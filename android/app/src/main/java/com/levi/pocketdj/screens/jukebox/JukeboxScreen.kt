@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -47,9 +48,11 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.jukebox.JukeboxDecisionAction
+import com.levi.pocketdj.data.jukebox.JukeboxLink
 import com.levi.pocketdj.data.jukebox.JukeboxGraph
 import com.levi.pocketdj.data.jukebox.JukeboxRepository
 import com.levi.pocketdj.data.jukebox.JukeboxSessionInfo
+import com.levi.pocketdj.data.jukebox.JukeboxSettings
 import com.levi.pocketdj.di.AppGraph
 
 /**
@@ -61,7 +64,7 @@ import com.levi.pocketdj.di.AppGraph
  * renders its state, so navigation away never stops the party.
  */
 @Composable
-fun JukeboxScreen(modifier: Modifier = Modifier) {
+fun JukeboxScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit = {}) {
     val context = LocalContext.current
     val graph = remember(context) { JukeboxGraph.get(context) }
     val appGraph = remember(context) { AppGraph.get(context) }
@@ -69,28 +72,82 @@ fun JukeboxScreen(modifier: Modifier = Modifier) {
 
     val state by graph.repository.state.collectAsState()
     val settings by appGraph.settings.settings.collectAsState(initial = null)
+    val joined by graph.joined.sessions.collectAsState()
+    var joinDialog by remember { mutableStateOf(false) }
     val loadedSettings = settings ?: return
+    val pocketDjName by appGraph.settings.flow(com.levi.pocketdj.onboarding.OnboardingPrefs.PROFILE_NAME)
+        .collectAsState(initial = "")
 
-    when {
-        state.session != null -> LiveView(
-            state = state,
-            repository = graph.repository,
-            modifier = modifier,
-        )
-        loadedSettings.jukeboxServerUrl.isBlank() -> NotConfiguredView(modifier)
-        else -> CreateView(
-            state = state,
-            defaultRequireToken = loadedSettings.jukeboxTokensRequiredByDefault,
-            onStart = graph.repository::start,
-            modifier = modifier,
+    Column(modifier.fillMaxSize()) {
+        // Guest strip: joined jukeboxes above whichever host state is showing (iOS safeAreaInset top).
+        if (joined.isNotEmpty() || joinDialog || state.session != null) {
+            JoinedSessionsStrip(
+                sessions = joined,
+                onOpen = onOpenJoin,
+                onLeave = graph.joined::remove,
+                onJoinByLink = { joinDialog = true },
+            )
+        }
+        Box(Modifier.weight(1f)) {
+            when {
+                state.session != null -> LiveView(
+                    state = state,
+                    repository = graph.repository,
+                )
+                loadedSettings.jukeboxServerUrl.isBlank() -> NotConfiguredView(
+                    onJoinByLink = if (joined.isEmpty()) ({ joinDialog = true }) else null,
+                )
+                else -> CreateView(
+                    state = state,
+                    defaultRequireToken = loadedSettings.jukeboxTokensRequiredByDefault,
+                    defaultName = JukeboxSettings.defaultSessionName(pocketDjName),
+                    onStart = graph.repository::start,
+                    onJoinByLink = if (joined.isEmpty()) ({ joinDialog = true }) else null,
+                )
+            }
+        }
+    }
+    if (joinDialog) {
+        JoinByLinkDialog(
+            onDismiss = { joinDialog = false },
+            onJoin = { link ->
+                graph.joined.addJoined(link)
+                joinDialog = false
+                onOpenJoin(link.jukeboxId)
+            },
         )
     }
+}
+
+/** Manual "Join by link or id" entry (also the emulator-verifiable path without a deep link). */
+@Composable
+private fun JoinByLinkDialog(onDismiss: () -> Unit, onJoin: (JukeboxLink) -> Unit) {
+    var text by remember { mutableStateOf("") }
+    val link = JukeboxLink.parseLoose(text)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Join a jukebox") },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text("Link or id") },
+                singleLine = true,
+                isError = text.isNotBlank() && link == null,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { link?.let(onJoin) }, enabled = link != null) { Text("Join") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 // ---- not configured --------------------------------------------------------
 
 @Composable
-private fun NotConfiguredView(modifier: Modifier = Modifier) {
+private fun NotConfiguredView(modifier: Modifier = Modifier, onJoinByLink: (() -> Unit)? = null) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -118,6 +175,7 @@ private fun NotConfiguredView(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
+        onJoinByLink?.let { TextButton(onClick = it) { Text("Join a jukebox by link\u2026") } }
     }
 }
 
@@ -127,8 +185,10 @@ private fun NotConfiguredView(modifier: Modifier = Modifier) {
 private fun CreateView(
     state: JukeboxRepository.UiState,
     defaultRequireToken: Boolean,
+    defaultName: String,
     onStart: (name: String, requiresToken: Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    onJoinByLink: (() -> Unit)? = null,
 ) {
     var name by remember { mutableStateOf("") }
     // Seeded from the Settings default each time the create view appears (§6).
@@ -163,7 +223,7 @@ private fun CreateView(
             value = name,
             onValueChange = { name = it },
             label = { Text("Session name") },
-            placeholder = { Text(JukeboxRepository.DEFAULT_SESSION_NAME) },
+            placeholder = { Text(defaultName) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
@@ -189,6 +249,7 @@ private fun CreateView(
             }
             Text(if (state.starting) "Starting…" else "Start Jukebox")
         }
+        onJoinByLink?.let { TextButton(onClick = it) { Text("Join a jukebox by link\u2026") } }
     }
 }
 
@@ -293,6 +354,7 @@ private fun LiveView(
                     if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                     RequestRowView(
                         row = row,
+                        mixOwns = state.mixOwns,
                         onDecide = { action -> repository.decide(row.request.id, action) },
                     )
                 }
@@ -395,6 +457,7 @@ private fun OnAirBody(state: JukeboxRepository.UiState) {
 @Composable
 private fun RequestRowView(
     row: JukeboxRepository.RequestRow,
+    mixOwns: Boolean = false,
     onDecide: (JukeboxDecisionAction) -> Unit,
 ) {
     Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -426,7 +489,7 @@ private fun RequestRowView(
             is JukeboxRepository.Match.Found -> Text(
                 text = buildString {
                     append("Match: ${match.song.name} — ${match.song.artist}")
-                    if (!match.playable) append(" (no audio yet)")
+                    if (!match.playable) append(if (mixOwns) " (will burn into the mix)" else " (no audio yet)")
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (match.playable) {
@@ -436,7 +499,10 @@ private fun RequestRowView(
                 },
             )
         }
-        val playable = (row.match as? JukeboxRepository.Match.Found)?.playable == true
+        // A live auto mix accepts a match that is not on disk yet (it burns + parks it), so only a
+        // missing match disables the placement buttons while mixing.
+        val found = row.match as? JukeboxRepository.Match.Found
+        val playable = found != null && (found.playable || mixOwns)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             TextButton(onClick = { onDecide(JukeboxDecisionAction.DENIED) }) {
                 Text(JukeboxDecisionAction.DENIED.label, color = MaterialTheme.colorScheme.error)

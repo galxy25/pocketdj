@@ -1,0 +1,642 @@
+{
+ "area": "Games tab (Gem Collector / Collectors Puzzle, In the Pocket, Music with Friends, Scoreboard) + Location tie-in",
+ "inventory": [
+  {
+   "feature": "Games tab home: three game cards (Gem Collector, In the Pocket, Music with Friends) with 'Round in progress' badges, best/stat lines, MwF live session rows + New/Join buttons",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/GamesView.swift (lines 55-252), apple/PocketDJ/Views/RootView.swift:81-91 (Section.games pinned token 'Games'), RootView.swift:1033",
+   "android_files": "none \u2014 android/app/src/main/java/com/levi/pocketdj/navigation/PocketDjDestination.kt has 6 destinations and no Games route; MainActivity.kt NavHost has no games composables",
+   "notes": "iOS Games is a top-level Section. Android needs a 7th bottom destination (see architecture: 7 icons, label only on the selected item)."
+  },
+  {
+   "feature": "Scoreboard section: per-game best run + 5 recent runs, 'No runs yet' empty state, header row with \u22ef menu (hidden when empty) + long-press menu, per-game delete and delete-all with a single confirmation alert whose copy warns about synced devices",
+   "status": "MISSING",
+   "ios_files": "GamesView.swift:254-391 (scoreboardSection, scoreboardTitleRow \u2014 header is a ROW not a Section header: measured iOS context-menu finding, pinned by GamesUITests.testScoreboardHeaderRowLongPressDeletesEverything)",
+   "android_files": "none",
+   "notes": "Keep \u22ef + long-press on the title row; both affordances real. Delete copy mentions 'every device you sync with' \u2014 on Android say 'on this device' until S3 sync exists."
+  },
+  {
+   "feature": "GameScoreboardStore: durable run log (pocketdj-game-scores.json), frozen GameKind tokens collectorsPuzzle|musicWithFriends|inThePocket (labels free: 'Gem Collector'), RunRecord{id, game, score, at(ms Double), settingsSummary, detail map, originInstallId}, maxRuns 500 (cap trim NEVER tombstones), tombstones for deletes (maxTombstones 2000, oldest-first eviction, 'deleted' key omitted when empty, schemaVersion stays 1), lenient per-element decode, union-by-id reloadFromDisk merge with id-based mustSave, inThePocketStats (rounds, pocketRate over decided rounds, best/current streak; abandoned neither extends nor breaks), seedFixture (PDJ_SEED_GAMES authoritative under PDJ_USE_FIXTURE), clear() hard wipe for account deletion",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/GameScoreboardStore.swift (whole file; tests apple/Tests/Unit/GameScoreboardStoreTests.swift)",
+   "android_files": "none",
+   "notes": "Keep the exact JSON shape (runs + optional deleted) so a future S3 profile sync can union-merge across platforms. CloudSync pull path is N/A (no CloudKit) but the pure merge stays implemented + tested."
+  },
+  {
+   "feature": "PuzzleSettings: roundSeconds 60/120/180/300, playCountBias/recencyBias/favoriteBias (off|favor|avoid), genreCategories set, yearMin/yearMax, membershipMode (off|inAny|notInAny)+membershipCollectionIds, targetCollectionIds (0..3, ordered), similarity (off|on|strict, default on); lenient per-field decode (missing similarity \u21d2 on, missing recencyBias \u21d2 off); summaryLine ('2:00 \u00b7 \u2665 favor \u00b7 most played \u00b7 hip-hop+funk \u00b7 1990\u20131999 \u00b7 in 2 \u00b7 3 targets \u00b7 similar+' / 'free file'); persisted UserDefaults pdj.puzzle.settings.v1; deleted collections pruned from targets/membership at engine load",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/CollectorsPuzzle/PuzzleModels.swift; CollectorsPuzzleEngine.swift:125-172",
+   "android_files": "none (Genre categories exist: android/.../screens/browse/Genre.kt categoryNames/order)",
+   "notes": "Store as JSON string in a games-owned Preferences DataStore key puzzleSettingsJson."
+  },
+  {
+   "feature": "PuzzleSampler: RawInputs\u2192Inputs derivation OFF main (genre-by-song via album, membership union, playable-now set, recency decay once), hard filters (excluding, suppressedForTargets, playableOnly, year bounds drop nil-year only when a bound is set, genre category with Other fallback, membership in/not-in, already-in-EVERY-target), soft multiplicative weights (\u2665 4.0/0.25; play count 1+log2(1+c) / c==0?4:1/(1+log2(1+c)); recency 1+gain\u00b7r / r<=0?4:1/(1+gain\u00b7r)), playable-first pool with fallback on the RESULT (rip-on-demand never counts as playable), PoolStats {matched, similar?}, weighted sample without replacement with injected rng, top-up `excluding`",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/CollectorsPuzzle/PuzzleSampler.swift; tests apple/Tests/Unit/PuzzleSamplerTests.swift, PuzzlePlayabilityTests.swift",
+   "android_files": "none",
+   "notes": "PlayRecency (decay/gain/score) lives outside Games on iOS (grep PlayRecency) \u2014 port the formula alongside the sampler as data/games/puzzle/PlayRecency.kt. Lifetime play counts: iOS merges Apple's ~144k baseline (PlayCountService); Android has only PlayHistoryStore.playCount \u2192 PARTIAL signal, same formula."
+  },
+  {
+   "feature": "PuzzleSimilarity (local-first): TargetProfile from target members (artist share w/ artistKey fold, genre share, year mean/sigma\u22658, top-20 keyword share, co-member ids from OTHER collections, decayed co-play edges within 30 min via sorted+binary search, memberIds), profile-level availableWeight denominator (wArtist .30, wGenre .25, wYear .15, wCoMember .12, wLyrics .10, wCoPlay .08, wRecency .05), score() with cloud as pure bonus (cloudWeight .25; cloudRank 0 \u21d2 identical local score), shortlist: off/empty \u21d2 candidates unchanged; strict floor 0.15; k=max(400, 8\u00b7wanted); deterministic sort (sim, weight, recency, id); within-shortlist weight \u00d7(0.25+sim); starvation guard min(count, max(20, wanted/2)) refilled from remaining; balanced-mode (SimilarityFamilies) is nil for Gem Collector",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/CollectorsPuzzle/PuzzleSimilarity.swift; tests apple/Tests/Unit/PuzzleSimilarityTests.swift",
+   "android_files": "none",
+   "notes": "Port only the balance==nil path; SimilarityFamilies belongs to the rec/'In Da Zone' area, not Games. Cloud booster (RecommendationService.similarSongs) is a provider seam defaulting to empty \u2014 the Android rec engine is a services-area dependency."
+  },
+  {
+   "feature": "CollectorsPuzzleEngine round state machine: idle\u2192sampling\u2192countdown(3,2,1)\u2192running\u2192finished; n=max(60, roundSeconds) sample; one cloud call per round under a 2.5 s budget before sampling (never from the ticker); 0.25 s ticker; wall-clock deadline; ownership by run tag puzzle_<roundId> (sequencerTakenOver \u21d2 endRound(stopAudio:false), never skip/stop a foreign run); audio watchdog re-arms from the current card AT MOST ONCE per card (lastAudioArmIndex); drift re-sync: audio position (audioBaseIndex + sequencer.index) ahead of queueIndex \u21d2 batch-record 'expired' rows in ONE persist; top-up when <10 remain, single-flight, round-guarded continuation (armedRoundId), round queue always grows, audio queue only while still owned; poolExhausted; assign(toTargetIndex) one point; skip() records 'skipped'; endRound records run with settingsSummary + detail{assigned, roundSeconds}; isNewHighScore; reset(); replace-queue confirm when something else is playing",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/CollectorsPuzzle/CollectorsPuzzleEngine.swift (whole file); tests apple/Tests/Unit/CollectorsPuzzleEngineTests.swift",
+   "android_files": "none \u2014 Android has no queue-index / append / run-tag surface on PlaybackController (playback/PlaybackController.kt playQueue builds a fresh queue; QueuePlan skips non-manifest rows)",
+   "notes": "Needs a GameRunPlayer port over Media3 (queue index, append, ownership by PlayContext.contextId). See architecture."
+  },
+  {
+   "feature": "Filing through the Add-to picker ('file into ANY collection'): beginFiling holds the round clock (ticker fully suspended incl. drift/watchdog/top-up), filingSongId carried by id, noteFiled dedupes targets by (kind,id) while the sheet stays open (multi-collection filing), endFiling is the ONE settle point: idempotent, re-checks LIVE membership (unchecked rows \u21d2 not filed), credits held time min(elapsed, 20 s + 10 s per extra target, ceiling 60 s), ONE POINT PER CARD (pointsPerFiledCard=1) but one decision row PER target, cancel \u2260 skip (card stays), re-arms audio to the current card; filedLabel 'Crate A +2 more'",
+   "status": "MISSING",
+   "ios_files": "CollectorsPuzzleEngine.swift:47-76, 491-610; CollectorsPuzzleView.swift:52-72, 505-510",
+   "android_files": "android/.../screens/collections/AddToCollectionSheet.kt exists but self-dismisses after ONE add (performAdd \u2192 onDismiss, line 143-150) and has no onAdded callback",
+   "notes": "Shared touchpoint: AddToCollectionSheet gains `onAdded: ((AddTarget) -> Unit)? = null` + `stayOpenAfterAdd: Boolean = false` (\u224815 lines, collections architect's file)."
+  },
+  {
+   "feature": "PuzzleDecisionStore: pocketdj-puzzle-decisions.json, Decision{id, roundId, at, songId, action assigned|skipped|expired, collectionId?, collectionName?, positionInRound?, settings snapshot?, originInstallId}, maxDecisions 20k, coalesced 600 ms save on a serial writer with a write GENERATION (stale enqueued snapshot skips itself), recordBatch (one persist per drift burst), flush() sync on background, flushAsync() at round end, union-by-id reloadFromDisk, clear()",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/CollectorsPuzzle/PuzzleDecisionStore.swift; tests apple/Tests/Unit/PuzzleDecisionStoreTests.swift",
+   "android_files": "none",
+   "notes": "Keep file name + shape. applyPulledPayload (CloudSync) is N/A."
+  },
+  {
+   "feature": "PuzzleRecEventBridge: ONLY `assigned` decisions with a collectionId leave the device as RecPuzzleEventWire{id, atMs, gameId='collectorsPuzzle', songId, collectionId, action='added', points=1}, oldest first, sinceMs cursor owned by the rec service",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/CollectorsPuzzle/PuzzleRecEventBridge.swift; PocketDJApp.swift:1497-1500 (installed on recEngine.puzzleEventsProvider)",
+   "android_files": "none (Android has no RecommendationService \u2014 services area)",
+   "notes": "Port the pure projection now; wire it when the Android rec engine lands (dependency on the services area). Uploading skipped/expired would invert their meaning server-side."
+  },
+  {
+   "feature": "Gem Collector screen: setup Form (best line; Round length segmented; Weighting pickers play count / last played / favorites; Filters: genres sub-screen with checkmarks, year from/to number fields with clear, collection filter picker + membership list; Targets section with 'Draw' similarity picker shown only with targets, target list \u22643 with order, 'New Pocket\u2026' dialog that appends the new pocket as a target; pinned bottom start bar with '\u2026 songs match' / 'N match \u00b7 M similar' + last error + Start disabled when matched==0; 'Start round?' replace confirm when something is playing), countdown digits, running view (mm:ss timer red <10 s, \u2605 score pill, card = button with plus badge opening the picker, 0\u20133 assign buttons + 'File into\u2026'/'Other\u2026', Skip, End Round, 'Catalog exhausted!'), summary (\u2605 score, 'New high score! \ud83c\udfc6', Best, 'Filed this round' rows '\u2192 Crate', Play Again, Done)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/CollectorsPuzzle/CollectorsPuzzleView.swift (whole file); debounced 300 ms single-flight recount lines 86-97",
+   "android_files": "none",
+   "notes": "Compose: one screen switching on engine phase; settings draft pushed to the engine on every change (persisted)."
+  },
+  {
+   "feature": "History attribution of game plays: PlaySource.game ('Game', symbol gamecontroller) with contextName = GameKind.label, derived from the run tag prefix (puzzle_ / itp_) BEFORE CollectionsStore.historyContext; MwF accepted-song auto-queue never appends into a live puzzle round",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/PlayHistoryStore.swift:31-62 (PlaySource.game); apple/PocketDJ/PocketDJApp.swift:141-150 (historyContext(forSourceSetlistId:)); MusicWithFriendsStore.swift:494-515",
+   "android_files": "android/.../data/history/PlayHistoryModels.kt PlaySource has NO `game` token (browser|playlist|pocket|album|setlist|mix|artist); playback/PlayEvents.kt PlayContext has no SOURCE_GAME",
+   "notes": "Shared touchpoint (history area): add PlaySource.GAME + PlayContext.SOURCE_GAME + PlayContext.game(runTag, gameLabel). Adding a token is safe both ways (lenient decode coerces unknown to BROWSER on older builds)."
+  },
+  {
+   "feature": "In the Pocket models: InThePocketContext (timeBuckets night 22-5 / morning 5-10 / midday 10-14 / afternoon 14-18 / evening 18-22 mirroring params.mjs, dayType, dow from atMs+tzOffsetMin, ctx only place/trip, ctxKey 'place:<id>'/'trip:<id>', learningKeys most-specific first, timePhrase), InThePocketTarget{dim,value,label(never uploaded),weight}, modes cloud|history|cold, song states pending|playing|completed|skipped|notPlayed, outcome pocket|broke(at)|abandoned (custom {outcome, brokeAt} encoding), InThePocketRound (seed as decimal string, algoVersion, targets incl. bpm band target, rating 1..5, feedback capped 2000 UTF-16 units without splitting surrogates), wire InThePocketRoundWire (flooredMinute on started/ended, weights/scores rounded to 1e-3, song outcome completed|skipped|notPlayed|partial, explicit nulls for nullable fields), batch {v:1, deviceId, installId, sentAtMs, rounds}, fingerprint for re-send",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/InThePocket/InThePocketModels.swift; tests apple/Tests/Unit/InThePocketUploadTests.swift; server contract scripts/lambda/listening-pockets/index.mjs:302-363 (POST /rounds, cleanRound, mergeRounds), store.mjs",
+   "android_files": "none",
+   "notes": "Wire fields must encode explicit null (kotlinx `explicitNulls` is false in PdjJson.lenient \u2014 use a dedicated Json instance for the rounds wire)."
+  },
+  {
+   "feature": "InThePocketScorer (pure, deterministic): cloud profile from patterns (weight = contextMatch\u00b7(1+ln occurrences)) and pockets (0.5\u00b7match) absorbing musical features/numeric bpm/topSongs/membership/collectionCandidates; contextMatch (0 unless timeBucket matches; +1 dayType; +2 same place/trip); history profile (same bucket+dayType, narrowed to place/trip with \u22655 plays, else same bucket; <5 \u21d2 cold over all plays) with share\u22650.15 and lift clamp [0.5,3], BPM band = middle half (normalizedBand \u22656 wide), seeds +1/\u22122; normalize to top 6 strongest=1; round learning (cloud `rounds` contexts exact-then-relaxed key, else local InThePocketLearning: label +1 pocket / \u22121 broke at \u22642, multiplier 2(pos+1)/(pos+neg+2) clamped [0.25,2], add targets when \u22651.25 on \u22652 positives); scoring \u03a3 targets + 0.6\u00b7bpm fit (e^(\u2212d/8)) + 0.8\u00b7seed + familiarity (0.6(rate\u2212\u00bd)+0.3\u00b7min(plays,5)/5 Laplace) + 0.9\u00b7membership cosine + 0.5\u00b7collection candidate; unrelated candidates dropped; exclusions: played within 48 h + songs of the last 3 rounds; pick: top 40, seeded SplitMix64 draws (score\u00b2 weights) from top 8 then top 6 with coherence (+0.3 shared genre, +0.3\u00b7e^(\u2212|\u0394BPM|/10), +0.3\u00b7mean Jaccard membership, \u22121 per same artist); 4 songs cloud / 3 otherwise; failures nothingPlayable | notEnoughCandidates; chips; genreLabel",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/InThePocket/InThePocketScorer.swift, InThePocketMembership.swift (MembershipIndex, addScale 0.5+0.5e^(\u2212age/45) unknown 0.75, normalizeMembership top 12 L1, Centroid \u22653 members, similarity blend genre .35/bpm .25 \u03c38/camelot .2 adjacent/mood .2 Jaccard, minCoverage .45, soft 0.6\u00b7sim when \u22650.55, live-hour pull 0.5, collectionTargets top 3); tests apple/Tests/Unit/InThePocketScorerTests.swift; MUST match scripts/lambda/listening-pockets/analyze.mjs learnFromRounds/roundMultiplier",
+   "android_files": "none (Harmonics.kt has Camelot helpers that may provide camelotAdjacent)",
+   "notes": "RecAudioShortlist.camelotAdjacent is outside Games on iOS \u2014 port a local camelotAdjacent in the membership file (or reuse data/collections/Harmonics.kt if it exposes neighbour logic)."
+  },
+  {
+   "feature": "InThePocketRoundEvaluator (pure outcome state machine over the play log): song k starts when the next event after \u25b6 (startTolerance 2 s) is song k (base id); replays of already-played round songs ignored; any other song is FOREIGN; skipped when the event carries the skip verdict (final \u21d2 'Broke at song k'); completed when a later round song started, or fraction \u22650.9, or (ended) fraction \u22650.5 / unknown-is-a-play; end signal = min(foreignAt, ownershipLostAt) only once settleMs 8 s old; idle timeout 3 h; abandoned unless waiting on the stop checkpoint (last song has no fraction yet, not timed out, no foreign play); currentIndex",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/InThePocket/InThePocketRoundEvaluator.swift; tests apple/Tests/Unit/InThePocketRoundEvaluatorTests.swift; verdict source apple/PocketDJ/Playback/SkipTracker.swift (<50% at advance-away, STRICT; pause/stop/natural end/\u23ee never skips; one-deep previous stash; high-water position)",
+   "android_files": "android/.../data/history/PlayHistoryStore.kt + PlayHistoryModels.kt have NO wasSkipped / listenedFraction / tzOffsetMin / originInstallId; no SkipTracker; PlaybackService emits only PlayStarted",
+   "notes": "Hard dependency: Android history must gain skip + fraction verdicts (GAMES-6, a playback/history shared touchpoint)."
+  },
+  {
+   "feature": "InThePocketStore (app-scoped): buildRound off-main (context now + tz + place/trip GUESS + catalog slice of playable\u222ahistory\u222acollection members with album genre category lowercased, Other\u21d2nil), replaces an unstarted round, refuses while a round plays; start() stamps startedAtMs, plays via the shared sequencer under run tag itp_<id>, 1 Hz ticker that runs whether or not the screen shows (resumeTrackingIfNeeded on launch/foreground), evaluate(forceEnd) filters events to this install since start\u22122 s, writes states/fractions, records outcome to scoreboard (score = completed count, settingsSummary = chips, detail{outcome, roundId, songs}), endActiveRound, dismissCurrent, saveFeedback (capped, rating 1..5, bumps updatedAtMs so a FINISHED round re-uploads), uploadWires (finished rounds only), trim 300 rounds never dropping active/current, persisted DEVICE-LOCAL pocketdj-in-the-pocket.json (holds free text \u2014 never synced), clearLocal",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/InThePocket/InThePocketStore.swift; wiring PocketDJApp.swift:1584-1605; tests apple/Tests/Unit/InThePocketStoreTests.swift",
+   "android_files": "none",
+   "notes": "Audio availability = rips manifest \u222a AM-streamable (hasAppleMusic && appleMusicId) on Android; no burned/offline ids yet."
+  },
+  {
+   "feature": "In the Pocket screen: opt-in gate (ListeningPocketsOptInView when pockets off; 'needs Recommendations' note), stats row (rounds / % in the pocket / best streak), build card with mode-specific errors ('Nothing can play right now\u2026' / 'Not enough fresh, playable songs\u2026'), round card (chips, mode note cloud/history/cold, progress dots hollow/half/filled/\u2715, numbered song rows with why \u22643, outcome banner, controls Start / Different songs / End round / New round), 'How does it feel?' editor (1\u20135 stars toggle, multiline text with live 2000 cap, mic button only when dictation is available, explanation line, counter, Save/Saved), privacy note, save on disappear",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/InThePocket/InThePocketView.swift; apple/PocketDJ/Views/ListeningPocketsView.swift:121-161 (opt-in view)",
+   "android_files": "none",
+   "notes": "The opt-in view belongs to the services/history area (History \u25b8 Pockets); Games reuses it via the PocketsBridge or ships a minimal local copy if that wave lands later."
+  },
+  {
+   "feature": "Feedback dictation: on-device speech only (requiresOnDeviceRecognition; no server fallback), mic + speech permission asked in context, live transcript APPENDED to typed text (join rule: trimmed + single space, none after a trailing newline), tap again stops, denied/unavailable \u21d2 mic disabled with one-line explanation and typing still works, borrows the audio session so music keeps playing, stop on leave",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/InThePocket/FeedbackDictation.swift; tests apple/Tests/Unit/FeedbackDictationTests.swift",
+   "android_files": "none",
+   "notes": "Android: android.speech.SpeechRecognizer.createOnDeviceSpeechRecognizer (API 31+) + isOnDeviceRecognitionAvailable gate; RECORD_AUDIO runtime permission. Device-only verification (emulator usually lacks the on-device model \u2192 mic hidden, which is itself the correct behaviour)."
+  },
+  {
+   "feature": "Rounds upload: finished rounds ride the listening-pockets flush as POST /pockets/rounds (rounds.v1, cap 50/batch) under the rec engine's key + scoped profile id, acknowledged ONLY on 2xx by fingerprint (sentRounds), stay QUEUED on 404 (roundsServiceAvailable=false, silent), re-sent when feedback/rating/outcome changes; gate = recEngineEnabled && listeningPocketsEnabled; onRoundsChanged \u21d2 flushSoon",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/ListeningPocketsService.swift:1-130, 332, 435-470 (uploadRounds), roundsProvider seam; PocketDJApp.swift:1601-1604",
+   "android_files": "none \u2014 no ListeningPocketsService / RecommendationService on Android (grep found no rec/pockets code); RemoteEndpoints.kt already carries EndpointKey.LISTENING_POCKETS_BASE and REC_ENGINE_BASE",
+   "notes": "Cross-area: the pockets service (events upload, results fetch, credentials) is the services architect's. Games owns the rounds half behind a PocketsBridge interface so it can ship with a no-op bridge."
+  },
+  {
+   "feature": "Location tie-in: contextGuess (ListeningPlaceEngine.currentGuess \u2014 place while inside a stay; trip to the most-reached destination within 4 h of departure; never stamped on a play) only while places & trips is ON; contextLabel 'Location A' / 'A \u2192 B' for chips (never uploaded); ListeningContextTag {kind place|trip|none, placeId, tripId, origin, destination} on rounds and on results",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Location/ListeningContext.swift, ListeningLocationStore.swift, ListeningPlaceEngine.swift:247-272, CoreLocationVisitSource.swift (iOS-only CLVisit + significant-change), ListeningLocationSettingsSection.swift",
+   "android_files": "none",
+   "notes": "Android has no CLVisit equivalent; a port needs the pure ListeningPlaceEngine (596 lines, fully testable) + a FusedLocation low-power/passive source + ACCESS_BACKGROUND_LOCATION (Play policy). Not Games scope \u2014 flagged for the collections/services architect. In the Pocket on Android runs TIME-ONLY (ctx = null) exactly as iOS does on macOS/tvOS/visionOS; the ListeningContextTag model is still needed to decode results/encode rounds."
+  },
+  {
+   "feature": "MwF link parsing: pocketdj://mwf/<id> (host 'mwf' or first segment) and https://jukebox.pocket-dj.com/mwf/<id>/ (guestBase kept); id = base32 [a-z2-7]{4,32}; literal 'mwf' segment can never collide with a jukebox id; stateURL <base>/mwf/<id>/state.json",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/Friends/MwFLink.swift; tests apple/Tests/Unit/MwFLinkTests.swift; apple/project.yml:133-141 (CFBundleURLSchemes pocketdj; applinks entitlement)",
+   "android_files": "android/.../data/jukebox/JukeboxUrls.kt (host-side URL construction only; no guest/deep-link parsing); AndroidManifest.xml has no VIEW intent filters",
+   "notes": "Needs manifest intent filters (scheme pocketdj host mwf; https jukebox.pocket-dj.com pathPrefix /mwf/) + MainActivity onNewIntent. App Links auto-verify needs /.well-known/assetlinks.json on jukebox.pocket-dj.com (server/web step, device-verified)."
+  },
+  {
+   "feature": "MwF wire models (all-optional lenient): MwFSettings{turnSeconds, acceptOutsideTurn, turnEndsOnFirstSuggestion}, MwFMember, MwFMatch, MwFSuggestion{status pending|accepted|rejected, plusOnes, match}, MwFCollectionEntry, MwFTurn{deadline ms}, MwFState (+apiBase, you), score(of:); MwFSessionEntry persisted list (id, memberId, memberKey, leaderKey?, name, theme, url, apiBase, expiresAt, pocketId, joinedAt)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/Friends/MwFModels.swift; tests apple/Tests/Unit/MwFModelsTests.swift",
+   "android_files": "none (JukeboxModels.kt is the host-side jukebox shape only)",
+   "notes": "Persist entries as JSON (same field names) in a games-owned file; bearer keys are secrets \u2014 filesDir is app-private."
+  },
+  {
+   "feature": "MwFClient over the SAME jukebox broker: POST /mwf (server token bearer, 30 s), POST /mwf/:id/join (public; joinSecret body; memberKey bearer re-binds; apiBase from public state.json wins over the configured base), GET /mwf/:id/state (memberKey), public state.json (cache-busting, no auth), suggest, decision (leaderKey; carries match), plusone, config (leaderKey; turnSeconds applies next turn), register-device / DELETE register-device (6 s), end (leaderKey, 30 s); X-PocketDJ-Device on every call; 12 s default timeout; decode errors \u21d2 ClientError.decoding",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/Friends/MwFClient.swift; broker scripts/jukebox-server.mjs:1074-1150 (/mwf routes), 1034 (health mwf:true, version)",
+   "android_files": "android/.../data/jukebox/JukeboxClient.kt (pattern to mirror: shortClient 12 s / longClient 30 s, builder(installId, bearer), JukeboxException(code))",
+   "notes": "MwFJoinSecret: 32 random hex minted once, NEVER the broadcast install id; reset on account deletion."
+  },
+  {
+   "feature": "MusicWithFriendsStore: sessions newest-first, pendingOpenId / pendingJoin link signals (handleOpenedLink raises pendingOpenId in BOTH branches), create/join return their error to the SHEET (never a shared field), 404 on create/join probes /health (version<3 or mwf!=true \u21d2 'older server' message), refresh(): per-session lastState/pollErrors; 401 \u21d2 single-flight recoverMembership (present memberKey, then joinSecret-only) and retry once; 404/410 \u21d2 fold ended locally; ended \u21d2 recordFinalScoreIfNeeded ONCE per session (scored set persisted; expiry fallback with last-known state); suggest THROWS (409 = not your turn); plusOne; leader approve runs the matcher first (catalog \u2192 appleMusicId \u2192 title/artist-only) then decides; reject; updateSettings; endSession folds locally even if unreachable; leave() local only; queueAccepted nicety (append to the shared queue, never into a live puzzle round); downloadCollection \u2192 pocket 'MwF \u2014 <name>' idempotent via entry.pocketId, unresolved entries become provisional songs; eraseAll",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/Friends/MusicWithFriendsStore.swift; tests apple/Tests/Unit/MusicWithFriendsStoreTests.swift",
+   "android_files": "none; android/.../data/jukebox/JukeboxMatcher.kt (catalog-only matcher, reusable); CollectionsStore.createPocket(name, songIds, description) + addSongToPocket exist; NO materializePortableItems equivalent",
+   "notes": "PARTIAL by design on Android: no profiles (display name defaults 'Player', last-used name remembered), catalog-only matching (AM catalog search via dev token is a later rung), unresolved collection entries counted and skipped instead of provisional songs."
+  },
+  {
+   "feature": "MwF push notifications (APNs: new-suggestion to leader, song-accepted to peers, your-turn and turn-ending <10% to the member) + token re-registration + unregister on account deletion",
+   "status": "NA",
+   "ios_files": "MusicWithFriendsStore.swift:450-488; scripts/jukebox-server.mjs:650-680, 878-890 (registerMwfDevice accepts only ios|macos, APNs tokens ^[a-f0-9]{64,}$)",
+   "android_files": "none",
+   "notes": "The broker speaks APNs only; FCM would need Firebase in the app AND a broker change. Polling (4 s on the session screen) is the source of truth on iOS too, so Android MwF is fully functional without push. Record as a future broker+app addition."
+  },
+  {
+   "feature": "MwF screens: Create sheet (session name default '<Name>'s Music with Friends', theme \u2264144 with counter, display name, turn length 30 s/1 m/2 m/5 m, two toggles, 'No jukebox server configured' warning, sheet-local error), Join sheet (paste field hidden when opened from a link, 300 ms debounced theme preview with stale-response guard and clear-on-edit, display name, sheet-local error), Session screen (header theme + 'ends in Xh Ym', ended banner with score, turn banner 'Your turn!'/'<name>'s turn' + live m:ss, invite QR + share + copy, per-session verb error + poll error 'showing the last known state \u2026 Last updated', leaderboard sorted by score with crown + '(you)', suggest composer disabled outside your turn unless acceptOutsideTurn with '409 \u21d2 Not your turn yet', suggestions feed newest-first with status chips + '+1 (n)' disabled for own/already/ended, leader inbox Accept/Reject with per-row spinner, leader settings pickers/toggles + 'Queue accepted songs', collection section with 'Download to My Collections' \u2192 alert with Open, End Session confirm / Leave), 4 s poll owned by the screen, breaks when ended",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Games/Friends/MusicWithFriendsViews.swift; GamesView.swift:224-252 (session rows, expiresLabel)",
+   "android_files": "android/.../screens/jukebox/JukeboxQr.kt (JukeboxQrCard reusable for the invite QR)",
+   "notes": "Share = Android ACTION_SEND chooser; copy = ClipboardManager."
+  },
+  {
+   "feature": "Star map two-tier constellations",
+   "status": "NA",
+   "ios_files": "none \u2014 PWA only (src/starmap/constellationMap.ts, layout.ts per memory starmap-two-tier); iOS Genre.swift/BrowseModel.swift mention constellations only as a genre-category vocabulary",
+   "android_files": "none",
+   "notes": "Not an iOS Games feature; no iOS parity gap. Out of scope."
+  },
+  {
+   "feature": "Scoreboard + decision-log CloudKit sync, account-deletion erasure hooks (AccountDeletionService cloudDocKeys), UI-test fixture seams (PDJ_USE_FIXTURE launch URLs/suites)",
+   "status": "NA",
+   "ios_files": "GameScoreboardStore.swift:155-170, 328-375; PuzzleDecisionStore.swift:95-102, 152-156; CollectorsPuzzleEngine.swift:162-167",
+   "android_files": "none",
+   "notes": "No CloudKit on Android. Keep store constructors file-injectable so JVM tests use temp files; a debug-only seed (BuildConfig/intent extra) replaces PDJ_SEED_GAMES for emulator drives."
+  }
+ ],
+ "architecture": "## Games on Android \u2014 architecture\n\n### Placement and navigation\n- **Games becomes the 7th bottom destination** (`PocketDjDestination.Games(\"games\", \"Games\", phase=5, Icons.Filled.SportsEsports)`), inserted after Jukebox to mirror iOS order (Browser \u00b7 History \u00b7 Collections \u00b7 Mix \u00b7 Producer \u00b7 Jukebox \u00b7 Games). Seven labelled items do not fit a 411 dp Pixel at 10 sp, so `NavigationBar` items switch to `alwaysShowLabel = false` (label only on the selected item). This is a **shared touchpoint** on `navigation/PocketDjDestination.kt` + `MainActivity.kt`; if the surfaces architect replaces the bar with a rail/overflow, the only requirement from Games is that route `games` and the pushed routes below are reachable.\n- Pushed routes (in `MainActivity.kt`, constants exported from `screens/games/GamesRoutes.kt`): `games/puzzle`, `games/puzzle/genres`, `games/inthepocket`, `games/mwf/{sessionId}`. Titles handled like the existing `title = when (currentRoute)` table.\n- All game engines are **app-scoped singletons** in a `GamesGraph` sidecar (`di/GamesGraph.kt`, the `JukeboxGraph` pattern) hanging off `AppGraph`, so a running round survives tab switches and screen pops (the iOS SetlistPlayer/MixEngine doctrine). `GamesGraph.get(context)` is the only entry; AppGraph itself is not edited.\n\n### Packages (Kotlin)\n```\ncom.levi.pocketdj.data.games            GameKind, GameScoreboardStore(+Models), GamesPrefs (Preferences DataStore pocketdj-games.preferences_pb)\ncom.levi.pocketdj.data.games.puzzle     PuzzleSettings, PlayRecency, PuzzleSampler, PuzzleSimilarity, PuzzleDecisionStore, PuzzleRecEventBridge, CollectorsPuzzleEngine\ncom.levi.pocketdj.data.games.inthepocket InThePocketModels, InThePocketScorer, InThePocketMembership, InThePocketLearning, SplitMix64, InThePocketRoundEvaluator, InThePocketStore, InThePocketRoundsClient\ncom.levi.pocketdj.data.games.friends    MwFLink, MwFModels, MwFClient, MwFJoinSecret, MusicWithFriendsStore, MwFSessionFile\ncom.levi.pocketdj.data.pockets          PocketsModels (ListeningContextTag, PocketsResults v1 lenient decode), PocketsBridge (interface + NoPocketsBridge)   \u2190 shared with the services area\ncom.levi.pocketdj.playback              GameRunPlayer (interface) + Media3GameRunPlayer (adapter), SkipTracker, PlayProgress events   \u2190 shared touchpoints\ncom.levi.pocketdj.screens.games         GamesScreen, CollectorsPuzzleScreen, PuzzleGenreScreen, InThePocketScreen, FeedbackDictation(+Controller), MwF sheets + session screen\n```\n\n### Data flow\n```\nPlaybackService \u2500\u2500PlayStarted/PlayProgress\u2500\u2500\u25b6 PlayEventBus \u2500\u2500\u25b6 PlayHistoryStore (record / markSkipped / noteListened)\n                                                   \u2502                      \u25b2\n                                                   \u2514\u2500\u2500\u25b6 SkipTracker \u2500\u2500\u2500\u2500\u2500\u2500\u2518 (<50% at advance-away \u21d2 skip; high-water fraction)\nGamesScreen \u2500\u2500\u25b6 GamesGraph { scoreboard, puzzle, inThePocket, friends }\nCollectorsPuzzleEngine \u2500\u2500GameRunPlayer.playRun(items, PlayContext.game(\"puzzle_<id>\", \"Gem Collector\"))\u2500\u2500\u25b6 PlaybackController/Media3\n                     \u25c0\u2500\u2500 queueIndex(), isRunning(tag) (ownership = nowPlaying.context.contextId == tag)\nInThePocketStore \u2500\u2500GameRunPlayer.playRun(..., \"itp_<id>\")\u2500\u2500\u25b6 Media3;  evaluate() reads PlayHistoryStore.events (wasSkipped/listenedFraction)\nInThePocketStore.uploadWires \u2500\u2500\u25b6 PocketsBridge.roundsProvider \u2500\u2500\u25b6 (services) ListeningPocketsService flush \u2500\u2500\u25b6 POST /pockets/rounds\nMusicWithFriendsStore \u2500\u2500MwFClient (OkHttp, same broker as JukeboxClient)\u2500\u2500\u25b6 /mwf/*\n```\n\n### Key classes and contracts\n- **GameRunPlayer** (new, `playback/GameRunPlayer.kt`): `suspend fun playRun(items: List<RunItem>, context: PlayContext): RunStart` (RunItem{songId,title,artist,lengthMs}; returns how many items resolved), `suspend fun appendRun(items, context)` (appends ONLY when `ownsRun(context.contextId)`), `fun ownsRun(tag): Boolean`, `suspend fun queueIndex(): Int?`, `suspend fun stopRun(tag)` (no-op unless owned), `val nowPlaying: StateFlow`. `Media3GameRunPlayer` lives beside `PlaybackController` and needs three small additions to `PlaybackController` (shared touchpoint, \u224850 lines): `suspend fun appendQueue(items: List<MediaItem>)`, `suspend fun currentQueueIndex(): Int?`, and an `internal fun buildGameItem(songId, url, song, album, context, isPreview)` that reuses the private `mediaItem()`. **Decision \u2014 game runs are ExoPlayer-only**: manifest hits stream; a non-manifest song with an `appleMusicId` rides as the 30-s AM preview (`AppleMusicPreviewResolver`, emulator-OK, cached per id); full-track AM (one-song-at-a-time native engine) is never used inside a game queue because the engine maps its queue index onto the player's. Rip-on-demand is excluded (a timed rush cannot wait minutes). The adapter resolves preview URLs in chunks of 12 ahead of the cursor; an unresolvable song is **dropped from the ROUND queue before it is shown** (`audioResolvable` hook on the engine), preserving the \"a card on screen is a song you can hear\" contract.\n- **History attribution** (shared touchpoint, history area): `PlaySource.GAME(\"game\", label \"Game\")`, `PlayContext.SOURCE_GAME`, `PlayContext.game(runTag, gameLabel)`; `PlaybackService` already forwards the context extras, so rows read \"Game \u00b7 Gem Collector\" with no service change.\n- **SkipTracker + verdict fields** (shared touchpoint, playback/history \u2014 package GAMES-6, yield to the playback architect if they claim it): `PlayEvent` gains `wasSkipped: Boolean? = null`, `listenedFraction: Double? = null`, `tzOffsetMin: Int? = null`, `originInstallId: String? = null` (additive-optional, same iOS key names); `PlayHistoryStore.record` stamps tz + originInstallId and returns the event id; `markSkipped(eventId)` / `noteListened(eventId, fraction)` (clamped, MAX-merged, <1 pp changes dropped, no PlayStarted re-fire); `PlaybackService` emits `PlayProgress(songId, positionMs, durationMs)` every ~1 s and `PlayAdvancedAway(songId, positionMs?, durationMs?)` from `onMediaItemTransition` with reason SEEK/PLAYLIST_CHANGED (never AUTO = natural end) and from `stop()/clearMediaItems`; `SkipTracker` keeps the iOS rule (strict <0.5, high-water position, one-deep previous stash) and writes verdicts.\n- **PocketsBridge** (`data/pockets/PocketsBridge.kt`): `val isEnabled: StateFlow<Boolean>` (recEngineEnabled && listeningPocketsEnabled), `val results: StateFlow<PocketsResults?>`, `suspend fun refreshIfStale()`, `fun flushSoon()`, `var roundsProvider: ((installId) -> List<InThePocketRoundWire>)?`, `suspend fun credentials(): Pair<key, profileId>?`, `val installId`. `NoPocketsBridge` (default until the services wave lands) is disabled \u2192 the game shows the opt-in screen in a \"needs Recommendations + Listening pockets in Settings\" state. `InThePocketRoundsClient` (Games-owned) posts `rounds.v1` batches of \u226450 to `${Endpoints.LISTENING_POCKETS_BASE}/pockets/rounds` with the bridge's bearer key + `X-PocketDJ-Profile`, acknowledges fingerprints only on 2xx, marks `roundsServiceAvailable=false` on 404 (rounds stay queued), persists `sentRounds` in a device-local `pocketdj-in-the-pocket-sync.json`.\n- **PocketsResults** decode: lenient per-element (bad element \u21d2 dropped, not the document), `algo.version` nested, `rounds` \u21d2 roundLearning, numeric map per-key lenient \u2014 a Kotlin `JsonElement` walker, not `@Serializable` data classes, to match the iOS `LPKey` tolerance.\n- **Collections inputs**: `CollectionsStore.songIdsForPocket/Playlist`, `playlistContains`, `createPocket(name, songIds, description)`, `addSongToPocket`, `addSong(songId, AddTarget)`; \"all collection memberships\" for similarity = every pocket/playlist flattened (memoised on `CollectionsStore.state.revision` inside the engine, never recomputed in the ticker). Add times for membership recency come from `CollectionActivityStore.events` (ADD kind, itemId=songId) \u2014 unknown \u21d2 0.75.\n- **Favorites / rec feedback / cloud similar**: provider seams on the engine defaulting to empty (`favoriteIdsProvider`, `recSuppressedProvider`, `cloudSimilarProvider`); wired when the favorites store (deferred per android/specs/activity-favorites.md) and the Android rec engine exist. The round is byte-identical to today's sampling when they are empty (the iOS contract).\n\n### Persistence (shape-compatible with iOS)\n| Doc | Android path | Shape |\n|---|---|---|\n| pocketdj-game-scores.json | filesDir | `{schemaVersion:1, installId, runs:[RunRecord], deleted?:[Tombstone]}` \u2014 key `deleted` omitted when empty |\n| pocketdj-puzzle-decisions.json | filesDir | `{schemaVersion:1, installId, decisions:[Decision]}` |\n| pocketdj-in-the-pocket.json | filesDir (device-local, excluded from backup via `backup_rules.xml`) | `{schemaVersion:1, rounds:[Round], currentRoundId?}` |\n| pocketdj-in-the-pocket-sync.json | filesDir | `{sentRounds:{id:fingerprint}}` |\n| pocketdj-mwf-sessions.json | filesDir | `[MwFSessionEntry]` (same field names as iOS UserDefaults blob) |\n| pocketdj-games.preferences_pb | DataStore | puzzleSettingsJson, mwfJoinSecret, mwfScoredSessionIds (string set), mwfQueueAccepted, mwfDisplayName |\nIds are UUID strings; `at`/`playedAt` epoch-ms **Double** (iOS wire). Every write: temp file + rename (the PlayHistoryStore idiom). All documents use `PdjJson.lenient` EXCEPT the rounds wire, which uses a Json with `explicitNulls = true` (server `cleanRound` tolerates nulls; iOS encodes them).\n\n### Threading model\n- Engine/store state = `StateFlow<ImmutableSnapshot>`; mutations run on `Dispatchers.Main.immediate` (iOS @MainActor equivalent) via a `mainScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)` inside GamesGraph. Heavy work (sampling over ~100k songs, similarity profile, scorer, JSON encode of MB-scale docs) runs in `withContext(Dispatchers.Default)` on COW-style immutable snapshots taken on Main (the iOS `RawInputs` \u2192 `Inputs(raw:)` split).\n- Tickers: `while (isActive) { tickOnce(); delay(250) }` (puzzle) / `delay(1000)` (ITP) launched in `mainScope`; tests call `tickOnce()`/`evaluate()` directly (`countdownEnabled=false`, injected `now`, `rng`).\n- PuzzleDecisionStore writer: `Dispatchers.IO.limitedParallelism(1)` + an `AtomicInteger` write generation; `flush()` on `ProcessLifecycleOwner` STOP via a lifecycle observer registered in GamesGraph.\n- MwF: one `refresh(id)` loop per open session screen (`LaunchedEffect(sessionId)`, 4 s, breaks when ended), all verbs `suspend` on IO through `MwFClient`.\n\n### Platform APIs\n- Media3 `MediaController` (queue index, `addMediaItems`, transitions) \u2014 already the one audio owner.\n- `android.speech.SpeechRecognizer.createOnDeviceSpeechRecognizer` + `isOnDeviceRecognitionAvailable` + `EXTRA_PREFER_OFFLINE` for dictation; `RECORD_AUDIO` permission via `ActivityResultContracts.RequestPermission`; partial results appended to the typed base.\n- Deep links: manifest `<intent-filter>` VIEW/BROWSABLE for `pocketdj://mwf/*` and `https://jukebox.pocket-dj.com/mwf/*` (`android:autoVerify=\"true\"`; needs assetlinks.json server-side), `MainActivity.onNewIntent` \u2192 `friends.handleOpenedLink`; `pendingOpenId` consumed by `PocketDjApp` (navigate to Games then push the session when an entry exists).\n- ZXing (`JukeboxQrCard`) for the invite QR; `Intent.ACTION_SEND` share; `ClipboardManager` copy.\n- No WorkManager/Glance needed in this area.\n\n### Mix DSP engine\nNot touched by this area \u2014 no decision made here.\n\n### Invariants carried over (must stay true on Android)\n1. One point per filed card; one decision row per target; cancel \u2260 skip; endFiling idempotent; live-membership re-check.\n2. Clock hold while the picker is open; credit = min(elapsed, 20 + 10\u00b7extraTargets) \u2264 60 s.\n3. Audio is authoritative for position; expired rows persisted in one batch; watchdog re-arms once per card; never skip/stop/append into a foreign run; takeover ends the round without touching their audio; top-up is single-flight and round-guarded.\n4. Playable-first pool with fallback on the result; rip-on-demand is not playable; similarity off/no-targets \u21d2 byte-identical sampling; starvation guard.\n5. GameKind tokens frozen; tombstoned deletes; cap trim never tombstones; `deleted` omitted when empty.\n6. Only `assigned` decisions ever leave the device.\n7. In the Pocket: rounds device-local; only finished rounds upload; floored minutes; fingerprint re-send; queued on 404; opaque context only; labels never uploaded; feedback \u22642000 UTF-16 units; dictation on-device only; evaluator constants (settle 8 s, idle 3 h, tolerance 2 s, 0.9/0.5 fractions); scorer constants + algoVersion 1 + SplitMix64; learning formula identical to analyze.mjs.\n8. MwF: joinSecret \u2260 install id; 401 recovery order (memberKey, then secret); 404/410 fold; score recorded once; per-session error channels; create/join errors stay in the sheet; never auto-queue into a live puzzle round; theme \u2264144; preview debounce + stale guard.",
+ "decisions": [
+  "Games is a 7th bottom-nav destination placed after Jukebox (iOS order); NavigationBar switches to label-on-selected-only (alwaysShowLabel=false) so seven items fit a 411 dp phone. Surfaces architect may swap in a rail/overflow; Games only needs route `games` reachable.",
+  "Game engines live in a GamesGraph sidecar (JukeboxGraph pattern) with Main.immediate state mutation + Default-dispatcher heavy work, instead of editing AppGraph.",
+  "Game runs are ExoPlayer-only: manifest streams first, 30-second Apple Music previews for non-manifest songs with an appleMusicId (emulator-OK), never the native AM full-track engine inside a game queue (it is single-song and would break queue-index ownership); unresolvable songs are dropped from the round queue before they are shown.",
+  "History gains PlaySource.GAME / PlayContext.game(runTag, label) (shared touchpoint) so rows read 'Game \u00b7 Gem Collector' exactly as iOS; the token is additive and lenient-safe.",
+  "Skip/fraction verdicts (SkipTracker, wasSkipped/listenedFraction/tzOffsetMin/originInstallId on PlayEvent, PlayProgress/PlayAdvancedAway events from PlaybackService) are specified as package GAMES-6 because In the Pocket cannot ship without them; the playback architect may claim it, in which case GAMES-6 collapses into a dependency with the same contract.",
+  "In the Pocket depends on a PocketsBridge interface (enabled gate, results, credentials, flushSoon, roundsProvider) that the services area implements; Games ships a NoPocketsBridge so the game compiles and shows the opt-in/unavailable state, and owns the POST /pockets/rounds client half.",
+  "In the Pocket on Android runs time-only (ctx = null) \u2014 the Location engine port is out of Games scope and flagged for the collections/services architect; the ListeningContextTag model is still defined (shared file data/pockets/PocketsModels.kt) for wire/results compatibility.",
+  "Scoreboard keeps the iOS JSON shape including tombstones and the pure union-merge (tested) even though no sync exists yet, so a future S3 profile sync can merge across platforms without a migration.",
+  "Music with Friends ships without push (broker is APNs-only; polling is the source of truth on iOS too); catalog-only matching for leader approvals (AM catalog search is a later rung); unresolved downloaded-collection entries are counted and skipped rather than materialised as provisional songs (no portable-items path on Android).",
+  "AddToCollectionSheet gains optional onAdded + stayOpenAfterAdd parameters (\u224815 lines, collections architect's file) so Gem Collector's multi-collection filing works; default behaviour unchanged for every other caller.",
+  "The rounds wire uses a dedicated Json with explicitNulls=true (server contract encodes nulls); every on-disk document keeps PdjJson.lenient.",
+  "No CloudKit/UI-fixture seams are ported; stores take injectable File paths for JVM tests and a debug-only seed intent extra replaces PDJ_SEED_GAMES for emulator drives."
+ ],
+ "packages": [
+  {
+   "id": "GAMES-1",
+   "title": "Games tab shell + Scoreboard store + GamesGraph + history game source",
+   "goal": "Make the Games tab exist on Android with the scoreboard fully working (record/best/recent/delete with tombstones/stats), the GamesGraph sidecar every later package plugs into, and the shared history token for game plays.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/games/GameKind.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/GameScoreboardModels.kt (new: RunRecord, Tombstone, Document, InThePocketStats)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/GameScoreboardStore.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/GamesPrefs.kt (new: Preferences DataStore pocketdj-games.preferences_pb)",
+    "android/app/src/main/java/com/levi/pocketdj/di/GamesGraph.kt (new; holds scoreboard now, slots for puzzle/inThePocket/friends)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/GamesScreen.kt (new: cards, scoreboard section, \u22ef + long-press menus, delete confirm; MwF rows/buttons stubbed behind `friends` nullable)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/GamesRoutes.kt (new: route constants + builders)",
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/navigation/PocketDjDestination.kt (add Games)",
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (NavigationBar alwaysShowLabel=false; composable(games); title table; pushed game routes registered as placeholders)",
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/data/history/PlayHistoryModels.kt (PlaySource.GAME + label 'Game')",
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/playback/PlayEvents.kt (PlayContext.SOURCE_GAME + PlayContext.game(runTag, gameLabel))",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/GameScoreboardStoreTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/navigation/PocketDjDestinationTest.kt (update: 7 destinations, Games route)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Games tab visible as the 7th destination; tapping it shows three cards and 'No runs yet \u2014 play a game!' on a fresh install",
+    "GameKind persisted tokens are exactly collectorsPuzzle|musicWithFriends|inThePocket; labels 'Gem Collector'/'Music with Friends'/'In the Pocket'",
+    "record() appends, trims at 500 WITHOUT tombstoning, saves atomically; bestRun = highest score, newest on tie; recentRuns newest-first limit 5",
+    "delete(game)/deleteAll() tombstone every removed id; the saved doc carries `deleted` only when non-empty; reloading a doc that still contains tombstoned runs does not resurrect them and rewrites the doc (id-based mustSave)",
+    "Merge is commutative/idempotent: applying the same doc twice changes nothing; a doc with runs we lack unions them; tombstones union with earliest `at` winning; capped at 2000 oldest-first",
+    "inThePocketStats: pocketRate over decided rounds only; abandoned neither extends nor breaks a streak",
+    "A per-element corrupt run row is dropped, the rest of the scoreboard loads",
+    "Scoreboard title row shows \u22ef only when runs exist; long-press on the title row and on any game block opens the same menus; delete confirmation copy per iOS (device-only wording)",
+    "History PlaySource.GAME decodes/encodes 'game'; PlayContext.game(...) carries contextName = game label"
+   ],
+   "priority": "P0",
+   "unit_tests": [
+    "GameScoreboardStoreTest: tokensFrozenLabelsFree, recordTrimsAt500NeverTombstones, bestRunTieNewestWins, deleteGameTombstonesAndSurvivesReload, deleteAllThenReloadOfStaleDocRewrites, mergeIdempotentCommutative, tombstoneCapOldestFirst, lenientRowDrop, deletedKeyOmittedWhenEmpty, inThePocketStatsStreaks, seedFixtureReplaceExisting",
+    "PocketDjDestinationTest: sevenDestinationsOrder, gamesRoute",
+    "PlayHistoryModels: PlaySource.fromToken(\"game\") == GAME; unknown token still \u2192 BROWSER"
+   ],
+   "emulator_steps": [
+    "Build + install; tap Games; screenshot cards + empty scoreboard",
+    "Launch with debug extra `-e pdj.seedGames true` (debug-only seed: 3 puzzle runs 5/9/7 + 1 MwF run 4) \u2192 best 9 shown on the puzzle card, scoreboard lists Gem Collector best 9 + 3 recent, MwF best 4",
+    "Long-press 'Gem Collector' block \u2192 'Delete Gem Collector Scores' \u2192 confirm \u2192 block gone, MwF stays; \u22ef \u2192 Delete All \u2192 empty state; relaunch \u2192 still empty (tombstones persisted)",
+    "Rotate / switch tabs during the confirm dialog \u2014 no crash, state intact"
+   ],
+   "device_only": "none",
+   "shared_touchpoints": [
+    "navigation/PocketDjDestination.kt + MainActivity.kt (nav shell \u2014 surfaces architect)",
+    "data/history/PlayHistoryModels.kt PlaySource.GAME + playback/PlayEvents.kt PlayContext.game (history/playback architects)"
+   ],
+   "est_lines": 1200
+  },
+  {
+   "id": "GAMES-2",
+   "title": "Gem Collector core: settings, recency, sampler, similarity, decision store, rec bridge (pure, no UI, no player)",
+   "goal": "Port the whole deterministic brain of Gem Collector with the iOS pinned numbers so the engine and UI packages build on tested math.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/games/puzzle/PuzzleSettings.kt (new: lenient JSON, summaryLine, roundLengthLabel)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/puzzle/PlayRecency.kt (new: decay/gain/score \u2014 port from iOS PlayRecency, grep apple/PocketDJ for `enum PlayRecency`)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/puzzle/PuzzleSampler.kt (new: RawInputs, Inputs(raw) off-main derivation, pool/poolStats/sample)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/puzzle/PuzzleSimilarity.kt (new: TargetProfile, artistKey, profile, score, shortlist; balance=null path only)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/puzzle/PuzzleDecisionStore.kt (new: coalesced serial writer + write generation, recordBatch, flush/flushAsync, union reload)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/puzzle/PuzzleRecEventBridge.kt (new: RecPuzzleEventWire + events(from, sinceMs))",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/puzzle/PuzzleSettingsTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/puzzle/PuzzleSamplerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/puzzle/PuzzleSimilarityTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/puzzle/PuzzleDecisionStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/puzzle/PuzzleRecEventBridgeTest.kt"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "PuzzleSettings decodes a blob missing `similarity` to ON and missing `recencyBias` to OFF; unknown keys ignored; summaryLine matches iOS strings incl. 'free file', '1 target', 'similar+', 'any', genre order via Genre.order",
+    "Sampler hard filters match iOS: nil-year dropped only when a bound is set; genre uses album category with Other fallback; inAny/notInAny; already-in-EVERY-target excluded; suppressedForTargets excluded; playable-first then fallback on the RESULT; rip-on-demand never playable",
+    "Soft weights numerically identical: \u2665 4/0.25; count 1+log2(1+c) and c==0\u21d24 else 1/(1+log2(1+c)); recency per PlayRecency; biases compose multiplicatively",
+    "sample(n) is weighted without replacement, deterministic under an injected rng, honours `excluding`, returns [] on an empty pool",
+    "Similarity: profile denominators per availability; cloudRank 0 \u21d2 score identical; shortlist off/empty \u21d2 same list object; strict floor 0.15; k = max(400, 8\u00b7wanted); starvation guard refills to min(count, max(20, wanted/2)); deterministic order (sim, weight, recency, id)",
+    "Decision store: records coalesce into one write within 600 ms; a stale enqueued snapshot never overwrites a newer save (generation); flush() writes synchronously; cap 20k; union-by-id reload; recordBatch persists once",
+    "Rec bridge exports only assigned rows with a collectionId, oldest first, action 'added', points 1, gameId 'collectorsPuzzle'"
+   ],
+   "priority": "P0",
+   "unit_tests": [
+    "Port apple/Tests/Unit/PuzzleSamplerTests.swift, PuzzlePlayabilityTests.swift, PuzzleSimilarityTests.swift, PuzzleDecisionStoreTests.swift case-for-case (seeded rng via Prng.seededRng); add KotlinSpecific: Inputs(raw) genre map built once per album; recency derived once",
+    "PuzzleSettingsTest: lenientDefaults, summaryLineVariants, roundTrip"
+   ],
+   "emulator_steps": [
+    "none (pure JVM) \u2014 `./gradlew :app:testDebugUnitTest --tests 'com.levi.pocketdj.data.games.puzzle.*'` count must rise by \u226560"
+   ],
+   "device_only": "none",
+   "shared_touchpoints": [
+    "reads screens/browse/Genre.kt (Genre.category/order) and data/catalog/IndexModels.kt \u2014 no edits"
+   ],
+   "est_lines": 2300
+  },
+  {
+   "id": "GAMES-3",
+   "title": "Gem Collector engine + GameRunPlayer (Media3 adapter) + playback touchpoints",
+   "goal": "The round state machine with every hard-won ownership/filing/drift/top-up rule, driving the shared Media3 queue under a run tag.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/playback/GameRunPlayer.kt (new: interface RunItem/RunStart, FakeGameRunPlayer lives in test sources)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/Media3GameRunPlayer.kt (new: preview-resolving adapter, chunked lookahead 12, ownership by nowPlaying.context.contextId)",
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (add appendQueue(items), currentQueueIndex(), internal buildGameItem(...) wrapping mediaItem(); \u224850 lines)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/puzzle/CollectorsPuzzleEngine.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/di/GamesGraph.kt (modify: construct engine with providers: catalog snapshot, collections membership memo on revision, play counts/last played from PlayHistoryStore, favoriteIds/recSuppressed/cloudSimilar default empty, audio availability = rips manifest \u222a AM-streamable)",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/puzzle/CollectorsPuzzleEngineTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/playback/GameRunPlayerContractTest.kt (fake-based contract)"
+   ],
+   "depends_on": [
+    "GAMES-1",
+    "GAMES-2"
+   ],
+   "acceptance": [
+    "startRound: idle/finished only; samples max(60, roundSeconds); empty sample \u21d2 lastError 'No songs match these settings.' and idle; countdown 3-2-1 unless countdownEnabled=false; deadline = now + roundSeconds; audio armed at index 0 under tag puzzle_<roundId> via PlayContext.game",
+    "Cloud call happens once per round before sampling, bounded by 2.5 s (slow provider loses), never from tickOnce",
+    "tickOnce order: takeover \u21d2 endRound(stopAudio=false) and the foreign run keeps playing; filing hold returns before deadline/watchdog/drift/top-up; deadline \u21d2 endRound; watchdog re-arms from current card at most once per card; drift re-sync records one batch of 'expired' rows and moves queueIndex; top-up at <10 remaining is single-flight and a stale round's continuation mutates nothing (not even toppingUp); round queue grows even when audio was lost; audio appended only while owned",
+    "assign(i): one point, decision row per target, advance skips only an owned run; skip() logs 'skipped'; beginFiling refuses when not running/no card/sheet open/taken over; noteFiled dedupes (kind,id); endFiling idempotent, re-checks live membership, credits min(elapsed, 20+10\u00b7extra) \u2264 60, scores once, re-arms audio when position drifted; cancel keeps the card",
+    "endRound records to the scoreboard with summaryLine + detail{assigned, roundSeconds}; isNewHighScore vs prior best; decisions flushed async; reset only from finished",
+    "Settings load prunes deleted collections; updateSettings persists to GamesPrefs",
+    "Media3GameRunPlayer: manifest \u2192 stream URL with clip windows; appleMusicId \u2192 cached preview URL; unresolvable dropped before display; ownsRun true only while nowPlaying.context.contextId == tag"
+   ],
+   "priority": "P0",
+   "unit_tests": [
+    "Port apple/Tests/Unit/CollectorsPuzzleEngineTests.swift against FakeGameRunPlayer: filingHoldSuspendsTicker, filingCreditScalesAndCaps, endFilingIdempotentCancelIsNotSkip, uncheckedRowsNotFiled, driftExpiredBatchSinglePersist, watchdogOncePerCard, takeoverEndsWithoutStoppingForeignAudio, topUpRoundGuard, topUpAppendsOnlyWhenOwned, poolExhausted, onePointPerCardManyDecisionRows, cloudBudgetRace, settingsPruneDeletedCollections",
+    "GameRunPlayerContractTest: ownership semantics, append refused when not owned"
+   ],
+   "emulator_steps": [
+    "With catalog loaded and rips manifest present: Games \u2192 Gem Collector \u2192 Start (free file) \u2192 countdown \u2192 card shows and audio plays (verify MiniPlayerBar shows the song; History row reads 'Game \u00b7 Gem Collector')",
+    "Tap Skip \u00d73 \u2192 cards advance and the player skips; let a song end naturally (use a short clip) \u2192 card advances via drift re-sync",
+    "Go to Browse and play an album mid-round \u2192 return: round ended (summary shown), album keeps playing",
+    "Pull the network (airplane) mid-round \u2192 watchdog re-arms once, no loop; round continues scoring"
+   ],
+   "device_only": "Apple Music preview resolution needs network; full-track AM is deliberately not used in game runs",
+   "shared_touchpoints": [
+    "playback/PlaybackController.kt (three additive members \u2014 playback architect)"
+   ],
+   "est_lines": 1700
+  },
+  {
+   "id": "GAMES-4",
+   "title": "Gem Collector screens (setup / countdown / running / summary) + Add-to sheet filing hook",
+   "goal": "The complete Compose UI for Gem Collector with multi-collection filing through the app's one Add-to sheet.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/CollectorsPuzzleScreen.kt (new: phase switch, setup form with pinned start bar, debounced 300 ms pool stats, replace-queue confirm, New Pocket dialog, running view, summary)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/PuzzleGenreScreen.kt (new: genre checklist route games/puzzle/genres sharing the draft via GamesGraph.puzzle.settings)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/PuzzleComponents.kt (new: year field, bias pickers as SegmentedButton/ExposedDropdown, card button with plus badge, timer text)",
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/screens/collections/AddToCollectionSheet.kt (add `onAdded: ((AddTarget) -> Unit)? = null`, `stayOpenAfterAdd: Boolean = false`; performAdd calls onAdded and skips onDismiss when staying open)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (register games/puzzle + games/puzzle/genres composables \u2014 touchpoint already reserved by GAMES-1)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/games/PuzzleScreenLogicTest.kt (pure helpers: poolCountText, timer format, filedLabel)"
+   ],
+   "depends_on": [
+    "GAMES-1",
+    "GAMES-2",
+    "GAMES-3"
+   ],
+   "acceptance": [
+    "Setup shows Best, Round length (1:00/2:00/3:00/5:00), Play count / Last played / Favorites pickers, Genres row with count, Year from/to numeric with clear, Collection filter + membership checklist when not off, Draw picker only when targets exist, target list capped at 3 with order, New Pocket\u2026 creates and auto-targets, footer text per iOS; Start pinned at the bottom regardless of list length; disabled when 0 songs match; '\u2026 songs match' \u2192 'N songs match' / 'N match \u00b7 M similar'",
+    "Start while something else plays \u2192 'Start round? This replaces your current queue.'",
+    "Running: mm:ss turns red under 10 s; \u2605 score; card tap and 'File into\u2026'/'Other\u2026' open AddToCollectionSheet with stayOpenAfterAdd=true; each add calls engine.noteFiled; dismiss calls engine.endFiling(null); 0\u20133 assign buttons labelled with collection names; Skip; End Round; 'Catalog exhausted!'",
+    "Summary: score, 'New high score! \ud83c\udfc6' when applicable, Best, 'Filed this round' rows with '\u2192 Crate +N more', Play Again (reset), Done (reset + pop)",
+    "Draft settings persist across process death (relaunch shows last-used settings)"
+   ],
+   "priority": "P0",
+   "unit_tests": [
+    "PuzzleScreenLogicTest: poolCountText variants, timer formatting, year field parsing (blank \u2192 null, trims)",
+    "Compose UI tests are not in the Android project (no androidTest dir) \u2014 logic kept in testable helpers"
+   ],
+   "emulator_steps": [
+    "Games \u2192 Gem Collector: set 1:00, favorites off, genre 'funk', year 1975\u20131985 \u2192 count updates after typing stops; Start \u2192 play through ~5 cards using assign/skip/file; file one card into two pockets via the sheet \u2192 summary shows '+1 more' and the score counts it once",
+    "Setup with 0 matches (year 2999) \u2192 Start disabled with '0 songs match'",
+    "Kill the app mid-setup \u2192 relaunch \u2192 same settings restored",
+    "Screenshots: setup, running, summary"
+   ],
+   "device_only": "none",
+   "shared_touchpoints": [
+    "screens/collections/AddToCollectionSheet.kt (collections architect) \u2014 additive optional params"
+   ],
+   "est_lines": 1400
+  },
+  {
+   "id": "GAMES-5",
+   "title": "In the Pocket core: models, pockets results decode, scorer, membership, learning, evaluator, rounds wire (pure)",
+   "goal": "Deterministic round building and outcome evaluation identical to iOS and the lambda, testable without a player or network.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/pockets/PocketsModels.kt (new, SHARED with services area: ListeningContextTag, PocketsResults v1 lenient JsonElement decoder incl. pockets/patterns/features/numeric/membership/collectionCandidates/rounds learning/labels)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/inthepocket/InThePocketModels.kt (new: Context/timeBuckets, Target, Mode, SongState, Outcome, Song, Round incl. capFeedback, RoundWire + batch with explicitNulls Json, fingerprint, flooredMinute)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/inthepocket/SplitMix64.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/inthepocket/InThePocketScorer.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/inthepocket/InThePocketMembership.kt (new: MembershipIndex, Centroid, similarity, MembershipPull, applyMembership, collectionTargets, local camelotAdjacent)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/inthepocket/InThePocketLearning.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/inthepocket/InThePocketRoundEvaluator.kt (new: Observation, Verdict, evaluate)",
+    "android/app/src/test/java/com/levi/pocketdj/data/pockets/PocketsResultsDecodeTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/inthepocket/InThePocketContextTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/inthepocket/InThePocketScorerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/inthepocket/InThePocketLearningTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/inthepocket/InThePocketRoundEvaluatorTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/inthepocket/InThePocketWireTest.kt"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Context: timeBucket(hour) boundaries incl. night wrap; dow from atMs+tz with 1970-01-01 Thursday; ctx kept only for place/trip; ctxKey and learningKeys order",
+    "Results decode drops a bad element not the document; `algo.version` nested; missing `rounds` \u21d2 null learning; numeric map per-key lenient; `3.0` reads as Int",
+    "Scorer: same Input+seed \u21d2 identical Output; cloud profile needs generatedAtMs and a matching time bucket; history narrows to place/trip at \u22655 plays; cold under 5; normalize top 6 strongest=1 with (dim,value) tiebreak; band \u22656 wide rounded; familiarity Laplace; exclusions 48 h + last 3 rounds; related-only; 4 picks cloud / 3 otherwise; failures nothingPlayable/notEnoughCandidates; coherence/diversity terms; chips text",
+    "Membership: addScale, normalizeMembership top 12 rounded 1e-4, centroid needs \u22653 members, similarity min coverage 0.45, soft 0.6\u00b7sim \u22650.55, live-hour pull 0.5, collectionTargets top 3 labelled locally",
+    "Learning multiplier identical to analyze.mjs for fixture inputs in scripts/lambda/listening-pockets/fixtures (pos/neg \u2192 multiplier table), add rule \u22651.25 on \u22652 positives",
+    "Evaluator: every iOS test case (ported) passes \u2014 foreign play settles after 8 s, late skip verdict one track late still breaks, unknown fraction after foreign/timeout is a play, waiting-on-checkpoint not abandoned, idle 3 h abandon, replay ignored",
+    "Wire: only finished+started rounds; floored minutes; 1e-3 rounding; explicit nulls present in the encoded JSON; fingerprint moves when feedback/rating/outcome/song outcome changes; capFeedback trims, drops empty, cuts at 2000 UTF-16 units without splitting a surrogate pair"
+   ],
+   "priority": "P1",
+   "unit_tests": [
+    "Port apple/Tests/Unit/InThePocketScorerTests.swift, InThePocketRoundEvaluatorTests.swift, InThePocketUploadTests.swift case-for-case; cross-check learning against scripts/lambda/listening-pockets/test-listening-pockets.mjs round fixtures",
+    "PocketsResultsDecodeTest with a captured results.json fixture under app/src/test/resources"
+   ],
+   "emulator_steps": [
+    "none (pure JVM)"
+   ],
+   "device_only": "none",
+   "shared_touchpoints": [
+    "data/pockets/PocketsModels.kt is shared with the services architect's listening-pockets package \u2014 whichever lands first owns it; keep the field names from ListeningPocketsModels.swift"
+   ],
+   "est_lines": 2400
+  },
+  {
+   "id": "GAMES-6",
+   "title": "Play outcome verdicts: SkipTracker, PlayProgress/PlayAdvancedAway events, wasSkipped/listenedFraction/tzOffsetMin/originInstallId on PlayEvent",
+   "goal": "Give the Android play log the same skip and played-fraction facts iOS has, so In the Pocket (and later listening pockets) can judge rounds; keep the recording site single (PlaybackService) and the rule in one place (SkipTracker).",
+   "files": [
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/data/history/PlayHistoryModels.kt (PlayEvent +wasSkipped, +listenedFraction, +tzOffsetMin, +originInstallId; derived outcome completed|skipped|partial|unknown)",
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/data/history/PlayHistoryStore.kt (record stamps tz + originInstallId and returns the event; markSkipped(eventId); noteListened(eventId, fraction) clamped/MAX-merged/<0.01 dropped; lastLocalEvent(songId); no PlayStarted re-fire)",
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/playback/PlayEvents.kt (PlayProgress, PlayAdvancedAway, PlayStopped events on PlayEventBus)",
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/playback/PlaybackService.kt (1 Hz progress poster while playing; onMediaItemTransition reason\u2260AUTO \u21d2 PlayAdvancedAway(old song, high-water pos, duration); onPlaybackStateChanged ENDED/stop \u21d2 PlayStopped with final fraction)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/SkipTracker.kt (new: strict <0.5 rule, high-water position, one-deep previous stash, classified latch; wired in PlayHistoryStore.get() collector)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/SkipTrackerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/history/PlayHistoryStoreTest.kt (extend: markSkipped/noteListened/tz/origin, lenient decode of old docs)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "An old pocketdj-play-history.json without the new keys decodes unchanged; new keys are omitted when null (explicitNulls=false) so a never-skipped log keeps its byte shape",
+    "Advance-away at <50% (strict) \u21d2 wasSkipped=true on that event; at exactly 50% \u21d2 not skipped; natural end (AUTO transition), pause, stop, previous are never skips",
+    "listenedFraction is the high-water fraction, never decreases, final value lands on stop/natural end",
+    "A row \u25b6 over a running set classifies the REPLACED track via the one-deep stash (verdict at most one track late)",
+    "tzOffsetMin = local offset at play time; originInstallId = this install's id",
+    "PlayStarted emission is unchanged (no double history rows)"
+   ],
+   "priority": "P1",
+   "unit_tests": [
+    "Port apple/Tests/Unit/SkipTrackerTests.swift: strictHalf, naturalEndNotSkip, pauseNotSkip, jumpToRowClassifiesPrevious, highWaterAfterSeekBack, doubleClassifyGuard",
+    "PlayHistoryStoreTest additions: additiveOptionalRoundTrip, markSkippedIdempotent, noteListenedMaxMerge, oldDocDecodes"
+   ],
+   "emulator_steps": [
+    "Play a song, skip after 5 s \u2192 History row shows a skip marker (if the history screen renders it) or dump pocketdj-play-history.json via `adb shell run-as com.levi.pocketdj cat files/pocketdj-play-history.json` and verify wasSkipped=true, listenedFraction\u22480.1",
+    "Let a short track end naturally \u2192 wasSkipped absent, listenedFraction \u22650.9"
+   ],
+   "device_only": "none",
+   "shared_touchpoints": [
+    "ENTIRE package is a playback/history touchpoint \u2014 if the playback architect's plan already adds skip/fraction verdicts, GAMES-6 becomes a dependency on that package with this exact field contract"
+   ],
+   "est_lines": 900
+  },
+  {
+   "id": "GAMES-7",
+   "title": "In the Pocket store + PocketsBridge + rounds upload client",
+   "goal": "The app-scoped game store that builds rounds off-main, plays them under itp_<id>, tracks them through the history log at 1 Hz, persists device-locally, records to the scoreboard and hands finished rounds to the pockets upload.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/pockets/PocketsBridge.kt (new, SHARED contract: isEnabled, results, refreshIfStale, flushSoon, credentials, installId, roundsProvider; NoPocketsBridge)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/inthepocket/InThePocketStore.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/inthepocket/InThePocketRoundsClient.kt (new: POST {LISTENING_POCKETS_BASE}/pockets/rounds, \u226450/batch, bearer key + X-PocketDJ-Profile + X-PocketDJ-Device, 2xx-only ack, 404 \u21d2 queued, sync doc pocketdj-in-the-pocket-sync.json)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/inthepocket/InThePocketInputs.kt (new: makeInput off-main \u2014 catalog slice, playable ids = rips manifest \u222a (hasAppleMusic && appleMusicId), plays from PlayEvent incl. outcome/tz, collection infos from CollectionsStore + CollectionActivityStore add times)",
+    "android/app/src/main/java/com/levi/pocketdj/di/GamesGraph.kt (modify: construct store with GameRunPlayer, PocketsBridge (NoPocketsBridge until services wires one), lifecycle resumeTrackingIfNeeded on START)",
+    "android/app/src/main/res/xml/backup_rules.xml + data_extraction_rules.xml (exclude pocketdj-in-the-pocket*.json)",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/inthepocket/InThePocketStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/inthepocket/InThePocketRoundsClientTest.kt (MockWebServer)"
+   ],
+   "depends_on": [
+    "GAMES-1",
+    "GAMES-3",
+    "GAMES-5",
+    "GAMES-6"
+   ],
+   "acceptance": [
+    "buildRound refused while building or while a round is active; replaces an unstarted round; failure messages per iOS; round carries seed string, algoVersion 1, bpm target appended, chips cached",
+    "start() stamps startedAtMs/updatedAtMs, plays via GameRunPlayer under itp_<id> with PlayContext.game(tag, 'In the Pocket'), starts the 1 Hz ticker; resumeTrackingIfNeeded restarts it after process restart with an active round",
+    "evaluate(): observations = this install's events since start\u22122 s; ownership loss timestamped once; states/eventIds/fractions written; outcome \u21d2 endedAtMs, scoreboard record (score = completed, settingsSummary = chips joined ' \u00b7 ', detail{outcome, roundId, songs}), onRoundsChanged \u21d2 bridge.flushSoon",
+    "saveFeedback caps text, validates rating 1..5, no-ops when unchanged, bumps updatedAtMs monotonically, flushSoon only for finished rounds",
+    "uploadWires returns finished rounds only; rounds client acks fingerprints on 2xx only, leaves them queued on 404/5xx, re-sends a round whose fingerprint moved, caps 50 per POST",
+    "trim keeps \u2264300 rounds never dropping active/current; clearLocal deletes the file",
+    "Document is excluded from Android backup"
+   ],
+   "priority": "P1",
+   "unit_tests": [
+    "Port apple/Tests/Unit/InThePocketStoreTests.swift with FakeGameRunPlayer + in-memory PlayHistoryStore (temp file): buildReplacesUnstarted, refuseWhileActive, startPlaysUnderTag, evaluateWritesStatesAndRecordsOnce, feedbackResendsFinished, trimKeepsActive, uploadWiresFinishedOnly",
+    "InThePocketRoundsClientTest: ackOn2xxOnly, queuedOn404, batchCap50, headers"
+   ],
+   "emulator_steps": [
+    "With NoPocketsBridge the game screen (GAMES-8) shows the opt-in/unavailable state; with a test bridge (debug flag `pdj.pocketsStub`) that returns enabled + empty results: build a round (history/cold mode) \u2192 Start \u2192 play through \u2192 outcome 'In the pocket!' and the scoreboard card updates",
+    "Skip song 2 \u2192 'Broke at song 2'; stats row shows 1 round, 0%"
+   ],
+   "device_only": "Cloud mode needs real pockets results (services area + rec key) \u2014 verify once the services bridge lands",
+   "shared_touchpoints": [
+    "data/pockets/PocketsBridge.kt \u2014 the services architect's listening-pockets service must implement it (or adapt to it)",
+    "res/xml backup rules (surfaces/services)"
+   ],
+   "est_lines": 1400
+  },
+  {
+   "id": "GAMES-8",
+   "title": "In the Pocket screen + on-device feedback dictation",
+   "goal": "The game UI with stats, round card, progress dots, feedback editor with stars/text/mic, opt-in gate and privacy note; dictation strictly on-device.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/InThePocketScreen.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/InThePocketComponents.kt (new: stat tile, chips, dots, song row, outcome banner, controls, feedback editor)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/PocketsOptInView.kt (new minimal copy; replaced by the services area's History \u25b8 Pockets opt-in when it lands)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/inthepocket/FeedbackDictation.kt (new: FeedbackSpeechEngine interface, FeedbackDictationController state machine + join(), AndroidOnDeviceSpeechEngine using SpeechRecognizer.createOnDeviceSpeechRecognizer + EXTRA_PREFER_OFFLINE + partial results)",
+    "android/app/src/main/AndroidManifest.xml (add RECORD_AUDIO permission)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (register games/inthepocket)",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/inthepocket/FeedbackDictationControllerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/screens/games/InThePocketScreenLogicTest.kt (modeNote, outcomeText, progressLabel, summary line)"
+   ],
+   "depends_on": [
+    "GAMES-7"
+   ],
+   "acceptance": [
+    "Pockets disabled \u21d2 opt-in view with 'Turn on'/'Not now' and the 'needs Recommendations' note; enabled \u21d2 content",
+    "Stats row (rounds / % in the pocket / best streak); build card with spinner text 'Finding your pocket\u2026' and error line; round card with chips, mode note, dots (hollow/half/filled/\u2715/dim), numbered rows with \u22643 why terms, outcome banner, Start / Different songs / End round / New round",
+    "Feedback editor: stars toggle and save immediately; text capped live at 2000 UTF-16 units; counter; Save/Saved; mic shown only when the engine reports available; denied/unavailable \u21d2 disabled mic + explanation line; dictation appends to typed text per join rule; leaving the screen stops dictation and saves",
+    "Dictation uses on-device recognition only; recognizer unavailable \u21d2 no mic, never a cloud fallback"
+   ],
+   "priority": "P1",
+   "unit_tests": [
+    "Port apple/Tests/Unit/FeedbackDictationTests.swift with a fake engine: toggleStartsAndAppends, deniedShowsExplanation, unavailableHidesMic, stopFromListening, failureMessage",
+    "InThePocketScreenLogicTest: modeNote/outcomeText/progressLabel/inThePocketSummary strings"
+   ],
+   "emulator_steps": [
+    "Games \u2192 In the Pocket (stub bridge enabled): build, start, play through; type feedback \u2192 counter updates; Save \u2192 'Saved'; relaunch \u2192 feedback persisted",
+    "Mic hidden on the emulator (no on-device model) \u2014 the explanation path is verified by the fake-engine tests"
+   ],
+   "device_only": "On-device SpeechRecognizer availability + RECORD_AUDIO prompt + live transcript appending (Pixel with the offline speech pack)",
+   "shared_touchpoints": [
+    "AndroidManifest.xml RECORD_AUDIO (surfaces)"
+   ],
+   "est_lines": 1200
+  },
+  {
+   "id": "GAMES-9",
+   "title": "Music with Friends link, models, client, join secret, store (broker-driven, no UI)",
+   "goal": "Full MwF session logic against the existing jukebox broker: create/join/poll/recover/verbs/scores/download, persisted sessions.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/games/friends/MwFLink.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/friends/MwFModels.kt (new: all-optional @Serializable wire types + MwFSessionEntry)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/friends/MwFClient.kt (new; mirrors JukeboxClient timeouts/headers; MwFException(code))",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/friends/MwFJoinSecret.kt (new: GamesPrefs-backed 32-hex secret, reset())",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/friends/MwFSessionFile.kt (new: atomic JSON list)",
+    "android/app/src/main/java/com/levi/pocketdj/data/games/friends/MusicWithFriendsStore.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/di/GamesGraph.kt (modify: construct store with settings jukebox URL/token, installId, catalog, JukeboxMatcher, CollectionsStore, scoreboard, GameRunPlayer for queueAccepted)",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/friends/MwFLinkTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/friends/MwFModelsTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/friends/MwFClientTest.kt (MockWebServer)",
+    "android/app/src/test/java/com/levi/pocketdj/data/games/friends/MusicWithFriendsStoreTest.kt (MockWebServer-backed client)"
+   ],
+   "depends_on": [
+    "GAMES-1",
+    "GAMES-3"
+   ],
+   "acceptance": [
+    "MwFLink parses pocketdj://mwf/<id>, pocketdj:///mwf/<id>, https://jukebox.pocket-dj.com/mwf/<id>/\u2026; rejects bad ids, jukebox links, other hosts; stateURL built with guestBase or the canonical host",
+    "Client: POST /mwf with server token (30 s); join with joinSecret body and optional memberKey bearer against apiBase-or-configured base; state/suggest/decide/plusone/config/register/unregister(6 s)/end(30 s); X-PocketDJ-Device on every call; Authorization omitted when empty; non-2xx \u21d2 MwFException(code); undecodable \u21d2 decoding error",
+    "Store: create/join return the error string (null = success) and never write a shared error field; 404 \u21d2 /health probe message (version<3 or mwf!=true \u21d2 'older server'); refresh updates lastState + entry name/theme/expiresAt, clears pollErrors[id]; 401 \u21d2 recoverMembership (memberKey first, then secret) single-flight + one retry; 404/410 \u21d2 ended fold + score once; other errors \u21d2 pollErrors[id]",
+    "suggest throws (409 surfaced); plusOne/approve/reject/updateSettings/endSession write lastErrors[id] only; approve matches via JukeboxMatcher first; endSession folds locally even when unreachable; leave records score if due and forgets the session",
+    "recordFinalScoreIfNeeded exactly once per session (persisted set), only when ended or expired, score = members[you].score, settingsSummary = theme prefix 60, detail{sessionId, theme}",
+    "queueMatchIfPlayable appends to a running queue or starts one, and does NOTHING when the current run tag starts with puzzle_",
+    "downloadCollection creates 'MwF \u2014 <name>' once (entry.pocketId), re-download adds missing members; unresolved entries counted in the result",
+    "eraseAll clears sessions/states/scored/queueAccepted/pending signals; MwFJoinSecret.reset mints a fresh secret"
+   ],
+   "priority": "P1",
+   "unit_tests": [
+    "Port apple/Tests/Unit/MwFLinkTests.swift, MwFModelsTests.swift, MusicWithFriendsStoreTests.swift: createIncompleteReply, join404OlderServer, refresh401Recovers, refresh410Folds, scoreOnce, neverQueueIntoPuzzle, downloadIdempotent, errorsKeyedPerSession",
+    "MwFClientTest: headers/bearers/timeouts/paths per route"
+   ],
+   "emulator_steps": [
+    "Point Settings \u25b8 Jukebox at the live broker (same as Jukebox Hero) and drive the store from GAMES-10's UI; unit tests cover the protocol"
+   ],
+   "device_only": "none (broker reachable over the emulator's network like Jukebox Hero)",
+   "shared_touchpoints": [
+    "reads AppSettingsStore jukeboxServerUrl/jukeboxToken/installId, data/jukebox/JukeboxMatcher.kt, CollectionsStore \u2014 no edits"
+   ],
+   "est_lines": 1600
+  },
+  {
+   "id": "GAMES-10",
+   "title": "Music with Friends screens + deep links + Games home session rows",
+   "goal": "Create/Join sheets, the session screen with its 4 s poll and all leader/member controls, invite sharing, deep-link entry, and the Games home rows.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/MwFCreateSheet.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/MwFJoinSheet.kt (new: paste field, 300 ms debounced preview with stale guard, display name remembered in GamesPrefs)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/MwFSessionScreen.kt (new: route games/mwf/{sessionId})",
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/MwFComponents.kt (new: turn banner with live countdown, status chip, leaderboard row, suggestion row, invite card reusing JukeboxQrCard + ACTION_SEND + clipboard)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/games/GamesScreen.kt (modify: session rows with crown/theme/'ends in'/your score, New Session / Join Session buttons, pendingJoin sheet)",
+    "SHARED: android/app/src/main/AndroidManifest.xml (VIEW/BROWSABLE intent filters: scheme pocketdj host mwf; https jukebox.pocket-dj.com pathPrefix /mwf/ with autoVerify)",
+    "SHARED: android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (onNewIntent/launch intent \u2192 MwFLink.parse \u2192 friends.handleOpenedLink; PocketDjApp consumes pendingOpenId: navigate games then push session when an entry exists; register games/mwf/{sessionId})",
+    "android/app/src/test/java/com/levi/pocketdj/screens/games/MwFScreenLogicTest.kt (expiresLabel, canSuggestNow, sorted feeds, turn remaining)"
+   ],
+   "depends_on": [
+    "GAMES-1",
+    "GAMES-9"
+   ],
+   "acceptance": [
+    "Create sheet: defaults '<name>'s Music with Friends'/'Music with Friends', theme \u2264144 with counter, turn 30 s/1 m/2 m/5 m, toggles (outside-turn off, first-suggestion on), 'No jukebox server configured' warning + Create disabled when URL empty or theme blank; error shown in the sheet; success dismisses and opens the session",
+    "Join sheet: paste field (hidden when opened from a link), theme preview appears after 300 ms idle and clears on edit, Join disabled until a valid link parses; sheet-local error",
+    "Session screen: theme + 'ends in Xh Ym'/'ended'; ended banner with score; turn banner 'Your turn!' vs '<name>'s turn' + m:ss left; invite QR/share/copy; per-session verb error; poll error block with 'Last updated \u2026 ago'; leaderboard sorted desc with crown/(you); composer disabled outside your turn unless acceptOutsideTurn, 409 \u21d2 'Not your turn yet \u2014 hang tight.'; feed newest-first with chips and +1 (n) disabled for own/already/ended; leader inbox Accept (spinner) / Reject; leader settings incl. 'Queue accepted songs'; collection count + Download \u2192 dialog with Open (navigates to the pocket); End Session confirm / Leave pops",
+    "Poll every 4 s while the screen is shown, stops when ended; leaving the screen cancels it",
+    "Tapping pocketdj://mwf/<id> or the https link opens the app on Games: known session pushes the session screen, unknown opens the Join sheet with the link prefilled (cold launch and warm)"
+   ],
+   "priority": "P1",
+   "unit_tests": [
+    "MwFScreenLogicTest: expiresLabel hours/minutes/ended, canSuggestNow matrix, feed/leaderboard ordering, remaining seconds clamp"
+   ],
+   "emulator_steps": [
+    "Settings \u25b8 Jukebox configured \u2192 Games \u2192 New Session (theme '90s road-trip anthems') \u2192 session screen shows QR + 'Your turn!'",
+    "`adb shell am start -a android.intent.action.VIEW -d pocketdj://mwf/<id>` from a second emulator/phone or the same device after Leave \u2192 Join sheet with the theme preview \u2192 Join \u2192 leaderboard shows both members",
+    "Suggest from the member, Accept from the leader (catalog match) \u2192 member sees 'accepted' + score 1; +1 from the leader \u2192 score 2; Download to My Collections \u2192 pocket 'MwF \u2014 \u2026' exists in Collections",
+    "Stop the broker \u2192 poll error block with 'last known state'; End Session \u2192 ended banner, scoreboard records the score once"
+   ],
+   "device_only": "https App Link auto-verification needs /.well-known/assetlinks.json on jukebox.pocket-dj.com (web/server step) \u2014 until then https links go through the Android disambiguation chooser; the pocketdj:// scheme works on the emulator",
+   "shared_touchpoints": [
+    "AndroidManifest.xml intent filters + MainActivity.kt intent handling (surfaces architect); scripts/jukebox-site assetlinks.json (web)"
+   ],
+   "est_lines": 1600
+  }
+ ]
+}

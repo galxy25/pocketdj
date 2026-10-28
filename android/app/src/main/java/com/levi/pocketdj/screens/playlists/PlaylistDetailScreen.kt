@@ -1,6 +1,14 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.ui.dnd.DropHighlight
+import com.levi.pocketdj.ui.dnd.acceptSongsInto
+import com.levi.pocketdj.ui.dnd.clipboardHasSongs
+import com.levi.pocketdj.ui.dnd.pasteSongsInto
+import com.levi.pocketdj.ui.dnd.songDropTarget
+import com.levi.pocketdj.data.collections.SongTransfer
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -18,6 +26,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
+import kotlinx.coroutines.launch
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -38,9 +47,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.screens.collections.RemoveDuplicatesResultAlert
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.PlaylistNode
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.levi.pocketdj.data.rips.PlayResolver
+import com.levi.pocketdj.ui.selection.SelectionBar
+import com.levi.pocketdj.ui.selection.SelectionScope
+import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.Fmt
 import com.levi.pocketdj.screens.browse.SongDetailSheet
@@ -66,6 +82,7 @@ fun PlaylistDetailScreen(
     val graph = remember { AppGraph.get(context) }
     val store = remember { graph.collections }
     val snackbar = remember { SnackbarHostState() }
+    val forceScope = androidx.compose.runtime.rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         graph.catalogRepository.loadIfNeeded()
@@ -82,11 +99,18 @@ fun PlaylistDetailScreen(
     var detailSongId by remember { mutableStateOf<String?>(null) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
+    var dedupeResult by rememberSaveable { mutableStateOf<Int?>(null) }
+    var syncMessage by remember { mutableStateOf<String?>(null) }
     var addChapterOpen by remember { mutableStateOf(false) }
     var noteChapterId by remember { mutableStateOf<String?>(null) }
     var renameChapter by remember { mutableStateOf<PlaylistNode?>(null) }
     var renameSetlist by remember { mutableStateOf<Pair<String, String?>?>(null) }
     var deleteSetlistId by remember { mutableStateOf<String?>(null) }
+    // COL-13: per-playlist sort/filter (key pdj.collection.<id>); stored node order is never mutated.
+    val sortState = rememberCollectionSortState(playlistId)
+    val playCountOf = rememberPlayCountOf()
+    var showSort by remember { mutableStateOf(false) }
+    var showFilter by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
         if (playlist == null) {
@@ -100,6 +124,21 @@ fun PlaylistDetailScreen(
         }
 
         val stats = store.statsForPlaylist(playlistId)
+        val sortInputs = sortState.inputs
+        val defaultOrder = sortInputs.isDefaultOrder
+        // chapter nodeId -> display children (song nodes sorted, non-song nodes last), off-main.
+        val readTime = rememberCollectionReadTime(sortInputs)
+        val resolvedChapters by produceState<Map<String, List<PlaylistNode>>?>(
+            initialValue = null, playlist.sequences, sortInputs, catalog, state.revision, readTime,
+        ) {
+            value = if (defaultOrder || catalog == null) null else withContext(Dispatchers.Default) {
+                playlist.sequences.associate {
+                    it.nodeId to CollectionSortFilter.resolveChapterChildren(
+                        it.children.orEmpty(), catalog, sortInputs, playCountOf, readTime = readTime,
+                    )
+                }
+            }
+        }
         val itemCount = playlist.sequences.sumOf { it.children?.size ?: 0 }
         val setlists = store.setlistsForPlaylist(playlistId)
 
@@ -114,7 +153,39 @@ fun PlaylistDetailScreen(
             onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
         }
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        val burnController = rememberCollectionBurnController(playlistId)
+
+        val rowSelection = remember { graph.collectionsGraph.rowSelection }
+        val selScope = "playlist:$playlistId"
+        // Chapters are keyed by NODE id (the same song may appear in several chapters); the
+        // payload translates node ids -> song ids in display order.
+        fun songNodes() = CollectionSortFilter.selectableSongNodes(playlist.sequences, resolvedChapters, defaultOrder, catalog)
+        SelectionScope(
+            selection = rowSelection,
+            scope = selScope,
+            onPaste = { t -> acceptSongsInto(store, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, playlistId), t) },
+            pruneKey = listOf(playlist.sequences, resolvedChapters),
+            allIds = { songNodes().map { it.nodeId } },
+            payload = {
+                com.levi.pocketdj.ui.selection.playlistSelectionPayload(
+                    nodes = songNodes().map { it.nodeId to it.songId },
+                    selection = rowSelection,
+                    songsById = catalog?.songsById.orEmpty(),
+                    isStudioId = PlayResolver::isStudioId,
+                )
+            },
+        )
+
+        Column(
+            Modifier
+                .fillMaxSize()
+                .songDropTarget(highlight = DropHighlight.LIST) { t -> acceptSongsInto(store, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, playlistId), t) },
+        ) {
+        SelectionBar(rowSelection, selScope, store)
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            item(key = "burn-bar") {
+                CollectionBurnBar(burnController, songIds = { store.songIdsForPlaylist(playlistId) }, noun = "playlist")
+            }
             item(key = "actions") {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -137,6 +208,16 @@ fun PlaylistDetailScreen(
                         Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     OverflowMenu { dismiss ->
+                        DropdownMenuItem(
+                            text = { Text("Paste songs") },
+                            enabled = clipboardHasSongs(context),
+                            onClick = { dismiss(); pasteSongsInto(context, store, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, playlistId)) },
+                        )
+                        CollectionSortFilterMenuItems(
+                            sortState, dismiss,
+                            onSort = { showSort = true },
+                            onFilter = { showFilter = true },
+                        )
                         DropdownMenuItem(
                             text = { Text("Make set list") },
                             enabled = itemCount > 0,
@@ -161,6 +242,30 @@ fun PlaylistDetailScreen(
                                 store.convertPlaylistToPocket(playlistId)?.let { onOpenPocket(it.id) }
                             },
                         )
+                        DropdownMenuItem(
+                            text = { Text("Remove duplicates") },
+                            onClick = { dismiss(); dedupeResult = store.removeDuplicatesInPlaylist(playlistId) },
+                        )
+                        playlist?.let { pl ->
+                            SourceSyncMenuItems(
+                                dismiss = dismiss,
+                                hasSource = pl.hasSource,
+                                syncEnabled = pl.syncsWithSource,
+                                direction = pl.amSyncDir,
+                                onToggle = { store.setPlaylistSourceSyncEnabled(it, playlistId) },
+                                onSyncNow = {
+                                    syncMessage = if (store.syncPlaylistFromSourceNow(playlistId)) {
+                                        "Playlist updated from its source."
+                                    } else {
+                                        "Already in sync (or the source isn't available)."
+                                    }
+                                },
+                                onDirection = { store.setAMSyncDirectionForPlaylist(it, playlistId) },
+                                onLink = null,
+                                prefix = "playlist",
+                                linkedName = store.sourcePlaylistForPlaylist(playlistId)?.playlist?.name,
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Delete playlist") },
                             onClick = { dismiss(); deleteOpen = true },
@@ -198,8 +303,15 @@ fun PlaylistDetailScreen(
                         trailing = store.statsForChapter(chapter).summary,
                     )
                 }
-                val children = chapter.children.orEmpty()
-                if (children.isEmpty()) {
+                val stored = chapter.children.orEmpty()
+                // Default order: stored children. Otherwise the resolved display order (empty until it lands).
+                val children = if (defaultOrder) stored else resolvedChapters?.get(chapter.nodeId).orEmpty()
+                if (!defaultOrder && resolvedChapters == null && stored.isNotEmpty()) {
+                    item(key = "ch-resolving-${chapter.nodeId}") { SectionCaption("Sorting…") }
+                } else if (!defaultOrder && children.isEmpty() && stored.isNotEmpty()) {
+                    item(key = "ch-nomatch-${chapter.nodeId}") { SectionCaption("No songs match the filter.") }
+                }
+                if (stored.isEmpty()) {
                     item(key = "ch-empty-${chapter.nodeId}") {
                         SectionCaption("Empty chapter — add items from a song/album ▸ Add to…")
                     }
@@ -209,12 +321,17 @@ fun PlaylistDetailScreen(
                         NodeRow(
                             node = node,
                             catalog = catalog,
+                            selection = rowSelection,
+                            selectionScope = selScope,
                             pocketName = { store.pocket(it)?.name },
                             manifestHit = node.songId?.let { manifest.containsKey(it) } ?: false,
+                            rowNote = rememberRowNote(node.songId, node.songId?.let { manifest.containsKey(it) } ?: false),
                             onTapSong = { detailSongId = it },
                             onOpenAlbum = onOpenAlbum,
                             onOpenPocket = onOpenPocket,
                             menu = { dismiss ->
+                                // Reorder / remove only make sense on the stored order.
+                                if (defaultOrder) {
                                 DropdownMenuItem(
                                     text = { Text("Move up") },
                                     enabled = index > 0,
@@ -225,10 +342,39 @@ fun PlaylistDetailScreen(
                                     enabled = index < children.lastIndex,
                                     onClick = { dismiss(); store.moveNodeDown(node.nodeId, playlistId) },
                                 )
+                                }
+                                // COL-8: manual escape hatch for a stale source snapshot (iOS ForceSyncMenu).
+                                val forceSongId = node.songId
+                                if (node.kind == PlaylistNode.Kind.SONG && forceSongId != null &&
+                                    !com.levi.pocketdj.data.rips.PlayResolver.isStudioId(forceSongId)
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Force Apple Music sync") },
+                                        onClick = {
+                                            dismiss()
+                                            val wb = graph.collectionsGraph.writeBack
+                                            val attempt = store.forceWriteBackSong(
+                                                forceSongId, com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, playlistId,
+                                            )
+                                            if (attempt == com.levi.pocketdj.data.collections.CollectionsStore.WriteBackAttempt.QUEUED ||
+                                                attempt == com.levi.pocketdj.data.collections.CollectionsStore.WriteBackAttempt.DEDUPED
+                                            ) wb.runSoon()
+                                            forceScope.launch {
+                                                snackbar.showSnackbar(
+                                                    com.levi.pocketdj.data.applemusic.ForceSyncMessages.line(
+                                                        attempt, wb.canWriteBack, wb.isUnsyncable(forceSongId),
+                                                    ),
+                                                )
+                                            }
+                                        },
+                                    )
+                                }
+                                if (defaultOrder) {
                                 DropdownMenuItem(
                                     text = { Text("Remove") },
                                     onClick = { dismiss(); store.removeNode(node.nodeId, playlistId) },
                                 )
+                                }
                             },
                         )
                     }
@@ -278,11 +424,24 @@ fun PlaylistDetailScreen(
                 }
             }
         }
+        }
 
         SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter))
     }
 
     // ---- dialogs -----------------------------------------------------------
+
+    CollectionSortFilterSheets(
+        state = sortState,
+        catalog = catalog,
+        songIds = playlist?.sequences.orEmpty().flatMap { ch ->
+            ch.children.orEmpty().filter { it.kind == PlaylistNode.Kind.SONG }.mapNotNull { it.songId }
+        },
+        showSort = showSort,
+        showFilter = showFilter,
+        onDismissSort = { showSort = false },
+        onDismissFilter = { showFilter = false },
+    )
 
     detailSongId?.let { songId ->
         SongDetailSheet(
@@ -352,6 +511,8 @@ fun PlaylistDetailScreen(
         )
     }
 
+    RemoveDuplicatesResultAlert(dedupeResult) { dedupeResult = null }
+    SourceSyncMessageAlert(syncMessage) { syncMessage = null }
     if (deleteOpen) {
         ConfirmDialog(
             title = "Delete this playlist?",
@@ -371,8 +532,11 @@ fun PlaylistDetailScreen(
 private fun NodeRow(
     node: PlaylistNode,
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
+    selection: com.levi.pocketdj.ui.selection.RowSelection,
+    selectionScope: String,
     pocketName: (String) -> String?,
     manifestHit: Boolean,
+    rowNote: String? = null,
     onTapSong: (String) -> Unit,
     onOpenAlbum: (String) -> Unit,
     onOpenPocket: (String) -> Unit,
@@ -382,7 +546,19 @@ private fun NodeRow(
         PlaylistNode.Kind.SONG -> {
             val songId = node.songId
             val song = songId?.let { catalog?.songsById?.get(it) }
-            if (song == null || (songId != null && PlayResolver.isStudioId(songId))) {
+            val studio = rememberStudioInfo(songId)
+            if (studio != null) {
+                StudioItemRow(
+                    info = studio,
+                    badges = {
+                        node.repeatCount?.takeIf { it > 1 }?.let {
+                            Spacer(Modifier.width(6.dp))
+                            CapsuleBadge("×$it")
+                        }
+                    },
+                    trailing = { OverflowMenu(content = menu) },
+                )
+            } else if (song == null || (songId != null && PlayResolver.isStudioId(songId))) {
                 // Unresolvable + Studio ids degrade honestly (§5.2).
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     MissingItemRow(modifier = Modifier.weight(1f))
@@ -391,13 +567,14 @@ private fun NodeRow(
             } else {
                 CollectionTrackRow(
                     title = song.name,
-                    subtitle = song.artist,
+                    subtitle = if (rowNote != null) "${song.artist} · $rowNote" else song.artist,
                     album = song.albumId?.let { catalog?.albumsById?.get(it) },
                     bpm = song.bpm,
                     camelot = song.camelot,
                     lengthMs = song.length,
                     dimmed = !manifestHit,
-                    onClick = { onTapSong(song.id) },
+                    modifier = Modifier.selectableRow(selection, node.nodeId, selectionScope, { onTapSong(song.id) }, rowSongId = song.id),
+                    favoriteSongId = song.id, favoriteAppleMusicId = song.appleMusicId,
                     badges = {
                         node.repeatCount?.takeIf { it > 1 }?.let {
                             Spacer(Modifier.width(6.dp))

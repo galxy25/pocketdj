@@ -52,8 +52,12 @@ fun BrowseSortSheet(
     sortKeys: List<SortKey>,
     onSortKeys: (List<SortKey>) -> Unit,
     onDismiss: () -> Unit,
+    /** History mode adds the history-only "Last played" key (BRW-6). */
+    historyMode: Boolean = false,
+    /** Per-collection sort (COL-13) offers "Date added". */
+    includeDateAdded: Boolean = false,
 ) {
-    val sortable = SortField.forKind(kind)
+    val sortable = SortField.forKind(kind, includeHistory = historyMode, includeDateAdded = includeDateAdded)
     val usedIds = sortKeys.map { it.field.id }.toSet()
     val unused = sortable.filter { it.id !in usedIds }
 
@@ -83,7 +87,7 @@ fun BrowseSortSheet(
 
             if (sortKeys.isEmpty()) {
                 Text(
-                    "No sort. Default order is artist › title.",
+                    if (historyMode) "No sort. Default order is most recently played." else "No sort. Default order is artist › title.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 8.dp),

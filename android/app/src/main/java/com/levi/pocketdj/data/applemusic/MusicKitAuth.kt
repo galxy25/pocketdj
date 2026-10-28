@@ -43,6 +43,9 @@ class MusicKitAuth(
         enum class Kind { NO_SUBSCRIPTION, SUBSCRIPTION_EXPIRED, TOKEN_FETCH_ERROR, UNKNOWN, SDK_UNAVAILABLE }
     }
 
+    /** COL-8: invoked after a Music-User-Token is persisted (re-arms the write-back queue). */
+    @Volatile var onSignedIn: (() -> Unit)? = null
+
     /** Thrown when the sign-in intent can't be built (no dev token / SDK gone). */
     class AuthUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
@@ -94,6 +97,7 @@ class MusicKitAuth(
             return AuthResult.Failed(AuthResult.Kind.UNKNOWN, "Sign-in returned no token — try again.")
         }
         settings.setMusicUserToken(token)
+        runCatching { onSignedIn?.invoke() }
         return AuthResult.Success(token)
     }
 

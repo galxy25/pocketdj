@@ -1,5 +1,6 @@
 package com.levi.pocketdj.data.storage
 
+import com.levi.pocketdj.data.burns.ArtistUsage
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -41,14 +42,82 @@ class StorageService(
     private val clearPlayHistory: () -> Unit,
     /** Wired to `CollectionActivityStore.clear()` (keeps installId). */
     private val clearActivity: () -> Unit,
+    /** `filesDir/pocketdj-favorites.json` (COL-10, measured-only user content). */
+    private val favoritesFile: File? = null,
+    /** SVC-2: measured burned-media bytes (audio + sidecars + cuts + grids; owned files only). */
+    private val burnsUsageBytes: (() -> Long)? = null,
+    /** SVC-2: measured owned stem-file bytes (a separately clearable line). */
+    private val stemsUsageBytes: (() -> Long)? = null,
+    /** SVC-2: `BurnStore.removeAllBurns()` — the library/catalog/collections are never touched. */
+    private val clearBurns: (() -> Unit)? = null,
+    /** SVC-2: `BurnStore.removeAllStems(protecting=...)`; beat grids and burned audio stay. */
+    private val clearStems: (() -> Unit)? = null,
+    /** BRW-4: `filesDir/lyrics-cache/` - on-demand lyrics text, re-fetched when a song opens. */
+    private val lyricsCacheDir: File? = null,
+    /** BRW-4: `LyricsStore.clearDisk()` (also drops the in-memory tier). */
+    private val clearLyrics: (() -> Unit)? = null,
+    /** SVC-6: targeted burn/stem deletes + per-artist usage (wired to BurnStore). */
+    private val burnOps: BurnStorageOps? = null,
+    /** STU-7: per-family Studio usage + delete-all (wired to StudioStore). */
+    private val studioOps: StudioStorageOps? = null,
+    /** MIX-12: `filesDir/mix-sessions/` - recorded mix takes (user content; delete-all skips the live take). */
+    private val mixSessionsDir: File? = null,
+    /** MIX-12: deletes every take except the in-flight one. */
+    private val clearMixSessions: (() -> Unit)? = null,
 ) {
+    /**
+     * The slice of StudioStore the Storage screen uses (a port for JVM tests). [deleteAll] is STRICT: it
+     * keeps records whose root is unreachable and skips the recorder's in-flight take.
+     */
+    interface StudioStorageOps {
+        fun usageBytes(family: com.levi.pocketdj.studio.store.StudioFamily): Long
+        fun deleteAll(family: com.levi.pocketdj.studio.store.StudioFamily)
+        /** Records of the family (iOS enables delete when count > 0 OR bytes > 0: a record with zero bytes is removable). */
+        fun recordCount(family: com.levi.pocketdj.studio.store.StudioFamily): Int = 0
+    }
+
+    /** Studio record count for a STUDIO_* category (0 for others / unwired). Off-main callers only. */
+    fun studioRecordCount(category: Category): Int =
+        runCatching { category.studioFamily?.let { studioOps?.recordCount(it) } }.getOrNull() ?: 0
+
+    /** The slice of BurnStore the Storage screen's targeted deletes use (a port for JVM tests). */
+    interface BurnStorageOps {
+        fun usageByArtist(): List<ArtistUsage>
+        fun stemUsageByArtist(): List<ArtistUsage>
+        fun approximateBytes(ids: List<String>): Long
+        fun removeBurns(songIds: List<String>)
+        fun removeStems(songIds: List<String>)
+    }
+
     /** The five measured categories (specs/storage.md §2, ordered caches → docs). */
     enum class Category(val clearable: Boolean) {
         CATALOG_CACHE(clearable = true),
         ARTWORK(clearable = true),
+        BURNS(clearable = true), // downloaded media only — songs stay in the library, re-burnable
+        STEMS(clearable = true), // burned stem files; beat grids + audio stay
         COLLECTIONS(clearable = false), // user content — display-only (§2.3)
         PLAY_HISTORY(clearable = true),
         ACTIVITY(clearable = true),
+        LYRICS(clearable = true), // re-fetchable text cache (BRW-4)
+        FAVORITES(clearable = false), // per-profile ♥ + tombstones — display-only, user content
+        STUDIO_SAMPLES(clearable = true), // the user's own recordings/cuts: delete-all is explicit + confirmed
+        STUDIO_LOOPS(clearable = true),
+        STUDIO_SEQUENCES(clearable = true),
+        STUDIO_TAKES(clearable = true),
+        STUDIO_INSTRUMENTS(clearable = true), // downloaded SoundFonts: re-downloadable
+        MIX_SESSIONS(clearable = true), // recorded mix takes: explicit delete-all, skips the active take
+        ;
+
+        /** The Studio family a STUDIO_* category maps to, else null. */
+        val studioFamily: com.levi.pocketdj.studio.store.StudioFamily?
+            get() = when (this) {
+                STUDIO_SAMPLES -> com.levi.pocketdj.studio.store.StudioFamily.SAMPLES
+                STUDIO_LOOPS -> com.levi.pocketdj.studio.store.StudioFamily.LOOPS
+                STUDIO_SEQUENCES -> com.levi.pocketdj.studio.store.StudioFamily.SEQUENCES
+                STUDIO_TAKES -> com.levi.pocketdj.studio.store.StudioFamily.TAKES
+                STUDIO_INSTRUMENTS -> com.levi.pocketdj.studio.store.StudioFamily.INSTRUMENTS
+                else -> null
+            }
     }
 
     /** Categories that expose a Clear action (everything but Collections). */
@@ -59,9 +128,17 @@ class StorageService(
         when (category) {
             Category.CATALOG_CACHE -> dirSize(catalogCacheDir)
             Category.ARTWORK -> runCatching { artwork.diskSizeBytes() }.getOrDefault(0L)
+            Category.BURNS -> burnsUsageBytes?.invoke() ?: 0L
+            Category.STEMS -> stemsUsageBytes?.invoke() ?: 0L
             Category.COLLECTIONS -> fileSize(collectionsFile)
             Category.PLAY_HISTORY -> fileSize(playHistoryFile)
             Category.ACTIVITY -> fileSize(activityFile)
+            Category.FAVORITES -> favoritesFile?.let(::fileSize) ?: 0L
+            Category.LYRICS -> lyricsCacheDir?.let(::dirSize) ?: 0L
+            Category.MIX_SESSIONS -> mixSessionsDir?.let(::dirSize) ?: 0L
+            Category.STUDIO_SAMPLES, Category.STUDIO_LOOPS, Category.STUDIO_SEQUENCES,
+            Category.STUDIO_TAKES, Category.STUDIO_INSTRUMENTS ->
+                runCatching { category.studioFamily?.let { studioOps?.usageBytes(it) } }.getOrNull() ?: 0L
         }
     }
 
@@ -84,9 +161,45 @@ class StorageService(
             Category.ARTWORK -> runCatching { artwork.clear() }
             Category.PLAY_HISTORY -> runCatching { clearPlayHistory() }
             Category.ACTIVITY -> runCatching { clearActivity() }
-            Category.COLLECTIONS -> Unit // unreachable — guarded above
+            Category.BURNS -> runCatching { clearBurns?.invoke() }
+            Category.STEMS -> runCatching { clearStems?.invoke() }
+            Category.LYRICS -> runCatching {
+                clearLyrics?.invoke() ?: lyricsCacheDir?.listFiles()?.forEach { it.delete() }
+            }
+            Category.MIX_SESSIONS -> runCatching { clearMixSessions?.invoke() }
+            Category.STUDIO_SAMPLES, Category.STUDIO_LOOPS, Category.STUDIO_SEQUENCES,
+            Category.STUDIO_TAKES, Category.STUDIO_INSTRUMENTS ->
+                runCatching { category.studioFamily?.let { studioOps?.deleteAll(it) } }
+            Category.COLLECTIONS, Category.FAVORITES -> Unit // unreachable — guarded above
         }
         measure(category)
+    }
+
+    /** Downloaded songs grouped by artist (unique audio files counted once). */
+    suspend fun burnUsageByArtist(): List<ArtistUsage> =
+        withContext(Dispatchers.Default) { burnOps?.usageByArtist().orEmpty() }
+
+    suspend fun stemUsageByArtist(): List<ArtistUsage> =
+        withContext(Dispatchers.Default) { burnOps?.stemUsageByArtist().orEmpty() }
+
+    /** Bytes [songIds] would free if their downloads were deleted (collection delete preview). */
+    suspend fun approximateBurnBytes(songIds: List<String>): Long =
+        withContext(Dispatchers.Default) { burnOps?.approximateBytes(songIds) ?: 0L }
+
+    /**
+     * Delete the downloaded media of [songIds] (an artist's songs or a collection's members).
+     * Media only: the library, collections and catalog are untouched. Returns the re-measured
+     * [Category.BURNS] size.
+     */
+    suspend fun deleteBurns(songIds: List<String>): Long = withContext(Dispatchers.Default) {
+        runCatching { burnOps?.removeBurns(songIds) }
+        measure(Category.BURNS)
+    }
+
+    /** Delete only the stem files of [songIds]; burned audio and beat grids stay. */
+    suspend fun deleteStems(songIds: List<String>): Long = withContext(Dispatchers.Default) {
+        runCatching { burnOps?.removeStems(songIds) }
+        measure(Category.STEMS)
     }
 
     private fun fileSize(file: File): Long = if (file.isFile) file.length() else 0L

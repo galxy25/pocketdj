@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import com.levi.pocketdj.data.rips.RipPlayWait
 import androidx.core.os.bundleOf
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -19,15 +20,51 @@ import com.levi.pocketdj.data.applemusic.AppleMusicPreviewResolver
 import com.levi.pocketdj.data.applemusic.MusicKitDeveloperTokenClient
 import com.levi.pocketdj.data.rips.PlayAction
 import com.levi.pocketdj.data.rips.PlayResolver
+import com.levi.pocketdj.data.rips.PresignCache
+import com.levi.pocketdj.data.rips.RipJobTracker
+import com.levi.pocketdj.data.rips.RipWaitOutcome
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.rips.RipsRepository
 import com.levi.pocketdj.data.settings.AppSettingsStore
+import com.levi.pocketdj.diag.NPLog
+import com.levi.pocketdj.playback.am.AmEvent
+import com.levi.pocketdj.playback.am.AmObservation
+import com.levi.pocketdj.playback.am.AmTrack
+import com.levi.pocketdj.playback.am.AppleMusicEndMonitor
+import com.levi.pocketdj.playback.am.BackendAppleMusicController
+import com.levi.pocketdj.playback.health.EngineProbe
+import com.levi.pocketdj.playback.sequencer.AppleMusicRowResolver
+import com.levi.pocketdj.playback.sequencer.AppleMusicSource
+import com.levi.pocketdj.playback.session.AppleMusicPlayerAdapter
+import com.levi.pocketdj.playback.sequencer.CloudRowResolver
+import com.levi.pocketdj.playback.sequencer.RipOnDemandSource
+import com.levi.pocketdj.playback.session.RipOnDemandBridge
+import com.levi.pocketdj.playback.session.RipOnDemandResolver
+import com.levi.pocketdj.playback.session.RipOnDemandSession
+import com.levi.pocketdj.playback.session.RipResolution
+import com.levi.pocketdj.playback.sequencer.LocalFileResolver
+import com.levi.pocketdj.playback.sequencer.LocalFileRowResolver
+import com.levi.pocketdj.playback.sequencer.QueueItem
+import com.levi.pocketdj.playback.sequencer.LocalFileSource
+import com.levi.pocketdj.playback.sequencer.ManifestRowResolver
+import com.levi.pocketdj.playback.sequencer.PlayRequest
+import com.levi.pocketdj.playback.sequencer.PlayerPort
+import com.levi.pocketdj.playback.sequencer.RepeatMode
+import com.levi.pocketdj.playback.sequencer.RowResolverRegistry
+import com.levi.pocketdj.playback.sequencer.SetlistSequencer
+import com.levi.pocketdj.playback.sequencer.StreamSource
+import com.levi.pocketdj.playback.sequencer.UrlRequest
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
@@ -91,6 +128,13 @@ class PlaybackController(
      */
     devTokenClient: MusicKitDeveloperTokenClient? = null,
     private val previewResolver: AppleMusicPreviewResolver? = null,
+    /**
+     * Presigned-URL cache (the rips bucket is private). Null = direct manifest URLs (tests,
+     * serverless); also falls back to the direct URL when no server is configured.
+     */
+    private val presigns: PresignCache? = null,
+    /** Watches a rip past the 20 s interactive wait and fires onRipReady. Null in tests. */
+    private val ripTracker: RipJobTracker? = null,
 ) {
     /** One immutable now-playing snapshot; null when nothing is loaded. */
     data class NowPlayingInfo(
@@ -129,6 +173,9 @@ class PlaybackController(
             )
         }
 
+    /** True while the Apple Music engine owns audio (Now Playing transport ladder). */
+    val isAppleMusicActive: Boolean get() = activeBackend == ActiveBackend.APPLE_MUSIC
+
     private val _nowPlaying = MutableStateFlow<NowPlayingInfo?>(null)
     val nowPlaying: StateFlow<NowPlayingInfo?> = _nowPlaying.asStateFlow()
 
@@ -144,6 +191,213 @@ class PlaybackController(
     fun clearLastError() {
         _lastError.value = null
     }
+
+    private val urls = PlaybackUrlResolver(presigns)
+
+    // ---- the sequencer (decision D11): owns the queue; ExoPlayer holds only the current row ----
+
+    /** Burned / studio local-file seam (SVC-4 / STU-7 swap the real one in). */
+    @Volatile
+    var localFiles: LocalFileResolver = LocalFileResolver.None
+
+    /** SVC-4 burned-first: the local file for a plain song id, via the same seam as the ladder. */
+    /** File.exists()/dir.list() (analog heal) must not run on the main thread: callers are on Main. */
+    private suspend fun burnedFile(songId: String) =
+        withContext(Dispatchers.IO) { localFiles.localUrlForPlayback(QueueItem(id = songId)) }
+
+    @Volatile private var cachedMode: PlaybackMode = PlaybackMode.CLOUD
+    @Volatile private var cachedRipConfigured: Boolean = false
+
+    /** The per-row resolve ladder; packages register their rung via [RowResolverRegistry.register]. */
+    val rowResolvers = RowResolverRegistry(
+        initial = listOf(
+            LocalFileRowResolver { item -> localFiles.localUrlForPlayback(item) },
+            ManifestRowResolver { id -> rips.entry(id) },
+            CloudRowResolver(),
+        ) + listOfNotNull(
+            // PB-8: Apple Music rung. Null backend (AM not wired) / emulator (canPlayFullTrack=false) => falls through.
+            appleMusicBackend?.let { backend ->
+                AppleMusicRowResolver(
+                    appleMusicIdFor = { item -> catalog.state.value.catalog?.songsById?.get(item.id)?.appleMusicId },
+                    // Cached facts only on the resolve path (a token fetch here is dead air on every row);
+                    // a cold token is warmed off-path so the next row sees it.
+                    canPlayFullTrack = {
+                        val ok = backend.canPlayFullTrackCached()
+                        if (!ok) scope.launch { runCatching { backend.canPlayFullTrack() } }
+                        ok
+                    },
+                )
+            },
+        ),
+        manifestHit = { id -> rips.entry(id) != null },
+        ripServerConfigured = { cachedRipConfigured },
+    )
+
+    private val sequencerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    /** The sequencer's Main scope, shared with the supervisor ticker (PlaybackGraph). */
+    val sequencerScopeForHealth: CoroutineScope get() = sequencerScope
+
+    /** True while the sequencer's row is what ExoPlayer holds (end / error events feed it). */
+    @Volatile private var ownsPlayerField = false
+    private var sequencerOwnsPlayer: Boolean
+        get() = ownsPlayerField
+        set(v) {
+            val changed = ownsPlayerField != v
+            ownsPlayerField = v
+            // The session's command gate depends on this flag, not only on sequencer state emissions.
+            if (changed) RunTransportBus.stateChanged?.invoke()
+        }
+
+    /** The listener changed repeat mode before the persisted value finished loading. */
+    @Volatile private var repeatTouched = false
+
+    /**
+     * Rip-on-demand for a rip-required row INSIDE a run (PB-3): one in-flight `POST /rip` per song, shared by
+     * the service's data source (durable mp3) and the watcher that swaps a live HLS stream in.
+     */
+    private val ripSession = RipOnDemandSession(
+        scope = scope,
+        resolver = RipOnDemandResolver(
+            requestRip = { id -> ripServer.requestRip(id) },
+            awaitDurable = { job -> awaitDurableRip(job) },
+            liveUrl = { path -> liveRipUrl(path) },
+            onQueued = { id -> withContext(Dispatchers.Main) { sequencer.notePlaybackRipQueued(id) } },
+        ),
+    ).also { RipOnDemandBridge.session = it }
+
+    /** Poll a queued rip to its durable url, bounded at 10 minutes (cancelled by a skip). */
+    private suspend fun awaitDurableRip(job: com.levi.pocketdj.data.rips.RipJob): String {
+        val jobId = job.jobId ?: throw java.io.IOException(job.error ?: "Rip did not start")
+        val deadline = System.currentTimeMillis() + RIP_WAIT_CAP_MS
+        while (true) {
+            when (val outcome = ripServer.awaitReadyInteractive(jobId)) {
+                is RipWaitOutcome.Ready -> {
+                    runCatching { rips.refresh() }
+                    return outcome.url
+                }
+                is RipWaitOutcome.StillRipping ->
+                    if (System.currentTimeMillis() > deadline) throw java.io.IOException("Still ripping")
+            }
+        }
+    }
+
+    /** `<serverUrl><streamPath>?token=<token>` (token omitted when empty) - the iOS `liveURL` builder. */
+    private suspend fun liveRipUrl(streamPath: String): String {
+        val cfg = settings.current()
+        val base = cfg.ripServerUrl.trim().removeSuffix("/")
+        val token = cfg.ripToken.trim()
+        val url = if (streamPath.startsWith("http")) streamPath else base + "/" + streamPath.removePrefix("/")
+        return if (token.isEmpty()) url else url + "?token=" + java.net.URLEncoder.encode(token, "UTF-8")
+    }
+
+    private fun exoFronts(): Boolean = com.levi.pocketdj.playback.session.SessionSwitchboard.shared.exoFrontsSession()
+
+    /** Facts about the engine holding the sequencer's current row (arms the health machinery). */
+    private val engineProbe = object : EngineProbe {
+        private val c get() = controller
+        override val hasLoadedItem: Boolean
+            get() = sequencerOwnsPlayer && when (activeBackend) {
+                // Final review: a Mix / npdsp owner makes the controller mirror THEIR playlist, not the setlist row.
+                ActiveBackend.EXO -> exoFronts() && (c?.mediaItemCount ?: 0) > 0
+                ActiveBackend.APPLE_MUSIC -> appleMusicBackend?.currentRow() != null
+            }
+        override val isPlaying: Boolean
+            get() = if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+                appleMusicBackend?.snapshot()?.status == com.levi.pocketdj.playback.am.AmStatus.PLAYING
+            } else {
+                exoFronts() && c?.isPlaying == true
+            }
+        override val positionMs: Long
+            get() = if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.snapshot()?.positionMs ?: 0L else c?.currentPosition ?: 0L
+        override val durationMs: Long?
+            get() = if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+                appleMusicBackend?.snapshot()?.durationMs
+            } else {
+                c?.duration?.takeIf { it > 0 && it != androidx.media3.common.C.TIME_UNSET }
+            }
+        override val trackEnded: Boolean
+            get() = activeBackend == ActiveBackend.EXO && c?.playbackState == Player.STATE_ENDED
+        override fun rekick(by: String) {
+            // The Apple Music lane is detector-only: the SDK owns its own buffering, a re-kick would only fight it.
+            if (activeBackend == ActiveBackend.APPLE_MUSIC) return
+            val ctl = c ?: return
+            NPLog.lane(NPLog.PLAYBACK, "rekick by=$by pos=${ctl.currentPosition}ms")
+            ctl.seekTo(ctl.currentPosition)
+            ctl.prepare()
+            ctl.play()
+        }
+    }
+
+    val sequencer: SetlistSequencer = SetlistSequencer(
+        scope = sequencerScope,
+        port = Media3Port(),
+        registry = rowResolvers,
+        modeProvider = { cachedMode },
+    ).also { seq ->
+        seq.progressProvider = { progressFraction() }
+        seq.ripWaitProbe = { ripSession.isResolving() }
+        seq.engine = engineProbe
+        seq.preloadEnabled = true // PB-10: gapless window for local / manifest-rip boundaries
+        seq.appleMusicActive = { activeBackend == ActiveBackend.APPLE_MUSIC }
+        seq.rowOnDevice = { item -> localFiles.localUrlForPlayback(item) != null }
+        seq.rowStartsInstantly = { item ->
+            !com.levi.pocketdj.data.rips.PlayResolver.isStudioId(item.id) && rips.entry(item.resolveId) != null
+        }
+        seq.isUserRequestedRip = { id -> ripTracker?.isUserRequestedRip(id) == true }
+        seq.cancelPlaybackRips = { ids ->
+            scope.launch { runCatching { ripServer.cancelRips(ids) } }
+        }
+        seq.onRepeatModeChanged = { mode ->
+            repeatTouched = true
+            scope.launch { runCatching { settings.set(PlaybackPrefKeys.REPEAT_MODE, mode.token) } }
+        }
+        RunTransportBus.handler = object : RunTransportBus.Handler {
+            override val isRunActive: Boolean get() = seq.isRunning && sequencerOwnsPlayer
+            override fun next() = seq.skipNext()
+            override fun previous() = seq.skipPrevious()
+        }
+        val base = com.levi.pocketdj.playback.session.SetlistSequencerControl(seq)
+        RunTransportBus.control = object : com.levi.pocketdj.playback.session.SequencerControl by base {
+            // The session's next/prev/repeat/shuffle exist only while the sequencer's row is on ExoPlayer.
+            override val isRunning: Boolean get() = base.isRunning && (sequencerOwnsPlayer || base.isHeldForResume)
+        }
+        seq.onHeldRestored = {
+            RunTransportBus.stateChanged?.invoke()
+            RunTransportBus.heldRestored?.invoke()
+        }
+        sequencerScope.launch { seq.state.collect { RunTransportBus.stateChanged?.invoke() } }
+        scope.launch {
+            runCatching {
+                cachedMode = PlaybackMode.fromToken(settings.get(PlaybackPrefKeys.PLAYBACK_MODE))
+                val saved = RepeatMode.fromToken(settings.get(PlaybackPrefKeys.REPEAT_MODE))
+                withContext(Dispatchers.Main) {
+                    // A cycle the user made before the saved value arrived wins and is persisted.
+                    if (!repeatTouched && !(seq.isRunning && seq.isHeldForResume)) seq.setRepeatMode(saved)
+                }
+            }
+        }
+        scope.launch {
+            runCatching {
+                settings.flow(PlaybackPrefKeys.PLAYBACK_MODE).collect { cachedMode = PlaybackMode.fromToken(it) }
+            }
+        }
+        scope.launch {
+            runCatching { settings.settings.collect { cachedRipConfigured = it.hasRipServer } }
+        }
+    }
+
+    /** Listened fraction of the current track from the live player position, or null when unknown. */
+    private fun progressFraction(): Double? {
+        val c = controller ?: return null
+        val dur = c.duration
+        if (dur <= 0 || dur == androidx.media3.common.C.TIME_UNSET) return null
+        return (c.currentPosition.toDouble() / dur).coerceIn(0.0, 1.0)
+    }
+
+    /** Bumped at every play entry/commit; a background rip wait only plays if still the owner. */
+    private val playGeneration = java.util.concurrent.atomic.AtomicLong()
+    private var urlRetriedFor: String? = null
 
     private var controller: MediaController? = null
     private val controllerMutex = Mutex()
@@ -168,6 +422,153 @@ class PlaybackController(
             ) {
                 _nowPlaying.value = snapshot(player)
             }
+            // Final review: Mix / npdsp deck changes must not presign their placeholder uids or end the row.
+            if (!exoFronts()) return
+            if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION)) refreshAhead()
+            if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
+                NPLog.lane(NPLog.PLAYBACK, "[playback] engine state=${player.playbackState} item=${player.currentMediaItem?.mediaId}")
+            }
+            if (sequencerOwnsPlayer &&
+                events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) &&
+                player.playbackState == Player.STATE_ENDED
+            ) {
+                // Natural end of the row the sequencer loaded -> advance (repeat / next / stop).
+                player.currentMediaItem?.mediaId?.let(sequencer::handleEnded)
+            }
+        }
+
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            // PB-10: the engine rolled onto the preloaded window slot by itself. The sequencer advances to
+            // that row's uid; everything else (setMediaItems, seeks) is the sequencer's own load.
+            if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO || mediaItem == null) return
+            if (activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer || !exoFronts()) return
+            val rendering = controller?.let { it.isPlaying && it.playbackState == Player.STATE_READY } ?: false
+            if (!sequencer.handlePreloadedTransition(mediaItem.mediaId, rendering)) return
+            urlRetriedFor = null
+            playGeneration.incrementAndGet()
+            scope.launch {
+                withController { c ->
+                    // Drop the finished row(s) so the window stays [current, next].
+                    val cur = c.currentMediaItemIndex
+                    if (cur > 0 && c.currentMediaItem?.mediaId == mediaItem.mediaId) c.removeMediaItems(0, cur)
+                }
+                val ahead = sequencer.state.value.upcoming.take(PlaybackUrlResolver.AHEAD).map { it.resolveId }
+                urls.prefetch(ahead, settings.current().hasRipServer)
+            }
+        }
+
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (!isPlaying || activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer || !exoFronts()) return
+            // First proof of sound for the row the sequencer loaded: closes the start window + dead-air gap.
+            sequencer.onFirstAudio(controller?.currentMediaItem?.mediaId)
+        }
+
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            if (activeBackend == ActiveBackend.EXO && exoFronts()) sequencer.discriminator.onPlayWhenReadyChanged(playWhenReady, reason)
+        }
+
+        override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
+            if (activeBackend == ActiveBackend.EXO && exoFronts()) sequencer.discriminator.onSuppressionChanged(playbackSuppressionReason)
+        }
+
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            NPLog.lane(NPLog.PLAYBACK, "[playback] engine error ${error.errorCodeName} item=${controller?.currentMediaItem?.mediaId} cause=${error.cause?.javaClass?.simpleName}: ${error.cause?.message}")
+            val c = controller ?: return
+            val item = c.currentMediaItem ?: return
+            val id = item.mediaId
+            if (activeBackend != ActiveBackend.EXO) return
+            // A rip-on-demand placeholder that failed to resolve: there is no presigned url to retry with.
+            if (item.requestMetadata.extras?.getString(PlaybackContract.EXTRA_URL)
+                    ?.startsWith(RipOnDemandSource.SCHEME + "://") == true
+            ) {
+                failToSequencer(id)
+                return
+            }
+            val isPreview = item.requestMetadata.extras?.getBoolean(PlaybackContract.EXTRA_IS_PREVIEW) == true
+            val isStream = item.requestMetadata.extras?.getBoolean(PlaybackContract.EXTRA_IS_STREAM) == true
+            // A presigned URL that expired (long pause) or 403'd: mint a fresh one once per song.
+            // A raw stream (jukebox Tune-In) has no song id to presign.
+            if (isStream) return
+            if (urlRetriedFor == id || isPreview) {
+                failToSequencer(id)
+                return
+            }
+            urlRetriedFor = id
+            presigns?.invalidate(id)
+            scope.launch {
+                val fresh = if (settings.current().hasRipServer) presigns?.urlFor(id) else null
+                if (fresh == null) {
+                    withContext(Dispatchers.Main) { failToSequencer(id) }
+                    return@launch
+                }
+                withController { ctl ->
+                    val idx = ctl.currentMediaItemIndex
+                    val cur = ctl.currentMediaItem ?: return@withController
+                    if (cur.mediaId != id) return@withController
+                    val pos = ctl.currentPosition
+                    ctl.replaceMediaItem(idx, withUrl(cur, fresh))
+                    ctl.seekTo(idx, pos)
+                    ctl.prepare()
+                    ctl.play()
+                }
+            }
+        }
+    }
+
+    /** A dead source in a sequencer run advances the set (never replays). */
+    private fun failToSequencer(songId: String) {
+        if (sequencerOwnsPlayer) sequencer.handleFailed(songId)
+    }
+
+    private fun withUrl(item: MediaItem, url: String): MediaItem {
+        val extras = Bundle(item.requestMetadata.extras ?: Bundle()).apply {
+            putString(PlaybackContract.EXTRA_URL, url)
+        }
+        return item.buildUpon()
+            .setUri(url)
+            .setRequestMetadata(
+                MediaItem.RequestMetadata.Builder().setMediaUri(Uri.parse(url)).setExtras(extras).build(),
+            )
+            .build()
+    }
+
+    /**
+     * Keep the next few queue items freshly presigned (iOS prefetch-3-ahead): resolved off the
+     * critical path while the current song plays, swapped in only if the slot is unchanged.
+     */
+    private fun refreshAhead() {
+        scope.launch {
+            try {
+                if (activeBackend != ActiveBackend.EXO || !settings.current().hasRipServer) return@launch
+                val (from, ids) = withController { c ->
+                    val range = PlaybackUrlResolver.aheadIndices(c.currentMediaItemIndex, c.mediaItemCount)
+                    range.first to range.map { c.getMediaItemAt(it).mediaId }
+                }
+                for ((offset, id) in ids.withIndex()) {
+                    // Burned-first: a local file item is never swapped back to a network URL.
+                    val isLocal = withController { c ->
+                        val idx = from + offset
+                        idx < c.mediaItemCount && c.getMediaItemAt(idx).let {
+                            PlaybackUrlResolver.isLocalItemUrl(
+                                it.requestMetadata.extras?.getString(PlaybackContract.EXTRA_URL),
+                                it.localConfiguration?.uri?.toString(),
+                            )
+                        }
+                    }
+                    if (isLocal) continue
+                    val fresh = presigns?.urlFor(id) ?: continue
+                    withController { c ->
+                        val idx = from + offset
+                        if (idx >= c.mediaItemCount || idx <= c.currentMediaItemIndex) return@withController
+                        val item = c.getMediaItemAt(idx)
+                        if (item.mediaId != id) return@withController
+                        if (item.requestMetadata.extras?.getString(PlaybackContract.EXTRA_URL) == fresh) return@withController
+                        c.replaceMediaItem(idx, withUrl(item, fresh))
+                    }
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+            }
         }
     }
 
@@ -190,21 +591,31 @@ class PlaybackController(
         songId: String,
         queueAlbumContext: Boolean = true,
         playContext: PlayContext? = null,
+        startMs: Long = 0L,
     ): PlayOutcome {
+        // Studio mic capture owns the audio path: nothing may start sounding into the take.
+        if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStartRaw("nowplaying")) return PlayOutcome.Failed("Recording in progress")
+        val gen = playGeneration.incrementAndGet()
+        lastStartHonored = false
         val merged = catalog.state.value.catalog
         val song = merged?.songsById?.get(songId)
         val ripConfigured = settings.current().hasRipServer
+        // A manual ▶ of a song IN the running queue repositions the cursor (it must not queue the
+        // album behind it, which would orphan the set) - see setQueueAndPlay's adoption.
+        // STU-6: a cue start is a SINGLE-item play (an album queue has no per-item start position).
+        val queueAlbumContext = queueAlbumContext && startMs <= 0L &&
+            !withContext(Dispatchers.Main) { sequencer.inRunningQueue(songId) }
 
-        return when (val action = PlayResolver.resolve(songId, rips.entry(songId), ripConfigured)) {
+        return when (val action = PlayResolver.resolveBurnedFirst(songId, rips.entry(songId), ripConfigured, burnedFile(songId))) {
             // AM ladder (specs/applemusic.md §6.0): a manifest hit (Stream) always
             // wins first; only for a non-manifest song with an appleMusicId do the
             // AM rungs (full-track → preview) sit BEFORE rip-on-demand / metadata.
             is PlayAction.MetadataOnly ->
-                tryAppleMusic(songId, song, merged, playContext)
+                amWithSeek(songId, song, merged, playContext, startMs, gen)
                     ?: PlayOutcome.NotPlayable(action.reason)
 
             is PlayAction.RipRequired ->
-                tryAppleMusic(songId, song, merged, playContext)
+                amWithSeek(songId, song, merged, playContext, startMs, gen)
                     ?: startRipAndPlay(songId, playContext ?: PlayContext.BROWSER)
 
             is PlayAction.Stream -> {
@@ -218,16 +629,49 @@ class PlaybackController(
                 } else {
                     val item = mediaItem(
                         songId = songId,
-                        action = action,
+                        action = urls.resolve(songId, action, ripConfigured),
                         song = song,
                         album = song?.albumId?.let { merged?.albumsById?.get(it) },
                         playContext = playContext ?: PlayContext.BROWSER,
                     )
-                    setQueueAndPlay(listOf(item), 0)
+                    // Cue start: ExoPlayer positions are relative to the item's ClippingConfiguration, so the
+                    // seek is the song-relative cue ALONE (the shared-album clipStart is applied by the clip,
+                    // never pre-added here — that would push the end boundary into the next song).
+                    setQueueAndPlay(listOf(item), 0, adoptSongId = songId, startPositionMs = startMs.takeIf { it > 0 })
+                    lastStartHonored = true
                     PlayOutcome.Started
                 }
             }
         }
+    }
+
+    /** STU-6: would an Apple Music start offset be honoured (full-track engine ready)? Cached facts only. */
+    suspend fun canSeekAppleMusic(): Boolean = runCatching { appleMusicBackend?.canPlayFullTrackCached() == true }.getOrDefault(false)
+
+    /** STU-6: did the most recent [play] apply its requested start offset (false = started from the top)? */
+    @Volatile var lastStartHonored: Boolean = false
+        private set
+
+    /**
+     * Apple Music ladder + play-then-seek (device-only): the SDK has no start offset, so once the FULL-TRACK engine
+     * confirms playing we seek. A 30 s preview (rung 3) is never seeked, and a superseded play ([gen] moved on, or
+     * AM no longer owns audio) never seeks a newer song.
+     */
+    private suspend fun amWithSeek(
+        songId: String,
+        song: IndexSong?,
+        merged: com.levi.pocketdj.data.catalog.MergedCatalog?,
+        playContext: PlayContext?,
+        startMs: Long,
+        gen: Long,
+    ): PlayOutcome? {
+        var fullTrack = false
+        val out = tryAppleMusic(songId, song, merged, playContext) { fullTrack = true } ?: return null
+        if (startMs > 0L && out is PlayOutcome.Started && fullTrack && com.levi.pocketdj.studio.cues.CueSeek.shouldSeekAfterAm(gen, playGeneration.get(), activeBackend == ActiveBackend.APPLE_MUSIC)) {
+            runCatching { seekTo(startMs) }
+            lastStartHonored = true
+        }
+        return out
     }
 
     /** Play a whole album from its first playable track (or [startSongId]). */
@@ -244,86 +688,124 @@ class PlaybackController(
     }
 
     /**
-     * Play an ordered queue of song ids (a realized setlist / Now Playing run —
-     * specs/realize-play.md §6.3). Resolution happens at queue-BUILD time via
-     * [QueuePlan]: manifest hits stream (with analog clip windows), everything
-     * else is SKIPPED (P2 cut: no per-row rip-on-demand inside a queue run).
-     * Per-item repeatCount expands into consecutive duplicate items.
+     * Play an ordered queue of song ids (a realized setlist / Now Playing run) through the
+     * [SetlistSequencer]: nothing is resolved here - each row resolves FRESH at its turn through
+     * the [rowResolvers] ladder, unplayable rows are skipped with a `[playback] advance` line, and
+     * a per-row `repeatCount` loops on natural end.
      *
-     * [playContext] is captured once for the whole run (the iOS captured-origin
-     * doctrine) — build it from `CollectionsStore.historyContext(...)` so
-     * History attributes rows to the right playlist/pocket/setlist.
-     *
-     * [startEntryIndex] addresses the ORIGINAL entry list (pre-skip,
-     * pre-repeat); playback starts at the first playable entry at or after it.
+     * The History context + navigable origin are captured ONCE at start: [playContext] when given,
+     * else from the sequencer's providers keyed by [sourceSetlistId]. [startEntryIndex] addresses
+     * the ORIGINAL entry list (empty-id entries are dropped).
      */
     suspend fun playQueue(
         entries: List<QueuePlan.QueueEntry>,
-        playContext: PlayContext,
+        playContext: PlayContext? = null,
         startEntryIndex: Int = 0,
+        sourceSetlistId: String? = null,
     ): QueueOutcome {
         val merged = catalog.state.value.catalog
-        val plan = QueuePlan.build(entries) { songId ->
-            PlayResolver.resolve(songId, rips.entry(songId), false)
+        val items = QueuePlan.items(entries) { id ->
+            val song = merged?.songsById?.get(id)
+            Triple(song?.name, song?.artist, song?.length)
         }
-        if (plan.isEmpty) return QueueOutcome.NothingPlayable(entries.size)
-
-        val items = plan.items.map { planned ->
-            val song = merged?.songsById?.get(planned.songId)
-            val album = song?.albumId?.let { merged.albumsById[it] }
-            mediaItem(
-                songId = planned.songId,
-                action = planned.action,
-                song = song,
-                album = album,
-                playContext = playContext,
-            )
+        if (items.isEmpty()) return QueueOutcome.NothingPlayable(entries.size)
+        val start = QueuePlan.queueIndexForEntry(entries, startEntryIndex)
+        withContext(Dispatchers.Main) {
+            // The engine is about to be driven by the sequencer.
+            sequencerOwnsPlayer = true
+            sequencer.play(items, sourceSetlistId, context = playContext, startIndex = start)
         }
-        var startIndex = plan.items.indexOfFirst { it.entryIndex >= startEntryIndex }
-        if (startIndex < 0) startIndex = 0
-        setQueueAndPlay(items, startIndex)
         return QueueOutcome.Started(
-            playableEntryCount = plan.playableEntryCount,
-            skippedEntryCount = plan.skippedEntryCount,
-            requestedEntryCount = plan.requestedEntryCount,
+            playableEntryCount = items.size,
+            skippedEntryCount = 0,
+            requestedEntryCount = entries.size,
         )
     }
 
-    /** Convenience: queue a frozen setlist's playable rows in frozen order. */
+    /** Convenience: queue a frozen setlist's rows in frozen order (context captured from the setlist id). */
     suspend fun playSetlist(
         setlist: com.levi.pocketdj.data.collections.Setlist,
-        playContext: PlayContext,
+        playContext: PlayContext? = null,
         startEntryIndex: Int = 0,
-    ): QueueOutcome = playQueue(QueuePlan.entriesForSetlist(setlist), playContext, startEntryIndex)
+    ): QueueOutcome = playQueue(
+        QueuePlan.entriesForSetlist(setlist),
+        playContext,
+        startEntryIndex,
+        sourceSetlistId = setlist.id,
+    )
+
+    /** Play an arbitrary stream (jukebox Tune-In) without disturbing a held queue. */
+    suspend fun playUrl(title: String, artist: String?, url: String, seekMs: Long = 0) {
+        withContext(Dispatchers.Main) { sequencer.playUrl(title, artist, url, seekMs) }
+    }
+
+    /**
+     * Stop the jukebox stream [url] ONLY if it is what the player currently holds. Never abandons a
+     * run, so a HELD (restored, unstarted) queue survives; foreign audio is left alone.
+     */
+    suspend fun stopUrl(url: String) {
+        withController { ctl ->
+            if (isTuneInMediaId(ctl.currentMediaItem?.mediaId, url)) {
+                ctl.stop()
+                ctl.clearMediaItems()
+            }
+        }
+    }
 
     // Transport routes to whichever engine owns audio (single-owner, §6.1).
     suspend fun pause() {
-        if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.pause()
-        else withController { it.pause() }
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+            withContext(Dispatchers.Main) { amController?.pause() ?: run { amMonitor.noteIntentionalPause(true) } }
+            if (amController == null) appleMusicBackend?.pause()
+        } else {
+            withController { it.pause() }
+        }
     }
 
     suspend fun resume() {
-        if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.resume()
-        else withController { it.play() }
+        if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStartRaw("nowplaying.resume")) return
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+            withContext(Dispatchers.Main) { amController?.play() ?: run { amMonitor.noteIntentionalPause(false) } }
+            if (amController == null) appleMusicBackend?.resume()
+        } else {
+            withController { it.play() }
+        }
     }
 
     suspend fun next() {
+        if (withContext(Dispatchers.Main) { sequencer.isRunning.also { if (it) sequencer.skipNext() } }) return
         if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.next()
         else withController { it.seekToNextMediaItem() }
     }
 
     suspend fun previous() {
+        if (withContext(Dispatchers.Main) { sequencer.isRunning.also { if (it) sequencer.skipPrevious() } }) return
         if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.previous()
         else withController { it.seekToPreviousMediaItem() }
     }
 
     suspend fun seekTo(positionMs: Long) {
-        if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.seekTo(positionMs)
-        else withController { it.seekTo(positionMs) }
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+            // Through the controller so the monitor re-bases (our own backward scrub is not a system previous).
+            withContext(Dispatchers.Main) {
+                val ctl = amController
+                if (ctl != null) ctl.seekTo(positionMs) else amMonitor.noteSeek(positionMs)
+            }
+            if (amController == null) appleMusicBackend?.seekTo(positionMs)
+        } else {
+            withController { it.seekTo(positionMs) }
+        }
     }
 
     suspend fun stop() {
+        withContext(Dispatchers.Main) {
+            cancelRipOnDemand()
+            sequencerOwnsPlayer = false
+            sequencer.abandonRun() // the player teardown below is the stop
+        }
         if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+            // Final review: release() resigns the switchboard -> MediaSession.setPlayer, which asserts the application looper.
+            withContext(Dispatchers.Main) { disarmAppleMusic() }
             appleMusicBackend?.stop()
         } else {
             withController {
@@ -337,7 +819,160 @@ class PlaybackController(
      *  play so the two never sound at once (single-owner switching, §6.1). */
     private suspend fun stopAppleMusic() {
         if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+            // Final review: release() resigns the switchboard -> MediaSession.setPlayer, which asserts the application looper.
+            withContext(Dispatchers.Main) { disarmAppleMusic() }
             appleMusicBackend?.stop()
+        }
+    }
+
+    // ---- PB-8: Apple Music rows inside a run ----------------------------------------------------------
+
+    private val amMonitor = AppleMusicEndMonitor()
+    private var amPollJob: kotlinx.coroutines.Job? = null
+    private var amController: BackendAppleMusicController? = null
+    private var amAdapter: AppleMusicPlayerAdapter? = null
+    @Volatile private var amCurrentAmId: String? = null
+
+    /** An interruption resume is re-queuing the song: the poll loop must not read the gap as a dead source. */
+    @Volatile private var amResuming = false
+
+    /** Stop watching the AM row (a foreign play / stop / the next load took over) and hand the session back. */
+    private fun disarmAppleMusic() {
+        amMonitor.disarm()
+        amPollJob?.cancel()
+        amPollJob = null
+        amAdapter?.release()
+    }
+
+    /** Lazily build the Media3 adapter (Main). Only ever on a device whose AM engine actually plays. */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun ensureAmAdapter(backend: AppleMusicBackend): AppleMusicPlayerAdapter {
+        amAdapter?.let { return it }
+        val ctl = BackendAppleMusicController(backend, amMonitor) { songId, title, artist, albumId ->
+            val merged = catalog.state.value.catalog
+            val album = albumId?.let { merged?.albumsById?.get(it) }
+            AmTrack(songId, title, artist, album?.name, album?.artCandidates()?.firstOrNull())
+        }
+        ctl.onPlayIntent = { playing ->
+            sequencer.discriminator.onPlayWhenReadyChanged(
+                playing,
+                Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE,
+            )
+        }
+        ctl.onResumeFromInterruption = { atSeconds -> resumeAppleMusicAfterInterruption(backend, atSeconds) }
+        amController = ctl
+        return AppleMusicPlayerAdapter(
+            looper = android.os.Looper.getMainLooper(),
+            engineControl = ctl,
+            onSkipNext = { sequencer.skipNext() },
+            onSkipPrevious = { sequencer.skipPrevious() },
+            canSkip = { sequencer.isRunning },
+            // A session stop is the full set stop (abandon the run + disarm), not a bare engine stop.
+            onStop = { scope.launch { stop() } },
+        ).also { amAdapter = it }
+    }
+
+    /** ▶ after an interruption: re-queue the same song and seek back to where it was cut off (device-only). */
+    private fun resumeAppleMusicAfterInterruption(backend: AppleMusicBackend, atSeconds: Double) {
+        val row = backend.currentRow() ?: return
+        val amId = amCurrentAmId ?: return
+        amResuming = true
+        sequencerScope.launch {
+            try {
+                val ok = runCatching {
+                    backend.play(amId, row.songId, row.title, row.artist, row.albumId, PlayContext(PlayContext.SOURCE_SETLIST), resume = true)
+                }.getOrDefault(false)
+                if (ok) {
+                    backend.seekNow((atSeconds * 1000).toLong())
+                    amMonitor.noteSeek((atSeconds * 1000).toLong())
+                }
+                // else: it never came back - the interrupted hold (and its notice) stays; nothing advances.
+            } finally {
+                amResuming = false
+            }
+        }
+    }
+
+    private fun startAppleMusicMonitor(backend: AppleMusicBackend, songId: String, lengthMs: Long?) {
+        amMonitor.arm(lengthMs)
+        amPollJob?.cancel()
+        backend.itemEndedListener = { amMonitor.onSdkItemEnded()?.let { dispatchAm(songId, it) } }
+        amPollJob = sequencerScope.launch {
+            while (this.isActive && !amMonitor.isFinished) {
+                kotlinx.coroutines.delay(AppleMusicEndMonitor.POLL_MS)
+                if (amResuming) continue
+                val row = backend.currentRow()
+                if (row == null) {
+                    // The engine dropped the row without us stopping it: a steady-state SDK error => dead source.
+                    amMonitor.disarm()
+                    sequencer.handleFailed(songId)
+                    break
+                }
+                if (row.songId != songId) { amMonitor.disarm(); break } // a foreign play took over
+                val snap = backend.snapshot()
+                amMonitor.tick(AmObservation(snap.status, snap.positionMs))?.let { dispatchAm(songId, it) }
+            }
+        }
+    }
+
+    private fun dispatchAm(songId: String, ev: AmEvent) {
+        when (ev) {
+            AmEvent.FirstAudio -> Unit // play() already confirmed PLAYING and closed the start window
+            is AmEvent.Ended -> sequencer.handleAppleMusicEnded(songId, ev.reason)
+            AmEvent.Restarted -> sequencer.handleAppleMusicRestarted(songId)
+            is AmEvent.Interrupted -> sequencer.noteAppleMusicInterrupted(songId)
+            AmEvent.Resumed -> sequencer.noteAppleMusicResumed(songId)
+        }
+    }
+
+    /** The sequencer's Apple Music row: SDK plays it, the adapter fronts the session, the monitor watches it. */
+    private suspend fun loadAppleMusic(request: PlayRequest, src: AppleMusicSource) {
+        val backend = appleMusicBackend ?: throw IllegalStateException("Apple Music engine unavailable")
+        val item = request.item
+        val entryGeneration = sequencer.state.value.playGeneration
+        val merged = catalog.state.value.catalog
+        val song = merged?.songsById?.get(item.id)
+        ripWatchJob?.cancel()
+        ripWatchJob = null
+        ripSession.cancel()
+        amMonitor.disarm()
+        amPollJob?.cancel()
+        val prior = activeBackend
+        // Claim ownership first so Exo's IPC-delayed pause/stop events cannot clobber the AM card.
+        activeBackend = ActiveBackend.APPLE_MUSIC
+        if (prior == ActiveBackend.EXO) withController { it.pause() }
+        // Hold the session claim until the Exo teardown below is done: the SDK reaches PLAYING (and the
+        // adapter would take the MediaSession) before play() returns, and a teardown stop() sent through
+        // the session would then land on the adapter and kill the Apple Music audio just started.
+        val adapter = withContext(Dispatchers.Main) { ensureAmAdapter(backend).also { it.holdClaims() } }
+        try {
+        amCurrentAmId = src.appleMusicId
+        val started = runCatching {
+            backend.play(src.appleMusicId, item.id, song?.name ?: item.title, song?.artist ?: item.artist, song?.albumId, request.context)
+        }.getOrDefault(false)
+        if (!started) {
+            activeBackend = prior
+            if (prior == ActiveBackend.EXO) withController { it.play() }
+            throw IllegalStateException("Apple Music did not start song=${item.id}")
+        }
+        if (sequencer.state.value.playGeneration != entryGeneration) {
+            throw CancellationException("superseded by a foreign play")
+        }
+        playGeneration.incrementAndGet()
+        urlRetriedFor = null
+        withContext(Dispatchers.Main) { sequencerOwnsPlayer = true }
+        withController {
+            it.stop()
+            it.clearMediaItems()
+        }
+        withContext(Dispatchers.Main) {
+            adapter.releaseClaims()
+            startAppleMusicMonitor(backend, item.id, item.lengthMs)
+            amController?.let { amAdapter?.onEngineChanged() }
+            sequencer.onFirstAudio(item.id, "am")
+        }
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) { adapter.releaseClaims() }
         }
     }
 
@@ -374,7 +1009,7 @@ class PlaybackController(
 
         // Manifest hits only — metadata-only tracks are skipped in queues.
         val playable = merged.tracks(album).mapNotNull { song ->
-            val action = PlayResolver.resolve(song.id, rips.entry(song.id), false)
+            val action = PlayResolver.resolveBurnedFirst(song.id, rips.entry(song.id), false, burnedFile(song.id))
             (action as? PlayAction.Stream)?.let { song to it }
         }
         if (playable.isEmpty()) {
@@ -400,7 +1035,20 @@ class PlaybackController(
             .firstOrNull { (index, entry) -> index >= startIndex && entry.second.isUnboundedAnalog }
             ?.index ?: playable.lastIndex
 
-        val queue = playable.subList(0, lastIndex + 1).map { (song, action) ->
+        val serverConfigured = ripConfigured
+        val queueEntries = playable.subList(0, lastIndex + 1)
+        // Presign ONLY the start item before playback begins (a hung presign must not hold ▶);
+        // the rest start from the direct URL and are swapped to fresh presigned URLs by
+        // refreshAhead() while the current song plays (and re-resolved again at each transition).
+        val resolved = queueEntries.mapIndexed { index, (song, action) ->
+            if (index == startIndex) urls.resolve(song.id, action, serverConfigured) else action
+        }
+        urls.prefetch(
+            queueEntries.drop(startIndex + 1).take(PlaybackUrlResolver.AHEAD).map { it.first.id },
+            serverConfigured,
+        )
+        val queue = queueEntries.mapIndexed { index, (song, _) ->
+            val action = resolved[index]
             mediaItem(
                 songId = song.id,
                 action = action,
@@ -410,6 +1058,7 @@ class PlaybackController(
             )
         }
         setQueueAndPlay(queue, startIndex)
+        refreshAhead()
         return PlayOutcome.Started
     }
 
@@ -430,20 +1079,37 @@ class PlaybackController(
         val jobId = job.jobId
             ?: return PlayOutcome.Failed(job.error ?: "Rip did not start")
 
-        // "Preparing…" path (specs/playback.md §4.5 Phase-1 minimum): wait for
-        // the durable mp3, refresh the manifest, then start playback.
+        // "Preparing…" path: bounded 20 s interactive wait. A queued rip that outlives it is
+        // NOT a failure ("Still ripping…"): the tracker keeps polling and refreshes the manifest
+        // + fires onRipReady when it lands, so the row flips playable without another tap.
         _preparingSongId.value = songId
         _lastError.value = null
+        val gen = playGeneration.get()
+        val wait = RipPlayWait(
+            awaitReady = { ripServer.awaitReadyInteractive(it) },
+            refreshManifest = { rips.refresh() },
+            presignedUrl = { presigns?.urlFor(it) },
+            tracker = ripTracker,
+        )
         scope.launch {
             try {
-                val url = ripServer.awaitReady(jobId)
-                runCatching { rips.refresh() }
-                playResolvedUrl(songId, url, playContext)
+                when (
+                    val result = wait.run(songId, jobId) {
+                        playGeneration.get() == gen && _preparingSongId.value == songId
+                    }
+                ) {
+                    is RipPlayWait.Result.Play -> playResolvedUrl(songId, result.url, playContext)
+                    RipPlayWait.Result.StillRipping ->
+                        if (playGeneration.get() == gen) {
+                            _lastError.value = "Still ripping — this track will be playable in a few minutes."
+                        }
+                    RipPlayWait.Result.Superseded -> Unit
+                }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                _lastError.value = error.message ?: "Rip failed"
+                if (playGeneration.get() == gen) _lastError.value = error.message ?: "Rip failed"
             } finally {
-                _preparingSongId.value = null
+                _preparingSongId.compareAndSet(songId, null)
             }
         }
         return PlayOutcome.Preparing(songId, jobId)
@@ -460,6 +1126,7 @@ class PlaybackController(
         song: IndexSong?,
         merged: com.levi.pocketdj.data.catalog.MergedCatalog?,
         playContext: PlayContext?,
+        onFullTrackStarted: () -> Unit = {},
     ): PlayOutcome? {
         val amId = song?.appleMusicId?.takeIf { it.isNotBlank() } ?: return null
         val resolver = previewResolver ?: return null
@@ -485,18 +1152,38 @@ class PlaybackController(
                 pausedExo = true
                 withController { it.pause() }
             }
-            val started = runCatching {
+            // Hold the session claim across the Exo teardown (see loadAppleMusic).
+            val adapter = withContext(Dispatchers.Main) { ensureAmAdapter(backend).also { it.holdClaims() } }
+            val started = try { runCatching {
                 backend.play(amId, songId, song.name, song.artist, song.albumId, ctx)
-            }.getOrDefault(false)
+            }.getOrDefault(false) } catch (e: Throwable) {
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) { adapter.releaseClaims() }
+                throw e
+            }
             if (started) {
                 // AM truly owns audio now → release ExoPlayer for good (guarded
                 // events are ignored because activeBackend == APPLE_MUSIC).
-                withController {
-                    it.stop()
-                    it.clearMediaItems()
+                withContext(Dispatchers.Main) {
+                    sequencerOwnsPlayer = false
+                    sequencer.noteForeignPlay()
+                    sequencer.retirePendingStart()
                 }
+                try {
+                    withController {
+                        it.stop()
+                        it.clearMediaItems()
+                    }
+                } finally {
+                    // PB-8: front the session with the adapter so exactly one card exists (device only).
+                    withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
+                        adapter.releaseClaims()
+                        adapter.onEngineChanged()
+                    }
+                }
+                onFullTrackStarted()
                 return PlayOutcome.Started
             }
+            withContext(Dispatchers.Main) { adapter.releaseClaims() }
             // Full-track failed to start → relinquish ownership to whatever owned
             // audio before, and fall through to the preview rung.
             activeBackend = prior
@@ -519,7 +1206,7 @@ class PlaybackController(
             playContext = ctx,
             isPreview = true,
         )
-        setQueueAndPlay(listOf(item), 0)
+        setQueueAndPlay(listOf(item), 0, adoptSongId = songId)
         return PlayOutcome.Started
     }
 
@@ -534,7 +1221,7 @@ class PlaybackController(
             album = album,
             playContext = playContext,
         )
-        setQueueAndPlay(listOf(item), 0)
+        setQueueAndPlay(listOf(item), 0, adoptSongId = songId)
     }
 
     private fun mediaItem(
@@ -544,6 +1231,9 @@ class PlaybackController(
         album: IndexAlbum?,
         playContext: PlayContext,
         isPreview: Boolean = false,
+        originCollectionId: String? = null,
+        titleFallback: String? = null,
+        artistFallback: String? = null,
     ): MediaItem {
         val artUri = album?.artCandidates()?.firstOrNull()
         val isLive = action.url.contains("/hls/")
@@ -558,6 +1248,8 @@ class PlaybackController(
             playContext.contextId?.let { putString(PlaybackContract.EXTRA_CONTEXT_ID, it) }
             playContext.contextName?.let { putString(PlaybackContract.EXTRA_CONTEXT_NAME, it) }
             album?.id?.let { putString(PlaybackContract.EXTRA_ALBUM_ID, it) }
+            playContext.runTag?.let { putString(PlaybackContract.EXTRA_RUN_TAG, it) }
+            originCollectionId?.let { putString(PlaybackContract.EXTRA_ORIGIN_COLLECTION_ID, it) }
         }
         return MediaItem.Builder()
             .setMediaId(songId)
@@ -569,8 +1261,8 @@ class PlaybackController(
             )
             .setMediaMetadata(
                 MediaMetadata.Builder()
-                    .setTitle(song?.name ?: songId)
-                    .setArtist(song?.artist)
+                    .setTitle(song?.name ?: titleFallback ?: songId)
+                    .setArtist(song?.artist ?: artistFallback)
                     .setAlbumTitle(album?.name)
                     .apply { artUri?.let { setArtworkUri(Uri.parse(it)) } }
                     .build(),
@@ -578,14 +1270,276 @@ class PlaybackController(
             .build()
     }
 
-    private suspend fun setQueueAndPlay(items: List<MediaItem>, startIndex: Int) {
+    /**
+     * Hand audio to ExoPlayer for a NON-sequencer play. [adoptSongId] (a single-row ▶) that is IN the
+     * running queue repositions the sequencer's cursor to the nearest occurrence so the set keeps
+     * auto-advancing; a non-member single leaves the index untouched. A multi-item queue (album
+     * up-next) replaces the run.
+     */
+    private suspend fun setQueueAndPlay(
+        items: List<MediaItem>,
+        startIndex: Int,
+        adoptSongId: String? = null,
+        startPositionMs: Long? = null,
+    ) {
         // Single-owner: hand audio to ExoPlayer, stopping the AM engine first.
+        cancelRipOnDemand() // a foreign play retires the run's rip-on-demand wait
+        playGeneration.incrementAndGet()
+        urlRetriedFor = null
         stopAppleMusic()
         activeBackend = ActiveBackend.EXO
+        withContext(Dispatchers.Main) {
+            sequencerOwnsPlayer = when {
+                adoptSongId != null -> sequencer.adoptCursor(adoptSongId).also { if (!it) sequencer.noteForeignPlay() }
+                items.size > 1 -> {
+                    sequencer.noteForeignPlay()
+                    sequencer.abandonRun()
+                    false
+                }
+                else -> {
+                    // A non-member single: the run is kept but its in-flight start must not load
+                    // over the user's pick (slow presign window).
+                    sequencer.noteForeignPlay()
+                    sequencer.retirePendingStart()
+                    false
+                }
+            }
+        }
         withController {
-            it.setMediaItems(items, startIndex, androidx.media3.common.C.TIME_UNSET)
+            com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
+            it.setMediaItems(items, startIndex, startPositionMs ?: androidx.media3.common.C.TIME_UNSET)
             it.prepare()
             it.play()
+        }
+    }
+
+    /** The sequencer's engine: loads ONLY the current row into ExoPlayer. */
+    private inner class Media3Port : PlayerPort {
+        override suspend fun load(request: PlayRequest) {
+            (request.source as? AppleMusicSource)?.let { loadAppleMusic(request, it); return }
+            val item = request.item
+            // A foreign play retires the sequencer's pending start (generation bump, published); if
+            // that happens while we await the presign we must stand down, not load over it.
+            val entryGeneration = sequencer.state.value.playGeneration
+            val merged = catalog.state.value.catalog
+            val song = merged?.songsById?.get(item.id)
+            val album = song?.albumId?.let { merged.albumsById[it] }
+            // Instant metadata (PB-2): the notification shows the new row before any network resolve.
+            val instantMd = MediaMetadata.Builder()
+                    .setTitle(song?.name ?: item.title ?: item.id)
+                    .setArtist(song?.artist ?: item.artist)
+                    .setAlbumTitle(album?.name)
+                    .apply { album?.artCandidates()?.firstOrNull()?.let { setArtworkUri(Uri.parse(it)) } }
+                    .build()
+            RunTransportBus.instantMetadata?.invoke(instantMd)
+            val ripConfigured = settings.current().hasRipServer
+            ripWatchJob?.cancel() // the previous row's live-swap watcher must not touch this one
+            ripWatchJob = null
+            try {
+                val action = when (val src = request.source) {
+                    is LocalFileSource -> PlayAction.Stream(src.file.url, src.file.startMs, src.file.endMs)
+                    // Presign ONLY the row being started; the next few are warmed below.
+                    is StreamSource -> urls.resolve(item.resolveId, src.action, ripConfigured)
+                    // Rip-on-demand: the row loads NOW as a placeholder (metadata on the card, BUFFERING);
+                    // the service's data source POSTs /rip and reads the durable mp3 when it lands.
+                    is RipOnDemandSource -> PlayAction.Stream(RipOnDemandSource.uriFor(src.songId))
+                    else -> throw IllegalStateException("No player path for source ${src.backend}")
+                }
+                if (request.source !is RipOnDemandSource) ripSession.cancel()
+                val mi = mediaItem(
+                    songId = item.id,
+                    action = action,
+                    song = song,
+                    album = album,
+                    playContext = request.context,
+                    originCollectionId = request.originCollectionId,
+                    titleFallback = item.title,
+                    artistFallback = item.artist,
+                )
+                if (sequencer.state.value.playGeneration != entryGeneration) throw CancellationException("superseded by a foreign play")
+                playGeneration.incrementAndGet()
+                urlRetriedFor = null
+                stopAppleMusic()
+                activeBackend = ActiveBackend.EXO
+                sequencerOwnsPlayer = true
+                val resume = request.resumeAtMs
+                val rip = request.source as? RipOnDemandSource
+                if (rip != null) { ripSession.cancel(rip.songId); ripSession.begin(rip.songId) } // fresh resolve each load (retry-in-place re-POSTs); BEFORE the load: the data source joins this one
+                withController {
+                    com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
+                    it.setMediaItems(listOf(mi), 0, resume ?: androidx.media3.common.C.TIME_UNSET)
+                    it.prepare()
+                    it.play()
+                }
+                if (rip != null) watchRipOnDemand(rip.songId, item.id, entryGeneration, mi)
+            } catch (e: Throwable) {
+                // A failed/superseded load must not leave this row's title over whatever is still loaded.
+                RunTransportBus.clearInstantMetadata?.invoke(instantMd)
+                throw e
+            }
+            val ahead = sequencer.state.value.upcoming.take(PlaybackUrlResolver.AHEAD).map { it.resolveId }
+            urls.prefetch(ahead, ripConfigured)
+        }
+
+        override suspend fun loadUrl(request: UrlRequest) {
+            val mi = MediaItem.Builder()
+                .setMediaId("url:" + request.url)
+                .setRequestMetadata(
+                    MediaItem.RequestMetadata.Builder()
+                        .setMediaUri(Uri.parse(request.url))
+                        .setExtras(
+                            bundleOf(
+                                PlaybackContract.EXTRA_URL to request.url,
+                                PlaybackContract.EXTRA_SOURCE to PlayContext.SOURCE_BROWSER,
+                                PlaybackContract.EXTRA_IS_LIVE to request.url.contains("/hls/"),
+                                PlaybackContract.EXTRA_IS_STREAM to true,
+                            ),
+                        )
+                        .build(),
+                )
+                .setMediaMetadata(
+                    MediaMetadata.Builder().setTitle(request.title).setArtist(request.artist).build(),
+                )
+                .build()
+            playGeneration.incrementAndGet()
+            stopAppleMusic()
+            activeBackend = ActiveBackend.EXO
+            sequencerOwnsPlayer = false // the stream's end must never advance a (held) queue
+            withController {
+                com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
+                it.setMediaItems(listOf(mi), 0, if (request.seekMs > 0) request.seekMs else androidx.media3.common.C.TIME_UNSET)
+                it.prepare()
+                it.play()
+            }
+        }
+
+        override suspend fun replay(songId: String): Boolean {
+            if (!sequencerOwnsPlayer || activeBackend != ActiveBackend.EXO) return false
+            return withController { c ->
+                val cur = c.currentMediaItem
+                if (cur == null || cur.mediaId != songId) {
+                    false
+                } else {
+                    // Same item, no timeline change: no MEDIA_ITEM_TRANSITION, so no second History row.
+                    c.seekTo(0)
+                    c.prepare()
+                    c.play()
+                    true
+                }
+            }
+        }
+
+        override suspend fun preloadNext(request: PlayRequest?): Boolean {
+            if (!sequencerOwnsPlayer || activeBackend != ActiveBackend.EXO) return false
+            if (request == null) {
+                withController { c ->
+                    val next = c.currentMediaItemIndex + 1
+                    if (c.mediaItemCount > next) c.removeMediaItems(next, c.mediaItemCount)
+                }
+                return true
+            }
+            val item = request.item
+            val merged = catalog.state.value.catalog
+            val song = merged?.songsById?.get(item.id)
+            val album = song?.albumId?.let { merged.albumsById[it] }
+            val ripConfigured = settings.current().hasRipServer
+            val action = when (val src = request.source) {
+                is LocalFileSource -> PlayAction.Stream(src.file.url, src.file.startMs, src.file.endMs)
+                is StreamSource -> urls.resolve(item.resolveId, src.action, ripConfigured)
+                else -> return false // AM / rip-on-demand / unplayable never enter the window
+            }
+            val mi = mediaItem(
+                songId = item.id,
+                action = action,
+                song = song,
+                album = album,
+                playContext = request.context,
+                originCollectionId = request.originCollectionId,
+                titleFallback = item.title,
+                artistFallback = item.artist,
+            )
+            return withController { c ->
+                if (c.mediaItemCount == 0) return@withController false
+                val next = c.currentMediaItemIndex + 1
+                if (c.mediaItemCount > next) c.removeMediaItems(next, c.mediaItemCount)
+                c.addMediaItem(next, mi)
+                true
+            }
+        }
+
+        override suspend fun pause() = withController { it.pause() }
+        override suspend fun resume() = withController { it.play() }
+        override suspend fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs) }
+        override suspend fun stop() {
+            // Only tear the engine down if the sequencer still owns it (a foreign single may be playing).
+            if (!sequencerOwnsPlayer) return
+            sequencerOwnsPlayer = false
+            cancelRipOnDemand()
+            if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+                disarmAppleMusic()
+                appleMusicBackend?.stop()
+                return
+            }
+            withController {
+                it.stop()
+                it.clearMediaItems()
+            }
+        }
+    }
+
+    @Volatile private var ripWatchJob: kotlinx.coroutines.Job? = null
+
+    private fun cancelRipOnDemand() {
+        ripWatchJob?.cancel()
+        ripWatchJob = null
+        ripSession.cancel()
+    }
+
+    /**
+     * Follow a rip-on-demand row: a LIVE result replaces the placeholder with the HLS stream (waitingForLive,
+     * scrubber off, backstop armed); a DURABLE result lets the start watchdog take over while the data source
+     * reads the mp3. A failed resolve is left to the data source (it throws -> onPlayerError -> dead source).
+     */
+    private fun watchRipOnDemand(songId: String, mediaId: String, entryGeneration: Long, placeholder: MediaItem) {
+        ripWatchJob?.cancel()
+        ripWatchJob = sequencerScope.launch {
+            val result = try {
+                ripSession.begin(songId).await()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return@launch
+            }
+            if (sequencer.state.value.playGeneration != entryGeneration) return@launch
+            when (result) {
+                is RipResolution.Durable -> sequencer.noteSourceResolved(songId)
+                is RipResolution.Live -> {
+                    val live = withUrl(placeholder, result.url)
+                    val extras = Bundle(live.requestMetadata.extras ?: Bundle()).apply {
+                        putBoolean(PlaybackContract.EXTRA_IS_LIVE, true)
+                        remove(PlaybackContract.EXTRA_CLIP_START_MS)
+                        remove(PlaybackContract.EXTRA_CLIP_END_MS)
+                    }
+                    val liveItem = live.buildUpon().setRequestMetadata(
+                        MediaItem.RequestMetadata.Builder().setMediaUri(Uri.parse(result.url)).setExtras(extras).build(),
+                    ).build()
+                    var swapped = false
+                    withController { c ->
+                        if (c.currentMediaItem?.mediaId == mediaId) {
+                            com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
+                            c.setMediaItems(listOf(liveItem), 0, androidx.media3.common.C.TIME_UNSET)
+                            c.prepare()
+                            c.play()
+                            swapped = true
+                        }
+                    }
+                    if (swapped && sequencer.state.value.playGeneration == entryGeneration) {
+                        sequencer.noteLive(songId)
+                        sequencer.noteSourceResolved(songId)
+                        result.jobId?.let { ripTracker?.pollToReady(songId, it) }
+                    }
+                }
+            }
         }
     }
 
@@ -626,13 +1580,20 @@ class PlaybackController(
         return controllerMutex.withLock {
             controller ?: run {
                 val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-                val built = MediaController.Builder(context, token).buildAsync().await()
+                val built = MediaController.Builder(context, token)
+                    .setConnectionHints(android.os.Bundle().apply { putBoolean(INTERNAL_HINT, true) })
+                    .buildAsync().await()
                 built.addListener(playerListener)
                 _nowPlaying.value = snapshot(built)
                 controller = built
                 built
             }
         }
+    }
+
+    private companion object {
+        /** A rip-on-demand row waits at most this long for its durable mp3 (a skip cancels it sooner). */
+        const val RIP_WAIT_CAP_MS = 600_000L
     }
 }
 
@@ -650,3 +1611,6 @@ private suspend fun <T> ListenableFuture<T>.await(): T =
         )
         continuation.invokeOnCancellation { cancel(false) }
     }
+
+/** True when [mediaId] is the Tune-In item for stream [url] (see `loadUrl`'s `"url:" + url` id). */
+fun isTuneInMediaId(mediaId: String?, url: String): Boolean = mediaId == "url:$url"

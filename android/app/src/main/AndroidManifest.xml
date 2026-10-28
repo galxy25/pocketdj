@@ -1,12 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Decision D4: declared once in wave 1. None is requested at launch. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- COL-20: opt-in places & trips. Coarse+fine are requested together (user may pick approximate); background is the "Always" upgrade. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+
+    <uses-feature android:name="android.software.midi" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application
+        android:name=".PocketDjApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -18,13 +34,103 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:label="@string/app_name"
             android:theme="@style/Theme.PocketDJ">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- SVC-5: open a .pdjdiagkey file from Files (diag-writer key import). -->
+            <!-- Files/Downloads hand out opaque content:// URIs (no filename in the path), so
+                 match on scheme + MIME only; DiagServices.deepLink checks DISPLAY_NAME. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- file:// URIs do carry the name. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" />
+                <data android:mimeType="*/*" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.pdjdiagkey" />
+            </intent-filter>
+            <!-- SURF-4: pocketdj:// custom scheme. Scheme-only so both pocketdj://jukebox/<id> and the
+                 host-less pocketdj:///jukebox/<id> match; DeepLinkParser validates verbs
+                 (play, album, artist, playlist, pocket, setlist, jukebox, mwf, search). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="pocketdj" />
+            </intent-filter>
+            <!-- SURF-4: App Links for jukebox guest pages and /mwf/<id>/ (autoVerify needs
+                 assetlinks.json on the website: device-only). -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="jukebox.pocket-dj.com" />
+                <data android:pathPrefix="/" />
+            </intent-filter>
+            <!-- SURF-4: collection files by MIME (content://) ... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/x-pocketdj-collection" />
+            </intent-filter>
+            <!-- ... and by extension (.pdjcollection / .pocketdj.zip) where the path carries a name. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.pdjcollection" />
+                <data android:pathPattern=".*\\..*\\.pdjcollection" />
+                <data android:pathPattern=".*\\.pocketdj\\.zip" />
+                <data android:pathPattern=".*\\..*\\.pocketdj\\.zip" />
+                <data android:pathPattern=".*\\..*\\..*\\.pdjcollection" />
+                <data android:pathPattern=".*\\..*\\..*\\.pocketdj\\.zip" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.pdjcollection" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.pocketdj\\.zip" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\..*\\.pdjcollection" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\..*\\.pocketdj\\.zip" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\..*\\..*\\.pdjcollection" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\..*\\..*\\.pocketdj\\.zip" />
+            </intent-filter>
+            <!-- SURF-5: Assistant / adb voice search ("play my warmup pocket on PocketDJ"). -->
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <!-- SURF-5: static launcher shortcuts (res/xml/shortcuts.xml); dynamic ones come from ShortcutsPublisher. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <service
             android:name=".playback.PlaybackService"
@@ -33,7 +139,44 @@
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
+            <!-- SURF-8: Android Auto browses the library through this service. -->
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaLibraryService" />
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
         </service>
+
+        <!-- SURF-8: declare a media app for Android Auto (res/xml/automotive_app_desc.xml). -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <!-- SURF-7: Now Playing Glance widget; the action receiver is app-internal only. -->
+        <receiver
+            android:name=".widget.NowPlayingWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_name">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/now_playing_widget_info" />
+        </receiver>
+        <!-- COL-20: Fused low-power location updates (PendingIntent target; not exported). -->
+        <receiver
+            android:name=".data.location.FusedLocationReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".widget.WidgetActionReceiver"
+            android:exported="false" />
+
+        <!-- SVC-3: WorkManager's foreground service must declare a type for long-running burn downloads. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
 
         <!-- REQUIRED on Android 12+ or the manifest merge fails (specs/applemusic.md
              §2): the auth library declares this activity WITH an <intent-filter>

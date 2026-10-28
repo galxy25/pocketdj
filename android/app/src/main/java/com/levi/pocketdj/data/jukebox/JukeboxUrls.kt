@@ -45,6 +45,13 @@ object JukeboxUrls {
     /** `POST {base}/jukebox/{id}/end` */
     fun end(base: String, jukeboxId: String): HttpUrl? = session(base, jukeboxId, "end")
 
+    /** `GET {base}/sessions` — every live session (account bearer). */
+    fun sessions(base: String): HttpUrl? = root(base)?.addPathSegment("sessions")?.build()
+
+    /** `GET {base}/sessions/{id}` — one session's full info incl. hostKey (adopt). */
+    fun sessionInfo(base: String, jukeboxId: String): HttpUrl? =
+        root(base)?.addPathSegment("sessions")?.addPathSegment(jukeboxId)?.build()
+
     private fun root(base: String): HttpUrl.Builder? =
         normalizedBase(base).toHttpUrlOrNull()?.newBuilder()
 

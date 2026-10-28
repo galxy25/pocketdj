@@ -2,18 +2,20 @@ package com.levi.pocketdj.data.settings
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.emptyPreferences
-import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.levi.pocketdj.data.PdjJson
+import com.levi.pocketdj.data.credentials.SecretStore
 import com.levi.pocketdj.data.config.Endpoints
 import com.levi.pocketdj.data.config.RemoteEndpoints
 import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.Serializable
@@ -109,49 +111,93 @@ data class AppSettings(
 class AppSettingsStore(
     private val dataStore: DataStore<Preferences>,
     private val json: Json = PdjJson.lenient,
+    /**
+     * Where the three secrets (rip token, jukebox token, Music-User-Token) live. null ⇒
+     * legacy behaviour (plaintext in the DataStore) — JVM tests and the pre-migration
+     * window. When present, writes go ONLY here and reads fall back to a not-yet-migrated
+     * DataStore copy so the one-shot migration is invisible to callers.
+     */
+    private val secrets: SecretStore? = null,
 ) {
     private object Keys {
-        val SOURCES_JSON = stringPreferencesKey("sourcesJson")
-        val RIP_SERVER_URL = stringPreferencesKey("ripServerUrl")
-        val RIP_TOKEN = stringPreferencesKey("ripToken")
-        val JUKEBOX_SERVER_URL = stringPreferencesKey("jukeboxServerUrl")
-        val JUKEBOX_TOKEN = stringPreferencesKey("jukeboxToken")
-        val JUKEBOX_TOKENS_REQUIRED = booleanPreferencesKey("jukeboxTokensRequiredByDefault")
-        val ONLINE_SEARCH_ENABLED = booleanPreferencesKey("onlineSearchEnabled")
-        val INSTALL_ID = stringPreferencesKey("installId")
-        val BROWSE_SNAPSHOT_JSON = stringPreferencesKey("browseSnapshotJson")
-        val COLLECTION_SORT = stringPreferencesKey("collectionSort")
-        val PLAYLISTS_MODE = stringPreferencesKey("playlistsMode")
-        val COLLAPSED_FOLDER_IDS = stringSetPreferencesKey("collapsedFolderIds")
-        val EXPANDED_SOURCE_NAMES = stringSetPreferencesKey("expandedSourceNames")
-        val MUSIC_USER_TOKEN = stringPreferencesKey("musicUserToken")
-        val AM_DEV_TOKEN = stringPreferencesKey("appleMusicDeveloperToken")
-        val AM_DEV_TOKEN_EXP = androidx.datastore.preferences.core.longPreferencesKey("appleMusicDeveloperTokenExpiresAt")
+        val SOURCES_JSON = LegacyPrefKeys.SOURCES_JSON
+        val RIP_SERVER_URL = LegacyPrefKeys.RIP_SERVER_URL
+        val RIP_TOKEN = LegacyPrefKeys.RIP_TOKEN
+        val JUKEBOX_SERVER_URL = LegacyPrefKeys.JUKEBOX_SERVER_URL
+        val JUKEBOX_TOKEN = LegacyPrefKeys.JUKEBOX_TOKEN
+        val JUKEBOX_TOKENS_REQUIRED = LegacyPrefKeys.JUKEBOX_TOKENS_REQUIRED
+        val ONLINE_SEARCH_ENABLED = LegacyPrefKeys.ONLINE_SEARCH_ENABLED
+        val INSTALL_ID = LegacyPrefKeys.INSTALL_ID
+        val BROWSE_SNAPSHOT_JSON = LegacyPrefKeys.BROWSE_SNAPSHOT_JSON
+        val COLLECTION_SORT = LegacyPrefKeys.COLLECTION_SORT
+        val PLAYLISTS_MODE = LegacyPrefKeys.PLAYLISTS_MODE
+        val COLLAPSED_FOLDER_IDS = LegacyPrefKeys.COLLAPSED_FOLDER_IDS
+        val EXPANDED_SOURCE_NAMES = LegacyPrefKeys.EXPANDED_SOURCE_NAMES
+        val MUSIC_USER_TOKEN = LegacyPrefKeys.MUSIC_USER_TOKEN
+        val AM_DEV_TOKEN = LegacyPrefKeys.AM_DEV_TOKEN
+        val AM_DEV_TOKEN_EXP = LegacyPrefKeys.AM_DEV_TOKEN_EXP
+    }
+
+    private val prefsFlow: Flow<Preferences> = dataStore.data
+        .catch { error -> if (error is IOException) emit(emptyPreferences()) else throw error }
+
+    // ---- Generic typed API (decision D3) -----------------------------------
+
+    /** Live value of [key] (its default when unset). */
+    fun <T> flow(key: PrefKey<T>): Flow<T> =
+        prefsFlow.map { it[key.key] ?: key.default }.distinctUntilChanged()
+
+    suspend fun <T> get(key: PrefKey<T>): T = flow(key).first()
+
+    /** True when [key] has ever been written (distinguishes "never asked" from a stored default). */
+    suspend fun <T> isSet(key: PrefKey<T>): Boolean = prefsFlow.first().contains(key.key)
+
+    suspend fun <T> set(key: PrefKey<T>, value: T) {
+        dataStore.edit { it[key.key] = value }
+    }
+
+    /** Transactional read-modify-write of one key. */
+    suspend fun <T> update(key: PrefKey<T>, transform: (T) -> T) {
+        dataStore.edit { it[key.key] = transform(it[key.key] ?: key.default) }
+    }
+
+    suspend fun <T> remove(key: PrefKey<T>) {
+        dataStore.edit { it.remove(key.key) }
+    }
+
+    /** Wipe every preference (Reset everything). Secrets are the caller's to clear. */
+    suspend fun clearAll() {
+        dataStore.edit { it.clear() }
     }
 
     /** Live settings; IO errors surface as defaults rather than a crash. */
-    val settings: Flow<AppSettings> = dataStore.data
-        .catch { error -> if (error is IOException) emit(emptyPreferences()) else throw error }
-        .map(::toSettings)
+    val settings: Flow<AppSettings> =
+        combine(prefsFlow, secrets?.revision ?: flowOf(0L)) { prefs, _ -> toSettings(prefs) }
+            .flowOn(kotlinx.coroutines.Dispatchers.IO) // secret reads may touch the Keystore
 
     suspend fun current(): AppSettings = settings.first()
 
+    private fun secretOrLegacy(prefs: Preferences, secretName: String, legacy: PrefKey<String>): String {
+        val fromSecrets = secrets?.get(secretName).orEmpty()
+        return fromSecrets.ifEmpty { prefs[legacy.key] ?: "" }
+    }
+
     private fun toSettings(prefs: Preferences): AppSettings = AppSettings(
-        sources = decodeSources(prefs[Keys.SOURCES_JSON]),
-        ripServerUrl = prefs[Keys.RIP_SERVER_URL] ?: Endpoints.DEFAULT_RIP_SERVER_URL,
-        ripToken = prefs[Keys.RIP_TOKEN] ?: "",
-        jukeboxServerUrl = prefs[Keys.JUKEBOX_SERVER_URL] ?: Endpoints.DEFAULT_JUKEBOX_SERVER_URL,
-        jukeboxToken = prefs[Keys.JUKEBOX_TOKEN] ?: "",
-        jukeboxTokensRequiredByDefault = prefs[Keys.JUKEBOX_TOKENS_REQUIRED] ?: true,
-        onlineSearchEnabled = prefs[Keys.ONLINE_SEARCH_ENABLED] ?: false,
-        installId = prefs[Keys.INSTALL_ID] ?: "",
-        collectionSort = prefs[Keys.COLLECTION_SORT] ?: "name",
-        playlistsMode = prefs[Keys.PLAYLISTS_MODE] ?: "user",
-        collapsedFolderIds = prefs[Keys.COLLAPSED_FOLDER_IDS] ?: emptySet(),
-        expandedSourceNames = prefs[Keys.EXPANDED_SOURCE_NAMES] ?: emptySet(),
-        musicUserToken = prefs[Keys.MUSIC_USER_TOKEN] ?: "",
-        appleMusicDeveloperToken = prefs[Keys.AM_DEV_TOKEN] ?: "",
-        appleMusicDeveloperTokenExpiresAt = prefs[Keys.AM_DEV_TOKEN_EXP] ?: 0L,
+        sources = decodeSources(prefs[Keys.SOURCES_JSON.key]),
+        ripServerUrl = prefs[Keys.RIP_SERVER_URL.key] ?: Endpoints.DEFAULT_RIP_SERVER_URL,
+        ripToken = secretOrLegacy(prefs, SecretStore.RIP_TOKEN, Keys.RIP_TOKEN),
+        jukeboxServerUrl = prefs[Keys.JUKEBOX_SERVER_URL.key] ?: Endpoints.DEFAULT_JUKEBOX_SERVER_URL,
+        jukeboxToken = secretOrLegacy(prefs, SecretStore.JUKEBOX_TOKEN, Keys.JUKEBOX_TOKEN),
+        jukeboxTokensRequiredByDefault = prefs[Keys.JUKEBOX_TOKENS_REQUIRED.key] ?: true,
+        onlineSearchEnabled = prefs[Keys.ONLINE_SEARCH_ENABLED.key] ?: false,
+        installId = prefs[Keys.INSTALL_ID.key] ?: "",
+        collectionSort = prefs[Keys.COLLECTION_SORT.key] ?: "name",
+        playlistsMode = prefs[Keys.PLAYLISTS_MODE.key] ?: "user",
+        collapsedFolderIds = prefs[Keys.COLLAPSED_FOLDER_IDS.key] ?: emptySet(),
+        expandedSourceNames = prefs[Keys.EXPANDED_SOURCE_NAMES.key] ?: emptySet(),
+        musicUserToken = secretOrLegacy(prefs, SecretStore.MUSIC_USER_TOKEN, Keys.MUSIC_USER_TOKEN),
+        appleMusicDeveloperToken = prefs[Keys.AM_DEV_TOKEN.key] ?: "",
+        appleMusicDeveloperTokenExpiresAt = prefs[Keys.AM_DEV_TOKEN_EXP.key] ?: 0L,
     )
 
     private fun decodeSources(raw: String?): List<SourceConfig> {
@@ -165,7 +211,7 @@ class AppSettingsStore(
 
     suspend fun setSources(sources: List<SourceConfig>) {
         val encoded = json.encodeToString(sources)
-        dataStore.edit { it[Keys.SOURCES_JSON] = encoded }
+        dataStore.edit { it[Keys.SOURCES_JSON.key] = encoded }
     }
 
     /**
@@ -176,8 +222,8 @@ class AppSettingsStore(
      */
     suspend fun updateSources(transform: (List<SourceConfig>) -> List<SourceConfig>) {
         dataStore.edit { prefs ->
-            val current = decodeSources(prefs[Keys.SOURCES_JSON])
-            prefs[Keys.SOURCES_JSON] = json.encodeToString(transform(current))
+            val current = decodeSources(prefs[Keys.SOURCES_JSON.key])
+            prefs[Keys.SOURCES_JSON.key] = json.encodeToString(transform(current))
         }
     }
 
@@ -189,7 +235,7 @@ class AppSettingsStore(
      */
     val browseSnapshot: Flow<BrowseSnapshot> = dataStore.data
         .catch { error -> if (error is IOException) emit(emptyPreferences()) else throw error }
-        .map { decodeBrowseSnapshot(it[Keys.BROWSE_SNAPSHOT_JSON]) }
+        .map { decodeBrowseSnapshot(it[Keys.BROWSE_SNAPSHOT_JSON.key]) }
 
     suspend fun currentBrowseSnapshot(): BrowseSnapshot = browseSnapshot.first()
 
@@ -200,7 +246,7 @@ class AppSettingsStore(
      */
     suspend fun setBrowseSnapshot(snapshot: BrowseSnapshot) {
         val encoded = json.encodeToString(snapshot)
-        dataStore.edit { it[Keys.BROWSE_SNAPSHOT_JSON] = encoded }
+        dataStore.edit { it[Keys.BROWSE_SNAPSHOT_JSON.key] = encoded }
     }
 
     private fun decodeBrowseSnapshot(raw: String?): BrowseSnapshot {
@@ -209,36 +255,43 @@ class AppSettingsStore(
             .getOrElse { BrowseSnapshot() }
     }
 
-    suspend fun setRipServer(url: String, token: String) {
-        dataStore.edit {
-            it[Keys.RIP_SERVER_URL] = url.trim()
-            it[Keys.RIP_TOKEN] = token.trim()
+    /** Secret write: into [secrets] when wired (and blank any stale plaintext), else DataStore. */
+    private suspend fun putSecret(secretName: String, legacy: PrefKey<String>, value: String) {
+        val store = secrets
+        if (store == null || !store.isAvailable) {
+            dataStore.edit { it[legacy.key] = value }
+        } else {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { store.put(secretName, value) }
+            dataStore.edit { prefs -> if (prefs[legacy.key] != null) prefs[legacy.key] = "" }
         }
+    }
+
+    suspend fun setRipServer(url: String, token: String) {
+        dataStore.edit { it[Keys.RIP_SERVER_URL.key] = url.trim() }
+        putSecret(SecretStore.RIP_TOKEN, Keys.RIP_TOKEN, token.trim())
     }
 
     suspend fun setJukeboxServer(url: String, token: String) {
-        dataStore.edit {
-            it[Keys.JUKEBOX_SERVER_URL] = url.trim()
-            it[Keys.JUKEBOX_TOKEN] = token.trim()
-        }
+        dataStore.edit { it[Keys.JUKEBOX_SERVER_URL.key] = url.trim() }
+        putSecret(SecretStore.JUKEBOX_TOKEN, Keys.JUKEBOX_TOKEN, token.trim())
     }
 
     suspend fun setJukeboxTokensRequiredByDefault(required: Boolean) {
-        dataStore.edit { it[Keys.JUKEBOX_TOKENS_REQUIRED] = required }
+        dataStore.edit { it[Keys.JUKEBOX_TOKENS_REQUIRED.key] = required }
     }
 
     suspend fun setOnlineSearchEnabled(enabled: Boolean) {
-        dataStore.edit { it[Keys.ONLINE_SEARCH_ENABLED] = enabled }
+        dataStore.edit { it[Keys.ONLINE_SEARCH_ENABLED.key] = enabled }
     }
 
     /** Persist the Playlists collection-sort token (`CollectionSortOrder.token`). */
     suspend fun setCollectionSort(token: String) {
-        dataStore.edit { it[Keys.COLLECTION_SORT] = token }
+        dataStore.edit { it[Keys.COLLECTION_SORT.key] = token }
     }
 
     /** Persist the Playlists Yours/Shared tab ("user" | "shared"). */
     suspend fun setPlaylistsMode(mode: String) {
-        dataStore.edit { it[Keys.PLAYLISTS_MODE] = mode }
+        dataStore.edit { it[Keys.PLAYLISTS_MODE.key] = mode }
     }
 
     /**
@@ -247,8 +300,8 @@ class AppSettingsStore(
      */
     suspend fun setFolderCollapsed(folderId: String, collapsed: Boolean) {
         dataStore.edit { prefs ->
-            val current = prefs[Keys.COLLAPSED_FOLDER_IDS] ?: emptySet()
-            prefs[Keys.COLLAPSED_FOLDER_IDS] =
+            val current = prefs[Keys.COLLAPSED_FOLDER_IDS.key] ?: emptySet()
+            prefs[Keys.COLLAPSED_FOLDER_IDS.key] =
                 if (collapsed) current + folderId else current - folderId
         }
     }
@@ -256,8 +309,8 @@ class AppSettingsStore(
     /** Toggle one Shared source group's expanded state (inverse-set semantics). */
     suspend fun setSourceExpanded(sourceName: String, expanded: Boolean) {
         dataStore.edit { prefs ->
-            val current = prefs[Keys.EXPANDED_SOURCE_NAMES] ?: emptySet()
-            prefs[Keys.EXPANDED_SOURCE_NAMES] =
+            val current = prefs[Keys.EXPANDED_SOURCE_NAMES.key] ?: emptySet()
+            prefs[Keys.EXPANDED_SOURCE_NAMES.key] =
                 if (expanded) current + sourceName else current - sourceName
         }
     }
@@ -267,20 +320,20 @@ class AppSettingsStore(
      * §3.3). Atomic single-key edit; never touches identity or other settings.
      */
     suspend fun setMusicUserToken(token: String) {
-        dataStore.edit { it[Keys.MUSIC_USER_TOKEN] = token.trim() }
+        putSecret(SecretStore.MUSIC_USER_TOKEN, Keys.MUSIC_USER_TOKEN, token.trim())
     }
 
     /** Sign out of Apple Music — clears the Music-User-Token only (dev token is
      *  app-wide, not user-identifying, and is deliberately kept). */
     suspend fun clearMusicUserToken() {
-        dataStore.edit { it[Keys.MUSIC_USER_TOKEN] = "" }
+        putSecret(SecretStore.MUSIC_USER_TOKEN, Keys.MUSIC_USER_TOKEN, "")
     }
 
     /** Cold-start cache of the app-wide developer token + its epoch-ms expiry. */
     suspend fun setAppleMusicDeveloperToken(token: String, expiresAt: Long) {
         dataStore.edit {
-            it[Keys.AM_DEV_TOKEN] = token
-            it[Keys.AM_DEV_TOKEN_EXP] = expiresAt
+            it[Keys.AM_DEV_TOKEN.key] = token
+            it[Keys.AM_DEV_TOKEN_EXP.key] = expiresAt
         }
     }
 
@@ -292,9 +345,26 @@ class AppSettingsStore(
         current().installId.takeIf { it.isNotEmpty() }?.let { return it }
         var minted = UUID.randomUUID().toString()
         dataStore.edit { prefs ->
-            val existing = prefs[Keys.INSTALL_ID]
-            if (existing.isNullOrEmpty()) prefs[Keys.INSTALL_ID] = minted else minted = existing
+            val existing = prefs[Keys.INSTALL_ID.key]
+            if (existing.isNullOrEmpty()) prefs[Keys.INSTALL_ID.key] = minted else minted = existing
         }
         return minted
+    }
+
+    /** Account deletion (SVC-13): forget the per-install id so the next call mints a fresh one. */
+    suspend fun resetInstallId() {
+        dataStore.edit { it.remove(Keys.INSTALL_ID.key) }
+    }
+
+    /**
+     * Device reset (SVC-13): every preference back to its default in ONE edit, the per-install id
+     * preserved (a reset device is the same install; only account deletion re-mints it).
+     */
+    suspend fun resetToDefaultsKeepingInstallId() {
+        dataStore.edit { prefs ->
+            val keep = prefs[Keys.INSTALL_ID.key]
+            prefs.clear()
+            if (!keep.isNullOrEmpty()) prefs[Keys.INSTALL_ID.key] = keep
+        }
     }
 }

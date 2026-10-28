@@ -59,6 +59,15 @@ describe('endpoint schema v1', () => {
     expect(v.config.endpoints.searchConfigURL).toBe('https://dgreen123.cloudfront.net/search-config.json');
   });
 
+  it('profileSyncBase is optional, validated, and never derived', () => {
+    const v0 = validateEndpointDoc(GREEN);
+    expect(v0.ok && v0.config.endpoints.profileSyncBase).toBeUndefined();
+    const ok = validateEndpointDoc({ ...GREEN, endpoints: { ...GREEN.endpoints, profileSyncBase: 'https://ps1.execute-api.us-west-2.amazonaws.com/' } });
+    expect(ok.ok && ok.config.endpoints.profileSyncBase).toBe('https://ps1.execute-api.us-west-2.amazonaws.com');
+    for (const bad of ['http://ps1.execute-api.us-west-2.amazonaws.com', 'https://evil.example.com'])
+      expect(validateEndpointDoc({ ...GREEN, endpoints: { ...GREEN.endpoints, profileSyncBase: bad } }).ok).toBe(false);
+  });
+
   it('host allowlist', () => {
     for (const ok of [
       'app.pocket-dj.com', 'pocket-dj.com', 'd2p4cubg6se03u.cloudfront.net',

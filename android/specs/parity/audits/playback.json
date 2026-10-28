@@ -1,0 +1,720 @@
+{
+ "area": "Playback core + Now Playing (sequencer, providers, dead-air/stall discipline, Now Playing deck + Up Next, durable sessions, lock-screen/remote transport, history outcomes, diag logging)",
+ "inventory": [
+  {
+   "feature": "Resolution ladder behind \u25b6 (local burned file \u2192 manifest rip stream w/ analog clip window \u2192 Apple Music full-track \u2192 rip-on-demand \u2192 metadata-only); studio-id fence; 12 s rip POST timeout",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Playback/PlaybackCoordinator.swift (providers(for:), play), Playback/RipServerPlaybackProvider.swift, Playback/TrackPlaybackProvider.swift, State/RipsStore.swift (ensureURL, play), State/BurnStore.swift:603-936 (localURLForPlayback, startMs)",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/rips/PlayResolver.kt, playback/PlaybackController.kt (play/tryAppleMusic/startRipAndPlay), data/rips/RipServerClient.kt",
+   "notes": "Single-row \u25b6 ladder is DONE incl. AM full-track (device-only) + 30 s preview rung (Android-only addition). MISSING: local burned-file rung (no BurnStore on Android \u2014 seam needed), per-row fresh resolve inside a queue run (QueuePlan resolves at build time and SKIPS RipRequired rows), 'queued rip must not block streaming' ordering (canPlayImmediately \u2192 AM first when rip only queued), edition/variant (clean/explicit) identity."
+  },
+  {
+   "feature": "Setlist sequencer: app-scoped index-cursor queue with per-instance uid, repeatCount loops, skipNext/skipPrevious (never below 0; repeat-all wraps), fresh play replaces run, captured history context + navigable origin at play() time",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Playback/SetlistPlayer.swift:22-180, 533-577, 811-835, 1563-1706",
+   "android_files": "playback/QueuePlan.kt, playback/PlaybackController.kt (playQueue/playSetlist, next/previous), data/collections/CollectionsStore.kt (playNow, historyContext, originCollection)",
+   "notes": "Android hands the whole queue to ExoPlayer's playlist (repeat expanded as duplicate items; unplayable rows dropped at build). No index cursor object, no uid row identity, no repeatCount via replay, no sourceSetlistId run tag (SetlistDetailScreen infers 'this run' from history contextId), no skip-previous-at-top rule, no 'nearest occurrence' adoption of a manual row \u25b6 over a running set."
+  },
+  {
+   "feature": "Live queue edits mutate ONLY the upcoming tail: moveUpcoming (clamped), removeUpcoming(uids), appendToQueue, insertNextInQueue, insertInQueue(before uid), insertRandomInQueue (Jukebox Surprise Slot), moveUpcomingNext/ToEnd, jumpToUpcoming(uid), playNow(item) splice, jumpToPlayed(uid) rewind, upcomingUid(atOffset) positional\u2192identity bridge",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Playback/SetlistPlayer.swift:897-1106",
+   "android_files": "data/jukebox/JukeboxRepository.kt:386-420 (applyPlacement \u2192 MediaController.addMediaItem directly)",
+   "notes": "Only the Jukebox NEXT/END/random insert exists, and it bypasses any sequencer (writes straight into the MediaController playlist). No reorder/remove/jump/play-now/rewind API, no uid identity."
+  },
+  {
+   "feature": "Whole-session repeat (off/all/one, sticky, cycle order off\u2192all\u2192one) + live shuffle of the upcoming tail with canonical-order restore; reshuffle entire queue on repeat-all wrap; mirrored to lock-screen changeRepeat/changeShuffle commands",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Playback/SetlistPlayer.swift:264-279, 837-895; Playback/PlayerEngine.swift:1044-1071, 1129-1150; Settings/SettingsStore.swift:17 (RepeatMode)",
+   "android_files": "\u2014",
+   "notes": "PlaybackController never sets ExoPlayer repeat/shuffle; media notification has no repeat/shuffle buttons."
+  },
+  {
+   "feature": "Natural-end / one-shot end latch: analog shared-file end boundary (startMs+lengthMs) races natural end, fires exactly once; mid-song item failure = dead source \u2192 advance (never replay under repeat-one); item load-failed grace 2.5 s before advance",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Playback/PlayerEngine.swift:55-67, 298-345, 374-403, 627-660",
+   "android_files": "playback/PlaybackService.kt (ClippingConfiguration from extras), data/rips/PlayResolver.kt (clipStart/clipEnd)",
+   "notes": "Clip window end boundary is DONE via ClippingConfiguration. MISSING: onPlayerError \u2192 dead-source advance (ExoPlayer stops the whole playlist on error unless handled), unbounded-analog row handling inside a set (P1 truncates album queue only), repeat-one/repeatCount semantics on natural end."
+  },
+  {
+   "feature": "Apple Music streamed rows inside a set: separate engine; end-monitor verdicts endReason(.natural/.systemSkip/.neverStarted), trackRestarted (system \u23ee), stoppedByInterruption (same-host capture), InterruptedResumeGate, pauseIsIntentional sticky flag, audioConfirmed first-audio, onNearEnd 8 s lead, PrefetchCache (TTL 30 min, cap 8)",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Playback/AppleMusicPlaybackProvider.swift:130-345, 444-700; SetlistPlayer.swift:1603-1645, 1743-1755, 2590-2599",
+   "android_files": "playback/AppleMusicBackend.kt (play confirm \u226410 s, pause/resume/next/prev/seek, PlayStarted emit), playback/PlaybackController.kt (single-owner EXO\u2194AM switching)",
+   "notes": "Single-song AM playback with handover confirmation is DONE (device-only). MISSING: AM row inside a sequencer run (end \u2192 advance, systemSkip discrimination via SDK onItemEnded/state polling), AM interruption hold + notice, never-started dead-source advance, pre-arming. Android advantage: SDK delivers onItemEnded/onPlaybackStateChanged callbacks, so the iOS polling heuristics shrink; the pure verdict functions still port for the 'paused-at-0 after progress = skip' cases."
+  },
+  {
+   "feature": "One audio owner + one system card: NowPlayingArbiter (claim/resign/prefer/onOwnerChanged), PlayerEngine impersonates the AM stream's card on iOS (beginExternalNowPlaying), idle engine refuses transport + card writes (ghost-second-card), holdsOwnershipAcrossTracks between rows, NowPlayingCardPublisher invariants (rate>0 iff advancing, elapsed clamped, playbackState agrees, OVERWRITTEN detection)",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Playback/NowPlayingArbiter.swift, Playback/NowPlayingCardPublisher.swift, Playback/PlayerEngine.swift:75-96, 405-430, 662-786, 1171-1324",
+   "android_files": "playback/PlaybackService.kt (MediaSession over ExoPlayer), playback/PlaybackController.kt (activeBackend guard, IPC-delayed-event clobber guard)",
+   "notes": "Media3 MediaSession gives the card/notification for ExoPlayer for free (DONE). MISSING: a MediaSession card + transport while the Apple Music engine owns audio (AM plays with NO notification/lock-screen controls today \u2014 specs/applemusic.md \u00a76.1.5 deferred), honest buffering state during a resolve, announce-upcoming metadata before audio resolves, Mix-engine arbitration (Mix area will add a second audio owner)."
+  },
+  {
+   "feature": "Lock-screen / remote transport ladder: play on IDLE engine \u2192 onIdlePlay (resumeHeld / startCurrent / startInFlight), pending-remote-play latch (15 s) consumed by a later restore, remote toggle on a waiting item = re-kick not pause, \u23ed/\u23ee drive the set, like/\u2665 command owned by card owner, [transport] telemetry rows",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Playback/PlayerEngine.swift:339-356 (via SetlistPlayer init), 456-472, 567-625, 1073-1163",
+   "android_files": "playback/PlaybackService.kt (default MediaSession callbacks \u2192 ExoPlayer)",
+   "notes": "Play/pause/seek/next/prev reach ExoPlayer's playlist only; nothing routes to a sequencer, no idle-play ladder, no \u2665 custom command, no repeat/shuffle commands, no telemetry of remote commands."
+  },
+  {
+   "feature": "Zero-dead-air start window: PlaybackRunway (background task held resolve\u2192first audio, 25 s cap), start-stall watchdog (8 s re-kick / 20 s escalate), resolve-stall hop (6 s \u2192 next on-device row, else next instant-start row, stalled row deferred not dropped; lookahead 50), AM near-end mixable session pre-arm + promote at first audio ('!int' fix), route-loss = listener pause, interruption resume only if was playing and not intentionally paused",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Playback/PlaybackRunway.swift, SetlistPlayer.swift:368-493, 1708-1820, PlayerEngine.swift:823-1023",
+   "android_files": "\u2014",
+   "notes": "Android analogues: foreground MediaSessionService + partial WakeLock for the runway; ExoPlayer playWhenReady change reasons (AUDIO_FOCUS_LOSS / AUDIO_BECOMING_NOISY / USER_REQUEST / REMOTE) + playbackSuppressionReason for the pause-discrimination; audio focus handled by ExoPlayer (handleAudioFocus=true already set). The '!int' AVAudioSession problem has no Android equivalent (audio focus can be requested from the background)."
+  },
+  {
+   "feature": "PlaybackSupervisor 1 Hz keep-playing watchdog (pure Core: L1 3 s re-kick, L2 +12 s retry-in-place \u22642/song, L3 +8 s escalate; detector-only while startPending/trackEnded/AM lane; never acts on listener pause/interruption/held/cascade-halt) + dead-air total lines",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Playback/PlaybackSupervisor.swift",
+   "android_files": "\u2014",
+   "notes": "Pure Core ports 1:1 and is table-driven unit-testable."
+  },
+  {
+   "feature": "DeadAirMeter KPI: per-day persisted doc (pocketdj-dead-air.json, 60 d) active/dead/transitionDead/midSongDead seconds, per-transition gaps keyed from\u2192to backend with cause (advance/skip/start), gapsOver1s/3s/10s, abandoned transitions (pause/call/held/stop/cascade), summary every 600 active s + on background; Settings \u25b8 Debug readout; scripts/deadair-report.py reads [deadair] lines from S3",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Playback/DeadAirMeter.swift; memory dead-air-metric.md (baseline 293 s / 95 transitions)",
+   "android_files": "\u2014",
+   "notes": "Keep JSON Day/Pair/Document shape and log grammar identical so the existing report script works on Android diag logs."
+  },
+  {
+   "feature": "Auto-advance cascade breaker (3 quick auto-advances <5 s audible \u2192 halt, pausedByCascade, playbackNotice 'Playback paused \u2014 \u2026', \u25b6 retries row, any user transport resets) + PlaybackRipWindow (playback rips only for playing row + next 10; evict/cancel via POST /rip-cancel; heard \u226530 s exempt; endSession cancels all but playing)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Playback/PlaybackRipWindow.swift; SetlistPlayer.swift:206-227, 2447-2588",
+   "android_files": "\u2014",
+   "notes": "Pure value types; RipServerClient lacks /rip-cancel (shared touchpoint with rips area)."
+  },
+  {
+   "feature": "Live HLS row in a set: waitingForLive 'Next' affordance, scrubber disabled, live backstop advance at length+45 s (paused time excluded)",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Playback/SetlistPlayer.swift:203-204, 1822-1843, 2086-2091; PlayerEngine.swift (isLive)",
+   "android_files": "playback/PlaybackContract.kt EXTRA_IS_LIVE, PlaybackController.kt (isLive flag), screens/browse/MiniPlayerBar.kt ('LIVE' badge)",
+   "notes": "Single-row live HLS plays (media3-exoplayer-hls present). No in-set live semantics, no backstop, no 'Next' affordance (no Now Playing deck)."
+  },
+  {
+   "feature": "Supersede/cancel discipline: startPlayCurrent is the only spawn funnel (cancel previous task), playGeneration claimed at entry only after isCancelled check, coordinator playToken, RipServerPlaybackProvider tryPlayGeneration, AM ticket re-check after play(); cancelled tasks never claim generations",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Playback/SetlistPlayer.swift:1708-1714, 1845-1858, 1881-1895, 2039-2066; PlaybackCoordinator.swift:105-106, 208-229; RipServerPlaybackProvider.swift:1432-1441",
+   "android_files": "playback/PlaybackController.kt (startRipAndPlay launches an unguarded scope.launch; tryAppleMusic has no ticket)",
+   "notes": "A rip-wait that completes after the user played something else will load its song over the newer one (startRipAndPlay has no generation guard). Must port the generation discipline."
+  },
+  {
+   "feature": "Durable playback session: pocketdj-playback-session.json real-time snapshot (play, every index move with positionMs 0, all live edits, pause/resume immediate, ~5 s position throttle; versioned off-main writer so stale writes never resurrect a cleared session), restore HELD at launch (no audio, no card, no file write \u2014 'restore is not a write' for future cross-device sync), resumeFromHold at saved song-relative position, exitHoldIfNeeded on skip/jump, repeat/shuffle/stemLock ride the snapshot, materializeNowPlayingSetlist from the live queue",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/PlaybackSessionStore.swift, Playback/SetlistPlayer.swift:184-204, 2104-2360; memory durable-playback-sessions.md",
+   "android_files": "\u2014",
+   "notes": "Shape-compatible JSON required (future S3 profile sync merges by mtime). Android: filesDir + atomic temp-rename + versioned writer coroutine."
+  },
+  {
+   "feature": "History recording on track start with captured context; 30 s same-song re-count window; outcome fields wasSkipped / listenedFraction / tzOffsetMin / originCollectionId / originInstallId / carPlay; onRecord/onResume hooks; markSkipped, noteListened (max-merge)",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/State/PlayHistoryStore.swift:71-130, 179-185, 256-330; PocketDJApp.swift:673-731",
+   "android_files": "data/history/PlayHistoryModels.kt, data/history/PlayHistoryStore.kt, playback/PlayEvents.kt, playback/PlaybackService.kt (onMediaItemTransition id-gate)",
+   "notes": "Track-start recording + context + 30 s window + atomic/salvage persistence are DONE. MISSING: outcome fields (additive-optional), markSkipped/noteListened, onRecord/onResume seams, originCollectionId stamping, originInstallId stamping."
+  },
+  {
+   "feature": "SkipTracker (<50 % strict rule on ADVANCE-AWAY only; high-water position mark fed 1 Hz; one-deep previous stash for adopt-ordering; noteTrackRestarted re-zero; checkpoint on background/stop; feeds PlayCountService.noteSkipped + listened fraction)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Playback/SkipTracker.swift; SetlistPlayer.swift:165-182, 2403-2423",
+   "android_files": "\u2014",
+   "notes": "Pure @MainActor class; ports as a plain Kotlin class with injected clock. No PlayCountService on Android (play counts come from history countIndex) \u2014 skip counts land in history only."
+  },
+  {
+   "feature": "Now Playing home deck: title/artist header, spinning gold record (one revolution per 4-beat bar from beat-grid BPM else catalog BPM, 33\u2153 RPM fallback, pause freezes in place), tonearm sweep by progress (1 Hz), transport \u23ee\u23ef\u23ed with held-deck/cascade/idle-engine routing, \u27f2 previously-played toggle, \u2665 favorite, \ud83d\udc4d/\ud83d\udc4e rec feedback row, shuffle/repeat row (shown only while a set runs), playback notice banner, open-setlist button, record long-press \u2192 song detail",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Views/NowPlayingPanel.swift (NowPlayingDeckCluster 603-875, RecordPlayerView 981-1126, togglePlayPause 241-263); Views/RecFeedbackControls.swift:105",
+   "android_files": "screens/browse/MiniPlayerBar.kt (title/artist/art + play-pause only; onTap seam unused)",
+   "notes": "\u2665 needs a FavoritesStore (activity-favorites area) and \ud83d\udc4d/\ud83d\udc4e needs RecFeedbackStore (recs area) \u2014 build the deck with those two as optional seams."
+  },
+  {
+   "feature": "Up Next list: windowed upcoming slice, reorder (edit mode), swipe/\u2715 remove by uid, context menu (Play now / Play next / Move to end / Remove / Song detail), previously-played list (Rewind to here / Play now), add-search (songs + albums, 200 ms debounce off-main, ranking exact > prefix > catalog order; Add next / Add to end incl. whole album), header count + collection origin button",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Views/NowPlayingPanel.swift:320-600, 1127-1166 (NowPlayingSearch); Views/NowPlayingExpandedView.swift",
+   "android_files": "\u2014",
+   "notes": "Android has a 'Now Playing' SetlistDetailScreen (route setlist/set_now_playing) that shows the frozen setlist rows, not the live queue."
+  },
+  {
+   "feature": "Mini bar (collapsed strip): title, \u23ee\u23ef\u23ed, expand chevron, builder/search shortcut; Now Playing visible in every mode except Mix",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Views/NowPlayingPanel.swift:875-980 (NowPlayingMiniBar); RootView gate",
+   "android_files": "screens/browse/MiniPlayerBar.kt, MainActivity.kt (docked above NavigationBar)",
+   "notes": "Play/pause + Preparing\u2026 only; no \u23ee\u23ed, no expand to a deck, no position."
+  },
+  {
+   "feature": "Expanded/landscape Now Playing layout (platter centered, played/up-next flanks, drag played row onto a specific Up Next slot, resize grabber)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Views/NowPlayingExpandedView.swift, Views/NowPlayingResize.swift",
+   "android_files": "\u2014",
+   "notes": "Phone-landscape + tablet variant of PB-6/PB-7; iPad/macOS-specific resize grabber is N/A."
+  },
+  {
+   "feature": "Instant metadata on skip (announceUpcoming: card shows the new row's title/artist/art while the audio resolves; same-song art memo; artwork token supersedes slow fetches)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Playback/PlayerEngine.swift:1221-1290",
+   "android_files": "\u2014",
+   "notes": "Android mapping: the sequencer loads the next MediaItem with full MediaMetadata + a lazily-resolved pdj-resolve:// URI (ResolvingDataSource), so the Media3 notification shows the row immediately in BUFFERING state."
+  },
+  {
+   "feature": "Prefetch of upcoming rows (presigned URLs for next 3 rip rows; Apple Music catalog pre-resolve for AM-first rows; both skipped in device mode / for on-device rows)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Playback/SetlistPlayer.swift:1719-1741; State/RipsStore.swift:592-625; AppleMusicPlaybackProvider.swift:183-220, 542",
+   "android_files": "\u2014",
+   "notes": "Android rips bucket URLs are public today (no presign in RipsRepository); prefetch = ExoPlayer preload of the next resolved item (rolling 2-item window). If the bucket goes private, a /rips/presign client is a rips-area touchpoint."
+  },
+  {
+   "feature": "Device/cloud playback mode (device = burned files only, skip un-burned, one-shot 'nothing on device' banner with the raising run's id; mode flip applies to next track)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Playback/SetlistPlayer.swift:236-254, 286-289, 1951-1992; Settings/SettingsStore.swift (PlaybackMode)",
+   "android_files": "\u2014",
+   "notes": "Needs the burn/offline store (storage/rips area). This area owns the sequencer branch + settings key `playbackMode` and the LocalFileResolver seam."
+  },
+  {
+   "feature": "Edition policy (clean/explicit variants): Item.variant/editionLocked/editionCatalogId stamped at play() (frozen > clean-only collection > global prefer-explicit), resolveId vs id, Item.matches dual-id, lazy rip of the wanted edition (owner-gated), base-id keyed history",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Playback/SetlistPlayer.swift:33-75, 579-719; Models/SongVariant.swift; Models/EditionPolicy.swift",
+   "android_files": "\u2014",
+   "notes": "The explicit system is a browse/collections-area feature; this area reserves `variant`/`editionLocked` on QueueItem and the session Row (JSON compat) and an EditionDecider seam defaulting to unchanged."
+  },
+  {
+   "feature": "F4 Now Playing Mix mini-panel (swap-on-touch AVPlayer\u2192DSP hand-off, stems/effects/tempo/pitch/gain, hidden for non-local tracks or while a Mix session runs) + Stem Lock (per-session carry of stem set, prefetch song then stems V>D>O>B, indicator off/idle/loading/active/unavailable, persisted in session)",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Playback/NowPlayingDSP.swift, Playback/StemLock.swift, Playback/StemPlayer.swift, Playback/StemSync.swift, Views/NowPlayingMixPanel.swift, SetlistPlayer.swift:1108-1418",
+   "android_files": "\u2014",
+   "notes": "Depends on the Mix-area DSP engine decision and on local burned files; this area defines the NowPlayingDspSeam interface (engage/disengage/isPlaying/currentTime/onReachedEnd) and persists `stemLock` in the session JSON as an opaque object so a later package can light it up. Not N/A forever \u2014 deferred to the Mix area."
+  },
+  {
+   "feature": "Lyrics in Now Playing",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Views/SongDetailView.swift (lyrics live in Song Detail, not on the deck)",
+   "android_files": "screens/browse/SongDetailSheet.kt",
+   "notes": "iOS Now Playing has no lyrics surface; the record long-press opens Song Detail, which carries lyrics (browse area)."
+  },
+  {
+   "feature": "Now Playing widgets (App Group snapshot + WidgetKit), App Intents / Siri playback, CarPlay Now Playing template",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Playback/WidgetSync.swift, Intents/IntentServices.swift, CarPlay/*.swift",
+   "android_files": "\u2014",
+   "notes": "Surfaces area (Glance widget, App Actions, Android Auto MediaLibraryService). This area exposes the seams they need: `SetlistSequencer.state` StateFlow (queue/index/held/notice), `MediaSession` driven by the sequencer-aware ForwardingPlayer (Android Auto gets transport for free)."
+  },
+  {
+   "feature": "Remote diag logs: DiagLog (S3 PutObject to diag/<platform>-<device8>/<ISO>-b<build>.log, part rotation 500 lines, 40k session cap, 15 s/3 s flush, error immediate, upload status readout, buffered until key arrives) + telemetry mode (actions/screens) + NPLog trace mirrored; lanes [playback] [session] [transport] [supervisor] [deadair] [runway] [ripreq] [action] [rip]",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Support/DiagLog.swift; memory pocketdj-remote-diag-logs.md (s3://pocketdj-logs-623170744161/diag/, profile llc)",
+   "android_files": "android.util.Log.i(\"PocketDJ\", \u2026) scattered (di/AppGraph.kt)",
+   "notes": "No AWS SDK on Android: hand-rolled SigV4 PUT over OkHttp (~150 lines). Channel gate: BuildConfig.DEBUG || Settings \u25b8 Debug 'Remote diagnostics' toggle (no TestFlight-receipt analogue); writer key entered in Settings (EncryptedSharedPreferences)."
+  },
+  {
+   "feature": "Passive stream-through rip on Apple Music play (owner-gated, same-host deferral) + lazy edition rip",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Playback/PlaybackCoordinator.swift:233-270; RipServerPlaybackProvider.swift:1500-1506",
+   "android_files": "\u2014",
+   "notes": "Android has no catalog-owner identity; specs/playback.md \u00a73 already rules 'rip fires only on explicit \u25b6'. Decision: Android never fans out passive rips. The rip-ahead window still applies to explicit in-queue rip-on-demand rows."
+  },
+  {
+   "feature": "AirPlay external-playback guard (allowsExternalPlayback=false)",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Playback/PlayerEngine.swift:179-187",
+   "android_files": "\u2014",
+   "notes": "No AirPlay on Android; Cast is out of scope."
+  },
+  {
+   "feature": "Position clock must not recompose the world (PlayerClock sampled by TimelineView; ~4 Hz)",
+   "status": "DONE",
+   "ios_files": "apple/PocketDJ/Playback/PlayerEngine.swift:18-32",
+   "android_files": "playback/PlaybackController.kt currentPositionMs() (poll-style, no hot StateFlow); specs/playback.md \u00a75.5",
+   "notes": "Keep: the Now Playing scrubber/tonearm polls on its own 1 Hz LaunchedEffect loop."
+  },
+  {
+   "feature": "Rip-on-demand 'Preparing\u2026' with transient-poll-resilient await; manifest refresh after job; live HLS tokened playlist URL",
+   "status": "DONE",
+   "ios_files": "apple/PocketDJ/State/RipsStore.swift:470-520",
+   "android_files": "data/rips/RipServerClient.kt (awaitReady, pollUntilDurable), playback/PlaybackController.kt startRipAndPlay, screens/browse/MiniPlayerBar.kt",
+   "notes": "Single-row only; the in-queue variant lands with PB-3."
+  }
+ ],
+ "architecture": "# Android architecture \u2014 Playback core + Now Playing\n\n## 0. Where Android stands (grounded)\n`PlaybackController` (652 lines) is a *facade over ExoPlayer's playlist*: \u25b6 resolves one song (manifest \u2192 AM full-track \u2192 AM preview \u2192 rip-on-demand \u2192 metadata-only), builds `MediaItem`s with `PlaybackContract` extras (URL, clip window, history context, album id, isLive/isPreview) and calls `setMediaItems`. `PlaybackService` (`MediaSessionService`, same process \u2014 **never add `android:process`**) rebuilds URI + `ClippingConfiguration` in `onAddMediaItems` and is the single History emitter (`onMediaItemTransition` id-gate \u2192 `PlayEventBus`). `QueuePlan` resolves a setlist at build time (skips RipRequired rows, duplicates items for repeatCount). `AppleMusicBackend` is a second engine with no MediaSession. Jukebox writes into the `MediaController` playlist directly. There is no sequencer object, no Now Playing deck, no durable session, no dead-air/stall discipline, no diag upload.\n\niOS's playback core is a 2.6k-line **index-cursor sequencer** (`SetlistPlayer`) that resolves each row **fresh at its turn**, owns every live-queue edit, and carries ~30 hard-won invariants (listed in the inventory). The port keeps those semantics and uses Media3 where it genuinely helps.\n\n## 1. Core decision: sequencer owns the queue; ExoPlayer holds a 1\u20132 item window\n`playback/sequencer/SetlistSequencer` (app-scoped singleton in `AppGraph`, `@MainThread` state, `StateFlow<SequencerState>`) is the Android `SetlistPlayer`. It owns `queue: List<QueueItem>` (`id`, `title`, `artist`, `lengthMs?`, `repeatCount?`, `variant?`, `editionLocked`, `uid: String = UUID`), `index`, `isRunning`, `isHeldForResume`, `sourceSetlistId`, `capturedContext: PlayContext`, `capturedOrigin`, `repeatMode`, `shuffleEnabled` (+ `canonicalOrder`), `waitingForLive`, `pausedByCascade`, `playbackNotice`, `playGeneration`.\n\nExoPlayer's playlist is **not** the queue. The sequencer loads **the current row** (and, after PB-10, pre-loads the *next resolved* row for gapless local/rip\u2192rip boundaries) through the `MediaController`; `MEDIA_ITEM_TRANSITION_REASON_AUTO` / `STATE_ENDED` / `onPlayerError` are reported back as `handleEnded` / `handleFailed`. Why not keep the whole playlist in ExoPlayer: Apple Music rows play on a separate engine, rows must be resolved fresh (a rip may land between build and play), repeatCount/repeat-one/dead-source/hop/cascade/live-HLS semantics all need the cursor in app code, and live edits address rows by `uid`, which Media3 items lack.\n\nRow start (`startPlayCurrent(fresh, resumeAtMs)` \u2014 the ONLY spawn funnel): cancel the previous `playJob`, `if (!isActive) return`, claim `++playGeneration`, `endMixEngagement()` if fresh, arm `currentPlaysRemaining = normalizedRepeat(repeatCount)` if fresh, then `RowSourceResolver.resolve(item, mode)`:\n1. `LocalFileResolver.localUrlForPlayback(id, decision)` (seam; default null until the burn store lands) \u2192 `MediaItem(file://\u2026, clip startMs/startMs+lengthMs)`;\n2. `RipsRepository.entry(id)` \u2192 `PlayAction.Stream` (public mp3 + clip window; instant);\n3. Apple Music full-track when `song.appleMusicId != null && appleMusicBackend.canPlayFullTrack()` AND (song is AM-sourced OR the rip is not instant \u2014 iOS `ripStartsNow` rule);\n4. rip-on-demand (`RipRequired`, server configured): `MediaItem(pdj-resolve://song/<id>)` \u2014 resolved lazily by a `ResolvingDataSource` inside the service (POST /rip \u2192 `streamUrl` live HLS if present, else `awaitReady` \u226430 min) while the row is already current (card shows it, state BUFFERING, FGS alive);\n5. none \u2192 `advanceToNext(UNPLAYABLE_HERE)`.\n**No 30 s preview rung inside a run** (a preview would advance the set every 30 s); the single-row \u25b6 keeps it. After an `await`, guard `isActive && gen == playGeneration` before touching any state (the stems-toggle discipline: commit only at your own generation).\n\nThreading: sequencer state mutations on `Dispatchers.Main.immediate`; resolution I/O in `scope.launch` jobs tied to `playGeneration`; `MediaController` calls hop to Main (existing `withController`). ExoPlayer runs on its own playback thread; we only read `Player` state on Main.\n\n## 2. Packages (new, under `android/app/src/main/java/com/levi/pocketdj/`)\n- `playback/sequencer/` \u2014 `SetlistSequencer`, `QueueItem`, `SequencerState`, `RowSourceResolver`, `LocalFileResolver` (interface), `EditionDecider` (interface, default unchanged), `AdvanceCause`.\n- `playback/session/` \u2014 `SequencerForwardingPlayer` (wraps ExoPlayer for the `MediaSession`), `AppleMusicPlayerAdapter : SimpleBasePlayer`, `SessionSwitchboard` (which `Player` the session shows), `FavoriteCommand` seam, `ResolvingSongDataSource`.\n- `playback/health/` \u2014 `PlaybackRunway`, `StartWatchdog`, `ResolveStallHop`, `AutoAdvanceCascadeBreaker`, `PlaybackRipWindow`, `PlaybackSupervisor` (Core + Shell), `DeadAirMeter`, `LiveBackstop`.\n- `playback/durable/` \u2014 `PlaybackSessionStore`, `SessionSnapshot` (JSON models).\n- `playback/outcome/` \u2014 `SkipTracker`.\n- `diag/` \u2014 `DiagLog`, `NPLog`, `SigV4`, `DiagCredentialStore`.\n- `screens/nowplaying/` \u2014 `NowPlayingScreen`, `NowPlayingDeckCluster`, `RecordPlayer`, `UpNextList`, `PlayedList`, `NowPlayingSearch`, `NowPlayingViewModel`.\n\nShared touch points (named so packages stay disjoint): `di/AppGraph.kt` (one `val sequencer`, `val sessionStore`, `val diag`, `val skipTracker` each \u2014 add lines, never restructure), `MainActivity.kt` (one `composable(NOW_PLAYING_ROUTE)` + MiniPlayerBar `onTap`), `playback/PlaybackContract.kt` (new extra keys appended), `playback/PlayEvents.kt` (`PlayStarted.originCollectionId`), `data/settings/AppSettingsStore.kt` (keys `playbackMode`, `diagKey*`, `telemetryEnabled`), `data/rips/RipServerClient.kt` (`cancelRips(ids)`), `data/collections/CollectionsStore.kt` (`materializeNowPlayingSetlist`), `data/jukebox/JukeboxRepository.kt` (route inserts through the sequencer), `screens/settings/SettingsScreen.kt` (Debug section), `screens/history/HistoryRows.kt` (outcome glyph + live row).\n\n## 3. Lock-screen / notification / remote transport\n`PlaybackService` builds `SequencerForwardingPlayer(exoPlayer)` and gives THAT to `MediaSession`. Overrides: `seekToNext/seekToNextMediaItem \u2192 sequencer.skipNext()`, `seekToPrevious* \u2192 sequencer.skipPrevious()` (never below 0; repeat-all wraps), `setRepeatMode \u2192 sequencer.setRepeatMode(map)`, `setShuffleModeEnabled \u2192 sequencer.setShuffle(on)`, `play()` when `mediaItemCount == 0 || playbackState == IDLE` \u2192 `sequencer.onIdlePlay()` ladder (`resumeHeld` / `startCurrent` / `startInFlight` ignore) else latch `pendingRemotePlayAt` (15 s, consumed by a later restore); `getAvailableCommands` advertises next/prev/repeat/shuffle only while `sequencer.isRunning`; `play()` on a BUFFERING item = re-kick (`prepare()`), never a pause. Each remote command logs `[transport] rc cmd=\u2026 owner=\u2026 verdict=\u2026`. The \u2665 is a `CommandButton` with `SessionCommand(\"pdj.favorite\")` whose handler calls a `FavoriteToggleSeam` (null \u2192 button hidden) \u2014 wired by the activity-favorites area. Media3 publishes the notification + lock-screen card from the session player; the \"honest card\" is native (BUFFERING with playWhenReady shows \u23f8 and no moving cursor). `announceUpcoming` = loading the new row's `MediaItem` with full `MediaMetadata` + artwork URI immediately (its URI may be `pdj-resolve://`).\n\nApple Music rows: `AppleMusicPlayerAdapter : SimpleBasePlayer` maps `MediaPlayerController` state/position/duration/commands into a Media3 `Player`; `SessionSwitchboard` calls `mediaSession.setPlayer(forwardingPlayer or amAdapter)` when the sequencer's active backend flips, so the lock screen always shows exactly ONE card (iOS \"impersonate\" rule) and \u23ed/\u23ee still reach the sequencer (the adapter's seekToNext/Previous delegate the same way). `onItemEnded` \u2192 `handleAppleMusicEnded(NATURAL)`; the ported pure `endReason(...)` decides SYSTEM_SKIP (paused at \u22641 s after \u22652 s progress, not intentionalPause) and NEVER_STARTED (12 s without PLAYING) from the SDK's state callbacks + a 400 ms position poll; `onPlaybackError` mid-run \u2192 dead-source advance. Device-only to verify; the adapter is unit-tested against a fake controller interface.\n\n## 4. Zero dead air (the iOS 2026-10 program, Android mapping)\n- **Runway**: `PlaybackRunway(name)` = `PowerManager` partial WakeLock (25 s cap, idempotent end, `[runway] begin/end held=\u2026s reason=\u2026`) held from `startPlayCurrent` until first audio. The service stays foreground while `sequencer.isRunning` (the current row is loaded with `playWhenReady=true`, so Media3 keeps the FGS; `setForegroundServiceTimeoutMs` if the Media3 1.6.1 API exists, else keep the item BUFFERING).\n- **First audio** = `onIsPlayingChanged(true)` with `playbackState == READY` (local lane) or AM `PLAYING` \u2192 `DeadAirMeter.firstAudio()`, close the start window, cancel the start watchdog. Log `[playback] start-ok song=\u2026 after=\u2026ms`.\n- **Start watchdog**: 8 s no audio (and not `pausedByListener`) \u2192 `[playback] start-stall \u2026` + `prepare()` re-kick; 20 s \u2192 `escalateStalledStart` (hop else `advanceToNext(AUTO)`).\n- **Resolve-stall hop** (6 s inside the `pdj-resolve://` wait): move the first on-device row (else first instant-start row: manifest hit / AM-ready) within 50 ahead to `index`, defer the stalled row behind it (never dropped), `[playback] resolve stalled 6s song=\u2026 \u2192 hop to on-device \u2026`.\n- **Pause discrimination** (for watchdog/supervisor \"never fight the listener\"): `pausedByListener` = `playWhenReady` false with reason `USER_REQUEST`/`REMOTE`/`AUDIO_BECOMING_NOISY` (route loss = listener pause); `interruptionOpen` = `playbackSuppressionReason == TRANSIENT_AUDIO_FOCUS_LOSS` or reason `AUDIO_FOCUS_LOSS`. ExoPlayer resumes after transient focus loss itself (iOS P0-4 behaviour); a focus loss while the listener had paused never un-pauses.\n- **Cascade breaker** + **rip window** + **live backstop**: pure ports (`AutoAdvanceCascadeBreaker.shouldHalt(afterAudibleSeconds)`, `PlaybackRipWindow.windowIds/evict/endSession`, 45 s grace after length). `trackAudibleSeconds` sampled by the 1 Hz ticker (audible = isPlaying && position advanced \u2265100 ms).\n- **Supervisor**: `PlaybackSupervisor.Core.step(probe, now)` ported verbatim (L1 3 s rekick, L2 +12 s retryInPlace \u22642/song, L3 +8 s escalate; detector-only while startPending/trackEnded/AM lane; engaged only when intentPlaying && !userPaused && !held && !interruptionOpen && !cascadeHalted). Shell ticks 1 Hz from the sequencer's ticker; `meter.accumulate` + `transitionAbandoned`.\n- **DeadAirMeter**: same `Document{days:{\"YYYY-MM-DD\": Day}}` JSON at `filesDir/pocketdj-dead-air.json`, 60-day prune, 30 s save throttle, `[deadair] gap=%.2fs from=\u2026 to=\u2026 cause=\u2026` and the day summary line **character-identical** to iOS so `scripts/deadair-report.py` works unchanged on `android-<id8>` logs. Backend names: `burned`, `presigned`\u2192`rip`, `hls`, `appleMusic`, `none`.\n- **Gapless (PB-10)**: once the current row is READY, pre-resolve the next row; if it is a local/manifest item, `addMediaItem` it as a 2nd window item so Media3 preloads and auto-transitions (`burned\u2192burned \u2248 0 s`). Live edits that change `queue[index+1]` replace window slot 1. AM/rip-required next rows are not pre-added. `handleEnded` reconciles ExoPlayer's AUTO transition with `index += 1` (or seeks back to clip start for repeat-one/repeatCount>1 instead of adding).\n\n## 5. Durable session\n`PlaybackSessionStore` writes `filesDir/pocketdj-playback-session.json` with the iOS `Snapshot` shape (schemaVersion 1; `sessionId \"pses_<uuid>\"`; `source{kind,id,name,originKind,originId}`; `queue[{songId,title,artist,lengthMs,repeatCount,variant,editionLocked}]`; `index`; `positionMs` song-relative; `isPlaying`; `repeatMode \"off|all|one\"`; `shuffleEnabled`; `stemLock` opaque JsonObject; `updatedAt` epoch-ms double). Writer = single `Channel`-fed coroutine with a monotonic version (stale writes and the `clear()` delete can never resurrect a cleared session); encode off-main; atomic temp+rename. Triggers: `play` (pos 0), every index move (pos 0), every live edit, pause/resume immediately, 1 Hz ticker throttled to 5 s. `restoreIfIdle()` runs from `AppGraph` init (before catalog load): rebuild queue with fresh uids, `isHeldForResume=true`, NO audio, NO session card (`mediaSession.player` stays idle), NO file write; honour a pending remote play \u226415 s old. First \u25b6 \u2192 `resumeFromHold()` \u2192 `startPlayCurrent(fresh=false, resumeAtMs)` (local: clip start + resumeMs seek; AM: play then seek). Any skip/jump \u2192 `exitHoldIfNeeded()`. `ProcessLifecycleOwner` ON_STOP \u2192 `flushSessionSnapshotNow()` + `DeadAirMeter.flush()` + `skipTracker.checkpoint()`.\n\n## 6. History outcomes\n`PlayEvent` gains additive-optional `originInstallId`, `wasSkipped`, `listenedFraction`, `tzOffsetMin`, `originCollectionId` (same JSON keys as iOS; `carPlay`/`listeningContext` left absent). `PlayHistoryStore.record` stamps `tzOffsetMin` + `originInstallId` + `originCollectionId` (from `PlayStarted.originCollectionId`, set by the sequencer when `contextId == set_now_playing`), fires `onRecord(event)`; the 30 s window hit fires `onResume(existingEvent)`. `markSkipped(eventId)`, `noteListened(eventId, fraction)` max-merge. `SkipTracker` port: `noteTrackStarted/Resumed/Restarted`, `samplePosition` 1 Hz from the sequencer ticker, `noteAdvanceAway(songId, positionMs?, durationMs?)` on skipNext / jump / playNow / fresh play over a run / AM systemSkip (NEVER natural end, repeat, dead-source, \u23ee, stop, live 'Next'); strict `< 0.5`; one-deep previous stash; `checkpoint()`. History rows render outcome (skipped/completed/partial) and the live row keyed by `skipTracker.currentEventId`.\n\n## 7. Now Playing UI (Compose)\nRoute `nowplaying` pushed by MiniPlayerBar tap and by every \u25b6/\ud83d\udd00 funnel that today navigates to `setlistRoute(NOW_PLAYING_SETLIST_ID, autoplay)` (SetlistDetailScreen keeps serving REAL setlists). `NowPlayingViewModel` exposes `sequencer.state` + a 1 Hz `progress` poll (no hot position flow). Deck cluster: title/artist (`np-title/np-artist` test tags mirrored as Compose `testTag`s), `RecordPlayer` (Canvas; gold platter, accent chassis; `revsPerSecond = clamp(bpm/4, 8, 120)/60` else 33\u2153 RPM; `withFrameNanos` angle accumulator frozen in place on pause; spins only when the audible track is the deck's row; tonearm outer-edge\u2192center by progress, 1 Hz), transport \u23ee\u23ef\u23ed routed through `NowPlayingTransport.togglePlayPause` (held \u2192 resumeFromHold; cascade \u2192 startCurrent; AM backend \u2192 AM toggle; idle engine + start pending \u2192 ignore + log; idle \u2192 startCurrent; else toggle), \u27f2 played toggle, \u2665 (seam), \ud83d\udc4d/\ud83d\udc4e (seam, hidden when no RecFeedbackStore), shuffle/repeat row (only while running; repeat glyph `repeat`/`repeat_one`; help strings off/session/song), notice banner `np-playback-notice`, long-press record \u2192 `SongDetailSheet`. Up Next: `LazyColumn` over `upcoming` (windowed 200), drag reorder via `moveUpcoming(fromOffsets, toOffset)` clamped, swipe/\u2715 \u2192 `removeUpcoming(uids)`, DropdownMenu Play now / Play next / Move to end / Remove / Song detail; Played list with Rewind to here (`jumpToPlayed`) / Play now (`playNow(fresh QueueItem)`); add-search (`SearchBar`, 200 ms debounce, `Dispatchers.Default` over catalog snapshots, albums above songs, collapsible, `insertNextInQueue` / `appendToQueue`); header \"Open set list\" \u2192 `collections.materializeNowPlayingSetlist(name, rows)` \u2192 `setlistRoute`. Landscape/tablet: `NowPlayingExpandedLayout` with played/up-next flanks (no resize grabber). MiniPlayerBar: title, \u23ee\u23ef\u23ed, expand chevron, Preparing\u2026 row; hidden while a Mix session owns audio (seam `mixSessionActive`, default false).\n\n## 8. Diag logging\n`DiagLog` (process singleton): `log(category, message)` (facts only), `telemetry(category, message)` (titles allowed, opt-in), ring buffer, parts of 500 lines, 40k session cap, flush 15 s (3 s telemetry) / immediate on `error` / 25 pending, serialized uploads (latest body per key), `UploadStatus` (channelEnabled, keyPresent, lastSuccessAt, lastError) persisted in DataStore, `[diag] status` at launch, outcome transitions logged, buffered-until-key. Key: `diag/android-<installId first 8>/<ISO stamp>-b<versionCode>[-pN].log` in bucket `pocketdj-logs-623170744161` (from `RemoteEndpoints` so an account move needs no release), region us-west-2, hand-rolled SigV4 PUT over OkHttp. Channel gate: `BuildConfig.DEBUG || settings.diagEnabled`. `NPLog.trace(msg)` \u2192 `Log.d(\"PocketDJ.np\")` + mirrored `[np]` line. Settings \u25b8 Debug: diag key field, Remote diagnostics toggle, Remote telemetry toggle, status readout, \"Playback dead air\" readout (today's `DeadAirMeter.summaryLine`), \"Capture log\" share.\n\n## 9. Mix DSP engine\nNot decided here. This area touches Mix only through the F4 mini-panel / Stem Lock hand-off; it defines `NowPlayingDspSeam` (`engage(file, startMs, lengthMs, atSeconds, play)`, `disengage()`, `isPlaying`, `currentTimeSec`, `rate`, `onReachedEnd`) and the `mixSessionActive` gate so either an Oboe/native or an AudioTrack engine can plug in without touching the sequencer. Recommendation for the Mix area: any hand-off engine must honour the one-audio-owner rule by publishing through the same `SessionSwitchboard` (a `SimpleBasePlayer` adapter), never a second `MediaSession`.\n\n## 10. Verification strategy\nJVM: sequencer semantics with a `FakePlayerPort` (interface over the MediaController calls: setItem/prepare/play/pause/seek/stop + listener), virtual-time (`runTest`) for watchdogs/hops/backstops, table-driven Supervisor/CascadeBreaker/RipWindow/DeadAirMeter/SkipTracker/endReason, JSON round-trips against iOS fixture snapshots copied verbatim. Emulator (AVD `pocketdj`): real rip URLs from the public manifest, `adb shell dumpsys media_session` for the card/commands, `adb shell cmd media_session dispatch` (next/prev/play/pause) for remote transport, `am kill` + relaunch for held restore, airplane-mode toggles for stall/hop/cascade, `logcat -s PocketDJ.np PocketDJ.diag`. Device-only: Apple Music full-track rows, the AM session card, Bluetooth route loss, Android Auto.",
+ "decisions": [
+  "Sequencer owns the queue (index cursor + per-row uid); ExoPlayer holds only the current row (plus one pre-resolved next row after PB-10). Never hand the whole setlist to ExoPlayer's playlist again \u2014 AM rows, fresh per-row resolve, repeatCount, dead-source/hop/cascade and uid-addressed live edits all need the cursor in app code.",
+  "MediaSession is driven by a SequencerForwardingPlayer; \u23ed/\u23ee/repeat/shuffle/idle-play are intercepted there (the iOS onNext/onPrevious/onRepeatModeChange/onIdlePlay hooks). The service and the sequencer share one process \u2014 `android:process` must never be set.",
+  "One system card always: when the Apple Music engine owns audio, the session's Player is swapped to an AppleMusicPlayerAdapter (SimpleBasePlayer) via MediaSession.setPlayer \u2014 the Android form of iOS 'impersonate'. No second MediaSession ever.",
+  "Cloud rows that need async work (rip-on-demand) load as `pdj-resolve://song/<id>` MediaItems resolved by a ResolvingDataSource inside the service: the row is current immediately (instant metadata = iOS announceUpcoming), the card is honestly BUFFERING, and the foreground service stays alive through the resolve (the runway). Sync-available rows (local/manifest) keep the existing extras-based URL rebuild.",
+  "No 30-second preview rung inside a sequencer run (it would advance the set every 30 s); previews stay a single-row \u25b6 fallback.",
+  "Android never fires passive stream-through rips (no catalog-owner identity; specs/playback.md \u00a73). Rip-on-demand inside a run is explicit per-row, gated by the rip-ahead window (playing + next 10) with /rip-cancel on eviction.",
+  "Durable session JSON is shape-identical to iOS `PlaybackSessionStore.Snapshot` (schemaVersion 1); restore is held (no audio, no card) and is NOT a write \u2014 the file's mtime must mean 'last actually played here' for the future S3 profile sync.",
+  "History outcome fields reuse the iOS JSON keys (wasSkipped, listenedFraction, tzOffsetMin, originCollectionId, originInstallId); `carPlay`/`listeningContext` are left absent, never renamed.",
+  "DeadAirMeter document shape and every `[deadair]`/`[supervisor]`/`[playback]` log line keep the iOS grammar so scripts/deadair-report.py works on `android-<id8>` logs without changes.",
+  "Diag upload uses a hand-rolled SigV4 PUT over OkHttp (no AWS SDK dependency); channel gate = debuggable build or an explicit Settings toggle, since Android has no TestFlight receipt.",
+  "Pause discrimination comes from Media3 playWhenReady change reasons + playbackSuppressionReason, not from timing heuristics: USER_REQUEST/REMOTE/AUDIO_BECOMING_NOISY = listener pause; AUDIO_FOCUS_LOSS / TRANSIENT suppression = interruption. The supervisor and watchdogs never act on a listener pause.",
+  "Edition (clean/explicit) fields are reserved on QueueItem and the session Row for JSON compatibility with an EditionDecider seam defaulting to 'unchanged'; the explicit system itself belongs to the browse/collections area.",
+  "F4 Mix mini-panel + Stem Lock are deferred to the Mix area behind a NowPlayingDspSeam; the Mix DSP engine choice is not made here, but any hand-off engine must publish through the same SessionSwitchboard (one audio owner, one card)."
+ ],
+ "packages": [
+  {
+   "id": "PB-9",
+   "title": "Diag logging: DiagLog S3 uploader + NPLog + Settings \u25b8 Debug",
+   "goal": "Port iOS DiagLog/NPLog so every later playback package can emit the same lanes ([playback] [session] [transport] [supervisor] [deadair] [runway] [ripreq] [action] [np]) and the lines land in s3://pocketdj-logs-\u2026/diag/android-<id8>/ readable by the existing report scripts.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/diag/DiagLog.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/NPLog.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/SigV4.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/DiagCredentialStore.kt (new; EncryptedSharedPreferences)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/DiagUploadStatus.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/DebugSettingsSection.kt (new composable)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/SettingsScreen.kt (modify: mount DebugSettingsSection)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (modify: keys diagEnabled, telemetryEnabled)",
+    "android/app/src/main/java/com/levi/pocketdj/data/config/RemoteEndpoints.kt (modify: diagBucket/diagRegion fields, defaults pocketdj-logs-623170744161 / us-west-2)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (modify: val diag: DiagLog; `[launch]` + `[diag] status` lines)",
+    "android/app/src/test/java/com/levi/pocketdj/diag/DiagLogTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/diag/SigV4Test.kt (new)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "DiagLog.log(category, message) appends `<ISO ms> [category] message`; parts rotate at 500 lines as `-p2`, `-p3`\u2026; session cap 40_000 lines then one mute line.",
+    "Flush timing: 15 s after first new line (3 s when telemetryEnabled), immediately for category `error`, and at 25 pending lines; uploads serialized, latest body per key wins.",
+    "Key naming `diag/android-<installId first 8 chars>/<launch ISO stamp>-b<versionCode>[-pN].log`; SigV4 signature verified against the AWS test-suite vector.",
+    "Channel gate: uploads only when BuildConfig.DEBUG || settings.diagEnabled; keyless lines are buffered (bounded) and uploaded when a key arrives; `[diag] status` written at launch.",
+    "UploadStatus (channelEnabled, keyPresent, lastSuccessAt, lastError/At) persists across launches; ok\u21c4failing transitions logged.",
+    "telemetry(category, message) is a no-op unless telemetryEnabled; NPLog.trace writes Log.d(\"PocketDJ.np\") and mirrors an `[np]` line.",
+    "Settings \u25b8 Debug shows key field, Remote diagnostics toggle, Remote telemetry toggle, status summary string identical in wording to iOS (`off \u2014 \u2026`, `ok \u2014 last upload \u2026`)."
+   ],
+   "priority": "P0",
+   "est_lines": 1300,
+   "shared_touchpoints": [
+    "di/AppGraph.kt",
+    "data/settings/AppSettingsStore.kt",
+    "screens/settings/SettingsScreen.kt",
+    "data/config/RemoteEndpoints.kt"
+   ],
+   "unit_tests": [
+    "DiagLogTest: rotation at 500 lines, session cap, flush timers with virtual time, error-immediate flush, buffered-until-key, status transitions, telemetry gate",
+    "SigV4Test: canonical request + signature for a known PUT vector; key path format"
+   ],
+   "emulator_steps": [
+    "Enter a (test) key in Settings \u25b8 Debug, toggle Remote diagnostics; `adb logcat -s PocketDJ.diag` shows PUT outcome lines",
+    "With no network: verify status reads failing and recovers when network returns"
+   ],
+   "device_only": "None (real bucket PUT needs a writer key; use a MockWebServer in tests)"
+  },
+  {
+   "id": "PB-1",
+   "title": "SetlistSequencer core: cursor queue, live edits, repeat/shuffle, per-row resolve ladder",
+   "goal": "Replace ExoPlayer-playlist queuing with an app-scoped index-cursor sequencer that reproduces SetlistPlayer's queue, transport, live-edit, repeat/shuffle and fresh-per-row resolution semantics over the current row only.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/SetlistSequencer.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/QueueItem.kt (new; id,title,artist,lengthMs?,repeatCount?,variant?,editionLocked,uid; matches(observedId); resolveId)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/SequencerState.kt (new; immutable snapshot for Compose)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/RowSourceResolver.kt (new; ladder \u00a71 incl. ripStartsNow rule; RipRequired rows return Deferred(pdj-resolve URI) \u2014 PB-3 fills the resolver; until then treated as UNPLAYABLE_HERE)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/LocalFileResolver.kt (new interface + NoLocalFiles default)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/EditionDecider.kt (new interface, default Unchanged)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/PlayerPort.kt (new; interface over MediaController: setItem/prepare/play/pause/seekTo/stop/currentPosition/listener \u2014 enables fakes)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/RepeatMode.kt (new; OFF/ALL/ONE, next())",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (modify: playQueue/playSetlist/next/previous/pause/resume delegate to sequencer when a run exists; expose sequencer; keep single-row play())",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackContract.kt (modify: EXTRA_QUEUE_UID, EXTRA_ORIGIN_COLLECTION_ID)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlayEvents.kt (modify: PlayStarted.originCollectionId)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/QueuePlan.kt (modify: becomes entriesForSetlist + QueueItem factory; drop repeat duplication)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (modify: playbackMode key 'cloud'|'device')",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (modify: val sequencer)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/SetlistDetailScreen.kt (modify: isThisRun = sequencer.sourceSetlistId == setlistId; start via sequencer.play(items, setlistId))",
+    "android/app/src/test/java/com/levi/pocketdj/playback/sequencer/SetlistSequencerTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/sequencer/LiveQueueEditsTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/sequencer/RowSourceResolverTest.kt (new)"
+   ],
+   "depends_on": [
+    "PB-9"
+   ],
+   "acceptance": [
+    "play(items, sourceSetlistId): empty = no-op; replaces a running set; captures PlayContext + origin ONCE from CollectionsStore.historyContext/originCollection; shuffleEnabled resets per run, repeatMode is sticky.",
+    "currentSongId = queue[index].id while running; inRunningQueue(id) memoized; History rows for a run carry the captured context and originCollectionId when contextId == set_now_playing.",
+    "Natural end: repeatMode ONE \u2192 replay current; playsRemaining>1 \u2192 decrement + replay; else index+1; past end with ALL \u2192 wrap to 0 (reshuffle whole queue if shuffleEnabled); else stop() and clear. Dead source (onPlayerError / unresolvable) \u2192 advance, never replay.",
+    "skipPrevious at index 0 restarts (or wraps to last when repeat ALL and count>1); never below 0.",
+    "All live edits touch only queue[index+1\u2026]: moveUpcoming clamps offsets, removeUpcoming(uids) ignores unknown/played uids, insertNextInQueue, appendToQueue (no-op when idle), insertInQueue(before uid) falls back to append, insertRandomInQueue(slot injectable), moveUpcomingNext/ToEnd, jumpToUpcoming(uid), playNow(freshItem) splices at index+1 and steps onto it, jumpToPlayed(uid) rewinds; upcomingUid(atOffset) bridges position\u2192identity.",
+    "setShuffle(true) permutes the tail remembering canonicalOrder once; setShuffle(false) restores pre-shuffle relative order with later-added rows at the end.",
+    "Every start funnels through startPlayCurrent: previous job cancelled; a cancelled job never claims a generation; post-await state writes guarded by generation; a superseded resolve's error never advances the newer row.",
+    "A manual single-row \u25b6 (PlaybackController.play) of a song IN the running queue repositions the cursor to the nearest occurrence (forward-preferred) instead of silently ending the set; a non-member single leaves the index untouched.",
+    "Device mode: rows without a LocalFileResolver hit are skipped (UNPLAYABLE_HERE, not counted by the breaker); a run that ends having loaded no device file raises deviceQueueUnplayable + deviceUnplayableSourceId.",
+    "Existing JVM tests (QueuePlanTest, PlayResolverTest, 258 total) stay green or are updated with the new shapes."
+   ],
+   "priority": "P0",
+   "est_lines": 2400,
+   "shared_touchpoints": [
+    "di/AppGraph.kt",
+    "playback/PlaybackController.kt",
+    "playback/PlaybackContract.kt",
+    "playback/PlayEvents.kt",
+    "data/settings/AppSettingsStore.kt",
+    "screens/playlists/SetlistDetailScreen.kt"
+   ],
+   "unit_tests": [
+    "SetlistSequencerTest: play/replace, captured context, natural end + repeat ONE/ALL/repeatCount, skipPrevious floor + wrap, dead-source advance, generation supersede (slow resolve returns late), nearest-occurrence adoption, device-mode banner",
+    "LiveQueueEditsTest: every edit only mutates the tail; uid-addressed removal under a racing advance; clamp of stale toOffset; canonical order restore",
+    "RowSourceResolverTest: ladder order incl. ripStartsNow \u2192 AM first; no preview rung in a run; studio ids never resolve"
+   ],
+   "emulator_steps": [
+    "Collections \u25b8 playlist \u25b8 \u25b6: logcat `[playback] track start song=\u2026 index=i/n backend=rip` per row; analog rows advance at clip end",
+    "Skip \u23ed rapidly 10\u00d7: exactly one row sounds; no stale row loads afterwards",
+    "Queue a playlist with a metadata-only (no rip, no server) row between two playable rows: it is skipped with a `[playback] advance` line, the set continues"
+   ],
+   "device_only": "Apple Music rows inside a run (full-track rung) need a signed-in arm64 device"
+  },
+  {
+   "id": "PB-2",
+   "title": "Session transport: SequencerForwardingPlayer, idle-play ladder, repeat/shuffle/\u2665 commands, instant metadata",
+   "goal": "Make the Media3 MediaSession (notification, lock screen, headset, future Android Auto) drive the sequencer exactly as MPRemoteCommandCenter drives SetlistPlayer, with the honest/instant card.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/playback/session/SequencerForwardingPlayer.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/session/SessionSwitchboard.kt (new; holds MediaSession, setPlayer(), custom layout)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/session/FavoriteCommand.kt (new; SessionCommand pdj.favorite + FavoriteToggleSeam interface)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/session/TransportLog.kt (new; `[transport] rc cmd=\u2026 verdict=\u2026`)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackService.kt (modify: build forwarding player, session callback onCustomCommand/onPlaybackResumption, available commands by sequencer state)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/SetlistSequencer.kt (modify: onIdlePlay(), pendingRemotePlayAt latch + consumePendingRemotePlay(maxAge), setRepeatMode/setShuffle from remote, announce metadata on start)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (modify: currentPositionMs/nowPlaying read from session player regardless of backend)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/session/SequencerForwardingPlayerTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/session/IdlePlayLadderTest.kt (new)"
+   ],
+   "depends_on": [
+    "PB-1"
+   ],
+   "acceptance": [
+    "seekToNext/seekToPrevious (and MediaItem variants) call sequencer.skipNext/skipPrevious; setRepeatMode/setShuffleModeEnabled map to sequencer modes; getRepeatMode/getShuffleModeEnabled reflect sequencer state so the notification glyphs are right.",
+    "Next/previous/repeat/shuffle commands are available only while sequencer.isRunning (single-song play shows no \u23ed/\u23ee).",
+    "play() on an idle player: held \u2192 resumeFromHold (verdict resumeHeld); start pending \u2192 ignored (startInFlight); current row never sounded \u2192 startCurrent; nothing to do \u2192 latch pendingRemotePlayAt (consumed by a restore within 15 s).",
+    "play() while BUFFERING and not listener-paused re-kicks (prepare + playWhenReady) instead of toggling to pause.",
+    "Every remote command logs `[transport] rc cmd=<play|pause|toggle|next|prev|repeat|shuffle|favorite> engine=<exo|am> verdict=<handled|refused-idle|onIdlePlay\u2192\u2026|not-running>`.",
+    "\u2665 CommandButton appears only when a FavoriteToggleSeam is installed; pressing it toggles and refreshes the button state; it never appears while the Mix engine owns audio (seam flag).",
+    "Starting a row sets MediaMetadata (title/artist/album/art URI) on the loaded item before any network resolve completes \u2014 the notification shows the new row within one frame of \u23ed."
+   ],
+   "priority": "P0",
+   "est_lines": 1200,
+   "shared_touchpoints": [
+    "playback/PlaybackService.kt",
+    "playback/PlaybackController.kt"
+   ],
+   "unit_tests": [
+    "SequencerForwardingPlayerTest: command routing with a fake sequencer + fake Player; available-commands by running state; repeat/shuffle mirroring",
+    "IdlePlayLadderTest: held/startPending/idle/nothing cases + latch age window"
+   ],
+   "emulator_steps": [
+    "`adb shell cmd media_session dispatch next` / `previous` advance the set; `dumpsys media_session` shows repeat/shuffle state matching the deck",
+    "Kill the app mid-set, relaunch (held), `cmd media_session dispatch play` \u2192 playback resumes at the saved position",
+    "Headset-button toggle via `adb shell input keyevent KEYCODE_MEDIA_PLAY_PAUSE` while buffering \u2192 re-kick, not pause"
+   ],
+   "device_only": "Bluetooth/headset routes and the actual lock-screen render"
+  },
+  {
+   "id": "PB-3",
+   "title": "Zero dead air: rip-on-demand in runs, runway, watchdogs, stall hop, cascade breaker, rip window, live backstop, supervisor, DeadAirMeter",
+   "goal": "Port the 2026-10 playback-bulletproof + dead-air program so a run keeps sounding: every start is bounded by watchdogs, stalls hop to playable rows, cascades halt with a notice, and dead air is measured in the iOS format.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/playback/session/ResolvingSongDataSource.kt (new; pdj-resolve://song/<id> \u2192 rip-on-demand live HLS or durable mp3; cancellable)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/health/PlaybackRunway.kt (new; WakeLock 25 s cap, idempotent end, [runway] lines)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/health/StartWatchdog.kt (new; 8 s rekick / 20 s escalate)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/health/ResolveStallHop.kt (new; 6 s, lookahead 50, on-device then instant)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/health/AutoAdvanceCascadeBreaker.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/health/PlaybackRipWindow.kt (new; ahead 10, heard 30 s)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/health/LiveBackstop.kt (new; length + 45 s, paused time excluded)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/health/PlaybackSupervisor.kt (new; Core + Shell)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/health/DeadAirMeter.kt (new; pocketdj-dead-air.json)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/health/PauseDiscriminator.kt (new; playWhenReady reasons \u2192 pausedByListener/interruptionOpen/intentPlaying)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/SetlistSequencer.kt (modify: start window, trackAudibleSeconds ticker, waitingForLive, pausedByCascade/playbackNotice, supervisorRetryInPlace/Escalate, rip window reconcile hooks)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackService.kt (modify: install ResolvingDataSource.Factory in the ExoPlayer MediaSourceFactory; keep FGS while sequencer running)",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipServerClient.kt (modify: cancelRips(ids) \u2192 POST /rip-cancel)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (modify: val deadAirMeter, val supervisor; start supervisor)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/health/PlaybackSupervisorCoreTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/health/CascadeBreakerTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/health/RipWindowTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/health/DeadAirMeterTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/health/StallTimersTest.kt (new)"
+   ],
+   "depends_on": [
+    "PB-1",
+    "PB-2"
+   ],
+   "acceptance": [
+    "A RipRequired row inside a run loads immediately (metadata on the card, BUFFERING); the data source POSTs /rip, plays the live HLS streamUrl when present (waitingForLive=true, scrubber disabled, LiveBackstop armed) else awaits the durable mp3; cancelled cleanly on skip.",
+    "Runway held from startPlayCurrent until first audio or 25 s; `[runway] begin/end held=\u2026s reason=firstAudio|cap|superseded|stop`.",
+    "Start watchdog: 8 s without first audio and not listener-paused \u2192 `[playback] start-stall \u2026` + re-kick; 20 s \u2192 hop else advanceToNext(AUTO).",
+    "Resolve stall 6 s \u2192 first on-device row (else first instant row: manifest hit or AM-ready) within 50 is moved to index and the stalled row deferred right behind it; none \u2192 keep waiting with a log line.",
+    "Cascade breaker: 3 consecutive auto-advances with <5 s audible each \u2192 halt (pause, pausedByCascade, playbackNotice 'Playback paused \u2014 the last few tracks didn\u2019t play' or the Apple Music variant); \u25b6 retries the row; \u23ed/\u23ee/jump reset.",
+    "Rip window: playback rips tracked; evicted ids cancelled via POST /rip-cancel on index moves/edits (coalesced), rows heard \u226530 s exempt, endSession cancels all but the playing row; user-requested rips never cancelled.",
+    "Supervisor Core table tests pass verbatim against the iOS timings (L1 3 s, L2 +12 s \u22642/song, L3 +8 s, 60 s report window); shell ticks 1 Hz only while running; never acts when userPaused/interruptionOpen/held/cascadeHalted/startPending/trackEnded/AM lane.",
+    "DeadAirMeter persists Day/Pair/Document shape identical to iOS; `[deadair] gap=%.2fs from=%s to=%s cause=%s` and the `day=\u2026 active=\u2026s dead=\u2026s ratio=\u2026%` line are character-compatible; transitions abandoned on pause/interruption/held/stop/cascade; flush on background.",
+    "PauseDiscriminator: USER_REQUEST/REMOTE/AUDIO_BECOMING_NOISY \u2192 pausedByListener (watchdogs stand down); AUDIO_FOCUS_LOSS/transient suppression \u2192 interruptionOpen; ExoPlayer's own focus-regain resume is never undone."
+   ],
+   "priority": "P0",
+   "est_lines": 2400,
+   "shared_touchpoints": [
+    "data/rips/RipServerClient.kt",
+    "di/AppGraph.kt",
+    "playback/PlaybackService.kt"
+   ],
+   "unit_tests": [
+    "PlaybackSupervisorCoreTest (table-driven, fake clock): silent\u2192L1\u2192L2\u2192L3, proof resets, detector-only states, retries exhausted path",
+    "CascadeBreakerTest, RipWindowTest (windowIds/evict/keep/endSession), DeadAirMeterTest (day rollup, pair keys, abandoned, prune 60 d, summary string)",
+    "StallTimersTest with runTest virtual time: start-stall rekick/escalate, resolve-stall hop choice (on-device > instant), live backstop excludes paused time, cancellation on superseding start"
+   ],
+   "emulator_steps": [
+    "Set a rip server URL that points at a closed port: a RipRequired row shows on the card, hops after 6 s to the next manifest row with `[playback] resolve stalled 6s \u2026` logged",
+    "Enable airplane mode mid-run: `[supervisor] silent \u2026` then L1/L2/L3 lines; three quick dead rows \u2192 `cascade-stop` + notice banner text in the deck (after PB-6)",
+    "`cat files/pocketdj-dead-air.json` after a 2-minute run shows activeSeconds and transition pairs"
+   ],
+   "device_only": "Real cellular dead zones; Apple Music lane behaviours"
+  },
+  {
+   "id": "PB-4",
+   "title": "Durable playback session: real-time snapshot, held restore, resume at position, materialize Now Playing setlist",
+   "goal": "A force-quit or reboot never loses the deck: the run (played/current/up-next incl. edits, repeat/shuffle) is snapshotted in real time with the iOS JSON shape and restored HELD at launch.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/playback/durable/PlaybackSessionStore.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/durable/SessionSnapshot.kt (new; Snapshot/SourceRef/Row @Serializable, schemaVersion 1)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/durable/SessionWriter.kt (new; versioned single-writer coroutine, atomic temp+rename, delete on clear)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/SetlistSequencer.kt (modify: persistSession on play/index moves (pos 0)/edits/mode changes, 1 Hz position with 5 s throttle + immediate on play/pause, restore(from), restoreIfIdle, resumeFromHold, exitHoldIfNeeded, sessionPositionMs song-relative)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/durable/AppLifecycleFlusher.kt (new; ProcessLifecycleOwner ON_STOP \u2192 flush snapshot, meter, tracker checkpoint)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsStore.kt (modify: materializeNowPlayingSetlist(name, rows) upserting set_now_playing)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (modify: val sessionStore; call sequencer.restoreIfIdle() at init before catalog load)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/durable/PlaybackSessionStoreTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/durable/SessionRestoreTest.kt (new)",
+    "android/app/src/test/resources/fixtures/ios-playback-session-v1.json (new; copied from an iOS device snapshot shape)"
+   ],
+   "depends_on": [
+    "PB-1",
+    "PB-2"
+   ],
+   "acceptance": [
+    "Snapshot JSON decodes/encodes the iOS fixture byte-for-byte in field set (sessionId pses_\u2026, source{kind,id,name,originKind,originId}, queue rows incl. variant/editionLocked nulls omitted, index, positionMs song-relative, isPlaying, repeatMode, shuffleEnabled, stemLock, updatedAt, schemaVersion 1); unknown version \u2192 load() = null.",
+    "Writes: play and every index move persist positionMs 0; every live edit persists; pause/resume persist immediately; playing position throttled to \u22655 s; a stale version can never overwrite a newer write or resurrect after clear().",
+    "restoreIfIdle at launch: skipped when running / any backend playing / `PDJ_DISABLE_SESSION_RESTORE` system property; otherwise rebuilds queue with fresh uids, index clamped, held=true, running=true, NO audio, NO MediaSession player activation, NO file write (mtime unchanged \u2014 verified in test).",
+    "resumeFromHold: arms hooks, persists with the resume offset, starts the current row at pendingResumeMs (local/manifest: clipStart + offset; AM: play then seek); skip/jump while held \u2192 exitHoldIfNeeded (offset dropped).",
+    "A pending remote play \u226415 s old at restore time resumes the held set once.",
+    "stop()/end-of-set clears the file; a fresh play() mints a new sessionId.",
+    "CollectionsStore.materializeNowPlayingSetlist produces a Setlist with id set_now_playing / playlistId pls_now_playing / seed now-playing from the live queue rows."
+   ],
+   "priority": "P0",
+   "est_lines": 1300,
+   "shared_touchpoints": [
+    "di/AppGraph.kt",
+    "data/collections/CollectionsStore.kt"
+   ],
+   "unit_tests": [
+    "PlaybackSessionStoreTest: fixture round-trip, throttle/immediate rules, version guard vs stale write and clear, lenient load failures",
+    "SessionRestoreTest: held semantics (no PlayerPort calls), resume at offset per source kind, exitHold on skip, restore-is-not-a-write mtime, remote-play latch consumption"
+   ],
+   "emulator_steps": [
+    "Start a playlist, skip twice, reorder one row, `adb shell am force-stop com.levi.pocketdj`, relaunch: deck shows played/current/up-next, nothing sounds; \u25b6 resumes mid-song",
+    "`run-as com.levi.pocketdj cat files/pocketdj-playback-session.json` shows the iOS shape"
+   ],
+   "device_only": "None"
+  },
+  {
+   "id": "PB-5",
+   "title": "History outcomes: SkipTracker + additive PlayEvent fields + record/resume hooks",
+   "goal": "Record WHAT HAPPENED to each play (skipped <50 %, completed/partial fraction, origin collection, time-zone) with the iOS keys so cross-device history merge and listening-pocket uploads stay compatible.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/playback/outcome/SkipTracker.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/data/history/PlayHistoryModels.kt (modify: originInstallId, wasSkipped, listenedFraction, tzOffsetMin, originCollectionId \u2014 all nullable with defaults)",
+    "android/app/src/main/java/com/levi/pocketdj/data/history/PlayHistoryStore.kt (modify: onRecord/onResume hooks, markSkipped, noteListened max-merge, stamp tz/installId/originCollectionId, re-count window returns the existing event for onResume)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/SetlistSequencer.kt (modify: onAdvanceAway/onPositionSample/onTrackRestart hooks at the iOS call sites; isRestartOfCurrent guard; waitingForLive exemption)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/HistoryRows.kt (modify: outcome glyph skipped/completed/partial; live-row indicator keyed by skipTracker.currentEventId)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (modify: val skipTracker; wire hooks)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/outcome/SkipTrackerTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/data/history/PlayHistoryOutcomeTest.kt (new)"
+   ],
+   "depends_on": [
+    "PB-1"
+   ],
+   "acceptance": [
+    "Skip verdict only on advance-away (skipNext, jumpToUpcoming/Played to a different song, playNow of a different song, fresh play over a run, AM systemSkip); never on natural end, repeat, dead-source advance, \u23ee, stop, or the live 'Next'; strict fraction < 0.5; unknown duration \u21d2 not a skip.",
+    "High-water mark fed by 1 Hz samples for the CURRENT song only; noteTrackRestarted re-zeroes after reporting pass-1 fraction; one-deep previous stash classifies a late verdict after the new track already armed; a second verdict for the same event is ignored.",
+    "PlayEvent JSON: new keys omitted when null; old documents decode; `outcome` derived (skipped wins, then fraction \u22650.5 completed else partial, null unknown).",
+    "record() stamps tzOffsetMin (minutes from UTC at play time), originInstallId (store installId), originCollectionId when contextId == set_now_playing and the sequencer has a captured origin; fires onRecord; a 30 s-window hit fires onResume(existing).",
+    "noteListened max-merges and persists; markSkipped sets wasSkipped=true and persists; History timeline shows the outcome glyph and highlights the live row."
+   ],
+   "priority": "P1",
+   "est_lines": 1100,
+   "shared_touchpoints": [
+    "di/AppGraph.kt",
+    "screens/history/HistoryRows.kt",
+    "data/history/PlayHistoryStore.kt"
+   ],
+   "unit_tests": [
+    "SkipTrackerTest: <50 % strict boundary, high-water beats clobbered live read, previous-stash adopt ordering, restart re-zero, resumed-already-skipped stays classified, checkpoint reports fraction",
+    "PlayHistoryOutcomeTest: additive decode of old docs, max-merge, onRecord/onResume firing, origin/tz stamping"
+   ],
+   "emulator_steps": [
+    "Play a set, skip the first row at ~10 %: History shows it with the skipped glyph; let the second finish: completed glyph",
+    "Check `pocketdj-play-history.json` rows carry wasSkipped/listenedFraction/tzOffsetMin"
+   ],
+   "device_only": "None"
+  },
+  {
+   "id": "PB-6",
+   "title": "Now Playing deck screen + mini bar upgrade",
+   "goal": "Ship the home Now Playing deck (spinning gold record, transport with the full routing ladder, modes, notice, \u2665/\ud83d\udc4d\ud83d\udc4e seams) and turn the mini bar into the iOS collapsed strip.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/NowPlayingScreen.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/NowPlayingDeckCluster.kt (new; header, record, transport, feedback row, shuffle/repeat row, notice)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/RecordPlayer.kt (new; Canvas platter + tonearm)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/NowPlayingTransport.kt (new; togglePlayPause ladder, isPlayingNow, currentItemAudible)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/NowPlayingViewModel.kt (new; sequencer state + 1 Hz progress poll + bpm lookup)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/NowPlayingSeams.kt (new; FavoriteSeam, RecFeedbackSeam, MixSessionActiveSeam \u2014 nullable, default hidden)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/MiniPlayerBar.kt (modify: \u23ee\u23ef\u23ed, expand chevron, title/artist, hidden while mixSessionActive, Preparing\u2026 row kept)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (modify: NOW_PLAYING_ROUTE composable + title 'Now Playing'; MiniPlayerBar onTap navigates; \u25b6/\ud83d\udd00 funnels for playlists/pockets/albums/artists/source playlists route to NOW_PLAYING_ROUTE instead of setlistRoute(set_now_playing))",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PlaylistsComponents.kt (modify: funnel helper target)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/nowplaying/RecordSpinTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/nowplaying/NowPlayingTransportTest.kt (new)"
+   ],
+   "depends_on": [
+    "PB-1",
+    "PB-2"
+   ],
+   "acceptance": [
+    "Deck shows title + artist above the record (testTags np-title/np-artist); record is gold on the accent chassis; revsPerSecond = clamp(bpm/4, 8, 120)/60 using manifest beatGridBpm else catalog bpm else 33\u2153 RPM; angle accumulates only while audible and freezes in place on pause; tonearm sweeps outer edge\u2192center by elapsed/length at 1 Hz; length prefers catalog lengthMs then player duration.",
+    "Record spins only when the audible track is the deck's current row (a Browse single over a paused set does not spin it).",
+    "Transport: \u23ee/\u23ef/\u23ed (np-previous/np-playpause/np-next) route through NowPlayingTransport.togglePlayPause: held \u2192 resumeFromHold; pausedByCascade \u2192 startCurrent; AM backend \u2192 AM toggle; idle engine + start pending \u2192 ignored + `[playback] \u25b6 ignored: start in flight`; idle engine \u2192 startCurrent; else toggle.",
+    "Shuffle/repeat row only while a set runs; repeat cycles off\u2192all\u2192one with glyph repeat/repeat_one and help text 'Repeat off/session/song'; shuffle glyph accent when on.",
+    "\u27f2 toggle reveals the played list (PB-7 supplies the list; here it toggles state). \u2665 and \ud83d\udc4d/\ud83d\udc4e render only when their seams are installed. Notice banner (np-playback-notice) shows sequencer.playbackNotice.",
+    "Long-press on the record opens SongDetailSheet for the current row (synthesized minimal song when not in catalog).",
+    "Mini bar: title/artist, \u23ee\u23ef\u23ed, expand chevron \u2192 NOW_PLAYING_ROUTE; renders nothing when idle and nothing while mixSessionActive; Preparing\u2026 row preserved.",
+    "Phone landscape hides the record and keeps functional rows; no horizontal scroll at 360 dp width."
+   ],
+   "priority": "P0",
+   "est_lines": 1900,
+   "shared_touchpoints": [
+    "MainActivity.kt",
+    "screens/browse/MiniPlayerBar.kt",
+    "screens/playlists/PlaylistsComponents.kt"
+   ],
+   "unit_tests": [
+    "RecordSpinTest: rpm mapping/clamps/fallback, angle accumulator freeze/resume, progress fraction sources",
+    "NowPlayingTransportTest: ladder verdicts for held/cascade/AM/idle+pending/idle/loaded with a fake sequencer + fake player state"
+   ],
+   "emulator_steps": [
+    "Collections \u25b8 playlist \u25b8 \u25b6 opens Now Playing; record spins; pause freezes it in place; resume continues from the same angle",
+    "Rotate to landscape: record hidden, transport usable; tap mini bar from Browse \u2192 Now Playing",
+    "Trigger a cascade halt (PB-3 steps): banner text visible; \u25b6 retries the row"
+   ],
+   "device_only": "None"
+  },
+  {
+   "id": "PB-7",
+   "title": "Up Next, previously played, add-search, open set list; jukebox routed through the sequencer",
+   "goal": "Deliver the live-queue half of the Now Playing panel with uid-safe edits and the add-search builder, and make Jukebox Hero inserts go through the sequencer instead of the raw MediaController.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/UpNextList.kt (new; windowed 200, drag reorder, swipe/\u2715 remove, context menu)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/PlayedList.kt (new; Rewind to here / Play now)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/NowPlayingSearch.kt (new; pure ranking exact>prefix>catalog order; albums above songs)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/NowPlayingSearchBar.kt (new; 200 ms debounce, Dispatchers.Default snapshots, Add next / Add to end for songs and whole albums)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/NowPlayingExpandedLayout.kt (new; landscape/tablet flanks)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/NowPlayingScreen.kt (modify: mount lists + search + header 'Open set list' + origin button)",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxRepository.kt (modify: applyPlacement \u2192 sequencer.insertNextInQueue / appendToQueue / insertRandomInQueue; start a one-item run when idle)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/nowplaying/QueueReorder.kt (new; small drag-reorder helper for LazyColumn, no third-party dep)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/nowplaying/NowPlayingSearchTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/data/jukebox/JukeboxPlacementTest.kt (new or modify existing)"
+   ],
+   "depends_on": [
+    "PB-1",
+    "PB-6"
+   ],
+   "acceptance": [
+    "Up Next renders sequencer.upcoming windowed to 200 rows with count header; drag reorder calls moveUpcoming with clamped offsets; swipe/\u2715 calls removeUpcoming(setOf(uid)) resolved via upcomingUid(atOffset) at gesture time, never a stale index.",
+    "Row menu: Play now (jumpToUpcoming uid) / Play next (moveUpcomingNext) / Move to end (moveUpcomingToEnd) / Remove / Song detail; a tap on a row that advanced away underneath is a safe no-op.",
+    "Played list (behind \u27f2) offers Rewind to here (jumpToPlayed uid) and Play now (playNow(fresh QueueItem copy)).",
+    "Search: debounced 200 ms, computed off-main over catalog snapshots; results albums above songs, each section collapsible; song rows Add next / Add to end; album rows add the whole tracklist in album order; ranking exact name > prefix > catalog order (NowPlayingSearch pure + tested).",
+    "'Open set list' routes to the real setlist when sourceSetlistId exists in collections, else materializes set_now_playing from the live queue and routes to it; origin button opens the originating playlist/pocket/album/artist when known.",
+    "Jukebox accept NEXT/END/Surprise insert through the sequencer (random slot uniform over index+1..count), and when nothing is running starts a one-item run tagged with the jukebox context; no direct MediaController playlist writes remain in data/jukebox.",
+    "Expanded layout at \u2265600 dp width or landscape: platter centered, played flank left, up-next flank right."
+   ],
+   "priority": "P1",
+   "est_lines": 2000,
+   "shared_touchpoints": [
+    "data/jukebox/JukeboxRepository.kt",
+    "screens/nowplaying/NowPlayingScreen.kt (owned by PB-6; PB-7 adds sections only)"
+   ],
+   "unit_tests": [
+    "NowPlayingSearchTest: ranking order, prefix vs contains, albums-first, empty query",
+    "JukeboxPlacementTest: NEXT/END/random slot ranges via injected slot fn; idle \u2192 one-item run with jukebox context"
+   ],
+   "emulator_steps": [
+    "Start a 10-song playlist; reorder row 3 above row 1 while the current track ends \u2192 no crash, order preserved relative to the new current",
+    "Remove an upcoming row while another finishes: exactly the tapped row is gone",
+    "Search 'love', Add next on a song and an album; Up Next reflects both; Jukebox accept lands in the tail"
+   ],
+   "device_only": "None"
+  },
+  {
+   "id": "PB-8",
+   "title": "Apple Music rows in a run: SimpleBasePlayer session adapter + end/skip/interruption verdicts",
+   "goal": "Let a set that mixes Apple Music and rip rows keep the single lock-screen card and advance correctly across AM track ends, system skips, never-started and interruptions (iOS am-setlist-auto-advance + pause\u2260skip discriminator).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/playback/session/AppleMusicPlayerAdapter.kt (new; SimpleBasePlayer over MediaPlayerController)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/am/AppleMusicController.kt (new; thin interface over the SDK so tests can fake it)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/am/AppleMusicEndMonitor.kt (new; pure endReason/trackEnded/trackRestarted/neverStarted/stoppedByInterruption ports + 400 ms poll)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/AppleMusicBackend.kt (modify: expose position/duration/state flows, intentionalPause sticky flag, firstAudio/nearEnd callbacks, interruption notice)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/session/SessionSwitchboard.kt (modify: setPlayer(amAdapter) when backend == AM, back to forwarding player otherwise; one card)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/SetlistSequencer.kt (modify: handleAppleMusicEnded(reason), handleAppleMusicRestarted, handleAppleMusicInterrupted notice, AM lane in audible/position/duration readers)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/am/AppleMusicEndMonitorTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/session/AppleMusicPlayerAdapterTest.kt (new; fake controller)"
+   ],
+   "depends_on": [
+    "PB-1",
+    "PB-2",
+    "PB-3"
+   ],
+   "acceptance": [
+    "While an AM row plays, the MediaSession's player is the adapter: notification shows title/artist/art/position; \u23ed/\u23ee reach sequencer.skipNext/skipPrevious; play/pause route to the SDK; only one notification ever exists.",
+    "endReason port passes the iOS cases: stopped \u2192 NATURAL; paused at end \u2192 NATURAL; paused \u22641 s with maxObserved \u22652 \u2192 SYSTEM_SKIP; paused \u22641 s with intentionalPause \u2192 null; paused \u22641 s otherwise \u2192 SYSTEM_SKIP; mid-song pause \u2192 null; trackRestarted when playbackTime <2 after maxObserved >10; neverStarted after 12 s without PLAYING unless intentionally paused; stoppedByInterruption when stopped \u226510 s short of duration.",
+    "SDK onItemEnded \u2192 NATURAL; SYSTEM_SKIP \u2192 noteAdvanceAway + advanceToNext(USER); NEVER_STARTED \u2192 advance (never replay under repeat-one); interruption \u2192 hold with the Apple Music notice, \u25b6 resumes.",
+    "AM row start: first PLAYING closes the start window (DeadAirMeter firstAudio backend=appleMusic); AM lane is detector-only for the supervisor.",
+    "Emulator (x86_64, no SDK): adapter is never constructed; sequencer falls through to rip rungs exactly as today."
+   ],
+   "priority": "P1",
+   "est_lines": 1500,
+   "shared_touchpoints": [
+    "playback/AppleMusicBackend.kt",
+    "playback/session/SessionSwitchboard.kt (owned by PB-2)"
+   ],
+   "unit_tests": [
+    "AppleMusicEndMonitorTest: full iOS verdict table (natural/systemSkip/neverStarted/restart/interruption)",
+    "AppleMusicPlayerAdapterTest: state/position/duration mapping, command routing, availableCommands, one-player-at-a-time switchboard"
+   ],
+   "emulator_steps": [
+    "Build + run: no behaviour change with AM unavailable; unit suite green"
+   ],
+   "device_only": "All real AM playback: signed-in arm64 device with subscription; verify one lock-screen card, \u23ed from the lock screen advances, pause-then-\u23ed does not double-skip, a region-locked song advances after 12 s"
+  },
+  {
+   "id": "PB-10",
+   "title": "Gapless preload window (next resolved row pre-added to ExoPlayer)",
+   "goal": "Close the rip\u2192rip / local\u2192local boundary to ~0 s dead air by letting Media3 preload the next already-resolved row while the sequencer keeps ownership of the queue.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/NextRowPreloader.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/SetlistSequencer.kt (modify: window reconcile on READY, on edits touching index+1, on repeat semantics; AUTO transition \u2192 index+1 bookkeeping)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/sequencer/PlayerPort.kt (modify: addItem/replaceItem/removeItem window ops)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/sequencer/NextRowPreloaderTest.kt (new)"
+   ],
+   "depends_on": [
+    "PB-1",
+    "PB-3"
+   ],
+   "acceptance": [
+    "After the current row reaches READY, the next row is resolved; if it is a local/manifest item it is added as window slot 1 with its clip window and metadata; AM / rip-required / unplayable next rows are not added.",
+    "A live edit that changes queue[index+1] replaces/removes window slot 1 within one frame; shuffle/repeat changes reconcile the window.",
+    "On MEDIA_ITEM_TRANSITION_REASON_AUTO the sequencer advances index to the preloaded row's uid (not blindly +1), fires track-start hooks once, opens/closes the start window via DeadAirMeter (gap recorded ~0).",
+    "repeatCount>1 and repeat ONE replay by seeking to clip start (no duplicate items); window slot 1 is only added when the next play is a different row.",
+    "With preload disabled (flag) behaviour equals PB-3; all PB-1 tests still pass."
+   ],
+   "priority": "P2",
+   "est_lines": 900,
+   "shared_touchpoints": [
+    "playback/sequencer/SetlistSequencer.kt"
+   ],
+   "unit_tests": [
+    "NextRowPreloaderTest: window add/replace/remove on edits, AUTO transition bookkeeping, repeat paths, disabled flag parity"
+   ],
+   "emulator_steps": [
+    "Play an album of digital rips: `[deadair] gap=0.0xs from=rip to=rip cause=advance` between rows; reorder the next row mid-track and confirm the new one plays next"
+   ],
+   "device_only": "None"
+  }
+ ]
+}

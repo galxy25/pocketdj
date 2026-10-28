@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Static launcher shortcuts (iOS App Shortcuts analogue). Handled by MediaSearchIntentHandler
+     (ACTION_OPEN_TAB). Keep ShortcutManagerSink.STATIC_COUNT equal to the number of entries. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="open_collections"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_collections_short"
+        android:shortcutLongLabel="@string/shortcut_collections_long">
+        <intent
+            android:action="com.levi.pocketdj.action.OPEN_TAB"
+            android:targetPackage="com.levi.pocketdj"
+            android:targetClass="com.levi.pocketdj.MainActivity">
+            <extra android:name="tab" android:value="playlists" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="open_browse"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_browse_short"
+        android:shortcutLongLabel="@string/shortcut_browse_long">
+        <intent
+            android:action="com.levi.pocketdj.action.OPEN_TAB"
+            android:targetPackage="com.levi.pocketdj"
+            android:targetClass="com.levi.pocketdj.MainActivity">
+            <extra android:name="tab" android:value="browse" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="open_mix"
+        android:enabled="true"
+        android:shortcutShortLabel="@string/shortcut_mix_short"
+        android:shortcutLongLabel="@string/shortcut_mix_long">
+        <intent
+            android:action="com.levi.pocketdj.action.OPEN_TAB"
+            android:targetPackage="com.levi.pocketdj"
+            android:targetClass="com.levi.pocketdj.MainActivity">
+            <extra android:name="tab" android:value="mix" />
+        </intent>
+    </shortcut>
+</shortcuts>

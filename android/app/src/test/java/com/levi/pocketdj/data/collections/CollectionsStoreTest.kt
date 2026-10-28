@@ -586,4 +586,26 @@ class CollectionsStoreTest {
         assertFalse(file.exists())
         assertTrue(newStore(file).pockets.isEmpty())
     }
+
+    @Test
+    fun materializeNowPlayingSetlist_keepsEveryRowAndRepeats_withoutBumpingRevisionOrSource() {
+        val store = newStore()
+        store.wireCatalog(catalog(listOf(song("a"))))
+        store.playNow(listOf("a"), sourceToken = "playlist", originId = "pls_1")
+        val rev = store.state.value.nowPlayingRevision
+        val set = store.materializeNowPlayingSetlist(
+            "Mine",
+            listOf(
+                com.levi.pocketdj.playback.sequencer.QueueItem(id = "a", repeatCount = 3),
+                com.levi.pocketdj.playback.sequencer.QueueItem(id = "amrec_x", title = "Rip", artist = "Them"),
+            ),
+        )
+        assertEquals(listOf("a", "amrec_x"), set.tracks.map { it.songId })
+        assertEquals("Rip", set.tracks[1].name)
+        assertEquals("Them", set.tracks[1].artist)
+        assertEquals(3, set.tracks[0].repeatCount)
+        assertEquals(rev, store.state.value.nowPlayingRevision)
+        assertEquals("playlist", store.state.value.nowPlayingSource)
+        assertEquals("pls_1", store.state.value.nowPlayingOriginId)
+    }
 }

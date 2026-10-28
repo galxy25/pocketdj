@@ -1,7 +1,9 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.data.collections.SongTransfer
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,9 +41,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.rips.PlayResolver
+import com.levi.pocketdj.ui.selection.SelectionBar
+import com.levi.pocketdj.ui.selection.SelectionScope
+import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.screens.browse.SongDetailSheet
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 /**
@@ -80,16 +89,40 @@ fun SourcePlaylistDetailScreen(
     val catalog = catalogState.catalog
 
     // Source ids are unique only within a source namespace — match BOTH (§8.4).
-    val source = catalog?.playlists?.firstOrNull {
+    val isRecentlyAdded = playlistId == com.levi.pocketdj.data.collections.RecentlyAdded.PLAYLIST_ID
+    val recentlyLimit by remember {
+        graph.settings.flow(com.levi.pocketdj.data.settings.ShellSettings.DEFAULT_RECENTLY_ADDED_COUNT)
+            .map { com.levi.pocketdj.data.settings.ShellSettings.clampRecentlyAdded(it) }
+    }.collectAsState(initial = com.levi.pocketdj.data.settings.ShellSettings.RECENTLY_ADDED_DEFAULT)
+    val activityState by graph.collectionActivity.state.collectAsState()
+    // The virtual "Recently added" playlist is derived off-main (memoized), never in the body.
+    // `derived` distinguishes "still deriving" from "derived, empty" so we never flash "not found".
+    var virtualDerived by remember { mutableStateOf(false) }
+    val virtualSource by produceState<com.levi.pocketdj.data.catalog.SourcePlaylist?>(
+        initialValue = null, catalog, activityState.revision, recentlyLimit, isRecentlyAdded,
+    ) {
+        virtualDerived = false
+        value = if (!isRecentlyAdded || catalog == null) null else withContext(Dispatchers.Default) {
+            graph.collectionsGraph.recentlyAdded.playlist(catalog, activityState.events, recentlyLimit)
+        }
+        virtualDerived = true
+    }
+    val virtualLoading = isRecentlyAdded && catalog != null && !virtualDerived
+    val source = if (isRecentlyAdded) virtualSource else catalog?.playlists?.firstOrNull {
         it.playlist.id == playlistId && it.sourceName == sourceName
     }
 
     var detailSongId by remember { mutableStateOf<String?>(null) }
+    // COL-13: per-collection sort/filter (key pdj.collection.<id>), independent of the Browse session.
+    val sortState = rememberCollectionSortState("source:$sourceName:$playlistId")
+    val playCountOf = rememberPlayCountOf()
+    var showSort by remember { mutableStateOf(false) }
+    var showFilter by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (source == null) {
+        if (source == null || catalog == null) {
             Text(
-                if (catalog == null) "Loading catalog…" else "Source playlist not found",
+                if (catalog == null) "Loading catalog…" else if (virtualLoading) "Loading…" else "Source playlist not found",
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.align(Alignment.Center),
             )
@@ -104,7 +137,47 @@ fun SourcePlaylistDetailScreen(
             it.sourcePlaylistId == playlistId && (it.sourceName == sourceName || it.sourceName == null)
         }
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        val rowSelection = remember { graph.collectionsGraph.rowSelection }
+        val selScope = "source:$sourceName:$playlistId"
+        // Rows are keyed by SONG id (as iOS); a repeat gets an occurrence suffix so keys stay
+        // unique, and a reorder never moves the selection onto different songs.
+        val rowKeys = com.levi.pocketdj.ui.selection.stableKeys(songIds)
+        // Sorted/filtered display order, resolved OFF-main; keyed on the stored ids + inputs + catalog.
+        // Null = not resolved yet (skeleton-free: show the stored rows' count honestly as loading).
+        val inputs = sortState.inputs
+        val readTime = rememberCollectionReadTime(inputs)
+        val displayed by produceState<List<String>?>(
+            initialValue = null, songIds, inputs, catalog, readTime,
+        ) {
+            value = if (inputs.isDefaultOrder) null else withContext(Dispatchers.Default) {
+                CollectionSortFilter.resolveSongIds(songIds, catalog, inputs, playCountOf, readTime)
+            }
+        }
+        val displayedIds: List<String>? = if (inputs.isDefaultOrder) null else displayed
+        // Selection acts on what is DISPLAYED (resolved order while sorted/filtered); keys follow the rows.
+        val selIds: List<String> = displayedIds ?: if (inputs.isDefaultOrder) songIds else emptyList()
+        val selKeys = if (displayedIds != null) com.levi.pocketdj.ui.selection.stableKeys(selIds) else rowKeys
+        fun selectableIds() = selIds.indices.filter {
+            catalog.songsById.containsKey(selIds[it]) && !PlayResolver.isStudioId(selIds[it])
+        }.map { selKeys[it] }
+        SelectionScope(
+            selection = rowSelection,
+            scope = selScope,
+            pruneKey = listOf(songIds, displayedIds),
+            allIds = { selectableIds() },
+            payload = {
+                SongTransfer.make(
+                    rowSelection.orderedSelection(selectableIds()).mapNotNull { k ->
+                        selKeys.indexOf(k).takeIf { it >= 0 }?.let { selIds[it] }
+                    },
+                    catalog.songsById,
+                )
+            },
+        )
+
+        Column(Modifier.fillMaxSize()) {
+        SelectionBar(rowSelection, selScope, store)
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             item(key = "title") {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -120,6 +193,11 @@ fun SourcePlaylistDetailScreen(
                         modifier = Modifier.weight(1f),
                     )
                     CapsuleBadge(sourceName)
+                    CollectionSortFilterButtons(
+                        sortState,
+                        onSort = { showSort = true },
+                        onFilter = { showFilter = true },
+                    )
                 }
             }
 
@@ -183,7 +261,18 @@ fun SourcePlaylistDetailScreen(
             }
 
             item(key = "hdr-songs") { SectionHeader("Songs") }
-            songIds.forEachIndexed { index, songId ->
+            if (!inputs.isDefaultOrder && displayedIds == null) {
+                item(key = "resolving") { SectionCaption("Sorting…") }
+            } else if (displayedIds != null && displayedIds.isEmpty()) {
+                item(key = "no-match") { SectionCaption("No songs match the filter.") }
+            }
+            // Default order: the stored list (missing / Studio rows degrade honestly). Sorted or
+            // filtered: only catalog songs, in pipeline order; the stored list is never mutated.
+            val shownIds: List<String> = displayedIds ?: if (inputs.isDefaultOrder) songIds else emptyList()
+            val shownKeys = if (displayedIds != null) {
+                com.levi.pocketdj.ui.selection.stableKeys(shownIds)
+            } else rowKeys
+            shownIds.forEachIndexed { index, songId ->
                 item(key = "song-$index-$songId") {
                     val song = catalog.songsById[songId]
                     if (song == null || PlayResolver.isStudioId(songId)) {
@@ -197,15 +286,27 @@ fun SourcePlaylistDetailScreen(
                             camelot = song.camelot,
                             lengthMs = song.length,
                             dimmed = !manifest.containsKey(songId),
-                            onClick = { detailSongId = songId },
+                            modifier = Modifier.selectableRow(rowSelection, shownKeys[index], selScope, { detailSongId = songId }, rowSongId = songId),
+                            favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                         )
                     }
                 }
             }
         }
+        }
 
         SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter))
     }
+
+    CollectionSortFilterSheets(
+        state = sortState,
+        catalog = catalog,
+        songIds = source?.playlist?.songIds.orEmpty(),
+        showSort = showSort,
+        showFilter = showFilter,
+        onDismissSort = { showSort = false },
+        onDismissFilter = { showFilter = false },
+    )
 
     detailSongId?.let { songId ->
         SongDetailSheet(

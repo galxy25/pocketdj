@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -27,6 +28,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -41,7 +44,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.data.share.ShareText
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.ui.FavoriteToggle
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
 import com.levi.pocketdj.screens.collections.AddToItem
 import java.util.Locale
@@ -52,6 +57,9 @@ import kotlinx.coroutines.launch
  * tag, album row (navigates when [onOpenAlbum] is provided), ordered metadata
  * grid, sentiment chips, play action.
  */
+/** Minimal song facts for rows that are not in the catalog. */
+data class MinimalSong(val title: String, val artist: String, val lengthMs: Long?)
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SongDetailSheet(
@@ -59,11 +67,14 @@ fun SongDetailSheet(
     onDismiss: () -> Unit,
     snackbar: SnackbarHostState,
     onOpenAlbum: ((String) -> Unit)? = null,
+    /** Off-catalog rows (AM-only, amrec_, Studio): a minimal title/artist/length surface instead of "not found". */
+    fallback: MinimalSong? = null,
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val scope = rememberCoroutineScope()
     var showAddSheet by remember { mutableStateOf(false) }
+    var confirmRemove by remember { mutableStateOf(false) }
 
     val catalogState by graph.catalogRepository.state.collectAsState()
     val manifest by graph.ripsRepository.manifest.collectAsState()
@@ -74,6 +85,11 @@ fun SongDetailSheet(
     val song = catalog?.songsById?.get(songId)
     val album = song?.albumId?.let { catalog.albumsById[it] }
     val source = catalog?.sourceOfSong?.get(songId)
+    // Lyrics: fetch-once + disk cache, only when lyricsStatus == "found" (gate lives in the store).
+    var lyrics by remember(songId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(song) {
+        lyrics = song?.let { graph.browseGraph.lyricsStore.lyrics(it) }
+    }
     val canPlay = playability(songId, manifest, settings?.hasRipServer == true, song?.appleMusicId)
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -87,7 +103,31 @@ fun SongDetailSheet(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             if (song == null) {
-                Text("Song not found", style = MaterialTheme.typography.bodyLarge)
+                if (fallback == null) {
+                    Text("Song not found", style = MaterialTheme.typography.bodyLarge)
+                } else {
+                    Text(fallback.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    if (fallback.artist.isNotBlank()) {
+                        Text(fallback.artist, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                    fallback.lengthMs?.takeIf { it > 0 }?.let {
+                        Text("Length ${Fmt.duration(it)}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FavoriteToggle(songId = songId)
+                        Spacer(Modifier.width(4.dp))
+                        FilledTonalIconButton(
+                            onClick = { showAddSheet = true },
+                            modifier = Modifier.testTag("song-add-to-collection"),
+                        ) { Icon(Icons.Filled.AddCircleOutline, contentDescription = "Add to collection") }
+                        Spacer(Modifier.width(4.dp))
+                        FilledTonalIconButton(
+                            onClick = { ShareText.send(context, "${fallback.title} — ${fallback.artist}", "${fallback.title} — ${fallback.artist}") },
+                            modifier = Modifier.testTag("song-share"),
+                        ) { Icon(Icons.Filled.Share, contentDescription = "Share") }
+                    }
+                }
                 return@Column
             }
 
@@ -136,13 +176,22 @@ fun SongDetailSheet(
                         },
                     )
                 }
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(4.dp))
+                FavoriteToggle(songId = songId, appleMusicId = song.appleMusicId)
+                Spacer(Modifier.width(4.dp))
                 // Add-to-Collection launch point (specs/playlists-ui.md §8.1).
                 FilledTonalIconButton(
                     onClick = { showAddSheet = true },
                     modifier = Modifier.testTag("song-add-to-collection"),
                 ) {
                     Icon(Icons.Filled.AddCircleOutline, contentDescription = "Add to collection")
+                }
+                Spacer(Modifier.width(4.dp))
+                FilledTonalIconButton(
+                    onClick = { ShareText.send(context, ShareText.forSong(song), "${song.name} — ${song.artist}") },
+                    modifier = Modifier.testTag("song-share"),
+                ) {
+                    Icon(Icons.Filled.Share, contentDescription = "Share")
                 }
             }
 
@@ -172,6 +221,8 @@ fun SongDetailSheet(
                     }
                 }
             }
+
+            SuggestedCollectionsBlock(songId = songId, graph = graph)
 
             Spacer(Modifier.height(12.dp))
             HorizontalDivider()
@@ -222,6 +273,63 @@ fun SongDetailSheet(
                     }
                 }
             }
+
+            // DISC-2: user-added provisional songs (Discover / Imported) can be removed from the library.
+            if (com.levi.pocketdj.screens.discover.isRemovableFromLibrary(source)) {
+                Spacer(Modifier.height(14.dp))
+                androidx.compose.material3.TextButton(
+                    onClick = { confirmRemove = true },
+                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                    modifier = Modifier.testTag("song-remove-from-library"),
+                ) { Text("Remove from Library") }
+                if (confirmRemove) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { confirmRemove = false },
+                        title = { Text("Remove from Library?") },
+                        text = { Text("${song.name} will be removed from your library.") },
+                        confirmButton = {
+                            androidx.compose.material3.TextButton(
+                                modifier = Modifier.testTag("song-remove-confirm"),
+                                onClick = {
+                                    confirmRemove = false
+                                    scope.launch {
+                                        val removed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            graph.browseGraph.removeFromLibrary(songId, source, song.name, song.artist)
+                                        }
+                                        if (removed) {
+                                            scope.launch { snackbar.showSnackbar("Removed ${song.name} from your library") }
+                                            onDismiss()
+                                        }
+                                    }
+                                },
+                            ) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            androidx.compose.material3.TextButton(onClick = { confirmRemove = false }) { Text("Cancel") }
+                        },
+                    )
+                }
+            }
+
+            lyrics?.takeIf { it.isNotBlank() }?.let { text ->
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "LYRICS",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(6.dp))
+                SelectionContainer {
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.fillMaxWidth().testTag("song-lyrics"),
+                    )
+                }
+            }
         }
     }
 
@@ -230,5 +338,74 @@ fun SongDetailSheet(
             item = AddToItem.Song(songId),
             onDismiss = { showAddSheet = false },
         )
+    }
+}
+
+/** Row cap (iOS `prefix(5)`). */
+internal const val SUGGESTED_COLLECTIONS_MAX = 5
+
+/**
+ * "Suggested collections" (BRW-13): the rec engine's per-song collection matches, hidden when there
+ * are none (engine off, offline, nothing above threshold). Rows whose collection no longer resolves
+ * locally are dropped; a stale server snapshot that already contains the song shows a check, not Add.
+ */
+@Composable
+private fun SuggestedCollectionsBlock(songId: String, graph: AppGraph) {
+    val engineOn by graph.browseGraph.recEnabled.collectAsState()
+    var rows by remember(songId) { mutableStateOf<List<com.levi.pocketdj.data.recs.RecommendationService.CollectionSuggestion>>(emptyList()) }
+    var added by remember(songId) { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(songId, engineOn) {
+        rows = emptyList(); added = emptySet()
+        if (!engineOn) return@LaunchedEffect
+        rows = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val svc = graph.browseGraph.recService
+            val collections = graph.collections
+            svc.collectionSuggestions(songId).filter {
+                if (it.kind == "pocket") collections.pocket(it.id) != null else collections.playlist(it.id) != null
+            }
+        }
+    }
+    if (rows.isEmpty()) return
+    val collections = graph.collections
+    HorizontalDivider(Modifier.padding(top = 12.dp))
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp).testTag("song-suggested-collections")) {
+        Text(
+            "SUGGESTED COLLECTIONS",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        rows.take(SUGGESTED_COLLECTIONS_MAX).forEachIndexed { idx, sug ->
+            val isPocket = sug.kind == "pocket"
+            val member = added.contains(sug.id) ||
+                if (isPocket) collections.pocket(sug.id)?.songIds?.contains(songId) == true
+                else collections.playlistContains(sug.id, songId)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("song-suggested-collection-$idx"),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(sug.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                    sug.reasons.firstOrNull()?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                    }
+                }
+                if (member) {
+                    Text("Added", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                } else {
+                    androidx.compose.material3.OutlinedButton(onClick = {
+                        // The generic addSong choke point: stamps activity + MRU exactly like the Add sheet.
+                        collections.addSong(
+                            songId,
+                            com.levi.pocketdj.data.collections.AddTarget(
+                                if (isPocket) com.levi.pocketdj.data.collections.AddTarget.Kind.POCKET
+                                else com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST,
+                                sug.id,
+                            ),
+                        )
+                        added = added + sug.id
+                    }) { Text("Add") }
+                }
+            }
+        }
     }
 }

@@ -2,7 +2,63 @@ package com.levi.pocketdj.data.collections
 
 import com.levi.pocketdj.data.catalog.IndexAlbum
 import com.levi.pocketdj.data.catalog.IndexSong
+import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.screens.browse.Fmt
+
+/** Display metadata for a Studio id (`smp_`/`lp_`/`ptn_`/`tk_`): title + REAL length (spec §8). */
+data class StudioItemInfo(
+    val title: String,
+    val lengthMs: Int,
+    val bpm: Double? = null,
+    val camelot: String? = null,
+    /** "Sample" / "Loop" / "Sequence" / "Instrumental". */
+    val kindLabel: String = "",
+)
+
+/**
+ * The Studio seam of the Collections layer (iOS `studioLookup`). Wired to `StudioStore` by the
+ * StudioGraph; consulted LAZILY and only for an id that misses the catalog AND has a studio shape.
+ * null at a call site = unwired = studio ids simply drop (the pre-Studio behaviour).
+ */
+fun interface StudioLookup {
+    fun info(id: String): StudioItemInfo?
+}
+
+/**
+ * A synthesized catalog entry for a studio id (iOS `IndexSong.studioSynthetic`). [lengthMs] is
+ * MANDATORY so a 4 s loop counts / realizes as 4 s, never 0 and never the engine's 210 s default.
+ * bpm/camelot let the harmonic math see the item; they do NOT admit it to the autofill pool
+ * (candidates are assembled from the catalog before injection).
+ */
+fun studioSyntheticSong(id: String, info: StudioItemInfo, artist: String = STUDIO_ARTIST): IndexSong =
+    IndexSong(
+        id = id, artist = artist, name = info.title, length = info.lengthMs.toLong(),
+        bpm = info.bpm, camelot = info.camelot,
+    )
+
+const val STUDIO_ARTIST = "Studio"
+
+/** Row-badge label from the id shape alone (a frozen setlist row carries no lookup): "Sample"/"Loop"/"Sequence"/"Instrumental". */
+fun studioKindLabel(id: String): String? = when {
+    id.startsWith("smp_") -> "Sample"
+    id.startsWith("lp_") -> "Loop"
+    id.startsWith("ptn_") -> "Sequence"
+    id.startsWith("tk_") -> "Instrumental"
+    else -> null
+}
+
+/** Catalog first, then a synthesized pseudo-song for a studio id the [lookup] knows; null otherwise. */
+fun resolveSongOrStudio(
+    songsById: Map<String, IndexSong>,
+    id: String,
+    lookup: StudioLookup?,
+    artist: String = STUDIO_ARTIST,
+): IndexSong? {
+    songsById[id]?.let { return it }
+    if (lookup == null || !PlayResolver.isStudioId(id)) return null
+    val info = lookup.info(id) ?: return null
+    return studioSyntheticSong(id, info, artist)
+}
 
 /**
  * Pure count + runtime helpers for containers — "how many songs, and how long,
@@ -23,7 +79,11 @@ class CollectionCatalog(
     private val songsById: Map<String, IndexSong>,
     private val albumsById: Map<String, IndexAlbum>,
     private val pocketsById: Map<String, Pocket>,
+    private val studioLookup: StudioLookup? = null,
+    private val studioArtist: String = STUDIO_ARTIST,
 ) {
+    private fun song(id: String): IndexSong? = resolveSongOrStudio(songsById, id, studioLookup, studioArtist)
+
     data class Stats(val count: Int = 0, val runtimeMs: Long = 0) {
         /** "12 songs · 47:31" — the standard container subtitle. */
         val summary: String
@@ -39,7 +99,7 @@ class CollectionCatalog(
 
     private fun songsForNode(node: PlaylistNode, seenPockets: MutableSet<String>): List<IndexSong> =
         when (node.kind) {
-            PlaylistNode.Kind.SONG -> node.songId?.let { songsById[it] }?.let(::listOf) ?: emptyList()
+            PlaylistNode.Kind.SONG -> node.songId?.let { song(it) }?.let(::listOf) ?: emptyList()
             PlaylistNode.Kind.ALBUM -> {
                 val album = node.albumId?.let { albumsById[it] }
                 album?.trackList?.mapNotNull { songsById[it] } ?: emptyList()
@@ -84,7 +144,7 @@ class CollectionCatalog(
     ) {
         if (!seen.add(pocketId)) return // cycle / revisit guard
         val pocket = pocketsById[pocketId] ?: return
-        for (songId in pocket.songIds) push(songsById[songId], out, added)
+        for (songId in pocket.songIds) push(song(songId), out, added)
         for (albumId in pocket.albumIds) {
             val album = albumsById[albumId] ?: continue
             for (trackId in album.trackList) push(songsById[trackId], out, added)

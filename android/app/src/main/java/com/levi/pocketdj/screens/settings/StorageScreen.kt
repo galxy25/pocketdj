@@ -1,5 +1,8 @@
 package com.levi.pocketdj.screens.settings
 
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.material3.ButtonDefaults
 import android.text.format.Formatter
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,7 +24,13 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
+import com.levi.pocketdj.data.burns.ArtistUsage
+import com.levi.pocketdj.data.burns.BurnSettings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,6 +74,7 @@ fun StorageScreen(modifier: Modifier = Modifier) {
 
     // null == not yet measured → render the "—" placeholder (spec §1, iOS parity).
     val sizes = remember { mutableStateMapOf<Category, Long?>() }
+    val studioCounts = remember { mutableStateMapOf<Category, Int>() }
     var measuring by remember { mutableStateOf(true) }
     var pendingClear by remember { mutableStateOf<Category?>(null) }
 
@@ -72,6 +82,9 @@ fun StorageScreen(modifier: Modifier = Modifier) {
         measuring = true
         val measured = storage.measureAll() // off-main inside the service
         sizes.putAll(measured)
+        withContext(Dispatchers.IO) {
+            Category.entries.filter { it.studioFamily != null }.forEach { studioCounts[it] = storage.studioRecordCount(it) }
+        }
         measuring = false
     }
 
@@ -106,7 +119,7 @@ fun StorageScreen(modifier: Modifier = Modifier) {
 
             Spacer(Modifier.height(8.dp))
 
-            Category.entries.forEach { category ->
+            Category.entries.filter { it.studioFamily == null }.forEach { category ->
                 val meta = storageCategoryMeta(category)
                 val bytes = sizes[category]
                 StorageRow(
@@ -126,6 +139,43 @@ fun StorageScreen(modifier: Modifier = Modifier) {
                 HorizontalDivider()
                 Spacer(Modifier.height(4.dp))
             }
+
+            Spacer(Modifier.height(12.dp))
+            SectionHeader("Producer studio")
+            Caption(
+                "These are things you made (recordings, loops, sequences, takes). PocketDJ never deletes them on its " +
+                    "own. Deleting a family is permanent: loops already playing keep playing, but sequencer rows that " +
+                    "use a deleted sample or loop fall silent, and any pocket or playlist entry for a deleted item is " +
+                    "left unplayable. Instruments are downloaded packs and can be fetched again.",
+            )
+            Spacer(Modifier.height(8.dp))
+            Category.entries.filter { it.studioFamily != null }.forEach { category ->
+                val meta = storageCategoryMeta(category)
+                val bytes = sizes[category]
+                StorageRow(
+                    title = meta.title,
+                    description = meta.description,
+                    sizeLabel = bytes?.let { Formatter.formatFileSize(context, it) } ?: "—",
+                    // Enable a Clear while any bytes remain, even if the logical
+                    // count is 0 (reclaim orphaned bytes) — spec §1, iOS parity.
+                    clearable = (bytes ?: 0L) > 0L || (studioCounts[category] ?: 0) > 0,
+                    destructive = true,
+                    onClear = if (category.clearable) {
+                        { pendingClear = category }
+                    } else {
+                        null
+                    },
+                )
+                Spacer(Modifier.height(4.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(4.dp))
+            }
+
+            DownloadSections(
+                graph = graph,
+                onChanged = { scope.launch { sizes.putAll(storage.measureAll()) } },
+                snackbar = snackbar,
+            )
 
             Spacer(Modifier.height(8.dp))
             Row(
@@ -164,11 +214,14 @@ fun StorageScreen(modifier: Modifier = Modifier) {
                         scope.launch {
                             val remaining = storage.clear(category) // off-main + re-measure
                             sizes[category] = remaining
-                            snackbar.showSnackbar("${meta.title} cleared")
+                            if (category.studioFamily != null) {
+                                studioCounts[category] = withContext(Dispatchers.IO) { storage.studioRecordCount(category) }
+                            }
+                            snackbar.showSnackbar(if (category.studioFamily != null) "${meta.title} deleted" else "${meta.title} cleared")
                         }
                     },
                 ) {
-                    Text("Clear")
+                    Text(if (category.studioFamily != null) "Delete" else "Clear")
                 }
             },
             dismissButton = {
@@ -185,6 +238,7 @@ private fun StorageRow(
     sizeLabel: String,
     clearable: Boolean,
     onClear: (() -> Unit)?,
+    destructive: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -213,8 +267,12 @@ private fun StorageRow(
             )
             if (onClear != null) {
                 Spacer(Modifier.height(6.dp))
-                OutlinedButton(onClick = onClear, enabled = clearable) {
-                    Text("Clear")
+                OutlinedButton(
+                    onClick = onClear, enabled = clearable,
+                    colors = if (destructive) ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    else ButtonDefaults.outlinedButtonColors(),
+                ) {
+                    Text(if (destructive) "Delete" else "Clear")
                 }
             }
         }
@@ -269,11 +327,32 @@ internal fun storageCategoryMeta(category: Category): StorageCategoryMeta = when
         clearBody = "Removes cached album and song artwork from this device. Images " +
             "re-download the next time they appear. Nothing in your library changes.",
     )
+    Category.BURNS -> StorageCategoryMeta(
+        title = "Downloaded songs",
+        description = "Songs burned to this device for offline play. Your library is never touched.",
+        clearTitle = "Delete downloaded songs?",
+        clearBody = "Removes every downloaded song file from this device. The songs stay in " +
+            "your library and collections and can be downloaded again any time.",
+    )
+    Category.STEMS -> StorageCategoryMeta(
+        title = "Stems",
+        description = "Separated vocal, drum, bass and other parts kept for offline mixing.",
+        clearTitle = "Delete stems?",
+        clearBody = "Removes the downloaded stem files from this device. Downloaded songs " +
+            "and beat grids are kept; stems re-download when needed.",
+    )
     Category.COLLECTIONS -> StorageCategoryMeta(
         // Display-only (§2.3): no clear affordance — the clear-copy fields are
         // never shown for this category.
         title = "Collections",
         description = "Your pockets, playlists, set lists, and folders. Kept — never cleared here.",
+        clearTitle = "",
+        clearBody = "",
+    )
+    Category.FAVORITES -> StorageCategoryMeta(
+        // Display-only like Collections: favorites (and un-favorite tombstones) are user content.
+        title = "Favorites",
+        description = "Your hearted songs. Kept — never cleared here.",
         clearTitle = "",
         clearBody = "",
     )
@@ -284,6 +363,13 @@ internal fun storageCategoryMeta(category: Category): StorageCategoryMeta = when
         clearBody = "Every recorded play is removed from this device. Your settings, " +
             "sources, and install identity are kept. This can't be undone.",
     )
+    Category.LYRICS -> StorageCategoryMeta(
+        title = "Lyrics cache",
+        description = "Song lyrics saved for offline reading. Re-fetched when a song opens.",
+        clearTitle = "Clear lyrics cache?",
+        clearBody = "Removes saved lyrics text from this device. Lyrics re-download the " +
+            "next time you open a song that has them. Nothing else changes.",
+    )
     Category.ACTIVITY -> StorageCategoryMeta(
         title = "Activity log",
         description = "The add/remove history behind the Activity tab. Your collections stay.",
@@ -291,4 +377,263 @@ internal fun storageCategoryMeta(category: Category): StorageCategoryMeta = when
         clearBody = "Removes the add/remove activity history from this device. The " +
             "collections it references are untouched. This can't be undone.",
     )
+    Category.STUDIO_SAMPLES -> studioMeta("Studio samples", "Your recorded and carved samples (and their edited renders).", "samples")
+    Category.STUDIO_LOOPS -> studioMeta("Studio loops", "Loops cut from your samples.", "loops")
+    Category.STUDIO_SEQUENCES -> studioMeta("Studio sequences", "Bounced sequencer patterns.", "sequences")
+    Category.STUDIO_TAKES -> studioMeta("Studio takes", "Instrumental takes and their rendered audio. A take being recorded right now is kept.", "takes")
+    Category.STUDIO_INSTRUMENTS -> StorageCategoryMeta(
+        title = "Studio instruments",
+        description = "Downloaded instrument SoundFonts. Re-downloadable.",
+        clearTitle = "Delete instruments?",
+        clearBody = "Removes the downloaded instrument packs from this device. They can be downloaded again.",
+    )
+    Category.MIX_SESSIONS -> StorageCategoryMeta(
+        title = "Mix sessions",
+        description = "Audio recorded from your mixes. A take being recorded right now is kept.",
+        clearTitle = "Delete mix recordings?",
+        clearBody = "Permanently deletes every recorded mix take from this device. Session logs are kept.",
+    )
+}
+
+private fun studioMeta(title: String, description: String, noun: String) = StorageCategoryMeta(
+    title = title,
+    description = description,
+    clearTitle = "Delete all $noun?",
+    clearBody = "Permanently deletes every Studio $noun file and its record. Anything stored in a folder " +
+        "that is unavailable right now is kept. This can't be undone.",
+)
+
+
+/** What the by-artist / by-collection delete dialog is currently offering. */
+private enum class DeleteKind(val label: String, val stems: Boolean) {
+    BURN_ARTIST("Delete songs by artist", false),
+    BURN_COLLECTION("Delete songs by collection", false),
+    STEM_ARTIST("Delete stems by artist", true),
+}
+
+private data class DeleteChoice(val label: String, val detail: String, val songIds: List<String>)
+
+/**
+ * SVC-6: Settings ▸ Storage cap + prune controls and targeted deletes. Media only — the
+ * library, collections, catalog and settings are never touched.
+ */
+@Composable
+private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: SnackbarHostState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val services = graph.servicesGraph
+    val storage = graph.storageService
+    var capGb by remember { mutableStateOf("") }
+    var capSongs by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf<String?>(null) }
+    var pruning by remember { mutableStateOf(false) }
+    var kind by remember { mutableStateOf<DeleteKind?>(null) }
+    var choices by remember { mutableStateOf<List<DeleteChoice>>(emptyList()) }
+    var confirm by remember { mutableStateOf<Pair<DeleteKind, DeleteChoice>?>(null) }
+
+    LaunchedEffect(Unit) {
+        val gb = services.storageSettings.capGB()
+        val n = services.storageSettings.capSongs()
+        capGb = gb?.let { if (it % 1.0 == 0.0) it.toLong().toString() else it.toString() } ?: ""
+        capSongs = n?.toString() ?: ""
+        services.storageManager.lastResult?.let { status = describe(context, it) }
+    }
+
+    BurnFolderSection(graph, snackbar)
+    Spacer(Modifier.height(16.dp))
+    SectionHeader("Automatic cleanup")
+    Caption(
+        "Optional soft cap on downloaded songs. When set, PocketDJ removes the songs you " +
+            "have played least recently (never-played first), at most once a day, until the " +
+            "downloads fit. Leave both empty to manage storage yourself.",
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedTextField(
+            value = capGb,
+            onValueChange = { v -> capGb = v.filter { it.isDigit() || it == '.' }.take(7) },
+            label = { Text("Cap (GB)") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            modifier = Modifier.weight(1f),
+        )
+        OutlinedTextField(
+            value = capSongs,
+            onValueChange = { v -> capSongs = v.filter { it.isDigit() }.take(7) },
+            label = { Text("Cap (songs)") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.weight(1f),
+        )
+    }
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(onClick = {
+            scope.launch {
+                if (capGb.isNotBlank() && capGb.toDoubleOrNull() == null) {
+                    snackbar.showSnackbar("Enter the GB cap as a number, e.g. 12.5")
+                    return@launch
+                }
+                services.storageSettings.setCapGB(capGb.toDoubleOrNull())
+                services.storageSettings.setCapSongs(capSongs.toIntOrNull())
+                snackbar.showSnackbar("Cap saved")
+            }
+        }) { Text("Save cap") }
+        OutlinedButton(
+            enabled = !pruning,
+            onClick = {
+                scope.launch {
+                    if (capGb.isNotBlank() && capGb.toDoubleOrNull() == null) {
+                        status = "Enter the GB cap as a number, e.g. 12.5"
+                        return@launch
+                    }
+                    services.storageSettings.setCapGB(capGb.toDoubleOrNull())
+                    services.storageSettings.setCapSongs(capSongs.toIntOrNull())
+                    pruning = true
+                    val r = services.storageManager.prune()
+                    pruning = false
+                    status = r?.let { describe(context, it) }
+                        ?: if (services.storageManager.isPruning) "A prune is already running - try again shortly."
+                        else "No cap set - nothing to prune."
+                    onChanged()
+                }
+            },
+        ) { Text(if (pruning) "Pruning…" else "Prune now") }
+    }
+    status?.let { Caption(it) }
+
+    Spacer(Modifier.height(16.dp))
+    SectionHeader("Delete downloads")
+    Caption("Removes downloaded files only. Songs stay in your library and collections.")
+    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (k in DeleteKind.entries) {
+            OutlinedButton(onClick = {
+                scope.launch {
+                    choices = loadChoices(graph, k)
+                    kind = k
+                }
+            }) { Text(k.label, style = MaterialTheme.typography.labelSmall) }
+        }
+    }
+
+    kind?.let { k ->
+        AlertDialog(
+            onDismissRequest = { kind = null },
+            title = { Text(k.label) },
+            text = {
+                if (choices.isEmpty()) Text("Nothing downloaded.")
+                else Column(Modifier.verticalScroll(rememberScrollState())) {
+                    choices.forEach { c ->
+                        Column(
+                            Modifier.fillMaxWidth().clickable { confirm = k to c; kind = null }.padding(vertical = 8.dp),
+                        ) {
+                            Text(c.label, style = MaterialTheme.typography.bodyMedium)
+                            Text(c.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { kind = null }) { Text("Close") } },
+        )
+    }
+    confirm?.let { (k, c) ->
+        AlertDialog(
+            onDismissRequest = { confirm = null },
+            title = { Text("Delete ${c.label}?") },
+            text = { Text("Removes ${c.detail} from this device. Your library and collections are kept.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = null
+                    scope.launch {
+                        if (k.stems) storage.deleteStems(c.songIds) else storage.deleteBurns(c.songIds)
+                        snackbar.showSnackbar("Deleted ${c.label}")
+                        onChanged()
+                    }
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirm = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+private suspend fun loadChoices(graph: AppGraph, k: DeleteKind): List<DeleteChoice> {
+    val storage = graph.storageService
+    fun fmt(a: ArtistUsage) = DeleteChoice(a.artist, "${a.songIds.size} songs, ${a.bytes / 1_000_000} MB", a.songIds)
+    return when (k) {
+        DeleteKind.BURN_ARTIST -> storage.burnUsageByArtist().map(::fmt)
+        DeleteKind.STEM_ARTIST -> storage.stemUsageByArtist().map(::fmt)
+        DeleteKind.BURN_COLLECTION -> {
+            val col = graph.collections
+            val st = col.state.value
+            val raw = st.pockets.map { it.name to col.songIdsForPocket(it.id) } +
+                st.playlists.map { it.name to col.songIdsForPlaylist(it.id) }
+            raw.sortedBy { it.first.lowercase() }.mapNotNull { (name, ids) ->
+                val ready = graph.servicesGraph.burnStore.readyBurnedIds(ids)
+                if (ready.isEmpty()) null
+                else DeleteChoice(name, "${ready.size} downloaded songs, ${storage.approximateBurnBytes(ready) / 1_000_000} MB", ready)
+            }
+        }
+    }
+}
+
+private fun describe(context: android.content.Context, r: com.levi.pocketdj.data.storage.StorageManager.PruneResult): String =
+    "Pruned ${r.evicted} songs, freed ${Formatter.formatFileSize(context, r.freedBytes)}. " +
+        "Now ${r.usageSongs} songs / ${Formatter.formatFileSize(context, r.usageBytes)}."
+
+/** SVC-14: pick (or clear) a SAF folder for burns. Existing burns stay where they were written. */
+@Composable
+private fun BurnFolderSection(graph: AppGraph, snackbar: SnackbarHostState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val prefs = graph.servicesGraph.burnFolderPrefs
+    var chosen by remember { mutableStateOf(prefs.treeUri()) }
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            val ok = runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }.isSuccess
+            if (ok) {
+                // Release the grant of the folder being replaced (grants are capped per app).
+                chosen?.takeIf { it != uri.toString() }?.let { old -> releaseBurnGrant(context, old) }
+                prefs.setTreeUri(uri.toString()); chosen = uri.toString()
+                graph.servicesGraph.burnStore.invalidateLocalCache()
+            } else scope.launch { snackbar.showSnackbar("Couldn’t keep access to that folder") }
+        }
+    }
+    Spacer(Modifier.height(16.dp))
+    SectionHeader(BurnSettings.FOLDER_TITLE)
+    Caption(
+        "Choose a folder (including an SD card) to also receive each downloaded song as a descriptive " +
+            "mp3 with a matching .txt. If it becomes unavailable, new downloads fall back to app storage.",
+    )
+    Text(
+        chosen?.let { android.net.Uri.parse(it).lastPathSegment ?: it } ?: BurnSettings.FOLDER_APP_STORAGE,
+        style = MaterialTheme.typography.bodyMedium,
+    )
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { picker.launch(null) }) { Text(if (chosen == null) "Choose folder" else "Change folder") }
+        if (chosen != null) {
+            OutlinedButton(onClick = {
+                chosen?.let { u -> releaseBurnGrant(context, u) }
+                prefs.setTreeUri(null); chosen = null
+                graph.servicesGraph.burnStore.invalidateLocalCache()
+            }) { Text("Use app storage") }
+        }
+    }
+}
+
+/** Release BOTH halves of the persisted grant taken at pick time. */
+private fun releaseBurnGrant(context: android.content.Context, uri: String) {
+    runCatching {
+        context.contentResolver.releasePersistableUriPermission(
+            android.net.Uri.parse(uri),
+            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+        )
+    }
 }

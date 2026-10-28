@@ -1,5 +1,8 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.data.collections.AddTarget
+import com.levi.pocketdj.data.collections.SongDrop
+import com.levi.pocketdj.ui.dnd.songDropTarget
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,12 +20,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.History
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -31,6 +37,7 @@ import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +62,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.screens.collections.RemoveDuplicatesResultAlert
 import com.levi.pocketdj.data.catalog.SourcePlaylist
 import com.levi.pocketdj.data.collections.CollectionSortOrder
 import com.levi.pocketdj.data.collections.CollectionSortable
@@ -63,6 +71,10 @@ import com.levi.pocketdj.data.collections.Playlist
 import com.levi.pocketdj.data.collections.Pocket
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.Fmt
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 /** Which create dialog is open (§2.5 toolbar). */
@@ -110,6 +122,18 @@ fun PlaylistsScreen(
     val collapsedFolders = settings?.collapsedFolderIds ?: emptySet()
     val expandedSources = settings?.expandedSourceNames ?: emptySet()
 
+    val recentlyLimit by remember {
+        graph.settings.flow(com.levi.pocketdj.data.settings.ShellSettings.DEFAULT_RECENTLY_ADDED_COUNT)
+            .map { com.levi.pocketdj.data.settings.ShellSettings.clampRecentlyAdded(it) }
+    }.collectAsState(initial = com.levi.pocketdj.data.settings.ShellSettings.RECENTLY_ADDED_DEFAULT)
+    val activityState by graph.collectionActivity.state.collectAsState()
+    // Derived off-main + memoized on (catalog, activity revision, limit): null = no adds.
+    val recentlyAddedCount by produceState<Int?>(null, catalog, activityState.revision, recentlyLimit) {
+        value = if (catalog == null) null else withContext(Dispatchers.Default) {
+            graph.collectionsGraph.recentlyAdded.songIds(catalog, activityState.events, recentlyLimit).size
+        }
+    }
+
     var query by rememberSaveable { mutableStateOf("") }
 
     // Dialog state.
@@ -118,6 +142,10 @@ fun PlaylistsScreen(
     var deleteItem by remember { mutableStateOf<RowRef?>(null) }
     var moveItem by remember { mutableStateOf<RowRef?>(null) }
     var addPocketToPlaylist by remember { mutableStateOf<RowRef?>(null) }
+    val exporter = com.levi.pocketdj.screens.collections.rememberCollectionExporter()
+    val startImport = com.levi.pocketdj.screens.collections.rememberCollectionImporter()
+    var dedupeConfirm by rememberSaveable { mutableStateOf(false) }
+    var dedupeResult by rememberSaveable { mutableStateOf<Int?>(null) }
 
     Column(modifier = modifier.fillMaxSize()) {
         // Mode tabs + toolbar (§2.1, §2.5 — import deferred §13).
@@ -152,6 +180,14 @@ fun PlaylistsScreen(
                         },
                     )
                 }
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("Remove duplicates in all collections…") },
+                    onClick = { dismiss(); dedupeConfirm = true },
+                )
+            }
+            IconButton(onClick = startImport, modifier = Modifier.testTag("collections-import")) {
+                Icon(Icons.Filled.FileOpen, contentDescription = "Import")
             }
             IconButton(onClick = { createDialog = CreateKind.FOLDER }) {
                 Icon(Icons.Filled.CreateNewFolder, contentDescription = "New folder")
@@ -189,11 +225,19 @@ fun PlaylistsScreen(
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             if (mode == "user") {
                 userTab(
+                    onExport = exporter::export,
                     state = state,
                     store = store,
                     sort = sort,
                     query = trimmedQuery,
                     collapsedFolders = collapsedFolders,
+                    recentlyAddedCount = recentlyAddedCount,
+                    onOpenRecentlyAdded = {
+                        onOpenSourcePlaylist(
+                            com.levi.pocketdj.data.collections.RecentlyAdded.PLAYLIST_ID,
+                            com.levi.pocketdj.data.collections.RecentlyAdded.NAME,
+                        )
+                    },
                     onToggleFolder = { id, collapsed ->
                         scope.launch { graph.settings.setFolderCollapsed(id, collapsed) }
                     },
@@ -314,6 +358,21 @@ fun PlaylistsScreen(
         )
     }
 
+    if (dedupeConfirm) {
+        ConfirmDialog(
+            title = "Remove duplicates in all collections?",
+            text = "Collapses the same song on the same album listed twice in any pocket or " +
+                "playlist, keeping the copy that streams from Apple Music.",
+            confirmLabel = "Remove",
+            onDismiss = { dedupeConfirm = false },
+            onConfirm = {
+                dedupeConfirm = false
+                dedupeResult = store.removeDuplicatesEverywhere()
+            },
+        )
+    }
+    RemoveDuplicatesResultAlert(dedupeResult) { dedupeResult = null }
+
     addPocketToPlaylist?.let { ref ->
         // Pocket ▸ "Add to playlist…" — inserts a pocket-REF node into the
         // playlist's default chapter (§2.8).
@@ -354,11 +413,14 @@ fun PlaylistsScreen(
 // ---- User tab --------------------------------------------------------------
 
 private fun LazyListScope.userTab(
+    onExport: (com.levi.pocketdj.screens.collections.ExportRequest) -> Unit,
     state: CollectionsStore.State,
     store: CollectionsStore,
     sort: CollectionSortOrder,
     query: String,
     collapsedFolders: Set<String>,
+    recentlyAddedCount: Int?,
+    onOpenRecentlyAdded: () -> Unit,
     onToggleFolder: (id: String, collapsed: Boolean) -> Unit,
     onOpenPlaylist: (String) -> Unit,
     onOpenPocket: (String) -> Unit,
@@ -378,6 +440,12 @@ private fun LazyListScope.userTab(
                 onRename = { onRename(RowRef(RowRef.Kind.PLAYLIST, pl.id, pl.name)) },
                 onMove = { onMove(RowRef(RowRef.Kind.PLAYLIST, pl.id, pl.name)) },
                 onDelete = { onDelete(RowRef(RowRef.Kind.PLAYLIST, pl.id, pl.name)) },
+                onExport = onExport,
+                modifier = Modifier.songDropTarget { t ->
+                    SongDrop.accept(listOf(t), resolves = store::songResolves) {
+                        store.addSongs(it, AddTarget(AddTarget.Kind.PLAYLIST, pl.id))
+                    }
+                },
             )
         }
     }
@@ -392,6 +460,12 @@ private fun LazyListScope.userTab(
                 onMove = { onMove(RowRef(RowRef.Kind.POCKET, p.id, p.name)) },
                 onAddToPlaylist = { onAddPocketToPlaylist(RowRef(RowRef.Kind.POCKET, p.id, p.name)) },
                 onDelete = { onDelete(RowRef(RowRef.Kind.POCKET, p.id, p.name)) },
+                onExport = onExport,
+                modifier = Modifier.songDropTarget { t ->
+                    SongDrop.accept(listOf(t), resolves = store::songResolves) {
+                        store.addSongs(it, AddTarget(AddTarget.Kind.POCKET, p.id))
+                    }
+                },
             )
         }
     }
@@ -418,7 +492,7 @@ private fun LazyListScope.userTab(
     }
 
     // Whole-tab empty state (§2.4).
-    if (state.playlists.isEmpty() && state.pockets.isEmpty()) {
+    if (state.playlists.isEmpty() && state.pockets.isEmpty() && recentlyAddedCount == 0) {
         item(key = "empty") {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -448,6 +522,23 @@ private fun LazyListScope.userTab(
             }
         }
         return
+    }
+
+    // 0. Pinned virtual "Recently added" row (hidden when there are no adds).
+    if (recentlyAddedCount != null && recentlyAddedCount > 0) {
+        item(key = "hdr-recent") { SectionHeader("Recently added") }
+        item(key = "row-recent") {
+            androidx.compose.material3.ListItem(
+                headlineContent = { Text("$recentlyAddedCount songs — newest first") },
+                leadingContent = {
+                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.History, contentDescription = null)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("recently-added-row")
+                    .clickable(onClick = onOpenRecentlyAdded),
+            )
+        }
     }
 
     // 1. "Your playlists" — top-level, active sort (§2.4).
@@ -538,9 +629,12 @@ private fun PlaylistRow(
     onRename: () -> Unit,
     onMove: () -> Unit,
     onDelete: () -> Unit,
+    onExport: (com.levi.pocketdj.screens.collections.ExportRequest) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val stats = store.statsForPlaylist(playlist.id)
     CollectionRow(
+        modifier = modifier,
         icon = Icons.AutoMirrored.Filled.QueueMusic,
         iconTint = MaterialTheme.colorScheme.primary,
         name = playlist.name,
@@ -550,6 +644,14 @@ private fun PlaylistRow(
             OverflowMenu { dismiss ->
                 DropdownMenuItem(text = { Text("Rename") }, onClick = { dismiss(); onRename() })
                 DropdownMenuItem(text = { Text("Move to folder…") }, onClick = { dismiss(); onMove() })
+                DropdownMenuItem(
+                    text = { Text("Export…") },
+                    onClick = { dismiss(); onExport(com.levi.pocketdj.screens.collections.CollectionExportRequests.playlistZip(store, playlist.id, playlist.name)) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Export CSV") },
+                    onClick = { dismiss(); onExport(com.levi.pocketdj.screens.collections.CollectionExportRequests.playlistCsv(store, playlist.id, playlist.name)) },
+                )
                 DropdownMenuItem(text = { Text("Delete") }, onClick = { dismiss(); onDelete() })
             }
         },
@@ -565,9 +667,12 @@ private fun PocketRow(
     onMove: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onDelete: () -> Unit,
+    onExport: (com.levi.pocketdj.screens.collections.ExportRequest) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val stats = store.statsForPocket(pocket.id)
     CollectionRow(
+        modifier = modifier,
         icon = Icons.Filled.Layers,
         iconTint = MaterialTheme.colorScheme.primary,
         name = pocket.name,
@@ -580,6 +685,14 @@ private fun PocketRow(
                 DropdownMenuItem(
                     text = { Text("Add to playlist…") },
                     onClick = { dismiss(); onAddToPlaylist() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Export…") },
+                    onClick = { dismiss(); onExport(com.levi.pocketdj.screens.collections.CollectionExportRequests.pocketZip(store, pocket.id, pocket.name)) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Export CSV") },
+                    onClick = { dismiss(); onExport(com.levi.pocketdj.screens.collections.CollectionExportRequests.pocketCsv(store, pocket.id, pocket.name)) },
                 )
                 DropdownMenuItem(text = { Text("Delete") }, onClick = { dismiss(); onDelete() })
             }

@@ -5,10 +5,12 @@ import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.emptyPreferences
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.onboarding.OnboardingPrefs
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * Jukebox-feature object graph, hanging off [AppGraph] (the core graph is
@@ -39,8 +41,19 @@ class JukeboxGraph private constructor(context: Context) {
                 baseUrl = current.jukeboxServerUrl,
                 token = current.jukeboxToken,
                 installId = app.settings.ensureInstallId(),
+                profileId = app.servicesGraph.enrolledProfileId(), // SVC-10
             )
         },
+    )
+
+    /** JBX-2 guest side: joined-sessions list (process-wide, UI-independent) + public client. */
+    val joined: JoinedSessionsStore = joinedSessions(appContext)
+
+    val guestClient: JukeboxGuestClient = JukeboxGuestClient(
+        http = app.httpClient,
+        json = app.json,
+        installId = { app.settings.ensureInstallId() },
+        configuredBase = { app.settings.current().jukeboxServerUrl },
     )
 
     val repository: JukeboxRepository = JukeboxRepository(
@@ -51,11 +64,37 @@ class JukeboxGraph private constructor(context: Context) {
         rips = app.ripsRepository,
         playback = app.playbackController,
         scope = app.appScope,
-    )
+        pocketDjName = {
+            app.settings.get(OnboardingPrefs.PROFILE_NAME)
+        },
+    ).also { it.queue = SequencerJukeboxQueue(app.playbackGraph.sequencer) }
 
     companion object {
         @Volatile
         private var instance: JukeboxGraph? = null
+
+        @Volatile
+        private var joinedInstance: JoinedSessionsStore? = null
+
+        /**
+         * The joined-sessions store on its own light DataStore file, so deep links / the route
+         * resolver can use it without constructing the whole (player-bound) jukebox graph.
+         */
+        fun joinedSessions(context: Context): JoinedSessionsStore =
+            joinedInstance ?: synchronized(this) {
+                joinedInstance ?: run {
+                    val app = AppGraph.get(context)
+                    val ctx = context.applicationContext
+                    val ds = PreferenceDataStoreFactory.create(
+                        corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+                        scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+                    ) { File(ctx.filesDir, "pocketdj-jukebox-joined.preferences_pb") }
+                    JoinedSessionsStore(DataStoreJoinedStorage(ds), app.appScope).also {
+                        joinedInstance = it
+                        app.appScope.launch(Dispatchers.IO) { it.load() }
+                    }
+                }
+            }
 
         fun get(context: Context): JukeboxGraph =
             instance ?: synchronized(this) {

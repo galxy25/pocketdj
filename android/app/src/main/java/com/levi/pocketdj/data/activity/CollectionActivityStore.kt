@@ -1,6 +1,7 @@
 package com.levi.pocketdj.data.activity
 
 import com.levi.pocketdj.data.PdjJson
+import com.levi.pocketdj.data.store.VersionedJsonWriter
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,7 +30,11 @@ class CollectionActivityStore(
     private val json: Json = PdjJson.lenient,
     /** Injectable for tests; production uses [DEFAULT_MAX_EVENTS]. */
     private val maxEvents: Int = DEFAULT_MAX_EVENTS,
+    /** Version-ordered writer; production wires a background executor. */
+    private val writer: VersionedJsonWriter = VersionedJsonWriter(file),
 ) {
+    private var saveVersion = 0L
+
     /** One immutable snapshot; recompute keys off [revision], never `events.size`. */
     data class State(
         /** The log, oldest → newest. No derived indexes — aggregate-free by design. */
@@ -93,6 +98,8 @@ class CollectionActivityStore(
         collectionKind: String? = null,
         collectionName: String? = null,
         atMs: Double = System.currentTimeMillis().toDouble(),
+        itemArtist: String? = null,
+        libraryWrite: String? = null,
     ): ActivityEvent? = synchronized(lock) {
         if (itemId.isEmpty()) return null
         val event = ActivityEvent(
@@ -101,9 +108,12 @@ class CollectionActivityStore(
             kind = kind,
             itemId = itemId,
             itemTitle = itemTitle,
+            itemArtist = itemArtist,
             collectionId = collectionId,
             collectionKind = collectionKind,
             collectionName = collectionName,
+            originInstallId = _state.value.installId,
+            libraryWrite = libraryWrite,
         )
         var events = _state.value.events + event
         if (events.size > maxEvents) events = events.takeLast(maxEvents)
@@ -111,6 +121,43 @@ class CollectionActivityStore(
         save()
         event
     }
+
+    /**
+     * Batch write path: appends one event per [Entry] under ONE publish + ONE
+     * save (a select-all add is one write). Empty itemIds are skipped.
+     */
+    fun recordAll(kind: ActivityKind, entries: List<Entry>, atMs: Double = System.currentTimeMillis().toDouble()): Int =
+        synchronized(lock) {
+            val fresh = entries.filter { it.itemId.isNotEmpty() }.map {
+                ActivityEvent(
+                    id = UUID.randomUUID().toString(),
+                    at = atMs,
+                    kind = kind,
+                    itemId = it.itemId,
+                    itemTitle = it.itemTitle,
+                    itemArtist = it.itemArtist,
+                    collectionId = it.collectionId,
+                    collectionKind = it.collectionKind,
+                    collectionName = it.collectionName,
+                    originInstallId = _state.value.installId,
+                )
+            }
+            if (fresh.isEmpty()) return 0
+            var events = _state.value.events + fresh
+            if (events.size > maxEvents) events = events.takeLast(maxEvents)
+            publish(events)
+            save()
+            fresh.size
+        }
+
+    data class Entry(
+        val itemId: String,
+        val itemTitle: String? = null,
+        val itemArtist: String? = null,
+        val collectionId: String? = null,
+        val collectionKind: String? = null,
+        val collectionName: String? = null,
+    )
 
     /** Test/merge seam: swap the whole log, re-cap, bump, persist. */
     fun replaceAll(newEvents: List<ActivityEvent>) {
@@ -131,7 +178,39 @@ class CollectionActivityStore(
         synchronized(lock) {
             salvagePending = false
             publish(emptyList())
-            runCatching { file.delete() }
+            dirty = false
+            writer.delete(++saveVersion)
+        }
+    }
+
+    /**
+     * Cloud-pull merge (SVC-7, iOS `reloadFromDisk`): UNION the pulled document's events with this
+     * device's by event id; never adopt the pulled installId. Returns true when this device holds
+     * rows the pulled document lacks and therefore RE-SAVED the superset (inline, so the file mtime
+     * advances before the sync engine looks - it then clears the watermark and the superset pushes
+     * on the next pass). A no-op merge leaves the file clean, which terminates the push loop.
+     */
+    fun reloadFromDisk(): Boolean {
+        val disk = (readDocument() as? ReadResult.Ok)?.doc ?: return false
+        synchronized(lock) {
+            salvagePending = false
+            val byId = LinkedHashMap<String, ActivityEvent>()
+            for (e in _state.value.events) byId.putIfAbsent(e.id, e)
+            var addedFromDisk = 0
+            for (e in disk.events) if (byId.putIfAbsent(e.id, e) == null) addedFromDisk++
+            val weHoldRowsTheDocLacks = byId.size > disk.events.map { it.id }.toSet().size
+            var merged = byId.values.sortedBy { it.at }
+            if (merged.size > maxEvents) merged = merged.takeLast(maxEvents)
+            if (addedFromDisk > 0 || weHoldRowsTheDocLacks) publish(merged)
+            if (!weHoldRowsTheDocLacks) {
+                // The file already holds the pulled bytes; any queued pre-pull write is stale.
+                dirty = false
+                writer.invalidate(++saveVersion)
+                return false
+            }
+            dirty = true
+            flushNow()
+            return true
         }
     }
 
@@ -181,29 +260,36 @@ class CollectionActivityStore(
     }
 
     /** Atomic write: temp file + rename, ordered after every mutation. */
+    /** True when a mutation was handed to the writer and no inline flush has superseded it. */
+    private var dirty = false
+
     private fun save() {
         salvageIfPending()
+        dirty = true
         val snapshot = _state.value
         val doc = ActivityDocument(
             schemaVersion = COLLECTION_ACTIVITY_SCHEMA_VERSION,
             installId = snapshot.installId,
             events = snapshot.events,
         )
-        try {
-            file.parentFile?.mkdirs()
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(json.encodeToString(ActivityDocument.serializer(), doc))
-            if (!tmp.renameTo(file)) {
-                // renameTo can fail when the destination exists. Overwrite-copy in
-                // place (no file.delete() window that a process kill could turn
-                // into total loss with a complete .tmp sitting unused) then drop
-                // the temp.
-                tmp.copyTo(file, overwrite = true)
-                tmp.delete()
-            }
-        } catch (_: Exception) {
-            // Best-effort; the in-memory log stays authoritative.
-        }
+        val version = ++saveVersion
+        writer.write(version) { json.encodeToString(ActivityDocument.serializer(), doc) }
+    }
+
+    /** ON_STOP barrier: supersede queued writes, write the latest log inline. */
+    fun flushNow() = synchronized(lock) {
+        // Untouched since the last write: never rewrite (an Unreadable launch must not clobber disk).
+        if (!dirty) return@synchronized
+        salvageIfPending()
+        dirty = false
+        val snapshot = _state.value
+        val doc = ActivityDocument(
+            schemaVersion = COLLECTION_ACTIVITY_SCHEMA_VERSION,
+            installId = snapshot.installId,
+            events = snapshot.events,
+        )
+        val version = ++saveVersion
+        writer.flushNow(version) { json.encodeToString(ActivityDocument.serializer(), doc) }
     }
 
     companion object {

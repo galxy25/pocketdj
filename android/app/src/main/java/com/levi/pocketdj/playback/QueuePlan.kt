@@ -1,95 +1,62 @@
 package com.levi.pocketdj.playback
 
-import com.levi.pocketdj.data.collections.CollectionMembership
 import com.levi.pocketdj.data.collections.Setlist
-import com.levi.pocketdj.data.rips.PlayAction
+import com.levi.pocketdj.playback.sequencer.QueueItem
 
 /**
- * Pure setlist-queue planning (specs/realize-play.md §6.2–§6.3) — everything
- * about turning ordered queue entries into a playable Media3 item list that
- * does NOT need a player:
+ * Pure setlist -> sequencer queue mapping. Since PB-1 nothing is resolved at queue-BUILD time:
+ * the [com.levi.pocketdj.playback.sequencer.SetlistSequencer] resolves each row fresh at its turn
+ * (a rip may land between build and play), skips the unplayable ones with a log line, and loops a
+ * row `repeatCount` times on natural end (no consecutive-duplicate expansion).
  *
- * - resolve every id at queue-BUILD time; keep `PlayAction.Stream` hits (with
- *   their analog clip windows), SKIP metadata-only / rip-required rows (P2 cut:
- *   no per-row rip-on-demand inside a setlist run) and surface the skip count;
- * - per-item repeatCount is NOT native to Media3 — expand a repeated entry into
- *   `normalizedRepeat` CONSECUTIVE queue items (keeps ExoPlayer's gapless
- *   preload, needs no custom advance logic); History's 30 s same-song window
- *   collapses the repeats;
- * - unbounded-analog rows (no manifest duration) keep clip-start only and run
- *   to the album file's natural end — NO queue truncation here (that P1 rule is
- *   album-up-next-specific; in a setlist the next row is usually another file).
+ * Mapping is 1:1 with the entries, so an entry index IS a queue index.
  */
 object QueuePlan {
-    /** One ordered row of a wanted queue (a setlist track, pre-resolution). */
+    /** One ordered row of a wanted queue. */
     data class QueueEntry(
         val songId: String,
-        /** Total plays before advance; null ⇒ once. */
+        /** Total plays before advance; null = once. */
         val repeatCount: Int? = null,
+        val title: String? = null,
+        val artist: String? = null,
+        val lengthMs: Long? = null,
     )
 
-    /** One playable Media3 slot (repeat expansion already applied). */
-    data class PlannedItem(
-        /** Index of the originating entry in the input list (repeats share it). */
-        val entryIndex: Int,
-        val songId: String,
-        val action: PlayAction.Stream,
-    )
-
-    data class Plan(
-        val items: List<PlannedItem>,
-        /** Entries that resolved playable. */
-        val playableEntryCount: Int,
-        /** Entries skipped (metadata-only / rip-required / empty id). */
-        val skippedEntryCount: Int,
-        val requestedEntryCount: Int,
-    ) {
-        val isEmpty: Boolean get() = items.isEmpty()
-
-        /** "Playing m of n — k not playable on Android" seam for the UI. */
-        val skippedSummary: String?
-            get() = if (skippedEntryCount == 0) {
-                null
-            } else {
-                "Playing $playableEntryCount of $requestedEntryCount — " +
-                    "$skippedEntryCount not playable on Android"
-            }
-    }
-
-    /** Resolve + repeat-expand an ordered entry list into a queue plan. */
-    fun build(entries: List<QueueEntry>, resolve: (String) -> PlayAction): Plan {
-        val items = ArrayList<PlannedItem>()
-        var playable = 0
-        var skipped = 0
-        entries.forEachIndexed { index, entry ->
-            if (entry.songId.isEmpty()) {
-                skipped++
-                return@forEachIndexed
-            }
-            when (val action = resolve(entry.songId)) {
-                is PlayAction.Stream -> {
-                    playable++
-                    repeat(CollectionMembership.normalizedRepeat(entry.repeatCount)) {
-                        items.add(PlannedItem(index, entry.songId, action))
-                    }
-                }
-                else -> skipped++
-            }
+    /** Entries -> queue rows. [meta] fills title/artist/length from the catalog when the entry has none. */
+    fun items(
+        entries: List<QueueEntry>,
+        meta: (String) -> Triple<String?, String?, Long?> = { Triple(null, null, null) },
+    ): List<QueueItem> =
+        entries.filter { it.songId.isNotEmpty() }.map { e ->
+            val (t, a, l) = meta(e.songId)
+            QueueItem(
+                id = e.songId,
+                title = e.title?.takeIf { it.isNotEmpty() } ?: t ?: e.songId,
+                artist = e.artist?.takeIf { it.isNotEmpty() } ?: a,
+                lengthMs = e.lengthMs ?: l,
+                repeatCount = e.repeatCount,
+            )
         }
-        return Plan(
-            items = items,
-            playableEntryCount = playable,
-            skippedEntryCount = skipped,
-            requestedEntryCount = entries.size,
-        )
-    }
+
+    /** Index of the queue row for an ORIGINAL entry index (empty-id entries are dropped). */
+    fun queueIndexForEntry(entries: List<QueueEntry>, entryIndex: Int): Int =
+        entries.take(entryIndex.coerceAtLeast(0)).count { it.songId.isNotEmpty() }
+            .coerceAtMost((entries.count { it.songId.isNotEmpty() } - 1).coerceAtLeast(0))
 
     /**
-     * A setlist's queue rows (specs/realize-play.md §6.1): text cues and empty
-     * songIds filtered, repeatCount carried. Frozen order preserved.
+     * A setlist's queue rows (specs/realize-play.md 6.1): text cues and empty songIds filtered,
+     * repeatCount and the frozen title/artist/length carried. Frozen order preserved.
      */
     fun entriesForSetlist(setlist: Setlist): List<QueueEntry> =
         setlist.tracks
             .filter { it.isText != true && it.songId.isNotEmpty() }
-            .map { QueueEntry(songId = it.songId, repeatCount = it.repeatCount) }
+            .map {
+                QueueEntry(
+                    songId = it.songId,
+                    repeatCount = it.repeatCount,
+                    title = it.name,
+                    artist = it.artist,
+                    lengthMs = it.lengthMs,
+                )
+            }
 }

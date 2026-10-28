@@ -10,7 +10,7 @@ package com.levi.pocketdj.data.config
 object Endpoints {
     // Account-bound bases are read LIVE from [RemoteEndpoints] (docs/design/remote-endpoints.md)
     // at request time, so a blue ↔ green backend flip needs no release. Compiled-in defaults =
-    // today's blue values (EndpointConfig.COMPILED_IN).
+    // today's green values (EndpointConfig.COMPILED_IN).
     val CATALOG_BASE_PROD: String get() = RemoteEndpoints.url(EndpointKey.CATALOG_BASE)
     val CATALOG_BASE_DEV: String get() = RemoteEndpoints.url(EndpointKey.CATALOG_BASE_DEV)
 
@@ -36,6 +36,18 @@ object Endpoints {
     /** Public rips bucket — public-read, works with the rip server offline. */
     val RIPS_BASE: String get() = RemoteEndpoints.url(EndpointKey.RIPS_BASE)
     val RIPS_MANIFEST_URL: String get() = "$RIPS_BASE/rips/manifest.json"
+
+    /** Instrument-pack manifest (STU-8): `rips/instruments/index.json` under the rips bucket. */
+    val INSTRUMENTS_INDEX_URL: String get() = "$RIPS_BASE/rips/instruments/index.json"
+
+    /**
+     * Base the manifest's RELATIVE bank keys (`banks/<file>.sf2`) append to. The client never invents
+     * S3 paths and never uses an absolute bankKey (a bare bucket-root key 403s).
+     */
+    val INSTRUMENTS_BASE: String get() = "$RIPS_BASE/rips/instruments"
+
+    /** `instrumentsBase + "/" + key` (a leading slash on [key] is dropped). */
+    fun instrumentBankUrl(key: String): String = "$INSTRUMENTS_BASE/${key.removePrefix("/")}"
 
     /**
      * Rip server: NO shipped default — the user pastes their own (Tailscale
@@ -63,3 +75,11 @@ object Endpoints {
     /** Playable audio for a rips-manifest entry key (e.g. "rips/<id>.mp3"). */
     fun ripAudioUrl(key: String): String = "$RIPS_BASE/${key.removePrefix("/")}"
 }
+
+/**
+ * Rec-engine shared enrollment secret (BRW-13), mirrored from iOS `Config.recEngineEnrollSecret`.
+ * Sent as `X-PocketDJ-Enroll` ONLY on the two routes that can create or destroy server state
+ * (`POST /events`, `DELETE /state`); the read routes authenticate with the bearer key alone.
+ * Not a user secret: it ships in every client build, exactly like the iOS .ipa constant.
+ */
+const val REC_ENGINE_ENROLL_SECRET: String = "108fe53e75eb4bcf5a6c1390ee756ea100d3fa4ae7d3194d"

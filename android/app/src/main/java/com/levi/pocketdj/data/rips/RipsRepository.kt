@@ -5,12 +5,14 @@ import com.levi.pocketdj.data.config.Endpoints
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.CacheControl
@@ -33,6 +35,9 @@ class RipsRepository(
 ) {
     private val _manifest = MutableStateFlow<RipsManifest>(emptyMap())
     val manifest: StateFlow<RipsManifest> = _manifest.asStateFlow()
+
+    /** Launch gate (installed by AppGraph from onboarding): network refreshes wait for it. */
+    @Volatile var launchGate: suspend () -> Unit = {}
 
     private val manifestFile = File(cacheDir, "rips-manifest.json")
 
@@ -68,35 +73,91 @@ class RipsRepository(
      * "Manifest fetch failure → keep cached copy"): the previous in-memory or
      * on-disk manifest is kept and returned.
      */
-    suspend fun refresh(): RipsManifest = withContext(Dispatchers.IO) {
-        val request = Request.Builder()
-            .url(Endpoints.RIPS_MANIFEST_URL)
-            .cacheControl(CacheControl.FORCE_NETWORK)
-            .build()
+    suspend fun refresh(): RipsManifest =
         try {
-            http.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) error("HTTP ${response.code} fetching rips manifest")
-                val text = response.body?.string() ?: error("Empty rips manifest body")
-                val decoded = json.decodeFromString<RipsManifest>(text)
-                _manifest.value = decoded
-                // Persist raw bytes only after the decode succeeded; best-effort.
-                runCatching {
-                    val temp = File.createTempFile("rips-", ".part", cacheDir)
-                    temp.writeText(text)
-                    Files.move(
-                        temp.toPath(),
-                        manifestFile.toPath(),
-                        StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.ATOMIC_MOVE,
-                    )
-                }
-                decoded
-            }
+            launchGate()
+            fetchManifest()
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error
             // Keep the previous in-memory manifest; try disk if we have nothing.
             if (_manifest.value.isEmpty()) seedFromDisk()
             _manifest.value
         }
+
+    /**
+     * Like [refresh] but reports failure: any fetch/decode error surfaces as [java.io.IOException]
+     * (the cached manifest is still seeded). For background workers that must retry on failure.
+     */
+    suspend fun refreshStrict(): RipsManifest =
+        try {
+            launchGate()
+            fetchManifest()
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            if (_manifest.value.isEmpty()) seedFromDisk()
+            throw if (error is java.io.IOException) error else java.io.IOException("rips manifest refresh failed", error)
+        }
+
+    /**
+     * Monotonic arrival stamp. Overlapping refreshes (rip completion, burn loops, the UI button)
+     * can finish DECODING in any order; adoption requires being the newest ARRIVAL, so an older
+     * response completing late is discarded instead of flipping a just-ready rip back to
+     * "not ripped".
+     */
+    private val generation = AtomicLong()
+    private val adoptLock = Any()
+
+    internal fun stampArrival(): Long = generation.incrementAndGet()
+
+    /**
+     * Decode [text] and adopt it iff [gen] is still the newest arrival. Publishes only on a real
+     * change (an identical manifest never re-emits). Returns the manifest in force afterwards.
+     */
+    internal suspend fun adopt(gen: Long, text: String): RipsManifest {
+        val decoded = withContext(Dispatchers.Default) { json.decodeFromString<RipsManifest>(text) }
+        val changed: Boolean
+        synchronized(adoptLock) {
+            if (generation.get() != gen) return _manifest.value // a newer response arrived
+            changed = decoded != _manifest.value
+            if (changed) _manifest.value = decoded
+        }
+        if (changed || !manifestFile.isFile) persist(gen, text)
+        return decoded
+    }
+
+    private val persistMutex = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun persist(gen: Long, text: String) = persistMutex.withLock {
+      withContext(Dispatchers.IO) {
+        // A newer arrival owns the disk copy now (its own persist is queued behind us).
+        if (generation.get() != gen && manifestFile.isFile) return@withContext
+        // Persist raw bytes only after the decode succeeded; best-effort.
+        runCatching {
+            val temp = File.createTempFile("rips-", ".part", cacheDir)
+            temp.writeText(text)
+            Files.move(
+                temp.toPath(),
+                manifestFile.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
+            )
+        }
+      }
+    }
+
+    private suspend fun fetchManifest(): RipsManifest {
+        val request = Request.Builder()
+            .url(Endpoints.RIPS_MANIFEST_URL)
+            .cacheControl(CacheControl.FORCE_NETWORK)
+            .build()
+        val (gen, text) = withContext(Dispatchers.IO) {
+            http.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) error("HTTP ${response.code} fetching rips manifest")
+                val body = response.body?.string() ?: error("Empty rips manifest body")
+                // Stamp at RESPONSE arrival, before the (possibly slow) decode.
+                stampArrival() to body
+            }
+        }
+        return adopt(gen, text)
     }
 }

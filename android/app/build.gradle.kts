@@ -17,6 +17,31 @@ android {
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Diagnostics upload channel gate (decision D8): DEBUG || DIAG_CHANNEL.
+        // Release builds stay false; a TestFlight-style internal channel flips it.
+        buildConfigField("boolean", "DIAG_CHANNEL", "false")
+        // Build identity for Settings ▸ Debug (SVC-5); "unknown" outside a git checkout.
+        val gitSha = runCatching {
+            val p = ProcessBuilder("git", "rev-parse", "--short", "HEAD").directory(projectDir)
+                .redirectErrorStream(true).start()
+            p.inputStream.bufferedReader().readText().trim().also { p.waitFor() }
+        }.getOrNull()?.takeIf { it.matches(Regex("[0-9a-f]{4,40}")) } ?: "unknown"
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+
+        // STU-2: Studio native DSP lib (cpp/pdjdsp). Real devices are arm64; x86_64 serves the emulator.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        externalNativeBuild {
+            cmake { cppFlags += "-std=c++17"; arguments += listOf("-DANDROID_STL=c++_shared") }
+        }
+    }
+
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/pdjdsp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
@@ -38,12 +63,19 @@ android {
         jvmTarget = "17"
     }
 
+    // MIX-2: instrumented audio tests share the JVM mp3 fixtures
+    sourceSets.getByName("androidTest").resources.srcDir("src/test/resources")
+
     buildFeatures {
         compose = true
+        buildConfig = true
+        prefab = true // Oboe ships as a prefab AAR (STU-2)
     }
 }
 
 dependencies {
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -84,9 +116,26 @@ dependencies {
     // AARs assume but don't declare (specs/applemusic.md §1, fact 0.4).
     implementation(libs.androidx.appcompat)
 
+    // Decision D4 dependency sweep: later packages add files, not build lines.
+    implementation(libs.androidx.material3.adaptive.navigation.suite)
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.lifecycle.process)
+    implementation(libs.androidx.security.crypto)
+    implementation(libs.androidx.glance.appwidget)
+    implementation(libs.androidx.media3.common)
+    implementation(libs.play.services.location)
+
+    // STU-2: Oboe low-latency output (prefab; linked from cpp/pdjdsp).
+    implementation(libs.oboe)
+
     debugImplementation(libs.androidx.ui.tooling)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.androidx.work.testing)
 }

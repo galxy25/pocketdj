@@ -1,0 +1,779 @@
+{
+ "area": "System surfaces + shell (navigation shell/tab set, deep links, onboarding, app lifecycle/background work, lock-screen transport, widgets, App Actions/shortcuts, Android Auto, Jukebox host+guest, Settings, multi-window)",
+ "inventory": [
+  {
+   "feature": "Top-level section set + landing: Browser \u00b7 History \u00b7 Collections(Playlists) \u00b7 Mix \u00b7 Producer(Performance) \u00b7 Jukebox Hero \u00b7 Games \u00b7 Settings; History is the default landing tab; last-visited section persisted (`settings.lastSection`) and restored on iOS relaunch; pinned section tokens never renamed",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Views/RootView.swift:80-114 (Section enum), RootView.swift launchActions (PDJ_START_SECTION + lastSection restore, History default), Settings/SettingsStore.swift (lastSection)",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/navigation/PocketDjDestination.kt (6 tabs), MainActivity.kt PocketDjApp (startDestination=Browse, Settings gear only on Browse, Mix/Producer placeholders)",
+   "notes": "Android lacks Games tab, History-default landing, last-tab restore, and the 'Can't open that' alert for unroutable navigation. Settings-inside-Browse is a recorded Android product decision \u2014 keep."
+  },
+  {
+   "feature": "Single navigation-destination registry (every stack can push album/artist/song/pocket/playlist/setlist/source playlist/jukebox join route); intent-driven navigation via a pending-route bus consumed atomically by the shell with a staged push (clear signal first, switch section now, push 450 ms later)",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Views/NavigationDestinations.swift, Views/RootView.swift:807-905 (consumeIntentRoute / consumeJukeboxOpen / consumeFriendsOpen), Intents/IntentServices.swift (IntentRoute, pendingRoute, routeMessage)",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (string routes + builders: albumRoute/artistRoute/playlistRoute/pocketRoute/setlistRoute/sourcePlaylistRoute)",
+   "notes": "Routes exist but there is no out-of-UI route bus (needed by deep links, shortcuts, Auto, widget taps). No jukebox-join route."
+  },
+  {
+   "feature": "Deep links: `pocketdj://jukebox/<id>` + Universal Link `https://jukebox.pocket-dj.com/<id>/` \u2192 JOIN as guest (parked until onboarding completes); `pocketdj://mwf/<id>` / `https://jukebox.pocket-dj.com/mwf/<id>/` (Music with Friends); `.pdjcollection`/legacy `.zip` file open \u2192 import collection; `.pdjdiagkey` \u2192 diag key import; streaming OAuth callback. Id validated against server shape `[a-z2-7]{4,32}` so unrelated URLs never misparse",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/PocketDJApp.swift:1911-1950 (onOpenURL precedence: diagkey \u2192 mwf \u2192 jukebox \u2192 file/OAuth), Jukebox/JukeboxLink.swift, Games/Friends/MwFLink.swift, apple/project.yml:82-142 (UTExportedTypeDeclarations com.pocketdj.collection, CFBundleURLSchemes pocketdj)",
+   "android_files": "android/app/src/main/AndroidManifest.xml (only MAIN/LAUNCHER + AM SDK auth activity)",
+   "notes": "App Links autoVerify needs `/.well-known/assetlinks.json` on jukebox.pocket-dj.com (website change, out of android/). Emulator can exercise all VIEW intents via `adb shell am start`."
+  },
+  {
+   "feature": "Zero-to-hero onboarding: 3 stages (Profile on-device vs iCloud \u2192 Apple Music sign-in \u2192 Sources Vinyl/Digital/Streaming); decision tree (marker absent + settings blob \u21d2 existing user, stamp completed silently; `started(stage)` resumes; `pending` after mushroom-cloud reset); `waitUntilComplete()` gates the ENTIRE launch pipeline; mutating intents/CarPlay vetoed while incomplete; file/link opens deferred until complete",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/OnboardingStore.swift (decide(), Marker JSON {version,state,stage,completedAtMs} under `pdj.onboarding.v1`), Views/Onboarding/OnboardingView.swift, Intents/IntentServices.swift:107-123 (veto)",
+   "android_files": "\u2014",
+   "notes": "iCloud profile branch is N/A (no CloudKit); Android stage 1 = PocketDJ name + 'device-only' note (future S3 sync). Apple Music stage reuses existing MusicKitAuth sign-in (device-only completion)."
+  },
+  {
+   "feature": "App lifecycle: foreground \u2192 endpoint re-check (15-min throttle), drain widget commands, reconcile transfers, auto-sync-if-due; background \u2192 flush funnel (collections doc, playback session snapshot, mix-deck session, history/telemetry, jukebox) BEFORE suspension; BGTasks burn-drain / rip-reconcile(15 min) / storage-prune(daily) re-armed from .background; 15-min while-active tick for daily jobs; background URLSession for transfers; orderly-exit finalize of in-flight mix recording",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/PocketDJApp.swift:2012-2137 (scenePhase hooks), AppDelegate.swift (BGTaskScheduler ids com.levi.pocketdj.burn-drain/rip-reconcile/storage-prune, TransferCoordinator.activate, RecordingExitBridge), Support/RemoteEndpoints.swift",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt:80-84 (onStart \u2192 refreshEndpoints), di/AppGraph.kt (RemoteEndpoints.install + launch refresh)",
+   "notes": "No Application subclass, no ProcessLifecycleOwner flush funnel, no WorkManager. Android stores already write atomically on mutation, so the flush funnel is smaller than iOS but still needed for debounced writers (BrowseSession 400 ms debounce, future playback-session snapshot)."
+  },
+  {
+   "feature": "Lock-screen / system transport: single-owner arbiter between standalone player and Mix engine ('whoever last STARTED audio owns the card'; preferred owner after restore; restored-but-never-sounded Mix is NOT a remote target); \u23ed/\u23ee enabled only while a set runs; \u2665 likeCommand owned by player (disabled on Mix card, healed on reclaim); repeat/shuffle commands enabled only while a set runs and glyph state re-asserted; Mix remote \u23f8 suspends Auto-DJ wall clock (never ends mix), \u25b6 resumes only what pause silenced; Mix \u23ed=5 s fast switch, \u23ee=slow (Settings skip fade); honest card: buffering shows \u23f8 with frozen cursor",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Playback/NowPlayingArbiter.swift, Playback/NowPlayingCardPublisher.swift, Playback/PlayerEngine.swift:1020-1130, Mix/MixEngine.swift:2306-2360 (remotePause/remotePlay), MixEngine.swift:5680-5800 (configureMixRemoteCommands/handleRemoteCommand)",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackService.kt (MediaSessionService, default notification/lock-screen transport), playback/PlaybackController.kt (NowPlayingInfo flow, EXO/APPLE_MUSIC single-owner enum)",
+   "notes": "Media3 gives play/pause/seek/next/prev + progress extrapolation for free (card invariants are handled by the framework). Missing: \u2665 custom command, repeat/shuffle availability gating, session-player arbiter seam for the future Mix engine, resumption of a held session without auto-play."
+  },
+  {
+   "feature": "Now Playing widgets (small/medium/large + idle): cover, title/artist, Up Next, \u23ee\u23ef\u23ed \u2665 (+ repeat/shuffle on Large, \ud83d\udc4d/\ud83d\udc4e only for recommendation queues); App Group snapshot `nowPlayingSnapshot.v1` + cover PNG; widget taps while app quit are QUEUED (`pendingWidgetCommands`, max 32; stale transport discarded, verdicts never) and drained on foreground / Darwin wake-up; \u2665 while quit targets the snapshot's song",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJWidgets/NowPlayingWidget.swift, apple/Shared/NowPlayingSnapshot.swift, apple/Shared/WidgetTransport.swift, apple/PocketDJ/Playback/WidgetSync.swift",
+   "android_files": "\u2014",
+   "notes": "Glance AppWidget; snapshot keeps iOS JSON key names so a future shared doc stays compatible. \ud83d\udc4d/\ud83d\udc4e pair stays hidden until a rec engine exists on Android (recScope empty)."
+  },
+  {
+   "feature": "App Intents / Siri / Spotlight: 8 App Shortcuts (Play/Shuffle Playlist, Play/Shuffle Pocket, Auto-Mix source, Pause/Resume Auto-Mix, Create Pocket), Open Playlist/Pocket (Spotlight), system.search \u2192 Browser query; entity donations + Spotlight reindex debounced on collections change; iOS 27 audio assistant schema; onboarding veto; `ensureReady()` returns right after disk-cache seed (Siri 10 s budget)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Intents/PocketDJShortcuts.swift, Intents/PlaybackIntents.swift, Intents/MixIntents.swift, Intents/IntentServices.swift, Intents/CollectionsDonations.swift, Intents/CreatePocketIntent.swift + PocketBuilder.swift, Intents/AudioSchema27.swift",
+   "android_files": "\u2014",
+   "notes": "Android analogues: `MEDIA_PLAY_FROM_SEARCH` + MediaSession search callbacks (Assistant 'play X on PocketDJ'), static + dynamic shortcuts (donations analogue), Spotlight \u2248 none. Create Pocket (on-device Foundation Models + NLEmbedding) is N/A on Android \u2014 no on-device LLM; iOS 27 schema N/A."
+  },
+  {
+   "feature": "CarPlay \u2192 Android Auto: root tabs Playlists (user + 'src:' source playlists) \u00b7 Pockets \u00b7 For You (frozen cache, read-only, never refreshes) \u00b7 Mix (two-crate Auto DJ remote + Jukebox session\u2192QR); 'Continue' row for a held restored set (never auto-plays on connect); song \u2192 Play now / Add to pocket-playlist; Up Next (windowed 200) with Play now/Remove/Play next/Move to end; Now Playing buttons \u2665, shuffle+repeat (set running only), \ud83d\udc4d/\ud83d\udc4e (rec queue only); art cache; NO search tab (vehicle keyboard freeze); catalog warm-up placeholder; parked Mix stays parked on connect",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/CarPlay/CarPlayScene.swift, CarPlay/CarPlayModel.swift, CarPlay/CarPlayForYou.swift, Intents/IntentServices.swift:160-180 (restorePlaybackSessionIfIdle), apple/Tests/Unit/CarPlayModelTests.swift",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackService.kt (MediaSessionService, NOT a MediaLibraryService; no browse tree)",
+   "notes": "For You and \ud83d\udc4d/\ud83d\udc4e are N/A until recs exist on Android; Mix tab waits on the Mix engine. Auto renders the session queue itself (Up Next edits are phone-only). Desktop Head Unit (DHU) can drive the emulator over adb; real head unit + Assistant voice are device-only."
+  },
+  {
+   "feature": "Jukebox Hero HOST: create/resume/end, 4 s loop (state on change or 15 s heartbeat; requests poll with decided-set dedup), match \u2192 inbox, Deny/Play Next/Play Last/Surprise Slot, nothing-playing \u21d2 accepted request starts music, View+Hear gate (only public https rips-bucket mp3), 404/410 folds session, end clears local even on failure, QR on white card, share/copy link",
+   "status": "DONE",
+   "ios_files": "apple/PocketDJ/Jukebox/JukeboxStore.swift, Jukebox/JukeboxClient.swift, Views/JukeboxView.swift",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxRepository.kt, JukeboxClient.kt, JukeboxUrls.kt, JukeboxSessionStore.kt, JukeboxMatcher.kt, screens/jukebox/JukeboxScreen.kt, JukeboxQr.kt (+ 3 test files)",
+   "notes": "Verified at P1 checkpoint. Timeless toggle deliberately not ported (marked for removal on iOS)."
+  },
+  {
+   "feature": "Jukebox host gaps: played-history 'one row per track' dedup (server-side fix 2026-07-22: a pause\u2192null is NOT a transition; rewind/restart of the same track is not a replay); 'Require access token by default' Settings toggle seeding the create view; `GET /sessions` list + `GET /sessions/:id` adopt (become publisher of a session started elsewhere); Apple Music catalog-search match stage; broadcast accept into a running Auto-Mix with pending rip+burn inserts (15 min deadline)",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Jukebox/JukeboxStore.swift:168-200 (adopt), :454-583 (accept/acceptIntoMix/drainPendingMixInserts), Jukebox/JukeboxClient.swift:91-120 (listSessions/sessionInfo), Jukebox/JukeboxMatcher.swift (4 stages), Views/SettingsView.swift:623-676, scripts/jukebox-server.mjs notePlayed",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxRepository.kt:372-384 (derivePlayed logs on ANY change incl. \u2192null), screens/settings/SettingsScreen.kt:396-423 (URL/token only; no require-token toggle although AppSettingsStore.setJukeboxTokensRequiredByDefault exists)",
+   "notes": "Android local played mirror reproduces the exact pause-duplicate bug the broker fixed; fix client-side mirror to the server rule. Broadcast-into-Mix depends on the Mix engine (seam only here). Foundation-Models pick stage is N/A."
+  },
+  {
+   "feature": "Jukebox GUEST (join from link): joined-sessions list persisted (`pdj.jukebox.joined.list.v1` [{id,name,guestBase}]) shown as a strip on the Jukebox home; join panel polls public `<guestBase>/<id>/state.json` (cache-busted) every 4 s while on screen; now playing / up next / played / requests with 'mine' highlighting; submit request to `state.apiBase` (fallback configured broker) with stable clientId; Tune In (hear mode: play `streamUrl` seeked to host position, re-tune on track change, stop on leave); 404/410 \u21d2 ended; Leave removes; tapped link TAKES the user into the panel (`pendingOpenId`)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Jukebox/JukeboxGuest.swift, Jukebox/JukeboxLink.swift, Jukebox/JukeboxStore.swift:269-350, Jukebox/JukeboxClient.swift:184-213, Views/JukeboxJoinView.swift, Views/JukeboxView.swift:60-98",
+   "android_files": "\u2014",
+   "notes": "Fully emulator-testable: state.json and streamUrl are public https objects."
+  },
+  {
+   "feature": "Settings sections (iOS): Profile (PocketDJ name, iCloud sync toggle, Delete Account) \u00b7 Data sources (name/URL/enabled, add/remove) \u00b7 Collections (default recently-added count) \u00b7 Apple Music (sub-screen: credentials, syncing, favorites, write-back, explicit preference) \u00b7 Online search (AWS creds + host) \u00b7 Import server (URL, token, 'Rip from cloud source', Test) \u00b7 Jukebox Hero (URL, token, require-token default, Test) \u00b7 For You (refresh cadence) \u00b7 Recommendations (rec engine, lifetime counts, listening pockets, places) \u00b7 Mix (crossfade lead/length, skip fade, glide, auto-hide played, cue channel, beat pulse, deck layout) \u00b7 Storage (sub-screen) \u00b7 Edits (export/import JSON) \u00b7 Backup (.pocketdj.zip export/import) \u00b7 Reset everything (+ forces onboarding) \u00b7 Debug",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Views/SettingsView.swift:56-70 (section order), Settings/SettingsStore.swift (all keys), Views/AppleMusicSettingsView.swift, Views/DebugView.swift",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/screens/settings/SettingsScreen.kt (Data sources w/ presets, Catalog reload/clear, Import server URL/token/test, Apple Music sign-in/out, Jukebox broker URL/token, History clear, Storage nav, About), data/settings/AppSettingsStore.kt, screens/settings/StorageScreen.kt",
+   "notes": "Shell owns the Settings scaffold + Profile/Collections count/ripFromCloud/require-token/Reset/Backup/Edits/Debug rows. Mix / For You / Recommendations / AM-sync rows are added by those areas through a section registry (shared touch point). Online search stays deliberately absent until aoss lands (no dead controls). iCloud toggle + Delete Account cloud wipe are N/A (no CloudKit); local 'Delete everything' folds into Reset."
+  },
+  {
+   "feature": "Settings credentials sync across devices (rip/jukebox/search creds as an iCloud-synced doc; blank-field doctrine)",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Settings/SettingsCredentialsSync.swift",
+   "android_files": "\u2014",
+   "notes": "CloudKit. Revisit with the future S3 profile sync; keep the credential subset as a distinct serializable struct so the doc shape (schemaVersion 1) can be reused then."
+  },
+  {
+   "feature": "Backup `.pocketdj.zip` (collections + sources + edits + favorites; collections import under fresh ids, favorites merge newest-wins) and `.pdjcollection` pocket/playlist share files (custom UTI com.pocketdj.collection, mime application/x-pocketdj-collection) incl. 'Open in PocketDJ' from Files/Messages",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Services/BackupZip.swift, Services/PocketZip.swift, Services/PlaylistZip.swift, Services/PortableItems.swift, Support/PocketDJUTType.swift, Views/SettingsView.swift:147-200",
+   "android_files": "\u2014",
+   "notes": "Must stay byte-shape compatible with the iOS zip layout so files round-trip between platforms (Android has the same collections JSON codec \u2014 CollectionsCodec.kt)."
+  },
+  {
+   "feature": "Device identity header `X-PocketDJ-Device` (per-install UUID) on every authenticated call; `X-PocketDJ-Profile` omitted when no profile",
+   "status": "DONE",
+   "ios_files": "apple/PocketDJ/Support/DeviceIdentity.swift",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (ensureInstallId), data/jukebox/JukeboxClient.kt:25, data/rips/RipServerClient.kt (Config.installId)",
+   "notes": "Profile header stays omitted until S3 profiles."
+  },
+  {
+   "feature": "Multi-window (\u2318N new window; per-window tab + stack, shared engines) and macOS/iPad keyboard shortcuts \u2318B/\u2318H/\u2318P/\u2318J",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/PocketDJApp.swift:1841-1847,2139-2219 (NewWindowCommands), Views/RootView.swift:957-975",
+   "android_files": "android/app/src/main/AndroidManifest.xml",
+   "notes": "Desktop/iPad affordance. Android: keep `resizeableActivity` default (true) so split-screen/freeform work; no multi-instance. Hardware-keyboard shortcuts not planned."
+  },
+  {
+   "feature": "Push notifications (APNs) + NotificationRouter for Music-with-Friends session opens",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Services/PushRegistrationService.swift, Services/NotificationRouter.swift, AppDelegate.swift",
+   "android_files": "\u2014",
+   "notes": "Belongs to the Games/MwF area and would need FCM (Firebase) \u2014 a dependency decision for that area; the 4 s poll is the documented fallback. LINK-1 still reserves the `pocketdj://mwf/<id>` route so the Games area can consume it."
+  },
+  {
+   "feature": "Debug & diagnostics: capture debug log sessions + export, remote telemetry to private S3 diag bucket (write-only key, `.pdjdiagkey` import), build identity, dead-air meter readout, backend summary",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Views/DebugView.swift, Support/DiagLog.swift, Support/DiagKeyImport.swift, Playback/DeadAirMeter.swift, Services/Search/SigV4.swift",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/screens/settings/SettingsScreen.kt:458-470 (About rows: version, Android, catalog/rips base, backend summary)",
+   "notes": "Only the 'Backend' About row exists. Remote telemetry needs a SigV4 PUT implementation on Android (none yet). Dead-air metric depends on the playback area."
+  },
+  {
+   "feature": "tvOS / visionOS shells (TVRootView, TV Mix, TV Now Playing actions)",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Views/TVRootView.swift, Views/TVCompat.swift",
+   "android_files": "\u2014",
+   "notes": "No Android TV target in the locked decisions."
+  }
+ ],
+ "architecture": "## Android architecture \u2014 System surfaces + shell\n\n### Packages (all under `android/app/src/main/java/com/levi/pocketdj/`)\n\n```\nPocketDjApplication.kt            Application subclass: builds AppGraph, installs ProcessLifecycleOwner observer, WorkManager init\nshell/\n  ShellActions.kt                 the IntentServices analogue \u2014 ONE fa\u00e7ade every out-of-UI surface calls (Auto, widgets, shortcuts, deep links, Assistant)\n  NavRequestBus.kt                pending navigation route (atomic take) + routeMessage (\"Can't open that\")\n  ShellRoute.kt                   sealed routes: Album/Artist/Playlist/Pocket/Setlist/SourcePlaylist/JukeboxJoin/BrowseSearch(query)/Tab\n  LastSectionStore.kt             lastSection + History-default landing\n  DeepLinkParser.kt               URL \u2192 DeepLink (JukeboxJoin | Mwf | CollectionFile | DiagKey | None); precedence identical to PocketDJApp.onOpenURL\n  FlushRegistry.kt                background flush funnel (registered closures, run on ON_STOP)\nonboarding/\n  OnboardingStore.kt              marker doc {version,state,stage,completedAtMs} in DataStore key `pdj.onboarding.v1`; decide(); waitUntilComplete()\n  OnboardingScreen.kt + 3 stage composables\nwork/\n  WorkScheduler.kt                PeriodicWorkRequest ids: rip-reconcile (15 min, network), storage-prune (24 h), burn-drain (seam)\n  RipReconcileWorker.kt, StoragePruneWorker.kt (CoroutineWorker; call AppGraph lazies)\nplayback/ (modifies existing)\n  PlaybackService.kt \u2192 MediaLibraryService (AUTO-1); SessionPlayerArbiter.kt (LOCK-1); TransportOwner.kt (interface for Mix facade)\n  resumption/ResumptionProvider.kt seam (held last queue, never auto-play)\nwidget/\n  NowPlayingSnapshot.kt (kotlinx.serialization; iOS key names), WidgetSync.kt (observer \u2192 DataStore + cover PNG), NowPlayingWidget.kt (Glance), NowPlayingWidgetReceiver.kt, WidgetActionReceiver.kt, PendingWidgetCommands.kt\nauto/\n  AutoBrowseTree.kt               pure Kotlin: root/tabs/items \u2192 MediaItem list (unit-testable, no Android Auto import \u2014 the CarPlayModel doctrine)\n  AutoLibraryCallback.kt          MediaLibrarySession.Callback: onGetLibraryRoot/onGetChildren/onGetItem/onSearch/onSetMediaItems/onCustomCommand\n  AutoArtwork.kt                  artworkUri resolution (https catalog art; Coil-cached content URI fallback)\nassistant/\n  ShortcutsPublisher.kt           static shortcuts.xml + dynamic shortcuts (donation analogue, debounced on CollectionsStore change)\n  MediaSearchHandler.kt           MEDIA_PLAY_FROM_SEARCH + session search \u2192 ShellActions\ndata/jukebox/ (extends existing)\n  JukeboxLink.kt, JukeboxGuestState.kt, JukeboxGuestClient.kt (guestState/submitGuestRequest/listSessions/sessionInfo), JoinedSessionsStore.kt\nscreens/jukebox/JukeboxJoinScreen.kt, JoinedSessionsStrip.kt\nscreens/settings/\n  SettingsSections.kt             section registry (List<SettingsSection>) \u2014 other areas append rows here, not inside SettingsScreen.kt\n  ProfileSection.kt, ResetSection.kt, BackupSection.kt, DebugScreen.kt\ndata/backup/BackupZip.kt, CollectionFile.kt (PocketZip/PlaylistZip shape)\n```\n\n### Key classes and data flow\n\n**ShellActions** (app-scoped, in `AppGraph`): `playPlaylist(id, shuffle)`, `playPocket(id, shuffle)`, `playSong(id)`, `playAlbum(id, shuffle)`, `playSongIds(ids, name, shuffle, context)`, `startAutoMix(source, shuffle)` / `pauseAutoMix()` / `resumeAutoMix()` (delegate to a `MixFacade?` seam \u2014 null until the Mix area lands \u21d2 throws `NotAvailable`), `open(route)` (posts to NavRequestBus), `search(query)`. Every mutating call runs `onboarding.vetoIfIncomplete()` (iOS R4 veto) and `ensureReady()` = `catalogRepository.loadIfNeeded()` (returns after disk-cache seed; refresh continues in background \u2014 the Siri-budget doctrine). Playback goes through the existing `PlaybackController` / `QueuePlan` so Auto, widgets, shortcuts and the phone share one queue and one Now Playing.\n\n**NavRequestBus**: `MutableStateFlow<ShellRoute?>`; the shell (`PocketDjApp`) collects it, `take()`s atomically (clear first), switches tab now, and stages the push after the tab-switch frame (`withFrameNanos`/`delay(450)`), exactly RootView's discipline. A route that cannot resolve (deleted collection, album not in catalog) sets `routeMessage` \u2192 app snackbar/alert \u2014 never a silent no-op.\n\n**Lifecycle**: `PocketDjApplication` registers a `DefaultLifecycleObserver` on `ProcessLifecycleOwner`: `onStart` \u2192 `refreshEndpoints()`, `PendingWidgetCommands.drain()`, `WorkScheduler.ensureScheduled()`, `jukeboxRepository.bootstrap()`; `onStop` \u2192 `FlushRegistry.flushAll()` (BrowseSession debounce, collections `flushNow`, jukebox session, playback-session snapshot once that exists) then `WorkScheduler.ensureScheduled()`. WorkManager replaces BGTaskScheduler: rip-reconcile = `ripsRepository.refresh()`; storage-prune = `storageService.pruneIfDue()` (gate inside; no-op without cap \u2014 the storage area owns the gate). `android:foregroundServiceType=\"mediaPlayback\"` already covers audio.\n\n**Lock-screen / MediaSession** (LOCK-1): one `MediaSession` (becomes `MediaLibrarySession` in AUTO-1). `SessionPlayerArbiter` holds the active `Player` and swaps it with `mediaSession.player = \u2026` \u2014 rule: the engine that last STARTED audio owns the session; a restored-but-never-sounded engine is not a remote target; `preferred` owner answers remote commands after a restore. `TransportOwner` interface (`remotePlay/remotePause/remoteNext/remotePrev`, `supportsLike`, `setRunning`) is what the Mix facade must implement later; Mix's \u23ed=fast switch / \u23ee=slow switch semantics live in that implementation. A `ForwardingPlayer` over ExoPlayer gates `COMMAND_SEEK_TO_NEXT/PREVIOUS_MEDIA_ITEM` and `COMMAND_SET_REPEAT_MODE/SET_SHUFFLE_MODE` availability to \"a set is running\" (queue from a collection context, `mediaItemCount > 1`). Custom layout: \u2665 `CommandButton` (SessionCommand `pdj.favorite`) shown only when a `FavoriteSeam` is wired (Collections area), hidden on the Mix owner. `onPlaybackResumption` returns the held queue + start position from `ResumptionProvider` with `playWhenReady=false` semantics honoured by never calling `play()` on connect (the CarPlay 'held, driver taps \u25b6' rule).\n\n**Widgets** (WID-1): `WidgetSync` collects `playbackController.nowPlaying` + queue tail (via the controller's MediaController hop) + favorite state \u2192 writes `NowPlayingSnapshot` JSON (same keys as `apple/Shared/NowPlayingSnapshot.swift`: isPlaying, hasContent, title, artist, songId, coverVersion, upNext[{id,songId,title,artist}], isFavorite, appleMusicId, repeatMode, shuffleEnabled, recVerdict, recScope) to `filesDir/widget/nowplaying.json` + `cover.png`, then `NowPlayingWidget().updateAll()`. Glance renders Responsive sizes (small \u2248 2\u00d71: toggle+next; medium: \u23ee\u23ef\u23ed\u2665; large: + repeat/shuffle + Up Next). Transport actions send `ACTION_MEDIA_BUTTON` KeyEvents to `PlaybackService` (works when the process is dead: service starts, Media3 resumption). \u2665/repeat/shuffle go to `WidgetActionReceiver`: if the graph is live apply immediately, else append to `pendingWidgetCommands` (DataStore JSON; cap 32; transport entries expire after 20 s, verdicts/favorites never) and drain at `onStart`. A \u2665 queued while quit carries the snapshot's `songId` so it targets the song the user saw.\n\n**Android Auto** (AUTO-1): `PlaybackService` becomes `MediaLibraryService`; manifest adds `android.media.browse.MediaBrowserService` intent filter + `com.google.android.gms.car.application` meta-data (`res/xml/automotive_app_desc.xml`, `<uses name=\"media\"/>`). `AutoBrowseTree` is pure Kotlin over `CollectionsStore` + `CatalogRepository` + `RipsRepository`: root children = `tab:playlists`, `tab:pockets` (CONTENT_STYLE list hints), later `tab:mix`; `tab:playlists` = user playlists + source playlists (`src:` ids, subtitle badge); collection node children = `all:<id>` (\"Play all\"), `shuffle:<id>`, then song items (playable, windowed 200, unplayable AM-only songs rendered non-playable with subtitle \"Not available here\"); `continue:` row first at root when `ResumptionProvider.held() != null`. Selecting a song calls `ShellActions.playSongIds(collection songs, startAt=song)` so Auto's queue = the collection. Custom browser action `pdj.addTo` (\"Add to pocket/playlist\") only on song items (Media3 1.6 `EXTRAS_KEY_CUSTOM_BROWSER_ACTION_*`; verify on DHU). Catalog not warm \u21d2 root child \"Loading\u2026\" and `notifyChildrenChanged(root)` when loaded (no catalog sweep on the connect path \u2014 the car never triggers heavy work).\n\n**Assistant / shortcuts** (INT-1): `MainActivity` gets `android.media.action.MEDIA_PLAY_FROM_SEARCH`; `MediaSearchHandler.resolve(query, focus)` \u2192 collection name match (playlist/pocket, case-insensitive, then fuzzy via `JukeboxMatcher.normalize`) \u2192 `ShellActions`; same resolver serves `MediaLibrarySession.Callback.onSearch/onAddMediaItems(searchQuery)`. `ShortcutsPublisher` publishes static shortcuts (Start Jukebox, Open Collections, Open History) from `res/xml/shortcuts.xml` and dynamic shortcuts (`ShortcutManagerCompat.pushDynamicShortcut`, up to `maxShortcutCountPerActivity`) for the most recently played playlists/pockets with intents `pocketdj://play/playlist/<id>?shuffle=0`; debounced 1 s on `CollectionsStore.state` changes (the Spotlight-donation analogue). Deep links of the `pocketdj://play/...` form are parsed by `DeepLinkParser` and executed through `ShellActions`.\n\n**Deep links** (LINK-1): manifest intent filters \u2014 `pocketdj` scheme (hosts `jukebox`, `mwf`, `play`), `https://jukebox.pocket-dj.com/*` with `android:autoVerify=\"true\"`, `ACTION_VIEW`/`ACTION_SEND` for `application/x-pocketdj-collection`, `application/zip`, `*/*` with `.pdjcollection` path pattern. `MainActivity.onCreate`/`onNewIntent` \u2192 `DeepLinkParser` \u2192 `ShellActions.handle(link)`; while onboarding is incomplete the link parks in `PendingOpen` and drains on completion (iOS `pendingJukeboxLink` / `pendingOpenURL`). `launchMode=\"singleTask\"` so a tapped link reuses the running shell.\n\n**Jukebox guest** (JBX-2): `JoinedSessionsStore` (DataStore JSON `[{id,name,guestBase}]`, idempotent add-to-top, remove, updateName). `JukeboxJoinScreen` owns its poll (`LaunchedEffect` + 4 s loop, cancelled on leave), maps 404/410 \u2192 ended, highlights requests whose `clientId == installId`, \"Tune In\" plays `nowPlaying.streamUrl` via `PlaybackController.playUrl(title, artist, url, seekMs = positionMs + elapsed-since-updatedAt)` (new small method) and re-tunes when `title|artist` changes. Host tab (`JukeboxScreen`) shows `JoinedSessionsStrip` above create/live view; `pendingOpenId` from a tapped link routes `ShellRoute.JukeboxJoin(id)` through NavRequestBus.\n\n**Settings** (SET-1/2): `SettingsSections.kt` exposes `fun settingsSections(graph): List<SettingsSection>`; `SettingsScreen` iterates it. New `AppSettings` keys (DataStore, additive-optional): `pocketDJName` (default \"\"), `defaultRecentlyAddedCount` (50, clamped 1\u2026500), `ripFromCloud` (false), `onboardingMarkerJson`. Reset everything = clear settings DataStore (keeps nothing), `catalogService.clearCache()`, delete collections/history/activity/jukebox files, `onboarding.forcePending()`; the onboarding marker is written AFTER the wipe (iOS mushroom-cloud order). Backup zip mirrors `BackupZip.swift` entries (collections.json, sources.json, edits.json, favorites.json, manifest.json) via SAF `ACTION_CREATE_DOCUMENT`/`ACTION_OPEN_DOCUMENT`; collections import under fresh ids via `CollectionsCodec` + id remap.\n\n### Persistence formats\n- Onboarding marker: JSON `{\"version\":1,\"state\":\"pending|started|completed\",\"stage\":0..2,\"completedAtMs\":\u2026}` \u2014 same as iOS `pdj.onboarding.v1`.\n- Joined jukeboxes: JSON array `[{\"id\",\"name\",\"guestBase\"}]` \u2014 same as iOS `pdj.jukebox.joined.list.v1`.\n- Widget snapshot: iOS `NowPlayingSnapshot` key set (above), file-backed; cover PNG beside it.\n- Pending widget commands: `[{\"kind\",\"at\",\"songId\",\"scope\",\"verdict\"}]` (iOS `WidgetCommandChannel.Pending`).\n- Backup zip: iOS `BackupZip` layout (read `apple/PocketDJ/Services/BackupZip.swift` for the exact entry names before implementing).\n- All docs additive-optional, `PdjJson.lenient`, atomic temp-file+rename writes (existing store pattern).\n\n### Threading\n- `AppGraph.appScope` (Dispatchers.Default) for loops/observers; IO for disk/network; `MediaController`/`MediaSession` touches hop to Main (existing `withController` pattern). Glance `provideGlance` reads the snapshot file on IO. WorkManager `CoroutineWorker`s run on Default. The Auto callback must return quickly: `onGetChildren` reads already-loaded state and returns `Futures`; never awaits a network refresh. ProcessLifecycle `onStop` flush runs synchronously-ish via `runBlocking(IO)` bounded by 2 s so a quick suspend cannot lose the write.\n\n### Mix DSP engine (touched by LOCK-1 only)\nShell constraint, not a DSP choice: whatever the Mix area picks (Oboe/AAudio native graph is the better fit for tempo/pitch/crossfade and is my recommendation if the decision falls to this stage), the engine must expose a Media3 `SimpleBasePlayer` facade implementing `TransportOwner`, so the one `MediaSession` can host it through `SessionPlayerArbiter.setOwner(mixPlayer)` and the lock screen / Auto / widgets drive the Mix with the iOS remote semantics (\u23f8 suspends the Auto-DJ, \u25b6 resumes, \u23ed/\u23ee = fast/slow switch, no \u2665).",
+ "decisions": [
+  "Keep the Android bottom-bar shell (Levi-approved at P1) but drive it from an adaptive NavigationSuiteScaffold: compact width = M3 NavigationBar with labels shown only for the selected item so a 7th destination (Games, placeholder until the Games area lands) fits; medium/expanded width = NavigationRail. Settings stays inside Browse (recorded Android product decision).",
+  "History becomes the default landing tab and the last-visited tab is restored on relaunch (iOS parity, Levi 2026-07-22); persisted in AppSettings as `lastSection` with the destination route token.",
+  "All out-of-UI entry points (Android Auto, widgets, shortcuts, Assistant media search, deep links) go through ONE fa\u00e7ade `ShellActions` (the IntentServices analogue) and ONE route bus `NavRequestBus` with atomic-take + staged push; a route that cannot be honoured always produces a visible message.",
+  "Onboarding is ported with the iOS decision tree and marker shape; stage 1 is 'PocketDJ name + device-only' (iCloud branch N/A \u2014 no CloudKit; future S3 sync). The whole launch pipeline and every mutating ShellActions call wait on / are vetoed by onboarding, exactly as on iOS.",
+  "Background work uses WorkManager (periodic rip-reconcile 15 min with network constraint; storage-prune daily) and a ProcessLifecycleOwner ON_STOP flush funnel (`FlushRegistry`) replaces the iOS scenePhase .background flush block. No background URLSession analogue is needed in this area (transfers belong to the storage/burn area; the registry exposes a seam).",
+  "Lock-screen transport stays on the single Media3 MediaSession; a `SessionPlayerArbiter` swaps the session's Player between ExoPlayer and the future Mix `SimpleBasePlayer` facade with the iOS ownership rules (last-started owns; restored-never-sounded is not a remote target; preferred owner after restore). \u2665 is a custom CommandButton shown only when the Collections area wires a FavoriteSeam; repeat/shuffle/next/prev commands are available only while a set runs.",
+  "Widgets are Glance AppWidgets fed by a file-backed snapshot that keeps the iOS NowPlayingSnapshot key names; transport taps are ACTION_MEDIA_BUTTON to the service (works with the process dead); \u2665/repeat/shuffle taps queue in DataStore when the process is dead and drain on foreground (stale transport dropped, verdicts/favorites never). \ud83d\udc4d/\ud83d\udc4e stays hidden until recommendations exist on Android.",
+  "Android Auto = MediaLibraryService browse tree Playlists \u00b7 Pockets (+ Continue row), with For You and the Mix tab deferred to their areas; Up Next edits remain phone-only (Auto renders the queue natively); no search tab in the tree (parity with the CarPlay removal) \u2014 Assistant voice covers hands-free. Browse-tree logic is pure Kotlin and unit-tested; the session callback is a thin adapter.",
+  "Siri/App Intents map to: MEDIA_PLAY_FROM_SEARCH + MediaSession search (Assistant), static + dynamic shortcuts (the donation analogue, debounced on collection changes, published through `pocketdj://play/...` links). Create Pocket (on-device Foundation Models) and the iOS 27 audio schema are N/A on Android.",
+  "Jukebox: host side is DONE; this program adds the guest/join surface, the deep-link join, the require-token default toggle, GET /sessions list+adopt client methods (for the future Auto Mix tab), and fixes the local played-history mirror to the server's dedup rule (pause\u2192null and same-track rewinds are not transitions). Broadcast-into-Mix and Apple-Music-search matching are seams for the Mix / AM areas.",
+  "Settings gets a section registry so the Mix, For You, Recommendations and Apple-Music-sync areas append their rows without editing SettingsScreen.kt. Online-search controls remain deliberately absent until aoss lands. 'Reset everything' wipes everything local and forces onboarding `pending` AFTER the wipe (mushroom-cloud order). Settings credential sync is N/A (CloudKit).",
+  "Backup `.pocketdj.zip` and `.pdjcollection` import/export are implemented byte-shape-compatible with the iOS zips (read BackupZip/PocketZip/PlaylistZip.swift first) via SAF; `.pdjcollection` opens from Files/Messages through the deep-link intent filters.",
+  "Mix DSP substrate is NOT decided here; the shell imposes one constraint \u2014 the Mix engine must present a Media3 SimpleBasePlayer facade implementing `TransportOwner` \u2014 and recommends Oboe/AAudio if the Mix area has no stronger reason otherwise.",
+  "Multi-window (\u2318N), tvOS/visionOS shells, APNs push, iCloud credential sync and keyboard shortcuts are recorded N/A with reasons; MwF deep links are parsed and parked so the Games area can consume them."
+ ],
+ "packages": [
+  {
+   "id": "SHELL-1",
+   "title": "Navigation shell parity: adaptive scaffold, Games placeholder, History default + last-tab restore, route bus",
+   "goal": "Bring the shell to iOS section parity and create the single out-of-UI navigation seam (ShellRoute + NavRequestBus + routeMessage) every later package posts into, with the atomic-take + staged-push discipline from RootView.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/navigation/PocketDjDestination.kt (modify: add Games phase 5; routeToken; fromToken)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/ShellRoute.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/NavRequestBus.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/LastSectionStore.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/ShellNavigation.kt (new: NavHost + NavigationSuiteScaffold + consumeRoute extracted from MainActivity)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (modify: thin; delegates to ShellNavigation; keeps route string constants)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (modify: LAST_SECTION key + setter)",
+    "android/app/src/test/java/com/levi/pocketdj/shell/NavRequestBusTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/shell/ShellRouteResolverTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/navigation/PocketDjDestinationTest.kt (modify)",
+    "android/gradle/libs.versions.toml + android/app/build.gradle.kts (modify: material3-adaptive-navigation-suite)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Cold launch with no persisted tab lands on History; relaunch after visiting Collections lands on Collections (token persisted via AppSettingsStore.lastSection).",
+    "Seven destinations render on a 360 dp-wide emulator without label wrapping (labels only on the selected item); a 600 dp+ window shows a NavigationRail.",
+    "`NavRequestBus.post(ShellRoute.Pocket(id))` from a non-UI coroutine switches to Collections and pushes the pocket detail; a second concurrent consumer sees null (atomic take).",
+    "A route for a deleted collection / unknown album produces the snackbar 'Can't open that' with the iOS messages (e.g. 'That album isn't in your library.'), never a blank screen.",
+    "MiniPlayerBar, app snackbar and existing routes (album/artist/playlist/pocket/setlist/sourcePlaylist/settings/storage) behave exactly as before (existing tests green)."
+   ],
+   "unit_tests": [
+    "NavRequestBusTest: post\u2192take returns once; take after take is null; posting while a route is pending replaces (set-then-clear, never queued).",
+    "ShellRouteResolverTest: resolve(ShellRoute.Album(unknown)) \u2192 RouteMessage; resolve(Pocket(known)) \u2192 NavCommand(tab=Collections, push=pocketRoute); BrowseSearch sets the pending query.",
+    "PocketDjDestinationTest: token round-trip for all 7 destinations; unknown token \u2192 History default; bottomNav order pinned."
+   ],
+   "emulator_steps": [
+    "Build + install; launch \u2192 screenshot shows History selected.",
+    "Tap Collections, force-stop app (`adb shell am force-stop com.levi.pocketdj`), relaunch \u2192 Collections selected.",
+    "Rotate emulator to landscape / resize to tablet (`adb shell wm size 1280x800`) \u2192 rail layout screenshot.",
+    "Trigger a test route via a debug broadcast or the ADB-launched deep link added in LINK-1 (optional) and confirm the staged push lands."
+   ],
+   "device_only": "None.",
+   "shared_touchpoints": [
+    "MainActivity.kt nav graph (this package owns the restructure; later packages ADD composable routes through ShellNavigation's `extraRoutes` list)",
+    "AppSettingsStore.kt (one new key)",
+    "libs.versions.toml / build.gradle.kts"
+   ],
+   "est_lines": 900,
+   "priority": "P0"
+  },
+  {
+   "id": "ONB-1",
+   "title": "Zero-to-hero onboarding (store, 3 stages, launch gate, mutating-intent veto)",
+   "goal": "Port OnboardingStore's decision tree and marker doc plus a 3-stage Compose flow (PocketDJ name/device-only \u2192 Apple Music sign-in \u2192 Sources), gating the launch pipeline and every ShellActions mutation while incomplete.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/onboarding/OnboardingStore.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/onboarding/OnboardingScreen.kt (new: shell + nav row + progress dots)",
+    "android/app/src/main/java/com/levi/pocketdj/onboarding/OnboardingStages.kt (new: ProfileStage, AppleMusicStage, SourcesStage)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (modify: `onboarding` lazy; `hadPersistedSettings` captured at construction; catalog loadIfNeeded + jukebox bootstrap wait on it)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (modify: ONBOARDING_MARKER_JSON + POCKETDJ_NAME keys; `hasPersistedBlob()`)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/ShellNavigation.kt (modify: full-screen onboarding gate when !isComplete)",
+    "android/app/src/test/java/com/levi/pocketdj/onboarding/OnboardingStoreTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/onboarding/OnboardingMarkerCodecTest.kt (new)"
+   ],
+   "depends_on": [
+    "SHELL-1"
+   ],
+   "acceptance": [
+    "Fresh install (no DataStore file) shows the flow at stage Profile; an install whose settings file already exists but has no marker stamps `completed` silently and never shows the flow.",
+    "Force-quit mid-flow at stage 2 resumes at stage 2 on relaunch (marker `started(1)` outranks blob existence).",
+    "Catalog load, rips manifest refresh and jukebox bootstrap do not start until `waitUntilComplete()` returns; with the flow never needed they start immediately.",
+    "Stage 2 'Sign in' reuses MusicKitAuth.signInIntent(); on the emulator the result decodes Cancelled/Failed and 'Continue without' is offered (never a crash). Stage 3 toggles the Vinyl/Digital/Streaming presets into AppSettings.sources.",
+    "`PDJ_SHOW_ONBOARDING` (intent extra `pdj.showOnboarding=true` in debug builds) forces the flow for emulator verification; `forcePending()` exists for SET-1's Reset."
+   ],
+   "unit_tests": [
+    "OnboardingStoreTest.decide: (nil, blob=false)\u2192show(profile); (nil, blob=true)\u2192skipAndStamp; completed\u2192skip; pending\u2192show(profile); started(2)\u2192show(sources); force-seam wins over everything.",
+    "OnboardingStoreTest.advance/back/complete persist the marker and release waiters (waitUntilComplete completes exactly once; multiple waiters all resume).",
+    "OnboardingMarkerCodecTest: decodes the iOS JSON `{\"version\":1,\"state\":\"started\",\"stage\":1}` and tolerates unknown keys / missing completedAtMs."
+   ],
+   "emulator_steps": [
+    "`adb shell pm clear com.levi.pocketdj` then launch \u2192 stage 1 screenshot; enter a name \u2192 Continue \u2192 stage 2 \u2192 'Continue without Apple Music' \u2192 stage 3 \u2192 toggle Vinyl+Digital \u2192 Finish \u2192 Browse/History renders and catalog loads.",
+    "Kill the app at stage 2, relaunch \u2192 still stage 2.",
+    "Install over an existing P2 build with settings present \u2192 no onboarding shown."
+   ],
+   "device_only": "Apple Music sign-in completion (stage 2) \u2014 emulator can only verify the cancel/fail path.",
+   "shared_touchpoints": [
+    "AppGraph.kt (onboarding lazy + gating)",
+    "AppSettingsStore.kt (two keys)",
+    "ShellNavigation.kt (gate)"
+   ],
+   "est_lines": 1100,
+   "priority": "P0"
+  },
+  {
+   "id": "LIFE-1",
+   "title": "Application lifecycle + background work: Application class, ProcessLifecycle flush funnel, WorkManager jobs",
+   "goal": "Replace the iOS AppDelegate/scenePhase doctrine: build the graph at process start, flush debounced writers on background, re-check endpoints/drain widget commands on foreground, and schedule rip-reconcile + storage-prune via WorkManager.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/PocketDjApplication.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/FlushRegistry.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/AppLifecycleObserver.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/work/WorkScheduler.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/work/RipReconcileWorker.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/work/StoragePruneWorker.kt (new; calls a `StorageService.pruneIfDue()` seam \u2014 adds a no-op default if the storage area has not shipped the cap)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseSessionPersistence.kt (modify: register flushNow with FlushRegistry)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (modify: expose flushRegistry; register collections/jukebox flush closures)",
+    "android/app/src/main/AndroidManifest.xml (modify: android:name=.PocketDjApplication; WorkManager default initializer kept)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (modify: remove onStart refreshEndpoints \u2014 moved to the process observer)",
+    "android/app/src/test/java/com/levi/pocketdj/shell/FlushRegistryTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/work/WorkSchedulerPolicyTest.kt (new)",
+    "android/gradle/libs.versions.toml + android/app/build.gradle.kts (modify: androidx.work:work-runtime-ktx, androidx.lifecycle:lifecycle-process)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Backgrounding the app within 400 ms of a Browse filter change persists the change (BrowseSession debounce flushed by FlushRegistry on ON_STOP).",
+    "ON_START triggers RemoteEndpoints refresh (throttled 15 min inside) and the widget pending-command drain hook (no-op until WID-1).",
+    "WorkManager shows unique periodic work `pdj.rip-reconcile` (15 min, CONNECTED) and `pdj.storage-prune` (24 h) after first foreground; re-scheduling is idempotent (KEEP policy).",
+    "Flush closures that throw never prevent the others from running; total flush is bounded (2 s) and logged."
+   ],
+   "unit_tests": [
+    "FlushRegistryTest: registration order, exception isolation, bounded run, unregister.",
+    "WorkSchedulerPolicyTest: request builders produce the expected ids/intervals/constraints (pure function over a fake builder).",
+    "RipReconcileWorker/StoragePruneWorker: Result.success on seam success, Result.retry on IOException (using a fake graph seam)."
+   ],
+   "emulator_steps": [
+    "Change a Browse filter, immediately press Home, force-stop, relaunch \u2192 filter restored.",
+    "`adb shell dumpsys jobscheduler | grep pocketdj` shows the two periodic jobs; `adb shell cmd jobscheduler run -f com.levi.pocketdj <jobId>` runs rip-reconcile and logcat shows the manifest refresh."
+   ],
+   "device_only": "None.",
+   "shared_touchpoints": [
+    "AndroidManifest.xml (application name)",
+    "AppGraph.kt (flushRegistry + registrations)",
+    "MainActivity.kt (remove onStart hook)",
+    "libs.versions.toml / build.gradle.kts"
+   ],
+   "est_lines": 700,
+   "priority": "P0"
+  },
+  {
+   "id": "LINK-1",
+   "title": "Deep links + file opens: manifest filters, DeepLinkParser, pending-until-onboarding, routing",
+   "goal": "Accept pocketdj:// and https://jukebox.pocket-dj.com App Links, .pdjcollection/.zip file opens and the future pocketdj://play/... shortcut links; parse with iOS precedence; park until onboarding completes; dispatch through ShellActions/NavRequestBus.",
+   "files": [
+    "android/app/src/main/AndroidManifest.xml (modify: MainActivity launchMode singleTask + intent-filters: pocketdj scheme hosts jukebox/mwf/play; https jukebox.pocket-dj.com autoVerify; VIEW/SEND application/x-pocketdj-collection, application/zip, pathPattern .*\\.pdjcollection)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/DeepLinkParser.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/PendingOpenStore.kt (new: in-memory parked links drained on onboarding completion)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/DeepLinkDispatcher.kt (new: DeepLink \u2192 ShellActions / NavRequestBus / collection-import seam)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (modify: onCreate intent + onNewIntent \u2192 dispatcher)",
+    "android/app/src/test/java/com/levi/pocketdj/shell/DeepLinkParserTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/shell/DeepLinkDispatcherTest.kt (new)"
+   ],
+   "depends_on": [
+    "SHELL-1",
+    "ONB-1",
+    "JBX-2"
+   ],
+   "acceptance": [
+    "`pocketdj://jukebox/exmkrd5a`, `pocketdj:///jukebox/exmkrd5a` and `https://jukebox.pocket-dj.com/exmkrd5a/` (also with trailing `state.json`) all parse to JukeboxJoin(id, guestBase) with the iOS id validation `[a-z2-7]{4,32}`; `https://jukebox.pocket-dj.com/mwf/<id>/` parses to Mwf BEFORE the jukebox branch; unrelated https URLs and the AM SDK `musicsdk://` redirect parse to None.",
+    "A jukebox link tapped while the app runs adds the session to JoinedSessionsStore (moves to top) AND opens the join panel; tapped during onboarding it is parked and opens after completion.",
+    "Opening a `.pdjcollection` from Files hands the content Uri to the collection-import seam (SET-2 implements it; until then a 'Import coming soon' snackbar \u2014 never a crash); a link that cannot be handled shows routeMessage.",
+    "`pocketdj://play/playlist/<id>?shuffle=1` runs ShellActions.playPlaylist(id, shuffle=true) after onboarding; an unknown id yields the iOS-style message."
+   ],
+   "unit_tests": [
+    "DeepLinkParserTest: table of \u226514 URLs (scheme/universal/mwf/file/garbage/invalid-id lengths/uppercase id/host-less scheme form) \u2192 expected DeepLink.",
+    "DeepLinkDispatcherTest (fake ShellActions + fake onboarding): parked while incomplete, drained once on completion, duplicate taps idempotent, mwf parked for a Games-area consumer seam."
+   ],
+   "emulator_steps": [
+    "`adb shell am start -a android.intent.action.VIEW -d 'pocketdj://jukebox/<live id>' com.levi.pocketdj` \u2192 Jukebox tab + join panel.",
+    "`adb shell am start -a android.intent.action.VIEW -d 'https://jukebox.pocket-dj.com/<id>/'` \u2192 same (autoVerify is not required for an explicit-package start).",
+    "Push a .pdjcollection to /sdcard/Download and open it from the Files app \u2192 import seam invoked.",
+    "`adb shell pm clear` then tap the link first \u2192 onboarding shows \u2192 finish \u2192 join panel opens."
+   ],
+   "device_only": "App Links auto-verification (needs https://jukebox.pocket-dj.com/.well-known/assetlinks.json with the signing cert fingerprint \u2014 a website change outside android/) and the 'Open in PocketDJ' banner behaviour from a real browser tap.",
+   "shared_touchpoints": [
+    "AndroidManifest.xml (MainActivity filters)",
+    "MainActivity.kt (intent handling)"
+   ],
+   "est_lines": 650,
+   "priority": "P0"
+  },
+  {
+   "id": "ACT-1",
+   "title": "ShellActions fa\u00e7ade (IntentServices analogue) + Assistant media search + static/dynamic shortcuts",
+   "goal": "One app-scoped fa\u00e7ade for every out-of-UI surface (play playlist/pocket/song/album/songIds, open routes, search, Mix seams) with the onboarding veto and ensureReady(); wire Assistant MEDIA_PLAY_FROM_SEARCH + session search and publish static + dynamic launcher shortcuts as the App-Shortcuts/donations analogue.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/shell/ShellActions.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/MixFacade.kt (new: interface startAutoMix/pauseAutoMix/resumeAutoMix/isAutoMixing; null until the Mix area lands)",
+    "android/app/src/main/java/com/levi/pocketdj/assistant/MediaSearchHandler.kt (new: query+focus \u2192 ShellActions)",
+    "android/app/src/main/java/com/levi/pocketdj/assistant/ShortcutsPublisher.kt (new)",
+    "android/app/src/main/res/xml/shortcuts.xml (new: Start Jukebox, Open Collections, Open History)",
+    "android/app/src/main/AndroidManifest.xml (modify: MEDIA_PLAY_FROM_SEARCH intent-filter; shortcuts meta-data)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (modify: shellActions, shortcutsPublisher wiring)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackService.kt (modify: SessionCallback.onAddMediaItems honours requestMetadata.searchQuery via MediaSearchHandler)",
+    "android/app/src/test/java/com/levi/pocketdj/shell/ShellActionsTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/assistant/MediaSearchHandlerTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/assistant/ShortcutsPublisherTest.kt (new)"
+   ],
+   "depends_on": [
+    "SHELL-1",
+    "ONB-1"
+   ],
+   "acceptance": [
+    "ShellActions.playPlaylist/playPocket/playAlbum/playSong return the display name (for Assistant TTS) and start playback through PlaybackController with the matching PlayContext (history tags playlist/pocket/album like the in-app paths); unknown ids throw NotFound with the iOS message.",
+    "Every mutating action throws SetupIncomplete while onboarding is unresolved; ensureReady() returns as soon as the catalog disk cache is seeded (does not await the network refresh).",
+    "`adb shell am start -a android.media.action.MEDIA_PLAY_FROM_SEARCH --es query 'warmup' --es android.intent.extra.focus vnd.android.cursor.item/playlist` plays the best-matching playlist or pocket (exact \u2192 normalized \u2192 token-coverage via JukeboxMatcher.normalize) and otherwise lands on Browse with the query.",
+    "Dynamic shortcuts list the most recently played playlists/pockets (max per launcher cap), refreshed \u22641 s after a CollectionsStore/PlayHistory change, each opening `pocketdj://play/<kind>/<id>`; the reserved NOW_PLAYING_SETLIST_ID is never published (iOS: never donate the scratch set).",
+    "startAutoMix/pauseAutoMix/resumeAutoMix report 'Auto-Mix isn't available yet' while MixFacade is null."
+   ],
+   "unit_tests": [
+    "ShellActionsTest (fake PlaybackController/CollectionsStore/Onboarding): veto path; ensureReady fast path; playPocket resolves via collections.playableIds DAG order; shuffle variants; NotFound messages.",
+    "MediaSearchHandlerTest: focus-driven resolution, case/diacritic folding, tie \u2192 most recently played, no match \u2192 BrowseSearch route.",
+    "ShortcutsPublisherTest: ranking by lastPlayedAt, cap, excludes NOW_PLAYING_SETLIST_ID, debounce coalesces bursts (TestScope)."
+   ],
+   "emulator_steps": [
+    "Issue the MEDIA_PLAY_FROM_SEARCH adb command above \u2192 playback starts, MiniPlayerBar shows the collection name.",
+    "Long-press the launcher icon \u2192 static shortcuts visible; after playing two pockets, dynamic shortcuts list them; tapping one plays it."
+   ],
+   "device_only": "Real Google Assistant voice ('play my warmup pocket on PocketDJ') \u2014 the emulator path is the explicit intent.",
+   "shared_touchpoints": [
+    "AppGraph.kt (shellActions)",
+    "AndroidManifest.xml (filter + meta-data)",
+    "PlaybackService.kt SessionCallback (small hook; AUTO-1 later replaces the callback class \u2014 coordinate: AUTO-1 depends on ACT-1)"
+   ],
+   "est_lines": 1200,
+   "priority": "P0"
+  },
+  {
+   "id": "LOCK-1",
+   "title": "MediaSession transport parity: SessionPlayerArbiter, set-gated next/prev/repeat/shuffle, \u2665 custom command, held-session resumption",
+   "goal": "Encode the iOS lock-screen doctrine on Media3: single-owner arbiter ready for the Mix facade, command availability gated to 'a set is running', optional \u2665 CommandButton via a favorites seam, and onPlaybackResumption that restores a held queue without auto-playing.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/playback/SessionPlayerArbiter.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/TransportOwner.kt (new: interface + ExoTransportOwner)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/SetGatedPlayer.kt (new: ForwardingPlayer that masks SEEK_TO_NEXT/PREVIOUS + SET_REPEAT_MODE/SET_SHUFFLE_MODE availability unless a set is running)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/FavoriteSeam.kt (new: interface isFavorite(songId)/toggle(songId); null \u21d2 no \u2665 button)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/resumption/ResumptionProvider.kt (new: interface held(): HeldQueue?; DefaultResumptionProvider = last queue snapshot written by PlaybackController)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackService.kt (modify: wrap player in SetGatedPlayer; setCustomLayout(\u2665) when seam present; onCustomCommand pdj.favorite; onPlaybackResumption; arbiter owns setPlayer)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (modify: mark 'set running' via PlaybackContract extra EXTRA_SET_RUNNING on queue plays; write resumption snapshot on queue change; expose repeat/shuffle toggles)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackContract.kt (modify: EXTRA_SET_RUNNING, COMMAND_FAVORITE)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/SessionPlayerArbiterTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/SetGatedCommandsTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/ResumptionSnapshotTest.kt (new)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Playing a single Browse song shows only play/pause/seek on the notification; playing an album/setlist shows \u23ee/\u23ed and repeat/shuffle; after the queue ends they hide again.",
+    "\u2665 appears in the notification custom layout only when a FavoriteSeam is installed and the owner is the standalone player; tapping it toggles the CURRENT song and the glyph updates (filled/outline).",
+    "Arbiter: `setOwner(mix)` swaps the session player; a remote play while the owner is a restored-never-sounded engine is refused and logged; `prefer(owner)` after a restore makes that engine answer the next remote command; `resign` hands back to ExoPlayer.",
+    "Killing the app mid-set and pressing play on the Bluetooth/notification (resumption) rebuilds the last queue at the saved index/position and does NOT start audio until the user's \u25b6 (Media3 resumption semantics honoured).",
+    "Lock-screen progress keeps moving for analog clip windows (ClippingConfiguration) \u2014 existing behaviour preserved."
+   ],
+   "unit_tests": [
+    "SessionPlayerArbiterTest: last-started owns; isActive(preferred) while owner nil; resign \u2192 next claimant; restored-never-sounded refusal; onChange callback on ownership change.",
+    "SetGatedCommandsTest: availableCommands with setRunning=false lacks next/prev/repeat/shuffle; true includes them; diffed updates do not churn (counts).",
+    "ResumptionSnapshotTest: JSON round-trip of HeldQueue {items[songId,title,artist,url,clip], index, positionMs, setRunning}; corrupt file \u2192 null; written only on queue/index change."
+   ],
+   "emulator_steps": [
+    "Play an album \u2192 `adb shell dumpsys media_session` shows actions incl. SKIP_TO_NEXT/SET_REPEAT_MODE; play a single song \u2192 absent.",
+    "Install a debug FavoriteSeam (in-memory) via debug flag \u2192 \u2665 button in the notification, toggle updates glyph.",
+    "Kill the process while playing (`am force-stop`), then `adb shell input keyevent KEYCODE_MEDIA_PLAY` \u2192 service restarts with the restored queue (verify via dumpsys), audio starts only after the explicit play key (this key IS the explicit \u25b6)."
+   ],
+   "device_only": "Bluetooth/AVRCP head unit behaviour; Wear OS remote.",
+   "shared_touchpoints": [
+    "PlaybackService.kt / PlaybackController.kt / PlaybackContract.kt (owned here; AUTO-1 and WID-1 depend on this package and only add code paths)",
+    "AppGraph.kt (favoriteSeam/resumptionProvider wiring \u2014 one line each)"
+   ],
+   "est_lines": 1300,
+   "priority": "P0"
+  },
+  {
+   "id": "WID-1",
+   "title": "Glance Now Playing widget (small/medium/large + idle) with snapshot sync and offline command queue",
+   "goal": "Port NowPlayingWidget/WidgetSync/WidgetTransport: a file-backed NowPlayingSnapshot (iOS key names) + cover PNG written on every playback change, Glance widget in three sizes, transport via media-button intents, \u2665/repeat/shuffle via a receiver that queues when the process is dead and drains on foreground.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/widget/NowPlayingSnapshot.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/widget/NowPlayingSnapshotStore.kt (new: atomic JSON + cover.png in filesDir/widget)",
+    "android/app/src/main/java/com/levi/pocketdj/widget/WidgetSync.kt (new: observes PlaybackController.nowPlaying + queue tail + FavoriteSeam; coverVersion bump only when songId/art URL changes; Coil fetch \u2192 PNG)",
+    "android/app/src/main/java/com/levi/pocketdj/widget/NowPlayingWidget.kt (new: GlanceAppWidget, SizeMode.Responsive with 3 size classes, IdleView)",
+    "android/app/src/main/java/com/levi/pocketdj/widget/NowPlayingWidgetReceiver.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/widget/WidgetActionReceiver.kt (new: BroadcastReceiver for favorite/repeat/shuffle)",
+    "android/app/src/main/java/com/levi/pocketdj/widget/PendingWidgetCommands.kt (new: queue JSON, cap 32, 20 s transport expiry, drain)",
+    "android/app/src/main/res/xml/now_playing_widget_info.xml (new)",
+    "android/app/src/main/AndroidManifest.xml (modify: receiver declarations)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (modify: widgetSync start; drain hook into LIFE-1 observer)",
+    "android/app/src/test/java/com/levi/pocketdj/widget/NowPlayingSnapshotCodecTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/widget/PendingWidgetCommandsTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/widget/WidgetSyncPublishTest.kt (new)",
+    "android/gradle/libs.versions.toml + android/app/build.gradle.kts (modify: androidx.glance:glance-appwidget, glance-material3)"
+   ],
+   "depends_on": [
+    "LOCK-1",
+    "LIFE-1"
+   ],
+   "acceptance": [
+    "Snapshot JSON uses exactly the iOS keys (isPlaying, hasContent, title, artist, songId, coverVersion, upNext[], isFavorite, appleMusicId, repeatMode, shuffleEnabled, recVerdict, recScope); written only when content changes (no per-second position churn).",
+    "Small widget: cover + \u23ef \u23ed; medium: cover, title/artist, \u23ee\u23ef\u23ed\u2665; large: + repeat/shuffle + up to 4 Up Next rows; idle shows the calm placeholder, never blank. \u2665 hidden when no FavoriteSeam; \ud83d\udc4d/\ud83d\udc4e absent (recScope empty).",
+    "Transport taps work with the app process dead (service starts via ACTION_MEDIA_BUTTON and resumes the held queue \u2014 \u23ef is the explicit play).",
+    "\u2665 tapped while the process is dead is queued with the snapshot's songId and applied on next foreground; a \u23ed queued >20 s ago is discarded; queue never exceeds 32.",
+    "Cover refresh is superseded when the song changes before the fetch lands (token discipline) so a slow image never lands on the wrong track."
+   ],
+   "unit_tests": [
+    "NowPlayingSnapshotCodecTest: round-trip; decodes an iOS-produced sample; missing optional fields default.",
+    "PendingWidgetCommandsTest: enqueue/drain order, transport expiry, verdict/favorite never expire, cap trims oldest, corrupt file \u2192 empty.",
+    "WidgetSyncPublishTest (fake flows): publishes on song change, favorite flip, repeat change; does NOT publish on position tick; coverVersion increments only on cover identity change; superseded fetch dropped."
+   ],
+   "emulator_steps": [
+    "Place the widget on the launcher (long-press home \u2192 Widgets \u2192 PocketDJ) in each size; play a song \u2192 widget shows art/title; pause \u2192 glyph flips.",
+    "`adb shell am force-stop com.levi.pocketdj`; tap widget \u23ed \u2192 service restarts and plays; tap \u2665 while stopped \u2192 relaunch app \u2192 favorite applied (with a debug FavoriteSeam).",
+    "Nothing playing \u2192 idle view screenshot."
+   ],
+   "device_only": "None (Glance renders on the emulator launcher).",
+   "shared_touchpoints": [
+    "AndroidManifest.xml (receivers)",
+    "AppGraph.kt (widgetSync)",
+    "libs.versions.toml / build.gradle.kts"
+   ],
+   "est_lines": 1500,
+   "priority": "P1"
+  },
+  {
+   "id": "AUTO-1",
+   "title": "Android Auto: MediaLibraryService browse tree (Playlists \u00b7 Pockets \u00b7 Continue), play/add-to actions, artwork, warm-up",
+   "goal": "Port CarPlayModel/CarPlayScene minus For You and Mix: convert PlaybackService to a MediaLibraryService with a pure-Kotlin AutoBrowseTree over collections/catalog/rips, Continue row for a held session, Play all/Shuffle all rows, song play with collection queue, custom 'Add to\u2026' browser action, https artwork and a no-sweep connect path.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/auto/AutoBrowseTree.kt (new: ids root/tab:playlists/tab:pockets/continue:/pl:<id>/src:<id>/pkt:<id>/all:/shuffle:/song:<ctx>|<id>; windowed 200)",
+    "android/app/src/main/java/com/levi/pocketdj/auto/AutoLibraryCallback.kt (new: MediaLibrarySession.Callback \u2014 onGetLibraryRoot/onGetChildren/onGetItem/onSearch/onGetSearchResult/onSetMediaItems/onCustomCommand; delegates to ACT-1 ShellActions + MediaSearchHandler)",
+    "android/app/src/main/java/com/levi/pocketdj/auto/AutoArtwork.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/auto/AutoAddTargets.kt (new: pockets then playlists as pkt:/pls: targets; add via CollectionsStore.addSongToPocket/addSongToPlaylist)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackService.kt (modify: extends MediaLibraryService; MediaLibrarySession.Builder; keeps LOCK-1 arbiter/custom layout)",
+    "android/app/src/main/AndroidManifest.xml (modify: MediaBrowserService intent-filter, car meta-data)",
+    "android/app/src/main/res/xml/automotive_app_desc.xml (new)",
+    "android/app/src/test/java/com/levi/pocketdj/auto/AutoBrowseTreeTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/auto/AutoAddTargetsTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/auto/AutoIdCodecTest.kt (new)"
+   ],
+   "depends_on": [
+    "ACT-1",
+    "LOCK-1"
+   ],
+   "acceptance": [
+    "Root = Playlists \u00b7 Pockets tabs (grid/list content-style hints); Playlists lists user playlists then source playlists with a source badge subtitle; Pockets lists pockets with song counts; a Continue row appears first only when a held session exists and tapping it resumes it (no auto-play on connect).",
+    "Opening a collection shows 'Play all' and 'Shuffle all' first, then songs (max 200) with album art; unplayable AM-only songs (no public rip, no AM sign-in) are non-playable rows with a subtitle, never a playback attempt.",
+    "Selecting a song plays the collection queue starting at that song (history tagged with the collection context); 'Add to pocket/playlist' custom browser action lists targets and adds with a confirmation toast; the reserved Now Playing setlist is never a target.",
+    "Connecting before the catalog is warm shows a single 'Loading\u2026' child and the tree refreshes via notifyChildrenChanged once loaded; no catalog sweep or network refresh is triggered by the connect itself.",
+    "Voice/search via onSearch returns matching collections then songs (MediaSearchHandler)."
+   ],
+   "unit_tests": [
+    "AutoBrowseTreeTest (fake stores): root with/without held session; playlists incl. src: rows; pocket songs in DAG order; window cap; unplayable flags; empty collection \u2192 'No songs' placeholder item.",
+    "AutoIdCodecTest: encode/decode of every id kind incl. ids containing ':' and unicode (Uri-encoded).",
+    "AutoAddTargetsTest: target order pockets\u2192playlists, excludes NOW_PLAYING_SETLIST_ID, add returns display name, unknown target \u2192 null."
+   ],
+   "emulator_steps": [
+    "Install the Desktop Head Unit (DHU) from the SDK; on the emulator enable Android Auto developer mode (Android Auto app \u2192 Start head unit server); `adb forward tcp:5277 tcp:5277; desktop-head-unit` \u2192 DHU shows PocketDJ with Playlists/Pockets.",
+    "Browse into a pocket \u2192 Play all \u2192 DHU Now Playing shows art/title and the queue; \u23ed advances the set.",
+    "Kill the app, start a set from the phone, re-connect DHU \u2192 tree still renders (session persists).",
+    "Verify custom 'Add to\u2026' action in DHU (may require DHU 2.x)."
+   ],
+   "device_only": "Real head unit rendering, Google Assistant voice in the car, and the custom browser action on older Auto versions.",
+   "shared_touchpoints": [
+    "PlaybackService.kt (service superclass change \u2014 coordinate with LOCK-1 which lands first)",
+    "AndroidManifest.xml (service filter + meta-data)"
+   ],
+   "est_lines": 1500,
+   "priority": "P1"
+  },
+  {
+   "id": "AUTO-2",
+   "title": "Android Auto Mix tab + Jukebox session rows (two-crate Auto DJ remote)",
+   "goal": "Add the CarPlay Mix tab to the Auto tree once the Mix engine exists: Deck A/B crate pickers (pockets/playlists/set lists), Start/Pause/Resume Mix rows, live status row, and a Jukebox node listing live broker sessions with their join URL (no QR image in Auto rows).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/auto/AutoMixTab.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/auto/AutoBrowseTree.kt (modify: tab:mix node when MixFacade != null)",
+    "android/app/src/main/java/com/levi/pocketdj/auto/AutoLibraryCallback.kt (modify: mix custom commands pdj.mix.start/pause/resume/pickA/pickB)",
+    "android/app/src/test/java/com/levi/pocketdj/auto/AutoMixTabTest.kt (new)"
+   ],
+   "depends_on": [
+    "AUTO-1",
+    "JBX-1"
+   ],
+   "acceptance": [
+    "Mix tab hidden until a MixFacade is wired; with it: Deck A row (crate name or 'Choose a crate\u2026'), Deck B ('Same as Deck A'), '\u25b6 Start Mix' (disabled subtitle 'Pick Deck A first'), live rows (status 'n / count \u00b7 deck', Pause/Resume) rebuilt on facade state changes via notifyChildrenChanged.",
+    "Jukebox node lists live sessions (GET /sessions) with name + 'Live'/'Timeless' and a child showing the join URL text; unreachable broker renders the iOS message row.",
+    "Remote \u23ed/\u23ee during an auto-mix map to fast/slow switch through TransportOwner (LOCK-1)."
+   ],
+   "unit_tests": [
+    "AutoMixTabTest (fake MixFacade): setup vs live sections, disabled start row, crate list grouping, status row text, hidden without facade."
+   ],
+   "emulator_steps": [
+    "With a debug fake MixFacade: DHU shows the Mix tab; pick crates; Start \u2192 status row updates."
+   ],
+   "device_only": "Real head unit; real Mix audio (depends on the Mix area's engine).",
+   "shared_touchpoints": [
+    "AutoBrowseTree.kt / AutoLibraryCallback.kt (owned by AUTO-1; this package extends them after AUTO-1 merges)"
+   ],
+   "est_lines": 600,
+   "priority": "P2"
+  },
+  {
+   "id": "JBX-1",
+   "title": "Jukebox host parity gaps: played-history dedup rule, require-token default toggle, sessions list/adopt, AM-search match seam, Mix placement seam",
+   "goal": "Close the remaining host-side deltas: mirror the broker's one-row-per-track rule locally, surface the require-token default in Settings and seed the create view from it, add GET /sessions + GET /sessions/:id (adopt) client methods, and define the seams for Apple-Music-search matching and broadcast-into-Mix placement.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxRepository.kt (modify: derivePlayed \u2014 ignore \u2192null and same title/artist; adopt(jukeboxId); PlacementSink seam; matcher stage seam)",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxClient.kt (modify: listSessions(), sessionInfo(id))",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxUrls.kt (modify: sessions(base), session(base,id))",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxModels.kt (modify: SessionRow)",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxMatcher.kt (modify: pluggable extra stage `suspend (title, artist) -> ExternalMatch?`)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/jukebox/JukeboxScreen.kt (modify: create view seeds requiresToken from settings each time it appears; default name `<pocketDJName>'s Jukebox` \u2192 'PocketDJ Jukebox')",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/sections/JukeboxSection.kt (new, registered via SET-1 registry; until SET-1 lands, the toggle is added inline in SettingsScreen's Jukebox block)",
+    "android/app/src/test/java/com/levi/pocketdj/data/jukebox/JukeboxPlayedDedupTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/data/jukebox/JukeboxSessionsClientTest.kt (new, MockWebServer)",
+    "android/app/src/test/java/com/levi/pocketdj/data/jukebox/JukeboxUrlsTest.kt (modify)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Played section shows ONE row per track: play\u2192pause\u2192resume\u2192pause of the same song adds nothing; a rewind of the same title/artist adds nothing; only a different track (or end of session) appends the outgoing track \u2014 matching scripts/jukebox-server.mjs notePlayed after the 2026-07-22 fix.",
+    "Settings \u25b8 Jukebox shows 'Require access tokens by default' (default ON) bound to AppSettingsStore.setJukeboxTokensRequiredByDefault; the create view's toggle re-seeds from it on every appearance; UI copy never claims the link is gated (spec \u00a79).",
+    "listSessions()/sessionInfo() decode the broker shapes; adopt(id) refuses while a different session is active, no-ops for the current one, otherwise adopts + resets loop bookkeeping + persists (iOS adopt semantics).",
+    "Default session name uses the PocketDJ name when set.",
+    "PlacementSink/ExternalMatch seams are documented interfaces with default no-op/null implementations; no behaviour change until the Mix / Apple Music areas wire them."
+   ],
+   "unit_tests": [
+    "JukeboxPlayedDedupTest: sequences [A,A(paused\u2192null),A,B] \u2192 [A]; [A,A rewind,B] \u2192 [A]; [A,B,A] \u2192 [A,B]; cap respected.",
+    "JukeboxSessionsClientTest: 200 list \u2192 rows; 401 \u2192 JukeboxException(401); sessionInfo carries hostKey; adopt guard matrix.",
+    "JukeboxUrlsTest: sessions/session URLs under direct and Funnel bases."
+   ],
+   "emulator_steps": [
+    "Start a jukebox against the live broker; play, pause, resume, pause, skip \u2192 Played shows one row for the first track.",
+    "Settings \u2192 toggle require-token off \u2192 Jukebox create view shows it off; back on \u2192 on."
+   ],
+   "device_only": "Apple Music catalog search stage (needs AM sign-in) \u2014 seam only in this package.",
+   "shared_touchpoints": [
+    "SettingsScreen.kt Jukebox block (if SET-1 has not landed) / SettingsSections registry (if it has)",
+    "AppSettingsStore.kt (reads existing key; pocketDJName key comes from ONB-1/SET-1 \u2014 fall back to '' when absent)"
+   ],
+   "est_lines": 700,
+   "priority": "P1"
+  },
+  {
+   "id": "JBX-2",
+   "title": "Jukebox guest: JukeboxLink, joined-sessions list, join panel with request line + Tune In",
+   "goal": "Port the native guest surface: parse jukebox links, persist joined sessions, show them as a strip on the Jukebox home, and a pushed join panel that polls the public state.json, submits requests with the install clientId, highlights the guest's own requests, handles ended sessions, and can tune in to the party's public stream.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxLink.kt (new: parse + isValidId + stateUrl)",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxGuestState.kt (new, lenient)",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxGuestClient.kt (new: guestState(url) cache-busted; submitGuestRequest(apiBase,id,title,artist,clientId); 404/410 \u2192 Ended)",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JoinedSessionsStore.kt (new: DataStore JSON pdj.jukebox.joined.list.v1; add/remove/updateName; pendingOpenId flow)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/jukebox/JukeboxJoinScreen.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/jukebox/JoinedSessionsStrip.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/jukebox/JukeboxScreen.kt (modify: strip above create/live view; Leave via long-press)",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxGraph.kt (modify: guestClient, joinedSessions)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (modify: small `playUrl(title, artist, url, startMs)` for Tune In, tagged PlayContext source 'jukebox-guest')",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt or shell/ShellNavigation.kt (modify: JUKEBOX_JOIN_ROUTE = jukebox/join/{id})",
+    "android/app/src/test/java/com/levi/pocketdj/data/jukebox/JukeboxLinkTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/data/jukebox/JukeboxGuestStateDecodeTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/data/jukebox/JoinedSessionsStoreTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/data/jukebox/JukeboxGuestClientTest.kt (new, MockWebServer)"
+   ],
+   "depends_on": [
+    "SHELL-1"
+   ],
+   "acceptance": [
+    "JukeboxLink accepts the three iOS forms and rejects invalid ids / foreign hosts; stateUrl falls back to https://jukebox.pocket-dj.com for scheme links.",
+    "Joined strip lists sessions (name from first state.json read, id caption); tapping pushes the join panel; long-press \u2192 Leave removes it; `pendingOpenId` set by a tapped link navigates into the panel via NavRequestBus.",
+    "Join panel polls every 4 s only while visible (cancelled on back), shows Now Playing / Up Next / Played / Requests with the guest's own requests highlighted by clientId and status colours (pending/queued/denied); submit posts to `state.apiBase` (fallback configured broker URL; blank \u21d2 'This jukebox isn't taking requests'); 404/410 \u2192 'This jukebox has ended.' with Leave.",
+    "Tune In appears only when `hear == true` and `streamUrl` is https; it plays the stream seeked to `positionMs + (now \u2212 updatedAt)` and re-tunes when the track changes; Leave/back stops the stream.",
+    "All state.json fields are optional on decode (missing arrays \u2192 empty)."
+   ],
+   "unit_tests": [
+    "JukeboxLinkTest: \u226512 URL cases incl. `pocketdj:///jukebox/<id>`, uppercase rejection, 3-char id rejection, trailing state.json.",
+    "JukeboxGuestStateDecodeTest: partial/older payloads; unknown keys; apiBase absent.",
+    "JoinedSessionsStoreTest: idempotent add moves to top; remove; updateName ignores empty; corrupt JSON \u2192 empty list.",
+    "JukeboxGuestClientTest: cache-busting query param present; 404/410 \u2192 Ended; submit body shape {title, artist, clientId}; 429 \u2192 rate-limit message."
+   ],
+   "emulator_steps": [
+    "Host a jukebox on the iPhone (or a second emulator run); on the emulator `adb shell am start -a VIEW -d 'pocketdj://jukebox/<id>'` (via LINK-1) or add via a debug 'Join by id' field \u2192 panel shows the live state.",
+    "Submit a request \u2192 it appears highlighted as mine; host accepts \u2192 status flips to queued.",
+    "Host turns on View+Hear \u2192 Tune In appears \u2192 audio plays in sync; host skips \u2192 re-tune.",
+    "Host ends \u2192 panel shows ended; Leave removes the strip row."
+   ],
+   "device_only": "None.",
+   "shared_touchpoints": [
+    "JukeboxGraph.kt",
+    "PlaybackController.kt (one additive method)",
+    "Nav graph route registration (ShellNavigation.extraRoutes)"
+   ],
+   "est_lines": 1500,
+   "priority": "P1"
+  },
+  {
+   "id": "SET-1",
+   "title": "Settings parity scaffold: section registry, Profile name, Collections count, Rip-from-cloud, Jukebox default, Reset everything",
+   "goal": "Restructure SettingsScreen into a section registry other areas extend, and add the shell-owned rows: Profile (PocketDJ name), Collections (default recently-added count), Import server 'Rip from cloud source', Jukebox require-token default (if JBX-1 has not placed it), and a confirmed 'Reset everything' that wipes local state and forces onboarding.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/SettingsSections.kt (new: SettingsSection(id, order, content) registry + default list)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/SettingsScreen.kt (modify: iterate registry; existing blocks moved into sections/*.kt unchanged)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/sections/ProfileSection.kt, CollectionsSection.kt, ImportServerSection.kt, ResetSection.kt, AboutSection.kt (new; DataSources/Catalog/AppleMusic/History/Storage blocks moved verbatim)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (modify: POCKETDJ_NAME (if not from ONB-1), DEFAULT_RECENTLY_ADDED_COUNT (50, clamp 1\u2026500), RIP_FROM_CLOUD; setters; `resetAll()`)",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipServerClient.kt (modify: pass ripFromCloud in POST /rip body per specs/playback.md \u00a74.3 \u2014 read the iOS field name in RipsStore.swift before adding)",
+    "android/app/src/main/java/com/levi/pocketdj/data/storage/StorageService.kt or new shell/ResetEverything.kt (new: ordered wipe \u2014 stop playback, clear settings DataStore, catalog cache, collections/history/activity/jukebox/widget files, Coil cache, then onboarding.forcePending())",
+    "android/app/src/test/java/com/levi/pocketdj/screens/settings/SettingsSectionsTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/shell/ResetEverythingTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/data/settings/AppSettingsStoreTest.kt (modify)"
+   ],
+   "depends_on": [
+    "ONB-1"
+   ],
+   "acceptance": [
+    "Section order matches iOS where both exist: Profile \u00b7 Data sources \u00b7 Catalog \u00b7 Collections \u00b7 Apple Music \u00b7 Import server \u00b7 Jukebox \u00b7 (Mix/For You/Recommendations slots reserved by id) \u00b7 Storage \u00b7 History \u00b7 (Edits/Backup from SET-2) \u00b7 Reset \u00b7 About; other areas register sections without editing SettingsScreen.kt.",
+    "PocketDJ name persists and is used by the jukebox default session name; recently-added count clamps on write; 'Rip from cloud source' toggles the rip request flag.",
+    "Reset everything: confirmation dialog with the iOS copy; after confirm the app returns to onboarding at stage 1, catalog cache/collections/history/activity/jukebox session are gone, installId is re-minted, and the onboarding marker is written AFTER the wipe (verified by order in tests).",
+    "All previously existing Settings behaviour (presets, test connection, AM sign-in/out, clear history, storage nav) unchanged (existing tests + manual pass)."
+   ],
+   "unit_tests": [
+    "SettingsSectionsTest: default ordering; registering a section with an existing id replaces; ordering stable by `order` then id.",
+    "ResetEverythingTest (fake stores): every wipe closure invoked; marker written last; failure of one wipe does not skip the rest; playback stopped first.",
+    "AppSettingsStoreTest: new keys default/clamp/persist; resetAll leaves an empty prefs file."
+   ],
+   "emulator_steps": [
+    "Open Settings \u2192 set name 'Levi' \u2192 Jukebox create view shows default 'Levi's Jukebox'.",
+    "Reset everything \u2192 onboarding appears; finish \u2192 empty collections, Browse loads from network."
+   ],
+   "device_only": "None.",
+   "shared_touchpoints": [
+    "SettingsScreen.kt (owned here \u2014 Mix/Recs/AM-sync areas use the registry afterwards)",
+    "AppSettingsStore.kt (three keys)",
+    "RipServerClient.kt (one body field)"
+   ],
+   "est_lines": 1000,
+   "priority": "P1"
+  },
+  {
+   "id": "SET-2",
+   "title": "Backup .pocketdj.zip + .pdjcollection import/export (SAF + file-open deep link)",
+   "goal": "Port BackupZip/PocketZip/PlaylistZip shape-compatibly: export/import a full backup from Settings, import a shared .pdjcollection under fresh ids from Files/Messages or the Settings picker, and export a pocket/playlist as .pdjcollection through a FileProvider share sheet.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/backup/BackupZip.kt (new: write/read using java.util.zip; entry names/manifest identical to apple/PocketDJ/Services/BackupZip.swift)",
+    "android/app/src/main/java/com/levi/pocketdj/data/backup/CollectionFile.kt (new: .pdjcollection pocket/playlist zips per PocketZip/PlaylistZip/PortableItems; import remaps ids; favorites merge newest-wins)",
+    "android/app/src/main/java/com/levi/pocketdj/data/backup/BackupModels.kt (new: manifest + portable item shapes)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/sections/BackupSection.kt (new: Export backup / Import backup / Import collection via ACTION_CREATE_DOCUMENT / ACTION_OPEN_DOCUMENT)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/CollectionImportSeam.kt (new: Uri \u2192 import result; wired into LINK-1's dispatcher)",
+    "android/app/src/main/java/com/levi/pocketdj/data/backup/CollectionShare.kt (new: export pocket/playlist to cache + FileProvider Uri for ACTION_SEND)",
+    "android/app/src/main/res/xml/file_paths.xml (new) + AndroidManifest.xml (modify: FileProvider)",
+    "android/app/src/test/java/com/levi/pocketdj/data/backup/BackupZipRoundTripTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/data/backup/CollectionFileImportTest.kt (new)",
+    "android/app/src/test/resources/backup/*.zip fixtures exported from the iOS app (ask Levi for one if not in apple/Tests/Fixtures)"
+   ],
+   "depends_on": [
+    "SET-1",
+    "LINK-1"
+   ],
+   "acceptance": [
+    "A backup exported on iOS imports on Android (collections appear under fresh ids, sources merged, favorites merged newest-wins, edits stored for the future edits store) and vice versa \u2014 verified with a fixture zip in both directions.",
+    "A .pdjcollection shared from iOS opens on Android via Files \u2192 imports the pocket/playlist with fresh ids and shows a snackbar naming it; unknown/corrupt files produce a clear error, never a crash.",
+    "Export of a pocket via the share sheet yields a file iOS can open (same UTI extension .pdjcollection, mime application/x-pocketdj-collection).",
+    "Remote catalog data is never bundled (only ids), matching the iOS footer text."
+   ],
+   "unit_tests": [
+    "BackupZipRoundTripTest: write\u2192read equality; iOS fixture decodes; missing optional entries tolerated; manifest schema version check.",
+    "CollectionFileImportTest: id remap preserves DAG child references inside the file; duplicate import creates a second copy (fresh ids); favorites merge newest-wins; corrupt zip \u2192 typed error."
+   ],
+   "emulator_steps": [
+    "Settings \u2192 Export backup \u2192 save to Downloads \u2192 `adb pull` and inspect entries; Import the same file \u2192 counts match.",
+    "Push an iOS-exported .pdjcollection to /sdcard/Download \u2192 open from Files \u2192 imported pocket visible in Collections."
+   ],
+   "device_only": "None.",
+   "shared_touchpoints": [
+    "AndroidManifest.xml (FileProvider)",
+    "SettingsSections registry (adds Backup + Edits section ids)",
+    "LINK-1 dispatcher seam"
+   ],
+   "est_lines": 1400,
+   "priority": "P1"
+  },
+  {
+   "id": "DBG-1",
+   "title": "Debug & diagnostics screen: capture log sessions, remote telemetry (SigV4 PUT to the diag bucket) with .pdjdiagkey import, build/backend info",
+   "goal": "Port Settings \u25b8 Debug: an in-app ring-buffer log with saved sessions + export, a remote-telemetry toggle that uploads batched lines to the private S3 diag bucket using a write-only key imported from a .pdjdiagkey file (Keystore-encrypted), and the Build/Backend/Dead-air (seam) sections.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/diag/DiagLog.kt (new: ring buffer + file sessions + debounced flush; flushOnBackground via FlushRegistry)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/DiagKeyStore.kt (new: EncryptedSharedPreferences/Keystore; import .pdjdiagkey JSON; remove)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/SigV4.kt (new: AWS SigV4 signer for S3 PUT; port of apple/PocketDJ/Services/Search/SigV4.swift)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/DiagUploader.kt (new: per-device trace objects under diag/<installId>/\u2026, same layout as the iOS uploader)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/DebugScreen.kt (new) + sections/DebugSection.kt (new: nav row + build identity line)",
+    "android/app/src/main/java/com/levi/pocketdj/shell/DeepLinkParser.kt (modify: DiagKey file branch \u2192 DiagKeyStore.import)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (modify: DEBUG_LOGGING_ENABLED, REMOTE_TELEMETRY_ENABLED)",
+    "android/app/src/test/java/com/levi/pocketdj/diag/SigV4Test.kt (new: AWS published test vectors)",
+    "android/app/src/test/java/com/levi/pocketdj/diag/DiagLogTest.kt (new)",
+    "android/app/src/test/java/com/levi/pocketdj/diag/DiagKeyImportTest.kt (new)"
+   ],
+   "depends_on": [
+    "LIFE-1",
+    "SET-1",
+    "LINK-1"
+   ],
+   "acceptance": [
+    "Capture off \u21d2 nothing buffered; on \u21d2 lines buffered and a session file saved when toggled off; sessions listable, shareable (ACTION_SEND text/plain) and deletable.",
+    "Remote telemetry uploads only when a diag key is present and the toggle is on (debug/internal builds); with no key, lines are held locally and nothing uploads (iOS doctrine); uploads are SigV4-signed PUTs verified against the test vectors.",
+    "Opening a .pdjdiagkey file from Files stores the key encrypted and shows the key id; 'Remove diag key' clears it.",
+    "Debug screen shows build identity (versionName, git sha from BuildConfig), backend summary (RemoteEndpoints.summary), and a Dead-air section that reads a `DeadAirSource` seam (placeholder text until the playback area ships the meter)."
+   ],
+   "unit_tests": [
+    "SigV4Test: canonical request/string-to-sign/signature for the AWS S3 GET/PUT vectors; header ordering; payload hash.",
+    "DiagLogTest: ring cap, session rotation, debounce flush, background flush, disabled \u21d2 no-op.",
+    "DiagKeyImportTest: valid file \u2192 stored; wrong schema \u2192 error; remove clears."
+   ],
+   "emulator_steps": [
+    "Settings \u2192 Debug \u2192 Capture on \u2192 use the app \u2192 Capture off \u2192 session appears \u2192 Share opens the chooser.",
+    "Import a test .pdjdiagkey (Levi exports one via scripts/green/export-diag-key.sh) \u2192 toggle telemetry \u2192 logcat shows 200 from S3 PUT (network required)."
+   ],
+   "device_only": "None (S3 uploads work from the emulator with network).",
+   "shared_touchpoints": [
+    "AppSettingsStore.kt (two keys)",
+    "FlushRegistry (register)",
+    "SettingsSections registry",
+    "DeepLinkParser (DiagKey branch)"
+   ],
+   "est_lines": 1200,
+   "priority": "P2"
+  }
+ ]
+}

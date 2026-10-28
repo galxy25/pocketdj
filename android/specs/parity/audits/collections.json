@@ -1,0 +1,1044 @@
+{
+ "area": "Collections / Pockets / Playlists / Setlists (incl. listening pockets, location context, favorites, AM playlist sync + write-back, import/export, multi-select/DnD, dedupe, recently-added)",
+ "inventory": [
+  {
+   "feature": "Collections document (schemaVersion 7, pockets/playlists/setlists/folders/lastAddTarget/recentAddTargets), lenient per-field decode, LOSSY per-element playlist/node decode, identity migrate stamp, atomic save + .bak quarantine, Now Playing purge at launch",
+   "status": "DONE",
+   "ios_files": "apple/PocketDJ/Models/CollectionsSchema.swift (LossyDecodableArray :204-229, CollectionsCodec :567-616); apple/PocketDJ/State/CollectionsStore.swift init :248-262",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsModels.kt, CollectionsCodec.kt, CollectionsStore.kt (readDocument/salvageIfPending/save :1400-1482); tests CollectionsCodecTest.kt, CollectionsStoreTest.kt",
+   "notes": "Verified: id prefixes pkt_/pls_/set_/nd_/pnt_/fld_, EpochMsSerializer integral ms, unknown node kind drops that node only."
+  },
+  {
+   "feature": "Additive-optional fields iOS added WITHOUT a version bump: Pocket/Playlist `amSyncDirection` (CollectionSyncDirection both|push|pull|off), `cleanOnly`, `recsEnabled` (stored false/nil), `amPlaylistId` (durable AM link; STRIPPED on import)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Models/CollectionsSchema.swift :84-96 (CollectionSyncDirection), :140-179 (Pocket fields + CodingKeys), :321-390 (Playlist); CollectionsStore.swift setAMSyncDirection/setCleanOnly/setRecommendationsEnabled :1040-1113, linkToAppleMusic :3111-3120",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsModels.kt (Pocket/Playlist lack all four)",
+   "notes": "SHAPE-COMPAT BUG: an iOS document round-tripped through Android's re-encode LOSES these four keys (Pocket is a @Serializable data class; PlaylistSerializer hand-writes fields). Must be fixed before any S3 sync. Note iOS Pocket CodingKeys deliberately omits amPlaylistId from the lenient decoder listing? No \u2014 it IS decoded via `try? c.decode(String.self, forKey: .amPlaylistId)`? CodingKeys enum at :168-170 lists amSyncDirection/cleanOnly/recsEnabled but NOT amPlaylistId, so on iOS amPlaylistId on Pocket is in-memory only for Pocket (Playlist encodes it); Android must mirror EXACTLY: Playlist carries amPlaylistId, Pocket does not persist it. Implementer must re-read CollectionsSchema.swift :160-180 and :360-392 to confirm per-type CodingKeys before writing."
+  },
+  {
+   "feature": "Pocket DAG: create/rename/delete (scrubs child refs), set-like adds, cycle guard, notes (unified-order position), songRepeats sidecar, reorder songs/albums/children/notes",
+   "status": "DONE",
+   "ios_files": "CollectionsStore.swift :301-418, :557-559",
+   "android_files": "CollectionsStore.kt :172-315; CollectionsStoreTest.kt",
+   "notes": ""
+  },
+  {
+   "feature": "Playlist templates: chapters (sequence nodes), 5 node kinds, add/rename/remove-sequence (last-chapter guard), node notes + repeatCount, moveNode \u00b11, moveNodes/moveSequences, convert playlist\u2192pocket (carries provenance)",
+   "status": "DONE",
+   "ios_files": "CollectionsStore.swift :420-559, :900-957",
+   "android_files": "CollectionsStore.kt :317-560, :627-705",
+   "notes": "Android convertPlaylistToPocket must carry sourcePlaylistId/sourceName/sourceSongIds/sourceSyncEnabled (iOS fix 113508b) \u2014 verify in COL-1 test."
+  },
+  {
+   "feature": "Remove by SONG id from a playlist (every chapter), removeAlbum(fromPlaylist), batch removeSongs(fromPocket/fromPlaylist) as ONE write, playlistSongIdSet / playlist(contains:) / playlist(containsAlbum:)",
+   "status": "PARTIAL",
+   "ios_files": "CollectionsStore.swift :709-815 (removeSong/removeSongs/removeAlbum fromPlaylist, playlistSongIdSet)",
+   "android_files": "CollectionsStore.kt removeNode :500, playlistContains :554 (node-id removal only; no song-id/album-id/batch removes)",
+   "notes": "Needed by Add-to \u2713 toggle-off and SelectionBar. Each must emit ONE activity batch."
+  },
+  {
+   "feature": "Batch add choke point `addSongs(ids, to:, dedupe: .wholeCollection|.targetChapter)` \u2014 ONE document write, ONE activity batch (`onActivityBatch`), ONE write-back resolution, self-heals empty `sequences`",
+   "status": "MISSING",
+   "ios_files": "CollectionsStore.swift :1392-1458, onActivityBatch :76-84",
+   "android_files": "\u2014",
+   "notes": "Load-bearing for DnD / multi-select / paste; per-id loops re-encode the multi-MB doc N times."
+  },
+  {
+   "feature": "Realize \u2192 frozen Setlist, reserved Now Playing (set_now_playing/pls_now_playing, LWW, hidden, revision token, origin kind/id), markPlayed stamps outside mutate, setlist post-Play edits recompute totalMs",
+   "status": "DONE",
+   "ios_files": "CollectionsStore.swift :2124-2737; Performance/RealizeEngine.swift",
+   "android_files": "CollectionsStore.kt :1067-1337; RealizeEngine.kt; SetlistDetailScreen.kt; RealizeEngineTest.kt",
+   "notes": "Android realize is LITERAL order (harmonic autofill/interpolate ported in Harmonics.kt/Interpolate.kt but budget autofill deferred per specs/realize-play.md \u00a79) \u2014 out of this area's packages (Performance engine)."
+  },
+  {
+   "feature": "Off-main, VERSION-ORDERED document writer (encode+write detached; stale stragglers dropped; `flushDocumentNow` on background; `membershipRevision` memo key)",
+   "status": "MISSING",
+   "ios_files": "CollectionsStore.swift :3225-3373 (save, flushDocumentNow, CollectionsDocumentWriter actor)",
+   "android_files": "CollectionsStore.kt save() :1452 (synchronous encode+write inside `synchronized(lock)` on the CALLER's thread \u2014 a \u25b6 Play on a 26k-track source playlist encodes megabytes on the main thread)",
+   "notes": "Port the actor as a single-thread executor + monotonic saveVersion; flush on ProcessLifecycleOwner ON_STOP."
+  },
+  {
+   "feature": "Folders (flat, heterogeneous), move-to-folder, delete\u2192members to top level, collapse memory (`__your_playlists__` sentinel + folder ids), Shared per-source groups collapsed-by-default with remembered expansions",
+   "status": "DONE",
+   "ios_files": "Views/PlaylistsView.swift :288-660, :730-760; CollectionsStore.swift :1273-1327",
+   "android_files": "screens/playlists/PlaylistsScreen.kt; CollectionsStore.kt :847-900; AppSettingsStore.kt collapsedFolderIds/expandedSourceNames",
+   "notes": ""
+  },
+  {
+   "feature": "Collection sort (recentlyPlayed | name A\u2013Z | lastUpdated) persisted in Settings; source playlists always A\u2013Z; `pocketsAZ`/`playlistsAZ` helpers for menus",
+   "status": "DONE",
+   "ios_files": "Settings/SettingsStore.swift :47-89, :193; CollectionsStore.swift playlistsAZ/pocketsAZ",
+   "android_files": "data/collections/CollectionSort.kt; CollectionSortTest.kt",
+   "notes": "Android lacks explicit pocketsAZ/playlistsAZ accessors \u2014 add in ADD-1 (tiny)."
+  },
+  {
+   "feature": "Yours|Shared tabs, per-tab search (case/diacritic-insensitive), empty states, create/rename/delete/move dialogs, pocket 'Add to playlist\u2026' (pocket-ref node), row context menus are MANAGEMENT ONLY (no play on rows \u2014 owner rejected)",
+   "status": "DONE",
+   "ios_files": "Views/PlaylistsView.swift :1-300, :540-660",
+   "android_files": "screens/playlists/PlaylistsScreen.kt, PlaylistsComponents.kt",
+   "notes": ""
+  },
+  {
+   "feature": "Source playlist detail: Play/Shuffle, duplicateForSource (ONE find-or-create keyed (id, sourceName)), convert-to-pocket with provenance, `addSong(toIndexPlaylist:)` never advances snapshot / never sets lastAddTarget",
+   "status": "DONE",
+   "ios_files": "CollectionsStore.swift :580-707, :938-957",
+   "android_files": "CollectionsStore.kt :580-705; screens/playlists/SourcePlaylistDetailScreen.kt; MergedCatalog.kt (keyed by (id, sourceName) \u2014 prerequisite fix landed)",
+   "notes": ""
+  },
+  {
+   "feature": "Source sync three-way merge engine (reconcilePocket/reconcilePlaylist, missing source \u21d2 untouched, no-change persists nothing, manual Sync-now ignores toggles)",
+   "status": "DONE",
+   "ios_files": "CollectionsStore.swift :1131-1271",
+   "android_files": "CollectionsStore.kt :741-846; CollectionsSourceSyncTest.kt",
+   "notes": "Engine only \u2014 see next two rows for the missing gates/UI."
+  },
+  {
+   "feature": "AUTO source sync on every catalog refresh, global Settings toggle `syncConvertedPockets` (default ON), per-item \u22ef toggle + 'Sync from source now' UI, `amSyncDirection.allowsPull` gate, name+artist/same-release DUPLICATE gate inside reconcile",
+   "status": "MISSING",
+   "ios_files": "PocketDJApp.swift :841; SettingsStore.swift :284-297; CollectionsStore.swift :1138-1152 (allowsPull), :1191-1207 + :1230-1244 (SongDuplicateJudge.Seen gates); Views/PocketsView.swift :236-261",
+   "android_files": "\u2014(store has syncConvertedCollections but nothing calls it; no settings key; no UI)",
+   "notes": "specs/collections-schema.md \u00a78.4 explicitly deferred this slice."
+  },
+  {
+   "feature": "Link an unlinked pocket to an Apple Music source playlist (`linkPocketToSource`, snapshots CURRENT source membership so own songs read as user adds; cancels pending write-backs owed to the OLD source) + LinkSourceSheet (searchable, AM sources only, shown only when !hasSource)",
+   "status": "MISSING",
+   "ios_files": "CollectionsStore.swift :958-978; Views/PocketsView.swift LinkSourceSheet :569-622",
+   "android_files": "\u2014",
+   "notes": ""
+  },
+  {
+   "feature": "Remove duplicates: SongDuplicateJudge (normalized key tier + SAME-RELEASE tier: same album, feat.-stripped title, \u22651 shared artist token, NOT when both appleMusicIds differ, NOT when both credit non-overlapping features; keep non-Latin chars) \u2192 `collapsePlan` (survivor prefers appleMusicId, earliest slot; repeats follow survivor) \u2192 removeDuplicates(inPocket/inPlaylist/Everywhere one save) + menu items + result alert; NOT emitted as remove activity",
+   "status": "MISSING",
+   "ios_files": "Services/Streaming/SongDuplicateJudge.swift; CollectionsStore.swift :817-898; Views/RemoveDuplicatesAlert.swift; PlaylistsView sort menu 'Remove duplicates in all collections\u2026'",
+   "android_files": "\u2014",
+   "notes": "LLM tie-break tier (FoundationModels) is N/A on Android \u2014 ship deterministic tiers only; 'extend the judge, never a parallel matcher' (memory collections-dedupe-pass)."
+  },
+  {
+   "feature": "Add-to sheet: Recent top-3 that still resolve, pockets/playlists/chapters, inline create, 'From your sources' rows, MRU dedupe by (kind,id) ignoring sequenceId cap 10",
+   "status": "DONE",
+   "ios_files": "Views/AddToCollectionView.swift :1-640; CollectionsStore.swift :1329-1390",
+   "android_files": "screens/collections/AddToCollectionSheet.kt; CollectionsStore.kt :903-970",
+   "notes": ""
+  },
+  {
+   "feature": "Add-to sheet parity gaps: \u2713 row TAP REMOVES (toggle), search field (fuzzy, `searchFirst` focus-at-bottom), multi-song `.songs([ids])` item with all-members semantics + O(members) Set checks, Suggested targets from rec engine (`cachedCollectionSuggestions`), shared `AddToActions` (recentTargets/suggestedTargets/inPocket/inPlaylist/isMember/add/remove/toggle)",
+   "status": "PARTIAL",
+   "ios_files": "Views/AddToCollectionView.swift :14, :118-140, :639-755 (AddToActions)",
+   "android_files": "AddToCollectionSheet.kt (tap = add only; no search; Song/Album only)",
+   "notes": "Owner rule: ONE ranking/membership path (AddToActions); any new add-to UI calls it."
+  },
+  {
+   "feature": "'Add to Playlist' submenu on EVERY item context menu: top-5 = Suggested then Recent, menu Toggles with \u2713 (checked tap removes), 'More\u2026' opens search-first sheet via nearest host; no 'Added to\u2026' banner",
+   "status": "MISSING",
+   "ios_files": "Views/AddToPlaylistMenu.swift (quickLimit 5, AddToPlaylistPresenter/host)",
+   "android_files": "screens/browse/BrowseScreen.kt :457-495 (long-press opens the full sheet directly \u2014 no submenu)",
+   "notes": ""
+  },
+  {
+   "feature": "Multi-select: RowSelection (per-window scope, select mode armed PER SCOPE, anchor/range, select-all over the FULL filtered universe, prune on recompute, ordered payload), SelectableRow, SelectionBar (count \u00b7 Select all \u00b7 Add to [Recent/Pockets A\u2013Z/Playlists A\u2013Z] \u00b7 Copy \u00b7 Clear), playlist chapters keyed by NODE id",
+   "status": "MISSING",
+   "ios_files": "State/RowSelection.swift; Views/SelectionUI.swift; PlaylistsView.swift :864, :1121; PocketsView.swift :119",
+   "android_files": "\u2014",
+   "notes": "Keyboard modifiers (\u2318/\u2325/\u21e7) are Mac/iPad; Android = long-press to arm select mode, taps toggle only in the armed scope (the 'swallowed first tap in every other list' bug must not be re-shipped)."
+  },
+  {
+   "feature": "Drag & drop + clipboard of song ids: SongTransfer {songIds, text} (custom UTI com.pocketdj.songlist + text fallback), drops on collection ROWS (default chapter) and detail whole-list targets with highlight, `SongDrop.acceptableIds` (maxIds 100k, maxIdLength 128, must resolve in catalog/studio), 8 MB pasteboard cap, \u2318C/\u2318V paste target registration",
+   "status": "MISSING",
+   "ios_files": "Models/SongTransfer.swift; PlaylistsView.swift :550-620 (dropDestination), :104-118; Support/PocketDJUTType.swift",
+   "android_files": "\u2014",
+   "notes": "Compose foundation dragAndDropSource/Target + ClipData with MIME application/vnd.pocketdj.songlist+json; foreign pasteboard strings must never persist (resolve-gate)."
+  },
+  {
+   "feature": "Apple Music WRITE-BACK (PUSH of adds to the real AM playlist): durable device-local queue `pocketdj-playlist-writeback.json` (states queued/delivered/notApplicable/failed/unresolvable, maxAttempts 4, backoff, history cap 200, dedup on playlist+song), resolve playlist by name ONCE (tiered exact\u2192trimmed\u2192folded; 'Sap ' bug) then join by persisted MusicKit id, pre-check membership before add (non-idempotent add), `WriteBackMatcher` catalog-id resolve on device for songs the indexer missed, store seams (enqueueSourceWriteBack/batch/canWriteBack/cancelPending), eligibility (AM provenance incl. BOTH 'Apple Music (Local)' and 'Apple Music', catalog song w/ id or title+artist, not in snapshot unless FORCE, allowsPush), batch >50 parks behind confirm dialog, backfill from activity log (days 1\u201390, local-origin only, still-member), force-sync menu with WriteBackAttempt feedback",
+   "status": "MISSING",
+   "ios_files": "State/PlaylistWriteBack.swift; CollectionsStore.swift :1460-1768; SettingsStore.swift :424-430",
+   "android_files": "\u2014 (specs say 'impossible: no MusicKit'; superseded \u2014 see decisions)",
+   "notes": "FEASIBLE on Android via the Apple Music Web API: `GET/POST /v1/me/library/playlists[/{id}/tracks]` with `Authorization: Bearer <devToken>` + `Music-User-Token` \u2014 both already persisted in AppSettings (musicUserToken, appleMusicDeveloperToken). Snapshot `sourceSongIds` is OFF-LIMITS for optimistic advance (reconcile would delete the song)."
+  },
+  {
+   "feature": "Apple Music PLAYLIST SYNC (WS2, Lambda `amPlaylistSyncBase`): submit 202 \u2192 poll GET /job/{id} stall-based (180 s no-progress), transient-absorb, jobId persisted for re-attach; coordinator resolveOutgoing (normName merge, allowsPush, pockets with AM provenance, judge dedupe + trackMeta), pull newImports (skip existing by normName incl. pockets, collapse same-name remotes, import LINKED with provenance), linkToAppleMusic amPlaylistId stamping (direct write, not mutate), SyncReport audit trail cap 20, RunSnapshot persistence + `.interrupted` + resumeIfInterrupted, daily auto-sync (amAutoSyncEnabled, amAutoSyncMinutes=980), \u21c5 Sync / \u2191 Send / \u2193 Get verbs in Settings \u25b8 Apple Music",
+   "status": "MISSING",
+   "ios_files": "Services/Streaming/PlaylistAppleMusicSync.swift; Services/Streaming/AMPlaylistSyncClient.swift; Views/AppleMusicSettingsView.swift",
+   "android_files": "\u2014 (RemoteEndpoints already carries AM_PLAYLIST_SYNC_BASE)",
+   "notes": "Server-side reconcile (remove/reorder) uses on-device MusicLibrary.edit \u2192 N/A on Android; push = create + append-only (same as macOS). Device-only to verify (MUT needs a real subscription)."
+  },
+  {
+   "feature": "AM-sync REMOVAL CONFIRMATION (3 distinct-day strikes before a playlist/member/library removal ships; reset on reappearance)",
+   "status": "NA",
+   "ios_files": "(server) scripts am-sync on the iMac: ~/.pocketdj/am-sync/pending-removals.json; memory source-sync-and-removal-confirmation",
+   "android_files": "\u2014",
+   "notes": "Lives in the indexer, not in any client; Android inherits it through the published catalog. Nothing to port."
+  },
+  {
+   "feature": "Favorites \u2665: per-profile FavoritesStore `pocketdj-favorites.json` {schemaVersion 1, entries[{songId, favorited, atMs, appleMusicId?, pushedAtMs?}], seedVersion?}, TOMBSTONE doctrine, derived favoriteIds Set, revision, onChanged \u2192 activity heart/unheart (user toggles only), remapSongIds, coalesced saves, export/importMerging; FavoriteToggle in every song row; Browse favorite/not-favorite filter",
+   "status": "MISSING",
+   "ios_files": "State/FavoritesStore.swift; Views/CollectionSongRow.swift FavoriteToggle :499; Browse/BrowseState.swift :65-68,205-211",
+   "android_files": "\u2014 (specs/activity-favorites.md \u00a76 deliberately deferred; heart seam stubbed in ActivityKind)",
+   "notes": "Browse filter + rows are a Browse-area shared touchpoint."
+  },
+  {
+   "feature": "Favorites two-way Apple Music sync: push pending (PUT /v1/me/ratings/songs/{id} value 1 + POST /v1/me/favorites?ids[songs]=; unfavorite = DELETE rating only \u2014 \u2605 irreversible), pull GET /v1/me/ratings/songs?ids= batches of 250 \u2192 applyRemote (newer local wins), owner gate (CloudKit hash) OR per-install opt-in `favoritesTwoWaySync`, owner seed `favorites-seed.json` opt-in (default OFF)",
+   "status": "PARTIAL",
+   "ios_files": "State/FavoritesSyncService.swift; Services/Streaming/AppleMusicFavorites.swift; SettingsStore.swift :331-334",
+   "android_files": "data/config/Endpoints.kt FAVORITES_SEED_URL (constant only)",
+   "notes": "Owner gate = CloudKit \u2192 N/A; everything else feasible via Web API with MUT. Device-only to verify."
+  },
+  {
+   "feature": "Collection activity log (add/remove from user choke points only; never from reconcile/decode), History \u25b8 Collection segment, installId",
+   "status": "DONE",
+   "ios_files": "State/CollectionActivityStore.swift; CollectionsStore.swift :56-74",
+   "android_files": "data/activity/CollectionActivityStore.kt, ActivityModels.kt; screens/history/HistoryScreen.kt ActivityContent, ActivityRows.kt; CollectionsActivityChokePointsTest.kt",
+   "notes": ""
+  },
+  {
+   "feature": "Activity event parity: `itemArtist` snapshot, `originInstallId` (write-back backfill peer filter), kinds `catalogAdd`/`catalogRemove` + lenient unknown-kind skip, batch `record` (one write per gesture)",
+   "status": "PARTIAL",
+   "ios_files": "CollectionActivityStore.swift :32-80, :151-181",
+   "android_files": "ActivityModels.kt (4 kinds, no itemArtist/originInstallId)",
+   "notes": "RISK: Android `ActivityKind` enum has no default \u2192 an iOS doc containing a `catalogAdd` event may fail the WHOLE list decode unless the store decodes per element; verify + fix in COL-1."
+  },
+  {
+   "feature": "Recently added VIRTUAL playlist (id `__pdj_recently_added__`, name 'Recently added', last N by catalog `dateAdded` \u222a in-app adds, N = Settings \u25b8 Collections default 3650 clamp 1\u2013100000, memoized on catalog revision, `hasRecentlyAddedItems` cheap gate, pinned section at top of Yours tab \u2192 read-only source-playlist detail with Play/Shuffle/Duplicate/Convert)",
+   "status": "MISSING",
+   "ios_files": "State/AppModel.swift :1023-1200; Views/PlaylistsView.swift :304-320; SettingsStore.swift :435-443",
+   "android_files": "\u2014 (IndexSong has NO `dateAdded`; iOS IndexModels.swift :230 has it)",
+   "notes": "Adding `dateAdded: Double?` to Android IndexSong is a Catalog-area touchpoint (additive, lenient)."
+  },
+  {
+   "feature": "Per-collection SORT + FILTER on every collection detail (reuses the Browser pipeline on the song subset; persisted per collection key `pdj.collection.<id>`; reorder/up-down/remove gated to default order; `dateAdded` sort field)",
+   "status": "MISSING",
+   "ios_files": "Views/CollectionSortFilter.swift; memory recently-added program ('COLLECTION items sort/filter')",
+   "android_files": "screens/browse/BrowseSort.kt + BrowseFilterSheet.kt exist (Browse only)",
+   "notes": ""
+  },
+  {
+   "feature": ".pdjcollection import/export: zip = manifest.json + playlist.json|pocket.json + pockets.json (+ items.json PORTABLE snapshot in PWA MusicItem[] shape), UTI com.pocketdj.collection conforming to zip, EXPLICIT `<name>.playlist.pdjcollection` / `.pocket.pdjcollection` filenames, `importAny` content-routed (legacy .zip, JSON envelope), match-by-id idempotent merge + dropDanglingRefs, imported pockets lose folderId, amPlaylistId STRIPPED, cleanOnly/recsEnabled travel, tapped-file open (LSSupportsOpeningDocumentsInPlace absent), CSV tracklist export",
+   "status": "MISSING",
+   "ios_files": "CollectionsStore.swift :2739-3075; Services/PlaylistZip.swift, PocketZip.swift, PortableItems.swift; Support/PocketDJUTType.swift; PocketDJApp.swift :16, :1930-1945; Views/PocketsView.swift :516-520",
+   "android_files": "\u2014 (specs/playlists-ui.md \u00a713 deferred)",
+   "notes": "Portable-item materialization needs an ImportedSongsStore injection source (Catalog touchpoint)."
+  },
+  {
+   "feature": "Listening pockets: idempotent fingerprint uploads (`outcome|fraction%|ctx|tz`, 90-day window, batch 1000), rounds upload, collections snapshot + addEvents (ids only; 24 h/changed gate; caps 500/5000/100k/5000/365 d/3.5 MB), results fetch+cache (TTL 10 min, 404 \u21d2 serviceAvailable=false silently), privacy gate (rec engine ON \u2227 pockets ON), epoch invalidation, Delete cloud data (isDeleting, uploadFloorMs), History \u25b8 Pockets UI (Recurring/Recent, detail, Play, Save as playlist, opt-in offer)",
+   "status": "MISSING",
+   "ios_files": "State/ListeningPocketsService.swift; Services/ListeningPockets/*.swift; Models/CollectionFlattener.swift; Views/ListeningPocketsView.swift",
+   "android_files": "\u2014 (RemoteEndpoints has LISTENING_POCKETS_BASE)",
+   "notes": "Needs rec-engine credentials (key + scoped profileId) from the Recs/For You area, and PlayEvent outcome fields (wasSkipped, listenedFraction, tzOffsetMin, originInstallId, listeningContext, carPlay) which Android PlayEvent lacks (History/Playback touchpoint)."
+  },
+  {
+   "feature": "Pockets \u00d7 collections membership vector: CollectionFlattener (effective membership: albums expanded, DAG flattened, first-seen dedup; addTimes/addEvents from the activity log; 45-day half-life + 30-min add sessions are server-side), membership is CURRENT and RETROACTIVE",
+   "status": "MISSING",
+   "ios_files": "Models/CollectionFlattener.swift; Services/ListeningPockets/ListeningPocketsCollections.swift",
+   "android_files": "\u2014",
+   "notes": "Pure; also feeds `membershipSnapshotForSimilarity`/`recMembership` (Recs/Games area consumers)."
+  },
+  {
+   "feature": "Location places & trips: pure ListeningPlaceEngine (visit clustering 150 m, merge 100 m, min dwell 5 min, trips \u22644 h, rank window 60 d, retention 30/180/180 d, centroids rounded 4 dp, opaque plc_/trp_ ids, aliases, pending horizon 6 h), ListeningLocationStore (`pocketdj-listening-places.json`, opt-in default OFF, erase on disable, never synced), CoreLocation CLVisit + significant-change source, Settings rows + Always upgrade, onDisabled wiring",
+   "status": "MISSING",
+   "ios_files": "Location/ListeningPlaceEngine.swift, ListeningLocationStore.swift, ListeningContext.swift, CoreLocationVisitSource.swift, ListeningLocationSettingsSection.swift",
+   "android_files": "\u2014",
+   "notes": "Android has no CLVisit; synthesize visits from low-power fused fixes (dwell detection). Real-world verification is device-only; emulator accepts injected fixes."
+  },
+  {
+   "feature": "Membership snapshot for Gem Collector similarity + `recMembership`/`suggestionsExcludingMembers` ('never suggest what is already in here'), per-collection recs opt-out list",
+   "status": "MISSING",
+   "ios_files": "CollectionsStore.swift :3122-3223, :1056-1113",
+   "android_files": "\u2014",
+   "notes": "Consumers are Games/Recs areas; this area supplies the flattener + recsEnabled field. Not packaged here beyond COL-1 fields + LP-1 flattener."
+  },
+  {
+   "feature": "SourcePlaylistsCache (last-known Shared rows paint before the 61 MB catalog decodes; never overwrites real with empty)",
+   "status": "PARTIAL",
+   "ios_files": "State/SourcePlaylistsCache.swift",
+   "android_files": "CatalogRepository seeds from disk cache (full decode) \u2014 no slim cache",
+   "notes": "Low priority; fold into RA-1 if cheap."
+  },
+  {
+   "feature": "Collection \u25b8 Timeline grain (Songs/Albums by dateAdded with listening progress) in History \u25b8 Collection",
+   "status": "MISSING",
+   "ios_files": "Models/CollectionTimeline.swift; Views/CollectionTimelineView.swift",
+   "android_files": "\u2014",
+   "notes": "History-area surface; depends on RA-1's dateAdded. Not packaged here."
+  },
+  {
+   "feature": "Collection Rip/Burn/Stemify buttons, device/cloud PlaybackModeToggle, CarPlay/Siri/App Intents/Spotlight collection vocabulary, CloudKit whole-doc LWW + reloadFromDisk, tvOS/visionOS surfaces, Studio items in collections",
+   "status": "NA",
+   "ios_files": "Views/CollectionRipBurn.swift; Intents/*; Services/CloudSync/*; Views/TVRootView.swift",
+   "android_files": "\u2014",
+   "notes": "Rip/Burn = Rip area; Siri/CarPlay = Android Auto/App Actions areas; CloudKit = locked NO (future S3; keep doc shape unchanged); tvOS/visionOS = N/A; Studio = Phase 4. `onChange` seam stays nullable."
+  }
+ ],
+ "architecture": "## Android architecture \u2014 Collections / Pockets / Playlists / Setlists\n\nEverything below builds on what is already shipped: `data/collections/CollectionsStore` (main-thread-confined singleton with a `synchronized(lock)` + `StateFlow<State>` snapshot), `CollectionsCodec` (lossy per-element decode), `AppGraph` hand-rolled DI, `PdjJson.lenient`, the `PlayHistoryStore` durable-JSON idiom (temp+rename, `.bak` quarantine), Navigation Compose routes in `MainActivity.kt`, Preferences DataStore settings. No new frameworks; three new library deps (versions pinned in `gradle/libs.versions.toml`): `androidx.lifecycle:lifecycle-process` (ON_STOP flush), `androidx.work:work-runtime-ktx` (daily AM sync + location poll), `com.google.android.gms:play-services-location` (fused provider). Compose DnD comes from the existing foundation (BOM 2025.01.00).\n\n### Package map (new or materially changed)\n```\ncom.levi.pocketdj\n\u251c\u2500\u2500 data/collections/\n\u2502   \u251c\u2500\u2500 CollectionsModels.kt        + amSyncDirection/cleanOnly/recsEnabled/amPlaylistId, CollectionSyncDirection\n\u2502   \u251c\u2500\u2500 CollectionsCodec.kt         + hand-written Playlist fields; iOS-fixture round-trip test\n\u2502   \u251c\u2500\u2500 CollectionsStore.kt         + addSongs/removeSongs/removeSong(fromPlaylist)/removeAlbum(fromPlaylist),\n\u2502   \u2502                                 onActivityBatch, membershipRevision, write-back seams, link/direction,\n\u2502   \u2502                                 removeDuplicates*, export/import merge, recentlyAdded helpers\n\u2502   \u251c\u2500\u2500 CollectionsDocumentWriter.kt NEW \u2014 single-thread executor, version-ordered write/delete/invalidate, flushNow\n\u2502   \u251c\u2500\u2500 SongDuplicateJudge.kt       NEW \u2014 pure (tier 1 + same-release tier, Seen, CollapsePlan)\n\u2502   \u251c\u2500\u2500 SongTransfer.kt             NEW \u2014 payload codec + SongDrop.acceptableIds\n\u2502   \u251c\u2500\u2500 CollectionFlattener.kt      NEW \u2014 pure membership flattening + addTimes/addEvents\n\u2502   \u251c\u2500\u2500 RecentlyAdded.kt            NEW \u2014 virtual SourcePlaylist builder, memo keyed on catalog revision\n\u2502   \u2514\u2500\u2500 io/ PlaylistZip.kt PocketZip.kt PortableItems.kt TracklistCsv.kt CollectionsImport.kt   NEW\n\u251c\u2500\u2500 data/activity/ActivityModels.kt  + itemArtist, originInstallId, catalogAdd/catalogRemove, lenient unknown kind\n\u251c\u2500\u2500 data/favorites/ FavoritesModels.kt FavoritesStore.kt FavoritesSyncService.kt   NEW\n\u251c\u2500\u2500 data/applemusic/\n\u2502   \u251c\u2500\u2500 AppleMusicWebApi.kt         NEW \u2014 ONE OkHttp wrapper for api.music.apple.com (dev token + Music-User-Token headers,\n\u2502   \u2502                                 storefront, 401/403 \u2192 re-mint hook, 429 backoff)\n\u2502   \u251c\u2500\u2500 AppleMusicLibraryPlaylists.kt NEW \u2014 list/resolve-by-name/tracks/append (write-back transport)\n\u2502   \u251c\u2500\u2500 AppleMusicFavoritesApi.kt   NEW \u2014 ratings PUT/DELETE/GET batches 250, favorites POST ids[songs]\n\u2502   \u251c\u2500\u2500 WriteBackMatcher.kt         NEW \u2014 pure catalog-candidate scoring (port)\n\u2502   \u251c\u2500\u2500 PlaylistWriteBack.kt        NEW \u2014 durable queue doc + drain\n\u2502   \u251c\u2500\u2500 AMPlaylistSyncClient.kt     NEW \u2014 Lambda submit/poll/re-attach\n\u2502   \u251c\u2500\u2500 PlaylistAppleMusicSync.kt   NEW \u2014 coordinator (resolveOutgoing/newImports/audit/run snapshot)\n\u2502   \u2514\u2500\u2500 AppleMusicAutoSyncWorker.kt NEW \u2014 WorkManager periodic (isDue pure)\n\u251c\u2500\u2500 data/pockets/  ListeningPocketsModels.kt ListeningPocketsClient.kt ListeningPocketsCollections.kt ListeningPocketsService.kt  NEW\n\u251c\u2500\u2500 data/location/ ListeningContext.kt ListeningPlaceEngine.kt ListeningLocationStore.kt FusedVisitSource.kt   NEW\n\u251c\u2500\u2500 ui/selection/  RowSelection.kt SelectionUi.kt (SelectableRow, SelectionBar)   NEW\n\u251c\u2500\u2500 ui/dnd/        SongDragDrop.kt   NEW\n\u251c\u2500\u2500 screens/collections/ AddToActions.kt AddToPlaylistMenu.kt (+AddToCollectionSheet.kt upgrades) RemoveDuplicatesDialog.kt\n\u251c\u2500\u2500 screens/playlists/   CollectionSortFilter.kt LinkSourceSheet.kt (+detail screens)\n\u251c\u2500\u2500 screens/history/     ListeningPocketsScreen.kt ListeningPocketDetailScreen.kt   NEW\n\u2514\u2500\u2500 screens/settings/    AppleMusicSettingsScreen.kt (Syncing: \u21c5/\u2191/\u2193, steps, audit, favorites toggle, write-back status, catch-up) CollectionsSettings rows, ListeningLocationSettingsRows\n```\n\n### Data flow\n1. **User mutation** \u2192 `CollectionsStore` choke point (`addSong/addSongs/addAlbum/remove*`) \u2192 `mutate*` stamps `updatedAt` \u2192 `save()` bumps `membershipRevision` + `saveVersion`, snapshots the document (immutable data classes, cheap), hands it to `CollectionsDocumentWriter.write(doc, version)` on its single-thread executor (encode + atomic write off the caller's thread; a lower version arriving later is dropped) \u2192 `onChange?`, `onActivityBatch?`/`onActivity?` (\u2192 `CollectionActivityStore.record`), `enqueueSourceWriteBack?` (\u2192 `PlaylistWriteBack.enqueue` + `runSoon`). `ProcessLifecycleOwner` ON_STOP \u2192 `flushNow()` (invalidate-through-version barrier, then synchronous write) \u2014 identical ordering rule to iOS (`invalidate` BEFORE the inline write).\n2. **Catalog refresh** \u2192 `CatalogRepository.state` collector in `AppGraph` \u2192 if `settings.syncConvertedPockets` \u2192 `collections.syncConvertedCollections(catalog.playlists)` (allowsPull + judge `Seen` gates) \u2192 then `favoritesSync`/`writeBack.runSoon()` if signed in.\n3. **Apple Music (device-only path)**: `AppleMusicWebApi` is the ONLY class that speaks `api.music.apple.com`; it reads `settings.musicUserToken` + `musicKitDevTokenClient.cachedTokenOrNull()`. `PlaylistWriteBack` (device-local queue, never synced) and `FavoritesSyncService` are its consumers; `AMPlaylistSyncClient` talks to the Lambda (`RemoteEndpoints.url(AM_PLAYLIST_SYNC_BASE)`) sending the MUT per call (never stored server-side). `PlaylistAppleMusicSync` is app-scoped (one instance in `AppGraph`) so a second screen can never fork a concurrent sync.\n4. **Listening pockets**: `PlayHistoryStore` (outcome fields) + `ListeningLocationStore` (opaque ctx) + `CollectionFlattener` (membership) \u2192 `ListeningPocketsService.flush` (fingerprint diff) \u2192 `ListeningPocketsClient` \u2192 results cache \u2192 `ListeningPocketsScreen`. Credentials come through a nullable seam `() -> Pair<String,String>?` the Recs area wires; unwired \u21d2 inert, zero network.\n5. **Selection/DnD**: `RowSelection` (app-scoped in `AppGraph`, one per process \u2014 Android is single-window) holds `scopeId`, `ids`, `selectModeScope`, `activeList` registration; `SelectionBar` and drop targets build a `SongTransfer`, run `SongDrop.acceptableIds` against `catalog.songsById`, and call `collections.addSongs(ids, target)` once.\n\n### Persistence formats (all under `filesDir`, all additive-optional, iOS-shape-compatible where a doc is shared)\n| file | shape owner | sync class |\n|---|---|---|\n| `pocketdj-collections.json` | iOS `CollectionsDocument` v7 + the four additive keys | future S3 LWW \u2014 byte-shape must match |\n| `pocketdj-collection-activity.json` | iOS `CollectionActivityStore.Document` v1 (+itemArtist, originInstallId, 6 kinds) | future S3 union-by-id |\n| `pocketdj-favorites.json` | iOS `FavoritesStore.Document` v1 (tombstones; appleMusicId/pushedAtMs/seedVersion carried) | future S3 |\n| `pocketdj-playlist-writeback.json` | iOS `PlaylistWriteBack.Document` v1 job fields verbatim | DEVICE-LOCAL by doctrine (never sync) |\n| `pocketdj-am-sync-audit.json`, `pocketdj-am-sync-current.json` | iOS SyncReport[] / RunSnapshot | device-local |\n| `pocketdj-listening-pockets-sync.json`, `pocketdj-listening-pockets.json` | iOS SyncDoc / results cache | device-local by doctrine |\n| `pocketdj-listening-places.json` | iOS ListeningLocationStore.Document v1 (engine state) | NEVER leaves the device; excluded from backup (`android:allowBackup` rules) |\n| `pocketdj-imported-songs.json` | iOS ImportedSongsStore entries | future S3 |\n| DataStore keys | `syncConvertedPockets`(true), `favoritesTwoWaySync`(false), `applyOwnerFavoritesSeed`(false), `writeBackBackfillDays`(2, 1\u201390), `defaultRecentlyAddedCount`(3650, 1\u2013100000), `amAutoSyncEnabled`(true), `amAutoSyncMinutes`(980), `lastAMAutoSyncAtMs`, `listeningPocketsEnabled`(false), `listeningLocationEnabled`(false), `pdj.amsync.activeJob.<op>`, `collectionBrowseStates` (JSON map id\u2192BrowseSnapshot) | view/user state \u2014 OUTSIDE the collections doc, exactly like iOS |\n\n### Threading model\n- Store mutations stay synchronous under `lock` (callers are Compose event handlers on main); the ONLY expensive step \u2014 encode+write \u2014 moves to `CollectionsDocumentWriter` (one `Executors.newSingleThreadExecutor`, version-ordered). Reads for UI go through `state.collectAsState()`.\n- Heavy derivations (realize over big source playlists, flattener, recently-added selection, per-collection sort/filter, dedupe plans) run in `withContext(Dispatchers.Default)` from `LaunchedEffect`/`produceState` keyed on `state.revision`/catalog revision; never inside a composable body (collections-sequencer-perf lesson).\n- Network (Web API, Lambda, pockets) on `Dispatchers.IO` via OkHttp; services expose `StateFlow` for progress and single-flight guards (`isSyncing`, `isFlushing`, epoch counters) exactly as iOS.\n- WorkManager: `AppleMusicAutoSyncWorker` (periodic 15 min tick \u2192 `AppleMusicAutoSync.isDue` pure check \u2192 `runFullPass`), `LocationPollWorker` (periodic, low power). Location callbacks hop to main before touching the store.\n\n### Platform APIs\n- Compose `Modifier.dragAndDropSource { \u2026 }` / `dragAndDropTarget` with `ClipData` (`application/vnd.pocketdj.songlist+json` + `text/plain`); `LocalClipboardManager` for copy/paste.\n- Storage Access Framework `ActivityResultContracts.CreateDocument(\"application/zip\")` with the explicit `.playlist.pdjcollection` name; `OpenDocument` importer; manifest `<intent-filter>` ACTION_VIEW on `application/zip`/`application/octet-stream` + `pathPattern` `.*\\\\.pdjcollection` \u2192 `MainActivity.onNewIntent` \u2192 `CollectionsImport.importAny(uri)` (content-routed; never claims every zip as \"ours\" beyond the extension pattern).\n- `java.util.zip` for the zips; `kotlinx.serialization` JSON element API for the lenient PWA `items.json`.\n- Fused location (`PRIORITY_LOW_POWER`, interval 5 min, smallest displacement 200 m) + a dwell detector that synthesizes `LocationVisitSample`s (stationary \u2265 5 min within 150 m); `ACCESS_COARSE_LOCATION` first, `ACCESS_BACKGROUND_LOCATION` as the \"Always\" upgrade. Coordinates never leave the device.\n- Apple Music Web API via OkHttp (no SDK needed for library/ratings endpoints); the vendored MusicKit AARs stay auth + playback only.\n\n### Mix DSP engine\nNot touched by this area; no decision taken here.",
+ "decisions": [
+  "Apple Music write-back, Lambda playlist sync and favorites two-way sync ARE feasible on Android: the vendored MusicKit auth AAR already yields the Music-User-Token and the rip server/Lambda mints the developer token, and iOS itself does these via the Apple Music WEB API (MusicDataRequest), not MusicKit library APIs. The 'impossible \u2014 no MusicKit' lines in specs/collections-schema.md \u00a78.3 and specs/playlists-ui.md \u00a713 are superseded; `IndexPlaylistAdd.writeBackEligible` stops being hard-false. The one Apple-only piece (`MusicLibrary.edit` remove/reorder reconcile) stays N/A \u2014 Android push is create+append only, same as macOS.",
+  "Owner gate (salted CloudKit userRecordID hash) is N/A: favorites two-way sync on Android is the per-install opt-in toggle only; the shipped owner-seed is a separate opt-in defaulting OFF (integrity rule: never seed someone else's picks silently).",
+  "The 3-strike removal confirmation is indexer-side (iMac am-sync pending-removals.json); nothing to port \u2014 the client only ever sees the confirmed catalog.",
+  "Schema parity first: Android must carry `amSyncDirection`, `cleanOnly`, `recsEnabled`, `amPlaylistId` with iOS's per-type CodingKeys semantics (schemaVersion stays 7 \u2014 additive, no bump, because a bump would discard documents). Every later package depends on COL-1.",
+  "Batch choke points + the version-ordered off-main writer land before any multi-select/DnD UI, so a select-all add is ONE document write, ONE activity batch, ONE write-back resolution.",
+  "Multi-select on Android is touch-first: long-press arms select mode PER SCOPE; keyboard modifier handling (\u2318/\u2325/\u21e7) is dropped; the bar's semantics (Select all over the full filtered universe, Recent/Pockets A\u2013Z/Playlists A\u2013Z Add-to, Copy, Clear) are kept verbatim.",
+  "Drag & drop uses Compose foundation DnD + ClipData with a PocketDJ MIME type; foreign payloads pass `SongDrop.acceptableIds` (resolve-gate against the catalog) before anything persists.",
+  "Dedupe ships the deterministic tiers of `SongDuplicateJudge` only (FoundationModels LLM tie-break is N/A); it is the ONE matcher used by remove-duplicates, source-sync reconcile gates, AM push dedupe and pull-import twin filtering.",
+  "No CLVisit on Android: the pure `ListeningPlaceEngine` is ported bit-for-bit and fed by a dwell detector over low-power fused fixes; raw coordinates stay on device, default OFF, erased on disable, never backed up.",
+  "Listening-pockets credentials (rec-engine key + scoped profile id) are a nullable seam owned by the Recs/For You area; the pockets service ships inert and makes zero network calls until wired \u2014 the privacy gate doctrine.",
+  "Shared touchpoints outside this area, kept additive: `IndexSong.dateAdded` (Catalog), `PlayEvent` outcome fields `wasSkipped/listenedFraction/tzOffsetMin/originInstallId/listeningContext/carPlay` (History/Playback), `BrowseFilters` favorite tri-state + row \u2665 (Browse), `ImportedSongsStore` injection source in `CatalogRepository` (Catalog). Each package names the exact file it touches.",
+  "CloudKit/`reloadFromDisk` stay OMITTED (locked); nothing in any document shape may change for a future S3 whole-doc LWW \u2014 the writer's `invalidate(through:)` seam is kept so a pull can later supersede queued writes exactly as on iOS.",
+  "Device-only verification is explicit for WB-1, AMSYNC-1, FAV-2 (a real Apple Music subscription + MUT) and LOC-2 (real movement); every other package is emulator-verifiable."
+ ],
+ "packages": [
+  {
+   "id": "COL-1",
+   "title": "Collections + activity schema parity (additive iOS fields, lenient kinds, iOS fixture round-trip)",
+   "goal": "Make an iOS pocketdj-collections.json and pocketdj-collection-activity.json survive an Android decode\u2192encode byte-shape-equivalently: add amSyncDirection/cleanOnly/recsEnabled/amPlaylistId (per-type CodingKeys exactly as CollectionsSchema.swift :160-180, :360-392), CollectionSyncDirection enum + setters, wantsRecommendations/amSyncDir derived props, ActivityEvent itemArtist + originInstallId, ActivityKind catalogAdd/catalogRemove with unknown-kind per-element skip, and convertPlaylistToPocket provenance carry-over.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsCodec.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsStore.kt (ONLY: new setters setAMSyncDirection/setCleanOnly/setRecommendationsEnabled/linkToAppleMusic + recommendationsOffIds; convertPlaylistToPocket provenance)",
+    "android/app/src/main/java/com/levi/pocketdj/data/activity/ActivityModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/activity/CollectionActivityStore.kt (record gains itemArtist + stamps originInstallId; per-element lenient decode)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/CollectionsCodecTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/CollectionsStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/activity/CollectionActivityStoreTest.kt",
+    "android/app/src/test/resources/fixtures/ios-collections-v7.json (NEW, hand-built from the Swift shapes)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Decoding the iOS fixture then encoding yields a JSON object whose key SET per pocket/playlist/node equals the input's (sorted-key diff empty except absent-null normalisation).",
+    "Pocket.amPlaylistId is NOT persisted (matches iOS Pocket CodingKeys); Playlist.amPlaylistId IS.",
+    "setCleanOnly(false) and setRecommendationsEnabled(true) leave the serialized bytes of an untouched item unchanged (stored true/nil and false/nil idioms).",
+    "linkToAppleMusic writes directly (updatedAt untouched) and is idempotent.",
+    "An activity doc containing a `catalogAdd` event and an unknown kind `zzz` decodes with the unknown event skipped and every other event kept.",
+    "convertPlaylistToPocket of a provenance-stamped playlist yields a pocket with the same provenance (iOS 113508b)."
+   ],
+   "priority": "P0",
+   "est_lines": 700,
+   "unit_tests": [
+    "CollectionsCodecTest: iosFixtureRoundTripKeepsAdditiveKeys, pocketDoesNotPersistAmPlaylistId, unknownSyncDirectionReadsAsBoth",
+    "CollectionsStoreTest: cleanOnlyOffLeavesBytesUnchanged, recsEnabledOnLeavesBytesUnchanged, linkToAppleMusicDoesNotTouchUpdatedAt, convertPlaylistCarriesProvenance",
+    "CollectionActivityStoreTest: unknownKindSkipsThatEventOnly, recordStampsOriginInstallIdAndArtist"
+   ],
+   "emulator_steps": [
+    "Push the iOS fixture to filesDir via `adb push \u2026 /data/data/com.levi.pocketdj/files/pocketdj-collections.json` (run-as), launch, open Collections: every playlist/pocket from the fixture lists; relaunch twice and `adb pull` the file \u2014 keys preserved."
+   ],
+   "shared_touchpoints": [
+    "none outside data/collections + data/activity"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "COL-2",
+   "title": "Store batch choke points + version-ordered off-main document writer",
+   "goal": "Add iOS's batch membership primitives and move encode+write off the caller thread with version ordering and an ON_STOP flush, so multi-select/DnD/paste cost one write and \u25b6 Play on a 26k-track list never stalls the main thread.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsStore.kt (addSongs(ids,target,BatchDedupe), removeSongs(fromPocket/fromPlaylist), removeSongFromPlaylist, removeAlbumFromPlaylist, playlistSongIdSet, playlistContainsAlbum, pocketsAZ/playlistsAZ, onActivityBatch, membershipRevision, flushNow, save() \u2192 writer)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsDocumentWriter.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (ProcessLifecycleOwner ON_STOP \u2192 collections.flushNow(); wire onActivityBatch \u2192 activity.recordAll)",
+    "android/app/src/main/java/com/levi/pocketdj/data/activity/CollectionActivityStore.kt (recordAll(batch) = one write)",
+    "android/app/build.gradle.kts + gradle/libs.versions.toml (+ androidx.lifecycle:lifecycle-process)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/CollectionsBatchTest.kt (NEW)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/CollectionsDocumentWriterTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "COL-1"
+   ],
+   "acceptance": [
+    "addSongs on a pocket dedupes against membership, appends in order, returns count added; 0 \u21d2 no save, no activity, no MRU stamp.",
+    "addSongs on a playlist: .wholeCollection dedupes against every chapter, .targetChapter only against the chosen chapter; empty `sequences` self-heals with a Default chapter.",
+    "A batch add fires exactly ONE onActivityBatch emission (fallback: N onActivity when the batch seam is unwired) and ONE document write (count writer invocations).",
+    "Writer drops a lower-version write that arrives after a higher one; flushNow then a straggler save leaves the flushed bytes on disk (port the iOS reload test).",
+    "removeSongs(fromPlaylist) prunes every .song node with those ids across nested sequences in one mutate.",
+    "Existing CollectionsStoreTest/CollectionsActivityChokePointsTest stay green (count of tests moves UP)."
+   ],
+   "priority": "P0",
+   "est_lines": 900,
+   "unit_tests": [
+    "CollectionsBatchTest: pocketBatchDedupes, playlistWholeCollectionDedupe, playlistTargetChapterDedupe, emptySequencesSelfHeal, zeroAddedNoSideEffects, oneActivityBatchPerGesture",
+    "CollectionsDocumentWriterTest: versionOrderDropsStale, flushNowBeatsStraggler, deleteIsVersionOrdered"
+   ],
+   "emulator_steps": [
+    "Add 500 songs to a playlist via a debug seam/script, background the app (adb shell input keyevent HOME) immediately; relaunch \u2014 all 500 present (flush worked).",
+    "Shuffle-play a large source playlist: no ANR, UI stays responsive (adb shell dumpsys gfxinfo jank not spiking)."
+   ],
+   "shared_touchpoints": [
+    "di/AppGraph.kt (lifecycle observer registration)",
+    "data/activity/CollectionActivityStore.kt (recordAll)"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "DEDUPE-1",
+   "title": "SongDuplicateJudge + Remove duplicates (collection, all collections) + reconcile duplicate gates",
+   "goal": "Port the deterministic duplicate judge (normalized key + same-release tier with the 2026-10-19 rules), the collapse plan, removeDuplicates(inPocket/inPlaylist/Everywhere) with survivor/repeat rules, the Seen-gates inside reconcilePocket/reconcilePlaylist, and the menu items + result alert.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/SongDuplicateJudge.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsStore.kt (ONLY: removeDuplicates* section + Seen gates in reconcilePocket/reconcilePlaylist + duplicateIdentity(songId) via catalogProvider)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/collections/RemoveDuplicatesDialog.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PlaylistsScreen.kt (sort menu: 'Remove duplicates in all collections\u2026' with confirm)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PocketDetailScreen.kt + PlaylistDetailScreen.kt (\u22ef 'Remove duplicates')",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/SongDuplicateJudgeTest.kt (NEW)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/CollectionsDedupeTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "COL-1"
+   ],
+   "acceptance": [
+    "'Never Let Me Down | Kanye West, Jay-Z & J-Ivy' vs 'Never Let Me Down (feat. JA\u0178-Z & J. Ivy) | Kanye West' on the same album \u21d2 duplicate; 'E.T.' vs 'E.T. (feat. Kanye West)' with differing appleMusicIds \u21d2 NOT; 'Goodies' remix with non-overlapping feats \u21d2 NOT; '(Live)' vs studio \u21d2 NOT; Korean titles are not collapsed to empty.",
+    "collapsePlan keeps the copy with an appleMusicId (else first), in the group's earliest slot; songRepeats follow the survivor; playlist prune happens by ORIGINAL id before rename.",
+    "removeDuplicatesEverywhere performs ONE save and returns the total; no activity events are emitted.",
+    "reconcilePocket skips a source add whose identity is already present under another id (and the playlist twin)."
+   ],
+   "priority": "P1",
+   "est_lines": 900,
+   "unit_tests": [
+    "SongDuplicateJudgeTest: 12 rule cases above + normalization keeps non-Latin",
+    "CollectionsDedupeTest: pocketSurvivorPrefersAppleMusicId, repeatsFollowSurvivor, playlistPruneByOriginalId, everywhereOneSave, noActivityEmitted, reconcileSkipsIdentityTwin"
+   ],
+   "emulator_steps": [
+    "Seed a pocket with two twin ids from the live catalog, open \u22ef \u2192 Remove duplicates \u2192 alert 'Removed 1 duplicate', list shows one row; run 'Remove duplicates in all collections\u2026' \u2192 'No duplicates found'."
+   ],
+   "shared_touchpoints": [
+    "CollectionsStore.kt reconcile functions (also edited by SYNC-1 \u2014 SYNC-1 must rebase on this)"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "ADD-1",
+   "title": "AddToActions + Add-to sheet parity + 'Add to Playlist' context submenu",
+   "goal": "Extract the ONE shared AddToActions (recent/suggested/membership/add/remove/toggle incl. multi-song), upgrade the sheet (\u2713 tap removes, fuzzy search field with searchFirst, Songs item, suggested row via a nullable rec seam), and add the long-press 'Add to Playlist' submenu (top-5 toggles + More\u2026) to every song/album row.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/collections/AddToActions.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/collections/AddToPlaylistMenu.kt (NEW \u2014 composable dropdown submenu + AddToPlaylistHost state)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/collections/AddToCollectionSheet.kt (toggle, search, AddToItem.Songs, Suggested)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/FuzzyMatch.kt (NEW \u2014 port Models/FuzzyMatch.swift)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseScreen.kt, AlbumDetailScreen.kt, SongDetailSheet.kt (row long-press \u2192 DropdownMenu containing AddToPlaylistMenu instead of opening the sheet directly)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PlaylistsComponents.kt (song rows in details get the same menu)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (collectionSuggestionsProvider: ((String) -> List<RecCollectionSuggestionWire>)? = null seam)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/collections/AddToActionsTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "COL-2"
+   ],
+   "acceptance": [
+    "Tapping a \u2713 pocket/playlist row removes the item (pocket membership; playlist every chapter); a multi-song item is \u2713 only when EVERY id is a member, computed with one Set per row.",
+    "quickTargets = suggested (song items only, unwired \u21d2 none) then recent, deduped by (kind,id), capped at 5; 'More\u2026' opens the sheet with the search field focused.",
+    "No 'Added to\u2026' snackbar \u2014 the \u2713 is the feedback.",
+    "Search matches via FuzzyMatch against pocket/playlist/source names; empty query shows the full sheet.",
+    "Source-row adds still bypass MRU/activity (unchanged)."
+   ],
+   "priority": "P1",
+   "est_lines": 1300,
+   "unit_tests": [
+    "AddToActionsTest: recentTargetsFiltersDeleted, suggestedExcludesRecent, inPlaylistMultiAllMembers, toggleRemovesEveryChapter, songsBatchUsesAddSongsOnce",
+    "FuzzyMatchTest: port of iOS FuzzyMatch cases"
+   ],
+   "emulator_steps": [
+    "Browse \u2192 long-press a song \u2192 'Add to Playlist' \u2192 tap a playlist (\u2713 appears), long-press again \u2192 tap the \u2713 row (\u2713 clears) \u2192 History \u25b8 Collection shows Added then Removed rows.",
+    "'More\u2026' \u2192 sheet opens with keyboard up on the search field; type two letters \u2192 list narrows."
+   ],
+   "shared_touchpoints": [
+    "screens/browse/* row menus (Browse area owns those files; this package only swaps the long-press handler)",
+    "di/AppGraph.kt (suggestion seam \u2014 Recs area wires it later)"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "SEL-1",
+   "title": "Multi-select: RowSelection + SelectableRow + SelectionBar on Browse and every collection detail",
+   "goal": "Port RowSelection (scoped select mode, select-all over the full filtered universe, prune, ordered payload, active-list/paste registration), SelectableRow (long-press arms, tap toggles only in the armed scope), SelectionBar (count \u00b7 Select all \u00b7 Add to Recent/Pockets A\u2013Z/Playlists A\u2013Z \u00b7 Copy \u00b7 Clear) and wire it into the Browse song list and the playlist (node-id keyed), pocket, source-playlist and setlist details.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/ui/selection/RowSelection.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/ui/selection/SelectionUi.kt (NEW: selectableSongRow modifier, SelectionBar, CollectionSelectionChrome)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseScreen.kt (songs list rows + bar)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PlaylistDetailScreen.kt, PocketDetailScreen.kt, SourcePlaylistDetailScreen.kt, SetlistDetailScreen.kt (chrome + row modifier)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (rowSelection singleton)",
+    "android/app/src/test/java/com/levi/pocketdj/ui/selection/RowSelectionTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "COL-2",
+    "ADD-1"
+   ],
+   "acceptance": [
+    "Select mode armed in Browse is invisible in a pocket detail: a plain tap there navigates (the swallowed-first-tap bug is covered by a test).",
+    "Select all selects the FULL filtered universe (not just rendered rows); prune drops ids that left the list; a stale selection whose payload resolves to nothing clears the bar instead of advertising a count.",
+    "Add-to from the bar calls collections.addSongs ONCE with display-ordered ids; playlist chapters translate node ids \u2192 song ids.",
+    "Copy puts SongTransfer JSON + text fallback on the clipboard."
+   ],
+   "priority": "P1",
+   "est_lines": 1500,
+   "unit_tests": [
+    "RowSelectionTest: armPerScopeOnlyInterceptsOwnScope, selectAllUsesAllIds, pruneKeepsAnchorValid, orderedSelectionFollowsDisplayOrder, unregisterDisarmsOnlyOwner, canCopyRequiresActiveListScope"
+   ],
+   "emulator_steps": [
+    "Browse songs \u2192 long-press a row \u2192 bar shows '1 selected' \u2192 Select all \u2192 count equals the list count \u2192 Add to \u2192 Pockets \u2192 pick one \u2192 pocket detail shows them; open History \u25b8 Collection \u2192 ONE batch of Added rows.",
+    "With select mode armed in Browse, open Collections \u2192 a pocket \u2192 tap a song \u2192 song detail opens (no toggle)."
+   ],
+   "shared_touchpoints": [
+    "screens/browse/BrowseScreen.kt (Browse area)",
+    "di/AppGraph.kt"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "DND-1",
+   "title": "Song drag & drop + clipboard (SongTransfer payload, collection-row and whole-list drop targets, paste)",
+   "goal": "Port SongTransfer/SongPasteboard/SongDrop and add Compose DnD: drag a selected row (or the selection) from Browse/any detail, drop on a playlist/pocket row in the Collections list (default chapter, highlighted) or on a detail's whole list; paste into the on-screen collection; always through addSongs with the resolve-gate.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/SongTransfer.kt (NEW: SongTransfer, SongDrop.acceptableIds, ClipData codec, 8 MB cap)",
+    "android/app/src/main/java/com/levi/pocketdj/ui/dnd/SongDragDrop.kt (NEW: songDragSource(), collectionDropTarget() modifiers, drag chip)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PlaylistsScreen.kt (rows become drop targets with highlight)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PlaylistDetailScreen.kt, PocketDetailScreen.kt (whole-list target + paste)",
+    "android/app/src/main/java/com/levi/pocketdj/ui/selection/SelectionUi.kt (drag source hooks only)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/SongTransferTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "SEL-1"
+   ],
+   "acceptance": [
+    "acceptableIds dedupes, caps at 100 000 ids / 128 chars, and drops ids the catalog cannot resolve; a payload over 8 MB is refused before decode.",
+    "Dropping on a playlist row adds to its default chapter via addSongs(.wholeCollection); a self-drop of already-present songs adds nothing and writes nothing.",
+    "Row highlight appears only while hovered; folder headers and source rows take no drops.",
+    "Paste into a pocket detail with foreign clipboard text is a no-op (no bare strings persisted)."
+   ],
+   "priority": "P2",
+   "est_lines": 900,
+   "unit_tests": [
+    "SongTransferTest: clipDataRoundTrip, textFallbackCap200Lines, acceptableIdsCapsAndResolves, oversizedPayloadRefused"
+   ],
+   "emulator_steps": [
+    "Enable select mode in Browse, select 3 songs, long-press-drag the chip onto a pocket row in Collections (adb shell input swipe over the coordinates or the Compose UI test) \u2192 pocket count +3 \u2192 History shows one batch."
+   ],
+   "shared_touchpoints": [
+    "screens/browse/BrowseScreen.kt (drag source on rows \u2014 Browse area)"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "SYNC-1",
+   "title": "Source-sync completion: auto reconcile on catalog refresh, global + per-item toggles, direction gate, link-to-source",
+   "goal": "Wire syncConvertedCollections to every catalog refresh behind settings.syncConvertedPockets (default ON), add amSyncDirection.allowsPull gating, per-item 'Sync with source' toggle + 'Sync from source now' + 'Apple Music sync' direction picker in pocket/playlist \u22ef menus, linkPocketToSource + LinkSourceSheet (AM sources only, shown only when !hasSource), and the Settings row.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsStore.kt (ONLY: allowsPull in syncConvertedCollections, linkPocketToSource, cancelPendingWriteBacks seam, isAppleMusicSource helper)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (+syncConvertedPockets)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (catalog state collector \u2192 sync pass)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/LinkSourceSheet.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PocketDetailScreen.kt, PlaylistDetailScreen.kt (\u22ef source section)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/SettingsScreen.kt (Collections section: 'Follow source playlists' toggle)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/CollectionsSourceSyncTest.kt (extend)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/CollectionsLinkTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "COL-1",
+    "DEDUPE-1"
+   ],
+   "acceptance": [
+    "A catalog refresh with the toggle ON reconciles sync-enabled items; OFF \u21d2 zero mutations; manual 'Sync now' works regardless of both toggles.",
+    "An item with amSyncDirection push|off is skipped by the auto pass; 'Get only'/'Two-way' follow.",
+    "linkPocketToSource snapshots the source's CURRENT deduped membership, keeps an explicit sourceSyncEnabled=false, and calls cancelPendingWriteBacks(oldId, songIds) when re-linking to a different source.",
+    "A source missing from the refresh leaves the item untouched; no-change refresh persists nothing (writer invocation count unchanged)."
+   ],
+   "priority": "P1",
+   "est_lines": 1000,
+   "unit_tests": [
+    "CollectionsSourceSyncTest: autoPassRespectsGlobalToggle, pullDisabledSkipsItem, manualIgnoresToggles, missingSourceUntouched",
+    "CollectionsLinkTest: linkSnapshotsCurrentMembership, relinkCancelsOldWriteBacks, relinkPreservesExplicitOff"
+   ],
+   "emulator_steps": [
+    "Convert a source playlist to a pocket, remove a song from it, pull-to-refresh Browse (catalog refresh) \u2192 the song stays removed (user edit survives); toggle Settings \u25b8 Follow source playlists OFF \u2192 'Sync from source now' still works from \u22ef.",
+    "Create a hand-made pocket \u2192 \u22ef 'Link to Apple Music playlist\u2026' \u2192 pick one \u2192 \u22ef now shows the source section."
+   ],
+   "shared_touchpoints": [
+    "di/AppGraph.kt",
+    "screens/settings/SettingsScreen.kt (Settings area)",
+    "data/settings/AppSettingsStore.kt"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "WB-1",
+   "title": "Apple Music write-back queue (durable, Web API transport, batch confirm, backfill, force sync)",
+   "goal": "Port PlaylistWriteBack + WriteBackMatcher + the store's write-back seams/eligibility/batch-confirm/backfill/force paths, delivering adds to the REAL Apple Music library playlist through the Web API with the dev token + Music-User-Token, joining by a persisted library-playlist id after a one-time tiered name resolve, pre-checking membership before every non-idempotent append.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/applemusic/AppleMusicWebApi.kt (NEW \u2014 headers, storefront, 401/403 re-mint hook, 429 backoff)",
+    "android/app/src/main/java/com/levi/pocketdj/data/applemusic/AppleMusicLibraryPlaylists.kt (NEW \u2014 GET /v1/me/library/playlists, GET \u2026/{id}/tracks (paginate), POST \u2026/{id}/tracks, GET /v1/catalog/{sf}/search)",
+    "android/app/src/main/java/com/levi/pocketdj/data/applemusic/WriteBackMatcher.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/applemusic/PlaylistWriteBack.kt (NEW \u2014 doc pocketdj-playlist-writeback.json, enqueue/enqueueMany/run/retry/discard/cancelPending/isUnsyncable/prune)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsStore.kt (ONLY: write-back seams, writeBackPayload/WriteBackAttempt, PendingWriteBackBatch (threshold 50), confirm/discard, backfillSourceWriteBacks, forceWriteBackSong, IndexPlaylistAdd.writeBackEligible real)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (wiring behind canWriteBack = hasAppleMusic)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (+writeBackBackfillDays)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/AppleMusicSettingsScreen.kt (NEW: queue status rows, retry failed, 'Catch up Apple Music' stepper + 'Send my adds')",
+    "android/app/src/main/java/com/levi/pocketdj/screens/collections/WriteBackConfirmDialog.kt (NEW, hosted in MainActivity)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PocketDetailScreen.kt + PlaylistDetailScreen.kt (row \u22ef 'Force Apple Music sync' with WriteBackAttempt feedback)",
+    "android/app/src/test/java/com/levi/pocketdj/data/applemusic/PlaylistWriteBackTest.kt, WriteBackMatcherTest.kt, AppleMusicLibraryPlaylistsTest.kt (MockWebServer) (NEW)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/WriteBackSourceSyncTest.kt (NEW \u2014 port of the 23 iOS cases)"
+   ],
+   "depends_on": [
+    "COL-2",
+    "SYNC-1"
+   ],
+   "acceptance": [
+    "Eligibility exactly: AM provenance (sourceName is 'Apple Music (Local)' or 'Apple Music'), catalog song with appleMusicId OR title+artist, not in sourceSongIds unless force, allowsPush; each ineligible reason maps to WriteBackAttempt.",
+    "sourceSongIds is NEVER advanced by a delivery (test asserts snapshot unchanged after delivered).",
+    "Queue dedups on (indexPlaylistId, songId) across queued/delivered; failed after 4 attempts; delivered/notApplicable pruned oldest-first past 200; cancelPending removes only undelivered jobs for that playlist's ids.",
+    "Name resolve tiers exact \u2192 trimmed \u2192 case/diacritic-folded; 'Sap ' resolves; duplicates arbitrated by track overlap and recorded in resolutionNote (never clears lastError semantics); persisted library id reused thereafter; playlistGone clears it once.",
+    "Transport pre-checks the playlist's tracks and skips an append when the catalog id is already present.",
+    "Batch >50 eligible songs parks behind the confirm dialog; confirm enqueues once; discard leaves the local add intact; a non-capable session never shows the dialog.",
+    "Backfill: window clamp 1\u201390, newest-first per (collection,song) once, skips peer originInstallId, skips songs no longer members, returns newly-queued count."
+   ],
+   "priority": "P1",
+   "est_lines": 2400,
+   "unit_tests": [
+    "PlaylistWriteBackTest: enqueueDedup, maxAttemptsToFailed, pruneKeepsQueuedAndFailed, cancelPendingScoped, backoffSchedule",
+    "AppleMusicLibraryPlaylistsTest: resolveTiers, overlapArbitration, precheckSkipsAppend, pagination",
+    "WriteBackSourceSyncTest: the 23 iOS cases (per-add pocket/playlist, 4 guards, backfill window/idempotency/removed/clamp/peer-skip, link carry-over, direction gate)"
+   ],
+   "emulator_steps": [
+    "With MockWebServer-free emulator: sign-in is impossible, so verify the OFFLINE half \u2014 adds to a converted pocket enqueue `queued` jobs visible in Settings \u25b8 Apple Music; relaunch keeps them; 'Send my adds' reports N queued; dialog appears for a 60-song batch."
+   ],
+   "shared_touchpoints": [
+    "di/AppGraph.kt",
+    "MainActivity.kt (confirm dialog host)",
+    "screens/settings/* (Settings area)"
+   ],
+   "device_only": "Actual delivery needs a real device with an active Apple Music subscription and a Music-User-Token (emulator cannot mint one). Verify end-to-end on Levi's Android device: add to a converted pocket \u2192 song appears in the real Apple Music playlist within seconds; re-run backfill \u2192 nothing re-sent."
+  },
+  {
+   "id": "AMSYNC-1",
+   "title": "Apple Music playlist sync (Lambda WS2): client, coordinator, audit/run persistence, daily auto-sync, Settings pane",
+   "goal": "Port AMPlaylistSyncClient (202 submit \u2192 stall-based poll with transient absorb \u2192 jobId re-attach), PlaylistAppleMusicSync (resolveOutgoing with normName merge/allowsPush/pockets with AM provenance/judge dedupe+trackMeta; pull newImports linked with provenance; linkToAppleMusic stamping; SyncReport audit cap 20; RunSnapshot + interrupted + resumeIfInterrupted), AppleMusicAutoSync (isDue, default 16:20 local, claim-before-run) on WorkManager, and the Settings \u25b8 Apple Music Syncing pane (\u21c5 Sync / \u2191 Send / \u2193 Get, live steps, audit list, automatic section). Reconcile (remove/reorder) is omitted: push = create + append only.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/applemusic/AMPlaylistSyncClient.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/applemusic/PlaylistAppleMusicSync.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/applemusic/AppleMusicAutoSync.kt + AppleMusicAutoSyncWorker.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (+amAutoSyncEnabled/amAutoSyncMinutes/lastAMAutoSyncAtMs/activeJob keys)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/AppleMusicSettingsScreen.kt (Syncing tab \u2014 extends WB-1's screen)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (app-scoped sync instance; resumeIfInterrupted at launch/foreground; WorkManager enqueue)",
+    "android/app/build.gradle.kts + libs.versions.toml (+ androidx.work)",
+    "android/app/src/test/java/com/levi/pocketdj/data/applemusic/AMPlaylistSyncClientTest.kt (MockWebServer), PlaylistAppleMusicSyncTest.kt, AppleMusicAutoSyncTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "WB-1",
+    "SYNC-1"
+   ],
+   "acceptance": [
+    "Poll loop: progress change resets the 180 s stall deadline; 5xx/429/decode errors are absorbed; 404 \u21d2 jobGone and job cleared; 4xx/worker \u21d2 terminal and cleared; transient \u21d2 stored jobId survives (never two concurrent pushes).",
+    "resolveOutgoing merges normName-colliding locals (ordered union, deduped ids), drops allowsPush=false collections, includes pockets with AM provenance, emits trackMeta from the judge identity.",
+    "newImports skips remotes matching an existing playlist OR pocket by normName, collapses same-name remotes to the fullest, and imported playlists are created with provenance via duplicateForSource semantics.",
+    "Audit trail read-merge-write, newest first, cap 20; RunSnapshot persisted per step; a persisted running step hydrates as interrupted and resume re-attaches by stored jobId.",
+    "isDue: once per day after amAutoSyncMinutes local time, claim-before-run."
+   ],
+   "priority": "P2",
+   "est_lines": 2300,
+   "unit_tests": [
+    "AMPlaylistSyncClientTest: submit202, stallResetsOnProgress, transientAbsorbed, jobGoneTerminal, reattachUsesStoredJob",
+    "PlaylistAppleMusicSyncTest: resolveOutgoingMerge, pushDisabledDropped, pocketsWithProvenanceIncluded, newImportsSkipExistingNamesInclPockets, collapseSameNameRemotes, auditCap20, interruptedHydration",
+    "AppleMusicAutoSyncTest: isDueBoundaries, claimBeforeRun"
+   ],
+   "emulator_steps": [
+    "Point AM_PLAYLIST_SYNC_BASE at a local MockWebServer (debug endpoint override) returning a scripted job \u2192 Settings \u25b8 Apple Music \u25b8 \u21c5 Sync shows live steps, completes, audit row appears; kill the app mid-poll \u2192 relaunch shows 'Interrupted sync' and resumes."
+   ],
+   "shared_touchpoints": [
+    "di/AppGraph.kt",
+    "screens/settings/AppleMusicSettingsScreen.kt (shared with WB-1/FAV-2 \u2014 WB-1 creates it, this package adds the Syncing tab)",
+    "data/settings/AppSettingsStore.kt"
+   ],
+   "device_only": "Real pull/push needs a Music-User-Token from a real subscription; verify on device that push creates-if-absent and tops up (never duplicates), and that an imported AM playlist arrives linked."
+  },
+  {
+   "id": "FAV-1",
+   "title": "Favorites store + \u2665 toggle + Browse favorite filter + heart/unheart activity",
+   "goal": "Ship FavoritesStore (iOS doc shape, tombstones, favoriteIds Set, revision, onChanged only from user toggles, remapSongIds seam, coalesced saves, export/importMerging), the FavoriteToggle composable in every song surface, the Browse favorite/not-favorite tri-state filter, and the activity wiring heart/unheart.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/favorites/FavoritesModels.kt, FavoritesStore.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/ui/FavoriteToggle.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseModels.kt (BrowseFilters.favorite: ANY|FAVORITE|NOT), BrowseFilterSheet.kt, BrowseScreen.kt rows, SongDetailSheet.kt, AlbumDetailScreen.kt track rows",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PlaylistsComponents.kt (collection song rows)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (favorites singleton; onChanged \u2192 activity heart/unheart with live-catalog title/artist)",
+    "android/app/src/main/java/com/levi/pocketdj/data/storage/StorageService.kt (+favorites file in clears)",
+    "android/app/src/test/java/com/levi/pocketdj/data/favorites/FavoritesStoreTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "COL-1"
+   ],
+   "acceptance": [
+    "Un-\u2665 stores favorited=false (tombstone), never deletes the row; applyRemote with an older observedAt than a local edit loses; applySeed never overrides an explicit entry and applies once per seedVersion.",
+    "favoriteIds is maintained alongside byId (O(1) row reads); revision bumps on every set mutation incl. reload/seed/remap.",
+    "Only user toggles fire onChanged (seed/import/remote do not) \u21d2 exactly one heart or unheart activity row per tap.",
+    "Browse filter FAVORITE/NOT applies in the engine (BrowseRows.filteredSongs), not in composables."
+   ],
+   "priority": "P1",
+   "est_lines": 1300,
+   "unit_tests": [
+    "FavoritesStoreTest: tombstoneNotDeleted, applyRemoteNewerLocalWins, seedOncePerVersionNeverOverExplicit, onChangedOnlyUserToggles, importMergingKeepsNewerLocal, remapMovesEntry, coalescedSavesOneWrite, docRoundTripKeepsAppleMusicIdAndPushedAt"
+   ],
+   "emulator_steps": [
+    "Browse \u2192 tap \u2665 on a song \u2192 History \u25b8 Collection shows '\u2665 Hearted \u2026'; Browse filter 'Favorites' shows only it; tap \u2665 again \u2192 'Unhearted' row; relaunch \u2192 still unfavorited (tombstone)."
+   ],
+   "shared_touchpoints": [
+    "screens/browse/* (Browse area: BrowseModels/BrowseFilterSheet/BrowseScreen/SongDetailSheet/AlbumDetailScreen)",
+    "di/AppGraph.kt",
+    "data/storage/StorageService.kt (Storage area)"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "FAV-2",
+   "title": "Favorites two-way Apple Music sync (opt-in) + owner-seed opt-in",
+   "goal": "Port AppleMusicFavorites request construction (PUT/DELETE ratings, POST favorites?ids[songs] chunked, GET ratings batches of 250, lovedIds parse) and FavoritesSyncService (push pending \u2192 markPushed; pull \u2192 applyRemote; seed fetch from FAVORITES_SEED_URL when opted in), gated by settings.favoritesTwoWaySync (owner gate N/A), triggered at launch/foreground when signed in and from the Settings 'Sync favorites' button.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/applemusic/AppleMusicFavoritesApi.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/favorites/FavoritesSyncService.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (+favoritesTwoWaySync, applyOwnerFavoritesSeed)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/AppleMusicSettingsScreen.kt (Favorites section: toggle, seed toggle, Sync favorites, status)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (triggers)",
+    "android/app/src/test/java/com/levi/pocketdj/data/applemusic/AppleMusicFavoritesApiTest.kt, android/app/src/test/java/com/levi/pocketdj/data/favorites/FavoritesSyncServiceTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "FAV-1",
+    "WB-1"
+   ],
+   "acceptance": [
+    "starRequests use the TYPE-SCOPED `ids[songs]` query param, chunked; a bare `ids=` never appears (test asserts the URL).",
+    "Favorite pushes BOTH the rating PUT and the \u2605 POST; unfavorite only DELETEs the rating.",
+    "Pull folds loved ids through applyRemote so a newer local tombstone wins; catalog ids map back to songIds through the catalog seam.",
+    "Opt-in OFF \u21d2 zero requests (MockWebServer sees none); single-flight isSyncing; a failed push stays pending for the next pass."
+   ],
+   "priority": "P2",
+   "est_lines": 1100,
+   "unit_tests": [
+    "AppleMusicFavoritesApiTest: idsSongsParam, chunking250, lovedIdsParse, loveRequestBody",
+    "FavoritesSyncServiceTest: optOutNoCalls, pushMarksPushed, failedStaysPending, pullNewerLocalWins, seedOptInOncePerVersion"
+   ],
+   "emulator_steps": [
+    "With a MockWebServer standing in for api.music.apple.com (debug base override) and a fake MUT in settings: toggle sync ON, \u2665 a song \u2192 mock receives PUT + POST; un-\u2665 \u2192 DELETE only."
+   ],
+   "shared_touchpoints": [
+    "di/AppGraph.kt",
+    "screens/settings/AppleMusicSettingsScreen.kt"
+   ],
+   "device_only": "Real Apple account: verify \u2665 in PocketDJ appears as loved in the Music app and a love made in Music arrives on the next pull; confirm un-\u2665 leaves the \u2605 (documented lossy behaviour)."
+  },
+  {
+   "id": "RA-1",
+   "title": "Recently added virtual playlist + Settings count + IndexSong.dateAdded",
+   "goal": "Add lenient `dateAdded: Double?` to IndexSong, a memoized RecentlyAdded builder (last N by dateAdded desc \u222a in-app adds from activity catalogAdd events, N = settings.defaultRecentlyAddedCount default 3650 clamp 1\u2013100000, cheap hasRecentlyAddedItems gate), the pinned 'Recently added' section at the top of the Yours tab navigating to SourcePlaylistDetailScreen with the virtual SourcePlaylist (id `__pdj_recently_added__`, sourceName 'Recently added'), and the Settings \u25b8 Collections row.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/catalog/IndexModels.kt (+dateAdded on IndexSong, lenient)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/RecentlyAdded.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PlaylistsScreen.kt (section + empty-state gate)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/SourcePlaylistDetailScreen.kt (resolve the virtual id before catalog lookup)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (+defaultRecentlyAddedCount)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/SettingsScreen.kt (Collections \u25b8 Default recently added)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/RecentlyAddedTest.kt (NEW)",
+    "android/app/src/test/java/com/levi/pocketdj/data/catalog/IndexModelsDecodeTest.kt (+dateAdded)"
+   ],
+   "depends_on": [
+    "COL-1"
+   ],
+   "acceptance": [
+    "Songs without dateAdded are excluded; order newest-first; ties by songId for determinism; memo keyed on (catalog revision, limit) \u2014 a second call with the same key does no work (counter test).",
+    "hasRecentlyAddedItems answers without building the full list.",
+    "Duplicate/Convert/Play/Shuffle on the virtual playlist work exactly like a source playlist (provenance stamped with sourceName 'Recently added').",
+    "Settings clamp 1\u2013100000 on write and on read of an out-of-range persisted value."
+   ],
+   "priority": "P1",
+   "est_lines": 700,
+   "unit_tests": [
+    "RecentlyAddedTest: excludesUndated, newestFirstStable, memoHitNoRecompute, limitClamp, unionWithCatalogAddEvents",
+    "IndexModelsDecodeTest: dateAddedOptional"
+   ],
+   "emulator_steps": [
+    "Collections \u25b8 Yours shows 'Recently added \u00b7 N songs \u2014 newest first' above Your playlists; open it \u2192 rows newest first; Settings \u25b8 Collections \u25b8 set 50 \u2192 row says 50 songs."
+   ],
+   "shared_touchpoints": [
+    "data/catalog/IndexModels.kt (Catalog area \u2014 additive field only)",
+    "screens/settings/SettingsScreen.kt"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "SORT-1",
+   "title": "Per-collection sort/filter on every collection detail (Browser pipeline over the song subset, per-collection persistence, default-order gating, dateAdded field)",
+   "goal": "Reuse BrowseSort/BrowseFilters on a collection's resolved songs with state remembered per collection key `pdj.collection.<id>` (JSON map in DataStore), add sort/filter toolbar buttons + sheets to source-playlist, pocket, playlist (chapter rows: non-song nodes at end) and setlist details, gate reorder/up-down/remove to the default order, and add a DATE_ADDED sort field.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/CollectionSortFilter.kt (NEW \u2014 state holder, toolbar, sheets reuse BrowseSortSheet/BrowseFilterSheet)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseSort.kt (+DATE_ADDED key, nulls-last)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (+collectionBrowseStates map get/set)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/SourcePlaylistDetailScreen.kt, PocketDetailScreen.kt, PlaylistDetailScreen.kt, SetlistDetailScreen.kt",
+    "android/app/src/test/java/com/levi/pocketdj/screens/playlists/CollectionSortFilterTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "RA-1"
+   ],
+   "acceptance": [
+    "Sorting/filtering never mutates stored order; switching back to default order restores the stored order and re-enables reorder controls.",
+    "State persists per collection id across process death and is independent of the Browse session.",
+    "Playlist display with a non-default sort lists song nodes sorted and non-song nodes (text/album/pocket) after them; up/down/remove hidden in that mode.",
+    "Resolution runs off-main (produceState) keyed on state.revision + browse state."
+   ],
+   "priority": "P2",
+   "est_lines": 1000,
+   "unit_tests": [
+    "CollectionSortFilterTest: defaultOrderPreservesStored, dateAddedNullsLast, playlistNonSongNodesLast, persistenceKeyPerCollection"
+   ],
+   "emulator_steps": [
+    "Open a pocket \u2192 sort by BPM \u2192 rows reorder, up/down menu items absent; relaunch \u2192 still BPM-sorted; choose default \u2192 stored order back with controls."
+   ],
+   "shared_touchpoints": [
+    "screens/browse/BrowseSort.kt (Browse area \u2014 additive sort key)",
+    "data/settings/AppSettingsStore.kt"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "IO-1",
+   "title": ".pdjcollection codecs + idempotent import merge + CSV (pure JVM)",
+   "goal": "Port PlaylistZip/PocketZip/PortableItems (manifest.json/playlist.json|pocket.json/pockets.json/items.json in the PWA MusicItem[] shape with its null conventions), the single-item CollectionsDocument envelope, `importAny` content routing (zip magic vs JSON), match-by-id upsert merge (upsertFolder/upsertPocket/upsertPlaylist unioning members/nodes, dropDanglingRefs, imported pockets folderId cleared, amPlaylistId stripped, cleanOnly/recsEnabled kept), and TracklistCSV export with the universal columns.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/io/PlaylistZip.kt, PocketZip.kt, PortableItems.kt, TracklistCsv.kt, CollectionsImport.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsStore.kt (ONLY: exportPocket/exportPlaylist envelopes, importCollection merge, insertImported*, exportPlaylistZip/exportPocketZip, export*CSV, onPortableItems seam)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/io/PlaylistZipTest.kt, PocketZipTest.kt, PortableItemsTest.kt, CollectionsImportMergeTest.kt, TracklistCsvTest.kt (NEW)",
+    "android/app/src/test/resources/fixtures/pwa-playlist.pocketdj.zip (NEW, built from the PWA shape)"
+   ],
+   "depends_on": [
+    "COL-1"
+   ],
+   "acceptance": [
+    "items.json uses `name`/`lengthMs`, required `sentimentKeywords: []` and `explicit: false`, explicit nulls for unknown bpm/key/camelot, `sourceId: src_imported`; decode is lenient dict parsing.",
+    "Importing the same file twice is a no-op (ids preserved, members unioned, no duplicate collection or song); dangling folder/child refs dropped; amPlaylistId never survives import.",
+    "importAny routes legacy .zip and JSON envelopes by content, not extension.",
+    "CSV columns match iOS TracklistCSV (incl. Sequence + Song ID)."
+   ],
+   "priority": "P2",
+   "est_lines": 1300,
+   "unit_tests": [
+    "PlaylistZipTest: roundTrip, pwaFixtureImports, portableWhenCatalogGiven",
+    "PortableItemsTest: nullConventions, lenientDecode",
+    "CollectionsImportMergeTest: reimportNoop, modifiedReimportUnionsOnly, danglingRefsDropped, amPlaylistIdStripped, cleanOnlyTravels",
+    "TracklistCsvTest: columns"
+   ],
+   "emulator_steps": [
+    "(JVM package; emulator coverage comes with IO-2)"
+   ],
+   "shared_touchpoints": [
+    "CollectionsStore.kt (import/export section only)"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "IO-2",
+   "title": ".pdjcollection SAF export/import UI, tapped-file open, provisional imported songs",
+   "goal": "Wire IO-1 into the UI: Export\u2026 (zip with EXPLICIT `<name>.playlist.pdjcollection`/`.pocket.pdjcollection` via CreateDocument, plus Export CSV) in playlist/pocket/setlist \u22ef menus, an Import button on the Collections toolbar (OpenDocument), a manifest intent-filter for `.pdjcollection` files opened from Files/Drive/mail \u2192 MainActivity.onNewIntent \u2192 importAny, and ImportedSongsStore (`pocketdj-imported-songs.json`) injected into the merged catalog as the 'Imported' source so portable songs browse/play by id.",
+   "files": [
+    "android/app/src/main/AndroidManifest.xml (intent-filter VIEW application/zip|application/octet-stream + pathPattern .pdjcollection; FileProvider for share)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (onNewIntent/initial intent \u2192 import; result snackbar)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PlaylistsScreen.kt (Import toolbar button), PlaylistDetailScreen.kt, PocketDetailScreen.kt, SetlistDetailScreen.kt (Export\u2026/Export CSV)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/collections/CollectionExportImport.kt (NEW \u2014 ActivityResult launchers + naming)",
+    "android/app/src/main/java/com/levi/pocketdj/data/catalog/ImportedSongsStore.kt (NEW) + CatalogRepository.kt/MergedCatalog.kt (injection seam: extra synthetic source appended after real sources; real source wins on id collision)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (store + onPortableItems wiring)",
+    "android/app/src/test/java/com/levi/pocketdj/data/catalog/ImportedSongsStoreTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "IO-1"
+   ],
+   "acceptance": [
+    "Exported file name carries the explicit `.pdjcollection` tail (never relies on the system to append); MIME application/zip.",
+    "Opening a .pdjcollection from the Files app launches PocketDJ and imports (snackbar with counts); a plain .zip of something else is NOT claimed beyond the extension pattern.",
+    "Portable items outside the live catalog appear under source 'Imported', are playable by id where a public rip exists, and yield to a real source on collision."
+   ],
+   "priority": "P2",
+   "est_lines": 1000,
+   "unit_tests": [
+    "ImportedSongsStoreTest: dedupAgainstSelf, realSourceWins, docLenient",
+    "CollectionExportImportTest (JVM): exportFilenameExplicitExtension, contentRouting"
+   ],
+   "emulator_steps": [
+    "Export a pocket \u2192 pick Downloads \u2192 `adb shell ls /sdcard/Download` shows `<name>.pocket.pdjcollection`; delete the pocket; `adb shell am start -a android.intent.action.VIEW -t application/zip -d file:///sdcard/Download/<name>.pocket.pdjcollection` \u2192 pocket is back; repeat \u2192 no duplicate."
+   ],
+   "shared_touchpoints": [
+    "AndroidManifest.xml",
+    "MainActivity.kt",
+    "data/catalog/CatalogRepository.kt + MergedCatalog.kt (Catalog area \u2014 injection seam)",
+    "di/AppGraph.kt"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "LP-1",
+   "title": "Listening pockets wire models, HTTP client, CollectionFlattener + collections payload (pure)",
+   "goal": "Port ListeningPocketsModels (upload batch/event with explicit nulls and additive contextId/contextKind, place/trip wires, lenient Results v1 incl. patterns/pockets/baseline/labels/roundLearning), ListeningPocketsClient (bearer key + profile id headers, enroll secret, 404 \u21d2 unavailable, health), CollectionFlattener (flatten/pocketSongs/playlistSongs/capped/expand/addTimes/addEvents) and ListeningPocketsCollections.payload (caps, byte cap, hash, 24 h/changed resend gate, contextId mapping that drops the Now Playing id).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/pockets/ListeningPocketsModels.kt, ListeningPocketsClient.kt, ListeningPocketsCollections.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionFlattener.kt (NEW)",
+    "android/app/src/test/java/com/levi/pocketdj/data/pockets/ListeningPocketsModelsTest.kt, ListeningPocketsClientTest.kt (MockWebServer), ListeningPocketsCollectionsTest.kt (NEW)",
+    "android/app/src/test/java/com/levi/pocketdj/data/collections/CollectionFlattenerTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "COL-1"
+   ],
+   "acceptance": [
+    "Upload event JSON has explicit nulls for nullable fields, `ctx` null when absent, contextId/contextKind absent (not null) when unknown; atMs floored to the minute.",
+    "Results decode leniently (missing arrays \u21d2 empty; unknown keys ignored).",
+    "Flattener: albums expanded via albumTracks, child pockets cycle-guarded, first-seen dedup; addTimes picks the LATEST add per current member; caps 500/5000/100k applied in order.",
+    "Payload hash changes only when membership or add times change; isDue false within 24 h with the same hash; collection names never appear in the payload."
+   ],
+   "priority": "P2",
+   "est_lines": 1300,
+   "unit_tests": [
+    "ListeningPocketsModelsTest: eventEncodingNulls, contextFieldsAbsentNotNull, resultsLenient",
+    "ListeningPocketsClientTest: headers, 404SetsUnavailable, errorBodyMessage",
+    "CollectionFlattenerTest: dagCycleGuard, albumExpansion, addTimesLatest, caps",
+    "ListeningPocketsCollectionsTest: hashStability, resendGate, nowPlayingContextDropped, byteCap"
+   ],
+   "emulator_steps": [
+    "(pure; covered by LP-2/LP-3)"
+   ],
+   "shared_touchpoints": [
+    "none"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "LP-2",
+   "title": "ListeningPocketsService + PlayEvent outcome fields + settings/opt-in gate",
+   "goal": "Port the service: fingerprint-diff uploads over the 90-day window (batch 1000), rounds seam (nullable), collections snapshot upload when due, results fetch + cache (TTL 10 min), flushSoon debounce 5 s / auto 25 s + 600 s, epoch invalidation on toggle/delete/clear, deleteCloudData with isDeleting + uploadFloorMs, settleContexts via the ListeningContextProviding seam, privacy gate (rec engine enabled \u2227 listeningPocketsEnabled), onDisabled \u2192 turns location off. Adds the additive PlayEvent fields Android lacks (wasSkipped, listenedFraction, tzOffsetMin, originInstallId, listeningContext, carPlay) with markSkipped/markListenedFraction MAX-merge and the derived outcome.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/pockets/ListeningPocketsService.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/history/PlayHistoryModels.kt (+6 additive fields, PlayOutcome derived), PlayHistoryStore.kt (markSkipped, markListenedFraction, settleContexts, stamp originInstallId + tzOffsetMin on record)",
+    "android/app/src/main/java/com/levi/pocketdj/data/location/ListeningContext.kt (NEW \u2014 tag, lookup, providing interface; shared with LOC-1, byte-identical contract)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (+listeningPocketsEnabled)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (service wiring; credentials seam `recEngineCredentials: (() -> Pair<String,String>?)? = null`; playback \u2192 markSkipped/fraction hooks)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (ONLY: emit skip + listened-fraction to history on item transition/stop)",
+    "android/app/src/test/java/com/levi/pocketdj/data/pockets/ListeningPocketsServiceTest.kt, android/app/src/test/java/com/levi/pocketdj/data/history/PlayHistoryOutcomeTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "LP-1"
+   ],
+   "acceptance": [
+    "Gate closed (either toggle off or credentials null) \u21d2 no network call ever, except deleteCloudData.",
+    "Fingerprint = `outcome|fraction%|ctx|tz`; only moved fingerprints re-send; `sent` recorded only on 2xx; a profileId change resets `sent`.",
+    "deleteCloudData sets uploadFloorMs, clears sent, blocks flushes while in flight; a flush that observes a bumped epoch after an await abandons.",
+    "PlayEvent decode of a doc with the new fields and without them both succeed; listenedFraction MAX-merges; outcome derives skipped > completed(\u22650.9?) exactly per iOS PlayHistoryStore.swift :116-125 (implementer reads the thresholds there).",
+    "History doc written by Android still decodes on iOS (field names verbatim)."
+   ],
+   "priority": "P2",
+   "est_lines": 1400,
+   "unit_tests": [
+    "ListeningPocketsServiceTest: gateBlocksNetwork, fingerprintDiffOnly, sentOn2xxOnly, profileRebindResets, deleteSetsFloorAndBlocks, epochAbandons, resultsTTL, 404Silent",
+    "PlayHistoryOutcomeTest: fieldsAdditive, fractionMaxMerge, outcomeDerivation"
+   ],
+   "emulator_steps": [
+    "Point LISTENING_POCKETS_BASE at MockWebServer; enable the toggle with a fake credentials seam; play 3 songs, skip one \u2192 after 25 s the mock receives one POST /pockets/events with 3 events (one `skipped`); toggle off \u2192 no further calls."
+   ],
+   "shared_touchpoints": [
+    "data/history/PlayHistoryModels.kt + PlayHistoryStore.kt (History area \u2014 additive)",
+    "playback/PlaybackController.kt (Playback area \u2014 two hook calls)",
+    "di/AppGraph.kt",
+    "data/settings/AppSettingsStore.kt"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "LP-3",
+   "title": "History \u25b8 Pockets screen (Recurring/Recent, detail, Play, Save as playlist, opt-in offer, device re-labelling)",
+   "goal": "Port ListeningPocketsView + detail + opt-in: a third History segment 'Pockets' showing patterns (Recurring) and pockets (Recent, newest first), stale banner, pull-to-refresh \u2192 refreshNow, empty states incl. 'not available yet', detail with 'What defines it' / 'When & where' / songs, \u25b6 Play (collections.playNow with source token) and 'Save as playlist', place/trip chips relabelled on device via ListeningContextProviding.label (fallback to cloud labels; unknown \u21d2 'Earlier place'), collection names resolved locally for collectionCandidates.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/ListeningPocketsScreen.kt, ListeningPocketDetailScreen.kt, ListeningPocketLabeler.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/HistoryScreen.kt (HistoryTab.POCKETS segment)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (route for the detail)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/history/ListeningPocketLabelerTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "LP-2"
+   ],
+   "acceptance": [
+    "Opt-in offer shows when the engine is on but pockets never answered; 'Not now' leaves it off; 'Turn on' flips the same settings key the toggle uses.",
+    "Recent sorted by startMs desc; stale \u21d2 banner; serviceAvailable=false \u21d2 'Pockets aren't available yet.'",
+    "Play builds Now Playing from the pocket's songIds with history source token 'pocket' semantics identical to iOS; Save as playlist creates a playlist named from the pocket title.",
+    "Labeler prefers the device provider's label, then cloud labels, then 'Earlier place'."
+   ],
+   "priority": "P2",
+   "est_lines": 1000,
+   "unit_tests": [
+    "ListeningPocketLabelerTest: devicePrecedence, cloudFallback, earlierPlace, collectionNamesLocalOnly"
+   ],
+   "emulator_steps": [
+    "With the fixture results JSON placed in the cache file (`pocketdj-listening-pockets.json`) and the toggle ON: History \u25b8 Pockets lists Recurring + Recent; open one \u2192 Play starts the mini-player; Save as playlist \u2192 appears in Collections."
+   ],
+   "shared_touchpoints": [
+    "screens/history/HistoryScreen.kt (History area)",
+    "MainActivity.kt (one route)"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "LOC-1",
+   "title": "Listening places engine + location store (pure port, no platform APIs)",
+   "goal": "Port ListeningPlaceEngine bit-for-bit (Params, Place/DwellSegment/StoredVisit, ingest visit + movement hint, clustering/merge with aliases, trip ids per ORDERED pair, lookup \u2192 unavailable/pending/settled with the 6 h pending horizon, rank labels A\u2013Z/AA by share of dwell over 60 d, prune/retention) and ListeningLocationStore (doc `pocketdj-listening-places.json`, enabled default OFF, setEnabled(false) erases everything, revision, trackingStartedAt, ListeningContextProviding impl, source abstraction `ListeningLocationSource`).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/location/ListeningPlaceEngine.kt, ListeningLocationStore.kt, ListeningLocationSource.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/data/location/ListeningContext.kt (shared with LP-2 \u2014 whichever lands first creates it; the other must not edit)",
+    "android/app/src/main/res/xml/backup_rules.xml + AndroidManifest.xml dataExtractionRules (exclude the places file)",
+    "android/app/src/test/java/com/levi/pocketdj/data/location/ListeningPlaceEngineTest.kt, ListeningLocationStoreTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "LP-2"
+   ],
+   "acceptance": [
+    "Visits worse than 200 m accuracy dropped; two visits within 150 m join one place; centroids drift dwell-weighted and are stored rounded to 4 dp; places within 100 m merge with an alias so old tags still resolve.",
+    "A\u2192B and B\u2192A mint different trp_ ids; a gap > 4 h is no trip; a departure that never arrived keys `<origin>>?`.",
+    "lookup: before trackingStartedAt \u21d2 unavailable; inside an open/estimated-end stay younger than 6 h \u21d2 pending; older than 6 h never pending.",
+    "Labels rank by share over the window, only places with \u2265 1 h dwell; rank 27 \u21d2 'AA'.",
+    "Disabling erases the file and resets state; the file is excluded from backup."
+   ],
+   "priority": "P2",
+   "est_lines": 1500,
+   "unit_tests": [
+    "ListeningPlaceEngineTest: accuracyDrop, clusterJoin, mergeAlias, orderedTrips, noTripOver4h, pendingHorizon, rankLabels, pruneRetention, movementHintClosesStay, redeliveredVisitUpdatesSegment",
+    "ListeningLocationStoreTest: defaultOff, disableErases, contextLookupDelegates, docRoundTrip"
+   ],
+   "emulator_steps": [
+    "(pure; covered by LOC-2)"
+   ],
+   "shared_touchpoints": [
+    "AndroidManifest.xml backup rules"
+   ],
+   "device_only": ""
+  },
+  {
+   "id": "LOC-2",
+   "title": "Android location source (fused low-power + dwell detection) + Settings rows + wiring",
+   "goal": "Implement ListeningLocationSource on Android: FusedLocationProviderClient low-power updates (5 min interval, 200 m displacement) plus a dwell detector that synthesizes LocationVisitSample (stationary \u2265 5 min within 150 m \u21d2 visit with arrival/departure; movement fixes \u21d2 hints), a periodic WorkManager poll for background coverage, permission flow (COARSE first; BACKGROUND as the 'Always' upgrade, Settings deep-link when denied), Settings \u25b8 Recommendations rows ('Use places & trips in pockets' under the pockets toggle, status, Always upgrade, 'Erase places & trips'), onDisabled wiring from the pockets service, settleContexts trigger after each ingest.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/location/FusedVisitSource.kt, DwellDetector.kt, LocationPollWorker.kt (NEW)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/ListeningLocationSettingsRows.kt (NEW) + SettingsScreen.kt (host under the pockets toggle)",
+    "android/app/src/main/AndroidManifest.xml (ACCESS_COARSE/FINE/BACKGROUND_LOCATION)",
+    "android/app/build.gradle.kts + libs.versions.toml (+ play-services-location)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (store + source + pockets.onDisabled)",
+    "android/app/src/test/java/com/levi/pocketdj/data/location/DwellDetectorTest.kt (NEW)"
+   ],
+   "depends_on": [
+    "LOC-1",
+    "LP-2"
+   ],
+   "acceptance": [
+    "Turning location ON requires pockets ON; turning OFF is never blocked and erases; pockets turning off turns location off.",
+    "DwellDetector emits a visit only after \u2265 5 min stationary within 150 m, closes it on a fix farther than radius + accuracy, and ignores fixes worse than 3 000 m as movement hints.",
+    "No coordinates are logged or uploaded; only plc_/trp_ ids reach the history/pockets layers (test the upload event built from a tagged play).",
+    "Permission denied \u21d2 authorization 'denied' row with a Settings deep-link; nothing ingested."
+   ],
+   "priority": "P2",
+   "est_lines": 900,
+   "unit_tests": [
+    "DwellDetectorTest: minDwell, radiusClose, accuracyFilter, hintOnlyCloses"
+   ],
+   "emulator_steps": [
+    "Grant location, toggle on; `adb emu geo fix -122.4 37.8` hold 6 min (or inject with time acceleration via the detector's clock seam), then `adb emu geo fix -122.3 37.9` \u2192 Settings rows show 'Location A' with a share; play a song \u2192 History event carries ctx place id (inspect the pulled play-history file)."
+   ],
+   "shared_touchpoints": [
+    "screens/settings/SettingsScreen.kt",
+    "di/AppGraph.kt",
+    "AndroidManifest.xml"
+   ],
+   "device_only": "Real visit/trip formation (background fixes, Doze, battery) can only be judged on a device over days; emulator covers the pipeline with injected fixes."
+  }
+ ]
+}

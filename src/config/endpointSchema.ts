@@ -19,7 +19,7 @@ export const REQUIRED_ENDPOINT_KEYS = [
 
 /** Keys a document MAY carry; when absent they DERIVE from the same document (never from
  *  the compiled-in blue values — a green doc must never half-fall-back to blue). */
-export const OPTIONAL_ENDPOINT_KEYS = ['catalogBaseDev', 'listeningPocketsBase', 'searchConfigURL'] as const;
+export const OPTIONAL_ENDPOINT_KEYS = ['catalogBaseDev', 'listeningPocketsBase', 'searchConfigURL', 'profileSyncBase'] as const;
 
 export type RequiredEndpointKey = (typeof REQUIRED_ENDPOINT_KEYS)[number];
 export type OptionalEndpointKey = (typeof OPTIONAL_ENDPOINT_KEYS)[number];
@@ -28,8 +28,9 @@ export type EndpointKey = RequiredEndpointKey | OptionalEndpointKey;
 export interface EndpointConfig {
   v: 1;
   env: string;
-  /** Every key resolved (optional keys already derived). No trailing slash. */
-  endpoints: Record<EndpointKey, string>;
+  /** Every key resolved (optional keys already derived). No trailing slash. `profileSyncBase`
+   *  (Android profile sync) has no derivation: absent stays absent => sync disabled. */
+  endpoints: Record<Exclude<EndpointKey, 'profileSyncBase'>, string> & { profileSyncBase?: string };
   /** Extra catalog hosts whose persisted URLs rebase onto this doc's catalog bases. */
   aliases: { catalogBase: string[]; catalogBaseDev: string[] };
 }
@@ -121,7 +122,7 @@ export function validateEndpointDoc(raw: unknown): ValidationResult {
     config: {
       v: 1,
       env,
-      endpoints: out as Record<EndpointKey, string>,
+      endpoints: out as EndpointConfig['endpoints'],
       aliases: { catalogBase: hostList(al.catalogBase), catalogBaseDev: hostList(al.catalogBaseDev) },
     },
   };

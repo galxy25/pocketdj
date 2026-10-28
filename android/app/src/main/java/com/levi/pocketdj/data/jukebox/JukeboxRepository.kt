@@ -1,26 +1,15 @@
 package com.levi.pocketdj.data.jukebox
 
-import android.content.ComponentName
 import android.content.Context
-import android.net.Uri
-import androidx.core.os.bundleOf
-import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
-import androidx.media3.session.MediaController
-import androidx.media3.session.SessionToken
-import com.google.common.util.concurrent.ListenableFuture
-import com.google.common.util.concurrent.MoreExecutors
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.config.Endpoints
-import com.levi.pocketdj.data.rips.PlayAction
-import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.data.rips.RipsRepository
-import com.levi.pocketdj.playback.PlaybackContract
 import com.levi.pocketdj.playback.PlaybackController
-import com.levi.pocketdj.playback.PlaybackService
 import com.levi.pocketdj.playback.PlayContext
+import com.levi.pocketdj.playback.sequencer.QueueItem
+import com.levi.pocketdj.playback.sequencer.SequencerState
+import com.levi.pocketdj.playback.sequencer.SetlistSequencer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
@@ -35,7 +24,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -63,8 +51,18 @@ class JukeboxRepository(
     private val rips: RipsRepository,
     private val playback: PlaybackController,
     private val scope: CoroutineScope,
+    /** The PocketDJ name (Settings ▸ Profile); "" when unset. */
+    private val pocketDjName: suspend () -> String = { "" },
+    /** Seam: broadcast-into-Mix placement (Mix area wires it; default no-op). */
+    @Volatile var placementSink: JukeboxPlacementSink = JukeboxPlacementSink.None,
+    /** Seam: Apple-Music catalog match stage (device-only; default null). */
+    @Volatile var externalMatch: JukeboxExternalMatch = JukeboxExternalMatch.None,
+    /** Where accepted requests land: the sequencer (null in tests that never place). */
+    @Volatile var queue: JukeboxQueue? = null,
+    /** Seam: the live Mix (MIX-16). Consulted per call so a mix started after construction is picked up. */
+    private val mixSource: () -> MixJukeboxSource? = { MixJukeboxSeam.source },
 ) {
-    private val appContext = context.applicationContext
+    private val appContext by lazy { context.applicationContext }
 
     /** Match state for one inbox row (§4.4). */
     sealed interface Match {
@@ -86,9 +84,6 @@ class JukeboxRepository(
         val match: Match = Match.Searching,
     )
 
-    /** One locally-derived played-history row (newest first). */
-    data class PlayedEntry(val title: String, val artist: String, val atMs: Long)
-
     data class UiState(
         val session: JukeboxSessionInfo? = null,
         val starting: Boolean = false,
@@ -97,9 +92,14 @@ class JukeboxRepository(
         /** Pending guest requests, oldest first. */
         val requests: List<RequestRow> = emptyList(),
         /** Locally-derived played history, newest first (mirror of §1). */
-        val played: List<PlayedEntry> = emptyList(),
+        val played: List<JukeboxPlayedEntry> = emptyList(),
         /** Queue items after the current one, from the last loop tick. */
         val upNextCount: Int = 0,
+        /**
+         * A live auto mix owns the audio, so an accepted request joins ITS queue (parked behind a burn when
+         * the song is not on disk yet): the accept buttons must not wait for a rip-playable match.
+         */
+        val mixOwns: Boolean = false,
         /** Transient broker trouble — shown as a subtle hint; loop keeps going. */
         val transientError: String? = null,
         /** Create-view message: start failure or "This jukebox has ended." */
@@ -123,17 +123,32 @@ class JukeboxRepository(
     private var lastPostAtMs = 0L
     private var lastOnAir: Pair<String, String>? = null
 
-    private var controller: MediaController? = null
-    private val controllerMutex = Mutex()
+    /** Serializes session commits (bootstrap / start / adopt) so a slow
+     *  coroutine can't overwrite a session another one already committed. */
+    private val commitLock = Mutex()
+
+    /** Runs [block] only when no session other than [allowId] is active. */
+    private suspend fun commitIfFree(allowId: String?, block: suspend () -> Unit): Boolean =
+        commitLock.withLock {
+            val current = _state.value.session
+            if (current != null && current.jukeboxId != allowId) {
+                false
+            } else {
+                block()
+                true
+            }
+        }
 
     /** Re-adopt a persisted session at app start (§4.1 Resume). Idempotent. */
     fun bootstrap() {
         if (!bootstrapped.compareAndSet(false, true)) return
         scope.launch {
             val persisted = sessionStore.load() ?: return@launch
-            if (_state.value.session != null) return@launch
-            _state.update { it.copy(session = persisted.session, hear = persisted.hear) }
-            startLoop()
+            commitLock.withLock {
+                if (_state.value.session != null || _state.value.starting) return@launch
+                _state.update { it.copy(session = persisted.session, hear = persisted.hear) }
+                startLoop()
+            }
         }
     }
 
@@ -144,16 +159,22 @@ class JukeboxRepository(
         scope.launch {
             try {
                 val created = client.createSession(
-                    name = name.trim().ifEmpty { DEFAULT_SESSION_NAME },
+                    name = name.trim().ifEmpty { JukeboxSettings.defaultSessionName(pocketDjName()) },
                     requiresToken = requiresToken,
                 )
                 // Stamp the intent locally — the server doesn't echo it (§3.1).
                 val stamped = created.copy(requiresToken = requiresToken)
-                sessionStore.save(stamped)
-                sessionStore.setHear(false)
-                resetLoopBookkeeping()
-                _state.value = UiState(session = stamped, hear = false)
-                startLoop()
+                val committed = commitIfFree(null) {
+                    sessionStore.save(stamped)
+                    sessionStore.setHear(false)
+                    resetLoopBookkeeping()
+                    _state.value = UiState(session = stamped, hear = false)
+                    startLoop()
+                }
+                if (!committed) {
+                    runCatching { client.end(stamped) }
+                    _state.update { it.copy(starting = false) }
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -162,6 +183,42 @@ class JukeboxRepository(
                         starting = false,
                         notice = error.message ?: "Couldn't start the jukebox",
                     )
+                }
+            }
+        }
+    }
+
+    /** Every live session on the broker (picker surfaces). */
+    suspend fun listSessions(): List<JukeboxSessionRow> = client.listSessions()
+
+    /**
+     * Become the publisher of an existing session (iOS `adopt`): no-op for the
+     * current one, refused while a different one is active or a start is in
+     * flight; otherwise adopt, reset loop bookkeeping, persist, start the loop.
+     */
+    fun adopt(jukeboxId: String) {
+        val current = _state.value
+        when (JukeboxAdoptGuard.decide(current.session?.jukeboxId, current.starting, jukeboxId)) {
+            JukeboxAdoptDecision.NO_OP, JukeboxAdoptDecision.REFUSE -> return
+            JukeboxAdoptDecision.PROCEED -> Unit
+        }
+        _state.update { it.copy(starting = true, notice = null) }
+        scope.launch {
+            try {
+                val info = client.sessionInfo(jukeboxId)
+                val committed = commitIfFree(jukeboxId) {
+                    sessionStore.save(info)
+                    sessionStore.setHear(false)
+                    resetLoopBookkeeping()
+                    _state.value = UiState(session = info, hear = false)
+                    startLoop()
+                }
+                if (!committed) _state.update { it.copy(starting = false) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _state.update {
+                    it.copy(starting = false, notice = error.message ?: "Couldn't adopt the jukebox")
                 }
             }
         }
@@ -178,10 +235,23 @@ class JukeboxRepository(
         scope.launch {
             runCatching { client.end(session) }
             sessionStore.clear()
-            releaseController()
             resetLoopBookkeeping()
             _state.value = UiState()
         }
+    }
+
+    /**
+     * Account deletion / reset (iOS awaits `jukebox.end()`): end the party even when this process never opened the
+     * Jukebox tab (load the persisted session), bounded POST /end, then clear the store and the in-memory state.
+     */
+    suspend fun endAndAwait(timeoutMs: Long = 8_000) {
+        loopJob?.cancel()
+        loopJob = null
+        val session = _state.value.session ?: runCatching { sessionStore.load()?.session }.getOrNull()
+        if (session != null) kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { runCatching { client.end(session) } }
+        sessionStore.clear()
+        resetLoopBookkeeping()
+        _state.value = UiState()
     }
 
     /** Flip View + Hear; an immediate tick shows guests the flip promptly. */
@@ -214,9 +284,34 @@ class JukeboxRepository(
         }
         scope.launch { runCatching { client.decide(session, requestId, action) } }
         if (action.isPlacement) {
-            val found = row.match as? Match.Found
-            if (found?.playable == true) {
-                scope.launch { applyPlacement(found.song, action) }
+            val found = row.match as? Match.Found ?: return
+            // A live auto mix owns the setlist: even an un-ripped match joins ITS queue (parked behind a
+            // burn-when-ripped intent); the sequencer path below still needs a playable match.
+            scope.launch {
+                val mixOwns = runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false)
+                if (mixOwns) {
+                    try {
+                        if (onMain { mixSource()?.place(found.song, action) } == true) {
+                            kick()
+                            return@launch
+                        }
+                    } catch (c: CancellationException) {
+                        throw c
+                    } catch (e: Exception) {
+                        // Never fall back to the sequencer: it would sound on top of the live mix.
+                        _state.update { it.copy(transientError = e.message ?: "Couldn't add to the mix") }
+                        return@launch
+                    }
+                }
+                if (!found.playable) return@launch
+                val handled = try {
+                    placementSink.place(found.song, action)
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (e: Exception) {
+                    false
+                }
+                if (!handled) applyPlacement(found.song, action)
             }
         }
     }
@@ -247,12 +342,17 @@ class JukeboxRepository(
             // state POST for this tick — posting nowPlaying=null would make the
             // broker log the still-playing song as played and flash guests
             // "Nothing playing" over a transient binder hiccup.
+            // Parked broadcast inserts whose burn landed; ones whose mix ended go to a running sequencer.
+            runCatching { onMain { mixSource()?.drainPending() } }.getOrNull()?.forEach { landed ->
+                if (queue?.isRunning == true) applyPlacement(landed.song, landed.action)
+            }
             val snapshotResult = runCatching { readPlayer() }
             snapshotResult.exceptionOrNull()?.let { if (it is CancellationException) throw it }
             if (snapshotResult.isSuccess) {
                 val snapshot = snapshotResult.getOrNull()
                 derivePlayed(snapshot)
-                _state.update { it.copy(upNextCount = snapshot?.upNext?.size ?: 0) }
+                val mixOwns = runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false)
+                _state.update { it.copy(upNextCount = snapshot?.upNext?.size ?: 0, mixOwns = mixOwns) }
                 val payload = composePayload(snapshot, hear)
                 val now = System.currentTimeMillis()
                 if (payload != lastPosted || now - lastPostAtMs > HEARTBEAT_MS) {
@@ -287,7 +387,6 @@ class JukeboxRepository(
     /** Server-side death (§2.4): clear everything, back to the create view. */
     private suspend fun foldSession() {
         sessionStore.clear()
-        releaseController()
         resetLoopBookkeeping()
         _state.value = UiState(notice = "This jukebox has ended.")
     }
@@ -316,9 +415,22 @@ class JukeboxRepository(
         }
     }
 
-    private fun computeMatch(request: JukeboxRequest) {
+    private suspend fun computeMatch(request: JukeboxRequest) {
+        // A cold start that never visited Browse has no catalog in memory; matching against nothing
+        // would flag every request "No match found". Load it (cache-seeded) and wait a bounded time.
+        if (catalog.state.value.catalog == null) {
+            catalog.loadIfNeeded()
+            withTimeoutOrNull(CATALOG_WAIT_MS) { catalog.state.first { it.catalog != null } }
+        }
         val songs = catalog.state.value.catalog?.songs.orEmpty()
         val song = JukeboxMatcher.match(request.title, request.artist, songs)
+            ?: try {
+                externalMatch.match(request.title, request.artist)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                null
+            }
         val match = song?.let { Match.Found(it, rips.isPlayable(it.id)) } ?: Match.None
         _state.update { current ->
             current.copy(
@@ -367,16 +479,24 @@ class JukeboxRepository(
     /**
      * Local mirror of the broker's played-history derivation (§1): a snapshot
      * replacing one track with a different one (or nothing) logs the outgoing
-     * track. Same title+artist is a position tick, not a transition.
+     * track, one row per track (see [JukeboxPlayedDedup]).
      */
     private fun derivePlayed(snapshot: PlayerSnapshot?) {
         val current = snapshot?.songId?.let {
             snapshot.title.orEmpty() to snapshot.artist.orEmpty()
         }
         val previous = lastOnAir
-        if (previous != null && previous != current) {
-            val entry = PlayedEntry(previous.first, previous.second, System.currentTimeMillis())
-            _state.update { it.copy(played = (listOf(entry) + it.played).take(PLAYED_CAP)) }
+        val now = System.currentTimeMillis()
+        _state.update {
+            it.copy(
+                played = JukeboxPlayedDedup.apply(
+                    it.played,
+                    previous?.let { p -> JukeboxOnAir(p.first, p.second) },
+                    current?.let { c -> JukeboxOnAir(c.first, c.second) },
+                    now,
+                    PLAYED_CAP,
+                ),
+            )
         }
         lastOnAir = current
     }
@@ -385,34 +505,34 @@ class JukeboxRepository(
 
     private suspend fun applyPlacement(song: IndexSong, action: JukeboxDecisionAction) {
         try {
-            val snapshot = readPlayer()
-            if (snapshot.songId == null) {
-                // Nothing playing — the accepted request starts the music with
-                // a one-item queue (§4.3).
+            val target = queue
+            if (target == null) {
+                // Not wired (unit tests): fall back to a plain play so a request is never silently lost.
                 playback.play(song.id, queueAlbumContext = false)
                 kick()
                 return
             }
-            val stream = PlayResolver.resolve(song.id, rips.entry(song.id), false)
-                as? PlayAction.Stream
-            if (stream == null) {
-                _state.update {
-                    it.copy(transientError = "“${song.name}” isn't playable anymore")
-                }
+            if (!rips.isPlayable(song.id)) {
+                _state.update { it.copy(transientError = "“${song.name}” isn't playable anymore") }
                 return
             }
-            val item = queueItem(song, stream)
-            withController { player ->
-                val count = player.mediaItemCount
-                val afterCurrent = (player.currentMediaItemIndex + 1).coerceIn(0, count)
-                val insertAt = when (action) {
-                    JukeboxDecisionAction.NEXT -> afterCurrent
-                    JukeboxDecisionAction.END -> count
-                    // Uniform random slot within the upcoming tail.
-                    else -> if (afterCurrent >= count) count else Random.nextInt(afterCurrent, count + 1)
-                }
-                player.addMediaItem(insertAt, item)
+            // Studio mic capture owns the audio path: nothing may start sounding into the take.
+            if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStartRaw("jukebox")) {
+                _state.update { it.copy(transientError = "Recording in progress - request not queued") }
+                return
             }
+            val item = QueueItem(id = song.id, title = song.name, artist = song.artist, lengthMs = song.length)
+            val np = playback.nowPlaying.value
+            val foreign = if (!target.isRunning && np != null && np.songId.isNotEmpty()) {
+                ForeignPlayback(
+                    QueueItem(id = np.songId, title = np.title ?: np.songId, artist = np.artist, lengthMs = np.durationMs),
+                    runCatching { playback.currentPositionMs() }.getOrDefault(0L),
+                )
+            } else {
+                null
+            }
+            // The sequencer is Main-confined; every queue mutation hops there.
+            withContext(Dispatchers.Main) { JukeboxPlacement.place(target, item, action, foreign = foreign) }
             kick()
         } catch (error: CancellationException) {
             throw error
@@ -421,94 +541,40 @@ class JukeboxRepository(
         }
     }
 
-    /**
-     * Build a queue item the [PlaybackService] can resolve — the same
-     * [PlaybackContract] request-metadata contract the [PlaybackController]
-     * uses, so the URI + clip window survive the controller → session hop.
-     */
-    private fun queueItem(song: IndexSong, action: PlayAction.Stream): MediaItem {
-        val merged = catalog.state.value.catalog
-        val album = song.albumId?.let { merged?.albumsById?.get(it) }
-        val extras = bundleOf(
-            PlaybackContract.EXTRA_URL to action.url,
-            PlaybackContract.EXTRA_SOURCE to PlayContext.SOURCE_BROWSER,
-            PlaybackContract.EXTRA_IS_LIVE to false,
-        ).apply {
-            action.clipStartMs?.let { putLong(PlaybackContract.EXTRA_CLIP_START_MS, it) }
-            action.clipEndMs?.let { putLong(PlaybackContract.EXTRA_CLIP_END_MS, it) }
-            album?.id?.let { putString(PlaybackContract.EXTRA_ALBUM_ID, it) }
-        }
-        return MediaItem.Builder()
-            .setMediaId(song.id)
-            .setRequestMetadata(
-                MediaItem.RequestMetadata.Builder()
-                    .setMediaUri(Uri.parse(action.url))
-                    .setExtras(extras)
-                    .build(),
-            )
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(song.name)
-                    .setArtist(song.artist)
-                    .setAlbumTitle(album?.name)
-                    .apply {
-                        album?.artCandidates()?.firstOrNull()?.let { setArtworkUri(Uri.parse(it)) }
-                    }
-                    .build(),
-            )
-            .build()
-    }
+    /** Mix state is Main-confined; with no mix wired (tests, no Mix built) there is nothing to hop for. */
+    private suspend fun <T> onMain(block: suspend () -> T?): T? =
+        if (mixSource() == null) null else withContext(Dispatchers.Main) { block() }
 
-    /** One main-thread hop reading now-playing + the upcoming queue tail. */
-    private suspend fun readPlayer(): PlayerSnapshot = withController { player ->
-        val item = player.currentMediaItem
-        val upNext = buildList {
-            val from = if (player.currentMediaItemIndex >= 0) player.currentMediaItemIndex + 1 else 0
-            for (index in from until player.mediaItemCount) {
-                val metadata = player.getMediaItemAt(index).mediaMetadata
-                add(
-                    JukeboxStatePayload.Track(
-                        title = metadata.title?.toString().orEmpty(),
-                        artist = metadata.artist?.toString().orEmpty(),
-                    ),
-                )
-            }
+    /** One read of now-playing + the upcoming queue tail, from the sequencer (never the MediaController). */
+    private suspend fun readPlayer(): PlayerSnapshot {
+        // BROADCAST mode (iOS stateSnapshot): a live auto mix owns the audio - the on-air deck + the queue tail.
+        onMain { mixSource()?.snapshot() }?.let { mix ->
+            return PlayerSnapshot(
+                songId = mix.songId, title = mix.title, artist = mix.artist,
+                durationMs = mix.durationMs, positionMs = mix.positionMs ?: 0L,
+                upNext = mix.upNext,
+            )
         }
-        PlayerSnapshot(
-            songId = item?.mediaId,
-            title = item?.mediaMetadata?.title?.toString(),
-            artist = item?.mediaMetadata?.artist?.toString(),
-            durationMs = player.duration.takeIf { it != C.TIME_UNSET },
-            positionMs = player.currentPosition,
-            upNext = upNext,
+        val seq = queue?.snapshot()
+        val current = seq?.current
+        val np = playback.nowPlaying.value
+        val position = runCatching { playback.currentPositionMs() }.getOrDefault(0L)
+        val songId = current?.id ?: np?.songId
+        return PlayerSnapshot(
+            songId = songId,
+            title = current?.title ?: np?.title,
+            artist = current?.artist ?: np?.artist,
+            durationMs = np?.durationMs ?: current?.lengthMs,
+            positionMs = position,
+            upNext = seq?.upcoming.orEmpty().map {
+                JukeboxStatePayload.Track(title = it.title, artist = it.artist.orEmpty())
+            },
         )
     }
 
-    /** MediaController is main-thread confined; every touch hops to Main. */
-    private suspend fun <T> withController(block: (MediaController) -> T): T =
-        withContext(Dispatchers.Main) { block(obtainController()) }
-
-    private suspend fun obtainController(): MediaController {
-        controller?.let { return it }
-        return controllerMutex.withLock {
-            controller ?: run {
-                val token = SessionToken(
-                    appContext,
-                    ComponentName(appContext, PlaybackService::class.java),
-                )
-                val built = MediaController.Builder(appContext, token).buildAsync().await()
-                controller = built
-                built
-            }
-        }
-    }
-
-    private suspend fun releaseController() = withContext(Dispatchers.Main) {
-        controller?.release()
-        controller = null
-    }
-
     companion object {
+        /** Upper bound on waiting for a cold catalog before matching a guest request. */
+        const val CATALOG_WAIT_MS = 10_000L
         const val DEFAULT_SESSION_NAME = "PocketDJ Jukebox"
         private const val TICK_MS = 4_000L
         private const val HEARTBEAT_MS = 15_000L
@@ -516,17 +582,67 @@ class JukeboxRepository(
     }
 }
 
-private suspend fun <T> ListenableFuture<T>.await(): T =
-    suspendCancellableCoroutine { continuation ->
-        addListener(
-            {
-                try {
-                    continuation.resumeWith(Result.success(get()))
-                } catch (error: Exception) {
-                    continuation.resumeWith(Result.failure(error))
-                }
-            },
-            MoreExecutors.directExecutor(),
-        )
-        continuation.invokeOnCancellation { cancel(false) }
+/** The slice of the sequencer the jukebox needs - a seam so placement is unit-testable without Media3. */
+interface JukeboxQueue {
+    /** Is a run active (accepting inserts)? */
+    val isRunning: Boolean
+    fun snapshot(): SequencerState
+    fun insertNext(item: QueueItem)
+    fun append(item: QueueItem)
+    /** Insert at a uniformly random slot of [slots] (index+1..count); [slot] is injectable. */
+    fun insertRandom(item: QueueItem, slot: (IntRange) -> Int)
+    /** Nothing running: start a one-item run tagged with [context]. */
+    fun startRun(item: QueueItem, context: PlayContext)
+    /**
+     * Audio is sounding outside any sequencer run (album queue, browse single, AM, stream): fold it
+     * into a one-row run at [positionMs] so an insert lands after it instead of replacing it.
+     */
+    fun adoptForeign(current: QueueItem, positionMs: Long, context: PlayContext)
+}
+
+/** What is audible while the sequencer is idle. */
+data class ForeignPlayback(val item: QueueItem, val positionMs: Long)
+
+/** Production [JukeboxQueue]: every accepted request goes through the [SetlistSequencer]. */
+class SequencerJukeboxQueue(private val sequencer: SetlistSequencer) : JukeboxQueue {
+    override val isRunning: Boolean get() = sequencer.state.value.isRunning
+    override fun snapshot(): SequencerState = sequencer.state.value
+    override fun insertNext(item: QueueItem) = sequencer.insertNextInQueue(listOf(item))
+    override fun append(item: QueueItem) = sequencer.appendToQueue(listOf(item))
+    override fun insertRandom(item: QueueItem, slot: (IntRange) -> Int) =
+        sequencer.insertRandomInQueue(listOf(item), slot)
+    override fun startRun(item: QueueItem, context: PlayContext) = sequencer.play(listOf(item), context = context)
+    override fun adoptForeign(current: QueueItem, positionMs: Long, context: PlayContext) {
+        sequencer.adoptForeign(current, positionMs, context)
     }
+}
+
+/** Placement rules for an accepted request (§4.3, §5). */
+object JukeboxPlacement {
+    /** History context of a run the jukebox started. */
+    val CONTEXT = PlayContext(source = "jukebox", contextName = "Jukebox")
+
+    fun place(
+        queue: JukeboxQueue,
+        item: QueueItem,
+        action: JukeboxDecisionAction,
+        slot: (IntRange) -> Int = { Random.nextInt(it.first, it.last + 1) },
+        foreign: ForeignPlayback? = null,
+    ) {
+        if (!action.isPlacement) return
+        if (!queue.isRunning) {
+            if (foreign == null) {
+                // Nothing playing: the accepted request starts the music with a one-item queue.
+                queue.startRun(item, CONTEXT)
+                return
+            }
+            // Something is sounding outside the sequencer: keep it, queue the request behind it.
+            queue.adoptForeign(foreign.item, foreign.positionMs, CONTEXT)
+        }
+        when (action) {
+            JukeboxDecisionAction.NEXT -> queue.insertNext(item)
+            JukeboxDecisionAction.END -> queue.append(item)
+            else -> queue.insertRandom(item, slot)
+        }
+    }
+}

@@ -91,4 +91,22 @@ class JukeboxUrlsTest {
         assertNull(JukeboxUrls.create("not a url"))
         assertNull(JukeboxUrls.state("   ", "ab2cd3ef"))
     }
+
+    @Test
+    fun sessions_underDirectAndFunnelBases() {
+        assertEquals("http://192.168.1.20:8788/sessions", JukeboxUrls.sessions(direct).toString())
+        assertEquals(
+            "https://levis-imac.tail2e2bdf.ts.net:8443/jukebox/sessions",
+            JukeboxUrls.sessions(funneled).toString(),
+        )
+    }
+
+    @Test
+    fun sessionInfo_encodesId() {
+        assertEquals("http://192.168.1.20:8788/sessions/jb1", JukeboxUrls.sessionInfo(direct, "jb1").toString())
+        assertEquals(
+            "https://levis-imac.tail2e2bdf.ts.net:8443/jukebox/sessions/a%20b",
+            JukeboxUrls.sessionInfo(funneled, "a b").toString(),
+        )
+    }
 }

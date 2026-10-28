@@ -1,0 +1,904 @@
+{
+ "area": "Services / data plane (rips + burns, storage manager, TransferCoordinator + background tasks, catalog offline cache, user profiles + sync, credentials + remote endpoints, onboarding gate, diag log upload, cloud stems offload, lyrics)",
+ "inventory": [
+  {
+   "feature": "Rips manifest (public S3 `rips/manifest.json`) \u2014 offline-first copy, every field optional, stems/beatgrid/lyrics/cut fields",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/State/RipsStore.swift:90-153 (ManifestEntry incl. cutKey/beatgrid/stems/lyrics), :312-345 (refreshManifest with response-generation guard + detached decode + publish-only-on-change)",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/rips/RipsModels.kt (RipManifestEntry \u2014 has cutKey, NO stems/beatgrid/lyrics fields), RipsRepository.kt (refresh keeps last-good; decodes on IO)",
+   "notes": "Missing: `stems{vocals,drums,bass,other}`, `stemVersion/stemFormat/stemmedAt`, `beatgrid`, `beatGridBpm/firstDownbeatMs/steady`, `lyrics/lyricsVersion` fields; the overlapping-refresh generation guard (older response must never clobber a newer one \u2014 a just-ready rip flipping back to 'not ripped'); publish only when the map actually changed (avoid invalidating every row)."
+  },
+  {
+   "feature": "Rip-on-demand: POST /rip, GET /jobs, bearer omitted when empty, X-PocketDJ-Device, 12 s fail-fast timeout, studio-id fence",
+   "status": "DONE",
+   "ios_files": "apple/PocketDJ/State/RipsStore.swift:627-760 (ensureURL), :284-300 (studio fence), apple/PocketDJ/Support/DeviceIdentity.swift (PDJIdentityHeaders)",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/rips/RipServerClient.kt, PlayResolver.kt, playback/PlaybackController.kt:416-450 (startRipAndPlay)",
+   "notes": "X-PocketDJ-Profile header is omitted (no profile yet) \u2014 add when SYNC-1 lands."
+  },
+  {
+   "feature": "Interactive \u25b6 wait bounded to 20 s \u2192 `stillRipping` (not 'timed out'); wall-clock poll deadline; keep polling in background (`pollToReady`) and fire `onRipReady` so the row flips playable; do NOT stop on phase=error (server auto-heal re-queues)",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/State/RipsStore.swift:496-552 (RipError.stillRipping rationale), :689-752 (pollDeadline, pollToReady)",
+   "android_files": "RipServerClient.kt awaitReady (1 s \u00d7 1800 = 30 MIN foreground wait, throws on error), pollUntilDurable (no onRipReady hook); PlaybackController.startRipAndPlay awaits awaitReady for the whole rip",
+   "notes": "Android's interactive path can park a \u25b6 for 30 minutes \u2014 exactly the 2026-08-17 iOS bug. Need: 20 s interactive bound returning a distinct StillRipping outcome, background pollToReady with manifest refresh + onRipReady callback, 10 s per-poll timeout."
+  },
+  {
+   "feature": "Presigned playback/download URLs (`GET /rips/presign?songId&ttl`), 6 h prefetch of upcoming songs (dead-air fix), direct-URL fallback when serverless",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/RipsStore.swift:552-626 (presignedURL, prefetchPresigned, prefetchedURL; TTL 21600 trusted 5 h); scripts/rip-server.mjs:2528-2545",
+   "android_files": "none \u2014 PlayResolver.playableUrl builds `ripsBase/key` directly",
+   "notes": "Dead-air memory: presign round trip in the song gap is THE silent gap on cellular; prefetch is load-bearing for setlist transport. The bearer must never ride to S3/presigned URLs (TransferCoordinator.shouldAttachBearer, 2026-09-01 poisoned burns)."
+  },
+  {
+   "feature": "Stream-through-rip: fire-and-forget `requestRipIfNeeded` on playback start, 3-layer idempotency, rip-ahead window gate, `ripFromCloud` body flag",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/RipsStore.swift:880-1024; apple/PocketDJ/Settings/SettingsStore.swift:148 (ripFromCloud); docs/design/stream-through-rip-and-collection-ripburn.md",
+   "android_files": "none (specs/applemusic.md \u00a76.0 deliberately forbids auto-/rip on AM playback \u2014 keep that; the explicit-\u25b6 passive rip for rip-server streams is still missing)",
+   "notes": "Android doctrine 'no auto-rip on AM playback' stays. Still needed: `requestRipIfNeeded` for setlist pre-rip (rip-ahead window) + `ripFromCloud` setting."
+  },
+  {
+   "feature": "Collection RIP batch: POST /rip-collection (+404 per-song fallback), /rip-cancel, progress poll ends the INDICATOR not the rip (~2 h cap)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/RipsStore.swift:1769-1935; docs/ARCHITECTURE-APPLE.md item 20",
+   "android_files": "none",
+   "notes": "userRequestedRipIds must never be cancelled by the playback window."
+  },
+  {
+   "feature": "BurnStore \u2014 offline burns ledger `pocketdj-burns.json` (schemaVersion, items[], pendingAfterRip[]); keyed analog\u2192`<albumId>.mp3` shared / digital\u2192`<songId>.mp3`; descriptive filenames with NEVER-truncated id suffix; prose `.txt` sidecar + machine ledger; isFresh (size + rippedAt); analog shared-file don't-clobber; disk-full abort; STOP at loop top only",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/BurnStore.swift:1-140 (models), :1656-1960 (burn loop), :2019-2130 (isFresh, fileNames, sanitizeToken, tokenCap 40 / prefixCap 150), :2236-2360 (buildSidecar), :2148-2185 (pendingAfterRip/drain)",
+   "android_files": "none (android/specs/playback.md \u00a75 'Burns \u2026 Phase-1 cut: none of this'; specs/storage.md \u00a75 Deferred)",
+   "notes": "ARCHITECTURE-APPLE items 24/25: analog burn is ALBUM-level; the analog CUT (`cutKey`) is BURN-ONLY \u2014 playback never touches it."
+  },
+  {
+   "feature": "Burn reconcile on launch: drop ledger items whose file vanished; self-heal POISONED items (<4 KB starting with <?xml/<Error/<html)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/BurnStore.swift:1478-1517",
+   "android_files": "none",
+   "notes": "Pair with TransferCoordinator's 'HTTP error body is never finalized as audio'."
+  },
+  {
+   "feature": "Burn stems + beat-grid sidecars into the burn folder (`stem-<id>-<part>.mp3`, `analysis-<id>.json`), validate JSON before caching, stems never trigger separation",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/BurnStore.swift:645-870, :1879-1960",
+   "android_files": "none",
+   "notes": "Consumed by Mix stem decks (other area) \u2014 the files/naming are the contract."
+  },
+  {
+   "feature": "Rip\u2192burn for recognizer/Discover adds (`startRipAndBurn`, album variant with ONE shared poll loop)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/BurnStore.swift:1530-1655",
+   "android_files": "none (no Shazam recognizer on Android \u2014 ShazamKit is Apple-only; Discover is Browse area)",
+   "notes": "Port the store-owned lifecycle (survives sheet dismissal) as a generic `ripThenBurn(songId,\u2026)`; the recognizer trigger is N/A."
+  },
+  {
+   "feature": "TransferCoordinator \u2014 background downloads that survive suspend/cold relaunch; persisted `pocketdj-transfers.json`; record persisted BEFORE resume; bearer never to S3; non-2xx body never finalized; run-scoped progress (beginRun), byte deltas throttled 0.5 s; cancel(songIds); reconcileOnLaunch; delegate must not touch main-actor state",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/TransferCoordinator.swift (whole file); docs/ARCHITECTURE-APPLE.md items 18, 21",
+   "android_files": "none",
+   "notes": "Android mapping: WorkManager CoroutineWorker (unique work per songId) + OkHttp streaming to `.part` + atomic rename; records persisted in the same JSON (additive `workId` field)."
+  },
+  {
+   "feature": "Background tasks: burn-drain, rip-reconcile (manifest refresh), daily storage prune",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/AppDelegate.swift:76-140; apple/PocketDJ/State/StorageManager.swift:31-33",
+   "android_files": "none (no WorkManager dependency in android/gradle/libs.versions.toml)",
+   "notes": "WorkManager periodic workers; `Notification.ProgressStyle` (API 36) already listed as a candidate in ARCHITECTURE-ANDROID.md."
+  },
+  {
+   "feature": "Storage manager: soft cap (decimal GB and/or #songs), once-per-20 h gate, STAMP FIRST then prune (launch-crash-loop fix), ONE disk scan plan (`planEviction`), chunked eviction (25) yielding, protectedSongIds (deck-loaded), LRP order via PlayStats with `SongVariant.baseId`, orphan aux sweep first",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/StorageManager.swift (whole), apple/PocketDJ/State/BurnStore.swift:1192-1296 (burnedUsageBytes, planEviction), :1040-1080 (sweepOrphanAuxFiles)",
+   "android_files": "none; android/specs/storage.md \u00a75 explicitly defers cap + prune until burns exist",
+   "notes": "Memory 'storage-manager': per-eviction disk rescan on main = launch crash loop \u2014 stamp first, one-scan plan, chunked async. Must port exactly."
+  },
+  {
+   "feature": "Storage screen: measured usage, delete burns by artist / by collection / all, delete stems, 'your library is never touched' doctrine, enable while bytes>0",
+   "status": "PARTIAL",
+   "ios_files": "apple/PocketDJ/Views/StorageView.swift:340-420, :619-860 (usageByArtist, readyBurnedIds(in:))",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/storage/StorageService.kt (5 categories: catalog cache, artwork, collections display-only, play history, activity), screens/settings/StorageScreen.kt",
+   "notes": "Android has the cache/doc rows + the clear contract (never touch settings DataStore / installId; collections display-only). Missing: everything burn/stem/cap related."
+  },
+  {
+   "feature": "PlayStatsStore \u2014 per-song playCount/lastPlayedAt aggregate (`pocketdj-play-stats.json`), 30 s re-count window, revision counter, synced",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/PlayStatsStore.swift",
+   "android_files": "none (android/specs/history.md flags it non-P1; PlayHistoryStore is the capped 20 000-event log only)",
+   "notes": "Needed as the prune's ordering signal. Android aggregates must be fed from PlayEventBus, not derived from the capped log."
+  },
+  {
+   "feature": "Catalog offline-first disk cache: explicit per-source file cache (sha256 name + .meta.json validators), conditional GET, decode-then-cache atomically, last-good fallback, render-from-cache instantly, non-destructive refresh, queued refresh, synthetic sources appended after real ones",
+   "status": "DONE",
+   "ios_files": "apple/PocketDJ/Services/CatalogService.swift, apple/PocketDJ/State/AppModel.swift (loadIfNeeded/performRefresh)",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/catalog/CatalogService.kt, CatalogRepository.kt",
+   "notes": "One gap: on 304 iOS hands back the already-decoded seed (`load(reusing:)`, saves ~640 ms/launch on a 50 MB index) and reports `changed=false` so the derived rebuild is skipped; Android re-decodes from disk and always re-merges. Low priority polish (CAT-1)."
+  },
+  {
+   "feature": "Remote endpoint config (schema v1, host allowlist, last-good persisted, 15-min throttle, catalog URL rebasing, request-time resolution)",
+   "status": "DONE",
+   "ios_files": "apple/PocketDJ/Support/RemoteEndpoints.swift, apple/PocketDJ/Support/Config.swift",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/config/RemoteEndpoints.kt, Endpoints.kt, RemoteEndpointsTest.kt",
+   "notes": "RISK: COMPILED_IN still names the BLUE account (011183829623) which memory says was DELETED 2026-10-15; a first launch that cannot reach app.pocket-dj.com would resolve to dead hosts. Flip compiled-in to green and pin it to config/endpoints.green.json in a test (CAT-1). `generation` counter (iOS) absent on Android \u2014 needed only by search-config memo (other area)."
+  },
+  {
+   "feature": "Install/device identity (`X-PocketDJ-Device`), minted once and frozen",
+   "status": "DONE",
+   "ios_files": "apple/PocketDJ/Support/DeviceIdentity.swift",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt:291-299 (ensureInstallId)",
+   "notes": "Reset path (account deletion) must forget it \u2014 part of RESET-1."
+  },
+  {
+   "feature": "Connection credentials entered once, synced across devices (`settings-credentials` doc): blank-field doctrine (fresh install never materializes \u2192 adopts), sorted-keys deterministic encoding, EMPTY-SECRET GUARD (same URL + empty secret never clobbers a non-empty local secret and heals the fleet), sources ride along",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Settings/SettingsCredentialsSync.swift (whole); memory: tailscale-path-mount-shadows-rip (credsync LWW wiped rip token fleet-wide)",
+   "android_files": "none; rip/jukebox URL+token live in plaintext Preferences DataStore (AppSettingsStore.kt:115-118)",
+   "notes": "Depends on a sync channel (SYNC). Also move secrets (rip token, jukebox token, AM user token, future profile secret) to EncryptedSharedPreferences/Keystore."
+  },
+  {
+   "feature": "User profile (`pocketdj-profile.json`: schemaVersion, id, name, createdAtMs), name mirrors to collections performerName + jukebox DJ line, migrate legacy name, reset mints a fresh identity",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/ProfileStore.swift",
+   "android_files": "none",
+   "notes": "Shape-compatible doc (shared across devices via sync)."
+  },
+  {
+   "feature": "Cross-device document sync (CloudSyncService): whole-document LWW with 2 s skew, `.pre-cloud` backup before overwrite, per-key pushed-mtime watermark, merge-on-reload clears watermark, pushDirty with meta probe (never blind), syncAtLaunch 8 s deadline, foreground throttle 5 min, 20 s active tick, onboarding push gate, restoreForOnboarding (forced pull), probeCloudProfile (timeout \u21d2 unknown, never fresh), clearLocalSyncState",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Services/CloudSync/CloudSyncService.swift, CloudDocDatabase.swift (protocol: accountAvailable/fetchMeta/fetch/save/delete/deleteAll); registry apple/PocketDJ/PocketDJApp.swift:1626-1730",
+   "android_files": "none (locked: NO CloudKit; S3-based equivalent to be designed \u2014 decided below)",
+   "notes": "Engine is pure over the `CloudDocDatabase` seam \u2014 port it verbatim and swap the backend. Android registry subset: profile, collections, play-stats, play-history, collection-activity, settings-credentials, diag-key (others arrive with their areas: favorites, playback-session, mix-decks, mix-sessions, timeline-cues, discover-adds, imported-songs, profile-source, rec-*, foryou-feed, game-scores, puzzle-decisions, studio-cues)."
+  },
+  {
+   "feature": "Profile-source store + device-local profile audio (Pocket DJ custom audio source)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/ProfileSourceStore.swift, ProfileAudioStore.swift",
+   "android_files": "none",
+   "notes": "Depends on Producer/Demux (Phase 4, other area). Only the sync-doc key `profile-source` belongs to this area; defer the store itself to the Producer area."
+  },
+  {
+   "feature": "Owner gate (iCloud userRecordID hash) for two-way AM favorites",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Support/OwnerIdentity.swift, Config.swift:464-480",
+   "android_files": "n/a",
+   "notes": "CloudKit-only identity; favorites sync is the streaming area. Android equivalent would be profile-id allowlist \u2014 decide there."
+  },
+  {
+   "feature": "Zero-to-hero onboarding: 3 stages (profile on-device vs linked/restore \u00b7 Apple Music sign-in \u00b7 sources Vinyl/Digital/Streaming); explicit persisted marker (pending / started(stage) / completed) outranks blob-existence; upgrade-stamps silently; launch pipeline awaits `waitUntilComplete()`; pushes + mutating intents vetoed while incomplete; reset re-arms via `pending`",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/OnboardingStore.swift, apple/PocketDJ/Views/Onboarding/OnboardingView.swift, apple/PocketDJ/Settings/SettingsStore.swift:639 (applyOnboardingSources), :741-753 (resetEverything)",
+   "android_files": "none",
+   "notes": "Stage 2 (AM sign-in) is device-only on Android (specs/applemusic.md fact 0.8); emulator shows the 'not available / previews only' branch."
+  },
+  {
+   "feature": "Remote diag log \u2192 private S3 (`diag/<platform>-<device8>/<stamp>-b<build>[-pN].log`): secret-free event lines, part rotation at 500 lines, 40 000-line session cap, flush 15 s (3 s telemetry) / immediate on error / 25 dirty, serialized uploads with newest-body-per-key coalescing, keyless bounded buffer uploaded when a key arrives, upload status persisted + transitions logged, channel gate (debug/TestFlight only), pure SigV4 PUT",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Support/DiagLog.swift (whole), apple/PocketDJ/Support/DiagCredentialStore.swift, DiagKeySync.swift (empty-never-wins), DiagKeyImport.swift (.pdjdiagkey validation + bucket-account pairing check); memory: pocketdj-remote-diag-logs",
+   "android_files": "none (android.util.Log only)",
+   "notes": "Android channel gate: BuildConfig.DEBUG or an `internal` build flavour flag (no TestFlight receipt). Telemetry lane (user actions/screens) is owner opt-in."
+  },
+  {
+   "feature": "Cloud stems offload client: POST /stemify, /stemify-collection (confirmLarge), /stemify-cancel, /stemify-custom (upload), StemJob phases (queued/ripping/stemming/ready/error/ineligible), 3 s poll \u2264 4 h, pruneFinishedStemJobs, stem URLs from manifest `stems` keys",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/RipsStore.swift:74-152, :2005-2260; docs/design/stems-demucs-stemify-spec.md; scripts/rip-server.mjs:2788-2877",
+   "android_files": "none",
+   "notes": "Server-side SQS/EC2 offload is shared backend (no Android work). `/stemify-custom` needs Producer (defer the upload half)."
+  },
+  {
+   "feature": "Lyrics: on-demand `{catalogBase}/lyrics/<songId>.txt` only when `lyricsStatus == \"found\"`, memory \u2192 disk cache (`lyrics-cache/<safeId>.txt`) \u2192 network, non-2xx never cached, empty never cached",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Services/LyricsStore.swift",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/config/Endpoints.kt:61 (URL builder only); screens/browse/SongDetailSheet.kt:195 shows the status string only",
+   "notes": "Timed-word sidecar (`rips/lyrics/<id>.json`, TimedLyricsSidecar) is consumed by Producer/Mix Demux panel \u2014 ship the decoder here, the UI there."
+  },
+  {
+   "feature": "Reset everything (sources, credentials mirror, caches, collections; re-arm onboarding) + Account deletion orchestrator (cloud delete \u2192 stop live activity \u2192 clear stores \u2192 media \u2192 settings \u2192 identity LAST; best-effort per step)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Settings/SettingsStore.swift:741-760, apple/PocketDJ/Services/AccountDeletionService.swift (cloudDocKeys must mirror the sync registry)",
+   "android_files": "none (SettingsScreen has only Clear cache / Clear play history)",
+   "notes": "Settings reset AFTER media stores (they read folder config from settings); identity reset LAST."
+  },
+  {
+   "feature": "Rip server health check / test connection, protocol v2",
+   "status": "DONE",
+   "ios_files": "apple/PocketDJ/Services/RipServerService.swift",
+   "android_files": "RipServerClient.health(candidateUrl\u2026) (probe without persisting a bad URL)",
+   "notes": ""
+  },
+  {
+   "feature": "Apple Music developer-token client (rip-server `/musickit-token`), sign-in, preview resolver",
+   "status": "DONE",
+   "ios_files": "(no iOS analogue \u2014 MusicKit native)",
+   "android_files": "android/app/src/main/java/com/levi/pocketdj/data/applemusic/*",
+   "notes": "Streaming area owns further AM work; listed for completeness of config/ touchpoints."
+  },
+  {
+   "feature": "Backup / portable zips (.pocketdj.zip, .pdjcollection, pocket/playlist zips, PortableItems)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Services/BackupZip.swift, PocketZip.swift, PlaylistZip.swift, PortableItems.swift",
+   "android_files": "none",
+   "notes": "Owned by the Collections area (import/export UX); noted so it is not dropped."
+  },
+  {
+   "feature": "Push registration (APNs) for Music with Friends",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Services/PushRegistrationService.swift",
+   "android_files": "n/a",
+   "notes": "APNs-specific; MwF polls every 4 s as fallback \u2014 Android can rely on the poll (social area)."
+  },
+  {
+   "feature": "Main-thread stall watchdog + dead-air meter diagnostics",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Support/MainThreadStallWatchdog.swift; memory dead-air-metric",
+   "android_files": "none",
+   "notes": "Android: `StrictMode` + a Choreographer-based jank watchdog logging to DiagLog \u2014 small add-on inside DIAG-1."
+  }
+ ],
+ "architecture": "## Android data-plane architecture (Services / State non-playback)\n\n### 0. Decisions made in this area\n1. **Profile sync without CloudKit = port `CloudSyncService` verbatim over a `CloudDocDatabase` interface, backed by S3 through a tiny first-party Lambda (`pocketdj-profile-sync`).** The iOS engine (`CloudSyncService.swift`) is already pure over `CloudDocDatabase` (accountAvailable / fetchMeta / fetch / save / delete / deleteAll) and is unit-tested against an in-memory DB; porting the engine unchanged preserves every hard-won rule (2 s skew, `.pre-cloud` backup, watermark semantics, merge-on-reload clears watermark, meta-probed pushDirty, onboarding push gate, 8 s launch deadline). Only the backend differs:\n   - Objects: `profiles/<profileId>/<key>.json` in a private bucket (same account as `diagLogsBase`), S3 user-metadata `x-amz-meta-modified-at-ms`, `x-amz-meta-device`. `fetchMeta` = one Lambda call returning `{key: modifiedAtMs}` (HEAD fan-out server-side).\n   - HTTP API (new remote-endpoint key `profileSyncBase`, OPTIONAL in the v1 doc \u2014 absent \u21d2 sync disabled, never derived from another key): `POST /enroll` (header `X-PocketDJ-Enroll` = shipped capability token, same pattern as `Config.recEngineEnrollSecret`; body `{profileId, secretHash}`), then `GET /meta?keys=`, `GET /doc/{key}`, `PUT /doc/{key}` (headers `X-PocketDJ-Modified-At`, `X-PocketDJ-Device`), `DELETE /doc/{key}`, `DELETE /profile` \u2014 all with `Authorization: Bearer <profileSecret>` + `X-PocketDJ-Profile`.\n   - Identity: `profileId` = the durable UUID in `pocketdj-profile.json`; `profileSecret` = 32 random bytes minted on device at enroll, stored in **EncryptedSharedPreferences** (Android Keystore master key), never in DataStore/JSON. \"Link with iCloud\" becomes **\"Link a device\"**: the enrolled device shows a QR (zxing, already a dependency) / 20-char code encoding `pocketdj://link?p=<profileId>&s=<secret>`; the new device types/scans it, probes the cloud profile (`probeCloudProfile`) and runs `restoreForOnboarding`. `accountAvailable()` \u21d4 a secret is present AND the last `/meta` probe was not 401/403.\n   - Why not CloudKit JS / Firebase / direct SigV4: CloudKit web needs an Apple ID web flow and a public container; a per-user IAM key is unacceptable; Firebase adds a second cloud. The Lambda+S3 shape is what `am-playlist-sync` and `rec-engine` already use and what ARCHITECTURE-ANDROID.md sketched (\"per-profile documents under an authenticated prefix\").\n   - The Lambda is **outside android/** (`scripts/lambda/profile-sync/`), ~400 lines Node, listed as package SYNC-0; the Android engine ships first against an in-memory DB and a MockWebServer so Sonnet packages are independently testable.\n2. **Burns live app-private** (`filesDir/burns/`, ledger `filesDir/pocketdj-burns.json`) in v1. A user-browsable folder (SAF `ACTION_OPEN_DOCUMENT_TREE` + persisted tree URI, `DocumentFile`) is a P2 package: it is the Android twin of the security-scoped bookmark and must obey the same rule \u2014 the destination is captured onto the transfer record at enqueue time, never read from live settings inside the worker.\n3. **TransferCoordinator = WorkManager.** `OneTimeWorkRequest` per song (`enqueueUniqueWork(\"burn:<songId>\", KEEP)`), a `CoroutineWorker` that streams OkHttp \u2192 `<audio>.part` \u2192 atomic rename, runs as a **foreground (long-running) worker** with a progress notification (plain progress on API 35; `Notification.ProgressStyle` on 36 \u2014 the listed API-36 candidate). Records persist in `pocketdj-transfers.json` (iOS shape + additive `workId`). WorkManager gives survival across process death and cold relaunch; `reconcileOnLaunch` = cross-check records vs `WorkManager.getWorkInfosForUniqueWork`. `DownloadManager` was rejected (cannot target app-private `filesDir`; no header control guarantees).\n4. **Mix DSP engine: not touched by this area.** Burn/stem file naming (`stem-<id>-<part>.mp3`, `analysis-<id>.json`, descriptive `<prefix>-<id>.mp3`) is the only contract the Mix area consumes; it is fixed here.\n5. **Secrets move to EncryptedSharedPreferences** (rip token, jukebox token, Music-User-Token, profile secret, diag key); non-secret settings stay in the Preferences DataStore. Migration is additive: read DataStore value once, copy, blank the DataStore key.\n6. **Diag channel gate** = `BuildConfig.DEBUG || BuildConfig.DIAG_CHANNEL` (a `buildConfigField` set true for an `internal` build flavour; release = false). No App-Store-receipt analogue exists.\n7. **Compiled-in endpoints flip to green** (623170744161) with a JVM test pinning `EndpointConfig.COMPILED_IN` to `config/endpoints.green.json` (blue was deleted 2026-10-15 per memory; a compiled-in blue only matters when `app.pocket-dj.com` is unreachable on first launch, but then it is fatal).\n\n### 1. Packages (Kotlin, under `com.levi.pocketdj`)\n```\ndata/rips/        RipsModels (+stems/beatgrid/lyrics fields), RipsRepository (gen guard), RipServerClient (+presign, rip-collection, cancel, stemify*, 20 s interactive wait), PresignCache, RipJobTracker (jobs/stemJobs StateFlow, pollToReady, onRipReady), PlayResolver (+rung 0 local burn, device/cloud mode)\ndata/burns/       BurnModels (BurnItem/Document/PendingBurn \u2014 iOS shape), BurnFileNames (pure), BurnSidecar (pure), BurnStore, BurnFolder (app dir now; SAF later), BurnReconciler, EvictionPlanner (pure), BurnStems (stem/beatgrid pulls)\ndata/transfers/   TransferRecord/TransferDoc, TransferCoordinator (WorkManager facade + persisted records + progress mirror), BurnDownloadWorker, BearerPolicy (pure shouldAttachBearer), RipReconcileWorker, StoragePruneWorker\ndata/stats/       PlayStatsStore (pocketdj-play-stats.json), fed by PlayEventBus\ndata/storage/     StorageService (extend categories), StorageManager (prune engine), ArtworkCache (exists)\ndata/sync/        CloudDoc, CloudDocDatabase, InMemoryCloudDocDatabase, S3CloudDocDatabase (Lambda HTTP), CloudSyncService, SyncRegistry (AppGraph wiring), ProfileStore, ProfileSecretStore (EncryptedSharedPreferences), LinkCode (QR payload encode/decode)\ndata/credentials/ SettingsCredentialsDocument + CredentialsSync (blank-field doctrine, sorted-keys encode, empty-secret guard), SecretStore (EncryptedSharedPreferences), DiagKeySync\ndata/onboarding/  OnboardingStore (marker in DataStore key `pdj.onboarding.v1` as the iOS MarkerFile JSON), OnboardingDecision (pure)\ndata/lyrics/      LyricsStore (lyrics-cache/), TimedLyricsSidecar (decoder)\ndiag/             DiagLog, DiagUploadStatus, SigV4 (pure, javax.crypto), DiagCredentialStore, DiagKeyFile (+bucket-account pairing), JankWatchdog\ndata/reset/       AppResetService (reset everything), AccountDeletionService (ordered best-effort)\nscreens/settings/ StorageScreen (+burns/stems/cap rows), DebugScreen (new), ProfileSection, ResetSection; screens/onboarding/ OnboardingScreen + 3 stage composables\n```\n\n### 2. Data flow\n- **Play \u25b6 (data-plane part):** `PlayResolver.resolve(songId)` rung 0 = `BurnStore.localUrlForPlayback(songId)` (burned-first, EVERY song-start path; analog shared file + `startMs` clip) \u2192 rung 1 manifest hit \u2192 `PresignCache.prefetched(songId) ?: ripServer.presign(songId)` (direct URL only when no server) \u2192 AM rungs (streaming area) \u2192 rung 4 `RipRequired`: `requestRip` + 20 s bounded wait \u2192 `StillRipping` outcome + `RipJobTracker.pollToReady` (2 s, \u22641 h, never stops on error) \u2192 `onRipReady` refreshes manifest and lets the row flip. `PlaybackMode.DEVICE` skips un-burned tracks and raises the one-shot `deviceQueueUnplayable` banner when the whole queue is un-burned (ARCHITECTURE-APPLE item 23).\n- **Setlist prefetch:** the setlist transport (playback area) calls `PresignCache.prefetch(nextIds)` and `RipServerClient.requestRipIfNeeded(id, playback=true)` inside a rip-ahead window gate \u2014 the AM\u2192burned dead-air fix.\n- **Burn a collection:** `BurnStore.burn(songs)` \u2192 `beginRun()` \u2192 per song: STOP check at loop top \u2192 fresh-skip (`isFresh`: size == bytes && rippedAt \u2264 downloadedAt) \u2192 not-in-manifest \u21d2 error item `notRipped` (never blocks on a rip) \u2192 presign (6 h TTL, one retry) \u2192 pre-render sidecar + filenames on the caller's thread \u2192 persist `.downloading` BurnItem + TransferRecord BEFORE enqueue \u2192 `TransferCoordinator.enqueue` \u2192 worker downloads, rejects non-2xx bodies (never finalizes an XML error as audio), analog shared file don't-clobber, writes sidecar, `finalizeBurn` upserts `.ready` + `onAnyBurnFinalized`. Post-pass: stems + beat-grid pulls (idempotent, best-effort, STOP-aware). `pendingAfterRip` drains on `onRipReady` and at launch; an intent is cleared only when `burned > 0`.\n- **Prune:** `StoragePruneWorker` (periodic 24 h, constraints: idle not required) and `onResume` \u2192 `StorageManager.pruneIfDue()` \u2192 cap active && last stamp \u2265 20 h \u2192 **stamp first** \u2192 `sweepOrphanAuxFiles()` if over cap \u2192 order = ready items minus protected, by `PlayStatsStore.lastPlayedAt(SongVariant.baseId)` asc then `downloadedAt` asc \u2192 `EvictionPlanner.plan(order, capBytes, capSongs)` (ONE listing per root; shared analog audio freed with its LAST referencing item; aux files credited from every root) \u2192 evict in chunks of 25 with `yield()` and a per-chunk re-read of `protectedSongIds` \u2192 re-measure once \u2192 `PruneResult`.\n- **Sync pass:** `syncAtLaunch` (awaited by the launch pipeline after onboarding, 8 s deadline) \u2192 `fetchMeta(all keys)` \u2192 per entry: cloud newer by >2 s \u21d2 backup `.pre-cloud`, write (or `applyPayload` seam), watermark pulled mtime, `reload()`, if the file mtime moved during reload \u21d2 clear the watermark (merged superset must publish) ; local newer \u21d2 push if `pushAllowed()`. `syncOnForeground` (5 min), `syncTick` (20 s while active), `pushOnBackground` \u2192 `pushDirty` with meta probe (absent \u21d2 push; strictly newer cloud \u21d2 skip).\n- **Diag:** `DiagLog.log(category, msg)` (never secrets) \u2192 in-memory part buffer \u2192 flush rules \u2192 `UploadQueue` (serial, newest body per key) \u2192 `SigV4.put(host=diagLogsBase, key, body)` \u2192 `UploadStatus` persisted (DataStore keys `pdj.diag.lastSuccessAt/lastError/lastErrorAt`). Keyless \u21d2 bounded buffer (499 lines + marker), uploaded when a key arrives (Settings entry, `.pdjdiagkey` import, or `diag-key` sync doc).\n\n### 3. Persistence formats (filesDir, shape-compatible where the doc is shared or already named)\n| file | shape | shared? |\n|---|---|---|\n| `pocketdj-burns.json` | iOS `BurnStore.Document` (schemaVersion 1, items[], pendingAfterRip[]); `wasAppStorage` optional, coalesced true | device-local (never synced) |\n| `pocketdj-transfers.json` | iOS `TransferDoc` + additive `workId: String?` (WorkManager UUID); `taskIdentifier` kept as a stable Int hash for compat | device-local |\n| `pocketdj-play-stats.json` | iOS `PlayStatsStore.Document` (stats{id\u2192{playCount,lastPlayedAt,appleCount?,preTagPlayCount?,skipCount?}}, appleTaggingMigratedAtMs) | SYNCED (key `play-stats`) |\n| `pocketdj-profile.json` | `{schemaVersion:1,id,name,createdAtMs}` | SYNCED (`profile`) |\n| `pocketdj-settings-credentials.json` | iOS `SettingsCredentialsDocument` (sorted keys) | SYNCED (`settings-credentials`) |\n| `pocketdj-diag-key.json` | `{schemaVersion:1,accessKeyID,secret}` | SYNCED (`diag-key`) \u2014 on-disk mirror only while a key exists |\n| `pocketdj-cloudsync-state.json` | `{pushedMtimeMs{}, lastSyncAtMs}` | device-local |\n| DataStore `pdj.onboarding.v1` | iOS MarkerFile JSON string `{version:1,state,stage?,completedAtMs?}` | device-local |\n| `lyrics-cache/<safeId>.txt`, `burns/<descriptive>-<id>.mp3`, `burns/<...>-<songId>.txt`, `burns/stem-<id>-<part>.mp3`, `burns/analysis-<id>.json` | byte-identical naming to iOS | device-local |\nAll JSON through `PdjJson.lenient` (unknown keys ignored, nulls \u2192 defaults); writes are `.part` + `Files.move(ATOMIC_MOVE)` like `CatalogService`.\n\n### 4. Threading model\n- Stores are plain classes (no `@MainActor`); each owns a `Mutex` (or a `Dispatchers.IO.limitedParallelism(1)` writer) and publishes `StateFlow`s. File IO never on Main; `withContext(Dispatchers.IO)` for disk, `Dispatchers.Default` for planning/merging.\n- Workers (`CoroutineWorker`) must read NOTHING from live stores: destination dir, sidecar text, filenames, manifest key all ride on the persisted `TransferRecord` (ARCHITECTURE-APPLE item 18). Finalization hops to `BurnStore` through a process-wide `TransferCoordinator` singleton (AppGraph) exactly like `onBurnFinalized`; if the process was cold-started by WorkManager, `AppGraph.get(applicationContext)` lazily materializes `BurnStore` from disk.\n- Progress: worker `setProgress` + an in-process throttled (0.5 s per task) `onBytes` flow; UI binds only the `StateFlow` mirror, never worker internals.\n- `DiagLog` is single-writer on `Dispatchers.Default.limitedParallelism(1)`; `log()` is non-suspending (enqueue to a `Channel(UNLIMITED)`), uploads detached with `SupervisorJob`.\n- Launch pipeline (MainActivity/AppGraph): `RemoteEndpoints.install` (sync, tiny) \u2192 `onboarding.waitUntilComplete()` \u2192 `cloudSync.syncAtLaunch()` \u2192 `catalogRepository.loadIfNeeded()`, `ripsRepository.loadAtLaunch()`, `burnStore.reconcileOnLaunch()`, `transfers.reconcileOnLaunch()`, `burnStore.drainPendingAfterRip()`, `storageManager.pruneIfDue()`; `ON_STOP` \u2192 `diag.flushOnBackground()`, `cloudSync.pushOnBackground()`, re-arm periodic workers.\n\n### 5. Platform APIs\nWorkManager 2.10 (`androidx.work:work-runtime-ktx`, new dependency) \u00b7 `Notification.ProgressStyle` (API 36, guarded) \u00b7 `androidx.security:security-crypto` EncryptedSharedPreferences \u00b7 `javax.crypto.Mac` HmacSHA256 + `MessageDigest` SHA-256 for SigV4 \u00b7 `ActivityResultContracts.OpenDocument` for `.pdjdiagkey` import (MIME `application/json`) \u00b7 zxing-core (already present) for the link QR \u00b7 `StrictMode`/`Choreographer` for the jank watchdog \u00b7 `android.text.format.Formatter.formatFileSize` for sizes.\n\n### 6. Emulator vs device\nEverything in this area is emulator-verifiable (headless AVD `pocketdj`, API 36) including WorkManager survival (`adb shell am force-stop com.levi.pocketdj` mid-download, relaunch, assert `.ready`) and the SigV4 PUT (needs a real diag key in the emulator's Settings \u25b8 Debug; otherwise verified by unit test vectors). Device-only: onboarding stage 2 real Apple Music sign-in (specs/applemusic.md fact 0.8), SAF folder picking on removable media, and Doze-constrained periodic worker timing (emulator: `adb shell cmd jobscheduler run -f com.levi.pocketdj <jobId>`).",
+ "decisions": [
+  "Profile/document sync on Android = verbatim port of iOS CloudSyncService over a `CloudDocDatabase` interface, backed by S3 through a new first-party Lambda `pocketdj-profile-sync` (new OPTIONAL remote-endpoint key `profileSyncBase`; absent \u21d2 sync disabled). Identity = profileId (durable UUID) + per-profile secret minted at enroll (X-PocketDJ-Enroll capability token like the rec engine), stored in EncryptedSharedPreferences; devices are linked by QR/code, replacing 'Link with iCloud'.",
+  "Background transfers use WorkManager (unique CoroutineWorker per songId, foreground progress notification; ProgressStyle on API 36) with the iOS `pocketdj-transfers.json` record doc (+additive workId). DownloadManager rejected (cannot write app-private filesDir).",
+  "Burns live app-private in filesDir/burns/ in v1 with the iOS ledger shape and byte-identical file naming; a SAF user-browsable folder is a P2 package and must capture the destination onto the transfer record at enqueue time (never read live settings in the worker).",
+  "Secrets (rip token, jukebox token, Music-User-Token, profile secret, diag key) move to EncryptedSharedPreferences; DataStore keeps non-secret settings. Additive one-shot migration.",
+  "Diag upload channel gate = BuildConfig.DEBUG || BuildConfig.DIAG_CHANNEL (internal flavour flag); release builds never upload.",
+  "Compiled-in endpoint defaults flip to the green account and are pinned by a JVM test to config/endpoints.green.json (blue account deleted 2026-10-15).",
+  "Android keeps 'no auto-/rip on Apple Music playback'; the passive stream-through rip is ported only for rip-server-streamed rows and setlist rip-ahead (inside a window gate).",
+  "PlayStatsStore is ported as a separate aggregate doc (not derived from the capped play-history log) because it is the prune's ordering signal and is a synced doc.",
+  "Mix DSP engine (Media3 vs Oboe) is not touched by this area; burn/stem/beat-grid file naming is the only contract fixed here.",
+  "Owner gate (iCloud userRecordID hash) is N/A on Android; favorites two-way sync (streaming area) must use a profile-id allowlist if it needs an owner concept.",
+  "Interactive \u25b6 rip wait is bounded to 20 s and returns a distinct StillRipping outcome; background pollToReady continues (2 s, \u22641 h, never terminates on phase=error) and fires onRipReady \u2014 replacing Android's current 30-minute foreground await."
+ ],
+ "packages": [
+  {
+   "id": "RIP-1",
+   "title": "Rip client parity: presign + prefetch, bounded interactive wait, job tracker, manifest generation guard, batch rip/cancel",
+   "goal": "Bring RipServerClient/RipsRepository to iOS RipsStore semantics so playback never parks and song-boundary presigns are prefetched (dead-air fix).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipsModels.kt (add stems/beatgrid/lyrics/stemVersion/beatGridBpm/firstDownbeatMs/steady fields; StemJob; BatchRipItem/Result; CancelItem; PresignResponse)",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipServerClient.kt (presign(songId, ttlSec), awaitReadyInteractive(jobId, 20 s) \u2192 sealed WaitOutcome{Ready(url),StillRipping,Failed}, requestRipIfNeeded(songId, playback, ripFromCloud), ripCollection(ids) with 404 per-song fallback, cancelCollection(ids), 10 s per-poll timeout)",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/PresignCache.kt (new: 6 h TTL, 5 h usable, in-flight dedup, prefetch(ids))",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipJobTracker.kt (new: jobs/stemJobs StateFlow, pollToReady 2 s \u2264 1 h never stopping on error, onRipReady callbacks, userRequestedRipIds, inFlightPhases)",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipsRepository.kt (response-generation guard; publish only on change; stemUrls/beatgridUrl/lyricsUrl helpers; isStemmed)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (additive key `ripFromCloud` Boolean default false)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (startRipAndPlay: use awaitReadyInteractive \u2192 surface StillRipping via lastError text 'Still ripping \u2014 playable in a few minutes' and register onRipReady; use PresignCache for Stream URLs)",
+    "android/app/src/test/java/com/levi/pocketdj/data/rips/* (new tests)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "awaitReadyInteractive returns StillRipping after 20 s wall-clock with a queued job (not 'Rip timed out'); the tracker keeps polling and fires onRipReady when the job reports ready",
+    "pollToReady does not terminate on phase=error; terminates on ready or the 1 h cap",
+    "presign() builds `/rips/presign?songId=&ttl=` with the standard header set; PresignCache returns a cached URL for 5 h and drops it after; concurrent prefetch of the same id issues one request",
+    "RipsRepository: an older manifest response completing after a newer one is discarded (generation guard); an identical manifest does not re-emit the StateFlow",
+    "ripCollection dedups ids, fences studio ids, falls back to per-song /rip on 404 and classifies ready/queued/inflight/unknown",
+    "Existing 234+ unit tests still pass; PlaybackController's manifest-hit path uses the presigned URL when a server is configured and the direct URL when not"
+   ],
+   "priority": "P0",
+   "est_lines": 1100,
+   "unit_tests": [
+    "RipServerClientTest: presign URL/headers via MockWebServer; interactive wait 20 s bound with a virtual clock (kotlinx-coroutines-test) \u2192 StillRipping; error phase in interactive path throws; 10 consecutive poll failures abort",
+    "RipJobTrackerTest: pollToReady ignores error phases, fires onRipReady once on ready, stops at cap",
+    "PresignCacheTest: TTL/usable window, in-flight dedup, serverless \u2192 null",
+    "RipsRepositoryTest: generation guard with two interleaved responses; publish-only-on-change",
+    "RipsModelsTest: manifest entry with stems/beatgrid/lyrics decodes; unknown fields ignored",
+    "ripCollection fallback on 404 synthesizes counts"
+   ],
+   "emulator_steps": [
+    "Configure a rip server in Settings; tap \u25b6 on an un-ripped song: within ~20 s the UI shows 'Still ripping\u2026' instead of spinning; when the rip lands the row becomes playable without another tap (adb logcat shows onRipReady)",
+    "Play a ripped song with the server configured: logcat shows one presign request; play the next song in an album queue: no presign request at the boundary (prefetched)"
+   ],
+   "shared_touchpoints": [
+    "PlaybackController.startRipAndPlay + Stream URL resolution (playback area owns the file; change is confined to those two call sites)",
+    "AppSettingsStore (one additive key)"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "BURN-1",
+   "title": "BurnStore core: ledger, filenames, sidecar, in-process burn loop, reconcile, removal, usage, eviction planner, pendingAfterRip",
+   "goal": "Offline burns with the iOS ledger shape, naming and invariants, runnable without the background coordinator (in-process serial loop = the iOS `transfers: nil` path) so it is fully JVM-testable.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnModels.kt (BurnItem, BurnDocument, PendingBurn, BurnState, BurnResult, Progress \u2014 iOS field names)",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnFileNames.kt (pure: idToken, digitalSongPrefix, analogAlbumPrefix, sanitizeToken tokenCap 40, prefixCap 150, descriptiveName; stableIdSuffix; cutFileName)",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnSidecar.kt (pure: buildSidecar header order mirroring burn-setlist.mjs; parseSidecarForAdoption)",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnFolder.kt (app-private root filesDir/burns/; probe write; interface so SAF can slot in)",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnStore.kt (items StateFlow, burn(songs) in-process path, requestStop, isFresh, removeBurns (shared analog audio freed with LAST ref), removeAllBurns, sweepOrphanAuxFiles, burnedUsageBytes, usageByArtist, readyBurnedIds(in), approximateBytes, localUrlForPlayback(songId) \u2192 (uri, startMs), burnWhenRipped/cancelPendingBurn/drainPendingAfterRip, ripThenBurn(songId,title,artist) store-owned lifecycle, adoptOrphanedBurns)",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnReconciler.kt (reconcileOnLaunch: missing file \u21d2 drop; poisoned <4 KB xml/html \u21d2 delete+drop)",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/EvictionPlanner.kt (pure planEviction: one listing per root, audioRefs, aux credit from every root)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (lazy burnStore wired with ripsRepository, ripServerClient, catalog lookup)",
+    "android/app/src/test/java/com/levi/pocketdj/data/burns/*"
+   ],
+   "depends_on": [
+    "RIP-1"
+   ],
+   "acceptance": [
+    "Burning an analog album's 3 songs downloads the shared `<Artist-Album-Year-Genre>-<albumId>.mp3` ONCE and writes 3 per-song sidecars; digital songs get `<Artist-Song-Album-Year-Genre-Camelot-Key-BPM>-<songId>.mp3`; id suffix + extension are never truncated even with 300-char metadata",
+    "A song not in the manifest is recorded as an error item 'not ripped \u2014 Rip first' and the loop continues (never awaits a rip)",
+    "STOP requested mid-run stops at the top of the next item; the in-flight item is fully written and recorded",
+    "isFresh: size mismatch or rippedAt > downloadedAt \u21d2 re-burn; otherwise skip and count as burned",
+    "removeBurns on one analog song keeps the shared album file while a sibling remains; removing the last sibling deletes it; collections/catalog untouched",
+    "reconcileOnLaunch drops items whose file is gone and deletes+drops a 536-byte '<?xml' file",
+    "planEviction returns the iOS result on the same fixture (shared analog audio credited once with the last referencing song; aux files credited from every root)",
+    "drainPendingAfterRip clears an intent only when burned > 0",
+    "Ledger JSON written by Android decodes with the iOS `BurnStore.Document` field set (fixture test with a captured iOS file)"
+   ],
+   "priority": "P0",
+   "est_lines": 2300,
+   "unit_tests": [
+    "BurnFileNamesTest (sanitize, caps, analog/digital prefixes, idToken from key basename)",
+    "BurnSidecarTest (header order, '\u2014' placeholders, raw JSON tail, adoption round-trip)",
+    "BurnStoreTest with MockWebServer-backed rips: analog shared write-once, not-ripped skip, STOP semantics, out-of-space abort (simulated IOException), isFresh matrix, removeBurns shared-ref rule, usageByArtist",
+    "BurnReconcilerTest (missing file, poisoned body, healthy small-but-real file \u2265 4 KB kept)",
+    "EvictionPlannerTest (iOS fixture parity, capSongs-only prune, projected bytes)",
+    "PendingAfterRipTest (drain clears only on success; persisted across store re-init)"
+   ],
+   "emulator_steps": [
+    "From a playlist detail (BURN-2 UI) or a debug action, burn a small collection against the live rips bucket; `adb shell run-as com.levi.pocketdj ls files/burns` shows descriptive names + .txt sidecars; `cat files/pocketdj-burns.json` shows ready items",
+    "Kill the app, delete one mp3 via run-as, relaunch: the ledger item is gone (reconcile)"
+   ],
+   "shared_touchpoints": [
+    "AppGraph (new lazy singleton)"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "XFER-1",
+   "title": "TransferCoordinator over WorkManager: background burn downloads that survive process death, persisted records, bearer policy, progress mirror, reconcile, rip-reconcile + prune periodic workers",
+   "goal": "Port TransferCoordinator's invariants onto WorkManager so burns finish after suspend/cold relaunch and never finalize an HTTP error body as audio.",
+   "files": [
+    "android/gradle/libs.versions.toml + android/app/build.gradle.kts (add androidx.work:work-runtime-ktx 2.10.x, androidx.work:work-testing)",
+    "android/app/src/main/java/com/levi/pocketdj/data/transfers/TransferModels.kt (TransferRecord/TransferDoc \u2014 iOS fields + workId)",
+    "android/app/src/main/java/com/levi/pocketdj/data/transfers/BearerPolicy.kt (pure shouldAttachBearer: empty token / X-Amz-Signature / *.amazonaws.com / ripsBase host \u21d2 false)",
+    "android/app/src/main/java/com/levi/pocketdj/data/transfers/TransferCoordinator.kt (records behind a Mutex persisted atomically BEFORE enqueue; beginRun/enqueue/cancel(songIds)/cancelAll/reconcileOnLaunch; progress StateFlow (enqueued, finished); onBytes throttled 0.5 s; onBurnFinalized/onBurnFailed hooks)",
+    "android/app/src/main/java/com/levi/pocketdj/data/transfers/BurnDownloadWorker.kt (CoroutineWorker: foreground info + notification channel 'transfers'; OkHttp stream \u2192 .part \u2192 atomic rename; non-2xx \u21d2 fail record; analog shared don't-clobber; sidecar from record text; destination from record only)",
+    "android/app/src/main/java/com/levi/pocketdj/data/transfers/RipReconcileWorker.kt (periodic 15 min network-constrained: rips manifest refresh + drainPendingAfterRip)",
+    "android/app/src/main/java/com/levi/pocketdj/data/transfers/TransferNotifications.kt (plain progress; Notification.ProgressStyle when Build.VERSION.SDK_INT >= 36)",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnStore.kt (background path: when `transfers != null` enqueue instead of downloading inline; finalizeBurn(record, bytes); requestStop cancels .downloading items)",
+    "android/app/src/main/AndroidManifest.xml (FOREGROUND_SERVICE_DATA_SYNC permission; WorkManager default initializer kept)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (transferCoordinator singleton; wire hooks; schedule periodic workers)",
+    "android/app/src/test/java/com/levi/pocketdj/data/transfers/*"
+   ],
+   "depends_on": [
+    "BURN-1"
+   ],
+   "acceptance": [
+    "enqueue persists the record to pocketdj-transfers.json before WorkManager.enqueueUniqueWork is called (crash between persist and enqueue is recoverable by reconcile)",
+    "shouldAttachBearer is false for presigned URLs, amazonaws.com hosts and the ripsBase host; true for the rip server",
+    "A 400 response with a 536-byte XML body fails the record (onBurnFailed) and leaves NO audio file",
+    "Progress counters reset on beginRun; cancel(songIds) decrements enqueued so the overlay clears",
+    "reconcileOnLaunch drops records whose unique work is absent/finished and keeps running ones",
+    "Force-stopping the app mid-download: WorkManager resumes/finishes the worker on next opportunity and the ledger item becomes .ready",
+    "onBytes publishes at most once per 0.5 s per task"
+   ],
+   "priority": "P0",
+   "est_lines": 1500,
+   "unit_tests": [
+    "BearerPolicyTest (the 2026-09-01 regression predicate)",
+    "TransferCoordinatorTest with a fake WorkManager seam: persist-before-enqueue order, run-scoped counters, cancel bookkeeping, reconcile against a fake work-info list, throttle timing",
+    "BurnDownloadWorkerTest (Robolectric or pure function extraction `DownloadOutcome.from(response, record, dir)`): non-2xx never finalized, analog shared skip, sidecar written, atomic rename",
+    "TransferModelsTest: iOS TransferDoc fixture decodes; workId additive"
+   ],
+   "emulator_steps": [
+    "Burn a 5-song collection; a 'Downloading\u2026 2 of 5' notification appears; `adb shell am force-stop com.levi.pocketdj` at 2/5; relaunch \u2192 the remaining items finish and pocketdj-transfers.json empties",
+    "Point the rip server at a URL that 400s: items show error rows, no mp3 in files/burns",
+    "adb shell dumpsys jobscheduler | grep pocketdj shows the periodic rip-reconcile worker"
+   ],
+   "shared_touchpoints": [
+    "AppGraph",
+    "AndroidManifest.xml (permission only)",
+    "gradle version catalog (new WorkManager deps \u2014 coordinate with any other package adding deps)"
+   ],
+   "device_only": "Doze-deferred periodic timing is only observable on hardware; the emulator uses `cmd jobscheduler run -f`."
+  },
+  {
+   "id": "BURN-2",
+   "title": "Burned-first playback rung + device/cloud PlaybackMode + collection Rip/Burn UI with Stop and progress",
+   "goal": "Make burns audible and manageable: local file wins on every song-start path; device mode skips un-burned tracks; Playlist/Pocket/Setlist detail screens get Rip / Burn / Stop with the single progress pill.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/PlayResolver.kt (new rung 0 `PlayAction.LocalFile(uri, clipStartMs, clipEndMs)`; `PlaybackMode` param; studio fence unchanged)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (resolve via BurnStore.localUrlForPlayback first on play/playAlbum/playQueue/playSetlist; DEVICE mode skips un-burned entries; one-shot `deviceQueueUnplayable` StateFlow banner; protectedSongIds provider = now-playing + queued ids for StorageManager)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackContract.kt (EXTRA_IS_LOCAL marker)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (additive `playbackMode` String 'cloud'|'device', default cloud)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/CollectionBurnBar.kt (new composable: Rip (batch), Burn, Stop, 'Burning X of N' / 'Stems \u00b7 \u2026' pill, partial-success summary dialog incl. notRipped/outOfSpace/folderUnavailable/stopped/stemmedSongs)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/PlaylistDetailScreen.kt, PocketDetailScreen.kt, SetlistDetailScreen.kt (mount CollectionBurnBar; burned badge on rows)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/MiniPlayerBar.kt (device/cloud toggle glyph mirroring iOS PlaybackModeToggle)",
+    "android/app/src/test/java/com/levi/pocketdj/data/rips/PlayResolverTest.kt, playback/QueuePlanTest.kt (extend)"
+   ],
+   "depends_on": [
+    "BURN-1",
+    "RIP-1"
+   ],
+   "acceptance": [
+    "A burned song plays from file:// (ExoPlayer) with the analog startMs/duration clip, even when a manifest entry and a server exist (burned-first on EVERY song-start path)",
+    "In DEVICE mode an un-burned song is skipped in Play-All; when NO entry is burned the banner fires once and nothing plays; CLOUD mode behaves as today",
+    "Burn bar: Burn runs BurnStore.burn for the collection's resolved song ids, shows the single pill, Stop halts, the summary dialog reports counts; Rip runs ripCollection and the row phases update from RipJobTracker",
+    "Un-ripped rows in a collection show 'not ripped \u2014 Rip first' after a Burn",
+    "No regression in BrowseEngine/QueuePlan tests"
+   ],
+   "priority": "P0",
+   "est_lines": 1400,
+   "unit_tests": [
+    "PlayResolverTest: rung order local > manifest > rip; analog clip from the ledger; studio ids still MetadataOnly",
+    "QueuePlanTest: device-mode skip + all-unplayable outcome",
+    "CollectionBurnBar state reducer test (pure): result \u2192 summary strings"
+   ],
+   "emulator_steps": [
+    "Burn a playlist, enable airplane mode (`adb shell cmd connectivity airplane-mode enable`), play it: songs play from local files; mini-player shows the device glyph",
+    "Toggle device mode with a half-burned playlist: un-burned rows are skipped; with none burned the banner shows once"
+   ],
+   "shared_touchpoints": [
+    "PlaybackController (playback area) \u2014 coordinate: this package owns ONLY the resolution rung, mode gate and protectedSongIds provider",
+    "Playlist/Pocket/Setlist detail screens (collections area) \u2014 mount one composable",
+    "AppSettingsStore (one additive key)"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "STEM-1",
+   "title": "Cloud stems client + burned stems/beat-grids",
+   "goal": "Request and track Demucs separation on the rip server and pull stems + beat-grid sidecars into the burn folder under the Mix-contract names.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipServerClient.kt (stemify(songId), stemifyCollection(ids, confirmLarge), cancelStemCollection(ids); StemJob decode)",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipJobTracker.kt (stemJobs, pollStemReady 3 s \u2264 4 h, pruneFinishedStemJobs on manifest change)",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnStems.kt (new: stemFileName/beatgridFileName, localStemUrls all-or-nothing, localStemPartUrls, burnStems, burnStemPart, burnBeatGrid (validate JSON before caching), stemsBurned/stemPartsBurned/beatgridBurned, localStemSongIds, stemUsageBytes/ByArtist, removeStems/removeAllStems(protecting), auxFileSongId)",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnStore.kt (post-pass burnCollectionStems/burnCollectionBeatgrids; removeBurns also removes aux files from every root)",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/BeatGridSidecar.kt (decoder: beatGridBpm, firstDownbeatMs, steady, beatsMs, downbeatsMs)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/playlists/CollectionBurnBar.kt (Stemify action + 'stemmed' tint)",
+    "android/app/src/test/java/com/levi/pocketdj/data/burns/BurnStemsTest.kt, data/rips/StemJobTest.kt"
+   ],
+   "depends_on": [
+    "RIP-1",
+    "BURN-1"
+   ],
+   "acceptance": [
+    "stemify is idempotent at three layers (isStemmed, in-flight phase, requesting set) and never fires for studio ids",
+    "pollStemReady keeps polling through queued/ripping/stemming, stops on ready (manifest refresh) / error / ineligible",
+    "After a burn, every manifest-stemmed song has stem-<id>-{vocals,drums,bass,other}.mp3 and every analyzed song has analysis-<id>.json; a stem failure never fails the burn",
+    "A truncated beat-grid body is not cached",
+    "removeBurns(songId) deletes its stems and beat-grid from every root; sweepOrphanAuxFiles removes aux files whose song has no burned audio"
+   ],
+   "priority": "P1",
+   "est_lines": 900,
+   "unit_tests": [
+    "StemJobTest: decode all six phases; unknown fields ignored",
+    "RipJobTrackerStemTest: poll termination matrix; pruneFinishedStemJobs",
+    "BurnStemsTest: all-or-nothing resolution, idempotent downloads, beat-grid validation, aux removal, auxFileSongId parsing"
+   ],
+   "emulator_steps": [
+    "Pick a song whose manifest entry has `stemVersion`; Burn its collection; run-as ls files/burns shows 4 stem files + analysis json",
+    "Tap Stemify on an un-stemmed song with the server configured; row shows Queued\u2026 then stemmed tint when the manifest flips"
+   ],
+   "shared_touchpoints": [
+    "CollectionBurnBar (BURN-2)",
+    "RipJobTracker/RipServerClient (RIP-1)"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "STOR-1",
+   "title": "PlayStatsStore + StorageManager prune engine + Storage screen burn/stem/cap sections",
+   "goal": "Port the soft-cap LRP prune with its crash-loop-proof discipline and complete Settings \u25b8 Storage (usage, delete by artist/collection/all, stems, caps, prune now).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/stats/PlayStatsStore.kt (pocketdj-play-stats.json iOS shape; notePlayed(id, fromAppleMusic) with 30 s recount window; noteSkipped; lastPlayedAt; revision; migrateUntaggedRows; clear; reloadFromDisk)",
+    "android/app/src/main/java/com/levi/pocketdj/data/stats/PlayStatsRecorder.kt (collects PlayEventBus \u2192 PlayStatsStore; wired in AppGraph)",
+    "android/app/src/main/java/com/levi/pocketdj/data/storage/StorageManager.kt (ActiveCap, pruneIfDue 20 h gate, prune() stamp-first + planEviction + chunk 25 + yield + per-chunk protected re-read, pruneNow, PruneResult, lastResult StateFlow; DiagLog lines)",
+    "android/app/src/main/java/com/levi/pocketdj/data/transfers/StoragePruneWorker.kt (periodic 24 h \u2192 pruneIfDue)",
+    "android/app/src/main/java/com/levi/pocketdj/data/storage/StorageService.kt (new categories BURNS, STEMS; usageByArtist, byCollection via CollectionsStore resolved ids; deleteBurns(ids)/deleteAllBurns/deleteStems \u2014 all re-measure after)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (additive: storageSoftCapGB Double?, storageSoftCapSongs Int?, lastStoragePruneAt Long?)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/StorageScreen.kt (sections: Burnt music usage \u00b7 Delete by artist (sheet) \u00b7 Delete by collection (sheet) \u00b7 Delete all \u00b7 Stems usage/delete \u00b7 Soft cap (GB + songs steppers) \u00b7 Prune now + last result line; every delete behind AlertDialog; 'songs stay in your library' footer)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (playStats, storageManager; protectedSongIds from PlaybackController)",
+    "android/app/src/test/java/com/levi/pocketdj/data/stats/*, data/storage/StorageManagerTest.kt"
+   ],
+   "depends_on": [
+    "BURN-1",
+    "XFER-1"
+   ],
+   "acceptance": [
+    "No cap set \u21d2 prune never deletes anything; cap set \u21d2 pruneIfDue runs only when lastStoragePruneAt is \u2265 20 h old and writes the stamp BEFORE evicting",
+    "Eviction order: never-played (0) first, then oldest lastPlayedAt, ties by downloadedAt; variant burns ('sng_x_clean') read recency through the base id",
+    "A song loaded onto a deck mid-prune (protectedSongIds changes between chunks) is spared",
+    "ONE directory listing per root per prune (no per-eviction rescans) \u2014 asserted via a counting BurnFolder fake",
+    "Storage screen deletes remove downloaded media only; collections/catalog/settings DataStore/installId untouched (existing StorageServiceTest invariants extended)",
+    "PlayStats: two plays of the same song 10 s apart count once but refresh lastPlayedAt; a reload replaces the map and bumps revision"
+   ],
+   "priority": "P1",
+   "est_lines": 1800,
+   "unit_tests": [
+    "PlayStatsStoreTest (recount window, appleCount tagging, migration stamp, iOS fixture decode)",
+    "StorageManagerTest (gate, stamp-first ordering with a failing BurnStore fake, LRP order incl. baseId, chunked yield, protected re-read, capSongs-only, PruneResult arithmetic)",
+    "StorageServiceTest extensions (burns/stems categories, by-artist/by-collection deletes, clear contract preserved)"
+   ],
+   "emulator_steps": [
+    "Burn ~10 songs, play 3 of them, set a cap smaller than the footprint, tap Prune now: never-played songs vanish first; status line shows evicted/freed; relaunch twice quickly \u2014 no re-prune (20 h gate)",
+    "Storage \u25b8 Delete by artist removes that artist's files; the playlist still lists the songs"
+   ],
+   "shared_touchpoints": [
+    "AppGraph",
+    "AppSettingsStore (3 additive keys)",
+    "PlaybackController protectedSongIds provider (BURN-2 defines it)"
+   ],
+   "device_only": "Periodic worker cadence under Doze."
+  },
+  {
+   "id": "SYNC-1",
+   "title": "Document sync engine (CloudSyncService port) + ProfileStore + in-memory database + registry",
+   "goal": "Port the iOS whole-document LWW engine and the profile document, runnable end-to-end against an in-memory CloudDocDatabase so every doctrine is unit-tested before any backend exists.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/sync/CloudDoc.kt, CloudDocDatabase.kt (interface), InMemoryCloudDocDatabase.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/sync/CloudSyncService.kt (Entry{key,file,reload,applyPayload}; skewMs 2000; foregroundGap 5 min; activeTick 20 s; syncAtLaunch(deadline 8 s); syncOnForeground; syncTick; syncNow; pushOnBackground\u2192pushDirty with meta probe; runPass; applyPull with .pre-cloud backup + watermark/merge rule; probeCloudProfile(deadline 10 s \u21d2 unknown); restoreForOnboarding; clearLocalSyncState; pushAllowed gate; state file pocketdj-cloudsync-state.json; status StateFlow)",
+    "android/app/src/main/java/com/levi/pocketdj/data/sync/ProfileStore.kt (pocketdj-profile.json; setName \u2192 onNameApplied; migrateIfNeeded; reloadFromDisk; reset)",
+    "android/app/src/main/java/com/levi/pocketdj/data/sync/SyncRegistry.kt (registers profile, collections, play-history, collection-activity, play-stats (when present), settings-credentials/diag-key (CRED-1); reload seams call the stores' reloadFromDisk)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsStore.kt, data/history/PlayHistoryStore.kt, data/activity/CollectionActivityStore.kt (add `reloadFromDisk()` seams; activity/history reload MERGES by event id as iOS does)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (additive: cloudSyncEnabled Boolean default true; pocketDJName mirror)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/ProfileSection.kt (name field, Sync toggle, Sync now, status line, 'Link a device' entry point stub)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (cloudSync + profile; launch ordering hook)",
+    "android/app/src/test/java/com/levi/pocketdj/data/sync/*"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Pull applies only when cloud mtime > local + 2 s; a `.pre-cloud` backup exists after every pull; the watermark equals the pulled mtime unless reload re-saved (then it is cleared and the superset pushes on the next pass)",
+    "pushDirty never uploads over a strictly newer cloud copy; a meta-probe failure falls back to blind push",
+    "syncAtLaunch returns within the deadline while the pass continues in the background",
+    "probeCloudProfile times out to Unknown (never Fresh); restoreForOnboarding pulls every existing doc regardless of local mtimes and returns null when disabled/no account",
+    "pushAllowed=false blocks pushes but not pulls",
+    "Profile name edits mirror to collections performerName and the jukebox DJ line; a cloud pull of the profile re-mirrors"
+   ],
+   "priority": "P1",
+   "est_lines": 2000,
+   "unit_tests": [
+    "CloudSyncServiceTest against InMemoryCloudDocDatabase: LWW matrix (newer cloud/newer local/equal within skew), backup file, watermark rules incl. merge-on-reload, pushDirty probe skip + fallback, deadline, foreground throttle, tick gap, onboarding gate, restore-forced pull, probe outcomes with virtual clock",
+    "ProfileStoreTest (mint once, migrate legacy name, reload, reset mints new id)",
+    "Reload-seam tests for collections/history/activity (history/activity merge by event id)"
+   ],
+   "emulator_steps": [
+    "With the in-memory DB swapped in via a debug flag, edit the profile name \u2192 Settings \u25b8 Profile shows 'Pushed profile' summary; Sync now shows 'Everything in sync'"
+   ],
+   "shared_touchpoints": [
+    "CollectionsStore / PlayHistoryStore / CollectionActivityStore (one `reloadFromDisk()` method each \u2014 collections/history areas)",
+    "AppGraph",
+    "AppSettingsStore (additive keys)",
+    "SettingsScreen (mount ProfileSection)"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "SYNC-0",
+   "title": "Backend: pocketdj-profile-sync Lambda (S3 document store) + endpoint key",
+   "goal": "Provide the HTTP API S3CloudDocDatabase talks to, in the green account, deployed like am-playlist-sync.",
+   "files": [
+    "scripts/lambda/profile-sync/index.mjs (routes: POST /enroll (X-PocketDJ-Enroll), GET /meta, GET|PUT|DELETE /doc/{key}, DELETE /profile; S3 objects profiles/<profileId>/<key>.json with metadata modified-at-ms/device; secret stored as SHA-256 in profiles/<profileId>/_auth.json; bearer verified per call)",
+    "scripts/lambda/profile-sync/deploy.sh (API Gateway HTTP API + Lambda + bucket policy, profile llc/green)",
+    "scripts/lambda/profile-sync/test/*.mjs (node:test with an in-memory S3 fake)",
+    "config/endpoints.green.json + public PWA config (add optional `profileSyncBase`); src/config/endpointSchema.ts allowlist (optional key)",
+    "docs/design/profile-sync-s3.md (API contract; mirrors user-profiles-cloudkit-public-rip.md \u00a71)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Enroll requires the capability token and refuses re-enrolling an existing profileId with a different secret",
+    "All doc routes 401 without a valid bearer for that profile; keys are restricted to [a-z0-9-]{1,40}",
+    "PUT stores body + modifiedAtMs + device metadata; GET /meta returns {key: modifiedAtMs} for existing keys only; DELETE is idempotent; DELETE /profile removes the prefix",
+    "Deploy script is re-runnable; endpoint doc validates with the existing PWA validator"
+   ],
+   "priority": "P1",
+   "est_lines": 500,
+   "unit_tests": [
+    "node:test suite: auth matrix, meta/get/put/delete, idempotent delete, key validation, profile wipe"
+   ],
+   "emulator_steps": [
+    "curl the deployed API with a test profile from the Mac; then point SYNC-2 at it"
+   ],
+   "shared_touchpoints": [
+    "config/endpoints*.json + endpointSchema.ts (shared with iOS/PWA; additive optional key)"
+   ],
+   "device_only": "n/a (backend)"
+  },
+  {
+   "id": "SYNC-2",
+   "title": "S3CloudDocDatabase + enroll + link-a-device (QR/code)",
+   "goal": "Make SYNC-1 real: the Lambda-backed database, profile secret storage, enrollment, and the device-linking flow that replaces 'Link with iCloud'.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/sync/S3CloudDocDatabase.kt (OkHttp; headers Authorization Bearer, X-PocketDJ-Profile, X-PocketDJ-Device, X-PocketDJ-Modified-At; accountAvailable = secret present && last probe not 401/403; 12 s timeouts)",
+    "android/app/src/main/java/com/levi/pocketdj/data/sync/ProfileSecretStore.kt (EncryptedSharedPreferences 'pdj-secrets'; mint/read/clear)",
+    "android/app/src/main/java/com/levi/pocketdj/data/sync/Enrollment.kt (POST /enroll with the shipped capability token; retries; marks enrolled)",
+    "android/app/src/main/java/com/levi/pocketdj/data/sync/LinkCode.kt (pure: encode/decode `pocketdj://link?p=&s=` + 20-char base32 code with checksum)",
+    "android/app/src/main/java/com/levi/pocketdj/data/config/RemoteEndpoints.kt + Endpoints.kt (optional EndpointKey.PROFILE_SYNC_BASE; absent \u21d2 null; COMPILED_IN unchanged)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/LinkDeviceScreen.kt (show QR via zxing + code; 'Enter a code' field; probe + restore)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (choose S3CloudDocDatabase when profileSyncBase resolves; else disabled)",
+    "android/app/src/test/java/com/levi/pocketdj/data/sync/S3CloudDocDatabaseTest.kt, LinkCodeTest.kt"
+   ],
+   "depends_on": [
+    "SYNC-1",
+    "SYNC-0"
+   ],
+   "acceptance": [
+    "With no profileSyncBase in the endpoint doc, sync is disabled and the Profile section says so (no network calls)",
+    "Enroll happens once; the secret never appears in DataStore/JSON/logs",
+    "Entering another device's link code adopts its profileId + secret, probes Existing(name), and 'Restore my stuff' pulls collections/history/profile; a mistyped code fails the checksum before any network",
+    "401 from the API flips accountAvailable to false and surfaces 'Profile not authorized \u2014 relink' in Settings",
+    "MockWebServer tests cover every route incl. metadata headers"
+   ],
+   "priority": "P1",
+   "est_lines": 1200,
+   "unit_tests": [
+    "S3CloudDocDatabaseTest (MockWebServer): headers, meta parsing, 404 \u2192 null, 401 \u2192 unavailable, idempotent delete",
+    "LinkCodeTest (round trip, checksum, URI form)",
+    "EnrollmentTest (once-only, retry on 5xx, refuse on 403)"
+   ],
+   "emulator_steps": [
+    "Two emulator instances (or emulator + reinstall): show the QR/code on A, type the code on B, Restore \u2192 B shows A's playlists; edit a name on B \u2192 A picks it up on the next 20 s tick"
+   ],
+   "shared_touchpoints": [
+    "RemoteEndpoints/Endpoints (config area \u2014 additive optional key)",
+    "AppGraph"
+   ],
+   "device_only": "QR camera scanning is deferred (code entry only); nothing else."
+  },
+  {
+   "id": "CRED-1",
+   "title": "Secrets to Keystore + synced connection credentials (empty-secret guard) + diag-key sync doc + profile header",
+   "goal": "Credentials entered once follow the profile; an accidental empty secret can never wipe the fleet; secrets leave plaintext DataStore.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/credentials/SecretStore.kt (EncryptedSharedPreferences; ripToken, jukeboxToken, musicUserToken; one-shot migration from DataStore keys, blanking them)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (token getters/setters delegate to SecretStore; AppSettings keeps the same fields)",
+    "android/app/src/main/java/com/levi/pocketdj/data/credentials/SettingsCredentialsDocument.kt + CredentialsSync.kt (sorted-keys deterministic encode; credentialsAreBlank; syncIfChanged (blank install never materializes); reloadFromDisk with keepLocalSecret(local, pulled, localURL, pulledURL) for rip/jukebox and the search pair; sources adoption when non-null; DiagLog presence-only lines)",
+    "android/app/src/main/java/com/levi/pocketdj/data/credentials/DiagKeySync.kt (materialize only non-empty + changed; applyPulled ignores empty)",
+    "android/app/src/main/java/com/levi/pocketdj/data/sync/SyncRegistry.kt (register settings-credentials, diag-key)",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipServerClient.kt + data/jukebox/JukeboxClient.kt (X-PocketDJ-Profile header when profile id present)",
+    "android/app/src/test/java/com/levi/pocketdj/data/credentials/*"
+   ],
+   "depends_on": [
+    "SYNC-1"
+   ],
+   "acceptance": [
+    "A fresh install with blank credentials never writes pocketdj-settings-credentials.json; after a pull it adopts the cloud values",
+    "Pulled doc with same rip URL + empty token keeps the local token and re-materializes a differing doc (heals the fleet); different URL + empty token adopts wholesale; cleared URL clears both",
+    "Search key pair is guarded as a pair on the same endpoint",
+    "Re-encoding just-pulled values is byte-identical (no LWW ping-pong)",
+    "Tokens are absent from pocketdj-settings.preferences_pb after migration and present in the encrypted prefs; existing AppSettingsStoreTest passes with a fake SecretStore",
+    "Rip and jukebox calls carry X-PocketDJ-Profile once a profile exists"
+   ],
+   "priority": "P1",
+   "est_lines": 800,
+   "unit_tests": [
+    "CredentialsSyncTest (blank doctrine, keepLocalSecret matrix from the 2026-09-12 incident, pair guard, byte-identical re-encode, sources nil vs list)",
+    "DiagKeySyncTest (empty-never-wins both directions)",
+    "SecretStoreMigrationTest (fake storage)",
+    "RipServerClientTest header assertion"
+   ],
+   "emulator_steps": [
+    "Enter rip URL+token on emulator A (linked profile), relaunch B: B's Settings shows the URL and a test connection succeeds; clear the token on a third unlinked debug build that materialized the doc empty \u2192 A and B keep their tokens"
+   ],
+   "shared_touchpoints": [
+    "AppSettingsStore (token accessors)",
+    "JukeboxClient (jukebox area \u2014 header only)",
+    "RipServerClient (RIP-1)"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "ONB-1",
+   "title": "Zero-to-hero onboarding gate (3 stages) + launch pipeline gating",
+   "goal": "First-run flow with the iOS marker semantics, gating catalog load and sync until the user's choices are made.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/onboarding/OnboardingStore.kt (Stage profile/appleMusic/sources; Marker pending/started/completed persisted as the iOS MarkerFile JSON under DataStore key `pdj.onboarding.v1`; decide(marker, hadPersistedSettings, env) pure; advance/back/complete; waitUntilComplete via CompletableDeferred; markPendingAfterReset; PDJ_SHOW_ONBOARDING / PDJ_USE_FIXTURE seams via intent extras or BuildConfig)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/onboarding/OnboardingScreen.kt + StageProfile.kt ('Use on this device' / 'Link a device' \u2192 probe \u2192 Existing: Restore my stuff / Start fresh (confirm) \u00b7 Unknown: continue with sync on \u00b7 name field) + StageAppleMusic.kt (Sign in (device) / 'Previews only' (emulator/not available) / Skip) + StageSources.kt (Vinyl / Digital / Streaming toggles \u2192 applyOnboardingSources)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (applyOnboardingSources(vinyl, digital, streaming); hadPersistedSettings probe)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (full-screen onboarding host above the NavHost while !isComplete; launch pipeline awaits waitUntilComplete before catalogRepository.loadIfNeeded / ripsRepository.loadAtLaunch / cloudSync.syncAtLaunch; onComplete \u2192 catalog reload)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (onboardingStore; cloudSync.pushAllowed = { onboarding.isComplete })",
+    "android/app/src/test/java/com/levi/pocketdj/data/onboarding/OnboardingStoreTest.kt"
+   ],
+   "depends_on": [
+    "SYNC-1"
+   ],
+   "acceptance": [
+    "decide(): force seam \u2192 show(profile); fixture seam \u2192 skip; completed \u2192 skip; pending \u2192 show(profile); started(s) \u2192 show(s); nil+settings \u2192 skipAndStamp; nil+no settings \u2192 show(profile) (order is load-bearing)",
+    "Force-quit at stage 2 resumes at stage 2 (marker outranks blob existence)",
+    "No catalog load, rips manifest fetch, or sync push happens before completion; completing triggers the catalog load with the chosen sources",
+    "Reset-everything writes `pending` so the flow re-runs even though Settings is re-persisted afterwards",
+    "Stage 2 on the emulator shows the previews-only branch and never blocks"
+   ],
+   "priority": "P1",
+   "est_lines": 1300,
+   "unit_tests": [
+    "OnboardingStoreTest: decision table, marker round-trip JSON compatible with iOS MarkerFile, resume-at-stage, waitUntilComplete releases on complete, markPendingAfterReset",
+    "AppSettingsStoreTest: applyOnboardingSources produces the iOS source set (vinyl default, digital/streaming presets)"
+   ],
+   "emulator_steps": [
+    "`adb shell pm clear com.levi.pocketdj`; launch: stage 1 \u2192 'Use on this device', stage 2 \u2192 previews-only, stage 3 \u2192 toggle Vinyl+Digital \u2192 app loads with those two sources; relaunch shows no onboarding",
+    "Launch with the force extra: onboarding shows on an existing install; kill at stage 2; relaunch resumes at stage 2"
+   ],
+   "shared_touchpoints": [
+    "MainActivity (nav host root \u2014 the one place the gate is mounted)",
+    "AppGraph",
+    "AppSettingsStore"
+   ],
+   "device_only": "Real Apple Music sign-in in stage 2 (specs/applemusic.md fact 0.8)."
+  },
+  {
+   "id": "DIAG-1",
+   "title": "Remote diag log to S3 (SigV4) + Debug settings + jank watchdog",
+   "goal": "TestFlight-equivalent remote diagnostics for internal/debug Android builds with every iOS safety rule (secret-free, bounded, never silent, never disturbs the app).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/diag/DiagLog.kt (singleton via AppGraph; enabled gate; keyBase `diag/android-<device8>/<stamp>-b<versionCode>`; part rotation 500 lines; session cap 40 000; flush 15 s / 3 s telemetry / error immediate / 25 dirty; keyless bounded buffer + overflow marker; serialized UploadQueue with newest-body-per-key; UploadStatus persisted in DataStore; transition-only [diag] lines; telemetry(category, msg) gated by remoteTelemetryEnabled; flushOnBackground)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/SigV4.kt (pure: canonical request, HMAC chain, PUT with x-amz-date/x-amz-content-sha256; region us-west-2; host from Endpoints DIAG_LOGS_BASE at request time)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/DiagCredentialStore.kt (EncryptedSharedPreferences; empty clears; status-returning save)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/DiagKeyFile.kt (decode/validate .pdjdiagkey: type tag, schemaVersion 1, AKIA/ASIA id regex, 12-digit account; bucketAccount(of logsBase); importer with env/account pairing check and force)",
+    "android/app/src/main/java/com/levi/pocketdj/diag/JankWatchdog.kt (Choreographer frame-gap > 500 ms \u2192 DiagLog 'stall' line with stack sample; debug/internal only)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/DebugScreen.kt (new route settings/debug: build identity, endpoints summary (RemoteEndpoints.summary), upload status readout, access key id + secret fields, Save/Remove, 'Import upload key from file\u2026' via OpenDocument, Remote telemetry toggle)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (additive remoteTelemetryEnabled Boolean default false)",
+    "android/app/build.gradle.kts (buildConfigField DIAG_CHANNEL; `internal` flavour or debug-only)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (route + ON_STOP flush), di/AppGraph.kt (diag singleton; [endpoints] launch line routed to DiagLog)",
+    "android/app/src/test/java/com/levi/pocketdj/diag/*"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "SigV4 output matches a known AWS test vector (and a captured iOS-signed request for the same inputs)",
+    "Keyless: lines buffer to 499 + one marker, nothing uploads; adding a key uploads the buffered part immediately",
+    "Part rotation at 500 lines with a '[rotate] continues in part N' first line; uploads for a key are serialized and only the newest pending body is sent",
+    "Upload failures persist lastError/lastErrorAt and log a [diag] line only on transition; recovery logs once",
+    "Release builds: enabled=false, no network, no files",
+    "Importing a .pdjdiagkey whose account \u2260 the logs-bucket account requires confirmation; a malformed file is rejected with a named reason and no secret in any message"
+   ],
+   "priority": "P1",
+   "est_lines": 1400,
+   "unit_tests": [
+    "SigV4Test (AWS doc vector; header set)",
+    "DiagLogTest with a fake uploader + virtual clock: flush timings, error immediate, 25-dirty, rotation, session cap, keyless buffer/overflow, late key flush, serialized newest-body coalescing, status transitions",
+    "DiagKeyFileTest (validation matrix, bucketAccount parsing, importer pairing/force)",
+    "DiagCredentialStoreTest with an in-memory prefs fake"
+   ],
+   "emulator_steps": [
+    "Debug build: Settings \u25b8 Debug shows 'DISABLED \u2014 no diag key'; paste the green diag key; readout flips to 'ok \u2014 last upload Ns ago'; `aws s3 ls s3://pocketdj-logs-623170744161/diag/android-` shows the new object",
+    "Toggle Remote telemetry, tap around: object grows within ~3 s; background the app: tail lines land"
+   ],
+   "shared_touchpoints": [
+    "MainActivity (one route)",
+    "AppGraph",
+    "AppSettingsStore (one additive key)",
+    "build.gradle.kts (flavour/buildConfigField)"
+   ],
+   "device_only": "none (needs network + a real write-only key)."
+  },
+  {
+   "id": "LYR-1",
+   "title": "Lyrics store (text cache) + song-detail lyrics panel + timed-lyrics sidecar decoder",
+   "goal": "On-demand, offline-cached lyrics exactly as iOS/PWA, plus the decoder for the cloud timed-word sidecar.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/lyrics/LyricsStore.kt (memory \u2192 filesDir/lyrics-cache/<safeId>.txt \u2192 GET Endpoints.lyricsUrl; only when lyricsStatus == 'found'; non-2xx and blank never cached; atomic write)",
+    "android/app/src/main/java/com/levi/pocketdj/data/lyrics/TimedLyricsSidecar.kt (version, model, lang, durationMs, words[{w,startMs,endMs}] lossy-decoded; URL from manifest `lyrics` key)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/SongDetailSheet.kt (Lyrics section: loading / text / 'No lyrics' ; scrollable)",
+    "android/app/src/main/java/com/levi/pocketdj/data/storage/StorageService.kt (LYRICS_CACHE category, clearable)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (lyricsStore)",
+    "android/app/src/test/java/com/levi/pocketdj/data/lyrics/*"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "A song with lyricsStatus != found never triggers a request",
+    "First open fetches once and writes the cache file; second open (airplane mode) renders from disk; a 404 writes nothing",
+    "Timed sidecar decodes with malformed words dropped, not failing the whole doc",
+    "Storage screen shows and clears the lyrics cache without touching other categories"
+   ],
+   "priority": "P2",
+   "est_lines": 500,
+   "unit_tests": [
+    "LyricsStoreTest (MockWebServer: gate, cache tiers, 404/blank not cached, id sanitization)",
+    "TimedLyricsSidecarTest (iOS fixture, lossy words)",
+    "StorageServiceTest extension"
+   ],
+   "emulator_steps": [
+    "Open a song with Lyrics: found \u2192 text appears; airplane mode \u2192 reopen \u2192 still shows; run-as ls files/lyrics-cache"
+   ],
+   "shared_touchpoints": [
+    "SongDetailSheet (browse area \u2014 one section)",
+    "StorageService category enum",
+    "AppGraph"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "RESET-1",
+   "title": "Reset everything + account deletion orchestrator",
+   "goal": "Settings \u25b8 Reset (device) and Delete account (cloud + device) with the iOS ordering and best-effort guarantees.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/reset/AppResetService.kt (resetEverything: clear sources/credentials mirror + secrets, markPendingAfterReset, catalog cache dir, rips-cache, Coil caches, collections clear (test seam reused deliberately here only), cloudSync.clearLocalSyncState)",
+    "android/app/src/main/java/com/levi/pocketdj/data/reset/AccountDeletionService.kt (cloudDocKeys = the SyncRegistry keys (test enforces lockstep); order: stop playback/jukebox + cancel transfers \u2192 cloud deleteAll + DELETE /profile (gated, best-effort) \u2192 local stores clear \u2192 burns/stems/lyrics media \u2192 settings reset \u2192 identity LAST (profile reset, secret clear, installId re-mint))",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (resetInstallId)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/ResetSection.kt (two destructive rows with typed-confirmation dialogs and the iOS copy)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/reset/*"
+   ],
+   "depends_on": [
+    "BURN-1",
+    "SYNC-1",
+    "STOR-1",
+    "CRED-1"
+   ],
+   "acceptance": [
+    "After reset: onboarding marker is `pending`, sources default, catalog-cache empty, collections empty, settings-credentials mirror gone, sync state + .pre-cloud backups gone; app relaunches into onboarding",
+    "Account deletion with the cloud unreachable still wipes the device completely; a failing step is logged and the rest run",
+    "Settings reset happens AFTER media deletes; identity (profile id, secret, installId) changes LAST and only once",
+    "cloudDocKeys equals the registry key set (compile-time constant checked by test)"
+   ],
+   "priority": "P2",
+   "est_lines": 700,
+   "unit_tests": [
+    "AccountDeletionServiceTest with fakes recording call order; cloud failure path; lockstep test",
+    "AppResetServiceTest (files removed, marker pending, DataStore defaults, installId preserved on reset but re-minted on account deletion)"
+   ],
+   "emulator_steps": [
+    "Settings \u25b8 Reset all app state \u2192 relaunch shows onboarding; Settings \u25b8 Delete account on a linked profile \u2192 the other device's next pass reports 'profile not found' and local state is clean"
+   ],
+   "shared_touchpoints": [
+    "SettingsScreen (mount ResetSection)",
+    "AppGraph",
+    "CollectionsStore.clear() (existing seam; collections area informed)"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "CAT-1",
+   "title": "Catalog cache polish + green compiled-in endpoints",
+   "goal": "Skip the redundant re-decode on 304 and the derived rebuild when nothing changed; make first-launch defaults point at the live account.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/catalog/CatalogService.kt (load(url, reusing: IndexJson?) \u2192 Loaded(index, fromCache, changed); 304/offline fallback returns `reusing` without decode)",
+    "android/app/src/main/java/com/levi/pocketdj/data/catalog/CatalogRepository.kt (pass lastGoodBySource as `reusing`; skip MergedCatalog.merge when no source changed and synthetic docs unchanged)",
+    "android/app/src/main/java/com/levi/pocketdj/data/config/RemoteEndpoints.kt (COMPILED_IN \u2192 green values from config/endpoints.green.json; `generation` counter bumped on change)",
+    "android/app/src/test/java/com/levi/pocketdj/data/catalog/CatalogServiceTest.kt, CatalogRepositoryTest (new), data/config/RemoteEndpointsTest.kt (pin COMPILED_IN to the green json file read from the repo)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "A 304 with a seed hands back the seed object identity (no decode call \u2014 asserted via a counting Json fake)",
+    "A refresh where every source is 304 does not re-merge (merge counter unchanged) and the StateFlow does not emit",
+    "COMPILED_IN equals config/endpoints.green.json byte-for-byte on the required keys; existing rebase tests pass with the new default host",
+    "Settings 'Reload catalog' still refreshes in place"
+   ],
+   "priority": "P2",
+   "est_lines": 400,
+   "unit_tests": [
+    "CatalogServiceTest: reusing on 304 and on network failure; changed flag",
+    "CatalogRepositoryTest: merge skipped when unchanged; emitted when one source changed",
+    "RemoteEndpointsTest: compiled-in pinned to green json"
+   ],
+   "emulator_steps": [
+    "Launch twice with network: logcat timing line for catalog ready drops on the second launch (no decode on 304)"
+   ],
+   "shared_touchpoints": [
+    "RemoteEndpoints (config)"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "BURN-5",
+   "title": "User-browsable burn folder via SAF (optional P2)",
+   "goal": "Let the user pick a folder (incl. SD card) for burns, mirroring the iOS security-scoped folder with the capture-at-enqueue rule.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnFolder.kt (SafBurnFolder: persisted tree URI with takePersistableUriPermission; DocumentFile ops; probe; fallback to app storage when unavailable \u2014 never drop a file)",
+    "android/app/src/main/java/com/levi/pocketdj/data/transfers/TransferModels.kt (+ burnFolderTreeUri: String? captured at enqueue)",
+    "android/app/src/main/java/com/levi/pocketdj/data/transfers/BurnDownloadWorker.kt (resolve destination from the record's tree URI only)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (additive burnFolderTreeUri)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/StorageScreen.kt (folder picker row via OpenDocumentTree; 'Use app storage')",
+    "android/app/src/test/java/com/levi/pocketdj/data/burns/SafBurnFolderTest.kt"
+   ],
+   "depends_on": [
+    "XFER-1",
+    "STOR-1"
+   ],
+   "acceptance": [
+    "Each BurnItem resolves against the folder it was ACTUALLY written to (wasAppStorage); switching folders never mis-resolves or prunes against the wrong dir",
+    "Worker never reads settings for the destination; an unavailable tree URI falls back to app storage and the item records wasAppStorage=true",
+    "reconcileOnLaunch skips (never prunes) items whose folder is currently unresolvable"
+   ],
+   "priority": "P2",
+   "est_lines": 800,
+   "unit_tests": [
+    "SafBurnFolderTest with a fake DocumentFile layer: probe, fallback, per-item root resolution, reconcile skip"
+   ],
+   "emulator_steps": [
+    "Pick a folder under /sdcard via the picker; burn; Files app shows descriptive mp3 + txt; revoke the permission (Settings \u25b8 Apps) \u2192 next burn falls back to app storage with a notice"
+   ],
+   "shared_touchpoints": [
+    "TransferModels/BurnDownloadWorker (XFER-1)",
+    "StorageScreen (STOR-1)"
+   ],
+   "device_only": "Removable SD media behaviour."
+  }
+ ]
+}

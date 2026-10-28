@@ -1,6 +1,8 @@
 package com.levi.pocketdj.screens.browse
 
+import com.levi.pocketdj.data.artists.Artist
 import com.levi.pocketdj.data.catalog.IndexAlbum
+import com.levi.pocketdj.data.favorites.FavoriteFilter
 import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.settings.AppSettingsStore
@@ -14,6 +16,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import com.levi.pocketdj.data.settings.BrowseSnapshot
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Browse kinds. Album, Song, Artist — order matches iOS `ShowTab`
@@ -26,70 +30,127 @@ enum class BrowseKind { ALBUMS, SONGS, ARTISTS }
 enum class AlbumLayout { GRID, LIST }
 
 /**
- * On-device local filter vs. online OpenSearch (specs/browse.md §4.2, §7). The
- * online pipeline is not built in P1, but the mode is modelled + persisted so
- * the snapshot is spec-shaped and forward-compatible (discover is excluded on
- * Android). Defaults to [DEVICE].
+ * On-device local filter vs. online OpenSearch vs. Discover (Apple Music catalog search, BRW-15).
+ * Discover is NOT a [BrowseKind]: it rides the search mode (iOS `SearchMode.discover`) and is
+ * persisted as the lower-cased name; an older build parses the unknown "discover" string as
+ * [DEVICE]. Defaults to [DEVICE].
  */
-enum class SearchMode { DEVICE, ONLINE }
+enum class SearchMode { DEVICE, ONLINE, DISCOVER }
+
+/** Any row the filter/sort engine can run over: album, song (incl. History) or artist. */
+sealed interface BrowseRow {
+    val browseKind: BrowseKind
+    val source: String?
+}
 
 /** One precomputed album row: source tag + collapsed genre + folded search key. */
 data class AlbumRow(
     val album: IndexAlbum,
-    val source: String?,
+    override val source: String?,
     val genreCategory: String,
     val searchKey: String,
-)
+) : BrowseRow {
+    override val browseKind: BrowseKind get() = BrowseKind.ALBUMS
+}
 
-/** One precomputed song row (genre = owning album's collapsed category, §3). */
+/**
+ * One precomputed song row (genre = owning album's collapsed category, §3).
+ * [dateAdded] (epoch ms) is null until the catalog carries it; [playedAt]
+ * (epoch ms) is set only on History rows (the `lastPlayedAt` field).
+ */
 data class SongRow(
     val song: IndexSong,
     val albumName: String?,
-    val source: String?,
+    override val source: String?,
     val genreCategory: String,
     val searchKey: String,
-)
+    val dateAdded: Double? = null,
+    val playedAt: Double? = null,
+) : BrowseRow {
+    override val browseKind: BrowseKind get() = BrowseKind.SONGS
+}
+
+/** An Artists-kind row wrapping the derived [Artist] (albumCount / songCount sortable). */
+data class ArtistRow(val artist: Artist) : BrowseRow {
+    override val browseKind: BrowseKind get() = BrowseKind.ARTISTS
+    override val source: String? get() = null
+    val searchKey: String get() = artist.searchKey
+}
 
 /**
- * The P1 filter set (task-locked cut of the full clause registry:
- * genre / bpm / key(Camelot) / source — specs/browse.md §6.5). Semantics follow
- * §6.2: clauses AND-compose; a clause whose field doesn't apply to the row's
- * kind passes the row; a missing bpm fails a between; between bounds are
- * inclusive with open ends.
+ * The live filter set: an AND-composed list of [Clause]s over the full field
+ * registry (iOS `BrowseState.clauses`). Incomplete clauses are no-ops and are
+ * not counted. The helper accessors below back the quick Sources rail and the
+ * legacy genre/bpm/key/source sheet by reading/writing the matching clause.
  */
 data class BrowseFilters(
-    val genres: Set<String> = emptySet(),
-    val bpmMin: Double? = null,
-    val bpmMax: Double? = null,
-    val camelots: Set<String> = emptySet(),
-    val sources: Set<String> = emptySet(),
+    val clauses: List<Clause> = emptyList(),
+    /**
+     * Favorite tri-state (song mode only). TRANSIENT like iOS: never in [BrowseSnapshot] — its
+     * truth lives in FavoritesStore and moves independently. Applied by the engine at read
+     * time ([BrowseRows.filteredSongs]) against the live ♥ set, never memoized.
+     */
+    val favorite: FavoriteFilter = FavoriteFilter.ANY,
+    /** Collection-membership SHOW/HIDE (song mode only). TRANSIENT; read-time; never persisted. */
+    val membership: MembershipFilter = MembershipFilter(),
+    /** History-only Hide-skips lens. TRANSIENT; applied at History base build. */
+    val hideSkips: Boolean = false,
 ) {
-    val activeCount: Int
-        get() = (if (genres.isNotEmpty()) 1 else 0) +
-            (if (bpmMin != null || bpmMax != null) 1 else 0) +
-            (if (camelots.isNotEmpty()) 1 else 0) +
-            (if (sources.isNotEmpty()) 1 else 0)
+    fun withMembership(m: MembershipFilter) = copy(membership = m)
+    fun withHideSkips(v: Boolean) = copy(hideSkips = v)
 
-    fun matchesAlbum(row: AlbumRow): Boolean {
-        if (genres.isNotEmpty() && row.genreCategory !in genres) return false
-        if (sources.isNotEmpty() && (row.source == null || row.source !in sources)) return false
-        // bpm/camelot are song fields — they pass album rows (§6.2).
-        return true
+    /** Clear All: clauses + favorite + hide-skips. Membership has its own "Clear membership". */
+    fun clearedAll() = copy(clauses = emptyList(), favorite = FavoriteFilter.ANY, hideSkips = false)
+
+    /** Membership is song-mode only. */
+    fun membershipActive(kind: BrowseKind): Boolean = kind == BrowseKind.SONGS && membership.active
+
+    /** Toolbar glyph lit: counted filters OR a membership constraint. */
+    fun glyphLit(kind: BrowseKind, historyMode: Boolean = false): Boolean =
+        activeCount(kind, historyMode) > 0 || membershipActive(kind)
+
+    /** True when the favorite filter constrains anything. */
+    val favoriteActive: Boolean get() = favorite != FavoriteFilter.ANY
+
+    fun withFavorite(v: FavoriteFilter) = copy(favorite = v)
+
+    val activeCount: Int get() = clauses.count { !it.isIncomplete }
+
+    /** Kind-gated count (iOS): the favorite constraint is song-mode only. */
+    fun activeCount(kind: BrowseKind, historyMode: Boolean = false): Int =
+        activeCount + (if (kind == BrowseKind.SONGS && favoriteActive) 1 else 0) +
+            (if (historyMode && hideSkips) 1 else 0)
+
+    /** Does the current sort/filter state read play counts (memo-key gate)? */
+    fun usesPlayCounts(sortKeys: List<SortKey>): Boolean =
+        sortKeys.any { it.field == SortField.PLAY_COUNT } ||
+            clauses.any { !it.isIncomplete && it.field == "playCount" }
+
+    private fun listValues(field: String): Set<String> =
+        clauses.firstOrNull { it.field == field && it.op == FilterOp.IN_LIST }?.values.orEmpty()
+
+    private fun withList(field: String, values: Set<String>): BrowseFilters {
+        val rest = clauses.filterNot { it.field == field && it.op == FilterOp.IN_LIST }
+        return if (values.isEmpty()) copy(clauses = rest)
+        else copy(clauses = rest + Clause(field, FilterOp.IN_LIST, values = values))
     }
 
-    fun matchesSong(row: SongRow): Boolean {
-        if (genres.isNotEmpty() && row.genreCategory !in genres) return false
-        if (sources.isNotEmpty() && (row.source == null || row.source !in sources)) return false
-        if (camelots.isNotEmpty()) {
-            val code = row.song.camelot?.trim()?.uppercase(Locale.ROOT)
-            if (code == null || code !in camelots) return false
-        }
-        if (bpmMin != null || bpmMax != null) {
-            val bpm = row.song.bpm ?: return false // missing value fails between
-            if (bpm < (bpmMin ?: Double.NEGATIVE_INFINITY)) return false
-            if (bpm > (bpmMax ?: Double.POSITIVE_INFINITY)) return false
-        }
-        return true
+    private fun between(field: String): Clause? =
+        clauses.firstOrNull { it.field == field && it.op == FilterOp.BETWEEN }
+
+    val genres: Set<String> get() = listValues("genre")
+    val camelots: Set<String> get() = listValues("camelot")
+    val sources: Set<String> get() = listValues("source")
+    val bpmMin: Double? get() = between("bpm")?.min
+    val bpmMax: Double? get() = between("bpm")?.max
+
+    fun withGenres(v: Set<String>) = withList("genre", v)
+    fun withCamelots(v: Set<String>) = withList("camelot", v)
+    fun withSources(v: Set<String>) = withList("source", v)
+    fun withBpm(min: Double?, max: Double?): BrowseFilters {
+        val rest = clauses.filterNot { it.field == "bpm" && it.op == FilterOp.BETWEEN }
+        return if (min == null && max == null) copy(clauses = rest)
+        else copy(clauses = rest + Clause("bpm", FilterOp.BETWEEN, min = min, max = max))
     }
 }
 
@@ -120,6 +181,10 @@ class BrowseRows(catalog: MergedCatalog) {
         )
     }
 
+    /** Parallel search-key arrays for [BrowseEngine.filterSort] (built once per catalog). */
+    val albumKeys: List<String> = albumRows.map { it.searchKey }
+    val songKeys: List<String> = songRows.map { it.searchKey }
+
     /** Distinct collapsed genres over both kinds, category-priority order (§6.1). */
     val genreOptions: List<String> =
         (albumRows.asSequence().map { it.genreCategory } +
@@ -146,20 +211,19 @@ class BrowseRows(catalog: MergedCatalog) {
 }
 
 /** Filtered album results for (query, filters) — run on Dispatchers.Default. */
-fun BrowseRows.filteredAlbums(query: String, filters: BrowseFilters): List<AlbumRow> {
-    // Strip newlines from the query so it can't match across field boundaries (§4.1).
-    val folded = Fmt.fold(query).replace("\n", "")
-    return albumRows.filter { row ->
-        (folded.isEmpty() || row.searchKey.contains(folded)) && filters.matchesAlbum(row)
-    }
-}
+fun BrowseRows.filteredAlbums(query: String, filters: BrowseFilters): List<AlbumRow> =
+    BrowseEngine.filterSort(albumRows, albumKeys, query, filters.clauses, emptyList())
 
 /** Filtered song results for (query, filters) — run on Dispatchers.Default. */
-fun BrowseRows.filteredSongs(query: String, filters: BrowseFilters): List<SongRow> {
-    val folded = Fmt.fold(query).replace("\n", "")
-    return songRows.filter { row ->
-        (folded.isEmpty() || row.searchKey.contains(folded)) && filters.matchesSong(row)
-    }
+fun BrowseRows.filteredSongs(
+    query: String,
+    filters: BrowseFilters,
+    playCounts: Map<String, Int> = emptyMap(),
+    /** The live ♥ set (FavoritesStore.favoriteIds); consulted only while the filter is active. */
+    favoriteIds: Set<String> = emptySet(),
+): List<SongRow> {
+    val rows = BrowseEngine.filterSort(songRows, songKeys, query, filters.clauses, emptyList(), playCounts)
+    return BrowseEngine.applyFavorites(rows, filters.favorite, favoriteIds)
 }
 
 /**
@@ -178,8 +242,20 @@ object BrowseSession {
 
     private val attached = AtomicBoolean(false)
 
+    /**
+     * Final review: apply a parked search term (pocketdj://search, Assistant "search", ShellActions.search) to the
+     * search field. Returns true when one was consumed.
+     */
+    fun consumePendingQuery(): Boolean {
+        val q = com.levi.pocketdj.shell.NavRequestBus.takePendingBrowseQuery()?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        query.value = q
+        return true
+    }
+
     /** Snapshot state to the live flows (the current session as a value). */
-    private fun currentState(): BrowseSessionState = BrowseSessionState(
+    @Volatile internal var restored = false
+
+    internal fun currentState(): BrowseSessionState = BrowseSessionState(
         kind = kind.value,
         layout = layout.value,
         searchMode = searchMode.value,
@@ -204,15 +280,43 @@ object BrowseSession {
             searchMode.value = restored.searchMode
             filters.value = restored.filters
             sortKeys.value = restored.sortKeys
+            this@BrowseSession.restored = true
 
             combine(kind, layout, searchMode, filters, sortKeys) { _, _, _, _, _ ->
                 currentState()
             }
                 .drop(1) // the just-restored state — nothing new to write
                 .debounce(WRITE_DEBOUNCE_MS)
-                .collectLatest { store.setBrowseSnapshot(it.toSnapshot()) }
+                .collectLatest { persist { snap -> store.setBrowseSnapshot(snap) } }
         }
+    }
+
+    /** One serialized writer for the debounced collector and the lifecycle flush. */
+    private val writeLock = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Writes the LIVE state (read inside the lock), so a slow older write can never commit
+     * after a newer one and leave a stale snapshot behind.
+     */
+    internal suspend fun persist(write: suspend (BrowseSnapshot) -> Unit) {
+        writeLock.withLock { write(currentState().toSnapshot()) }
     }
 
     private const val WRITE_DEBOUNCE_MS = 400L
 }
+
+/**
+ * The production SONGS pipeline (query → clauses → sort, then ♥ layer). BrowseScreen passes FavoriteFilter.ANY
+ * and applies favorites via ReadTimeFilters instead.
+ */
+fun BrowseRows.songResults(
+    query: String,
+    filters: BrowseFilters,
+    sortKeys: List<SortKey>,
+    playCounts: Map<String, Int>,
+    favoriteIds: Set<String>,
+): List<SongRow> = BrowseEngine.applyFavorites(
+    BrowseEngine.filterSort(songRows, songKeys, query, filters.clauses, sortKeys, playCounts),
+    filters.favorite,
+    favoriteIds,
+)

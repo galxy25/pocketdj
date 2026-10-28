@@ -23,7 +23,7 @@ import okhttp3.Request
  * `EndpointResolver` and the PWA `src/config/endpointSchema.ts` (the canonical rules).
  *
  * Schema v1: `{"v":1,"env":"blue","endpoints":{"catalogBase":"https://…",…},"aliases":{…}}`.
- * Resolution order: last-good fetched doc (persisted) → compiled-in defaults (blue). A fetched
+ * Resolution order: last-good fetched doc (persisted) → compiled-in defaults (green). A fetched
  * doc is accepted only if `v == 1`, `env` is non-empty, every required key is present and every
  * URL is https on an allowlisted host; otherwise it is ignored.
  */
@@ -35,7 +35,10 @@ enum class EndpointKey(val wire: String) {
     REC_ENGINE_BASE("recEngineBase"),
     LISTENING_POCKETS_BASE("listeningPocketsBase"),
     DIAG_LOGS_BASE("diagLogsBase"),
-    SEARCH_CONFIG_URL("searchConfigURL");
+    SEARCH_CONFIG_URL("searchConfigURL"),
+
+    /** OPTIONAL, never derived: absent => profile sync is disabled (SVC-8/9). */
+    PROFILE_SYNC_BASE("profileSyncBase");
 
     companion object {
         val REQUIRED = listOf(CATALOG_BASE, RIPS_BASE, AM_PLAYLIST_SYNC_BASE, REC_ENGINE_BASE, DIAG_LOGS_BASE)
@@ -49,7 +52,11 @@ data class EndpointConfig(
     val catalogAliases: Set<String> = emptySet(),
     val catalogDevAliases: Set<String> = emptySet(),
 ) {
+    /** The optional profile-sync Lambda base; null (absent in the doc) => sync disabled, no network. */
+    val profileSyncBase: String? get() = endpoints[EndpointKey.PROFILE_SYNC_BASE]
+
     fun url(key: EndpointKey): String = endpoints[key] ?: when (key) {
+        EndpointKey.PROFILE_SYNC_BASE -> "" // optional with no default: callers use profileSyncBase
         EndpointKey.CATALOG_BASE_DEV -> url(EndpointKey.CATALOG_BASE)
         EndpointKey.LISTENING_POCKETS_BASE -> url(EndpointKey.REC_ENGINE_BASE)
         EndpointKey.SEARCH_CONFIG_URL -> url(EndpointKey.CATALOG_BASE) + "/search-config.json"
@@ -59,20 +66,24 @@ data class EndpointConfig(
     companion object {
         const val SCHEMA_VERSION = 1
 
-        /** Today's values (blue, 011183829623). Must equal config/endpoints.blue.json. */
+        /** Today's values (green, 623170744161). Must equal config/endpoints.green.json. */
         val COMPILED_IN = EndpointConfig(
-            env = "blue",
+            env = "green",
             endpoints = mapOf(
-                EndpointKey.CATALOG_BASE to "https://d2p4cubg6se03u.cloudfront.net",
-                EndpointKey.CATALOG_BASE_DEV to "https://djictbz9w796r.cloudfront.net",
-                EndpointKey.RIPS_BASE to "https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com",
-                EndpointKey.AM_PLAYLIST_SYNC_BASE to "https://ynwdaa8vh2.execute-api.us-west-2.amazonaws.com",
-                EndpointKey.REC_ENGINE_BASE to "https://n5ordrwfe9.execute-api.us-west-2.amazonaws.com",
-                EndpointKey.LISTENING_POCKETS_BASE to "https://n5ordrwfe9.execute-api.us-west-2.amazonaws.com",
-                EndpointKey.DIAG_LOGS_BASE to "https://pocketdj-logs-011183829623.s3.us-west-2.amazonaws.com",
-                EndpointKey.SEARCH_CONFIG_URL to "https://d2p4cubg6se03u.cloudfront.net/search-config.json",
+                EndpointKey.CATALOG_BASE to "https://d1j6qufkowz1xq.cloudfront.net",
+                EndpointKey.CATALOG_BASE_DEV to "https://d1zb3ydtksjw1r.cloudfront.net",
+                EndpointKey.RIPS_BASE to "https://pocketdj-rips-623170744161.s3.us-west-2.amazonaws.com",
+                EndpointKey.AM_PLAYLIST_SYNC_BASE to "https://webhj3e832.execute-api.us-west-2.amazonaws.com",
+                EndpointKey.REC_ENGINE_BASE to "https://kwgk9osywa.execute-api.us-west-2.amazonaws.com",
+                EndpointKey.LISTENING_POCKETS_BASE to "https://kwgk9osywa.execute-api.us-west-2.amazonaws.com",
+                EndpointKey.DIAG_LOGS_BASE to "https://pocketdj-logs-623170744161.s3.us-west-2.amazonaws.com",
+                EndpointKey.SEARCH_CONFIG_URL to "https://d1j6qufkowz1xq.cloudfront.net/search-config.json",
             ),
         )
+
+        /** Retired blue catalog hosts: persisted Settings sources saved against them still rebase. */
+        val LEGACY_BLUE_CATALOG_HOST = "d2p4cubg6se03u.cloudfront.net"
+        val LEGACY_BLUE_CATALOG_DEV_HOST = "djictbz9w796r.cloudfront.net"
 
         private val POCKET_DJ = Regex("^[a-z0-9-]+(\\.[a-z0-9-]+)*\\.pocket-dj\\.com$")
         private val CLOUDFRONT = Regex("^[a-z0-9]+\\.cloudfront\\.net$")
@@ -159,6 +170,14 @@ object RemoteEndpoints {
 
     fun url(key: EndpointKey): String = current.url(key)
 
+    /** Optional profile-sync base from the live doc; null => sync disabled. */
+    val profileSyncBase: String? get() = current.profileSyncBase
+
+    /** Logs bucket name (host label before `.s3.`), e.g. `pocketdj-logs-623170744161`. */
+    val diagBucket: String
+        get() = runCatching { URI(url(EndpointKey.DIAG_LOGS_BASE)).host.substringBefore(".s3.") }
+            .getOrDefault("pocketdj-logs-623170744161")
+
     /** Load the persisted last-good doc (if any, and still valid) from [file]. */
     fun install(file: File) = synchronized(lock) {
         cacheFile = file
@@ -230,10 +249,10 @@ object RemoteEndpoints {
         val host = hostOf(raw) ?: return raw
         val cfg = current
         val prod = synchronized(lock) {
-            setOfNotNull(hostOf(EndpointConfig.COMPILED_IN.url(EndpointKey.CATALOG_BASE))) + cfg.catalogAliases + seenCatalogHosts
+            setOfNotNull(hostOf(EndpointConfig.COMPILED_IN.url(EndpointKey.CATALOG_BASE)), EndpointConfig.LEGACY_BLUE_CATALOG_HOST) + cfg.catalogAliases + seenCatalogHosts
         }
         val dev = synchronized(lock) {
-            setOfNotNull(hostOf(EndpointConfig.COMPILED_IN.url(EndpointKey.CATALOG_BASE_DEV))) + cfg.catalogDevAliases + seenCatalogDevHosts
+            setOfNotNull(hostOf(EndpointConfig.COMPILED_IN.url(EndpointKey.CATALOG_BASE_DEV)), EndpointConfig.LEGACY_BLUE_CATALOG_DEV_HOST) + cfg.catalogDevAliases + seenCatalogDevHosts
         }
         val target = when (host) {
             in prod -> cfg.url(EndpointKey.CATALOG_BASE)

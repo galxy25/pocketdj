@@ -179,11 +179,85 @@ class SortEngineTest {
             albumFields,
         )
         assertEquals(
+            listOf("artist", "albumCount", "songCount"),
+            SortField.forKind(BrowseKind.ARTISTS).map { it.id },
+        )
+        // History-only fields stay out of the Browser sheet unless asked for.
+        assertEquals(false, "lastPlayedAt" in songFields)
+        assertEquals(true, "lastPlayedAt" in SortField.forKind(BrowseKind.SONGS, includeHistory = true).map { it.id })
+        assertEquals(
             listOf(
-                "artist", "name", "year", "genre", "fileType", "source",
+                "artist", "name", "year", "playCount", "genre", "fileType", "source",
                 "trackNumber", "length", "bpm", "key", "camelot", "explicit",
             ),
             songFields,
         )
+    }
+
+    // ---- BRW-1 additions ---------------------------------------------------
+
+    private fun artist(name: String, albums: Int, songs: Int) =
+        ArtistRow(com.levi.pocketdj.data.artists.Artist(name, albums, songs, null, name.lowercase()))
+
+    @Test
+    fun playCount_descending_playedFirst_unplayedNullsLast() {
+        val rows = listOf(song("none"), song("two"), song("five"), song("zero"))
+        val counts = mapOf("two" to 2, "five" to 5, "zero" to 0)
+        val sorted = BrowseSort.songs(rows, listOf(SortKey(SortField.PLAY_COUNT, ascending = false)), counts)
+        // 0 plays reads as missing (iOS `n > 0`) → nulls last, input order kept.
+        assertEquals(listOf("five", "two", "none", "zero"), sorted.ids())
+    }
+
+    @Test
+    fun playCount_ascending_stillNullsLast() {
+        val rows = listOf(song("none"), song("two"), song("five"))
+        val sorted = BrowseSort.songs(
+            rows, listOf(SortKey(SortField.PLAY_COUNT, ascending = true)), mapOf("two" to 2, "five" to 5),
+        )
+        assertEquals(listOf("two", "five", "none"), sorted.ids())
+    }
+
+    @Test
+    fun dateAdded_newestFirst_missingLast() {
+        val rows = listOf(
+            song("old").copy(dateAdded = 1_000.0),
+            song("missing"),
+            song("new").copy(dateAdded = 9_000.0),
+        )
+        val sorted = BrowseSort.songs(rows, listOf(SortKey(SortField.DATE_ADDED, ascending = false)))
+        assertEquals(listOf("new", "old", "missing"), sorted.ids())
+    }
+
+    @Test
+    fun lastPlayedAt_sortsOnHistoryTimestamp() {
+        val rows = listOf(song("a").copy(playedAt = 5.0), song("b").copy(playedAt = 50.0), song("c"))
+        val sorted = BrowseSort.songs(rows, listOf(SortKey(SortField.LAST_PLAYED_AT, ascending = false)))
+        assertEquals(listOf("b", "a", "c"), sorted.ids())
+    }
+
+    @Test
+    fun camelot_sortsByWheelRankNumber_notString() {
+        // "10A" < "2A" lexicographically; wheel rank puts 2A first.
+        val rows = listOf(song("ten", camelot = "10A"), song("two", camelot = "2A"), song("bad", camelot = "zz"))
+        val sorted = BrowseSort.songs(rows, listOf(SortKey(SortField.CAMELOT, ascending = true)))
+        assertEquals(listOf("two", "ten", "bad"), sorted.ids())
+    }
+
+    @Test
+    fun artistsKind_sortByAlbumCountAndSongCount() {
+        val rows = listOf(artist("A", 1, 30), artist("B", 3, 10), artist("C", 2, 20))
+        val byAlbums = BrowseSort.artists(rows, listOf(SortKey(SortField.ALBUM_COUNT, ascending = false)))
+        assertEquals(listOf("B", "C", "A"), byAlbums.map { it.artist.name })
+        val bySongs = BrowseSort.artists(rows, listOf(SortKey(SortField.SONG_COUNT, ascending = true)))
+        assertEquals(listOf("B", "C", "A"), bySongs.map { it.artist.name })
+        val byName = BrowseSort.artists(rows.reversed(), listOf(SortKey(SortField.ARTIST, ascending = true)))
+        assertEquals(listOf("A", "B", "C"), byName.map { it.artist.name })
+    }
+
+    @Test
+    fun songOnlyField_onAlbumRows_isNullSoInputOrderHolds() {
+        val rows = listOf(album("b"), album("a"))
+        val sorted = BrowseSort.albums(rows, listOf(SortKey(SortField.BPM, ascending = true)))
+        assertEquals(listOf("b", "a"), sorted.ids())
     }
 }

@@ -1,11 +1,47 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Pre-Android-12 (API < 31) Auto Backup rules. Companion to
-  data_extraction_rules.xml: keep the settings DataStore out of the cloud backup
-  because it now persists Apple Music credentials (Music-User-Token + developer
-  token). Absent an <include>, everything else is still backed up.
+  Pre-Android-12 Auto Backup rules; mirrors data_extraction_rules.xml (credentials,
+  mirrors and large media/caches excluded so the backup fits the 25 MB quota).
 -->
 <full-backup-content>
     <exclude domain="file" path="pocketdj-settings.preferences_pb" />
     <exclude domain="file" path="pocketdj-settings.preferences_pb.tmp" />
+    <exclude domain="file" path="pocketdj-in-the-pocket.json" />
+    <exclude domain="file" path="pocketdj-in-the-pocket.json.tmp" />
+    <exclude domain="file" path="pocketdj-in-the-pocket-sync.json" />
+    <exclude domain="file" path="pocketdj-in-the-pocket-sync.json.tmp" />
+    <exclude domain="file" path="pocketdj-listening-places.json" />
+    <exclude domain="file" path="pocketdj-listening-places.json.tmp" />
+    <exclude domain="file" path="pocketdj-settings-credentials.json" />
+    <exclude domain="file" path="pocketdj-settings-credentials.json.tmp" />
+    <exclude domain="file" path="pocketdj-settings-credentials.json.pre-cloud" />
+    <exclude domain="file" path="pocketdj-settings-credentials.json.pull.tmp" />
+    <exclude domain="file" path="pocketdj-diag-key.json" />
+    <exclude domain="file" path="pocketdj-diag-key.json.tmp" />
+    <exclude domain="file" path="pocketdj-diag-key.json.pre-cloud" />
+    <exclude domain="file" path="pocketdj-diag-key.json.pull.tmp" />
+    <exclude domain="file" path="pocketdj-rec-key.json" />
+    <exclude domain="file" path="pocketdj-rec-key.json.tmp" />
+    <exclude domain="file" path="pocketdj-rec-key.json.pre-cloud" />
+    <exclude domain="file" path="pocketdj-rec-key.json.pull.tmp" />
+    <exclude domain="file" path="pocketdj-cloudsync-state.json" />
+    <exclude domain="file" path="pocketdj-cloudsync-state.json.tmp" />
+    <exclude domain="file" path="pocketdj-cloudsync-state.json.pre-cloud" />
+    <exclude domain="file" path="pocketdj-cloudsync-state.json.pull.tmp" />
+    <exclude domain="file" path="pocketdj-endpoints.json" />
+    <exclude domain="file" path="pocketdj-endpoints.json.tmp" />
+    <exclude domain="file" path="pocketdj-endpoints.json.pre-cloud" />
+    <exclude domain="file" path="pocketdj-endpoints.json.pull.tmp" />
+    <exclude domain="sharedpref" path="pocketdj-secrets.xml" />
+    <exclude domain="file" path="burns" />
+    <exclude domain="file" path="burns-user" />
+    <exclude domain="file" path="catalog-cache" />
+    <exclude domain="file" path="rips-cache" />
+    <exclude domain="file" path="demux-cache" />
+    <exclude domain="file" path="diag-captures" />
+    <exclude domain="file" path="lyrics-cache" />
+    <exclude domain="file" path="lyrics" />
+    <exclude domain="file" path="studio" />
+    <exclude domain="file" path="mix-sessions" />
+    <exclude domain="file" path="widget" />
 </full-backup-content>

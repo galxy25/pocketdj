@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.browse
 
+import com.levi.pocketdj.data.collections.SongTransfer
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -65,15 +66,34 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.artists.Artist
 import com.levi.pocketdj.data.artists.ArtistCatalog
+import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.MergedCatalog
+import com.levi.pocketdj.data.favorites.FavoriteFilter
+import com.levi.pocketdj.data.search.OnlineSearchModel
+import com.levi.pocketdj.screens.discover.DiscoverPane
+import com.levi.pocketdj.data.search.SearchSettings
 import com.levi.pocketdj.di.AppGraph
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudQueue
+import com.levi.pocketdj.ui.FavoriteToggle
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
 import com.levi.pocketdj.screens.collections.AddToItem
+import com.levi.pocketdj.screens.collections.AddToPlaylistMenu
+import com.levi.pocketdj.ui.selection.SelectionBar
+import com.levi.pocketdj.ui.selection.SelectionScope
+import com.levi.pocketdj.ui.selection.SelectionBarSemantics
+import com.levi.pocketdj.ui.selection.writeSongTransfer
+import com.levi.pocketdj.ui.dnd.songDragSource
+import com.levi.pocketdj.ui.selection.selectionDecor
+import com.levi.pocketdj.ui.selection.selectionTap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** RowSelection scope for the Browse Songs list. */
+internal const val BROWSE_SELECTION_SCOPE = "browse"
 
 /** Rows rendered per page of the incremental list (specs/browse.md §4.1). */
 private const val PAGE_SIZE = 120
@@ -107,6 +127,11 @@ fun BrowseScreen(
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
+    // Cold and warm arrivals: a parked deep-link / Assistant search term lands in the search field.
+    LaunchedEffect(Unit) {
+        com.levi.pocketdj.shell.NavRequestBus.pendingBrowseQuery.collect { if (it != null) BrowseSession.consumePendingQuery() }
+    }
+
     LaunchedEffect(Unit) {
         graph.catalogRepository.loadIfNeeded()
         graph.ripsRepository.loadAtLaunch()
@@ -118,6 +143,7 @@ fun BrowseScreen(
     val query by BrowseSession.query.collectAsState()
     val filters by BrowseSession.filters.collectAsState()
     val sortKeys by BrowseSession.sortKeys.collectAsState()
+    val searchMode by BrowseSession.searchMode.collectAsState()
 
     var showFilterSheet by remember { mutableStateOf(false) }
     var showSortSheet by remember { mutableStateOf(false) }
@@ -125,6 +151,7 @@ fun BrowseScreen(
     // Long-press add-to-collection target (specs/playlists-ui.md §8; the
     // long-press launch point is an Android addition to the iOS ＋-only set).
     var addItem by remember { mutableStateOf<AddToItem?>(null) }
+    var addSheetOpen by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
         when {
@@ -151,6 +178,8 @@ fun BrowseScreen(
                     query = query,
                     filters = filters,
                     sortKeys = sortKeys,
+                    searchMode = searchMode,
+                    onSearchMode = { BrowseSession.searchMode.value = it },
                     isRefreshing = catalogState.isRefreshing,
                     onKind = { BrowseSession.kind.value = it },
                     onLayout = { BrowseSession.layout.value = it },
@@ -183,12 +212,25 @@ fun BrowseScreen(
     }
 
     if (showFilterSheet) {
-        val rows = catalogState.catalog?.let { remember(it) { BrowseRows.of(it) } }
+        val rows = catalogState.catalog?.takeIf { kind != BrowseKind.ARTISTS }?.let { remember(it) { BrowseRows.of(it) } }
+        val sheetCollections = remember { AppGraph.get(context).collections }
+        val collState by sheetCollections.state.collectAsState()
+        val sources = catalogState.catalog?.availableSources.orEmpty()
+        val artistRows = catalogState.catalog?.takeIf { kind == BrowseKind.ARTISTS }?.let { remember(it) { ArtistCatalog.of(it).artists.map(::ArtistRow) } }
         BrowseFilterSheet(
+            kind = kind,
             filters = filters,
-            genreOptions = rows?.genreOptions.orEmpty(),
-            camelotOptions = rows?.camelotOptions.orEmpty(),
-            sourceOptions = catalogState.catalog?.availableSources.orEmpty(),
+            optionsFor = { fieldId ->
+                val base: List<BrowseRow> = when (kind) {
+                    BrowseKind.ALBUMS -> rows?.albumRows.orEmpty()
+                    BrowseKind.SONGS -> rows?.songRows.orEmpty()
+                    BrowseKind.ARTISTS -> artistRows.orEmpty()
+                }
+                FieldOptions.of(fieldId, base, sources)
+            },
+            showFavorite = kind == BrowseKind.SONGS,
+            playlists = collState.playlists.sortedBy { it.name.lowercase() }.map { CollectionRef(it.id, it.name) },
+            pockets = collState.pockets.sortedBy { it.name.lowercase() }.map { CollectionRef(it.id, it.name) },
             onFilters = { BrowseSession.filters.value = it },
             onDismiss = { showFilterSheet = false },
         )
@@ -212,8 +254,36 @@ fun BrowseScreen(
         )
     }
 
+    // Long-press → "Add to Playlist" submenu (top-5 ✓ toggles + More…); More… opens the full
+    // sheet with the search field focused.
     addItem?.let { item ->
-        AddToCollectionSheet(item = item, onDismiss = { addItem = null })
+        if (addSheetOpen) {
+            AddToCollectionSheet(
+                item = item,
+                searchFirst = true,
+                onDismiss = { addItem = null; addSheetOpen = false },
+            )
+        } else {
+            val songId = (item as? AddToItem.Song)?.id
+            val ctx = LocalContext.current
+            val sel = remember { graph.collectionsGraph.rowSelection }
+            val extras = if (songId == null) emptyList() else listOf<Pair<String, () -> Unit>>(
+                "Select" to { sel.enterSelectMode(BROWSE_SELECTION_SCOPE, songId) },
+                "Copy" to {
+                    val st = sel.state.value
+                    val picked = if (st.scopeId == BROWSE_SELECTION_SCOPE) sel.currentPayload()?.songIds else null
+                    val ids = SelectionBarSemantics.rowOrSelectionIds(picked, songId)
+                    val songs = catalogState.catalog?.songsById.orEmpty()
+                    writeSongTransfer(ctx, SongTransfer.make(ids, songs))
+                },
+            )
+            AddToPlaylistMenu(
+                item = item,
+                onDismiss = { addItem = null },
+                onMore = { addSheetOpen = true },
+                extraActions = extras,
+            )
+        }
     }
 }
 
@@ -225,6 +295,8 @@ private fun BrowseContent(
     query: String,
     filters: BrowseFilters,
     sortKeys: List<SortKey>,
+    searchMode: SearchMode,
+    onSearchMode: (SearchMode) -> Unit,
     isRefreshing: Boolean,
     onKind: (BrowseKind) -> Unit,
     onLayout: (AlbumLayout) -> Unit,
@@ -248,43 +320,157 @@ private fun BrowseContent(
         }
     }
 
-    // Filter + search off the main thread; a new result set carries a new
+    // Lifetime play counts are the one pipeline input living outside the catalog
+    // (device-local store): snapshot them, and fold the revision into the key
+    // ONLY while a clause/sort actually reads them.
+    val context = LocalContext.current
+    val history = remember { PlayHistoryStore.get(context) }
+    val usesPlayCounts = filters.usesPlayCounts(sortKeys)
+    val historyRevision = if (usesPlayCounts) history.state.collectAsState().value.revision else -1
+    val resultsKey = BrowseEngine.resultsKey(
+        catalogIdentity = System.identityHashCode(catalog).toLong(),
+        kind = kind,
+        query = debouncedQuery,
+        clauses = filters.clauses,
+        sortKeys = sortKeys,
+        playCountsRevision = historyRevision,
+    )
+
+    // Filter + search + sort off the main thread; a new result set carries a new
     // version so the paging budget resets in the same frame (§13).
     var resultVersion by remember { mutableIntStateOf(0) }
-    val results by produceState(
-        initialValue = BrowseResults(),
-        catalog, kind, debouncedQuery, filters, sortKeys,
-    ) {
+    // Favorite tri-state: applied at READ time against the live ♥ set, outside the memoized
+    // resultsKey. The revision is collected (and folded into the produceState keys) only while
+    // the filter is active, so ♥ taps elsewhere never recompute an inactive pipeline.
+    val favStore = remember { AppGraph.get(context).collectionsGraph.favorites }
+    val collStore = remember { AppGraph.get(context).collections }
+    val favoriteFilter = if (kind == BrowseKind.SONGS) filters.favorite else FavoriteFilter.ANY
+    val membership = if (kind == BrowseKind.SONGS) filters.membership else MembershipFilter()
+    val favRevision = if (favoriteFilter != FavoriteFilter.ANY) {
+        favStore.state.collectAsState().value.revision
+    } else {
+        -1
+    }
+    val collRevision = if (membership.active) collStore.state.collectAsState().value.revision else -1
+    // ---- Online (OpenSearch) mode: Albums/Songs only; Artists is always on-device. ----
+    val online = searchMode == SearchMode.ONLINE && kind != BrowseKind.ARTISTS
+    val discover = searchMode == SearchMode.DISCOVER
+    val onlineGraph = remember { AppGraph.get(context) }
+    val onlineScope = rememberCoroutineScope()
+    val onlineModel = remember { OnlineSearchModel(onlineGraph.browseGraph.searchService, onlineScope) }
+    val secretsRev by onlineGraph.secrets.revision.collectAsState(initial = 0L)
+    // null = not read yet (no false "add credentials" error); Some(null) = read, none configured.
+    val onlineCredsLoad by produceState<List<com.levi.pocketdj.net.SigV4.Creds?>?>(null, secretsRev) {
+        value = listOf(withContext(Dispatchers.IO) { SearchSettings.creds(onlineGraph.secrets) })
+    }
+    val onlineCreds = onlineCredsLoad?.firstOrNull()
+    val onlineUi by onlineModel.ui.collectAsState()
+    // Any query/kind/filter/SORT change (or creds change) RESETS and reloads page 1 (300 ms debounce
+    // lives in the model); leaving online mode cancels in-flight work.
+    LaunchedEffect(online, kind, query, filters.clauses, sortKeys, onlineCredsLoad) {
+        if (online && onlineCredsLoad == null) {
+            // credentials still loading: wait
+        } else if (online) {
+            onlineModel.searchDebounced(query, kind, filters.clauses, sortKeys, onlineCreds)
+        } else {
+            onlineModel.cancel()
+        }
+    }
+
+    val results by produceState(initialValue = BrowseResults(), if (online) "online" else if (discover) "discover" else resultsKey) {
+        // iOS parity: the heavy local filter/sort never runs in online mode.
+        if (online || discover) return@produceState
         value = withContext(Dispatchers.Default) {
-            // Pipeline (§4.1): base rows → text query → filter clauses → sort.
-            // Filter AND sort both run here off the main thread; a ~90k-row
-            // locale-aware pass on the UI thread was a shipped runloop hang (§13).
+            // Pipeline (§4.1): base rows → text query → filter clauses → sort,
+            // all in BrowseEngine.filterSort. A ~90k-row locale-aware pass on
+            // the UI thread was a shipped runloop hang (§13).
             val rows = BrowseRows.of(catalog)
+            val playCounts = if (usesPlayCounts) {
+                rows.songRows.asSequence()
+                    .map { it.song.id }
+                    .associateWith(history::playCount)
+                    .filterValues { it > 0 }
+            } else {
+                emptyMap()
+            }
+            val clauses = filters.clauses
             when (kind) {
                 BrowseKind.ALBUMS -> BrowseResults(
-                    albums = BrowseSort.albums(rows.filteredAlbums(debouncedQuery, filters), sortKeys),
+                    albums = BrowseEngine.filterSort(
+                        rows.albumRows, rows.albumKeys, debouncedQuery, clauses, sortKeys,
+                    ),
                     version = ++resultVersion,
                 )
                 BrowseKind.SONGS -> BrowseResults(
-                    songs = BrowseSort.songs(rows.filteredSongs(debouncedQuery, filters), sortKeys),
+                    songs = rows.songResults(
+                        // Favorites + membership are READ-TIME layers (applied below), so the
+                        // memoized pipeline — and the paging reset — ignore store contents.
+                        debouncedQuery, filters.copy(favorite = FavoriteFilter.ANY), sortKeys, playCounts,
+                        emptySet(),
+                    ),
                     version = ++resultVersion,
                 )
-                // Artists: name-scoped filter over the FULL catalog (filters/sort
-                // are inert on artist rows, specs/artists.md §3.3). Derived +
-                // memoized off-main like the other kinds.
-                BrowseKind.ARTISTS -> BrowseResults(
-                    artists = ArtistCatalog.of(catalog).filtered(debouncedQuery),
-                    version = ++resultVersion,
-                )
+                BrowseKind.ARTISTS -> {
+                    val artistRows = ArtistCatalog.of(catalog).artists.map(::ArtistRow)
+                    BrowseResults(
+                        artists = BrowseEngine.filterSort(
+                            artistRows, artistRows.map { it.searchKey },
+                            debouncedQuery, clauses, sortKeys,
+                        ).map { it.artist },
+                        version = ++resultVersion,
+                    )
+                }
             }
         }
     }
 
+    // Read-time layers over the already filtered+sorted rows: cheap Set lookups, never memoized.
+    val shownSongs = remember(results.songs, membership, favoriteFilter, favRevision, collRevision) {
+        ReadTimeFilters.apply(
+            rows = results.songs,
+            membership = membership,
+            allCollectionIds = (collStore.playlists.map { it.id } + collStore.pockets.map { it.id }).toSet(),
+            membersOf = { id ->
+                if (id.startsWith("pkt_")) collStore.songIdsForPocket(id) else collStore.songIdsForPlaylist(id)
+            },
+            favorite = favoriteFilter,
+            favoriteIds = favStore.favoriteIds,
+        )
+    }
+    // Paging resets when the CONSTRAINT changes (selection / mode), never when store contents do.
+    val pagingKey = "${results.version}|${favoriteFilter.name}|${membership.selectionKey()}"
+
+    // Multi-select (COL-5): Songs list only, never in online mode. The registered universe is the
+    // FULL filtered list (shownSongs), not the rendered page.
+    val rowSelection = remember { AppGraph.get(context).collectionsGraph.rowSelection }
+    val selectionState by rowSelection.state.collectAsState()
+    val selectable = kind == BrowseKind.SONGS && !online && !discover
+    if (selectable) {
+        SelectionScope(
+            selection = rowSelection,
+            scope = BROWSE_SELECTION_SCOPE,
+            pruneKey = System.identityHashCode(shownSongs),
+            allIds = { shownSongs.map { it.song.id } },
+            payload = {
+                val ordered = rowSelection.orderedSelection(shownSongs.map { it.song.id })
+                SongTransfer.make(ordered, catalog.songsById)
+            },
+        )
+    }
+
     Column(Modifier.fillMaxSize()) {
-        SourcesRail(
+        if (selectable) SelectionBar(rowSelection, BROWSE_SELECTION_SCOPE, collStore)
+        // BRW-17: the "?♪?" song recognizer sits at the top of every catalog tab.
+        // iOS shows it on the catalog tabs only (not Discover/online) and centered; hidden while this build has no capture backend.
+        if (!discover && !online && AppGraph.get(context).browseGraph.shazamBackend.isAvailable) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.Center) {
+                com.levi.pocketdj.screens.shazam.ShazamButton(onOpenSong = onOpenSong, onOpenAlbum = onOpenAlbum)
+            }
+        }
+        if (!discover) SourcesRail(
             sources = catalog.availableSources,
             selected = filters.sources,
-            onSelect = { selection -> onFilters(filters.copy(sources = selection)) },
+            onSelect = { selection -> onFilters(filters.withSources(selection)) },
         )
 
         Row(
@@ -296,9 +482,13 @@ private fun BrowseContent(
             SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
                 BrowseKind.entries.forEachIndexed { index, entry ->
                     SegmentedButton(
-                        selected = kind == entry,
-                        onClick = { onKind(entry) },
-                        shape = SegmentedButtonDefaults.itemShape(index, BrowseKind.entries.size),
+                        selected = kind == entry && !discover,
+                        onClick = {
+                            // Leaving Discover returns to device mode (Discover is a search mode, not a kind).
+                            if (discover) onSearchMode(SearchMode.DEVICE)
+                            onKind(entry)
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(index, BrowseKind.entries.size + 1),
                     ) {
                         Text(
                             when (entry) {
@@ -309,8 +499,13 @@ private fun BrowseContent(
                         )
                     }
                 }
+                SegmentedButton(
+                    selected = discover,
+                    onClick = { onSearchMode(SearchMode.DISCOVER) },
+                    shape = SegmentedButtonDefaults.itemShape(BrowseKind.entries.size, BrowseKind.entries.size + 1),
+                ) { Text("Discover") }
             }
-            if (kind == BrowseKind.ALBUMS) {
+            if (!discover && kind == BrowseKind.ALBUMS) {
                 IconButton(
                     onClick = {
                         onLayout(if (layout == AlbumLayout.GRID) AlbumLayout.LIST else AlbumLayout.GRID)
@@ -326,7 +521,20 @@ private fun BrowseContent(
                     )
                 }
             }
-            IconButton(onClick = onShowSort) {
+            if (!discover && kind != BrowseKind.ARTISTS) {
+                IconButton(
+                    onClick = {
+                        onSearchMode(if (online) SearchMode.DEVICE else SearchMode.ONLINE)
+                    },
+                ) {
+                    Icon(
+                        if (online) Icons.Filled.Cloud else Icons.Filled.CloudQueue,
+                        contentDescription = if (online) "Searching online — switch to this device" else "Search online",
+                        tint = if (online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+            if (!discover) IconButton(onClick = onShowSort) {
                 Icon(
                     Icons.Filled.SwapVert,
                     contentDescription = "Sort",
@@ -337,16 +545,16 @@ private fun BrowseContent(
                     },
                 )
             }
-            BadgedBox(
+            if (!discover) BadgedBox(
                 badge = {
-                    if (filters.activeCount > 0) Badge { Text(filters.activeCount.toString()) }
+                    if (filters.activeCount(kind) > 0) Badge { Text(filters.activeCount(kind).toString()) } else if (filters.glyphLit(kind)) Badge()
                 },
             ) {
                 IconButton(onClick = onShowFilters) {
                     Icon(
                         Icons.Filled.FilterList,
                         contentDescription = "Filters",
-                        tint = if (filters.activeCount > 0) {
+                        tint = if (filters.glyphLit(kind)) {
                             MaterialTheme.colorScheme.primary
                         } else {
                             MaterialTheme.colorScheme.onSurface
@@ -362,7 +570,7 @@ private fun BrowseContent(
             singleLine = true,
             placeholder = {
                 Text(
-                    when (kind) {
+                    if (discover) "Search Apple Music" else when (kind) {
                         BrowseKind.ALBUMS -> "Search albums"
                         BrowseKind.SONGS -> "Search songs"
                         BrowseKind.ARTISTS -> "Search artists"
@@ -383,7 +591,7 @@ private fun BrowseContent(
         )
 
         // Results header: "<count> albums|songs" (+ refresh spinner in place).
-        Row(
+        if (!discover) Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
@@ -391,7 +599,7 @@ private fun BrowseContent(
         ) {
             val count = when (kind) {
                 BrowseKind.ALBUMS -> results.albums.size
-                BrowseKind.SONGS -> results.songs.size
+                BrowseKind.SONGS -> shownSongs.size
                 BrowseKind.ARTISTS -> results.artists.size
             }
             val noun = when (kind) {
@@ -400,7 +608,7 @@ private fun BrowseContent(
                 BrowseKind.ARTISTS -> "artists"
             }
             Text(
-                text = "$count $noun",
+                text = if (online) onlineCountLabel(onlineUi, kind) else "$count $noun",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -424,20 +632,35 @@ private fun BrowseContent(
                 )
             }
             Spacer(Modifier.weight(1f))
-            if (isRefreshing) {
+            if (online && (onlineUi.isLoadingPage || onlineUi.state == OnlineSearchModel.State.Loading) || isRefreshing) {
                 CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
             }
         }
 
         // Incremental paging: budget keyed by the result-set version so a new
         // result set never renders the previous set's large prefix (§13).
-        var pageCount by remember(results.version) { mutableIntStateOf(1) }
+        var pageCount by remember(pagingKey) { mutableIntStateOf(1) }
         val emptyMessage = when {
-            query.isNotBlank() || filters.activeCount > 0 -> "No matches — adjust search or filters"
+            query.isNotBlank() || filters.glyphLit(kind) -> "No matches — adjust search or filters"
             else -> "Nothing here yet — pull the catalog from Settings"
         }
 
-        when (kind) {
+        if (discover) {
+            DiscoverPane(query = query, modifier = Modifier.weight(1f))
+        } else if (online) {
+            OnlineResults(
+                ui = onlineUi,
+                kind = kind,
+                layout = layout,
+                catalog = catalog,
+                onLoadMore = { onlineScope.launch { onlineModel.loadMore() } },
+                onOpenAlbum = onOpenAlbum,
+                onOpenSong = onOpenSong,
+                onAddSong = onAddSong,
+                onAddAlbum = onAddAlbum,
+                onPlaySong = onPlaySong,
+            )
+        } else when (kind) {
             BrowseKind.ALBUMS -> {
                 val visible = results.albums.take(pageCount * PAGE_SIZE)
                 if (results.albums.isEmpty()) {
@@ -482,20 +705,38 @@ private fun BrowseContent(
             }
 
             BrowseKind.SONGS -> {
-                val visible = results.songs.take(pageCount * PAGE_SIZE)
-                if (results.songs.isEmpty()) {
+                val visible = shownSongs.take(pageCount * PAGE_SIZE)
+                if (shownSongs.isEmpty()) {
                     EmptyState(emptyMessage)
                 } else {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         items(visible, key = { it.song.id }) { row ->
+                            val songId = row.song.id
+                            // COL-6: a selected row is the drag handle (long-press-drag exports the selection).
+                            val rowSelected = selectionState.isSelected(songId, BROWSE_SELECTION_SCOPE)
                             BrowseSongRow(
                                 row = row,
-                                onClick = { onOpenSong(row.song.id) },
-                                onPlay = { onPlaySong(row.song.id) },
-                                onLongClick = { onAddSong(row.song.id) },
+                                modifier = Modifier
+                                    .selectionDecor(rowSelection, songId, BROWSE_SELECTION_SCOPE)
+                                    .songDragSource(enabled = true) {
+                                        if (rowSelected) rowSelection.currentPayload() else com.levi.pocketdj.data.collections.SongTransfer(listOf(songId), null)
+                                    },
+                                // Select mode armed HERE eats the tap; otherwise it opens as before.
+                                onClick = {
+                                    selectionTap(rowSelection, songId, BROWSE_SELECTION_SCOPE) { onOpenSong(songId) }
+                                },
+                                onPlay = { onPlaySong(songId) },
+                                // Armed: long-press toggles. Otherwise the COL-4 Add-to menu (with Select / Copy).
+                                onLongClick = ({
+                                    if (rowSelection.state.value.isSelectMode(BROWSE_SELECTION_SCOPE)) {
+                                        rowSelection.handleLongPress(songId, BROWSE_SELECTION_SCOPE)
+                                    } else {
+                                        onAddSong(songId)
+                                    }
+                                }),
                             )
                         }
-                        if (visible.size < results.songs.size) {
+                        if (visible.size < shownSongs.size) {
                             item(key = "pager") {
                                 PagingTrigger(visible.size) { pageCount += 1 }
                             }
@@ -581,7 +822,7 @@ private fun PagingTrigger(visibleCount: Int, onGrow: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AlbumGridCard(
+internal fun AlbumGridCard(
     row: AlbumRow,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
@@ -621,7 +862,7 @@ private fun AlbumGridCard(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AlbumListRow(
+internal fun AlbumListRow(
     row: AlbumRow,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
@@ -779,6 +1020,7 @@ fun BrowseSongRow(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        FavoriteToggle(songId = row.song.id, appleMusicId = row.song.appleMusicId, iconSize = 18.dp)
         when {
             preparingId == row.song.id -> {
                 Spacer(Modifier.width(10.dp))
@@ -835,7 +1077,7 @@ private fun ErrorState(message: String, onRetry: () -> Unit, modifier: Modifier 
 }
 
 @Composable
-private fun EmptyState(message: String) {
+internal fun EmptyState(message: String) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(
             message,

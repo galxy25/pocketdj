@@ -11,6 +11,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.ui.platform.testTag
+import com.levi.pocketdj.screens.nowplaying.NowPlayingSeams
+import com.levi.pocketdj.screens.nowplaying.NowPlayingViewModel
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,10 +49,15 @@ import kotlinx.coroutines.launch
 fun MiniPlayerBar(
     modifier: Modifier = Modifier,
     onTap: (() -> Unit)? = null,
+    /** Expand chevron / strip tap target (navigates to Now Playing). */
+    onExpand: (() -> Unit)? = null,
+    /** Hide the bar (the Now Playing deck already shows the transport). */
+    hidden: Boolean = false,
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val scope = rememberCoroutineScope()
+    val vm = remember { NowPlayingViewModel(graph, scope) }
 
     val nowPlaying by graph.playbackController.nowPlaying.collectAsState()
     val preparingId by graph.playbackController.preparingSongId.collectAsState()
@@ -54,7 +65,15 @@ fun MiniPlayerBar(
 
     val np = nowPlaying
     val preparing = preparingId
-    if (np == null && preparing == null) return
+    // PB-4: a durable-session restore is HELD (no audio, no player card), so nowPlaying stays null;
+    // without this strip the restored deck (and its ▶) would be unreachable after a relaunch.
+    val seqState by graph.playbackGraph.sequencer.state.collectAsState()
+    val heldRow = if (seqState.isHeldForResume) seqState.queue.getOrNull(seqState.index) else null
+    if (hidden || (np == null && preparing == null && heldRow == null)) return
+    // A Mix session owns the transport; the Mix screen is its own deck.
+    val mixActive by NowPlayingSeams.mixSessionActiveFlow.collectAsState()
+    if (mixActive) return
+    val tap = onExpand ?: onTap
 
     val catalog = catalogState.catalog
 
@@ -66,7 +85,7 @@ fun MiniPlayerBar(
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .let { base -> if (onTap != null) base.clickable(onClick = onTap) else base }
+                .let { base -> if (tap != null) base.clickable(onClick = tap) else base }
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {
             when {
@@ -100,23 +119,65 @@ fun MiniPlayerBar(
                             )
                         }
                     }
-                    Spacer(Modifier.width(8.dp))
+                    Spacer(Modifier.width(4.dp))
+                    IconButton(
+                        onClick = { scope.launch { graph.playbackController.previous() } },
+                        modifier = Modifier.testTag("mini-previous"),
+                    ) {
+                        Icon(Icons.Filled.SkipPrevious, contentDescription = "Previous")
+                    }
                     IconButton(
                         onClick = {
-                            scope.launch {
-                                if (np.isPlaying) {
-                                    graph.playbackController.pause()
-                                } else {
-                                    graph.playbackController.resume()
-                                }
-                            }
+                            vm.togglePlayPause(vm.currentInputs())
                         },
+                        modifier = Modifier.testTag("mini-playpause"),
                     ) {
                         Icon(
                             if (np.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                             contentDescription = if (np.isPlaying) "Pause" else "Play",
                             tint = MaterialTheme.colorScheme.primary,
                         )
+                    }
+                    IconButton(
+                        onClick = { scope.launch { graph.playbackController.next() } },
+                        modifier = Modifier.testTag("mini-next"),
+                    ) {
+                        Icon(Icons.Filled.SkipNext, contentDescription = "Next")
+                    }
+                    if (onExpand != null) {
+                        IconButton(onClick = onExpand, modifier = Modifier.testTag("mini-expand")) {
+                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Open Now Playing")
+                        }
+                    }
+                }
+
+                preparing == null && heldRow != null -> {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            heldRow.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            listOfNotNull(heldRow.artist, "Paused").joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    IconButton(
+                        onClick = { vm.togglePlayPause(vm.currentInputs()) },
+                        modifier = Modifier.testTag("mini-playpause"),
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = MaterialTheme.colorScheme.primary)
+                    }
+                    if (onExpand != null) {
+                        IconButton(onClick = onExpand, modifier = Modifier.testTag("mini-expand")) {
+                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Open Now Playing")
+                        }
                     }
                 }
 
