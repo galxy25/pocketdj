@@ -1,0 +1,910 @@
+{
+ "area": "Producer / Studio / Performance / Tracks (iOS apple/PocketDJ/Studio + Performance \u2192 Android Producer tab)",
+ "inventory": [
+  {
+   "feature": "Producer tab shell: 7 sub-tabs (Samples/Loops/Sequencer/Instruments/Cues/Demuxer/Tracks), last sub-tab persisted, compact = icon-only segments, arranger-fullscreen hides picker",
+   "ios_files": "Studio/Views/PerformanceView.swift (StudioSubTab, StudioNavState); tab rawValue 'Performance' persisted, title 'Producer'",
+   "android_files": "MainActivity.kt \u2192 PlaceholderScreen('Producer', phase 4); PocketDjDestination.Producer",
+   "status": "MISSING",
+   "notes": "Only a placeholder route exists."
+  },
+  {
+   "feature": "Studio document: StudioDocument {samples, loops, patterns, takes, cues, slices, folders\u00d74, arrangements, arrangementFolders, arrangementArtifacts, keys}; schemaVersion=1 NEVER bumped; every new field additive-optional with per-element lossy decode; id prefixes smp_/lp_/ptn_/tk_ (collection-riding) vs cue_/slc_/sfld_/lpfld_/ptnfld_/tkfld_/arr_/trk_/clip_/arrfld_/art_/stf_ (internal)",
+   "ios_files": "Studio/StudioModels.swift (StudioFactory.studioPrefixes :1451, StudioLossyBox :25, StudioSource Codable :54-107, StudioPatternRow.init(from:) :513 normalizes to max(raw,16)), Studio/StudioStore.swift (versioned off-main writer, flush(), scheduleSave, cues mirror doc)",
+   "android_files": "none (PlayResolver.STUDIO_ID_PREFIXES only knows the 4 riding prefixes)",
+   "status": "MISSING",
+   "notes": "Port shape-compatibly: same JSON keys, same lenient decode, same stepCount normalization (silent truncation to 16 = data loss, SEQ4 lesson)."
+  },
+  {
+   "feature": "Launch reconcile: drop a sample/loop/take record ONLY when its file is provably gone from a reachable root; unreachable user root \u21d2 never prune; dangling rendered/bounce files are nulled (bounceDirty=true), never deleted",
+   "ios_files": "Studio/StudioStore.swift reconcileOnLaunch :1319-1380; BurnStore.reconcileOnLaunch doctrine",
+   "android_files": "none",
+   "status": "MISSING",
+   "notes": "Android roots = app-private filesDir/studio/<family>; user-relocatable roots via SAF tree URIs (persisted permission) \u2014 unreachable SAF tree must skip, never prune."
+  },
+  {
+   "feature": "Storage families + deterministic filenames: studio/{samples,loops,sequences,takes,instruments,arrangements}; sample-<id>.m4a, loop-<id>.caf (LPCM), pattern-<id>.m4a, take-<id>.m4a, instrument-<slug>.sf2, clip-<id>.m4a; usage/delete filter strictly by filename shape AND document-known id; delete-all keeps records whose user root is unreachable",
+   "ios_files": "Studio/StudioFolders.swift (StudioFamily :9-72, fileId :232, usageBytes :256), StudioStore.usageBytes/deleteAll :1407-1460, Views/StorageView.swift :20-76",
+   "android_files": "data/storage/StorageService.kt (Category enum has no studio categories), screens/settings/StorageScreen.kt",
+   "status": "MISSING",
+   "notes": "Loops become loop-<id>.wav on Android (LPCM; no CAF writer) \u2014 document is device-local so the extension divergence is acceptable but must be stated in the Android doc."
+  },
+  {
+   "feature": "Samples: create from indexed track (region carve w/ waveform, mark in/out, nudge \u00b110 ms/\u00b11 beat, burn-on-demand ladder: local \u2192 download \u2192 'Rip first'), from mic, from imported file (DRM rejected), from stems subset (summed, song-relative), from take (COPIES audio), from arranger artifact",
+   "ios_files": "Views/StudioSamplesView.swift, StudioNewSampleFromTrackView.swift, StudioMicRecordView.swift, StudioRender.carveTrackRegion/carveStemMix/importAudioFile :386-499",
+   "android_files": "none; Android has NO burns \u2014 only streaming (specs/playback.md:342). RipManifestEntry lacks stems/beatgrid/lyrics fields",
+   "status": "MISSING",
+   "notes": "Android needs a LocalAudioCache (download public rip/cut/stem mp3 to cache) as the carve source \u2014 the 'burn' rung of the ladder. Analog songs: carve [startMs, startMs+durationMs] of the album file so sample 0:00 is the song's 0:00."
+  },
+  {
+   "feature": "Sample editor: non-destructive edit {trim, gainDb, rate 0.5\u201310, pitch \u00b112, reverb, delay, comp, filter}; Save bakes nothing; renderRevision stamp \u2192 rendered cache sample-<id>.m4a re-rendered when stale; tap-tempo / manual BPM / Auto-detect tempo for grid-less samples",
+   "ios_files": "Views/StudioSampleEditorView.swift, StudioMixerDeck.swift, StudioEngine.applyEdit :680, StudioAudio.applyEditToChain :86, Support/BeatDetect.swift (search 55\u2013210 wider than report 70\u2013180)",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Sample folders (sfld_), loop/pattern/take folders; move-to menus; delete confirmation lists referencing loops/pattern rows",
+   "ios_files": "StudioStore folders :325-530, StudioSamplesView a11y folder-*/move-to-*",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Slices \u2192 performance pads: 8 start markers per sample (slc_), even chop / beat-snap, pad = self-contained one-shot (never touches trim window), 'make sample' bakes slice to smp_, 'send to sequencer'",
+   "ios_files": "Views/StudioSliceEditorView.swift, StudioStore slices :1089-1170, BeatMath.sliceStarts, StudioEngine.playSlice :634",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Loops: beat-grid slices \u00bd\u201332 beats at anchor; length = sum of REAL inter-beat intervals when grid exists else beats\u00d760000/bpm; rendered to LPCM with authoritative frame count (AAC ticks at the seam); priming-latency head trimmed; self-contained after render (parent delete leaves loop playable, re-slice disabled)",
+   "ios_files": "Views/StudioLoopsView.swift, StudioRender.renderLoop :151, Support/BeatMath.sliceBoundaries :64, StudioEngine.playLoop :827",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Sequencer: StudioPattern rows over smp_/lp_ targets; per-pattern stepCount (16 default, max 8192, bar granularity); per-step loop mode + span (tempo-fit stretch); row gain LIVE; mono-choke retrigger; pre-rendered row buffers (no live AU latency); rolling 4-bar scheduling horizon; sample-accurate anchor; missing-target rows muted+skipped; zero-sounding-step refuses play/bounce; live-edit toggle (next bar); solo row; retarget row; row labels/collapse/zoom; start-step cursor + \u221e loop bars (shared mappedStep/loopWindow for clock AND scheduler); sticky cursor on stop (guard: not while looping); bounce pattern-<id>.m4a (loops baked as finite repeats, bounce\u2261live)",
+   "ios_files": "Views/StudioSequencerView.swift, StudioEngine.swift (StudioPatternClock :132, stepFrames/stepTime/loopWindow/mappedStep :376-425, loadPattern :876, armSlot horizon), StudioRender.bouncePattern :203, StudioAnalyzer.StudioPatternBouncer :65",
+   "android_files": "none",
+   "status": "MISSING",
+   "notes": "All step math is pure and must be ported as JVM-testable functions."
+  },
+  {
+   "feature": "Cues: 8 slots/song, tap = play from cue, set-at-playhead/rename/nudge/delete; waveform (analog = album-side PNG cropped to song window); seek = startMs(shared analog) + cue computed separately; in-flight live-HLS rip cannot seek \u2192 disabled state; cues mirrored to their own doc",
+   "ios_files": "Views/StudioCuesView.swift (:376 play(cue:)), StudioStore cues :978-1088, StudioCueDoc",
+   "android_files": "PlaybackController.seekTo exists; PlayAction.Stream carries clipStartMs",
+   "status": "MISSING",
+   "notes": "Android: ExoPlayer ClippingMediaSource/clip start + seekTo(cueMs) on the streamed rip; AM-native backend = play-then-seek (device-only)."
+  },
+  {
+   "feature": "Instruments: 7 GM instruments from GeneralUser GS SF2 (shared bank, index at rips/instruments/index.json with bankKey RELATIVE to instrumentsBase), file-based download w/ progress + sha256 + atomic install, ONE bank row grouped by bankKey, delete bank",
+   "ios_files": "Studio/InstrumentPacks.swift (:163 InstrumentPackStore, installBank :441, bankSlug :506)",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Instrument engine: sampler + on-screen keys; MIDI receive thread calls synth directly + appends timestamped events into a lock-protected log (never per-note main-thread hops); live capture always-on (anchored at first note), take log armed-only; click + 1-bar count-in (click NOT recorded); take \u2192 events + rendered audio; replay plays EVENTS; multi-staff replay = cached rendered mixdown; metronome toggle live mid-take",
+   "ios_files": "Studio/InstrumentEngine.swift (InstrumentEventLog :45, startTake :1222, replayTake :1361, replayActions :1545), StudioRender.renderTake/renderTakePolyphonic :528-640",
+   "android_files": "none",
+   "status": "MISSING",
+   "notes": "Native SF2 synth needed (TinySoundFont) under Oboe; realtime thread must never allocate/lock on the UI."
+  },
+  {
+   "feature": "Score: quantize to 16ths at take.bpm, durations snapped, chords, rests, measures; clef plan per instrument; accidentals (display-only); editable score (editedEvents, nil \u21d2 derive) with Enter/Select/Move/Edit modes, undo, Cancel = revertTakeEdits; playhead state; PDF export (vector) + SMF type-0 PPQ 480 from RAW events + audio export",
+   "ios_files": "Studio/ScoreModel.swift (ScoreQuantizer :199, ScorePlayhead :338), ScorePDF.swift, SMFWriter.swift, Views/ScoreEditorView.swift, StudioScoreView.swift",
+   "android_files": "none",
+   "status": "MISSING",
+   "notes": "PDF via android.graphics.pdf.PdfDocument (vector) \u2014 same ScoreLayout math shared with Canvas."
+  },
+  {
+   "feature": "MIDI import (.mid \u2192 take on current instrument, ch10 dropped), switch take instrument, change take tempo (rescales note ms, invalidates render)",
+   "ios_files": "Studio/StudioMIDIImport.swift, StudioStore.setTakeInstrument/setTakeTempo :824-870",
+   "android_files": "none",
+   "status": "MISSING",
+   "notes": "Needs a pure-Kotlin SMF parser (no AudioToolbox equivalent)."
+  },
+  {
+   "feature": "Arpeggiator: PROGRAM mode writes NOTHING to any score; dedicated transport playable while programming; orders up/down/exclusive/inclusive/order/random (injected RNG); octaves 1\u20134; swing 50\u201375%; latch; arp notes write to live score (or overdub staff INSTEAD, never both)",
+   "ios_files": "Studio/ArpeggiatorEngine.swift (ArpPattern.cycle/onsetMs/gateOffMs), InstrumentEngine.startArpPlayback :940",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Overdub: \u22644 staffs per take, per-staff instrument/edits; region CONFINED to [anchor, score end] (score never grows; EXCEPTION empty score unbounded); <250 ms room \u21d2 refused with explanation; loop toggle wraps + layers; passes end explicitly; backing = cached rendered mixdown at anchor offset; polyphonic render = sequential per-staff render + float mix",
+   "ios_files": "InstrumentEngine.startOverdub/hasOverdubRoom/stopOverdub :1087-1200, StudioStore.addOverdubStaff :871",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "BLE MIDI + USB/wired MIDI",
+   "ios_files": "Studio/BLEMIDI.swift (CoreBluetooth central, GATT 03B80E5A/7772E5DB), InstrumentEngine CoreMIDI",
+   "android_files": "none",
+   "status": "MISSING",
+   "notes": "android.media.midi.MidiManager handles USB AND BLE (openBluetoothDevice) natively \u2014 one Kotlin receiver, no GATT parser. Device-only."
+  },
+  {
+   "feature": "Mic recorder: session configured+activated before input format read; tap at HW input format; deep-copy \u2192 private queue \u2192 encoder; process-wide micCaptureActive flag guards every playback-category switch; input picker; level meter; orphan recovery; stall watchdog; stopAwaitingFinalize (delete only after encoder finalized)",
+   "ios_files": "Studio/StudioMicRecorder.swift, Studio/AudioSessionPolicy.swift",
+   "android_files": "none; Manifest has no RECORD_AUDIO",
+   "status": "MISSING",
+   "notes": "Android: AudioRecord/Oboe input stream \u2192 MediaCodec AAC \u2192 MediaMuxer; AudioFocus + audio-mode coexistence instead of AVAudioSession category guard."
+  },
+  {
+   "feature": "Mixer deck (reusable): Tempo/Pitch/Gain/Comp/Reverb/Delay/Filter + Loop over the trim window; live-audition-only looper never baked; per-sequencer-row deck (bake next Play)",
+   "ios_files": "Views/StudioMixerDeck.swift",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Demuxer: load catalog song (carve shared analog side once into demux-cache so 0:00 = song's 0:00) / studio item / imported file; on-device chord detection (chromagram \u2192 24 triad templates \u2192 vote+merge); chord detail (staves + guitar barre shapes; Int.MIN collision-math overflow trap); timeline zoom 4\u201360 px/s, drag-scrub, follow (REAL layout anchors, not offset); stems: mute/solo via synced stem player, download, /stemify + poll, /stemify-custom upload for non-catalog audio; save",
+   "ios_files": "Studio/Demux/DemuxModels.swift, DemuxStore.swift, ChordDetector.swift, Views/StudioDemuxView.swift, DemuxTimelineView.swift, DemuxChordDetailView.swift",
+   "android_files": "none; RipManifestEntry has no stems fields",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Demux drum-pattern extraction (hop-512 STFT spectral flux, kick/snare/perc/other by band ratio, bass stem \u2192 bass lane), bars from sidecar downbeats else estimate, grid follows playback + two-way seek, 'Send bar N / all bars to Sequencer' (carves kit samples from stems, builds StudioPattern)",
+   "ios_files": "Studio/Demux/DrumPatternDetector.swift, Views/DemuxDrumPatternView.swift",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Demux instrumental (chord-comping take, beat-quantized) + melody (monophonic f0 YIN-ish \u2192 notes \u2192 scale snap) \u2192 StudioTake with demuxSourceKey/demuxMode; comping\u2194melody switch from Takes menu; synced follow score",
+   "ios_files": "Studio/Demux/DemuxInstrumental.swift, MelodyTracker.swift, Views/DemuxInstrumentalView.swift",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Demux Cut Sample (stem subset, WYHIWYG), Send stems to new/existing arrangement",
+   "ios_files": "Views/DemuxCutSampleView.swift, StudioDemuxView ~:806",
+   "android_files": "none",
+   "status": "MISSING"
+  },
+  {
+   "feature": "Demux lyrics: cloud faster-whisper sidecar rips/lyrics/<id>.json (cloud-first); on-device SFSpeech transcription behind DemuxFeatures.lyricsEnabled gate (hidden by default)",
+   "ios_files": "Studio/Demux/DemuxTranscriber.swift, DemuxStore.applyCloudTranscript :292, Views/DemuxLyricsView.swift",
+   "android_files": "none",
+   "status": "PARTIAL",
+   "notes": "Cloud sidecar display = portable. On-device file-based speech recognition has no Android API (SpeechRecognizer is mic-only) \u2192 that half is N/A, which matches iOS where it is gated off anyway."
+  },
+  {
+   "feature": "Tracks arranger: multiple arrangements + folders (home list), lanes (trk_) with gain/pan/mute/solo/colour/channel strip, clips (clip_) = IMMUTABLE baked snapshots with fileStartMs window, beat ruler + tap-seek, zoom + follow, looper region, master FX (phaser/ring-mod/drive/Brazilian bass/master gain; freeze NEVER on Tracks), per-track strip (pitch/tempo BAKED; EQ/reverb/delay/chorus = render kernels), Beat Match (grid warp + snap), scissor trim (pure trimGap, staged until Save, multi-select, add-clip disabled in trim), bounce (artifact-only, WYSIWYG), record-to-master (Clean = tap post-limiter at canonical rate; Quantized = relabel), artifacts browser (audition/convert to sample/add as track/share/delete), stem import as 4 lanes",
+   "ios_files": "Views/TracksView.swift, Studio/MultitrackPlayer.swift (single render callback: per-track mix + TrackFXKernel + MasterFXKernel), ArrangerBouncer.swift, ArrangerClipBaker.swift, ArrangerBeatMatch.swift, TrackFX.swift, MasterFX.swift, StudioArrangerGridAnalyzer.swift, StudioStore arranger ext :1732-2234 (trimGap :2154)",
+   "android_files": "none",
+   "status": "MISSING",
+   "notes": "Load-bearing: live and bounce read paths apply identical math; playGeneration token guards play() across decode awaits; bake on natural-end nonce, NOT on an isPlaying flip; applyMix keyed by track id not index."
+  },
+  {
+   "feature": "Collections \u2194 Studio: studio ids ride songIds/PlaylistNode verbatim; playback/counts KEEP them; rip/stemify/CSV/Browse EXCLUDE; realize places studio items as synthetic pseudo-songs with real lengthMs but never autofill candidates; Mix/SetlistPlayer resolve via studioResolve closure",
+   "ios_files": "PocketDJApp.swift :1025-1045 (studioLookup/studioResolve wiring), Mix/MixResolver.swift :54",
+   "android_files": "data/collections/CollectionsStore.kt :1014-1060 (songIds*/playableIds* split DONE), data/rips/PlayResolver.kt (STUDIO_LOCAL_ID \u2192 MetadataOnly), RealizeEngine.kt (no synthetic studio songs)",
+   "status": "PARTIAL",
+   "notes": "Policy split exists; actual local-file playback of studio ids and realize synthetic entries are missing."
+  },
+  {
+   "feature": "Realize engine (Performance/ folder = the setlist realize math, NOT Studio)",
+   "ios_files": "Performance/RealizeEngine.swift, Harmonics.swift, Interpolate.swift, SeededRNG.swift",
+   "android_files": "data/collections/RealizeEngine.kt, Harmonics.kt, Interpolate.kt, Prng.kt (+ tests)",
+   "status": "DONE",
+   "notes": "Already ported bit-for-bit in P2."
+  },
+  {
+   "feature": "Stem playback primitive (4 synced stems, mute/solo, seek)",
+   "ios_files": "Mix/StemPlayer.swift (startSynced plays only scheduled nodes \u2014 disconnected-node crash)",
+   "android_files": "none",
+   "status": "MISSING",
+   "notes": "Owned by the Mix area's engine decision; Demuxer consumes it. Flagged as cross-area dependency."
+  },
+  {
+   "feature": "Studio Debug/diag logging (MixDiag-style NPLog of every playback exit)",
+   "ios_files": "StudioEngine.dlog :363, InstrumentEngine BackingStart typed results",
+   "android_files": "android.util.Log usage only",
+   "status": "MISSING",
+   "notes": "Every player exit must log a distinct reason."
+  },
+  {
+   "feature": "Keyboard shortcuts \u23181\u2013\u23187 / shadow buttons / XCUITest seams (PDJ_SEED_STUDIO, PDJ_SEED_DEMUX)",
+   "ios_files": "PerformanceView.tabShortcuts",
+   "android_files": "n/a",
+   "status": "NA",
+   "notes": "macOS-only input; fixture seeding is replaced by an intent-extra seed flag in debug builds (useful for emulator verification)."
+  },
+  {
+   "feature": "Security-scoped bookmarks for user folders",
+   "ios_files": "StudioFolders.resolveRoot",
+   "android_files": "n/a",
+   "status": "NA",
+   "notes": "Android equivalent = SAF persistable tree URI; different API, same 'unreachable \u21d2 skip' semantics."
+  },
+  {
+   "feature": "visionOS/macOS-specific (layered app icon, NSImage template glyph, AirPods route zombie-node re-prime)",
+   "ios_files": "Views/TracksGlyph.swift etc.",
+   "android_files": "n/a",
+   "status": "NA",
+   "notes": "Route-change handling exists on Android as AudioDeviceCallback + Oboe stream disconnect \u2192 rebuild stream (same 're-prime after engine down' invariant, different mechanism)."
+  }
+ ],
+ "architecture": "## Android architecture \u2014 Producer (Studio) area\n\n### 0. Engine decision (OPEN \u2192 decided for this area): Oboe/AAudio + small C++ DSP core, Kotlin owns all logic\n\n**Decision:** one NDK module `android/app/src/main/cpp/studiodsp/` (CMake, C++17) exposing a thin JNI surface; **all scheduling, state, persistence and musical math stay in Kotlin.** Rationale, grounded in the iOS history:\n1. The iOS arranger was forced OFF per-node graphs onto ONE `AVAudioSourceNode` render callback that sums clips and runs `TrackFXKernel`/`MasterFXKernel` in-block (MultitrackPlayer.swift; custom AUv3 failed on device). The Android analogue of \"one render callback\" is an **Oboe output stream with a data callback**; Java `AudioTrack.write` loops add 20\u201340 ms jitter and GC pauses and cannot host a SoundFont synth with playable latency.\n2. Instruments need a SoundFont renderer. There is no platform SF2 synth on Android. **TinySoundFont** (single header, MIT) renders GeneralUser GS presets; `tsf_load_filename` + `tsf_set_output(TSF_STEREO_INTERLEAVED, 44100)`; one preset loaded per staff (the iOS \"loadSoundBankInstrument loads ONE preset\" fact holds).\n3. Tempo/pitch (sample rate 0.5\u201310\u00d7, pitch \u00b112, span stretch, strip bake, Beat Match warp) needs a time-stretcher. **Signalsmith Stretch** (MIT, header-only) is used OFFLINE only (pre-bake, as iOS does) \u2014 never in the realtime callback.\n4. Everything deterministic is pure Kotlin and JVM-tested (step timing, loop windows, BeatMath, trimGap, quantizer, SMF, score layout, chord/drum/melody detectors, biquad/Freeverb coefficient math). The C++ side is small: PCM mixer, TSF wrapper, stretch wrapper, and float-array ports of TrackFXKernel/MasterFXKernel (also callable offline from Kotlin via JNI for WYSIWYG bounce \u2261 live).\n\nFallback if NDK is blocked: `StudioOutput` is an interface; a Kotlin `AudioTrack` implementation exists for the emulator/CI path (latency irrelevant there) and is the default on the emulator; Oboe is the device default. Both consume the same `RenderGraph` pull API.\n\n**Codecs:** decode via `MediaExtractor`+`MediaCodec` \u2192 canonical **44.1 kHz stereo Float32** (`StudioAudio.canonical`), resampled on import (iOS `convertToCanonical`). Encode AAC `.m4a` via `MediaCodec`+`MediaMuxer`; loops write **`.wav` LPCM** with an authoritative `frames` count (CAF has no Android writer; same seam-tick rationale). `AVURLAsset.hasProtectedContent` \u21d2 reject DRM imports = `MediaExtractor.getDrmInitData() != null` or decode failure.\n\n### 1. Packages (`com.levi.pocketdj.`)\n- `studio.model` \u2014 `StudioModels.kt` (@Serializable mirrors of every iOS struct, same JSON keys), `StudioFactory` (id minting, `studioPrefixes`, `isStudioId`), `StudioSource` custom serializer (`type` discriminator exactly as StudioModels.swift:54-107).\n- `studio.store` \u2014 `StudioStore` (single doc `pocketdj-studio.json` under filesDir, versioned writer on `Dispatchers.IO`, `scheduleSave` debounce + `flush()`, `StateFlow<StudioDocument>`; cues mirror `pocketdj-studio-cues.json`), `StudioFolders` (families, filename shapes, SAF roots), `StudioReconcile`.\n- `studio.audio` \u2014 `StudioAudio` (canonical format, gain math, `trimmedOrPadded`), `PcmBuffer` (FloatArray + frames), `AudioDecoder`, `AacEncoder`, `WavWriter`, `StudioRender` (offline: renderSample/renderLoop/bouncePattern/carveTrackRegion/carveStemMix/importAudioFile/stretch/transform/renderTake/mixPCM, FX-tail drain to \u221260 dBFS or 3 s, priming head trim), `StudioOutput` (Oboe/AudioTrack), `RenderGraph` (what the callback pulls), `LocalAudioCache` (download rip/cut/stem mp3 \u2192 `studio-src/` with atomic rename; the \"burn rung\").\n- `studio.dsp` \u2014 pure Kotlin kernels mirroring TrackFX.swift/MasterFX.swift (biquads, Freeverb-lite, delay, chorus, phaser, ring-mod, drive, Brazilian bass) with identical parameter structs; used by offline render; the C++ copies are generated from the same constants and cross-checked by a golden test.\n- `studio.engine` \u2014 `StudioEngine` (sample audition chain, slice one-shot, loop audition, pattern scheduler with `StudioPatternClock`, `stepFrames/stepTime/loopWindow/mappedStep`, rolling `armSlot` horizon, choke, live step mirror), `InstrumentEngine` (TSF voice, `InstrumentEventLog` lock-protected, take/live/overdub logs, click, arp scheduler, replay), `MicRecorder`, `MultitrackPlayer` (clip list \u2192 render callback with per-track gain/pan/FX + master FX, loop/seek frame cursor, `playGeneration`, natural-end nonce), `ArrangerBouncer`, `ArrangerClipBaker`, `ArrangerBeatMatch`, `AudioFocusPolicy` (mic-capture-active flag + AudioFocus request; every playback start consults it).\n- `studio.midi` \u2014 `MidiInput` (android.media.midi, USB + BLE via `MidiManager.openBluetoothDevice`), `SmfWriter`, `SmfParser`, `MidiImport`.\n- `studio.score` \u2014 `ScoreQuantizer`, `ScoreLayout`, `ScorePlayhead`, `ScorePdf` (PdfDocument), `Accidental`.\n- `studio.packs` \u2014 `InstrumentPackStore` (index fetch offline-first via CatalogService pattern, OkHttp streaming download to temp + sha256 + atomic move, grouped by bankKey).\n- `studio.demux` \u2014 `DemuxModels`, `DemuxStore` (`demux-cache/<key>.json`, audio/, stems/<key>/), `ChordDetector`, `DrumPatternDetector`, `MelodyTracker`, `DemuxInstrumental`, `KeyDetector`, `BeatDetect`, `BeatMath`, `StemClient` (manifest stems keys, `/stemify`, `/stemify-custom`, poll).\n- `screens.producer` \u2014 `ProducerScreen` (sub-tab row persisted in AppSettingsStore `studioTab`), `samples/`, `loops/`, `sequencer/`, `instruments/`, `cues/`, `demux/`, `tracks/`, shared `MixerDeck`, `WaveformView`, `EditSlider`.\n\n### 2. Data flow / threading\n- UI (Compose) \u2190 `StateFlow` from stores/engines; engines are `@MainThread` facades (mirror of `@MainActor @Observable`) whose realtime state lives in lock-free structs read by the audio callback.\n- **Realtime thread rule (load-bearing, from InstrumentEngine):** MIDI receive (`MidiReceiver.onSend`, runs on a MidiManager thread) calls `nativeNoteOn` directly and appends to `InstrumentEventLog` under a `ReentrantLock`-free `AtomicReference` ring; UI highlights drain at 30 Hz; staff publish at ~10 Hz; never per-note main-thread posts.\n- Offline renders run on `Dispatchers.Default` inside a `StudioRender` single-permit `Mutex` (iOS actor). Decoding never on main.\n- Store writes: snapshot \u2192 IO thread \u2192 temp file \u2192 `rename` (version monotonic; later version wins).\n- Audio ownership: one audible owner at a time \u2014 `PlaybackController` (Media3) vs Studio engines. Starting a Studio engine calls `playbackController.pause()` and requests `AUDIOFOCUS_GAIN`; focus loss pauses engines (iOS interruption park); `AudioDeviceCallback`/Oboe `onErrorAfterClose` \u2192 rebuild stream and re-prime active players (zombie-node lesson).\n- Mic: `MicRecorder` sets `AudioFocusPolicy.micCaptureActive`; `PlaybackController` and all Studio play paths refuse to change audio mode/route while it is set.\n\n### 3. Platform APIs\nOboe (prefab AAR `com.google.oboe:oboe`), NDK/CMake, `MediaExtractor/MediaCodec/MediaMuxer`, `AudioRecord` (or Oboe input), `android.media.midi`, `PdfDocument`, SAF `ACTION_OPEN_DOCUMENT_TREE`/`ACTION_OPEN_DOCUMENT` (import audio/MIDI), `FileProvider` share sheet (export PDF/MIDI/audio), `WorkManager` only for pack download retries (foreground download otherwise), Compose `Canvas` for waveforms/score/timeline, `LazyRow` with per-second anchors for follow-scroll.\n\n### 4. Persistence shapes (shared with iOS)\n`pocketdj-studio.json` identical keys (StudioDocument); `demux-cache/<key>.json` identical (DemuxDocument); instrument index `rips/instruments/index.json` identical; beatgrid sidecar `rips/analysis/<id>.json` `{beatGridBpm, firstDownbeatMs, steady, beatsMs, downbeatsMs}`; lyrics sidecar `rips/lyrics/<id>.json`. `RipManifestEntry` gains additive optional fields (`firstDownbeatMs, beatGridBpm, steady, beatgrid, stems{vocals,drums,bass,other}, stemVersion, lyrics`). Loop file extension `.wav` is the one documented divergence.\n\n### 5. Tiers\n- **Tier 0 (core, P0):** models/store/folders, audio core + native lib, Producer shell, Samples (mic/import/from-track via LocalAudioCache), Loops, Sequencer, Cues, Collections playback of studio ids, Storage rows.\n- **Tier 1 (P1):** Instruments (packs, synth, keys, takes, score, exports), MIDI (USB/BLE), Arp + overdub, Tracks arranger (model+UI, player, bounce/record/trim/beat-match), Demuxer core (chords, timeline, stems) .\n- **Tier 2 (P2):** Demux drum/melody/instrumental/cut-sample/lyrics, mixer deck everywhere, slices, folders polish.\n\n### 6. Shared touch points (named once, every package lists which it touches)\n`MainActivity.kt` (Producer composable + routes), `di/AppGraph.kt` (new singletons), `AndroidManifest.xml` (RECORD_AUDIO, BLUETOOTH_CONNECT/SCAN, FileProvider), `app/build.gradle.kts` + `gradle/libs.versions.toml` (NDK/CMake, Oboe, media3-common), `data/storage/StorageService.kt` (studio categories), `playback/PlaybackController.kt` (local-file studio playback branch), `data/rips/RipsModels.kt` (additive fields), `data/settings/AppSettingsStore.kt` (studioTab, click toggles, folder URIs).",
+ "decisions": [
+  "Mix/Studio DSP engine for this area: Oboe/AAudio output stream + small C++ core (TinySoundFont for SF2, Signalsmith Stretch for OFFLINE time/pitch, ported TrackFX/MasterFX kernels); all logic/state/math in Kotlin; AudioTrack implementation of the same StudioOutput interface for the emulator. Justification: iOS converged on a single render-callback manual mixer; Android has no platform SF2 synth; Java AudioTrack cannot carry playable instrument latency.",
+  "Studio document JSON stays key-compatible with iOS pocketdj-studio.json (schemaVersion 1, additive-optional fields only, per-element lossy decode, pattern rows normalized to max(raw.count,16)); loops are .wav (LPCM) instead of .caf \u2014 documented divergence, device-local doc so no sync impact.",
+  "The 'burn' rung of the sample/demux source ladder becomes LocalAudioCache (download public rip/cut/stem mp3 to app cache, atomic rename); no general Burn/offline store is built in this area \u2014 if the Collections/Playback area ships a BurnStore, LocalAudioCache delegates to it.",
+  "Studio ids are played on Android by a local-file branch in PlaybackController (ExoPlayer file:// MediaItem) resolved through StudioStore.localUrlForPlayback \u2014 never sent to /rip (PlayResolver STUDIO_LOCAL_ID already fences it).",
+  "On-device speech transcription is N/A on Android (SpeechRecognizer is mic-only); Demux lyrics display the cloud sidecar only \u2014 equal to iOS default behaviour (gate off).",
+  "USB and BLE MIDI both go through android.media.midi.MidiManager (no custom GATT parser); device-only verification.",
+  "Stem playback primitive (synced 4-stem player) is a cross-area dependency on the Mix engine package; DMX-1 ships a single-file fallback and a StemPlayer interface the Mix area implements.",
+  "Realtime callback never allocates, locks, or touches Kotlin objects shared with UI except via atomics/pre-filled float arrays; MIDI \u2192 synth direct on the MIDI thread; UI drains at 30 Hz.",
+  "Every engine play()/stop() exit logs a distinct reason tag (StudioDiag) \u2014 the iOS 'no sound vs never called' lesson.",
+  "Packages are sized for one Sonnet implementer; shared files (MainActivity, AppGraph, Manifest, gradle, StorageService, PlaybackController, RipsModels, AppSettingsStore) are touched only where each package says so, and STU-1/STU-2 land first so later packages mostly add new files."
+ ],
+ "packages": [
+  {
+   "id": "STU-1",
+   "title": "Studio models + store + folders + reconcile",
+   "goal": "Port StudioModels/StudioStore/StudioFolders: key-compatible JSON document, lenient per-element decode, id minting, all CRUD setters (samples/loops/patterns/takes/cues/slices/folders), referrers, reconcileOnLaunch (never prune on unreachable root), usageBytes/deleteAll per family, cues mirror doc.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/model/StudioModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/model/StudioFactory.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/model/StudioSourceSerializer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/store/StudioStore.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/store/StudioFolders.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/store/StudioReconcile.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/store/StudioStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/model/StudioModelsDecodeTest.kt",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (add studioStore lazy)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Round-trips an iOS-produced pocketdj-studio.json fixture (copy one from apple tests) with zero field loss for samples/loops/patterns/takes/cues/slices/arrangements",
+    "Unknown fields and malformed elements are dropped per-element, never per-array or per-document",
+    "Pattern rows decode to max(raw.count,16) steps; stepCount>16 patterns never truncate",
+    "deleteSample reports referrers (loop count, pattern row count); loops survive parent deletion; pattern rows with missing target stay as muted rows",
+    "reconcile prunes a record only when its file is missing from a reachable root; an unreachable SAF root skips; dangling renderedFileName/bounce fileName are nulled + bounceDirty=true",
+    "Writes are atomic (temp+rename), versioned, flush() synchronous"
+   ],
+   "priority": "P0",
+   "est_lines": 2200,
+   "unit_tests": [
+    "StudioModelsDecodeTest: iOS fixture round-trip, StudioSource type discriminator for all 5 cases, lossy element drop at 3 depths",
+    "StudioStoreTest: CRUD per family, cue max-8 per song, slice slots, delete-with-referrers, reconcile unreachable root, usageBytes strict filename shape, version monotonic writer, flush"
+   ],
+   "emulator_steps": [
+    "Debug seed flag --ez PDJ_SEED_STUDIO true writes fixture doc + 1 s tone files; relaunch \u2192 rows persist; delete the tone file \u2192 relaunch \u2192 record pruned; point samples root at a revoked SAF uri \u2192 relaunch \u2192 nothing pruned"
+   ],
+   "device_only": "SAF tree permission persistence on real external storage",
+   "shared_touchpoints": [
+    "di/AppGraph.kt"
+   ]
+  },
+  {
+   "id": "STU-2",
+   "title": "Studio audio core: decode/encode, canonical PCM, offline StudioRender, StudioOutput (Oboe + AudioTrack), native DSP lib",
+   "goal": "The audio substrate every other package pulls: MediaCodec decode \u2192 44.1k stereo Float32, AAC m4a encode, WAV writer, StudioRender (carve, import, loop render with exact frames + priming trim, sample render with FX tail drain, stretch/transform via native stretcher, mixPCM), StudioOutput interface with Oboe (device) and AudioTrack (emulator) backends, RenderGraph pull API, NDK module with TinySoundFont + Signalsmith Stretch + TrackFX/MasterFX kernels, StudioDiag logger.",
+   "files": [
+    "android/app/src/main/cpp/studiodsp/CMakeLists.txt",
+    "android/app/src/main/cpp/studiodsp/jni.cpp",
+    "android/app/src/main/cpp/studiodsp/mixer.cpp",
+    "android/app/src/main/cpp/studiodsp/fx_kernels.cpp",
+    "android/app/src/main/cpp/studiodsp/sf2_voice.cpp",
+    "android/app/src/main/cpp/studiodsp/stretch.cpp",
+    "android/app/src/main/cpp/studiodsp/third_party/tsf.h",
+    "android/app/src/main/cpp/studiodsp/third_party/signalsmith-stretch.h",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/StudioAudio.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/PcmBuffer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/AudioDecoder.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/AacEncoder.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/WavWriter.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/StudioRender.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/StudioOutput.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/OboeOutput.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/AudioTrackOutput.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/RenderGraph.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/NativeDsp.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/StudioDiag.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/dsp/TrackFxKernel.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/dsp/MasterFxKernel.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/dsp/Biquad.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/audio/StudioAudioTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/dsp/KernelsTest.kt",
+    "android/app/build.gradle.kts (externalNativeBuild + oboe dep + ndk abiFilters)",
+    "android/gradle/libs.versions.toml (oboe)"
+   ],
+   "depends_on": [
+    "STU-1"
+   ],
+   "acceptance": [
+    "Decoding a 48 kHz mono m4a yields canonical 44.1 k stereo with correct duration \u00b11 ms",
+    "renderLoop writes exactly the beat-window frame count; frame 0 is musical frame 0 (priming head trimmed); a looped audition has no click at the seam (RMS continuity test on synthetic tone)",
+    "renderSample length = ceil(src/rate)+tail until <\u221260 dBFS or 3 s cap",
+    "Kotlin kernels and native kernels produce identical output (\u00b11e-5) on a golden impulse",
+    "StudioOutput starts/stops, survives stream disconnect by rebuilding and re-priming (callback resumes within 300 ms)",
+    "JNI never allocates in the callback (verified by code review + StrictMode-free run)"
+   ],
+   "priority": "P0",
+   "est_lines": 2500,
+   "unit_tests": [
+    "StudioAudioTest: gain dB math, trimmedOrPadded, canonical conversion of synthesized buffers (pure Kotlin, no MediaCodec)",
+    "KernelsTest: biquad coefficient parity with TrackFX.swift constants, Freeverb warm-up non-silence, drive soft-clip peak < dry, Brazilian bass beat pump phase after seek",
+    "StudioRenderMathTest: frame math for loop windows, tail-drain detection isBelowFloor"
+   ],
+   "emulator_steps": [
+    "Instrumented smoke on 'pocketdj' AVD: decode bundled tone.m4a, render loop .wav, encode m4a, play through AudioTrackOutput 1 s without exception; adb logcat shows StudioDiag start/stop reasons"
+   ],
+   "device_only": "Oboe low-latency path, real latency numbers, route-change (headphones) stream rebuild",
+   "shared_touchpoints": [
+    "app/build.gradle.kts",
+    "gradle/libs.versions.toml"
+   ]
+  },
+  {
+   "id": "STU-3",
+   "title": "Producer shell + Samples tab (mic, import, from-track) + sample editor + mixer deck",
+   "goal": "Replace the Producer placeholder with the 7-segment sub-tab shell (persisted studioTab, icon-only on compact) and ship Samples: list w/ folders & move-to, record from mic (permission, input picker, level meter, orphan recovery, stopAwaitingFinalize), import audio file (SAF, DRM rejected), new-from-track (song search, LocalAudioCache download ladder with burning/ready/failed+Retry/'Rip first' states, waveform, mark in/out, nudge \u00b110 ms/\u00b11 beat, carve inherits offset-shifted beat grid), editor with non-destructive edit chain audition via StudioEngine sample path, renderRevision cache, tap-tempo/manual BPM/Auto-detect (BeatDetect port), reusable MixerDeck.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/ProducerScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/StudioSubTab.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/samples/SamplesScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/samples/SampleEditorSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/samples/NewSampleFromTrackSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/samples/MicRecordSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/common/MixerDeck.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/common/WaveformView.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/common/EditSlider.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/common/FolderRows.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/StudioEngine.kt (sample audition + slice one-shot part)",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/MicRecorder.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/AudioFocusPolicy.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/audio/LocalAudioCache.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/BeatDetect.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/BeatMath.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/demux/BeatMathTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/demux/BeatDetectTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/MicRecorderMathTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/audio/LocalAudioCacheTest.kt",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (Producer composable only)",
+    "android/app/src/main/AndroidManifest.xml (RECORD_AUDIO)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (studioTab, sample folder uri)",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipsModels.kt (additive beatgrid/stems/lyrics fields)"
+   ],
+   "depends_on": [
+    "STU-1",
+    "STU-2"
+   ],
+   "acceptance": [
+    "Producer tab opens to last sub-tab; segments icon-only under 600 dp width",
+    "Mic: denied state, record\u2192stop produces smp_ with duration, app-kill mid-record recovers orphan on relaunch, playback cannot start while micCaptureActive",
+    "From-track: unavailable rip \u2192 'Rip first'; downloading \u2192 ready \u2192 carve produces sample whose grid beats are offset-shifted and only inside the region; analog song carve starts at entry.startMs",
+    "Editor: audition reflects rate/pitch/gain/FX live; Save bakes nothing; rendered cache regenerated only when renderRevision changed",
+    "BeatDetect search range 55\u2013210 wider than report window 70\u2013180 (test pins octave fold)"
+   ],
+   "priority": "P0",
+   "est_lines": 2500,
+   "unit_tests": [
+    "BeatMathTest: lastBeat/isDownbeat/sliceBoundaries real-grid vs constant fallback, sliceStarts even/beat-snap merge",
+    "BeatDetectTest: synthetic click track at 90/150 BPM \u2192 \u00b11 BPM, sub-70 fundamental folds",
+    "LocalAudioCacheTest (MockWebServer): atomic rename, partial download never visible, dedupe in-flight",
+    "MicRecorderMathTest: clampedTickDt, nextStallAccum, mintSampleFile, adoptableSampleId"
+   ],
+   "emulator_steps": [
+    "Boot pocketdj AVD with virtual mic (emulator -allow-host-audio) \u2192 record 2 s \u2192 row appears; import tone.wav via SAF; from-track against live manifest downloads and carves; screenshot each state"
+   ],
+   "device_only": "Real mic quality, Bluetooth input picker, DRM-protected file rejection with a real protected file",
+   "shared_touchpoints": [
+    "MainActivity.kt",
+    "AndroidManifest.xml",
+    "AppSettingsStore.kt",
+    "RipsModels.kt"
+   ]
+  },
+  {
+   "id": "STU-4",
+   "title": "Loops tab + slice editor (performance pads)",
+   "goal": "Loops: sample picker, beats \u00bd\u201332, anchor \u00b1beat with label, preview windowed audition, save renders loop-<id>.wav with authoritative frames, folders/move-to, rename/delete, grid-less CTA, 'source removed' note. Slices: 8 draggable markers on waveform, even chop / beat snap, pads = one-shot via StudioEngine.playSlice, make-sample bakes slc_ \u2192 smp_, send-to-sequencer builds a pattern.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/loops/LoopsScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/loops/LoopSliceSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/samples/SliceEditorSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/LoopAudition.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/LoopMathTest.kt"
+   ],
+   "depends_on": [
+    "STU-3"
+   ],
+   "acceptance": [
+    "Loop length = sum of real inter-beat intervals when grid present, else beats\u00d760000/bpm",
+    "Saved loop plays standalone after parent sample deletion; re-slice disabled with note",
+    "Pads play [start, nextStart) without touching the sample trim window",
+    "Even chop of N slices on a 4-beat grid yields merged coincident snaps"
+   ],
+   "priority": "P0",
+   "est_lines": 1400,
+   "unit_tests": [
+    "LoopMathTest: lengthMs with drifting grid, frames = round(lengthMs*44.1), sliceWindow(sampleId, slot) end = next start or duration"
+   ],
+   "emulator_steps": [
+    "Seeded sample \u2192 slice 4 beats \u2192 save \u2192 audition loops seamlessly (logcat frame count equals expected); delete sample \u2192 loop still auditions"
+   ],
+   "device_only": "Audible seam-click judgement",
+   "shared_touchpoints": []
+  },
+  {
+   "id": "STU-5",
+   "title": "Sequencer tab + pattern engine + bounce",
+   "goal": "Pattern engine: pre-rendered row buffers, sample-accurate scheduling against pattern-start frame anchor, step=60/bpm/4, rolling 4-bar horizon (armSlot), mono-choke retrigger, loop-step mode, span stretch (StudioStretchKey dedup), missing-target skip, zero-sounding refusal, live row gain, live step/loop mirror toggle, solo row, startStep + \u221e loopBars via shared mappedStep/loopWindow for clock AND scheduler, sticky cursor on stop (not while looping). UI: pattern list w/ folders, grid wrapped 8 per line on compact (bars-per-line zoom), step long-press menu (loop/span), row cards (collapse/label/retarget/gain/solo/per-row MixerDeck bake-next-play), length stepper, refresh/\u221e/play, 'edits apply next Play' banner, bounce pattern-<id>.m4a with loops baked as finite repeats trimmed to next same-row trigger.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/sequencer/SequencerScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/sequencer/PatternEditor.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/sequencer/PatternRowCard.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/PatternEngine.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/PatternClock.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/PatternMath.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/PatternBouncer.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/PatternMathTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/PatternEngineTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/PatternBouncerTest.kt"
+   ],
+   "depends_on": [
+    "STU-3",
+    "STU-4"
+   ],
+   "acceptance": [
+    "stepFrames(120 bpm, 44100) = 5512; stepTime anchors are monotonic across horizon re-arm",
+    "loopWindow slides back to stay full at tail and collapses to whole pattern when shorter; mappedStep cycles inside the window",
+    "Choke: a retrigger on the same row cuts the ringing hit (buffer test: second trigger resets row frame cursor)",
+    "Bounce of a pattern equals live schedule (offline mixdown of the same event list; loop steps finite, phase continuation at wrap)",
+    "Zero sounding steps \u2192 inline notice, no scheduling",
+    "Live-mode edits audible at next bar; static mode shows banner"
+   ],
+   "priority": "P0",
+   "est_lines": 2500,
+   "unit_tests": [
+    "PatternMathTest: stepFrames/stepTime/loopWindow/mappedStep (port the 23 iOS StudioEngineMathTests cases)",
+    "PatternEngineTest (fake RenderGraph clock): choke, missing-target skip, horizon re-arm count, startStep park guard when looping",
+    "PatternBouncerTest: bounce \u2261 live event list; loop wrap head fill; span stretch key dedup"
+   ],
+   "emulator_steps": [
+    "Seed 2 rows \u2192 toggle steps \u2192 Play: logcat shows scheduled slots; cursor advances; Stop parks cursor; \u221e with 2 bars loops; Bounce writes pattern-<id>.m4a of lengthMs"
+   ],
+   "device_only": "Timing tightness and .interrupts cut audibility",
+   "shared_touchpoints": []
+  },
+  {
+   "id": "STU-6",
+   "title": "Cues tab + cue-seek playback plumbing",
+   "goal": "Cues UI (track search burned-first, timeline/waveform with analog PNG crop, 8 slot buttons, tap=play from cue, long-press set-at-playhead/rename/nudge/delete, transport scrub) and the playback plumbing: PlaybackController.play(songId, startMs=cue) \u2192 ExoPlayer seek on streamed rip (clipStart + cue computed separately, never pre-added), AM backend play-then-seek, in-flight live rip \u2192 disabled 'still ripping' state.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/cues/CuesScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/cues/CueTimeline.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/cues/CueSeek.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/cues/CueSeekTest.kt",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (add startMs param to play(); seek after READY)"
+   ],
+   "depends_on": [
+    "STU-1"
+   ],
+   "acceptance": [
+    "Cue on an analog song seeks to entry.startMs + cueMs; end boundary stays entry.startMs + durationMs",
+    "8th slot set succeeds, 9th refused",
+    "Live-HLS rip-in-progress disables slots with hint",
+    "Waveform for analog crops the album-side PNG to [startMs, startMs+durationMs]"
+   ],
+   "priority": "P0",
+   "est_lines": 1200,
+   "unit_tests": [
+    "CueSeekTest: absolute seek math for digital vs shared analog, boundary preservation, clamp to duration",
+    "StudioStoreTest additions: cue CRUD/nudge/rename normalization"
+   ],
+   "emulator_steps": [
+    "Pick a streamed song \u2192 set cue at 30 s \u2192 tap \u2192 position jumps to ~30 s (logcat position)"
+   ],
+   "device_only": "Apple Music native backend play-then-seek",
+   "shared_touchpoints": [
+    "playback/PlaybackController.kt"
+   ]
+  },
+  {
+   "id": "STU-7",
+   "title": "Collections integration: play studio ids, counts, realize synthetic entries, Storage rows",
+   "goal": "Wire studio items into the existing Collections layer: PlaybackController local-file branch for smp_/lp_/ptn_/tk_ (via StudioStore.localUrlForPlayback, prepare-on-demand: bounce dirty pattern / render stale take), CollectionCatalog stats include studio items (title + real lengthMs via studioLookup), RealizeEngine synthetic pseudo-songs with mandatory lengthMs + bpm/camelot (never in candidates), AddToCollection sheet accepts .studio items, setlist rows show kind badge, Storage screen: per-family usage + delete-all + folder choosers.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/StudioPlayback.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/StudioAnalyzer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/StudioStorageSection.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/StudioCollectionsTest.kt",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (studio branch)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionCatalog.kt (studioLookup injection)",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/RealizeEngine.kt (synthetic entries in ctx.songsById only)",
+    "android/app/src/main/java/com/levi/pocketdj/data/storage/StorageService.kt (studio categories)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/StorageScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/collections/AddToCollectionSheet.kt"
+   ],
+   "depends_on": [
+    "STU-1",
+    "STU-5"
+   ],
+   "acceptance": [
+    "A playlist containing a 4 s loop realizes with 4 s, not catalog default; loop never appears as an autofill bridge",
+    "Playing a pocket with a studio id plays the local file; rip/CSV ids exclude it (existing songIds* contract test still green)",
+    "Storage shows samples/loops/sequences/takes/instruments bytes; delete-all per family keeps records on unreachable roots and skips the recorder's active take"
+   ],
+   "priority": "P0",
+   "est_lines": 1300,
+   "unit_tests": [
+    "StudioCollectionsTest: synthetic lengthMs placement, candidates fence, stats include studio, songIds exclusion unchanged",
+    "StorageServiceTest additions: studio categories measure/clear strictness"
+   ],
+   "emulator_steps": [
+    "Add seeded sample to a pocket \u2192 pocket detail shows count+runtime \u2192 play \u2192 local playback; Storage shows bytes; delete-all samples \u2192 rows gone, loops remain"
+   ],
+   "device_only": "none",
+   "shared_touchpoints": [
+    "playback/PlaybackController.kt",
+    "data/collections/CollectionCatalog.kt",
+    "data/collections/RealizeEngine.kt",
+    "data/storage/StorageService.kt",
+    "screens/settings/StorageScreen.kt",
+    "screens/collections/AddToCollectionSheet.kt"
+   ]
+  },
+  {
+   "id": "INST-1",
+   "title": "Instrument packs + SF2 synth engine + on-screen keys + takes (click/count-in)",
+   "goal": "InstrumentPackStore (index offline-first, streamed download w/ progress/sha256/atomic install, grouped single bank row, delete), InstrumentEngine over native TSF voice (loadInstrument off-main with loading state), InstrumentEventLog (lock-protected, arm/disarm, live/take logs anchored at beat 1 = end of count-in), click + 1-bar count-in not recorded, startTake/stopTake \u2192 StudioTake + renderTake offline, on-screen keyboard, takes list (rename/delete/folders/replay/use-as-sample COPIES audio/instrument switch/tempo rescale), Instruments screen.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/packs/InstrumentPackStore.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/packs/InstrumentPackModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/InstrumentEngine.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/InstrumentEventLog.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/ClickTrack.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/instruments/InstrumentsScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/instruments/PianoKeyboard.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/instruments/PacksSection.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/instruments/TakesScreen.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/packs/InstrumentPackStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/InstrumentEventLogTest.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/config/Endpoints.kt (instrumentsIndexUrl/instrumentsBase)"
+   ],
+   "depends_on": [
+    "STU-2",
+    "STU-3"
+   ],
+   "acceptance": [
+    "Index decode tolerant; bankKey appended to instrumentsBase (relative key, the 403 gotcha); second pack sharing a bank is instant",
+    "Take events are ms from beat 1; click never in rendered audio; replay plays events through the synth",
+    "Note on/off from the keyboard reaches native synth without main-thread hop (log thread name in debug)",
+    "Tempo change rescales note ms and invalidates render"
+   ],
+   "priority": "P1",
+   "est_lines": 2500,
+   "unit_tests": [
+    "InstrumentPackStoreTest (MockWebServer): manifest decode, dedupe by bankKey, sha256 mismatch rejects install, atomic move",
+    "InstrumentEventLogTest: arm/disarm windows, live log anchored at first note, held-note close at stop, highlight drain coalescing",
+    "ScoreMath tempo rescale test"
+   ],
+   "emulator_steps": [
+    "Download bank from live S3 index (32 MB) \u2192 progress \u2192 Piano enabled; tap keys \u2192 sound via AudioTrackOutput; record take with count-in \u2192 take row \u2192 replay"
+   ],
+   "device_only": "Latency feel on Oboe; large-bank parse time on a real device",
+   "shared_touchpoints": [
+    "data/config/Endpoints.kt"
+   ]
+  },
+  {
+   "id": "INST-2",
+   "title": "Score: quantizer, layout, editor (Enter/Select/Move/Edit, undo/cancel), live staff, PDF + MIDI + audio export",
+   "goal": "Port ScoreQuantizer/ScorePlayhead/ScoreLayout (clef plan, accidentals, hit-testing), ScoreEditor Compose canvas with 4 modes, value-based Set<NoteEvent> selection, undo stack, Cancel = revertTakeEdits, add/remove bar; live staff filling as you play + Save-as-take (writes a rendered audio file so reconcile keeps it); SmfWriter (type-0, PPQ 480, raw events) + SmfParser + MIDI import; ScorePdf via PdfDocument; share via FileProvider.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/score/ScoreQuantizer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/score/ScoreLayout.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/score/ScorePlayhead.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/score/ScorePdf.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/midi/SmfWriter.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/midi/SmfParser.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/midi/MidiImport.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/instruments/ScoreEditor.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/instruments/ScoreScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/instruments/LiveStaff.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/score/ScoreQuantizerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/score/ScoreLayoutTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/midi/SmfWriterTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/midi/SmfParserTest.kt",
+    "android/app/src/main/res/xml/file_paths.xml",
+    "android/app/src/main/AndroidManifest.xml (FileProvider)"
+   ],
+   "depends_on": [
+    "INST-1"
+   ],
+   "acceptance": [
+    "Quantize: onsets snap to 16ths at take.bpm, same-onset notes = chord, rests fill gaps, measures paginate (port iOS ScoreQuantizerTests)",
+    "SMF bytes match the hand-decoded iOS fixture; parser round-trips writer output; channel 10 dropped on import",
+    "Selection survives re-sort (value-based); Cancel restores editedEvents=nil; Undo multi-step",
+    "PDF opens in a viewer with vector staves"
+   ],
+   "priority": "P1",
+   "est_lines": 2500,
+   "unit_tests": [
+    "ScoreQuantizerTest, ScoreLayoutTest (locate/nearestNote/stepsUp never Int.MIN), SmfWriterTest fixture parity, SmfParserTest"
+   ],
+   "emulator_steps": [
+    "Record take \u2192 Score \u2192 edit note \u2192 Undo \u2192 Cancel \u2192 export PDF/MIDI \u2192 share sheet shows file"
+   ],
+   "device_only": "none",
+   "shared_touchpoints": [
+    "AndroidManifest.xml"
+   ]
+  },
+  {
+   "id": "INST-3",
+   "title": "MIDI input (USB + BLE) + arpeggiator + overdub staffs",
+   "goal": "MidiInput over android.media.midi (device list, open USB and BLE devices, running-status-safe parser, receiver thread \u2192 synth direct + log append), Bluetooth MIDI connect sheet (scan via BluetoothLeScanner for MIDI service UUID, MidiManager.openBluetoothDevice); ArpPattern port (orders/octaves/swing/latch, injected RNG) + Program mode (writes nothing) + transport; overdub: \u22644 staffs, confined region, hasOverdubRoom, loop toggle wrap/layer, explicit pass end, backing from cached mixdown at anchor, polyphonic render; metronome live toggle; two persisted click switches.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/midi/MidiInput.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/midi/MidiParser.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/midi/BleMidiScanner.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/ArpeggiatorEngine.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/OverdubController.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/instruments/ArpPanel.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/instruments/OverdubControls.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/instruments/BluetoothMidiSheet.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/midi/MidiParserTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/ArpeggiatorTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/OverdubMathTest.kt",
+    "android/app/src/main/AndroidManifest.xml (BLUETOOTH_SCAN/CONNECT, uses-feature midi)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (studioClickEnabled, studioOverdubClickEnabled)"
+   ],
+   "depends_on": [
+    "INST-2"
+   ],
+   "acceptance": [
+    "Program mode writes nothing to any score even while transport plays (pinned test)",
+    "Arp onsetMs(k)=(k/2)*pairMs+(odd?pairMs*s:0); exclusive vs inclusive endpoints; latch OFF plays one cycle then pauses",
+    "Overdub region [anchor, scoreEnd]; <250 ms room refused with message; empty score unbounded; held notes close at boundary; arp notes go to overdub staff INSTEAD of live",
+    "Running-status MIDI stream parses correctly"
+   ],
+   "priority": "P1",
+   "est_lines": 2200,
+   "unit_tests": [
+    "MidiParserTest (running status, note on vel 0 = off), ArpeggiatorTest (6 orders, octaves, swing, seeded random), OverdubMathTest (hasOverdubRoom, scoreEndMs, wrapIntoLoop, deadlineDeferred)"
+   ],
+   "emulator_steps": [
+    "Arp program 3 keys \u2192 play \u2192 live staff fills; overdub on a seeded take \u2192 second staff appears; MIDI: emulator has no MIDI devices \u2192 verify device list renders empty state"
+   ],
+   "device_only": "USB keyboard, BLE keyboard pairing, latency",
+   "shared_touchpoints": [
+    "AndroidManifest.xml",
+    "AppSettingsStore.kt"
+   ]
+  },
+  {
+   "id": "TRK-1",
+   "title": "Tracks arranger: model CRUD, home list + folders, lanes/clips UI, clip baker, artifacts browser",
+   "goal": "Arranger store extension (arrangements/folders/artifacts, addTrack/duplicate (copies clip audio)/delete, addClip/removeClip/moveClip, strip/pan/colour/mute/solo setters, mutateArrangement single door, seedArrangementBpmIfUntouched), ArrangerClipBaker (prepare source \u2192 import canonical AAC snapshot), home list w/ folders (collapsible), arrangement view: beat ruler + tap seek cursor, lanes with clips, zoom ladder + follow (real layout anchors), add-clip picker (samples/loops/patterns/takes/stems/artifacts), TrackEditSheet (name/colour grid/pan dial/strip sliders), artifacts (Bounces/Recordings) with audition/convert-to-sample/add-as-track/share/delete, arranger-fullscreen hides sub-tab row, transport collapsible on compact.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/store/StudioStoreArranger.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/ArrangerClipBaker.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/TracksHomeScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/ArrangementScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/LaneRow.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/BeatRuler.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/ClipPickerSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/TrackEditSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/ArtifactsSection.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/store/StudioStoreArrangerTest.kt"
+   ],
+   "depends_on": [
+    "STU-1",
+    "STU-3"
+   ],
+   "acceptance": [
+    "arr_/trk_/clip_ never in studioPrefixes; duplicateTrack copies every clip file (no shared file)",
+    "Clips are immutable snapshots: editing the source sample does not change a placed clip",
+    "Follow-scroll centers on playhead past the first screenful (anchor layout test via semantics)",
+    "Artifacts convert-to-sample yields an independent smp_ copy"
+   ],
+   "priority": "P1",
+   "est_lines": 2500,
+   "unit_tests": [
+    "StudioStoreArrangerTest: CRUD + file copy/delete round-trip, additive lossy decode of arrangements, seed bpm once, artifact CRUD, createSampleFromArtifact independence"
+   ],
+   "emulator_steps": [
+    "New arrangement \u2192 add track \u2192 add clip from seeded sample \u2192 clip renders at 0:00; zoom \u00b1; ruler tap moves cursor; artifact row audition"
+   ],
+   "device_only": "none",
+   "shared_touchpoints": []
+  },
+  {
+   "id": "TRK-2",
+   "title": "MultitrackPlayer (single render callback: clip sum + per-track gain/pan + TrackFX + MasterFX), live mix, master FX grid, looper, seek",
+   "goal": "Port MultitrackRenderContext/MultitrackPlayer: decode + pre-bake (strip pitch/tempo via native stretch, fileStartMs window) \u2192 native clip list; render callback mixes clips by frame cursor, applies per-track TrackFX kernel only for tracks with active FX, sums to master, runs MasterFX (freeze never on Tracks), peak-limits; loop region wrap; play(fromMs) head-trims straddling clips; playGeneration token across decode awaits; applyMix by track id live mid-play; applyMasterFX live; MultitrackClock for playhead; renderedTotal starts at seek cursor (beat-synced bass); re-prime debounce ~350 ms on strip bake changes; master FX grid + master gain UI; loop handles in timeline coordinate space.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/MultitrackPlayer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/MultitrackRenderContext.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/MultitrackClock.kt",
+    "android/app/src/main/cpp/studiodsp/multitrack.cpp",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/TransportBar.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/MasterFxGrid.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/LoopRegionOverlay.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/MultitrackRenderTest.kt"
+   ],
+   "depends_on": [
+    "TRK-1",
+    "STU-2"
+   ],
+   "acceptance": [
+    "Offline pull of the render context over a 2-clip arrangement equals ArrangerBouncer output (WYSIWYG test in TRK-3)",
+    "Stale persisted freezeEnabled=true never silences playback (allowFreeze=false, excluded from anyEffectEnabled)",
+    "Seek to 10 s then play: Brazilian bass pump phase aligned to beats from 10 s",
+    "Double-tap play never double-starts (generation token); delete track mid-play keeps other tracks' mix by id"
+   ],
+   "priority": "P1",
+   "est_lines": 2200,
+   "unit_tests": [
+    "MultitrackRenderTest (Kotlin reference mixer vs native via JNI stub or pure-Kotlin path): gain/pan law, fileStartMs window, loop wrap continuity, seek head-trim, FX-neutral fast path equals kernel path at unity"
+   ],
+   "emulator_steps": [
+    "Play 2-lane arrangement on AudioTrackOutput; toggle mute/solo/gain live (logcat applyMix); enable Drive \u2192 audible/level change; loop 2 bars wraps"
+   ],
+   "device_only": "Oboe latency, live FX quality judgement",
+   "shared_touchpoints": []
+  },
+  {
+   "id": "TRK-3",
+   "title": "Bounce (artifact), record-to-master (Clean/Quantized), scissor trim (multi-select), Beat Match + grid analyzer, channel-strip bake",
+   "goal": "ArrangerBouncer (per-track jobs, identical math to live incl. strip bake + FX kernels + master FX, peak-limited, off-main, dated bounce-<ts>.m4a artifact only), record-to-master (tap post-limiter canonical master \u2192 WAV \u2192 bake on natural-end nonce, never on isPlaying flip; Quantized = relabel w/o resample; restart keeps recording; leftover partial deleted), scissor trim mode (trimGap pure, staged map + undo, All-tracks default, selection locked once staged, Save = commitTrimmedTrack dedupes shared tail to own file + orphan clean, Cancel zero writes, add-clip affordances disabled), Beat Match (BeatDetect grids per clip in background \u2192 clip.grid; rate = clipBpm\u2192arrBpm \u00d7 tempoRatio; snap starts; fileStartMs scaled by rate; 'grid under construction' until ready).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/ArrangerBouncer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/ArrangerBeatMatch.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/ArrangerGridAnalyzer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/engine/MasterRecorder.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/store/TrimGap.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/TrimModeOverlay.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/BounceSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/tracks/RecordMenu.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/store/TrimGapTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/ArrangerBouncerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/engine/ArrangerBeatMatchTest.kt"
+   ],
+   "depends_on": [
+    "TRK-2"
+   ],
+   "acceptance": [
+    "trimGap all cases (head/tail/middle split keeps id for head, new id + same fileName + fileStartMs slid for tail); trimmed tail bounce is silent in the gap",
+    "Bounce bakes master FX (driven bounce peak soft-clipped < dry) and per-track strip; mute/solo do NOT affect bounce; gain does",
+    "Record restart via seek/loop keeps recording; bake only on natural end; partial file deleted on new record",
+    "Beat Match: rate(clipBpm 90, master 120) = 4/3 \u00d7 tempoRatio; snappedStartFrame to beat; fileStartMs scaled"
+   ],
+   "priority": "P1",
+   "est_lines": 2400,
+   "unit_tests": [
+    "TrimGapTest (port testTrimGapAllCases + multi-track commit/orphan-clean), ArrangerBouncerTest (bounce \u2261 live render, FX baked, mute ignored), ArrangerBeatMatchTest, MasterRecorder nonce state machine test"
+   ],
+   "emulator_steps": [
+    "Bounce all \u2192 artifact appears with duration; scissor: select region \u2192 Delete \u2192 Undo \u2192 Delete \u2192 Save \u2192 gap silent; Record \u2192 stop \u2192 Recordings artifact"
+   ],
+   "device_only": "Record-pitch correctness on a 48 kHz hardware device (the iOS 8.8%-slow bug) \u2014 assert WAV sample rate equals canonical and duration matches wall clock",
+   "shared_touchpoints": []
+  },
+  {
+   "id": "DMX-1",
+   "title": "Demuxer core: sources + DemuxStore + chord detection + timeline + chord detail + stems (download/stemify/mute-solo)",
+   "goal": "DemuxModels/DemuxStore (demux-cache/<key>.json, imported audio, carved analog song once into audio/, stems/<key>/ all-or-nothing), source picker (Imported/Performance media/Tracks groups collapsed by default, search force-expands), resolve ladder with resolveTask cancel + isCurrent guards, ChordDetector (streamed chromagram \u2192 24 triad templates \u2192 vote+merge) off-main with status, DemuxTimeline (zoom 4\u201360 px/s ladder + fit-to-width, drag scrub, follow with real per-second layout anchors, chord chips, save), chord detail (staves via ScoreLayout + guitar barre shapes; collision math seeded safely), StemClient (manifest stems keys, POST /stemify + /jobs poll, /stemify-custom raw upload for dmx_/smp_/lp_/ptn_/tk_/slc_ ids), stem rows mute/solo over a StemPlayer interface (single-file fallback impl here; synced 4-stem impl is the Mix area's), 'Rip first'/download/create/failed states.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/DemuxModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/DemuxStore.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/ChordDetector.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/Chromagram.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/StemClient.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/StemPlayer.kt (interface + SingleFileStemPlayer)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/demux/DemuxScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/demux/DemuxSourcePicker.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/demux/DemuxTimeline.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/demux/ChordDetailSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/demux/StemsSection.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/demux/ChordDetectorTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/demux/DemuxStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/demux/StemClientTest.kt"
+   ],
+   "depends_on": [
+    "STU-3"
+   ],
+   "acceptance": [
+    "Synthetic C-major / A-minor triad audio detects the right chord \u226590% of frames; segments merge",
+    "DemuxDocument JSON decodes iOS-cached docs (optional drum/melody/transcript fields)",
+    "Analog song carved once; 0:00 = song's 0:00; re-select reuses cache",
+    "Stale resolve (older selection finishing later) cannot overwrite the current selection",
+    "Chord detail renders any voicing without arithmetic overflow (fuzz test over all 24 chords \u00d7 5 octaves)",
+    "Stems download all-or-nothing; stemify poll surfaces failed state"
+   ],
+   "priority": "P1",
+   "est_lines": 2500,
+   "unit_tests": [
+    "ChordDetectorTest (templates, match, segments merge), DemuxStoreTest (doc round trip, carved path, stems all-or-nothing), StemClientTest (MockWebServer: stemify \u2192 poll \u2192 keys; custom upload id regex), ChordDetail collision math test"
+   ],
+   "emulator_steps": [
+    "Pick seeded studio sample \u2192 chords appear on timeline \u2192 zoom/follow during play \u2192 chord chip opens detail; pick catalog song with stems in manifest \u2192 download \u2192 mute/solo rows"
+   ],
+   "device_only": "Real-song chord quality",
+   "shared_touchpoints": [
+    "playback/PlaybackController.kt (pause before demux play \u2014 one audio owner)"
+   ]
+  },
+  {
+   "id": "DMX-2",
+   "title": "Demux drum pattern + melody + instrumental + cut sample + send stems to arrangement + lyrics sidecar",
+   "goal": "DrumPatternDetector (hop-512 STFT flux, adaptive peak pick, kick/snare/perc/other band ratios, bass stem low-band lane), bars from beatgrid sidecar downbeats else gridEstimate, drum grid follows playback + two-way seek (bar tap / step tap), 'Send bar N' and 'Send all N bars' to Sequencer (carve strongest kit hits from stems \u2192 pattern rows), MelodyTracker (YIN-like f0, voiced gate, median smooth, note segmentation, KeyDetector scale snap), DemuxInstrumental (chord comping events + melody events, re-anchored to firstDownbeatMs) \u2192 StudioTake with demuxSourceKey/demuxMode + Takes-menu mode switch, synced follow score, DemuxCutSample (stem subset WYHIWYG), send stems to new/existing arrangement, lyrics panel from cloud sidecar rips/lyrics/<id>.json (karaoke lines, status/diag), DemuxFeatures.lyricsEnabled gate.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/DrumPatternDetector.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/MelodyTracker.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/KeyDetector.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/DemuxInstrumental.kt",
+    "android/app/src/main/java/com/levi/pocketdj/studio/demux/LyricsSidecar.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/demux/DrumPatternPanel.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/demux/InstrumentalPanel.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/demux/CutSampleSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/producer/demux/LyricsPanel.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/demux/DrumPatternDetectorTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/demux/MelodyTrackerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/demux/DemuxInstrumentalTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/studio/demux/KeyDetectorTest.kt"
+   ],
+   "depends_on": [
+    "DMX-1",
+    "STU-5",
+    "INST-1",
+    "TRK-1"
+   ],
+   "acceptance": [
+    "Synthetic kick/snare click track classifies \u226590%; bars keyed by source (no stale cross-source export)",
+    "f0: 220 Hz \u2192 MIDI 57, 440 \u2192 69; segmentation drops <80 ms blips; scale snap kills semitone jitter",
+    "Comping take events quantized to beats, one event per onset for melody; take carries demuxSourceKey/demuxMode; switching mode re-extracts",
+    "Send-all-bars raises pattern stepCount up to 8192 without truncation",
+    "Lyrics sidecar words decode per-word lossy; panel hidden when gate off"
+   ],
+   "priority": "P2",
+   "est_lines": 2500,
+   "unit_tests": [
+    "DrumPatternDetectorTest, MelodyTrackerTest (synthetic tones), DemuxInstrumentalTest (quantize/snap/beatsSpanned), KeyDetectorTest (chroma \u2192 camelot), LyricsSidecar decode test"
+   ],
+   "emulator_steps": [
+    "Seeded stemmed source \u2192 Extract drums \u2192 bars + lanes \u2192 Send bar 1 \u2192 Sequencer opens pattern with rows; Instrumental \u2192 take appears; Cut sample with stem subset \u2192 smp_"
+   ],
+   "device_only": "Real-stem detection quality",
+   "shared_touchpoints": []
+  },
+  {
+   "id": "STU-8",
+   "title": "Hardening + diagnostics + emulator seed + docs sync",
+   "goal": "Cross-package invariants: AudioFocusPolicy enforcement across PlaybackController and all engines, route-change/stream-disconnect re-prime for every engine, StudioDiag every play exit, debug seed intent extras (PDJ_SEED_STUDIO/PDJ_SEED_DEMUX) + bundled 1 s fixture, AndroidX test screenshots script for the Producer sub-tabs, ARCHITECTURE-ANDROID.md Ch.4 Producer section + android/specs/studio.md written from the shipped code.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/studio/StudioSeed.kt",
+    "android/app/src/main/assets/studio-fixture-tone.m4a",
+    "android/app/src/androidTest/java/com/levi/pocketdj/studio/ProducerSmokeTest.kt",
+    "android/specs/studio.md",
+    "docs/ARCHITECTURE-ANDROID.md (Ch.4 Producer status)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (focus policy hook)"
+   ],
+   "depends_on": [
+    "STU-7",
+    "INST-3",
+    "TRK-3",
+    "DMX-2"
+   ],
+   "acceptance": [
+    "Starting any Studio engine pauses Media3 playback and vice versa (one audible owner)",
+    "Mic active \u21d2 playback start refused with logged reason",
+    "Every engine stop/start logs a reason; ProducerSmokeTest navigates all 7 sub-tabs with seed and asserts key rows render",
+    "Docs describe the .wav loop divergence, LocalAudioCache ladder, N/A list (on-device transcription, security-scoped bookmarks)"
+   ],
+   "priority": "P1",
+   "est_lines": 900,
+   "unit_tests": [
+    "AudioFocusPolicyTest: mic flag blocks playback; focus loss parks engines; resume only what was parked (interruptionParked pairing)"
+   ],
+   "emulator_steps": [
+    "Run ProducerSmokeTest on pocketdj AVD; capture screenshot per sub-tab; review logcat StudioDiag"
+   ],
+   "device_only": "Headphone unplug / Bluetooth route change re-prime across each engine",
+   "shared_touchpoints": [
+    "playback/PlaybackController.kt",
+    "docs/ARCHITECTURE-ANDROID.md"
+   ]
+  }
+ ]
+}

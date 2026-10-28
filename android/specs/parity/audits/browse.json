@@ -1,0 +1,1092 @@
+{
+ "area": "Browse / Discover / For You / recs / search / Artists / History / Recognizer",
+ "inventory": [
+  {
+   "feature": "Browse kinds Albums | Songs | Artists (segmented), grid/list album layout, sources rail, results header + sort summary",
+   "status": "DONE",
+   "ios_files": "Views/BrowseView.swift:205-273,621-640; State/AppModel.swift:478-499",
+   "android_files": "screens/browse/BrowseScreen.kt:221-535; screens/browse/BrowseModels.kt; data/artists/ArtistCatalog.kt",
+   "notes": "Artist grouping is case-insensitive, songCount = \u03a3 trackList.size (parity verified in ArtistCatalogTest)."
+  },
+  {
+   "feature": "On-device search: folded (case+diacritic) search keys parallel to rows, newline-stripped query, 180 ms debounce, filter+sort off main thread, paging prefix 120 keyed by result-set version",
+   "status": "DONE",
+   "ios_files": "Browse/BrowseState.swift:333-359,551-577,627-659; State/AppModel.swift:1527-1560",
+   "android_files": "screens/browse/BrowseScreen.kt:242-280,399-470; screens/browse/Fmt.kt",
+   "notes": "Hard-won: never render the previous set's prefix for one frame (version bump in the same produceState) \u2014 preserved."
+  },
+  {
+   "feature": "Full filter clause registry (artist/name/year/playCount/genre/fileType/source/country/trackCount/trackNumber/length/bpm/key/camelot/explicit/sentiment/dateAdded/lastPlayedAt; ops eq/neq/inList/notInList/between; artist-kind albumCount/songCount), FilterEngine semantics (neq keeps missing, notInList keeps empty, between fails missing), options derivation (camelot wheel order, genre priority order)",
+   "status": "PARTIAL",
+   "ios_files": "Browse/BrowseModel.swift:107-315; Browse/BrowseState.swift:596-616",
+   "android_files": "screens/browse/BrowseModels.kt:56-95 (BrowseFilters: genre/bpm/camelot/source only); screens/browse/BrowseFilterSheet.kt",
+   "notes": "Android shipped the task-locked P1 cut (4 fields, typed struct). iOS has 18 fields + 5 ops + per-clause remove + Clear All semantics. Sort engine is bit-parity (BrowseSort.kt) but lacks PLAY_COUNT/DATE_ADDED/LAST_PLAYED_AT/ALBUM_COUNT/SONG_COUNT fields and the ARTISTS kind."
+  },
+  {
+   "feature": "Multi-key sort engine (stable, nulls-last, camelot wheel rank, case-insensitive strings), sort sheet (ordered keys, asc/desc, drag reorder, Add key, Clear All)",
+   "status": "DONE",
+   "ios_files": "Browse/BrowseModel.swift:319-388; Views/SortSheet.swift",
+   "android_files": "screens/browse/BrowseSort.kt; screens/browse/BrowseSortSheet.kt",
+   "notes": "Sort fields for the ARTISTS kind deliberately left empty per specs/artists.md \u00a711 \u2014 iOS registers artist/albumCount/songCount; close in BRW-1."
+  },
+  {
+   "feature": "Browse state persistence (kind/clauses/sortKeys/layout/searchMode under one key; query, membership and favorite filters NEVER persisted; lenient decode, unknown kind \u2192 album)",
+   "status": "PARTIAL",
+   "ios_files": "Browse/BrowseState.swift:128-157",
+   "android_files": "data/settings/BrowseSnapshot.kt; screens/browse/BrowseSessionPersistence.kt",
+   "notes": "Snapshot persists typed P1 filter fields, not clauses. BRW-1 adds `clauses` and keeps the legacy fields decodable (migrate forward once)."
+  },
+  {
+   "feature": "Collection-membership filter (song mode only; SHOW/HIDE sets mixing pls_/pkt_ ids; *Any flags; placed albums expand to tracks; applied at READ time, never memoized; 'Clear membership' separate from 'Clear All')",
+   "status": "MISSING",
+   "ios_files": "Browse/BrowseState.swift:41-56,475-508,531-534; Views/FilterSheet.swift:257-334",
+   "android_files": "",
+   "notes": "Android has CollectionsStore.songIdsForPlaylist/songIdsForPocket (CollectionsStore.kt:1038-1041) so the resolver exists; the filter layer + sheet section are missing."
+  },
+  {
+   "feature": "Favorite filter (any/only/exclude; read-time layer; NOT Codable so it can never reach the snapshot; counted in activeFilterCount; cleared by Clear All)",
+   "status": "MISSING",
+   "ios_files": "Browse/BrowseState.swift:58-69,510-523,536-545; Views/FilterSheet.swift:235-255",
+   "android_files": "",
+   "notes": "Blocked on a FavoritesStore, which the collections area deferred (android/specs/activity-favorites.md \u00a76). BRW-2 ships the layer behind a nullable favorites provider so it lights up when that store lands."
+  },
+  {
+   "feature": "Lifetime play counts ('Plays' field, #NN badge) \u2014 Apple baseline + non-Apple plays + provisional",
+   "status": "PARTIAL",
+   "ios_files": "State/PlayCountService.swift; State/PlayStatsStore.swift; State/AMPlayBaselineStore.swift",
+   "android_files": "data/history/PlayHistoryStore.kt:107 (playCount from countIndex)",
+   "notes": "Apple play-count baseline is N/A on Android (no Library.xml / MusicKit play counts). Android 'Plays' = PlayHistoryStore.countIndex only; BRW-1 wires it as the playCount field with the usesPlayCounts memo-key gate."
+  },
+  {
+   "feature": "Online search (OpenSearch aoss): SigV4 signing (service aoss), search-config.json host resolution (user override \u2192 remote \u2192 baked), multi_match query, structured filter translation, server-side sort + {id:asc} tiebreak, 50/page, 300 ms debounce, reset on sort change, 10k window cap, dedupe without desyncing offset, stub rows for hits not in catalog, device\u2194online toolbar toggle (artist kind always on-device)",
+   "status": "MISSING",
+   "ios_files": "Services/Search/SearchService.swift; Services/Search/SigV4.swift; State/OnlineSearchModel.swift; Views/BrowseView.swift:195-196,436-444,483-495,598-615",
+   "android_files": "data/config/Endpoints.kt:25 (SEARCH_CONFIG_URL only); data/settings/AppSettingsStore.kt:44 (onlineSearchEnabled flag, dead)",
+   "notes": "Settings toggle was deliberately removed on Android rather than ship a dead control (ARCHITECTURE-ANDROID.md Ch.6). SearchMode.ONLINE is already modelled + persisted."
+  },
+  {
+   "feature": "Discover tab (search ALL of Apple Music: MusicKit catalog search \u2225 rip-server GET /search iTunes proxy, merged + deduped by store id, Songs|Albums nested scope, refine-by-artist, 400 ms debounce)",
+   "status": "MISSING",
+   "ios_files": "Views/BrowseDiscover.swift; Views/BrowseView.swift:88-101,232-259,290-309; State/RipsStore.swift:1081-1400; scripts/rip-server.mjs:2584-2706",
+   "android_files": "",
+   "notes": "Android can replace the MusicKit catalog search with the Apple Music REST API (api.music.apple.com/v1/catalog/{storefront}/search) signed with the developer token Android already mints (data/applemusic/MusicKitDeveloperTokenClient.kt) \u2014 no SDK needed for SEARCH."
+  },
+  {
+   "feature": "Discover \uff0bAdd song/album: library write (needs Music-User-Token) + requestRip('amrec_<storeId>') + provisional DiscoverAddsStore entries folded in as a synthetic 'Discover' source; album fan-out (accepted tracks only, one batched inject); DiscoverAlbumAddState n/m \u2192 added | partial; supersede by appleMusicId when the nightly index lands the real row; 'Remove from Library' inverse",
+   "status": "MISSING",
+   "ios_files": "State/DiscoverAddsStore.swift; Views/BrowseDiscover.swift:249-262,640-811; Views/SongDetailView.swift:281-297; State/AppModel.swift (withProvisionalSources/applySupersede)",
+   "android_files": "",
+   "notes": "Android has the rip client (data/rips/RipServerClient.kt) and the merged-catalog first-wins merge (data/catalog/MergedCatalog.kt) the supersede rule needs; the provisional-source injection point into CatalogRepository is the one shared touchpoint."
+  },
+  {
+   "feature": "Shazam '?\u266a?' recognizer: mic permission \u2192 SHManagedSession \u2192 match \u2192 ShazamCatalogMatch (normalized title + compatible artist) \u2192 result sheet ('In your crate' deep link / 'Not in your crate') + Apple Music section (library check / open album / \uff0b add-to-library + rip&burn under amrec_<storeId>); gated off while a Mix recording is active",
+   "status": "MISSING",
+   "ios_files": "Services/Shazam/ShazamRecognizer.swift; Services/Shazam/ShazamCatalogMatch.swift; Services/Streaming/AppleMusicRecognition.swift; Views/Shazam/ShazamButton.swift; Views/Shazam/ShazamResultSheet.swift; Views/Shazam/AppleMusicRecognitionSection.swift",
+   "android_files": "",
+   "notes": "Apple ships ShazamKit for Android as a vendored AAR (needs an Apple Music developer token \u2014 Android already has one). Actual recognition is DEVICE-ONLY; the matcher and the action reducer are pure and JVM-testable."
+  },
+  {
+   "feature": "Album detail: header, zebra track table (#, title+E+sentiment caption, BPM, key chip, time, \u25b6), per-track metadata-only dimming, audio-analysis section, Play",
+   "status": "DONE",
+   "ios_files": "Views/AlbumDetailView.swift",
+   "android_files": "screens/browse/AlbumDetailScreen.kt",
+   "notes": "Shuffle-whole-album, Stemify, Share, Queue (Play next/last) menus and Edit are missing \u2014 see below."
+  },
+  {
+   "feature": "Album detail extras: Shuffle all via playNow(.album), Share (streaming links text), context menu Play Next / Play Last / Add to Playlist, Stemify, Edit album, 'In your Apple Music library' row",
+   "status": "PARTIAL",
+   "ios_files": "Views/AlbumDetailView.swift:51-88,142-146,195-240",
+   "android_files": "screens/browse/AlbumDetailScreen.kt:131-160 (Play only)",
+   "notes": "Shuffle + Share are this area (BRW-3). Play-next/last is the Now Playing queue area; Stemify + Edit are rip/edits areas; AM library row is the streaming area."
+  },
+  {
+   "feature": "Song detail: art, header, metadata grid, sentiment chips, Play, Add-to-collection, album hotlink",
+   "status": "DONE",
+   "ios_files": "Views/SongDetailView.swift:100-130,403-460",
+   "android_files": "screens/browse/SongDetailSheet.kt",
+   "notes": ""
+  },
+  {
+   "feature": "Song detail extras: lyrics (fetch-once + disk cache ONLY when lyricsStatus == 'found'), Share (ShareText with Apple Music/Spotify/YouTube links or search fallbacks), Suggested collections (rec engine), Apple Music library affordance, Remove from Library (provisional items only), Edit, stem audition",
+   "status": "PARTIAL",
+   "ios_files": "Views/SongDetailView.swift:124,160-300,412-460; Services/LyricsStore.swift; Support/ShareText.swift",
+   "android_files": "",
+   "notes": "Lyrics + Share \u2192 BRW-3; Suggested collections \u2192 REC-6; Remove-from-Library \u2192 DISC-2; AM library affordance \u2192 streaming area; Edit/stems \u2192 other areas."
+  },
+  {
+   "feature": "Streaming links (appleMusicUrl/spotifyUrl/youtubeUrl on songs + albums, backfilled nightly; share text; tracklist CSV export)",
+   "status": "MISSING",
+   "ios_files": "Models/IndexModels.swift:157-166,205-214; Support/ShareText.swift; Support/TracklistCSV.swift; State/AppModel.swift:337-340",
+   "android_files": "data/catalog/IndexModels.kt (fields absent)",
+   "notes": "Index fields must be added to IndexSong/IndexAlbum (lenient, default null). Share via ACTION_SEND. CSV export belongs to the setlist/export area."
+  },
+  {
+   "feature": "Explicit / edition system: IndexSong.appleMusicIdExplicit/appleMusicIdClean, EditionPolicy.decide (collection cleanOnly beats global 'Prefer explicit versions' tri-state; substitution only when the edition id is known and distinct), CleanOnly.resolve (explicit without clean edition is DROPPED, never falls back), storageIds <base>_<edition> / legacy / other edition with allowFallback asymmetry, lazyRipId gate",
+   "status": "MISSING",
+   "ios_files": "Models/CleanOnly.swift; Models/SongVariant.swift; Settings/SettingsStore.swift:322-325; Models/CollectionsSchema.swift:151-154",
+   "android_files": "screens/browse/BrowseScreen.kt:755 (E badge only); screens/browse/AlbumDetailScreen.kt:255",
+   "notes": "The E badge and explicit filter value exist. Policy + settings + the play-path hook (choose which storeId/burn key to resolve) are missing. Collection `cleanOnly` flag is the collections area's schema field; the decision function lives here."
+  },
+  {
+   "feature": "Recently added: addedAtBySongId = catalog dateAdded \u222a in-app add stores (Discover/imports/profile), newest-first O(n) top-N selection with id tiebreak, memoized on catalogRevision + add-store signatures, owner-scoped (non-owner counts only own on-device AM source), 'Recently added' virtual SourcePlaylist, Settings 'default recently added count'",
+   "status": "MISSING",
+   "ios_files": "State/AppModel.swift:1023-1200; Models/IndexModels.swift:230; Settings/SettingsStore.swift:436-439; Views/SettingsView.swift:452",
+   "android_files": "",
+   "notes": "IndexSong.dateAdded is not decoded on Android. Owner-scoping depends on the (not yet existing) owner identity; Android = single-user device, so scope = 'all catalog dateAdded' with the filter seam kept."
+  },
+  {
+   "feature": "History tabs: Playback (default) | Collection | Pockets (gated) | For You (gated); every tab shown, current filled; Unified REMOVED 2026-08-10 (Rewind moved to Playback rows); PDJ_HISTORY_TAB headless seam",
+   "status": "PARTIAL",
+   "ios_files": "Views/HistoryView.swift:1-22,57-99,252-326",
+   "android_files": "screens/history/HistoryScreen.kt:89-300 (Unified | Playback | Collection; two-button 'destinations' bar)",
+   "notes": "Android implements the PRE-2026-08-10 iOS shape (Unified default + show-only-other-tabs bar). Parity = drop Unified (keep buildUnified under test only if cheap), full tab bar, Pockets/For You gated on their stores."
+  },
+  {
+   "feature": "Playback timeline through the shared filter/sort engine (externalBase + refreshExternal: debounce-before-build, supersede check, never memoize an EMPTY base, no publish without a bound base, invalidateDisplayKey on explicit submit), History-only persistence key, default lastPlayedAt desc, 'Last played' between = date pickers, pagingKey excludes catalogRevision so a catalog churn never resets scroll",
+   "status": "PARTIAL",
+   "ios_files": "Browse/BrowseState.swift:107-120,361-440; Views/HistoryView.swift:101-154,187-200,914-971; Views/FilterSheet.swift:184-218",
+   "android_files": "screens/history/HistoryRows.kt (buildRows: query + newest/oldest + date range only); screens/history/HistoryScreen.kt:141-157",
+   "notes": "Android has search + asc/desc + date range (P1 minimum). Full sort/filter sheets over history rows (genre, bpm, source, playCount, \u2026) and the sticky-empty-base guards are missing."
+  },
+  {
+   "feature": "History row: shared song row + context line (live speaker indicator keyed on SkipTracker.currentEventId AND something actually sounding; source icon \u00b7 label \u00b7 contextName \u00b7 relative time \u00b7 'on another device' \u00b7 'skipped' badge \u00b7 'N plays')",
+   "status": "PARTIAL",
+   "ios_files": "Views/HistoryView.swift:594-651,723-730",
+   "android_files": "screens/history/HistoryScreen.kt:456-533",
+   "notes": "Missing: live indicator, skipped badge, 'on another device' (needs originInstallId), per-row context menu (Rewind / Add to\u2026 / Share)."
+  },
+  {
+   "feature": "Skip tracking: SkipTracker (<50% played strict, advance-away only; one-deep previous stash for the adopt ordering; high-water position mark; noteTrackRestarted re-zero; checkpoint on background/stop) \u2192 PlayEvent.wasSkipped + listenedFraction (max-merged) + Hide-skips filter (applied at base build, part of filterSortSignature, cleared by Clear All, never persisted)",
+   "status": "MISSING",
+   "ios_files": "Playback/SkipTracker.swift; State/PlayHistoryStore.swift:95-99,300-325; Views/HistoryView.swift:878-886; Views/FilterSheet.swift:221-233",
+   "android_files": "data/history/PlayHistoryModels.kt (no wasSkipped/listenedFraction); playback/PlaybackService.kt:45-70",
+   "notes": "Android PlayEvent lacks originInstallId, wasSkipped, listenedFraction, tzOffsetMin, carPlay, originCollectionId \u2014 all additive-optional on iOS (no schema bump)."
+  },
+  {
+   "feature": "Rewind to here (same run \u2192 cursor move by played uid; past run \u2192 contiguous same-contextId slice re-played via playSongIds under the event's source; always confirms; re-reads the event at execute time)",
+   "status": "MISSING",
+   "ios_files": "Views/HistoryView.swift:653-721",
+   "android_files": "",
+   "notes": "rewindSlice is pure \u2192 unit test. Same-run cursor jump needs the setlist player's played-list API (touchpoint: PlaybackController)."
+  },
+  {
+   "feature": "History 30 s same-song dedup with direction guard, max-based lastPlayedIndex, 20k cap, lenient doc, installId, atomic save + salvage",
+   "status": "DONE",
+   "ios_files": "State/PlayHistoryStore.swift:149-174,239-256",
+   "android_files": "data/history/PlayHistoryStore.kt",
+   "notes": "iOS additionally keeps the 30 s window LOCAL to this install's events once peer events are merged (originInstallId guard, PlayHistoryStore.swift:271,490) \u2014 add with HIST-1 so a future S3 merge can't suppress a genuine local play."
+  },
+  {
+   "feature": "Collection tab: Activity feed (add/heart/unheart/remove/catalogAdd/catalogRemove headlines; unresolved rows show raw id; tap opens song/album/pocket) + grain picker Activity | Songs | Albums",
+   "status": "PARTIAL",
+   "ios_files": "Views/HistoryView.swift:328-499",
+   "android_files": "screens/history/ActivityRows.kt; screens/history/HistoryScreen.kt:570-665",
+   "notes": "Activity feed is DONE (4 kinds). catalogAdd/catalogRemove kinds (Discover/Remove-from-Library) and the grain picker + timeline are missing."
+  },
+  {
+   "feature": "Collection ONE TRUE TIMELINE (F8): whole catalog on an add-date axis (songs/albums grain), month dividers, heard/total album progress, since-date filter, jump-to-cue, cue points (TimelineCueStore), windowed rendering, build OFF main actor",
+   "status": "MISSING",
+   "ios_files": "Views/CollectionTimelineView.swift; Models/CollectionTimeline.swift; State/TimelineCueStore.swift",
+   "android_files": "",
+   "notes": "Pure CollectionTimeline.build/sortAndMark/jumpIndex are unit-testable. Cue points are a small extra store; ship in HIST-3 or defer cues."
+  },
+  {
+   "feature": "History toolbar: select mode / select-all whole filtered universe / Share selection, write-back backfill button",
+   "status": "PARTIAL",
+   "ios_files": "Views/HistoryView.swift:732-833",
+   "android_files": "",
+   "notes": "Multi-select (RowSelection) is a cross-cutting shared model (Views/SelectionUI.swift) owned by the collections/multi-select area; write-back backfill is the AM sync area. History adopts both when they land."
+  },
+  {
+   "feature": "For You tiles grid: New always #1, In Da Zone always #2, then one tile per collection with \u22651 suggestion sorted by count then name; tints; subtitles with source attribution (cloud vs on-device) and New empty reason",
+   "status": "MISSING",
+   "ios_files": "Services/Recommendations/ForYouTiles.swift; Services/Recommendations/ForYouGrid.swift; Views/ForYouView.swift",
+   "android_files": "",
+   "notes": "ForYouTiles.build and ForYouGrid.tiles are pure; CarPlay parity on iOS exists precisely because ONE function derives order \u2014 keep that on Android for Android Auto later."
+  },
+  {
+   "feature": "For You feed is CACHED not recomputed: ForYouFeedSnapshot (schemaVersion 3; zoneIds, zoneBuriedIds, zoneSourceRaw, zoneReasons?, crates[{id,kind,name,songIds,reasons?,soundIds?}]), durable JSON, refresh ONLY on tab-menu Refresh / first build after catalog loaded / schedule due (evaluated at READ: tab open + foreground, never a timer); \ud83d\udc4d/\ud83d\udc4e re-derive cards immediately without re-ranking; empty-catalog refresh gate (never stamp an empty ranking)",
+   "status": "MISSING",
+   "ios_files": "Services/Recommendations/ForYouFeed.swift; Services/Recommendations/ForYouRefreshSchedule.swift; Views/ForYouView.swift:27-40,132-160,250-361",
+   "android_files": "",
+   "notes": "Schema-version bump retires stale cached feeds (v2 duplicate-recordings bug, v3 timbre e-fold) \u2014 port the version constant verbatim."
+  },
+  {
+   "feature": "In Da Zone on-device ranking (ZoneEngine.inDaZone: familiar pool recency-decayed vs rediscovery pool \u226550% floor, 3-per-artist cap, cooldown, taste profile from plays + accepted, negative profile from rejects, skip penalties with Laplace prior, timbre term, cloud ranking shaped by shapeCloudRanking) and per-collection suggestions (ZoneEngine.rank/suggestions/explainedSuggestions: artist-or-genre admission gate, era window p15\u2013p85 \u00b12y, musical profile, timbre centroid + SOUND DOOR admission, RecMembership multi-id exclusion, RecVersionIdentity edition suppression, RecRecordingIdentity collapse, RecComposition diversity floor, 'why' captions)",
+   "status": "MISSING",
+   "ios_files": "Services/Recommendations/ZoneEngine.swift (2006); SimilarityFamilies.swift (1044); RecVersionIdentity.swift; RecRecordingIdentity.swift; RecMembership.swift; RecNovelty.swift; RecComposition.swift; RecSoundAdmit.swift; RecAudioShortlist.swift; Games/CollectorsPuzzle/PuzzleSimilarity.swift (profile/score reused by the zone)",
+   "android_files": "",
+   "notes": "Hard-won numeric facts to preserve: timbre e-fold 0.12 (v3), rediscovery floor, timbrePrior=2 load-bearing (memory: musical-recs-v2), whitening worse than rails, sound-quota OFF is the real tile gain. Port tuning constants verbatim and pin them with parity fixtures."
+  },
+  {
+   "feature": "Timbre corpus: {catalogBase}/timbre.json (14-axis 0\u20261 vectors, TIMBRE_VERSION parity) fetched on demand with conditional GET + disk cache, decoded off main, memoized 6 h, fail-open to [:]",
+   "status": "MISSING",
+   "ios_files": "Services/Recommendations/TimbreCatalog.swift; SimilarityFamilies.swift:568-680",
+   "android_files": "data/catalog/CatalogService.kt (validators + cache helpers reusable)",
+   "notes": ""
+  },
+  {
+   "feature": "Rec feedback store (\ud83d\udc4d/\ud83d\udc4e/cleared decisions, scope = collection id or tile kind, surface, denormalized artistKey/genre, per-device seq; 7-day tombstone SINK evaluated at read; accept removes permanently in zone/new; taste half global and decaying; PlayingScope persisted for SYNC mode; rankedIds/partition/visibleCount) + RecFeedbackButtons + CollectionRecsToggle (recsEnabled per playlist/pocket; off = no ranking work, tile gone next frame, listed in Settings \u25b8 For You)",
+   "status": "MISSING",
+   "ios_files": "State/RecFeedbackStore.swift; Views/RecFeedbackControls.swift; Views/CollectionRecsToggle.swift; Models/CollectionsSchema.swift:151-154,183",
+   "android_files": "data/collections/CollectionsModels.kt (no recsEnabled/cleanOnly fields)",
+   "notes": "recsEnabled on Playlist/Pocket is a one-line additive schema change in the collections area (touchpoint)."
+  },
+  {
+   "feature": "For You detail screens: ForYouSongListView (frozen ids first, off-main fallback ranking, Buried / Sounds-like badges, why captions, \ud83d\udc4d = add (straight to the crate or the Add sheet), sunk rows dimmed at bottom, \u25b6/\ud83d\udd00 play LIVE rows only and stamp the feedback scope, 'Add all to\u2026', 'Open <collection>'); NewReleasesView (Out now / Coming soon, recheck, \u25b6 streams am:<storeId>)",
+   "status": "MISSING",
+   "ios_files": "Views/ForYouDetailViews.swift",
+   "android_files": "",
+   "notes": ""
+  },
+  {
+   "feature": "Cloud recommendation engine (opt-in, ships OFF): RecEngineClient (Bearer key, X-PocketDJ-Profile/Device headers, enroll secret on POST /events + DELETE /state, 403 body \u2192 keyMismatch | enrollmentRequired), device-minted 32-byte key, scoped profile id = HMAC-SHA256(profileId, key), /events delta flush with per-stream cursors + 30-day overlap ack lists + membership snapshot caps + play-counts hash, /recs/songs cloud zone (limit 200, 15-min TTL, force on manual refresh), /recs/collections per-song suggestions (LRU 20 / 15 min, dropRecsOff), audio-analysis shortlist upload, Delete cloud data + pending-delete tombstone, Settings \u25b8 Recommendations",
+   "status": "MISSING",
+   "ios_files": "State/RecommendationService.swift; Services/Recommendations/RecEngineClient.swift; Services/Recommendations/RecModels.swift; Support/DeviceIdentity.swift:57-59; Views/SettingsView.swift:808-880",
+   "android_files": "data/config/RemoteEndpoints.kt:35 (REC_ENGINE_BASE already resolved)",
+   "notes": "CloudKit key sync is N/A \u2014 the key is device-local; profileId = installId (no profiles on Android). iOS fixture seams (PDJ_REC_FIXTURE) map to a debug BuildConfig flag."
+  },
+  {
+   "feature": "New releases feed: GET /v1/catalog/us/artists?ids\u226450&views=latest-release,similar-artists with dev + user token, concurrency 2 + 429/5xx backoff, TTL by artist popularity (2\u201314 d), 30-day window, outNow/comingSoon classified at read, on-play lazy trigger + 2 s debounced drain + global isFetching guard, one-shot listening seed, ownership probe (store id / provisional amrec_album / same-record title) and version probe, persisted pocketdj-release-feed.json, emptyReason",
+   "status": "MISSING",
+   "ios_files": "Services/Recommendations/ReleaseFeedService.swift; ReleaseFeedModels.swift; ReleaseStreaming.swift; Models/IndexModels.swift:41-70 (IndexArtist table)",
+   "android_files": "data/catalog/IndexModels.kt (no `artists` table)",
+   "notes": "Needs IndexJson.artists (key/name/id/alt) decoded. Playing an unowned release = DRM Apple Music playback through AppleMusicBackend \u2192 device-only."
+  },
+  {
+   "feature": "Listening pockets (History \u25b8 Pockets): opt-in gated on rec engine, upload play events with tz/outcome/ctx + collections snapshot + In-the-Pocket rounds, results cache (pockets/patterns/labels), pocket detail (features, harmonic, when & where, songs), play / save-as-playlist, location contexts (places/trips)",
+   "status": "MISSING",
+   "ios_files": "State/ListeningPocketsService.swift; Services/ListeningPockets/*; Views/ListeningPocketsView.swift; Location/*",
+   "android_files": "data/config/RemoteEndpoints.kt:36 (LISTENING_POCKETS_BASE)",
+   "notes": "Location contexts need FusedLocation + background permission \u2014 treat as optional sub-package; the pockets tab works without ctx."
+  },
+  {
+   "feature": "Keyboard shortcuts / focus cursor / macOS row-control traps",
+   "status": "NA",
+   "ios_files": "Views/BrowseView.swift:521-564",
+   "android_files": "",
+   "notes": "macOS/iPad-keyboard affordances; no Android counterpart."
+  },
+  {
+   "feature": "App Intents 'Search PocketDJ for \u2026' consumed into the Browse query (pendingBrowseQuery seam)",
+   "status": "NA",
+   "ios_files": "Views/BrowseView.swift:150-158,311-318",
+   "android_files": "",
+   "notes": "Owned by the Intents/App Actions area; BRW-2 exposes `BrowseSession.query` + a `pendingQuery` StateFlow so a deep link can set it."
+  },
+  {
+   "feature": "Queue builder (Browse pipeline over an external base to build an Up Next queue)",
+   "status": "NA",
+   "ios_files": "Browse/QueueBuilderState.swift; Views/QueueBuilderView.swift",
+   "android_files": "",
+   "notes": "Now Playing area; it consumes the pure `BrowseEngine.filterSort` this area must expose (BRW-1)."
+  },
+  {
+   "feature": "Star map / constellations",
+   "status": "NA",
+   "ios_files": "",
+   "android_files": "",
+   "notes": "PWA-only, no port planned (ARCHITECTURE-ANDROID.md Ch.6)."
+  },
+  {
+   "feature": "tvOS/visionOS browse surfaces",
+   "status": "NA",
+   "ios_files": "Views/TVRootView.swift; Views/TVCompat.swift",
+   "android_files": "",
+   "notes": "Platform-specific."
+  }
+ ],
+ "architecture": "# Android architecture \u2014 Browse / Discover / For You / recs / search / Artists / History / Recognizer\n\nBaseline measured in the worktree: Android unit tests = **275 `@Test`** (every package below must move that number, not just stay green). Android already has the right spine for this area: lenient `PdjJson`, offline-first `CatalogRepository`/`MergedCatalog`, `PlayHistoryStore` + `CollectionActivityStore` (iOS-shaped docs), `PlayEventBus` fired from `PlaybackService.onMediaItemTransition`, `CollectionsStore.playNow` + `historyContext`, `RemoteEndpoints` with `REC_ENGINE_BASE` / `LISTENING_POCKETS_BASE` / `SEARCH_CONFIG_URL`, and the vendored MusicKit AARs + `MusicKitDeveloperTokenClient`. Nothing here needs Room, Hilt, or WorkManager; the iOS stores are durable JSON + atomic rename, and Android already copies that idiom.\n\n## 1. Package layout (new vs modified)\n\n```\ncom.levi.pocketdj\n\u251c\u2500\u2500 data/catalog/IndexModels.kt            MOD  +dateAdded, +appleMusicUrl/spotifyUrl/youtubeUrl, +appleMusicIdExplicit/Clean,\n\u2502                                               +IndexJson.artists: List<IndexArtist>? (key,name,id,songs?,alt?) + IndexArtist.normalize\n\u251c\u2500\u2500 data/catalog/CatalogRepository.kt      MOD  provisionalSources(): List<IndexJson> hook (Discover) appended AFTER real sources\n\u251c\u2500\u2500 data/edition/EditionPolicy.kt          NEW  EditionPolicy.decide / storageIds / resolveStored / lazyRipId ; CleanOnly.resolve/ripIds ; SongVariant\n\u251c\u2500\u2500 data/search/SigV4.kt                   NEW  pure HMAC-SHA256 signer (host;x-amz-content-sha256;x-amz-date, service \"aoss\")\n\u251c\u2500\u2500 data/search/SearchConfig.kt            NEW  user host \u2192 search-config.json \u2192 baked default; memoized per endpoint generation\n\u251c\u2500\u2500 data/search/SearchService.kt           NEW  query body, FilterQuery clause translation, sortBody (+{id:asc}), parse hits\n\u251c\u2500\u2500 data/search/OnlineSearchModel.kt       NEW  paging 50, debounce 300, reset on query/kind/clauses/sort, 10k cap, dedupe\n\u251c\u2500\u2500 data/history/PlayHistoryModels.kt      MOD  +originInstallId, wasSkipped, listenedFraction, tzOffsetMin, carPlay(null), originCollectionId\n\u251c\u2500\u2500 data/history/PlayHistoryStore.kt       MOD  markSkipped, noteListened, isFromAnotherDevice, recentPlaysForZone, local-only 30 s window\n\u251c\u2500\u2500 playback/SkipTracker.kt                NEW  <50 % strict rule, previous-stash, high-water mark, restart re-zero, checkpoint\n\u251c\u2500\u2500 data/recent/RecentlyAdded.kt           NEW  addedAtBySongId union + newestFirst(limit) + memo key + synthetic SourcePlaylist\n\u251c\u2500\u2500 data/timeline/CollectionTimeline.kt    NEW  pure build/sortAndMark/jumpIndex (songs/albums grain) + TimelineCueStore (JSON)\n\u251c\u2500\u2500 data/recs/                             NEW  pure engine, zero Android imports (JVM-testable):\n\u2502   \u251c\u2500\u2500 Similarity.kt                           PuzzleSimilarity.profile/score subset (shared with the Games area later)\n\u2502   \u251c\u2500\u2500 SimilarityFamilies.kt                   genre canonical, era window, musical profile, timbre pack/distance/profile/fit/calibrate\n\u2502   \u251c\u2500\u2500 RecIdentity.kt                          RecVersionIdentity, RecRecordingIdentity, RecMembership\n\u2502   \u251c\u2500\u2500 RecShaping.kt                           RecNovelty, RecComposition (diversity floor), RecSoundAdmit, RecAudioShortlist\n\u2502   \u251c\u2500\u2500 ZoneEngine.kt                           Track/Play/Feedback/Tuning, versionKeys, inDaZone, shapeCloudRanking, rank/suggestions/explained\n\u2502   \u251c\u2500\u2500 ZoneCatalog.kt                          MergedCatalog \u2192 List<ZoneEngine.Track> + genreBySongId (memo keyed by catalog identity)\n\u2502   \u251c\u2500\u2500 TimbreCatalog.kt                        timbre.json fetch (conditional GET via CatalogService helpers), 6 h memo, fail-open\n\u2502   \u251c\u2500\u2500 ForYouFeed.kt                           ForYouFeedSnapshot (schemaVersion 3, lenient), ForYouFeedInputs, ForYouFeedBuilder\n\u2502   \u251c\u2500\u2500 ForYouFeedStore.kt                      durable JSON, refresh(inputs, cloudZone) off main, revision StateFlow\n\u2502   \u251c\u2500\u2500 ForYouRefreshSchedule.kt                cadence enum (manual/hourly/daily/weekly/monthly), lastFire/nextFire/isDue\n\u2502   \u251c\u2500\u2500 ForYouTiles.kt + ForYouGrid.kt          pure tile order + live filters (accepted / tombstoned / member / recsOff)\n\u2502   \u251c\u2500\u2500 RecFeedbackStore.kt                     decisions doc, tombstones (7 d, read-time), partition/rankedIds/visibleCount, PlayingScope\n\u2502   \u251c\u2500\u2500 RecEngineClient.kt                      OkHttp; Bearer key; X-PocketDJ-Profile/Device; enroll header; 403 body mapping\n\u2502   \u251c\u2500\u2500 RecModels.kt                            wire structs (@Serializable, lenient)\n\u2502   \u251c\u2500\u2500 RecommendationService.kt                gate, key mint (device JSON), scoped profile id (HMAC), flush w/ cursors+acks, cloud zone, suggestions, delete\n\u2502   \u251c\u2500\u2500 ReleaseFeedModels.kt / ReleaseFeedService.kt / ReleaseStreaming.kt   New releases (Apple Music REST)\n\u2502   \u2514\u2500\u2500 ListeningPockets{Models,Client,Service}.kt\n\u251c\u2500\u2500 screens/browse/BrowseFilter.kt          NEW  Field registry (18 fields), Clause, FilterOp, FieldValues.of(row,\u2026), FilterEngine, options()\n\u251c\u2500\u2500 screens/browse/BrowseEngine.kt          NEW  pure filterSort(base, keys, query, clauses, sortKeys, playCounts) for Browse/History/collections/queue-builder\n\u251c\u2500\u2500 screens/browse/BrowseModels.kt          MOD  BrowseFilters \u2192 clauses; BrowseSession gains membership/favorite (transient), pendingQuery\n\u251c\u2500\u2500 screens/browse/BrowseSort.kt            MOD  +PLAY_COUNT, DATE_ADDED, LAST_PLAYED_AT(history-only), ALBUM_COUNT/SONG_COUNT + ARTISTS kind\n\u251c\u2500\u2500 screens/browse/BrowseFilterSheet.kt     MOD  clause editors (field/op/value, date pickers for lastPlayedAt/dateAdded), favorite, hide-skips, membership\n\u251c\u2500\u2500 screens/browse/BrowseScreen.kt          MOD  device\u2194online toggle, online results list, Discover tab, Shazam row\n\u251c\u2500\u2500 screens/browse/{SongDetailSheet,AlbumDetailScreen}.kt MOD lyrics, share, shuffle, suggested collections\n\u251c\u2500\u2500 screens/discover/*.kt                   NEW  DiscoverSearchModel(s), DiscoverResultsList, DiscoverAlbumRow, DiscoverAddsStore\n\u251c\u2500\u2500 screens/shazam/*.kt                     NEW  ShazamRecognizer, ShazamCatalogMatch, ShazamButton, ShazamResultSheet, AppleMusicRecognition\n\u251c\u2500\u2500 screens/history/HistoryScreen.kt        MOD  Playback | Collection | Pockets | For You; grain picker; context menus; rewind\n\u251c\u2500\u2500 screens/foryou/*.kt                     NEW  ForYouTilesScreen, ForYouSongListScreen, NewReleasesScreen, RecFeedbackButtons, CollectionRecsToggle\n\u251c\u2500\u2500 screens/pockets/*.kt                    NEW  ListeningPocketsScreen (+ opt-in, detail)\n\u251c\u2500\u2500 screens/settings/SettingsScreen.kt      MOD  Online search creds, Prefer explicit versions, Recently-added count, For You cadence + recs-off list, Recommendations\n\u251c\u2500\u2500 di/AppGraph.kt                          MOD  new stores (lazy): lyricsStore, feedbackStore, forYouFeedStore, recService, releaseFeed, pocketsService, discoverAdds, skipTracker\n\u2514\u2500\u2500 MainActivity.kt                         MOD  routes: foryou/{tileId}, foryou/new, pocket-detail/{id}, discover album preview\n```\n\nShared touch points (named so packages stay disjoint): `AppGraph.kt` (one `val` per new store, each package adds its own lines), `MainActivity.kt` (one `composable(...)` per new route), `SettingsScreen.kt` (one section composable per package, each in its own file under `screens/settings/sections/`), `IndexModels.kt` (fields added once in EXPL-1, consumed by others), `CollectionsModels.kt` (+`recsEnabled: Boolean? = null`, +`cleanOnly: Boolean? = null` on Playlist/Pocket \u2014 collections area owns the file; REC-4/EXPL-1 need only the field), `PlaybackController.kt` (edition resolution hook + played-list jump), `PlaybackService.kt` (SkipTracker samples).\n\n## 2. Data flow and threading\n\nDoctrine (ported from iOS, already in force on Android): **every engine is a pure function over value snapshots, run on `Dispatchers.Default`; stores are single-writer, `synchronized(lock)` + `StateFlow`; views read `StateFlow`s and never compute in a composable body.**\n\n- **Browse pipeline**: `BrowseRows.of(catalog)` (memo by catalog identity) \u2192 `BrowseEngine.filterSort(base, searchKeys, query, clauses, sortKeys, playCounts)` in `produceState`+`withContext(Default)` keyed on `(catalog, kind, debouncedQuery, clauses, sortKeys, playCountsRevision if usesPlayCounts)` \u2192 read-time layer `applyReadTimeFilters(items, membership, favorites)` applied synchronously over the already-sorted list (cheap O(n) Set lookups, never memoized) \u2192 paging prefix keyed by result version. Memo key = JSON of the clause VALUES (never clause UUIDs), sorted keys, exactly as `BrowseState.resultsKey`.\n- **History**: `buildItems()` on the store's events (hide-skips applied at BASE build, so it is part of the base key) \u2192 the same `BrowseEngine.filterSort` with `lastPlayedAt` taken from the row's `PlayRef`. Port the three `refreshExternal` guards verbatim: (1) debounce BEFORE building the base, (2) abandon the publish if the filter/sort signature moved during the await, (3) never memoize an empty base and never stamp a display key when no base is bound. `pagingKey` deliberately excludes catalog identity.\n- **Recs**: `ForYouTilesScreen` snapshots inputs on Main (catalog \u2192 `ZoneCatalog.tracks`, `history.recentPlaysForZone()`, counts, crates, feedback projections with skip penalties, `recsOff` ids, `TimbreCatalog.vectors()` awaited first) \u2192 `ForYouFeedStore.refresh` runs `ForYouFeedBuilder.build` on `Default` \u2192 commits snapshot \u2192 optional `cloudZone()` second commit via `applyingCloudZone`. The grid derives cards with `ForYouGrid.tiles(snapshot, collections, feedback, releaseFeed)` keyed on `feed.revision | feedback.revision | releaseFeed.revision | collection counts | membershipRevision | recsOff ids`. Only three things recompute the ranking: menu Refresh, first build after `catalog != null`, schedule due (checked on tab open and `ON_RESUME` via `ProcessLifecycleOwner`; never a timer or WorkManager).\n- **Cloud**: `RecommendationService.flushNow()` is a coroutine on `appScope`; `flushEpoch` invalidation after every `await`; `startAutoFlush` = debounced 60 s loop while enabled. Requests use the existing `AppGraph.httpClient` (OkHttp, 20 s / 30 s timeouts).\n- **Discover**: `DiscoverSearchModel.searchDebounced(400 ms)` runs Apple Music REST search (dev token) and rip-server `GET /search` in parallel (`async` pair), merges and dedupes by store id (REST leads, server song rows win ties on ripped/url), refines by artist client-side.\n- **Shazam**: `ShazamRecognizer` wraps `com.shazam.shazamkit` `StreamingSession` fed by an `AudioRecord` (48 kHz mono PCM16) on an IO coroutine; results \u2192 `ShazamCatalogMatch.resolve` (pure) \u2192 `StateFlow<ShazamPhase>`.\n\n## 3. Platform APIs\n\n| Need | API |\n|---|---|\n| Online search creds | DataStore blob encrypted with an Android Keystore AES-GCM key (`SecretBox` helper; `androidx.security:security-crypto` is deprecated) |\n| SigV4 | `javax.crypto.Mac` HmacSHA256 + `MessageDigest` SHA-256; no AWS SDK |\n| Apple Music REST (search, artists latest-release, library add) | OkHttp + `Authorization: Bearer <devToken>` (+ `Music-User-Token` from `AppSettings.musicUserToken` for /v1/me/*) |\n| Unowned-release / `am:<storeId>` playback | existing `AppleMusicBackend` (DRM, device-only) |\n| Shazam | vendored ShazamKit for Android AAR (`app/libs/shazamkit-android-*.aar`, same flatDir pattern as MusicKit) + `RECORD_AUDIO` runtime permission; `Activity.shouldShowRequestPermissionRationale` drives the `.denied` \u2192 open-settings phase |\n| Share | `Intent.ACTION_SEND` with `ShareText.forSong/forAlbum/forSongs` |\n| Lyrics cache | `filesDir/lyrics-cache/<safe id>.txt` |\n| Schedule read points | `ProcessLifecycleOwner` `ON_RESUME` + tab enter |\n| Dates | `DateRangePicker` already used by History; reuse for `lastPlayedAt`/`dateAdded` between editors (epoch ms, end-of-day = next-day-start \u2212 1 ms via `java.time` zone rules) |\n| Background drain for release feed | none; lazy on-play, in-process coroutine with 2 s debounce (iOS parity) |\n\n## 4. Persistence formats (shape-compatible with iOS for the future S3 sync)\n\nAll files in `filesDir`, atomic tmp+rename, lenient decode, additive-optional fields, `installId` carried:\n- `pocketdj-play-history.json` \u2014 extend `PlayEvent` with the six optional fields; `originInstallId` stamped = `installId` on record; `wasSkipped`/`listenedFraction` MAX-merged.\n- `pocketdj-collection-activity.json` \u2014 add `catalogAdd` / `catalogRemove` kinds + `libraryWrite`, `itemArtist` optional.\n- `pocketdj-foryou-feed.json` \u2014 exactly `ForYouFeedSnapshot` (`schemaVersion` 3; `zoneSourceRaw` string; `reasons`/`soundIds` nullable). Match the iOS file name (read `ForYouFeedStore.defaultURL()`).\n- `pocketdj-rec-feedback.json` \u2014 `{schemaVersion, installId, decisions[], playing?, seq}`; `verdict`/`surface` as strings; per-row lenient decode (a corrupt row never drops the log).\n- `pocketdj-rec-key.json` (`{schemaVersion:1,key}`), `pocketdj-rec-sync.json` (`SyncState` cursors/acks/audio lists), `pocketdj-rec-pending-delete.json`.\n- `pocketdj-release-feed.json` (`{schemaVersion, entries[], seededAtMs?}`), `pocketdj-discover-adds.json` (`{schemaVersion:1, entries[], albums?}`), `pocketdj-timeline-cues.json`.\n- Browse snapshot (DataStore key `browseSnapshotJson`): add `clauses: [{id,field,op,value,values[],min?,max?}]`; keep decoding the legacy `genres/bpmMin/bpmMax/camelots/sources` into clauses when `clauses` is absent (one-way, drop legacy on next write). History gets its own key `historySnapshotJson`.\n\n## 5. Invariants a port must preserve (hard-won)\n\n1. Off-main filter/sort with a value-based memo key; paging prefix derived from the result signature in the same frame.\n2. Read-time layers (membership, favorites) are NEVER in the memo key and NEVER persisted.\n3. `activeFilterCount` counts favorite-only and hide-skips so the toolbar glyph stays honest; Clear All owns favorite + hide-skips, NOT membership.\n4. History: event-id row identity; 30 s window LOCAL to this install; hide-skips in the base key; `pagingKey` excludes catalog revision; never memoize an empty base; signature re-check after every await.\n5. Skip = advanced-away with position/duration < 0.5 (strict); natural end / repeat / stop / pause never classify; one-deep previous stash; high-water mark; restart re-zeroes.\n6. For You is frozen; feedback and membership edits re-derive CARDS, never the ranking; empty-catalog refresh is gated; schedule is evaluated at read.\n7. Zone: \u2265 50 % rediscovery floor, \u2264 3 per artist, thumbed-down removed from the queue but SUNK (rendered, dim) on screens; accepted rows removed permanently in zone/new; a collection switched off gets no sweep AND loses its tile next frame.\n8. Online search resets paging on sort change; `{id:asc}` tiebreak last; advance `loadedCount` by RAW hit count; drop a stale page when `from != loadedCount`.\n9. Edition policy: collection clean-only beats the global toggle; clean-only skips, never falls back; substitution only when the edition id is known and \u2260 primary; never enqueue a rip for an un-named edition.\n10. Discover: provisional rows appended AFTER real sources (first-wins merge shadows without deleting); album add records ACCEPTED tracks only; one batched inject; supersede by `appleMusicId` remaps collection references.\n11. Release feed: \u2264 50 ids per request, concurrency 2, only 429/5xx retryable, drain is global (`isFetching` guard), re-arm only after a clean pass, status classified at read.\n\n## 6. Mix DSP engine\nNot touched by this area; no decision taken here.",
+ "decisions": [
+  "Remove the Android-only 'Unified' History tab to match iOS (removed 2026-08-10): tabs = Playback | Collection | Pockets (gated) | For You (gated), every tab visible, current filled; Rewind-to-here lives on Playback rows.",
+  "Replace the typed P1 `BrowseFilters` with the full iOS clause registry (18 fields, 5 ops) behind ONE pure `BrowseEngine.filterSort`; Browse, History, collection details and the future queue builder all consume it. Legacy snapshot fields are decoded forward once.",
+  "Online search goes DIRECT to the aoss host with a pure-Kotlin SigV4 signer (no AWS SDK, no CloudFront proxy \u2014 the proxy is a PWA CORS workaround only); creds live in a Keystore-encrypted DataStore blob.",
+  "Discover's full-catalog search uses the Apple Music REST API with the developer token Android already mints (no MusicKit SDK needed for search), in parallel with the rip-server `/search` iTunes proxy for subscription-free coverage; adds require the Music-User-Token.",
+  "Shazam recognition uses Apple's vendored ShazamKit-for-Android AAR (same flatDir pattern as the MusicKit AARs) fed by AudioRecord; recognition is device-only, the matcher and action reducer are pure and unit-tested.",
+  "The on-device recommendation engine (ZoneEngine + SimilarityFamilies + identity/shaping) is ported as pure Kotlin with tuning constants verbatim and parity fixtures; the cloud engine stays opt-in/off by default; the rec key is device-local JSON (no CloudKit) and profileId = installId.",
+  "'Plays' on Android = local PlayHistoryStore counts only; the Apple play-count baseline (PlayCountService/AMPlayBaselineStore) is N/A on Android.",
+  "New releases ride the Apple Music REST artists endpoint with dev + user token; playing an unowned release routes `am:<storeId>` through AppleMusicBackend (DRM, device-only). Requires `IndexJson.artists` decoding.",
+  "For You refresh schedule is evaluated at read (tab open + ON_RESUME), never WorkManager/AlarmManager, matching the owner's 'cache, refresh on demand' rule.",
+  "Persisted documents keep the iOS file names and field names so the future S3 profile sync can union them (installId + per-event ids everywhere).",
+  "Mix DSP engine decision is out of scope for this area; nothing here depends on it."
+ ],
+ "packages": [
+  {
+   "id": "BRW-1",
+   "title": "Full filter/sort clause engine + persistence migration",
+   "goal": "Port the complete iOS field registry, Clause/FilterOp model, FilterEngine and SortEngine (incl. playCount, dateAdded, lastPlayedAt, albumCount/songCount, ARTISTS kind sort) as a pure, reusable `BrowseEngine.filterSort`; persist clauses; keep legacy snapshot decodable.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseFilter.kt (new: Field, Fields.all/byId/forKind, FilterOp, Clause, FieldValue, FieldValues.of(AlbumRow|SongRow|Artist|HistoryRow), FilterEngine, options())",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseEngine.kt (new: filterSort(base, searchKeys, query, clauses, sortKeys, playCounts); resultsKey JSON signature)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseSort.kt (mod: +PLAY_COUNT, DATE_ADDED, LAST_PLAYED_AT historyOnly, ALBUM_COUNT, SONG_COUNT, ARTISTS kind membership)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseModels.kt (mod: BrowseFilters \u2192 List<Clause>; activeFilterCount; usesPlayCounts)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/BrowseSnapshot.kt (mod: +clauses, +ClauseDoc; legacy fields kept)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseSessionPersistence.kt (mod: legacy\u2192clauses forward decode)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseScreen.kt (mod: produceState key + playCounts snapshot from PlayHistoryStore; minimal)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/browse/FilterEngineTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/screens/browse/BrowseEngineTest.kt (extend)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/browse/BrowseSessionPersistenceTest.kt (extend)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Fields.all order and ids match Browse/BrowseModel.swift:108-172 exactly (playCount placed high, lastPlayedAt historyOnly).",
+    "Filter semantics: number neq keeps missing; between fails missing and is inclusive with open ends; string notInList keeps empty; bool eq vs 'true'; stringArray inList = any; clause for non-applicable kind passes the row; incomplete clause is a no-op.",
+    "Options: camelot by wheel rank, genre by Genre.order, else case-insensitive; source from availableSources.",
+    "resultsKey is a sorted-key JSON of clause VALUES (not ids) + sort + catalog identity + playCountsRevision only when usesPlayCounts.",
+    "Old BrowseSnapshot with genres/bpm/camelots/sources decodes into equivalent clauses; a doc with unknown field ids drops those clauses; unit-test count increases by \u2265 25."
+   ],
+   "priority": "P0",
+   "est_lines": 1400,
+   "shared_touchpoints": [
+    "BrowseScreen.kt produceState key (BRW-2 owns the rest of the screen)",
+    "BrowseSnapshot.kt (data layer)"
+   ],
+   "unit_tests": [
+    "FilterEngineTest: one test per (field kind \u00d7 op) incl. neq-keeps-missing, notInList-keeps-empty, between open ends, explicit missing\u2192false, sentiment any-of",
+    "SortEngineTest additions: playCount nulls-last, dateAdded desc, camelot numeric rank, ARTISTS kind albumCount/songCount",
+    "BrowseEngineTest: newline-stripped query, parallel-arrays fallback matcher, memo key determinism + collision resistance (comma/pipe in values)",
+    "BrowseSessionPersistenceTest: legacy fields \u2192 clauses; unknown field dropped; round trip"
+   ],
+   "emulator_steps": [
+    "Browse \u2192 Filters \u2192 Add filter \u2192 Year between 1988\u20131994 + Genre none-of [Pop] \u2192 header count changes and persists across process death",
+    "Songs \u2192 Sort by Plays desc after playing two songs \u2192 played songs first, unplayed nulls-last"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "BRW-2",
+   "title": "Filter/sort sheets at full width + membership + favorite + hide-skips read-time layers",
+   "goal": "Rebuild BrowseFilterSheet as the iOS clause editor (field picker \u2192 op picker \u2192 value editor incl. multi-select, comma list, date pickers), add per-clause remove + Clear All semantics, membership SHOW/HIDE section, favorite tri-state (nullable favorites provider), History-only Hide-skips section; apply read-time layers in Browse.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseFilterSheet.kt (rewrite)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/ClauseEditor.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/MembershipSection.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/ReadTimeFilters.kt (new: applyMembership via CollectionsStore.songIdsForPlaylist/Pocket, applyFavorites(favoriteIds: Set<String>?), FavoriteFilter enum NOT serializable)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseModels.kt (mod: BrowseSession transient includeAny/includeIds/excludeAny/excludeIds/favoriteFilter/pendingQuery)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseScreen.kt (mod: pagingKey folds membership+favorite constraints; filter glyph lit when membershipActive)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/browse/ReadTimeFiltersTest.kt"
+   ],
+   "depends_on": [
+    "BRW-1"
+   ],
+   "acceptance": [
+    "Membership: SHOW keeps members of ANY selected, HIDE drops, both = intersection, *Any = every playlist+pocket, placed albums expand to tracks, song mode only, never persisted; 'Clear membership' button separate from Clear All.",
+    "Favorite filter: any/only/exclude over a Set; exclude keeps never-touched songs; counted in activeFilterCount in song mode only; cleared by Clear All; degrades to no-constraint when no favorites provider is wired.",
+    "Changing a clause's field resets op to the field's first op and clears values; lastPlayedAt/dateAdded between renders date pickers writing start-of-day / end-of-day\u22121 ms.",
+    "Scroll position survives hearting/adding (pagingKey tracks constraints, not store contents)."
+   ],
+   "priority": "P0",
+   "est_lines": 1100,
+   "shared_touchpoints": [
+    "CollectionsStore.songIdsForPlaylist/songIdsForPocket (read only)",
+    "Favorites provider interface `() -> Set<String>?` to be fulfilled by the collections area's FavoritesStore"
+   ],
+   "unit_tests": [
+    "ReadTimeFiltersTest: show/hide/intersection/any; non-song rows pass; favorites only/exclude; nil provider no-op",
+    "ClauseEditor state test: field change resets op + values (pure reducer)"
+   ],
+   "emulator_steps": [
+    "Songs \u2192 Filters \u2192 In playlist/pocket: pick one pocket \u2192 only members listed; toggle Any \u2192 all members of any collection",
+    "Add a song to a pocket via long-press while the filter is on \u2192 row appears without scroll reset"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "SRCH-1",
+   "title": "Online OpenSearch (aoss) search",
+   "goal": "Ship the device\u2194online toggle with SigV4-signed direct aoss queries, search-config.json host resolution, full clause/sort translation, server paging, and the Settings credential rows.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/search/SigV4.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/search/SearchConfig.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/search/SearchService.kt (Searching interface + Live impl + FilterQuery + sortBody + parse)",
+    "android/app/src/main/java/com/levi/pocketdj/data/search/OnlineSearchModel.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/SecretBox.kt (Keystore AES-GCM wrap)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (mod: searchAccessKeyId, searchSecretKey(encrypted), searchEndpoint; remove dead onlineSearchEnabled)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/sections/OnlineSearchSection.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/OnlineResults.kt (new: loading/failed/loaded list, paging footer)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseScreen.kt (mod: toolbar mode button cycling device\u2192online\u2192device; artist kind forced on-device; online content branch)",
+    "android/app/src/test/java/com/levi/pocketdj/data/search/SigV4Test.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/search/SearchServiceTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/search/OnlineSearchModelTest.kt"
+   ],
+   "depends_on": [
+    "BRW-1"
+   ],
+   "acceptance": [
+    "Signed headers exactly host;x-amz-content-sha256;x-amz-date, service aoss, empty canonical query, payload SHA-256; signature matches a known AWS test vector.",
+    "Body: multi_match fields title^3/artist^2/album^1.5/lyrics/sentiment^2 best_fields fuzziness AUTO operator and; match_all on empty; term type filter; clause translation table identical to SearchService.swift:288-304 (genre\u2192genreCategory, name\u2192title.kw, lowercase+trim strings, whole numbers as Int); sort ends with {id:asc}.",
+    "Paging: 50/page, reset on query/kind/clauses/sort, loadMore guarded by hasMore && !isLoadingPage && loaded, offset advanced by raw hit count, stale page dropped when from != loadedCount, cap 10 000.",
+    "Host resolution user override (scheme/path stripped) \u2192 search-config.json (bypass HTTP cache) \u2192 baked default; reload when RemoteEndpoints generation changes.",
+    "No creds \u2192 failed state 'Add OpenSearch credentials in Settings to search online.'; transient page error keeps loaded rows."
+   ],
+   "priority": "P0",
+   "est_lines": 1600,
+   "shared_touchpoints": [
+    "AppSettingsStore.kt (new keys)",
+    "SettingsScreen.kt (one section include)",
+    "BrowseScreen.kt toolbar (BRW-2 also touches \u2014 coordinate: SRCH-1 owns the mode button + online branch only)"
+   ],
+   "unit_tests": [
+    "SigV4Test: canonical request + signature against AWS SigV4 test suite vector; header set",
+    "SearchServiceTest (MockWebServer): body shape per kind, each clause op \u2192 term/terms/range/must_not, sort mapping, parse total + hits",
+    "OnlineSearchModelTest (stub Searching): reset on sort change, raw-count offset with dedupe, stale-page drop, 10k cap, error keeps rows"
+   ],
+   "emulator_steps": [
+    "Settings \u2192 Online search: paste the djpocketsearch read-only key \u2192 'Configured' badge; Browse \u2192 cloud icon \u2192 type 'midnight' \u2192 header shows exact total, scroll pages in 50s",
+    "Change sort to BPM desc while online \u2192 list resets and reloads page 1"
+   ],
+   "device_only": "None (aoss reachable from the emulator)."
+  },
+  {
+   "id": "EXPL-1",
+   "title": "Explicit/edition system + streaming-link and dateAdded index fields",
+   "goal": "Decode the missing IndexSong/IndexAlbum fields and port EditionPolicy/CleanOnly/SongVariant with the 'Prefer explicit versions' tri-state and the playback-resolution hook.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/catalog/IndexModels.kt (mod: +dateAdded, appleMusicUrl, spotifyUrl, youtubeUrl, appleMusicIdExplicit, appleMusicIdClean; IndexSong.appleMusicId(for: edition); +IndexArtist + IndexJson.artists + normalize)",
+    "android/app/src/main/java/com/levi/pocketdj/data/edition/SongVariant.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/edition/EditionPolicy.kt (decide, storageIds, resolveStored, lazyRipId, CleanOnly.resolve/ripIds/isSkipped)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (mod: preferExplicitVersions: Boolean? tri-state)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/sections/EditionSection.kt (new: 'Prefer explicit versions' toggle with 'never chosen' state)",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/PlayResolver.kt (mod: accept EditionPolicy.Decision \u2192 storage ids order + lazy rip id)",
+    "android/app/src/test/java/com/levi/pocketdj/data/edition/EditionPolicyTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/catalog/IndexModelsDecodeTest.kt (extend)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Precedence: collection cleanOnly \u2192 clean always; else global tri-state (nil \u21d2 unchanged, false \u21d2 clean, true \u21d2 explicit); substitution only when edition id known and \u2260 primary.",
+    "CleanOnly.resolve drops explicit songs without a clean id (never falls back), passes unknown ids untouched; ripIds emits '<base>_clean' variant ids.",
+    "storageIds = [wanted, base, other] with fallback; [wanted] only under clean-only; lazyRipId nil when no edition / already stored / unknown catalog id.",
+    "Index docs lacking the new fields still decode (all default null); IndexJson.artists decodes key/name/id/alt leniently."
+   ],
+   "priority": "P0",
+   "est_lines": 700,
+   "shared_touchpoints": [
+    "PlayResolver.kt / PlaybackController.kt resolution order (playback area reviews)",
+    "CollectionsModels.kt +cleanOnly field (collections area adds the Boolean?)"
+   ],
+   "unit_tests": [
+    "EditionPolicyTest: 12 cases covering the precedence table, unresolved-edition under clean-only vs global, storage id order, lazy rip gate",
+    "IndexModelsDecodeTest: new fields present/absent; artists table"
+   ],
+   "emulator_steps": [
+    "Settings \u2192 Prefer explicit versions ON \u2192 song detail of a song with appleMusicIdExplicit shows the explicit edition as the resolved play id (log/debug row)"
+   ],
+   "device_only": "Actual explicit/clean Apple Music streaming (DRM) verification."
+  },
+  {
+   "id": "BRW-3",
+   "title": "Song/Album detail parity: lyrics, share, shuffle, artist-kind polish",
+   "goal": "Add LyricsStore (fetch-once + disk cache, only when lyricsStatus == found), ShareText + ACTION_SEND on song/album/selection, Album Shuffle via playNow(.album), artist-kind sort fields in the sheet.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/lyrics/LyricsStore.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/share/ShareText.kt (forSong, forAlbum, forSongs; appleMusicURL/spotifyURL/youtubeURL with search fallbacks)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/SongDetailSheet.kt (mod: lyrics section, Share button)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/AlbumDetailScreen.kt (mod: Shuffle button \u2192 collections.playNow(trackIds, shuffle=true, SOURCE_ALBUM) + navigate NOW_PLAYING autoplay; Share; audio-analysis read-only section)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseSortSheet.kt (mod: ARTISTS kind keys)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (mod: lyricsStore)",
+    "android/app/src/test/java/com/levi/pocketdj/data/lyrics/LyricsStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/share/ShareTextTest.kt"
+   ],
+   "depends_on": [
+    "EXPL-1",
+    "BRW-1"
+   ],
+   "acceptance": [
+    "Lyrics fetched only when lyricsStatus == 'found'; memory \u2192 disk \u2192 network; non-2xx never cached; path-unsafe ids sanitized.",
+    "ShareText output byte-matches iOS for a song with/without links (Apple Music URL derived from appleMusicId when appleMusicUrl absent; search fallbacks otherwise).",
+    "Album Shuffle starts a Now Playing run attributed source=album with contextName = album name (History row shows 'Album \u00b7 <name>').",
+    "Audio-analysis section renders per-segment rows (# \u00b7 start\u2013end \u00b7 bpm \u00b7 key chip \u00b7 keyStrength%) + total for albums with audioTracks."
+   ],
+   "priority": "P0",
+   "est_lines": 800,
+   "shared_touchpoints": [
+    "AppGraph.kt (lyricsStore)",
+    "CollectionsStore.playNow (read only)"
+   ],
+   "unit_tests": [
+    "LyricsStoreTest (MockWebServer + temp dir): gate on lyricsStatus, cache hit, 404 not cached",
+    "ShareTextTest: link precedence + fallbacks for song/album/multi"
+   ],
+   "emulator_steps": [
+    "Open a song with lyricsStatus found \u2192 Lyrics section appears; airplane mode \u2192 reopens from cache",
+    "Album \u2192 Shuffle \u2192 mini-player plays; History row context reads 'Album \u00b7 <name>'"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "HIST-1",
+   "title": "PlayEvent schema extension + SkipTracker + local-only recount window",
+   "goal": "Add the six additive-optional PlayEvent fields, the SkipTracker (<50 % strict, advance-away only), listened-fraction reporting, originInstallId stamping and the install-local 30 s window, wired from PlaybackService/PlaybackController.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/history/PlayHistoryModels.kt (mod)",
+    "android/app/src/main/java/com/levi/pocketdj/data/history/PlayHistoryStore.kt (mod: markSkipped, noteListened, isFromAnotherDevice, lastPlayedAtAnyDevice, recentPlaysForZone(limit, coverageDays), record stamps originInstallId + tzOffsetMin; window local)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/SkipTracker.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackService.kt (mod: 1 Hz position sampler \u2192 tracker; onMediaItemTransition reason SEEK/PLAYLIST_CHANGED = advance-away, AUTO = natural end; noteTrackRestarted on repeat)",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (mod: next()/previous()/jump = noteAdvanceAway; stop()/pause-to-background = checkpoint)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (mod: skipTracker)",
+    "android/app/src/test/java/com/levi/pocketdj/playback/SkipTrackerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/history/PlayHistoryStoreTest.kt (extend)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Skip iff advance-away with max(position)/duration < 0.5 strictly; natural end, repeat, stop, pause never classify; a second advance-away for the same event is ignored; late advance-away for the replaced track classifies the one-deep stash.",
+    "Restart of the same song re-zeroes the high-water mark after reporting pass-1 fraction; unknown duration reports nothing.",
+    "PlayEvent decodes docs with/without the new fields; wasSkipped only ever flips false\u2192true; listenedFraction max-merged.",
+    "Recount window ignores events whose originInstallId \u2260 installId; isFromAnotherDevice true only for foreign non-nil origins.",
+    "recentPlaysForZone walks back past `limit` while inside coverageDays."
+   ],
+   "priority": "P0",
+   "est_lines": 900,
+   "shared_touchpoints": [
+    "PlaybackService.kt / PlaybackController.kt (playback area co-owns; HIST-1 adds hook calls only)",
+    "AppGraph.kt"
+   ],
+   "unit_tests": [
+    "SkipTrackerTest: 10 cases from the SkipTracker.swift doc (strict 50 %, stash, high-water after seek-back, restart, checkpoint)",
+    "PlayHistoryStoreTest: local-only window, foreign origin, max-merge, lenient decode of new fields"
+   ],
+   "emulator_steps": [
+    "Play a rip, skip at 10 s \u2192 History row shows 'skipped'; let one finish \u2192 no badge",
+    "Repeat-one a track, skip during the replay \u2192 classified as skip (mark re-zeroed)"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "HIST-2",
+   "title": "History screen parity: tab model, engine-backed Playback timeline, row chrome, rewind, hide-skips",
+   "goal": "Rebuild HistoryScreen to the 2026-08-10 iOS shape (drop Unified), run the Playback timeline through BrowseEngine with its own persisted state and the three refreshExternal guards, add live indicator / skipped / on-another-device / N plays, row context menu (Rewind, Add to\u2026, Share), Hide-skips, full sort/filter sheets.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/HistoryScreen.kt (rewrite)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/HistoryRows.kt (mod: buildItems \u2192 HistoryRow with PlayRef(eventId, playedAt, source, contextName, count, fromAnotherDevice, wasSkipped); visibleEvents(hideSkips); distinctSongs)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/HistoryBrowseState.kt (new: external base + refreshExternal with debounce-first, supersede check, never-memoize-empty, invalidateDisplayKey; persistence key historySnapshotJson; default lastPlayedAt desc)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/Rewind.kt (new: rewindSlice pure + performRewind: same-run jump via PlaybackController played list else playNow(slice, name, source))",
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/HistoryRowMenu.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (mod: historySnapshotJson key)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/history/HistoryRowsTest.kt (extend)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/history/HistoryBrowseStateTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/screens/history/RewindTest.kt"
+   ],
+   "depends_on": [
+    "BRW-1",
+    "BRW-2",
+    "HIST-1"
+   ],
+   "acceptance": [
+    "Tabs Playback | Collection (+ Pockets / For You only when their stores report enabled); every tab rendered, current selected; Unified gone.",
+    "Timeline rows keyed by event id; sort/filter sheets expose song fields + 'Last played' (between = date pickers) + Hide skips; default sort lastPlayedAt desc; History state persisted under its own key; query transient.",
+    "Guards: typing debounces BEFORE base build; a signature change during the await abandons the publish; an empty base is never memoized; explicit submit invalidates both memos.",
+    "Row: speaker icon only when row.eventId == skipTracker.currentEventId AND player is playing; 'skipped' badge; '\u00b7 on another device'; 'N plays' when > 1; context menu Rewind / Add to\u2026 / Share.",
+    "Rewind confirms always; same-run \u2192 cursor move keeps setlist identity; past-run \u2192 contiguous same-contextId slice re-played under the event's source token.",
+    "Catalog refresh does not reset the scrolled-in paging budget."
+   ],
+   "priority": "P0",
+   "est_lines": 1800,
+   "shared_touchpoints": [
+    "PlaybackController played-list/jump API (playback area) \u2014 expose `jumpToPlayed(uid)` or fall back to playNow",
+    "AppSettingsStore.kt key"
+   ],
+   "unit_tests": [
+    "HistoryRowsTest: hideSkips filtering, PlayRef fields, snapshot fallback title",
+    "HistoryBrowseStateTest: supersede abandon, empty-base not memoized, invalidate re-fires, pagingKey excludes catalog",
+    "RewindTest: slice stops at first different contextId; missing event \u2192 empty"
+   ],
+   "emulator_steps": [
+    "Play 3 songs from an album, skip the 2nd \u2192 Playback shows live icon on the 3rd, 'skipped' on the 2nd; Filters \u2192 Hide skips \u2192 2nd disappears, glyph lit",
+    "Long-press a past row \u2192 Rewind to here \u2192 confirm \u2192 playback restarts at that song with the following songs queued",
+    "Filters \u2192 Last played between (yesterday..today) \u2192 only today's rows; relaunch \u2192 filter restored"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "HIST-3",
+   "title": "Collection timeline (F8) + Recently-added derivation + Settings count",
+   "goal": "Add the Collection tab grain picker (Activity | Songs | Albums) backed by a pure CollectionTimeline builder over addedAtBySongId, month dividers, album heard/total progress, since-date filter, cue points; expose RecentlyAdded.songIds(limit) + the synthetic 'Recently added' SourcePlaylist for the Collections tab.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/recent/RecentlyAdded.kt (addedAtBySongId(catalog, overrides, filterToOwnLibrary), newestFirst(limit) with 2\u00b7limit buffer + id tiebreak, memo key, recentlyAddedPlaylist, hasRecentlyAddedItems)",
+    "android/app/src/main/java/com/levi/pocketdj/data/timeline/CollectionTimeline.kt (Grain, Row, Summary, build/buildSongs/buildAlbums/sortAndMark/jumpIndex)",
+    "android/app/src/main/java/com/levi/pocketdj/data/timeline/TimelineCueStore.kt (pocketdj-timeline-cues.json)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/CollectionTimelineScreen.kt (new)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/HistoryScreen.kt (mod: grain picker on Collection tab only)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (mod: defaultRecentlyAddedCount clamped 1..max)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/sections/CollectionsSection.kt (new: count stepper + caption)",
+    "android/app/src/test/java/com/levi/pocketdj/data/recent/RecentlyAddedTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/timeline/CollectionTimelineTest.kt"
+   ],
+   "depends_on": [
+    "EXPL-1",
+    "HIST-2"
+   ],
+   "acceptance": [
+    "newestFirst selects top-N without a full sort, ties broken by id desc (deterministic), unresolvable ids dropped, overrides win when newer.",
+    "Timeline build runs off main; rows ordered by add date with the chosen direction; album rows aggregate heard/total/plays; jumpIndex finds the first row at/after a cue date.",
+    "Recently-added playlist id '__pdj_recently_added__', name 'Recently added', nil when empty; memo invalidates on catalog identity / limit / add-store signature.",
+    "Grain default is Activity on every open (ephemeral)."
+   ],
+   "priority": "P1",
+   "est_lines": 1500,
+   "shared_touchpoints": [
+    "Playlists tab surfaces the synthetic playlist (collections area consumes RecentlyAdded.recentlyAddedPlaylist)",
+    "AppSettingsStore.kt key; SettingsScreen.kt section include"
+   ],
+   "unit_tests": [
+    "RecentlyAddedTest: top-N correctness vs full sort on 5k random rows, tie determinism, override precedence, own-library filter",
+    "CollectionTimelineTest: month dividers, album aggregation, asc/desc marking, jumpIndex boundaries"
+   ],
+   "emulator_steps": [
+    "History \u2192 Collection \u2192 Songs grain \u2192 stream of songs by date added with month headers; set 'since' date \u2192 list narrows",
+    "Settings \u2192 Recently added count 50 \u2192 Collections tab playlist shows 50 newest"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "REC-1",
+   "title": "Recs core A: SimilarityFamilies, Similarity profile, TimbreCatalog",
+   "goal": "Port the pure similarity math (genre canonicalization, era window p15\u2013p85 \u00b12y + calibration, musical profile bpm/camelot densities, timbre pack/distance/centroid profile/fit/calibration/adjectives, term weights/balance) plus the PuzzleSimilarity.profile/score subset the zone uses, and the timbre.json loader.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/SimilarityFamilies.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/Similarity.kt (PuzzleSimilarity.profile/TargetProfile/score with weighted members, hasRecency flag, calibrate)",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/TimbreCatalog.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/catalog/CatalogService.kt (mod: expose loadValidator/writeCache/cacheFileUrl helpers)",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/SimilarityFamiliesTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/TimbreCatalogTest.kt",
+    "android/app/src/test/resources/recs/timbre-fixture.json",
+    "android/app/src/test/resources/recs/similarity-parity.json (vectors + expected scores exported from the Swift test suite)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Constants verbatim: timbre axes list/order, timbreMinSharedAxes 8, timbre e-fold 0.12, TIMBRE_VERSION pinned by a test reading the constant.",
+    "Era window = p15\u2013p85 \u00b12y, flat inside / decaying outside; undated candidate scores the round neutral, never 0.",
+    "Timbre distance = RMS over shared finite axes; profile = centroid + spread; fit saturates inside spread; profile with < timbreMinVectors members \u21d2 null (term drops).",
+    "timbre.json: conditional GET, cache only after decode, 304 serves cache, failure serves last good, cold offline \u21d2 empty map; 6 h memo."
+   ],
+   "priority": "P1",
+   "est_lines": 1600,
+   "shared_touchpoints": [
+    "CatalogService.kt helper visibility",
+    "Games area may later reuse Similarity.kt"
+   ],
+   "unit_tests": [
+    "SimilarityFamiliesTest: era window on 808&Swinging-style years, camelot relatedness table, bpm density, timbre RMS vs euclidean, saturation, parity fixture within 1e-9",
+    "TimbreCatalogTest (MockWebServer): 200/304/500/offline paths"
+   ],
+   "emulator_steps": [
+    "Debug screen: 'Load timbre corpus' \u2192 row count 14,916-ish logged; airplane \u2192 cached"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "REC-2",
+   "title": "Recs core B: identity + shaping (version/recording identity, membership, novelty, composition, sound admit, audio shortlist)",
+   "goal": "Port RecVersionIdentity (edition/remix parse), RecRecordingIdentity (artist+base title+length corroborated collapse), RecMembership (multi-id exclusion incl. amrec_/variants), RecNovelty (primary artist key, familiarity, aux mix), RecComposition (limit, maxPerArtist, diversity floor), RecSoundAdmit (quota, skew caps), RecAudioShortlist.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/RecIdentity.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/RecShaping.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/RecIdentityTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/RecShapingTest.kt",
+    "android/app/src/test/resources/recs/version-identity-cases.json (title \u2192 key cases exported from iOS tests)"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "Deluxe/Bonus/remix/extended variants of a member are suppressed; live/acoustic/instrumental are NOT (fail open unless titles identical).",
+    "RecMembership.contains matches catalog id, '<id>_clean/_explicit' variants, 'amrec_<storeId>' via appleMusicId; validStoreKey rejects non-numeric.",
+    "RecComposition respects limit, maxPerArtist, and the raw-genre diversity floor; RecSoundAdmit caps skew per raw genre.",
+    "Artist key normalization is byte-identical to IndexArtist.normalize (trim, lowercase, collapse whitespace)."
+   ],
+   "priority": "P1",
+   "est_lines": 1500,
+   "shared_touchpoints": [
+    "None"
+   ],
+   "unit_tests": [
+    "RecIdentityTest: \u2265 30 title parse cases from the fixture; recording collapse with/without length corroboration",
+    "RecShapingTest: per-artist cap, diversity floor, sound quota, shortlist selection excludes pending"
+   ],
+   "emulator_steps": [
+    "n/a (pure)"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "REC-3",
+   "title": "ZoneEngine: In Da Zone + collection suggestions + cloud shaping",
+   "goal": "Port ZoneEngine (Track/Play/Feedback/Tuning/Pool/Queue/Ranking; versionKeys; inDaZone two-pool blend; shapeCloudRanking; rank/suggestions/explainedSuggestions with the SOUND DOOR) and the catalog projection.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ZoneEngine.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ZoneCatalog.kt (MergedCatalog \u2192 tracks + genreBySongId memo; 'Other' genre \u2192 null; year falls back to album)",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/ZoneEngineTest.kt",
+    "android/app/src/test/resources/recs/zone-fixture-catalog.json"
+   ],
+   "depends_on": [
+    "REC-1",
+    "REC-2",
+    "HIST-1"
+   ],
+   "acceptance": [
+    "Pools exactly complementary on rediscoveryQuietDays; rediscovery share \u2265 floor unless the library cannot supply; \u2264 3 per artist; cooldown excludes just-played; future-dated plays clamp to now.",
+    "Accepted ids join the taste profile but not seedWeight; rejected ids removed AND form a subtracted negative profile; skip penalties applied globally.",
+    "Suggestions: admission gate artist-or-genre; nothing already in the collection under any identity; no other VERSION of a member; era/musical/timbre terms fail open; explained rows carry a non-empty 'why' with timbre > genre precedence; soundAdmitted consistent between suggestions and explained.",
+    "Empty timbre \u21d2 ranking byte-identical to pre-v2 (parity test)."
+   ],
+   "priority": "P1",
+   "est_lines": 2400,
+   "shared_touchpoints": [
+    "None (consumes REC-1/2 and HIST-1 recentPlaysForZone)"
+   ],
+   "unit_tests": [
+    "ZoneEngineTest: pool partition, floor, artist cap, cooldown, accept/reject effects, cloud shaping drops unresolvable/capped ids, suggestion exclusion by variant/amrec, explained captions, empty-timbre parity"
+   ],
+   "emulator_steps": [
+    "n/a until REC-5 renders it; a debug 'rank now' action logs the zone queue size + buried count"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "REC-4",
+   "title": "For You feed store, feedback store, schedule, tiles/grid, recsEnabled toggle plumbing",
+   "goal": "Port ForYouFeedSnapshot/Builder/Store (durable, off-main refresh, schema version 3), RecFeedbackStore (decisions, tombstones at read, partition, PlayingScope), ForYouRefreshSchedule, ForYouTiles.build + ForYouGrid.tiles, and CollectionsStore recommendationsEnabled/suggestionsExcludingMembers/suggestibleCollections helpers.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ForYouFeed.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ForYouFeedStore.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ForYouRefreshSchedule.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ForYouTiles.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ForYouGrid.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/RecFeedbackStore.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/collections/CollectionsRecs.kt (new extension file: recommendationsEnabled, setRecommendationsEnabled, recommendationsOffIds, suggestibleCollections, suggestionsExcludingMembers, membershipRevision)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (mod: forYouRefreshCadence/minutes/weekday)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (mod: feedbackStore, forYouFeedStore)",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/ForYouFeedTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/RecFeedbackStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/ForYouRefreshScheduleTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/ForYouTilesTest.kt"
+   ],
+   "depends_on": [
+    "REC-3"
+   ],
+   "acceptance": [
+    "Snapshot decodes leniently (missing zoneSourceRaw \u2192 onDevice, missing reasons \u2192 null); a document with schemaVersion < 3 reads as NO cache (hasResult false).",
+    "Builder skips recsOff crates before sweeping; versionKeys and packed timbre computed once per refresh; empty cloud rows leave the snapshot untouched.",
+    "Feedback: tombstone 7 d evaluated at read; accept removes permanently in zone/new scopes; cleared is a row not a deletion; same-ms double-tap resolved by seq; partition sinks rather than filters.",
+    "Schedule: default weekly Friday 16:20; isDue when last scheduled instant passed and cache predates it (missed slot fires on next open); manual never due.",
+    "Tiles: New #1, Zone #2 always; collections with \u2265 1 live suggestion sorted count desc then name; deleted/recs-off crates dropped at derive time."
+   ],
+   "priority": "P1",
+   "est_lines": 2000,
+   "shared_touchpoints": [
+    "CollectionsModels.kt +recsEnabled: Boolean? on Playlist and Pocket (collections area adds the field; this package adds the extension functions in its own file)",
+    "AppSettingsStore.kt keys",
+    "AppGraph.kt"
+   ],
+   "unit_tests": [
+    "ForYouFeedTest: lenient decode matrix, schema gate, build filters recsOff, applyingCloudZone empty/unresolvable",
+    "RecFeedbackStoreTest: tombstone expiry at read, accept-permanent, toggle undo, seq ordering, lenient row skip",
+    "ForYouRefreshScheduleTest: lastFire for each cadence incl. DST week; isDue missed slot",
+    "ForYouTilesTest: pinned order, sort, subtitles incl. empty notes"
+   ],
+   "emulator_steps": [
+    "n/a (REC-5 renders)"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "REC-5",
+   "title": "For You UI: History \u25b8 For You tab, tiles grid, song list, feedback buttons, recs toggle, Settings \u25b8 For You",
+   "goal": "Render the cached grid with freshness bar + menu Refresh, tile long-press menu (Play/Shuffle live rows, recs toggle on collection tiles with the 'where it comes back' notice), ForYouSongListScreen (frozen ids first, off-main fallback, badges, why captions, \ud83d\udc4d = add, sunk rows, \u25b6/\ud83d\udd00 stamp the playing scope, Add all, Open collection), RecFeedbackButtons, CollectionRecsToggle, Settings For You section (cadence/time/weekday + recs-off list).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/foryou/ForYouTilesScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/foryou/ForYouSongListScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/foryou/RecFeedbackButtons.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/foryou/CollectionRecsToggle.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/foryou/ForYouRoutes.kt (tile route encoding)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/sections/ForYouSection.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/HistoryScreen.kt (mod: For You tab gated on recEngineEnabled || debug fixture)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (mod: routes foryou/{tileId})",
+    "android/app/src/test/java/com/levi/pocketdj/screens/foryou/ForYouSongListStateTest.kt"
+   ],
+   "depends_on": [
+    "REC-4",
+    "HIST-2"
+   ],
+   "acceptance": [
+    "Cold install shows a spinner only until the first build; every later open paints the cache on the first frame; refresh triggered by menu, first-build-after-catalog, schedule due on tab open / ON_RESUME.",
+    "Tile card count == song list header count by construction (same ForYouGrid function).",
+    "Song list: rejected rows render dimmed at the bottom, playable but excluded from \u25b6/\ud83d\udd00; \ud83d\udc4d adds (to the crate, or opens the Add sheet for Zone) and marks \u2713; In Da Zone tap plays from that row through playNow and stamps the feedback scope.",
+    "Switching recs off from a tile removes the tile on the next frame and shows the notice naming the collection \u22ef menu and Settings \u25b8 For You.",
+    "Settings lists every switched-off collection with a toggle to re-enable."
+   ],
+   "priority": "P1",
+   "est_lines": 1700,
+   "shared_touchpoints": [
+    "HistoryScreen.kt tab list (HIST-2 leaves a `extraTabs` seam)",
+    "MainActivity.kt route",
+    "SettingsScreen.kt section include",
+    "Playlist/Pocket detail \u22ef menus (collections area adds CollectionRecsToggle there)"
+   ],
+   "unit_tests": [
+    "ForYouSongListStateTest: visibleIds = live + sunk; blendSummary; accept path chooses crate vs sheet"
+   ],
+   "emulator_steps": [
+    "Seed history (debug seed) \u2192 History \u25b8 For You \u2192 tiles New/In Da Zone/<collections>; open In Da Zone \u2192 rows with Buried badges; \ud83d\udc4e a row \u2192 sinks + dims; menu Refresh \u2192 freshness bar updates",
+    "Long-press a collection tile \u2192 Recommendations off \u2192 tile disappears + notice; Settings \u25b8 For You lists it"
+   ],
+   "device_only": "None."
+  },
+  {
+   "id": "REC-6",
+   "title": "Cloud recommendation engine service + client + Settings \u25b8 Recommendations + Suggested collections",
+   "goal": "Port RecEngineClient and RecommendationService (gate, device key, scoped profile id, /events delta flush with cursors/acks/caps, /recs/songs cloud zone with TTL, /recs/collections suggestions with LRU + dropRecsOff, audio shortlist upload, DELETE /state + pending-delete tombstone, auto-flush), the Settings section, and the SongDetail 'Suggested collections' rows.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/RecModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/RecEngineClient.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/RecommendationService.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/config/Endpoints.kt (mod: REC_ENGINE_ENROLL_SECRET constant mirrored from Support/Config.swift:64; PDJ identity headers)",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (mod: recEngineEnabled, shareLifetimePlayCounts)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/sections/RecommendationsSection.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/SongDetailSheet.kt (mod: Suggested collections block)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (mod: recService)",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/RecEngineClientTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/RecommendationServiceTest.kt"
+   ],
+   "depends_on": [
+    "REC-4",
+    "HIST-1"
+   ],
+   "acceptance": [
+    "Every network method guards isEnabled first; disabled \u21d2 zero requests (asserted with MockWebServer request count 0).",
+    "Headers: Authorization Bearer <key>, X-PocketDJ-Profile = scoped id (HMAC-SHA256(installId, key) hex), X-PocketDJ-Device, X-PocketDJ-Enroll only on POST /events and DELETE /state; 403 body enrollment-required vs key-mismatch mapped distinctly.",
+    "Flush: batches \u2264 500, per-stream cursors with 30-day overlap and ack lists capped 25k newest-kept, collections snapshot caps (500 collections / 5k ids each / 100k total / 3.5 MB), play-counts hash gate; flushEpoch bump abandons an in-flight flush without advancing cursors.",
+    "cloudZoneRanking returns [] on any failure; forYou TTL 15 min unless force; suggestions LRU 20 / 15 min, filtered by recommendationsEnabled on read; Delete cloud data clears local + server and mints a fresh key on re-enable."
+   ],
+   "priority": "P1",
+   "est_lines": 2200,
+   "shared_touchpoints": [
+    "AppSettingsStore.kt keys",
+    "SettingsScreen.kt section include",
+    "SongDetailSheet.kt (BRW-3 also edits \u2014 REC-6 adds one composable block)",
+    "AppGraph.kt"
+   ],
+   "unit_tests": [
+    "RecEngineClientTest (MockWebServer): headers per route, 403 mapping, timeouts",
+    "RecommendationServiceTest: gate, key mint/persist, scoped id vector, cursor/ack bookkeeping incl. eviction keeps newest, epoch abandon, snapshot caps, TTL + force"
+   ],
+   "emulator_steps": [
+    "Settings \u2192 Recommendations ON \u2192 'Send now' \u2192 last synced updates; History \u25b8 For You \u2192 Refresh \u2192 In Da Zone subtitle reads 'recommendation engine'; song detail shows Suggested collections with Add"
+   ],
+   "device_only": "None (rec engine reachable from the emulator)."
+  },
+  {
+   "id": "REC-7",
+   "title": "New releases feed + screen + release streaming",
+   "goal": "Port ReleaseFeedPolicy/Models/Service (Apple Music REST artists endpoint with dev+user token, TTL by popularity, batches of 50, concurrency 2, retry policy, lazy on-play trigger + debounced global drain, one-shot seed, ownership + version probes, persisted cache, emptyReason), NewReleasesScreen (Out now / Coming soon, \ud83d\udc4d/\ud83d\udc4e scoped 'new', recheck), ReleaseStreaming (expand \u2264 25 releases, concurrency 4, queue am:<storeId>).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ReleaseFeedModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ReleaseFeedService.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ReleaseStreaming.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/AlbumOwnership.kt (owns(storeId, catalogSongIds, catalogAppleMusicIds, ripped, adHocPrefix, localRecordMatch) + ownedAlbumRecordIndex/ownedVersionIndex memo per artist)",
+    "android/app/src/main/java/com/levi/pocketdj/data/applemusic/AppleMusicApi.kt (new: catalog artists/search/album-tracks + library add; dev token + optional user token)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/foryou/NewReleasesScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (mod: hook noteArtistPlayed on PlayStarted via artists table join)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (mod: releaseFeed)",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/ReleaseFeedServiceTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/ReleaseFeedPolicyTest.kt",
+    "android/app/src/test/resources/recs/artists-latest-release.json"
+   ],
+   "depends_on": [
+    "REC-5",
+    "EXPL-1"
+   ],
+   "acceptance": [
+    "Request shape GET /v1/catalog/us/artists?ids=<\u226450>&views=latest-release,similar-artists; only 429/5xx retry with backoff; drain reentrancy guard keeps \u2264 2 requests globally even under a 429 storm with plays arriving (test).",
+    "TTL: release 2\u201314 d by popularity (reference 2860 plays), similar 30\u2013180 d; isDue; window 30 d; status classified at read.",
+    "Ownership: store id, provisional amrec_album_, and same-record title route all suppress; Deluxe reissue suppressed by version probe; live album not suppressed.",
+    "Seed runs once (seededAtMs persisted); emptyReason distinguishes seeding / unauthorized / offline / not-checked / nothing.",
+    "Play/Shuffle queue only out-now releases, expand with concurrency 4, drop blank store ids, surface the empty-expansion message."
+   ],
+   "priority": "P2",
+   "est_lines": 2300,
+   "shared_touchpoints": [
+    "PlaybackController.kt PlayStarted hook",
+    "AppleMusicBackend (am:<storeId> queue items \u2014 streaming/playback area)",
+    "AppGraph.kt"
+   ],
+   "unit_tests": [
+    "ReleaseFeedPolicyTest: popularity/TTL curves, isDue, classify, window",
+    "ReleaseFeedServiceTest (fake transport, timeScale\u22480): batching, concurrency cap under 429, re-queue on failure, no re-arm after failed pass, seed once, ownership/version probes"
+   ],
+   "emulator_steps": [
+    "Sign in to Apple Music (emulator can auth) \u2192 play songs by two artists \u2192 History \u25b8 For You \u25b8 New shows their latest releases; menu 'Check for new releases' re-fetches"
+   ],
+   "device_only": "Playing an unowned release (Apple Music DRM playback) \u2014 verify on a device."
+  },
+  {
+   "id": "DISC-1",
+   "title": "Discover tab: Apple Music catalog search (REST) \u2225 rip-server /search, Songs|Albums scope, refine by artist",
+   "goal": "Add the Discover Show tab (rides SearchMode.DISCOVER, persisted), DiscoverSearchModel/DiscoverAlbumSearchModel (400 ms debounce, two sources merged + deduped by store id, client-side artist refine), result lists with Play Next/Last (if queue API exists) and the \uff0bAdd affordance delegating to DISC-2.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/discover/DiscoverModels.kt (DiscoverHit, DiscoverAlbumHit, merge/term/refine pure)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/discover/DiscoverSearchModel.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/discover/DiscoverResultsList.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/discover/DiscoverAlbumResultsList.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipServerClient.kt (mod: search(query, entity, limit), albumTracks(collectionId))",
+    "android/app/src/main/java/com/levi/pocketdj/data/applemusic/AppleMusicApi.kt (new or shared with REC-7: catalog search songs/albums)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseModels.kt (mod: SearchMode.DISCOVER + legacy boolean mapping)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseScreen.kt (mod: 4th segment Discover; hides layout/sort/filter/mode controls; discover scope + refine row)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/discover/DiscoverModelsTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/rips/RipServerClientTest.kt (extend)"
+   ],
+   "depends_on": [
+    "SRCH-1"
+   ],
+   "acceptance": [
+    "Discover is NOT a 4th BrowseKind; it rides searchMode; leaving returns to device mode; snapshot still writes searchMode strings older builds tolerate.",
+    "Merge: REST results lead, server song rows win ties (ripped/url authority), dedupe by store id; refine narrows client-side by normalized artist containment.",
+    "Rip-server search error \u21d2 'Discover unavailable'; no server configured and no dev token \u21d2 explanatory empty state.",
+    "Help text from DiscoverAddWording.addHelp(noun, canAddToLibrary = hasMusicUserToken, opensInMusic = false)."
+   ],
+   "priority": "P1",
+   "est_lines": 1700,
+   "shared_touchpoints": [
+    "BrowseScreen.kt segment row (BRW-2/SRCH-1 also edit \u2014 DISC-1 owns only the Discover branch)",
+    "RipServerClient.kt (rip area reviews)"
+   ],
+   "unit_tests": [
+    "DiscoverModelsTest: merge precedence/dedupe, term building, refine containment, add-help wording",
+    "RipServerClientTest: /search and /album-tracks decoding incl. missing album envelope"
+   ],
+   "emulator_steps": [
+    "Browse \u2192 Discover \u2192 type a title \u2192 hits with artwork; refine by artist narrows; Albums scope lists albums; tap album \u2192 preview/track list"
+   ],
+   "device_only": "None for search."
+  },
+  {
+   "id": "DISC-2",
+   "title": "Discover \uff0bAdd: provisional catalog entries, album fan-out, supersede, Remove from Library",
+   "goal": "Port DiscoverAddsStore (entries + albums doc), the synthetic 'Discover' source injected after real sources, song add (library write via Apple Music API + requestRip amrec_<storeId> + poll), album add (tracks via REST or /album-tracks; accepted-only fan-out; one batched inject; DiscoverAlbumAddState n/m \u2192 added | partial), supersede by appleMusicId with collection remap, catalogAdd/catalogRemove activity kinds, SongDetail 'Remove from Library'.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/discover/DiscoverAddsStore.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/discover/DiscoverAddState.kt (pure: of(trackIds, readyIds, erroredIds))",
+    "android/app/src/main/java/com/levi/pocketdj/data/discover/ProvisionalSource.kt (DiscoverAdds \u2192 IndexJson with manifest.sourceName 'Discover')",
+    "android/app/src/main/java/com/levi/pocketdj/data/catalog/CatalogRepository.kt (mod: provisionalSources provider appended last; split/supersede on refresh \u2192 remap callback)",
+    "android/app/src/main/java/com/levi/pocketdj/data/activity/ActivityModels.kt (mod: +CATALOG_ADD, CATALOG_REMOVE, libraryWrite, itemArtist)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/discover/DiscoverAddController.kt (song/album add flows)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/SongDetailSheet.kt (mod: Remove from Library row for provisional ids)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (mod: discoverAdds)",
+    "android/app/src/test/java/com/levi/pocketdj/data/discover/DiscoverAddsStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/discover/DiscoverAddStateTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/catalog/CatalogRepositoryTest.kt (provisional merge + supersede)"
+   ],
+   "depends_on": [
+    "DISC-1"
+   ],
+   "acceptance": [
+    "Doc shape {schemaVersion:1, entries[], albums?} with every later field optional; an old doc without albums decodes.",
+    "Provisional source merges AFTER every real source (first-wins shadows without deleting); a real row with the same appleMusicId supersedes \u2192 provisional excluded + remap pairs applied to CollectionsStore.remapSongIds.",
+    "Album add records only tracks the server ACCEPTED; one catalog rebuild per album; state settles to partial when every track is terminal and \u2265 1 failed; preparedCopies=false adds never spin.",
+    "Remove from Library drops the item, logs catalogRemove, and it leaves Recently added."
+   ],
+   "priority": "P1",
+   "est_lines": 2000,
+   "shared_touchpoints": [
+    "CatalogRepository.kt / MergedCatalog.kt (catalog area)",
+    "CollectionsStore.remapSongIds (collections area must expose)",
+    "ActivityModels.kt kinds (history area = this area)",
+    "AppGraph.kt"
+   ],
+   "unit_tests": [
+    "DiscoverAddsStoreTest: lenient decode, supersede split for songs/albums, remap pairs",
+    "DiscoverAddStateTest: adding/added/partial transitions",
+    "CatalogRepositoryTest: provisional appended last, shadowing, no deletion"
+   ],
+   "emulator_steps": [
+    "Discover \u2192 \uff0b Add a song \u2192 appears in Browse under source 'Discover' immediately; with rip server configured the row shows Preparing\u2026 then plays",
+    "Add an album \u2192 n/m capsule \u2192 Added; kill one rip \u2192 partial"
+   ],
+   "device_only": "Apple Music library write needs a signed-in Music-User-Token (works in emulator if signed in)."
+  },
+  {
+   "id": "SHZ-1",
+   "title": "'?\u266a?' recognizer: ShazamKit for Android + catalog match + result sheet + Apple Music actions",
+   "goal": "Vendor the ShazamKit Android AAR, implement ShazamRecognizer (phase state machine over AudioRecord + StreamingSession, mic permission \u2192 denied phase, cancel on second tap, gated while a mix recording is active), pure ShazamCatalogMatch, ShazamButton at the top of the catalog tabs, ShazamResultSheet (in-crate deep link / not-in-crate), AppleMusicRecognition reducer + section (library check / open album / add-to-library + rip&burn under amrec_<storeId> / open in Music).",
+   "files": [
+    "android/app/libs/shazamkit-android-<ver>.aar (vendored)",
+    "android/app/build.gradle.kts (mod: files() dep) ",
+    "android/app/src/main/AndroidManifest.xml (mod: RECORD_AUDIO)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/shazam/ShazamRecognizer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/shazam/ShazamCatalogMatch.kt (norm + resolve, pure)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/shazam/AppleMusicRecognition.kt (action reducer + indexAlbum/indexSong/burnSongID, pure)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/shazam/ShazamButton.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/shazam/ShazamResultSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/shazam/AppleMusicRecognitionSection.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/browse/BrowseScreen.kt (mod: shazamRow above content on catalog tabs)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/shazam/ShazamCatalogMatchTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/screens/shazam/AppleMusicRecognitionTest.kt"
+   ],
+   "depends_on": [
+    "DISC-2"
+   ],
+   "acceptance": [
+    "norm: lowercase + diacritic fold, drop (...)/[...] tails, drop ' - remastered/live/\u2026' clause, strip punctuation, collapse spaces; resolve = equal normalized titles AND compatible artists (equal or containment); first hit wins.",
+    "Phases idle/listening/recognizing/matched/noMatch/denied/failed; second tap while active cancels; denied \u2192 opens app settings; button disabled while MixRecorder (if present) is recording.",
+    "Action reducer table identical to AppleMusicRecognition.action (unavailable/connect/checking/notFound/openIndexAlbum/openRecognizedAlbum/inLibrary/openInMusicApp/addToLibrary); burnSongID = catalog id else amrec_<storeId>.",
+    "Result sheet deep-links an in-crate hit to SongDetail; not-in-crate shows metadata + the Apple Music section."
+   ],
+   "priority": "P1",
+   "est_lines": 1500,
+   "shared_touchpoints": [
+    "build.gradle.kts / manifest",
+    "BrowseScreen.kt (one row composable)",
+    "BurnStore/rip flow for rip&burn (rip area API: startRipAndBurn(songId))"
+   ],
+   "unit_tests": [
+    "ShazamCatalogMatchTest: norm cases (Caf\u00e9/Cafe, feat., Remastered), artist containment, no-artist match",
+    "AppleMusicRecognitionTest: full reducer table, indexAlbum/indexSong matching, burnSongID"
+   ],
+   "emulator_steps": [
+    "Browse \u2192 '?\u266a?' \u2192 permission prompt \u2192 listening animation \u2192 cancel on second tap; deny permission \u2192 shake + settings deep link"
+   ],
+   "device_only": "Actual recognition (needs real music through a real mic + Shazam dev token) and add-to-library + rip&burn end to end."
+  },
+  {
+   "id": "LP-1",
+   "title": "Listening pockets (History \u25b8 Pockets) client/service/opt-in/list/detail",
+   "goal": "Port ListeningPocketsClient/Models/Service (upload play events with tz/outcome/fraction/contextId, collections snapshot cadence, results cache + stale refresh, cursors + flushEpoch, delete cascade from REC-6), the opt-in view, pockets list (Recurring/Recent/patterns) and detail (features, harmonic, when, songs, Play, Save as playlist). Location contexts deferred.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ListeningPocketsModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ListeningPocketsClient.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/recs/ListeningPocketsService.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/pockets/ListeningPocketsScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/pockets/ListeningPocketDetailScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/pockets/ListeningPocketLabeler.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/history/HistoryScreen.kt (mod: Pockets tab gated on service.isEnabled || (recEngineEnabled && choice == null))",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (mod: listeningPocketsChoice: Boolean?)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (mod: route)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (mod)",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/ListeningPocketsServiceTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/recs/ListeningPocketsModelsTest.kt"
+   ],
+   "depends_on": [
+    "REC-6",
+    "HIST-1"
+   ],
+   "acceptance": [
+    "Wire event: id, songId, atMs (floored minute), ord per-install ordinal, tzOffsetMin, source, outcome (completed/skipped/partial/unknown derived), fraction, originInstallId, artist, contextId/contextKind; encoded exactly as ListeningPocketsModels.swift:58-118.",
+    "Gate = rec engine ON AND choice == true; 'Not now' records false and the tab disappears; a 404 reads as 'not deployed yet', never an error.",
+    "Results decode leniently (unknown dims ignored); refreshIfStale honors stale flag; delete cascade clears local + server under the shared credentials."
+   ],
+   "priority": "P2",
+   "est_lines": 2000,
+   "shared_touchpoints": [
+    "RecommendationService.sharedCredentials / onDeleteCloudData (REC-6)",
+    "HistoryScreen.kt tab seam",
+    "AppSettingsStore.kt, MainActivity.kt, AppGraph.kt"
+   ],
+   "unit_tests": [
+    "ListeningPocketsModelsTest: wire encoding golden JSON, results lenient decode",
+    "ListeningPocketsServiceTest: gate, cursor advance, epoch abandon, 404 handling, collections cadence"
+   ],
+   "emulator_steps": [
+    "Recommendations ON \u2192 History \u25b8 Pockets offer \u2192 Turn on \u2192 after plays, pull-to-refresh shows pockets/patterns; open a pocket \u2192 Save as playlist"
+   ],
+   "device_only": "Location contexts (places/trips) are deferred; nothing else is device-only."
+  }
+ ]
+}

@@ -1,0 +1,1081 @@
+{
+ "area": "Mix tab (Switchboard engine, decks, Auto-DJ, crates, streaming mode, stems, VU, cue, beat grid, loop, sessions, downloads) + Mix DSP engine decision + offline audio downloads",
+ "inventory": [
+  {
+   "feature": "Two-deck audio graph (per deck: player \u2192 inputMixer \u2190 4 stem players \u2192 timePitch \u2192 4 FX slots (comp/filter/reverb/mod, bypass-flipped, never rewired) \u2192 eq3 \u2192 trim (>100% boost) \u2192 mainGain/cueGain split \u2192 houseSum \u2192 housePan \u2192 main \u2192 PeakLimiter). Build once, write-once topology; inert prepare() vs real start; canonical 44.1k stereo downstream of inputMixer",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Mix/MixEngine.swift (ensureEngine ~L1139-1320, connectChain L6150), docs/design/mix-audio-graph.md",
+   "android_files": "none (android/app/.../screens/PlaceholderScreen.kt renders the Mix tab)",
+   "notes": "Decides the DSP engine (see architecture). Android must sum voices in-process \u2014 stem sync is impossible across separate AudioTracks."
+  },
+  {
+   "feature": "Tempo 0.5\u20132.0\u00d7 pitch-preserved + Pitch \u00b112 st tempo-preserved; load resets rate/pitch/lead; playhead advances at rate\u00d7wall time",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift setRate/setPitch L2905-2918, applyRate/applyPitch L5927, tickFire L6230",
+   "android_files": "none",
+   "notes": "Android: Media3 SonicAudioProcessor (public, s16 PCM) per voice gives independent speed+pitch without NDK."
+  },
+  {
+   "feature": "Sample-accurate seek bounded to the song window [startFrames,endFrames) (analog shared-album slice); loop-aware seek; stream-held seek; seek re-stamps the Auto-DJ end clock; slider-freeze fix (drag offset must be gesture-scoped state, always read live position)",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift seek L2466-2533, refreshAutoDeckEndIfLive L2895; MixView.swift DeckSeekSlider; docs/design/mix-tab-nowplaying-skip-slider-stems.md \u00a71,\u00a76",
+   "android_files": "none",
+   "notes": "Compose: drag fraction lives in a gesture-scoped var reset on drag end; the composable must always read the live position."
+  },
+  {
+   "feature": "Equal-power crossfader (A=cos(\u03c0/2\u00b7v), B=cos(\u03c0/2\u00b7(1\u2212v)), default 0.5) + per-deck Vol 0\u2013200% split as min(v,1) on the fader \u00d7 20\u00b7log10(max(v,1)) dB on trim; master limiter; Vol snaps to unity within 0.03; gold '+N dB' readout",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift crossfadeFactor L5859, applyCueRouting L5870, applyBoost L5900; docs/design/mix-sessions-and-controls-spec.md \u00a72",
+   "android_files": "none",
+   "notes": "Gain identity test: min(v,1)\u00b710^(dB/20) == v for all v (port testGainSplitIdentity)."
+  },
+  {
+   "feature": "FX rack: 4 positional slots, families Filter(LP/HP/BP)/Reverb(Room/Hall/Plate/Cathedral)/Modulation(Flanger/Chorus/Echo)/Compressor(Punch/Glue/Limit), duplicates legal, swap = bypass flip, default layout = Comp\u00b7Reverb\u00b7Flanger\u00b7Filter at Punch/Hall/Flange/LowPass, \u21ba Reset silences but keeps layout, effect-keyed shims resolve first-match, strength 0\u20131 step 0.05, loadFactoryPreset only on variant change",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Mix/FXRack.swift (EffectVariant, FXSlot, FXParams), MixEngine.swift setSlot*/applySlot/writeSlotParams L3106-3172, L5938-6026",
+   "android_files": "none",
+   "notes": "FXParams curves (filterFrequency log sweep 18k\u2192250, comp threshold \u221230\u00b7s, makeup +15\u00b7s, delay 4 ms comb, wet s\u00b750%) must be ported numerically so decks sound the same."
+  },
+  {
+   "feature": "Slot modulation (LFO beat-locked via BeatMath.cyclePhase, Env follower 8 ms/180 ms, signed depth, 5 shapes, rates bar\u20261/8, ~60 Hz mod tick derives phase from playhead, never integrates; delayTime never moves at tick rate; strength stays the user's value)",
+   "status": "MISSING",
+   "ios_files": "FXRack.swift SlotMod/FXParams.modulated L136-286, MixEngine.swift modFire L6054-6133, BeatMath.swift cyclePhase",
+   "android_files": "none",
+   "notes": "P2: ship the rack first; modulation rides the same slot model (persisted as optional modSource/modRate/modShape/modDepth/modPhase strings)."
+  },
+  {
+   "feature": "3-band EQ (Low shelf 320 Hz / Mid peak 1 kHz / High shelf 3.2 kHz, \u00b112 dB), always active",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift EQBand L208, setEqGain L2922, applyEQ L5906; MixView.swift eqRow/MixKnob",
+   "android_files": "none",
+   "notes": ""
+  },
+  {
+   "feature": "Lead/Sync beat-match: exclusive leadDeck; syncRate = octaveFolded(leadBPM\u00b7leadRate/followerBPM); matchBPM prefers gridBpm over catalog bpm; best-effort phase align \u00b1\u00bd beat via seek anchored on firstDownbeatMs; canSync gating",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift setLead/syncToLead/canSync/matchBPM L2948-2984, octaveFolded/syncRate/phaseAlign L6179-6212",
+   "android_files": "none",
+   "notes": "Pure math \u2192 JVM tests."
+  },
+  {
+   "feature": "Cue / PFL: pre-fader post-FX cue send at independent cueVol, divide-out of trim boost, house pans hard opposite only while any deck cued (bit-identical stereo otherwise), Settings \u25b8 cue channel (default right), cue disabled on empty deck",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift setCued/setCueVolume/setCueOnRight L3001-3029, applyCueRouting L5870; docs/design/mix-tab-cue-beatgrid-pulse.md \u00a71",
+   "android_files": "none",
+   "notes": "Device-only for the felt routing; unit tests assert node gains/pans."
+  },
+  {
+   "feature": "VU meter per deck, pre-fader (post-FX) and post-fader, peak+RMS over ~4096-frame blocks, dB zones (blue <\u221212, gold \u221212\u2026\u22123, pink >\u22123), 20 Hz UI poll, stale after 0.3 s \u2192 zero, long-press to flip source",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift vuMeter L5600, levels/setMeterSource L5582-5599, taps L1252-1300; MixView.swift DeckVUMeter L1700-1795",
+   "android_files": "none",
+   "notes": "Meter values must bypass Compose state (poll from a lock-free holder, like iOS keeps them off Observation)."
+  },
+  {
+   "feature": "Beat-grid BPM readout (gridBpm one decimal, else rounded bpm) + opt-in beat pulse (downbeats brighter, real grid via binary search, synthesized grid from bpm+firstDownbeatMs, truePlayhead from the render clock + segmentStart add-back) + beatgrid sidecar burn (analysis-<id>.json, validated) and dynamic hydrate gated on pulse-on, songId-guarded patch",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift truePlayhead L5627, setBeatPulseEnabled/hydrateBeatGrid L3035-3070; MixView.swift BeatPulseView L1451-1542; apple/PocketDJ/Support/BeatMath.swift; BurnStore.swift burnBeatGrid L852",
+   "android_files": "none (RipManifestEntry lacks beatgrid/firstDownbeatMs/beatGridBpm/steady fields)",
+   "notes": "Extend android RipManifestEntry additively (beatgrid, firstBeatMs, firstDownbeatMs, beatGridBpm, beatsPerBar, tempoConfidence, steady, stems{vocals,drums,bass,other}, stemVersion)."
+  },
+  {
+   "feature": "Loop (\u221e): 2-unit default off the previous boundary, units = beats (grid median gap / 60/bpm) else seconds, 1\u202632 units, edge nudges, window slides back rather than shrinks, sample-accurate by queued passes (3 ahead, tick tops up), playhead folds inside window, seek while looped moves the loop, loop on stems needs the window inside the stem frontier, schedule-before-stop invariant, Auto-DJ never crossfades out from under an engaged loop",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift L2534-2900 (loopWindowMath, clampLoopWindow, armLoop, topUpLoop, setLoop, nudgeLoop); MixView.swift LoopButton L1325-1450",
+   "android_files": "none",
+   "notes": "On Android the render thread owns the loop wrap (frame-exact) \u2014 simpler than iOS pass-counting."
+  },
+  {
+   "feature": "Cue-jump row (up to 8 positional StudioCue per song, drop cue at live playhead, tap = seek)",
+   "status": "NA",
+   "ios_files": "MixView.swift cueJumpRow/dropCueButton L1091-1200 (reads StudioStore)",
+   "android_files": "none",
+   "notes": "Owned by the Producer/Studio store (Phase 4 area). Leave a `cueJumpRow` slot composable + a `CuePointsProvider` interface in the deck UI; the Producer area supplies the store."
+  },
+  {
+   "feature": "Stem decks: per-deck stem mode, 4 stem voices into inputMixer (ride tempo/pitch/FX/crossfader), per-stem mute + volume, ONE sample-frame start for all 4 (host-time starts comb-filter), mp3 priming (untagged LAME stems decode 576 samples late vs tagged full mix), zero-dead-air HANDOVER state machine (.toStems/.toFullMix, 60 ms LINEAR crossfade at a scheduled sample time, one fade at a time, settle before any transport, generation guards stemIntentGen/stemFadeGen, transactional ON: schedule before muting, bail if nothing scheduled), stems toggle only for rips.isStemmed, fetch whole vs stream, claims per owner",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift L4289-5082 (applyStemIntent, requestStemSource, advanceStemHandover, cutToStems/cutToFullMix, runStemFade, settleStemFade, wireStems, scheduleStems, startStems); apple/PocketDJ/Playback/StemSync.swift; docs/design/mix-audio-graph.md 'Zero dead air'",
+   "android_files": "none",
+   "notes": "Android advantage: the handover crossfade is rendered on the audio thread at an exact render frame \u2014 no 60 ms host-rate step risk; keep the same decision machine."
+  },
+  {
+   "feature": "Streaming mode: deck plays a growing mp3 (segments appended from fresh opens up to the byte frontier, 1 s chunks under 10 s runway else 15 s), HOLD when playhead reaches frontier (Buffering\u2026 badge), start runway 2 s / resume 4 s, frontier margin 1.5 s, bytesPerSecond from Content-Length/duration, completion \u2192 ordinary file deck + adoption into burns, failure before audio \u2192 eject (+ auto skip 0.5 s), failure mid-song \u2192 truncate; held seconds don't burn the auto end clock; stems streaming lane (all four, re-open on real growth, underrun hand-back 1 s before frontier, re-engage with 4 s runway, truncated main)",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift loadStreaming/pumpStream/finishStream/handleStreamFailure/holdStream L1591-1842, pumpStems/stemUnderrun/mainUnderrun/settleDeadSources L4702-4912; apple/PocketDJ/Mix/MixStreamLoader.swift; MixBufferingBadge.swift",
+   "android_files": "none",
+   "notes": "Android streams the PUBLIC rips object directly with Range (no presign; the iOS rips.hasServer gate does not apply) \u2014 canStream = network + manifest entry + cooldowns."
+  },
+  {
+   "feature": "Auto-DJ (timed crossfade machine): startAutoMix ejects both decks, queue (shuffled in engine; shuffled start opens on an on-device song), lead 15 s / fade 3 s, autoFire idle\u2192(preroll)\u2192fade\u2192(postroll), finishAutoCrossfade silences outgoing + preloads next loadable (drops vanished, DEFERS stream-gate-closed), ensureNextPreloaded late-append safety net, pause/resume (resume re-arms from live positions; two decks blended \u2192 survivor + autoResumeEndDeck handoff), Skip single tap = skipFadeSeconds (15) / double tap = 5 s, pendingFadeRestore, fade capped to runway (\u22650.5 s), repeat off/one/all (wrap), autoStatus text, autoEndedExhausted pickup, deckGestureGeneration",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift L3173-3991 (startAutoMix, stopAutoMix, pauseAuto, resumeAuto, beginResumeHandoff, autoFire, beginAdvanceTransition, skipToNext, beginAutoCrossfade, finishAutoCrossfade, ensureNextPreloaded, loadAuto*, refreshAutoStatus); docs/design/mix-tab-nowplaying-skip-slider-stems.md \u00a73,\u00a76",
+   "android_files": "none",
+   "notes": "Pure wall-clock machine stepped from the 10 Hz tick \u2014 identical on Android; clamp dt to 0.5 s."
+  },
+  {
+   "feature": "Zero dead air at the song boundary (readiness): deckReadyToAir strict (on-disk/finished/15 s autoReadyRunway) vs deckCanAir lenient; promoteReadyUpcoming; extendLive replay at 0.5 s left; frozen fade while incoming buffers (outgoing stays audible, fade re-timed, abandonTransition if outgoing runs out); incoming ejected mid-fade \u2192 back out; Skip during frozen fade not swallowed (defers held song); stalled live deck 8 s \u2192 1 s hand-over; transientlyUnloadable deferral; one `mixadvance` log line per decision",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift L1842-1987 (deckReadyToAir, deckCanAir, songOnDevice, transientlyUnloadable, promoteReadyUpcoming, extendLive, abandonTransition), autoFire; docs/design/mix-audio-graph.md 'Auto-DJ readiness'; memory dead-air-metric",
+   "android_files": "none",
+   "notes": "Hard-won CarPlay-on-cellular fixes \u2014 port verbatim."
+  },
+  {
+   "feature": "Auto-Mix glide: FX Glide (deterministic texture from splitmix64 seeded by FNV-1a of first songId \u2295 count; pool filter/reverb/flanger; peak 0.5\u20130.8; run 3\u20135; sweeps only the resolved slot's on/off+strength) + Mix Glide (Camelot \u00b11 key pitch bend 12\u00b7log2(1.1) st/key, beat-match split by sqrt of octave-folded ratio, pre-roll fitted into runway with 1.12 headroom, post-roll settles incoming, glidePhaseAlign); glide events recorded as compact .glide nodes",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift L3992-4288 (beginGlideTransition, applyOutgoingGlide, startGlideCrossfade, glidePhaseAlign, applyIncomingGlide, finishGlide, glide math statics)",
+   "android_files": "none",
+   "notes": "Pure math \u2192 JVM tests (signedCamelotSteps, glideRate, glidePitch, glideParams, rollTexture determinism)."
+  },
+  {
+   "feature": "Crates A/B: MixCrateMenu (Pockets \u00b7 Playlists \u00b7 Set lists A\u2013Z, 'Same as Crate A' reset), two-crate interleave A0,B0,A1,B1 with per-crate shuffle + union download run, auto mode pins both decks' source to the auto crates, per-deck source menu; menu must not be rebuilt by download-progress re-renders (scroll snapped to top \u2014 Levi 2026-10-25)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Mix/MixCrateMenu.swift; MixView.swift autoSetupBar/startAuto/syncDeckSourcesToAuto/beginDownload L388-660",
+   "android_files": "none",
+   "notes": "Compose: hoist menu entries with remember(collectionsRevision) and keep download progress in a separate StateFlow so the DropdownMenu content never recomposes while open."
+  },
+  {
+   "feature": "Track loader sheet: source menu + search (title/artist/album) + played \u2713 + Settings \u25b8 auto-hide played (default on) with 'Show N played' reveal; resolve loadables ONCE per render",
+   "status": "MISSING",
+   "ios_files": "MixView.swift TrackLoaderSheet L2584-2751; MixResolver.swift",
+   "android_files": "none",
+   "notes": ""
+  },
+  {
+   "feature": "MixResolver: pocket \u2192 DAG playable ids, playlist \u2192 catalog walk, setlist \u2192 frozen tracks; keeps only on-disk burned OR streamable songs; dedupe first-seen; snapshot metadata inlined (MixLoadable)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Mix/MixResolver.swift",
+   "android_files": "android/.../data/collections/CollectionCatalog.kt (resolvePocketSongs/songsInPlaylist exist), playback/QueuePlan.kt entriesForSetlist",
+   "notes": "Studio/profile item branches are N/A on Android (no Studio/profile source yet)."
+  },
+  {
+   "feature": "Mix sessions: event log (MixSessionEvent{id,tMs,kind,deck,songId,title,artist,bpm,camelot,param,value,flag,posMs,fromValue,rate,slot}), kinds incl. unknown(raw) round-trip, coalescing \u22641/120 ms for continuous kinds, discrete saves immediate + 0.6 s debounce, version-guarded off-main writes, resume re-anchors t0, flush on background, always one current session ('Session N' monotonic counter), rename/reset/delete, played-set \u2192 \u2713/auto-hide, setPlaying funnel records play/pause once, auto crossfader sweep NOT recorded as user gesture",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Models/MixSession.swift, apple/PocketDJ/State/MixSessionStore.swift, MixEngine.swift rec()/setPlaying L1026-1067; docs/design/mix-sessions-and-controls-spec.md \u00a73",
+   "android_files": "none",
+   "notes": "Persist as pocketdj-mix-sessions.json, MixSessionsDocument{schemaVersion:2,sessions,currentId,counter} \u2014 shape must match iOS (future S3 sync)."
+  },
+  {
+   "feature": "Sessions screen: list (name/date/duration/counts/Current badge, swipe delete, rename), replay timeline (vertical on phone), replay clock 0.5\u20134\u00d7, scrub, binary-search highlight, auto-scroll while playing, recordings panel \u25b6/\u23f9 + scrub",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Views/MixSessionsView.swift",
+   "android_files": "none",
+   "notes": "Visual replay only (parity)."
+  },
+  {
+   "feature": "Session audio recording: persistent tap on houseSum (clean stereo house, pre-pan), start/stop only toggle a flag, crash-safe fragmented file, writer death \u2192 auto-stop + file partial take + alert, content clock + 5 s stall \u2192 'Recording \u2014 no audio', orphan recovery at launch, take filed to the session current at START, \u25cf Recording indicator + Stop reachable in content",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift startRecording/stopRecording L1068-1128, MixTapSink L6745-6904; apple/PocketDJ/State/MixRecorder.swift; docs/architecture/04-performance-engine.md \u00a77.12",
+   "android_files": "none",
+   "notes": "Android: MediaCodec AAC \u2192 ADTS .aac (append-only, playable when truncated; MediaMuxer mp4 would need moov at stop). MixRecording.fileName carries the extension so iOS/Android docs stay shape-compatible."
+  },
+  {
+   "feature": "Durable mix-deck session: pocketdj-mix-decks.json schemaVersion 1 {deckA?,deckB?,crossfader,leadDeck?,auto?,wasRunning,updatedAt}; DeckSnapshot flat FX fields + optional fxSlots/loop/eq/filterMode; AutoSnapshot queue in final order; immediate on structural, 1 s debounce on sliders, 5 s position throttle, immediate on run/pause transition; load() lenient + exact schema match + isEmpty/isExhausted rejection; restore PARKED at launch then materialized on Mix tab held/suspended, no card claim, recorder detached, vanished file leaves deck empty, real load drops parked restore",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/MixDeckSessionStore.swift; MixEngine.swift L5213-5570 (restorePersistedMixIfIdle, materializePendingRestoreIfNeeded, restoreDeck, restoreAutoSuspended, persistMixDeckSession, mixDeckSnapshot, persistMixPositions)",
+   "android_files": "none",
+   "notes": "Field names are load-bearing for future S3 sync."
+  },
+  {
+   "feature": "Lock-screen / system transport for the Mix: nowPlayingDeck rule (only-playing deck, else A, else B), card with rate = tempo, ~1 Hz steady refresh while playing, remotePause suspends (not ends) a running Auto-DJ + freezes machine clocks, remotePlay unfreezes + resumeMasterPaused (only resumable decks; fallback to card deck; suspended restore \u2192 resumeAuto), remoteSkip into suspended machine resumes first, single-owner arbiter between Mix and the setlist player",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift nowPlayingDeck L5646, updateSystemNowPlaying L5671, handleRemoteCommand L5762, remotePause/remotePlay/remoteSkip/unfreezeAutoClock L2306-2370, resumeMasterPaused L2217; apple/PocketDJ/Playback/NowPlayingArbiter.swift",
+   "android_files": "android/.../playback/PlaybackService.kt (ExoPlayer MediaSession only)",
+   "notes": "Android: MixService (MediaSessionService) + SimpleBasePlayer adapter; AudioOwnerArbiter pauses whichever engine loses."
+  },
+  {
+   "feature": "Engine robustness: startEngineIfNeeded guard, tick watchdog restarts a system-stopped engine ~1/s only while mixWantsAudio, engineStallAt parks clocks (unpark/checkpoint), zombie-node re-prime after any engine-down window, healParkedPlayers, silentPlayingCheck (3 strikes \u00d7 1 s, pauses suspects unless recording), interruption/route-change/media-reset handling, parked policy (remote \u23f8 stays silent), mixdiag 1 Hz heartbeat (render/run/tapAge/sigAge/per-deck), resume-health probe",
+   "status": "MISSING",
+   "ios_files": "MixEngine.swift tickFire L6230-6348, silentPlayingCheck L6394, recoverFromEngineStop L6432, unparkEngineStall L6486, registerInterruptionHandling L6569-6732, diagHeartbeat L6349",
+   "android_files": "none",
+   "notes": "Android analogs: AudioManager focus loss/transient, AudioTrack routing-changed listener + AudioDeviceCallback, AudioTrack underrun count + write() error codes, becoming-noisy; tap-pulse liveness ported as-is."
+  },
+  {
+   "feature": "Collection download pipeline (CollectionMixDownloader): begin per source(s) idempotent, seed partition on-disk/burn-lane/rip-lane, serial burn lane in play order (autoUpcomingSongIds), rip poll 4.5 s up to 1600 ticks, 'N of M downloaded \u00b7 ~ETA \u00b7 K ripping' bar (256 kbps model over 30 s throughput window), streamed bytes count, progressive eligibility appends to a RUNNING mix (random when shuffled) with autoSourceLabel ownership check, zero-start pickup + exhausted re-arm guarded by deckGestureGeneration/isRunning, catalogShortfall caption, handleMixLeave tears down only when no mix is live",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Mix/CollectionMixDownloader.swift; MixView.swift downloadBar L660-760",
+   "android_files": "none",
+   "notes": "Depends on a BurnStore + TransferCoordinator that do not exist on Android yet."
+  },
+  {
+   "feature": "Offline burns (BurnStore): ledger pocketdj-burns.json (burnSchemaVersion 1, BurnItem{songId,title,artist,audioFileName,sidecarFileName,source,bpm,musicalKey,camelot,durationMs,startMs,bytes,rippedAt,downloadedAt,state,error,cutFileName\u2026}), descriptive file names (Artist-Song-Album-Year-Genre-Camelot-Key-BPM-<id>.mp3; analog album file shared per album; sidecar per song), stems stem-<songId>-<part>.mp3 (all 4 or nothing), beatgrid analysis-<id>.json, analog per-song cut preferred for playback, freshness vs rippedAt, adoptStreamedFile/adoptStreamedStems, STOP, reconcileOnLaunch, remove by artist/collection/all, eviction plan + usage, pendingAfterRip",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/BurnStore.swift (fileNames L2040-2127, stem cache L645-813, beat grid L815-870, burn L1656-1960, storage L969-1480), apple/PocketDJ/State/TransferCoordinator.swift",
+   "android_files": "android/.../data/storage/StorageService.kt (no burns category), specs/storage.md \u00a75 lists burns as Deferred",
+   "notes": "Android: app-private filesDir/burns (SAF folder picker deferred); OkHttp Range-resumable downloads in a foreground TransfersService; WorkManager reconcile is optional."
+  },
+  {
+   "feature": "Mix waveform peaks per loaded track (off-main, recomputed once per songId and once more when a stream completes)",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Mix/MixWaveform.swift; MixView.swift header/peaks",
+   "android_files": "none",
+   "notes": "Android can also use the manifest `waveform` PNG (ripsBase+key) as a fallback when decoding is costly."
+  },
+  {
+   "feature": "Deck layout setting (sideBySide / stacked default / single with \u2039 \u203a + dots); landscape always side-by-side; hidden deck keeps playing",
+   "status": "MISSING",
+   "ios_files": "MixView.swift deckArea L188-278; SettingsStore.swift mixDeckLayout",
+   "android_files": "none",
+   "notes": ""
+  },
+  {
+   "feature": "Settings \u25b8 Mix rows: autoMixLeadSeconds 15, autoMixFadeSeconds 3, skipFadeSeconds 15, mixGlideSeconds 10, mixAutoHidePlayed true, cueOutputChannel right, beatPulseEnabled false, mixDeckLayout stacked",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/Settings/SettingsStore.swift L160-195, L486-493",
+   "android_files": "android/.../data/settings/AppSettingsStore.kt (no mix keys), screens/settings/SettingsScreen.kt",
+   "notes": "Shared touchpoint; additive DataStore keys."
+  },
+  {
+   "feature": "Jukebox Hero seams on the Mix: onAirTrack, onAirBuffering, autoUpcoming(+Detailed), autoPlayed, autoQueueInsert(next/end/random bounded by autoNextToLoad), shuffle/remove/move upcoming, autoUpcomingLockedCount",
+   "status": "PARTIAL",
+   "ios_files": "MixEngine.swift L5083-5212",
+   "android_files": "android/.../data/jukebox/JukeboxRepository.kt (readPlayer/applyPlacement read ONLY the ExoPlayer MediaController)",
+   "notes": "Jukebox must prefer the Mix when a mix is live (on-air + queue + placement into the auto queue)."
+  },
+  {
+   "feature": "Mix play outcomes \u2192 History (MixPlayOutcomeBridge): onSongPlayed per deck load, onDeckTrackEnded(played, duration, reason natural/skip/replaced/stopped) keyed by DECK, fraction \u2192 noteListened, skip/replaced <50% \u2192 markSkipped + noteSkip once",
+   "status": "MISSING",
+   "ios_files": "apple/PocketDJ/State/MixPlayOutcomeBridge.swift; MixEngine.swift reportDeckEnded/resetLoadCycle L955-971",
+   "android_files": "android/.../playback/PlayEvents.kt + data/history/PlayHistoryStore.kt (no listened-fraction / skipped fields yet)",
+   "notes": "Adds additive-optional fields to the history event doc mirroring apple/PocketDJ/State/PlayHistoryStore.swift PlayEvent."
+  },
+  {
+   "feature": "Record button + \u21e7\u2318R / \u21e7\u2318A keyboard shortcuts, macOS toolbar right-click constraints",
+   "status": "NA",
+   "ios_files": "MixView.swift mixShortcuts, RecordButton",
+   "android_files": "",
+   "notes": "macOS-only affordances; Android record button lives in the top bar."
+  },
+  {
+   "feature": "CarPlay / tvOS / visionOS mix surfaces (two-deck remote Mix, TV queue menus, Buffering\u2026 in CarPlay detail text)",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/CarPlay/*, TV views",
+   "android_files": "",
+   "notes": "Android Auto is the later CarPlay-parity step; MixService's MediaSession is the prerequisite designed here."
+  },
+  {
+   "feature": "Now Playing mix mini-panel (NowPlayingDSP) + Stem Lock + StemLockPrefetcher",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Playback/NowPlayingDSP.swift, StemLock.swift",
+   "android_files": "",
+   "notes": "Now Playing area; it should REUSE mix/audio Voice + mix/graph Handover from this design rather than fork."
+  },
+  {
+   "feature": "Studio performance items + 'Pocket DJ' profile items as deck loadables; cue points from StudioStore",
+   "status": "NA",
+   "ios_files": "MixResolver.swift studioLoadable/profileLoadable; MixEngine.load studio/profile arms",
+   "android_files": "",
+   "notes": "Producer phase / profile source not on Android; keep `MixLoadable` shape so they can slot in later."
+  },
+  {
+   "feature": "App Intents / Siri startAutoMix (IntentServices.startAutoMix two-crate door) + intent donations",
+   "status": "NA",
+   "ios_files": "apple/PocketDJ/Intents/*",
+   "android_files": "",
+   "notes": "Intents area; expose `MixEngine.startAutoMix(crateA, crateB, shuffle, allowPendingStart)` as the one door so App Actions can call it later."
+  },
+  {
+   "feature": "User-picked burnt-music / session folder (security-scoped bookmarks)",
+   "status": "NA",
+   "ios_files": "BurnStore.resolveBurnFolder, SessionFolders.swift",
+   "android_files": "",
+   "notes": "Deferred: app-private storage first; a SAF tree-URI variant can be added behind the same BurnStore root resolver later."
+  }
+ ],
+ "architecture": "## 0. The DSP engine decision \u2014 Kotlin pull-graph on `AudioTrack` (no NDK), Media3 Sonic for time-pitch\n\n**Decision:** build the Mix as an **in-process, pull-based float audio graph written in Kotlin**, rendered by one `AudioTrack` (float PCM, `PERFORMANCE_MODE_LOW_LATENCY`, render thread at `THREAD_PRIORITY_URGENT_AUDIO`), with **MediaCodec** decoding mp3 \u2192 PCM per voice and **`androidx.media3.common.audio.SonicAudioProcessor`** (public API, verified in the cached media3-common 1.6.1 jar: `setSpeed/setPitch/configure/queueInput/getOutput`) as the per-deck time-stretch/pitch stage. **Not** ExoPlayer-per-voice, **not** Oboe/C++ today.\n\nWhy, grounded in what the iOS code actually requires:\n\n1. **Stems kill the \"one ExoPlayer per voice\" option outright.** iOS learned the hard way (`StemSync.startTogether`, mix-audio-graph.md \"Four stems, one frame\") that four players started by host time land samples apart and comb-filter for the whole song. Separate `AudioTrack`s have independent start latency; the only way to start 4 stems on ONE frame is to sum them in-process. The same is true of the 60 ms main\u2194stems handover crossfade, the pre-fader cue split, the house sum (recording tap), the house pan, and the master limiter \u2014 none are expressible across independent Android players (per-session `AudioEffect`s are too coarse and device-variable). So a custom mixer is mandatory regardless; the only real choice is Kotlin vs C++.\n2. **Kotlin wins on toolchain + testability for THIS team.** The SDK has no NDK/CMake installed (`~/Library/Android/sdk` has no `ndk/`, no `cmake/`), the repo has zero C++, the implementers are Sonnet agents verified by JVM unit tests. A pure-Kotlin graph renders **offline into a FloatArray** (`OfflineRenderer`), so the hard-won iOS invariants \u2014 \"> 2 ms of silence across a rapid stem toggle fails\", \"4 stems correlate at r=1.0\", \"gain split identity\", \"loop boundary is frame-exact\" \u2014 become ordinary JVM tests with synthesized PCM. iOS can only do these on a real engine.\n3. **Latency budget is a DJ deck's, not a synth's.** Control\u2192audio latency of ~30\u201360 ms is inaudible for faders/FX/transport. `AudioTrack` low-latency float on API 35/36 gives ~10\u201320 ms periods; we run a 3-period (~40\u201360 ms) buffer so ART GC pauses (sub-10 ms on modern ART) never underrun. The render loop allocates nothing (preallocated FloatArrays, atomics for params).\n4. **CPU is fine.** 10 voices \u00d7 (MediaCodec decode on worker threads + ring buffers) + 2 \u00d7 Sonic + 2 \u00d7 (4 FX + EQ3 + trim) + house + limiter at 44.1 kHz stereo is well under one big core in Kotlin; Sonic is already used by ExoPlayer on every Android device for exactly this.\n5. **Upgrade path is preserved, not foreclosed.** The graph's only platform contact is `AudioSink.write(FloatArray, frames)` + `latencyFrames()`. An `AAudio`/Oboe JNI sink can replace `AudioTrackSink` later without touching the graph; a Rubber Band/SoundTouch JNI `TimePitch` can replace the Sonic wrapper behind the same `TimePitch` interface if Sonic's quality at \u00b130 % proves insufficient. Both are optional follow-ups, not prerequisites.\n\nKnown cost accepted: Sonic (WSOLA-like) is a notch below `AVAudioUnitTimePitch` on extreme stretch (> \u00b125 %). The Auto-DJ glide bends \u2264 10 % and Sync usually lands within \u00b115 %, where Sonic is clean. Note it in ARCHITECTURE-ANDROID.md as the resolved open question #1.\n\nMedia3/ExoPlayer stays the setlist/mini-player engine (locked decision 4). The two engines are coordinated by an **AudioOwnerArbiter** (iOS `NowPlayingArbiter`): whoever last STARTED audio owns the system card; starting one pauses the other.\n\n## 1. Package layout (all under `android/app/src/main/java/com/levi/pocketdj/`)\n\n```\nmix/model/      MixModels.kt (Deck, MixSource, MixLoadable, LoadedTrack, AutoMixItem, AutoRepeatMode, MeterSource,\n                EQBand, Effect), FxRack.kt (EffectVariant, ModSource/ModRate/ModShape, SlotMod, FXSlot, FxParams curves),\n                MixMath.kt (crossfadeFactor, octaveFolded, syncRate, loopWindowMath, clampLoopWindow, glide math,\n                splitmix64/rollTexture/fxSeed, streamBytesPerSecond/streamPlayableFrames, handoverReady,\n                playableSeconds, etaSeconds/etaLabel, ThroughputWindow), BeatMath.kt (port of Support/BeatMath.swift)\nmix/store/      MixDeckSessionStore.kt (+ Snapshot/DeckSnapshot/FXSlotSnapshot/AutoRow/AutoSnapshot/TrackRef),\n                MixSessionStore.kt + MixSessionModels.kt (MixSessionsDocument/MixSession/MixSessionEvent/MixEventKind/\n                MixRecording), VersionedJsonWriter.kt (shared off-main last-writer-wins writer)\nmix/audio/      AudioSink.kt (interface) \u00b7 AudioTrackSink.kt \u00b7 OfflineRenderer.kt (tests + instrumented probes) \u00b7\n                RenderClock.kt \u00b7 PcmSource.kt (interface) \u00b7 Mp3FrameReader.kt (frame walk, Xing/Info/VBRI, LAME\n                encoder delay, 576 priming rule, growing-file frontier) \u00b7 Mp3Decoder.kt (MediaCodec sync mode) \u00b7\n                Voice.kt (ring buffer, window [startFrame,endFrame), schedule/append/seek/play(atRenderFrame)/pause/stop,\n                playerFrame, loop window) \u00b7 VoiceGroup.kt (one-frame start for N voices = StemSync.startTogether)\nmix/dsp/        Biquad.kt \u00b7 Eq3.kt \u00b7 TrimGain.kt \u00b7 TimePitch.kt (SonicAudioProcessor wrapper, s16\u2194float, latency\n                accounting) \u00b7 Compressor.kt \u00b7 Reverb.kt \u00b7 ModDelay.kt \u00b7 Limiter.kt \u00b7 Meter.kt (peak/RMS + MixDeckLevels\n                holder) \u00b7 EnvelopeFollower.kt \u00b7 FxSlotNodes.kt (comp\u2192filter\u2192reverb\u2192mod, bypass flips, applySlot)\nmix/graph/      MixGraph.kt (topology, render(), parameter snapshot swap) \u00b7 DeckChain.kt \u00b7 RenderParams.kt (immutable\n                per-deck + house params, AtomicReference) \u00b7 Taps.kt (pre/post VU, envelope, tap pulse, recording hook,\n                capture seam) \u00b7 Handover.kt (scheduled 60 ms linear main\u2194stems crossfade on the render thread)\nmix/engine/     MixEngine.kt (@MainThread facade; StateFlow<MixUiState>) \u00b7 EngineCore.kt (internal interface the\n                sub-controllers use) \u00b7 DeckController.kt (load/seek/play/pause/EQ/FX/cue/sync/VU/tick/persist) \u00b7\n                LoopController.kt \u00b7 StemController.kt (intent/handover/wire/fetch/claims) \u00b7 AutoDj.kt (queue + wall-clock\n                machine + readiness + skip + repeat + remote freeze) \u00b7 GlideMachine.kt \u00b7 StreamDecks.kt (growing-file\n                decks + stem streams) \u00b7 MixPersistence.kt (snapshot build/restore) \u00b7 MixRecordingHooks.kt (rec())\nmix/stream/     MixStreamLoader.kt \u00b7 StreamSink.kt (OkHttp Range body \u2192 file + byte events) \u00b7 NetworkMonitor.kt\nmix/download/   CollectionMixDownloader.kt \u00b7 MixResolver.kt\nmix/recording/  TapSink.kt (render-thread \u2192 SPSC queue) \u00b7 AacAdtsWriter.kt (MediaCodec AAC-LC \u2192 ADTS, flush per frame)\n                \u00b7 MixRecorder.kt \u00b7 SessionFolders.kt \u00b7 RecordingPlayer.kt\nmix/service/    MixService.kt (MediaSessionService, foreground mediaPlayback) \u00b7 MixSessionPlayer.kt (SimpleBasePlayer\n                adapter) \u00b7 MixAudioFocus.kt \u00b7 MixDiag.kt (ring buffer + logcat tags mixdiag/mixadvance/mixstream/mixstems)\nplayback/       AudioOwnerArbiter.kt (NEW, shared with PlaybackController)\ndata/burns/     BurnStore.kt \u00b7 BurnModels.kt (Document/BurnItem/PendingBurn, schemaVersion 1) \u00b7 BurnFileNames.kt \u00b7\n                BeatGridSidecar.kt \u00b7 TransferCoordinator.kt \u00b7 TransfersService.kt (foreground dataSync + notification)\nscreens/mix/    MixScreen.kt \u00b7 MixViewModel.kt \u00b7 DeckView.kt \u00b7 DeckControls.kt (DeckSlider/MixKnob/StepButton) \u00b7\n                DeckSeekSlider.kt \u00b7 FxSlotChip.kt \u00b7 StemPad.kt \u00b7 DeckVuMeter.kt \u00b7 LoopChip.kt \u00b7 CueButton.kt \u00b7\n                BeatPulse.kt \u00b7 MixWaveform.kt \u00b7 CrossfaderView.kt \u00b7 AutoMixBars.kt \u00b7 MixCrateMenu.kt \u00b7 DownloadBar.kt \u00b7\n                TrackLoaderSheet.kt \u00b7 MixSessionsScreen.kt \u00b7 MixReplayTimeline.kt \u00b7 SessionHeader.kt\nscreens/settings/MixSettingsSection.kt\n```\n\n**Shared touchpoints (named so packages stay disjoint):** `di/AppGraph.kt` (wire burns/transfers/streamLoader/mixEngine/downloader/mixSessions/mixDeckSession/recorder/arbiter \u2014 one block per package, appended), `MainActivity.kt` nav graph (Mix route \u2192 `MixScreen`; `MIX_SESSIONS_ROUTE`; `SETTINGS_ROUTE` unchanged), `data/settings/AppSettingsStore.kt` (mix keys), `data/rips/RipsModels.kt` (stems/beatgrid fields + `stemUrls()/beatgridKey`), `data/config/Endpoints.kt` (`ripAudioUrl` already exists), `data/storage/StorageService.kt` (new categories BURNS, STEMS, MIX_STREAM_CACHE, MIX_SESSIONS), `AndroidManifest.xml` (two services, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `FOREGROUND_SERVICE_DATA_SYNC`, `POST_NOTIFICATIONS`), `data/jukebox/JukeboxRepository.kt`, `data/history/PlayHistoryStore.kt`, `gradle/libs.versions.toml` (no new runtime deps expected; `androidx.work:work-runtime-ktx` optional for DL-1 reconcile).\n\n## 2. Audio graph (same topology as docs/design/mix-audio-graph.md)\n\n```\nDECK d (A,B):  mainVoice \u2500\u2510\n               stem vocals \u2524                                       \u250c VU pre (post-FX) \u2510\n               stem drums  \u253c\u2192 inputSum \u2192 TimePitch \u2192 slot0\u2192slot1\u2192slot2\u2192slot3 \u2192 Eq3 \u2192 Trim \u2500\u2524                 \u251c\u2500 mainGain (min(vol,1)\u00b7xfade) \u2500\u2510\n               stem bass   \u2524   (env follower tap)   (each slot: comp\u2192filter\u2192reverb\u2192mod,                      \u2514\u2500 cueGain (cued ? cueVol/max(vol,1) : 0, pan cueSide) \u2510\n               stem other \u2500\u2518                          \u22641 un-bypassed)                                                                         \u2502  \u2502\n                                                                                                                                              \u25bc  \u2502\n                                              houseSum (both mainGains) \u2500\u2500\u25ba RECORDING TAP (clean stereo) \u2500\u2500\u25ba housePan (\u00b11 only while any cued) \u2500\u253c\u2500\u2500\u25ba mainSum \u2192 Limiter \u2192 AudioSink\n                                                                                                                                                 \u2514\u2500\u2500\u25ba (cue sends)\n```\n\n- **Formats:** everything after `inputSum` runs at the sink rate (44.1 or 48 kHz, read from `AudioTrack.getSampleRate()`), stereo float, block = sink period (e.g. 256\u2013512 frames). Voices resample mono/other-rate files on decode (`Voice` upmixes mono; mp3 rates \u2260 sink rate go through a simple linear resampler in `Voice` \u2014 rips are 44.1 kHz so this is a fallback).\n- **Render thread** (`AudioTrackSink.loop`): for each block: `params = paramsRef.get()`; pull each voice (`Voice.read(out, frames)` from its ring; returns silence + `underrun` flag when the ring is empty and the voice is not complete \u2014 that is the STREAM HOLD signal); apply gains; chain DSP; taps; write. Never blocks on I/O, never allocates. Exposes `renderFrame` (monotonic frame counter) = the shared **render clock** used for scheduled starts, handover fades and loop wraps.\n- **Decoder threads** (one per voice, `Executors.newSingleThreadExecutor` per `Voice`): `Mp3FrameReader` walks frames \u2264 `frontierBytes`, feeds `MediaCodec`, writes PCM into the ring (lock-free SPSC `FloatRing`, 2\u20134 s). Seek = drain ring, position reader at frame index `floor(sample/1152)`, decode-and-discard the remainder + `encoderDelay` (LAME tag, else 576 for untagged stems, else 0) + 529 decoder delay. The reader exposes `totalFrames` from the Xing/Info frame count (partial LAME files report full length \u2014 same as `AVAudioFile`), `bytesPerSecond` from Content-Length/duration, and `playableFrames(bytes)` = `streamPlayableFrames` math.\n- **Scheduled starts:** `Voice.play(atRenderFrame)`; `VoiceGroup.startTogether(voices, lead=0.06 s)` computes ONE render frame for all stems. `Handover.schedule(deck, toStems, atRenderFrame, fadeFrames = 0.06 s\u00b7sr)` ramps linear gains inside the render loop and stops the outgoing voice when the ramp lands; the engine's `advanceStemHandover` decision machine is unchanged from iOS, only the mechanics moved onto the render thread (frame-exact, no 60 ms host-rate stair risk).\n- **Loops:** the render loop wraps a voice's read position inside `[loopStartFrame, loopEndFrame)` \u2014 frame-exact by construction; the decoder pre-fills the window. Replaces iOS's queued-pass/top-up bookkeeping (keep `loopWindowMath/clampLoopWindow`).\n- **Parameter model:** the engine builds an immutable `RenderParams` (per deck: mainVoiceGain, stem gains\u00d74, rate, pitch, 4 slot params (effect, variant, enabled, strength \u2192 node params via FxParams), eq gains, trim dB, mainGain, cueGain, cuePan; house: housePan, limiter) and `paramsRef.set()`s it. Smoothing: `mainGain/cueGain/stem gains` are ramped over one block in the render loop (click-free); `delayTime` is set only from the BASE strength (iOS lesson); `Reverb.setVariant` rebuilds only on variant change.\n- **Taps** (read-only): pre-fader VU after Trim, post-fader after mainGain (`Meter` \u2192 `MixDeckLevels` volatile fields, 4096-frame cadence), envelope after inputSum (8 ms/180 ms ballistics), `MixTapPulse` (lastRenderAt/lastAudibleAt) on houseSum, recording `TapSink` on houseSum (persistent; `isCapturing` flag), `MixDeckCapture` test seam.\n\n## 3. Engine (main thread) and threading\n\n- `MixEngine` is `@MainThread`, app-scoped (constructed in `AppGraph`, survives tab switches \u2014 the iOS load-bearing \"no teardown on disappear\"). UI state is a `StateFlow<MixUiState>` (decks' loaded/isPlaying/volume/rate/pitch/slots/eq/stem/loop/cue, crossfader, lead, auto state, buffering set). Hot values stay OUT of the flow: `position(deck)` via a `DeckPositions` holder polled by the seek slider at 10 Hz; VU via `MixDeckLevels`; `truePlayhead(deck)` computed from `Voice.playerFrame` + segmentStart (the beat pulse reads it at 60 fps).\n- **Tick (10 Hz, `appScope` + `Dispatchers.Main.immediate`, `delay(100)`)**: dt clamped \u2264 0.5 s; per deck: stream hold \u2192 freeze playhead + push auto end clock by dt; loop fold; advance position at rate; frontier catch \u2192 hold; end \u2192 retire (unless auto running); watchdog branch when `!sink.isRendering && mixWantsAudio`; `AutoDj.fire()`; `persistPositions()`; MediaSession position refresh ~1 Hz; stop ticking when idle.\n- **Sub-controllers** share `EngineCore` (internal interface: state access, `mutate`, `rec`, `persist`, `setPlaying` funnel, voices, graph). Each is its own file so the MIX-2\u2026MIX-5 packages touch disjoint files.\n- **Persistence writers:** `VersionedJsonWriter` (single-thread executor, monotonic version watermark; `null` payload deletes) shared by MixDeckSessionStore and MixSessionStore; writes are atomic temp+rename (existing PlayHistoryStore doctrine).\n- **Downloads:** OkHttp on `Dispatchers.IO`; `TransferCoordinator` runs \u2264 2 concurrent burns + the stream loader's \u2264 3 streams; byte deltas published through a `SharedFlow<ByteDelta>` (throughput window) and completion hooks. `TransfersService` (foreground, `dataSync` type, progress notification \u2014 `Notification.ProgressStyle` on API 36 noted as the existing candidate) runs while any transfer is active; `MixService` (foreground `mediaPlayback`) runs while the engine wants audio. Process death: `BurnStore.reconcileOnLaunch()` marks partials as `queued` and the next `begin()` resumes with Range.\n- **System integration:** `MixService` hosts a `MediaSession` over `MixSessionPlayer : SimpleBasePlayer` (play \u2192 `remotePlay()`, pause \u2192 `remotePause()`, seekToNext \u2192 `remoteSkip(5)`, seekToPrevious \u2192 `remoteSkip(skipFadeSeconds)`, position/duration/rate from `nowPlayingDeck`); `MixAudioFocus` requests GAIN on start, `AUDIOFOCUS_LOSS_TRANSIENT` \u2192 `remotePause()` with `interruptionParked` latch, `GAIN` after transient \u2192 resume only what was parked; becoming-noisy \u2192 `remotePause()`; `AudioTrack.addOnRoutingChangedListener` + `AudioDeviceCallback` \u2192 `recoverFromSinkStop()` (recreate the AudioTrack at the new route's rate, re-prime voices, park/unpark machine clocks). `AudioOwnerArbiter` (in `playback/`): `PlaybackController.play*` claims EXO and calls `mixEngine.pauseBoth()`; any Mix deck play claims MIX and pauses the MediaController.\n\n## 4. Data flow\n\n```\nCrate pick (UI) \u2192 MixResolver(collections, catalog, burns.localUrl, streamLoader.canStream) \u2192 [MixLoadable]\n   \u251c\u2500 startAutoMix(items, shuffled, lead, fade, label) \u2192 AutoDj (queue, preload A/B, play A)\n   \u251c\u2500 downloader.begin(sources) \u2192 partition (onDisk | burnQueue | needsRip) \u2192 TransferCoordinator / rip poll\n   \u2502     landings \u2192 noteDownloaded \u2192 progress/ETA \u2192 continueAutoMixIfArmed \u2192 engine.autoQueueInsert / startAutoMix\n   \u2514\u2500 engine.load(loadable, deck) \u2192 burns.localUrlPreferringCut ?: streamLoader.open \u2192 Voice.open(file, window)\nDeck controls \u2192 MixEngine setters \u2192 mutate state + RenderParams swap + rec(event) + persist(immediate|debounced)\nRender thread \u2192 taps \u2192 MixDeckLevels / MixTapPulse / TapSink(AAC) ; sink underrun \u2192 stream hold\nMixEngine.onSongPlayed / onDeckTrackEnded \u2192 MixPlayOutcomeBridge \u2192 PlayHistoryStore (+ PlayEventBus for History tab)\nMixEngine.onAirTrack / autoUpcoming / autoQueueInsert \u2194 JukeboxRepository (when a mix is live)\n```\n\n## 5. Persistence formats (shape-compatible with iOS; future S3 sync merges these)\n\n- `filesDir/pocketdj-mix-decks.json` \u2014 exactly `MixDeckSessionStore.Snapshot` schemaVersion **1** (fields and names as in MixDeckSessionStore.swift L46-238, flat FX fields written alongside optional `fxSlots`, `loopOn/loopUnits/eqLow/eqMid/eqHigh/filterMode` optional). `load()` lenient; exact schema match; `isEmpty`/`isExhausted` reject.\n- `filesDir/pocketdj-mix-sessions.json` \u2014 `MixSessionsDocument` schemaVersion **2** (`sessions[]`, `currentId`, `counter`); `MixSessionEvent` fields as MixSession.swift L486-510; `MixEventKind` string rawValues with `unknown(raw)` round-trip; `MixRecording{id,fileName,startedAt,durationMs,wasUserFolder:false}`.\n- `filesDir/pocketdj-burns.json` \u2014 `BurnStore.Document` schemaVersion **1** (`items[BurnItem]`, `pendingAfterRip?`); audio under `filesDir/burns/` with the iOS descriptive naming (`BurnFileNames.kt` port of BurnStore.swift L2040-2127), `stem-<songId>-<part>.mp3`, `analysis-<songId>.json`, sidecar `.txt`.\n- `cacheDir/mixstream/` \u2014 swept at launch (partials never resumed; a restored deck re-streams).\n- `filesDir/mix-sessions/<sessionId>/recording-N.aac` \u2014 ADTS AAC-LC 44.1/48 kHz stereo 192 kbps (append-only \u21d2 crash-safe).\n- Settings (DataStore keys, additive): `mixAutoLeadSeconds`(15) `mixAutoFadeSeconds`(3) `mixSkipFadeSeconds`(15) `mixGlideSeconds`(10) `mixAutoHidePlayed`(true) `mixCueChannel`(\"right\") `mixBeatPulse`(false) `mixDeckLayout`(\"stacked\").\n\n## 6. Hard-won invariants the port MUST preserve (checklist for reviewers)\n\n1. Stems start on ONE render frame; sum of 4 stems vs full mix must correlate r > 0.999 (priming trimmed).\n2. Handover: one fade at a time; intent moves, landing re-runs the decision; settle before any transport; > 2 ms silence on rapid toggles fails the test.\n3. Stem ON is transactional: schedule before muting, bail if nothing scheduled; clamp into the shortest stem.\n4. Auto-DJ never sweeps onto a deck that isn't making sound (freeze/abandon/extend/promote/defer/stall rules verbatim); held seconds don't burn the end clock; dt clamped.\n5. Skip ignored mid-fade EXCEPT a fade frozen on a buffering incoming deck; `pendingFadeRestore` restores the baseline fade.\n6. Lock-screen \u23f8 SUSPENDS the Auto-DJ and freezes clocks; in-app master pause ENDS it. Remote \u25b6 resumes only what \u23f8 parked; a restored suspended mix resumes via `resumeAuto`.\n7. Restore is parked at launch, materialized held on the Mix tab, Auto-DJ suspended, recorder detached, no card claim; a real load drops the parked restore; exhausted snapshots don't restore.\n8. Auto crossfader sweeps are NOT recorded as user `.crossfader` events; `setPlaying` funnel records play/pause once; `.resetDeck` is one semantic event.\n9. The engine is never torn down on leaving the tab; only the downloader's `handleMixLeave` runs (and only when no mix is live).\n10. Gain split identity; `applyBoost` never runs on the crossfader path; cue divide-out `/max(vol,1)`.\n11. Streaming: stream failure before audio ejects + skips 0.5 s if live; mid-song truncates; canStream cooldowns (120 s per song, 60 s server-down); max 3 concurrent, pinned streams never cancelled; a finished stream is adopted into burns and counts for the downloader.\n12. Progressive eligibility only touches OUR mix (`autoSourceLabel == autoLabel`); zero-start/exhausted pickups are killed by any deck gesture (`deckGestureGeneration`) or a running engine.\n13. The crate menu content must not recompose while open (entries remembered by collections revision; progress in a separate flow).\n14. Position ticks never recompose the whole screen; VU/playhead are polled holders.\n\n## 7. Offline downloads this depends on (DL-1/DL-2/DL-3)\n\n`BurnStore` (ledger + file resolution + stems + beat grids + removal/eviction) over `TransferCoordinator` (OkHttp `Range` downloads to `<name>.part`, atomic rename, byte-delta flow, cancel/STOP, \u2264 2 concurrent, `TransfersService` foreground while active). `MixStreamLoader` streams the public object (`Endpoints.ripAudioUrl(entry.key)`; analog prefers `cutKey`, falls back to the album side) into `cacheDir/mixstream`, publishes `onProgress(songId)` after every chunk (throttled to ~4/s) and adopts on completion (`BurnStore.adoptStreamedFile` \u2014 digital per-song mp3 / analog side only; cuts are played but not adopted). `CollectionMixDownloader` composes both exactly as iOS (seed partition, serial burn lane in play order, rip poll 4.5 s \u2264 1600 ticks, throughput window 30 s, 256 kbps ETA model, 'K ripping'). Studio/profile fences are no-ops on Android (ids never appear) but keep the `isStudioId` filter from `PlayResolver`.\n\n## 8. Emulator vs device\n\nThe headless AVD boots with `-no-audio`: `AudioTrack` still accepts writes, so transport/state/handover/auto-DJ logic is verifiable via `MixDiag` heartbeat lines (`render=1 tapAge\u22480 sigAge\u22480`) and the `OfflineRenderer` instrumented probes; audible output, cue channel routing on a real interface, Bluetooth route changes, audio-focus from a phone call, and lock-screen controls are **device-only**. Boot with a window (`emulator -avd pocketdj`) for Levi's checkpoints.",
+ "decisions": [
+  "Mix DSP engine = Kotlin in-process pull graph rendered by ONE float AudioTrack (low-latency mode, urgent-audio render thread), MediaCodec mp3 decode per voice on worker threads, Media3 SonicAudioProcessor (public API in media3-common 1.6.1) for per-deck pitch-preserved tempo + tempo-preserved pitch. Rejected: ExoPlayer-per-voice (cannot start 4 stems on one frame, no shared house sum/cue split/limiter \u2014 the exact iOS StemSync lesson) and Oboe/C++ today (no NDK/CMake installed, no C++ in repo, JVM-untestable). Oboe/AAudio sink and a native time-pitch remain drop-in follow-ups behind the AudioSink / TimePitch interfaces.",
+  "Record ARCHITECTURE-ANDROID.md open question #1 as RESOLVED with the above; add a 'Mix' row to the status ledger and the AudioTrack\u2192AAudio upgrade seam to the API-36 candidates list (AAudio is NDK-only, so it is not an API-36 trigger).",
+  "Streaming mode on Android GETs the public rips object with Range (no presign, no rip-server requirement in canStream); analog prefers cutKey with album-side fallback, same as iOS.",
+  "Offline burns live in app-private filesDir/burns with the iOS descriptive file-naming and ledger shape (pocketdj-burns.json v1); the SAF user-folder picker is deferred behind BurnStore's single root resolver.",
+  "Session audio recordings are ADTS .aac (MediaCodec AAC-LC), not fragmented .m4a: ADTS is append-only and playable when truncated, which is the crash-safety property iOS gets from movieFragmentInterval; MixRecording.fileName carries the extension so the sessions document stays shape-compatible.",
+  "Mix gets its own MixService (MediaSessionService, foreground mediaPlayback) with a SimpleBasePlayer adapter so lock-screen/notification transport and future Android Auto come from Media3; a new playback/AudioOwnerArbiter enforces the single-audio-owner rule between MixService and the existing PlaybackService.",
+  "Stem handover crossfade and loop wrapping are executed on the render thread at exact render frames (frame-accurate by construction); the iOS decision machines (advanceStemHandover, loop window math, auto readiness) are ported unchanged.",
+  "All persistence shapes (pocketdj-mix-decks.json v1, pocketdj-mix-sessions.json v2, pocketdj-burns.json v1) use the iOS field names verbatim because a future S3 sync merges them.",
+  "Cue-jump row, Studio/profile loadables, Now Playing DSP/Stem Lock, App Intents, CarPlay/TV surfaces, user-picked folders and macOS shortcuts are out of this area (N/A or other areas); the deck UI leaves a cueJumpRow slot behind a CuePointsProvider interface.",
+  "Slot modulation (LFO/Env) ships after the rack as its own package; the FXSlot model and snapshot fields carry it from day one so no schema change is needed."
+ ],
+ "packages": [
+  {
+   "id": "MIX-0",
+   "title": "Mix models, FX rack types, pure math (BeatMath, MixMath, FxParams)",
+   "goal": "Port every pure, UI-free piece of the Mix: enums/models (Deck, MixSource, MixLoadable, LoadedTrack, AutoMixItem, Effect, EffectVariant, FXSlot, SlotMod), the FX parameter curves, BeatMath (lastBeat/isDownbeat/sliceBoundaries/cyclePhase), and MixMath (crossfadeFactor, octaveFolded, syncRate, loopWindowMath, clampLoopWindow, glide math incl. signedCamelotSteps/glideRate/glidePitch/glideParams, splitmix64/rollTexture/fxSeed, streamBytesPerSecond/streamPlayableFrames, handoverReady/playableSeconds, ThroughputWindow/etaSeconds/etaLabel) with exhaustive JVM tests.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/model/MixModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/model/FxRack.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/model/MixMath.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/model/BeatMath.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/model/Camelot.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/model/MixMathTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/model/BeatMathTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/model/FxRackTest.kt"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "FXSlot invariant variant.effect == effect enforced; mismatched variant falls back to family default; default layout = compressor/punch, reverb/hall, flanger/flange, filter/lowPass",
+    "octaveFolded(ratio) folds into 0.5\u20262.0; syncRate matches iOS examples (140\u219470 \u2192 1.0)",
+    "loopWindowMath snaps start to the previous unit boundary and clampLoopWindow slides back without shrinking; floor 50 ms",
+    "glideParams: both Camelot known + not identical \u2192 pitch bends \u22641 key each (12\u00b7log2(1.1) st/key); both BPM known \u2192 inRate=sqrt(octaveFolded(ra/rb)), outRate=1/inRate, both clamped; missing datum \u2192 identity",
+    "rollTexture is deterministic for a given seed; fxSeed is FNV-1a over first songId \u2295 count",
+    "BeatMath.cyclePhase folds negative beat positions into 0..<1 and extends past the measured grid at the grid's own spacing",
+    "ThroughputWindow prunes to 30 s, floors span at 1 s; etaLabel renders '3m 20s' / '45s' / '\u2014'"
+   ],
+   "priority": "P0",
+   "est_lines": 1600,
+   "shared_touchpoints": [],
+   "unit_tests": [
+    "MixMathTest: crossfade equal-power sums (cos\u00b2+sin\u00b2=1), octaveFolded edge cases, syncRate, loop math table, glide math table, PRNG determinism, stream frame math (nil bytesPerSecond \u21d2 startFrame)",
+    "BeatMathTest: port of BeatMathTests cases (lastBeat before first beat nil, downbeat tolerance 30 ms, slice extension past grid, synthesized lattice)",
+    "FxRackTest: variant/family invariant, setEffect resets variant, SlotMod depth clamp + phase fold, FxParams curve endpoints (filterFrequency(lowPass,0)=18 kHz, (1)=250 Hz; compThreshold \u221230\u00b7s; makeup +15\u00b7s)"
+   ],
+   "emulator_steps": [
+    "none (pure JVM package); ./gradlew :app:testDebugUnitTest must pass with the new test count > previous count (XcodeGen test-count trap applies to Gradle too \u2014 verify the count moved)"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "MIX-1",
+   "title": "Durable stores: MixDeckSessionStore + MixSessionStore (shape-compatible JSON)",
+   "goal": "Persist the live mix (pocketdj-mix-decks.json, schema 1) and the mix session action log (pocketdj-mix-sessions.json, schema 2) with the iOS write doctrine: off-main version-guarded writer, immediate vs 1 s debounced vs 5 s throttled position writes, lenient load with exact-schema match and isEmpty/isExhausted rejection; sessions with 120 ms coalescing, 0.6 s debounce, resume t0 re-anchor, Session N counter, rename/reset/delete, played-set + playedRevision, recordings list.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/store/VersionedJsonWriter.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/store/MixDeckSessionStore.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/store/MixSessionModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/store/MixSessionStore.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/store/MixDeckSessionStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/store/MixSessionStoreTest.kt",
+    "android/app/src/test/resources/mix/ios-mix-decks-v1.json",
+    "android/app/src/test/resources/mix/ios-mix-sessions-v2.json"
+   ],
+   "depends_on": [
+    "MIX-0"
+   ],
+   "acceptance": [
+    "A snapshot JSON written by iOS (fixture copied from MixDeckSessionStore.seedShowcaseSnapshot field set) decodes; resolvedSlots falls back to flat fields when fxSlots is absent or malformed; unknown mod strings degrade to off",
+    "Schema mismatch, empty, or exhausted (live deck at end, standby at end, cursor can't advance, repeat off) snapshots load as null",
+    "saveDebounced lands exactly one write after the burst; updatePosition writes immediately on run/pause transition and at most every 5 s while running; a stale write can never clobber a newer one; clear() deletes the file",
+    "MixEventKind unknown(raw) round-trips; continuous kinds coalesce into one event per 120 ms bucket keeping bucket-start tMs and final value; a discrete event breaks the run; different param/deck don't merge",
+    "init resumes the previously-current session; first event after relaunch re-bases t0 so no offline gap is embedded; reset on empty session is a no-op; counter is monotonic across rename/delete",
+    "flush() writes synchronously"
+   ],
+   "priority": "P0",
+   "est_lines": 1500,
+   "shared_touchpoints": [
+    "di/AppGraph.kt (construct both stores lazily)"
+   ],
+   "unit_tests": [
+    "MixDeckSessionStoreTest: round-trip, iOS fixture decode, legacy flat\u2192slots migration, exhausted/empty rejection, debounce/throttle with injectable clock, version guard ordering",
+    "MixSessionStoreTest: naming/reset/rename/delete lifecycle, played-set, coalescing rules, lenient decode of a future kind + re-save preserves it, resume re-anchor, persistence round-trip against the iOS fixture"
+   ],
+   "emulator_steps": [
+    "Instrumented smoke (optional): write + read both files under filesDir via adb run-as and cat them to confirm pretty-printed field names match iOS"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "DL-1",
+   "title": "BurnStore + TransferCoordinator + TransfersService (offline audio downloads)",
+   "goal": "Create the Android burn store: pocketdj-burns.json ledger (schema 1, iOS BurnItem fields), descriptive file naming, local resolution (localUrl, localUrlPreferringCut, startMs), stems (all-4-or-nothing stem-<id>-<part>.mp3, burnStems, burnStemPart, adoptStreamedStems, stemsRemote via manifest), beat grids (analysis-<id>.json validated), serial burn(songs) with freshness vs rippedAt, STOP, adoptStreamedFile, remove/removeAll/removeBurns, usage + planEviction, reconcileOnLaunch; over a Range-resumable OkHttp TransferCoordinator (\u22642 concurrent, .part + atomic rename, byte-delta SharedFlow, cancel) hosted in a foreground TransfersService with a progress notification. Extend RipManifestEntry additively with stems/beatgrid fields and add Storage categories.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnModels.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnFileNames.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BurnStore.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/BeatGridSidecar.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/TransferCoordinator.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/burns/TransfersService.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/rips/RipsModels.kt (MODIFY: + stems{vocals,drums,bass,other}, stemVersion, stemFormat, beatgrid, firstBeatMs, firstDownbeatMs, beatGridBpm, beatsPerBar, tempoConfidence, steady, cutBytes, cutRippedAt; + isStemmed()/stemUrls()/beatgridUrl())",
+    "android/app/src/main/java/com/levi/pocketdj/data/storage/StorageService.kt (MODIFY: + BURNS, STEMS categories wired to BurnStore)",
+    "android/app/src/main/AndroidManifest.xml (MODIFY: TransfersService, FOREGROUND_SERVICE_DATA_SYNC, POST_NOTIFICATIONS)",
+    "android/app/src/test/java/com/levi/pocketdj/data/burns/BurnFileNamesTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/burns/BurnStoreTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/burns/TransferCoordinatorTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/rips/RipsModelsStemsTest.kt"
+   ],
+   "depends_on": [],
+   "acceptance": [
+    "File names match the iOS scheme (token sanitize, 40-char token cap, 150-char prefix cap, id suffix always whole; analog album-level prefix shared per album; sidecar per song)",
+    "burn([...]) skips fresh items, re-downloads when manifest rippedAt is newer, writes the ledger after each item, honours requestStop between items, resumes a .part with Range",
+    "localStemUrls returns all four or null; burnStems is idempotent; adoptStreamedStems is all-or-nothing",
+    "burnBeatGrid validates JSON (beatsMs array) before caching and returns null with no network when the manifest has no beatgrid key",
+    "Analog songs resolve startMs from the manifest and prefer the per-song cut when present",
+    "reconcileOnLaunch drops ledger rows whose file vanished and adopts orphan files by id suffix",
+    "Storage screen shows Burns and Stems rows with bytes and Clear; clears never touch settings/installId"
+   ],
+   "priority": "P0",
+   "est_lines": 2400,
+   "shared_touchpoints": [
+    "data/rips/RipsModels.kt",
+    "data/storage/StorageService.kt",
+    "di/AppGraph.kt",
+    "AndroidManifest.xml",
+    "screens/settings/StorageScreen.kt (two rows)"
+   ],
+   "unit_tests": [
+    "BurnFileNamesTest: port of the iOS naming cases (illegal chars, '-' in values, caps, blank prefix)",
+    "BurnStoreTest with MockWebServer: burn/skip-fresh/re-burn-on-newer-rippedAt/stop/adopt/remove/eviction plan/reconcile; stems all-or-nothing; beat grid validation",
+    "TransferCoordinatorTest: Range resume from a truncated .part, byte deltas sum to Content-Length, cancel mid-transfer leaves .part, concurrency cap",
+    "RipsModelsStemsTest: lenient decode of a manifest entry with stems/beatgrid fields and unknown keys"
+   ],
+   "emulator_steps": [
+    "Install build, add a song to a pocket, trigger a burn via a debug action (or via DL-3 later), watch the TransfersService notification progress; adb shell run-as com.levi.pocketdj ls files/burns shows descriptive names; Settings \u25b8 Storage shows Burns bytes; airplane-mode mid-burn then back online resumes with Range (logcat 'transfer resume offset=')"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "DL-2",
+   "title": "MixStreamLoader: growing-file song streams + stem sets",
+   "goal": "Port MixStreamLoader: open(songId) \u2192 Range-stream the public rips object (analog: cutKey first, album side fallback) into cacheDir/mixstream, publish onProgress/onBytes/onFailed, resolved/isCut/startMs/expectedBytes/bytesReceived/isComplete/failed, maxConcurrent 3 with makeRoom (never cancels pinned), 3 Range retries, 120 s per-song failure cooldown, 60 s server-down cooldown, network availability via ConnectivityManager, sweep partials at launch, adopt completed adoptable streams into BurnStore; stem sets (4 parts keyed stem:<id>:<part>, owners mix/nowplaying, cancelStems when last owner lets go, adoptStemsIfComplete, onStemProgress + addStemListener).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/stream/MixStreamLoader.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/stream/StreamSink.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/stream/NetworkMonitor.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/stream/MixStreamLoaderTest.kt"
+   ],
+   "depends_on": [
+    "DL-1"
+   ],
+   "acceptance": [
+    "canStream false when offline, when the song is not in the manifest, during a per-song cooldown, or during the server-down cooldown; true for a live non-failed stream",
+    "open() on an analog entry with cutKey streams the cut (isCut=true, no window); a 403/404 on the cut falls back to the side with startMs",
+    "Progress events are strictly ordered response \u2192 bytes \u2192 complete; a completed adoptable stream becomes a .ready burn and fires onAnyBurnFinalized; a cut stream is never adopted",
+    "Fourth concurrent stream cancels the oldest unpinned one; pinned ids are never cancelled",
+    "A stem set completes only when all four parts complete; a failed part fails the set; cancelStems with two owners only drops a claim",
+    "Launch sweeps cacheDir/mixstream"
+   ],
+   "priority": "P0",
+   "est_lines": 1300,
+   "shared_touchpoints": [
+    "di/AppGraph.kt"
+   ],
+   "unit_tests": [
+    "MixStreamLoaderTest with MockWebServer: chunked body \u2192 byte frontier growth, Range retry after a dropped connection, cooldowns with injectable clock, cut\u2192side fallback, adoption hook, stem set owner semantics, makeRoom/pinned"
+   ],
+   "emulator_steps": [
+    "Debug action: open a stream for a ripped song; logcat 'mixstream open/resume/complete'; verify the file grows under cache/mixstream and lands in files/burns on completion"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "DL-3",
+   "title": "MixResolver + CollectionMixDownloader (collection pull with progress/ETA + progressive eligibility)",
+   "goal": "Port MixResolver (pocket/playlist/setlist \u2192 [MixLoadable], on-disk OR streamable, dedupe first-seen, setlist snapshot fallback to catalog) and CollectionMixDownloader (begin(sources) idempotent + union, seed partition onDisk/burnQueue/needsRip, serial burn lane in play order via a host seam, rip lane POST /rip-collection or per-song /rip + manifest poll 4.5 s \u22641600 ticks, ETA from the 30 s throughput window at 32 KB/s per playback second, rippingCount, catalogShortfall, noteAutoStarted/continueAutoMixIfArmed (append random-when-shuffled, label ownership check, zero-start + exhausted pickups guarded by gesture generation and isRunning), cancel, handleMixLeave, end-of-run retry of misses) against an `AutoMixHost` interface so it is testable without the engine.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/download/MixResolver.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/download/CollectionMixDownloader.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/download/AutoMixHost.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/download/MixResolverTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/download/CollectionMixDownloaderTest.kt"
+   ],
+   "depends_on": [
+    "MIX-0",
+    "DL-1",
+    "DL-2"
+   ],
+   "acceptance": [
+    "Resolver drops text/blank/un-burned non-streamable ids, dedupes, keeps collection order; setlist rows fall back to catalog albumId/key",
+    "begin() with the same sources while active is a no-op; a different source cancels and re-seeds; nothing to do \u21d2 isActive=false",
+    "downloadedCount/totalCount/rippingCount/etaSeconds match a scripted landing sequence; ETA is null until the first byte sample",
+    "Landings append to a running mix only when host.autoSourceLabel == autoLabel, random placement when shuffled; a landing while autoEndedExhausted (and not running) re-arms startAutoMix; a deck gesture since arm kills the zero-start pickup",
+    "Manifest flip during the rip poll moves an id into the burn lane; a song a deck is streaming is never burned twice",
+    "handleMixLeave(engineActive=false) cancels; true leaves the run alone"
+   ],
+   "priority": "P0",
+   "est_lines": 1400,
+   "shared_touchpoints": [
+    "di/AppGraph.kt",
+    "data/rips/RipServerClient.kt (ADD ripCollection(ids) \u2014 additive)"
+   ],
+   "unit_tests": [
+    "MixResolverTest over fixture collections + a fake burns/streamable seam",
+    "CollectionMixDownloaderTest with scripted clock, fake BurnStore/RipsRepository/AutoMixHost: partition, progress, ETA, eligibility rules, pickups, cancel/leave"
+   ],
+   "emulator_steps": [
+    "After UI-2: pick a crate with un-burned songs; the bottom bar shows 'N of M downloaded \u00b7 ~ETA'; logcat 'mixdl begin \u2026 burnQ= needsRip='; count climbs as files land"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "AUD-1",
+   "title": "Audio core: AudioSink/AudioTrackSink, OfflineRenderer, Mp3FrameReader, MediaCodec decoder, Voice, VoiceGroup",
+   "goal": "The platform layer of the DSP engine: an `AudioSink` interface + `AudioTrackSink` (float PCM, low-latency, dedicated render thread, renderFrame clock, underrun counter, routing-changed callback, isRendering) + `OfflineRenderer` (pulls N frames into an array for tests); `PcmSource` interface with `Mp3FrameReader` (sync walk, MPEG1/2 L3, Xing/Info/VBRI frame count \u2192 totalFrames, LAME encoder delay, 576-sample priming rule for untagged files, playableFrames(bytesFrontier), frame index \u2194 sample mapping) + `Mp3Decoder` (MediaCodec audio/mpeg synchronous mode) and a `SyntheticPcmSource` for JVM tests; `Voice` (decoder thread + lock-free FloatRing 2\u20134 s, window [startFrame,endFrame), schedule(from), append(toFrontier), seek, play(atRenderFrame)/pause/stop, playerFrame, loopWindow frame-exact wrap, underrun flag = hold signal, gain ramp per block); `VoiceGroup.startTogether` (one render frame for N voices).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/audio/AudioSink.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/audio/AudioTrackSink.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/audio/OfflineRenderer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/audio/RenderClock.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/audio/FloatRing.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/audio/PcmSource.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/audio/Mp3FrameReader.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/audio/Mp3Decoder.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/audio/Voice.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/audio/VoiceGroup.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/audio/Mp3FrameReaderTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/audio/VoiceTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/audio/FloatRingTest.kt",
+    "android/app/src/test/resources/mix/tagged-lame-2s.mp3",
+    "android/app/src/test/resources/mix/untagged-lame-2s.mp3",
+    "android/app/src/androidTest/java/com/levi/pocketdj/mix/audio/Mp3DecoderInstrumentedTest.kt"
+   ],
+   "depends_on": [
+    "MIX-0"
+   ],
+   "acceptance": [
+    "Mp3FrameReader on a tagged LAME file returns the Xing frame count and encoder delay; on an untagged file returns 576 priming; on a truncated copy of the same file totalFrames still equals the full count and playableFrames(bytes) is \u2264 the present frames minus the 1.5 s margin",
+    "Voice.read() never allocates and never blocks; with an empty ring and an incomplete source it returns silence + underrun=true; a complete source at end returns ended",
+    "VoiceGroup.startTogether starts four synthetic voices on the same render frame (OfflineRenderer shows identical first non-zero sample index)",
+    "Loop window wraps frame-exactly (a 1-frame click marker at window start appears every exactly (end-start) frames)",
+    "AudioTrackSink survives a routing change by recreating the track at the new rate and re-reporting isRendering; underrun count is exposed",
+    "Instrumented: Mp3Decoder decodes the fixture on the emulator and the first non-silent sample lands within 2 ms of the known offset"
+   ],
+   "priority": "P0",
+   "est_lines": 2200,
+   "shared_touchpoints": [],
+   "unit_tests": [
+    "Mp3FrameReaderTest (fixtures generated once with ffmpeg/lame on the Mac: a 2 s 440 Hz tone, tagged and untagged)",
+    "VoiceTest with SyntheticPcmSource: schedule/seek/append/hold/ended semantics, loop wrap, gain ramp has no step > 1/blockFrames",
+    "FloatRingTest: SPSC correctness under a producer/consumer stress loop"
+   ],
+   "emulator_steps": [
+    "./gradlew :app:connectedDebugAndroidTest (Mp3DecoderInstrumentedTest) on the pocketdj AVD; headless -no-audio is fine for decode"
+   ],
+   "device_only": "Actual audible output and AudioTrack low-latency behaviour on real hardware"
+  },
+  {
+   "id": "AUD-2",
+   "title": "DSP nodes: Biquad/Eq3/Trim, TimePitch (Sonic), Compressor, Reverb, ModDelay, Limiter, Meter, EnvelopeFollower, FxSlotNodes",
+   "goal": "Pure-Kotlin float DSP matching the iOS node roles and FxParams curves: resonant LP/HP/BP biquad (filter slot), 3-band EQ (low shelf 320 Hz, mid peak 1 kHz, high shelf 3.2 kHz, \u00b112 dB), trim gain in dB, TimePitch wrapping SonicAudioProcessor (s16 in/out \u2194 float, speed 0.5\u20132.0, pitch semitones\u2192ratio, latency/flush on seek), Compressor (threshold/headroom/attack/release/makeup per variant), Reverb (Freeverb-style with Room/Hall/Plate/Cathedral parameter sets; rebuild only on variant change), ModDelay (delay+feedback+wet/dry+LP cutoff; delayTime only from base strength), lookahead peak Limiter, Meter (peak+RMS over blocks, MixDeckLevels volatile holder), EnvelopeFollower (8 ms/180 ms, \u221240\u20260 dBFS \u2192 0\u20261), FxSlotNodes (comp\u2192filter\u2192reverb\u2192mod in series, \u22641 un-bypassed, applySlot(FXSlot, effectiveStrength)).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/Biquad.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/Eq3.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/TrimGain.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/TimePitch.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/Compressor.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/Reverb.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/ModDelay.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/Limiter.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/Meter.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/EnvelopeFollower.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/dsp/FxSlotNodes.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/dsp/BiquadEq3Test.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/dsp/TimePitchTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/dsp/DynamicsTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/dsp/ReverbDelayTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/dsp/MeterEnvelopeTest.kt"
+   ],
+   "depends_on": [
+    "MIX-0"
+   ],
+   "acceptance": [
+    "Every node processes in place on FloatArray blocks with zero allocation after construction; bypassed node output is bit-identical to input",
+    "Eq3 at 0 dB is transparent (|out\u2212in| < 1e-6); +12 dB low shelf lifts a 100 Hz tone \u2248 +12 dB and leaves 5 kHz within \u00b10.5 dB",
+    "TimePitch at speed 1.5 consumes 1.5\u00d7 input frames per output frame (\u00b12 %), pitch +12 st doubles a tone's frequency (\u00b13 %), speed/pitch independent; flush() clears tails",
+    "Limiter never lets |peak| exceed 1.0 for a 2\u00d7 over-driven input and is transparent below threshold",
+    "Meter peak/RMS match analytic values for a full-scale sine (RMS 0.707); envelope attack reaches 63 % in \u2248 8 ms and releases in \u2248 180 ms regardless of block size (test with 64- and 2048-frame blocks)",
+    "FxSlotNodes: exactly one node un-bypassed per slot; applySlot(filter lowPass, s) sets cutoff on the 18 kHz\u2192250 Hz log curve; variant change rebuilds reverb, strength change does not"
+   ],
+   "priority": "P0",
+   "est_lines": 1900,
+   "shared_touchpoints": [],
+   "unit_tests": [
+    "BiquadEq3Test (frequency response via sine sweeps), TimePitchTest (Sonic wrapper ratios; runs on JVM \u2014 media3-common is a plain jar), DynamicsTest (compressor gain reduction curve, limiter ceiling), ReverbDelayTest (impulse tail length per variant, delay time equals modDelayTime(variant, base)), MeterEnvelopeTest (ballistics block-size independence)"
+   ],
+   "emulator_steps": [
+    "none beyond unit tests; audible check lands with AUD-3/MIX-2"
+   ],
+   "device_only": "Subjective quality of Sonic at large stretch ratios"
+  },
+  {
+   "id": "AUD-3",
+   "title": "MixGraph: deck chains, house/cue/limiter, taps, render-thread handover + parameter snapshot",
+   "goal": "Assemble AUD-1 voices and AUD-2 nodes into the documented topology for two decks (main voice + 4 stem voices \u2192 inputSum \u2192 TimePitch \u2192 4 slots \u2192 Eq3 \u2192 Trim \u2192 mainGain/cueGain; houseSum \u2192 recording tap \u2192 housePan \u2192 mainSum (+cue sends) \u2192 Limiter \u2192 sink), driven by an immutable `RenderParams` swapped via AtomicReference and ramped per block; taps (pre/post VU, envelope, MixTapPulse, TapSink hook, MixDeckCapture seam); `Handover` (schedule a 60 ms LINEAR main\u2194stems crossfade at a render frame, start incoming at gain 0 from the outgoing voice's exact source position, stop outgoing when it lands, generation-guarded, settle()); offline render harness for dead-air probes.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/graph/MixGraph.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/graph/DeckChain.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/graph/RenderParams.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/graph/Taps.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/graph/Handover.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/graph/MixGraphTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/graph/HandoverTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/graph/CueRoutingTest.kt"
+   ],
+   "depends_on": [
+    "AUD-1",
+    "AUD-2"
+   ],
+   "acceptance": [
+    "Graph is built once; swapping an FX family/variant never reallocates nodes (bypass flips only)",
+    "Gain split: for v in 0\u20262, mainGain = min(v,1)\u00b7xfade and trim = 20\u00b7log10(max(v,1)) dB; applyBoost is not touched by crossfader changes (test spies)",
+    "Cue routing: cued deck's cue send = cueVol/max(vol,1) at pan cueSide despite the crossfader on the other deck; house pans \u2212cueSide only while any deck cued; nothing cued \u21d2 stereo bit-identical to the un-cued render",
+    "Handover: four synthetic stems vs a synthetic full mix \u2014 after cutToStems the output has no gap > 2 ms (sample-resolution probe) and the summed level stays within \u00b10.5 dB through the 60 ms fade; rapid toggles land on the last intent with zero dead air",
+    "Recording tap receives the clean house (pre-pan) even while a deck is cued",
+    "Render loop performs zero allocations per block (assert via a counting Allocation-free harness or by running 10k blocks and checking no OOM/GC log in tests) and never blocks"
+   ],
+   "priority": "P0",
+   "est_lines": 1500,
+   "shared_touchpoints": [],
+   "unit_tests": [
+    "MixGraphTest (OfflineRenderer): topology level checks, gain identity, equal-power crossfade sum, limiter ceiling with 2\u00d7200% decks, VU/post values, bypass identity",
+    "HandoverTest: dead-air probe, coherence (linear not equal-power), generation supersede, settle before transport",
+    "CueRoutingTest: port of testCueRoutingIsPreFaderPFLAndPansToTheCueChannel"
+   ],
+   "emulator_steps": [
+    "Instrumented smoke: build the graph on AudioTrackSink, render 2 s of a synthetic tone, assert MixTapPulse.lastAudibleAt advances (proves the render thread runs on the emulator even with -no-audio)"
+   ],
+   "device_only": "Hearing cue on the chosen channel of a real stereo interface"
+  },
+  {
+   "id": "MIX-2",
+   "title": "MixEngine core: decks, load/seek/transport, EQ, FX rack, Vol/crossfader, cue, lead/sync, VU, tick, session-log hooks, durable persistence",
+   "goal": "The @MainThread engine facade over MixGraph: DeckState/MixUiState StateFlow, load(MixLoadable) via BurnStore (cut preferred, analog startMs + lengthMs window), loadFile seam, commitLoad resets (rate/pitch/stems/loop, lead cleared, .load recorded with bpm/camelot, persist), play/pause/togglePlay/playBoth/pauseBoth/toggleAll with the setPlaying funnel, restart/resetDeck/clearDeck (eject), seek (bounded, re-stamps auto end via hook), setRate/setPitch/setEqGain, setVolume (0\u20262, boost), setCrossfader + non-recording applyCrossfader, FX rack setters (slot/effect/variant/strength + first-match shims), cue setters + setCueOnRight, setLead/syncToLead/canSync/phaseAlign, meters + setMeterSource, truePlayhead, 10 Hz tick (dt clamp, retire at end, watchdog hook), rec() helper (coalescing via MixSessionStore), persistMixDeckSession immediate/debounced + persistPositions, parked restore + materialize (held, recorder detached), ejectAll, deckGestureGeneration, onSongPlayed/onDeckTrackEnded hooks, MixDiag heartbeat lines. Defines EngineCore for MIX-3/4/5.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/MixEngine.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/EngineCore.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/DeckController.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/MixUiState.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/MixPersistence.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/MixRecordingHooks.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/MixTick.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/MixEngineTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/MixEngineSessionTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/MixEngineRecorderTest.kt"
+   ],
+   "depends_on": [
+    "MIX-0",
+    "MIX-1",
+    "AUD-3",
+    "DL-1"
+   ],
+   "acceptance": [
+    "Load of an analog song schedules exactly the [startMs, startMs+lengthMs) window; over-length startMs/empty file keeps the current track; a load resets rate/pitch/lead/stem/loop and records one .load with bpm/camelot",
+    "Every setter emits exactly one session event; load\u2192play records .play and marks played once; an idempotent re-issue records nothing; a bare Auto on\u2192off records no .crossfader (hook for MIX-4)",
+    "Seek past the window clamps; the slider's live position keeps updating during a drag (ViewModel exposes position via a polled holder, not the StateFlow)",
+    "resetDeck keeps the track + rack layout, zeroes params, rewinds; clearDeck ejects, drops lead and cue, persists; both record one .resetDeck",
+    "nowPlayingDeck: only-playing \u2192 that deck; zero/both \u2192 A; only B loaded \u2192 B; none \u2192 null",
+    "Restore: parked at launch, materialized on the Mix tab with decks re-loaded and seeked, nothing playing, recorder detached during materialization, vanished file leaves the deck empty; a real load drops the parked restore",
+    "Tick: dt clamped to 0.5 s; a deck reaching its end outside a running auto retires via setPlaying(false); tick stops when idle",
+    "Engine instance survives navigation (app-scoped in AppGraph); no teardown on leaving the tab"
+   ],
+   "priority": "P0",
+   "est_lines": 2500,
+   "shared_touchpoints": [
+    "di/AppGraph.kt (mixEngine singleton + stores)"
+   ],
+   "unit_tests": [
+    "MixEngineTest over OfflineRenderer-backed graph with synthetic sources: load window math, transport funnel, gain split, cue toggle/clamp/channel, sync rate + phase align (port testCueToggleVolumeAndChannel, testTruePlayheadReadsAudioClockAndHonorsSeekOffset, nowPlayingDeck cases)",
+    "MixEngineSessionTest: snapshot build/restore round trip, parked\u2192materialize, exhausted skip, debounced vs immediate writes (fake store)",
+    "MixEngineRecorderTest: every setter emits its event; no-recorder is a no-op"
+   ],
+   "emulator_steps": [
+    "With UI-1: load two burned tracks, play both, drag tempo/pitch/vol/crossfader; logcat mixdiag heartbeat shows render=1 sigAge\u22480 for both decks; kill the app (adb shell am force-stop) and relaunch \u2192 decks come back cued at their positions, silent"
+   ],
+   "device_only": "Audible verification of tempo/pitch quality and cue routing"
+  },
+  {
+   "id": "MIX-3",
+   "title": "Loop (\u221e) + stem decks + zero-dead-air handover + beat-grid hydrate",
+   "goal": "LoopController (loopUsesBeats/loopUnitSeconds via grid median gap, loopBounds via BeatMath, setLoop/setLoopUnits/nudgeLoop 1\u202632 units, frame-exact window on Voice, seek-while-looped moves the loop, loop on stems needs the window inside the stem frontier, schedule-before-stop) and StemController (stemModeOn/stemActive, applyStemIntent with stemIntentGen + deferSourceUntilPlay, requestStemSource: wire local \u2192 open stem stream \u2192 fetch whole via BurnStore.burnStems, advanceStemHandover decision machine with handoverReady, cutToStems/cutToFullMix through graph Handover at the outgoing voice's exact position, settleStemFade before every transport, dropPendingStems/releaseStemStream, wireStems all-4 with set priming, scheduleStems/startStems one frame, stemsScheduled re-arm after stop, toggleStemMute/setStemVolume, transactional ON) plus beat grid: setBeatPulseEnabled, hydrateBeatGrid (local sidecar sync, download iff pulse on, songId-guarded patch), stem-mode 'Loading stems\u2026' state.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/LoopController.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/StemController.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/BeatGridHydrator.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/LoopControllerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/StemControllerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/BeatGridHydratorTest.kt"
+   ],
+   "depends_on": [
+    "MIX-2",
+    "DL-2"
+   ],
+   "acceptance": [
+    "Loop: 2 units off the previous boundary by default; beats when grid/bpm exist else seconds; a window that would overrun slides back keeping its length; seek while looped re-anchors the loop; a loop on streaming stems refuses until the window is inside the frontier; loop release re-times the auto end (hook)",
+    "Stem ON with stems on disk on a paused deck switches outright; on a playing deck crosses over 60 ms with zero dead air; stems not on disk stream (or fetch) while the full mix plays and the UI shows 'Loading stems\u2026'; a toggle OFF before landing drops the request; a new track/eject bumps stemIntentGen so a late fetch touches nothing",
+    "Partial stems hand back to the full mix 1 s before their frontier and re-engage with 4 s runway; a truncated main stream under stems stays on stems; neither voice able to grow \u21d2 song ends at the longer audio",
+    "Toggling stems near a track's end after a paused auto never leaves the deck silent (port of the \u00a75 fix: schedule before mute, clamp to maxStemSeconds, bail)",
+    "Four stems vs full mix correlate r > 0.999 on the synthetic fixture (priming applied)",
+    "Enabling the pulse attaches a burned local sidecar without network; absent sidecar + pulse off \u21d2 no download"
+   ],
+   "priority": "P0",
+   "est_lines": 2400,
+   "shared_touchpoints": [],
+   "unit_tests": [
+    "LoopControllerTest: units/bounds/nudge/slide/seek-moves-loop; frame-exact wrap via OfflineRenderer",
+    "StemControllerTest: ports of testRapidTogglesLandOnTheLastIntentWithoutDeadAir, transactional ON, generation guards, streaming stems underrun/re-engage, truncated main, claims released on eject",
+    "BeatGridHydratorTest: local attach, gated download (MockWebServer), songId guard"
+   ],
+   "emulator_steps": [
+    "Load a stemmed burned track (manifest stemVersion != null), toggle Stems: pads appear, mute/vol work; toggle rapidly; logcat mixstems lines; engage \u221e and nudge edges; enable Settings \u25b8 beat pulse and confirm 'beatgrid hydrate' log for a track with a sidecar"
+   ],
+   "device_only": "Hearing the handover seam and loop click-freeness"
+  },
+  {
+   "id": "MIX-4",
+   "title": "Auto-DJ machine + readiness rules + glide + remote freeze + jukebox queue seams",
+   "goal": "AutoDj (startAutoMix ejects both decks and records .resetDeck\u00d72, queue/shuffle with on-device-first start, preload A/B, autoDeckEndsAt wall clocks, autoFire idle\u2192preroll\u2192fade\u2192postroll, beginAdvanceTransition fade cap \u22650.5 s + pendingFadeRestore, beginAutoCrossfade/finishAutoCrossfade (silence outgoing, advance, preload next loadable, drop vanished, defer transientlyUnloadable), ensureNextPreloaded, skipToNext (ignored mid-fade except frozen-on-buffering), pauseAuto/resumeAuto/beginResumeHandoff, stopAutoMix/endAutoLoop, repeat off/one/all + wrap preload, autoStatus, autoEndedExhausted, remotePausedAt freeze + unfreezeAutoClock, engineStallAt park/unpark/checkpoint hooks) + readiness (deckReadyToAir/deckCanAir, promoteReadyUpcoming, extendLive, abandonTransition, frozen fade, stall-skip 8 s, 'mixadvance' log lines) + GlideMachine (FX glide texture PRNG + slot resolution, Mix glide params, preroll/postroll, glidePhaseAlign, non-recording glide setters, .glide events) + jukebox seams (onAirTrack, onAirBuffering, autoUpcoming(+Detailed), autoPlayed, autoQueueInsert next/end/random \u2265 autoNextToLoad, shuffle/remove/move upcoming, autoUpcomingLockedCount).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/AutoDj.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/AutoReadiness.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/GlideMachine.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/AutoQueueSeams.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/AutoDjTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/AutoReadinessTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/GlideMachineTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/AutoQueueSeamsTest.kt"
+   ],
+   "depends_on": [
+    "MIX-2",
+    "MIX-3"
+   ],
+   "acceptance": [
+    "startAutoMix loads item0\u2192A, item1\u2192B, crossfader 0, plays A; at secondsLeft \u2264 lead with a strictly-ready standby the fade sweeps over fade seconds and finishes with the outgoing silenced and the next preloaded onto it",
+    "Skip single = skipFadeSeconds, double = 5 s; ignored mid-fade; a skip during a fade frozen on a buffering incoming backs out and defers that song; the baseline fade is restored afterwards",
+    "Natural transition with an un-ready standby: promote an on-device upcoming song, else wait, else at 0.5 s left extend the live song; frozen fade resumes re-timed; outgoing running out \u21d2 abandon + extend; incoming ejected \u21d2 back out",
+    "Held (buffering) seconds don't advance the live deck's end clock; stalled live deck 8 s \u21d2 1 s hand-over to a song that can air; stream-gate-closed songs are deferred, never dropped",
+    "pauseAuto gates only the trigger; resumeAuto re-arms from live positions (one deck \u2192 endsAt; both \u2192 survivor + handoff when the sooner ends; none \u2192 restart live)",
+    "Repeat one replays the slot with a frozen cursor; repeat all wraps to index 0 with wrap preload",
+    "remotePause suspends (not ends) + freezes all armed clocks; remotePlay shifts them by the frozen interval and resumes only the parked decks; in-app pauseBoth ends a running auto",
+    "Glide: texture deterministic per queue seed; only the resolved slot sweeps; preroll fitted into runway with 1.12 headroom when mix glide on; incoming settles back in postroll; recorded as .glide events; auto sweeps never record .crossfader",
+    "Jukebox inserts land \u2265 autoNextToLoad; shuffle/remove/move only touch uncommitted rows; every structural change persists"
+   ],
+   "priority": "P0",
+   "est_lines": 2500,
+   "shared_touchpoints": [],
+   "unit_tests": [
+    "AutoDjTest with injectable clock + fake voices: port of skipToNext/finishAutoCrossfade/resume/repeat tests, fade cap, pendingFadeRestore, exhausted flag, remote freeze arithmetic",
+    "AutoReadinessTest: promote/extend/freeze/abandon/stall/defer scenarios at sample resolution via OfflineRenderer (no gap > 2 ms during a frozen fade)",
+    "GlideMachineTest: texture determinism, slot resolution (all-compressor rack sits out), params fitting",
+    "AutoQueueSeamsTest: insert bounds, locked count, shuffle/remove/move no-ops on committed rows"
+   ],
+   "emulator_steps": [
+    "Pick a crate with \u22653 burned songs, Auto \u25b8 Play: banner shows 'Auto-mixing n/total \u00b7 Deck X'; Skip; double-tap Skip; Pause \u2192 hand-load \u2192 Resume; logcat mixadvance lines; lock screen (adb shell input keyevent KEYCODE_SLEEP) then media pause/play via adb shell cmd media_session dispatch pause/play behaves as suspend/resume"
+   ],
+   "device_only": "Real lock-screen transport and headset-button behaviour"
+  },
+  {
+   "id": "MIX-5",
+   "title": "Streaming decks in the engine (growing-file playback, hold/resume, truncation, stem streams)",
+   "goal": "StreamDecks: loadStreaming (hold until 2 s start runway / 4 s resume runway), pumpStream on every loader progress event (first attach reads totalFrames/bytesPerSecond, appends to the voice up to the frontier in 1 s/15 s chunks by runway, resumes a held deck, finishStream \u2192 ordinary file deck via BurnStore adoption), holdStream when the tick catches the frontier, handleStreamFailure (before audio \u2192 eject + skip 0.5 s if live; mid-song \u2192 truncate duration + restamp auto end; under stems \u2192 mainTruncated), clearStream, isStreaming/isBuffering/streamingSongIds/autoUpcomingSongIds, canStream passthrough, stem streaming pump (re-open on real growth, frontier never ahead of files, 15 s loop re-open step, finishStemStream adopt), seek into a held stream, Buffering\u2026 observable set, 'mixstream' logs. Wires MixStreamLoader.onProgress/onStemProgress to the engine and pinnedIds to the loader.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/StreamDecks.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/StreamDecksTest.kt"
+   ],
+   "depends_on": [
+    "MIX-2",
+    "MIX-3",
+    "DL-2"
+   ],
+   "acceptance": [
+    "A deck loaded on a stream with no bytes shows Buffering\u2026, starts the moment 2 s of runway exist, holds again when the playhead catches the frontier, resumes with 4 s",
+    "Completion hands the deck to the adopted burn file with no audible seam (OfflineRenderer: contiguous samples across the append boundary)",
+    "Failure before audio ejects the deck (and skips 0.5 s if it was the live auto deck); failure mid-song truncates and the auto end is re-stamped",
+    "Held seconds don't advance the playhead or the auto end clock; the Buffering badge clears on resume",
+    "Stem stream parts append in lockstep; frontier is the slowest part's reach",
+    "autoUpcomingSongIds feeds the downloader's play-order lane; pinnedIds covers both decks' streams"
+   ],
+   "priority": "P0",
+   "est_lines": 1300,
+   "shared_touchpoints": [
+    "di/AppGraph.kt (hook wiring)"
+   ],
+   "unit_tests": [
+    "StreamDecksTest with fake loader streams (injectStreamForTesting equivalents): hold/start/resume runway, append chunk policy, completion adoption, failure paths, truncation, held-seconds clock, stem part lockstep"
+   ],
+   "emulator_steps": [
+    "Pick a crate whose songs are ripped but not burned (manifest hit, no local file), Auto \u25b8 Shuffle: decks show Buffering\u2026 then play; throttle network (adb shell cmd netpolicy / emulator -netspeed gsm) and watch holds + mixadvance 'fade frozen' / 'extend' lines; end state: files appear under files/burns"
+   ],
+   "device_only": "Cellular dead-zone behaviour"
+  },
+  {
+   "id": "MIX-6",
+   "title": "MixService (MediaSession via SimpleBasePlayer), audio focus, routing recovery, AudioOwnerArbiter, MixDiag",
+   "goal": "Run the engine's sink inside a foreground `MixService : MediaSessionService` (type mediaPlayback) with `MixSessionPlayer : SimpleBasePlayer` adapting nowPlayingDeck (title/artist/art/duration/position/rate=tempo, ~1 Hz refresh while playing) and commands (play\u2192remotePlay, pause\u2192remotePause, next\u2192remoteSkip(5), previous\u2192remoteSkip(skipFadeSeconds)); MixAudioFocus (GAIN on start, transient loss \u2192 remotePause with interruptionParked latch, regain resumes only what was parked, LOSS \u2192 pauseBoth; becoming-noisy \u2192 remotePause); routing/device-change \u2192 recoverFromSinkStop (recreate AudioTrack, re-prime voices, park/unpark machine clocks, ~1/s retry), tick watchdog + silentPlayingCheck (3 strikes, pauses suspects unless recording), zombie re-prime after any sink-down window; `AudioOwnerArbiter` in playback/ (Mix start pauses the ExoPlayer controller; PlaybackController.play pauses the Mix); MixDiag ring buffer (mixdiag/mixadvance/mixstream/mixstems tags, 1 Hz heartbeat, Settings \u25b8 Debug export as text).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/service/MixService.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/service/MixSessionPlayer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/service/MixAudioFocus.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/service/MixRecovery.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/service/MixDiag.kt",
+    "android/app/src/main/java/com/levi/pocketdj/playback/AudioOwnerArbiter.kt",
+    "android/app/src/main/java/com/levi/pocketdj/playback/PlaybackController.kt (MODIFY: claim arbiter on play*, pause on loss)",
+    "android/app/src/main/AndroidManifest.xml (MODIFY: MixService + FOREGROUND_SERVICE_MEDIA_PLAYBACK)",
+    "android/app/src/test/java/com/levi/pocketdj/mix/service/MixSessionPlayerTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/service/MixRecoveryTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/playback/AudioOwnerArbiterTest.kt"
+   ],
+   "depends_on": [
+    "MIX-4"
+   ],
+   "acceptance": [
+    "Starting any deck claims the arbiter and pauses the setlist player; playing a song from Browse pauses the Mix (pauseBoth) and the notification switches to the setlist session",
+    "Notification/lock-screen shows the nowPlayingDeck track with a moving position at the deck's tempo; pause/play/next/previous map to the remote seams",
+    "Transient focus loss pauses and freezes auto clocks; regain resumes exactly what was parked; a deck hand-started during the park keeps recovery",
+    "Sink death (routing change) is recovered within ~1 s with voices re-primed; machine clocks are shifted by the stall; SILENT-PLAYING is logged after 3 strikes and suspects are paused unless recording",
+    "MixDiag heartbeat line every second while anything plays; export produces a text file"
+   ],
+   "priority": "P0",
+   "est_lines": 1500,
+   "shared_touchpoints": [
+    "playback/PlaybackController.kt",
+    "AndroidManifest.xml",
+    "di/AppGraph.kt",
+    "screens/settings/SettingsScreen.kt (Debug \u25b8 Export mix diagnostics row)"
+   ],
+   "unit_tests": [
+    "MixSessionPlayerTest: state mapping from a fake engine (nowPlayingDeck rule, rate, commands), focus state machine with fake AudioManager callbacks, recovery clock arithmetic (unpark/checkpoint), arbiter ownership transitions"
+   ],
+   "emulator_steps": [
+    "Play a mix; adb shell dumpsys media_session shows the PocketDJ Mix session active; adb shell cmd media_session dispatch pause/play/next; start a Browse song \u2192 mix pauses; toggle emulator audio route (adb shell cmd audio set-device or plug a virtual headset via emulator console 'event send EV_SW:SW_HEADPHONE_INSERT:1') \u2192 logcat 'recover: sink restarted'"
+   ],
+   "device_only": "Bluetooth route changes, phone-call interruption, headset buttons, real lock screen"
+  },
+  {
+   "id": "MIX-7",
+   "title": "Mix session audio recording (house tap \u2192 ADTS AAC) + MixRecorder + orphan recovery",
+   "goal": "TapSink on houseSum (persistent; render thread copies blocks into an SPSC queue; isCapturing flag), AacAdtsWriter (MediaCodec AAC-LC encoder on its own thread writing ADTS frames with flush per frame \u2192 crash-safe .aac; failure latch + one-shot onWriterFailure; content clock appendedSeconds), SessionFolders (filesDir/mix-sessions/<sessionId>/recording-N.aac), MixRecorder (start/stop/toggle, take filed to the session current at START, writerFailureMessage, 2 s watchdog \u2192 captureStalled when media freezes \u22655 s while audible, recoverOrphans at launch idempotent, activeTake never adopted), RecordingPlayer for the Sessions screen (pauses the mix via the arbiter), Storage category MIX_SESSIONS.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/recording/TapSink.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/recording/AacAdtsWriter.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/recording/SessionFolders.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/recording/MixRecorder.kt",
+    "android/app/src/main/java/com/levi/pocketdj/mix/recording/RecordingPlayer.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/storage/StorageService.kt (MODIFY: + MIX_SESSIONS)",
+    "android/app/src/test/java/com/levi/pocketdj/mix/recording/MixRecorderTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/recording/TapSinkTest.kt",
+    "android/app/src/androidTest/java/com/levi/pocketdj/mix/recording/AacAdtsWriterInstrumentedTest.kt"
+   ],
+   "depends_on": [
+    "AUD-3",
+    "MIX-1",
+    "MIX-2"
+   ],
+   "acceptance": [
+    "Start/stop never adds or removes a tap; the recording is the clean house (cued deck panning absent from the file)",
+    "A kill mid-take leaves a playable .aac; relaunch recoverOrphans files it onto its session (reviving a deleted session) exactly once",
+    "Writer failure (simulated) auto-stops, files the partial take, and surfaces writerFailureMessage once",
+    "captureStalled flips after \u22655 s with no appended media while the mix is audible and clears on recovery",
+    "durationMs comes from the content clock",
+    "Storage shows Mix sessions bytes; delete skips the active take"
+   ],
+   "priority": "P1",
+   "est_lines": 1300,
+   "shared_touchpoints": [
+    "data/storage/StorageService.kt",
+    "di/AppGraph.kt"
+   ],
+   "unit_tests": [
+    "TapSinkTest: SPSC queue never drops while the consumer keeps up; drops are counted when it doesn't",
+    "MixRecorderTest with a fake writer: filing to the session current at start, failure latch, stall watchdog with injectable clock, orphan recovery idempotence",
+    "AacAdtsWriterInstrumentedTest: encode 2 s, truncate the file, decode with MediaExtractor \u2192 still playable"
+   ],
+   "emulator_steps": [
+    "Record 10 s of a mix, Stop; Sessions screen lists the take and plays it; adb shell am force-stop during a take; relaunch \u2192 take appears"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "UI-1",
+   "title": "Deck UI: DeckView + controls (sliders/knobs/steppers), seek slider, FX chips, stem pads, VU meter, loop chip, cue button, beat pulse, waveform, crossfader, master transport",
+   "goal": "Compose port of the deck: deck label + lead button + source menu, header (waveform + art + title/artist + Camelot chip + grid BPM), DeckSeekSlider (gesture-scoped drag fraction, always reads live position at 10 Hz), transport row (Lead \u00b7 Sync \u00b7 Stems \u00b7 \u221e \u00b7 Cue \u00b7 \u21ba with long-press eject), tempo/pitch sliders with \u00b1 steppers (0.01\u00d7 / 0.1), 3 EQ knobs, 2\u00d72 FX slot chips (tap toggle; long-press \u2192 strength slider flanked by effect/variety menus + MOD slot placeholder), 2\u00d72 stem pads (tap mute, long-press volume; colors bass red/drums yellow/other green/vocals purple; 'Loading stems\u2026' badge), DeckVUMeter (20 Hz poll, dB zones, long-press pre/post), LoopChip (tap 2 units, long-press length + edge nudges), CueButton (tap/long-press cue volume), BeatPulse overlay (60 fps from truePlayhead, created only when enabled), Vol slider 0\u2013200% with gold '+N dB' and snap-to-unity, play button with buffering spinner, Buffering badge, CrossfaderView, master Play/Pause both; deck layouts side-by-side/stacked/single(\u2039 \u203a + dots), landscape always side-by-side.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/DeckView.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/DeckControls.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/DeckSeekSlider.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/FxSlotChip.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/StemPad.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/DeckVuMeter.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/LoopChip.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/CueButton.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/BeatPulse.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/MixWaveform.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/CrossfaderView.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/MixBufferingBadge.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/DeckArea.kt",
+    "android/app/src/test/java/com/levi/pocketdj/screens/mix/DeckFormattingTest.kt"
+   ],
+   "depends_on": [
+    "MIX-2",
+    "MIX-3"
+   ],
+   "acceptance": [
+    "Position ticks never recompose DeckView; only DeckSeekSlider/BeatPulse/DeckVuMeter poll",
+    "After a drag ends the seek slider immediately follows playback again (no stuck state)",
+    "Vol readout shows '150% \u00b7 +3.5dB' in gold above unity; drag snaps to 100% within 0.03",
+    "FX chip shows icon + variety label; long-press reveals strength + two menus; duplicates allowed",
+    "Stem grid only in stem mode; pads dim when muted; 'Loading stems\u2026' while a handover is pending",
+    "Beat pulse not composed when the setting is off; downbeats brighter when on",
+    "All controls carry testTag ids mirroring the iOS a11y ids (deck-A-tempo, deck-A-fx-slot-0, deck-A-stem-vocals, deck-A-vu, deck-A-loop, deck-A-cue, mix-play\u2026)"
+   ],
+   "priority": "P0",
+   "est_lines": 2400,
+   "shared_touchpoints": [],
+   "unit_tests": [
+    "DeckFormattingTest: BPM label (grid one decimal vs rounded catalog), Vol/dB formatting, cue clock m:ss, VU dB normalisation and zone stops (0.706/0.882)"
+   ],
+   "emulator_steps": [
+    "Boot pocketdj with a window; Mix tab (tap ~810,1834); load tracks on A and B via the header; drag every slider; screenshot each state (adb exec-out screencap) and inspect; rotate (adb shell settings put system user_rotation 1) \u2192 side-by-side"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "UI-2",
+   "title": "Mix screen shell: session header, Auto setup bar/banner/skip, crate menus A/B, download bar, loader sheet, Settings \u25b8 Mix, nav + DI wiring",
+   "goal": "MixScreen + MixViewModel: in-content session name pill (tap rename, long-press menu Rename/New/All Sessions), recording indicator slot, autoSetupBar (A/B MixCrateMenu with 'Same as Crate A', Play/Shuffle, error line, FX Glide/Mix Glide pills), autoMixBanner (status, Buffering badge, Pause/Resume, Stop, glide pills), skipButton (single = skipFadeSeconds, double = 5 s via pointerInput tap counting, never a Button), bottom-pinned DownloadBar ('N of M downloaded \u00b7 ~ETA \u00b7 K ripping', progress, \u2715, catalog shortfall caption), TrackLoaderSheet (source menu, search title/artist/album, played \u2713 + auto-hide + 'Show N played'), top bar Auto/Manual toggle + Record + Sessions nav + Reset(X) confirm, settings pushes (cue channel, beat pulse, glide seconds, skip fade), onChange funnels (auto crates \u2192 sync deck sources + begin download; deck sources \u2192 begin download), handleMixLeave only on dispose, materializePendingRestore on first composition; Settings \u25b8 Mix section (lead/fade/skip-fade steppers, glide seconds, auto-hide played, cue channel picker, beat pulse, deck layout); AppSettingsStore mix keys; nav route + Mix tab replacing the placeholder.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/MixScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/MixViewModel.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/SessionHeader.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/AutoMixBars.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/MixCrateMenu.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/DownloadBar.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/TrackLoaderSheet.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/MixSettingsSection.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/settings/AppSettingsStore.kt (MODIFY: mix keys + defaults)",
+    "android/app/src/main/java/com/levi/pocketdj/MainActivity.kt (MODIFY: Mix route \u2192 MixScreen, MIX_SESSIONS_ROUTE)",
+    "android/app/src/main/java/com/levi/pocketdj/screens/settings/SettingsScreen.kt (MODIFY: include MixSettingsSection)",
+    "android/app/src/main/java/com/levi/pocketdj/di/AppGraph.kt (MODIFY: downloader + resolver wiring)",
+    "android/app/src/test/java/com/levi/pocketdj/screens/mix/MixCrateMenuTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/screens/mix/TrackLoaderFilterTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/settings/MixSettingsTest.kt"
+   ],
+   "depends_on": [
+    "UI-1",
+    "MIX-4",
+    "MIX-5",
+    "DL-3",
+    "MIX-1"
+   ],
+   "acceptance": [
+    "Crate menu entries are remembered by collections revision; an open menu does not recompose while download progress updates (progress lives in its own StateFlow collected only by DownloadBar)",
+    "Auto \u25b8 Play with two crates interleaves A0,B0,A1,B1 per-crate-shuffled and starts the union download run; with nothing downloaded the mix starts on the first landing",
+    "Skip single vs double tap disambiguate correctly",
+    "Leaving the tab with a live mix keeps audio + downloads; leaving with nothing live cancels the download run",
+    "Loader hides played tracks by default with 'Show N played'; search filters by title/artist/album; rows load the deck and dismiss",
+    "Settings \u25b8 Mix rows persist via DataStore with iOS defaults; changing cue channel / beat pulse / glide / skip fade pushes into the engine immediately",
+    "Sessions and Reset(X) reachable in the top bar; Reset confirms and starts 'Session N+1'"
+   ],
+   "priority": "P0",
+   "est_lines": 2300,
+   "shared_touchpoints": [
+    "MainActivity.kt",
+    "data/settings/AppSettingsStore.kt",
+    "screens/settings/SettingsScreen.kt",
+    "di/AppGraph.kt",
+    "navigation/PocketDjDestination.kt (phase label only)"
+   ],
+   "unit_tests": [
+    "MixCrateMenuTest: sections in first-appearance order, A\u2013Z within Pockets/Playlists/Set lists, reset entry",
+    "TrackLoaderFilterTest: query + auto-hide + reveal counts match the same filtered set",
+    "MixSettingsTest: defaults, persist/reload, additive keys"
+   ],
+   "emulator_steps": [
+    "Full flow: Mix tab \u2192 A crate \u2192 Shuffle \u2192 banner + download bar; open the crate menu while the bar updates and scroll it (must not snap); loader sheet search; Settings \u25b8 Mix toggles; screenshots per state"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "UI-3",
+   "title": "Sessions screen + replay timeline + recordings panel",
+   "goal": "MixSessionsScreen (list: name, date, duration, track/action counts, Current badge, swipe delete, rename via long-press/menu; deleting current re-establishes one) and MixReplayTimeline (vertical color-coded cards A/B chip + kind icon + human sentence + m:ss.S, wall-clock replay with play/pause, 0.5\u20134\u00d7 speed, scrub, binary-search highlight over tMs, auto-scroll only while playing, tap card = jump) plus the recordings panel (per take \u25b6/\u23f9 + scrub bar via RecordingPlayer).",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/MixSessionsScreen.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/MixReplayTimeline.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/MixEventSentences.kt",
+    "android/app/src/test/java/com/levi/pocketdj/screens/mix/MixEventSentencesTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/screens/mix/ReplayClockTest.kt"
+   ],
+   "depends_on": [
+    "MIX-1",
+    "UI-2",
+    "MIX-7"
+   ],
+   "acceptance": [
+    "Every MixEventKind (incl. glide, autoPause/Resume, effectSlot/Variant/Mod, unknown) renders a sentence; unknown shows its raw kind",
+    "Replay clock advances at the chosen speed; scrubbing does not auto-scroll; the highlighted card is the last event with tMs \u2264 replayMs",
+    "Rename/delete/Current badge reflect the store; recordings list plays via RecordingPlayer and pauses the mix"
+   ],
+   "priority": "P1",
+   "est_lines": 1200,
+   "shared_touchpoints": [
+    "MainActivity.kt (MIX_SESSIONS_ROUTE composable)"
+   ],
+   "unit_tests": [
+    "MixEventSentencesTest: one case per kind; ReplayClockTest: speed/scrub/binary-search index"
+   ],
+   "emulator_steps": [
+    "Mix \u2192 Sessions: list shows the current session; open it; replay; rename; delete; screenshots"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "INT-1",
+   "title": "Integrations: Jukebox \u2194 Mix seams, MixPlayOutcomeBridge \u2192 History, docs update",
+   "goal": "JukeboxRepository prefers the Mix when a mix is live: composePayload nowPlaying from engine.onAirTrack (+ onAirBuffering), up-next from autoUpcoming, applyPlacement \u2192 engine.autoQueueInsert(next/end/random) with hear-mode unaffected; derivePlayed from autoPlayed. MixPlayOutcomeBridge: engine.onSongPlayed emits PlayStarted (source 'mix', contextName = autoSourceLabel) through PlayEventBus and maps deck\u2192event id; onDeckTrackEnded \u2192 PlayHistoryStore.noteListened(fraction) and markSkipped + noteSkip when reason is skip/replaced and fraction < 0.5 (additive-optional event fields mirroring iOS PlayEvent). Update docs/ARCHITECTURE-ANDROID.md (resolve open question #1, Mix status row, new files) and add android/specs/mix.md summarising this contract.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/MixPlayOutcomeBridge.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/JukeboxRepository.kt (MODIFY: MixSource seam)",
+    "android/app/src/main/java/com/levi/pocketdj/data/jukebox/MixJukeboxSource.kt",
+    "android/app/src/main/java/com/levi/pocketdj/data/history/PlayHistoryModels.kt (MODIFY: + listenedFraction, wasSkipped optional)",
+    "android/app/src/main/java/com/levi/pocketdj/data/history/PlayHistoryStore.kt (MODIFY: noteListened, markSkipped)",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/MixPlayOutcomeBridgeTest.kt",
+    "android/app/src/test/java/com/levi/pocketdj/data/jukebox/MixJukeboxSourceTest.kt",
+    "docs/ARCHITECTURE-ANDROID.md (MODIFY)",
+    "android/specs/mix.md (NEW)"
+   ],
+   "depends_on": [
+    "MIX-4",
+    "MIX-6"
+   ],
+   "acceptance": [
+    "With a live mix the jukebox state POST carries the on-air deck track and the auto queue tail; accepted requests land in the auto queue \u2265 autoNextToLoad; without a mix the ExoPlayer path is unchanged",
+    "Port of the iOS verdict table: natural/stopped never skip; skip/replaced < 50 % mark skipped and count once; second end for the same event ignored; mapping keyed by deck so repeat-one does not cross-capture",
+    "History tab shows Mix plays tagged with the crate name",
+    "ARCHITECTURE-ANDROID.md open question #1 marked resolved with the engine decision; specs/mix.md cites the iOS files per section"
+   ],
+   "priority": "P1",
+   "est_lines": 900,
+   "shared_touchpoints": [
+    "data/jukebox/JukeboxRepository.kt",
+    "data/history/PlayHistoryStore.kt",
+    "data/history/PlayHistoryModels.kt",
+    "di/AppGraph.kt",
+    "docs/ARCHITECTURE-ANDROID.md"
+   ],
+   "unit_tests": [
+    "MixPlayOutcomeBridgeTest: verdict table; MixJukeboxSourceTest: payload composition + placement with a fake engine"
+   ],
+   "emulator_steps": [
+    "Start a jukebox session while auto-mixing; broker payload (logcat) shows the deck track; accept a request \u2192 appears in the auto queue; History shows the Mix plays"
+   ],
+   "device_only": "none"
+  },
+  {
+   "id": "MIX-8",
+   "title": "Slot modulation (LFO beat-locked + envelope follower) on the FX rack",
+   "goal": "Port SlotMod runtime: ~60 Hz mod tick (only while a live modulating slot exists on a playing deck), phase from BeatMath.cyclePhase over the deck's grid (measured beats/downbeats, else bpm + firstDownbeatMs lattice; source-time so tempo follows), FxParams.modulated(base, mod, phase, env) writing NODE params only (strength untouched; delayTime never at tick rate \u2014 mod family pumps wet/feedback), envelope drive from the inputSum follower, selecting LFO force-hydrates the grid, MOD sheet UI (source Off/LFO/Env, rate bar\u20261/8, 5 shapes, signed depth, phase offset, 'est.' when un-gridded, warning with no BPM, note for Reverb/Compressor), chip waveform glyph, .effectMod session events, snapshot fields.",
+   "files": [
+    "android/app/src/main/java/com/levi/pocketdj/mix/engine/ModController.kt",
+    "android/app/src/main/java/com/levi/pocketdj/screens/mix/SlotModSheet.kt",
+    "android/app/src/test/java/com/levi/pocketdj/mix/engine/ModControllerTest.kt"
+   ],
+   "depends_on": [
+    "MIX-3",
+    "UI-1"
+   ],
+   "acceptance": [
+    "Phase is derived from the playhead each tick (never integrated); a paused deck's nodes sit exactly on stored values; strength never changes; delayTime equals modDelayTime(variant, base) throughout",
+    "LFO at 1 bar on a 120 BPM constant grid completes one cycle per 2 s of SOURCE time (tempo 1.5\u00d7 \u21d2 1.33 s wall)",
+    "Env pushes with positive depth and ducks with negative; Reverb/Compressor slots show the 'does not modulate' note",
+    "Persisted as optional mod* strings; unknown values degrade to off"
+   ],
+   "priority": "P2",
+   "est_lines": 1100,
+   "shared_touchpoints": [],
+   "unit_tests": [
+    "ModControllerTest: phase derivation, Auto-DJ glide composition (glide moves base, LFO wobbles around it), paused deck invariance, delayTime never moves"
+   ],
+   "emulator_steps": [
+    "Enable LFO on a filter slot with a gridded track; observe cutoff sweep in the mixdiag mod lines; toggle Env on a loud passage"
+   ],
+   "device_only": "Audible sweep"
+  }
+ ]
+}
