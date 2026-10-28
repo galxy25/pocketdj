@@ -40,6 +40,7 @@ import com.levi.pocketdj.data.collections.Setlist
 import com.levi.pocketdj.data.burns.BurnState
 import com.levi.pocketdj.data.burns.BurnSong
 import com.levi.pocketdj.mix.download.AutoMixHost
+import com.levi.pocketdj.mix.mixSettingsFlow
 import com.levi.pocketdj.mix.download.AutoPlacement
 import com.levi.pocketdj.mix.download.CollectionMixDownloader
 import com.levi.pocketdj.mix.download.MixBurnStatus
@@ -337,6 +338,62 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             d.songTitleArtist = { id -> catalog()?.songsById?.get(id)?.let { it.name to it.artist } ?: (id to "") }
         }
     }
+
+    /** MIX-14: the Mix tab's state holder, app-scoped so crate selections survive tab switches and rotation. */
+    val mixViewModel: com.levi.pocketdj.screens.mix.MixViewModel by lazy {
+        val engine = mixEngine
+        val dj = autoDj
+        val hydrator = mixDeckExtras.hydrator
+        val enginePort = object : com.levi.pocketdj.screens.mix.MixEnginePort {
+            override val autoMixing get() = engine.autoMixing
+            override val isRunning get() = engine.isRunning
+            override var autoEnabled: Boolean
+                get() = dj.enabled
+                set(v) = dj.setAutoEnabled(v)
+            override val autoUi get() = dj.ui
+            override fun startAutoMix(items: List<AutoMixItem>, shuffled: Boolean, lead: Double, fade: Double, label: String?) =
+                dj.startAutoMix(items, shuffled, lead, fade, label)
+            override fun skipToNext(fadeSeconds: Double) = dj.skipToNext(fadeSeconds)
+            override fun pauseAuto() = dj.pauseAuto()
+            override fun resumeAuto() = dj.resumeAuto()
+            override fun stopAutoMix() = dj.stopAutoMix()
+            override fun setFXGlide(on: Boolean) = dj.setFXGlide(on)
+            override fun setMixGlide(on: Boolean) = dj.setMixGlide(on)
+            override fun prepare() = engine.prepare()
+            override fun materializePendingRestore() = engine.materializePendingRestoreIfNeeded()
+            override fun setCueOnRight(right: Boolean) = engine.setCueOnRight(right)
+            override fun setBeatPulseEnabled(on: Boolean) = hydrator.setBeatPulseEnabled(on)
+            override fun setMixGlideSeconds(seconds: Double) = dj.setMixGlideSeconds(seconds)
+            override fun setSkipFadeSeconds(seconds: Double) = dj.setSkipFadeSeconds(seconds)
+        }
+        val downloader = collectionMixDownloader
+        val downloadPort = object : com.levi.pocketdj.screens.mix.MixDownloadPort {
+            override val isActive get() = downloader.isActive
+            override fun begin(sources: List<com.levi.pocketdj.mix.model.MixSource>) = downloader.begin(sources)
+            override fun noteAutoStarted(initialIds: Set<String>, lead: Double, fade: Double, label: String?, shuffled: Boolean) =
+                downloader.noteAutoStarted(initialIds, lead, fade, label, shuffled)
+            override fun handleMixLeave(engineActive: Boolean) = downloader.handleMixLeave(engineActive)
+        }
+        val resolver = mixResolver
+        val cratePort = object : com.levi.pocketdj.screens.mix.MixCratePort {
+            override fun loadables(source: com.levi.pocketdj.mix.model.MixSource) = resolver.loadables(source)
+            override fun name(source: com.levi.pocketdj.mix.model.MixSource): String? = when (source) {
+                is com.levi.pocketdj.mix.model.MixSource.Pocket -> app.collections.pocket(source.value)?.name
+                is com.levi.pocketdj.mix.model.MixSource.Playlist -> app.collections.playlist(source.value)?.name
+                is com.levi.pocketdj.mix.model.MixSource.Setlist -> app.collections.setlist(source.value)?.let { it.name ?: "Set list" }
+            }
+        }
+        com.levi.pocketdj.screens.mix.MixViewModel(
+            engine = enginePort, downloads = downloadPort, crates = cratePort,
+            settingsFlow = app.settings.mixSettingsFlow(),
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+        )
+    }
+
+    override val navEntries: List<com.levi.pocketdj.shell.NavEntry> get() = com.levi.pocketdj.screens.mix.MixRoutes.entries
+
+    override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection>
+        get() = listOf(com.levi.pocketdj.screens.settings.sections.mixSection())
 
     // ON_STOP: both documents are written inline so a process kill right after backgrounding
     // cannot lose the latest positions / events.

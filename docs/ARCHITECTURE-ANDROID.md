@@ -454,7 +454,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | MIX-9 — Auto-DJ machine + readiness rules + glide + remote freeze + jukebox queue seams | 9 | Merged (wave 9) | Real lock-screen transport and headset-button behaviour |
 | MIX-13 — Deck UI: DeckView + controls (sliders/knobs/steppers), seek slider, FX chips, stem pads, … | 10 | PARTIAL (UI built + JVM tested, unrouted until MIX-14) | Emulator pass (drag every slider, rotate to side-by-side) carried to MIX-14 acceptance. |
 | MIX-11 — Mix transport owner: MixSessionPlayer (SimpleBasePlayer TransportOwner) into the ONE Medi… | 11 | PARTIAL | Bluetooth route changes, phone-call interruption, headset buttons, re… (device-only; export control lives on Debug screen, not Mix settings; cold-start service bind via MediaController unverified on device) |
-| MIX-14 — Mix screen shell: session header, Auto setup bar/banner/skip, crate menus A/B (scroll res… | 12 | Planned | — |
+| MIX-14 — Mix screen shell: session header, Auto setup bar/banner/skip, crate menus A/B (scroll res… | 12 | PARTIAL (JVM-tested, routed, review fixes applied) | Emulator pass pending (integrator): crate-menu scroll while download bar ticks, skip single/double, Settings > Mix, MIX-13 slider/rotation carry-over. |
 | MIX-12 — Mix session audio recording (house tap → ADTS AAC) + MixRecorder + orphan recovery + Reco… | 13 | Planned | — |
 | MIX-15 — Sessions screen + replay timeline + recordings panel | 15 | Planned | — |
 | MIX-16 — Integrations: Jukebox ↔ Mix seams, MixPlayOutcomeBridge → History, MixFacade implementati… | 16 | Planned | — |

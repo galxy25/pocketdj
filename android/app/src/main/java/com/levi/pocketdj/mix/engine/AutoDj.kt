@@ -27,6 +27,8 @@ data class AutoUiState(
     val fxGlide: Boolean = false,
     val mixGlide: Boolean = false,
     val sourceLabel: String? = null,
+    /** Auto/Manual toggle (engine is the source of truth; the Mix screen mirrors it). */
+    val enabled: Boolean = false,
 )
 
 /**
@@ -124,6 +126,7 @@ class AutoDj(
     fun setAutoEnabled(on: Boolean) {
         enabled = on
         if (!on) endAutoLoop()
+        refreshStatus()
     }
 
     fun setFXGlide(on: Boolean) { glide.fxGlideEnabled = on; refreshStatus() }
@@ -1003,7 +1006,7 @@ class AutoDj(
         } else null
         val next = AutoUiState(
             mixing, paused, transitioning, s, livePos, queue.size, liveDeck, repeat,
-            glide.fxGlideEnabled, glide.mixGlideEnabled, sourceLabel,
+            glide.fxGlideEnabled, glide.mixGlideEnabled, sourceLabel, enabled,
         )
         if (next != _ui.value) _ui.value = next
     }

@@ -431,12 +431,11 @@ private fun ShellNavHost(
         composable(PocketDjDestination.Games.route) {
             com.levi.pocketdj.screens.games.GamesRoute(graph)
         }
-        listOf(
-            PocketDjDestination.Mix,
-        ).forEach { dest ->
-            composable(dest.route) {
-                PlaceholderScreen(title = dest.label, phase = dest.phase)
-            }
+        composable(PocketDjDestination.Mix.route) {
+            com.levi.pocketdj.screens.mix.MixRoute(
+                graph,
+                onOpenSessions = { nav.navigate(com.levi.pocketdj.screens.mix.MixRoutes.SESSIONS) },
+            )
         }
         composable(
             route = PLAYLIST_ROUTE,
