@@ -40,6 +40,25 @@ class Mp3DecoderInstrumentedTest {
         d.close()
     }
 
+    /** Guards the 529-sample decoder-delay accounting: a click at exactly 0.5 s must land there (+-2 ms), after start AND after seek. */
+    @Test fun clickAtHalfASecondLandsWithin2msAfterStartAndAfterSeek() {
+        val onset = 22_050
+        val tol = 88
+        fun firstLoud(pcm: FloatArray, ch: Int, from: Int = 0) =
+            (from until pcm.size / ch).firstOrNull { abs(pcm[it * ch]) > 0.2f } ?: -1
+        val d = Mp3Decoder(ArrayByteSource(bytes("click-at-0p5s.mp3")))
+        val pcm = decodeAll(d)
+        val a = firstLoud(pcm, d.channels)
+        assertTrue("linear onset $a", abs(a - onset) <= tol)
+        d.seek(20_000)
+        val ch = d.channels
+        val buf = FloatArray(8192 * ch)
+        assertEquals(8192, d.read(buf, 8192))
+        val b = 20_000 + firstLoud(buf, ch)
+        assertTrue("post-seek onset $b", abs(b - onset) <= tol)
+        d.close()
+    }
+
     @Test fun seekMidFileLandsOnTheSameSamplesAsLinearDecode() {
         val d = Mp3Decoder(ArrayByteSource(bytes("tagged-lame-2s.mp3")))
         val all = decodeAll(d)

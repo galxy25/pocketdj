@@ -23,7 +23,7 @@ class Mp3Decoder(
 
     private val reader = Mp3FrameReader(bytes)
     private var codec: MediaCodec? = null
-    private val info = MediaCodec.BufferInfo()
+    private val info by lazy { MediaCodec.BufferInfo() }
     private val frameBuf = ByteArray(Mp3FrameReader.MAX_FRAME_BYTES + 16)
 
     private var nextFrame = 0L
@@ -32,14 +32,18 @@ class Mp3Decoder(
     private var inputEos = false
     private var outputEos = false
     private var pcm = FloatArray(0)
+    private var byteScratch = ByteArray(0)
     private var pcmPos = 0
     private var pcmLen = 0 // floats
     private var outChannels = 2
     private var outRate = 44_100
     private var pendingSeek: Long = 0
 
-    override val sampleRate: Int get() = if (reader.isOpen) reader.sampleRate else outRate
-    override val channels: Int get() = if (reader.isOpen) reader.channels else outChannels
+    // Parse the header on demand: a Voice reads these exactly once at construction to decide
+    // whether to wrap us in a ConvertedSource, so they must be the FILE's values, not defaults.
+    override val sampleRate: Int get() = if (ensureOpen()) reader.sampleRate else outRate
+    // The layout [read] hands out is ALWAYS reader.channels (fill() remaps the codec's layout).
+    override val channels: Int get() = if (ensureOpen()) reader.channels else outChannels
     override val isComplete: Boolean get() = complete
     override val totalFrames: Long get() = if (ensureOpen()) reader.totalFrames(complete) else -1
     override val availableFrames: Long get() = if (ensureOpen()) reader.playableFrames(bytes.length, complete = complete) else 0
@@ -71,14 +75,14 @@ class Mp3Decoder(
         val target = reader.frameIndexForSample(position)
         val first = maxOf(0L, target - WARMUP_FRAMES)
         nextFrame = first
-        discard = position + reader.startSkip - first * reader.samplesPerFrame
+        discard = discardFor(position, reader.encoderDelay, first, reader.samplesPerFrame)
         inputEos = false; outputEos = false; pcmPos = 0; pcmLen = 0
     }
 
     override fun read(dst: FloatArray, frames: Int): Int {
         if (!ensureOpen()) return 0
         if (codec == null) applySeek()
-        val ch = outChannels
+        val ch = channels
         var produced = 0
         while (produced < frames) {
             if (pcmPos >= pcmLen) {
@@ -110,11 +114,12 @@ class Mp3Decoder(
             when {
                 oi >= 0 -> {
                     val out = c.getOutputBuffer(oi)!!
-                    val n = info.size / 2
+                    var n = info.size / 2
                     if (pcm.size < n) pcm = FloatArray(n)
-                    val tmp = ByteArray(info.size)
-                    out.position(info.offset); out.get(tmp, 0, info.size)
-                    PcmBuffer.fromPcm16(tmp, info.size, pcm, 0)
+                    if (byteScratch.size < info.size) byteScratch = ByteArray(info.size)
+                    out.position(info.offset); out.get(byteScratch, 0, info.size)
+                    PcmBuffer.fromPcm16(byteScratch, info.size, pcm, 0)
+                    n = remap(n)
                     pcmPos = 0; pcmLen = n
                     val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                     c.releaseOutputBuffer(oi, false)
@@ -133,6 +138,26 @@ class Mp3Decoder(
                 }
             }
         }
+    }
+
+    /** Convert [n] floats in [pcm] from the codec's channel layout to the file's; returns the new float count. */
+    private fun remap(n: Int): Int {
+        val tgt = reader.channels
+        val src = outChannels
+        if (src == tgt || src < 1) return n
+        val frames = n / src
+        val need = frames * tgt
+        if (tgt == 1) {
+            for (i in 0 until frames) {
+                var a = 0f
+                for (c in 0 until src) a += pcm[i * src + c]
+                pcm[i] = a / src
+            }
+        } else {
+            if (pcm.size < need) pcm = pcm.copyOf(need)
+            for (i in frames - 1 downTo 0) for (c in tgt - 1 downTo 0) pcm[i * tgt + c] = pcm[i * src + minOf(c, src - 1)]
+        }
+        return need
     }
 
     /** Queue one frame (or EOS). False when nothing could be queued. */
@@ -164,5 +189,20 @@ class Mp3Decoder(
         bytes.close()
     }
 
-    private companion object { const val WARMUP_FRAMES = 2L }
+    companion object {
+        private const val WARMUP_FRAMES = 2L
+
+        /**
+         * Android's MP3 codecs (C2SoftMp3Dec / SoftMP3) already drop the 529-sample decoder delay
+         * from the first output after start AND after every flush, so only the encoder delay (plus
+         * the intra-frame offset) is left to discard. Flip if a device codec is found to keep it.
+         */
+        const val CODEC_TRIMS_DECODER_DELAY = true
+
+        /** Samples to drop from the codec output after (re)starting at frame [firstFrame] to land on file sample [position]. */
+        internal fun discardFor(position: Long, encoderDelay: Int, firstFrame: Long, samplesPerFrame: Int): Long {
+            val skip = encoderDelay + if (CODEC_TRIMS_DECODER_DELAY) 0 else Mp3FrameReader.DECODER_DELAY
+            return maxOf(0L, position + skip - firstFrame * samplesPerFrame)
+        }
+    }
 }

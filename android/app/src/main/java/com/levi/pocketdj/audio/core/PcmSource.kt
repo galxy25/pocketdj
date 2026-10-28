@@ -63,11 +63,11 @@ class ConvertedSource(private val src: PcmSource, override val sampleRate: Int) 
                     inCount = 1
                 } else inCount = 0
                 inIndex = 0
-                if (srcEnded) break
+                if (srcEnded) return if (produced == 0) -1 else produced // EOF is sticky: every later call is -1 too
                 val want = IN_FRAMES - inCount
                 val tmp = if (inCount == 0) inBuf else scratch(want)
                 val r = src.read(tmp, want)
-                if (r < 0) { srcEnded = true; if (inCount == 0) return if (produced == 0) -1 else produced; break }
+                if (r < 0) { srcEnded = true; continue }
                 if (r == 0) break
                 if (tmp !== inBuf) System.arraycopy(tmp, 0, inBuf, inCount * ch, r * ch)
                 inCount += r

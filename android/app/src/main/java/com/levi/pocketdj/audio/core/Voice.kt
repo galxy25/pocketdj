@@ -93,9 +93,13 @@ class Voice(
 
     /** Loop [start,end) (file frames), re-seeking at the current position; (-1,-1) clears. */
     fun setLoop(start: Long, end: Long) {
-        val here = pos
+        // a seek/schedule not yet acknowledged by the render thread owns the position
+        val here = if (consumerGen != plan.gen) plan.from else pos
+        val newStart = if (end > start && start >= 0) start else -1L
+        val newEnd = if (end > start && start >= 0) end else -1L
+        if (consumerGen == plan.gen && newStart == plan.loopStart && newEnd == plan.loopEnd) return // no-op: no flush/hold
         val f = if (end > start && start >= 0) normalize(here, start, end) else here
-        plan = Plan(plan.gen + 1, f, if (end > start) start else -1, if (end > start) end else -1)
+        plan = Plan(plan.gen + 1, f, newStart, newEnd)
     }
 
     fun seek(frame: Long) = schedule(frame, endFrame, endFinal)
@@ -153,9 +157,7 @@ class Voice(
      */
     fun read(out: FloatArray, frames: Int, blockStart: Long): Status {
         val p = plan
-        if (consumerGen != p.gen) {
-            if (ack == p.gen) { ring.clearConsumer(); pos = p.from; consumerGen = p.gen; wasStarted = false }
-        }
+        syncGeneration(p)
         val start = startAt
         if (start == NOT_PLAYING) return finish(out, 0, frames, Status.IDLE, false)
         if (consumerGen != p.gen) return finish(out, 0, frames, Status.UNDERRUN, true) // handshake pending: hold
@@ -180,7 +182,7 @@ class Voice(
             var i = lead * 2
             val endI = (lead + got) * 2
             while (i < endI) { out[i] *= g; out[i + 1] *= g; g += step; i += 2 }
-            curGain = if (got == want) g1 else g
+            curGain = g // partial when a scheduled-start lead shortened the ramp: the next block continues from here
             if (abs(g1 - curGain) < 1e-6f) curGain = g1
         }
         advance(got, p)
@@ -197,6 +199,32 @@ class Voice(
         if (under) underrunCount++
         status = st
         return st
+    }
+
+    private fun syncGeneration(p: Plan) {
+        if (consumerGen != p.gen && ack == p.gen) { ring.clearConsumer(); pos = p.from; consumerGen = p.gen; wasStarted = false }
+    }
+
+    /**
+     * Would [read] for this block deliver the whole block (or end cleanly)? A [VoiceGroup] uses this to
+     * hold ALL its voices when any one would underrun, so stems never drift apart.
+     */
+    fun canFill(frames: Int, blockStart: Long): Boolean {
+        val p = plan
+        val start = startAt
+        if (start == NOT_PLAYING) return true
+        if (consumerGen != p.gen) return false // handshake pending: read() would flush first, leaving an empty ring
+        if (start != IMMEDIATE && start >= blockStart + frames) return true
+        val lead = if (start != IMMEDIATE && start > blockStart) (start - blockStart).toInt() else 0
+        if (ring.readable / 2 >= frames - lead) return true
+        return atEndGen == p.gen && endFinal
+    }
+
+    /** Output silence for a block WITHOUT consuming anything (group hold). */
+    fun hold(out: FloatArray, frames: Int): Status {
+        syncGeneration(plan)
+        val playing = startAt != NOT_PLAYING
+        return finish(out, 0, frames, if (playing) Status.UNDERRUN else Status.IDLE, playing)
     }
 
     private fun finish(out: FloatArray, from: Int, frames: Int, st: Status, under: Boolean): Status {
