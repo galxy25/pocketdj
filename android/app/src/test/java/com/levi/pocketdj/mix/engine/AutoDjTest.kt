@@ -578,4 +578,36 @@ class AutoDjTest {
         r.start(); r.dj.setAutoEnabled(false)
         assertFalse(r.dj.isMixing)
     }
+
+    // ---------------------------------------------------------------- review fixes
+
+    @Test fun lockScreenPauseDuringHoldDoesNotBankHoldTimeTowardStallSkip() {
+        val r = AutoRig()
+        r.start()
+        r.run(1.0)
+        r.held.add(A)
+        r.run(3.0)                       // 3 s into a hold
+        r.dj.remotePause()
+        r.run(60.0)                      // locked for a minute
+        r.dj.remotePlay()
+        r.run(1.0)                       // deck still held, fresh hold time ~1 s
+        assertEquals("no instant stall-skip off the stale hold stamp", "s0", r.id(A))
+        assertTrue(r.advLines().none { it.contains("stall-skip") })
+    }
+
+    @Test fun loaderSeamsDeferGatedRippedSongAndCountFinishedStreamsOnDevice() {
+        var burned = setOf<String>(); var finished = setOf<String>()
+        var ripped = setOf("r1", "r2", "b1"); var can = setOf<String>()
+        val s = LoaderAutoSeams({ it in burned }, { it in finished }, { it in ripped }, { it in can })
+        assertTrue("ripped, gate closed -> defer", s.transientlyUnloadable("r1"))
+        can = setOf("r1")
+        assertFalse("gate open -> loadable", s.transientlyUnloadable("r1"))
+        burned = setOf("b1")
+        assertFalse("burned is never gated", s.transientlyUnloadable("b1"))
+        assertFalse("unripped is permanently unloadable, not deferred", s.transientlyUnloadable("zzz"))
+        assertFalse(s.songOnDevice("r2"))
+        finished = setOf("r2")
+        assertTrue("finished stream is on device", s.songOnDevice("r2"))
+        assertTrue(s.songOnDevice("b1"))
+    }
 }

@@ -19,6 +19,23 @@ interface AutoSeams {
     fun transientlyUnloadable(songId: String): Boolean = false
 }
 
+/**
+ * Production seams over the burn store + stream loader (wired in MixGraph; iOS `songOnDevice` /
+ * `transientlyUnloadable`). `stream(deck)` stays null until MIX-10's StreamDecks supplies views.
+ */
+internal class LoaderAutoSeams(
+    private val burned: (String) -> Boolean,
+    private val finishedStream: (String) -> Boolean,
+    private val ripped: (String) -> Boolean,
+    private val canStream: (String) -> Boolean,
+) : AutoSeams {
+    /** On device = burned file, or a finished, non-failed stream. */
+    override fun songOnDevice(songId: String) = burned(songId) || finishedStream(songId)
+    /** Ripped, not burned, and the stream gate refuses right now: defer, never drop. */
+    override fun transientlyUnloadable(songId: String) =
+        ripped(songId) && !burned(songId) && !canStream(songId)
+}
+
 internal class EngineAutoSeams(private val engine: MixEngine) : AutoSeams {
     override fun songOnDevice(songId: String): Boolean = engine.songOnDisk(songId)
 }

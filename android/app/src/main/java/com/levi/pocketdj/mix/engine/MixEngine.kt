@@ -293,7 +293,7 @@ class MixEngine(
     }
 
     /** MIX-9: the audio of [songId] is fully on this device (a load of it airs at once). */
-    internal fun songOnDisk(songId: String): Boolean = resolver.resolve(songId) != null
+    internal fun songOnDisk(songId: String): Boolean = resolver.exists(songId)
 
     /** MIX-9: the Auto-DJ started sounding (iOS `hasSoundedThisProcess`). */
     internal fun noteSounded() { if (!isRestoringMixSession) hasSoundedThisProcess = true }

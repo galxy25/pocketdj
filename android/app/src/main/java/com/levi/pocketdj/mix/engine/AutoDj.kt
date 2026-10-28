@@ -447,10 +447,12 @@ class AutoDj(
     override fun fire(nowMs: Long) {
         if (!enabled || !mixing) return
         // REMOTE-FROZEN: the decks are silent and every armed timestamp is parked.
+        // Hold bookkeeping runs on EVERY tick (even frozen / stalled): a paused deck is not holding,
+        // so a lock-screen pause clears the stall clock (iOS updates it in the tick body).
+        trackHolds(nowMs)
         if (remotePausedAt != null) return
         // Engine stalled: a transition must not fire into a dead engine.
         if (engineStallAt != null) return
-        trackHolds(nowMs)
         val t = nowMs
         val pre = glide.prerollStartedAt
         val fadeStart0 = fadeStartedAt
@@ -712,6 +714,7 @@ class AutoDj(
 
     /** Empty a standby deck whose (never-aired) song was skipped past, so the next preload reloads it. */
     private fun ejectForReplacement(deck: Deck) {
+        streamHeldSince.remove(deck)
         engine.reportTrackEnded(deck, MixTrackEndReason.STOPPED)
         engine.ejectDeckCore(deck)
     }
@@ -873,7 +876,7 @@ class AutoDj(
     /** The deck's real length changed (a truncated stream): keep the auto bookkeeping honest. */
     fun setDeckDuration(deck: Deck) {
         if (mixing) deckDurationMs[deck] = (engine.duration(deck) * 1000).toInt()
-        restampEnd(deck)
+        if (deckEndsAt[deck] != null) restampEnd(deck)   // iOS guard: a never-armed standby stays unarmed
     }
 
     // ------------------------------------------------------------------------------ remote (lock screen)
@@ -884,6 +887,7 @@ class AutoDj(
      * heads re-send discrete PAUSE; a duplicate must not clobber the pause memory or resume intent.
      */
     fun remotePause() {
+        streamHeldSince.clear()   // silenced decks aren't holding; the pause must not bank hold time
         if (!(engine.isRunning || (remotePausedAt == null && !engine.hasMasterPaused))) {
             engine.diag("mix remotePause guard=dup")
             return
@@ -907,6 +911,7 @@ class AutoDj(
      * the user paused IN-APP stays paused.
      */
     fun remotePlay() {
+        streamHeldSince.clear()   // hold time restarts fresh after the lock-screen pause
         unfreezeAutoClock()
         engine.resumeMasterPaused()
         if (resumeAutoOnRemotePlay && mixing && paused) resumeAuto()

@@ -149,7 +149,17 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             diagSink = { NPLog.lane(NPLog.MIX, it) },
         ).also {
             it.recorder = mixSessions
-            autoDjInst = com.levi.pocketdj.mix.engine.AutoDj(it).also { dj -> it.autoDj = dj }
+            autoDjInst = com.levi.pocketdj.mix.engine.AutoDj(it).also { dj ->
+                it.autoDj = dj
+                val b = app.servicesGraph.burnStore
+                // Stream-gate-aware readiness: ripped-but-gated songs are deferred, never dropped.
+                dj.seams = com.levi.pocketdj.mix.engine.LoaderAutoSeams(
+                    burned = { id -> b.hasLocalFile(id) },
+                    finishedStream = { id -> mixStreamLoader.stream(id)?.let { st -> st.isComplete && !st.failed } == true },
+                    ripped = { id -> mixStreamLoader.isRipped(id) },
+                    canStream = { id -> mixStreamLoader.canStream(id) },
+                )
+            }
             val main = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             // MIX-8: stems + loop + beat-grid controllers, hooked into the engine.
             val burns = app.servicesGraph.burnStore
@@ -247,6 +257,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
 
 /** Resolves a song to its burned file (per-song cut preferred), analog window and beat grids. */
 class BurnStoreTrackResolver(private val burns: BurnStore) : MixTrackResolver {
+    override fun exists(songId: String): Boolean = burns.localUrlPreferringCut(songId) != null
     override fun resolve(songId: String): ResolvedTrack? {
         val h = burns.localUrlPreferringCut(songId) ?: return null
         val grid = burns.beatGrid(songId)

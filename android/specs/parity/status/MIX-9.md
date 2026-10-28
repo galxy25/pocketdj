@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-9 Auto-DJ machine + readiness rules + glide + remote freeze + jukebox queue seams
 
@@ -32,3 +32,14 @@ Real lock-screen transport and headset-button behaviour; audible glide quality; 
 
 ## Questions for Levi
 - None.
+
+## Review
+
+fixes applied
+
+- MAJOR AutoReadiness seams not wired -> fixed. `LoaderAutoSeams` (burn store + MixStreamLoader) is assigned to `autoDj.seams` in di/MixGraph.kt: `transientlyUnloadable` = ripped && !burned && !canStream; `songOnDevice` = burned or finished non-failed stream. Test: `loaderSeamsDeferGatedRippedSongAndCountFinishedStreamsOnDevice`. `stream(deck)` StreamView stays null until MIX-10 StreamDecks supplies views (MIX-10 reads `autoDj.seams.stream`).
+- MINOR streamHeldSince stale across lock-screen pause -> fixed. trackHolds runs before the remote-freeze / engine-stall guards; cleared in remotePause, remotePlay and ejectForReplacement. Test: `lockScreenPauseDuringHoldDoesNotBankHoldTimeTowardStallSkip` (verified failing without the fix).
+- MINOR main-thread IO -> fixed for the per-tick path. `MixTrackResolver.exists()` (cheap, no sidecar reads) backs `songOnDisk`, so promoteReadyUpcoming no longer reads beat-grid JSON for every queued song each tick. `loadNow` stays synchronous by contract (the machine checks the deck straight after); its prepare() cost is unchanged (device-verify jank on untagged mp3).
+- MINOR shared touchpoints -> recorded: this package edits di/MixGraph.kt (autoDj construction + `autoMixHost` hook block + seams assignment), MixEngine.kt, MixTick.kt, EngineCore.kt (watchdogRecover park/unpark, tick unpark, visibility, `MixTrackResolver.exists`). MIX-11 must EXTEND the existing autoDj / EngineAutoMixHost hook block in MixGraph (remotePause/remotePlay/remoteSkip/onSkipCommandsEnabled) rather than rewrite it.
+- NIT restampEnd guard -> fixed in `setDeckDuration` (restamps only when the deck's end is already armed); onSeek path unchanged. isReady guards in skipToNext/fire left as is.
+- NIT ledger row -> integrator: mark PARTIAL in docs/ARCHITECTURE-ANDROID.md. Device-only unverified: lock screen + headset buttons, glide sound, banner/logcat, stream StreamView (MIX-10).

@@ -98,6 +98,8 @@ data class ResolvedTrack(
 /** Resolves a song id to a local file (BurnStore in production, a stub under test). */
 fun interface MixTrackResolver {
     fun resolve(songId: String): ResolvedTrack?
+    /** Cheap existence check (no sidecar reads); main-thread safe. */
+    fun exists(songId: String): Boolean = resolve(songId) != null
 }
 
 /** Opens a file as a [PcmSource] (MediaCodec mp3 decoder in production). null = unreadable. */
