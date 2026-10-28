@@ -62,6 +62,7 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
     val scope = rememberCoroutineScope()
     var tab by remember { mutableStateOf(StudioSubTab.Samples) }
     var restored by remember { mutableStateOf(false) }
+    var arrangerFullscreen by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         tab = StudioSubTab.fromRaw(runCatching { settings.get(StudioSettings.STUDIO_TAB) }.getOrNull())
         restored = true
@@ -70,7 +71,7 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
     val iconOnly = StudioSubTab.iconOnly(widthDp)
 
     Column(modifier.fillMaxSize().testTag("producer-screen")) {
-        if (!hideTabs) {
+        if (!hideTabs && !arrangerFullscreen) {
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
                 val all = StudioSubTab.entries
                 all.forEachIndexed { i, t ->
@@ -94,6 +95,7 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
                 StudioSubTab.Loops -> LoopsScreen(graph)
                 StudioSubTab.Cues -> com.levi.pocketdj.screens.producer.cues.CuesScreen(graph)
                 StudioSubTab.Sequencer -> SequencerScreen(graph)
+                StudioSubTab.Tracks -> com.levi.pocketdj.screens.producer.tracks.TracksHomeScreen(graph, onFullscreenChange = { arrangerFullscreen = it })
                 else -> ComingSoon(tab)
             }
         }

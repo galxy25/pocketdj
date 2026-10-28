@@ -472,7 +472,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | STU-5 — Sequencer tab + pattern engine (clock, step modes, per-step loop/stretch) + bounce | 11 | Planned | Timing tightness and .interrupts cut audibility |
 | STU-6 — Cues tab + cue-seek playback plumbing (sequencer seek) + CuePointsProvider for the Mix de… | 11 | PARTIAL | Apple Music native backend play-then-seek (device-only); emulator cue-seek step not run |
 | STU-7 — Collections integration: StudioRowResolver (play studio ids as local files), counts, real… | 12 | PARTIAL (analyzer fires on add; Add to… on sample/loop/sequence rows; no tk_ synth so stale takes play raw; SAF-hosted loop/sample bounce inputs skipped; take rows have no Producer list to add from) | Emulator steps not run (add seeded sample to pocket, play, delete-all) |
-| STU-11 — Tracks arranger: model CRUD, home list + folders, lanes/clips UI, clip baker, artifacts b… | 13 | Planned | — |
+| STU-11 — Tracks arranger: model CRUD, home list + folders, lanes/clips UI, clip baker, artifacts b… | 13 | PARTIAL (arranger UI/CRUD/artifacts done; play/record/loop/scissor/bounce/master FX -> STU-12/13; stems -> STU-14/15; emulator verification pending) | Emulator steps not run; follow-scroll Compose test (androidTest) unrun |
 | STU-8 — Instrument packs + SF2 synth engine (native) + on-screen keys + takes (click/count-in) | 13 | Planned | Latency feel on Oboe; large-bank parse time on a real device |
 | STU-14 — Demuxer core: sources + DemuxStore + chord detection + timeline + chord detail + stems (d… | 14 | Planned | Real-song chord quality |
 | STU-9 — Score: quantizer, layout, editor (Enter/Select/Move/Edit, undo/cancel), live staff, PDF +… | 14 | Planned | — |

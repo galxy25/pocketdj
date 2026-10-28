@@ -130,6 +130,9 @@ dependencies {
     implementation(libs.oboe)
 
     debugImplementation(libs.androidx.ui.tooling)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
