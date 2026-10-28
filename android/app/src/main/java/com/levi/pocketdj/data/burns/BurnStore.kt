@@ -127,6 +127,9 @@ class BurnStore(
         writer.flushNow(version.incrementAndGet()) { json.encodeToString(BurnDocument.serializer(), doc) }
     }
 
+    /** Folder choice / reachability changed (picker, clear, foreground): drop stale local resolutions. */
+    fun invalidateLocalCache() = localMemo.clear()
+
     private fun setItem(item: BurnItem) {
         _items.update { it + (item.songId to item) }
         localMemo.clear()
@@ -219,8 +222,9 @@ class BurnStore(
 
     // ---- roots helpers ------------------------------------------------------------------------
 
-    /** READ root: the user folder when reachable, else the app root. */
-    private fun readRoot(): BurnRoot? = folder.roots().lastOrNull()
+    /** An aux file (stem / beat grid) in ANY root: the first hit wins (writes land in the active root). */
+    private fun findAux(name: String): File? =
+        folder.roots().asReversed().firstNotNullOfOrNull { r -> File(r.dir, name).takeIf { it.exists() } }
 
     private fun listNames(dir: File): List<String> = dir.list()?.toList() ?: emptyList()
 
@@ -297,6 +301,7 @@ class BurnStore(
         if (root == null) return BurnResult(failed = unique.size, total = unique.size)
         val dir = root.dir
         if (!folder.probeWrite(root)) return BurnResult(total = unique.size, folderUnavailable = true)
+        val fellBack = folder.fellBack()
 
         var done = 0
         // Once per run, never per song; a still-live earlier run keeps its counters.
@@ -364,7 +369,7 @@ class BurnStore(
                                 TransferRecord(
                                     songId = song.id, kind = TransferKind.BURN,
                                     audioFileName = names.audio, sidecarFileName = names.sidecar, sidecarText = sidecarText,
-                                    wasAppStorage = !root.isUserFolder, manifestKey = entry.key,
+                                    wasAppStorage = !root.isUserFolder, burnFolderTreeUri = root.treeUri, manifestKey = entry.key,
                                     source = entry.source ?: "digital", bpm = entry.bpm, musicalKey = entry.musicalKey,
                                     camelot = entry.camelot, durationMs = entry.durationMs,
                                     startMs = if (isAnalog) entry.startMs else null, rippedAt = entry.rippedAt,
@@ -397,6 +402,7 @@ class BurnStore(
                     burned += 1
                     save()
                     exportAnalogCut(song.id, entry, dir)
+                    folder.mirrorFiles(dir, listOf(names.audio, names.sidecar, _items.value[song.id]?.cutFileName.orEmpty()))
                 } catch (e: CancellationException) {
                     // Restore the pre-run READY record (old audio + sidecar are still on disk); else drop.
                     if (_items.value[song.id]?.state == BurnState.DOWNLOADING) {
@@ -431,7 +437,7 @@ class BurnStore(
         }
         return BurnResult(
             burned = burned, notRipped = notRipped, failed = failed, total = unique.size,
-            outOfSpace = outOfSpace, folderUnavailable = folderUnavailable, stopped = stopped,
+            outOfSpace = outOfSpace, folderUnavailable = folderUnavailable, stopped = stopped, fellBack = fellBack,
             stemmedSongs = stemmed, beatGridded = gridded, queued = queued,
         )
     }
@@ -536,12 +542,9 @@ class BurnStore(
 
     /** All 4 stem files iff every one exists in the active read root (all-or-nothing). */
     fun localStemFiles(songId: String): Map<String, File>? {
-        val dir = readRoot()?.dir ?: return null
         val out = LinkedHashMap<String, File>()
         for (n in BurnFileNames.STEM_NAMES) {
-            val f = File(dir, BurnFileNames.stemFileName(songId, n))
-            if (!f.exists()) return null
-            out[n] = f
+            out[n] = findAux(BurnFileNames.stemFileName(songId, n)) ?: return null
         }
         return out
     }
@@ -553,11 +556,9 @@ class BurnStore(
 
     /** Any subset of the four parts already on disk (Stem Lock reads part by part). */
     fun localStemPartFiles(songId: String): Map<String, File>? {
-        val dir = readRoot()?.dir ?: return null
         val out = LinkedHashMap<String, File>()
         for (n in BurnFileNames.STEM_NAMES) {
-            val f = File(dir, BurnFileNames.stemFileName(songId, n))
-            if (f.exists()) out[n] = f
+            findAux(BurnFileNames.stemFileName(songId, n))?.let { out[n] = it }
         }
         return out.ifEmpty { null }
     }
@@ -566,8 +567,8 @@ class BurnStore(
 
     /** Every song id with all 4 stems on disk in the active root. */
     fun localStemSongIds(): List<String> {
-        val dir = readRoot()?.dir ?: return emptyList()
-        return BurnStems.fullyStemmedIds(listNames(dir)).filter { stemsBurned(it) }
+        val names = folder.roots().flatMap { listNames(it.dir) }
+        return BurnStems.fullyStemmedIds(names).filter { stemsBurned(it) }
     }
 
     /** BURN the 4 stems (idempotent; never triggers separation). Null if not stemmed / failed. */
@@ -647,8 +648,7 @@ class BurnStore(
     // ---- beat grid ----------------------------------------------------------------------------
 
     fun localBeatgridFile(songId: String): File? {
-        val dir = readRoot()?.dir ?: return null
-        return File(dir, BurnFileNames.beatgridFileName(songId)).takeIf { it.exists() }
+        return findAux(BurnFileNames.beatgridFileName(songId))
     }
 
     fun beatgridBurned(songId: String) = localBeatgridFile(songId) != null
@@ -701,6 +701,7 @@ class BurnStore(
                 moveFile(from, audio)
             }
             writeAtomic(File(root.dir, names.sidecar), BurnSidecar.build(songId, BurnSong(songId, title, artist), s, a, entry).toByteArray())
+            folder.mirrorFiles(root.dir, listOf(names.audio, names.sidecar))
             val prev = _items.value[songId]
             setItem(
                 BurnItem(

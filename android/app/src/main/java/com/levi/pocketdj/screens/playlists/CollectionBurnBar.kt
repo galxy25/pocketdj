@@ -95,6 +95,7 @@ object CollectionBurnReducer {
             if (r.outOfSpace) add("out of space — stopped early")
             if (r.stopped) add("stopped")
             if (!r.stopped && r.notRipped > 0 && hasServer) add("prepared one at a time")
+            if (r.fellBack) add(BurnSettings.FOLDER_FELL_BACK)
         }
         return parts.joinToString(" · ")
     }

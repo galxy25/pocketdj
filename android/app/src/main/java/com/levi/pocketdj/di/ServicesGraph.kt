@@ -1,6 +1,9 @@
 package com.levi.pocketdj.di
 
-import com.levi.pocketdj.data.burns.AppPrivateBurnFolder
+import com.levi.pocketdj.data.burns.BurnDestinationResolver
+import com.levi.pocketdj.data.burns.ContentResolverBurnTree
+import com.levi.pocketdj.data.burns.SafBurnFolder
+import com.levi.pocketdj.data.burns.SharedPrefsBurnFolderPrefs
 import com.levi.pocketdj.data.burns.BurnStore
 import com.levi.pocketdj.data.burns.HttpBurnRips
 import com.levi.pocketdj.data.config.Endpoints
@@ -77,6 +80,21 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             transfers, app.httpClient,
             destDir = { _ -> burnsDir.also { it.mkdirs() } },
             refreshUrl = { rec -> app.ripServerClient.presign(rec.songId, 21_600) },
+            // SVC-14: destination comes from the RECORD (captured at enqueue), never from settings.
+            resolver = BurnDestinationResolver(burnsDir, File(app.appContext.filesDir, "burns-user"), ::openBurnTree),
+        )
+    }
+
+    /** SVC-14: the user's SAF burn folder choice (UI + enqueue time only). */
+    val burnFolderPrefs: SharedPrefsBurnFolderPrefs by lazy { SharedPrefsBurnFolderPrefs(app.appContext) }
+
+    private fun openBurnTree(uri: String): ContentResolverBurnTree? =
+        runCatching { ContentResolverBurnTree(app.appContext, android.net.Uri.parse(uri)) }.getOrNull()
+
+    val burnFolder: SafBurnFolder by lazy {
+        SafBurnFolder(
+            File(app.appContext.filesDir, "burns"), File(app.appContext.filesDir, "burns-user"),
+            burnFolderPrefs, ::openBurnTree,
         )
     }
 
@@ -90,7 +108,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         )
         BurnStore(
             ledgerFile = File(app.appContext.filesDir, "pocketdj-burns.json"),
-            folder = AppPrivateBurnFolder(File(app.appContext.filesDir, "burns")),
+            folder = burnFolder,
             rips = rips,
             lookup = { id ->
                 val cat = app.catalogRepository.state.value.catalog

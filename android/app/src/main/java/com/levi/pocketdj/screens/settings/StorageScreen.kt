@@ -30,6 +30,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import com.levi.pocketdj.data.burns.ArtistUsage
+import com.levi.pocketdj.data.burns.BurnSettings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -438,6 +439,7 @@ private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: S
         services.storageManager.lastResult?.let { status = describe(context, it) }
     }
 
+    BurnFolderSection(graph, snackbar)
     Spacer(Modifier.height(16.dp))
     SectionHeader("Automatic cleanup")
     Caption(
@@ -577,3 +579,61 @@ private suspend fun loadChoices(graph: AppGraph, k: DeleteKind): List<DeleteChoi
 private fun describe(context: android.content.Context, r: com.levi.pocketdj.data.storage.StorageManager.PruneResult): String =
     "Pruned ${r.evicted} songs, freed ${Formatter.formatFileSize(context, r.freedBytes)}. " +
         "Now ${r.usageSongs} songs / ${Formatter.formatFileSize(context, r.usageBytes)}."
+
+/** SVC-14: pick (or clear) a SAF folder for burns. Existing burns stay where they were written. */
+@Composable
+private fun BurnFolderSection(graph: AppGraph, snackbar: SnackbarHostState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val prefs = graph.servicesGraph.burnFolderPrefs
+    var chosen by remember { mutableStateOf(prefs.treeUri()) }
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            val ok = runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }.isSuccess
+            if (ok) {
+                // Release the grant of the folder being replaced (grants are capped per app).
+                chosen?.takeIf { it != uri.toString() }?.let { old -> releaseBurnGrant(context, old) }
+                prefs.setTreeUri(uri.toString()); chosen = uri.toString()
+                graph.servicesGraph.burnStore.invalidateLocalCache()
+            } else scope.launch { snackbar.showSnackbar("Couldn’t keep access to that folder") }
+        }
+    }
+    Spacer(Modifier.height(16.dp))
+    SectionHeader(BurnSettings.FOLDER_TITLE)
+    Caption(
+        "Choose a folder (including an SD card) to also receive each downloaded song as a descriptive " +
+            "mp3 with a matching .txt. If it becomes unavailable, new downloads fall back to app storage.",
+    )
+    Text(
+        chosen?.let { android.net.Uri.parse(it).lastPathSegment ?: it } ?: BurnSettings.FOLDER_APP_STORAGE,
+        style = MaterialTheme.typography.bodyMedium,
+    )
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { picker.launch(null) }) { Text(if (chosen == null) "Choose folder" else "Change folder") }
+        if (chosen != null) {
+            OutlinedButton(onClick = {
+                chosen?.let { u -> releaseBurnGrant(context, u) }
+                prefs.setTreeUri(null); chosen = null
+                graph.servicesGraph.burnStore.invalidateLocalCache()
+            }) { Text("Use app storage") }
+        }
+    }
+}
+
+/** Release BOTH halves of the persisted grant taken at pick time. */
+private fun releaseBurnGrant(context: android.content.Context, uri: String) {
+    runCatching {
+        context.contentResolver.releasePersistableUriPermission(
+            android.net.Uri.parse(uri),
+            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+        )
+    }
+}
