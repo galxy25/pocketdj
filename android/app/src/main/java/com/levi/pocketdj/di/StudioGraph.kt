@@ -34,6 +34,7 @@ import com.levi.pocketdj.studio.engine.LoopAudition
 import com.levi.pocketdj.studio.engine.LoopFactory
 import com.levi.pocketdj.studio.engine.SliceBaker
 import com.levi.pocketdj.studio.engine.MicRecorder
+import com.levi.pocketdj.studio.engine.PatternEngine
 import com.levi.pocketdj.studio.engine.SampleFactory
 import com.levi.pocketdj.studio.engine.SampleRenderCache
 import com.levi.pocketdj.studio.engine.StudioEngine
@@ -90,15 +91,16 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     val sampleFactory: SampleFactory by lazy { SampleFactory(studioRoots, studioStore, studioRender) }
 
-    private val engineLazy = lazy {
+    private val engineLazy: Lazy<StudioEngine> = lazy {
         val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { studioEngine.pauseSample() } }
         StudioEngine(
             sinkFactory = { StudioOutputs.create(audioManager) },
             stretcher = NativeStretcher,
             scope = app.appScope,
             focus = {
-                // One audible owner: park Now Playing before the Studio sample sounds.
+                // One audible owner: park Now Playing (and a running pattern) before the Studio sample sounds.
                 app.appScope.launch { runCatching { app.playbackController.pause() } }
+                if (patternLazy.isInitialized()) patternEngine.stopPattern()
                 focus.requestPlayback()
             },
             focusRelease = { focus.abandon() },
@@ -118,7 +120,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     val sliceBaker: SliceBaker by lazy { SliceBaker(studioRoots, studioStore, studioRender, { sampleRenderCache.sourceFile(it) }) }
 
-    private val loopLazy = lazy {
+    private val loopLazy: Lazy<LoopAudition> = lazy {
         val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { loopAudition.stop() } }
         LoopAudition(
             sinkFactory = { StudioOutputs.create(audioManager) },
@@ -127,6 +129,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
                 // One audible owner: park Now Playing and any sample audition before a loop sounds.
                 app.appScope.launch { runCatching { app.playbackController.pause() } }
                 if (engineLazy.isInitialized()) studioEngine.pauseSample()
+                if (patternLazy.isInitialized()) patternEngine.stopPattern()
                 focus.requestPlayback()
             },
             focusRelease = { focus.abandon() },
@@ -143,10 +146,31 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         loopStopObserverAdded = true
         app.appScope.launch(Dispatchers.Main) {
             androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(object : androidx.lifecycle.DefaultLifecycleObserver {
-                override fun onStop(owner: androidx.lifecycle.LifecycleOwner) { loopAudition.stop() }
+                override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
+                    loopAudition.stop()
+                    if (patternLazy.isInitialized()) patternEngine.stopPattern()
+                }
             })
         }
     }
+
+    // ---- STU-5: sequencer pattern playback (lazy; one audible owner with Now Playing / sample / loop auditions)
+
+    private val patternLazy: Lazy<PatternEngine> = lazy {
+        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { patternEngine.stopPattern() } }
+        PatternEngine(
+            sinkFactory = { StudioOutputs.create(audioManager) },
+            focus = {
+                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                if (engineLazy.isInitialized()) studioEngine.pauseSample()
+                if (loopLazy.isInitialized()) loopAudition.stop()
+                focus.requestPlayback()
+            },
+            focusRelease = { focus.abandon() },
+            diag = { msg -> runCatching { com.levi.pocketdj.audio.core.AudioDiag.emit("studio.pattern $msg") } },
+        )
+    }
+    val patternEngine: PatternEngine get() = patternLazy.value.also { ensureLoopStopObserver() }
 
     private val micLazy = lazy {
         val captureFocus = AudioFocusPolicy.FocusHandle(audioManager) { /* a competing app took focus: the take keeps going */ }

@@ -14,6 +14,9 @@ object StudioSettings {
 
     /** Last mic input the user picked (AudioDeviceInfo id), -1 = system default. */
     val MIC_INPUT_ID = PrefKey.int("studioMicInputId", -1)
+
+    /** Sequencer Live-vs-static playback (iOS `pdj.sequencerLive`): live mirrors step/loop edits into the running pattern. */
+    val SEQUENCER_LIVE = PrefKey.boolean("sequencerLive", false)
 }
 
 /** Writable-File access to the app-managed roots (offline renders/recordings write real files). */
