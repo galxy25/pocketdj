@@ -245,6 +245,19 @@ class NowPlayingDspEngineTest {
         assertEquals(level, r.peak(during, sr / 2, sr), level * 0.2f)
     }
 
+    @Test fun aNewTrackStartsOnTheFullMixEvenAfterATrackThatEndedOnStems() {
+        val r = Rig(); r.addAllParts()
+        r.engine.engage(file, 0, 0, 0.0, true); r.engine.bindSong("a")
+        r.engine.setStemMode(true); r.render(sr)
+        assertTrue(r.engine.stemsOnAir)
+        r.engine.disengage(); r.engine.resetControls()
+        r.parts.clear()
+        r.engine.engage(file, 0, 0, 0.0, true); r.engine.bindSong("b")
+        assertFalse("stale handover state must not report stems on air", r.engine.stemsOnAir)
+        val out = r.render(sr / 2)
+        assertTrue("the new track's full mix is audible from the first blocks", r.peak(out, 2048, 4096) > 0.2f)
+    }
+
     @Test fun stemsOffHandsBackToTheFullMix() {
         val r = Rig(); r.addAllParts()
         r.engine.engage(file, 0, 0, 0.0, true); r.engine.bindSong("s")

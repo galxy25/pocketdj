@@ -173,6 +173,9 @@ class NowPlayingDspHost(
     /** Host heartbeat (~4 Hz): engine tick + panel state refresh while engaged. */
     fun heartbeat() { engine.tick(); if (engine.isEngaged) publish() }
 
+    /** Re-publish the panel state (the Mix session flag or the current row changed under the host). */
+    fun refresh() = publish()
+
     private fun publish() {
         val id = ports.currentSongId
         _ui.value = DspUiState(

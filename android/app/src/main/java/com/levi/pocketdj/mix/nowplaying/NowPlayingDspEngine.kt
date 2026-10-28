@@ -139,7 +139,7 @@ class NowPlayingDspEngine(
         }
 
     /** Stems are audible (the handover landed on the stems). */
-    val stemsOnAir: Boolean get() = isEngaged && graph.deck(deck).handover.let { it.intentStems && it.publishedStem >= 0.999f }
+    val stemsOnAir: Boolean get() = isEngaged && stemGroup != null && graph.deck(deck).handover.let { it.intentStems && it.publishedStem >= 0.999f }
     /** A handover to the stems is pending or fading. */
     val stemsLoading: Boolean get() = stemHandover == StemHandover.TO_STEMS || (stemMode && !stemsOnAir)
     val stemsAvailable: Boolean get() = songId?.let { stemSource.obtainable(it) || stemSource.localParts(it).isNotEmpty() } == true
@@ -164,6 +164,9 @@ class NowPlayingDspEngine(
         main = v
         mainRun = runner.run(v)
         graph.setMain(deck, v)
+        // The chain's handover persists across engages: a previous track that ended on its stems left the
+        // gains at main=0/stems=1. A new track STARTS on the full mix (lands at the next block).
+        graph.deck(deck).handover.settle(false)
         publishParams()
         val s = sinkFactory()
         sink = s

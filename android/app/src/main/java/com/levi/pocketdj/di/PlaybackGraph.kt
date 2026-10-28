@@ -86,6 +86,7 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
             heldOffset = { seq.resumeOffsetMs },
             positionValid = { seq.engine?.hasLoadedItem == true && seq.currentRowLoaded },
             consumedResumeOffset = { seq.lastResumeOffsetMs },
+            stemLock = { app.mixGraph.stemLockForSession() },   // MIX-18
         )
     }
 
