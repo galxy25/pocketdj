@@ -103,7 +103,18 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
     val studioEngine: StudioEngine get() = engineLazy.value
 
-    private val micLazy = lazy { MicRecorder(studioRoots, studioStore, audioManager) }
+    private val micLazy = lazy {
+        val captureFocus = AudioFocusPolicy.FocusHandle(audioManager) { /* a competing app took focus: the take keeps going */ }
+        MicRecorder(
+            studioRoots, studioStore, audioManager,
+            onCaptureBegin = {
+                // Park Now Playing and take transient focus so nothing bleeds into the take.
+                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                captureFocus.requestCapture()
+            },
+            onCaptureEnd = { captureFocus.abandon() },
+        ).also { r -> studioStore.activeTakeFileName = { r.activeTake?.first } }
+    }
     val micRecorder: MicRecorder get() = micLazy.value
 
     /** Source ladder for New-sample-from-track: burned file -> burn-on-demand -> 'Rip first'. */

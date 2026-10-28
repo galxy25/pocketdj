@@ -15,6 +15,7 @@ import com.levi.pocketdj.studio.store.StudioRoots
 import com.levi.pocketdj.studio.store.StudioStore
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
@@ -96,7 +97,7 @@ object MicRecorderMath {
  */
 class WavTakeWriter(file: File, val sampleRate: Int) {
     private val raf = RandomAccessFile(file, "rw").also { it.setLength(0); it.write(header(0)) }
-    var dataBytes = 0L; private set
+    @Volatile var dataBytes = 0L; private set
     private var lastPatchBytes = 0L
     val appendedSeconds: Double get() = dataBytes / 2.0 / sampleRate
 
@@ -156,7 +157,14 @@ class MicRecorder(
     private val store: StudioStore,
     private val audioManager: AudioManager?,
     private val clockMs: () -> Long = System::currentTimeMillis,
+    /** Fired when capture opens (park Now Playing / take transient focus) and closes (release it). */
+    private val onCaptureBegin: () -> Unit = {},
+    private val onCaptureEnd: () -> Unit = {},
 ) {
+    /** The name the user has typed so far; the file-on-dismiss/exit paths use it instead of the default. */
+    @Volatile var pendingName: String? = null
+    private val ioScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
+
     private val _level = MutableStateFlow(0f)
     val level: StateFlow<Float> = _level.asStateFlow()
     private val _recording = MutableStateFlow(false)
@@ -175,7 +183,10 @@ class MicRecorder(
     @Volatile private var stopFlag = false
     private var finalized: CompletableDeferred<Unit>? = null
     private var recId = ""; private var recFile = ""; private var recUser = false; private var startedAtMs = 0.0
-    private var stallAccum = 0.0; private var lastAppended = -1.0; private var lastTick: Double? = null
+    @Volatile private var stallAccum = 0.0
+    @Volatile private var lastAppended = -1.0
+    @Volatile private var lastTick: Double? = null
+    @Volatile private var watchdog: Thread? = null
     @Volatile private var scannedApp = false
     @Volatile private var scannedUser = false
 
@@ -186,15 +197,16 @@ class MicRecorder(
     fun beginMonitoring(): Boolean {
         if (record != null) return true
         AudioFocusPolicy.beginMicCapture()
+        runCatching(onCaptureBegin)
         refreshInputs()
         val min = AudioRecord.getMinBufferSize(RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        if (min <= 0) { AudioFocusPolicy.endMicCapture(); return false }
+        if (min <= 0) { endCapture(); return false }
         val rec = try {
             AudioRecord(MediaRecorder.AudioSource.MIC, RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, min * 4)
-        } catch (_: Exception) { AudioFocusPolicy.endMicCapture(); return false }
-        if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); AudioFocusPolicy.endMicCapture(); return false }
+        } catch (_: Exception) { endCapture(); return false }
+        if (rec.state != AudioRecord.STATE_INITIALIZED) { rec.release(); endCapture(); return false }
         applyPreferred(rec)
-        try { rec.startRecording() } catch (_: Exception) { rec.release(); AudioFocusPolicy.endMicCapture(); return false }
+        try { rec.startRecording() } catch (_: Exception) { rec.release(); endCapture(); return false }
         record = rec
         stopFlag = false
         _level.value = 0f
@@ -210,8 +222,19 @@ class MicRecorder(
         record = null
         thread = null
         runCatching { t?.join(1500) }
-        AudioFocusPolicy.endMicCapture()
+        onCaptureEnded(false) // idempotent: a dead/absent capture thread still closes the writer + completes finalize
+        endCapture()
         _level.value = 0f
+    }
+
+    private fun endCapture() { AudioFocusPolicy.endMicCapture(); runCatching(onCaptureEnd) }
+
+    /** Dismiss path (any thread incl. Main): stop + file the take off-main, named [name] if given. */
+    fun stopAndFileAsync(name: String?) {
+        if (name != null) pendingName = name
+        ioScope.launch {
+            if (_recording.value) stopAwaitingFinalize()?.let { fileSample(it) } else endMonitoring()
+        }
     }
 
     fun refreshInputs() {
@@ -249,6 +272,13 @@ class MicRecorder(
     fun start(): Boolean {
         if (_recording.value) return false
         if (!beginMonitoring()) return false
+        return beginTake()
+    }
+
+    /** Open the take file + writer and flip to recording (no AudioRecord involvement: unit-testable). */
+    @Synchronized
+    internal fun beginTake(): Boolean {
+        if (_recording.value) return false
         // Mic takes are written to a real file in the app-managed root; copy-out to a SAF user root is a later step.
         val appDir = roots.appDir(StudioFamily.SAMPLES)
         val minted = MicRecorderMath.mintSampleFile({ appDir.exists(it) })
@@ -256,6 +286,7 @@ class MicRecorder(
         val wasUser = false
         target.parentFile?.mkdirs()
         val w = try { WavTakeWriter(target, RATE) } catch (_: Exception) { return false }
+        pendingName = null
         recId = minted.first; recFile = minted.second; recUser = wasUser
         startedAtMs = clockMs().toDouble()
         stallAccum = 0.0; lastAppended = -1.0; lastTick = null
@@ -263,35 +294,57 @@ class MicRecorder(
         finalized = CompletableDeferred()
         writer = w
         _recording.value = true
+        startWatchdog(w)
         return true
+    }
+
+    /** Independent ~10 Hz stall watchdog (iOS parity): ticks even while `AudioRecord.read` delivers nothing. */
+    private fun startWatchdog(w: WavTakeWriter) {
+        watchdog = Thread({
+            while (_recording.value && writer === w) {
+                watchdogTick(System.nanoTime() / 1e9)
+                try { Thread.sleep(100) } catch (_: InterruptedException) { break }
+            }
+        }, "pdj-mic-watchdog").also { it.isDaemon = true; it.start() }
     }
 
     private fun captureLoop(rec: AudioRecord, bufBytes: Int) {
         val buf = ByteArray(bufBytes)
         var level = 0f
-        var lastWatch = System.nanoTime()
+        var readError = false
         while (!stopFlag && record === rec) {
-            val n = rec.read(buf, 0, buf.size)
-            if (n <= 0) { if (n < 0) break else continue }
+            val n = rec.read(buf, 0, buf.size, AudioRecord.READ_NON_BLOCKING)
+            if (n < 0) { readError = true; break }
+            if (n == 0) { try { Thread.sleep(8) } catch (_: InterruptedException) { break }; continue }
             level = MicRecorderMath.smoothLevel(level, MicRecorderMath.peak16(buf, n))
             _level.value = level
             val w = writer
             if (w != null && _recording.value) {
                 try { w.append(buf, n) } catch (_: Exception) { onWriterFailed(); }
             }
-            val now = System.nanoTime()
-            if (now - lastWatch >= 250_000_000L) { lastWatch = now; watchdogTick(now / 1e9) }
         }
         runCatching { rec.stop() }
         runCatching { rec.release() }
-        // Finalize the writer on this thread AFTER the last append: the file is complete when [finalized] fires.
-        val w = writer
-        if (w != null && !_recording.value) { runCatching { w.close() }; writer = null; finalized?.complete(Unit) }
+        onCaptureEnded(readError)
         // A loop that ended on its own (writer failure / read error) must not leave a dead record behind.
-        if (record === rec) { record = null; thread = null; AudioFocusPolicy.endMicCapture(); _level.value = 0f }
+        if (record === rec) { record = null; thread = null; endCapture(); _level.value = 0f }
     }
 
-    private fun watchdogTick(nowSec: Double) {
+    /**
+     * The capture loop is over. A read error mid-take (DEAD_OBJECT / route change) files what was captured
+     * and ALWAYS completes [finalized], so Stop can never hang on a dead capture thread.
+     */
+    internal fun onCaptureEnded(readError: Boolean) {
+        if (readError && _recording.value) {
+            _failure.value = "Recording stopped: the microphone became unavailable. The audio captured so far was saved."
+            finishTake()?.let { fileSample(it) }
+        }
+        val w = writer
+        if (w != null && !_recording.value) { runCatching { w.close() }; writer = null }
+        if (!_recording.value) finalized?.complete(Unit)
+    }
+
+    internal fun watchdogTick(nowSec: Double) {
         val w = writer ?: return
         val dt = MicRecorderMath.clampedTickDt(nowSec, lastTick); lastTick = nowSec
         val appended = w.appendedSeconds
@@ -335,16 +388,20 @@ class MicRecorder(
 
     /** Like [stop] but suspends until the writer is closed: safe to read (and delete) the take file. */
     suspend fun stopAwaitingFinalize(): MicTake? {
-        val done: CompletableDeferred<Unit>?
-        val take: MicTake?
-        synchronized(this) {
-            done = finalized
-            take = finishTake()
-            if (take != null) endMonitoring()
+        // Off Main: endMonitoring joins the capture thread.
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val done: CompletableDeferred<Unit>?
+            val take: MicTake?
+            synchronized(this@MicRecorder) {
+                done = finalized
+                take = finishTake()
+                if (take != null) endMonitoring()
+            }
+            if (take == null) null else {
+                kotlinx.coroutines.withTimeoutOrNull(3000) { done?.await() }
+                take
+            }
         }
-        if (take == null) return null
-        done?.await()
-        return take
     }
 
     /** Orderly exit: file an in-flight take with the default name and flush the store synchronously. */
@@ -357,7 +414,7 @@ class MicRecorder(
     fun fileSample(t: MicTake) {
         store.addSample(
             StudioSample(
-                id = t.id, name = DEFAULT_NAME, fileName = t.fileName, wasUserFolder = t.wasUserFolder,
+                id = t.id, name = pendingName?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_NAME, fileName = t.fileName, wasUserFolder = t.wasUserFolder,
                 createdAt = startedAtMs, durationMs = t.durationMs, source = StudioSource.Mic,
             ),
         )

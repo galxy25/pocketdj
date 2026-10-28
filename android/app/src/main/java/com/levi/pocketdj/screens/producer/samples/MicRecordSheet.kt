@@ -58,6 +58,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.levi.pocketdj.studio.StudioSettings
 
 /** Permission states of the mic sheet (denied shows the Settings escape hatch). */
 enum class MicPermission { Unknown, Granted, Denied }
@@ -102,7 +103,14 @@ fun MicRecordSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (String) -> 
         }
     }
     // Dismissal mid-take files it (default name) and always releases the capture flag.
-    DisposableEffect(Unit) { onDispose { if (rec.isRecording.value) rec.stop()?.let { rec.fileSample(it) } else rec.endMonitoring() } }
+    DisposableEffect(Unit) { onDispose { rec.stopAndFileAsync(name.takeIf { it.isNotBlank() }) } }
+    LaunchedEffect(name) { rec.pendingName = name }
+    // Restore the last picked input (AudioDeviceInfo id; -1 = automatic) once.
+    LaunchedEffect(Unit) {
+        val saved = runCatching { graph.settings.get(StudioSettings.MIC_INPUT_ID) }.getOrNull() ?: -1
+        rec.refreshInputs()
+        if (saved >= 0 && rec.inputs.value.any { it.deviceId == saved }) rec.selectInput(saved)
+    }
 
     LaunchedEffect(recording) {
         val t0 = System.currentTimeMillis()
@@ -143,8 +151,8 @@ fun MicRecordSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (String) -> 
                                 Text(inputs.firstOrNull { it.deviceId == rec.selectedDeviceId }?.label ?: "Input: automatic")
                             }
                             DropdownMenu(pickerOpen, { pickerOpen = false }) {
-                                DropdownMenuItem(text = { Text("Automatic") }, onClick = { rec.selectInput(null); pickerOpen = false })
-                                inputs.forEach { o -> DropdownMenuItem(text = { Text(o.label) }, onClick = { rec.selectInput(o.deviceId); pickerOpen = false }) }
+                                DropdownMenuItem(text = { Text("Automatic") }, onClick = { rec.selectInput(null); scope.launch { graph.settings.set(StudioSettings.MIC_INPUT_ID, -1) }; pickerOpen = false })
+                                inputs.forEach { o -> DropdownMenuItem(text = { Text(o.label) }, onClick = { rec.selectInput(o.deviceId); scope.launch { graph.settings.set(StudioSettings.MIC_INPUT_ID, o.deviceId) }; pickerOpen = false }) }
                             }
                         }
                     }

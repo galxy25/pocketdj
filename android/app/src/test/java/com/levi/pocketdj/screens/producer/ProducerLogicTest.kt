@@ -176,8 +176,9 @@ class ProducerLogicTest {
     }
 
     @Test fun deleteConfirmationListsReferrers() {
-        assertTrue(SamplesCopy.deleteMessage("Kick", StudioReferrers(0, 0)).contains("can’t be undone"))
+        assertTrue(SamplesCopy.deleteMessage("Kick", StudioReferrers(0, 0)).contains("removed from this device"))
         val m = SamplesCopy.deleteMessage("Kick", StudioReferrers(2, 1))
         assertTrue(m.contains("2 loops")); assertTrue(m.contains("1 sequencer row")); assertFalse(m.contains("1 sequencer rows"))
+        assertTrue(m.contains("can’t be re-sliced")); assertTrue(m.contains("will be muted")); assertFalse(m.contains("removes those too"))
     }
 }

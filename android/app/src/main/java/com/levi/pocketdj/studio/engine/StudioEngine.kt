@@ -36,6 +36,8 @@ class SampleAuditionSource(
     private val raw: PcmBuffer,
     initial: StudioSampleEdit,
     private val stretcher: Stretcher = ResampleStretcher,
+    /** False: skip the (heavy) full-buffer fit at construction; the owner calls [reshape] off-main. */
+    eagerShape: Boolean = true,
 ) : PullSource {
     private val lock = Any()
     private var shaped: PcmBuffer = raw
@@ -50,7 +52,10 @@ class SampleAuditionSource(
     @Volatile var reachedEnd = false; private set
     @Volatile var finished = false; private set
 
-    init { synchronized(lock) { rebuildShaped(edit, initialBuild = true) ; cursor = windowStartLocked() } }
+    init { synchronized(lock) { if (eagerShape) rebuildShaped(edit, initialBuild = true); cursor = windowStartLocked() } }
+
+    /** True when the shaped buffer doesn't match the current edit's rate/pitch. */
+    fun needsReshape(): Boolean = synchronized(lock) { abs(edit.rate - shapedRate) > 1e-9 || abs(edit.pitchSemitones - shapedPitch) > 1e-9 }
 
     private val rate get() = shapedRate
 
@@ -121,15 +126,22 @@ class SampleAuditionSource(
 
     /** Re-fit the buffer to the current edit's rate/pitch. Heavy: call off the audio/UI thread. Keeps the playhead's source position. */
     fun reshape() {
-        val target = synchronized(lock) { edit }
-        val rateNow = target.rate; val pitch = target.pitchSemitones
-        val buf = fit(rateNow, pitch)
-        synchronized(lock) {
-            val srcPos = cursor * shapedRate
-            val sliceSrc = if (sliceEnd >= 0) sliceEnd * shapedRate else -1.0
-            shaped = buf; shapedRate = rateNow; shapedPitch = pitch
-            cursor = min(buf.frames.toLong(), Math.round(srcPos / rateNow))
-            sliceEnd = if (sliceSrc >= 0) min(buf.frames.toLong(), Math.round(sliceSrc / rateNow)) else -1
+        while (true) {
+            val target = synchronized(lock) { edit }
+            val rateNow = target.rate; val pitch = target.pitchSemitones
+            val buf = fit(rateNow, pitch)
+            val committed = synchronized(lock) {
+                // Latest wins: an older, slower fit must not overwrite a newer edit's target.
+                if (edit.rate != rateNow || edit.pitchSemitones != pitch) false else {
+                    val srcPos = cursor * shapedRate
+                    val sliceSrc = if (sliceEnd >= 0) sliceEnd * shapedRate else -1.0
+                    shaped = buf; shapedRate = rateNow; shapedPitch = pitch
+                    cursor = min(buf.frames.toLong(), Math.round(srcPos / rateNow))
+                    sliceEnd = if (sliceSrc >= 0) min(buf.frames.toLong(), Math.round(sliceSrc / rateNow)) else -1
+                    true
+                }
+            }
+            if (committed) return
         }
     }
 
@@ -209,8 +221,9 @@ class StudioEngine(
 
     fun loadSample(sample: StudioSample, canonical: PcmBuffer) {
         unloadSample()
-        val src = SampleAuditionSource(canonical.toCanonicalIfNeeded(), sample.edit, stretcher)
+        val src = SampleAuditionSource(canonical.toCanonicalIfNeeded(), sample.edit, stretcher, eagerShape = false)
         source = src
+        if (src.needsReshape()) scheduleReshape(src)
         graph.removeTrack(TRACK)
         graph.addTrack(TRACK, src)
         _loadedSampleId.value = sample.id
@@ -280,11 +293,13 @@ class StudioEngine(
     /** Apply an edit LIVE; a rate/pitch change re-fits the buffer on Default (latest wins). */
     fun applyEdit(edit: StudioSampleEdit) {
         val s = source ?: return
-        if (s.applyEdit(edit)) {
-            reshapeJob?.cancel()
-            val gen = generation.incrementAndGet()
-            reshapeJob = scope.launch(Dispatchers.Default) { if (gen == generation.get()) s.reshape() }
-        }
+        if (s.applyEdit(edit)) scheduleReshape(s)
+    }
+
+    private fun scheduleReshape(s: SampleAuditionSource) {
+        reshapeJob?.cancel()
+        val gen = generation.incrementAndGet()
+        reshapeJob = scope.launch(Dispatchers.Default) { if (gen == generation.get()) s.reshape() }
     }
 
     fun samplePlayheadSeconds(): Double = source?.playheadSeconds() ?: 0.0

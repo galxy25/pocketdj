@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-3 — Producer shell + Samples (mic, import, from-track) + sample editor + mixer deck + StudioEngine
 
@@ -39,3 +39,20 @@ Full `:app:testDebugUnitTest :app:assembleDebug` green: 2004 tests (1906 before)
 ## Questions for Levi
 - Should finished mic takes be transcoded WAV -> AAC m4a after stop (smaller files) or stay WAV? (Default: WAV.)
 - Should samples be copied out to the SAF user samples folder when one is configured? (Default: app root only.)
+
+## Review
+fixes applied
+
+- MAJOR MicRecorder read error mid-take: FIXED. `onCaptureEnded(readError)` files the take, closes the writer and always completes `finalized`; `endMonitoring` also closes/completes when the capture thread is dead; `stopAwaitingFinalize` has a 3 s timeout guard. Tests: `MicRecorderLifecycleTest` (read error, dead thread stop).
+- MAJOR NewSampleFromTrackSheet enterReady race: FIXED. Selection token (bumped by pick/Back) checked after every suspension in `enterReady` and `burn`; stale results dropped. UI-level guard; no JVM harness for Compose, so no direct test.
+- MINOR stall watchdog: FIXED. Independent ~10 Hz thread while a take is active; capture uses READ_NON_BLOCKING. Test: `stallWatchdogFiresWithoutAnyBuffersArriving`.
+- MINOR delete copy / false result: FIXED. iOS copy ported; `deleteSample` false shows "Folder unreachable" alert. `ProducerLogicTest` updated.
+- MINOR reshape latest-wins: FIXED. `reshape()` re-checks the edit under the lock at commit and refits if stale. Test: `staleSlowReshapeCannotOverwriteTheLatestEdit`.
+- MINOR main-thread work: FIXED. `loadSample` no longer shapes in the constructor (reshape scheduled on Default); `stopAwaitingFinalize` runs on IO; sheet dismiss uses `stopAndFileAsync`. Test: `loadSampleDoesNotStretchOnTheCallingThread`.
+- MINOR whole-file decode: FIXED. Ranged decode (`AudioDecoder.decode(startSeconds)`, `StudioCodec.decodeRange`, `StudioRender.decodeRangeBuffer`) for the from-track window and `carveTrackRegion`; offset math uses the buffer's own rate. Device-only: MediaExtractor seek accuracy.
+- MINOR playback during capture: FIXED. Capture begin pauses Now Playing and takes transient focus (`requestCapture`); `PlaybackController.play`/`resume` refuse while `micCaptureActive`. Mix deck players not separately gated (device check).
+- MINOR activeTakeFileName: FIXED. Wired in StudioGraph to `micRecorder.activeTake`.
+- MINOR ledger row: FIXED. STU-3 set to PARTIAL in docs/ARCHITECTURE-ANDROID.md.
+- NIT: FIXED. Typed name used on dismiss/exit (`pendingName`), `MIC_INPUT_ID` persisted/restored, final render kick on editor dismiss.
+
+Full suite: 2011 tests, 0 failures (2004 before; +7 new), assembleDebug green.

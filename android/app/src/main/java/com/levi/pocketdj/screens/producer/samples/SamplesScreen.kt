@@ -61,12 +61,10 @@ import java.io.File
 /** Pure copy for the delete confirmation (lists what references the sample). */
 object SamplesCopy {
     fun deleteMessage(name: String, r: StudioReferrers): String {
-        val parts = buildList {
-            if (r.loopCount > 0) add("${r.loopCount} loop${if (r.loopCount == 1) "" else "s"}")
-            if (r.patternRowCount > 0) add("${r.patternRowCount} sequencer row${if (r.patternRowCount == 1) "" else "s"}")
-        }
-        return if (parts.isEmpty()) "Delete “$name”? This can’t be undone."
-        else "“$name” is used by ${parts.joinToString(" and ")}. Deleting it removes those too."
+        val parts = mutableListOf("The audio file is removed from this device.")
+        if (r.loopCount > 0) parts.add("${r.loopCount} loop${if (r.loopCount == 1) "" else "s"} sliced from it keep playing but can’t be re-sliced.")
+        if (r.patternRowCount > 0) parts.add("${r.patternRowCount} sequencer row${if (r.patternRowCount == 1) "" else "s"} will be muted.")
+        return parts.joinToString(" ")
     }
 }
 
@@ -86,6 +84,7 @@ fun SamplesScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     var newFolder by remember { mutableStateOf(false) }
     var importing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var deleteBlocked by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<StudioSample?>(null) }
     var renaming by remember { mutableStateOf<StudioSample?>(null) }
     var moveNewFolderFor by remember { mutableStateOf<String?>(null) }
@@ -175,9 +174,14 @@ fun SamplesScreen(graph: AppGraph, modifier: Modifier = Modifier) {
             onDismissRequest = { pendingDelete = null },
             title = { Text("Delete sample?") },
             text = { Text(SamplesCopy.deleteMessage(s.name, store.referrers(s.id))) },
-            confirmButton = { TextButton(onClick = { store.deleteSample(s.id); pendingDelete = null }, modifier = Modifier.testTag("sample-delete-confirm")) { Text("Delete") } },
+            confirmButton = { TextButton(onClick = { if (!store.deleteSample(s.id)) deleteBlocked = true; pendingDelete = null }, modifier = Modifier.testTag("sample-delete-confirm")) { Text("Delete") } },
             dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("Cancel") } },
         )
+    }
+    if (deleteBlocked) {
+        AlertDialog(onDismissRequest = { deleteBlocked = false }, title = { Text("Folder unreachable") },
+            text = { Text("This sample lives in your samples folder, which isn’t reachable right now. Reconnect the folder (Settings ▸ Storage) and try again — nothing was deleted.") },
+            confirmButton = { TextButton(onClick = { deleteBlocked = false }) { Text("OK") } })
     }
     message?.let { m ->
         AlertDialog(onDismissRequest = { message = null }, title = { Text("Import failed") }, text = { Text(m, Modifier.testTag("import-error")) },

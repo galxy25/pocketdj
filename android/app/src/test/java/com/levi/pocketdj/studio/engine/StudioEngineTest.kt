@@ -308,4 +308,39 @@ class StudioEngineTest {
         assertEquals(raw, cache.playableFile(id)!!.name)
         assertEquals(3, codec.writes)
     }
+
+    @Test fun staleSlowReshapeCannotOverwriteTheLatestEdit() {
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val slowFirst = object : com.levi.pocketdj.studio.audio.Stretcher {
+            override fun stretch(pcm: PcmBuffer, outFrames: Int, pitchSemitones: Double): PcmBuffer {
+                if (calls.getAndIncrement() == 0) { entered.countDown(); gate.await() }
+                return ResampleStretcher.stretch(pcm, outFrames, pitchSemitones)
+            }
+        }
+        val src = SampleAuditionSource(flat(44100), StudioSampleEdit(), slowFirst)
+        assertTrue(src.applyEdit(StudioSampleEdit(rate = 2.0)))
+        val older = Thread { src.reshape() }.also { it.start() }
+        assertTrue(entered.await(2, java.util.concurrent.TimeUnit.SECONDS))
+        assertTrue(src.applyEdit(StudioSampleEdit(rate = 0.5)))   // the newer edit while the older fit is mid-flight
+        src.reshape()
+        gate.countDown(); older.join(3000)
+        assertFalse("shaped buffer must match the latest edit", src.needsReshape())
+    }
+
+    @Test fun loadSampleDoesNotStretchOnTheCallingThread() {
+        var stretchThreads = mutableListOf<Thread>()
+        val rec = object : com.levi.pocketdj.studio.audio.Stretcher {
+            override fun stretch(pcm: PcmBuffer, outFrames: Int, pitchSemitones: Double): PcmBuffer {
+                synchronized(stretchThreads) { stretchThreads.add(Thread.currentThread()) }
+                return ResampleStretcher.stretch(pcm, outFrames, pitchSemitones)
+            }
+        }
+        val e = StudioEngine({ OfflineRenderer() }, rec, scope, null)
+        e.loadSample(sample(edit = StudioSampleEdit(rate = 1.5)), flat(44100))
+        assertTrue(synchronized(stretchThreads) { stretchThreads.none { it === Thread.currentThread() } })
+        assertTrue(waitFor { synchronized(stretchThreads) { stretchThreads.isNotEmpty() } })
+        e.release()
+    }
 }

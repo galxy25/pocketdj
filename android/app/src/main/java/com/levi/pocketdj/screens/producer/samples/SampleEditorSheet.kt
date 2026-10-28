@@ -159,7 +159,12 @@ fun SampleEditorSheet(graph: AppGraph, sampleId: String, onDismiss: () -> Unit) 
         store.updateSampleEdit(sampleId, c)
     }
 
-    ModalBottomSheet(onDismissRequest = { store.flush(); onDismiss() }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    ModalBottomSheet(onDismissRequest = {
+        store.flush()
+        // Final render kick (iOS renderNow on close): outlives the sheet.
+        graph.appScope.launch(Dispatchers.Default) { runCatching { studio.sampleRenderCache.playableFile(sampleId) } }
+        onDismiss()
+    }, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         if (sample == null) {
             Text("This sample is gone.", Modifier.padding(24.dp)); return@ModalBottomSheet
         }

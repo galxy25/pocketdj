@@ -133,40 +133,49 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
         NewSampleLogic.search(catalog.catalog?.songs.orEmpty(), query, { burns.hasLocalFile(it) })
     }
 
+    /** Selection generation: bumped by pick()/Back so a stale decode/burn can never land on a newer selection. */
+    var selection by remember { mutableStateOf(0) }
+
     /** Resolve the burned file, load its song window into the audition chain, compute the inherited grid. */
-    suspend fun enterReady(s: IndexSong, src: LocalSource) {
+    suspend fun enterReady(s: IndexSong, src: LocalSource, token: Int) {
         val entry = graph.ripsRepository.entry(s.id)
         val len = NewSampleLogic.songLengthMs(s.length, entry?.durationMs)
-        lenMs = len
-        val full = withContext(Dispatchers.Default) { runCatching { studio.studioRender.decodeBuffer(src.file.path) }.getOrNull() }
-        if (full == null) { error = "Couldn’t open this track’s audio."; phase = SourcePhase.NeedsBurn; return }
         val off = if (src.isCut) 0 else src.offsetMs
-        val from = StudioAudio.msToFrames(off, 44100.0).coerceAtMost(full.frames.toLong())
-        val frames = minOf(StudioAudio.msToFrames(len, 44100.0), full.frames - from)
-        val win = StudioAudio.slice(full, from, frames) ?: full
+        // Ranged decode: only the song window, never the whole album side.
+        val win = runCatching { studio.studioRender.decodeRangeBuffer(src.file.path, off, len) }.getOrNull()
+        if (token != selection) return
+        if (win == null) { error = "Couldn’t open this track’s audio."; phase = SourcePhase.NeedsBurn; return }
+        lenMs = len
         window = win
-        peaks = withContext(Dispatchers.Default) { WaveformMath.peaks(win, 160) }
+        val pk = withContext(Dispatchers.Default) { WaveformMath.peaks(win, 160) }
+        if (token != selection) return
+        peaks = pk
         val (a, b) = NewSampleLogic.defaultRegion(len)
         startMs = a; endMs = b
         val sc = burns.localBeatGrid(s.id) ?: runCatching { burns.burnBeatGrid(s.id) }.getOrNull()
+        if (token != selection) return
         gridBpm = sc?.beatGridBpm ?: burns.beatGrid(s.id)?.bpm ?: s.bpm
         engine.loadSample(StudioSample("preview_${s.id}", s.name, "", durationMs = len), win)
         phase = SourcePhase.Ready(src)
     }
 
     fun pick(s: IndexSong) {
+        selection++
+        val token = selection
         song = s; error = null; window = null; peaks = FloatArray(0)
         val p = cache.phaseFor(s.id)
         phase = p
-        if (p is SourcePhase.Ready) scope.launch { enterReady(s, p.source) }
+        if (p is SourcePhase.Ready) scope.launch { enterReady(s, p.source, token) }
     }
 
     fun burn() {
         val s = song ?: return
+        val token = selection
         phase = SourcePhase.Burning
         scope.launch {
             val r = cache.prepare(s.id, s.name, s.artist)
-            if (r is SourcePhase.Ready) enterReady(s, r.source) else phase = r
+            if (token != selection) return@launch
+            if (r is SourcePhase.Ready) enterReady(s, r.source, token) else phase = r
         }
     }
 
@@ -213,7 +222,7 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
                 }
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { engine.unloadSample(); song = null; phase = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    IconButton(onClick = { selection++; engine.unloadSample(); song = null; phase = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                     Column(Modifier.weight(1f)) {
                         Text(s.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(s.artist, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
