@@ -174,6 +174,21 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
     val pocketsBridge: PocketsBridge
         get() = servicesBridge ?: if (isDebuggable()) debugBridge else NoPocketsBridge
 
+    /**
+     * The opt-in seam (GM-8). The services wave assigns the real Settings-backed handler; until then
+     * debug builds flip the `pdj.pocketsStub` gate and release builds can only show the offer.
+     */
+    internal val debugRecsEnabled = kotlinx.coroutines.flow.MutableStateFlow(true)
+
+    @Volatile var pocketsOptIn: com.levi.pocketdj.screens.games.PocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
+        // Debug builds: `pdj.pocketsRecsOff` extra turns the switch off so the "needs Recommendations"
+        // note is reachable; release builds without a services bridge never reach this view.
+        override val recommendationsEnabled: kotlinx.coroutines.flow.StateFlow<Boolean> get() = debugRecsEnabled
+        override fun choose(on: Boolean) {
+            if (isDebuggable()) stubEnabled.value = on
+        }
+    }
+
     /** Rounds upload half (acks in `pocketdj-in-the-pocket-sync.json`). */
     val roundsClient: InThePocketRoundsClient by lazy {
         InThePocketRoundsClient(
@@ -330,6 +345,10 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
             ) {
                 stubEnabled.value = true
             }
+            if (isDebuggable() && intent.hasExtra(POCKETS_RECS_OFF_EXTRA)) {
+                debugRecsEnabled.value = !(intent.getBooleanExtra(POCKETS_RECS_OFF_EXTRA, false) ||
+                    intent.getStringExtra(POCKETS_RECS_OFF_EXTRA) == "true")
+            }
             if (isDebuggable() && wantsSeed(intent)) {
                 app.appScope.launch(Dispatchers.IO) { runCatching { scoreboard.seedFixture(replaceExisting = wantsFixture(intent)) } }
             }
@@ -362,6 +381,7 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
 
         const val ROUNDS_SYNC_FILE = "pocketdj-in-the-pocket-sync.json"
         const val POCKETS_STUB_EXTRA = "pdj.pocketsStub"
+        const val POCKETS_RECS_OFF_EXTRA = "pdj.pocketsRecsOff"
         const val PUZZLE_DECISIONS_FILE = "pocketdj-puzzle-decisions.json"
         const val PUZZLE_DECISIONS_SYNC_KEY = "puzzle-decisions"
         const val PUZZLE_SETTINGS_KEY = "pdj.puzzle.settings.v1"
