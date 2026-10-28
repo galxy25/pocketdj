@@ -60,7 +60,11 @@ private fun parseLayout(value: String): AlbumLayout =
     if (value.lowercase() == "list") AlbumLayout.LIST else AlbumLayout.GRID
 
 private fun parseSearchMode(value: String): SearchMode =
-    if (value.lowercase() == "online") SearchMode.ONLINE else SearchMode.DEVICE
+    when (value.lowercase()) {
+        "online" -> SearchMode.ONLINE
+        "discover" -> SearchMode.DISCOVER
+        else -> SearchMode.DEVICE
+    }
 
 /**
  * Pre-clause snapshot (genres / bpm range / camelots / sources) → the equivalent

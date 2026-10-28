@@ -106,6 +106,28 @@ class RipServerClient(
         return execute(request) { text -> json.decodeFromString<RipJob>(text) }
     }
 
+    /**
+     * `POST /rip` with the metadata the server needs to mint an ad-hoc row for an `amrec_<id>` that is
+     * not in its manifest (iOS `requestRip(songId:title:artist:appleMusicId:lengthMs:)`). Without
+     * title + artist the server answers 404 "unknown songId" for a Discover song.
+     */
+    suspend fun requestRip(
+        songId: String,
+        title: String,
+        artist: String,
+        appleMusicId: String? = null,
+        lengthMs: Int? = null,
+    ): RipJob {
+        require(!PlayResolver.isStudioId(songId)) {
+            "Studio ids are device-local (not rippable): $songId"
+        }
+        val config = requireConfig()
+        val body = ripBody(songId, config.ripFromCloud, title, artist, appleMusicId, lengthMs)
+            .toRequestBody("application/json".toMediaType())
+        val request = builder(config, url(config, "rip")).post(body).build()
+        return execute(request) { text -> json.decodeFromString<RipJob>(text) }
+    }
+
     /** `GET /jobs/<jobId>` — poll a rip. The id is percent-encoded in the path. */
     suspend fun job(jobId: String): RipJob {
         val config = requireConfig()
@@ -426,6 +448,51 @@ class RipServerClient(
         }
     }
 
+    // ---- Discover (iOS RipsStore.discoverSearch / discoverSearchAlbums / fetchAlbumExpansion) ----
+
+    /** `GET /search?q=&limit=` — Apple Music catalog SONG hits via the iTunes proxy (metadata only). */
+    suspend fun searchSongs(query: String, limit: Int = 25): List<com.levi.pocketdj.screens.discover.DiscoverHit> {
+        val config = requireConfig()
+        val request = builder(config, url(config, "search").newBuilder()
+            .addQueryParameter("q", query.trim()).addQueryParameter("limit", limit.toString()).build()).get().build()
+        return execute(request) {
+            json.decodeFromString<com.levi.pocketdj.screens.discover.DiscoverSongsEnvelope>(it).results
+        }
+    }
+
+    /** `GET /search?entity=album` — ALBUM hits. */
+    suspend fun searchAlbums(query: String, limit: Int = 25): List<com.levi.pocketdj.screens.discover.DiscoverAlbumHit> {
+        val config = requireConfig()
+        val request = builder(config, url(config, "search").newBuilder()
+            .addQueryParameter("q", query.trim()).addQueryParameter("entity", "album")
+            .addQueryParameter("limit", limit.toString()).build()).get().build()
+        return execute(request) {
+            json.decodeFromString<com.levi.pocketdj.screens.discover.DiscoverAlbumsEnvelope>(it).results
+        }
+    }
+
+    /**
+     * `GET /album-tracks?id=<collectionId>` — ordered tracks plus (newer servers) the album row.
+     * [DiscoverAlbumExpansion.EMPTY] on any failure, exactly like iOS (callers decide how to surface it).
+     */
+    suspend fun albumTracks(collectionId: String): com.levi.pocketdj.screens.discover.DiscoverAlbumExpansion {
+        val id = collectionId.trim()
+        if (id.isEmpty() || !configProvider().configured) return com.levi.pocketdj.screens.discover.DiscoverAlbumExpansion.EMPTY
+        return try {
+            val config = requireConfig()
+            val request = builder(config, url(config, "album-tracks").newBuilder().addQueryParameter("id", id).build())
+                .get().build()
+            execute(request) {
+                val e = json.decodeFromString<com.levi.pocketdj.screens.discover.DiscoverAlbumTracksEnvelope>(it)
+                com.levi.pocketdj.screens.discover.DiscoverAlbumExpansion(e.album, e.tracks)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            com.levi.pocketdj.screens.discover.DiscoverAlbumExpansion.EMPTY
+        }
+    }
+
     private suspend fun requireConfig(): Config {
         val config = configProvider()
         if (!config.configured) {
@@ -480,7 +547,18 @@ class RipServerClient(
  * The POST /rip body (iOS RipsStore): `{"songId":…}` plus `"ripFromCloud":true` ONLY when the
  * toggle is on — the key is omitted (not false) when off, for older-server compat.
  */
-internal fun ripBody(songId: String, ripFromCloud: Boolean): String = buildJsonObject {
+internal fun ripBody(
+    songId: String,
+    ripFromCloud: Boolean,
+    title: String? = null,
+    artist: String? = null,
+    appleMusicId: String? = null,
+    lengthMs: Int? = null,
+): String = buildJsonObject {
     put("songId", songId)
+    if (!title.isNullOrBlank()) put("title", title)
+    if (!artist.isNullOrBlank()) put("artist", artist)
+    if (!appleMusicId.isNullOrBlank()) put("appleMusicId", appleMusicId)
+    if (lengthMs != null && lengthMs > 0) put("lengthMs", lengthMs)
     if (ripFromCloud) put("ripFromCloud", true)
 }.toString()

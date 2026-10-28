@@ -30,12 +30,12 @@ enum class BrowseKind { ALBUMS, SONGS, ARTISTS }
 enum class AlbumLayout { GRID, LIST }
 
 /**
- * On-device local filter vs. online OpenSearch (specs/browse.md §4.2, §7). The
- * online pipeline is not built in P1, but the mode is modelled + persisted so
- * the snapshot is spec-shaped and forward-compatible (discover is excluded on
- * Android). Defaults to [DEVICE].
+ * On-device local filter vs. online OpenSearch vs. Discover (Apple Music catalog search, BRW-15).
+ * Discover is NOT a [BrowseKind]: it rides the search mode (iOS `SearchMode.discover`) and is
+ * persisted as the lower-cased name; an older build parses the unknown "discover" string as
+ * [DEVICE]. Defaults to [DEVICE].
  */
-enum class SearchMode { DEVICE, ONLINE }
+enum class SearchMode { DEVICE, ONLINE, DISCOVER }
 
 /** Any row the filter/sort engine can run over: album, song (incl. History) or artist. */
 sealed interface BrowseRow {

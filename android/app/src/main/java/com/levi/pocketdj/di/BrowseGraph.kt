@@ -197,6 +197,36 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     val searchService: SearchService by lazy { SearchService(app.httpClient, searchConfig) }
 
+    // ---- BRW-15: Discover (Apple Music catalog search) --------------------------------------
+
+    /**
+     * Discover ＋ Add hooks. DISC-2 replaces these with the provisional-catalog / album fan-out flow;
+     * until then the default does the honest minimum: save to the Apple Music library when a
+     * Music-User-Token exists, and ask the rip server to prepare the user's copy (`amrec_<storeId>`).
+     * Return true when the add was accepted.
+     */
+    var discoverAddSong: suspend (com.levi.pocketdj.screens.discover.DiscoverHit) -> Boolean = { hit ->
+        val library = if (hasMusicUserToken()) {
+            app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.SONGS, listOf(hit.appleMusicId)) is
+                com.levi.pocketdj.data.applemusic.AmResult.Ok
+        } else {
+            false
+        }
+        val ripped = runCatching {
+            app.ripServerClient.isConfigured() && hit.id.isNotEmpty() &&
+                app.ripServerClient.requestRip(hit.id, hit.title, hit.artist, hit.appleMusicId, hit.durationMs) != null
+        }.getOrDefault(false)
+        library || ripped
+    }
+
+    var discoverAddAlbum: suspend (com.levi.pocketdj.screens.discover.DiscoverAlbumHit) -> Boolean = { hit ->
+        hasMusicUserToken() &&
+            app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.ALBUMS, listOf(hit.appleMusicId)) is
+                com.levi.pocketdj.data.applemusic.AmResult.Ok
+    }
+
+    suspend fun hasMusicUserToken(): Boolean = app.settings.current().hasAppleMusic
+
     /** On-demand lyrics (memory -> disk `filesDir/lyrics-cache` -> catalog CDN). */
     val lyricsStore: com.levi.pocketdj.data.lyrics.LyricsStore by lazy {
         com.levi.pocketdj.data.lyrics.LyricsStore(
