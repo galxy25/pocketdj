@@ -62,6 +62,9 @@ class PatternScheduler : PullSource {
     /** Slots armed so far (the horizon re-arm count; asserted by tests). */
     @Volatile var armedSlotCount = 0; private set
 
+    /** Fired (under the lock, audio thread) per horizon re-arm with the slot range; the host must only enqueue/rate-limit. */
+    @Volatile var onArmed: ((from: Int, through: Int) -> Unit)? = null
+
     val running: Boolean get() = runningFlag
 
     /** Frames pulled since the pattern (re)started: the render clock the highlight clock reads. */
@@ -143,8 +146,8 @@ class PatternScheduler : PullSource {
 
     /**
      * Live step edit: mirror a step on/off into the RUNNING pattern. Off also clears the live loop/span mirror
-     * (matching `StudioStore.setPatternStep`). Bounds-guarded; a no-op when the row/col isn't loaded. Hits already
-     * armed for that row are re-evaluated from the next not-yet-rendered slot so the edit is heard within a step.
+     * (matching `StudioStore.setPatternStep`). Bounds-guarded; a no-op when the row/col isn't loaded. Matches iOS: only the
+     * arrays change, so an edit is heard when the rolling horizon next arms that slot (hits already armed keep their schedule).
      */
     fun updateLiveStep(row: Int, col: Int, on: Boolean) = synchronized(lock) {
         val r = rows.getOrNull(row) ?: return@synchronized
@@ -154,22 +157,12 @@ class PatternScheduler : PullSource {
             if (col in r.loopSteps.indices) r.loopSteps[col] = false
             if (col in r.stepSpans.indices) r.stepSpans[col] = 0
         }
-        rearmRowLocked(r)
     }
 
     fun updateLiveStepLoop(row: Int, col: Int, loop: Boolean) = synchronized(lock) {
         val r = rows.getOrNull(row) ?: return@synchronized
         if (col !in r.loopSteps.indices) return@synchronized
         r.loopSteps[col] = loop
-        rearmRowLocked(r)
-    }
-
-    private fun rearmRowLocked(r: PatternRowVoice) {
-        if (!runningFlag) return
-        val stepF = PatternMath.stepFrames(bpm)
-        r.pending.clear()
-        val first = ((frameCursor + stepF - 1) / stepF).toInt()      // first slot whose frame is not yet rendered
-        for (slot in first until armedThroughSlot) armSlotRow(r, slot)
     }
 
     /** Test seam: the row voice's current frame cursor (null = silent / unloaded). Choke resets it to 0. */
@@ -183,7 +176,9 @@ class PatternScheduler : PullSource {
     private fun armHorizonLocked(throughFrame: Long) {
         val stepF = PatternMath.stepFrames(bpm)
         val target = (throughFrame / stepF).toInt() + PatternMath.HORIZON_SLOTS
+        val from = armedThroughSlot
         while (armedThroughSlot <= target) { armSlot(armedThroughSlot); armedThroughSlot++ }
+        if (armedThroughSlot > from) onArmed?.invoke(from, armedThroughSlot - 1)
     }
 
     /**
@@ -276,12 +271,53 @@ class PatternEngine(
 
     private var trackAdded = false
 
+    /** Latched interruption park: set by [parkForInterruption], cleared by an explicit start/stop/load. */
+    @Volatile var parkedForInterruption = false; private set
+    private var lastArmDiagNs = 0L
+
+    init {
+        scheduler.onArmed = { from, through ->
+            val now = System.nanoTime()
+            if (now - lastArmDiagNs > 1_000_000_000L) {      // rate-limited: never log per audio block
+                lastArmDiagNs = now
+                diag("armed slots $from..$through (count=${scheduler.armedSlotCount})")
+            }
+        }
+    }
+
+    /**
+     * Transient audio-focus loss (notification, nav prompt, call ring): silence the sink but KEEP the loaded pattern
+     * and the focus request so [resumeFromInterruption] can restart from the top on AUDIOFOCUS_GAIN (iOS parity:
+     * park on .began, resume on .ended+shouldResume).
+     */
+    fun parkForInterruption() {
+        if (!_isPlaying.value) return
+        parkedForInterruption = true
+        scheduler.stop()
+        clock.running = false
+        _isPlaying.value = false
+        _soloedRow.value = null
+        sink?.stop()
+        diag("pattern parked (interruption)")
+    }
+
+    /** Restart from the top iff parked and still loaded. Returns whether a restart happened. */
+    fun resumeFromInterruption(): Boolean {
+        if (!parkedForInterruption) return false
+        parkedForInterruption = false
+        if (_loadedPatternId.value == null) return false
+        val ok = startPattern()
+        diag("pattern resume after interruption ok=$ok")
+        return ok
+    }
+
     /** Swaps only while stopped (a running pattern is stopped first). */
     fun loadPattern(
         pattern: StudioPattern, buffers: Map<Int, PcmBuffer>, spanBuffers: Map<Int, Map<Int, PcmBuffer>> = emptyMap(),
         soloedRow: Int? = null, startStep: Int = 0, loopEnabled: Boolean = false, loopBars: Int = 2,
     ) {
         if (_isPlaying.value) stopPattern()
+        parkedForInterruption = false
         if (pattern.rows.size > PatternMath.MAX_PATTERN_ROWS) diag("loadPattern ${pattern.id}: rows capped at ${PatternMath.MAX_PATTERN_ROWS} (had ${pattern.rows.size})")
         val sounding = scheduler.load(pattern, buffers, spanBuffers, startStep, loopEnabled, loopBars)
         clock.bpm = scheduler.patternBpm; clock.stepCount = scheduler.patternStepCount
@@ -296,6 +332,7 @@ class PatternEngine(
 
     /** Start the loaded pattern from the top of the bar. False (and [lastRefusal]) when it cannot start. */
     fun startPattern(): Boolean {
+        parkedForInterruption = false
         if (_loadedPatternId.value == null) { lastRefusal = "no-pattern"; return false }
         if (!scheduler.hasContent) { lastRefusal = "no-content"; diag("startPattern REFUSED: no sounding steps with buffers"); return false }
         if (!AudioFocusPolicy.mayStartPlayback()) { lastRefusal = "mic-capture-active"; diag("startPattern refused: mic capture active"); return false }
@@ -319,11 +356,14 @@ class PatternEngine(
     /** Stop (rows keep their buffers - start replays from the top). Read [clock] BEFORE this to park the cursor. */
     fun stopPattern() {
         val was = _isPlaying.value
+        val wasParked = parkedForInterruption
+        parkedForInterruption = false
         scheduler.stop()
         clock.running = false
         _isPlaying.value = false
         _soloedRow.value = null
         if (was) { sink?.stop(); focusRelease?.invoke(); diag("stopPattern") }
+        else if (wasParked) { focusRelease?.invoke(); diag("stopPattern (parked)") }
     }
 
     /** Live row-gain tweak while a pattern plays (no schedule impact). */

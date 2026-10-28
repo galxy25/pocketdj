@@ -59,6 +59,7 @@ fun SequencerScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     val store = graph.studioGraph.studioStore
     var openId by rememberSaveable { mutableStateOf<String?>(null) }
     val id = openId
+    androidx.activity.compose.BackHandler(enabled = id != null) { openId = null }
     if (id != null) PatternEditor(graph, id, onBack = { openId = null }, modifier)
     else PatternList(graph, onOpen = { openId = it }, modifier)
 }

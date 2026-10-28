@@ -367,7 +367,7 @@ private fun StepGrid(
             }
         }
         if (shown < lines) {
-            val remaining = lines - shown
+            val remaining = (((lines - shown) * perLine + 15) / 16).coerceAtLeast(1)   // lines -> bars
             Text("$remaining more bar${if (remaining == 1) "" else "s"}…", Modifier.height(CELL_HEIGHT).testTag("seq-pending-bars-$rowIndex"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }

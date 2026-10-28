@@ -76,8 +76,10 @@ fun PatternEditor(graph: AppGraph, patternId: String, onBack: () -> Unit, modifi
     val store = sg.studioStore
     val doc by store.state.collectAsState()
     val pattern = doc.patterns.firstOrNull { it.id == patternId }
-    val scope = rememberCoroutineScope()
+    // App-scoped (Main) so an in-flight prepare survives activity recreation (rotation/fold/resize); cancelled on real exit.
+    val scope = remember(graph) { kotlinx.coroutines.CoroutineScope(graph.appScope.coroutineContext + kotlinx.coroutines.Dispatchers.Main.immediate) }
     val controller = remember(graph) { SequencerController(graph, scope) }
+    val activity = androidx.compose.ui.platform.LocalContext.current as? android.app.Activity
     val engine = sg.patternEngine
     val loadedId by engine.loadedPatternId.collectAsState()
     val playing by engine.isPlaying.collectAsState()
@@ -108,8 +110,9 @@ fun PatternEditor(graph: AppGraph, patternId: String, onBack: () -> Unit, modifi
     // Leaving the editor stops the pattern, gated on OWNERSHIP (the engine is app-scoped and plays one pattern globally).
     DisposableEffect(patternId) {
         onDispose {
-            controller.cancelPrepare()
-            if (engine.loadedPatternId.value == patternId && engine.isPlaying.value) engine.stopPattern()
+            val changing = activity?.isChangingConfigurations == true
+            if (SequencerLifecycle.shouldCancelPrepareOnDispose(changing)) controller.cancelPrepare()
+            if (SequencerLifecycle.shouldStopOnDispose(changing, engine.loadedPatternId.value == patternId, engine.isPlaying.value)) engine.stopPattern()
         }
     }
 

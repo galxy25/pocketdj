@@ -26,7 +26,19 @@ import kotlinx.coroutines.launch
  * SKIPPED with an advisory [notice] (never a throw); only a fully-empty result blocks playback. State is Compose state
  * so the editor re-renders; all engine calls happen on [scope] (Main).
  */
-class SequencerController(private val graph: AppGraph, private val scope: CoroutineScope) {
+/** Editor-dispose policy (pure, unit-tested): a configuration change (rotation, fold, resize, dark mode) is NOT leaving. */
+object SequencerLifecycle {
+    fun shouldStopOnDispose(changingConfigurations: Boolean, ownsLoadedPattern: Boolean, playing: Boolean): Boolean =
+        !changingConfigurations && ownsLoadedPattern && playing
+    fun shouldCancelPrepareOnDispose(changingConfigurations: Boolean): Boolean = !changingConfigurations
+}
+
+class SequencerController(
+    private val graph: AppGraph,
+    private val scope: CoroutineScope,
+    /** Bounce outlives the editor (iOS: unstructured Task): an app-scoped scope; flags below are plain state writes. */
+    private val bounceScope: CoroutineScope = graph.appScope,
+) {
     private val sg get() = graph.studioGraph
     private val store get() = sg.studioStore
 
@@ -159,7 +171,7 @@ class SequencerController(private val graph: AppGraph, private val scope: Corout
         if (bouncing) return
         notice = null
         bouncing = true
-        scope.launch {
+        bounceScope.launch {
             try {
                 val buffers = HashMap<String, PcmBuffer>()
                 for (row in pattern.rows.take(PatternMath.MAX_PATTERN_ROWS)) {

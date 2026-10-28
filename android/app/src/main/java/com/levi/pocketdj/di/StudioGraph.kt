@@ -157,7 +157,12 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     // ---- STU-5: sequencer pattern playback (lazy; one audible owner with Now Playing / sample / loop auditions)
 
     private val patternLazy: Lazy<PatternEngine> = lazy {
-        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { patternEngine.stopPattern() } }
+        val focus = AudioFocusPolicy.FocusHandle(
+            audioManager,
+            onLoss = { app.appScope.launch(Dispatchers.Main) { patternEngine.stopPattern() } },
+            onTransientLoss = { app.appScope.launch(Dispatchers.Main) { patternEngine.parkForInterruption() } },
+            onGain = { app.appScope.launch(Dispatchers.Main) { patternEngine.resumeFromInterruption() } },
+        )
         PatternEngine(
             sinkFactory = { StudioOutputs.create(audioManager) },
             focus = {

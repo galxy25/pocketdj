@@ -205,16 +205,49 @@ class PatternEngineTest {
         assertEquals(0.5012f, out[(stepF - 10) * 2], 1e-3f)     // and so is the next trigger, same schedule
     }
 
-    @Test fun liveStepOnIsHeardWithinTheHorizonWithoutARestart() {
+    @Test fun liveStepEditsLandAtTheNextHorizonNotInAlreadyArmedSlots() {
         val s = PatternScheduler()
         s.load(pattern(row("a", 0)), mapOf(0 to const(10, 1f)))
         s.restartFromTop(); s.render(stepF / 2)
-        assertFalse(s.pendingHitFrames(0).contains(3L * stepF))
+        val before = s.pendingHitFrames(0)
         s.updateLiveStep(0, 3, true)
-        assertTrue(s.pendingHitFrames(0).contains(3L * stepF))
-        assertTrue(s.pendingHitFrames(0).contains(19L * stepF))        // next pass too
-        s.updateLiveStep(0, 3, false)
-        assertFalse(s.pendingHitFrames(0).contains(3L * stepF))
+        assertEquals(before, s.pendingHitFrames(0))                     // iOS parity: armed hits keep their schedule
+        s.render(6 * 16 * stepF)                                        // horizon passes: slot 3 of a later pass is armed from the mirror
+        assertTrue(s.pendingHitFrames(0).any { (it / stepF) % 16 == 3L })
+    }
+
+    @Test fun engineParksOnTransientLossAndResumesFromTheTopOnlyWhenParked() {
+        val sink = FakeSink()
+        var released = 0
+        val e = PatternEngine({ sink }, focus = { true }, focusRelease = { released++ })
+        e.loadPattern(pattern(row("a", 0)), mapOf(0 to const(100, 0.5f)))
+        assertFalse(e.resumeFromInterruption())                         // not parked: no-op
+        assertTrue(e.startPattern())
+        e.parkForInterruption()
+        assertFalse(e.isPlaying.value); assertTrue(e.parkedForInterruption); assertEquals(0, released)   // focus kept
+        assertTrue(e.resumeFromInterruption())
+        assertTrue(e.isPlaying.value); assertFalse(e.parkedForInterruption)
+    }
+
+    @Test fun explicitStopClearsThePark() {
+        val sink = FakeSink()
+        var released = 0
+        val e = PatternEngine({ sink }, focus = { true }, focusRelease = { released++ })
+        e.loadPattern(pattern(row("a", 0)), mapOf(0 to const(100, 0.5f)))
+        e.startPattern(); e.parkForInterruption()
+        e.stopPattern()
+        assertEquals(1, released); assertFalse(e.parkedForInterruption)
+        assertFalse(e.resumeFromInterruption()); assertFalse(e.isPlaying.value)
+    }
+
+    @Test fun horizonRearmEmitsADiag() {
+        val sink = FakeSink()
+        val lines = ArrayList<String>()
+        val e = PatternEngine({ sink }, diag = { lines += it })
+        e.loadPattern(pattern(row("a", 0)), mapOf(0 to const(10, 1f)))
+        e.startPattern()
+        sink.renderer!!.render(FloatArray(stepF * 2), stepF)
+        assertTrue(lines.any { it.startsWith("armed slots ") })
     }
 
     @Test fun liveStepOffAlsoClearsTheLoopAndSpanMirror() {
