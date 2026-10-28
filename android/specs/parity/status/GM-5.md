@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # GM-5 — In the Pocket core (pure)
 

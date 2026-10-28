@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # PB-4 - Durable playback session: real-time snapshot, held restore, resume at position, materialize Now Playing setlist, playback-resumption provider
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # GM-1 Games tab + Scoreboard store + GamesGraph
 
