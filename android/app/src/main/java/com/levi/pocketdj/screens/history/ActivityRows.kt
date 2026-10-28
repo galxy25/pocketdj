@@ -77,7 +77,19 @@ internal fun activityHeadline(
         ActivityKind.HEART -> "Hearted $item"
         ActivityKind.UNHEART -> "Removed heart from $item"
         ActivityKind.REMOVE -> "Removed $item from $coll"
-        ActivityKind.CATALOG_ADD -> "Added $item to your library"
+        ActivityKind.CATALOG_ADD -> catalogAddHeadline(item, event.libraryWrite)
         ActivityKind.CATALOG_REMOVE -> "Removed $item from your library"
     }
+}
+
+/**
+ * iOS `CollectionActivityStore.catalogAddHeadline`: "to your library" only for a nil-legacy
+ * or proven ("confirmed" / "confirmed (web)") write; otherwise the write's own annotation.
+ */
+internal fun catalogAddHeadline(item: String, libraryWrite: String?): String {
+    val annotation = libraryWrite
+    if (annotation == null || annotation == "confirmed" || annotation == "confirmed (web)") {
+        return "Added $item to your library"
+    }
+    return "Added $item to PocketDJ ($annotation)"
 }

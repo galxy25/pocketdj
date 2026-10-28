@@ -79,6 +79,7 @@ private fun JsonObject.optBoolean(key: String): Boolean? {
     val el = this[key] ?: return null
     if (el is JsonNull) return null
     val p = el as? JsonPrimitive ?: throw SerializationException("$key must be a boolean")
+    if (p.isString) throw SerializationException("$key must be a boolean")
     return when (p.content) {
         "true" -> true
         "false" -> false
@@ -192,7 +193,7 @@ object PlaylistSerializer : KSerializer<Playlist> {
             sourceSongIds = obj.optStringList("sourceSongIds"),
             sourceSyncEnabled = obj.optBoolean("sourceSyncEnabled"),
             sourceSyncedAt = obj.optDouble("sourceSyncedAt"),
-            amSyncDirection = obj.optString("amSyncDirection"),
+            amSyncDirection = runCatching { obj.optString("amSyncDirection") }.getOrNull(),
             // Lenient on purpose (iOS `try?`): a garbled value must not cost the playlist.
             cleanOnly = runCatching { obj.optBoolean("cleanOnly") }.getOrNull(),
             recsEnabled = runCatching { obj.optBoolean("recsEnabled") }.getOrNull(),
@@ -235,6 +236,27 @@ object PlaylistSerializer : KSerializer<Playlist> {
 
 // MARK: - Document codec + migration
 
+/**
+ * iOS `Pocket.init(from:)` reads amSyncDirection/cleanOnly/recsEnabled with `try?`; the
+ * generated Pocket decoder would throw (dropping the whole pocket), so a wrong-typed
+ * value is stripped (=> null) before decoding.
+ */
+internal fun sanitizePocketFlags(el: kotlinx.serialization.json.JsonElement): kotlinx.serialization.json.JsonElement {
+    val obj = el as? JsonObject ?: return el
+    fun bad(key: String, ok: (JsonPrimitive) -> Boolean): Boolean {
+        val v = obj[key] ?: return false
+        if (v is kotlinx.serialization.json.JsonNull) return false
+        val p = v as? JsonPrimitive ?: return true
+        return !ok(p)
+    }
+    val drop = buildSet {
+        if (bad("amSyncDirection") { it.isString }) add("amSyncDirection")
+        if (bad("cleanOnly") { !it.isString && (it.content == "true" || it.content == "false") }) add("cleanOnly")
+        if (bad("recsEnabled") { !it.isString && (it.content == "true" || it.content == "false") }) add("recsEnabled")
+    }
+    return if (drop.isEmpty()) el else JsonObject(obj.filterKeys { it !in drop })
+}
+
 object CollectionsCodec {
     /**
      * Field-level lenient document decode (iOS `CollectionsDocument.init(from:)`):
@@ -254,7 +276,7 @@ object CollectionsCodec {
 
         val doc = CollectionsDocument(
             schemaVersion = (root["schemaVersion"] as? JsonPrimitive)?.intOrNull ?: 0,
-            pockets = lossyList("pockets", Pocket.serializer()),
+            pockets = (root["pockets"] as? JsonArray)?.let { lossyElements(json, JsonArray(it.map(::sanitizePocketFlags)), Pocket.serializer()) } ?: emptyList(),
             playlists = lossyList("playlists", PlaylistSerializer),
             setlists = lossyList("setlists", Setlist.serializer()),
             folders = lossyList("folders", PlaylistFolder.serializer()),

@@ -103,6 +103,23 @@ class CollectionsCodecParityTest {
     }
 
     @Test
+    fun garbledPocketFlagsKeepThePocket() {
+        val text = """{"schemaVersion":7,"pockets":[
+            {"id":"pk_a","name":"A","amSyncDirection":5,"cleanOnly":1,"recsEnabled":"true","createdAt":1,"updatedAt":2},
+            {"id":"pk_b","name":"B","cleanOnly":"true","createdAt":1,"updatedAt":2}],
+            "playlists":[{"id":"pls_x","name":"X","amSyncDirection":7,"cleanOnly":"true","sequences":[],"createdAt":1,"updatedAt":2}]}"""
+        val doc = CollectionsCodec.decode(json, text)
+        assertEquals(2, doc.pockets.size)
+        assertNull(doc.pockets[0].amSyncDirection)
+        assertNull(doc.pockets[0].cleanOnly)
+        assertNull(doc.pockets[0].recsEnabled)
+        assertNull(doc.pockets[1].cleanOnly)
+        assertEquals(1, doc.playlists.size)
+        assertNull(doc.playlists[0].amSyncDirection)
+        assertNull(doc.playlists[0].cleanOnly)
+    }
+
+    @Test
     fun cleanOnlyOffLeavesBytesUnchanged() {
         val store = newStore()
         val p = store.createPocket("P")

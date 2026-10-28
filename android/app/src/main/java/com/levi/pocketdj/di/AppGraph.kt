@@ -198,6 +198,7 @@ class AppGraph private constructor(context: Context) {
                     },
                     itemId = hook.itemId,
                     itemTitle = hook.itemTitle,
+                    itemArtist = hook.itemArtist,
                     collectionId = hook.collectionId,
                     collectionKind = hook.collectionKind,
                     collectionName = hook.collectionName,

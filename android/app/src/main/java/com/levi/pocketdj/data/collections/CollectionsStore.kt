@@ -59,6 +59,7 @@ class CollectionsStore(
         val kind: Kind,
         val itemId: String,
         val itemTitle: String? = null,
+        val itemArtist: String? = null,
         val collectionId: String? = null,
         /** AddTarget.Kind raw token ("pocket" / "playlist"). */
         val collectionKind: String? = null,
@@ -986,6 +987,11 @@ class CollectionsStore(
         return merged.songsById[id]?.name ?: merged.albumsById[id]?.name
     }
 
+    private fun activityArtist(id: String): String? {
+        val merged = catalogProvider?.invoke() ?: return null
+        return (merged.songsById[id]?.artist ?: merged.albumsById[id]?.artist)?.takeIf { it.isNotEmpty() }
+    }
+
     private fun plainCollectionName(target: AddTarget): String? = when (target.kind) {
         AddTarget.Kind.POCKET -> pocket(target.id)?.name
         AddTarget.Kind.PLAYLIST -> playlist(target.id)?.name
@@ -997,6 +1003,7 @@ class CollectionsStore(
                 kind = ActivityHook.Kind.ADD,
                 itemId = itemId,
                 itemTitle = activityTitle(itemId),
+                itemArtist = activityArtist(itemId),
                 collectionId = target.id,
                 collectionKind = target.kind.token,
                 collectionName = plainCollectionName(target),
@@ -1016,6 +1023,7 @@ class CollectionsStore(
                 kind = ActivityHook.Kind.REMOVE,
                 itemId = itemId,
                 itemTitle = itemTitle ?: activityTitle(itemId),
+                itemArtist = activityArtist(itemId),
                 collectionId = collectionId,
                 collectionKind = kind.token,
                 collectionName = name,

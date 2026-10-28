@@ -30,6 +30,8 @@ import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
@@ -669,8 +671,8 @@ private fun ActivityKind.icon(): ImageVector = when (this) {
     ActivityKind.HEART -> Icons.Filled.Favorite
     ActivityKind.UNHEART -> Icons.Filled.HeartBroken
     ActivityKind.REMOVE -> Icons.Filled.RemoveCircleOutline
-    ActivityKind.CATALOG_ADD -> Icons.Filled.AddCircleOutline
-    ActivityKind.CATALOG_REMOVE -> Icons.Filled.RemoveCircleOutline
+    ActivityKind.CATALOG_ADD -> Icons.Filled.Download
+    ActivityKind.CATALOG_REMOVE -> Icons.Filled.Delete
 }
 
 @Composable

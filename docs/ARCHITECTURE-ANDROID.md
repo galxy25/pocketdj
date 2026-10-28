@@ -394,7 +394,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
-| COL-1 — Collections + activity schema parity (additive iOS fields, lenient kinds, iOS fixture rou… | 1 | Planned | — |
+| COL-1 — Collections + activity schema parity (additive iOS fields, lenient kinds, iOS fixture rou… | 1 | DONE (JVM) | Emulator adb-push round-trip not run (integrator). amPlaylistId NOT persisted, matches iOS CodingKeys (roadmap deviation, owner decision pending). |
 | COL-2 — Store batch choke points + shared VersionedJsonWriter (off-main, version-ordered, invalid… | 2 | Planned | — |
 | COL-10 — Favorites store + ♥ toggle + Browse favorite tri-state filter model + heart/unheart activ… | 3 | Planned | — |
 | COL-4 — AddToActions + Add-to sheet parity (Suggested + Recent, pockets A–Z, playlists A–Z, More…… | 5 | Planned | — |
