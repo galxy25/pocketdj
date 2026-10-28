@@ -97,6 +97,7 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
                 StudioSubTab.Sequencer -> SequencerScreen(graph)
                 StudioSubTab.Tracks -> com.levi.pocketdj.screens.producer.tracks.TracksHomeScreen(graph, onFullscreenChange = { arrangerFullscreen = it })
                 StudioSubTab.Instruments -> com.levi.pocketdj.screens.producer.instruments.InstrumentsScreen(graph)
+                StudioSubTab.Demuxer -> com.levi.pocketdj.screens.producer.demux.DemuxScreen(graph)
                 else -> ComingSoon(tab)
             }
         }
