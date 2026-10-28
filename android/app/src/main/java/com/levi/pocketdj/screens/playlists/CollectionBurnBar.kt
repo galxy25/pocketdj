@@ -40,6 +40,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -106,16 +108,27 @@ object CollectionBurnReducer {
 
     fun pillText(p: BurnProgress?): String? = p?.let { "${it.label} ${it.done}/${it.total}".trim() }
 
+    /** iOS RowTransport.phaseLabel equivalent for the raw tracker phase string. */
+    fun phaseLabel(phase: String): String = when (phase.lowercase()) {
+        "queued", "pending" -> "Queued\u2026"
+        "searching", "search" -> "Searching\u2026"
+        "ripping", "recording" -> "Ripping\u2026"
+        "uploading", "upload" -> "Uploading\u2026"
+        else -> phase.replaceFirstChar { it.uppercase() } + "\u2026"
+    }
+
     /**
-     * One-line row note for a collection song: the burn ledger's not-ripped error wins, else the live
-     * rip phase while a rip is running. Null => no note.
+     * One-line row note for a collection song: the burn ledger's not-ripped error wins (unless the
+     * song has since landed in the manifest), else the live rip phase while a rip is running.
      */
-    fun rowNote(burn: BurnItem?, job: RipJob?): String? {
-        if (burn != null && burn.state == BurnState.ERROR) {
+    fun rowNote(burn: BurnItem?, job: RipJob?, manifestHit: Boolean = false): String? {
+        if (!manifestHit && burn != null && burn.state == BurnState.ERROR) {
             val e = burn.error.orEmpty()
             if (e.startsWith("not ripped")) return e
         }
-        if (job != null && !job.isReady && job.phase.isNotEmpty() && job.phase != "ready") return job.phase
+        if (job != null && !job.isReady && job.phase.isNotEmpty() && job.phase != "ready" && job.phase != "error") {
+            return phaseLabel(job.phase)
+        }
         return null
     }
 }
@@ -202,24 +215,27 @@ class CollectionBurnController(
         if (_state.value.working) return null
         _state.update { it.copy(working = true, inFlightOp = CollectionOp.BURN) }
         val job = scope.launch {
-            val songs = tuples(ids)
-            val r = try {
-                burn(songs)
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                _state.update { it.copy(working = false, inFlightOp = null) }
-                throw e
-            }
-            val server = hasServer()
-            if (CollectionBurnReducer.shouldRipMissing(r, server)) {
-                val missing = songs.map { it.id }.filterNot(isRipped)
-                if (missing.isNotEmpty()) runCatching { ripCollection(missing) }
-            }
-            _state.update {
-                it.copy(
-                    summary = CollectionBurnReducer.burnSummary(r, server),
-                    canRefresh = CollectionBurnReducer.canRefreshAfterBurn(r),
-                    working = false, inFlightOp = null, showSummary = true,
-                )
+            var finished = false
+            try {
+                val songs = tuples(ids)
+                // No hard cancel on Stop: requestStop() makes the store break at the next item and
+                // return a partial result (stopped = true), so the summary still reports counts.
+                val r = burn(songs)
+                val server = hasServer()
+                if (CollectionBurnReducer.shouldRipMissing(r, server)) {
+                    val missing = songs.map { it.id }.filterNot(isRipped)
+                    if (missing.isNotEmpty()) runCatching { ripCollection(missing) }
+                }
+                _state.update {
+                    it.copy(
+                        summary = CollectionBurnReducer.burnSummary(r, server),
+                        canRefresh = CollectionBurnReducer.canRefreshAfterBurn(r),
+                        working = false, inFlightOp = null, showSummary = true,
+                    )
+                }
+                finished = true
+            } finally {
+                if (!finished) _state.update { it.copy(working = false, inFlightOp = null) }
             }
         }
         burnJob = job
@@ -231,7 +247,6 @@ class CollectionBurnController(
         val s = _state.value
         requestStopBurn() // idempotent; also covers a background burn whose job already returned
         if (s.inFlightOp == CollectionOp.BURN) {
-            burnJob?.cancel()
             return null
         }
         val ids = lastRipIds
@@ -252,9 +267,9 @@ class CollectionBurnController(
 
 /** Builds the controller from the app graph for one collection screen. */
 @Composable
-fun rememberCollectionBurnController(): CollectionBurnController {
+fun rememberCollectionBurnController(key: Any? = null): CollectionBurnController {
     val context = LocalContext.current
-    val controller = remember {
+    val controller = remember(key) {
         val graph = AppGraph.get(context)
         val services = graph.servicesGraph
         val store = services.burnStore
@@ -295,21 +310,22 @@ fun CollectionBurnBar(
     val graph = AppGraph.get(LocalContext.current)
     val state by controller.state.collectAsState()
     val progress by graph.servicesGraph.burnStore.progress.collectAsState()
-    val ids = songIds()
+    val currentSongIds by androidx.compose.runtime.rememberUpdatedState(songIds)
+    val hasSongs by remember { androidx.compose.runtime.derivedStateOf { currentSongIds().isNotEmpty() } }
     val serverConfigured by androidx.compose.runtime.produceState(false) { value = graph.ripServerClient.isConfigured() }
 
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedButton(
                 onClick = { controller.rip(songIds()) },
-                enabled = ids.isNotEmpty() && !state.working && serverConfigured,
+                enabled = hasSongs && !state.working && serverConfigured,
             ) {
                 Icon(Icons.Filled.ArrowCircleDown, contentDescription = null)
                 Text("Rip")
             }
             OutlinedButton(
                 onClick = { controller.burn(songIds()) },
-                enabled = ids.isNotEmpty() && !state.working,
+                enabled = hasSongs && !state.working,
             ) {
                 Icon(Icons.Filled.LocalFireDepartment, contentDescription = null)
                 Text("Burn")
@@ -342,4 +358,18 @@ fun CollectionBurnBar(
             } else null,
         )
     }
+}
+
+/** Per-row note: collects only this song's ledger/job entries so other rows' changes don't recompose it. */
+@Composable
+fun rememberRowNote(songId: String?, manifestHit: Boolean): String? {
+    if (songId == null) return null
+    val graph = AppGraph.get(LocalContext.current)
+    val burn by remember(songId) {
+        graph.servicesGraph.burnStore.items.map { it[songId] }.distinctUntilChanged()
+    }.collectAsState(null)
+    val job by remember(songId) {
+        graph.ripJobTracker.jobs.map { it[songId] }.distinctUntilChanged()
+    }.collectAsState(null)
+    return CollectionBurnReducer.rowNote(burn, job, manifestHit)
 }

@@ -51,22 +51,3 @@ class BurnedRowResolver(private val lookup: BurnLookup) : LocalFileResolver, Row
         }
     }
 }
-
-/**
- * Pure device-mode queue plan (the sequencer applies the same rule row by row at its turn): which
- * rows would play, and whether the run is dead on arrival (the one-shot banner case).
- */
-object DeviceQueuePlan {
-    sealed interface Outcome {
-        /** [playable] keeps queue order; [skipped] are the un-burned rows device mode passes over. */
-        data class Plays(val playable: List<QueueItem>, val skipped: List<QueueItem>) : Outcome
-
-        /** Nothing in the queue is on this device: raise the banner ONCE and play nothing. */
-        data object AllUnplayable : Outcome
-    }
-
-    fun plan(queue: List<QueueItem>, isBurned: (QueueItem) -> Boolean): Outcome {
-        val (ok, skipped) = queue.partition(isBurned)
-        return if (ok.isEmpty()) Outcome.AllUnplayable else Outcome.Plays(ok, skipped)
-    }
-}

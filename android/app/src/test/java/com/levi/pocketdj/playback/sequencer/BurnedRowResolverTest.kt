@@ -54,18 +54,4 @@ class BurnedRowResolverTest {
         assertEquals(UnplayableSource(UnplayableSource.Reason.NOT_ON_DEVICE), src)
         assertTrue(registry().resolve(QueueItem("a"), PlaybackMode.DEVICE) is LocalFileSource)
     }
-
-    @Test fun queuePlanSkipsUnburnedAndKeepsOrder() {
-        val q = listOf(QueueItem("a"), QueueItem("m"), QueueItem("b"))
-        val plan = DeviceQueuePlan.plan(q) { resolver.localUrlForPlayback(it) != null }
-        plan as DeviceQueuePlan.Outcome.Plays
-        assertEquals(listOf("a", "b"), plan.playable.map { it.id })
-        assertEquals(listOf("m"), plan.skipped.map { it.id })
-    }
-
-    @Test fun queuePlanAllUnplayableWhenNothingBurned() {
-        val plan = DeviceQueuePlan.plan(listOf(QueueItem("m"), QueueItem("n"))) { false }
-        assertEquals(DeviceQueuePlan.Outcome.AllUnplayable, plan)
-        assertEquals(DeviceQueuePlan.Outcome.AllUnplayable, DeviceQueuePlan.plan(emptyList()) { true })
-    }
 }

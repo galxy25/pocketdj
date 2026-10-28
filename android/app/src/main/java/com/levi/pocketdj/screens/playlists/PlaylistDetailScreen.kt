@@ -114,9 +114,7 @@ fun PlaylistDetailScreen(
             onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
         }
 
-        val burnController = rememberCollectionBurnController()
-        val burnItems by graph.servicesGraph.burnStore.items.collectAsState()
-        val ripJobs by graph.ripJobTracker.jobs.collectAsState()
+        val burnController = rememberCollectionBurnController(playlistId)
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             item(key = "burn-bar") {
@@ -218,7 +216,7 @@ fun PlaylistDetailScreen(
                             catalog = catalog,
                             pocketName = { store.pocket(it)?.name },
                             manifestHit = node.songId?.let { manifest.containsKey(it) } ?: false,
-                            rowNote = node.songId?.let { CollectionBurnReducer.rowNote(burnItems[it], ripJobs[it]) },
+                            rowNote = rememberRowNote(node.songId, node.songId?.let { manifest.containsKey(it) } ?: false),
                             onTapSong = { detailSongId = it },
                             onOpenAlbum = onOpenAlbum,
                             onOpenPocket = onOpenPocket,

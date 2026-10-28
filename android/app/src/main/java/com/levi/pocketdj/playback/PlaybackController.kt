@@ -181,7 +181,9 @@ class PlaybackController(
     var localFiles: LocalFileResolver = LocalFileResolver.None
 
     /** SVC-4 burned-first: the local file for a plain song id, via the same seam as the ladder. */
-    private fun burnedFile(songId: String) = localFiles.localUrlForPlayback(QueueItem(id = songId))
+    /** File.exists()/dir.list() (analog heal) must not run on the main thread: callers are on Main. */
+    private suspend fun burnedFile(songId: String) =
+        withContext(Dispatchers.IO) { localFiles.localUrlForPlayback(QueueItem(id = songId)) }
 
     @Volatile private var cachedMode: PlaybackMode = PlaybackMode.CLOUD
     @Volatile private var cachedRipConfigured: Boolean = false
@@ -369,6 +371,17 @@ class PlaybackController(
                     range.first to range.map { c.getMediaItemAt(it).mediaId }
                 }
                 for ((offset, id) in ids.withIndex()) {
+                    // Burned-first: a local file item is never swapped back to a network URL.
+                    val isLocal = withController { c ->
+                        val idx = from + offset
+                        idx < c.mediaItemCount && c.getMediaItemAt(idx).let {
+                            PlaybackUrlResolver.isLocalItemUrl(
+                                it.requestMetadata.extras?.getString(PlaybackContract.EXTRA_URL),
+                                it.localConfiguration?.uri?.toString(),
+                            )
+                        }
+                    }
+                    if (isLocal) continue
                     val fresh = presigns?.urlFor(id) ?: continue
                     withController { c ->
                         val idx = from + offset

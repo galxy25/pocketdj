@@ -25,6 +25,10 @@ class PlaybackUrlResolver(private val presigns: PresignCache?) {
     }
 
     companion object {
+        /** True when a queue item is a burned local file (must never be swapped to a network URL). */
+        fun isLocalItemUrl(extraUrl: String?, uri: String?): Boolean =
+            (extraUrl != null && PlayResolver.isLocalUrl(extraUrl)) || (uri != null && PlayResolver.isLocalUrl(uri))
+
         /** How many queue items ahead of the current one are kept freshly presigned. */
         const val AHEAD = 3
 

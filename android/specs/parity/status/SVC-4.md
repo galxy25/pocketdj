@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SVC-4 — Burned-first resolver + PlaybackMode toggle + collection Rip/Burn bar
 
@@ -19,3 +19,16 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+fixes applied
+
+- MAJOR refreshAhead swaps burned items to network → fixed (skips file: items via PlaybackUrlResolver.isLocalItemUrl; test added)
+- MAJOR Stop cancels burn job, no summary → fixed (no hard cancel; store returns stopped result, summary shows "stopped"; state reset in finally; test rewritten + cancel-reset test)
+- MAJOR ARCHITECTURE-ANDROID ledger row → fixed (PARTIAL, notes unverified-on-emulator and Stemify dropped)
+- MINOR stale "not ripped" row note / raw phase → fixed (manifestHit suppresses; phaseLabel mapping)
+- MINOR row notes only in Playlist → fixed (Pocket and Setlist rows use rememberRowNote)
+- MINOR main-thread disk IO → fixed (burnedFile runs on Dispatchers.IO)
+- MINOR DeviceQueuePlan unused mirror → fixed (removed with its tests; real path covered by SetlistSequencer/ResolveLadder/ReviewFixes tests)
+- MINOR wide recomposition → fixed (per-row rememberRowNote flows; hasSongs via derivedStateOf)
+- NIT controller key → fixed (keyed on collection id); app-scoped summary persistence not done.

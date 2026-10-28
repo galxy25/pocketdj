@@ -75,7 +75,11 @@ class CollectionBurnBarStateTest {
         assertEquals("not ripped — Rip first", CollectionBurnReducer.rowNote(item(BurnState.ERROR, "not ripped — Rip first"), null))
         assertNull(CollectionBurnReducer.rowNote(item(BurnState.ERROR, "disk full"), null))
         assertNull(CollectionBurnReducer.rowNote(item(BurnState.READY, null), null))
-        assertEquals("ripping", CollectionBurnReducer.rowNote(null, RipJob(phase = "ripping")))
+        assertEquals("Ripping\u2026", CollectionBurnReducer.rowNote(null, RipJob(phase = "ripping")))
+        assertEquals("Queued\u2026", CollectionBurnReducer.rowNote(null, RipJob(phase = "queued")))
+        assertNull(CollectionBurnReducer.rowNote(null, RipJob(phase = "error")))
+        // Once the song is in the manifest the stale ledger error is suppressed.
+        assertNull(CollectionBurnReducer.rowNote(item(BurnState.ERROR, "not ripped — Rip first"), null, manifestHit = true))
         assertEquals(
             "not ripped — Rip first",
             CollectionBurnReducer.rowNote(item(BurnState.ERROR, "not ripped — Rip first"), RipJob(phase = "queued")),
@@ -128,15 +132,26 @@ class CollectionBurnBarStateTest {
         assertTrue(c.state.value.canRefresh)
     }
 
-    @Test fun stopDuringBurnSignalsStoreAndCancels() = runTest(StandardTestDispatcher()) {
+    @Test fun stopDuringBurnSignalsStoreAndShowsStoppedSummary() = runTest(StandardTestDispatcher()) {
         val flag = AtomicBoolean(false)
         val gate = CompletableDeferred<Unit>()
-        val c = controller(burn = { gate.await(); BurnResult(total = 1) }, stopFlag = flag)
+        // Like BurnStore: stop is cooperative; the loop notices the flag and returns a partial result.
+        val c = controller(burn = { gate.await(); BurnResult(burned = 1, total = 3, stopped = flag.get()) }, stopFlag = flag)
         c.burn(listOf("a")); advanceUntilIdle()
-        c.stop(); advanceUntilIdle()
+        c.stop(); gate.complete(Unit); advanceUntilIdle()
         assertTrue(flag.get())
         assertFalse(c.state.value.working)
-        assertFalse(c.state.value.showSummary)
+        assertTrue(c.state.value.showSummary)
+        assertTrue(c.state.value.summary!!.contains("stopped"))
+    }
+
+    @Test fun burnCancelledByScopeResetsWorking() = runTest(StandardTestDispatcher()) {
+        val gate = CompletableDeferred<Unit>()
+        val c = controller(burn = { gate.await(); BurnResult(total = 1) })
+        val job = c.burn(listOf("a"))!!; advanceUntilIdle()
+        job.cancel(); advanceUntilIdle()
+        assertFalse(c.state.value.working)
+        assertNull(c.state.value.inFlightOp)
     }
 
     @Test fun ripPollsUntilAllRippedThenStops() = runTest(StandardTestDispatcher()) {
