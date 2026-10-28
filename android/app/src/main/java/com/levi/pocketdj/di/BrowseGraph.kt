@@ -84,6 +84,22 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** Durable For You feed (BRW-11). Reads its file on first touch: touch off Main. */
+    val forYouFeedStore: com.levi.pocketdj.data.recs.ForYouFeedStore by lazy {
+        com.levi.pocketdj.data.recs.ForYouFeedStore(
+            java.io.File(app.appContext.filesDir, com.levi.pocketdj.data.recs.ForYouFeedStore.FILE_NAME),
+        )
+    }
+
+    /** 👍/👎 decisions (BRW-11). Reads its file on first touch: touch off Main. */
+    val recFeedbackStore: com.levi.pocketdj.data.recs.RecFeedbackStore by lazy {
+        com.levi.pocketdj.data.recs.RecFeedbackStore(
+            file = java.io.File(app.appContext.filesDir, "pocketdj-rec-feedback.json"),
+            scope = app.appScope,
+            identityFile = java.io.File(app.appContext.filesDir, "pocketdj-rec-feedback-install-id"),
+        )
+    }
+
     override val settingsSections: List<SettingsSection> by lazy {
         listOf(editionSection(), onlineSearchSection())
     }
