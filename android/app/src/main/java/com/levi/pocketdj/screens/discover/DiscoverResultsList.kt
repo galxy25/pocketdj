@@ -215,6 +215,7 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
     val songUi by songModel.ui.collectAsState()
     val albumUi by albumModel.ui.collectAsState()
     val canAdd by remember { graph.settings.settings.map { it.hasAppleMusic } }.collectAsState(false)
+    val albumStates by remember { graph.browseGraph.discoverAlbumStates }.collectAsState(emptyMap())
     val preferExplicit by remember { EditionSettings.flow(graph.settings) }.collectAsState(null)
     val rankedSongUi = remember(songUi, preferExplicit) {
         songUi.copy(hits = DiscoverExplicitRanking.rank(songUi.hits, preferExplicit ?: false))
@@ -255,6 +256,7 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
                 ui = albumUi, canAddToLibrary = canAdd,
                 loadTracks = { graph.ripServerClient.albumTracks(it) },
                 onAdd = { graph.browseGraph.discoverAddAlbum(it) },
+                addStates = albumStates,
             )
         }
     }

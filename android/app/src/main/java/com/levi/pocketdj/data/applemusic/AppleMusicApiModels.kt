@@ -115,6 +115,24 @@ object AppleMusicApiModels {
         )
     }
 
+    /** `albums/{id}/tracks` body -> ordered Discover tracks (disc, track), carrying the position metadata. */
+    fun parseAlbumTracks(body: String): List<com.levi.pocketdj.screens.discover.DiscoverAlbumTrack>? {
+        val rows = root(body)?.get("data").arr() ?: return null
+        return rows.mapNotNull { row ->
+            val o = row.obj() ?: return@mapNotNull null
+            val id = o["id"].str() ?: return@mapNotNull null
+            val a = o["attributes"].obj()
+            com.levi.pocketdj.screens.discover.DiscoverAlbumTrack(
+                id = id,
+                title = a?.get("name").str().orEmpty(),
+                artist = a?.get("artistName").str().orEmpty(),
+                discNumber = (a?.get("discNumber") as? JsonPrimitive)?.intOrNull,
+                trackNumber = (a?.get("trackNumber") as? JsonPrimitive)?.intOrNull,
+                durationMs = (a?.get("durationInMillis") as? JsonPrimitive)?.intOrNull,
+            )
+        }.sortedWith(compareBy({ it.discNumber ?: 1 }, { it.trackNumber ?: Int.MAX_VALUE }))
+    }
+
     fun album(row: JsonElement): AmAlbum? {
         val o = row.obj() ?: return null
         val id = o["id"].str() ?: return null

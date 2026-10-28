@@ -68,6 +68,40 @@ class CatalogRepository(
     @Volatile
     var syntheticDocuments: () -> List<IndexJson> = { emptyList() }
 
+    /**
+     * Provisional "Discover" source (DISC-2): resolved against the REAL documents of THIS merge so a real
+     * row carrying the same appleMusicId supersedes the provisional twin (excluded, never duplicated).
+     * Its document is appended after every real source and BEFORE [syntheticDocuments]. Null = none.
+     */
+    @Volatile
+    var provisionalSources: ((real: List<IndexJson>) -> com.levi.pocketdj.data.discover.ProvisionalSource.Result)? = null
+
+    /**
+     * Fired (off the merge path, after the catalog published) with the (provisional -> indexed) song id pairs
+     * a merge superseded - the app prunes the provisional store and remaps collection references.
+     */
+    @Volatile
+    var onSupersede: ((List<Pair<String, String>>) -> Unit)? = null
+
+    /** Real docs + provisional + synthetic, in merge order; reports supersedes through [onSupersede]. */
+    private fun withProvisional(real: List<IndexJson>): Pair<List<IndexJson>, com.levi.pocketdj.data.discover.ProvisionalSource.Result?> {
+        val prov = provisionalSources?.let { runCatching { it(real) }.getOrNull() }
+        return (real + prov?.documents.orEmpty() + syntheticDocuments()) to prov
+    }
+
+    private fun notifySupersede(prov: com.levi.pocketdj.data.discover.ProvisionalSource.Result?) {
+        val pairs = prov?.supersededSongs.orEmpty()
+        val albums = prov?.supersededAlbums.orEmpty()
+        if (pairs.isEmpty() && albums.isEmpty()) return
+        runCatching { onSupersede?.invoke(pairs) }
+        // Albums have nothing to remap (collections reference SONG ids): prune only.
+        runCatching { onAlbumsSuperseded?.invoke(albums) }
+    }
+
+    /** Provisional ALBUM supersedes (provisional album id -> indexed album id); prune-only. */
+    @Volatile
+    var onAlbumsSuperseded: ((List<Pair<String, String>>) -> Unit)? = null
+
     private val inFlight = AtomicBoolean(false)
     private val seeded = AtomicBoolean(false)
 
@@ -148,13 +182,14 @@ class CatalogRepository(
             _state.update { it.copy(phase = Phase.Loading) }
             return
         }
-        val inputs = cached + syntheticDocuments()
+        val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(cached) }
         val merged = withContext(Dispatchers.Default) {
             mergeCount++
             MergedCatalog.merge(inputs)
         }
         lastMergedInputs = inputs
         _state.update { it.copy(catalog = merged, phase = Phase.Ready, error = null) }
+        notifySupersede(prov)
         timing("seed ready in ${(System.nanoTime() - t0) / 1_000_000} ms (${cached.size} sources)")
     }
 
@@ -193,10 +228,11 @@ class CatalogRepository(
                 }
                 return
             }
-            val inputs = loaded + syntheticDocuments()
+            val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(loaded) }
             if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs)) {
                 // Every source unchanged (304 / failure on seed): skip the derived rebuild.
                 _state.update { it.copy(phase = Phase.Ready, error = lastError) }
+                notifySupersede(prov)
                 return
             }
             val mergedCatalog = withContext(Dispatchers.Default) {
@@ -208,6 +244,7 @@ class CatalogRepository(
             _state.update {
                 it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError)
             }
+            notifySupersede(prov)
         } finally {
             _state.update { it.copy(isRefreshing = false) }
             timing("refresh complete in ${(System.nanoTime() - t0) / 1_000_000} ms (merged=$merged)")

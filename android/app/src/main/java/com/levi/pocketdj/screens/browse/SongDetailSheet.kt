@@ -273,6 +273,26 @@ fun SongDetailSheet(
                 }
             }
 
+            // DISC-2: user-added provisional songs (Discover / Imported) can be removed from the library.
+            if (com.levi.pocketdj.screens.discover.isRemovableFromLibrary(source)) {
+                Spacer(Modifier.height(14.dp))
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        val removed = graph.browseGraph.removeFromLibrary(songId, source, song.name, song.artist)
+                        scope.launch {
+                            if (removed) {
+                                snackbar.showSnackbar("Removed ${song.name} from your library")
+                            }
+                        }
+                        if (removed) onDismiss()
+                    },
+                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                    modifier = Modifier.testTag("song-remove-from-library"),
+                ) { Text("Remove from Library") }
+            }
+
             lyrics?.takeIf { it.isNotBlank() }?.let { text ->
                 Spacer(Modifier.height(14.dp))
                 Text(

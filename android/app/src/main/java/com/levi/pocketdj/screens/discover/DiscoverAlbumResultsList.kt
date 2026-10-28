@@ -33,6 +33,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.data.discover.DiscoverAddState
 import com.levi.pocketdj.screens.browse.Fmt
 import kotlinx.coroutines.launch
 
@@ -47,6 +48,8 @@ fun DiscoverAlbumResultsList(
     loadTracks: suspend (collectionId: String) -> DiscoverAlbumExpansion,
     onAdd: suspend (DiscoverAlbumHit) -> Boolean,
     modifier: Modifier = Modifier,
+    /** Settle state of every recorded provisional album, keyed by album id (DISC-2); absent = not added yet. */
+    addStates: Map<String, DiscoverAddState> = emptyMap(),
 ) {
     var expandedId by rememberSaveable { mutableStateOf<String?>(null) }
     DiscoverStateHost(ui, "album") {
@@ -55,7 +58,7 @@ fun DiscoverAlbumResultsList(
                 DiscoverAlbumRow(
                     hit, canAddToLibrary, expanded = expandedId == hit.id,
                     onToggle = { expandedId = if (expandedId == hit.id) null else hit.id },
-                    loadTracks = loadTracks, onAdd = onAdd,
+                    loadTracks = loadTracks, onAdd = onAdd, addState = addStates[hit.id],
                 )
             }
         }
@@ -70,6 +73,7 @@ private fun DiscoverAlbumRow(
     onToggle: () -> Unit,
     loadTracks: suspend (String) -> DiscoverAlbumExpansion,
     onAdd: suspend (DiscoverAlbumHit) -> Boolean,
+    addState: DiscoverAddState? = null,
 ) {
     val scope = rememberCoroutineScope()
     var busy by remember(hit.id) { mutableStateOf(false) }
@@ -103,7 +107,10 @@ private fun DiscoverAlbumRow(
             val help = if (canAddToLibrary) DiscoverAddWording.addHelp("album", true) else DiscoverAddWording.ALBUM_NEEDS_SIGN_IN
             when {
                 busy -> CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
-                added -> Icon(Icons.Filled.Check, "Added", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(12.dp))
+                // Recorded album: per-track rip progress n/m until every track settles (iOS capsule).
+                addState is DiscoverAddState.Adding -> AddProgress("${addState.ready}/${addState.total}", spinning = true)
+                addState is DiscoverAddState.Partial -> AddProgress("${addState.ready}/${addState.total}", spinning = false)
+                added || addState is DiscoverAddState.Added -> Icon(Icons.Filled.Check, "Added", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(12.dp))
                 else -> IconButton(
                     onClick = {
                         busy = true
@@ -154,5 +161,20 @@ private fun DiscoverAlbumRow(
                 }
             }
         }
+    }
+}
+
+/** The n/m capsule: a spinner while tracks are still preparing, plain text once settled partial. */
+@Composable
+private fun AddProgress(label: String, spinning: Boolean) {
+    Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (spinning) {
+            CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(
+            label, style = MaterialTheme.typography.labelMedium,
+            color = if (spinning) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+        )
     }
 }

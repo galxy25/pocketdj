@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.plus
 
 /**
@@ -199,31 +200,127 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     // ---- BRW-15: Discover (Apple Music catalog search) --------------------------------------
 
+    // ---- BRW-16 (DISC-2): provisional Discover catalog entries ------------------------------
+
     /**
-     * Discover ＋ Add hooks. DISC-2 replaces these with the provisional-catalog / album fan-out flow;
-     * until then the default does the honest minimum: save to the Apple Music library when a
-     * Music-User-Token exists, and ask the rip server to prepare the user's copy (`amrec_<storeId>`).
-     * Return true when the add was accepted.
+     * The provisional "Discover" adds (iOS `DiscoverAddsStore`). Lazy - reads its small doc on first touch (the
+     * catalog merge touches it off-main). Creating it wires the live-catalog refresh and the History hooks.
      */
-    var discoverAddSong: suspend (com.levi.pocketdj.screens.discover.DiscoverHit) -> Boolean = { hit ->
-        val library = if (hasMusicUserToken()) {
-            app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.SONGS, listOf(hit.appleMusicId)) is
-                com.levi.pocketdj.data.applemusic.AmResult.Ok
-        } else {
-            false
+    val discoverAdds: com.levi.pocketdj.data.discover.DiscoverAddsStore by lazy {
+        com.levi.pocketdj.data.discover.DiscoverAddsStore(
+            java.io.File(app.appContext.filesDir, com.levi.pocketdj.data.discover.DiscoverAddsStore.FILE_NAME),
+        ).also { store ->
+            // A change (local add / user removal / cloud pull) rebuilds the live catalog ONCE.
+            store.onChanged = { app.catalogRepository.refresh() }
+            // User gestures only (never a cloud pull): the History activity timeline.
+            store.onUserCatalogAdd = { items, libraryWrite ->
+                app.appScope.launch(Dispatchers.IO) {
+                    for (i in items) {
+                        app.collectionActivity.record(
+                            kind = com.levi.pocketdj.data.activity.ActivityKind.CATALOG_ADD,
+                            itemId = i.id, itemTitle = i.title, itemArtist = i.artist, libraryWrite = libraryWrite,
+                        )
+                    }
+                }
+            }
         }
-        val ripped = runCatching {
-            app.ripServerClient.isConfigured() && hit.id.isNotEmpty() &&
-                app.ripServerClient.requestRip(hit.id, hit.title, hit.artist, hit.appleMusicId, hit.durationMs) != null
-        }.getOrDefault(false)
-        library || ripped
     }
 
-    var discoverAddAlbum: suspend (com.levi.pocketdj.screens.discover.DiscoverAlbumHit) -> Boolean = { hit ->
-        hasMusicUserToken() &&
-            app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.ALBUMS, listOf(hit.appleMusicId)) is
-                com.levi.pocketdj.data.applemusic.AmResult.Ok
+    /**
+     * Merge-order + supersede wiring (called once from the init below, before any catalog load): the Discover
+     * document joins every merge AFTER the real sources; a real row with the same appleMusicId supersedes the
+     * provisional twin, whose collection references then follow it (collections + favorites remap).
+     */
+    private fun wireDiscover() {
+        val repo = app.catalogRepository
+        repo.provisionalSources = { real -> discoverAdds.resolve(real) }
+        repo.onSupersede = { pairs ->
+            app.appScope.launch(Dispatchers.IO) {
+                runCatching {
+                    discoverAdds.remove(pairs.map { it.first })
+                    app.collections.remapSongIds(pairs)
+                    app.collectionsGraph.favorites.remapSongIds(pairs)
+                }
+            }
+        }
+        repo.onAlbumsSuperseded = { pairs ->
+            app.appScope.launch(Dispatchers.IO) { runCatching { discoverAdds.removeAlbums(pairs.map { it.first }) } }
+        }
     }
+
+    init { wireDiscover() }
+
+    private val discoverRips = object : com.levi.pocketdj.screens.discover.DiscoverRipPort {
+        override suspend fun configured() = app.ripServerClient.isConfigured()
+        override suspend fun request(songId: String, title: String, artist: String, appleMusicId: String, lengthMs: Int?) =
+            if (!app.ripServerClient.isConfigured()) {
+                com.levi.pocketdj.screens.discover.DiscoverRipOutcome.NoServer
+            } else {
+                val job = app.ripServerClient.requestRip(songId, title, artist, appleMusicId, lengthMs)
+                app.ripJobTracker.adopt(songId, job)
+                com.levi.pocketdj.screens.discover.DiscoverAddController.outcomeOf(job)
+            }
+        override suspend fun serverAlbumTracks(collectionId: String) = app.ripServerClient.albumTracks(collectionId).tracks
+        override fun watch(songId: String, jobId: String) { app.ripJobTracker.pollToReady(songId, jobId) }
+        override suspend fun refreshManifest() { app.ripsRepository.refresh() }
+    }
+
+    private val discoverLibrary = object : com.levi.pocketdj.screens.discover.DiscoverLibraryPort {
+        private fun token(r: com.levi.pocketdj.data.applemusic.AmResult<Unit>) = when (r) {
+            is com.levi.pocketdj.data.applemusic.AmResult.Ok -> com.levi.pocketdj.screens.discover.LibraryWrite.CONFIRMED_WEB
+            com.levi.pocketdj.data.applemusic.AmResult.NeedsUserToken -> com.levi.pocketdj.screens.discover.LibraryWrite.SKIPPED_NO_CONNECTION
+            is com.levi.pocketdj.data.applemusic.AmResult.RateLimited -> com.levi.pocketdj.screens.discover.LibraryWrite.failed("rate limited")
+            is com.levi.pocketdj.data.applemusic.AmResult.Failure -> com.levi.pocketdj.screens.discover.LibraryWrite.failed(r.message)
+        }
+        override suspend fun addSong(appleMusicId: String) =
+            token(app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.SONGS, listOf(appleMusicId)))
+        override suspend fun addAlbum(appleMusicId: String) =
+            token(app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.ALBUMS, listOf(appleMusicId)))
+        override suspend fun albumTracks(appleMusicId: String) =
+            app.appleMusicApi.albumTracks(appleMusicId).let { (it as? com.levi.pocketdj.data.applemusic.AmResult.Ok)?.value }.orEmpty()
+    }
+
+    /** Discover "+ Add" flows (song add, album fan-out) and "Remove from Library". */
+    val discoverController: com.levi.pocketdj.screens.discover.DiscoverAddController by lazy {
+        com.levi.pocketdj.screens.discover.DiscoverAddController(discoverAdds, discoverRips, discoverLibrary).also { c ->
+            c.onUserCatalogRemove = { item ->
+                app.appScope.launch(Dispatchers.IO) {
+                    app.collectionActivity.record(
+                        kind = com.levi.pocketdj.data.activity.ActivityKind.CATALOG_REMOVE,
+                        itemId = item.id, itemTitle = item.title, itemArtist = item.artist,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Discover ＋ Add hooks the Discover tab calls. Return true when the add was accepted. */
+    var discoverAddSong: suspend (com.levi.pocketdj.screens.discover.DiscoverHit) -> Boolean = { hit ->
+        withContext(Dispatchers.IO) { discoverController.addSong(hit).accepted }
+    }
+
+    /** iOS Discover album rows are built around live per-track rip progress: the download intent. */
+    var discoverAddAlbum: suspend (com.levi.pocketdj.screens.discover.DiscoverAlbumHit) -> Boolean = { hit ->
+        withContext(Dispatchers.IO) {
+            discoverController.addAlbum(hit, com.levi.pocketdj.screens.discover.AlbumAddIntent.AND_PREPARE_COPIES).accepted
+        }
+    }
+
+    /** Per-album n/m settle state for the Discover album rows (keyed by provisional album id). */
+    val discoverAlbumStates: kotlinx.coroutines.flow.Flow<Map<String, com.levi.pocketdj.data.discover.DiscoverAddState>> by lazy {
+        discoverController.albumStates(
+            readyIds = app.ripsRepository.manifest.map { it.keys },
+            erroredIds = app.ripJobTracker.jobs.map { jobs ->
+                jobs.filterValues { it.phase == com.levi.pocketdj.data.rips.RipJob.PHASE_ERROR }.keys
+            },
+        )
+    }
+
+    /** "Remove from Library" for a user-added provisional song (Discover / Imported). */
+    fun removeFromLibrary(songId: String, sourceName: String?, title: String, artist: String?): Boolean =
+        discoverController.removeFromLibrary(songId, sourceName, title, artist) { id ->
+            app.collectionsGraph.importedSongs.remove(listOf(id))
+        }
 
     suspend fun hasMusicUserToken(): Boolean = app.settings.current().hasAppleMusic
 
@@ -238,7 +335,12 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = recsSyncEntries(recFeedbackLazy, forYouFeedLazy) +
         // iOS cloudSync "rec-key": every device of the profile presents the SAME bearer key (server TOFU binding).
-        com.levi.pocketdj.shell.SyncEntry(REC_KEY_SYNC_KEY, REC_KEY_FILE, onPulled = { recServiceLazy.value.reloadKeyFromDisk() })
+        com.levi.pocketdj.shell.SyncEntry(REC_KEY_SYNC_KEY, REC_KEY_FILE, onPulled = { recServiceLazy.value.reloadKeyFromDisk() }) +
+        // iOS cloudSync "discover-adds": an add on one device shows up in the other's catalog on the next pull.
+        com.levi.pocketdj.shell.SyncEntry(
+            DISCOVER_ADDS_SYNC_KEY, com.levi.pocketdj.data.discover.DiscoverAddsStore.FILE_NAME,
+            onPulled = { discoverAdds.reloadFromDisk() },
+        )
 
     /** Account deletion / "Erase everything" (iOS AccountDeletionService clears both). */
     override val resetHooks: List<com.levi.pocketdj.shell.ResetHook> = recsResetHooks(recFeedbackLazy, forYouFeedLazy) +
@@ -246,7 +348,8 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         com.levi.pocketdj.shell.ResetHook {
             val svc = recServiceLazy.value
             svc.clearLocal(cloudDeleted = svc.deleteCloudData())
-        }
+        } +
+        com.levi.pocketdj.shell.ResetHook { discoverAdds.clear() }
 
     override val settingsSections: List<SettingsSection> by lazy {
         listOf(editionSection(), onlineSearchSection(), forYouSection(), recommendationsSection())
@@ -257,6 +360,7 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         const val REC_FEEDBACK_FILE = "pocketdj-rec-feedback.json"
         const val FORYOU_FEED_SYNC_KEY = "foryou-feed"
         const val REC_KEY_SYNC_KEY = "rec-key"
+        const val DISCOVER_ADDS_SYNC_KEY = com.levi.pocketdj.data.discover.DiscoverAddsStore.SYNC_KEY
         const val REC_KEY_FILE = "pocketdj-rec-key.json"
         const val REC_SYNC_FILE = "pocketdj-rec-sync.json"
         const val REC_PENDING_DELETE_FILE = "pocketdj-rec-pending-delete.json"
