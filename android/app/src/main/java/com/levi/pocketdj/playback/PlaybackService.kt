@@ -139,7 +139,7 @@ class PlaybackService : MediaSessionService() {
         RunTransportBus.clearInstantMetadata = { md -> forwarding.clearInstantMetadata(md) }
         board.onChange = { o -> mediaSession?.let { s -> val p = (o ?: exo).sessionPlayer; if (s.player !== p) s.player = p }; refreshCustomLayout() }
 
-        mediaSession = MediaSession.Builder(this, forwarding)
+        mediaSession = MediaSession.Builder(this, board.sessionPlayer(forwarding))
             .setCallback(SessionCallback())
             .apply { sessionActivity?.let(::setSessionActivity) }
             .build()

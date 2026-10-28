@@ -331,6 +331,12 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             e.restorePersistedMixIfIdle(); e.materializePendingRestoreIfNeeded("debug")
             mixStatus = "Mix restore: ${mixLine()}"
         }) { Text("Mix: restore") }
+        OutlinedButton(onClick = {
+            val f = com.levi.pocketdj.mix.service.MixDiag.export(
+                java.io.File(host.graph.appContext.cacheDir, "diag"), mixLine(),
+            )
+            mixStatus = "Mix diag exported: ${f.absolutePath}"
+        }) { Text("Mix: export diag") }
     }
     Text(mixStatus, style = MaterialTheme.typography.bodySmall)
 

@@ -117,6 +117,7 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
                 "sigAge=${String.format(java.util.Locale.US, "%.2f", e.tapAgeSeconds(true))} A=${deckBeat(Deck.A)} B=${deckBeat(Deck.B)} " +
                 "auto=${if (e.autoMixing) 1 else 0}/${if (e.autoDj?.isPaused == true) 1 else 0}",
         )
+        e.onHeartbeat?.invoke()
     }
 
     private fun deckBeat(d: Deck): String =

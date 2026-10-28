@@ -154,7 +154,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             runner = VoiceRunner { v -> val p = VoicePump(v).start(); AutoCloseable { p.stopAndJoin() } },
             tickDriver = CoroutineTickDriver(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)),
             deckStore = mixDeckSession,
-            diagSink = { NPLog.lane(NPLog.MIX, it) },
+            diagSink = { com.levi.pocketdj.mix.service.MixDiag.log(it) },
         ).also {
             it.recorder = mixSessions
             // SVC-6: Mix deck plays count for the LRP prune (iOS funnels MixEngine.setPlaying -> notePlayed).
@@ -210,7 +210,80 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                     commit(p)
                 }
             }
+            autoDjInst?.let { dj -> installTransportOwner(it, dj, audio) }
         }
+    }
+
+    @Volatile private var sessionPlayerRef: com.levi.pocketdj.mix.service.MixSessionPlayer? = null
+
+    /** MIX-11: the Mix as a [com.levi.pocketdj.playback.session.TransportOwner] (built with [mixEngine]). */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    val mixSessionPlayer: com.levi.pocketdj.mix.service.MixSessionPlayer get() { mixEngine; return checkNotNull(sessionPlayerRef) }
+
+    private var serviceLink: com.google.common.util.concurrent.ListenableFuture<androidx.media3.session.MediaController>? = null
+
+    /**
+     * A Mix-only session (nothing played from Browse) has no [com.levi.pocketdj.playback.PlaybackService]
+     * yet, so no notification / lock-screen card / foreground promotion. Binding a controller starts it
+     * (media3 promotes it to foreground once the session player, the Mix, is playing). Idempotent; the
+     * service seeds its MediaSession from the switchboard, so the Mix card is there from the first frame.
+     */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun ensureMediaService() {
+        if (serviceLink != null) return
+        val ctx = app.appContext
+        val token = androidx.media3.session.SessionToken(
+            ctx, android.content.ComponentName(ctx, com.levi.pocketdj.playback.PlaybackService::class.java),
+        )
+        serviceLink = androidx.media3.session.MediaController.Builder(ctx, token)
+            .setConnectionHints(android.os.Bundle().apply { putBoolean(com.levi.pocketdj.playback.INTERNAL_HINT, true) })
+            .buildAsync()
+    }
+
+    /**
+     * MIX-11 (decision D2, no MixService): the engine's system integration - the SimpleBasePlayer owner of
+     * the ONE MediaSession, audio focus, becoming-noisy, routing recovery and the 1 Hz heartbeat hook.
+     */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun installTransportOwner(e: MixEngine, dj: com.levi.pocketdj.mix.engine.AutoDj, audio: AudioManager) {
+        val art = { albumId: String? ->
+            albumId?.let { app.catalogRepository.state.value.catalog?.albumsById?.get(it)?.artCandidates()?.firstOrNull() }
+        }
+        lateinit var focus: com.levi.pocketdj.mix.service.MixFocusMachine
+        val player = com.levi.pocketdj.mix.service.MixSessionPlayer(
+            android.os.Looper.getMainLooper(), com.levi.pocketdj.mix.service.EngineMixTransportPort(e, dj, art),
+            onHandoff = { focus.onHandoff() },
+        )
+        sessionPlayerRef = player
+        val transport = object : com.levi.pocketdj.mix.service.FocusTransport {
+            override val isRunning get() = e.isRunning
+            override val mixWantsAudio get() = e.mixWantsAudio
+            override val deckAudible get() = com.levi.pocketdj.mix.model.Deck.entries.any {
+                e.isPlaying(it) && e.position(it) < e.duration(it) - 0.25
+            }
+            override val isOwner get() = com.levi.pocketdj.playback.session.SessionSwitchboard.shared.isActive(player)
+            override fun remotePause() = dj.remotePause()
+            override fun remotePlay() = dj.remotePlay()
+            override fun pauseBoth() = e.pauseBoth()
+        }
+        focus = com.levi.pocketdj.mix.service.MixFocusMachine(
+            com.levi.pocketdj.mix.service.AndroidFocusSystem(audio) { change -> focus.onFocusChange(change) }, transport,
+        )
+        val recovery = com.levi.pocketdj.mix.service.MixRecovery(com.levi.pocketdj.mix.service.EngineRecoveryPort(e, dj))
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        ContextCompat.registerReceiver(
+            app.appContext,
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: android.content.Intent?) = focus.onBecomingNoisy()
+            },
+            android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        e.onAudioStarted = { ensureMediaService(); player.onAudioStarted(); focus.onAudioStarted() }
+        e.onNowPlayingChanged = { player.refresh(); focus.onTransportIdle() }
+        e.onSinkRouting = { ok -> mainHandler.post { recovery.onSinkRouting(ok) } }   // fires on the render thread
+        e.onHeartbeat = { player.refresh(); recovery.silentPlayingCheck() }
+        dj.onSkipCommandsEnabled = { player.refresh() }
     }
 
     /**
