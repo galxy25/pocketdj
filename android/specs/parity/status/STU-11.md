@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-11 — Tracks arranger: model CRUD, home list + folders, lanes/clips UI, clip baker, artifacts browser
 
@@ -39,3 +39,15 @@ New arrangement -> + Track -> + clip from a seeded sample -> clip renders at 0:0
 
 ## Questions for Levi
 - none
+
+## Review
+fixes applied
+
+- MAJOR TracksHomeScreen back: fixed (BackHandler(enabled = current != null) closes the arrangement).
+- MAJOR follow-scroll wiring untested: fixed in part. Wiring extracted to `FollowTimeline` (internal) + `CursorOverlay`; new `FollowTimelineInstrumentedTest` (androidTest, ui-test-junit4 added) asserts the cursor anchor is centred in `tracks-timeline` past the first screenful and does not scroll early. It compiles (`compileDebugAndroidTestKotlin`) but is NOT run: emulator is integrator-owned. JVM count unchanged at 3404 (no JVM Compose infra / Robolectric in the project).
+- MAJOR ledger row: fixed (docs/ARCHITECTURE-ANDROID.md STU-11 -> PARTIAL with remaining items).
+- MINOR audition keeps playing: fixed (audition.stop() when an arrangement opens/closes, covers delete-inside).
+- MINOR silent add-clip failures: fixed (toast on all null paths; importStems and addArtifactAsTrack bake before addTrack).
+- MINOR main-thread IO: fixed (prepareAsync + OnPreparedListener; share copy on Dispatchers.IO).
+- MINOR ProducerScreen global flag: fixed (TracksNav removed; `onFullscreenChange` callback, per-host state). ProducerScreen.kt recorded as shared touchpoint for STU-12/13.
+- NIT BPM range: fixed (Set enabled only for 20..300); pxPerSec/cursorMs now rememberSaveable.

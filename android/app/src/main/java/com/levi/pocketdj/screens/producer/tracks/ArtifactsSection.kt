@@ -23,6 +23,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -60,8 +64,9 @@ class ArtifactAuditionPlayer(private val beforePlay: () -> Unit = {}) {
             p.setDataSource(file.path)
             p.setOnCompletionListener { if (playingId == id) stop() }
             p.setOnErrorListener { _, _, _ -> if (playingId == id) stop(); true }
-            p.prepare(); p.start()
+            p.setOnPreparedListener { if (player === p) it.start() }
             player = p; playingId = id
+            p.prepareAsync()
         } catch (_: Exception) {
             runCatching { p.release() }
             player = null; playingId = null
@@ -75,16 +80,20 @@ class ArtifactAuditionPlayer(private val beforePlay: () -> Unit = {}) {
 }
 
 /** Share an artifact file through a copy in the cache dir + the app FileProvider. */
-fun shareArtifact(ctx: Context, file: File, name: String) {
-    val dir = File(ctx.cacheDir, "shared-artifacts").also { it.mkdirs() }
-    val safe = name.replace(Regex("[^A-Za-z0-9 ._-]"), "_").ifBlank { "artifact" }
-    val copy = File(dir, "$safe.${file.extension.ifEmpty { "m4a" }}")
-    file.copyTo(copy, overwrite = true)
-    val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", copy)
+suspend fun shareArtifact(ctx: Context, file: File, name: String) {
+    val (copy, uri) = withContext(Dispatchers.IO) { copyForShare(ctx, file, name) }
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "audio/*"; putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
     ctx.startActivity(Intent.createChooser(send, "Share").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+}
+
+private fun copyForShare(ctx: Context, file: File, name: String): Pair<File, android.net.Uri> {
+    val dir = File(ctx.cacheDir, "shared-artifacts").also { it.mkdirs() }
+    val safe = name.replace(Regex("[^A-Za-z0-9 ._-]"), "_").ifBlank { "artifact" }
+    val copy = File(dir, "$safe.${file.extension.ifEmpty { "m4a" }}")
+    file.copyTo(copy, overwrite = true)
+    return copy to FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", copy)
 }
 
 /**
@@ -109,6 +118,7 @@ fun ArtifactGroup(
     val title = if (kind == StudioArrangementArtifact.Kind.BOUNCE) "Bounces" else "Recordings"
     val key = "$arrangementId-${kind.raw}"
     val ctx = LocalContext.current
+    val shareScope = rememberCoroutineScope()
     Column(modifier.padding(start = 22.dp)) {
         Text(
             "${if (expanded) "v" else ">"}  $title (${artifacts.size})",
@@ -139,7 +149,7 @@ fun ArtifactGroup(
                         DropdownMenuItem(text = { Text("Convert to sample") }, onClick = { menu = false; onConvert(art) }, modifier = Modifier.testTag("tracks-artifact-convert-${art.id}"))
                         DropdownMenuItem(text = { Text("Add as track") }, onClick = { menu = false; onAddAsTrack(art) }, modifier = Modifier.testTag("tracks-artifact-addtrack-${art.id}"))
                         DropdownMenuItem(text = { Text("Share") }, enabled = fileFor(art) != null,
-                            onClick = { menu = false; fileFor(art)?.let { shareArtifact(ctx, it, art.name) } })
+                            onClick = { menu = false; fileFor(art)?.let { f -> shareScope.launch { runCatching { shareArtifact(ctx, f, art.name) } } } })
                         DropdownMenuItem(text = { Text("Delete") }, onClick = { menu = false; onDelete(art) }, modifier = Modifier.testTag("tracks-artifact-delete-${art.id}"))
                     }
                 }

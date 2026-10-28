@@ -48,6 +48,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,10 +95,10 @@ fun ArrangementScreen(
     val compact = LocalConfiguration.current.screenWidthDp < 600
     val density = LocalDensity.current.density
 
-    var pxPerSec by remember(arrangementId) { mutableFloatStateOf(ArrangerMath.DEFAULT_PX_PER_SEC) }
+    var pxPerSec by rememberSaveable(arrangementId) { mutableFloatStateOf(ArrangerMath.DEFAULT_PX_PER_SEC) }
     var follow by remember { mutableStateOf(true) }
     var centerNonce by remember { mutableIntStateOf(0) }
-    var cursorMs by remember(arrangementId) { mutableIntStateOf(0) }
+    var cursorMs by rememberSaveable(arrangementId) { mutableIntStateOf(0) }
     var viewportDp by remember { mutableFloatStateOf(0f) }
     var transportCollapsed by remember { mutableStateOf(prefs.transportCollapsed) }
     var pickerTrack by remember { mutableStateOf<String?>(null) }
@@ -124,14 +125,6 @@ fun ArrangementScreen(
             }.getOrNull() ?: continue
             peaks[c.id] = withContext(Dispatchers.Default) { WaveformMath.peaks(pcm, 120) }
         }
-    }
-
-    val hScroll = rememberScrollState()
-    // Follow: centre the cursor (only past the first half-screenful) on cursor / zoom / follow changes.
-    LaunchedEffect(cursor, pxPerSec, follow, centerNonce, viewportDp) {
-        if (!follow || viewportDp <= 0f) return@LaunchedEffect
-        val target = ArrangerMath.followScrollTarget(cursor, pxPerSec, viewportDp, contentDp)
-        hScroll.animateScrollTo((target * density).toInt())
     }
 
     Column(modifier.fillMaxSize().testTag("arrangement-screen")) {
@@ -185,7 +178,7 @@ fun ArrangementScreen(
                             )
                         }
                     }
-                    Box(Modifier.weight(1f).onSizeChanged { viewportDp = it.width / density }.horizontalScroll(hScroll).testTag("tracks-timeline")) {
+                    FollowTimeline(cursor, pxPerSec, contentDp, follow, centerNonce, { viewportDp = it }, Modifier.weight(1f)) {
                         Column(Modifier.padding(end = 24.dp)) {
                             BeatRuler(arr.bpm, pxPerSec, arr.lengthMs, contentDp, onSeek = { cursorMs = it; centerNonce++ })
                             Box {
@@ -232,8 +225,29 @@ fun ArrangementScreen(
     }
 }
 
+/**
+ * The horizontally-scrolling timeline viewport. Follow: centres the cursor (only past the first
+ * half-screenful) whenever cursor / zoom / follow / [centerNonce] change. Split out so the scroll wiring
+ * (dp to px, viewport measurement) can be driven by a Compose UI test.
+ */
 @Composable
-private fun CursorOverlay(cursorMs: Int, pxPerSec: Float, laneCount: Int) {
+internal fun FollowTimeline(
+    cursorMs: Int, pxPerSec: Float, contentDp: Float, follow: Boolean, centerNonce: Int,
+    onViewportDp: (Float) -> Unit, modifier: Modifier = Modifier, content: @Composable () -> Unit,
+) {
+    val density = LocalDensity.current.density
+    val hScroll = rememberScrollState()
+    var viewportDp by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(cursorMs, pxPerSec, follow, centerNonce, viewportDp, contentDp) {
+        if (!follow || viewportDp <= 0f) return@LaunchedEffect
+        val target = ArrangerMath.followScrollTarget(cursorMs, pxPerSec, viewportDp, contentDp)
+        hScroll.animateScrollTo((target * density).toInt())
+    }
+    Box(modifier.onSizeChanged { viewportDp = it.width / density; onViewportDp(viewportDp) }.horizontalScroll(hScroll).testTag("tracks-timeline")) { content() }
+}
+
+@Composable
+internal fun CursorOverlay(cursorMs: Int, pxPerSec: Float, laneCount: Int) {
     val x = cursorMs / 1000f * pxPerSec
     val height = (RULER_HEIGHT + laneCount * LANE_HEIGHT + (laneCount - 1).coerceAtLeast(0) * LANE_GAP).dp
     Row(Modifier.height(height)) {
@@ -304,10 +318,10 @@ private fun BpmDialog(bpm: Double, onDismiss: () -> Unit, onSet: (Double) -> Uni
             Column {
                 OutlinedTextField(text, { text = it.filter { c -> c.isDigit() || c == '.' } }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.testTag("tracks-bpm-field"))
-                Text("Sets the beat grid and drop snap. 20–300.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Sets the beat grid and drop snap. Must be 20–300.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
-        confirmButton = { TextButton(enabled = v != null && v > 0, onClick = { onSet(v!!) }, modifier = Modifier.testTag("tracks-bpm-set")) { Text("Set") } },
+        confirmButton = { TextButton(enabled = v != null && v in 20.0..300.0, onClick = { onSet(v!!) }, modifier = Modifier.testTag("tracks-bpm-set")) { Text("Set") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

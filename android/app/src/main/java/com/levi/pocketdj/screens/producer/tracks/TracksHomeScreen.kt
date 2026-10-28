@@ -66,11 +66,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** Shared nav state: an open arrangement hides the Producer sub-tab row (iOS `arrangerFullscreen`). */
-object TracksNav {
-    var arrangerFullscreen by mutableStateOf(false)
-}
-
 /** Tiny per-viewer UI prefs (folder collapse, transport collapse); SharedPreferences, failure-tolerant. */
 class TracksPrefs(ctx: Context) {
     private val sp = ctx.applicationContext.getSharedPreferences("pocketdj-tracks-ui", Context.MODE_PRIVATE)
@@ -132,18 +127,21 @@ class TracksActions(
                 else Toast.makeText(ctx, "Couldn’t add that source (is it rendered?).", Toast.LENGTH_SHORT).show()
             }
             is ClipPick.Artifact -> busyTask("Adding clip…") {
-                val art = store.artifact(pick.id) ?: return@busyTask
-                val file = store.artifactFile(art.fileName) ?: return@busyTask
+                val art = store.artifact(pick.id)
+                val file = art?.let { store.artifactFile(it.fileName) }
                 val start = ArrangerMath.appendStartMs(store.arrangement(arrangementId)?.tracks?.firstOrNull { it.id == trackId })
-                baker.bakeFromFile(file, art.name, start)?.let { store.addClip(arrangementId, trackId, it) }
+                val clip = if (art != null && file != null) baker.bakeFromFile(file, art.name, start) else null
+                if (clip != null) store.addClip(arrangementId, trackId, clip)
+                else Toast.makeText(ctx, "Couldn’t add that source (is it rendered?).", Toast.LENGTH_SHORT).show()
             }
             is ClipPick.Stems -> importStems(arrangementId, pick.songId)
         }
     }
 
     fun addArtifactAsTrack(arrangementId: String, art: StudioArrangementArtifact) = busyTask("Adding track…") {
-        val file = store.artifactFile(art.fileName) ?: return@busyTask
-        val clip = baker.bakeFromFile(file, art.name, 0) ?: return@busyTask
+        val file = store.artifactFile(art.fileName)
+        val clip = file?.let { baker.bakeFromFile(it, art.name, 0) }
+        if (clip == null) { Toast.makeText(ctx, "Couldn’t add that source (is it rendered?).", Toast.LENGTH_SHORT).show(); return@busyTask }
         val track = store.addTrack(arrangementId, art.name) ?: kotlin.run { File(studio.studioRoots.arrangementsDir(), clip.fileName).delete(); return@busyTask }
         store.addClip(arrangementId, track.id, clip)
     }
@@ -160,8 +158,11 @@ class TracksActions(
         val songName = src.songs().firstOrNull { it.id == songId }?.name ?: "Stems"
         for (stem in ClipPickerModel.STEM_ORDER) {
             val f = files[stem] ?: continue
-            val track = store.addTrack(arrangementId, stem.replaceFirstChar { it.uppercase() }) ?: continue
-            baker.bakeFromFile(f, "$songName — $stem", 0, StudioClipSource.STEM)?.let { store.addClip(arrangementId, track.id, it) }
+            // Bake first so a failed stem never leaves an empty lane.
+            val clip = baker.bakeFromFile(f, "$songName — $stem", 0, StudioClipSource.STEM) ?: continue
+            val track = store.addTrack(arrangementId, stem.replaceFirstChar { it.uppercase() })
+            if (track == null) { File(studio.studioRoots.arrangementsDir(), clip.fileName).delete(); continue }
+            store.addClip(arrangementId, track.id, clip)
         }
     }
 
@@ -170,7 +171,7 @@ class TracksActions(
 
 /** The Tracks tab: lands on a home browser of arrangements + folders; opening one goes fullscreen. */
 @Composable
-fun TracksHomeScreen(graph: AppGraph, modifier: Modifier = Modifier) {
+fun TracksHomeScreen(graph: AppGraph, modifier: Modifier = Modifier, onFullscreenChange: (Boolean) -> Unit = {}) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val store = graph.studioGraph.studioStore
@@ -182,8 +183,13 @@ fun TracksHomeScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     // The open arrangement vanished (deleted elsewhere): fall back home.
     val current = openId?.let { id -> doc.arrangements.firstOrNull { it.id == id } }
     LaunchedEffect(current == null, openId) { if (openId != null && current == null) openId = null }
-    TracksNav.arrangerFullscreen = current != null
-    DisposableEffect(Unit) { onDispose { TracksNav.arrangerFullscreen = false } }
+    // An open arrangement is fullscreen (iOS `arrangerFullscreen`): tell the Producer host to hide its sub-tab row.
+    LaunchedEffect(current != null) { onFullscreenChange(current != null) }
+    DisposableEffect(Unit) { onDispose { onFullscreenChange(false) } }
+    // System Back closes the open arrangement instead of leaving the tab.
+    androidx.activity.compose.BackHandler(enabled = current != null) { openId = null }
+    // One audible owner: opening (or deleting) an arrangement stops any artifact audition.
+    LaunchedEffect(current != null) { audition.stop() }
 
     Box(modifier.fillMaxSize().testTag("tracks-screen")) {
         if (current != null) {
