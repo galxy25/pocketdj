@@ -1,0 +1,701 @@
+{
+  "schemaVersion": 1,
+  "samples": [
+    {
+      "id": "smp_aaaa1111-0000-4000-8000-000000000001",
+      "name": "Kick from track",
+      "fileName": "sample-smp_aaaa1111-0000-4000-8000-000000000001.m4a",
+      "wasUserFolder": false,
+      "createdAt": 1766000000000,
+      "durationMs": 1820,
+      "source": {
+        "type": "track",
+        "songId": "sng_42",
+        "startMs": 62000,
+        "endMs": 63820
+      },
+      "grid": {
+        "bpm": 124.5,
+        "firstDownbeatMs": 230,
+        "beatsMs": [
+          230,
+          713,
+          1196,
+          1679
+        ]
+      },
+      "edit": {
+        "trimStartMs": 10,
+        "trimEndMs": 1700,
+        "gainDb": -2.5,
+        "rate": 1.5,
+        "pitchSemitones": 3,
+        "reverbWet": 0.25,
+        "delayWet": 0.1,
+        "compWet": 0.4,
+        "filterAmt": 0.3
+      },
+      "renderRevision": 3,
+      "renderedFileName": "sample-smp_aaaa1111-0000-4000-8000-000000000001-r3.m4a",
+      "renderedRevision": 3,
+      "renderedWasUserFolder": false,
+      "folderId": "sfld_f1"
+    },
+    {
+      "id": "smp_aaaa1111-0000-4000-8000-000000000002",
+      "name": "Mic",
+      "fileName": "sample-smp_aaaa1111-0000-4000-8000-000000000002.m4a",
+      "wasUserFolder": true,
+      "createdAt": 1766000100000,
+      "durationMs": 5000,
+      "source": {
+        "type": "mic"
+      },
+      "edit": {
+        "trimStartMs": 0,
+        "trimEndMs": 0,
+        "gainDb": 0,
+        "rate": 1,
+        "pitchSemitones": 0,
+        "reverbWet": 0,
+        "delayWet": 0,
+        "compWet": 0,
+        "filterAmt": 0
+      },
+      "renderRevision": 0
+    },
+    {
+      "id": "smp_aaaa1111-0000-4000-8000-000000000003",
+      "name": "Imported",
+      "fileName": "sample-smp_aaaa1111-0000-4000-8000-000000000003.m4a",
+      "wasUserFolder": false,
+      "createdAt": 1766000200000,
+      "durationMs": 900,
+      "source": {
+        "type": "file",
+        "originalName": "my-breaks.wav"
+      },
+      "edit": {
+        "trimStartMs": 0,
+        "trimEndMs": 0,
+        "gainDb": 0,
+        "rate": 1,
+        "pitchSemitones": 0,
+        "reverbWet": 0,
+        "delayWet": 0,
+        "compWet": 0,
+        "filterAmt": 0
+      },
+      "renderRevision": 0
+    },
+    {
+      "id": "smp_aaaa1111-0000-4000-8000-000000000004",
+      "name": "Line",
+      "fileName": "sample-smp_aaaa1111-0000-4000-8000-000000000004.m4a",
+      "wasUserFolder": false,
+      "createdAt": 1766000300000,
+      "durationMs": 700,
+      "source": {
+        "type": "lineIn",
+        "inputName": "TX-6"
+      },
+      "edit": {
+        "trimStartMs": 0,
+        "trimEndMs": 0,
+        "gainDb": 0,
+        "rate": 1,
+        "pitchSemitones": 0,
+        "reverbWet": 0,
+        "delayWet": 0,
+        "compWet": 0,
+        "filterAmt": 0
+      },
+      "renderRevision": 0
+    },
+    {
+      "id": "smp_aaaa1111-0000-4000-8000-000000000005",
+      "name": "From take",
+      "fileName": "sample-smp_aaaa1111-0000-4000-8000-000000000005.m4a",
+      "wasUserFolder": false,
+      "createdAt": 1766000400000,
+      "durationMs": 3300,
+      "source": {
+        "type": "take",
+        "takeId": "tk_bbbb"
+      },
+      "edit": {
+        "trimStartMs": 0,
+        "trimEndMs": 0,
+        "gainDb": 0,
+        "rate": 1,
+        "pitchSemitones": 0,
+        "reverbWet": 0,
+        "delayWet": 0,
+        "compWet": 0,
+        "filterAmt": 0
+      },
+      "renderRevision": 0
+    }
+  ],
+  "loops": [
+    {
+      "id": "lp_cccc0001",
+      "name": "Half beat loop",
+      "sampleId": "smp_aaaa1111-0000-4000-8000-000000000001",
+      "anchorMs": 230,
+      "beats": 0.5,
+      "bpm": 124.5,
+      "lengthMs": 241,
+      "frames": 10630,
+      "fileName": "loop-lp_cccc0001.caf",
+      "wasUserFolder": false,
+      "createdAt": 1766000500000,
+      "folderId": "lpfld_f1"
+    },
+    {
+      "id": "lp_cccc0002",
+      "name": "Four",
+      "sampleId": "smp_gone",
+      "anchorMs": 0,
+      "beats": 4,
+      "bpm": 120,
+      "lengthMs": 2000,
+      "frames": 88200,
+      "fileName": "loop-lp_cccc0002.caf",
+      "wasUserFolder": false,
+      "createdAt": 1766000600000
+    }
+  ],
+  "patterns": [
+    {
+      "id": "ptn_dddd0001",
+      "name": "Beat",
+      "bpm": 120,
+      "stepCount": 32,
+      "rows": [
+        {
+          "targetId": "smp_aaaa1111-0000-4000-8000-000000000001",
+          "steps": [
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false
+          ],
+          "gainDb": -1.5,
+          "loopSteps": [
+            false,
+            false,
+            false,
+            false,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "stepSpans": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            2,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "label": "Kick"
+        },
+        {
+          "targetId": "lp_cccc0002",
+          "steps": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "gainDb": 0,
+          "loopSteps": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "stepSpans": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "fileName": "pattern-ptn_dddd0001.m4a",
+      "bounceDirty": false,
+      "wasUserFolder": false,
+      "createdAt": 1766000700000,
+      "folderId": "ptnfld_f1"
+    },
+    {
+      "id": "ptn_dddd0002",
+      "name": "Short",
+      "bpm": 90,
+      "stepCount": 16,
+      "rows": [
+        {
+          "targetId": "smp_missing",
+          "steps": [
+            true,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "gainDb": 0,
+          "loopSteps": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          "stepSpans": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        }
+      ],
+      "bounceDirty": true,
+      "wasUserFolder": false,
+      "createdAt": 1766000800000
+    }
+  ],
+  "takes": [
+    {
+      "id": "tk_bbbb",
+      "name": "Piano riff",
+      "instrument": "piano",
+      "fileName": "take-tk_bbbb.m4a",
+      "wasUserFolder": false,
+      "bpm": 96,
+      "events": [
+        {
+          "onMs": 0,
+          "offMs": 480,
+          "note": 60,
+          "velocity": 90
+        },
+        {
+          "onMs": 500,
+          "offMs": 980,
+          "note": 64,
+          "velocity": 80,
+          "accidental": "sharp"
+        }
+      ],
+      "durationMs": 4000,
+      "createdAt": 1766000900000,
+      "editedEvents": [
+        {
+          "onMs": 0,
+          "offMs": 500,
+          "note": 60,
+          "velocity": 90,
+          "accidental": "natural"
+        }
+      ],
+      "renderedFileName": "take-tk_bbbb-r2.m4a",
+      "renderedWasUserFolder": false,
+      "renderRevision": 2,
+      "renderedRevision": 2,
+      "demuxSourceKey": "sng_42",
+      "demuxMode": "melody",
+      "folderId": "tkfld_f1",
+      "extraStaffs": [
+        {
+          "id": "stf_1",
+          "instrument": "harp",
+          "events": [
+            {
+              "onMs": 1000,
+              "offMs": 1400,
+              "note": 72,
+              "velocity": 70,
+              "accidental": "flat"
+            }
+          ],
+          "editedEvents": [
+            {
+              "onMs": 1000,
+              "offMs": 1500,
+              "note": 72,
+              "velocity": 70
+            }
+          ],
+          "createdAt": 1766000950
+        }
+      ]
+    }
+  ],
+  "cues": [
+    {
+      "id": "cue_1",
+      "songId": "sng_42",
+      "slot": 0,
+      "positionMs": 15000,
+      "name": "Drop"
+    },
+    {
+      "id": "cue_2",
+      "songId": "sng_42",
+      "slot": 7,
+      "positionMs": 90500
+    }
+  ],
+  "slices": [
+    {
+      "id": "slc_1",
+      "sampleId": "smp_aaaa1111-0000-4000-8000-000000000001",
+      "slot": 0,
+      "startMs": 0,
+      "name": "Hit"
+    },
+    {
+      "id": "slc_2",
+      "sampleId": "smp_aaaa1111-0000-4000-8000-000000000001",
+      "slot": 3,
+      "startMs": 900
+    }
+  ],
+  "folders": [
+    {
+      "id": "sfld_f1",
+      "name": "Drums",
+      "createdAt": 1766000000000,
+      "updatedAt": 1766000000500
+    }
+  ],
+  "keys": {
+    "smp_aaaa1111-0000-4000-8000-000000000001": "8A",
+    "tk_bbbb": "5B"
+  },
+  "arrangements": [
+    {
+      "id": "arr_1",
+      "name": "Song",
+      "tracks": [
+        {
+          "id": "trk_1",
+          "name": "Drums",
+          "clips": [
+            {
+              "id": "clip_1",
+              "name": "Beat",
+              "fileName": "clip-clip_1.m4a",
+              "startMs": 0,
+              "durationMs": 4000,
+              "fileStartMs": 0,
+              "source": "pattern",
+              "sourceId": "ptn_dddd0001",
+              "grid": {
+                "bpm": 124.5,
+                "firstDownbeatMs": 230,
+                "beatsMs": [
+                  230,
+                  713,
+                  1196,
+                  1679
+                ]
+              },
+              "createdAt": 1766001000000
+            },
+            {
+              "id": "clip_2",
+              "name": "Tail",
+              "fileName": "clip-clip_1.m4a",
+              "startMs": 6000,
+              "durationMs": 2000,
+              "fileStartMs": 2000,
+              "source": "stem",
+              "createdAt": 1766001000100
+            }
+          ],
+          "gainDb": -2,
+          "pan": -0.5,
+          "muted": false,
+          "soloed": true,
+          "colorIndex": 3,
+          "strip": {
+            "pitchSemitones": 2,
+            "tempoRatio": 1.25,
+            "eqLowDb": 3,
+            "eqMidDb": 0,
+            "eqHighDb": -2,
+            "reverb": 0.2,
+            "delay": 0,
+            "chorus": 0.1
+          },
+          "createdAt": 1766001000000
+        }
+      ],
+      "folderId": "arrfld_1",
+      "bpm": 124.5,
+      "loopEnabled": true,
+      "loopStartMs": 0,
+      "loopEndMs": 8000,
+      "masterFX": {
+        "phaserEnabled": true,
+        "phaserRate": 0.5,
+        "phaserDepth": 0.6,
+        "ringModEnabled": false,
+        "ringModFreqHz": 200,
+        "ringModMix": 0.5,
+        "freezeEnabled": false,
+        "brazilianBassEnabled": true,
+        "brazilianBassAmount": 0.6,
+        "driveEnabled": false,
+        "driveAmount": 0.5,
+        "masterGainDb": -3
+      },
+      "beatMatchEnabled": true,
+      "createdAt": 1766001000000,
+      "updatedAt": 1766001100000
+    }
+  ],
+  "arrangementFolders": [
+    {
+      "id": "arrfld_1",
+      "name": "Sets",
+      "createdAt": 1766000000000,
+      "updatedAt": 1766000000000
+    }
+  ],
+  "arrangementArtifacts": [
+    {
+      "id": "art_1",
+      "arrangementId": "arr_1",
+      "kind": "recording",
+      "name": "live-recording-2026-10-01 12-00-00",
+      "fileName": "live-recording-2026-10-01 12-00-00.m4a",
+      "durationMs": 8000,
+      "createdAt": 1766001200000
+    }
+  ],
+  "loopFolders": [
+    {
+      "id": "lpfld_f1",
+      "name": "Loops A",
+      "createdAt": 1766000000000,
+      "updatedAt": 1766000000000
+    }
+  ],
+  "patternFolders": [
+    {
+      "id": "ptnfld_f1",
+      "name": "Seqs",
+      "createdAt": 1766000000000,
+      "updatedAt": 1766000000000
+    }
+  ],
+  "takeFolders": [
+    {
+      "id": "tkfld_f1",
+      "name": "Keys",
+      "createdAt": 1766000000000,
+      "updatedAt": 1766000000000
+    }
+  ]
+}
