@@ -12,6 +12,8 @@ import com.apple.android.music.playback.queue.CatalogPlaybackQueueItemProvider
 import com.apple.android.sdk.authentication.TokenProvider
 import com.levi.pocketdj.data.applemusic.MusicKitDeveloperTokenClient
 import com.levi.pocketdj.data.settings.AppSettingsStore
+import com.levi.pocketdj.playback.am.AmSnapshot
+import com.levi.pocketdj.playback.am.AmStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -143,6 +145,46 @@ class AppleMusicBackend(
         return ok
     }
 
+    // ---- PB-8: main-thread, non-suspending surface for the Media3 adapter + end monitor ----
+
+    /** The row the engine holds (songId = OUR id), or null when idle. */
+    data class Row(val songId: String, val title: String?, val artist: String?, val albumId: String?)
+
+    fun currentRow(): Row? = current?.let { Row(it.songId, it.title, it.artist, it.albumId) }
+
+    /** Fires (Main) on any state/position/metadata change the adapter renders. */
+    @Volatile var changeListener: (() -> Unit)? = null
+
+    /** Fires (Main) when the SDK reports the one-song queue's item ended. */
+    @Volatile var itemEndedListener: (() -> Unit)? = null
+
+    /** Cold SDK read; [AmSnapshot.IDLE] when no controller / any SDK failure. */
+    fun snapshot(): AmSnapshot {
+        val c = controller ?: return AmSnapshot.IDLE
+        return runCatching {
+            val st = when (c.playbackState) {
+                PlaybackState.PLAYING -> AmStatus.PLAYING
+                PlaybackState.PAUSED -> AmStatus.PAUSED
+                else -> AmStatus.STOPPED
+            }
+            val buffering = c.isBuffering
+            val pos = c.currentPosition.takeIf { it != MediaPlayerController.POSITION_UNKNOWN } ?: 0L
+            val dur = c.duration.takeIf { it != MediaPlayerController.DURATION_UNKNOWN && it > 0 }
+            AmSnapshot(if (buffering && st != AmStatus.PLAYING) AmStatus.BUFFERING else st, pos, dur, buffering)
+        }.getOrDefault(AmSnapshot.IDLE)
+    }
+
+    fun pauseNow() { runCatching { controller?.pause() } }
+    fun resumeNow() { runCatching { controller?.play() } }
+    fun seekNow(positionMs: Long) { runCatching { controller?.seekToPosition(positionMs) } }
+    fun stopNow() {
+        runCatching { controller?.stop() }
+        current = null
+        startedSongId = null
+        onNowPlaying(null)
+        changeListener?.invoke()
+    }
+
     suspend fun pause() = onController { it.pause() }
     suspend fun resume() = onController { it.play() }
     suspend fun next() = onController { it.skipToNextItem() }
@@ -192,6 +234,7 @@ class AppleMusicBackend(
         }
 
     private fun publishNowPlaying() {
+        changeListener?.invoke()
         val info = current ?: return
         val c = controller
         val isPlaying = runCatching { c?.playbackState == PlaybackState.PLAYING }.getOrDefault(false)
@@ -251,7 +294,9 @@ class AppleMusicBackend(
             publishNowPlaying()
         }
 
-        override fun onItemEnded(c: MediaPlayerController, item: PlayerQueueItem, endPositionMs: Long) = Unit
+        override fun onItemEnded(c: MediaPlayerController, item: PlayerQueueItem, endPositionMs: Long) {
+            itemEndedListener?.invoke()
+        }
 
         override fun onMetadataUpdated(c: MediaPlayerController, item: PlayerQueueItem) = publishNowPlaying()
 
