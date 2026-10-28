@@ -8,7 +8,10 @@ import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import com.levi.pocketdj.data.collections.SourceSyncSettings
 
 /**
  * Sidecar graph for the collections area (decision D3). Contributes the ON_STOP flush
@@ -57,6 +60,10 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     /** Window-scoped multi-select state shared by Browse and every collection detail (COL-5). */
     val rowSelection: com.levi.pocketdj.ui.selection.RowSelection by lazy { com.levi.pocketdj.ui.selection.RowSelection() }
 
+    override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> by lazy {
+        listOf(com.levi.pocketdj.screens.settings.sections.collectionsSyncSection())
+    }
+
     override val flushables: List<Flushable> = listOf(
         Flushable {
             app.collections.flushNow()
@@ -69,5 +76,23 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         // Warm the favorites doc off-main: the lazy constructor does a synchronous file read +
         // JSON decode that would otherwise land inside the first ♥ row's composition.
         app.appScope.launch(Dispatchers.IO) { favorites }
+        // Converted-collection source sync (COL-7, iOS onCatalogAssigned): every NEW catalog
+        // snapshot (cache seed + refresh) reconciles source-linked pockets/playlists, gated by
+        // the global Settings toggle (default ON). Same-instance re-emissions are skipped.
+        app.appScope.launch(Dispatchers.IO) {
+            app.catalogRepository.state
+                .map { it.catalog }
+                .distinctUntilChanged { a, b -> a === b }
+                .collect { catalog ->
+                    try {
+                        val on = app.settings.get(SourceSyncSettings.SYNC_CONVERTED_POCKETS)
+                        SourceSyncSettings.autoPass(on, catalog, app.collections)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        runCatching { android.util.Log.w("PocketDJ", "[source-sync] auto pass failed: $e") }
+                    }
+                }
+        }
     }
 }

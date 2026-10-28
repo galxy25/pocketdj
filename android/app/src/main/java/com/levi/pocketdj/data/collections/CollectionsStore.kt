@@ -93,6 +93,12 @@ class CollectionsStore(
      */
     var catalogProvider: (() -> MergedCatalog?)? = null
 
+    /**
+     * Re-link seam (COL-7): cancel still-undelivered write-backs owed to the OLD source
+     * playlist id for the given songs. Unwired on Android until a write-back queue exists.
+     */
+    var cancelPendingWriteBacks: ((indexPlaylistId: String, songIds: Set<String>) -> Unit)? = null
+
     /** Fired after every persisted mutation (post-save). Reserved seam (iOS Spotlight/Siri). */
     var onChange: (() -> Unit)? = null
 
@@ -791,15 +797,40 @@ class CollectionsStore(
             }
         }
         var changed = 0
-        for (p in pockets.filter { it.syncsWithSource }) {
+        for (p in pockets.filter { it.syncsWithSource && it.amSyncDir.allowsPull }) {
             val sp = match(p.sourcePlaylistId, p.sourceName) ?: continue
             if (reconcilePocket(p.id, sp)) changed++
         }
-        for (pl in playlists.filter { it.syncsWithSource }) {
+        for (pl in playlists.filter { it.syncsWithSource && it.amSyncDir.allowsPull }) {
             val sp = match(pl.sourcePlaylistId, pl.sourceName) ?: continue
             if (reconcilePlaylist(pl.id, sp)) changed++
         }
         changed
+    }
+
+    /**
+     * Link an EXISTING pocket to a source playlist after the fact (iOS linkPocketToSource).
+     * Snapshots the source's CURRENT deduped membership as the merge base (the pocket's extra
+     * songs read as user adds, never source removals). Never forces sourceSyncEnabled: a first
+     * link leaves it null (enabled by default) and a re-link preserves an explicit OFF. Re-linking
+     * to a DIFFERENT source cancels pending write-backs owed to the old one for this pocket's songs.
+     * False when the pocket is gone.
+     */
+    fun linkPocketToSource(pocketId: String, source: SourcePlaylist): Boolean = synchronized(lock) {
+        val p = pocket(pocketId) ?: return false
+        val old = p.sourcePlaylistId
+        if (old != null && old != source.playlist.id) {
+            cancelPendingWriteBacks?.invoke(old, p.songIds.toSet())
+        }
+        val ids = source.playlist.songIds.distinct()
+        mutatePocketLocked(pocketId) {
+            it.copy(
+                sourcePlaylistId = source.playlist.id,
+                sourceName = source.sourceName,
+                sourceSongIds = ids,
+            )
+        }
+        true
     }
 
     /** MANUAL "Sync from source now" — ignores the toggles (explicit user action). */

@@ -400,7 +400,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | COL-4 — AddToActions + Add-to sheet parity (Suggested + Recent, pockets A–Z, playlists A–Z, More…… | 5 | Merged (`796e5923`) | — |
 | COL-3 — SongDuplicateJudge (deterministic tiers) + Remove duplicates (collection, all collections… | 6 | Merged (`42809a00`) | — |
 | COL-5 — Multi-select: RowSelection + SelectableRow + SelectionBar on Browse and every collection … | 9 | Merged (wave 9) | Multi-select on Browse, pocket, playlist, source playlist, set list (bar: Select all, Add to, Copy, Clear; clipboard capped). No paste UI, no hardware-keyboard range-select. Emulator steps NOT run (device-only). |
-| COL-7 — Source-sync completion: auto reconcile on catalog refresh, global + per-item toggles, dir… | 10 | Planned | — |
+| COL-7 — Source-sync completion: auto reconcile on catalog refresh, global + per-item toggles, dir… | 10 | PARTIAL (JVM) | Auto reconcile on catalog refresh, Settings toggle, direction gate, link/re-link in pocket menu implemented + JVM-tested. Emulator steps (link a pocket, catalog refresh reconcile) NOT run (integrator). |
 | COL-12 — Recently added virtual playlist (derivation from IndexSong.dateAdded + add history) + Set… | 12 | Planned | — |
 | COL-8 — Apple Music write-back queue (durable, Web API transport via SVC-15, batch confirm, backf… | 13 | Planned | Needs a real Apple Music subscription + Music-User-Token; emulator ve… |
 | COL-14 — .pdjcollection + backup .pocketdj.zip codecs, idempotent import merge, CSV (pure JVM, byt… | 16 | Planned | — |
