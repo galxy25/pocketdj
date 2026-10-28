@@ -69,6 +69,8 @@ fun DemuxScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     val source by session.source.collectAsState()
     val doc by studioGraph.studioStore.state.collectAsState()
     val catalog by graph.catalogRepository.state.collectAsState()
+    // The catalog is otherwise only loaded when Browse is first shown; the track picker needs it too.
+    androidx.compose.runtime.LaunchedEffect(Unit) { graph.catalogRepository.loadIfNeeded() }
     val revision by store.revision.collectAsState()
     var expanded by remember { mutableStateOf(runCatching { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_EXPANDED, "") }.getOrNull().orEmpty()) }
     var importError by remember { mutableStateOf<String?>(null) }

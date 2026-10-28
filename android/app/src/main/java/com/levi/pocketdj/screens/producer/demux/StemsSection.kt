@@ -71,8 +71,9 @@ fun StemsSection(session: DemuxSession, isSong: Boolean) {
                     Switch(checked = stemMode, onCheckedChange = { session.setStemMode(it) }, modifier = Modifier.testTag("demux-stems-switch"))
                 }
                 if (stemMode) {
-                    @Suppress("UNUSED_EXPRESSION") version
-                    DemuxStore.STEM_NAMES.forEach { StemRow(it, session) }
+                    // `version` is passed down so each row recomposes when mute/solo/play state changes
+                    // (rows are otherwise skipped: same name + same session instance).
+                    DemuxStore.STEM_NAMES.forEach { StemRow(it, session, version) }
                 } else Muted(StemsCopy.STEMS_HINT)
             }
             DemuxStemState.Downloadable -> ActionRow(StemsCopy.DOWNLOADABLE, "Download", "demux-stems-download") { session.downloadStems() }
@@ -86,7 +87,8 @@ fun StemsSection(session: DemuxSession, isSong: Boolean) {
 }
 
 @Composable
-private fun StemRow(name: String, session: DemuxSession) {
+@Suppress("UNUSED_PARAMETER")
+private fun StemRow(name: String, session: DemuxSession, version: Int) {
     val player = session.player
     val soloed = player.soloed == name
     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
