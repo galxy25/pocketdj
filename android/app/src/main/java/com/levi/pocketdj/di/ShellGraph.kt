@@ -128,7 +128,7 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                     }
                 }
             },
-        )
+        ).also { it.mixFacade = app.mixGraph.mixFacade } // MIX-16: the Mix drives Auto-Mix actions
     }
 
     private fun mediaCandidates(kinds: Set<MediaCandidate.Kind>): List<MediaCandidate> {

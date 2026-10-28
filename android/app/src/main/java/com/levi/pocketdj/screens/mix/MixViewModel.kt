@@ -141,6 +141,14 @@ class MixAutoStarter(
         if (!twoCrates) {
             downloads.begin(listOf(a))
             val loadables = crates.loadables(a)
+            if (loadables.isEmpty()) {
+                // iOS guard (after the download kick): nothing loadable and no run that can supply a first track.
+                if (allowPendingStart && downloads.isActive) {
+                    downloads.noteAutoStarted(emptySet(), lead, fade, nameA, shuffle)
+                    return MixStartOutcome(nameA, 0)
+                }
+                throw NoLoadableSongsException(nameA)
+            }
             val items = loadables.map { AutoMixPlan.item(it) }
             // Shuffle is applied in the engine so order/shuffle share one path.
             engine.startAutoMix(items, shuffle, lead, fade, nameA)

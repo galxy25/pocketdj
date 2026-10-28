@@ -59,6 +59,8 @@ class JukeboxRepository(
     @Volatile var externalMatch: JukeboxExternalMatch = JukeboxExternalMatch.None,
     /** Where accepted requests land: the sequencer (null in tests that never place). */
     @Volatile var queue: JukeboxQueue? = null,
+    /** Seam: the live Mix (MIX-16). Consulted per call so a mix started after construction is picked up. */
+    private val mixSource: () -> MixJukeboxSource? = { MixJukeboxSeam.source },
 ) {
     private val appContext by lazy { context.applicationContext }
 
@@ -267,7 +269,9 @@ class JukeboxRepository(
             if (found?.playable == true) {
                 scope.launch {
                     val handled = try {
-                        placementSink.place(found.song, action)
+                        // A live auto mix owns the setlist: the request joins ITS queue (MIX-16).
+                        onMain { mixSource()?.place(found.song, action) } == true ||
+                            placementSink.place(found.song, action)
                     } catch (c: CancellationException) {
                         throw c
                     } catch (e: Exception) {
@@ -305,6 +309,7 @@ class JukeboxRepository(
             // state POST for this tick — posting nowPlaying=null would make the
             // broker log the still-playing song as played and flash guests
             // "Nothing playing" over a transient binder hiccup.
+            runCatching { onMain { mixSource()?.drainPending() } } // parked broadcast inserts whose burn landed
             val snapshotResult = runCatching { readPlayer() }
             snapshotResult.exceptionOrNull()?.let { if (it is CancellationException) throw it }
             if (snapshotResult.isSuccess) {
@@ -493,8 +498,20 @@ class JukeboxRepository(
         }
     }
 
+    /** Mix state is Main-confined; with no mix wired (tests, no Mix built) there is nothing to hop for. */
+    private suspend fun <T> onMain(block: suspend () -> T?): T? =
+        if (mixSource() == null) null else withContext(Dispatchers.Main) { block() }
+
     /** One read of now-playing + the upcoming queue tail, from the sequencer (never the MediaController). */
     private suspend fun readPlayer(): PlayerSnapshot {
+        // BROADCAST mode (iOS stateSnapshot): a live auto mix owns the audio - the on-air deck + the queue tail.
+        onMain { mixSource()?.snapshot() }?.let { mix ->
+            return PlayerSnapshot(
+                songId = mix.songId, title = mix.title, artist = mix.artist,
+                durationMs = mix.durationMs, positionMs = mix.positionMs ?: 0L,
+                upNext = mix.upNext,
+            )
+        }
         val seq = queue?.snapshot()
         val current = seq?.current
         val np = playback.nowPlaying.value

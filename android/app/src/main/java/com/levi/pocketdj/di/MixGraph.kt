@@ -4,6 +4,10 @@ import android.content.Context
 import android.media.AudioManager
 import com.levi.pocketdj.mix.engine.autoQueueInsert
 import com.levi.pocketdj.mix.engine.autoUpcoming
+import com.levi.pocketdj.mix.engine.autoPlayed
+import com.levi.pocketdj.mix.engine.onAirTrack
+import com.levi.pocketdj.mix.engine.onAirBuffering
+import kotlinx.coroutines.flow.first
 import com.levi.pocketdj.audio.core.AudioTrackSink
 import com.levi.pocketdj.audio.core.Mp3Decoder
 import com.levi.pocketdj.audio.core.VoicePump
@@ -188,6 +192,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             diagSink = { com.levi.pocketdj.mix.service.MixDiag.log(it) },
         ).also {
             it.recorder = mixSessions
+            installOutcomeBridge(it)
             // SVC-6: Mix deck plays count for the LRP prune (iOS funnels MixEngine.setPlaying -> notePlayed).
             com.levi.pocketdj.data.stats.PlayStatsRecorder.attachMix(it.hooks) { id ->
                 app.appScope.launch(Dispatchers.IO) { app.servicesGraph.playStats.notePlayed(id) }
@@ -369,8 +374,8 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         }
     }
 
-    /** MIX-14: the Mix tab's state holder, app-scoped so crate selections survive tab switches and rotation. */
-    val mixViewModel: com.levi.pocketdj.screens.mix.MixViewModel by lazy {
+    /** The Mix shell's ports over the engine / downloader / collections (shared by the tab and [mixFacade]). */
+    private val portsLazy = lazy {
         val engine = mixEngine
         val dj = autoDj
         val hydrator = mixDeckExtras.hydrator
@@ -413,11 +418,121 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 is com.levi.pocketdj.mix.model.MixSource.Setlist -> app.collections.setlist(source.value)?.let { it.name ?: "Set list" }
             }
         }
+        Triple(enginePort, downloadPort, cratePort)
+    }
+
+    /** MIX-14: the Mix tab's state holder, app-scoped so crate selections survive tab switches and rotation. */
+    val mixViewModel: com.levi.pocketdj.screens.mix.MixViewModel by lazy {
+        val (enginePort, downloadPort, cratePort) = portsLazy.value
         com.levi.pocketdj.screens.mix.MixViewModel(
             engine = enginePort, downloads = downloadPort, crates = cratePort,
             settingsFlow = app.settings.mixSettingsFlow(),
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
         )
+    }
+
+    // ---- MIX-16: integrations ------------------------------------------------------------------
+
+    private val mainScope by lazy { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) }
+
+    /**
+     * Mix plays -> History: `onSongPlayed` emits a `source = "mix"` [com.levi.pocketdj.playback.PlayStarted]
+     * (contextName = the crate label) and maps deck -> event; `onDeckTrackEnded` writes the listened fraction
+     * and the <50 % skip verdict (iOS `MixPlayOutcomeBridge`).
+     */
+    private fun installOutcomeBridge(e: MixEngine) {
+        val history by lazy { com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext) }
+        val bridge = com.levi.pocketdj.mix.engine.MixPlayOutcomeBridge(
+            emit = { ev -> com.levi.pocketdj.playback.PlayEventBus.emit(ev) },
+            findEvent = { songId, atMs, final ->
+                com.levi.pocketdj.mix.engine.MixPlayOutcomeBridge.pickEvent(
+                    history.events, songId, atMs, final,
+                    id = { ev -> ev.id }, song = { ev -> ev.songId }, playedAt = { ev -> ev.playedAt },
+                    local = { ev -> !history.isFromAnotherDevice(ev) },
+                )
+            },
+            noteListened = { id, f -> history.noteListened(id, f) },
+            markSkipped = { id -> history.markSkipped(id) },
+            wasSkipped = { id -> history.events.lastOrNull { ev -> ev.id == id }?.wasSkipped == true },
+            noteSkip = { id ->
+                app.appScope.launch(Dispatchers.IO) {
+                    app.servicesGraph.playStats.noteSkipped(com.levi.pocketdj.data.edition.SongVariant.baseId(id))
+                }
+            },
+            trackInfo = { d -> e.loaded(d)?.let { t -> t.title to t.artist } },
+            contextLabel = { autoDjInst?.sourceLabel },
+            // The store records off the bus asynchronously: poll briefly, then fall back to the collapsed row.
+            resolveAsync = { attempt ->
+                mainScope.launch {
+                    repeat(RESOLVE_ATTEMPTS) { if (attempt(false)) return@launch; kotlinx.coroutines.delay(RESOLVE_STEP_MS) }
+                    attempt(true)
+                }
+            },
+        )
+        e.onSongPlayed = bridge::onSongPlayed
+        e.onDeckTrackEnded = bridge::onDeckTrackEnded
+    }
+
+    /** The running auto mix as the jukebox sees it; null until the engine exists (never builds it). */
+    private val jukeboxPort = object : com.levi.pocketdj.data.jukebox.MixJukeboxPort {
+        private val dj get() = autoDjInst
+        override val autoMixing: Boolean get() = dj?.isMixing == true
+        override val onAir: com.levi.pocketdj.data.jukebox.MixJukeboxPort.OnAir?
+            get() {
+                val d = dj ?: return null
+                val track = d.onAirTrack ?: return null
+                val deck = when {
+                    d.isMixing -> d.liveDeck
+                    d.engine.isPlaying(com.levi.pocketdj.mix.model.Deck.A) -> com.levi.pocketdj.mix.model.Deck.A
+                    else -> com.levi.pocketdj.mix.model.Deck.B
+                }
+                val dur = d.engine.duration(deck)
+                return com.levi.pocketdj.data.jukebox.MixJukeboxPort.OnAir(
+                    songId = track.songId, title = track.title, artist = track.artist,
+                    positionMs = (d.engine.position(deck) * 1000).toLong(),
+                    durationMs = if (dur > 0) (dur * 1000).toLong() else null,
+                    buffering = d.onAirBuffering,
+                )
+            }
+        override val upcoming get() = dj?.autoUpcoming.orEmpty()
+        override val played get() = dj?.autoPlayed.orEmpty()
+        override fun insert(item: AutoMixItem, action: com.levi.pocketdj.data.jukebox.JukeboxDecisionAction) {
+            dj?.autoQueueInsert(item, action)
+        }
+    }
+
+    /** MIX-16: ShellActions' Mix seam (Assistant / shortcuts / deep links). Cheap: nothing builds until used. */
+    val mixFacade: com.levi.pocketdj.mix.MixFacadeImpl by lazy {
+        com.levi.pocketdj.mix.MixFacadeImpl(
+            starter = {
+                val (enginePort, downloadPort, cratePort) = portsLazy.value
+                com.levi.pocketdj.screens.mix.MixAutoStarter(enginePort, downloadPort, cratePort, pushSettings = enginePort)
+            },
+            settings = { app.settings.mixSettingsFlow().first() },
+            isAutoMixing = { autoDjInst?.isMixing == true },
+            isAutoPaused = { autoDjInst?.isPaused == true },
+            // Lock-screen seam, on Main (the engine is Main-confined; the caller may be any thread).
+            remotePause = { mainScope.launch { autoDjInst?.remotePause() } },
+            remotePlay = { mainScope.launch { autoDjInst?.remotePlay() } },
+        )
+    }
+
+    init {
+        // Jukebox <-> Mix: the app-scoped repository finds the Mix through this process-wide seam.
+        com.levi.pocketdj.data.jukebox.MixJukeboxSeam.source = com.levi.pocketdj.data.jukebox.MixJukeboxSource(
+            port = { jukeboxPort },
+            isLoadable = { id -> app.servicesGraph.burnStore.localUrl(id) != null || mixStreamLoader.canStream(id) },
+            requestBurn = { song ->
+                app.servicesGraph.burnStore.burn(
+                    listOf(com.levi.pocketdj.data.burns.BurnSong(song.id, song.name, song.artist)),
+                )
+            },
+        )
+    }
+
+    private companion object {
+        const val RESOLVE_ATTEMPTS = 20
+        const val RESOLVE_STEP_MS = 50L
     }
 
     override val navEntries: List<com.levi.pocketdj.shell.NavEntry> get() = com.levi.pocketdj.screens.mix.MixRoutes.entries
