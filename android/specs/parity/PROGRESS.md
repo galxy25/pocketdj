@@ -155,3 +155,19 @@ Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave9. Mix and G
 - PB-8 PASS (no behaviour change with AM unavailable: rip/burn playback and the preview path verified, unit suite green); full-track DRM is device-only. Fixed: the AM rung now skips run-tagged game rows (GM-3 note), test added.
 
 Open: Q35-Q40.
+
+## Wave 10
+
+Merged (clean, no conflicts): GM-4, COL-7, MIX-13, SVC-6, STU-4, SVC-8. JVM: 2880 tests, 0 failures after merge (the 2759 baseline moved by every package's new tests). assembleDebug green. Node: profile-sync 20/20 pass.
+
+Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave10:
+- GM-4 PASS after a fix: setup counts update after typing stops; 0 matches disables Start; settings (1:00, genre, years) restored after force-stop; a round plays, Skip works, a card filed into two pockets through the Add-to sheet shows "SeedDup +1 more" and scores once; summary + high score. BUG FIXED: a cold start straight onto Games left the catalog unloaded, so setup said "0 songs match" until Browse was visited (setup now kicks loadIfNeeded and re-counts when the catalog lands).
+- COL-7 PASS: "Link to Apple Music playlist..." on a hand-made pocket -> picker -> Linked; the menu then shows direction picker, Sync with source, Sync from source now, Re-link. A removed song stayed removed after a catalog refresh; Settings > Collections sync toggle present (linked count text); "Sync from source now" works with the toggle OFF ("Already in sync" - the source membership was already in the pocket, so a real pull diff was covered by JVM only). Fixed a "1 linked item follow" grammar nit.
+- MIX-13 PASS (via new Settings > Debug > "Mix: deck UI" harness, since the Mix tab is still the MIX-14 placeholder): two decks load and play, tempo/pitch/EQ/volume/crossfader sliders respond, VU/seek tick, stacked and side-by-side (landscape) layouts render. Waveform stays empty in the harness (no peaks provider; MIX-14 supplies it). The harness dialog is clipped ~136 px at the right edge in landscape on this emulator (display cutout); harness-only.
+- SVC-6 PASS: Burn 10 (new debug seed) -> 9 burned; with a 4-song cap Prune now removed 16 downloads, freed 660 MB, kept the played songs and the 2 oldest never-played (never-played first, then oldest play); play-stats JSON recorded plays/skips; Delete songs by artist removed that artist's file. The 20 h gate and the worker cadence are covered by PruneWorkerGateTest only (Doze cadence is device-only). Fixed: the third delete button overflowed the row (now FlowRow).
+- STU-4 PASS: 4-beat loop saved from a seeded sample (62446 frames); audition logs decoded=looped=expected=62446; after deleting the sample the loop still auditions and shows "Source sample removed"; Slice into pads auto-slice + Send pads to sequencer baked 4 pads into a pattern. Audible seam-click judgement is device-only.
+- SVC-8: not deployed (needs AWS profile llc); node:test 20/20 against the in-memory store. The curl-against-deployed-API step is not verifiable here.
+
+No FATAL EXCEPTION / ANR from com.levi.pocketdj in logcat.
+
+Open: Q41-Q45.

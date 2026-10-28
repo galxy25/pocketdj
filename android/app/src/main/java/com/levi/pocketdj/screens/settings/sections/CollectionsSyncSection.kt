@@ -41,7 +41,7 @@ internal fun collectionsSyncSection() = SettingsSection("collectionsSync", 410) 
         )
     }
     SettingsCaption(
-        "$linked linked item${if (linked == 1) "" else "s"} follow their source playlists on every " +
+        "$linked linked item${if (linked == 1) "" else "s"} ${if (linked == 1) "follows its" else "follow their"} source playlists on every " +
             "catalog refresh while this is on. Your own edits survive. Freeze a single item from its " +
             "detail-view menu, or use \"Sync from source now\" to pull one on demand.",
     )

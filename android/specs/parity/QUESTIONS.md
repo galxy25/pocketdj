@@ -50,6 +50,11 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q38 [MIX-10]** A stream that fails before audio now skips ahead / the Auto-DJ recovers from an empty live deck, but a song that failed is deferred by the loader's failure cooldown (about 60 s) before it is retried. Shorten the cooldown for Auto-DJ? -- *Default: loader default.*
 - **Q39 [BRW-6]** History Pockets and For You tabs are gated placeholders; the Hide skips row only toggles from the switch, not the label. Make the whole row tappable? -- *Default: switch only.*
 - **Q40 [COL-5]** After Add to from the selection bar the selection stays armed (iOS clears it?). Confirm; also the Collection History tab logs one Added row per song (153 rows for a 153-song batch) rather than one grouped batch row. -- *Default: as built.*
+- **Q41 [STU-4]** Should the Loops audition keep playing when the app is backgrounded? That needs a foreground media service. -- *Default: stops on background.* -- Producer UX.
+- **Q42 [SVC-8]** profile-sync Lambda uses its own `ENROLL_SECRET`; reuse the rec-engine `REC_ENROLL_SECRET` instead (one fewer secret)? Also OK to deploy to green with `AWS_PROFILE=llc scripts/lambda/profile-sync/deploy.sh` (commit `config/endpoints.green.json` after)? -- *Default: separate secret, not deployed (extends Q5).* -- Blocks SYNC-2 against a real endpoint.
+- **Q43 [GM-4]** Gem Collector opens as an in-tab overlay in Games (no nav route; changed GamesRoutes.kt from GM-1). Add a `games/puzzle` NavHost route later for deep links? -- *Default: overlay.* -- Deep links / predictive back.
+- **Q44 [SVC-6]** Delete-by-collection covers pockets and playlists only (not setlists); protected-set lookup can construct the Mix engine from the prune worker; play-stats file is not synced across devices (belongs to profile sync); no tvOS-style auto-manage toggle. OK as-is? -- *Default: as-is.* -- Storage parity.
+- **Q45 [COL-7]** cancelPendingWriteBacks on re-link has no Android write-back queue to hook until the write-back package lands. -- *Default: no-op.* -- Tracking only.
 
 ## ANSWERED
 
