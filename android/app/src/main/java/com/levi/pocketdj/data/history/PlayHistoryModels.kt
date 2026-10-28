@@ -97,6 +97,10 @@ data class PlayEvent(
     val tzOffsetMin: Int? = null,
     /** Navigable origin collection (playlist/pocket id) of a set_now_playing run. */
     val originCollectionId: String? = null,
+    /** Settled location context (opaque place/trip ids only). Write-once, own plays only; null = unresolved. */
+    val listeningContext: com.levi.pocketdj.data.pockets.ListeningContextTag? = null,
+    /** True when a car-projection session was connected at record time; null = unknown / not applicable. */
+    val carPlay: Boolean? = null,
 ) {
     /** DERIVED, never stored: skipped wins, then fraction >= 0.5 completed else partial. */
     val outcome: PlayOutcome
