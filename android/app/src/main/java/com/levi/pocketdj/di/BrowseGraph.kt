@@ -5,6 +5,7 @@ import com.levi.pocketdj.data.search.SearchService
 import com.levi.pocketdj.data.search.SearchSettings
 import com.levi.pocketdj.screens.browse.BrowseSessionFlushable
 import com.levi.pocketdj.screens.settings.sections.editionSection
+import com.levi.pocketdj.screens.settings.sections.forYouSection
 import com.levi.pocketdj.screens.settings.sections.onlineSearchSection
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
@@ -69,6 +70,13 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
     }
     val recFeedbackStore: com.levi.pocketdj.data.recs.RecFeedbackStore by recFeedbackLazy
 
+    /** Timbre corpus for the For You refresh (BRW-12): memoized fetch, never throws, empty when offline. */
+    val timbreCatalog: com.levi.pocketdj.data.recs.TimbreCatalog by lazy {
+        com.levi.pocketdj.data.recs.TimbreCatalog(app.catalogService) {
+            "${com.levi.pocketdj.data.config.Endpoints.CATALOG_BASE}/timbre.json"
+        }
+    }
+
     override val flushables: List<Flushable> = listOf(
         BrowseSessionFlushable { app.settings.setBrowseSnapshot(it) },
         recsFlushable(recFeedbackLazy),
@@ -109,7 +117,7 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
     override val resetHooks: List<com.levi.pocketdj.shell.ResetHook> = recsResetHooks(recFeedbackLazy, forYouFeedLazy)
 
     override val settingsSections: List<SettingsSection> by lazy {
-        listOf(editionSection(), onlineSearchSection())
+        listOf(editionSection(), onlineSearchSection(), forYouSection())
     }
 
     internal companion object {

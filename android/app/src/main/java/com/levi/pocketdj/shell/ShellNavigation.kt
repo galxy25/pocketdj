@@ -411,6 +411,9 @@ private fun ShellNavHost(
             HistoryScreen(
                 onSongClick = { detailSongId = it },
                 onAlbumClick = { albumId -> nav.navigate(albumRoute(albumId)) },
+                onOpenCollection = { kind, id ->
+                    nav.navigate(if (kind == "pocket") pocketRoute(id) else playlistRoute(id))
+                },
             )
             detailSongId?.let { songId ->
                 SongDetailSheet(
