@@ -327,3 +327,29 @@ Emulator results (shot pocketdj-parity/_shots/wave22/COL-20-places.png):
 - COL-20 PASS with caveats: Settings > places & trips row appears under the pockets toggle; with permissions granted the toggle turns on and status shows "While using the app" + Allow Always; the 15-min LocationPollWorker ran and fed the dwell detector (state file persisted, open visit emitted after 15 min within radius, Location A / plc_ id minted); with the visit departure reported, Settings lists "Location A - 100 % of time"; plays made afterwards (Play seed queue) were stamped listeningContext {place, plc_...} in the history file, and the POST /pockets/events upload (local mock via pdj.pocketsBase) carried ctx plc_ id + places labels only, no lat/lon anywhere. Toggle off erased pocketdj-listening-places.json and cancelled the poll. No FATAL EXCEPTION / ANR.
 - Emulator limits: `adb emu geo fix` does not move the Fused low-power provider (the GPS provider is OFF unless GNSS is requested, and low-power Fused uses network location which the emulator lacks), so the far-fix close path was not driven live (covered by DwellDetectorTest) and the closing departure was seeded in the places file. Plays are Pending (not stamped) while a visit is open by design (iOS parity); stamped once the departure is reported. Real movement/dwell device-only.
 Open: Q93.
+
+## Final review
+
+A whole-app review (after the 22 waves) raised 67 findings: cross-package wiring gaps, main-thread IO, session/audio ownership, sync registration, backup/credentials and reset/deletion sweeps. 21 "Final review fix:" commits (`edc6874d`..`0e79881f`) fixed most of them. The rest are deferred to Q94-Q102: Mix/npdsp session resign; remaining main-thread IO in the resolvers, `rowOnDevice`, Mix `loadNow`, the ON_STOP sessions encode and the first Auto connect; streaming Tracks playback; a minimal background graph; the `content://` VIEW filter; For You `endPlaybackScope`; Gem Collector `cloudSimilar`/`recSuppressed`; SAF files for Studio consumers; Studio audio backup.
+
+Adversarial recheck of those fixes. Each diff was compared with its finding. Five fixes were wrong or incomplete; all five are fixed in `c058ee42` ("Final review recheck: ..."):
+- npdsp audio focus: the focus request was tied to `onAudioStarted`, which fires once per engagement. After a user pause (focus abandoned), Play resumed with no focus. `onChanged` now re-requests focus while playing and goes idle otherwise.
+- `setlistIsLive` (newly wired to `sequencer.isRunning`) also gated the Mix-tab materialize. A held set-list run is durable and can last across launches, so it hid the parked mix from the Mix tab indefinitely. Now only the launch read defers to a live set list, and a later Mix-surface request always materializes, as `materializePendingRestoreIfNeeded` does on iOS. New test `aLaterMixTabRequestMaterializesEvenBehindAHeldSetlist`.
+- ON_STOP flush budget: `withTimeoutOrNull` around `flushAll()` did not bound anything. Blocking flushes ignore cancellation, and `flushAll`'s `runCatching` swallows the CancellationException and runs every remaining flushable. The flush now runs detached on IO, and main waits at most 2.5 s for it.
+- Secrets: after the transient-Keystore fix, a failed open keeps the secrets for the next launch, but this launch reads every secret as "". The credentials watcher would then mirror and push a blank-token doc. `CredentialsSync` now never materializes while `secrets.isAvailable` is false. New test.
+- In the Pocket: reading `games.pocketsBridge` on every composition did not help, because the bridge is a plain var and its assignment never triggers a recomposition. The bridge is now observed through `GamesGraph.servicesBridgeFlow`.
+
+Fixes rechecked and found sound: probe/listener stand-down (`exoFrontsSession`; every Exo load path calls `yieldMixToExo`, and Exo claims on its first isPlaying), AM STOP teardown on Main, Mix sink park (all resume paths go through `play()` -> `ensureEngine`, and the sink is restartable), Stem Lock spin, Studio ON_STOP/appScope filing/pack rescan, sync entries, the places lock order, backup rules (the legacy `backup_rules.xml` matches), AM auto-sync on catalog load, search deep links, edition decider, jukebox resume/end, the Games and Collections minors, trusted-controller custom commands, push single-flight, and the waveform bound (`Song.length` is in ms).
+
+Residual risks, device-only:
+- Whether Android Auto's controller reports `isTrusted`. If it does not, the favorite and Add-to commands disappear in Auto.
+- `EncryptedSecretStore.createOrNull` now sleeps up to about 750 ms on a transient failure, on whichever thread first touches the secrets.
+- A clean-only flag on a Setlist instance (as opposed to its playlist template) is not consulted.
+
+Test count: 5131 JVM tests, 0 failures. `:app:testDebugUnitTest :app:assembleDebug :app:assembleRelease` all green.
+
+Emulator smoke (pocketdj AVD, emulator-5554, debug APK):
+- Launch OK.
+- Visited all 7 bottom tabs: Browse, History, Jukebox, Collections, Mix, Producer, Games.
+- Settings > Debug: Seed rip playlist, then Play seed queue. The media session went to PLAYING ("Hot [Skit]", Jadakiss) and the position advanced from 3.0 s to 12.1 s; `switchboard owner=exo`.
+- logcat: 0 FATAL EXCEPTION, 0 ANR, crash buffer empty.
