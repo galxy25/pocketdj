@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 COL-2 Store batch choke points + shared VersionedJsonWriter.
 - [x] data/store/VersionedJsonWriter.kt (version-ordered, executor-based, flushNow, invalidate(through), delete)

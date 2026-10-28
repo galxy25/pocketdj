@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 BRW-3 Explicit/edition system.
 - [x] IndexModels: url fields, edition ids, dateAdded, IndexArtist + IndexJson.artists, IndexSong.appleMusicId(edition)

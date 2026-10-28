@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SURF-2 — Application lifecycle + background work
 

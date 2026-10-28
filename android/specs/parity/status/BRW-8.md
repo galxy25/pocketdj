@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # BRW-8 Recs core A
 - [x] SimilarityFamilies.kt (verbatim constants, era/musical/timbre math, term weights, scores)
