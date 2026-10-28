@@ -188,6 +188,14 @@ fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = M
                     onMove = { to -> store.setItemFolder(StudioFolderKind.TAKE, t.id, to) },
                     onNewFolderForMove = { moveNewFolderFor = t.id },
                     onDelete = { pendingDelete = t },
+                    // STU-15: a Demuxer-made take re-extracts the other mode (comping <-> melody) in place.
+                    onSwitchMode = if (t.demuxSourceKey == null) null else ({
+                        busyId = t.id
+                        scope.launch {
+                            try { message = com.levi.pocketdj.screens.producer.demux.switchDemuxTakeMode(graph, store.take(t.id) ?: t) ?: "Switched to ${com.levi.pocketdj.studio.demux.DemuxTakeSwitch.targetMode(t.demuxMode)}." }
+                            finally { busyId = null }
+                        }
+                    }),
                 )
                 HorizontalDivider()
             }
@@ -218,6 +226,7 @@ private fun TakeRow(
     t: StudioTake, folders: List<com.levi.pocketdj.studio.model.StudioFolder>, playing: Boolean, busy: Boolean,
     onPlay: () -> Unit, onScore: () -> Unit, onRename: () -> Unit, onInstrument: (InstrumentKey) -> Unit, onTempo: () -> Unit, onUseAsSample: () -> Unit,
     onMove: (String?) -> Unit, onNewFolderForMove: () -> Unit, onDelete: () -> Unit,
+    onSwitchMode: (() -> Unit)? = null,
 ) {
     var menu by remember { mutableStateOf(false) }
     var instMenu by remember { mutableStateOf(false) }
@@ -239,6 +248,7 @@ private fun TakeRow(
                 DropdownMenuItem(text = { Text("Add to…") }, onClick = { menu = false; addTo = true })
                 DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
                 DropdownMenuItem(text = { Text("Instrument: ${t.instrument.displayName}") }, onClick = { menu = false; instMenu = true })
+                if (onSwitchMode != null) DropdownMenuItem(text = { Text(com.levi.pocketdj.studio.demux.DemuxTakeSwitch.menuLabel(t.demuxMode)) }, enabled = !busy, onClick = { menu = false; onSwitchMode() }, modifier = Modifier.testTag("take-switch-mode-${t.id}"))
                 DropdownMenuItem(text = { Text("Change tempo…") }, onClick = { menu = false; onTempo() }, modifier = Modifier.testTag("take-tempo-${t.id}"))
                 MoveToItems(folders, t.folderId, onMove = { menu = false; onMove(it) }, onNewFolder = { menu = false; onNewFolderForMove() })
                 DropdownMenuItem(text = { Text("Delete") }, onClick = { menu = false; onDelete() })

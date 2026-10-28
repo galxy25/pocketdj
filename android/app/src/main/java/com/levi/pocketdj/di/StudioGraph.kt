@@ -475,6 +475,16 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
 
     /** The Demuxer's selection/resolve/stems state machine (one per app; the screen is a pure renderer of it). */
+    /** STU-15: drum-pattern / melody analyzers + cloud lyrics (one run per source key). */
+    val demuxAnalyzers: com.levi.pocketdj.studio.demux.DemuxAnalyzers by lazy {
+        com.levi.pocketdj.studio.demux.DemuxAnalyzers(app.appScope, demuxStore)
+    }
+
+    /** STU-15: the Demuxer's hand-offs into Studio (sequencer pattern, instrumental take, cut sample, stems -> arrangement). */
+    val demuxExporter: com.levi.pocketdj.studio.demux.DemuxExporter by lazy {
+        com.levi.pocketdj.studio.demux.DemuxExporter(studioRoots, studioStore, studioRender, takeRenderer, { instrumentPacks.localBankFile(it) })
+    }
+
     val demuxSession: com.levi.pocketdj.studio.demux.DemuxSession by lazy {
         com.levi.pocketdj.studio.demux.DemuxSession(
             app.appScope, demuxStore, DemuxAppEnv(), demuxPlayer,
