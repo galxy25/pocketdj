@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-11 Favorites two-way Apple Music sync (opt-in) + owner-seed opt-in
 

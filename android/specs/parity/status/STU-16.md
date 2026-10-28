@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-16 Studio hardening + diagnostics + emulator seed + docs sync + single-audio-layer grep guard
 
