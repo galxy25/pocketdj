@@ -1,7 +1,20 @@
 package com.levi.pocketdj.data.activity
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.descriptors.buildClassSerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonEncoder
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.put
 
 /**
  * Collection-activity document models (specs/activity-favorites.md §2) — the
@@ -27,6 +40,13 @@ enum class ActivityKind(val token: String) {
 
     @SerialName("remove")
     REMOVE("remove"),
+
+    /** Library/catalog add (Discover +Add, imports) — no collection fields. */
+    @SerialName("catalogAdd")
+    CATALOG_ADD("catalogAdd"),
+
+    @SerialName("catalogRemove")
+    CATALOG_REMOVE("catalogRemove"),
 }
 
 /**
@@ -43,10 +63,16 @@ data class ActivityEvent(
     val kind: ActivityKind,
     val itemId: String,
     val itemTitle: String? = null,
+    /** Artist snapshot (additive-optional). */
+    val itemArtist: String? = null,
     val collectionId: String? = null,
     /** AddTarget.Kind raw token ("pocket" / "playlist"). */
     val collectionKind: String? = null,
     val collectionName: String? = null,
+    /** installId of the ORIGINATING device (null ⇒ legacy, treated as local). */
+    val originInstallId: String? = null,
+    /** `.catalogAdd` only: the Apple Music library write outcome token. */
+    val libraryWrite: String? = null,
 )
 
 /**
@@ -54,7 +80,7 @@ data class ActivityEvent(
  * unknown keys ignored — an empty or forward-version file loads degraded rather
  * than resetting the store. `installId` is the merge attribution key.
  */
-@Serializable
+@Serializable(with = ActivityDocumentSerializer::class)
 data class ActivityDocument(
     val schemaVersion: Int = COLLECTION_ACTIVITY_SCHEMA_VERSION,
     val installId: String = "",
@@ -63,3 +89,41 @@ data class ActivityDocument(
 )
 
 const val COLLECTION_ACTIVITY_SCHEMA_VERSION = 1
+
+/**
+ * Lenient document decode (iOS `Document.init(from:)`): every field falls back to its default and
+ * `events` decode PER ELEMENT — an unknown/malformed event (e.g. a newer build's kind) is skipped
+ * while every other event is kept, instead of resetting the whole log.
+ */
+object ActivityDocumentSerializer : KSerializer<ActivityDocument> {
+    override val descriptor = buildClassSerialDescriptor("ActivityDocument")
+
+    override fun deserialize(decoder: Decoder): ActivityDocument {
+        val input = decoder as? JsonDecoder ?: throw SerializationException("JSON only")
+        val obj = input.decodeJsonElement() as? JsonObject
+            ?: throw SerializationException("activity document must be an object")
+        val events = (obj["events"] as? JsonArray)?.mapNotNull { el ->
+            runCatching { input.json.decodeFromJsonElement(ActivityEvent.serializer(), el) }.getOrNull()
+        } ?: emptyList()
+        return ActivityDocument(
+            schemaVersion = (obj["schemaVersion"] as? JsonPrimitive)?.intOrNull
+                ?: COLLECTION_ACTIVITY_SCHEMA_VERSION,
+            installId = (obj["installId"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: "",
+            events = events,
+        )
+    }
+
+    override fun serialize(encoder: Encoder, value: ActivityDocument) {
+        val output = encoder as? JsonEncoder ?: throw SerializationException("JSON only")
+        output.encodeJsonElement(
+            buildJsonObject {
+                put("schemaVersion", value.schemaVersion)
+                put("installId", value.installId)
+                put(
+                    "events",
+                    JsonArray(value.events.map { output.json.encodeToJsonElement(ActivityEvent.serializer(), it) }),
+                )
+            },
+        )
+    }
+}

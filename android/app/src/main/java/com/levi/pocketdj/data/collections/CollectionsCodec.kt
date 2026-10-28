@@ -79,6 +79,7 @@ private fun JsonObject.optBoolean(key: String): Boolean? {
     val el = this[key] ?: return null
     if (el is JsonNull) return null
     val p = el as? JsonPrimitive ?: throw SerializationException("$key must be a boolean")
+    if (p.isString) throw SerializationException("$key must be a boolean")
     return when (p.content) {
         "true" -> true
         "false" -> false
@@ -192,6 +193,10 @@ object PlaylistSerializer : KSerializer<Playlist> {
             sourceSongIds = obj.optStringList("sourceSongIds"),
             sourceSyncEnabled = obj.optBoolean("sourceSyncEnabled"),
             sourceSyncedAt = obj.optDouble("sourceSyncedAt"),
+            amSyncDirection = runCatching { obj.optString("amSyncDirection") }.getOrNull(),
+            // Lenient on purpose (iOS `try?`): a garbled value must not cost the playlist.
+            cleanOnly = runCatching { obj.optBoolean("cleanOnly") }.getOrNull(),
+            recsEnabled = runCatching { obj.optBoolean("recsEnabled") }.getOrNull(),
             lastPlayedAt = obj.optDouble("lastPlayedAt"),
             createdAt = obj.doubleOrThrow("createdAt"),
             updatedAt = obj.doubleOrThrow("updatedAt"),
@@ -218,6 +223,9 @@ object PlaylistSerializer : KSerializer<Playlist> {
             value.sourceSongIds?.let { ids -> put("sourceSongIds", JsonArray(ids.map(::JsonPrimitive))) }
             value.sourceSyncEnabled?.let { put("sourceSyncEnabled", it) }
             value.sourceSyncedAt?.let { put("sourceSyncedAt", epochMsPrimitive(it)) }
+            value.amSyncDirection?.let { put("amSyncDirection", it) }
+            value.cleanOnly?.let { put("cleanOnly", it) }
+            value.recsEnabled?.let { put("recsEnabled", it) }
             value.lastPlayedAt?.let { put("lastPlayedAt", epochMsPrimitive(it)) }
             put("createdAt", epochMsPrimitive(value.createdAt))
             put("updatedAt", epochMsPrimitive(value.updatedAt))
@@ -227,6 +235,27 @@ object PlaylistSerializer : KSerializer<Playlist> {
 }
 
 // MARK: - Document codec + migration
+
+/**
+ * iOS `Pocket.init(from:)` reads amSyncDirection/cleanOnly/recsEnabled with `try?`; the
+ * generated Pocket decoder would throw (dropping the whole pocket), so a wrong-typed
+ * value is stripped (=> null) before decoding.
+ */
+internal fun sanitizePocketFlags(el: kotlinx.serialization.json.JsonElement): kotlinx.serialization.json.JsonElement {
+    val obj = el as? JsonObject ?: return el
+    fun bad(key: String, ok: (JsonPrimitive) -> Boolean): Boolean {
+        val v = obj[key] ?: return false
+        if (v is kotlinx.serialization.json.JsonNull) return false
+        val p = v as? JsonPrimitive ?: return true
+        return !ok(p)
+    }
+    val drop = buildSet {
+        if (bad("amSyncDirection") { it.isString }) add("amSyncDirection")
+        if (bad("cleanOnly") { !it.isString && (it.content == "true" || it.content == "false") }) add("cleanOnly")
+        if (bad("recsEnabled") { !it.isString && (it.content == "true" || it.content == "false") }) add("recsEnabled")
+    }
+    return if (drop.isEmpty()) el else JsonObject(obj.filterKeys { it !in drop })
+}
 
 object CollectionsCodec {
     /**
@@ -247,7 +276,7 @@ object CollectionsCodec {
 
         val doc = CollectionsDocument(
             schemaVersion = (root["schemaVersion"] as? JsonPrimitive)?.intOrNull ?: 0,
-            pockets = lossyList("pockets", Pocket.serializer()),
+            pockets = (root["pockets"] as? JsonArray)?.let { lossyElements(json, JsonArray(it.map(::sanitizePocketFlags)), Pocket.serializer()) } ?: emptyList(),
             playlists = lossyList("playlists", PlaylistSerializer),
             setlists = lossyList("setlists", Setlist.serializer()),
             folders = lossyList("folders", PlaylistFolder.serializer()),

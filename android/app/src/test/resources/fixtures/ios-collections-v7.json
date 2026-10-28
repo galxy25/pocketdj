@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 7,
+  "pockets": [
+    {
+      "id": "pkt_aaa", "name": "Warmups", "kind": "harmonic", "description": "easy ones",
+      "songIds": ["sng_1", "sng_2"], "albumIds": ["alb_1"], "childPocketIds": [],
+      "notes": [{"id": "pnt_1", "text": "breathe", "position": 1}],
+      "folderId": "fld_1", "songRepeats": {"sng_1": 2},
+      "sourcePlaylistId": "pl_9", "sourceName": "Apple Music (Local)",
+      "sourceSongIds": ["sng_1", "sng_2"], "sourceSyncEnabled": true, "sourceSyncedAt": 1750000000500,
+      "lastPlayedAt": 1750000001000,
+      "amSyncDirection": "push", "cleanOnly": true, "recsEnabled": false,
+      "createdAt": 1750000000000, "updatedAt": 1750000002000
+    },
+    {
+      "id": "pkt_bbb", "name": "Plain", "kind": "performance",
+      "songIds": [], "albumIds": [], "childPocketIds": ["pkt_aaa"], "notes": [], "songRepeats": {},
+      "amSyncDirection": "sideways",
+      "createdAt": 1750000000000, "updatedAt": 1750000000000
+    }
+  ],
+  "playlists": [
+    {
+      "id": "pls_1", "name": "Set A", "description": "d", "targetMs": 3600000, "folderId": "fld_1",
+      "sourcePlaylistId": "pl_9", "sourceName": "Apple Music (Local)", "sourceSongIds": ["sng_1"],
+      "sourceSyncEnabled": false, "sourceSyncedAt": 1750000000500,
+      "amSyncDirection": "pull", "cleanOnly": true, "recsEnabled": false, "lastPlayedAt": 1750000003000,
+      "sequences": [
+        {"nodeId": "nd_1", "kind": "sequence", "name": "Default", "targetMs": 600000,
+         "children": [
+           {"nodeId": "nd_2", "kind": "song", "songId": "sng_1", "note": "cue", "repeatCount": 3},
+           {"nodeId": "nd_3", "kind": "text", "text": "hello"}
+         ]}
+      ],
+      "createdAt": 1750000000000, "updatedAt": 1750000004000
+    },
+    {
+      "id": "pls_2", "name": "Bare",
+      "sequences": [{"nodeId": "nd_9", "kind": "sequence", "name": "Default", "children": []}],
+      "createdAt": 1750000000000, "updatedAt": 1750000000000
+    }
+  ],
+  "setlists": [],
+  "folders": [{"id": "fld_1", "name": "Folder", "createdAt": 1750000000000, "updatedAt": 1750000000000}]
+}
