@@ -209,3 +209,28 @@ class InstrumentPackStoreTest {
         assertFalse(staged.exists()); assertEquals(1L, dest.length())
     }
 }
+
+class InstrumentPackGroupsTest {
+    private fun pack(id: String, inst: InstrumentKey, bank: String, bytes: Long = 0) = InstrumentPack(id, inst.displayName, inst, inst.gmProgram, bank, bytes)
+
+    @Test fun packsSharingABankCollapseIntoOneRowWithTheBankSize() {
+        val g = InstrumentPackGroups.group(
+            listOf(pack("a", InstrumentKey.PIANO, "banks/gu.sf2", 5), pack("b", InstrumentKey.VIOLIN, "banks/gu.sf2"), pack("c", InstrumentKey.HARP, "banks/harp.sf2", 900_000)),
+            listOf(InstrumentBank("banks/gu.sf2", 32_000_000)),
+        )
+        assertEquals(2, g.size)
+        assertEquals("Piano, Violin", g[0].title); assertEquals(32_000_000L, g[0].bytes)
+        assertEquals("Harp", g[1].title); assertEquals(900_000L, g[1].bytes)   // no bank entry => pack size
+    }
+
+    @Test fun packWithoutABankKeyIsItsOwnNonDownloadableRowListedLast() {
+        val g = InstrumentPackGroups.group(listOf(pack("x", InstrumentKey.CLARINET, ""), pack("a", InstrumentKey.PIANO, "k")), emptyList())
+        assertEquals(listOf("k", ""), g.map { it.bankKey })
+        assertFalse(g[1].downloadable); assertTrue(g[0].downloadable)
+    }
+
+    @Test fun sizeLabels() {
+        assertEquals("32 MB", InstrumentPackGroups.sizeLabel(32_400_000)); assertEquals("820 KB", InstrumentPackGroups.sizeLabel(820_000))
+        assertEquals("1 KB", InstrumentPackGroups.sizeLabel(10)); assertEquals("", InstrumentPackGroups.sizeLabel(0))
+    }
+}

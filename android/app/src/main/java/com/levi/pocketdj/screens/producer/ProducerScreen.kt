@@ -94,6 +94,7 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
                 StudioSubTab.Loops -> LoopsScreen(graph)
                 StudioSubTab.Cues -> com.levi.pocketdj.screens.producer.cues.CuesScreen(graph)
                 StudioSubTab.Sequencer -> SequencerScreen(graph)
+                StudioSubTab.Instruments -> com.levi.pocketdj.screens.producer.instruments.InstrumentsScreen(graph)
                 else -> ComingSoon(tab)
             }
         }

@@ -187,3 +187,81 @@ class TakeRenderer(
         }
     }
 }
+
+/** Why filing a take / making a sample from one failed (the UI maps each to copy). */
+sealed class TakeFileFailure(val message: String) {
+    object NoNotes : TakeFileFailure("No notes were played, so there's nothing to save.")
+    class PackMissing(val instrument: InstrumentKey) : TakeFileFailure("Download the ${instrument.displayName} pack first.")
+    object Failed : TakeFileFailure("Couldn't save that take.")
+}
+
+class TakeFileException(val failure: TakeFileFailure) : Exception(failure.message)
+
+/**
+ * Files a finished recording and derives samples from takes: the take's audio is rendered from its events
+ * (the click was never in the graph), the record is added through [StudioStore.addTakeRelocating], and
+ * "Use as sample" COPIES the audio into its own sample file — the sample outlives its take.
+ */
+class TakeFiler(
+    private val roots: StudioRoots,
+    private val store: StudioStore,
+    private val renderer: TakeRenderer,
+    private val studioRender: com.levi.pocketdj.studio.audio.StudioRender,
+    private val now: () -> Double = { System.currentTimeMillis().toDouble() },
+) {
+    /** Render + file [result]. Throws [TakeFileException]. */
+    suspend fun file(result: TakeResult, name: String, bank: File?): StudioTake {
+        if (result.events.isEmpty()) throw TakeFileException(TakeFileFailure.NoNotes)
+        if (bank == null) throw TakeFileException(TakeFileFailure.PackMissing(result.instrument))
+        try {
+            renderer.renderRaw(result.takeId, result.events, result.instrument, bank, result.fileName)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+            StudioFiles.appFile(roots, StudioFamily.TAKES, result.fileName)?.delete()
+            throw TakeFileException(TakeFileFailure.Failed)
+        }
+        return store.addTakeRelocating(
+            StudioTake(
+                id = result.takeId, name = name, instrument = result.instrument, fileName = result.fileName,
+                wasUserFolder = false, bpm = result.bpm, events = result.events, durationMs = result.durationMs, createdAt = now(),
+            ),
+        )
+    }
+
+    /** The take's CURRENT audio file: the fresh render cache, else the raw file when never edited/retimed, else null (needs a render). */
+    fun currentAudioFile(take: StudioTake): File? {
+        if (take.isRenderFresh) {
+            StudioFolders.fileRef(roots, StudioFamily.TAKES, take.renderedFileName!!, take.renderedWasUserFolder ?: false)?.file?.takeIf { it.isFile }?.let { return it }
+        }
+        if (take.editedEvents == null && take.renderRevision == 0) {
+            return StudioFolders.fileRef(roots, StudioFamily.TAKES, take.fileName, take.wasUserFolder)?.file?.takeIf { it.isFile }
+        }
+        return null
+    }
+
+    /** Make sure [take] has playable audio matching its score, rendering when stale. */
+    suspend fun ensureAudio(take: StudioTake, bankFor: (InstrumentKey) -> File?): File? {
+        currentAudioFile(take)?.let { return it }
+        return renderer.render(take, bankFor)
+    }
+
+    /** COPY the take's audio into a new sample (grid = the take's tempo, source = the take). */
+    suspend fun useAsSample(take: StudioTake, bankFor: (InstrumentKey) -> File?): com.levi.pocketdj.studio.model.StudioSample {
+        val src = try { ensureAudio(take, bankFor) } catch (e: TakeRenderException.BankMissing) {
+            throw TakeFileException(TakeFileFailure.PackMissing(e.instrument))
+        } catch (e: TakeRenderException.EmptyTake) { throw TakeFileException(TakeFileFailure.NoNotes) }
+            ?: throw TakeFileException(TakeFileFailure.Failed)
+        val id = com.levi.pocketdj.studio.model.StudioFactory.newSampleId()
+        val name = StudioFolders.fileName(StudioFamily.SAMPLES, id)
+        val dest = StudioFiles.appFile(roots, StudioFamily.SAMPLES, name) ?: throw TakeFileException(TakeFileFailure.Failed)
+        val res = try { studioRender.importAudioFile(src.path, dest) } catch (e: com.levi.pocketdj.studio.audio.StudioRenderException) {
+            dest.delete(); throw TakeFileException(TakeFileFailure.Failed)
+        }
+        return store.addSample(
+            com.levi.pocketdj.studio.model.StudioSample(
+                id, take.name, name, wasUserFolder = false, createdAt = now(), durationMs = res.durationMs,
+                source = com.levi.pocketdj.studio.model.StudioSource.Take(take.id),
+                grid = com.levi.pocketdj.studio.model.StudioGrid(take.bpm),
+            ),
+        )
+    }
+}

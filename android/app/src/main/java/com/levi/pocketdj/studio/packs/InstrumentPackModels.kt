@@ -113,3 +113,34 @@ object InstrumentBankNaming {
     /** `instrument-<slug>.sf2`, minted through [StudioFolders] so writer and strict parser never drift. */
     fun localFileName(key: String): String = StudioFolders.fileName(StudioFamily.INSTRUMENTS, slug(key))
 }
+
+/** One downloadable bank row on the Packs screen: every pack that rides the same bank is listed once, under it. */
+data class InstrumentBankGroup(val bankKey: String, val packs: List<InstrumentPack>, val bytes: Long) {
+    val title: String get() = packs.joinToString(", ") { it.name }
+    val downloadable: Boolean get() = bankKey.isNotEmpty()
+}
+
+object InstrumentPackGroups {
+    /**
+     * Group [packs] by `bankKey` (first-seen order). Size = the bank's advertised size from [banks], else the
+     * largest pack `bytes`. A pack with no bankKey is its own non-downloadable group.
+     */
+    fun group(packs: List<InstrumentPack>, banks: List<InstrumentBank>): List<InstrumentBankGroup> {
+        val out = ArrayList<InstrumentBankGroup>()
+        val byKey = LinkedHashMap<String, MutableList<InstrumentPack>>()
+        for (p in packs) {
+            if (p.bankKey.isEmpty()) out.add(InstrumentBankGroup("", listOf(p), p.bytes)) else byKey.getOrPut(p.bankKey) { ArrayList() }.add(p)
+        }
+        val grouped = byKey.map { (key, ps) ->
+            InstrumentBankGroup(key, ps, banks.firstOrNull { it.key == key }?.bytes?.takeIf { it > 0 } ?: ps.maxOf { it.bytes })
+        }
+        return grouped + out
+    }
+
+    /** "32 MB" / "820 KB" / "" for unknown. */
+    fun sizeLabel(bytes: Long): String = when {
+        bytes <= 0 -> ""
+        bytes >= 1_000_000 -> "%d MB".format(Math.round(bytes / 1_000_000.0))
+        else -> "%d KB".format(Math.max(1L, Math.round(bytes / 1_000.0)))
+    }
+}
