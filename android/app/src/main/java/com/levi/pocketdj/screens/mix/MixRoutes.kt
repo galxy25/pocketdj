@@ -33,7 +33,7 @@ object MixRoutes {
 
     val entries: List<NavEntry> = listOf(
         NavEntry(SESSIONS) { actions ->
-            composable(SESSIONS) { SessionsStub(onBack = { actions.pop() }) }
+            composable(SESSIONS) { MixSessionsRoute(onBack = { actions.pop() }) }
         },
     )
 }
@@ -41,23 +41,4 @@ object MixRoutes {
 @Composable
 fun MixRoute(graph: AppGraph, onOpenSessions: () -> Unit, modifier: Modifier = Modifier) {
     MixScreen(graph, onOpenSessions, modifier)
-}
-
-/** Placeholder until MIX-15 (Sessions screen + replay): the session names, newest first. */
-@Composable
-private fun SessionsStub(onBack: () -> Unit) {
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    val store = androidx.compose.runtime.remember { AppGraph.get(ctx).mixGraph.mixSessions }
-    val sessions by store.sessions.collectAsState()
-    Column(Modifier.fillMaxSize().testTag("mix-sessions-screen")) {
-        Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-            Text("Mix sessions", style = androidx.compose.material3.MaterialTheme.typography.titleLarge)
-        }
-        LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-            items(sessions.sortedByDescending { it.startedAt }, key = { it.id }) { s ->
-                Text(s.name, Modifier.padding(vertical = 10.dp))
-            }
-        }
-    }
 }

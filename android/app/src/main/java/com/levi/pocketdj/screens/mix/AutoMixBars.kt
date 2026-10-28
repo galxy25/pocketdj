@@ -38,6 +38,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -193,7 +196,12 @@ fun SkipButton(onSkip: (taps: Int) -> Unit, modifier: Modifier = Modifier) {
             .pointerInput(onSkip) {
                 detectTapGestures(onDoubleTap = { onSkip(2) }, onTap = { onSkip(1) })
             }
-            .semantics(mergeDescendants = true) { contentDescription = "Skip to next track. Double-tap for a fast five second sweep" },
+            .semantics(mergeDescendants = true) {
+                contentDescription = "Skip to next track. Double-tap for a fast five second sweep"
+                role = androidx.compose.ui.semantics.Role.Button
+                onClick(label = "Skip to next") { onSkip(1); true }
+                customActions = listOf(androidx.compose.ui.semantics.CustomAccessibilityAction("Fast skip") { onSkip(2); true })
+            },
         shape = CARD, color = DeckColors.raised, border = BorderStroke(1.dp, DeckColors.border),
     ) {
         Row(Modifier.padding(vertical = 11.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {

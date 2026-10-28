@@ -40,7 +40,8 @@ class MixViewModelTest {
         override fun setFXGlide(on: Boolean) { log += "fx=$on" }
         override fun setMixGlide(on: Boolean) { log += "mixglide=$on" }
         override fun prepare() { log += "prepare" }
-        override fun materializePendingRestore() { log += "materialize" }
+        var restoreEnables = false
+        override fun materializePendingRestore() { log += "materialize"; if (restoreEnables) autoEnabled = true }
         override fun setCueOnRight(right: Boolean) { log += "cue=$right" }
         override fun setBeatPulseEnabled(on: Boolean) { log += "pulse=$on" }
         override fun setMixGlideSeconds(seconds: Double) { log += "glide=$seconds" }
@@ -221,6 +222,42 @@ class MixViewModelTest {
     }
 
     // ---- skip --------------------------------------------------------------------------------
+
+    @Test fun engineEnabledFlipOutsideTheScreen_isMirroredAndSyncsDecks() = runTest {
+        val r = rig(); val vm = r.vm()
+        vm.setAutoSource(A)
+        assertFalse(vm.state.value.autoEnabled)
+        r.engine.autoEnabled = true
+        r.engine.autoUi.value = AutoUiState(enabled = true)    // restore / headless start flips the engine
+        assertTrue(vm.state.value.autoEnabled)
+        assertEquals(A, vm.state.value.sourceA)                 // deck sources mirrored
+        r.engine.autoUi.value = AutoUiState(enabled = false)
+        assertFalse(vm.state.value.autoEnabled)
+    }
+
+    @Test fun runAdoptsEngineEnabledAfterMaterializingARestore() = runTest {
+        val r = rig(); val vm = r.vm()
+        r.engine.restoreEnables = true     // the parked restore flips dj.enabled without a ui emission
+        val job = r.scope.launch { vm.run() }
+        assertTrue(vm.state.value.autoEnabled)
+        job.cancel()
+    }
+
+    @Test fun deletedCrateFailsLikeMixSourceNotFound() = runTest {
+        val r = rig(); r.crates.names.remove(B)
+        val starter = MixAutoStarter(r.engine, r.downloads, r.crates)
+        try { starter.start(A, B, false, true, MixSettings()); org.junit.Assert.fail("expected not found") }
+        catch (e: MixSourceNotFoundException) { assertEquals(B, e.source) }
+        assertNull(r.engine.started)
+    }
+
+    @Test fun unnamedSetlistStillReadsSetList_andStartPushesSettings() = runTest {
+        val r = rig(); val sl = MixSource.Setlist("s")
+        r.crates.tracks[sl] = songs("s", 1)
+        MixAutoStarter(r.engine, r.downloads, r.crates, pushSettings = r.engine).start(sl, null, false, true, MixSettings())
+        assertEquals("Set list", r.engine.started!!.label)
+        assertTrue(r.engine.log.any { it.startsWith("skipfade=") })
+    }
 
     @Test fun skipSingleVsDoubleTap() = runTest {
         val r = rig(); r.settings.value = MixSettings(skipFadeSeconds = 22.0)

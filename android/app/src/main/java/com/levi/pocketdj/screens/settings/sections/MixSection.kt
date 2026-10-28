@@ -58,8 +58,10 @@ internal const val MIX_SECTION_FOOTER =
  */
 internal fun mixSection() = SettingsSection(MIX_SECTION_ID, 520) { host ->
     val store = host.graph.settings
-    val s by store.mixSettingsFlow().collectAsState(MixSettings())
+    val sOrNull by store.mixSettingsFlow().collectAsState(null)
     val scope = host.scope
+    // Nothing until the first emission: a tap on defaults must never overwrite the stored value.
+    val s = sOrNull ?: return@SettingsSection
     SettingsHeader("Mix")
     StepperRow("Crossfade lead", s.autoMixLeadSeconds, MixSettings.LEAD_RANGE, "settings-automix-lead") {
         scope.launch { store.setMixLeadSeconds(it) }

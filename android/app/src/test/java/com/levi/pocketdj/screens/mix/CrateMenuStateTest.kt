@@ -17,7 +17,8 @@ class CrateMenuStateTest {
         pockets = listOf(Pocket(id = "p2", name = "zeta"), Pocket(id = "p1", name = "Alpha")),
         playlists = listOf(Playlist(id = "l2", name = "b-side", sequences = emptyList()), Playlist(id = "l1", name = "A-side", sequences = emptyList())),
         setlists = listOf(
-            Setlist(id = "s2", name = "Friday"), Setlist(id = "s1", name = null),
+            Setlist(id = "s2", playlistId = "l1", name = "Friday"), Setlist(id = "s1", playlistId = "p1", name = null),
+            Setlist(id = "orphan", playlistId = "gone", name = "Orphaned"),
             Setlist(id = NOW_PLAYING_SETLIST_ID, name = "Now Playing"),
         ),
     )
@@ -40,6 +41,15 @@ class CrateMenuStateTest {
         assertEquals(listOf("Friday", "Set list"), sets.map { it.name })
         assertTrue(sets.none { it.source == MixSource.Setlist(NOW_PLAYING_SETLIST_ID) })
         assertEquals(MixSource.Setlist("s2"), sets.first().source)
+    }
+
+    @Test fun orphanedSetlistsAreHidden() {
+        assertTrue(entries().none { it.source == MixSource.Setlist("orphan") })
+    }
+
+    @Test fun naturalNumericAndDiacriticInsensitiveOrder() {
+        val sorted = listOf("Set 10", "set 2", "Éclair", "eclair b", "Zed").sortedWith { a, b -> MixCrateMenuState.naturalCompare(a, b) }
+        assertEquals(listOf("Éclair", "eclair b", "set 2", "Set 10", "Zed"), sorted)
     }
 
     @Test fun rowsPutResetFirstThenHeaderedPicks() {

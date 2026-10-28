@@ -15,7 +15,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.random.Random
@@ -104,6 +106,9 @@ object AutoMixPlan {
 /** Nothing in the crate(s) is on this device and no download run can supply a first track. */
 class NoLoadableSongsException(val crateName: String) : Exception("No songs in $crateName are on this device yet")
 
+/** A crate id no longer resolves (iOS `mixSourceNotFound`). */
+class MixSourceNotFoundException(val source: MixSource) : Exception("That crate no longer exists")
+
 /** What [MixAutoStarter.start] did. [count] = queued tracks (0 ⇒ zero-start pending the first landing). */
 data class MixStartOutcome(val name: String, val count: Int)
 
@@ -117,13 +122,21 @@ class MixAutoStarter(
     private val downloads: MixDownloadPort,
     private val crates: MixCratePort,
     private val random: Random = Random.Default,
+    /** Optional sink for the pre-start settings push (the VM leaves it null: [MixViewModel.run] pushes). */
+    private val pushSettings: MixSettingsSink? = null,
 ) {
+    /** A deleted crate fails like iOS `mixSourceNotFound`; only an unnamed set list reads "Set list". */
+    private fun crateName(s: MixSource): String =
+        crates.name(s) ?: if (s is MixSource.Setlist) "Set list" else throw MixSourceNotFoundException(s)
+
     suspend fun start(
         a: MixSource, b: MixSource?, shuffle: Boolean, allowPendingStart: Boolean, settings: MixSettings,
     ): MixStartOutcome {
+        // iOS pushes the four settings before starting (headless starts honour the prefs).
+        pushSettings?.let { MixSettingsPush.pushAll(settings, it) }
         val lead = settings.autoMixLeadSeconds
         val fade = settings.autoMixFadeSeconds
-        val nameA = crates.name(a) ?: "Set list"
+        val nameA = crateName(a)
         val twoCrates = b != null && b != a
         if (!twoCrates) {
             downloads.begin(listOf(a))
@@ -135,7 +148,7 @@ class MixAutoStarter(
             return MixStartOutcome(nameA, items.size)
         }
         val bSrc = checkNotNull(b)
-        val nameB = crates.name(bSrc) ?: "Set list"
+        val nameB = crateName(bSrc)
         val name = "$nameA + $nameB"
         downloads.begin(listOf(a, bSrc))   // BEFORE the guard, registering BOTH crates (union run)
         val la = crates.loadables(a)
@@ -207,6 +220,8 @@ class MixViewModel(
 
     init {
         scope.launch { settingsFlow.collect { _settings.value = it } }
+        // The engine owns Auto/Manual (restore + non-screen starts flip it); mirror it live.
+        scope.launch { engine.autoUi.map { it.enabled }.distinctUntilChanged().collect { adoptEngineEnabled(it) } }
     }
 
     // ---- first composition / settings pushes -------------------------------------------------
@@ -221,6 +236,7 @@ class MixViewModel(
         var prev = settingsFlow.first()
         MixSettingsPush.pushAll(prev, engine)
         engine.materializePendingRestore()
+        adoptEngineEnabled(engine.autoEnabled)
         settingsFlow.collect { s ->
             if (s != prev) {
                 MixSettingsPush.pushChanges(prev, s, engine)
@@ -244,6 +260,13 @@ class MixViewModel(
         _state.update { it.copy(autoSourceB = s) }
         syncDeckSourcesToAuto()
         beginDownload(_state.value.autoSource)
+    }
+
+    /** iOS `.onChange(of: engine.autoEnabled) { syncDeckSourcesToAuto() }`. */
+    private fun adoptEngineEnabled(on: Boolean) {
+        if (_state.value.autoEnabled == on) return
+        _state.update { it.copy(autoEnabled = on) }
+        syncDeckSourcesToAuto()
     }
 
     fun setAutoEnabled(on: Boolean) {

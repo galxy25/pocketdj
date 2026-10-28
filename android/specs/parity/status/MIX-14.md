@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-14 Mix screen shell: session header, Auto bars, crate menus, download bar, loader sheet, Settings > Mix, route
 
@@ -26,3 +26,15 @@ JVM suite 3167 tests, 0 failures (+39 new); assembleDebug green. Emulator not us
 
 ## Questions for Levi
 - None.
+
+## Review
+Fixes applied.
+- MAJOR autoEnabled desync -> fixed: AutoUiState.enabled published by AutoDj (setAutoEnabled now refreshes); MixViewModel mirrors it live (adoptEngineEnabled -> syncDeckSourcesToAuto) and re-reads engine.autoEnabled after materializePendingRestore. Tests: engineEnabledFlipOutsideTheScreen_isMirroredAndSyncsDecks, runAdoptsEngineEnabledAfterMaterializingARestore.
+- MINOR crate menu orphan set lists / sort -> fixed: set lists need an existing playlist/pocket; Collator + numeric natural compare. Tests added in CrateMenuStateTest.
+- MINOR ledger row -> fixed: MIX-14 row PARTIAL; emulator pass remains device-only/integrator.
+- MINOR Sessions route ownership -> fixed: MixRoutes delegates to MixSessionsRoute(onBack) in MixSessionsScreen.kt (MIX-15 owns it; stub body there now).
+- MINOR SkipButton a11y -> fixed: Role.Button, onClick action, custom "Fast skip" action.
+- MINOR MixAutoStarter contracts -> fixed: MixSourceNotFoundException for missing crate (unnamed set list keeps "Set list"); optional pushSettings sink pushes settings before start. Tests added.
+- NIT stepper -> partially fixed: section renders nothing until first DataStore emission (no default overwrite); rapid-tap atomic update not done.
+
+JVM suite 3173 tests, 0 failures (+6); assembleDebug green.

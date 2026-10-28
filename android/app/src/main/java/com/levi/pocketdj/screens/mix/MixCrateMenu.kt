@@ -58,13 +58,41 @@ object MixCrateMenuState {
     const val EMPTY_TEXT = "No pockets, playlists, or set lists yet"
     const val SAME_AS_A = "Same as Crate A"
 
-    private val az = compareBy<MixCrateEntry, String>(String.CASE_INSENSITIVE_ORDER) { it.name }
+    private val collator = java.text.Collator.getInstance().apply { strength = java.text.Collator.PRIMARY }
+
+    /** localizedStandardCompare: case/diacritic-insensitive, digit runs compare numerically. */
+    internal fun naturalCompare(a: String, b: String): Int {
+        val ca = chunks(a); val cb = chunks(b)
+        for (i in 0 until minOf(ca.size, cb.size)) {
+            val x = ca[i]; val y = cb[i]
+            val r = if (x[0].isDigit() && y[0].isDigit()) {
+                val nx = x.trimStart('0'); val ny = y.trimStart('0')
+                if (nx.length != ny.length) nx.length.compareTo(ny.length) else nx.compareTo(ny)
+            } else collator.compare(x, y)
+            if (r != 0) return r
+        }
+        return ca.size.compareTo(cb.size)
+    }
+
+    private fun chunks(s: String): List<String> {
+        val out = ArrayList<String>()
+        var i = 0
+        while (i < s.length) {
+            val d = s[i].isDigit(); var j = i
+            while (j < s.length && s[j].isDigit() == d) j++
+            out += s.substring(i, j); i = j
+        }
+        return out
+    }
+
+    private val az = Comparator<MixCrateEntry> { x, y -> naturalCompare(x.name, y.name) }
 
     /** Every crate the Mix can pull from, A–Z within Pockets · Playlists · Set lists. */
     fun entries(pockets: List<Pocket>, playlists: List<Playlist>, setlists: List<Setlist>): List<MixCrateEntry> =
         pockets.map { MixCrateEntry(POCKETS, it.name, MixSource.Pocket(it.id)) }.sortedWith(az) +
             playlists.map { MixCrateEntry(PLAYLISTS, it.name, MixSource.Playlist(it.id)) }.sortedWith(az) +
-            setlists.filter { it.id != NOW_PLAYING_SETLIST_ID }
+            // iOS visibleSetlistsAZ: only set lists whose template playlist/pocket still exists.
+            setlists.filter { sl -> sl.id != NOW_PLAYING_SETLIST_ID && (playlists.any { it.id == sl.playlistId } || pockets.any { it.id == sl.playlistId }) }
                 .map { MixCrateEntry(SETLISTS, it.name ?: "Set list", MixSource.Setlist(it.id)) }.sortedWith(az)
 
     /** Section titles in first-appearance order. */
