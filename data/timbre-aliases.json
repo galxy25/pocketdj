@@ -1,10 +1,10 @@
 {
  "v": 1,
- "generatedAt": "2026-10-27T11:01:11.452Z",
+ "generatedAt": "2026-10-28T11:01:08.844Z",
  "counts": {
   "audioBearing": 16414,
-  "candidates": 94415,
-  "aliases": 3660,
+  "candidates": 94419,
+  "aliases": 3661,
   "rejectedLane1": 0
  },
  "rejectedLane1": [],
@@ -2810,6 +2810,10 @@
    "alternatives": [
     "sng_5f051135328c"
    ]
+  },
+  "sng_2e0f3008cec6": {
+   "to": "sng_d16fe16f68d9",
+   "dLenMs": 13
   },
   "sng_2e15325fb750": {
    "to": "sng_93f86a9ad33a",
