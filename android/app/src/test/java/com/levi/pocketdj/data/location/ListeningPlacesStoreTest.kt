@@ -2,6 +2,7 @@ package com.levi.pocketdj.data.location
 
 import com.levi.pocketdj.data.pockets.ListeningContextTag
 import java.io.File
+import java.util.concurrent.Executor
 import org.junit.Test
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -24,7 +25,7 @@ class ListeningPlacesStoreTest {
     private fun tmp(): File = File.createTempFile("pdj-places", ".json").also { it.delete(); it.deleteOnExit() }
 
     private fun store(f: File, src: FakeSource? = null, supported: Boolean = true) =
-        ListeningLocationStore(f, now = { clock }, platformSupported = supported, makeSource = { src })
+        ListeningLocationStore(f, now = { clock }, platformSupported = supported, makeSource = { src }, io = Executor { it.run() })
 
     private val visit get() = LocationVisitSample(45.0, -122.0, 20.0, clock - 2 * H, clock - H)
 
@@ -128,5 +129,41 @@ class ListeningPlacesStoreTest {
         assertTrue(s.engine.places.isEmpty())
         assertEquals(clock, s.engine.trackingStartedAtMs)
         assertTrue(s.isEnabled)
+    }
+
+    @Test fun engineIsSnapshot() {
+        val src = FakeSource(ListeningLocationAuthorization.WHEN_IN_USE)
+        val s = store(tmp(), src)
+        s.setEnabled(true)
+        s.ingestVisit(visit)
+        val snap = s.engine
+        val n = snap.places.size
+        s.ingestVisit(LocationVisitSample(10.0, 10.0, 20.0, clock - 5 * H, clock - 4 * H))
+        assertEquals(n, snap.places.size)               // earlier snapshot unaffected
+        assertTrue(s.engine.places.size > n)
+        assertTrue(snap !== s.engine)                    // fresh copy each read
+    }
+
+    @Test fun writesAreOffCallerThreadAndOrdered() {
+        val f = tmp()
+        val queue = ArrayDeque<Runnable>()
+        val s = ListeningLocationStore(f, now = { clock }, makeSource = { FakeSource(ListeningLocationAuthorization.WHEN_IN_USE) }, io = Executor { queue.add(it) })
+        s.setEnabled(true)
+        s.ingestVisit(visit)
+        assertFalse(f.exists())                          // nothing written on the caller thread
+        s.setEnabled(false)                              // queues delete AFTER the writes
+        while (queue.isNotEmpty()) queue.removeFirst().run()
+        assertFalse(f.exists())
+    }
+
+    @Test fun disableAndDisabledEraseNeverWriteADoc() {
+        val f = tmp()
+        val queue = ArrayDeque<Runnable>()
+        val s = ListeningLocationStore(f, now = { clock }, makeSource = { FakeSource(ListeningLocationAuthorization.WHEN_IN_USE) }, io = Executor { queue.add(it) })
+        s.setEnabled(true); queue.clear()
+        s.setEnabled(false)
+        s.eraseAll()
+        while (queue.isNotEmpty()) queue.removeFirst().run()
+        assertFalse(f.exists())
     }
 }

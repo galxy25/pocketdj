@@ -3,6 +3,8 @@ package com.levi.pocketdj.data.location
 import com.levi.pocketdj.data.PdjJson
 import com.levi.pocketdj.data.pockets.ListeningContextTag
 import java.io.File
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -46,7 +48,9 @@ interface ListeningLocationSource {
  * coordinates never leave the device. Turning it off erases everything; plays already tagged keep
  * their opaque ids, which then read as "Earlier place".
  *
- * Thread-safe: every public member takes one lock (sources deliver from arbitrary threads).
+ * Thread-safe: every public member takes one lock (sources deliver from arbitrary threads). The
+ * JSON document is encoded under the lock but written on [io], so the lock is never held across
+ * disk IO.
  */
 class ListeningLocationStore(
     private val file: File,
@@ -54,6 +58,8 @@ class ListeningLocationStore(
     /** Test seam: false => every lookup is unavailable and nothing is ever ingested. */
     platformSupported: Boolean = true,
     private val makeSource: () -> ListeningLocationSource? = { null },
+    /** Disk writes run here, in submission order (default: one daemon thread) so no caller thread - incl. main - does IO. Tests inject a direct executor. */
+    private val io: Executor = defaultIo,
 ) : ListeningContextProviding {
 
     private val lock = Any()
@@ -73,8 +79,11 @@ class ListeningLocationStore(
     val revision: Int get() = _revision.value
     val revisionFlow: StateFlow<Int> = _revision.asStateFlow()
 
-    /** Read-only view for the UI/tests; every mutation goes through this store. */
-    val engine: ListeningPlaceEngine get() = synchronized(lock) { engineState }
+    /**
+     * Read-only deep SNAPSHOT for the UI/tests (copied under the lock, so callers may iterate it on
+     * any thread while the source keeps ingesting). Mutating it does not affect the store.
+     */
+    val engine: ListeningPlaceEngine get() = synchronized(lock) { ListeningPlaceEngine.fromJson(engineState.toJson()) }
 
     override val isActive: Boolean get() = synchronized(lock) { activeLocked() }
     private fun activeLocked() = isSupported && enabled && auth.isGranted
@@ -113,8 +122,10 @@ class ListeningLocationStore(
             enabled = false
             auth = ListeningLocationAuthorization.NOT_DETERMINED
             requestedAlways = false
-            eraseAllLocked()
-            // Disabled == nothing on disk at all (not even an "off" doc with empty state).
+            // Disabled == nothing on disk at all (not even an "off" doc with empty state): reset
+            // in memory and delete, never save.
+            engineState = ListeningPlaceEngine()
+            _revision.value = _revision.value + 1
             deleteFiles()
         }
     }
@@ -125,7 +136,7 @@ class ListeningLocationStore(
     private fun eraseAllLocked() {
         engineState = ListeningPlaceEngine()
         if (enabled) engineState.trackingStartedAtMs = now()
-        bumpLocked()
+        if (enabled) bumpLocked() else { _revision.value = _revision.value + 1; deleteFiles() }
     }
 
     /** Settings' "Allow Always" button. */
@@ -205,8 +216,10 @@ class ListeningLocationStore(
     }
 
     private fun deleteFiles() {
-        runCatching { file.delete() }
-        runCatching { File(file.parentFile, file.name + ".tmp").delete() }
+        io.execute {
+            runCatching { file.delete() }
+            runCatching { File(file.parentFile, file.name + ".tmp").delete() }
+        }
     }
 
     private fun save() {
@@ -218,16 +231,22 @@ class ListeningLocationStore(
                 "engine" to engineState.toJson(),
             ),
         )
-        runCatching {
-            file.parentFile?.mkdirs()
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(PdjJson.lenient.encodeToString(JsonObject.serializer(), doc))
-            if (!tmp.renameTo(file)) { file.writeText(tmp.readText()); tmp.delete() }
+        val text = PdjJson.lenient.encodeToString(JsonObject.serializer(), doc)
+        io.execute {
+            runCatching {
+                file.parentFile?.mkdirs()
+                val tmp = File(file.parentFile, file.name + ".tmp")
+                tmp.writeText(text)
+                if (!tmp.renameTo(file)) { file.writeText(tmp.readText()); tmp.delete() }
+            }
         }
     }
 
     companion object {
         const val SCHEMA_VERSION = 1
         const val FILE_NAME = "pocketdj-listening-places.json"
+        private val defaultIo: Executor by lazy {
+            Executors.newSingleThreadExecutor { r -> Thread(r, "pdj-places-io").apply { isDaemon = true } }
+        }
     }
 }
