@@ -1,6 +1,8 @@
 package com.levi.pocketdj.screens.games
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,7 +73,6 @@ fun CollectorsPuzzleScreen(graph: AppGraph, onClose: () -> Unit, modifier: Modif
     val engine = graph.gamesGraph.puzzleEngine
     val state by engine.state.collectAsState()
     val scoreboard = graph.gamesGraph.scoreboard
-    var filingSong by remember { mutableStateOf<IndexSong?>(null) }
 
     Box(modifier.fillMaxSize()) {
         when (state.phase) {
@@ -85,9 +86,7 @@ fun CollectorsPuzzleScreen(graph: AppGraph, onClose: () -> Unit, modifier: Modif
             PuzzleRoundState.Phase.COUNTDOWN -> Box(Modifier.fillMaxSize().testTag("puzzle-countdown"), Alignment.Center) {
                 Text(state.countdown.toString(), fontSize = 120.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             }
-            PuzzleRoundState.Phase.RUNNING -> RunningView(engine, state) { song ->
-                if (engine.beginFiling()) filingSong = song
-            }
+            PuzzleRoundState.Phase.RUNNING -> RunningView(engine, state) { _ -> engine.beginFiling() }
             PuzzleRoundState.Phase.FINISHED -> SummaryView(
                 state = state,
                 best = scoreboard.bestScore(GameKind.CollectorsPuzzle) ?: state.score,
@@ -99,13 +98,12 @@ fun CollectorsPuzzleScreen(graph: AppGraph, onClose: () -> Unit, modifier: Modif
 
     // The app-wide Add-to sheet, multi-select: each add is noted and the sheet stays open;
     // dismissal is the one settle point (score once, advance, re-arm audio).
-    filingSong?.let { song ->
+    // Driven from ENGINE state (app-scoped), not local state: a rotation / tab switch that tears
+    // this composition down must not strand a filing hold (frozen timer, dead card tap).
+    state.filingSongId?.let { songId ->
         AddToCollectionSheet(
-            item = AddToItem.Song(song.id),
-            onDismiss = {
-                filingSong = null
-                engine.endFiling(null)
-            },
+            item = AddToItem.Song(songId),
+            onDismiss = { engine.endFiling(null) },
             onAdded = { engine.noteFiled(it) },
             stayOpenAfterAdd = true,
         )
@@ -129,7 +127,7 @@ private fun SetupForm(graph: AppGraph, engine: CollectorsPuzzleEngine, state: Pu
     // must not pile samples up.
     LaunchedEffect(s) {
         delay(300)
-        stats = engine.poolStats()
+        stats = withContext(Dispatchers.Default) { engine.poolStats() }
     }
 
     if (showGenres) {
@@ -278,7 +276,7 @@ private fun SetupForm(graph: AppGraph, engine: CollectorsPuzzleEngine, state: Pu
             title = { Text("New Pocket") },
             text = { OutlinedTextField(newPocketName, { newPocketName = it }, label = { Text("Name") }, singleLine = true) },
             confirmButton = {
-                TextButton(onClick = {
+                TextButton(enabled = store != null, onClick = {
                     val name = newPocketName.trim()
                     if (name.isNotEmpty()) {
                         store?.let { st ->
@@ -337,7 +335,7 @@ private fun RunningView(engine: CollectorsPuzzleEngine, state: PuzzleRoundState,
     val song = state.current
     val targets = state.settings.targetCollectionIds
     Column(
-        Modifier.fillMaxSize().padding(16.dp),
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {

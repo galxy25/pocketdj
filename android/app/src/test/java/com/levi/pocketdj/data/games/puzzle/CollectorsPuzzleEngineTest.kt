@@ -385,6 +385,20 @@ class CollectorsPuzzleEngineTest {
         assertEquals(1, d.engine.currentScore)
     }
 
+    @Test fun abandonedFilingIsVisibleInStateAndRecoverable() = runTest {
+        val s = stack()
+        s.engine.startRound()
+        val song = s.engine.current!!
+        assertNull(s.engine.state.value.filingSongId)
+        assertTrue(s.engine.beginFiling())
+        // the UI sheet is driven from this state, so a recreated screen re-shows it
+        assertEquals(song.id, s.engine.state.value.filingSongId)
+        // a recreated screen's dismiss settles it and re-arms beginFiling
+        s.engine.endFiling(null)
+        assertNull(s.engine.state.value.filingSongId)
+        assertTrue(s.engine.beginFiling(), "card tap works again")
+    }
+
     @Test fun endFilingIdempotentCancelIsNotSkip() = runTest {
         val s = stack()
         s.engine.startRound()

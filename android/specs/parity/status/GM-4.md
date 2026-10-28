@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # GM-4 Gem Collector screens
 
@@ -15,3 +15,16 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MAJOR sheet state lost on teardown -> fixed: Add-to sheet now driven by engine state.filingSongId (onDismiss -> endFiling); test abandonedFilingIsVisibleInStateAndRecoverable added
+- MAJOR ledger row -> fixed: GM-4 row set to PARTIAL (emulator steps not run)
+- MINOR .kotlin crash log -> fixed: git rm --cached, android/.kotlin/ gitignored
+- MINOR GamesRoutes cross-package edit -> acknowledged, rejected as change: in-tab overlay kept (sheet-loss root cause fixed separately); a games/puzzle NavHost route is a follow-up for ShellNavigation owner
+- MINOR poolStats on main -> fixed: wrapped in Dispatchers.Default
+- MINOR New Pocket silent no-op -> fixed: Create disabled until store loaded
+- MINOR RunningView not scrollable -> fixed: verticalScroll
+- MINOR test baseline/lifecycle -> fixed: baseline 2765 -> 2766 run, 0 failed (+1 lifecycle test)
+- NIT bias labels -> not changed (disclosed phone-width deviation)
+
+fixes applied
