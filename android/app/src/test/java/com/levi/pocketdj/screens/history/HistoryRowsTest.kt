@@ -76,4 +76,24 @@ class HistoryRowsTest {
 
         assertEquals(listOf("p:p_match", "a:a_match"), entries.map { it.id })
     }
+
+    @Test
+    fun rows_carryDerivedOutcome() {
+        val events = listOf(
+            PlayEvent(id = "s", songId = "a", playedAt = 1.0, wasSkipped = true, listenedFraction = 0.1),
+            PlayEvent(id = "c", songId = "b", playedAt = 2.0, listenedFraction = 0.9),
+            PlayEvent(id = "p", songId = "c", playedAt = 3.0, listenedFraction = 0.2),
+            PlayEvent(id = "u", songId = "d", playedAt = 4.0),
+        )
+        val rows = buildRows(events, catalog(), { 1 }, "", false, null, null)
+        assertEquals(
+            listOf(
+                com.levi.pocketdj.data.history.PlayOutcome.SKIPPED,
+                com.levi.pocketdj.data.history.PlayOutcome.COMPLETED,
+                com.levi.pocketdj.data.history.PlayOutcome.PARTIAL,
+                com.levi.pocketdj.data.history.PlayOutcome.UNKNOWN,
+            ),
+            rows.map { it.outcome },
+        )
+    }
 }

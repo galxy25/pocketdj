@@ -32,6 +32,10 @@ enum class PlaySource {
 
     @SerialName("artist")
     ARTIST,
+
+    /** Played by a game (Gem Collector, ...); the game's own name rides in `contextName`. */
+    @SerialName("game")
+    GAME,
     ;
 
     /** Human label (specs/history.md §2, iOS `PlayHistoryStore.swift:31-42`). */
@@ -44,6 +48,7 @@ enum class PlaySource {
             SETLIST -> "Set list"
             MIX -> "Mix"
             ARTIST -> "Artist"
+            GAME -> "Game"
         }
 
     /** The persisted raw token. */
@@ -56,6 +61,7 @@ enum class PlaySource {
             SETLIST -> "setlist"
             MIX -> "mix"
             ARTIST -> "artist"
+            GAME -> "game"
         }
 
     companion object {
@@ -81,7 +87,27 @@ data class PlayEvent(
     val contextName: String? = null,
     val title: String? = null,
     val artist: String? = null,
-)
+    /** Install that recorded the play (null = legacy, this device's own). */
+    val originInstallId: String? = null,
+    /** Advanced away from under 50 % played. Only ever flips false(null) -> true. */
+    val wasSkipped: Boolean? = null,
+    /** High-water played fraction 0...1; max-merged; null = unknown. */
+    val listenedFraction: Double? = null,
+    /** Minutes from UTC at play time. */
+    val tzOffsetMin: Int? = null,
+    /** Navigable origin collection (playlist/pocket id) of a set_now_playing run. */
+    val originCollectionId: String? = null,
+) {
+    /** DERIVED, never stored: skipped wins, then fraction >= 0.5 completed else partial. */
+    val outcome: PlayOutcome
+        get() {
+            if (wasSkipped == true) return PlayOutcome.SKIPPED
+            val f = listenedFraction ?: return PlayOutcome.UNKNOWN
+            return if (f >= 0.5) PlayOutcome.COMPLETED else PlayOutcome.PARTIAL
+        }
+}
+
+enum class PlayOutcome { COMPLETED, SKIPPED, PARTIAL, UNKNOWN }
 
 /**
  * The on-disk document `pocketdj-play-history.json` (specs/history.md §2).
