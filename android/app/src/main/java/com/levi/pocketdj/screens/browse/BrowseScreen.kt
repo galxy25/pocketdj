@@ -196,12 +196,24 @@ fun BrowseScreen(
 
     if (showFilterSheet) {
         val rows = catalogState.catalog?.let { remember(it) { BrowseRows.of(it) } }
+        val sheetCollections = remember { AppGraph.get(context).collections }
+        val collState by sheetCollections.state.collectAsState()
+        val sources = catalogState.catalog?.availableSources.orEmpty()
+        val artistRows = catalogState.catalog?.let { remember(it) { ArtistCatalog.of(it).artists.map(::ArtistRow) } }
         BrowseFilterSheet(
+            kind = kind,
             filters = filters,
-            genreOptions = rows?.genreOptions.orEmpty(),
-            camelotOptions = rows?.camelotOptions.orEmpty(),
-            sourceOptions = catalogState.catalog?.availableSources.orEmpty(),
+            optionsFor = { fieldId ->
+                val base: List<BrowseRow> = when (kind) {
+                    BrowseKind.ALBUMS -> rows?.albumRows.orEmpty()
+                    BrowseKind.SONGS -> rows?.songRows.orEmpty()
+                    BrowseKind.ARTISTS -> artistRows.orEmpty()
+                }
+                FieldOptions.of(fieldId, base, sources)
+            },
             showFavorite = kind == BrowseKind.SONGS,
+            playlists = collState.playlists.sortedBy { it.name.lowercase() }.map { CollectionRef(it.id, it.name) },
+            pockets = collState.pockets.sortedBy { it.name.lowercase() }.map { CollectionRef(it.id, it.name) },
             onFilters = { BrowseSession.filters.value = it },
             onDismiss = { showFilterSheet = false },
         )
@@ -300,12 +312,15 @@ private fun BrowseContent(
     // resultsKey. The revision is collected (and folded into the produceState keys) only while
     // the filter is active, so ♥ taps elsewhere never recompute an inactive pipeline.
     val favStore = remember { AppGraph.get(context).collectionsGraph.favorites }
+    val collStore = remember { AppGraph.get(context).collections }
     val favoriteFilter = if (kind == BrowseKind.SONGS) filters.favorite else FavoriteFilter.ANY
+    val membership = if (kind == BrowseKind.SONGS) filters.membership else MembershipFilter()
     val favRevision = if (favoriteFilter != FavoriteFilter.ANY) {
         favStore.state.collectAsState().value.revision
     } else {
         -1
     }
+    val collRevision = if (membership.active) collStore.state.collectAsState().value.revision else -1
     // ---- Online (OpenSearch) mode: Albums/Songs only; Artists is always on-device. ----
     val online = searchMode == SearchMode.ONLINE && kind != BrowseKind.ARTISTS
     val onlineGraph = remember { AppGraph.get(context) }
@@ -330,7 +345,7 @@ private fun BrowseContent(
         }
     }
 
-    val results by produceState(initialValue = BrowseResults(), if (online) "online" else resultsKey, favoriteFilter, favRevision) {
+    val results by produceState(initialValue = BrowseResults(), if (online) "online" else resultsKey) {
         // iOS parity: the heavy local filter/sort never runs in online mode.
         if (online) return@produceState
         value = withContext(Dispatchers.Default) {
@@ -356,8 +371,10 @@ private fun BrowseContent(
                 )
                 BrowseKind.SONGS -> BrowseResults(
                     songs = rows.songResults(
-                        debouncedQuery, filters.copy(favorite = favoriteFilter), sortKeys, playCounts,
-                        favStore.favoriteIds,
+                        // Favorites + membership are READ-TIME layers (applied below), so the
+                        // memoized pipeline — and the paging reset — ignore store contents.
+                        debouncedQuery, filters.copy(favorite = FavoriteFilter.ANY), sortKeys, playCounts,
+                        emptySet(),
                     ),
                     version = ++resultVersion,
                 )
@@ -374,6 +391,22 @@ private fun BrowseContent(
             }
         }
     }
+
+    // Read-time layers over the already filtered+sorted rows: cheap Set lookups, never memoized.
+    val shownSongs = remember(results.songs, membership, favoriteFilter, favRevision, collRevision) {
+        ReadTimeFilters.apply(
+            rows = results.songs,
+            membership = membership,
+            allCollectionIds = (collStore.playlists.map { it.id } + collStore.pockets.map { it.id }).toSet(),
+            membersOf = { id ->
+                if (id.startsWith("pkt_")) collStore.songIdsForPocket(id) else collStore.songIdsForPlaylist(id)
+            },
+            favorite = favoriteFilter,
+            favoriteIds = favStore.favoriteIds,
+        )
+    }
+    // Paging resets when the CONSTRAINT changes (selection / mode), never when store contents do.
+    val pagingKey = "${results.version}|${favoriteFilter.name}|${membership.selectionKey()}"
 
     Column(Modifier.fillMaxSize()) {
         SourcesRail(
@@ -447,14 +480,14 @@ private fun BrowseContent(
             }
             BadgedBox(
                 badge = {
-                    if (filters.activeCount(kind) > 0) Badge { Text(filters.activeCount(kind).toString()) }
+                    if (filters.activeCount(kind) > 0) Badge { Text(filters.activeCount(kind).toString()) } else if (filters.glyphLit(kind)) Badge()
                 },
             ) {
                 IconButton(onClick = onShowFilters) {
                     Icon(
                         Icons.Filled.FilterList,
                         contentDescription = "Filters",
-                        tint = if (filters.activeCount(kind) > 0) {
+                        tint = if (filters.glyphLit(kind)) {
                             MaterialTheme.colorScheme.primary
                         } else {
                             MaterialTheme.colorScheme.onSurface
@@ -499,7 +532,7 @@ private fun BrowseContent(
         ) {
             val count = when (kind) {
                 BrowseKind.ALBUMS -> results.albums.size
-                BrowseKind.SONGS -> results.songs.size
+                BrowseKind.SONGS -> shownSongs.size
                 BrowseKind.ARTISTS -> results.artists.size
             }
             val noun = when (kind) {
@@ -539,9 +572,9 @@ private fun BrowseContent(
 
         // Incremental paging: budget keyed by the result-set version so a new
         // result set never renders the previous set's large prefix (§13).
-        var pageCount by remember(results.version) { mutableIntStateOf(1) }
+        var pageCount by remember(pagingKey) { mutableIntStateOf(1) }
         val emptyMessage = when {
-            query.isNotBlank() || filters.activeCount(kind) > 0 -> "No matches — adjust search or filters"
+            query.isNotBlank() || filters.glyphLit(kind) -> "No matches — adjust search or filters"
             else -> "Nothing here yet — pull the catalog from Settings"
         }
 
@@ -603,8 +636,8 @@ private fun BrowseContent(
             }
 
             BrowseKind.SONGS -> {
-                val visible = results.songs.take(pageCount * PAGE_SIZE)
-                if (results.songs.isEmpty()) {
+                val visible = shownSongs.take(pageCount * PAGE_SIZE)
+                if (shownSongs.isEmpty()) {
                     EmptyState(emptyMessage)
                 } else {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -616,7 +649,7 @@ private fun BrowseContent(
                                 onLongClick = { onAddSong(row.song.id) },
                             )
                         }
-                        if (visible.size < results.songs.size) {
+                        if (visible.size < shownSongs.size) {
                             item(key = "pager") {
                                 PagingTrigger(visible.size) { pageCount += 1 }
                             }

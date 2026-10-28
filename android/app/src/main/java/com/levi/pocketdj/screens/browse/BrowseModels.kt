@@ -91,7 +91,24 @@ data class BrowseFilters(
      * time ([BrowseRows.filteredSongs]) against the live ♥ set, never memoized.
      */
     val favorite: FavoriteFilter = FavoriteFilter.ANY,
+    /** Collection-membership SHOW/HIDE (song mode only). TRANSIENT; read-time; never persisted. */
+    val membership: MembershipFilter = MembershipFilter(),
+    /** History-only Hide-skips lens. TRANSIENT; applied at History base build. */
+    val hideSkips: Boolean = false,
 ) {
+    fun withMembership(m: MembershipFilter) = copy(membership = m)
+    fun withHideSkips(v: Boolean) = copy(hideSkips = v)
+
+    /** Clear All: clauses + favorite + hide-skips. Membership has its own "Clear membership". */
+    fun clearedAll() = copy(clauses = emptyList(), favorite = FavoriteFilter.ANY, hideSkips = false)
+
+    /** Membership is song-mode only. */
+    fun membershipActive(kind: BrowseKind): Boolean = kind == BrowseKind.SONGS && membership.active
+
+    /** Toolbar glyph lit: counted filters OR a membership constraint. */
+    fun glyphLit(kind: BrowseKind, historyMode: Boolean = false): Boolean =
+        activeCount(kind, historyMode) > 0 || membershipActive(kind)
+
     /** True when the favorite filter constrains anything. */
     val favoriteActive: Boolean get() = favorite != FavoriteFilter.ANY
 
@@ -100,8 +117,9 @@ data class BrowseFilters(
     val activeCount: Int get() = clauses.count { !it.isIncomplete }
 
     /** Kind-gated count (iOS): the favorite constraint is song-mode only. */
-    fun activeCount(kind: BrowseKind): Int =
-        activeCount + if (kind == BrowseKind.SONGS && favoriteActive) 1 else 0
+    fun activeCount(kind: BrowseKind, historyMode: Boolean = false): Int =
+        activeCount + (if (kind == BrowseKind.SONGS && favoriteActive) 1 else 0) +
+            (if (historyMode && hideSkips) 1 else 0)
 
     /** Does the current sort/filter state read play counts (memo-key gate)? */
     fun usesPlayCounts(sortKeys: List<SortKey>): Boolean =
