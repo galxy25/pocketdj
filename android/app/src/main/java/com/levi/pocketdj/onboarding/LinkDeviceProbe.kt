@@ -1,5 +1,7 @@
 package com.levi.pocketdj.onboarding
 
+import kotlinx.coroutines.sync.withLock
+
 /** Outcome of probing for an existing PocketDJ profile to link (stage 1, "Link a device"). */
 sealed interface LinkProbeResult {
     /** A profile already exists for this account — offer "Welcome back" / restore. */
@@ -34,6 +36,13 @@ interface CodeLinkProbe : LinkDeviceProbe {
 
     /** "Restore my stuff": force-pull every synced document. true = the pass ran. */
     suspend fun restore(): Boolean
+
+    /**
+     * Undo the last successful [link] (user chose "Start fresh" / Back / a restore failed and they
+     * left the restore path): put the pre-link id + secret back so this device never keeps — and
+     * later pushes into — the other device's profile. No-op when nothing is linked.
+     */
+    suspend fun unlink()
 }
 
 /**
@@ -49,7 +58,17 @@ class S3LinkDeviceProbe(
     private val syncConfigured: () -> Boolean,
     private val probeCloud: suspend () -> com.levi.pocketdj.data.sync.CloudSyncService.ProfileProbe,
     private val restoreCloud: suspend () -> List<String>?,
+    /** Adopting a new identity: forget old watermarks and block pushes until the first pull (CloudSyncService). */
+    private val holdPushes: () -> Unit = {},
+    /** Link rolled back / nothing to restore: pushes follow their normal gate again. */
+    private val releasePushes: () -> Unit = {},
 ) : CodeLinkProbe {
+    private class PreLink(val secrets: com.levi.pocketdj.data.sync.ProfileSecretStore.Snapshot, val id: String)
+
+    /** Identity to go back to if the user leaves the restore path after a successful link. */
+    @Volatile private var preLink: PreLink? = null
+    private val identityLock = kotlinx.coroutines.sync.Mutex()
+
     private fun mapProbe(p: com.levi.pocketdj.data.sync.CloudSyncService.ProfileProbe): LinkProbeResult {
         if (isUnauthorized()) return LinkProbeResult.Unavailable(NOT_AUTHORIZED)
         return when (p) {
@@ -80,21 +99,46 @@ class S3LinkDeviceProbe(
             com.levi.pocketdj.data.sync.LinkCode.Decoded.BadFormat ->
                 return LinkProbeResult.Unavailable("That isn't a PocketDJ link code.")
         }
-        val prevSecrets = secrets.snapshot()
-        val prevId = profileId()
-        secrets.adopt(ok.profileId, ok.secret)
-        adoptProfileId(ok.profileId)
-        clearUnauthorized()
-        val result = mapProbe(probeCloud())
-        if (result !is LinkProbeResult.Existing && result !is LinkProbeResult.Fresh) {
-            secrets.restore(prevSecrets)
-            adoptProfileId(prevId)
+        return identityLock.withLock {
+            val prev = PreLink(secrets.snapshot(), profileId())
+            // Keep the ORIGINAL identity across a re-link: unlink() must go back to the device's own.
+            val original = preLink ?: prev
+            holdPushes()
+            secrets.adopt(ok.profileId, ok.secret)
+            adoptProfileId(ok.profileId)
             clearUnauthorized()
+            val result = mapProbe(probeCloud())
+            if (result !is LinkProbeResult.Existing && result !is LinkProbeResult.Fresh) {
+                secrets.restore(prev.secrets)
+                adoptProfileId(prev.id)
+                clearUnauthorized()
+                // The rollback re-applies the previous identity; a previous link (if any) stays unlinkable.
+                if (preLink == null) releasePushes()
+            } else {
+                preLink = original
+                // Nothing in the cloud to pull first, so there is nothing a push could overwrite.
+                if (result == LinkProbeResult.Fresh) releasePushes()
+            }
+            result
         }
-        return result
     }
 
-    override suspend fun restore(): Boolean = restoreCloud() != null
+    override suspend fun restore(): Boolean {
+        val ok = restoreCloud() != null
+        if (ok) preLink = null // restored: this device now IS the linked profile; nothing to undo
+        return ok
+    }
+
+    override suspend fun unlink() {
+        identityLock.withLock {
+            val p = preLink ?: return
+            secrets.restore(p.secrets)
+            adoptProfileId(p.id)
+            clearUnauthorized()
+            releasePushes()
+            preLink = null
+        }
+    }
 
     companion object {
         const val NOT_CONFIGURED = "Sync across devices isn't set up for this build yet. You can keep going on this device."

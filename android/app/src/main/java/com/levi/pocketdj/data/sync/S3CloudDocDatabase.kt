@@ -39,11 +39,20 @@ class S3CloudDocDatabase(
     private val deviceName: () -> String = { "Android" },
 ) : CloudDocDatabase {
 
-    private val _unauthorized = MutableStateFlow(false)
+    // Persisted (per profile id) so "Profile not authorized - relink" survives a process restart.
+    private val _unauthorized = MutableStateFlow(runCatching { secrets.unauthorizedFor(profileId()) }.getOrDefault(false))
     /** True after a 401 (or an enroll 409): Settings shows "Profile not authorized - relink". */
     val unauthorized: StateFlow<Boolean> = _unauthorized.asStateFlow()
 
-    fun clearUnauthorized() { _unauthorized.value = false }
+    fun clearUnauthorized() {
+        _unauthorized.value = false
+        secrets.clearUnauthorized()
+    }
+
+    private fun markUnauthorized() {
+        _unauthorized.value = true
+        runCatching { secrets.markUnauthorized(profileId()) }
+    }
 
     private fun base(): String? = baseUrl()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
 
@@ -54,7 +63,7 @@ class S3CloudDocDatabase(
         if (enrollment != null) {
             when (enrollment.ensureEnrolled(id)) {
                 Enrollment.Outcome.Enrolled, Enrollment.Outcome.AlreadyEnrolled -> Unit
-                Enrollment.Outcome.RelinkRequired -> { _unauthorized.value = true; return false }
+                Enrollment.Outcome.RelinkRequired -> { markUnauthorized(); return false }
                 else -> return false
             }
         }
@@ -70,7 +79,8 @@ class S3CloudDocDatabase(
         try {
             http.newCall(request).execute().use { r ->
                 if (r.code == 401) {
-                    _unauthorized.value = true
+                    // A 401 for an identity we've since replaced (link in flight) says nothing about the current one.
+                    if (sentIdentityIsCurrent(request)) markUnauthorized()
                     throw IOException("Profile not authorized (401)")
                 }
                 handle(r)
@@ -79,6 +89,10 @@ class S3CloudDocDatabase(
             throw e
         }
     }
+
+    private fun sentIdentityIsCurrent(request: Request): Boolean =
+        request.header("X-PocketDJ-Profile") == profileId().lowercase() &&
+            request.header("Authorization") == "Bearer " + secrets.secret()
 
     override suspend fun fetchMeta(keys: List<String>): Map<String, Double> {
         if (keys.isEmpty()) return emptyMap()

@@ -33,7 +33,9 @@ import com.levi.pocketdj.data.applemusic.MusicKitAuth
 import com.levi.pocketdj.data.settings.AppSettings
 import com.levi.pocketdj.di.AppGraph
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 private fun OnboardingCard(content: @Composable ColumnScope.() -> Unit) {
@@ -63,7 +65,7 @@ private fun NavRow(
 }
 
 /** Stage 1's internal machine: the choice, then the link probe's outcome. */
-private enum class ProfilePhase { Choosing, EnterCode, Probing, LinkUnavailable, LinkFound, Naming }
+private enum class ProfilePhase { Choosing, EnterCode, Probing, LinkUnavailable, LinkFound, RestoreFailed, Naming }
 
 /** Stage 1 — profile: name + "Use on this device" / "Link a device" (probe stubbed until SVC-9). */
 @Composable
@@ -81,7 +83,8 @@ fun OnboardingProfileStage(graph: AppGraph, store: OnboardingStore) {
     fun runProbe(block: suspend () -> LinkProbeResult) {
         phase = ProfilePhase.Probing
         scope.launch {
-            when (val r = block()) {
+            // Keystore reads/writes, profile file writes and HTTP: never on Main.
+            when (val r = withContext(Dispatchers.IO) { block() }) {
                 is LinkProbeResult.Existing -> { foundName = r.name; phase = ProfilePhase.LinkFound }
                 LinkProbeResult.Fresh -> phase = ProfilePhase.Naming
                 is LinkProbeResult.Unavailable -> {
@@ -169,16 +172,46 @@ fun OnboardingProfileStage(graph: AppGraph, store: OnboardingStore) {
                         onClick = {
                             restoring = true
                             scope.launch {
-                                val ok = probe.restore()
+                                val ok = withContext(Dispatchers.IO) { probe.restore() }
                                 restoring = false
-                                if (ok) store.advance()
-                                else { unavailableReason = "Couldn't restore right now. You can sync later from Settings."; phase = ProfilePhase.LinkUnavailable }
+                                if (ok) store.advance() else phase = ProfilePhase.RestoreFailed
                             }
                         },
                         modifier = Modifier.testTag("onboarding-link-restore"),
                     ) { Text(if (restoring) "Restoring\u2026" else "Restore my stuff") }
                 }
-                TextButton(onClick = { phase = ProfilePhase.Naming }) { Text("Start fresh on this device") }
+                TextButton(
+                    enabled = !restoring,
+                    onClick = {
+                        // Leaving the restore path: give this device its own identity back, so it never
+                        // pushes fresh/empty docs into the other device's profile.
+                        scope.launch {
+                            (probe as? CodeLinkProbe)?.let { withContext(Dispatchers.IO) { it.unlink() } }
+                            phase = ProfilePhase.Naming
+                        }
+                    },
+                    modifier = Modifier.testTag("onboarding-link-start-fresh"),
+                ) { Text("Start fresh on this device") }
+            }
+            ProfilePhase.RestoreFailed -> OnboardingCard {
+                Text("Couldn't restore", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Your device is linked but restoring didn't finish. Check your connection and try again.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Button(
+                    onClick = { phase = ProfilePhase.LinkFound },
+                    modifier = Modifier.testTag("onboarding-restore-retry"),
+                ) { Text("Try again") }
+                TextButton(
+                    onClick = {
+                        scope.launch {
+                            (probe as? CodeLinkProbe)?.let { withContext(Dispatchers.IO) { it.unlink() } }
+                            phase = ProfilePhase.Choosing
+                        }
+                    },
+                    modifier = Modifier.testTag("onboarding-restore-back"),
+                ) { Text("Back") }
             }
             ProfilePhase.Naming -> {
                 OnboardingCard {

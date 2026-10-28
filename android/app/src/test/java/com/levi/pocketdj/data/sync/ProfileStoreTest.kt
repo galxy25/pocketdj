@@ -96,4 +96,11 @@ class ProfileStoreTest {
         assertEquals("X", s.id)
         assertEquals("", s.name)
     }
+
+    @Test fun adoptIdentity_storesUpperCaseId_andPersists() {
+        val s = ProfileStore(file())
+        s.adoptIdentity("3f2504e0-4f89-41d3-9a0c-0305e82c3301")
+        assertEquals("3F2504E0-4F89-41D3-9A0C-0305E82C3301", s.id)
+        assertEquals(s.id, ProfileStore(file()).id)
+    }
 }

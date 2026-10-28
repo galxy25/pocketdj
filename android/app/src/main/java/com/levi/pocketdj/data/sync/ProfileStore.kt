@@ -92,7 +92,7 @@ class ProfileStore(private val file: File) {
      */
     fun adoptIdentity(newId: String) = synchronized(lock) {
         if (newId.isBlank()) return@synchronized
-        _state.value = _state.value.copy(id = newId)
+        _state.value = _state.value.copy(id = newId.uppercase()) // ProfileStore/iOS mint upper-case ids
         save()
     }
 

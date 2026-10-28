@@ -218,6 +218,8 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             syncConfigured = { com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase != null },
             probeCloud = { cloudSync.probeCloudProfile() },
             restoreCloud = { cloudSync.restoreForOnboarding() },
+            holdPushes = { cloudSync.holdPushesForIdentityChange() },
+            releasePushes = { cloudSync.releasePushHold() },
         )
     }
 

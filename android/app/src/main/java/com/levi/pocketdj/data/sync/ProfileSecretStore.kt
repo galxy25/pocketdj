@@ -43,6 +43,13 @@ class ProfileSecretStore(
 
     @Synchronized fun markRelinkRequired(profileId: String) = store.put(RELINK_ID, profileId.lowercase())
 
+    /** The profile id the server answered 401 for (persisted so "relink" survives a restart), or "". */
+    @Synchronized fun unauthorizedFor(profileId: String): Boolean = store.get(UNAUTHORIZED_ID) == profileId.lowercase()
+
+    @Synchronized fun markUnauthorized(profileId: String) = store.put(UNAUTHORIZED_ID, profileId.lowercase())
+
+    @Synchronized fun clearUnauthorized() = store.remove(UNAUTHORIZED_ID)
+
     /**
      * Adopt another device's identity: its secret becomes ours and the id counts as enrolled (the
      * originating device enrolled it). Clears any relink flag.
@@ -51,22 +58,23 @@ class ProfileSecretStore(
         store.put(SECRET, secret.lowercase())
         store.put(ENROLLED_ID, profileId.lowercase())
         store.remove(RELINK_ID)
+        store.remove(UNAUTHORIZED_ID)
     }
 
     /** Snapshot for rollback when a link attempt fails after [adopt]. */
-    @Synchronized fun snapshot(): Snapshot = Snapshot(store.get(SECRET), store.get(ENROLLED_ID), store.get(RELINK_ID))
+    @Synchronized fun snapshot(): Snapshot = Snapshot(store.get(SECRET), store.get(ENROLLED_ID), store.get(RELINK_ID), store.get(UNAUTHORIZED_ID))
 
     @Synchronized fun restore(s: Snapshot) {
         fun put(k: String, v: String) = if (v.isEmpty()) store.remove(k) else store.put(k, v)
-        put(SECRET, s.secret); put(ENROLLED_ID, s.enrolledId); put(RELINK_ID, s.relinkId)
+        put(SECRET, s.secret); put(ENROLLED_ID, s.enrolledId); put(RELINK_ID, s.relinkId); put(UNAUTHORIZED_ID, s.unauthorizedId)
     }
 
     /** Account deletion / reset. */
     @Synchronized fun clear() {
-        store.remove(SECRET); store.remove(ENROLLED_ID); store.remove(RELINK_ID)
+        store.remove(SECRET); store.remove(ENROLLED_ID); store.remove(RELINK_ID); store.remove(UNAUTHORIZED_ID)
     }
 
-    class Snapshot internal constructor(val secret: String, val enrolledId: String, val relinkId: String) {
+    class Snapshot internal constructor(val secret: String, val enrolledId: String, val relinkId: String, val unauthorizedId: String = "") {
         override fun toString() = "Snapshot(redacted)"
     }
 
@@ -76,6 +84,7 @@ class ProfileSecretStore(
         const val SECRET = "profileSecret"
         const val ENROLLED_ID = "profileEnrolledId"
         const val RELINK_ID = "profileRelinkId"
+        const val UNAUTHORIZED_ID = "profileUnauthorizedId"
         /** Optional enroll capability token (X-PocketDJ-Enroll); provisioned like the rec-engine one. */
         const val ENROLL_TOKEN = "profileSyncEnrollToken"
         const val SECRET_BYTES = 32

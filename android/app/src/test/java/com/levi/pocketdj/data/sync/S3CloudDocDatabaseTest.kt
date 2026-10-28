@@ -163,6 +163,30 @@ class S3CloudDocDatabaseTest {
         assertTrue(d.accountAvailable())
     }
 
+    @Test fun stale401FromAReplacedIdentity_isIgnored() = runTest {
+        var current = id
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                current = "11111111-2222-3333-4444-555555555555" // identity swapped while the request is in flight
+                return MockResponse().setResponseCode(401)
+            }
+        }
+        val d = S3CloudDocDatabase({ server.url("/").toString().trimEnd('/') }, { current }, secrets, OkHttpClient())
+        try { d.fetchMeta(listOf("profile")); fail() } catch (e: IOException) { assertTrue(e.message!!.contains("401")) }
+        assertFalse(d.unauthorized.value)
+        assertFalse(secrets.unauthorizedFor(current))
+    }
+
+    @Test fun unauthorized_survivesProcessRestart_untilRelink() = runTest {
+        server.enqueue(MockResponse().setResponseCode(401))
+        val d = db()
+        try { d.fetchMeta(listOf("profile")); fail() } catch (_: IOException) {}
+        assertTrue(db().unauthorized.value) // a "new process" over the same SecretStore
+        assertFalse(db().accountAvailable())
+        secrets.adopt(id, secret) // relink
+        assertFalse(db().unauthorized.value)
+    }
+
     @Test fun enroll409_flipsUnauthorized() = runTest {
         secrets.clear(); secrets.secretOrMint()
         server.enqueue(MockResponse().setResponseCode(409))

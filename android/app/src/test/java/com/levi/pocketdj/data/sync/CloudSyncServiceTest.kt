@@ -201,6 +201,32 @@ class CloudSyncServiceTest {
         assertEquals(listOf("profile"), f.db.saved)
     }
 
+    @Test fun identityChangeHoldBlocksPushesUntilRestorePulls() = runTest {
+        val f = fixture()
+        f.file.writeAt("mine", System.currentTimeMillis() + 60_000)
+        f.svc.holdPushesForIdentityChange()
+        f.svc.syncNow()          // a tick right after linking
+        f.svc.pushDirty()
+        assertTrue("no push may run before the first pull: ${f.db.saved}", f.db.saved.isEmpty())
+        f.db.put(cloud("theirs", localOld))
+        assertEquals(listOf("profile"), f.svc.restoreForOnboarding())
+        assertEquals("theirs", f.file.readText())
+        f.file.writeAt("mine2", System.currentTimeMillis() + 120_000)
+        f.svc.syncNow()
+        assertEquals(listOf("profile"), f.db.saved) // hold released by the restore
+    }
+
+    @Test fun identityChangeClearsOldWatermarks_andReleaseReopensPushes() = runTest {
+        val f = fixture()
+        f.file.writeAt("v1", System.currentTimeMillis() + 60_000)
+        f.svc.syncNow()
+        assertNotNull(f.svc.watermark("profile"))
+        f.svc.holdPushesForIdentityChange()
+        assertNull(f.svc.watermark("profile"))
+        f.svc.releasePushHold()
+        assertNull(f.svc.watermark("profile"))
+    }
+
     // ---- pushDirty --------------------------------------------------------------------------
 
     @Test fun pushDirtyNeverUploadsOverStrictlyNewerCloud() = runTest {
