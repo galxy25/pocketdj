@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.emptyPreferences
 import com.levi.pocketdj.data.PdjJson
 import com.levi.pocketdj.data.activity.ActivityKind
 import com.levi.pocketdj.data.activity.CollectionActivityStore
+import com.levi.pocketdj.data.store.VersionedJsonWriter
 import com.levi.pocketdj.data.applemusic.AppleMusicPreviewResolver
 import com.levi.pocketdj.data.applemusic.MusicKitAuth
 import com.levi.pocketdj.data.applemusic.MusicKitDeveloperTokenClient
@@ -216,8 +217,13 @@ class AppGraph private constructor(context: Context) {
      * The collection-activity log (History ▸ Activity). Lazy — construction
      * reads its JSON doc from disk; first touch should be off-main.
      */
+    /** Single daemon thread shared by the collections + activity version-ordered writers (D6). */
+    private val bgWriterExecutor by lazy { VersionedJsonWriter.backgroundExecutor() }
+
     val collectionActivity: CollectionActivityStore by lazy {
-        CollectionActivityStore(File(appContext.filesDir, CollectionActivityStore.FILE_NAME))
+        File(appContext.filesDir, CollectionActivityStore.FILE_NAME).let { f ->
+            CollectionActivityStore(f, writer = VersionedJsonWriter(f, bgWriterExecutor))
+        }
     }
 
     /**
@@ -227,8 +233,22 @@ class AppGraph private constructor(context: Context) {
      * remove choke points; this wiring just records what arrives).
      */
     val collections: CollectionsStore by lazy {
-        CollectionsStore(File(appContext.filesDir, CollectionsStore.FILE_NAME)).also { store ->
+        File(appContext.filesDir, CollectionsStore.FILE_NAME).let { f ->
+            CollectionsStore(f, writer = VersionedJsonWriter(f, bgWriterExecutor))
+        }.also { store ->
             store.catalogProvider = { catalogRepository.state.value.catalog }
+            store.onActivityBatch = { hooks ->
+                collectionActivity.recordAll(
+                    ActivityKind.ADD.takeIf { hooks.first().kind == CollectionsStore.ActivityHook.Kind.ADD }
+                        ?: ActivityKind.REMOVE,
+                    hooks.map {
+                        CollectionActivityStore.Entry(
+                            it.itemId, it.itemTitle, it.itemArtist,
+                            it.collectionId, it.collectionKind, it.collectionName,
+                        )
+                    },
+                )
+            }
             store.onActivity = { hook ->
                 collectionActivity.record(
                     kind = when (hook.kind) {

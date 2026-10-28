@@ -1,6 +1,7 @@
 package com.levi.pocketdj.data.activity
 
 import com.levi.pocketdj.data.PdjJson
+import com.levi.pocketdj.data.store.VersionedJsonWriter
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,7 +30,11 @@ class CollectionActivityStore(
     private val json: Json = PdjJson.lenient,
     /** Injectable for tests; production uses [DEFAULT_MAX_EVENTS]. */
     private val maxEvents: Int = DEFAULT_MAX_EVENTS,
+    /** Version-ordered writer; production wires a background executor. */
+    private val writer: VersionedJsonWriter = VersionedJsonWriter(file),
 ) {
+    private var saveVersion = 0L
+
     /** One immutable snapshot; recompute keys off [revision], never `events.size`. */
     data class State(
         /** The log, oldest → newest. No derived indexes — aggregate-free by design. */
@@ -117,6 +122,43 @@ class CollectionActivityStore(
         event
     }
 
+    /**
+     * Batch write path: appends one event per [Entry] under ONE publish + ONE
+     * save (a select-all add is one write). Empty itemIds are skipped.
+     */
+    fun recordAll(kind: ActivityKind, entries: List<Entry>, atMs: Double = System.currentTimeMillis().toDouble()): Int =
+        synchronized(lock) {
+            val fresh = entries.filter { it.itemId.isNotEmpty() }.map {
+                ActivityEvent(
+                    id = UUID.randomUUID().toString(),
+                    at = atMs,
+                    kind = kind,
+                    itemId = it.itemId,
+                    itemTitle = it.itemTitle,
+                    itemArtist = it.itemArtist,
+                    collectionId = it.collectionId,
+                    collectionKind = it.collectionKind,
+                    collectionName = it.collectionName,
+                    originInstallId = _state.value.installId,
+                )
+            }
+            if (fresh.isEmpty()) return 0
+            var events = _state.value.events + fresh
+            if (events.size > maxEvents) events = events.takeLast(maxEvents)
+            publish(events)
+            save()
+            fresh.size
+        }
+
+    data class Entry(
+        val itemId: String,
+        val itemTitle: String? = null,
+        val itemArtist: String? = null,
+        val collectionId: String? = null,
+        val collectionKind: String? = null,
+        val collectionName: String? = null,
+    )
+
     /** Test/merge seam: swap the whole log, re-cap, bump, persist. */
     fun replaceAll(newEvents: List<ActivityEvent>) {
         synchronized(lock) {
@@ -136,7 +178,7 @@ class CollectionActivityStore(
         synchronized(lock) {
             salvagePending = false
             publish(emptyList())
-            runCatching { file.delete() }
+            writer.delete(++saveVersion)
         }
     }
 
@@ -194,21 +236,20 @@ class CollectionActivityStore(
             installId = snapshot.installId,
             events = snapshot.events,
         )
-        try {
-            file.parentFile?.mkdirs()
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(json.encodeToString(ActivityDocument.serializer(), doc))
-            if (!tmp.renameTo(file)) {
-                // renameTo can fail when the destination exists. Overwrite-copy in
-                // place (no file.delete() window that a process kill could turn
-                // into total loss with a complete .tmp sitting unused) then drop
-                // the temp.
-                tmp.copyTo(file, overwrite = true)
-                tmp.delete()
-            }
-        } catch (_: Exception) {
-            // Best-effort; the in-memory log stays authoritative.
-        }
+        val version = ++saveVersion
+        writer.write(version) { json.encodeToString(ActivityDocument.serializer(), doc) }
+    }
+
+    /** ON_STOP barrier: supersede queued writes, write the latest log inline. */
+    fun flushNow() = synchronized(lock) {
+        val snapshot = _state.value
+        val doc = ActivityDocument(
+            schemaVersion = COLLECTION_ACTIVITY_SCHEMA_VERSION,
+            installId = snapshot.installId,
+            events = snapshot.events,
+        )
+        val version = ++saveVersion
+        writer.flushNow(version) { json.encodeToString(ActivityDocument.serializer(), doc) }
     }
 
     companion object {
