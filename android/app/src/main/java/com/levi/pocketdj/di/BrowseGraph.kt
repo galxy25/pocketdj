@@ -1,6 +1,8 @@
 package com.levi.pocketdj.di
 
+import com.levi.pocketdj.screens.settings.sections.editionSection
 import com.levi.pocketdj.shell.FeatureModule
+import com.levi.pocketdj.shell.SettingsSection
 
 /**
  * Sidecar graph for the browse area (decision D3). Empty today: packages in this area
@@ -10,4 +12,6 @@ import com.levi.pocketdj.shell.FeatureModule
  */
 class BrowseGraph(@Suppress("unused") private val app: AppGraph) : FeatureModule {
     override val area: String = "browse"
+
+    override val settingsSections: List<SettingsSection> by lazy { listOf(editionSection()) }
 }
