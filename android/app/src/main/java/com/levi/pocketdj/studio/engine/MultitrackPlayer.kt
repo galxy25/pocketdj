@@ -96,43 +96,10 @@ class MultitrackPlayer(
 
     private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean): PlayOutcome {
         val gen = synchronized(lock) { stopInternal(keepReprime = fromReprime); generation.get() }
-        // Each source file is decoded once per pass and released after its last clip; only the clip's
-        // window (not the whole file) is retained by the render context.
-        val uses = HashMap<String, Int>()
-        for (t in arrangement.tracks) for (c in t.clips) uses.merge(c.fileName, 1, Int::plus)
-        val decoded = HashMap<String, PcmBuffer?>()
         val rate = StudioAudio.CANONICAL_RATE
-        val clips = ArrayList<MultitrackRenderContext.Clip>()
-        val beatMatch = arrangement.beatMatchEnabled
-        val masterBpm = arrangement.bpm
-        val beatFrames = if (masterBpm > 0) 60.0 / masterBpm * rate else 0.0
-        for ((ti, track) in arrangement.tracks.withIndex()) {
-            val strip = track.strip.clamped()
-            for (clip in track.clips) {
-                val left = (uses[clip.fileName] ?: 1) - 1
-                uses[clip.fileName] = left
-                val buf = if (decoded.containsKey(clip.fileName)) decoded[clip.fileName] else loader.decode(clip.fileName).also { decoded[clip.fileName] = it }
-                if (left <= 0) decoded.remove(clip.fileName)
-                if (gen != generation.get()) return PlayOutcome.SUPERSEDED // stop-during-decode wins
-                if (buf == null || buf.frames <= 0) continue
-                val r = ArrangerBeatMatch.rate(clip.grid?.bpm ?: 0.0, masterBpm, strip.tempoRatio, beatMatch)
-                val pitchCents = strip.pitchSemitones * 100
-                val needsBake = Math.abs(r - 1) > 0.0005 || Math.abs(pitchCents) > 0.5
-                val startFrame = ArrangerBeatMatch.snappedStartFrame(
-                    MultitrackRenderContext.msToFrames(clip.startMs, rate), beatFrames, beatMatch)
-                val window = clipWindow(buf.frames, clip.fileStartMs, clip.durationMs, rate)
-                if (window.frameLength <= 0) continue
-                val warped = if (needsBake) loader.transform(buf, window.srcStart.toLong(), window.frameLength.toLong(), r, pitchCents) else null
-                if (gen != generation.get()) return PlayOutcome.SUPERSEDED
-                if (warped != null && warped.frames > 0) {
-                    clips += MultitrackRenderContext.Clip(ti, startFrame, warped.frames, 0, warped.toStereo().samples)
-                } else {
-                    val all = buf.toStereo().samples
-                    val win = all.copyOfRange(window.srcStart * 2, (window.srcStart + window.frameLength) * 2)
-                    clips += MultitrackRenderContext.Clip(ti, startFrame, window.frameLength, 0, win)
-                }
-            }
-        }
+        // The ONE planning path shared with ArrangerBouncer (WYSIWYG): decode once, window, warp, beat-snap.
+        val clips = ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate) { gen != generation.get() }
+            ?: return PlayOutcome.SUPERSEDED // stop-during-decode wins
         if (gen != generation.get()) return PlayOutcome.SUPERSEDED
         if (clips.isEmpty()) return PlayOutcome.NOTHING_TO_PLAY
 
