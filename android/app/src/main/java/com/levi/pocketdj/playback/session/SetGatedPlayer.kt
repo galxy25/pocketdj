@@ -15,10 +15,14 @@ object SetGate {
         Player.COMMAND_SET_SHUFFLE_MODE,
     )
 
-    /** next/prev/repeat/shuffle exist only while a set is running; everything else passes through. */
-    fun apply(base: Player.Commands, setRunning: Boolean): Player.Commands {
+    /**
+     * While a set runs, next/prev/repeat/shuffle are forced on (the sequencer serves them). When it
+     * does not, ExoPlayer's own answer stands for a real multi-item queue (an album has a next);
+     * only an empty/single-item timeline - which cannot skip - is masked.
+     */
+    fun apply(base: Player.Commands, setRunning: Boolean, itemCount: Int = 1): Player.Commands {
         val b = base.buildUpon()
-        if (setRunning) b.addAll(*GATED) else GATED.forEach { b.remove(it) }
+        if (setRunning) b.addAll(*GATED) else if (itemCount <= 1) GATED.forEach { b.remove(it) }
         return b.build()
     }
 }
@@ -32,6 +36,14 @@ open class SetGatedPlayer(player: Player) : ForwardingPlayer(player) {
         private set
 
     private val listeners = CopyOnWriteArrayList<Player.Listener>()
+    private val wrappers = java.util.concurrent.ConcurrentHashMap<Player.Listener, Player.Listener>()
+
+    /** Rewrites the wrapped player's ungated onAvailableCommandsChanged into the gated set. */
+    private inner class GatedListener(private val d: Player.Listener) : Player.Listener by d {
+        override fun onAvailableCommandsChanged(availableCommands: Player.Commands) {
+            d.onAvailableCommandsChanged(SetGate.apply(availableCommands, setRunning, mediaItemCount))
+        }
+    }
 
     /** Diffed update: returns true when the value changed (and listeners were told). */
     fun updateSetRunning(running: Boolean): Boolean {
@@ -44,17 +56,17 @@ open class SetGatedPlayer(player: Player) : ForwardingPlayer(player) {
 
     protected fun notifyListeners(block: (Player.Listener) -> Unit) = listeners.forEach(block)
 
-    override fun getAvailableCommands(): Player.Commands = SetGate.apply(super.getAvailableCommands(), setRunning)
+    override fun getAvailableCommands(): Player.Commands = SetGate.apply(super.getAvailableCommands(), setRunning, mediaItemCount)
 
     override fun isCommandAvailable(command: Int): Boolean = availableCommands.contains(command)
 
     override fun addListener(listener: Player.Listener) {
         listeners += listener
-        super.addListener(listener)
+        super.addListener(wrappers.getOrPut(listener) { GatedListener(listener) })
     }
 
     override fun removeListener(listener: Player.Listener) {
         listeners -= listener
-        super.removeListener(listener)
+        super.removeListener(wrappers.remove(listener) ?: listener)
     }
 }

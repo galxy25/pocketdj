@@ -22,6 +22,15 @@ class SessionSwitchboard(
 
     fun register(o: TransportOwner) = synchronized(lock) { if (o !in registered) registered += o }
 
+    /** [o] is gone for good (service destroyed): forget it entirely so nothing pauses a dead engine. */
+    fun unregister(o: TransportOwner) {
+        resign(o)
+        synchronized(lock) {
+            registered.remove(o)
+            if (preferred === o) preferred = null
+        }
+    }
+
     /** [o] started producing audio: it owns the session; every other registered engine is paused. */
     fun setOwner(o: TransportOwner) {
         val others: List<TransportOwner>

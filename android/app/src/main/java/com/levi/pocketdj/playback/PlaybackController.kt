@@ -195,7 +195,15 @@ class PlaybackController(
     private val sequencerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     /** True while the sequencer's row is what ExoPlayer holds (end / error events feed it). */
-    @Volatile private var sequencerOwnsPlayer = false
+    @Volatile private var ownsPlayerField = false
+    private var sequencerOwnsPlayer: Boolean
+        get() = ownsPlayerField
+        set(v) {
+            val changed = ownsPlayerField != v
+            ownsPlayerField = v
+            // The session's command gate depends on this flag, not only on sequencer state emissions.
+            if (changed) RunTransportBus.stateChanged?.invoke()
+        }
 
     /** The listener changed repeat mode before the persisted value finished loading. */
     @Volatile private var repeatTouched = false
@@ -221,7 +229,10 @@ class PlaybackController(
             // The session's next/prev/repeat/shuffle exist only while the sequencer's row is on ExoPlayer.
             override val isRunning: Boolean get() = base.isRunning && (sequencerOwnsPlayer || base.isHeldForResume)
         }
-        seq.onHeldRestored = { RunTransportBus.stateChanged?.invoke() }
+        seq.onHeldRestored = {
+            RunTransportBus.stateChanged?.invoke()
+            RunTransportBus.heldRestored?.invoke()
+        }
         sequencerScope.launch { seq.state.collect { RunTransportBus.stateChanged?.invoke() } }
         scope.launch {
             runCatching {
@@ -872,42 +883,47 @@ class PlaybackController(
             val song = merged?.songsById?.get(item.id)
             val album = song?.albumId?.let { merged.albumsById[it] }
             // Instant metadata (PB-2): the notification shows the new row before any network resolve.
-            RunTransportBus.instantMetadata?.invoke(
-                MediaMetadata.Builder()
+            val instantMd = MediaMetadata.Builder()
                     .setTitle(song?.name ?: item.title ?: item.id)
                     .setArtist(song?.artist ?: item.artist)
                     .setAlbumTitle(album?.name)
                     .apply { album?.artCandidates()?.firstOrNull()?.let { setArtworkUri(Uri.parse(it)) } }
-                    .build(),
-            )
+                    .build()
+            RunTransportBus.instantMetadata?.invoke(instantMd)
             val ripConfigured = settings.current().hasRipServer
-            val action = when (val src = request.source) {
-                is LocalFileSource -> PlayAction.Stream(src.file.url, src.file.startMs, src.file.endMs)
-                // Presign ONLY the row being started; the next few are warmed below.
-                is StreamSource -> urls.resolve(item.resolveId, src.action, ripConfigured)
-                else -> throw IllegalStateException("No player path for source ${src.backend}")
-            }
-            val mi = mediaItem(
-                songId = item.id,
-                action = action,
-                song = song,
-                album = album,
-                playContext = request.context,
-                originCollectionId = request.originCollectionId,
-                titleFallback = item.title,
-                artistFallback = item.artist,
-            )
-            if (sequencer.state.value.playGeneration != entryGeneration) throw CancellationException("superseded by a foreign play")
-            playGeneration.incrementAndGet()
-            urlRetriedFor = null
-            stopAppleMusic()
-            activeBackend = ActiveBackend.EXO
-            sequencerOwnsPlayer = true
-            val resume = request.resumeAtMs
-            withController {
-                it.setMediaItems(listOf(mi), 0, resume ?: androidx.media3.common.C.TIME_UNSET)
-                it.prepare()
-                it.play()
+            try {
+                val action = when (val src = request.source) {
+                    is LocalFileSource -> PlayAction.Stream(src.file.url, src.file.startMs, src.file.endMs)
+                    // Presign ONLY the row being started; the next few are warmed below.
+                    is StreamSource -> urls.resolve(item.resolveId, src.action, ripConfigured)
+                    else -> throw IllegalStateException("No player path for source ${src.backend}")
+                }
+                val mi = mediaItem(
+                    songId = item.id,
+                    action = action,
+                    song = song,
+                    album = album,
+                    playContext = request.context,
+                    originCollectionId = request.originCollectionId,
+                    titleFallback = item.title,
+                    artistFallback = item.artist,
+                )
+                if (sequencer.state.value.playGeneration != entryGeneration) throw CancellationException("superseded by a foreign play")
+                playGeneration.incrementAndGet()
+                urlRetriedFor = null
+                stopAppleMusic()
+                activeBackend = ActiveBackend.EXO
+                sequencerOwnsPlayer = true
+                val resume = request.resumeAtMs
+                withController {
+                    it.setMediaItems(listOf(mi), 0, resume ?: androidx.media3.common.C.TIME_UNSET)
+                    it.prepare()
+                    it.play()
+                }
+            } catch (e: Throwable) {
+                // A failed/superseded load must not leave this row's title over whatever is still loaded.
+                RunTransportBus.clearInstantMetadata?.invoke(instantMd)
+                throw e
             }
             val ahead = sequencer.state.value.upcoming.take(PlaybackUrlResolver.AHEAD).map { it.resolveId }
             urls.prefetch(ahead, ripConfigured)

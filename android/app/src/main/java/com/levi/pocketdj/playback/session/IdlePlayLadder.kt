@@ -8,13 +8,17 @@ enum class IdlePlayVerdict(val token: String) {
     LATCHED("latched"),
 }
 
-/** The idle-play ladder (iOS onIdlePlay): held -> resume; start pending -> ignore; never sounded -> start; else latch. */
+/**
+ * The idle-play ladder (iOS onIdlePlay), called with an engine that holds no item: a deck that is
+ * running -> held resumes, an in-flight start is ignored, otherwise the current row starts (a
+ * cascade-halted / stopped / errored deck included). Only a deck that is not running latches.
+ */
 object IdlePlayLadder {
-    fun decide(held: Boolean, startPending: Boolean, currentNeverSounded: Boolean): IdlePlayVerdict = when {
+    fun decide(runExists: Boolean, held: Boolean, startPending: Boolean): IdlePlayVerdict = when {
+        !runExists -> IdlePlayVerdict.LATCHED
         held -> IdlePlayVerdict.RESUME_HELD
         startPending -> IdlePlayVerdict.START_IN_FLIGHT
-        currentNeverSounded -> IdlePlayVerdict.START_CURRENT
-        else -> IdlePlayVerdict.LATCHED
+        else -> IdlePlayVerdict.START_CURRENT
     }
 }
 
@@ -26,6 +30,9 @@ class RemotePlayLatch(
     @Volatile private var armedAt: Long? = null
 
     fun arm() { armedAt = clock() }
+
+    /** A fresh play happened: whatever was latched is moot. */
+    fun clear() { armedAt = null }
 
     /** True (and clears) when armed within the window; a stale latch is dropped. */
     fun consume(): Boolean {

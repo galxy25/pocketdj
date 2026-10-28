@@ -22,4 +22,10 @@ object RunTransportBus {
 
     /** PB-2: sequencer state changed (running flip, repeat/shuffle) - refresh the command gate. */
     @Volatile var stateChanged: (() -> Unit)? = null
+
+    /** PB-2: drop the overlay [md] only if it is still the one showing (a failed/cancelled load). */
+    @Volatile var clearInstantMetadata: ((androidx.media3.common.MediaMetadata) -> Unit)? = null
+
+    /** PB-2: a held restore landed (consumes a latched remote play). Separate from [stateChanged]. */
+    @Volatile var heldRestored: (() -> Unit)? = null
 }

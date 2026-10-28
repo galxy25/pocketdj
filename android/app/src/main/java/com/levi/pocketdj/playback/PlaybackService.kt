@@ -35,6 +35,7 @@ class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
     private var forwardingPlayer: SequencerForwardingPlayer? = null
+    private var exoOwner: ExoOwner? = null
 
     /** Id-changed gate: a same-song restart/seek must not re-fire the play hook. */
     private var lastPlayEventSongId: String? = null
@@ -104,9 +105,10 @@ class PlaybackService : MediaSessionService() {
             )
         }
 
-        val forwarding = SequencerForwardingPlayer(player, DeferredControl)
+        val forwarding = SequencerForwardingPlayer(player, DeferredControl, board = SessionSwitchboard.shared)
         forwardingPlayer = forwarding
         val exo = ExoOwner(forwarding)
+        exoOwner = exo
         val board = SessionSwitchboard.shared
         board.register(exo)
         player.addListener(object : Player.Listener {
@@ -120,7 +122,9 @@ class PlaybackService : MediaSessionService() {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = refreshCustomLayout()
         })
         RunTransportBus.instantMetadata = { md -> forwarding.showInstantMetadata(md) }
-        RunTransportBus.stateChanged = { forwarding.syncGate(); forwarding.onHeldRestored() }
+        RunTransportBus.stateChanged = { forwarding.syncGate() }
+        RunTransportBus.heldRestored = { forwarding.onHeldRestored() }
+        RunTransportBus.clearInstantMetadata = { md -> forwarding.clearInstantMetadata(md) }
         board.onChange = { o -> mediaSession?.let { it.player = (o ?: exo).sessionPlayer }; refreshCustomLayout() }
 
         mediaSession = MediaSession.Builder(this, forwarding)
@@ -142,7 +146,12 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         RunTransportBus.instantMetadata = null
         RunTransportBus.stateChanged = null
+        RunTransportBus.heldRestored = null
+        RunTransportBus.clearInstantMetadata = null
         SessionSwitchboard.shared.onChange = {}
+        exoOwner?.let { SessionSwitchboard.shared.unregister(it) }
+        exoOwner = null
+        forwardingPlayer = null
         mediaSession?.run {
             player.release()
             release()
@@ -158,6 +167,7 @@ class PlaybackService : MediaSessionService() {
         override val isHeldForResume get() = c?.isHeldForResume == true
         override val isStartPending get() = c?.isStartPending == true
         override val currentNeverSounded get() = c?.currentNeverSounded == true
+        override val hasRun get() = c?.hasRun == true
         override var repeatMode: RepeatMode
             get() = c?.repeatMode ?: RepeatMode.OFF
             set(v) { c?.repeatMode = v }
@@ -171,10 +181,10 @@ class PlaybackService : MediaSessionService() {
     }
 
     /** The standalone ExoPlayer as a [TransportOwner]. */
-    private inner class ExoOwner(override val sessionPlayer: Player) : TransportOwner {
+    private class ExoOwner(override val sessionPlayer: SequencerForwardingPlayer) : TransportOwner {
         override val engine = "exo"
         @Volatile override var hasSounded = false
-        override fun pauseForHandoff() { sessionPlayer.pause() }
+        override fun pauseForHandoff() { sessionPlayer.silently { sessionPlayer.pause() } }
     }
 
     private fun refreshCustomLayout() {
@@ -202,6 +212,37 @@ class PlaybackService : MediaSessionService() {
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(cmds)
                 .build()
+        }
+
+        override fun onPlayerCommandRequest(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            playerCommand: Int,
+        ): Int {
+            // The in-app MediaController is not a remote: its play/pause must not log as `rc`.
+            forwardingPlayer?.callerInternal = controller.packageName == packageName
+            return super.onPlayerCommandRequest(session, controller, playerCommand)
+        }
+
+        override fun onMediaButtonEvent(
+            session: MediaSession,
+            controllerInfo: MediaSession.ControllerInfo,
+            intent: Intent,
+        ): Boolean {
+            val ev = if (android.os.Build.VERSION.SDK_INT >= 33) {
+                intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, android.view.KeyEvent::class.java)
+            } else {
+                @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
+            }
+            if (ev != null && ev.action == android.view.KeyEvent.ACTION_DOWN && ev.repeatCount == 0 &&
+                (ev.keyCode == android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE ||
+                    ev.keyCode == android.view.KeyEvent.KEYCODE_HEADSETHOOK ||
+                    ev.keyCode == android.view.KeyEvent.KEYCODE_MEDIA_PLAY)
+            ) {
+                forwardingPlayer?.callerInternal = false
+                if (forwardingPlayer?.onMediaButtonPlayToggle() == true) return true
+            }
+            return super.onMediaButtonEvent(session, controllerInfo, intent)
         }
 
         override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {

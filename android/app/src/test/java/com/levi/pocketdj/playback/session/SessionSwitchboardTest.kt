@@ -74,4 +74,13 @@ class SessionSwitchboardTest {
         board.resign(b)
         assertSame(a, board.current)
     }
+
+    @Test fun unregisterRemovesStaleOwnerFromHandoffs() {
+        val old = Owner("exo"); val fresh = Owner("exo")
+        board.setOwner(old)
+        board.unregister(old)
+        board.setOwner(fresh)
+        assertEquals(0, old.paused)
+        assertSame(fresh, board.current)
+    }
 }

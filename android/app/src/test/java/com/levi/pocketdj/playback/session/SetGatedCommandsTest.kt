@@ -16,6 +16,26 @@ class SetGatedCommandsTest {
         assertTrue(c.contains(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM))
     }
 
+    @Test fun multiItemTimelinePassesBaseCommandsThrough() {
+        val c = SetGate.apply(all, false, itemCount = 3)
+        SetGate.GATED.forEach { assertTrue(it.toString(), c.contains(it)) }
+    }
+
+    @Test fun baseEventsAreRewrittenToTheGatedSet() {
+        val ps = FakePlayerState()
+        val gp = SetGatedPlayer(fakePlayer(ps))
+        val got = mutableListOf<Player.Commands>()
+        gp.addListener(object : Player.Listener {
+            override fun onAvailableCommandsChanged(availableCommands: Player.Commands) { got += availableCommands }
+        })
+        ps.listeners.single().onAvailableCommandsChanged(all) // ExoPlayer pushes ungated commands
+        assertFalse(got.single().contains(Player.COMMAND_SEEK_TO_NEXT))
+        gp.updateSetRunning(true)
+        ps.listeners.single().onAvailableCommandsChanged(Player.Commands.Builder().add(Player.COMMAND_PLAY_PAUSE).build())
+        assertTrue(got.last().contains(Player.COMMAND_SEEK_TO_NEXT))
+        gp.removeListener(gp.let { _ -> object : Player.Listener {} }) // unknown listener is harmless
+    }
+
     @Test fun runningIncludesThemEvenIfBaseLacksThem() {
         val bare = Player.Commands.Builder().add(Player.COMMAND_PLAY_PAUSE).build()
         val c = SetGate.apply(bare, true)

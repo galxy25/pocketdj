@@ -10,12 +10,14 @@ class FakePlayerState {
     var items = 1
     var playWhenReady = false
     val calls = mutableListOf<String>()
+    val listeners = mutableListOf<Player.Listener>()
     var baseCommands: Player.Commands = Player.Commands.Builder().addAllCommands().build()
 }
 
 fun fakePlayer(s: FakePlayerState): Player =
     Proxy.newProxyInstance(Player::class.java.classLoader, arrayOf(Player::class.java)) { _, m, args ->
         s.calls += m.name
+        if (m.name == "addListener") s.listeners += args[0] as Player.Listener
         when (m.name) {
             "getPlaybackState" -> s.state
             "getMediaItemCount" -> s.items
@@ -25,6 +27,7 @@ fun fakePlayer(s: FakePlayerState): Player =
             "hasNextMediaItem", "hasPreviousMediaItem" -> false
             "getRepeatMode" -> Player.REPEAT_MODE_OFF
             "getShuffleModeEnabled" -> false
+            "getMediaMetadata" -> androidx.media3.common.MediaMetadata.EMPTY
             else -> when (m.returnType) {
                 java.lang.Boolean.TYPE -> false
                 Integer.TYPE -> 0
@@ -39,6 +42,8 @@ class FakeControl : SequencerControl {
     override var isHeldForResume = false
     override var isStartPending = false
     override var currentNeverSounded = false
+    var hasRunOverride: Boolean? = null
+    override val hasRun get() = hasRunOverride ?: isRunning
     override var repeatMode = RepeatMode.OFF
     override var shuffleEnabled = false
     val calls = mutableListOf<String>()
