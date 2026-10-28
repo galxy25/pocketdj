@@ -66,11 +66,11 @@ class JukeboxRepository(
     /** The PocketDJ name (Settings ▸ Profile); "" when unset. */
     private val pocketDjName: suspend () -> String = { "" },
     /** Seam: broadcast-into-Mix placement (Mix area wires it; default no-op). */
-    var placementSink: JukeboxPlacementSink = JukeboxPlacementSink.None,
+    @Volatile var placementSink: JukeboxPlacementSink = JukeboxPlacementSink.None,
     /** Seam: Apple-Music catalog match stage (device-only; default null). */
-    var externalMatch: JukeboxExternalMatch = JukeboxExternalMatch.None,
+    @Volatile var externalMatch: JukeboxExternalMatch = JukeboxExternalMatch.None,
 ) {
-    private val appContext = context.applicationContext
+    private val appContext by lazy { context.applicationContext }
 
     /** Match state for one inbox row (§4.4). */
     sealed interface Match {
@@ -129,14 +129,32 @@ class JukeboxRepository(
     private var controller: MediaController? = null
     private val controllerMutex = Mutex()
 
+    /** Serializes session commits (bootstrap / start / adopt) so a slow
+     *  coroutine can't overwrite a session another one already committed. */
+    private val commitLock = Mutex()
+
+    /** Runs [block] only when no session other than [allowId] is active. */
+    private suspend fun commitIfFree(allowId: String?, block: suspend () -> Unit): Boolean =
+        commitLock.withLock {
+            val current = _state.value.session
+            if (current != null && current.jukeboxId != allowId) {
+                false
+            } else {
+                block()
+                true
+            }
+        }
+
     /** Re-adopt a persisted session at app start (§4.1 Resume). Idempotent. */
     fun bootstrap() {
         if (!bootstrapped.compareAndSet(false, true)) return
         scope.launch {
             val persisted = sessionStore.load() ?: return@launch
-            if (_state.value.session != null) return@launch
-            _state.update { it.copy(session = persisted.session, hear = persisted.hear) }
-            startLoop()
+            commitLock.withLock {
+                if (_state.value.session != null || _state.value.starting) return@launch
+                _state.update { it.copy(session = persisted.session, hear = persisted.hear) }
+                startLoop()
+            }
         }
     }
 
@@ -152,11 +170,17 @@ class JukeboxRepository(
                 )
                 // Stamp the intent locally — the server doesn't echo it (§3.1).
                 val stamped = created.copy(requiresToken = requiresToken)
-                sessionStore.save(stamped)
-                sessionStore.setHear(false)
-                resetLoopBookkeeping()
-                _state.value = UiState(session = stamped, hear = false)
-                startLoop()
+                val committed = commitIfFree(null) {
+                    sessionStore.save(stamped)
+                    sessionStore.setHear(false)
+                    resetLoopBookkeeping()
+                    _state.value = UiState(session = stamped, hear = false)
+                    startLoop()
+                }
+                if (!committed) {
+                    runCatching { client.end(stamped) }
+                    _state.update { it.copy(starting = false) }
+                }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -188,11 +212,14 @@ class JukeboxRepository(
         scope.launch {
             try {
                 val info = client.sessionInfo(jukeboxId)
-                sessionStore.save(info)
-                sessionStore.setHear(false)
-                resetLoopBookkeeping()
-                _state.value = UiState(session = info, hear = false)
-                startLoop()
+                val committed = commitIfFree(jukeboxId) {
+                    sessionStore.save(info)
+                    sessionStore.setHear(false)
+                    resetLoopBookkeeping()
+                    _state.value = UiState(session = info, hear = false)
+                    startLoop()
+                }
+                if (!committed) _state.update { it.copy(starting = false) }
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Exception) {
@@ -253,7 +280,14 @@ class JukeboxRepository(
             val found = row.match as? Match.Found
             if (found?.playable == true) {
                 scope.launch {
-                    if (!placementSink.place(found.song, action)) applyPlacement(found.song, action)
+                    val handled = try {
+                        placementSink.place(found.song, action)
+                    } catch (c: CancellationException) {
+                        throw c
+                    } catch (e: Exception) {
+                        false
+                    }
+                    if (!handled) applyPlacement(found.song, action)
                 }
             }
         }
@@ -357,7 +391,13 @@ class JukeboxRepository(
     private suspend fun computeMatch(request: JukeboxRequest) {
         val songs = catalog.state.value.catalog?.songs.orEmpty()
         val song = JukeboxMatcher.match(request.title, request.artist, songs)
-            ?: runCatching { externalMatch.match(request.title, request.artist) }.getOrNull()
+            ?: try {
+                externalMatch.match(request.title, request.artist)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (e: Exception) {
+                null
+            }
         val match = song?.let { Match.Found(it, rips.isPlayable(it.id)) } ?: Match.None
         _state.update { current ->
             current.copy(

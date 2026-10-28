@@ -20,7 +20,8 @@ class JukeboxPlayedDedupTest {
 
     @Test fun pauseResumeCycleThenSkip_isOneRow() = assertEquals(listOf("A"), run(listOf(a, null, a, b)))
 
-    @Test fun rewindOfSameTrack_addsNothing() = assertEquals(listOf("A"), run(listOf(a, a, a, b)))
+    // A rewind and a position tick present the same identity to the reducer (no position in JukeboxOnAir).
+    @Test fun positionTickOrRewindOfSameTrack_addsNothing() = assertEquals(listOf("A"), run(listOf(a, a, a, b)))
 
     @Test fun playPauseResumePause_addsNothingUntilTransition() {
         assertEquals(emptyList<String>(), run(listOf(a, a, a, a)))
