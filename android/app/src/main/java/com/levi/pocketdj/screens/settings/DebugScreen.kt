@@ -279,6 +279,35 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }
     Text(mixStatus, style = MaterialTheme.typography.bodySmall)
 
+    // SVC-15 verify probe (debug only): catalog search (dev token) + a user-scoped call (NeedsUserToken when signed out).
+    var amStatus by remember { mutableStateOf("AM API: idle") }
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val api = host.graph.appleMusicApi
+            val cat = withContext(Dispatchers.IO) { runCatching { api.searchCatalog("daft punk") }.getOrElse { com.levi.pocketdj.data.applemusic.AmResult.Failure(null, it.message ?: "err") } }
+            val lib = withContext(Dispatchers.IO) { runCatching { api.libraryPlaylists() }.getOrElse { com.levi.pocketdj.data.applemusic.AmResult.Failure(null, it.message ?: "err") } }
+            amStatus = "AM API: catalog=${cat::class.simpleName} library=${lib::class.simpleName}"
+            android.util.Log.d("PdjVerify", amStatus + " " + (cat as? com.levi.pocketdj.data.applemusic.AmResult.Failure)?.message)
+        }
+    }) { Text("AM API probe") }
+    Text(amStatus, style = MaterialTheme.typography.bodySmall)
+
+    // MIX-7 verify probe (debug only): begin the app-scoped collection download for the SeedRip playlist.
+    var mdlStatus by remember { mutableStateOf("Mix dl: idle") }
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val pl = host.graph.collections.playlists.firstOrNull { it.name == "SeedRip" }
+            if (pl == null) { mdlStatus = "Mix dl: no SeedRip playlist"; return@launch }
+            val d = host.graph.mixGraph.collectionMixDownloader
+            d.begin(com.levi.pocketdj.mix.model.MixSource.Playlist(pl.id))
+            kotlinx.coroutines.delay(3000)
+            val st = d.state.value
+            mdlStatus = "Mix dl: ${st.downloadedCount} of ${st.totalCount} downloaded ripping=${st.rippingCount} eta=${st.etaSeconds} active=${st.isActive}"
+            android.util.Log.d("PdjVerify", mdlStatus)
+        }
+    }) { Text("Mix download SeedRip") }
+    Text(mdlStatus, style = MaterialTheme.typography.bodySmall)
+
     // COL-3 verify seed (debug only): a pocket holding one catalog twin pair (same artist/title/album, two ids).
     var dupStatus by remember { mutableStateOf("Dup seed: idle") }
     OutlinedButton(onClick = {

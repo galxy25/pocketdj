@@ -446,6 +446,7 @@ fun rememberCollectionBurnController(key: Any? = null): CollectionBurnController
  * Rip / Burn / Stop row + the single progress pill + the result dialog + the device/cloud toggle.
  * [songIds] resolves the collection's (deduped, studio-stripped) ids at action time.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun CollectionBurnBar(
     controller: CollectionBurnController,
@@ -461,7 +462,10 @@ fun CollectionBurnBar(
     val serverConfigured by androidx.compose.runtime.produceState(false) { value = graph.ripServerClient.isConfigured() }
 
     Column(modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             OutlinedButton(
                 onClick = { controller.rip(songIds()) },
                 enabled = hasSongs && !state.working && serverConfigured,

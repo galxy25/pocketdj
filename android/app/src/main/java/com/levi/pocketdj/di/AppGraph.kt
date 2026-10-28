@@ -229,6 +229,14 @@ class AppGraph private constructor(context: Context) {
         settings = settings,
     )
 
+    /** Apple Music Web API client (SVC-15): catalog with the dev token, library/favorites need a Music-User-Token. */
+    val appleMusicApi: com.levi.pocketdj.data.applemusic.AppleMusicApi by lazy {
+        com.levi.pocketdj.data.applemusic.AppleMusicApi(
+            http = httpClient,
+            tokens = com.levi.pocketdj.data.applemusic.DefaultAppleMusicTokens(musicKitDevTokenClient, settings),
+        )
+    }
+
     /** Resolves 30-second AM previews (dev-token API, else tokenless iTunes). */
     val appleMusicPreviewResolver: AppleMusicPreviewResolver = AppleMusicPreviewResolver(
         http = httpClient,

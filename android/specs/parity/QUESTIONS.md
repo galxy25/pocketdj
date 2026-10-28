@@ -30,6 +30,11 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q19 [COL-3]** The on-device LLM tie-break of iOS's duplicate judge has no Android equivalent: borderline pairs count as NOT duplicates. Acceptable, or add a server-side tie-break? -- *Default: exact + same-release tiers only.*
 - **Q20 [SURF-10]** The Jukebox "Require access tokens by default" setting is not access-controlled today (server mints no guest token), and `JukeboxRepository.adopt(id)` has no UI caller (no sessions picker). Build a sessions picker? -- *Default: setting is an intent flag only; no picker.*
 - **Q21 [PB-3]** Duplicate `POST /rip` for one row: the log shows two `rip-post begin` lines ~20 ms apart for the same song (one from the run, one more resolver call). Harmless against a server that dedupes, but worth a look when the playback lane is next touched. -- *Default: left as is.*
+- **Q22 [STU-3]** Finished mic takes are mono PCM16 WAV written under an `.m4a` file name (crash-safe orphan recovery). Transcode to AAC after stop? — *Default: stay WAV.*
+- **Q23 [STU-3]** Mic/import/carve samples go only to the app-managed samples root, not a SAF user folder. Copy out to the SAF folder? — *Default: app root only.*
+- **Q24 [PB-5]** Cumulative per-song skip count has no Kotlin sink (no PlayCountService equivalent). Build a PlayStatsStore sink with SVC-6? — *Default: skip verdicts live on PlayEvent only.*
+- **Q25 [SVC-15]** Apple Music catalog search needs a developer token minted by the rip server; emulator cannot reach it. Library/favorites writes need a real Music-User-Token. Confirm on a phone once Q1 is settled. — *Default: unit-tested only; debug probe in Settings > Debug.*
+- **Q26 [SURF-5 / MIX-7]** Mini player shows the track title after a collection search/shortcut play (iOS-style), not the collection name the roadmap step says. Show the collection name? Also MixFacade and the MIX-7 Auto-DJ hooks await MIX-9/MIX-14. — *Default: track title.*
 
 ## ANSWERED
 

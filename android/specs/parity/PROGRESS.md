@@ -95,3 +95,19 @@ Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave6/); no FATAL/ANR f
 - COL-3: PASS. Pocket menu > Remove duplicates -> "Removed 1 duplicate", pocket shows one row; Playlists sort menu > Remove duplicates in all collections -> confirm -> alert; second run "No duplicates found".
 
 Open: Q17-Q21 added. ARCHITECTURE-ANDROID.md ledger rows for wave-6 packages still to be updated.
+
+## Wave 7
+
+Merged: PB-5, SURF-5, MIX-7, SVC-11, SVC-15, STU-3. Only conflict: docs/ARCHITECTURE-ANDROID.md ledger row (SVC-11), kept the fuller row. Unit suite 2189 tests, 0 failures, assembleDebug green.
+
+Integration fixes: CollectionBurnBar button row now a FlowRow (Stemify as a 3rd button squeezed the device/cloud toggle into a sliver); AppGraph.appleMusicApi wiring (SVC-15 had no consumer); debug probes (AM API probe, Mix download SeedRip) in Settings > Debug.
+
+Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave7/); no FATAL/ANR from com.levi.pocketdj:
+- PB-5: PASS. Skip at ~5 s via media-session next -> history row wasSkipped=true listenedFraction=0.079 tzOffsetMin/originInstallId set; natural end -> listenedFraction=1.0 no wasSkipped. History shows skip and check glyphs and highlights the live row. Repeat-one re-zero covered by JVM only (no repeat-one control driven).
+- SURF-5: PASS. MEDIA_PLAY_FROM_SEARCH ("play my seedrip playlist") starts playback; pocketdj://play/playlist deep link plays; 3 static shortcuts + dynamic SeedRip listed in dumpsys shortcut. Mini player shows the track, not the collection name (Q26). Real Assistant voice: not verifiable.
+- MIX-7: PASS via debug probe (Mix UI-2 not built): begin(SeedRip) -> "2 of 12 downloaded ripping=1 active=true". `mixdl` is a telemetry lane, not mirrored to logcat. Auto-DJ append hooks unwired (MIX-9/14).
+- SVC-11: PASS. Burned dir holds 4 stems + analysis json per stemmed song; Stemify on SeedRip completes with "11 already stemmed / 1 unknown" summary (rip server unreachable from emulator, so a live Queued -> stemmed flip is not verifiable).
+- SVC-15: PARTIAL. Library call returns NeedsUserToken signed out (PASS); catalog search returns Failure(timeout) because the dev token is minted by the unreachable rip server (infra, Q25).
+- STU-3: PASS. Producer 7 segments; mic record 8.9 s row appears (permission granted via adb); SAF import of tone.wav opens editor (3.0 s); from-track carve of a burned song makes an 8.0 s sample with inherited 172.3 BPM grid; un-burned track shows the Rip-first state. Real mic quality, BT picker, DRM: not verifiable.
+
+Open: Q22-Q26 added. ARCHITECTURE ledger rows for wave-7 packages still to update.
