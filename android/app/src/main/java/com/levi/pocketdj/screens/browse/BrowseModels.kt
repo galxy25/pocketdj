@@ -296,8 +296,8 @@ object BrowseSession {
 }
 
 /**
- * The production SONGS pipeline (what BrowseScreen runs): query → clauses → sort, then the
- * read-time ♥ layer against the LIVE [favoriteIds].
+ * The production SONGS pipeline (query → clauses → sort, then ♥ layer). BrowseScreen passes FavoriteFilter.ANY
+ * and applies favorites via ReadTimeFilters instead.
  */
 fun BrowseRows.songResults(
     query: String,

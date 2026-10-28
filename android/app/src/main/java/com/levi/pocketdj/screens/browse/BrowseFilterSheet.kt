@@ -41,6 +41,7 @@ import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -114,7 +115,7 @@ fun BrowseFilterSheet(
                 )
             }
 
-            filters.clauses.forEach { clause ->
+            filters.clauses.forEach { clause -> key(clause.id) {
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
                 ClauseEditorRow(
                     clause = clause,
@@ -125,7 +126,7 @@ fun BrowseFilterSheet(
                     },
                     onRemove = { onFilters(filters.copy(clauses = filters.clauses.filterNot { it.id == clause.id })) },
                 )
-            }
+            } }
 
             OutlinedButton(
                 onClick = {

@@ -195,11 +195,11 @@ fun BrowseScreen(
     }
 
     if (showFilterSheet) {
-        val rows = catalogState.catalog?.let { remember(it) { BrowseRows.of(it) } }
+        val rows = catalogState.catalog?.takeIf { kind != BrowseKind.ARTISTS }?.let { remember(it) { BrowseRows.of(it) } }
         val sheetCollections = remember { AppGraph.get(context).collections }
         val collState by sheetCollections.state.collectAsState()
         val sources = catalogState.catalog?.availableSources.orEmpty()
-        val artistRows = catalogState.catalog?.let { remember(it) { ArtistCatalog.of(it).artists.map(::ArtistRow) } }
+        val artistRows = catalogState.catalog?.takeIf { kind == BrowseKind.ARTISTS }?.let { remember(it) { ArtistCatalog.of(it).artists.map(::ArtistRow) } }
         BrowseFilterSheet(
             kind = kind,
             filters = filters,
