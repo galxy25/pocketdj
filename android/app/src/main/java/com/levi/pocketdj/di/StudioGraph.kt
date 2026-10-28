@@ -580,9 +580,11 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     override val deepLinkHandlers: List<DeepLinkHandler> = listOf(
         DeepLinkHandler { intent ->
-            if (isDebuggable() && intent.getBooleanExtra(SEED_EXTRA, false)) {
-                app.appScope.launch(Dispatchers.IO) { runCatching { seedFixture() } }
-            }
+            val seed = com.levi.pocketdj.studio.StudioSeed.requested(
+                isDebuggable(), intent.getBooleanExtra(SEED_EXTRA, false), intent.getBooleanExtra(SEED_DEMUX_EXTRA, false),
+            )
+            if (seed.studio) app.appScope.launch(Dispatchers.IO) { runCatching { seedFixture() } }
+            if (seed.demux) app.appScope.launch(Dispatchers.IO) { runCatching { seedDemuxFixture() } }
             false   // never consumes the intent
         },
     )
@@ -590,57 +592,14 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     private fun isDebuggable(): Boolean =
         (app.appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
-    /**
-     * Debug fixture (`--ez PDJ_SEED_STUDIO true`): one 1 s tone sample + one loop (real files in
-     * the app roots), a pattern, and two cues. Idempotent by fixed ids. Emulator steps: relaunch
-     * -> rows persist; delete a tone file -> relaunch -> record pruned; revoke the SAF root ->
-     * relaunch -> nothing pruned.
-     */
-    fun seedFixture() {
-        val store = studioStore
-        val smpId = "smp_seed0000-0000-0000-0000-000000000001"
-        val lpId = "lp_seed0000-0000-0000-0000-000000000001"
-        val sName = StudioFolders.fileName(StudioFamily.SAMPLES, smpId)
-        val lName = StudioFolders.fileName(StudioFamily.LOOPS, lpId)
-        writeTone(File(File(app.appContext.filesDir, "studio/samples").also { it.mkdirs() }, sName))
-        writeTone(File(File(app.appContext.filesDir, "studio/loops").also { it.mkdirs() }, lName))
-        val t = System.currentTimeMillis().toDouble()
-        store.addSample(
-            StudioSample(smpId, "Seed Tone", sName, createdAt = t, durationMs = 1000, source = StudioSource.Mic, grid = StudioGrid(120.0)),
-        )
-        store.addLoop(StudioLoop(lpId, "Seed Loop", smpId, bpm = 120.0, lengthMs = 1000, frames = 44100, fileName = lName, createdAt = t))
-        store.addPattern(
-            StudioPattern.of(
-                "ptn_seed0000-0000-0000-0000-000000000001", "Seed Pattern",
-                rows = listOf(StudioPatternRow.of(smpId, steps = List(16) { it % 4 == 0 })), createdAt = t,
-            ),
-        )
-        store.setCue("sng_1", 0, 1000, "Seed A")
-        store.setCue("sng_1", 1, 2000, "Seed B")
-        store.flush()
-    }
+    /** Debug fixture (`--ez PDJ_SEED_STUDIO true`); see [com.levi.pocketdj.studio.StudioSeed]. */
+    fun seedFixture() = com.levi.pocketdj.studio.StudioSeed.seedStudio(studioStore, app.appContext)
 
-    /** 1 s 440 Hz mono 16-bit PCM WAV (the seed's stand-in audio; content-sniffed by the decoder). */
-    private fun writeTone(f: File) {
-        val rate = 44100; val n = rate
-        RandomAccessFile(f, "rw").use { raf ->
-            raf.setLength(0)
-            fun le32(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())
-            fun le16(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte())
-            raf.writeBytes("RIFF"); raf.write(le32(36 + n * 2)); raf.writeBytes("WAVEfmt ")
-            raf.write(le32(16)); raf.write(le16(1)); raf.write(le16(1)); raf.write(le32(rate))
-            raf.write(le32(rate * 2)); raf.write(le16(2)); raf.write(le16(16))
-            raf.writeBytes("data"); raf.write(le32(n * 2))
-            val buf = ByteArray(n * 2)
-            for (i in 0 until n) {
-                val v = (sin(2 * PI * 440.0 * i / rate) * 0.3 * Short.MAX_VALUE).toInt()
-                buf[2 * i] = v.toByte(); buf[2 * i + 1] = (v shr 8).toByte()
-            }
-            raf.write(buf)
-        }
-    }
+    /** Debug fixture (`--ez PDJ_SEED_DEMUX true`): imports the bundled 1 s tone as a Demuxer source. */
+    fun seedDemuxFixture() = com.levi.pocketdj.studio.StudioSeed.seedDemux(demuxStore, app.appContext)
 
     companion object {
-        const val SEED_EXTRA = "PDJ_SEED_STUDIO"
+        const val SEED_EXTRA = com.levi.pocketdj.studio.StudioSeed.STUDIO_EXTRA
+        const val SEED_DEMUX_EXTRA = com.levi.pocketdj.studio.StudioSeed.DEMUX_EXTRA
     }
 }

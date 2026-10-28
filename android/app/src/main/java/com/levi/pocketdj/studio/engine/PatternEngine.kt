@@ -335,7 +335,7 @@ class PatternEngine(
         parkedForInterruption = false
         if (_loadedPatternId.value == null) { lastRefusal = "no-pattern"; return false }
         if (!scheduler.hasContent) { lastRefusal = "no-content"; diag("startPattern REFUSED: no sounding steps with buffers"); return false }
-        if (!AudioFocusPolicy.mayStartPlayback()) { lastRefusal = "mic-capture-active"; diag("startPattern refused: mic capture active"); return false }
+        if (!AudioFocusPolicy.gateStart("pattern")) { lastRefusal = "mic-capture-active"; diag("startPattern refused: mic capture active"); return false }
         if (focus != null && !focus.invoke()) { lastRefusal = "no-focus"; diag("startPattern refused: no audio focus"); return false }
         if (!scheduler.restartFromTop()) { lastRefusal = "no-content"; return false }
         if (!trackAdded) { graph.addTrack(TRACK, scheduler); trackAdded = true }

@@ -225,7 +225,7 @@ class LoopAudition(
 
     /** Loop [file] as [id], conformed to [frames] (<= 0: as decoded). False when refused, unreadable or superseded. */
     suspend fun play(id: String, file: File, frames: Long): Boolean {
-        if (!AudioFocusPolicy.mayStartPlayback()) { lastRefusal = "mic-capture-active"; diag("loop play refused: mic capture"); return false }
+        if (!AudioFocusPolicy.gateStart("loop")) { lastRefusal = "mic-capture-active"; diag("loop play refused: mic capture"); return false }
         val gen = synchronized(lock) { generation += 1; _arming.value = id; generation }
         val raw = try { decode(file.path) } catch (e: CancellationException) {
             synchronized(lock) { if (generation == gen) _arming.value = null }

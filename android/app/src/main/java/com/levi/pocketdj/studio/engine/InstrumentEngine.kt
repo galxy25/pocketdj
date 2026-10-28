@@ -459,6 +459,7 @@ class InstrumentEngine(
      */
     fun replay(events: List<StudioNoteEvent>, fromMs: Int = 0, extraStaffs: List<Pair<SynthVoice, List<StudioNoteEvent>>> = emptyList(), loopRegion: Pair<Int, Int>? = null): Boolean {
         if (primary == null || _state.value.isRecordingTake) return false
+        if (!AudioFocusPolicy.gateStart("instrument")) return false
         stopReplay()
         val all = ArrayList<Pair<SynthVoice?, List<NoteAction>>>()
         all.add(null to TakeScore.actions(events, fromMs))

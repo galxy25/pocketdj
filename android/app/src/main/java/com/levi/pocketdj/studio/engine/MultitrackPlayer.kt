@@ -46,7 +46,7 @@ class StudioClipLoader(private val store: StudioStore, private val render: Studi
  * trigger a debounced re-prime ([REPRIME_DEBOUNCE_MS]).
  */
 /** Result of a play request: only [NOTHING_TO_PLAY] deserves a user-facing message. */
-enum class PlayOutcome { STARTED, SUPERSEDED, NOTHING_TO_PLAY }
+enum class PlayOutcome { STARTED, SUPERSEDED, NOTHING_TO_PLAY, REFUSED }
 
 class MultitrackPlayer(
     private val loader: MultitrackClipLoader,
@@ -112,6 +112,7 @@ class MultitrackPlayer(
     @Volatile private var recordQuantized = false
 
     private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean, record: Boolean = false, quantized: Boolean = false): PlayOutcome {
+        if (!AudioFocusPolicy.gateStart("multitrack")) return PlayOutcome.REFUSED
         val gen = synchronized(lock) { stopInternal(keepReprime = fromReprime); generation.get() }
         val rate = StudioAudio.CANONICAL_RATE
         // The ONE planning path shared with ArrangerBouncer (WYSIWYG): decode once, window, warp, beat-snap.

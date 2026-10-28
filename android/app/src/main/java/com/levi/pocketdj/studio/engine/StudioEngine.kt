@@ -245,7 +245,7 @@ class StudioEngine(
 
     fun playSample(): Boolean {
         val s = source ?: run { lastRefusal = "no-sample"; diag("playSample refused: no sample"); return false }
-        if (!AudioFocusPolicy.mayStartPlayback()) { lastRefusal = "mic-capture-active"; diag("playSample refused: mic capture active"); return false }
+        if (!AudioFocusPolicy.gateStart("sample")) { lastRefusal = "mic-capture-active"; diag("playSample refused: mic capture active"); return false }
         if (focus != null && !focus.invoke()) { lastRefusal = "no-focus"; diag("playSample refused: no audio focus"); return false }
         lastRefusal = null
         if (s.reachedEnd) s.rewind()
@@ -273,7 +273,7 @@ class StudioEngine(
     /** One-shot audition of a RAW-file window [startMs, endMs); never disturbs the trim window. */
     fun playSlice(startMs: Int, endMs: Int): Boolean {
         val s = source ?: return false
-        if (!AudioFocusPolicy.mayStartPlayback()) { lastRefusal = "mic-capture-active"; return false }
+        if (!AudioFocusPolicy.gateStart("sample")) { lastRefusal = "mic-capture-active"; return false }
         if (focus != null && !focus.invoke()) { lastRefusal = "no-focus"; return false }
         if (!s.playSlice(startMs, endMs)) return false
         lastRefusal = null
