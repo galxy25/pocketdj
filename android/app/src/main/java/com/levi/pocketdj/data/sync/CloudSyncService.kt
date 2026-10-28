@@ -102,6 +102,26 @@ class CloudSyncService(
      */
     @Volatile var pushAllowed: (() -> Boolean)? = null
 
+    /**
+     * IDENTITY-CHANGE PUSH HOLD (device linking): after adopting another device's profile id/secret
+     * every push is blocked until the first pull ([restoreForOnboarding]) completes or the link
+     * turns out to have nothing to restore ([releasePushHold]). Otherwise this device's freshly
+     * touched local docs (newer mtimes than A's cloud copies) would LWW-overwrite A's data.
+     */
+    @Volatile private var identityHold = false
+
+    private fun pushesOpen(): Boolean = !identityHold && (pushAllowed?.invoke() ?: true)
+
+    /** Called right after a link adopts a new identity: forget the old identity's watermarks, pull first. */
+    fun holdPushesForIdentityChange() {
+        identityHold = true
+        pushedMtimeMs.clear()
+        runCatching { stateFile.delete() }
+    }
+
+    /** Link rolled back / nothing to restore: pushes are governed by [pushAllowed] alone again. */
+    fun releasePushHold() { identityHold = false }
+
     private val entries = java.util.concurrent.CopyOnWriteArrayList<Entry>()
     private val syncing = AtomicBoolean(false)
 
@@ -217,7 +237,15 @@ class CloudSyncService(
      * the pass could not run (disabled / no account / already syncing / error).
      */
     suspend fun restoreForOnboarding(): List<String>? {
-        if (!mayRun || !syncing.compareAndSet(false, true)) return null
+        if (!mayRun) return null
+        // A tick pass may hold the single-flight flag: wait briefly instead of failing "for no visible reason".
+        var acquired = syncing.compareAndSet(false, true)
+        var waits = 0
+        while (!acquired && waits++ < RESTORE_WAIT_POLLS) {
+            kotlinx.coroutines.delay(RESTORE_WAIT_POLL_MS)
+            acquired = syncing.compareAndSet(false, true)
+        }
+        if (!acquired) return null
         try {
             _status.value = _status.value.copy(syncing = true, lastError = null)
             lastPassAt = clock()
@@ -242,6 +270,7 @@ class CloudSyncService(
                     lastSummary = if (pulled.isEmpty()) "Nothing to restore" else "Restored ${pulled.joinToString(", ")}",
                 )
                 saveState()
+                identityHold = false // the first pull after a link is done
                 pulled
             } catch (e: CancellationException) {
                 throw e
@@ -292,7 +321,7 @@ class CloudSyncService(
                     } else if (localMs != null &&
                         localMs > (cloudMs ?: 0.0) + SKEW_MS &&
                         localMs > (pushedMtimeMs[entry.key] ?: 0.0) + 1 &&
-                        (pushAllowed?.invoke() ?: true)
+                        pushesOpen()
                     ) {
                         push(db, entry, localMs)
                         pushed += entry.key
@@ -321,7 +350,7 @@ class CloudSyncService(
      * the user just played offline is worse than the narrow overwrite risk.
      */
     suspend fun pushDirty() {
-        if (!(pushAllowed?.invoke() ?: true)) return
+        if (!pushesOpen()) return
         val db = database()
         if (!db.accountAvailable()) return
         val candidates = entries.filter { entry ->
@@ -431,6 +460,9 @@ class CloudSyncService(
 
     companion object {
         const val PROFILE_KEY = "profile"
+
+        private const val RESTORE_WAIT_POLLS = 100
+        private const val RESTORE_WAIT_POLL_MS = 100L
 
         /** Clock/mtime slack under which two copies count as "the same write". */
         const val SKEW_MS = 2_000.0

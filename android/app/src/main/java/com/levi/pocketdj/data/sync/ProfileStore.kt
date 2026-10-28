@@ -87,6 +87,16 @@ class ProfileStore(private val file: File) {
     }
 
     /**
+     * Device linking (SVC-9): adopt another device's durable profile [newId] (name kept until the first pull
+     * replaces it). Persists. Does NOT fire [onNameApplied] - the name is unchanged.
+     */
+    fun adoptIdentity(newId: String) = synchronized(lock) {
+        if (newId.isBlank()) return@synchronized
+        _state.value = _state.value.copy(id = newId.uppercase()) // ProfileStore/iOS mint upper-case ids
+        save()
+    }
+
+    /**
      * Account deletion: erase the persisted profile and mint a BRAND-NEW identity (fresh id, empty
      * name, new createdAtMs) so a re-created account starts clean; persists it and mirrors the empty name.
      */

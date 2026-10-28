@@ -179,11 +179,55 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         }
     }
 
+    // ---- SVC-9 S3 backend, enrollment, device linking ------------------------------------------
+
+    /** The profile sync secret (Keystore SecretStore only). */
+    val profileSecrets: com.levi.pocketdj.data.sync.ProfileSecretStore by lazy {
+        com.levi.pocketdj.data.sync.ProfileSecretStore(app.secrets)
+    }
+
+    val enrollment: com.levi.pocketdj.data.sync.Enrollment by lazy {
+        com.levi.pocketdj.data.sync.Enrollment(
+            secrets = profileSecrets,
+            baseUrl = { com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase },
+            enrollToken = com.levi.pocketdj.data.sync.Enrollment.tokenFrom(app.secrets),
+            http = app.httpClient,
+        )
+    }
+
+    /** No `profileSyncBase` in the endpoint doc => accountAvailable() is false and nothing hits the network. */
+    val s3Database: com.levi.pocketdj.data.sync.S3CloudDocDatabase by lazy {
+        com.levi.pocketdj.data.sync.S3CloudDocDatabase(
+            baseUrl = { com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase },
+            profileId = { profile.id },
+            secrets = profileSecrets,
+            http = app.httpClient,
+            enrollment = enrollment,
+            deviceName = { android.os.Build.MODEL ?: "Android" },
+        )
+    }
+
+    /** Stage-1 / Settings device linking (code entry; QR camera scanning is deferred). */
+    val linkProbe: com.levi.pocketdj.onboarding.S3LinkDeviceProbe by lazy {
+        com.levi.pocketdj.onboarding.S3LinkDeviceProbe(
+            secrets = profileSecrets,
+            profileId = { profile.id },
+            adoptProfileId = { profile.adoptIdentity(it) },
+            clearUnauthorized = { s3Database.clearUnauthorized() },
+            isUnauthorized = { s3Database.unauthorized.value },
+            syncConfigured = { com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase != null },
+            probeCloud = { cloudSync.probeCloudProfile() },
+            restoreCloud = { cloudSync.restoreForOnboarding() },
+            holdPushes = { cloudSync.holdPushesForIdentityChange() },
+            releasePushes = { cloudSync.releasePushHold() },
+        )
+    }
+
     /**
      * The backend the engine syncs against. [UnavailableCloudDocDatabase] until SVC-9 installs the
      * S3 implementation here (or the debug flag swaps in [InMemoryCloudDocDatabase]).
      */
-    @Volatile var cloudDocDatabase: CloudDocDatabase = UnavailableCloudDocDatabase
+    @Volatile var cloudDocDatabase: CloudDocDatabase = s3Database
 
     /** Mirror of [SyncSettings.CLOUD_SYNC_ENABLED] (the engine's `enabled` closure is non-suspend). */
     @Volatile private var userSyncEnabled: Boolean = true
@@ -232,8 +276,8 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     /** Debug builds: swap the in-memory backend in/out live (Settings > Profile debug toggle). */
     fun setDebugInMemoryDb(on: Boolean) {
         if (!isDebuggableBuild()) return
-        if (on && cloudDocDatabase === UnavailableCloudDocDatabase) cloudDocDatabase = InMemoryCloudDocDatabase()
-        else if (!on && cloudDocDatabase is InMemoryCloudDocDatabase) cloudDocDatabase = UnavailableCloudDocDatabase
+        if (on && cloudDocDatabase === s3Database) cloudDocDatabase = InMemoryCloudDocDatabase()
+        else if (!on && cloudDocDatabase is InMemoryCloudDocDatabase) cloudDocDatabase = s3Database
     }
 
     fun isDebuggable(): Boolean = isDebuggableBuild()
@@ -250,7 +294,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         app.appScope.launch(Dispatchers.IO) {
             launch { app.settings.flow(SyncSettings.CLOUD_SYNC_ENABLED).collect { userSyncEnabled = it } }
             if (isDebuggableBuild() && app.settings.get(SyncSettings.DEBUG_IN_MEMORY_DB) &&
-                cloudDocDatabase === UnavailableCloudDocDatabase
+                cloudDocDatabase === s3Database
             ) {
                 cloudDocDatabase = InMemoryCloudDocDatabase()
             }
@@ -301,10 +345,11 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
 
     override val resetHooks: List<ResetHook> = listOf(
         ResetHook { if (cloudSyncLazy.isInitialized()) cloudSync.clearLocalSyncState() },
+        ResetHook { profileSecrets.clear() },
     )
 
     override val settingsSections: List<SettingsSection> by lazy {
-        if (diag.channel) listOf(debugSection()) else emptyList()
+        listOf(com.levi.pocketdj.screens.settings.linkDeviceSection()) + if (diag.channel) listOf(debugSection()) else emptyList()
     }
 
     override val deepLinkHandlers: List<DeepLinkHandler> by lazy {
