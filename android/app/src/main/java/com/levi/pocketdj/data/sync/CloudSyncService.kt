@@ -350,6 +350,15 @@ class CloudSyncService(
      * the user just played offline is worse than the narrow overwrite risk.
      */
     suspend fun pushDirty() {
+        // Single-flight: the lifecycle funnel fires several times per backgrounding; concurrent passes would upload the
+        // same dirty multi-MB documents twice and race saveState.
+        if (!pushFlight.tryLock()) return
+        try { pushDirtyLocked() } finally { pushFlight.unlock() }
+    }
+
+    private val pushFlight = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun pushDirtyLocked() {
         if (!pushesOpen()) return
         val db = database()
         if (!db.accountAvailable()) return
