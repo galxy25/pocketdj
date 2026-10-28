@@ -91,4 +91,19 @@ class ListeningPocketsCollectionsTest {
         val floored = ListeningPocketsCollections.build(ListeningPocketsCollections.Input(src, listOf(floorEv)), now, floorMs = now)
         assertTrue(floored.addEvents.isEmpty())
     }
+
+    @Test fun byteCapKeepsLargestFittingPrefix() {
+        val ids = (1..300).map { "song-number-$it" }
+        val cols = (1..100).map { ListeningPocketsCollectionWire("pkt_$it", "pocket", ids, emptyList()) }
+        fun sz(c: List<ListeningPocketsCollectionWire>) =
+            ListeningPocketsUploadBatch(null, "", 0, emptyList(), collections = c, addEvents = emptyList())
+                .toJson().toString().toByteArray(Charsets.UTF_8).size
+        val cap = sz(cols) - 10 // just barely over: only the last collection should go
+        val p = ListeningPocketsCollections.enforceByteCap(
+            ListeningPocketsCollections.Payload(cols, emptyList(), ListeningPocketsCollections.hash(cols, emptyList())), cap,
+        )
+        assertEquals(99, p.collections.size)
+        assertTrue(sz(p.collections) <= cap)
+        assertTrue(sz(cols.take(p.collections.size + 1)) > cap)
+    }
 }

@@ -71,7 +71,7 @@ object ListeningPocketsCollections {
 
     /**
      * Fit the encoded batch under [BYTE_CAP]: shed add events first (oldest, they are newest-first),
-     * then trailing collections, re-hashing so the hash describes what is sent.
+     * then trailing collections, each to the LARGEST prefix that fits, re-hashing so the hash describes what is sent.
      */
     internal fun enforceByteCap(p: Payload, cap: Int = BYTE_CAP): Payload {
         fun size(c: List<ListeningPocketsCollectionWire>, e: List<ListeningPocketsAddEventWire>): Int =
@@ -80,8 +80,18 @@ object ListeningPocketsCollections {
         var cols = p.collections
         var evs = p.addEvents
         if (size(cols, evs) <= cap) return p
-        while (evs.isNotEmpty() && size(cols, evs) > cap) evs = evs.take(evs.size / 2)
-        while (cols.isNotEmpty() && size(cols, evs) > cap) cols = cols.take(cols.size / 2)
+        // Largest prefix that fits (size is monotone in prefix length): events first, then collections.
+        fun largest(n: Int, fits: (Int) -> Boolean): Int {
+            var lo = 0
+            var hi = n
+            while (lo < hi) {
+                val mid = (lo + hi + 1) / 2
+                if (fits(mid)) lo = mid else hi = mid - 1
+            }
+            return lo
+        }
+        evs = evs.take(largest(evs.size) { size(cols, evs.take(it)) <= cap })
+        if (size(cols, evs) > cap) cols = cols.take(largest(cols.size) { size(cols.take(it), evs) <= cap })
         return Payload(cols, evs, hash(cols, evs))
     }
 

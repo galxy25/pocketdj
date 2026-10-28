@@ -82,5 +82,7 @@ class ListeningPocketsClientTest {
         assertFalse(client().health())
         server.enqueue(MockResponse().setResponseCode(404))
         assertFalse(client().health())
+        server.enqueue(MockResponse().setBody("""{"ok":"true"}"""))
+        assertFalse(client().health())
     }
 }

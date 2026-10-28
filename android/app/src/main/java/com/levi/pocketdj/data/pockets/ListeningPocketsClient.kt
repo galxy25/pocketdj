@@ -1,14 +1,19 @@
 package com.levi.pocketdj.data.pockets
 
 import java.io.IOException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /**
@@ -52,20 +57,38 @@ class ListeningPocketsClient(
     }
 
     /** Run a request → the 2xx body; 403 / 404 / other non-2xx map to distinct [ClientError]s. */
-    private suspend fun runRaw(req: Request): String = withContext(Dispatchers.IO) {
-        http.newCall(req).execute().use { resp ->
-            val text = resp.body?.string().orEmpty()
-            val code = resp.code
-            if (code == 403) throw map403(text)
-            if (code == 404) throw ClientError.NotFound
-            if (code !in 200..299) throw ClientError.Http(code)
-            text
-        }
+    private suspend fun runRaw(req: Request, timeoutSec: Long = DEFAULT_TIMEOUT_S): String {
+        val (code, text) = exec(req, timeoutSec)
+        if (code == 403) throw map403(text)
+        if (code == 404) throw ClientError.NotFound
+        if (code !in 200..299) throw ClientError.Http(code)
+        return text
     }
+
+    /** Cancellation-aware call with a per-call timeout (iOS: 20 s default, 30 s events, 12 s health). */
+    private suspend fun exec(req: Request, timeoutSec: Long): Pair<Int, String> =
+        suspendCancellableCoroutine { cont ->
+            val call = http.newCall(req)
+            call.timeout().timeout(timeoutSec, TimeUnit.SECONDS)
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (cont.isActive) cont.resumeWithException(e)
+                }
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        val r = response.use { it.code to (it.body?.string().orEmpty()) }
+                        if (cont.isActive) cont.resume(r)
+                    } catch (e: IOException) {
+                        if (cont.isActive) cont.resumeWithException(e)
+                    }
+                }
+            })
+        }
 
     /** `POST /pockets/events` (≤1000 events from this client). Carries the enrollment secret. */
     suspend fun postEvents(batch: ListeningPocketsUploadBatch, creds: PocketsCredentials): ListeningPocketsUploadResponse {
-        val text = runRaw(request("pockets/events", "POST", creds, batch.toJson().toString(), enroll = true))
+        val text = runRaw(request("pockets/events", "POST", creds, batch.toJson().toString(), enroll = true), EVENTS_TIMEOUT_S)
         return ListeningPocketsUploadResponse.parse(runCatching { Json.parseToJsonElement(text) }.getOrNull())
     }
 
@@ -82,14 +105,13 @@ class ListeningPocketsClient(
     }
 
     /** `GET /pockets/health` — unauthenticated reachability probe. */
-    suspend fun health(): Boolean = withContext(Dispatchers.IO) {
-        try {
+    suspend fun health(): Boolean {
+        return try {
             val req = Request.Builder().url(baseUrl().trimEnd('/') + "/pockets/health").get().build()
-            http.newCall(req).execute().use { resp ->
-                if (resp.code !in 200..299) return@use false
-                val o = runCatching { Json.parseToJsonElement(resp.body?.string().orEmpty()) as? JsonObject }.getOrNull()
-                (o?.get("ok") as? JsonPrimitive)?.content == "true"
-            }
+            val (code, text) = exec(req, HEALTH_TIMEOUT_S)
+            if (code !in 200..299) return false
+            val o = runCatching { Json.parseToJsonElement(text) as? JsonObject }.getOrNull()
+            (o?.get("ok") as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull == true
         } catch (_: IOException) {
             false
         } catch (_: IllegalArgumentException) {
@@ -98,6 +120,9 @@ class ListeningPocketsClient(
     }
 
     companion object {
+        private const val DEFAULT_TIMEOUT_S = 20L
+        private const val EVENTS_TIMEOUT_S = 30L
+        private const val HEALTH_TIMEOUT_S = 12L
         const val PROFILE_HEADER = "X-PocketDJ-Profile"
         const val ENROLL_HEADER = "X-PocketDJ-Enroll"
         const val DEVICE_HEADER = "X-PocketDJ-Device"
