@@ -67,6 +67,26 @@ class SessionSwitchboard(
         }
     }
 
+    /**
+     * A setlist/Browse load is about to drive the in-app MediaController. While the Mix owns the session its
+     * player (a SimpleBasePlayer) cannot take media items, so the load would be silently dropped. Silence the
+     * Mix and hand the session back to ExoPlayer first. Returns true when a Mix owner was displaced.
+     */
+    fun yieldMixToExo(): Boolean {
+        val o: TransportOwner
+        synchronized(lock) {
+            val t = owner ?: preferred ?: return false
+            if (t.engine != "mix") return false
+            o = t
+            if (owner === t) owner = null
+            if (preferred === t) preferred = null
+        }
+        log("switchboard yield mix->exo")
+        o.pauseForHandoff()
+        onChange(null)
+        return true
+    }
+
     /** True when [o] is the engine that should answer a remote command right now. */
     fun isActive(o: TransportOwner): Boolean = synchronized(lock) {
         val target = owner ?: preferred

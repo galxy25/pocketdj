@@ -83,4 +83,27 @@ class SessionSwitchboardTest {
         assertEquals(0, old.paused)
         assertSame(fresh, board.current)
     }
+
+    @Test fun yieldMixToExoSilencesMixAndHandsSessionBack() {
+        val seen = mutableListOf<String?>()
+        val exo = Owner("exo"); val mix = Owner("mix")
+        board.register(exo)
+        board.setOwner(mix)
+        board.onChange = { seen += it?.engine }
+        assertTrue(board.yieldMixToExo())
+        assertEquals(1, mix.paused)
+        assertNull(board.current)
+        assertEquals(listOf<String?>(null), seen)
+        // Exo (not the dead Mix) is the session player again.
+        assertSame(exo.sessionPlayer, board.sessionPlayer(exo.sessionPlayer))
+    }
+
+    @Test fun yieldMixToExoIsNoOpForOtherOwners() {
+        val exo = Owner("exo"); val am = Owner("am")
+        board.setOwner(am)
+        assertFalse(board.yieldMixToExo())
+        assertEquals(0, am.paused)
+        board.setOwner(exo)
+        assertFalse(board.yieldMixToExo())
+    }
 }

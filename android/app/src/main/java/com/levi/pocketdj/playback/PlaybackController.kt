@@ -1265,6 +1265,7 @@ class PlaybackController(
             }
         }
         withController {
+            com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
             it.setMediaItems(items, startIndex, startPositionMs ?: androidx.media3.common.C.TIME_UNSET)
             it.prepare()
             it.play()
@@ -1324,6 +1325,7 @@ class PlaybackController(
                 val rip = request.source as? RipOnDemandSource
                 if (rip != null) { ripSession.cancel(rip.songId); ripSession.begin(rip.songId) } // fresh resolve each load (retry-in-place re-POSTs); BEFORE the load: the data source joins this one
                 withController {
+                    com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
                     it.setMediaItems(listOf(mi), 0, resume ?: androidx.media3.common.C.TIME_UNSET)
                     it.prepare()
                     it.play()
@@ -1363,6 +1365,7 @@ class PlaybackController(
             activeBackend = ActiveBackend.EXO
             sequencerOwnsPlayer = false // the stream's end must never advance a (held) queue
             withController {
+                com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
                 it.setMediaItems(listOf(mi), 0, if (request.seekMs > 0) request.seekMs else androidx.media3.common.C.TIME_UNSET)
                 it.prepare()
                 it.play()
@@ -1444,6 +1447,7 @@ class PlaybackController(
                     var swapped = false
                     withController { c ->
                         if (c.currentMediaItem?.mediaId == mediaId) {
+                            com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
                             c.setMediaItems(listOf(liveItem), 0, androidx.media3.common.C.TIME_UNSET)
                             c.prepare()
                             c.play()
