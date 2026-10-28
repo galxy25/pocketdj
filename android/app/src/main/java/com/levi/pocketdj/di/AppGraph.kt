@@ -69,8 +69,12 @@ class AppGraph private constructor(context: Context) {
             if (changed || force) {
                 android.util.Log.i("PocketDJ", "[endpoints] ${if (changed) "changed" else "checked"} ${RemoteEndpoints.summary}")
             }
-            // A flipped backend: re-read the rips manifest from the new bucket.
-            if (changed) runCatching { ripsRepository.refresh() }
+            // A flipped backend: re-read the rips manifest from the new bucket. The rips
+            // manifest is part of the launch pipeline, so it waits for onboarding (SURF-3).
+            if (changed) {
+                onboarding.waitUntilComplete()
+                runCatching { ripsRepository.refresh() }
+            }
         }
     }
 
@@ -83,13 +87,22 @@ class AppGraph private constructor(context: Context) {
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    private val settingsFile = File(appContext.filesDir, "pocketdj-settings.preferences_pb")
+
+    /**
+     * Whether a settings file already existed when the process built its graph (SURF-3): an
+     * upgrade from a pre-onboarding build has one, a fresh install does not. Captured BEFORE
+     * anything can write it; the onboarding decision tree reads it.
+     */
+    internal val hadPersistedSettingsAtLaunch: Boolean = settingsFile.exists()
+
     private val settingsDataStore = PreferenceDataStoreFactory.create(
         // A truncated .preferences_pb (power loss mid-write) must reset to
         // defaults, not throw CorruptionException out of every save forever.
         corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
     ) {
-        File(appContext.filesDir, "pocketdj-settings.preferences_pb")
+        settingsFile
     }
 
     /**
@@ -115,6 +128,9 @@ class AppGraph private constructor(context: Context) {
     val browseGraph: BrowseGraph by lazy { BrowseGraph(this) }
     val servicesGraph: ServicesGraph by lazy { ServicesGraph(this) }
     val shellGraph: ShellGraph by lazy { ShellGraph(this) }
+
+    /** Zero-to-hero first-run state (SURF-3); lives in the shell sidecar. */
+    val onboarding: com.levi.pocketdj.onboarding.OnboardingStore get() = shellGraph.onboarding
 
     /** ON_STOP flush funnel (SURF-2). */
     val flushRegistry: com.levi.pocketdj.shell.FlushRegistry = com.levi.pocketdj.shell.FlushRegistry()

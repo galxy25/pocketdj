@@ -46,6 +46,8 @@ import androidx.navigation.navArgument
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.navigation.PocketDjDestination
+import com.levi.pocketdj.onboarding.OnboardingScreen
+import com.levi.pocketdj.onboarding.OnboardingStore
 import com.levi.pocketdj.screens.PlaceholderScreen
 import com.levi.pocketdj.screens.browse.AlbumDetailScreen
 import com.levi.pocketdj.screens.browse.ArtistDetailScreen
@@ -191,10 +193,25 @@ fun PocketDjApp() {
         if (startToken == null) startToken = graph.lastSection.restore().token
     }
     val resolvedStart = startToken?.let { PocketDjDestination.fromToken(it) }
-    if (resolvedStart == null) {
-        Box(Modifier.fillMaxSize())
-    } else {
-        ShellContent(graph, resolvedStart)
+
+    // Zero-to-hero gate (SURF-3): while the flow is incomplete the app proper is NOT composed,
+    // so no screen starts the catalog load / rips manifest / jukebox bootstrap. The debug
+    // intent extra forces the flow for emulator verification.
+    val onboarding = graph.onboarding
+    androidx.compose.runtime.saveable.rememberSaveable(onboarding) {
+        val activity = context as? android.app.Activity
+        val debuggable = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (debuggable && activity?.intent?.getBooleanExtra(OnboardingStore.SHOW_INTENT_EXTRA, false) == true) {
+            onboarding.forceShow()
+        }
+        true
+    }
+    val onboardingState by onboarding.state.collectAsState()
+    when {
+        !onboardingState.loaded -> Box(Modifier.fillMaxSize())
+        !onboardingState.complete -> OnboardingScreen(graph, onboarding)
+        resolvedStart == null -> Box(Modifier.fillMaxSize())
+        else -> ShellContent(graph, resolvedStart)
     }
 }
 
