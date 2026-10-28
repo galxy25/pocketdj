@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-4 — Burned-first resolver + PlaybackMode toggle + collection Rip/Burn bar
 

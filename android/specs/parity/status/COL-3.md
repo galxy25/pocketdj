@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # COL-3 SongDuplicateJudge + Remove duplicates
 

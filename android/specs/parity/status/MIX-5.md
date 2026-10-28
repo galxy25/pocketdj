@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # MIX-5 MixEngine core: decks, load/seek/transport, EQ, FX rack, Vol/crossfader, cue, lead/sync, VU, 10 Hz tick, session hooks, durable persistence
 

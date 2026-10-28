@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # PB-6 Now Playing deck + mini bar upgrade
 
