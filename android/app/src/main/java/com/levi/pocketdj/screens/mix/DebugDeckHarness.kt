@@ -40,7 +40,7 @@ fun DebugDeckHarness(graph: AppGraph, onDismiss: () -> Unit) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     DeckLayout.entries.forEach { l -> OutlinedButton(onClick = { layout = l }) { Text(l.raw) } }
-                    OutlinedButton(onClick = onDismiss) { Text("Close") }
+                    OutlinedButton(onClick = onDismiss) { Text("X") }
                 }
                 DeckArea(host = host, layout = layout, landscape = landscape, onLoad = {}, beatPulseEnabled = true)
                 CrossfaderView(engine = host.engine)
