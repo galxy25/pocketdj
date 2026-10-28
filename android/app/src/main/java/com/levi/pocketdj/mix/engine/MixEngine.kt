@@ -120,6 +120,10 @@ class MixEngine(
     var onNowPlayingChanged: (() -> Unit)? = null
     /** Whether a set list is live; a launch-time restore never builds a mix behind one. */
     var setlistIsLive: (() -> Boolean)? = null
+    /** MIX-11: the output route changed and the sink rebuilt (true = rendering). Fires on the RENDER thread; the owner posts to main. */
+    @Volatile var onSinkRouting: ((Boolean) -> Unit)? = null
+    /** MIX-11: the 1 Hz liveness beat (main thread) while anything plays: session card refresh + silent-playing check. */
+    var onHeartbeat: (() -> Unit)? = null
     /** Keep the sink alive even if nothing plays (an open recording tap). */
     var keepEngineAlive: () -> Boolean = { false }
 
@@ -233,7 +237,7 @@ class MixEngine(
     /** Start the sink if it is not pulling blocks. Reports failure instead of swallowing it. */
     fun startEngineIfNeeded(): Boolean {
         if (!built) return false
-        val s = sink ?: sinkFactory().also { sink = it }
+        val s = sink ?: sinkFactory().also { sk -> sink = sk; sk.onRoutingChanged = { ok -> onSinkRouting?.invoke(ok) } }
         if (!s.isRendering) graph.attach(s)
         return s.isRendering
     }
