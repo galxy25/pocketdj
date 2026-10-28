@@ -109,7 +109,7 @@ sealed interface MediaSearchResult {
 /** Pure name resolution: exact → normalized → token coverage, ties → most recently played. */
 object MediaSearchResolver {
     /** Spoken filler that is never part of a collection's name. */
-    private val NOISE = setOf("my", "the", "a", "playlist", "playlists", "pocket", "pockets", "pocketdj", "on", "shuffle", "shuffled")
+    private val NOISE = setOf("play", "please", "listen", "to", "some", "music", "my", "the", "a", "playlist", "playlists", "pocket", "pockets", "pocketdj", "on", "shuffle", "shuffled")
 
     fun kindsFor(focus: MediaFocus): Set<MediaCandidate.Kind> = when (focus) {
         MediaFocus.Any, MediaFocus.Playlist -> setOf(MediaCandidate.Kind.Playlist, MediaCandidate.Kind.Pocket)
