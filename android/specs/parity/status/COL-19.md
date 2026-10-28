@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # COL-19 Listening places engine + location store
 
