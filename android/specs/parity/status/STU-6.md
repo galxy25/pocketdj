@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-6 Cues tab + cue-seek plumbing
 
