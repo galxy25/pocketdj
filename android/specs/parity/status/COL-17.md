@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # COL-17 - ListeningPocketsService + PocketsPlayListener + real PocketsBridge
 
@@ -21,3 +21,13 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+fixes applied
+- MINOR cold-start gate flip (CollectionsGraph) -> fixed: mirror seeded from stored pref via first() before the first evaluation; single combine+distinctUntilChanged collector; service tracks lastGate so onDisabled fires only on a real true->false change; flushEpoch is now an AtomicInteger. Test: coldStartDoesNotFireOnDisabledAndRealCloseFiresOnce.
+- MINOR flush/delete race (ListeningPocketsService) -> fixed: isDeleting check, epoch read and flushDone registration share flushLock in flushNow; deleteCloudData sets isDeleting, bumps epoch and reads flushDone under the same lock. Test: deleteWaitsForFlushThatRegisteredBeforeIt.
+- MINOR PlayHistoryStore merge -> fixed: first-writer-wins absorption of listeningContext and carPlay, plus holdsFieldsMissing for both. Tests: reloadAbsorbsPeerContextAndCarPlayFirstWriterWins, reloadSavesWhenWeHoldContextOrCarPlayTheDocLacks.
+- MINOR clearLocal unhooked -> fixed: "listening-pockets" local store in ServicesGraph.accountDeletion calls listeningPockets.clearLocal().
+- NIT ledger row / emulator step -> not done: docs/ARCHITECTURE-ANDROID.md owned by orchestrator; emulator forbidden here (integrator owns it), so device-only: MockWebServer POST after 25 s.
+
+Verification: 4985 tests (was 4981, +4), 0 failures; assembleDebug OK.

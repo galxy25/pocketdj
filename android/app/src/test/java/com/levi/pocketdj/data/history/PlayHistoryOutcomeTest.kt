@@ -80,4 +80,38 @@ class PlayHistoryOutcomeTest {
         assertEquals(tag, s.events.first { it.id == mine.id }.listeningContext)
         assertNotNull(s.events.first { it.id == mine.id })
     }
+
+    private fun writeDoc(vararg events: PlayEvent) {
+        File(tmp.root, "h.json").writeText(
+            PdjJson.lenient.encodeToString(PlayHistoryDocument.serializer(), PlayHistoryDocument(installId = "i", events = events.toList())),
+        )
+    }
+
+    @Test fun reloadAbsorbsPeerContextAndCarPlayFirstWriterWins() {
+        val s = store()
+        val e = s.record("a", nowMs = t0)!!
+        val peer = e.copy(carPlay = true, listeningContext = ListeningContextTag.place("plc_1"))
+        writeDoc(peer)
+        s.reloadFromDisk()
+        val got = s.events.first { it.id == e.id }
+        assertEquals(true, got.carPlay); assertEquals(ListeningContextTag.place("plc_1"), got.listeningContext)
+        // First writer wins: a different later peer value never overwrites a held one.
+        writeDoc(e.copy(carPlay = false, listeningContext = ListeningContextTag.place("plc_2")))
+        s.reloadFromDisk()
+        val after = s.events.first { it.id == e.id }
+        assertEquals(true, after.carPlay); assertEquals(ListeningContextTag.place("plc_1"), after.listeningContext)
+    }
+
+    @Test fun reloadSavesWhenWeHoldContextOrCarPlayTheDocLacks() {
+        val s = store()
+        val e = s.record("a", nowMs = t0)!!
+        s.stampContexts(mapOf(e.id to ListeningContextTag.place("plc_1")))
+        // Let the debounced save of the stamp land first, or it would overwrite the stale doc below.
+        val dl = System.currentTimeMillis() + 5000
+        while (!File(tmp.root, "h.json").let { it.exists() && it.readText().contains("plc_1") } && System.currentTimeMillis() < dl) Thread.sleep(20)
+        writeDoc(e.copy(listeningContext = null, carPlay = null))   // stale peer copy lacking the field
+        assertTrue(s.reloadFromDisk())                               // true = we re-saved
+        val onDisk = PdjJson.lenient.decodeFromString(PlayHistoryDocument.serializer(), File(tmp.root, "h.json").readText())
+        assertEquals(ListeningContextTag.place("plc_1"), onDisk.events.first { it.id == e.id }.listeningContext)
+    }
 }

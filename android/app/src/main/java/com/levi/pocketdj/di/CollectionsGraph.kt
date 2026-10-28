@@ -23,6 +23,7 @@ import com.levi.pocketdj.shell.Flushable
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -431,15 +432,23 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                     svc.deleteCloudData(com.levi.pocketdj.data.pockets.PocketsCredentials(key, profileId, com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET))
                 }
             }
-            launch {
-                app.settings.flow(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED).collect { on ->
-                    pocketsEnabledMirror.set(on)
-                    svc.enabledDidChange()
-                }
+            // Seed the mirror from the stored pref BEFORE the first gate evaluation, so a cold start never reads
+            // "pockets off" and closes the gate (which would switch places & trips off every launch).
+            runCatching {
+                pocketsEnabledMirror.set(app.settings.flow(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED).first())
             }
+            svc.enabledDidChange()
             launch {
-                // The rec engine toggle is the other half of the gate.
-                app.browseGraph.recEnabled.collect { svc.enabledDidChange() }
+                // One collector over BOTH halves of the gate (rec engine + pockets); real changes only.
+                kotlinx.coroutines.flow.combine(
+                    app.browseGraph.recEnabled,
+                    app.settings.flow(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED),
+                ) { rec, pockets -> rec to pockets }
+                    .distinctUntilChanged()
+                    .collect { (_, pockets) ->
+                        pocketsEnabledMirror.set(pockets)
+                        svc.enabledDidChange()
+                    }
             }
             withContext(Dispatchers.Main) {
                 runCatching {

@@ -111,7 +111,9 @@ class ListeningPocketsService(
     @Volatile private var flushDone: CompletableDeferred<Boolean>? = null
 
     /** Invalidation epoch: bumped by a toggle, a delete or a local clear; an in-flight flush re-checks after every await. */
-    @Volatile private var flushEpoch = 0
+    private val flushEpoch = java.util.concurrent.atomic.AtomicInteger(0)
+    /** Last gate value seen by [enabledDidChange]; [onDisabled] fires only on a real true->false change. */
+    @Volatile private var lastGate = false
     private var autoFlushJob: Job? = null
     private var autoFlushGeneration = 0
     private var debounceJob: Job? = null
@@ -140,6 +142,7 @@ class ListeningPocketsService(
         }.getOrNull() ?: SyncDoc()
         runCatching { if (cacheFile.exists()) _results.value = ListeningPocketsResults.parse(cacheFile.readText()) }
         _enabled.value = isEnabled
+        lastGate = isEnabled
     }
 
     // ---- gate -------------------------------------------------------------------------------
@@ -182,9 +185,12 @@ class ListeningPocketsService(
 
     /** Settings toggled (rec engine OR pockets). OFF stops the loops (server data kept); ON arms the loop. */
     fun enabledDidChange() {
-        flushEpoch++
-        _enabled.value = isEnabled
-        if (isEnabled) {
+        flushEpoch.incrementAndGet()
+        val now = isEnabled
+        val was = lastGate
+        lastGate = now
+        _enabled.value = now
+        if (now) {
             startAutoFlush()
         } else {
             synchronized(this) {
@@ -192,7 +198,7 @@ class ListeningPocketsService(
                 debounceJob?.cancel(); debounceJob = null
             }
             syncError = null
-            onDisabled?.invoke()
+            if (was) onDisabled?.invoke()
         }
     }
 
@@ -203,14 +209,15 @@ class ListeningPocketsService(
      * drained. Fingerprints are remembered ONLY on 2xx. Fetches fresh results when anything was sent.
      */
     suspend fun flushNow(): Boolean {
-        if (!isEnabled || isDeleting) return false
         val done = CompletableDeferred<Boolean>()
+        val epoch: Int
+        // Gate check, epoch read and flush registration are ONE critical section (deleteCloudData takes the same lock).
         synchronized(flushLock) {
-            if (isFlushing) return false
+            if (!isEnabled || isDeleting || isFlushing) return false
             isFlushing = true
             flushDone = done
+            epoch = flushEpoch.get()
         }
-        val epoch = flushEpoch
         val sent = try {
             performFlush(epoch).also { done.complete(it) }
         } catch (t: Throwable) {
@@ -219,7 +226,7 @@ class ListeningPocketsService(
         } finally {
             synchronized(flushLock) { isFlushing = false; if (flushDone === done) flushDone = null }
         }
-        if (sent && epoch == flushEpoch) refreshResults(force = true)
+        if (sent && epoch == flushEpoch.get()) refreshResults(force = true)
         return sent
     }
 
@@ -271,16 +278,16 @@ class ListeningPocketsService(
             } catch (e: CancellationException) {
                 throw e
             } catch (_: ListeningPocketsClient.ClientError.NotFound) {
-                if (epoch == flushEpoch) serviceAvailable = false   // routes not deployed yet - silent
+                if (epoch == flushEpoch.get()) serviceAvailable = false   // routes not deployed yet - silent
                 return sentAny
             } catch (e: ListeningPocketsClient.ClientError) {
-                if (epoch == flushEpoch) syncError = message(e)
+                if (epoch == flushEpoch.get()) syncError = message(e)
                 return sentAny
             } catch (_: Exception) {
-                if (epoch == flushEpoch) syncError = "Couldn't reach the listening-pockets service."
+                if (epoch == flushEpoch.get()) syncError = "Couldn't reach the listening-pockets service."
                 return sentAny
             }
-            if (epoch != flushEpoch) return sentAny   // deleted / toggled mid-flight
+            if (epoch != flushEpoch.get()) return sentAny   // deleted / toggled mid-flight
             val acked = slice.associate { it.first.id to it.second }
             updateSync { it.copy(sent = it.sent + acked) }
             repeat(slice.size) { pending.removeAt(0) }
@@ -295,7 +302,7 @@ class ListeningPocketsService(
     /** Collections snapshot, then rounds - both AFTER the plays. */
     private suspend fun uploadTail(creds: PocketsCredentials, epoch: Int, sentPlays: Boolean): Boolean {
         val collectionsSent = uploadCollections(creds, epoch)
-        if (epoch != flushEpoch) return sentPlays || collectionsSent
+        if (epoch != flushEpoch.get()) return sentPlays || collectionsSent
         val roundsSent = uploadRounds(creds, epoch)
         return sentPlays || collectionsSent || roundsSent
     }
@@ -318,7 +325,7 @@ class ListeningPocketsService(
         } catch (_: Exception) {
             return false
         }
-        if (epoch != flushEpoch) return false
+        if (epoch != flushEpoch.get()) return false
         updateSync { it.copy(collectionsHash = payload.hash, collectionsSentAtMs = nowMs) }
         return true
     }
@@ -388,11 +395,11 @@ class ListeningPocketsService(
         val at = resultsFetchedAtMs
         if (!force && at != null && now() - at < RESULTS_TTL_MS) return
         val creds = credentials() ?: return
-        val epoch = flushEpoch
+        val epoch = flushEpoch.get()
         _isRefreshing.value = true
         try {
             val (decoded, raw) = client.results(creds)
-            if (epoch != flushEpoch) return
+            if (epoch != flushEpoch.get()) return
             _results.value = decoded
             resultsFetchedAtMs = now()
             serviceAvailable = true
@@ -401,9 +408,9 @@ class ListeningPocketsService(
         } catch (e: CancellationException) {
             throw e
         } catch (_: ListeningPocketsClient.ClientError.NotFound) {
-            if (epoch == flushEpoch) serviceAvailable = false
+            if (epoch == flushEpoch.get()) serviceAvailable = false
         } catch (e: ListeningPocketsClient.ClientError) {
-            if (epoch == flushEpoch && e != ListeningPocketsClient.ClientError.BadResponse) syncError = message(e)
+            if (epoch == flushEpoch.get() && e != ListeningPocketsClient.ClientError.BadResponse) syncError = message(e)
         } catch (_: Exception) {
             // Offline etc. - keep serving the cache; the next appear/refresh retries.
         } finally {
@@ -428,10 +435,13 @@ class ListeningPocketsService(
      * erased the rec state, then the local cache + sync doc. Runs regardless of the toggles. 404 is success.
      */
     suspend fun deleteCloudData(creds: PocketsCredentials): Boolean {
-        flushEpoch++
-        isDeleting = true   // no flush may START while the DELETE is in flight
+        val inFlight = synchronized(flushLock) {
+            isDeleting = true   // no flush may START while the DELETE is in flight
+            flushEpoch.incrementAndGet()
+            flushDone
+        }
         try {
-            flushDone?.let { runCatching { it.await() } }   // no batch may land after the DELETE
+            inFlight?.let { runCatching { it.await() } }   // no batch may land after the DELETE
             val erasedAtMs = nowMs
             try {
                 client.deleteState(creds)
@@ -455,7 +465,7 @@ class ListeningPocketsService(
 
     /** Account-deletion contract: drop every local file + in-memory state, stop the loops. */
     fun clearLocal() {
-        flushEpoch++
+        flushEpoch.incrementAndGet()
         synchronized(this) {
             autoFlushJob?.cancel(); autoFlushJob = null
             debounceJob?.cancel(); debounceJob = null

@@ -563,6 +563,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 add("favorites" to { app.collectionsGraph.favorites.clear() })
                 add("play-stats" to { playStats.clear() })
                 add("play-history" to { com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext).clear() })
+                add("listening-pockets" to { app.collectionsGraph.listeningPockets.clearLocal() })
                 add("collection-activity" to { app.collectionActivity.clear() })
                 add("playlist-writeback" to { app.collectionsGraph.writeBack.clear() })
                 // iOS `playbackSession.clear()` explicitly: the sequencer.stop() path only clears via an async collector.

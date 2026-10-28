@@ -284,4 +284,36 @@ class ListeningPocketsServiceTest {
         delay(200)
         assertEquals(2, be.eventCount())
     }
+
+    @Test fun coldStartDoesNotFireOnDisabledAndRealCloseFiresOnce() = runBlocking {
+        // Cold start: the pockets mirror reads OFF until the stored pref arrives -> gate false -> still false.
+        fx.pocketsOn = false
+        val svc = fx.service()
+        var disabled = 0
+        svc.onDisabled = { disabled++ }
+        svc.enabledDidChange()        // rec emission before the pref: false -> false
+        svc.enabledDidChange()
+        assertEquals(0, disabled)
+        fx.pocketsOn = true
+        svc.enabledDidChange()        // opens
+        assertEquals(0, disabled)
+        fx.pocketsOn = false
+        svc.enabledDidChange()        // real true -> false
+        svc.enabledDidChange()
+        assertEquals(1, disabled)
+    }
+
+    @Test fun deleteWaitsForFlushThatRegisteredBeforeIt() = runBlocking {
+        fx.plays(2)
+        be.eventsDelayMs = 400
+        val svc = fx.service()
+        val flush = async(Dispatchers.IO) { svc.flushNow() }
+        delay(120)   // flush is in flight
+        assertTrue(svc.deleteCloudData(fx.creds!!))
+        flush.await()
+        // The DELETE is the last thing the server saw; the abandoned flush re-uploaded nothing after it.
+        val reqs = be.requests.toList()
+        assertEquals("DELETE /pockets/state", reqs.last())
+        assertEquals(1, be.eventCount())
+    }
 }

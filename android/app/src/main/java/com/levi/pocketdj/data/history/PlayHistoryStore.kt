@@ -313,6 +313,8 @@ class PlayHistoryStore(
                 val tf = theirs.listenedFraction
                 if (tf != null && tf > (mine.listenedFraction ?: -1.0)) merged = merged.copy(listenedFraction = tf)
                 if (mine.tzOffsetMin == null && theirs.tzOffsetMin != null) merged = merged.copy(tzOffsetMin = theirs.tzOffsetMin)
+                if (mine.listeningContext == null && theirs.listeningContext != null) merged = merged.copy(listeningContext = theirs.listeningContext)
+                if (mine.carPlay == null && theirs.carPlay != null) merged = merged.copy(carPlay = theirs.carPlay)
                 if (merged != mine) {
                     byId[theirs.id] = merged
                     absorbedPeerFields = true
@@ -342,6 +344,8 @@ class PlayHistoryStore(
         val f = mine.listenedFraction
         if (f != null && f > (theirs.listenedFraction ?: -1.0)) return true
         if (mine.tzOffsetMin != null && theirs.tzOffsetMin == null) return true
+        if (mine.listeningContext != null && theirs.listeningContext == null) return true
+        if (mine.carPlay != null && theirs.carPlay == null) return true
         return false
     }
 
