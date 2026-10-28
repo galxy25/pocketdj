@@ -10,7 +10,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import com.levi.pocketdj.data.history.PlayHistoryStore
-import com.levi.pocketdj.screens.settings.SectionHeader
+import com.levi.pocketdj.screens.settings.SettingsHeader
 import com.levi.pocketdj.screens.settings.SettingsCaption
 import com.levi.pocketdj.screens.settings.SettingsSections
 import com.levi.pocketdj.shell.SettingsSection
@@ -22,7 +22,7 @@ internal fun historySection() = SettingsSection(SettingsSections.HISTORY, 600) {
     val context = LocalContext.current
     var confirmClearHistory by remember { mutableStateOf(false) }
 
-    SectionHeader("History")
+    SettingsHeader("History")
     OutlinedButton(onClick = { confirmClearHistory = true }) {
         Text("Clear play history")
     }

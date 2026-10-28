@@ -21,7 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.applemusic.MusicKitAuth
-import com.levi.pocketdj.screens.settings.SectionHeader
+import com.levi.pocketdj.screens.settings.SettingsHeader
 import com.levi.pocketdj.screens.settings.SettingsCaption
 import com.levi.pocketdj.screens.settings.SettingsSections
 import com.levi.pocketdj.shell.SettingsSection
@@ -53,7 +53,7 @@ internal fun appleMusicSection() = SettingsSection(SettingsSections.APPLE_MUSIC,
         }
     }
 
-    SectionHeader("Apple Music")
+    SettingsHeader("Apple Music")
     val current = host.settings
     when {
         current == null -> Unit

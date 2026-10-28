@@ -58,7 +58,7 @@ object SettingsSections {
 // ---- Shared building blocks for sections -------------------------------------
 
 @Composable
-internal fun SectionHeader(text: String) {
+internal fun SettingsHeader(text: String) {
     Text(
         text,
         style = MaterialTheme.typography.titleSmall,
@@ -69,7 +69,7 @@ internal fun SectionHeader(text: String) {
 }
 
 @Composable
-internal fun SectionDivider() {
+internal fun SettingsDivider() {
     Spacer(Modifier.height(16.dp))
     HorizontalDivider()
     Spacer(Modifier.height(16.dp))

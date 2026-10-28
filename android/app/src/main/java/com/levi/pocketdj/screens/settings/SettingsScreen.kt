@@ -27,7 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 
 /**
  * Settings host: renders the section registry (decision D3) in order, separated by
- * dividers. The blocks themselves live in `sections/*.kt`; other areas contribute
+ * dividers. The blocks themselves live in the `sections` package; other areas contribute
  * sections from their sidecar graph and this file is never edited for them.
  */
 @Composable
@@ -60,7 +60,7 @@ fun SettingsScreen(
                 .padding(16.dp),
         ) {
             sections.forEachIndexed { index, section ->
-                if (index > 0) SectionDivider()
+                if (index > 0) SettingsDivider()
                 key(section.id) { section.content(this, host) }
             }
             Spacer(Modifier.height(24.dp))

@@ -18,7 +18,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.levi.pocketdj.screens.settings.SectionHeader
+import com.levi.pocketdj.screens.settings.SettingsHeader
 import com.levi.pocketdj.screens.settings.SettingsCaption
 import com.levi.pocketdj.screens.settings.SettingsSections
 import com.levi.pocketdj.shell.SettingsSection
@@ -29,7 +29,7 @@ internal fun catalogSection() = SettingsSection(SettingsSections.CATALOG, 200) {
     val catalogState by graph.catalogRepository.state.collectAsState()
     var confirmClearCache by remember { mutableStateOf(false) }
 
-    SectionHeader("Catalog")
+    SettingsHeader("Catalog")
     catalogState.catalog?.let { catalog ->
         SettingsCaption(
             "${catalog.albums.size} albums · ${catalog.songs.size} songs · " +

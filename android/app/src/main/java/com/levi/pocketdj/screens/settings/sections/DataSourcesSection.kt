@@ -30,7 +30,7 @@ import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.settings.AppSettings
 import com.levi.pocketdj.data.settings.SourceConfig
-import com.levi.pocketdj.screens.settings.SectionHeader
+import com.levi.pocketdj.screens.settings.SettingsHeader
 import com.levi.pocketdj.screens.settings.SettingsCaption
 import com.levi.pocketdj.screens.settings.SettingsSections
 import com.levi.pocketdj.shell.SettingsSection
@@ -39,7 +39,7 @@ import kotlinx.coroutines.launch
 
 internal fun dataSourcesSection() = SettingsSection(SettingsSections.DATA_SOURCES, 100) { host ->
     val graph = host.graph
-    SectionHeader("Data sources")
+    SettingsHeader("Data sources")
     val current = host.settings
     if (current == null) {
         CircularProgressIndicator(Modifier.padding(8.dp))
@@ -102,7 +102,7 @@ internal fun importServerSection() = SettingsSection(SettingsSections.IMPORT_SER
     var healthResult by remember { mutableStateOf<String?>(null) }
     var testingHealth by remember { mutableStateOf(false) }
 
-    SectionHeader("Import server")
+    SettingsHeader("Import server")
     SettingsCaption(
         "Blank by default — paste your rip server's URL (e.g. a Tailscale " +
             "Funnel address). Songs without a public rip stay browsable " +
@@ -187,7 +187,7 @@ internal fun jukeboxBrokerSection() = SettingsSection(SettingsSections.JUKEBOX_B
         }
     }
 
-    SectionHeader("Jukebox broker")
+    SettingsHeader("Jukebox broker")
     SettingsCaption("The request-line broker Jukebox Hero connects to. Blank = off.")
     OutlinedTextField(
         value = jukeboxUrl,

@@ -6,13 +6,13 @@ import androidx.compose.ui.platform.LocalContext
 import com.levi.pocketdj.data.config.Endpoints
 import com.levi.pocketdj.data.config.RemoteEndpoints
 import com.levi.pocketdj.screens.settings.AboutRow
-import com.levi.pocketdj.screens.settings.SectionHeader
+import com.levi.pocketdj.screens.settings.SettingsHeader
 import com.levi.pocketdj.screens.settings.SettingsSections
 import com.levi.pocketdj.shell.SettingsSection
 
 internal fun aboutSection() = SettingsSection(SettingsSections.ABOUT, 800) { _ ->
     val context = LocalContext.current
-    SectionHeader("About")
+    SettingsHeader("About")
     val versionName = remember {
         runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
