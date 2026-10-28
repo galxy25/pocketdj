@@ -1,5 +1,10 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.ui.dnd.DropHighlight
+import com.levi.pocketdj.ui.dnd.acceptSongsInto
+import com.levi.pocketdj.ui.dnd.clipboardHasSongs
+import com.levi.pocketdj.ui.dnd.pasteSongsInto
+import com.levi.pocketdj.ui.dnd.songDropTarget
 import com.levi.pocketdj.data.collections.SongTransfer
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.clickable
@@ -48,7 +53,6 @@ import com.levi.pocketdj.data.collections.PocketNote
 import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.ui.selection.SelectionBar
 import com.levi.pocketdj.ui.selection.SelectionScope
-import com.levi.pocketdj.ui.selection.SongTransfer
 import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.SongDetailSheet
@@ -144,6 +148,7 @@ fun PocketDetailScreen(
         SelectionScope(
             selection = rowSelection,
             scope = selScope,
+            onPaste = { t -> acceptSongsInto(store, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.POCKET, pocketId), t) },
             pruneKey = listOf(pocket.songIds, resolved),
             allIds = { selectableIds() },
             payload = {
@@ -151,7 +156,11 @@ fun PocketDetailScreen(
             },
         )
 
-        Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .songDropTarget(highlight = DropHighlight.LIST) { t -> acceptSongsInto(store, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.POCKET, pocketId), t) },
+        ) {
         SelectionBar(rowSelection, selScope, store)
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             item(key = "burn-bar") {
@@ -179,6 +188,11 @@ fun PocketDetailScreen(
                         Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     OverflowMenu { dismiss ->
+                        DropdownMenuItem(
+                            text = { Text("Paste songs") },
+                            enabled = clipboardHasSongs(context),
+                            onClick = { dismiss(); pasteSongsInto(context, store, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.POCKET, pocketId)) },
+                        )
                         CollectionSortFilterMenuItems(
                             sortState, dismiss,
                             onSort = { showSort = true },

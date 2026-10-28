@@ -1,5 +1,8 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.data.collections.AddTarget
+import com.levi.pocketdj.data.collections.SongDrop
+import com.levi.pocketdj.ui.dnd.songDropTarget
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -438,6 +441,11 @@ private fun LazyListScope.userTab(
                 onMove = { onMove(RowRef(RowRef.Kind.PLAYLIST, pl.id, pl.name)) },
                 onDelete = { onDelete(RowRef(RowRef.Kind.PLAYLIST, pl.id, pl.name)) },
                 onExport = onExport,
+                modifier = Modifier.songDropTarget { t ->
+                    SongDrop.accept(listOf(t), resolves = store::songResolves) {
+                        store.addSongs(it, AddTarget(AddTarget.Kind.PLAYLIST, pl.id))
+                    }
+                },
             )
         }
     }
@@ -453,6 +461,11 @@ private fun LazyListScope.userTab(
                 onAddToPlaylist = { onAddPocketToPlaylist(RowRef(RowRef.Kind.POCKET, p.id, p.name)) },
                 onDelete = { onDelete(RowRef(RowRef.Kind.POCKET, p.id, p.name)) },
                 onExport = onExport,
+                modifier = Modifier.songDropTarget { t ->
+                    SongDrop.accept(listOf(t), resolves = store::songResolves) {
+                        store.addSongs(it, AddTarget(AddTarget.Kind.POCKET, p.id))
+                    }
+                },
             )
         }
     }
@@ -617,9 +630,11 @@ private fun PlaylistRow(
     onMove: () -> Unit,
     onDelete: () -> Unit,
     onExport: (com.levi.pocketdj.screens.collections.ExportRequest) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val stats = store.statsForPlaylist(playlist.id)
     CollectionRow(
+        modifier = modifier,
         icon = Icons.AutoMirrored.Filled.QueueMusic,
         iconTint = MaterialTheme.colorScheme.primary,
         name = playlist.name,
@@ -653,9 +668,11 @@ private fun PocketRow(
     onAddToPlaylist: () -> Unit,
     onDelete: () -> Unit,
     onExport: (com.levi.pocketdj.screens.collections.ExportRequest) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val stats = store.statsForPocket(pocket.id)
     CollectionRow(
+        modifier = modifier,
         icon = Icons.Filled.Layers,
         iconTint = MaterialTheme.colorScheme.primary,
         name = pocket.name,

@@ -147,6 +147,14 @@ class CollectionsStore(
         runCatching { onStudioIdsAdded?.invoke(studio) }
     }
 
+    /**
+     * COL-6 drop/paste gate (iOS: `songsById[id] != nil || studioLookup?(id) != nil`): the id resolves in
+     * the live catalog, or a studio lookup backs it. Never a bare prefix test - foreign clipboard strings
+     * must not persist into the cloud-synced document.
+     */
+    fun songResolves(id: String): Boolean =
+        catalogProvider?.invoke()?.songsById?.containsKey(id) == true || studioInfo(id) != null
+
     /** Display info for a studio id (the row UI), or null for a non-studio / unknown id. */
     fun studioInfo(id: String): StudioItemInfo? =
         if (PlayResolver.isStudioId(id)) studioLookup?.info(id) else null

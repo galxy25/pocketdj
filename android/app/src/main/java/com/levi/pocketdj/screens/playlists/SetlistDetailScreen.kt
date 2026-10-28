@@ -48,7 +48,6 @@ import com.levi.pocketdj.data.collections.SetlistTrack
 import com.levi.pocketdj.data.collections.TrackSource
 import com.levi.pocketdj.ui.selection.SelectionBar
 import com.levi.pocketdj.ui.selection.SelectionScope
-import com.levi.pocketdj.ui.selection.SongTransfer
 import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.QueueOutcome

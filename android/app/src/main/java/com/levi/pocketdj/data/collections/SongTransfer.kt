@@ -38,6 +38,16 @@ data class SongTransfer(val songIds: List<String>, val text: String? = null) {
             return SongTransfer(ids, text)
         }
 
+        /**
+         * Rebuild a payload from a clip's (label, item texts) - the shape [writeSongTransfer]
+         * produces (text fallback first, JSON second). Foreign clips (wrong label, one item, bad
+         * JSON, oversize) yield null, so foreign clipboard text can never become songs.
+         */
+        fun fromClipTexts(label: CharSequence?, itemTexts: List<String>): SongTransfer? {
+            if (label?.toString() != CLIP_LABEL || itemTexts.size < 2) return null
+            return decode(itemTexts[1])
+        }
+
         /** Byte-capped decode boundary (null on oversize / malformed). */
         fun decode(json: String): SongTransfer? {
             if (json.toByteArray(Charsets.UTF_8).size > MAX_PAYLOAD_BYTES) return null
