@@ -14,4 +14,8 @@ object BurnSettings {
     const val NOT_RIPPED_NO_SERVER = "not ripped (no rip server)"
 
     const val FOLDER_UNAVAILABLE = "Couldn’t write to the burnt-music folder — check Settings"
+
+    const val FOLDER_FELL_BACK = "Burn folder unavailable — saved to app storage instead"
+    const val FOLDER_TITLE = "Burn folder"
+    const val FOLDER_APP_STORAGE = "App storage (default)"
 }

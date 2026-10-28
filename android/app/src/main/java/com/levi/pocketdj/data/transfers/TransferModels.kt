@@ -31,6 +31,8 @@ data class TransferRecord(
     val wasAppStorage: Boolean = true,
     /** iOS security-scoped bookmark (base64). Unused on Android; kept for doc compat. */
     val burnFolderBookmark: String? = null,
+    /** ADDITIVE (SVC-14): SAF tree URI captured at enqueue when [wasAppStorage] is false. */
+    val burnFolderTreeUri: String? = null,
     val expectedBytes: Long? = null,
     val manifestKey: String = "",
     val source: String = "digital",

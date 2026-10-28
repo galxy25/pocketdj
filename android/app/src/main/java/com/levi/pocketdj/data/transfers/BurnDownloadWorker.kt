@@ -15,7 +15,9 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.levi.pocketdj.data.burns.BurnDestinationResolver
 import com.levi.pocketdj.data.burns.BurnReconciler
+import com.levi.pocketdj.data.burns.BurnTree
 import com.levi.pocketdj.data.burns.isOutOfSpace
 import com.levi.pocketdj.di.AppGraph
 import java.io.File
@@ -133,6 +135,8 @@ class BurnDownloadRunner(
     private val maxAttempts: Int = 5,
     /** Fresh presigned URL for a record (the stored one may have expired while work was deferred). */
     private val refreshUrl: (suspend (TransferRecord) -> String?)? = null,
+    /** SVC-14: when set, the destination comes from the RECORD (captured at enqueue), never settings. */
+    private val resolver: BurnDestinationResolver? = null,
 ) {
     enum class Result { SUCCESS, RETRY }
 
@@ -143,8 +147,11 @@ class BurnDownloadRunner(
 
     suspend fun run(songId: String, url: String, attachBearer: Boolean, runAttemptCount: Int): Result {
         // No record => cancelled (Stop) or already settled: nothing safe to do.
-        val record = coordinator.record(songId) ?: return Result.SUCCESS
-        val dir = destDir(record)
+        val stored = coordinator.record(songId) ?: return Result.SUCCESS
+        val resolved = resolver?.resolve(stored)
+        // Finalize with the resolved record: an unavailable tree flips wasAppStorage to true.
+        val record = resolved?.record ?: stored
+        val dir = resolved?.dir ?: destDir(stored)
         if (dir == null) {
             coordinator.onFailed(record, "no writable burn folder")
             return Result.SUCCESS
@@ -162,13 +169,51 @@ class BurnDownloadRunner(
             return Result.SUCCESS
         }
         return when (outcome) {
-            is DownloadOutcome.Done -> { coordinator.onFinished(record, outcome.bytes); Result.SUCCESS }
+            is DownloadOutcome.Done -> {
+                val tree = resolved?.tree
+                if (tree == null) {
+                    coordinator.onFinished(record, outcome.bytes)
+                } else {
+                    val landed = withContext(Dispatchers.IO) { mirrorToTree(record, dir, tree) }
+                    if (landed) coordinator.onFinished(record, outcome.bytes)
+                    else coordinator.onFinished(
+                        record.copy(wasAppStorage = true),
+                        withContext(Dispatchers.IO) { moveToApp(record, dir, resolver!!.appDir) } ?: outcome.bytes,
+                    )
+                }
+                Result.SUCCESS
+            }
             is DownloadOutcome.Failed -> { coordinator.onFailed(record, outcome.message); Result.SUCCESS }
             is DownloadOutcome.Retry ->
                 if (runAttemptCount + 1 >= maxAttempts) {
                     coordinator.onFailed(record, outcome.message); Result.SUCCESS
                 } else Result.RETRY
         }
+    }
+
+    /** Copy the staged audio (+ sidecar) into the user's tree; false => caller falls back to app storage. */
+    private fun mirrorToTree(record: TransferRecord, stage: File, tree: BurnTree): Boolean = try {
+        val audio = File(stage, record.audioFileName)
+        // Analog album mp3 is shared by sibling songs: never re-copy it over an existing one.
+        if (!(record.source == "analog" && tree.exists(record.audioFileName))) tree.copyIn(record.audioFileName, audio)
+        if (record.sidecarFileName.isNotEmpty()) tree.copyIn(record.sidecarFileName, File(stage, record.sidecarFileName))
+        true
+    } catch (_: IOException) {
+        false
+    }
+
+    private fun moveToApp(record: TransferRecord, stage: File, app: File): Long? = try {
+        app.mkdirs()
+        val audio = File(stage, record.audioFileName)
+        val dest = File(app, record.audioFileName)
+        if (audio.isFile) Files.move(audio.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        if (record.sidecarFileName.isNotEmpty()) {
+            val sc = File(stage, record.sidecarFileName)
+            if (sc.isFile) Files.move(sc.toPath(), File(app, record.sidecarFileName).toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+        dest.length()
+    } catch (_: IOException) {
+        null
     }
 
     private suspend fun fetch(record: TransferRecord, dir: File, url: String, attachBearer: Boolean): DownloadOutcome {
@@ -234,7 +279,7 @@ class BurnDownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
         val rt = AppGraph.get(applicationContext).servicesGraph.transferRuntime()
         // A start from the background can be refused on API 31+; the download still proceeds.
         runCatching { setForeground(getForegroundInfo()) }
-        val r = BurnDownloadRunner(rt.coordinator, rt.http, rt.destDir, refreshUrl = rt.refreshUrl).run(songId, url, attach, runAttemptCount)
+        val r = BurnDownloadRunner(rt.coordinator, rt.http, rt.destDir, refreshUrl = rt.refreshUrl, resolver = rt.resolver).run(songId, url, attach, runAttemptCount)
         return if (r == BurnDownloadRunner.Result.RETRY) Result.retry() else Result.success()
     }
 
@@ -255,6 +300,7 @@ class TransferRuntime(
     val http: OkHttpClient,
     val destDir: (TransferRecord) -> File?,
     val refreshUrl: (suspend (TransferRecord) -> String?)? = null,
+    val resolver: BurnDestinationResolver? = null,
 )
 
 /** Real WorkManager-backed [TransferWork]. */

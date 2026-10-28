@@ -364,7 +364,7 @@ class BurnStore(
                                 TransferRecord(
                                     songId = song.id, kind = TransferKind.BURN,
                                     audioFileName = names.audio, sidecarFileName = names.sidecar, sidecarText = sidecarText,
-                                    wasAppStorage = !root.isUserFolder, manifestKey = entry.key,
+                                    wasAppStorage = !root.isUserFolder, burnFolderTreeUri = root.treeUri, manifestKey = entry.key,
                                     source = entry.source ?: "digital", bpm = entry.bpm, musicalKey = entry.musicalKey,
                                     camelot = entry.camelot, durationMs = entry.durationMs,
                                     startMs = if (isAnalog) entry.startMs else null, rippedAt = entry.rippedAt,
