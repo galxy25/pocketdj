@@ -189,7 +189,7 @@ class PlayHistoryStore(
             val i = events.indexOfLast { it.id == eventId }
             if (i < 0 || events[i].wasSkipped == true) return
             publish(events.toMutableList().also { it[i] = it[i].copy(wasSkipped = true) })
-            save()
+            saveSoon()
         }
     }
 
@@ -208,7 +208,7 @@ class PlayHistoryStore(
             val old = events[i].listenedFraction
             if (old != null && f < old + 0.01) return
             publish(events.toMutableList().also { it[i] = it[i].copy(listenedFraction = f) })
-            save()
+            saveSoon()
         }
     }
 
@@ -328,8 +328,38 @@ class PlayHistoryStore(
         )
     }
 
+    private val savePending = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Coalesced, off-caller-thread persist for the HOT outcome mutations (skip mark / listened
+     * fraction), which run on Main via the sequencer. The in-memory state is already published; a burst
+     * of calls collapses into one rewrite of the whole log on the writer thread.
+     */
+    private fun saveSoon() {
+        if (!savePending.compareAndSet(false, true)) return
+        try {
+            WRITER.execute {
+                savePending.set(false)
+                save()
+            }
+        } catch (_: Exception) {
+            savePending.set(false)
+            save()
+        }
+    }
+
+    /** Block until every queued persist has landed (tests, backgrounding). */
+    fun flush() {
+        val done = java.util.concurrent.CountDownLatch(1)
+        try {
+            WRITER.execute { done.countDown() }
+            done.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        } catch (_: Exception) {
+        }
+    }
+
     /** Atomic write: temp file + rename, ordered after every mutation. */
-    private fun save() {
+    private fun save() = synchronized(WRITE_LOCK) {
         salvageIfPending()
         val snapshot = _state.value
         val doc = PlayHistoryDocument(
@@ -363,17 +393,32 @@ class PlayHistoryStore(
         @Volatile
         private var instance: PlayHistoryStore? = null
 
+        private val WRITE_LOCK = Any()
+
+        /** One daemon writer shared by every store: persists are serialised and never touch Main. */
+        private val WRITER: java.util.concurrent.ExecutorService =
+            java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+                Thread(r, "play-history-writer").apply { isDaemon = true }
+            }
+
         /**
          * Process-wide store; the first call also starts collecting the core
          * play-event seam ([PlayEventBus]) so every play records regardless of
          * which screen is open. Call once at app launch (ideally off-main —
          * construction reads the log from disk).
          */
-        fun get(context: Context): PlayHistoryStore =
-            instance ?: synchronized(this) {
+        fun get(
+            context: Context,
+            onRecord: ((PlayEvent) -> Unit)? = null,
+            onResume: ((PlayEvent) -> Unit)? = null,
+        ): PlayHistoryStore =
+            (instance ?: synchronized(this) {
                 instance ?: PlayHistoryStore(
                     File(context.applicationContext.filesDir, FILE_NAME),
                 ).also { store ->
+                    // Hooks first, so the very first bus play is already seen by the skip tracker.
+                    if (onRecord != null) store.onRecord = onRecord
+                    if (onResume != null) store.onResume = onResume
                     instance = store
                     CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
                         PlayEventBus.events.collect { played ->
@@ -388,6 +433,9 @@ class PlayHistoryStore(
                         }
                     }
                 }
+            }).also { store ->
+                if (onRecord != null) store.onRecord = onRecord
+                if (onResume != null) store.onResume = onResume
             }
     }
 }

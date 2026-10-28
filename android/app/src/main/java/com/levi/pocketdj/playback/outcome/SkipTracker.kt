@@ -1,6 +1,9 @@
 package com.levi.pocketdj.playback.outcome
 
 import com.levi.pocketdj.data.edition.SongVariant
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Classifies each playback as SKIPPED or not - the one place the "<50 % played" rule lives (port of
@@ -39,6 +42,25 @@ class SkipTracker(
     )
 
     private val lock = Any()
+
+    /** Store/registry side effects queued under [lock] and run AFTER it is released (disk, fan-out). */
+    private val outbox = ArrayList<() -> Unit>()
+
+    private fun <T> locked(block: () -> T): T {
+        val result: T
+        val drained: List<() -> Unit>
+        synchronized(lock) {
+            result = block()
+            drained = if (outbox.isEmpty()) emptyList() else ArrayList(outbox).also { outbox.clear() }
+        }
+        for (job in drained) runCatching { job() }
+        return result
+    }
+
+    private val currentEventIdFlow = MutableStateFlow<String?>(null)
+
+    /** Observable [currentEventId] - the History view's live-row highlight. */
+    val currentEventIdState: StateFlow<String?> = currentEventIdFlow.asStateFlow()
     private var currentEventIdValue: String? = null
     private var currentSongIdValue: String? = null
     private var classified = false
@@ -47,11 +69,11 @@ class SkipTracker(
     private var previous: Previous? = null
 
     /** History event id of the CURRENTLY-PLAYING track - the History view's live-row key. */
-    val currentEventId: String? get() = synchronized(lock) { currentEventIdValue }
-    val currentSongId: String? get() = synchronized(lock) { currentSongIdValue }
+    val currentEventId: String? get() = locked { currentEventIdValue }
+    val currentSongId: String? get() = locked { currentSongIdValue }
 
     /** A new track started (the history event was just appended). */
-    fun noteTrackStarted(eventId: String, songId: String) = synchronized(lock) {
+    fun noteTrackStarted(eventId: String, songId: String) = locked {
         arm(eventId, songId, classified = false)
     }
 
@@ -60,7 +82,7 @@ class SkipTracker(
      * start with a fresh high-water mark, except an already-skipped event resumes CLASSIFIED so a second
      * skip of the same collapsed listen can't double the count.
      */
-    fun noteTrackResumed(eventId: String, songId: String, wasSkipped: Boolean) = synchronized(lock) {
+    fun noteTrackResumed(eventId: String, songId: String, wasSkipped: Boolean) = locked {
         arm(eventId, songId, classified = wasSkipped)
     }
 
@@ -69,28 +91,28 @@ class SkipTracker(
      * duplicate consecutive row). Reports pass 1's fraction, then re-zeroes the mark. Other ids are stale
      * signals racing a track change - dropped.
      */
-    fun noteTrackRestarted(songId: String) = synchronized(lock) {
-        val current = currentSongIdValue ?: return@synchronized
-        if (SongVariant.baseId(songId) != SongVariant.baseId(current)) return@synchronized
+    fun noteTrackRestarted(songId: String) = locked {
+        val current = currentSongIdValue ?: return@locked
+        if (SongVariant.baseId(songId) != SongVariant.baseId(current)) return@locked
         reportCurrentFraction()
         maxPositionMs = 0
     }
 
     /** The current track played through (natural end): its final fraction is 1.0. Never a skip. */
-    fun noteNaturalEnd(songId: String) = synchronized(lock) {
-        val current = currentSongIdValue ?: return@synchronized
-        val eid = currentEventIdValue ?: return@synchronized
-        if (SongVariant.baseId(songId) != SongVariant.baseId(current)) return@synchronized
+    fun noteNaturalEnd(songId: String) = locked {
+        val current = currentSongIdValue ?: return@locked
+        val eid = currentEventIdValue ?: return@locked
+        if (SongVariant.baseId(songId) != SongVariant.baseId(current)) return@locked
         report(eid, 1.0)
     }
 
     /** Report the current fraction WITHOUT classifying (background / stop exits that never advance away). */
-    fun checkpoint() = synchronized(lock) { reportCurrentFraction() }
+    fun checkpoint() = locked { reportCurrentFraction() }
 
     /** ~1 Hz position sample; samples for any OTHER song are dropped. */
-    fun samplePosition(songId: String, positionMs: Long, durationMs: Long?) = synchronized(lock) {
-        val current = currentSongIdValue ?: return@synchronized
-        if (SongVariant.baseId(songId) != SongVariant.baseId(current)) return@synchronized
+    fun samplePosition(songId: String, positionMs: Long, durationMs: Long?) = locked {
+        val current = currentSongIdValue ?: return@locked
+        if (SongVariant.baseId(songId) != SongVariant.baseId(current)) return@locked
         maxPositionMs = maxOf(maxPositionMs, positionMs)
         if (durationMs != null && durationMs > 0) lastKnownDurationMs = durationMs
     }
@@ -100,13 +122,13 @@ class SkipTracker(
      * Current track first; a non-matching report falls to the one-deep stash; anything else is dropped.
      */
     fun noteAdvanceAway(songId: String, positionMs: Long?, durationMs: Long?) {
-        val verdict = synchronized(lock) {
+        val verdict = locked {
             val base = SongVariant.baseId(songId)
             val cur = currentSongIdValue
             val curEid = currentEventIdValue
             val prev = previous
             if (cur != null && SongVariant.baseId(cur) == base) {
-                if (curEid == null || classified) return
+                if (curEid == null || classified) return@locked null
                 classified = true
                 classify(curEid, cur, maxOf(positionMs ?: 0L, maxPositionMs), durationMs ?: lastKnownDurationMs)
             } else if (prev != null && SongVariant.baseId(prev.songId) == base && !prev.classified) {
@@ -134,7 +156,8 @@ class SkipTracker(
     }
 
     private fun report(eventId: String, fraction: Double) {
-        noteListened(eventId, fraction.coerceIn(0.0, 1.0))
+        val f = fraction.coerceIn(0.0, 1.0)
+        outbox += { noteListened(eventId, f) }
     }
 
     private fun arm(eventId: String, songId: String, classified: Boolean) {
@@ -146,6 +169,7 @@ class SkipTracker(
             previous = Previous(eid, sid, this.classified, maxPositionMs, lastKnownDurationMs)
         }
         currentEventIdValue = eventId
+        currentEventIdFlow.value = eventId
         currentSongIdValue = songId
         this.classified = classified
         maxPositionMs = 0
@@ -158,8 +182,8 @@ class SkipTracker(
         report(eventId, fraction)
         val skipped = fraction < 0.5
         if (skipped) {
-            markSkipped(eventId)
-            noteSkip?.invoke(songId)
+            outbox += { markSkipped(eventId) }
+            noteSkip?.let { sink -> outbox += { sink(songId) } }
         }
         return Verdict(songId, skipped, fraction.coerceIn(0.0, 1.0))
     }

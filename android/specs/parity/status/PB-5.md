@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # PB-5 History outcomes
 
@@ -23,3 +23,19 @@ Tests: 1934 total, 0 failures (SkipTrackerTest 15, PlayEventCodecTest 6, PlayHis
 
 ## Questions for Levi
 None.
+
+## Review
+fixes applied
+
+- MAJOR HistoryScreen glyph + live row -> fixed: HistoryRow.outcome, OutcomeGlyph (skipped/completed/partial, unknown none), live row from `SkipTracker.currentEventIdState` StateFlow; HistoryRowsTest.rows_carryDerivedOutcome.
+- MAJOR persist on Main / inside lock -> fixed: markSkipped/noteListened publish synchronously, persist coalesced on a daemon writer (`flush()` for tests/background); SkipTracker queues store/fan-out sinks under the lock and runs them after release; tests sinks_runOutsideTheTrackerLock, outcomeMutations_persistOffCallerThread_andCoalesce.
+- MINOR noteAdvanceAway live guard -> fixed (`if (waitingForLive) return`).
+- MINOR duration source -> fixed: `cur.lengthMs` first, engine fallback, both for samples and advance-away (catalogLength_beatsMissingEngineDuration).
+- MINOR noteSkip sink -> not wired (no PlayCountService in Kotlin); gap recorded in status ledger row as a dependency.
+- MINOR ledger row -> fixed: PARTIAL with device-only/open items.
+- MINOR sequencer wiring tests -> fixed: SkipWiringTest (8): skipNext 10%/50%, previous/end/stop no mark, playNow, sampleAudible feed, repeat-one pass 2, unknown duration.
+- NIT hooks race -> fixed: `PlayHistoryStore.get(ctx, onRecord, onResume)` installs hooks before the bus collector starts.
+- NIT GAME icon -> fixed (SportsEsports).
+- NIT endRun spurious PlayStopped -> fixed (only when running).
+
+Tests: 1946 total, 0 failures (was 1934; +12). assembleDebug OK. Emulator not used.

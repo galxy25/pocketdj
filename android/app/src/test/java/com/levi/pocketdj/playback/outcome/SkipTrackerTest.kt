@@ -151,4 +151,34 @@ class SkipTrackerTest {
         assertNull(t.currentEventId)
         assertTrue(skipped.isEmpty())
     }
+
+    @Test
+    fun sinks_runOutsideTheTrackerLock() {
+        var holdsLock: Boolean? = null
+        lateinit var t: SkipTracker
+        t = SkipTracker(
+            markSkipped = { holdsLock = holdsTrackerLock(t) },
+            noteListened = { _, _ -> },
+        )
+        t.noteTrackStarted("e1", "a")
+        t.noteAdvanceAway("a", 10_000, 100_000)
+        assertEquals(false, holdsLock)
+    }
+
+    /** True if another thread can NOT take the tracker's monitor right now (i.e. we hold it). */
+    private fun holdsTrackerLock(t: SkipTracker): Boolean {
+        var blocked = true
+        val th = Thread { t.currentEventId; blocked = false }
+        th.start()
+        th.join(500)
+        return blocked && th.isAlive.also { if (it) th.interrupt() }
+    }
+
+    @Test
+    fun currentEventIdState_tracksArming() {
+        val t = SkipTracker({ }, { _, _ -> })
+        assertEquals(null, t.currentEventIdState.value)
+        t.noteTrackStarted("e1", "a")
+        assertEquals("e1", t.currentEventIdState.value)
+    }
 }

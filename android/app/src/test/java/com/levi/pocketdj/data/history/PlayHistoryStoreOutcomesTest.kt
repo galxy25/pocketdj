@@ -57,6 +57,7 @@ class PlayHistoryStoreOutcomesTest {
         s.markSkipped("nope")
         assertEquals(0, fired)
         assertTrue(s.events.single().wasSkipped == true)
+        s.flush()
         assertTrue(store().events.single().wasSkipped == true)
     }
 
@@ -72,6 +73,7 @@ class PlayHistoryStoreOutcomesTest {
         s.noteListened(e.id, 7.0)
         assertEquals(1.0, s.events.single().listenedFraction!!, 1e-9)
         s.noteListened(e.id, Double.NaN)
+        s.flush()
         assertEquals(1.0, store().events.single().listenedFraction!!, 1e-9)
     }
 
@@ -104,5 +106,18 @@ class PlayHistoryStoreOutcomesTest {
         val s = store()
         s.replaceAll(listOf(PlayEvent("l", "a", 1.0), PlayEvent("p", "a", 2.0, originInstallId = "peer")))
         assertEquals("l", s.lastLocalEvent("a")!!.id)
+    }
+
+    @Test fun outcomeMutations_persistOffCallerThread_andCoalesce() {
+        val s = store()
+        val e = s.record("a", nowMs = t0)!!
+        // The in-memory state is published synchronously; the file lands via flush().
+        s.markSkipped(e.id)
+        for (i in 1..50) s.noteListened(e.id, i / 100.0)
+        assertTrue(s.events.single().wasSkipped == true)
+        s.flush()
+        val reloaded = store().events.single()
+        assertTrue(reloaded.wasSkipped == true)
+        assertEquals(0.5, reloaded.listenedFraction!!, 1e-9)
     }
 }

@@ -3,6 +3,7 @@ package com.levi.pocketdj.screens.history
 import com.levi.pocketdj.data.activity.ActivityEvent
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.history.PlayEvent
+import com.levi.pocketdj.data.history.PlayOutcome
 import com.levi.pocketdj.data.history.PlaySource
 
 /**
@@ -21,6 +22,8 @@ internal data class HistoryRow(
     val playedAtMs: Long,
     /** Total plays of this song in the log (badge shows only when > 1). */
     val playCount: Int,
+    /** Derived completed / skipped / partial / unknown; UNKNOWN draws nothing. */
+    val outcome: PlayOutcome = PlayOutcome.UNKNOWN,
 )
 
 /**
@@ -66,6 +69,7 @@ internal fun buildRows(
             contextName = event.contextName,
             playedAtMs = playedAtMs,
             playCount = playCountOf(event.songId),
+            outcome = event.outcome,
         )
     }
 }

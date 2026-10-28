@@ -302,8 +302,10 @@ class SetlistSequencer(
     fun abandonRun() = endRun()
 
     private fun endRun() {
-        skipTracker?.checkpoint() // a stop / set end never advances away: still land the final fraction
-        PlayEventBus.emit(PlayStopped(queue.getOrNull(index)?.id))
+        if (running) {
+            skipTracker?.checkpoint() // a stop / set end never advances away: still land the final fraction
+            PlayEventBus.emit(PlayStopped(queue.getOrNull(index)?.id))
+        }
         endRipWindowSession("stop") // before the queue is cleared: the playing row is exempt
         cancelHealthTimers()
         endStartWindow("stop")
@@ -652,12 +654,15 @@ class SetlistSequencer(
 
     /** The listener moved away from the current track by their own action (never a natural end). */
     private fun noteAdvanceAway() {
+        // iOS guard: a "Next" off a live HLS capture is never a skip.
+        if (waitingForLive) return
         val cur = queue.getOrNull(index) ?: return
         val tracker = skipTracker
         if (tracker != null) {
             val e = engine
             val pos = if (e != null && e.hasLoadedItem) e.positionMs else null
-            val dur = if (e != null && e.hasLoadedItem) e.durationMs else null
+            // Catalog length first (growing-file / stream-through rips report no engine duration).
+            val dur = cur.lengthMs?.takeIf { it > 0 } ?: if (e != null && e.hasLoadedItem) e.durationMs else null
             PlayEventBus.emit(PlayAdvancedAway(cur.id, pos, dur))
             tracker.noteAdvanceAway(cur.id, pos, dur)
             return
@@ -1137,7 +1142,7 @@ class SetlistSequencer(
         if (e.hasLoadedItem && !pausedByCascade) {
             queue.getOrNull(index)?.let { cur ->
                 val pos = e.positionMs
-                val dur = e.durationMs
+                val dur = cur.lengthMs?.takeIf { it > 0 } ?: e.durationMs
                 skipTracker?.samplePosition(cur.id, pos, dur)
                 PlayEventBus.emit(PlayProgress(cur.id, pos, dur))
             }

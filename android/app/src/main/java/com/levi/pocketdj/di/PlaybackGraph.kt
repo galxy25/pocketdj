@@ -118,9 +118,11 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         seq.skipTracker = skipTracker
         // Off-main: the store reads the (up to 20k-row) log from disk on first touch.
         app.appScope.launch(kotlinx.coroutines.Dispatchers.Default) {
-            val history = PlayHistoryStore.get(app.appContext)
-            history.onRecord = { e -> skipTracker.noteTrackStarted(e.id, e.songId) }
-            history.onResume = { e -> skipTracker.noteTrackResumed(e.id, e.songId, e.wasSkipped == true) }
+            PlayHistoryStore.get(
+                app.appContext,
+                onRecord = { e -> skipTracker.noteTrackStarted(e.id, e.songId) },
+                onResume = { e -> skipTracker.noteTrackResumed(e.id, e.songId, e.wasSkipped == true) },
+            )
         }
         // PB-3 zero-dead-air: the KPI, the start runway, and the supervisor that ticks only while a run exists.
         seq.meter = deadAirMeter

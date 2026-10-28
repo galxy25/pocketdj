@@ -21,7 +21,10 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.Timelapse
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.HeartBroken
@@ -34,6 +37,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DateRangePicker
@@ -74,6 +78,7 @@ import com.levi.pocketdj.data.activity.CollectionActivityStore
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.history.PlayEvent
 import com.levi.pocketdj.data.history.PlayHistoryStore
+import com.levi.pocketdj.data.history.PlayOutcome
 import com.levi.pocketdj.data.history.PlaySource
 import com.levi.pocketdj.di.AppGraph
 import kotlinx.coroutines.Dispatchers
@@ -456,10 +461,15 @@ private fun PlaysTimeline(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PlayRow(row: HistoryRow, onClick: () -> Unit) {
+    val appContext = LocalContext.current
+    val liveId by remember { AppGraph.get(appContext).playbackGraph.skipTracker.currentEventIdState }
+        .collectAsState()
+    val isLive = liveId == row.eventId
     Surface(
         onClick = onClick,
-        color = MaterialTheme.colorScheme.background,
-        modifier = Modifier.fillMaxWidth(),
+        color = if (isLive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+        else MaterialTheme.colorScheme.background,
+        modifier = Modifier.fillMaxWidth().testTag("history-row-${row.eventId}" + if (isLive) "-live" else ""),
     ) {
         Row(
             modifier = Modifier
@@ -487,6 +497,7 @@ private fun PlayRow(row: HistoryRow, onClick: () -> Unit) {
                 Spacer(Modifier.height(2.dp))
                 ContextLine(row)
             }
+            OutcomeGlyph(row)
             if (row.playCount > 1) {
                 Spacer(Modifier.width(8.dp))
                 Surface(
@@ -504,6 +515,23 @@ private fun PlayRow(row: HistoryRow, onClick: () -> Unit) {
             }
         }
     }
+}
+
+/** Outcome glyph: skipped / completed / partial; UNKNOWN draws nothing (iOS parity). */
+@Composable
+private fun OutcomeGlyph(row: HistoryRow) {
+    val (icon, desc) = when (row.outcome) {
+        PlayOutcome.SKIPPED -> Icons.Filled.SkipNext to "skipped"
+        PlayOutcome.COMPLETED -> Icons.Filled.CheckCircle to "completed"
+        PlayOutcome.PARTIAL -> Icons.Filled.Timelapse to "partial"
+        PlayOutcome.UNKNOWN -> return
+    }
+    Icon(
+        imageVector = icon,
+        contentDescription = desc,
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 8.dp).size(18.dp).testTag("history-outcome-${row.eventId}-$desc"),
+    )
 }
 
 /** `[source-icon] {SourceLabel} · {contextName} · {relative time}` (§6 row). */
@@ -721,7 +749,7 @@ private fun PlaySource.icon(): ImageVector = when (this) {
     PlaySource.SETLIST -> Icons.AutoMirrored.Filled.QueueMusic
     PlaySource.MIX -> Icons.Filled.Tune
     PlaySource.ARTIST -> Icons.Filled.Mic
-    PlaySource.GAME -> Icons.Filled.Tune
+    PlaySource.GAME -> Icons.Filled.SportsEsports
 }
 
 /** Abbreviated relative time ("2 hr. ago") from an epoch-ms play time. */
