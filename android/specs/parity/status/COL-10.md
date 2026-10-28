@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # COL-10 Favorites store + toggle + Browse tri-state + activity wiring
 
@@ -23,3 +23,13 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+fixes applied
+- MAJOR Browse favorite filter/♥ dead in app -> fixed. BrowseScreen SONGS arm now runs `BrowseRows.songResults` (filterSort + applyFavorites against live `favoriteIds`); revision folded into produceState keys only while the filter is active (not in resultsKey). Tri-state control added to BrowseFilterSheet (song mode); FavoriteToggle on BrowseSongRow, SongDetailSheet, AlbumTrackRow; badge/empty-state counts kind-gated. Test: BrowseEngineTest.productionSongPipelineAppliesLiveFavoriteTriState.
+- MINOR ledger row -> fixed (PARTIAL with open items).
+- MINOR toggle/isFavorite stale + lock nesting -> fixed. toggle/isFavorite read the locked internal set; onChanged hooks queued inside withCoalescedSaves and fired after lock release. Tests: toggleTwiceInsideCoalescedBlockFlipsBack, onChangedFiresAfterLockReleasedForCoalescedToggles.
+- MINOR main-thread disk read in FavoriteToggle -> fixed: CollectionsGraph warms `favorites` on Dispatchers.IO at construction.
+- MINOR remapSongIds no caller -> recorded as follow-up (Android has no Discover/amrec_ supersede path; wire with CollectionsStore remap). Backup-zip/profile-sync registration also recorded as open in the ledger.
+- NIT dirty never cleared -> fixed: flushNow skips inline write when writer.appliedVersion >= saveVersion.
+- Tests: 829 run, 0 failures (+3 vs 826).

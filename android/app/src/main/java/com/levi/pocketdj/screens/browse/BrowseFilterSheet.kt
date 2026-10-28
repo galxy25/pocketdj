@@ -1,6 +1,11 @@
 package com.levi.pocketdj.screens.browse
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.ui.platform.testTag
+import com.levi.pocketdj.data.favorites.FavoriteFilter
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -44,6 +49,8 @@ fun BrowseFilterSheet(
     genreOptions: List<String>,
     camelotOptions: List<String>,
     sourceOptions: List<String>,
+    /** Song mode only (iOS): the ♥ tri-state is meaningless for albums/artists. */
+    showFavorite: Boolean = false,
     onFilters: (BrowseFilters) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -73,9 +80,28 @@ fun BrowseFilterSheet(
                         bpmMaxText = ""
                         onFilters(BrowseFilters())
                     },
-                    enabled = filters.activeCount > 0,
+                    enabled = filters.activeCount > 0 || filters.favoriteActive,
                 ) {
                     Text("Clear all")
+                }
+            }
+
+            if (showFavorite) {
+                SectionLabel("Favorites")
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    val opts = listOf(
+                        FavoriteFilter.ANY to "Any",
+                        FavoriteFilter.FAVORITE to "Favorites",
+                        FavoriteFilter.NOT to "Not favorites",
+                    )
+                    opts.forEachIndexed { i, (v, label) ->
+                        SegmentedButton(
+                            selected = filters.favorite == v,
+                            onClick = { onFilters(filters.withFavorite(v)) },
+                            shape = SegmentedButtonDefaults.itemShape(i, opts.size),
+                            modifier = Modifier.testTag("favorite-filter-${v.name.lowercase()}"),
+                        ) { Text(label) }
+                    }
                 }
             }
 

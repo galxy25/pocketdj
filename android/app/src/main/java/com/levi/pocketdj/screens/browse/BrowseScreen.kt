@@ -68,7 +68,9 @@ import com.levi.pocketdj.data.artists.ArtistCatalog
 import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.MergedCatalog
+import com.levi.pocketdj.data.favorites.FavoriteFilter
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.ui.FavoriteToggle
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
 import com.levi.pocketdj.screens.collections.AddToItem
 import kotlinx.coroutines.Dispatchers
@@ -190,6 +192,7 @@ fun BrowseScreen(
             genreOptions = rows?.genreOptions.orEmpty(),
             camelotOptions = rows?.camelotOptions.orEmpty(),
             sourceOptions = catalogState.catalog?.availableSources.orEmpty(),
+            showFavorite = kind == BrowseKind.SONGS,
             onFilters = { BrowseSession.filters.value = it },
             onDismiss = { showFilterSheet = false },
         )
@@ -268,7 +271,17 @@ private fun BrowseContent(
     // Filter + search + sort off the main thread; a new result set carries a new
     // version so the paging budget resets in the same frame (§13).
     var resultVersion by remember { mutableIntStateOf(0) }
-    val results by produceState(initialValue = BrowseResults(), resultsKey) {
+    // Favorite tri-state: applied at READ time against the live ♥ set, outside the memoized
+    // resultsKey. The revision is collected (and folded into the produceState keys) only while
+    // the filter is active, so ♥ taps elsewhere never recompute an inactive pipeline.
+    val favStore = remember { AppGraph.get(context).collectionsGraph.favorites }
+    val favoriteFilter = if (kind == BrowseKind.SONGS) filters.favorite else FavoriteFilter.ANY
+    val favRevision = if (favoriteFilter != FavoriteFilter.ANY) {
+        favStore.state.collectAsState().value.revision
+    } else {
+        -1
+    }
+    val results by produceState(initialValue = BrowseResults(), resultsKey, favoriteFilter, favRevision) {
         value = withContext(Dispatchers.Default) {
             // Pipeline (§4.1): base rows → text query → filter clauses → sort,
             // all in BrowseEngine.filterSort. A ~90k-row locale-aware pass on
@@ -291,8 +304,9 @@ private fun BrowseContent(
                     version = ++resultVersion,
                 )
                 BrowseKind.SONGS -> BrowseResults(
-                    songs = BrowseEngine.filterSort(
-                        rows.songRows, rows.songKeys, debouncedQuery, clauses, sortKeys, playCounts,
+                    songs = rows.songResults(
+                        debouncedQuery, filters.copy(favorite = favoriteFilter), sortKeys, playCounts,
+                        favStore.favoriteIds,
                     ),
                     version = ++resultVersion,
                 )
@@ -369,14 +383,14 @@ private fun BrowseContent(
             }
             BadgedBox(
                 badge = {
-                    if (filters.activeCount > 0) Badge { Text(filters.activeCount.toString()) }
+                    if (filters.activeCount(kind) > 0) Badge { Text(filters.activeCount(kind).toString()) }
                 },
             ) {
                 IconButton(onClick = onShowFilters) {
                     Icon(
                         Icons.Filled.FilterList,
                         contentDescription = "Filters",
-                        tint = if (filters.activeCount > 0) {
+                        tint = if (filters.activeCount(kind) > 0) {
                             MaterialTheme.colorScheme.primary
                         } else {
                             MaterialTheme.colorScheme.onSurface
@@ -463,7 +477,7 @@ private fun BrowseContent(
         // result set never renders the previous set's large prefix (§13).
         var pageCount by remember(results.version) { mutableIntStateOf(1) }
         val emptyMessage = when {
-            query.isNotBlank() || filters.activeCount > 0 -> "No matches — adjust search or filters"
+            query.isNotBlank() || filters.activeCount(kind) > 0 -> "No matches — adjust search or filters"
             else -> "Nothing here yet — pull the catalog from Settings"
         }
 
@@ -809,6 +823,7 @@ fun BrowseSongRow(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        FavoriteToggle(songId = row.song.id, appleMusicId = row.song.appleMusicId, iconSize = 18.dp)
         when {
             preparingId == row.song.id -> {
                 Spacer(Modifier.width(10.dp))

@@ -57,7 +57,8 @@ class FavoritesStore(
 
     // ---- Reads -------------------------------------------------------------------------
 
-    override fun isFavorite(songId: String): Boolean = _state.value.favoriteIds.contains(songId)
+    /** Reads the internal set under the lock, so it is never stale inside a coalesced block. */
+    override fun isFavorite(songId: String): Boolean = synchronized(lock) { favoriteIdSet.contains(songId) }
 
     /** The explicit entry (favorite OR tombstone); null = never touched. */
     fun entry(songId: String): FavoriteEntry? = synchronized(lock) { byId[songId] }
@@ -75,28 +76,48 @@ class FavoritesStore(
     // ---- User writes -------------------------------------------------------------------
 
     override fun toggle(songId: String, appleMusicId: String?): Boolean {
-        val next = !isFavorite(songId)
-        set(songId, next, appleMusicId)
+        val (next, entry) = synchronized(lock) {
+            val n = !favoriteIdSet.contains(songId)
+            n to setLocked(songId, n, appleMusicId)
+        }
+        entry?.let { fire(it) }
         return next
     }
 
     /** Idempotent: a no-op write refreshes nothing and fires nothing. */
     fun set(songId: String, favorited: Boolean, appleMusicId: String?) {
-        if (songId.isEmpty()) return
-        val entry = synchronized(lock) {
-            val existing = byId[songId]
-            if (existing != null && existing.favorited == favorited &&
-                existing.appleMusicId == (appleMusicId ?: existing.appleMusicId)
-            ) {
-                return
-            }
-            // The AM id is a property of the SONG — keep a known one when the caller has none.
-            val e = FavoriteEntry(songId, favorited, clock(), appleMusicId ?: existing?.appleMusicId, null)
-            apply(e)
-            save()
-            e
+        val entry = synchronized(lock) { setLocked(songId, favorited, appleMusicId) }
+        entry?.let { fire(it) }
+    }
+
+    /**
+     * Mutation under [lock]. Returns the entry owed an [onChanged] call, or null for a no-op
+     * (or when inside a coalesced block, where the call is queued until the lock is released).
+     */
+    private fun setLocked(songId: String, favorited: Boolean, appleMusicId: String?): FavoriteEntry? {
+        if (songId.isEmpty()) return null
+        val existing = byId[songId]
+        if (existing != null && existing.favorited == favorited &&
+            existing.appleMusicId == (appleMusicId ?: existing.appleMusicId)
+        ) {
+            return null
         }
-        onChanged?.invoke(entry)
+        // The AM id is a property of the SONG — keep a known one when the caller has none.
+        val e = FavoriteEntry(songId, favorited, clock(), appleMusicId ?: existing?.appleMusicId, null)
+        apply(e)
+        save()
+        if (saveDepth > 0) {
+            // Never run the hook (activity.record takes another store's lock) under our lock.
+            pendingFires.add(e)
+            return null
+        }
+        return e
+    }
+
+    private val pendingFires = ArrayList<FavoriteEntry>()
+
+    private fun fire(e: FavoriteEntry) {
+        onChanged?.invoke(e)
     }
 
     /** Guarded on the toggle timestamp: a re-toggle while a push was in flight stays pending. */
@@ -216,7 +237,15 @@ class FavoritesStore(
     private var saveMissed = false
 
     /** Run [body], collapsing every save/publish it triggers into one trailing write. */
-    fun <T> withCoalescedSaves(body: () -> T): T = synchronized(lock) { coalesced(body) }
+    fun <T> withCoalescedSaves(body: () -> T): T {
+        val result = synchronized(lock) { coalesced(body) }
+        // Queued user-toggle hooks fire AFTER the lock is released (no lock nesting).
+        val toFire = synchronized(lock) {
+            if (saveDepth == 0 && pendingFires.isNotEmpty()) pendingFires.toList().also { pendingFires.clear() } else emptyList()
+        }
+        toFire.forEach(::fire)
+        return result
+    }
 
     private fun <T> coalesced(body: () -> T): T {
         saveDepth++
@@ -237,6 +266,8 @@ class FavoritesStore(
         synchronized(lock) {
             if (!dirty) return
             dirty = false
+            // The queued background write already landed: nothing newer to write inline.
+            if (writer.appliedVersion >= saveVersion) return
             val doc = snapshotDoc()
             writer.flushNow(++saveVersion) { json.encodeToString(FavoritesDocument.serializer(), doc) }
         }

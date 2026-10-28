@@ -172,4 +172,38 @@ class FavoritesStoreTest {
         s.markPushed("a", pushedAtMs = 2_000.0)
         assertTrue(s.pendingPushes.isEmpty())
     }
+
+    @Test
+    fun toggleTwiceInsideCoalescedBlockFlipsBack() {
+        val s = store()
+        s.withCoalescedSaves {
+            s.toggle("a", null)
+            assertTrue(s.isFavorite("a")) // not stale inside the block
+            s.toggle("a", null)
+            assertFalse(s.isFavorite("a"))
+        }
+        assertFalse(s.favoriteIds.contains("a"))
+        assertFalse(s.entry("a")!!.favorited)
+    }
+
+    @Test
+    fun onChangedFiresAfterLockReleasedForCoalescedToggles() {
+        val s = store()
+        val seen = ArrayList<Pair<String, Boolean>>()
+        var lockFreeInHook = true
+        s.onChanged = { e ->
+            // A second thread can read (takes the store lock) only if the hook runs unlocked.
+            val t = Thread { s.isFavorite("x") }
+            t.start(); t.join(2_000)
+            if (t.isAlive) lockFreeInHook = false
+            seen.add(e.songId to e.favorited)
+        }
+        s.withCoalescedSaves {
+            s.toggle("a", null)
+            s.toggle("b", null)
+            assertTrue(seen.isEmpty()) // queued, not fired under the lock
+        }
+        assertEquals(listOf("a" to true, "b" to true), seen)
+        assertTrue(lockFreeInHook)
+    }
 }

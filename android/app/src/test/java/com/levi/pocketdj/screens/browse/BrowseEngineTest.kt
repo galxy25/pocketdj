@@ -1,5 +1,7 @@
 package com.levi.pocketdj.screens.browse
 
+import com.levi.pocketdj.data.favorites.FavoriteFilter
+
 import com.levi.pocketdj.data.catalog.IndexAlbum
 import com.levi.pocketdj.data.catalog.IndexJson
 import com.levi.pocketdj.data.catalog.IndexManifest
@@ -122,6 +124,25 @@ class BrowseEngineTest {
         val filters = BrowseFilters().withSources(setOf("My Digital"))
         assertEquals(listOf("alb_2"), rows.filteredAlbums("", filters).map { it.album.id })
         assertEquals(listOf("sng_3"), rows.filteredSongs("", filters).map { it.song.id })
+    }
+
+    @Test
+    fun productionSongPipelineAppliesLiveFavoriteTriState() {
+        val rows = BrowseRows(catalog())
+        val all = rows.songResults("", BrowseFilters(), emptyList(), emptyMap(), emptySet()).map { it.song.id }
+        val fav = BrowseFilters().withFavorite(FavoriteFilter.FAVORITE)
+        val not = BrowseFilters().withFavorite(FavoriteFilter.NOT)
+        val live = setOf("sng_2")
+        assertEquals(listOf("sng_2"), rows.songResults("", fav, emptyList(), emptyMap(), live).map { it.song.id })
+        assertEquals(all - "sng_2", rows.songResults("", not, emptyList(), emptyMap(), live).map { it.song.id })
+        // Live set changes are honoured with no change to the filters (read-time layer).
+        assertEquals(emptyList<String>(), rows.songResults("", fav, emptyList(), emptyMap(), emptySet()).map { it.song.id })
+        // Composes with a clause filter (AND).
+        val both = BrowseFilters().withGenres(setOf("hip-hop")).withFavorite(FavoriteFilter.FAVORITE)
+        assertEquals(listOf("sng_2"), rows.songResults("", both, emptyList(), emptyMap(), live + "sng_3").map { it.song.id })
+        // Transient: the tri-state never reaches the persisted snapshot key and counts only in song mode.
+        assertEquals(1, fav.activeCount(BrowseKind.SONGS))
+        assertEquals(0, fav.activeCount(BrowseKind.ALBUMS))
     }
 
     @Test

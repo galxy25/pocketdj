@@ -396,7 +396,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 |---|---|---|---|
 | COL-1 — Collections + activity schema parity (additive iOS fields, lenient kinds, iOS fixture rou… | 1 | DONE (JVM) | Emulator adb-push round-trip not run (integrator). amPlaylistId NOT persisted, matches iOS CodingKeys (roadmap deviation, owner decision pending). |
 | COL-2 — Store batch choke points + shared VersionedJsonWriter (off-main, version-ordered, invalid… | 2 | Planned | — |
-| COL-10 — Favorites store + ♥ toggle + Browse favorite tri-state filter model + heart/unheart activ… | 3 | Planned | — |
+| COL-10 — Favorites store + ♥ toggle + Browse favorite tri-state filter model + heart/unheart activ… | 3 | PARTIAL (JVM) | Browse ♥ + tri-state filter (song mode) wired in BrowseScreen/SongDetailSheet/AlbumDetailScreen; emulator drive not run (integrator). Open: backup-zip + profile-sync registration of `pocketdj-favorites.json`; `favorites.remapSongIds` has no caller (no Discover/amrec_ supersede path on Android yet — wire alongside CollectionsStore remap). |
 | COL-4 — AddToActions + Add-to sheet parity (Suggested + Recent, pockets A–Z, playlists A–Z, More…… | 5 | Planned | — |
 | COL-3 — SongDuplicateJudge (deterministic tiers) + Remove duplicates (collection, all collections… | 6 | Planned | — |
 | COL-5 — Multi-select: RowSelection + SelectableRow + SelectionBar on Browse and every collection … | 9 | Planned | — |

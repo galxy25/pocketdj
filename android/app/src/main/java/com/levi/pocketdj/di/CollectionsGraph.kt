@@ -7,6 +7,8 @@ import com.levi.pocketdj.data.store.VersionedJsonWriter
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * Sidecar graph for the collections area (decision D3). Contributes the ON_STOP flush
@@ -52,4 +54,10 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             favorites.flushNow()
         },
     )
+
+    init {
+        // Warm the favorites doc off-main: the lazy constructor does a synchronous file read +
+        // JSON decode that would otherwise land inside the first ♥ row's composition.
+        app.appScope.launch(Dispatchers.IO) { favorites }
+    }
 }

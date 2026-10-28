@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.ui.FavoriteToggle
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
 import com.levi.pocketdj.screens.collections.AddToItem
 import java.util.Locale
@@ -136,7 +137,9 @@ fun SongDetailSheet(
                         },
                     )
                 }
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(4.dp))
+                FavoriteToggle(songId = songId, appleMusicId = song.appleMusicId)
+                Spacer(Modifier.width(4.dp))
                 // Add-to-Collection launch point (specs/playlists-ui.md §8.1).
                 FilledTonalIconButton(
                     onClick = { showAddSheet = true },

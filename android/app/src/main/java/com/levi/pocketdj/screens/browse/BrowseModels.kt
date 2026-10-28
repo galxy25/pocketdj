@@ -276,3 +276,19 @@ object BrowseSession {
 
     private const val WRITE_DEBOUNCE_MS = 400L
 }
+
+/**
+ * The production SONGS pipeline (what BrowseScreen runs): query → clauses → sort, then the
+ * read-time ♥ layer against the LIVE [favoriteIds].
+ */
+fun BrowseRows.songResults(
+    query: String,
+    filters: BrowseFilters,
+    sortKeys: List<SortKey>,
+    playCounts: Map<String, Int>,
+    favoriteIds: Set<String>,
+): List<SongRow> = BrowseEngine.applyFavorites(
+    BrowseEngine.filterSort(songRows, songKeys, query, filters.clauses, sortKeys, playCounts),
+    filters.favorite,
+    favoriteIds,
+)
