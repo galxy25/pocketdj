@@ -28,6 +28,8 @@ class StreamSink(
     private val client: OkHttpClient,
     private val scope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Client for low-priority transfers (stem parts); its dispatcher caps concurrency so song bytes win the link. */
+    private val lowPriorityClient: OkHttpClient? = null,
     private val onEvent: (Event) -> Unit,
 ) {
     sealed interface Event {
@@ -52,9 +54,9 @@ class StreamSink(
     private val transfers = ConcurrentHashMap<Int, Transfer>()
 
     /** Begin (or resume at [offset]) a GET of [url] into [file]. [file] must already exist for offset > 0. */
-    fun start(task: Int, url: String, file: File, offset: Long) {
+    fun start(task: Int, url: String, file: File, offset: Long, lowPriority: Boolean = false) {
         lateinit var transfer: Transfer
-        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) { run(task, url, file, offset, transfer) }
+        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) { run(task, url, file, offset, transfer, lowPriority) }
         transfer = Transfer(job)
         transfers[task] = transfer
         job.start()
@@ -73,7 +75,7 @@ class StreamSink(
         if (transfers.containsKey(task)) onEvent(event)
     }
 
-    private suspend fun run(task: Int, url: String, file: File, offset: Long, transfer: Transfer) {
+    private suspend fun run(task: Int, url: String, file: File, offset: Long, transfer: Transfer, lowPriority: Boolean) {
         var total = offset
         var unreported = 0L
         var lastReport = Long.MIN_VALUE / 2
@@ -82,7 +84,7 @@ class StreamSink(
             val req = Request.Builder().url(url).apply {
                 if (offset > 0) header("Range", "bytes=$offset-")
             }.build()
-            val call = client.newCall(req)
+            val call = ((if (lowPriority) lowPriorityClient else null) ?: client).newCall(req)
             transfer.call = call
             call.execute().use { resp ->
                 val status = resp.code

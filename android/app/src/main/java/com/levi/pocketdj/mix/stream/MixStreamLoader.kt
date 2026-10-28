@@ -117,6 +117,7 @@ class MixStreamLoader(
      */
     class StemSet internal constructor(val songId: String, val parts: Map<String, Stream>) {
         @Volatile var adopted = false; internal set
+        @Volatile internal var adopting = false
         val isComplete: Boolean get() = parts.isNotEmpty() && parts.values.all { it.isComplete }
         val failed: Boolean get() = parts.values.any { it.failed }
     }
@@ -178,14 +179,22 @@ class MixStreamLoader(
     init {
         // Partials from a previous launch are never resumed (a restored deck re-streams via the
         // normal load path) - sweep them so the cache can't grow across launches.
-        directory.deleteRecursively()
+        // Only the files present NOW are swept, and off the calling thread (it is usually main);
+        // anything this launch creates afterwards is never in the snapshot.
+        val stale = directory.listFiles()?.toList().orEmpty()
         directory.mkdirs()
+        if (stale.isNotEmpty()) scope.launch { stale.forEach { it.deleteRecursively() } }
         val client = (http ?: OkHttpClient()).newBuilder()
             .readTimeout(REQUEST_TIMEOUT_S, TimeUnit.SECONDS)
             .connectTimeout(REQUEST_TIMEOUT_S, TimeUnit.SECONDS)
             .cache(null)
             .build()
-        sink = StreamSink(client, scope, clock) { e -> lock.withLock { handle(e) } }
+        // Substitute for iOS URLSessionTask.lowPriority on stem parts: a separate dispatcher with
+        // a small cap, so the on-air deck's song streams are not starved by four stem transfers.
+        val stemClient = client.newBuilder()
+            .dispatcher(okhttp3.Dispatcher().apply { maxRequests = STEM_MAX_REQUESTS; maxRequestsPerHost = STEM_MAX_REQUESTS })
+            .build()
+        sink = StreamSink(client, scope, clock, lowPriorityClient = stemClient) { e -> lock.withLock { handle(e) } }
     }
 
     // ---- queries --------------------------------------------------------------------------------
@@ -284,7 +293,7 @@ class MixStreamLoader(
         stemSetMap[songId]?.let { set ->
             if (!set.failed) {
                 val files = set.parts.values.map { it.finalFile ?: it.file }
-                if (!set.isComplete || files.all { it.exists() }) {
+                if (!set.isComplete || set.adopting || files.all { it.exists() }) {
                     stemOwners.getOrPut(songId) { mutableSetOf() }.add(owner)
                     return set
                 }
@@ -344,11 +353,21 @@ class MixStreamLoader(
     /** All four parts landed: MOVE them into the burn folder as ordinary burned stems. */
     private fun adoptStemsIfComplete(base: String) {
         val set = stemSetMap[base] ?: return
-        if (!set.isComplete || set.adopted) return
-        val moved = adopter.adoptStems(base, set.parts.mapValues { it.value.file }) ?: return
-        for ((name, f) in moved) set.parts[name]?.finalFile = f
-        set.adopted = true
-        telemetry("stems done $base")
+        if (!set.isComplete || set.adopted || set.adopting) return
+        set.adopting = true
+        val files = set.parts.mapValues { it.value.file }
+        // The move can be a cross-filesystem copy of four files: never under the loader lock.
+        scope.launch {
+            val moved = runCatching { adopter.adoptStems(base, files) }.getOrNull()
+            lock.withLock {
+                set.adopting = false
+                if (moved == null || stemSetMap[base] !== set) return@withLock
+                for ((name, f) in moved) set.parts[name]?.finalFile = f
+                set.adopted = true
+                telemetry("stems done $base")
+                stemProgressed(base)
+            }
+        }
     }
 
     /** Cancel streams (collection run cancelled). Deck-pinned songs are left alone. */
@@ -372,7 +391,7 @@ class MixStreamLoader(
         if (offset == 0L) s.file.writeBytes(ByteArray(0))
         byTask[id] = s.songId
         s.taskId = id
-        sink.start(id, url, s.file, offset)
+        sink.start(id, url, s.file, offset, lowPriority = stemSongId(s.songId) != null)
     }
 
     private fun cancelTransfer(s: Stream) {
@@ -480,10 +499,20 @@ class MixStreamLoader(
     }
 
     private fun complete(s: Stream) {
+        if (!s.adoptable) { finishComplete(s, null); return }
+        // Adoption moves (possibly copies, across filesystems) the whole file: do it off the lock
+        // and the main thread. The stream reads as still-streaming (all bytes landed, file in
+        // place) until the move is done, so no reader sees a half-moved path.
+        scope.launch {
+            val moved = runCatching { adopter.adoptFile(s.songId, s.title, s.artist, s.file) }.getOrNull()
+            lock.withLock { if (streamMap[s.songId] === s) finishComplete(s, moved) }
+        }
+    }
+
+    private fun finishComplete(s: Stream, moved: File?) {
         s.isComplete = true
-        s.finalFile = s.file
         // Adopted: the file now lives in the burn folder.
-        if (s.adoptable) adopter.adoptFile(s.songId, s.title, s.artist, s.file)?.let { s.finalFile = it }
+        s.finalFile = moved ?: s.file
         val secs = (clock() - s.startedAt) / 1000.0
         telemetry("done ${s.songId} bytes=${s.bytesReceived} secs=${"%.1f".format(secs)} adopted=${if (s.adopted) 1 else 0}")
         stemSongId(s.songId)?.let { adoptStemsIfComplete(it) }
@@ -563,6 +592,7 @@ class MixStreamLoader(
         const val DEFAULT_FAILURE_COOLDOWN_MS = 120_000L
         const val DEFAULT_SERVER_DOWN_COOLDOWN_MS = 60_000L
         const val REQUEST_TIMEOUT_S = 20L
+        const val STEM_MAX_REQUESTS = 2
         const val PRESIGN_TTL_S = 21_600
 
         const val MIX_STEM_OWNER = "mix"

@@ -274,13 +274,39 @@ class MixStreamLoaderTest {
         assertNotNull(loader.stream("a")); assertNull(loader.stream("b"))
     }
 
+    @Test fun slowAdoptionDoesNotHoldTheLoaderLock() {
+        val body = digital("a", 20_000)
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val real = BurnStoreAdopter(burns)
+        val slow = object : StreamAdopter {
+            override fun adoptFile(songId: String, title: String, artist: String, from: File): File? {
+                entered.countDown(); gate.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                return real.adoptFile(songId, title, artist, from)
+            }
+            override fun adoptStems(songId: String, files: Map<String, File>) = real.adoptStems(songId, files)
+        }
+        val l = MixStreamLoader(rips = fakeRips, adopter = slow, directory = File(rig.dir, "cache/slow"), network = net, scope = scope)
+        val s = l.open("a", "A", "x")!!
+        assertTrue("adoption started", entered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        // Adoption is parked: every query must still answer immediately (they take the same lock).
+        val t0 = System.nanoTime()
+        l.canStream("a"); l.stream("a"); l.isStreaming("a"); l.streams; l.open("a", "A", "x")
+        assertTrue("queries blocked on adoption", (System.nanoTime() - t0) / 1_000_000 < 1_000)
+        assertFalse(s.isComplete)
+        gate.countDown()
+        waitUntil(what = "complete") { s.isComplete }
+        assertTrue(s.adopted)
+        assertArrayEquals(body, s.finalFile!!.readBytes())
+    }
+
     // ---- launch sweep ---------------------------------------------------------------------------------
 
     @Test fun constructionSweepsPartialsFromAPreviousLaunch() {
         val junk = File(cacheDir, "old-partial.mp3").apply { writeBytes(ByteArray(10)) }
         assertTrue(junk.exists())
         MixStreamLoader(rips = fakeRips, adopter = BurnStoreAdopter(burns), directory = cacheDir, scope = scope)
-        assertFalse(junk.exists())
+        waitUntil(what = "sweep") { !junk.exists() }
         assertTrue(cacheDir.isDirectory)
     }
 

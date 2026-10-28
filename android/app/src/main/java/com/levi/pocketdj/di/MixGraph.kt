@@ -52,13 +52,16 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val ripsRepo = app.ripsRepository
         val client = app.ripServerClient
         val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        // hasServer is read synchronously on every canStream; the real check is a suspend settings
-        // read, so keep the last answer and refresh it in the background (false until first answer).
-        val serverConfigured = java.util.concurrent.atomic.AtomicBoolean(false)
-        fun refreshServer() { ioScope.launch { serverConfigured.set(runCatching { client.isConfigured() }.getOrDefault(false)) } }
-        refreshServer()
+        // hasServer is read synchronously on every canStream, but the real check is a suspend
+        // settings read. Seed it ONCE before the loader exists (a one-off, tiny blocking read on
+        // IO) so the first canStream after a cold start is already correct, then keep it current
+        // with a throttled background refresh (not a coroutine per call).
+        val flag = com.levi.pocketdj.mix.stream.SeededFlag(
+            read = { client.isConfigured() }, scope = ioScope,
+            initial = runCatching { kotlinx.coroutines.runBlocking(Dispatchers.IO) { client.isConfigured() } }.getOrDefault(false),
+        )
         val rips = object : MixStreamRips {
-            override fun hasServer(): Boolean { refreshServer(); return serverConfigured.get() }
+            override fun hasServer(): Boolean = flag.get()
             override fun entry(songId: String) = ripsRepo.entry(songId)
             override suspend fun presignedUrl(songId: String, ttlSeconds: Int): String? =
                 if (client.isConfigured()) client.presign(songId, ttlSeconds) else null
