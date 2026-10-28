@@ -40,13 +40,17 @@ class StemPlayerSyncTest {
         assertTrue(what, cond())
     }
 
-    /** Render until the mix goes non-zero (all voices started on one frame); returns that block's first sample. */
+    /** Render until the mix goes non-zero (all voices started on one frame); returns the settled mix level. */
     private fun firstAudible(): Float {
         val r = sink!!
         repeat(1000) {
             val out = r.renderFrames(512)
             val i = OfflineRenderer.firstNonZeroFrame(out)
-            if (i >= 0) return out[i * 2]
+            if (i >= 0) {
+                // gain ramps are linear across one block: read the settled level a few blocks later
+                val later = r.renderFrames(4096)
+                return later[later.size - 2]
+            }
             Thread.sleep(2)
         }
         error("never audible")

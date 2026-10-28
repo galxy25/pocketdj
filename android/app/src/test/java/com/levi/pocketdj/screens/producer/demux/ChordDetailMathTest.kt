@@ -69,7 +69,7 @@ class ChordDetailMathTest {
         assertEquals("1-3-3-2-1-1", f.tabText)
         val b = DemuxChordSegment(11, true, 0, 1)                // Bm barre at 7
         assertEquals(7, ChordStaffMath.boxBase(b.guitarFrets))
-        assertEquals(0, ChordStaffMath.boxRow(7, 7)); assertEquals(1, ChordStaffMath.boxRow(9, 7))
+        assertEquals(0, ChordStaffMath.boxRow(7, 7)); assertEquals(2, ChordStaffMath.boxRow(9, 7))
         assertNull(ChordStaffMath.boxRow(14, 7))                 // outside the 5-fret window -> not drawn
     }
 
