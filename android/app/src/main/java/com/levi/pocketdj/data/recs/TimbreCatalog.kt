@@ -9,7 +9,6 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
-import kotlinx.serialization.json.intOrNull
 
 /**
  * Port of iOS `TimbreCatalog`: song id → 14-axis vector from the published `timbre.json`
@@ -32,7 +31,7 @@ class TimbreCatalog(
             val m = memo
             if (m != null && nowMs - fetchedAtMs < REFRESH_INTERVAL_MS) return@withLock m
             val result = try {
-                service.loadDocument(urlProvider(), ::decode)
+                service.loadDocument(urlProvider(), warm = m != null, decode = ::decode)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -46,7 +45,9 @@ class TimbreCatalog(
                 if (result.validated) fetchedAtMs = nowMs
                 loaded
             } else {
-                memo ?: emptyMap()
+                // Warm memo + 304: stamp the clock like iOS; failures keep retrying.
+                if (m != null && result?.validated == true) fetchedAtMs = nowMs
+                m ?: emptyMap()
             }
         }
 
@@ -66,15 +67,16 @@ class TimbreCatalog(
             val root = runCatching { json.parseToJsonElement(bytes.decodeToString()) }.getOrNull() as? JsonObject
                 ?: return null
             val songs = root["songs"] as? JsonObject ?: return null
-            val docVersion = (root["timbreVersion"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.intOrNull ?: 1
+            val docVersion = versionOf(root["timbreVersion"], absent = 1) ?: return null
             if (docVersion != SimilarityFamilies.TIMBRE_VERSION) return emptyMap()
 
             val own = HashMap<String, Map<String, Double>>(songs.size)
             for ((id, rowEl) in songs) {
                 val row = rowEl as? JsonObject ?: continue
                 val f = row["f"] as? JsonObject ?: continue
-                val rowVersion = (row["v"] as? JsonPrimitive)?.takeIf { it !is JsonNull }?.intOrNull
-                if (rowVersion != null && rowVersion != docVersion) continue
+                val rowEl2 = row["v"]
+                val rowVersion = versionOf(rowEl2, absent = docVersion)
+                if (rowVersion == null || rowVersion != docVersion) continue
                 // A PRESENT-but-null/non-numeric known axis ⇒ failed capture, drop the row.
                 val broken = SimilarityFamilies.TIMBRE_AXES.any { axis ->
                     f.containsKey(axis) && !isFinite(f[axis])
@@ -96,6 +98,14 @@ class TimbreCatalog(
                 own[alias]?.let { out[id] = it }
             }
             return out
+        }
+
+        /** Absent/null ⇒ [absent]; present ⇒ must be a whole number, else null (reject). */
+        private fun versionOf(el: JsonElement?, absent: Int): Int? {
+            if (el == null || el is JsonNull) return absent
+            val d = (el as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull ?: return null
+            if (!d.isFinite() || d != Math.rint(d) || Math.abs(d) > Int.MAX_VALUE) return null
+            return d.toInt()
         }
 
         private fun isFinite(el: JsonElement?): Boolean =

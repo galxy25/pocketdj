@@ -62,6 +62,13 @@ class TimbreCatalogTest {
         )!!.keys)
     }
 
+    @Test fun nonIntegerVersionsFailClosed() {
+        assertEquals(emptyMap<String, Any>(), TimbreCatalog.decode("""{"timbreVersion":2.0,"songs":{}}""".toByteArray()))
+        assertEquals(null, TimbreCatalog.decode("""{"timbreVersion":1.5,"songs":{}}""".toByteArray()))
+        assertEquals(null, TimbreCatalog.decode("""{"timbreVersion":"1","songs":{}}""".toByteArray()))
+        assertEquals(emptyMap<String, Any>(), TimbreCatalog.decode("""{"timbreVersion":1.0,"songs":{"a":{"v":1.5,"f":{"x":1}}}}""".toByteArray()))
+    }
+
     @Test fun ok200DecodesAndCaches() = runTest {
         server.enqueue(MockResponse().setBody(fixture).setHeader("ETag", "\"e1\""))
         val m = catalog.vectors(nowMs = 1_000)

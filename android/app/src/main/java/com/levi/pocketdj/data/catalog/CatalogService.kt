@@ -148,8 +148,10 @@ class CatalogService(
      * neither a usable response nor a usable cache. [DocumentLoad.validated] is true only when
      * the server answered 2xx/304 (so callers can stamp a freshness clock only then).
      */
-    suspend fun <T : Any> loadDocument(url: String, decode: (ByteArray) -> T?): DocumentLoad<T> = withContext(Dispatchers.IO) {
+    suspend fun <T : Any> loadDocument(url: String, warm: Boolean = false, decode: (ByteArray) -> T?): DocumentLoad<T> = withContext(Dispatchers.IO) {
+        // warm = caller already holds a decoded copy: 304/failure return value=null WITHOUT re-decoding disk.
         fun cached(): T? {
+            if (warm) return null
             val f = cacheFile(url)
             if (!f.isFile) return null
             return runCatching { decode(f.readBytes()) }.getOrNull()
@@ -172,6 +174,7 @@ class CatalogService(
                         val decoded = decode(bytes) ?: throw IOException("Undecodable document for $url")
                         runCatching {
                             val temp = File.createTempFile("doc-", ".part", cacheDir)
+                            try {
                             temp.writeBytes(bytes)
                             Files.move(
                                 temp.toPath(),
@@ -186,6 +189,9 @@ class CatalogService(
                                     etag = response.header("ETag"),
                                 ),
                             )
+                            } finally {
+                                temp.delete()
+                            }
                         }
                         DocumentLoad(decoded, validated = true)
                     }
