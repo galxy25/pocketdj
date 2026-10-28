@@ -68,9 +68,15 @@ class NowPlayingWidget : GlanceAppWidget() {
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val store = WidgetFiles.snapshotStore(context)
-        val snap = store.read()
-        val cover = if (snap.hasContent) loadCover(store) else null
-        provideContent { Content(context, snap, cover) }
+        provideContent {
+            // Read INSIDE the composition, keyed on the state version bumped by refreshNowPlayingWidget().
+            val version = androidx.glance.currentState<androidx.datastore.preferences.core.Preferences>()[VERSION_KEY]
+            val snap = androidx.compose.runtime.remember(version) { store.read() }
+            val cover = androidx.compose.runtime.remember(version, snap.coverVersion) {
+                if (snap.hasContent) loadCover(store) else null
+            }
+            Content(context, snap, cover)
+        }
     }
 
     @Composable
@@ -108,7 +114,7 @@ class NowPlayingWidget : GlanceAppWidget() {
             Cover(cover, 44.dp)
             Spacer(GlanceModifier.defaultWeight())
             Btn(playGlyph(s), "Play or pause", key(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
-            Btn(R.drawable.ic_widget_next, "Next", key(ctx, KeyEvent.KEYCODE_MEDIA_NEXT))
+            Btn(R.drawable.ic_widget_next, "Next", cmd(ctx, WidgetCommand.Kind.NEXT, s, null))
         }
     }
 
@@ -121,9 +127,9 @@ class NowPlayingWidget : GlanceAppWidget() {
                 TitleBlock(s)
                 Spacer(GlanceModifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Btn(R.drawable.ic_widget_previous, "Previous", key(ctx, KeyEvent.KEYCODE_MEDIA_PREVIOUS))
+                    Btn(R.drawable.ic_widget_previous, "Previous", cmd(ctx, WidgetCommand.Kind.PREVIOUS, s, null))
                     Btn(playGlyph(s), "Play or pause", key(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
-                    Btn(R.drawable.ic_widget_next, "Next", key(ctx, KeyEvent.KEYCODE_MEDIA_NEXT))
+                    Btn(R.drawable.ic_widget_next, "Next", cmd(ctx, WidgetCommand.Kind.NEXT, s, null))
                     if (WidgetModel.showHeart(s)) Heart(ctx, s)
                 }
             }
@@ -140,9 +146,9 @@ class NowPlayingWidget : GlanceAppWidget() {
             }
             Spacer(GlanceModifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically, modifier = GlanceModifier.fillMaxWidth()) {
-                Btn(R.drawable.ic_widget_previous, "Previous", key(ctx, KeyEvent.KEYCODE_MEDIA_PREVIOUS))
+                Btn(R.drawable.ic_widget_previous, "Previous", cmd(ctx, WidgetCommand.Kind.PREVIOUS, s, null))
                 Btn(playGlyph(s), "Play or pause", key(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
-                Btn(R.drawable.ic_widget_next, "Next", key(ctx, KeyEvent.KEYCODE_MEDIA_NEXT))
+                Btn(R.drawable.ic_widget_next, "Next", cmd(ctx, WidgetCommand.Kind.NEXT, s, null))
                 if (WidgetModel.showHeart(s)) Heart(ctx, s)
                 Btn(
                     if (s.repeatMode == "one") R.drawable.ic_widget_repeat_one else R.drawable.ic_widget_repeat,
@@ -233,5 +239,22 @@ class NowPlayingWidget : GlanceAppWidget() {
         private val DIM = ColorProvider(Color(0xFF9FB0C8))
         private val ACCENT = ColorProvider(Color(0xFF6EA8FF))
         private val PLACEHOLDER = ColorProvider(Color(0xFF16233A))
+    }
+}
+
+private val VERSION_KEY = androidx.datastore.preferences.core.longPreferencesKey("snapshotVersion")
+
+/**
+ * Re-render every placed widget. A running Glance session only recomposes on update(), it does not
+ * call provideGlance again, so the new snapshot is signalled through the widget's own Preferences
+ * state, which the composition reads and keys its file reads on.
+ */
+suspend fun refreshNowPlayingWidget(ctx: Context) {
+    val mgr = androidx.glance.appwidget.GlanceAppWidgetManager(ctx)
+    val widget = NowPlayingWidget()
+    val v = System.nanoTime()
+    mgr.getGlanceIds(NowPlayingWidget::class.java).forEach { id ->
+        androidx.glance.appwidget.state.updateAppWidgetState(ctx, id) { it[VERSION_KEY] = v }
+        widget.update(ctx, id)
     }
 }

@@ -19,6 +19,8 @@ data class WidgetInputs(
     val appleMusicId: String? = null,
     val repeatMode: String = "off",
     val shuffleEnabled: Boolean = false,
+    /** False while the catalog (art source) has not loaded: the cover is not attempted, and retried when it lands. */
+    val artSourceReady: Boolean = true,
 )
 
 /** Fetches the cover PNG bytes for a cover key (null when none / failed). */
@@ -48,21 +50,25 @@ class WidgetSync(
     private var coverVersion = 0
     private var coverIdentity: String? = null
     private var coverToken = 0L
+    private var fetchJob: Job? = null
 
     fun start(): Job = scope.launch { inputs.collect { onInputs(it) } }
 
     internal suspend fun onInputs(i: WidgetInputs) {
         val changed = synchronized(lock) {
             val hasContent = i.songId != null
-            val identity = if (hasContent) CoverKey(i.songId!!, i.albumId).identity else null
+            val base = if (hasContent) CoverKey(i.songId!!, i.albumId).identity else null
+            // A missing art source is part of the identity so the fetch is retried once it arrives.
+            val identity = if (base != null && !i.artSourceReady) "$base~noart" else base
             var fetch: Pair<Long, CoverKey>? = null
             if (identity != coverIdentity) {
                 coverIdentity = identity
                 coverToken++
+                fetchJob?.cancel()
                 if (identity == null) {
                     store.clearCover()
                     coverVersion++
-                } else {
+                } else if (i.artSourceReady) {
                     fetch = coverToken to CoverKey(i.songId!!, i.albumId)
                 }
             }
@@ -71,13 +77,17 @@ class WidgetSync(
             wrote to fetch
         }
         if (changed.first) runCatching { refresh() }
-        changed.second?.let { (token, key) -> fetchCover(token, key) }
+        // Own job: a slow art host must never hold up the next input (skip, pause, heart).
+        changed.second?.let { (token, key) ->
+            val job = scope.launch { fetchCover(token, key) }
+            synchronized(lock) { if (token == coverToken) fetchJob = job else job.cancel() }
+        }
     }
 
     private suspend fun fetchCover(token: Long, key: CoverKey) {
         val bytes = runCatching { covers.fetch(key) }.getOrNull()
         val wrote = synchronized(lock) {
-            if (token != coverToken) return // superseded by a newer song
+            if (token != coverToken) return@synchronized false // superseded by a newer song
             if (bytes != null && bytes.isNotEmpty()) store.writeCover(bytes) else store.clearCover()
             coverVersion++
             current = current.copy(coverVersion = coverVersion)

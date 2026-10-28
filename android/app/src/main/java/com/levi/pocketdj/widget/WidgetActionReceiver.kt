@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.view.KeyEvent
-import androidx.glance.appwidget.updateAll
 import com.levi.pocketdj.playback.PlaybackService
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
@@ -26,8 +25,17 @@ object WidgetCommandBus {
 
 object WidgetFiles {
     fun dir(ctx: Context) = File(ctx.filesDir, "widget")
-    fun snapshotStore(ctx: Context) = NowPlayingSnapshotStore(dir(ctx))
-    fun pending(ctx: Context) = PendingWidgetCommands(File(dir(ctx), "pending-commands.json"))
+    // Process-wide singletons: the receiver, bridge and sync must share one lock and one write cache.
+    @Volatile private var store: NowPlayingSnapshotStore? = null
+    @Volatile private var queue: PendingWidgetCommands? = null
+
+    fun snapshotStore(ctx: Context): NowPlayingSnapshotStore =
+        store ?: synchronized(this) { store ?: NowPlayingSnapshotStore(dir(ctx.applicationContext)).also { store = it } }
+
+    fun pending(ctx: Context): PendingWidgetCommands =
+        queue ?: synchronized(this) {
+            queue ?: PendingWidgetCommands(File(dir(ctx.applicationContext), "pending-commands.json")).also { queue = it }
+        }
 }
 
 /** Intents the Glance actions fire. */
@@ -98,7 +106,7 @@ class WidgetActionReceiver : BroadcastReceiver() {
             WidgetCommand.Kind.SHUFFLE -> snap.copy(shuffleEnabled = cmd.value == "1")
             else -> snap
         }
-        if (store.write(next)) NowPlayingWidget().updateAll(ctx)
+        if (store.write(next)) refreshNowPlayingWidget(ctx)
     }
 
     private companion object {

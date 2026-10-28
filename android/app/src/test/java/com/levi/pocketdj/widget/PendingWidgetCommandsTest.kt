@@ -63,3 +63,11 @@ class PendingWidgetCommandsTest {
         assertEquals(1, p.drain().size)
     }
 }
+
+class WidgetFilesSingletonTest {
+    @org.junit.Test fun transportKindsAreQueuedNotForegroundStarted() {
+        // NEXT/PREVIOUS are transport-class so a dead-process tap queues with the 20 s TTL.
+        org.junit.Assert.assertTrue(WidgetCommand.Kind.NEXT.transport)
+        org.junit.Assert.assertTrue(WidgetCommand.Kind.PREVIOUS.transport)
+    }
+}

@@ -49,13 +49,13 @@ class WidgetSyncPublishTest {
 
     @Test fun coverVersionOnlyBumpsOnCoverIdentityChange() = runTest {
         val s = sync(this)
-        s.onInputs(song("s1", "alb1"))
+        s.onInputs(song("s1", "alb1")); testScheduler.runCurrent()
         val v1 = store.read().coverVersion
         assertEquals(1, v1)
-        s.onInputs(song("s2", "alb1")) // same album => same cover
+        s.onInputs(song("s2", "alb1")); testScheduler.runCurrent() // same album => same cover
         assertEquals(v1, store.read().coverVersion)
         assertEquals(1, fetched.size)
-        s.onInputs(song("s3", "alb2"))
+        s.onInputs(song("s3", "alb2")); testScheduler.runCurrent()
         assertEquals(2, store.read().coverVersion)
         assertTrue(store.hasCover())
     }
@@ -65,12 +65,13 @@ class WidgetSyncPublishTest {
         var calls = 0
         fetcher = CoverFetcher { if (calls++ == 0) gate.await() else byteArrayOf(9) }
         val s = sync(this)
-        val first = launch { s.onInputs(song("s1", "alb1")) }
+        s.onInputs(song("s1", "alb1"))
         testScheduler.runCurrent()
         s.onInputs(song("s2", "alb2")) // newer song lands first
+        testScheduler.runCurrent()
         assertEquals(1, store.read().coverVersion)
         gate.complete(byteArrayOf(7, 7, 7))
-        first.join()
+        testScheduler.runCurrent()
         assertEquals(listOf<Byte>(9), store.coverFile.readBytes().toList()) // the stale 7s never landed
         assertEquals("s2", store.read().songId)
     }
@@ -92,5 +93,33 @@ class WidgetSyncPublishTest {
         assertFalse(snap.favoriteAvailable); assertFalse(snap.isFavorite)
         assertEquals(4, snap.upNext.size)
         assertEquals("", snap.recScope)
+    }
+
+    @Test fun collectorProcessesNextInputWhileCoverFetchIsSuspended() = runTest {
+        val gate = CompletableDeferred<ByteArray?>()
+        var calls = 0
+        fetcher = CoverFetcher { if (calls++ == 0) gate.await() else byteArrayOf(9) }
+        val flow = kotlinx.coroutines.flow.MutableStateFlow(song("s1", "alb1"))
+        val job = WidgetSync(this, flow, store, { fetcher.fetch(it) }, { refreshes++ }).start()
+        testScheduler.runCurrent()
+        assertEquals("s1", store.read().songId)
+        flow.value = song("s2", "alb2").copy(isPlaying = false) // first fetch is still suspended
+        testScheduler.runCurrent()
+        assertEquals("s2", store.read().songId)
+        assertFalse(store.read().isPlaying)
+        gate.complete(byteArrayOf(7, 7, 7)) // stale art must not land
+        testScheduler.runCurrent()
+        assertEquals(listOf<Byte>(9), store.coverFile.readBytes().toList())
+        job.cancel()
+    }
+
+    @Test fun coverRetriedWhenArtSourceArrivesLate() = runTest {
+        val s = sync(this)
+        s.onInputs(song().copy(artSourceReady = false)); testScheduler.runCurrent()
+        assertTrue(fetched.isEmpty())
+        assertFalse(store.hasCover())
+        s.onInputs(song().copy(artSourceReady = true)); testScheduler.runCurrent()
+        assertEquals(1, fetched.size)
+        assertTrue(store.hasCover())
     }
 }

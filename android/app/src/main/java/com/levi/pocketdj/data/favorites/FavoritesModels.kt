@@ -46,4 +46,7 @@ interface FavoritesAccess {
 
     /** Flip and return the NEW state. [appleMusicId] null keeps a previously-known id. */
     fun toggle(songId: String, appleMusicId: String? = null): Boolean
+
+    /** Idempotent set to [favorited] (atomic, unlike check-then-toggle). */
+    fun set(songId: String, favorited: Boolean, appleMusicId: String?)
 }

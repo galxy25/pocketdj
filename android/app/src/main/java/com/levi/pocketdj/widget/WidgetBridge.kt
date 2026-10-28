@@ -3,7 +3,9 @@ package com.levi.pocketdj.widget
 import android.content.Context
 import android.graphics.Bitmap
 import androidx.core.graphics.drawable.toBitmap
-import androidx.glance.appwidget.updateAll
+import com.levi.pocketdj.playback.session.SessionSwitchboard
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flow
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
@@ -32,9 +34,7 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
         when (cmd.kind) {
             WidgetCommand.Kind.FAVORITE -> {
                 val id = cmd.songId ?: return@WidgetCommandExecutor
-                val want = cmd.value == "1"
-                val access = app.collectionsGraph.favoriteAccess
-                if (access.isFavorite(id) != want) access.toggle(id, cmd.appleMusicId)
+                app.collectionsGraph.favoriteAccess.set(id, cmd.value == "1", cmd.appleMusicId)
             }
             WidgetCommand.Kind.REPEAT -> withContext(Dispatchers.Main) { pc.sequencer.setRepeatMode(RepeatMode.fromToken(cmd.value)) }
             WidgetCommand.Kind.SHUFFLE -> withContext(Dispatchers.Main) { pc.sequencer.setShuffle(cmd.value == "1") }
@@ -46,38 +46,48 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
         }
     }
 
+    private fun drainPending() {
+        app.appScope.launch(Dispatchers.Default) {
+            pending.drain().forEach { runCatching { executor.apply(it) } }
+        }
+    }
+
     fun start() {
         if (started) return
         started = true
         WidgetCommandBus.executor = executor
-        AppLifecycleObserver.widgetDrain = {
-            app.appScope.launch(Dispatchers.Default) {
-                pending.drain().forEach { runCatching { executor.apply(it) } }
-            }
-        }
+        AppLifecycleObserver.widgetDrain = { drainPending() }
+        // Cold start: ON_START already ran against the no-op default hook, so drain now too.
+        drainPending()
         app.appScope.launch(Dispatchers.Default) {
             val pc = app.playbackController
             val fav = app.collectionsGraph.favorites
-            val inputs = combine(pc.nowPlaying, pc.sequencer.state, fav.state) { np, seq, _ ->
+            // Who owns audio: when Mix sounds, the widget goes idle.
+            val owner = flow {
+                while (true) { emit(SessionSwitchboard.shared.current?.engine); delay(OWNER_POLL_MS) }
+            }.distinctUntilChanged()
+            val inputs = combine(pc.nowPlaying, pc.sequencer.state, fav.state, app.catalogRepository.state, owner) { np0, seq, _, cat, eng ->
+                val np = if (eng == MIX_ENGINE) null else np0
                 val songId = np?.songId
                 val seam = FavoriteCommand.seam
-                val song = songId?.let { app.catalogRepository.state.value.catalog?.songsById?.get(it) }
+                val song = songId?.let { cat.catalog?.songsById?.get(it) }
                 WidgetInputs(
                     songId = songId,
                     title = np?.title,
                     artist = np?.artist,
                     albumId = np?.albumId,
                     isPlaying = np?.isPlaying == true,
-                    upNext = if (seq.isRunning) seq.upcoming.take(WidgetSync.UP_NEXT_MAX)
+                    upNext = if (np != null && seq.isRunning) seq.upcoming.take(WidgetSync.UP_NEXT_MAX)
                         .map { NowPlayingSnapshot.Track(it.uid, it.id, it.title, it.artist.orEmpty()) } else emptyList(),
                     isFavorite = FavoriteCommand.filled(seam, songId),
                     favoriteAvailable = FavoriteCommand.visible(seam, songId),
                     appleMusicId = song?.appleMusicId,
                     repeatMode = if (seq.isRunning) seq.repeatMode.token else "off",
                     shuffleEnabled = seq.isRunning && seq.shuffleEnabled,
+                    artSourceReady = cat.catalog != null,
                 )
             }.distinctUntilChanged()
-            WidgetSync(this, inputs, store, ::fetchCover) { NowPlayingWidget().updateAll(ctx) }.start()
+            WidgetSync(this, inputs, store, ::fetchCover) { refreshNowPlayingWidget(ctx) }.start()
         }
     }
 
@@ -94,5 +104,10 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
             return ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
         }
         return null
+    }
+
+    private companion object {
+        const val OWNER_POLL_MS = 1_000L
+        const val MIX_ENGINE = "mix"
     }
 }
