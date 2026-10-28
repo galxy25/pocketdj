@@ -336,6 +336,51 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     suspend fun hasMusicUserToken(): Boolean = app.settings.current().hasAppleMusic
 
+    // ---- BRW-17: "?♪?" song recognizer ------------------------------------------------------
+
+    /**
+     * The capture + match pipeline. The ShazamKit-for-Android AAR (app/libs/shazamkit-android.aar) is not in
+     * the repo, so this defaults to the unavailable backend; the AudioRecord/StreamingSession adapter replaces it.
+     */
+    var shazamBackend: com.levi.pocketdj.screens.shazam.RecognitionBackend =
+        com.levi.pocketdj.screens.shazam.UnavailableRecognitionBackend
+
+    /** Apple Music Web API adapter behind the result sheet's Apple Music block. */
+    val appleMusicRecognition: com.levi.pocketdj.screens.shazam.AppleMusicRecognitionPort by lazy {
+        object : com.levi.pocketdj.screens.shazam.AppleMusicRecognitionPort {
+            private fun <T> com.levi.pocketdj.data.applemusic.AmResult<T>.okOrNull() =
+                (this as? com.levi.pocketdj.data.applemusic.AmResult.Ok)?.value
+
+            override val available get() = true
+            override suspend fun canContribute() = app.settings.current().hasAppleMusic
+            override val canAdd get() = true
+
+            override suspend fun resolve(storeId: String?, title: String?, artist: String?):
+                com.levi.pocketdj.screens.shazam.AppleMusicResolution? {
+                val api = app.appleMusicApi
+                var song = if (!storeId.isNullOrBlank()) api.recognizedSong(storeId).okOrNull() else null
+                if (song == null) {
+                    val term = listOfNotNull(title, artist).joinToString(" ").trim()
+                    if (term.isNotEmpty()) song = api.recognizedSongSearch(term).okOrNull()
+                }
+                song ?: return null
+                val inLib = api.librarySongsContain("${song.title} ${song.artist}".trim(), song.title, song.artist).okOrNull() ?: false
+                return song.copy(inLibrary = inLib)
+            }
+
+            override suspend fun addSongToLibrary(storeId: String) =
+                app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.SONGS, listOf(storeId)) is
+                    com.levi.pocketdj.data.applemusic.AmResult.Ok
+
+            override suspend fun startRipAndBurn(songId: String, title: String, artist: String, storeId: String) {
+                if (!app.ripServerClient.isConfigured()) return
+                val job = app.ripServerClient.requestRip(songId, title, artist, storeId, null)
+                app.ripJobTracker.adopt(songId, job)
+                job.jobId?.takeIf { !job.isReady }?.let { app.ripJobTracker.pollToReady(songId, it) }
+            }
+        }
+    }
+
     /** On-demand lyrics (memory -> disk `filesDir/lyrics-cache` -> catalog CDN). */
     val lyricsStore: com.levi.pocketdj.data.lyrics.LyricsStore by lazy {
         com.levi.pocketdj.data.lyrics.LyricsStore(

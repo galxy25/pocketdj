@@ -455,6 +455,10 @@ private fun BrowseContent(
 
     Column(Modifier.fillMaxSize()) {
         if (selectable) SelectionBar(rowSelection, BROWSE_SELECTION_SCOPE, collStore)
+        // BRW-17: the "?♪?" song recognizer sits at the top of every catalog tab.
+        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), horizontalArrangement = Arrangement.End) {
+            com.levi.pocketdj.screens.shazam.ShazamButton(onOpenSong = onOpenSong, onOpenAlbum = onOpenAlbum)
+        }
         if (!discover) SourcesRail(
             sources = catalog.availableSources,
             selected = filters.sources,
