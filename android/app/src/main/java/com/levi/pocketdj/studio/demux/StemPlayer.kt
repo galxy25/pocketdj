@@ -46,8 +46,8 @@ interface StemPlayer {
     val soloed: String?
     fun isAudible(name: String): Boolean
 
-    /** Load [files] (name -> file); a repeat load of the same [id] is a no-op. Replaces any prior load. */
-    fun load(id: String, files: Map<String, File>)
+    /** Load [files] (name -> file); a repeat load of the same [id] is a no-op. Replaces any prior load. Returns false when nothing could be loaded (unplayable/corrupt audio). */
+    fun load(id: String, files: Map<String, File>): Boolean
     fun togglePlayPause()
     fun seek(sec: Double)
     fun solo(name: String)
@@ -70,17 +70,21 @@ class SingleFileStemPlayer(private val focus: () -> Unit = {}, private val focus
     override val soloed: String? get() = mix.soloed
     override fun isAudible(name: String) = mix.isAudible(name)
 
-    override fun load(id: String, files: Map<String, File>) {
-        if (loadedId == id && mp != null) return
+    override fun load(id: String, files: Map<String, File>): Boolean {
+        if (loadedId == id && mp != null) return true
         stop()
-        val f = files.values.firstOrNull() ?: return
-        mp = android.media.MediaPlayer().apply {
-            setDataSource(f.path)
-            prepare()
-            setOnCompletionListener { pausedAt = 0.0; focusRelease(); bump() }
-        }
+        val f = files.values.firstOrNull() ?: return false
+        val player = android.media.MediaPlayer()
+        val ok = runCatching {
+            player.setDataSource(f.path)
+            player.prepare()
+            player.setOnCompletionListener { pausedAt = 0.0; focusRelease(); bump() }
+        }.isSuccess
+        if (!ok) { runCatching { player.release() }; return false }
+        mp = player
         loadedId = id
         bump()
+        return true
     }
 
     override fun togglePlayPause() {
@@ -147,11 +151,11 @@ class VoiceGroupStemPlayer(
         }
     }
 
-    override fun load(id: String, files: Map<String, File>) {
-        if (loadedId == id && voices.isNotEmpty()) return
+    override fun load(id: String, files: Map<String, File>): Boolean {
+        if (loadedId == id && voices.isNotEmpty()) return true
         stop()
-        val opened = files.entries.mapNotNull { (n, f) -> openSource(f)?.let { n to it } }
-        if (opened.isEmpty()) return
+        val opened = files.entries.mapNotNull { (n, f) -> runCatching { openSource(f) }.getOrNull()?.let { n to it } }
+        if (opened.isEmpty()) return false
         names = opened.map { it.first }
         voices = opened.map { (n, s) -> Voice(s, rate, name = n).also { it.schedule(0) } }
         rate = voices[0].sampleRate
@@ -161,6 +165,7 @@ class VoiceGroupStemPlayer(
         loadedId = id
         mix.reset(); applyGains(); pausedAt = 0.0
         bump()
+        return true
     }
 
     private fun applyGains() { for (i in voices.indices) voices[i].setGain(if (mix.isAudible(names[i])) 1f else 0f) }
@@ -261,11 +266,11 @@ class RoutingStemPlayer(
     override val soloed get() = active.soloed
     override fun isAudible(name: String) = active.isAudible(name)
 
-    override fun load(id: String, files: Map<String, File>) {
+    override fun load(id: String, files: Map<String, File>): Boolean {
         val next = if (files.size >= 2) multi else single
         if (next !== active) active.stop()
         active = next
-        next.load(id, files)
+        return next.load(id, files)
     }
 
     override fun togglePlayPause() = active.togglePlayPause()

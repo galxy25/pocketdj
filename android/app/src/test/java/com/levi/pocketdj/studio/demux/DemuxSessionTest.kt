@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
@@ -29,7 +30,9 @@ private class FakePlayer : StemPlayer {
     override val durationSec = 0.0
     override val soloed: String? = null
     override fun isAudible(name: String) = true
-    override fun load(id: String, files: Map<String, File>) { loads.add(id to files.keys) }
+    var loadResult = true
+    var stemLoadResult = true
+    override fun load(id: String, files: Map<String, File>): Boolean { loads.add(id to files.keys); return if (id.endsWith("#stems")) stemLoadResult else loadResult }
     override fun togglePlayPause() { isPlaying = !isPlaying }
     override fun seek(sec: Double) { currentTimeSec = sec }
     override fun solo(name: String) {}
@@ -246,6 +249,56 @@ class DemuxSessionTest {
         assertEquals("sng_a#stems" to DemuxStore.STEM_NAMES.toSet(), player.loads.last().let { it.first to it.second })
         assertEquals(42.0, player.currentTimeSec, 0.0)
         session.setStemMode(false)
+        assertFalse(session.stemMode.value)
+        assertEquals("sng_a#mix", player.loads.last().first)
+    }
+
+    @Test fun unplayableAudioFailsTheSessionInsteadOfCrashing() = runBlocking {
+        env.local["sng_a"] = DemuxLocalSong(mp3("a.mp3"), true, 0)
+        player.loadResult = false
+        session.select(songA).join()
+        assertEquals(DemuxPhase.Failed("Couldn’t play this audio"), session.phase.value)
+        assertEquals(0, chordCalls.get())
+    }
+
+    @Test fun throwingPlayerLoadIsContainedAsFailed() = runBlocking {
+        env.local["sng_a"] = DemuxLocalSong(mp3("a.mp3"), true, 0)
+        val boom = object : StemPlayer by FakePlayer() {
+            override fun load(id: String, files: Map<String, File>): Boolean = throw java.io.IOException("Prepare failed")
+        }
+        val s = DemuxSession(scope, store, env, boom)
+        s.select(songA).join()
+        assertTrue(s.phase.value is DemuxPhase.Failed)
+    }
+
+    @Test fun staleBlockingLoadNeverLeavesAPlayerLoadedAfterReselect() {
+        // A's load blocks (MediaPlayer.prepare) on the single player thread; the user taps Change/other source meanwhile.
+        val ctx = java.util.concurrent.Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val loaded = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val p = object : StemPlayer by FakePlayer() {
+            override fun load(id: String, files: Map<String, File>): Boolean { entered.countDown(); gate.await(); loaded.set(id); return true }
+            override fun stop() { loaded.set(null) }
+        }
+        val s = DemuxSession(scope, store, env, p, ctx)
+        env.local["sng_a"] = DemuxLocalSong(mp3("a.mp3"), true, 0)
+        s.select(songA)
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        s.clearSource()                      // stop is ordered AFTER the in-flight load on the player thread
+        gate.countDown()
+        runBlocking { withContext(ctx) {} } // drain the player thread
+        assertNull("stale load must be stopped, not left loaded", loaded.get())
+        assertNull(s.source.value)
+        ctx.close()
+    }
+
+    @Test fun stemModeFallsBackToMixWhenStemsDontLoad() = runBlocking {
+        env.local["sng_a"] = DemuxLocalSong(mp3("a.mp3"), true, 0)
+        env.stemmed.add("sng_a"); env.burnedStems.add("sng_a")
+        session.select(songA).join()
+        player.stemLoadResult = false
+        session.setStemMode(true)?.join()
         assertFalse(session.stemMode.value)
         assertEquals("sng_a#mix", player.loads.last().first)
     }

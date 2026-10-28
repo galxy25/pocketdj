@@ -37,7 +37,7 @@ sealed class DemuxSource {
         fun isSongKey(key: String): Boolean = !StudioFactory.isStudioId(key) && !key.startsWith("dmx_")
 
         /** Custom-audio ids the server's /stemify-custom accepts (dmx_/smp_/lp_/ptn_/tk_/slc_ + safe tail). */
-        private val CUSTOM_ID = Regex("^(dmx|smp|lp|ptn|tk|slc)_[A-Za-z0-9_-]{1,80}$")
+        private val CUSTOM_ID = Regex("^(dmx|smp|lp|ptn|tk|slc)_[A-Za-z0-9-]{1,80}$")
         fun isCustomStemId(id: String): Boolean = CUSTOM_ID.matches(id)
     }
 }

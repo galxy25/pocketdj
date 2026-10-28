@@ -2,7 +2,10 @@ package com.levi.pocketdj.studio.demux
 
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,6 +74,8 @@ class DemuxSession(
     private val store: DemuxStore,
     private val env: DemuxEnv,
     val player: StemPlayer,
+    /** All player load/stop calls run here (ONE thread in production) so a stale blocking load can never race a stop. */
+    private val playerContext: CoroutineDispatcher = Dispatchers.Unconfined,
 ) {
     private val _source = MutableStateFlow<DemuxSource?>(null)
     val source: StateFlow<DemuxSource?> = _source.asStateFlow()
@@ -88,7 +93,8 @@ class DemuxSession(
     val stemMode: StateFlow<Boolean> = _stemMode.asStateFlow()
 
     private var resolveJob: Job? = null
-    private var generation = 0
+    @Volatile private var generation = 0
+    private var stemJob: Job? = null
 
     /** Test/diagnostic: the resolve job (join it). */
     val resolving: Job? get() = resolveJob
@@ -108,8 +114,9 @@ class DemuxSession(
 
     fun clearSource() {
         resolveJob?.cancel()
+        stemJob?.cancel(); stemJob = null
         generation++
-        player.stop()
+        stopPlayer()
         _source.value = null
         _phase.value = DemuxPhase.Idle
         _stemState.value = DemuxStemState.None
@@ -118,6 +125,9 @@ class DemuxSession(
         _durationMs.value = 0
         _peaks.value = FloatArray(0)
     }
+
+    /** Ordered on [playerContext] so it lands after any load already running there. */
+    private fun stopPlayer() { scope.launch(playerContext) { runCatching { player.stop() } } }
 
     private suspend fun resolve(src: DemuxSource, gen: Int) {
         when (src) {
@@ -164,8 +174,17 @@ class DemuxSession(
         _durationMs.value = dur
         store.update(src) { it.copy(durationMs = maxOf(it.durationMs, dur)) }
         refreshStemState(src)
+        if (!isCurrent(src, gen)) return
+        val loaded = withContext(playerContext) {
+            isCurrent(src, gen) && runCatching { player.load("${src.key}#mix", mapOf("vocals" to file)) }.getOrDefault(false)
+        }
+        if (!isCurrent(src, gen)) return
+        if (!loaded) {
+            _audio.value = null
+            _phase.value = DemuxPhase.Failed("Couldn’t play this audio")
+            return
+        }
         _phase.value = DemuxPhase.Ready
-        player.load("${src.key}#mix", mapOf("vocals" to file))
         store.analyzeChords(scope, src, file.path, dur)
         val p = env.peaks(file, dur)
         if (!isCurrent(src, gen)) return
@@ -216,7 +235,7 @@ class DemuxSession(
             val got = env.burnSongStems(songId)
             if (gen != generation) return@launch
             _stemState.value = if (got != null) DemuxStemState.Burned else DemuxStemState.Failed("Couldn’t download this track’s stems.")
-        }
+        }.also { stemJob = it }
     }
 
     /** Trigger separation on the import server, then pull the stems down (catalog: /stemify; custom: upload). */
@@ -245,23 +264,37 @@ class DemuxSession(
             val files = store.downloadStems(src.key, remote)
             if (gen != generation) return@launch
             _stemState.value = if (files != null) DemuxStemState.Burned else DemuxStemState.Failed("Couldn’t download the separated stems.")
-        }
+        }.also { stemJob = it }
     }
 
-    /** Flip the Stems switch: reload the shared player in mix or stems mode, preserving position + play state. */
-    fun setStemMode(on: Boolean) {
-        val src = _source.value ?: return
+    /**
+     * Flip the Stems switch: reload the shared player in mix or stems mode, preserving position + play state.
+     * Loading runs on [playerContext] (never the UI thread); stem mode is only reported when the stems really
+     * loaded, otherwise the mix is restored.
+     */
+    fun setStemMode(on: Boolean): Job? {
+        val src = _source.value ?: return null
+        val gen = generation
         val pos = player.currentTimeSec
         val wasPlaying = player.isPlaying
         val stems = if (on) (src.songId?.let { env.songStemFiles(it) } ?: store.localStemFiles(src.key)) else null
         val audio = _audio.value
-        when {
-            stems != null -> { player.load("${src.key}#stems", stems); _stemMode.value = true }
-            audio != null -> { player.load("${src.key}#mix", mapOf("vocals" to audio)); _stemMode.value = false }
-            else -> return
+        if (stems == null && audio == null) return null
+        return scope.launch(playerContext) {
+            if (!isCurrent(src, gen)) return@launch
+            var stemsOn = false
+            var ok = false
+            if (stems != null) {
+                ok = runCatching { player.load("${src.key}#stems", stems) }.getOrDefault(false)
+                stemsOn = ok
+            }
+            if (!ok && audio != null) ok = runCatching { player.load("${src.key}#mix", mapOf("vocals" to audio)) }.getOrDefault(false)
+            if (!isCurrent(src, gen)) return@launch
+            _stemMode.value = stemsOn
+            if (!ok) return@launch
+            player.seek(pos)
+            if (wasPlaying && !player.isPlaying) player.togglePlayPause()
         }
-        player.seek(pos)
-        if (wasPlaying && !player.isPlaying) player.togglePlayPause()
     }
 
     /** Re-run chord detection over the loaded audio (the failed-status Retry). */
@@ -273,5 +306,5 @@ class DemuxSession(
 
     fun seekMs(ms: Int) = player.seek(ms / 1000.0)
 
-    fun dispose() { resolveJob?.cancel(); generation++; player.stop() }
+    fun dispose() { resolveJob?.cancel(); stemJob?.cancel(); generation++; stopPlayer() }
 }

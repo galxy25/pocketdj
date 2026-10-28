@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-14 Demuxer core (sources, DemuxStore, chords, timeline, chord detail, stems)
 
@@ -30,3 +30,16 @@ Real-song chord quality; VoiceGroup stem playback on hardware; Oboe/AudioTrack s
 
 ## Questions for Levi
 - none
+
+## Review
+fixes applied
+- MAJOR SingleFileStemPlayer.load unguarded -> fixed (StemPlayer.load returns Boolean; MediaPlayer setup in runCatching, half-built player released; enterReady moves to Failed("Couldn’t play this audio"); appScope got a CoroutineExceptionHandler). Tests: unplayableAudioFails…, throwingPlayerLoadIsContained….
+- MAJOR DemuxScreen dispose clears on rotation -> fixed (skip clearSource when Activity.isChangingConfigurations; DemuxScreenRules.shouldClearOnDispose, tested).
+- MAJOR ledger row -> fixed (STU-14 row now PARTIAL; emulator steps, real-song chords, VoiceGroup hardware playback listed as device-only/pending). Emulator not run (integrator owns it).
+- MINOR stemifySong poll -> fixed (READY terminal, 4h deadline); createStems/downloadStems jobs tracked and cancelled by select/clearSource/dispose.
+- MINOR player thread races -> fixed (all player load/stop on one-thread playerContext; isCurrent re-checked after refreshStemState and inside the context right before load; generation @Volatile). Test: staleBlockingLoadNeverLeavesAPlayerLoadedAfterReselect.
+- MINOR chordRuns -> fixed (StateFlow.update everywhere).
+- MINOR importedSources/burned on main -> fixed (produceState on IO, burned keyed on BurnStore.items).
+- MINOR setStemMode -> fixed (runs on playerContext, _stemMode only true when stems loaded, falls back to mix). Test: stemModeFallsBackToMixWhenStemsDontLoad. Not done: explicit loading indicator in UI.
+- NIT custom-id regex -> fixed (no underscore in tail; StemClientTest assertion that expected "slc_a_b" corrected, it encoded the bug; real ids are UUID-hyphen).
+Tests: 3751 -> 3757, 0 failures; assembleDebug green.

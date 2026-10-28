@@ -11,6 +11,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -178,17 +179,17 @@ class DemuxStore(
             val segments = try {
                 withContext(dispatcher) { detectChords(path) }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                _chordRuns.value = _chordRuns.value - key; throw e
+                _chordRuns.update { it - key }; throw e
             } catch (_: Throwable) { emptyList() }
             update(source) { it.copy(chords = segments, chordStatus = if (segments.isEmpty()) DemuxArtifactStatus.FAILED else DemuxArtifactStatus.DONE) }
-            _chordRuns.value = _chordRuns.value - key
+            _chordRuns.update { it - key }
         }
     }
 
     private fun claimRun(key: String, force: Boolean, source: DemuxSource): Boolean = synchronized(lock) {
         if (key in _chordRuns.value) return false
         if (!force && documentCreating(source).chordStatus == DemuxArtifactStatus.DONE) return false
-        _chordRuns.value = _chordRuns.value + key
+        _chordRuns.update { it + key }
         true
     }
 

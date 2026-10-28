@@ -35,8 +35,8 @@ class StemClientTest {
     private fun json(body: String) = MockResponse().setHeader("Content-Type", "application/json").setBody(body)
 
     @Test fun customIdRegexAcceptsStudioPrefixesAndRejectsCatalogAndJunk() {
-        for (id in listOf("dmx_ab12cd34", "smp_5f3a-11", "lp_x", "ptn_1", "tk_9", "slc_a_b")) assertTrue(id, DemuxSource.isCustomStemId(id))
-        for (id in listOf("sng_123", "pdj_9", "dmx_", "dmx_a/b", "dmx_a b", "../dmx_a", "dmx_" + "a".repeat(81), "")) assertFalse(id, DemuxSource.isCustomStemId(id))
+        for (id in listOf("dmx_ab12cd34", "smp_5f3a-11", "lp_x", "ptn_1", "tk_9", "slc_a-b")) assertTrue(id, DemuxSource.isCustomStemId(id))
+        for (id in listOf("sng_123", "slc_a_b", "pdj_9", "dmx_", "dmx_a/b", "dmx_a b", "../dmx_a", "dmx_" + "a".repeat(81), "")) assertFalse(id, DemuxSource.isCustomStemId(id))
     }
 
     @Test fun uploadThenPollToReadyReturnsAbsoluteStemUrls() = runBlocking {

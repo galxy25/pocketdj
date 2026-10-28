@@ -430,7 +430,10 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     /** The Demuxer's selection/resolve/stems state machine (one per app; the screen is a pure renderer of it). */
     val demuxSession: com.levi.pocketdj.studio.demux.DemuxSession by lazy {
-        com.levi.pocketdj.studio.demux.DemuxSession(app.appScope, demuxStore, DemuxAppEnv(), demuxPlayer)
+        com.levi.pocketdj.studio.demux.DemuxSession(
+            app.appScope, demuxStore, DemuxAppEnv(), demuxPlayer,
+            @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class) Dispatchers.Default.limitedParallelism(1),
+        )
     }
 
     private inner class DemuxAppEnv : com.levi.pocketdj.studio.demux.DemuxEnv {
@@ -466,13 +469,17 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         override suspend fun stemifySong(songId: String): Boolean {
             val tracker = app.ripJobTracker
             tracker.stemify(songId)
-            while (true) {
+            val deadline = System.currentTimeMillis() + 4L * 60 * 60 * 1000 // matches the tracker's stemDeadlineMs
+            while (System.currentTimeMillis() < deadline) {
                 if (songIsStemmed(songId)) return true
                 val phase = tracker.stemJobs.value[songId]?.phase
+                // READY is terminal (the tracker already refreshed the manifest): stemmed or not, stop polling.
+                if (phase == com.levi.pocketdj.data.stems.StemPhase.READY) return songIsStemmed(songId)
                 if (phase == com.levi.pocketdj.data.stems.StemPhase.ERROR || phase == com.levi.pocketdj.data.stems.StemPhase.INELIGIBLE) return false
                 if (phase == null && !tracker.isStemPolling(songId)) return songIsStemmed(songId)
                 kotlinx.coroutines.delay(1_500)
             }
+            return songIsStemmed(songId)
         }
 
         override suspend fun stemifyCustom(id: String, file: File) = demuxStemClient.stemifyCustom(id, file)

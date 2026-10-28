@@ -30,6 +30,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -72,8 +73,10 @@ fun DemuxScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     var expanded by remember { mutableStateOf(runCatching { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_EXPANDED, "") }.getOrNull().orEmpty()) }
     var importError by remember { mutableStateOf<String?>(null) }
 
-    // One audio owner: leaving the tab parks the player and cancels an in-flight resolve.
-    DisposableEffect(session) { onDispose { session.clearSource() } }
+    // One audio owner: leaving the tab parks the player and cancels an in-flight resolve. An Activity
+    // recreation (rotation, dark mode) also disposes the composition but must NOT tear the session down.
+    val activity = remember(ctx) { generateSequence(ctx) { (it as? android.content.ContextWrapper)?.baseContext }.filterIsInstance<android.app.Activity>().firstOrNull() }
+    DisposableEffect(session) { onDispose { if (DemuxScreenRules.shouldClearOnDispose(activity?.isChangingConfigurations == true)) session.clearSource() } }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -91,9 +94,16 @@ fun DemuxScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxSize().testTag("demux-screen")) {
         if (source == null) {
             importError?.let { Text(it, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.error) }
-            val burned = remember(catalog, revision) {
-                val ids = catalog.catalog?.songsById?.keys.orEmpty()
-                ids.filter { graph.servicesGraph.burnStore.localUrlPreferringCut(it) != null }.toSet()
+            val burnItems by graph.servicesGraph.burnStore.items.collectAsState()
+            // Disk walks (document JSON decode, file-exists heals) stay off the main thread.
+            val burned by produceState(emptySet<String>(), catalog, burnItems) {
+                value = withContext(Dispatchers.IO) {
+                    val ids = catalog.catalog?.songsById?.keys.orEmpty()
+                    ids.filter { graph.servicesGraph.burnStore.localUrlPreferringCut(it) != null }.toSet()
+                }
+            }
+            val importedFiles by produceState(emptyList<Pair<String, String>>(), revision) {
+                value = withContext(Dispatchers.IO) { store.importedSources() }
             }
             val studio = remember(doc) {
                 val s = studioGraph.studioStore
@@ -103,7 +113,7 @@ fun DemuxScreen(graph: AppGraph, modifier: Modifier = Modifier) {
             }
             DemuxSourcePicker(
                 data = DemuxPickerData(
-                    files = store.importedSources(), studio = studio,
+                    files = importedFiles, studio = studio,
                     songs = catalog.catalog?.songsById?.values.orEmpty(), burned = burned,
                 ),
                 expandedRaw = expanded,
@@ -211,4 +221,10 @@ private fun Status(spinner: Boolean, text: String, tag: String) {
         if (spinner) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
         Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
+}
+
+/** Pure lifecycle rules for the Demuxer screen (JVM-tested). */
+object DemuxScreenRules {
+    /** Composition disposal during an Activity recreation keeps the app-scoped session; a real exit clears it. */
+    fun shouldClearOnDispose(isChangingConfigurations: Boolean): Boolean = !isChangingConfigurations
 }

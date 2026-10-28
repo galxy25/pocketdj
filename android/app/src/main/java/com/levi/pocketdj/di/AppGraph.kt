@@ -60,7 +60,10 @@ class AppGraph private constructor(context: Context) {
     internal val appContext = context.applicationContext
 
     /** App-lifetime work scope (repositories, background polls). */
-    val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val appScope: CoroutineScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            kotlinx.coroutines.CoroutineExceptionHandler { _, t -> runCatching { android.util.Log.e("AppGraph", "uncaught in appScope", t) } },
+    )
 
     val json = PdjJson.lenient
 
