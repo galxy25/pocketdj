@@ -702,6 +702,11 @@ class RecommendationService(
      * WRONG one (the enrollment secret is accepted in place of the bound key). NEVER MINTS: a device with
      * no key, no tombstone and no upload history owes the server nothing — zero network.
      */
+    fun deleteCloudDataAsync(): kotlinx.coroutines.Job = scope.launch { deleteCloudData() }
+
+    /** [flushNow] on the service's own scope so leaving the screen can't cancel it midway. */
+    fun flushNowAsync(): kotlinx.coroutines.Job = scope.launch { flushNow() }
+
     suspend fun deleteCloudData(): Boolean {
         flushEpoch.incrementAndGet()
         flushJob?.join() // no batch may land after the DELETE

@@ -385,6 +385,16 @@ class RecommendationServiceTest {
         assertNull(r.getHeader("X-PocketDJ-Enroll"))
     }
 
+    @Test fun forYouCloudZoneProvider_wiredOnlyWhenEnabled_andReturnsServerOrder() = runBlocking {
+        val (s, k) = svc()
+        on("/recs/songs") { MockResponse().setBody(songsBody) }
+        val provider = com.levi.pocketdj.screens.foryou.ForYouInputsFactory.cloudZoneProvider(s, force = true)
+        assertNotNull(provider)
+        assertEquals(listOf("b", "a"), provider!!.invoke().map { it.songId })
+        k.enabled = false
+        assertNull(com.levi.pocketdj.screens.foryou.ForYouInputsFactory.cloudZoneProvider(s, force = true))
+    }
+
     @Test fun cloudZoneRanking_returnsEmptyOnAnyFailure() = runBlocking {
         val (s, _) = svc()
         on("/recs/songs") { MockResponse().setResponseCode(500) }

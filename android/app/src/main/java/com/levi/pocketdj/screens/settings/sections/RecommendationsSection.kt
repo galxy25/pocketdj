@@ -87,7 +87,7 @@ internal fun recommendationsSection() = SettingsSection(
         }
         err?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
         TextButton(
-            onClick = { service?.let { s -> busy = true; host.scope.launch { s.flushNow(); busy = false } } },
+            onClick = { service?.let { s -> busy = true; host.scope.launch { s.flushNowAsync().join(); busy = false } } },
             enabled = service != null && !busy,
             modifier = Modifier.testTag("rec-send-now"),
         ) { Text("Send now") }
@@ -108,7 +108,7 @@ internal fun recommendationsSection() = SettingsSection(
                 TextButton(
                     onClick = {
                         confirmDelete = false
-                        service?.let { s -> host.scope.launch { s.deleteCloudData() } }
+                        service?.deleteCloudDataAsync()
                     },
                     modifier = Modifier.testTag("rec-delete-cloud-confirm"),
                 ) { Text("Delete cloud data", color = MaterialTheme.colorScheme.error) }

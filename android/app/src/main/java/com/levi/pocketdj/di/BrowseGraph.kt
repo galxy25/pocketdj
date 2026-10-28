@@ -86,7 +86,10 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
     // ---- BRW-13: cloud recommendation engine ------------------------------------------------
 
     /** Live mirrors of the device-local prefs (the service's gates are non-suspend). Default OFF until the first emission. */
-    private val recEnabledMirror = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val recEnabledMirror = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /** The privacy-gate mirror as a flow (UI that must retry once the GATE opens keys on this, not the raw pref). */
+    val recEnabled: kotlinx.coroutines.flow.StateFlow<Boolean> get() = recEnabledMirror
     private val shareCountsMirror = java.util.concurrent.atomic.AtomicBoolean(true)
     @Volatile private var deviceIdMirror: String = ""
 
@@ -96,7 +99,7 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         val svc = com.levi.pocketdj.data.recs.RecommendationService(
             client = com.levi.pocketdj.data.recs.RecEngineClient(app.httpClient, deviceId = { deviceIdMirror }),
             scope = app.appScope + Dispatchers.IO,
-            enabled = { recEnabledMirror.get() },
+            enabled = { recEnabledMirror.value },
             shareLifetimePlayCounts = { shareCountsMirror.get() },
             profileId = { app.servicesGraph.profile.id },
             deviceId = { deviceIdMirror },
@@ -152,13 +155,18 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         app.appScope.launch(Dispatchers.IO) {
             deviceIdMirror = runCatching { app.settings.ensureInstallId() }.getOrDefault("")
             launch { app.settings.flow(com.levi.pocketdj.data.recs.RecsSettings.SHARE_LIFETIME_PLAY_COUNTS).collect { shareCountsMirror.set(it) } }
-            // First emission BEFORE the service exists, so the very first gate read is truthful.
-            recEnabledMirror.set(app.settings.get(com.levi.pocketdj.data.recs.RecsSettings.REC_ENGINE_ENABLED))
-            val svc = recService
-            svc.startAutoFlush()
-            app.settings.flow(com.levi.pocketdj.data.recs.RecsSettings.REC_ENGINE_ENABLED).distinctUntilChanged().drop(1).collect { on ->
-                recEnabledMirror.set(on)
-                svc.enabledDidChange()
+            // The mirror is set from EVERY emission of the flow (no get()+drop(1) gap where a toggle between the
+            // two is lost). The first emission lands BEFORE the service exists, so the first gate read is truthful.
+            var svc: com.levi.pocketdj.data.recs.RecommendationService? = null
+            app.settings.flow(com.levi.pocketdj.data.recs.RecsSettings.REC_ENGINE_ENABLED).distinctUntilChanged().collect { on ->
+                val prev = recEnabledMirror.value
+                recEnabledMirror.value = on
+                val s = svc
+                if (s == null) {
+                    svc = recService.also { it.startAutoFlush() }
+                } else if (prev != on) {
+                    s.enabledDidChange()
+                }
             }
         }
     }

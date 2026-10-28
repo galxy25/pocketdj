@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-13 Cloud recommendation engine service + client + rec key + Settings + Suggested collections
 
@@ -28,3 +28,23 @@ JVM tests: 4224 total, 0 failures (+57 new: RecEngineClientTest 15, Recommendati
 
 ## Questions for Levi
 - None blocking. Enrollment secret is mirrored verbatim from iOS Config.swift (same as the .ipa); confirm that is acceptable for the APK too.
+
+## Review
+- MAJOR cloud zone unwired: fixed (ForYouInputsFactory.cloudZoneProvider passes recService.cloudZoneRanking(force) when enabled; manual Refresh forces; test forYouCloudZoneProvider_wiredOnlyWhenEnabled_andReturnsServerOrder). Edits outside owned files: ForYouTilesScreen.kt.
+- MINOR AppGraph startRecs race: fixed (init moved to last initializer).
+- MINOR Delete/Send now on Main scope: fixed (deleteCloudDataAsync / flushNowAsync on service scope).
+- MINOR ledger row: fixed (PARTIAL, deferred consumers listed).
+- MINOR privacy-gate mirror gap: fixed (mirror is a StateFlow set from every emission, no drop(1); SongDetail keys on browseGraph.recEnabled).
+- NIT duplicate REC_ENGINE_ENABLED: fixed (ForYouGate aliases RecsSettings).
+
+fixes applied
+
+## Review
+- MAJOR cloud zone unwired: fixed (ForYouInputsFactory.cloudZoneProvider passes recService.cloudZoneRanking(force) when enabled; manual Refresh forces; test forYouCloudZoneProvider_wiredOnlyWhenEnabled_andReturnsServerOrder). Edit outside owned files: ForYouTilesScreen.kt.
+- MINOR AppGraph startRecs race: fixed (init moved to last initializer).
+- MINOR Delete/Send now on Main scope: fixed (deleteCloudDataAsync / flushNowAsync on service scope).
+- MINOR ledger row: fixed (PARTIAL, deferred consumers listed).
+- MINOR privacy-gate mirror gap: fixed (StateFlow set from every emission, no drop(1); SongDetail keys on browseGraph.recEnabled).
+- NIT duplicate REC_ENGINE_ENABLED: fixed (ForYouGate aliases RecsSettings).
+
+fixes applied

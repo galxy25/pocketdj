@@ -281,9 +281,6 @@ class AppGraph private constructor(context: Context) {
     // session's first play is never lost; SharedFlow has no replay.
     init { appScope.launch(Dispatchers.IO) { servicesGraph.startPlayStats() } }
 
-    // BRW-13: arm the rec-engine auto-flush loop (gated on the Settings toggle; also finishes an owed deletion).
-    init { browseGraph.startRecs() }
-
     /**
      * Settings ▸ Storage measurement + clears (specs/storage.md §2). Clears are
      * wired to the REAL stores/caches and never touch settings/installId. Lazy —
@@ -421,6 +418,10 @@ class AppGraph private constructor(context: Context) {
         // MainActivity forwards every intent to IntentSink; the modules' handlers answer.
         appScope.launch { IntentSink.install(features.deepLinkHandlers) }
     }
+
+    // BRW-13: arm the rec-engine auto-flush loop. MUST stay the LAST initializer: its IO coroutine reads
+    // lazily-delegated properties (collections, collectionActivity) that are initialized in textual order.
+    init { browseGraph.startRecs() }
 
     companion object {
         @Volatile

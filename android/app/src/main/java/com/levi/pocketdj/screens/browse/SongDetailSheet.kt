@@ -311,7 +311,7 @@ internal const val SUGGESTED_COLLECTIONS_MAX = 5
  */
 @Composable
 private fun SuggestedCollectionsBlock(songId: String, graph: AppGraph) {
-    val engineOn by graph.settings.flow(com.levi.pocketdj.data.recs.RecsSettings.REC_ENGINE_ENABLED).collectAsState(initial = false)
+    val engineOn by graph.browseGraph.recEnabled.collectAsState()
     var rows by remember(songId) { mutableStateOf<List<com.levi.pocketdj.data.recs.RecommendationService.CollectionSuggestion>>(emptyList()) }
     var added by remember(songId) { mutableStateOf(setOf<String>()) }
     LaunchedEffect(songId, engineOn) {

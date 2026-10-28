@@ -213,19 +213,29 @@ internal object ForYouInputsFactory {
         )
     }
 
-    /** Refresh the durable feed. The cloud ranker is not wired on Android yet (on-device zone only). */
-    suspend fun refresh(graph: AppGraph, feed: ForYouFeedStore) {
+    /**
+     * The cloud ranker for In Da Zone, only when the user opted in (iOS: `recEngine.isEnabled`); null otherwise
+     * so the zone ranks on device. [force] is the manual Refresh (skips the service's 15-min TTL).
+     */
+    internal fun cloudZoneProvider(svc: com.levi.pocketdj.data.recs.RecommendationService, force: Boolean):
+        (suspend () -> List<com.levi.pocketdj.data.recs.ForYouCloudZoneRow>)? =
+        if (svc.isEnabled) ({ svc.cloudZoneRanking(force) }) else null
+
+    /** Refresh the durable feed (device zone, or the cloud ranking when the engine is on). */
+    suspend fun refresh(graph: AppGraph, feed: ForYouFeedStore, force: Boolean = false) {
         val inputs = build(graph) ?: return
-        withContext(Dispatchers.IO) { feed.refresh(inputs, cloudZone = null) }
+        withContext(Dispatchers.IO) {
+            feed.refresh(inputs, cloudZone = cloudZoneProvider(graph.browseGraph.recService, force))
+        }
     }
 
     private val flights = java.util.WeakHashMap<AppGraph, ForYouSingleFlight>()
 
     /** Single-flight, app-scoped trigger; [shouldRun] is evaluated inside the flight (cheap, after the guard). */
-    fun launchRefresh(graph: AppGraph, feed: ForYouFeedStore, shouldRun: suspend () -> Boolean = { true }) {
+    fun launchRefresh(graph: AppGraph, feed: ForYouFeedStore, force: Boolean = false, shouldRun: suspend () -> Boolean = { true }) {
         val flight = synchronized(flights) { flights.getOrPut(graph) { ForYouSingleFlight(graph.appScope) } }
         flight.launch {
-            if (shouldRun()) refresh(graph, feed)
+            if (shouldRun()) refresh(graph, feed, force)
         }
     }
 
@@ -344,7 +354,7 @@ fun ForYouTilesScreen(
     LaunchedEffect(refreshToken) {
         if (refreshToken != lastToken) {
             lastToken = refreshToken
-            ForYouInputsFactory.launchRefresh(graph, stores.feed)
+            ForYouInputsFactory.launchRefresh(graph, stores.feed, force = true)
         }
     }
 
