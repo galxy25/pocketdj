@@ -82,6 +82,8 @@ internal class HistoryResults(val rows: List<SongRow>, private val base: History
 internal class HistoryBrowseState(
     private val debounceMs: Long = QUERY_DEBOUNCE_MS,
     private val filterDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /** When true, [refreshExternal] publishes nothing until the persisted snapshot has been applied. */
+    private val requireRestore: Boolean = false,
 ) {
     private val _inputs = MutableStateFlow(HistoryInputs())
     val inputs: StateFlow<HistoryInputs> = _inputs.asStateFlow()
@@ -104,8 +106,9 @@ internal class HistoryBrowseState(
     @Volatile var playCounts: Map<String, Int> = emptyMap()
 
     /** True once the persisted snapshot has been applied (a flush before this must not clobber it). */
-    @Volatile var restored: Boolean = false
-        private set
+    private val _restored = MutableStateFlow(false)
+    val restoredFlow: StateFlow<Boolean> = _restored.asStateFlow()
+    val restored: Boolean get() = _restored.value
 
     // ---- inputs -----------------------------------------------------------------------------
 
@@ -122,6 +125,7 @@ internal class HistoryBrowseState(
     // ---- the refreshExternal pipeline ---------------------------------------------------------
 
     suspend fun refreshExternal(signature: String, baseKey: String) {
+        if (requireRestore && !_restored.value) return // hydrating: defaults must not publish
         if (displayKey == signature) return
         val before = _inputs.value
         val sigBefore = before.signature()
@@ -195,6 +199,9 @@ internal class HistoryBrowseState(
         )
     }
 
+    /** Mark hydration finished without applying anything (load failed). */
+    fun markRestored() { _restored.value = true }
+
     /** Apply a persisted snapshot; an empty sort falls to the History default (most recent first). */
     fun restore(snapshot: HistorySnapshot) {
         val sort = snapshot.sortKeys
@@ -202,8 +209,13 @@ internal class HistoryBrowseState(
             .ifEmpty { HistoryInputs.DEFAULT_SORT }
         val clauses = snapshot.clauses.mapNotNull { it.toClause() }
             .filter { Fields.byId.containsKey(it.field) }
-        update { it.copy(clauses = clauses, sortKeys = sort) }
-        restored = true
+        // Apply only while the user hasn't touched filter/sort during the async hydrate.
+        update {
+            if (it.clauses.isEmpty() && it.sortKeys == HistoryInputs.DEFAULT_SORT) {
+                it.copy(clauses = clauses, sortKeys = sort)
+            } else it
+        }
+        _restored.value = true
     }
 
     companion object {

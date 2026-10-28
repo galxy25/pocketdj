@@ -118,8 +118,13 @@ internal fun contextLabel(ref: PlayRef): String {
 }
 
 /**
- * Live speaker indicator rule: the row is the CURRENT event AND the player is actually sounding
- * (a paused/stopped current row shows no speaker — the indicator must not lie).
+ * Live speaker indicator rule (iOS `isLiveRow`): the row is the CURRENT event AND either the
+ * sequencer still owns it (running, even while paused) or something is actually sounding.
  */
-internal fun isLiveRow(ref: PlayRef, currentEventId: String?, playerPlaying: Boolean): Boolean =
-    playerPlaying && currentEventId != null && ref.eventId == currentEventId
+internal fun isLiveRow(
+    ref: PlayRef,
+    currentEventId: String?,
+    playerPlaying: Boolean,
+    sequencerRunning: Boolean = false,
+): Boolean =
+    currentEventId != null && ref.eventId == currentEventId && (sequencerRunning || playerPlaying)

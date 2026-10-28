@@ -35,9 +35,10 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
      * skipped until the restore ran so defaults never clobber the saved doc.
      */
     private val historyBrowseLazy: Lazy<HistoryBrowseState> = lazy {
-        HistoryBrowseState().also { state ->
+        HistoryBrowseState(requireRestore = true).also { state ->
             app.appScope.launch(Dispatchers.IO) {
                 runCatching { state.restore(HistorySettings.load(app.settings)) }
+                if (!state.restored) state.markRestored()
                 state.inputs
                     .map { state.toSnapshot() }
                     .distinctUntilChanged()

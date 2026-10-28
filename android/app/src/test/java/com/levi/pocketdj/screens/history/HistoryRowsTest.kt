@@ -106,6 +106,9 @@ class HistoryRowsTest {
         assertFalse(isLiveRow(ref, "e1", playerPlaying = false))
         assertFalse(isLiveRow(ref, "e2", playerPlaying = true))
         assertFalse(isLiveRow(ref, null, playerPlaying = true))
+        // running but paused: the deck still owns the row
+        assertTrue(isLiveRow(ref, "e1", playerPlaying = false, sequencerRunning = true))
+        assertFalse(isLiveRow(ref, "e2", playerPlaying = false, sequencerRunning = true))
     }
 
     @Test

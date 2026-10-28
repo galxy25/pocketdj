@@ -110,8 +110,8 @@ internal enum class HistoryTab(val label: String) {
 
 /** Which gated tabs the stores currently report enabled. Their packages flip these. */
 internal object HistoryTabGate {
-    @Volatile var pocketsEnabled: Boolean = false
-    @Volatile var forYouEnabled: Boolean = false
+    val pocketsEnabled = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val forYouEnabled = kotlinx.coroutines.flow.MutableStateFlow(false)
 }
 
 /** Pure tab-visibility rule: Playback + Collection always; Pockets / For You only when enabled. */
@@ -142,7 +142,9 @@ fun HistoryScreen(
     val catalog = catalogState.catalog ?: MergedCatalog.EMPTY
 
     var tab by rememberSaveable { mutableStateOf(HistoryTab.PLAYBACK) }
-    val tabs = visibleHistoryTabs(HistoryTabGate.pocketsEnabled, HistoryTabGate.forYouEnabled)
+    val pocketsOn by HistoryTabGate.pocketsEnabled.collectAsState()
+    val forYouOn by HistoryTabGate.forYouEnabled.collectAsState()
+    val tabs = visibleHistoryTabs(pocketsOn, forYouOn)
     val current = if (tab in tabs) tab else HistoryTab.PLAYBACK
 
     val state = graph.browseGraph.historyBrowse
@@ -286,7 +288,8 @@ private fun PlaybackContent(
     val catalogId = System.identityHashCode(catalog)
     val signature = "$catalogId-${historyState.revision}-${inputs.signature()}"
     val baseKey = "$catalogId-${historyState.revision}-${inputs.hideSkips}"
-    LaunchedEffect(signature, inputs.submitNonce) {
+    val hydrated by state.restoredFlow.collectAsState()
+    LaunchedEffect(signature, inputs.submitNonce, hydrated) {
         val events = historyState.events
         state.externalBase = {
             buildItems(
@@ -308,6 +311,8 @@ private fun PlaybackContent(
     val liveEventId by remember { graph.playbackGraph.skipTracker.currentEventIdState }.collectAsState()
     val nowPlaying by graph.playbackController.nowPlaying.collectAsState()
     val playing = nowPlaying?.isPlaying == true
+    val seqState by graph.playbackGraph.sequencer.state.collectAsState()
+    val seqRunning = seqState.isRunning
 
     var menuEventId by remember { mutableStateOf<String?>(null) }
     var rewindEventId by remember { mutableStateOf<String?>(null) }
@@ -339,7 +344,7 @@ private fun PlaybackContent(
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(visible, key = { results.refOf(it)?.eventId ?: it.song.id + it.playedAt }) { row ->
                 val ref = results.refOf(row) ?: return@items
-                val live = isLiveRow(ref, liveEventId, playing)
+                val live = isLiveRow(ref, liveEventId, playing, seqRunning)
                 Box {
                     PlayRow(
                         row = row,
@@ -391,7 +396,8 @@ private fun PlaybackContent(
                 TextButton(
                     onClick = {
                         rewindEventId = null
-                        scope.launch {
+                        // App-lifetime scope: leaving History must not cancel a confirmed rewind.
+                        graph.appScope.launch(kotlinx.coroutines.Dispatchers.Main) {
                             // Re-read the log at EXECUTE time: a merge can change it under the dialog.
                             val result = performRewind(graph, id, store.state.value.events)
                             if (result is RewindResult.Failed) {

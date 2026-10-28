@@ -4,6 +4,7 @@ import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.history.HistorySettings
 import com.levi.pocketdj.data.history.HistorySnapshot
 import com.levi.pocketdj.data.history.PlayEvent
+import com.levi.pocketdj.data.settings.BrowseSortKeyDoc
 import com.levi.pocketdj.data.settings.ClauseDoc
 import com.levi.pocketdj.screens.browse.Clause
 import com.levi.pocketdj.screens.browse.FilterOp
@@ -34,6 +35,28 @@ class HistoryBrowseStateTest {
 
     private fun newState(disp: kotlinx.coroutines.CoroutineDispatcher) =
         HistoryBrowseState(debounceMs = 180, filterDispatcher = disp)
+
+    @Test
+    fun requireRestore_publishesNothingUntilHydrated() = runTest {
+        val s = HistoryBrowseState(debounceMs = 180, filterDispatcher = StandardTestDispatcher(testScheduler), requireRestore = true)
+        s.externalBase = { base(events(1_000.0, 2_000.0)) }
+        s.refreshExternal("sig", "base")
+        assertEquals(null, s.displayKey)
+        assertTrue(s.results.value.rows.isEmpty())
+        s.markRestored()
+        s.refreshExternal("sig", "base")
+        assertEquals("sig", s.displayKey)
+    }
+
+    @Test
+    fun restore_doesNotOverwriteEditsMadeDuringHydration() = runTest {
+        val s = newState(StandardTestDispatcher(testScheduler))
+        val edited = listOf(SortKey(SortField.LAST_PLAYED_AT, ascending = true))
+        s.setSortKeys(edited)
+        s.restore(HistorySnapshot(clauses = emptyList(), sortKeys = listOf(BrowseSortKeyDoc(SortField.LAST_PLAYED_AT.id, false))))
+        assertEquals(edited, s.inputs.value.sortKeys)
+        assertTrue(s.restored)
+    }
 
     @Test
     fun defaultSort_isLastPlayedDesc_andPublishesStampedKey() = runTest {

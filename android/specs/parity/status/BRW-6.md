@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-6 History screen parity
 
@@ -23,3 +23,16 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+
+fixes applied
+
+- MINOR rewind cancelled on scope exit: fixed. Execute step now runs on `graph.appScope` (Main); event log still re-read at execute time; failure Toast posted on Main.
+- MINOR live speaker ignores paused-but-running: fixed. `isLiveRow` = current event AND (sequencer running OR playing); test case added.
+- MINOR hydration race: fixed. `refreshExternal` publishes nothing until restored (`requireRestore`), `restore()` applies only when filter/sort are still pristine, a failed load still marks restored; the screen recompute keys on the restored flow. Two tests added.
+- MINOR Pockets / For You gate: partially fixed. `HistoryTabGate` is now a StateFlow collected by the screen (recomposes). The Pockets / For You tab bodies remain placeholders: tracked as a follow-up package, acceptance NOT met for them.
+- NIT ledger row: left to integrator; mark PARTIAL (emulator steps pending, Pockets/For You bodies stubbed).
+- NIT BrowseSortSheet `historyMode` param: additive with default; integrator should watch merge order. No code change.
+
+Tests: 2474 run, 0 failures; :app:assembleDebug green.
