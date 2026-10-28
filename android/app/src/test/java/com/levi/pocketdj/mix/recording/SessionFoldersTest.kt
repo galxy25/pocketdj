@@ -32,7 +32,7 @@ class SessionFoldersTest {
         File(a, "recording-1.aac").writeBytes(ByteArray(10))
         File(b, "recording-1.aac").writeBytes(ByteArray(10))
         assertEquals(30L, SessionFolders.usageBytes(root))
-        SessionFolders.deleteAll(root, keep = live)
+        SessionFolders.deleteAll(root, keep = listOf(live))
         assertEquals(10L, SessionFolders.usageBytes(root))
         assertTrue(live.exists())
         assertFalse(b.exists())

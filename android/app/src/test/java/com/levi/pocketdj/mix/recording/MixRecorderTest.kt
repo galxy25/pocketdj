@@ -14,7 +14,8 @@ private class FakeWriter(val file: File) : TakeWriter {
     override var onWriterFailure: (() -> Unit)? = null
     override var failed = false
     var started = false; var stopped = false
-    override fun start() { started = true; file.writeBytes(ByteArray(4)) }
+    var startThrows = false
+    override fun start() { if (startThrows) throw java.io.IOException("disk full"); started = true; file.writeBytes(ByteArray(4)) }
     override fun stop() { stopped = true }
     fun die() { failed = true; onWriterFailure?.invoke() }
 }
@@ -31,6 +32,12 @@ private class FakeSessions : RecordingSessions {
         val l = data.getOrPut(sessionId) { mutableListOf() }
         l += MixRecording("rec${l.size + 1}", fileName, startedAt, durationMs)
     }
+    override fun pruneRecordings(isGone: (String, String) -> Boolean): Int {
+        var n = 0
+        for (l in data.values) { val b = l.size; l.removeAll { isGone(sidOf(l), it.fileName) }; n += b - l.size }
+        return n
+    }
+    private fun sidOf(l: MutableList<MixRecording>) = data.entries.first { it.value === l }.key
 }
 
 class MixRecorderTest {
@@ -40,8 +47,12 @@ class MixRecorderTest {
     private var audible = true
     private var now = 1_000_000L
     private val writers = ArrayList<FakeWriter>()
-    private fun recorder(dur: (File) -> Int = { 1000 }) = MixRecorder(
+    private fun recorder(
+        scope: kotlinx.coroutines.CoroutineScope? = null, fin: ((() -> Unit) -> Unit)? = null,
+        dur: (File) -> Int = { 1000 },
+    ) = MixRecorder(
         root, tap, sessions, { audible }, { f -> FakeWriter(f).also { writers += it } }, { now }, durationOf = dur,
+        scope = scope, runFinalize = fin ?: { it() },
     )
 
     @Test fun startStopGatesTapAndFilesToSessionCurrentAtStart() {
@@ -132,5 +143,71 @@ class MixRecorderTest {
         r.stop()
         assertNotNull(sessions.data["s1"]!!.singleOrNull())
         assertEquals(0, r.recoverOrphans())
+    }
+
+    @Test fun toggleStartsTheWatchdogWhenScopeIsInjected() {
+        val job = kotlinx.coroutines.SupervisorJob()
+        val r = recorder(scope = kotlinx.coroutines.CoroutineScope(job + kotlinx.coroutines.Dispatchers.Unconfined))
+        assertFalse(r.watchdogActive)
+        r.toggle() // the record button's entry point
+        assertTrue(r.watchdogActive)
+        r.toggle()
+        assertFalse(r.watchdogActive)
+        job.cancel()
+    }
+
+    @Test fun startFailureFilesNoRowAndRemovesEmptyFile() {
+        val r = MixRecorder(root, tap, sessions, { audible },
+            { f -> FakeWriter(f).also { it.startThrows = true; writers += it } }, { now })
+        assertFalse(r.start())
+        assertFalse(r.isRecording)
+        assertFalse(tap.isCapturing)
+        assertTrue(sessions.data["s1"]!!.isEmpty())
+    }
+
+    @Test fun writerDeadBeforeAnyFrameLeavesNoRowAndDeletesFile() {
+        val r = recorder { 0 }; r.start()
+        val file = r.activeTake!!.file
+        writers[0].die()
+        assertTrue(sessions.data["s1"]!!.isEmpty())
+        assertFalse(file.exists())
+    }
+
+    @Test fun stopFlipsStateImmediatelyAndFilesAfterAsyncFinalize() {
+        val pending = ArrayList<() -> Unit>()
+        val r = recorder(fin = { pending += it }); r.start()
+        val file = r.activeTake!!.file
+        writers[0].appendedSeconds = 3.0
+        r.stop()
+        assertFalse(r.isRecording)
+        assertTrue(sessions.data["s1"]!!.isEmpty())      // not filed yet
+        assertTrue(r.liveFiles.contains(file))           // still protected while draining
+        assertEquals(0, r.recoverOrphans())
+        pending.single()()
+        assertEquals(3_000, sessions.data["s1"]!!.single().durationMs)
+        assertTrue(r.liveFiles.isEmpty())
+    }
+
+    @Test fun recoveredStartIsMtimeMinusDuration() {
+        val dir = SessionFolders.sessionFolder(root, "old")!!
+        val f = File(dir, "recording-1.aac").apply { writeBytes(ByteArray(8)); setLastModified(10_000_000L) }
+        recorder { 4_000 }.recoverOrphans()
+        assertEquals(10_000_000.0 - 4_000, sessions.data["old"]!!.single().startedAt, 1.0)
+        assertTrue(f.exists())
+    }
+
+    @Test fun deleteAllRecordingsRecoversOrphansUnlinksAndPrunesRowsKeepingLiveTake() {
+        val r = recorder()
+        r.start(); writers[0].appendedSeconds = 1.0; r.stop()         // s1/recording-1 filed
+        val orphan = File(SessionFolders.sessionFolder(root, "crash")!!, "recording-1.aac").apply { writeBytes(ByteArray(8)) }
+        r.start()                                                       // s1/recording-2 is live
+        val live = r.activeTake!!.file
+        r.deleteAllRecordings()
+        assertFalse(orphan.exists())
+        assertTrue(live.exists())
+        assertTrue(sessions.data["s1"]!!.isEmpty())                     // finished take's row pruned
+        assertTrue(sessions.data["crash"]!!.isEmpty())                  // recovered then deleted, row gone too
+        r.stop()
+        assertEquals(1, sessions.data["s1"]!!.size)                     // live take still files
     }
 }

@@ -44,13 +44,13 @@ object SessionFolders {
     fun usageBytes(root: File): Long =
         if (!root.exists()) 0L else root.walkBottomUp().filter { it.isFile }.sumOf { it.length() }
 
-    /** Delete everything under [root] except [keep] (the live take); prunes emptied session dirs. */
-    fun deleteAll(root: File, keep: File?) {
-        val keepPath = keep?.absoluteFile?.normalize()
+    /** Delete everything under [root] except [keep] (the live/finalizing takes); prunes emptied session dirs. */
+    fun deleteAll(root: File, keep: Collection<File>) {
+        val keepPaths = keep.map { it.absoluteFile.normalize() }.toSet()
         root.listFiles().orEmpty().forEach { dir ->
             if (!dir.isDirectory) return@forEach
             dir.listFiles().orEmpty().forEach { f ->
-                if (f.absoluteFile.normalize() != keepPath) f.delete()
+                if (f.absoluteFile.normalize() !in keepPaths) f.delete()
             }
             if (dir.listFiles().isNullOrEmpty()) dir.delete()
         }

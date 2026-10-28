@@ -19,4 +19,14 @@ class AdtsScanTest {
         assertEquals(0, AdtsScan.scan(ByteArray(0)).durationMs)
         assertEquals(0, AdtsScan.scan(ByteArray(64) { 7 }).frames)
     }
+
+    @Test fun fileScanStreamsAndMatchesByteScan() {
+        val bytes = frame(100) + frame(120) + frame(90).copyOf(50)
+        val f = kotlin.io.path.createTempFile("adts", ".aac").toFile()
+        f.writeBytes(bytes)
+        assertEquals(AdtsScan.scan(bytes), AdtsScan.scan(f))
+        assertEquals(2, AdtsScan.scan(f).frames)
+        assertEquals(0, AdtsScan.scan(java.io.File(f.path + ".missing")).frames)
+        f.delete()
+    }
 }

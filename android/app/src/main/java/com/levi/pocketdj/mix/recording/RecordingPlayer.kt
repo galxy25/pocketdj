@@ -22,9 +22,20 @@ class RecordingPlayer(private val pauseMix: () -> Unit) {
         return play(file)
     }
 
+    private val _lastError = MutableStateFlow<String?>(null)
+    /** Alert text for the Sessions screen (missing / damaged file); call [consumeError] once shown. */
+    val lastError: StateFlow<String?> = _lastError.asStateFlow()
+    fun consumeError() { _lastError.value = null }
+
+    /** Total length of the playing take in ms (0 when idle). */
+    val durationMs: Int get() = runCatching { mp?.duration ?: 0 }.getOrDefault(0).coerceAtLeast(0)
+    /** Current position in ms (0 when idle). */
+    val currentPositionMs: Int get() = runCatching { mp?.currentPosition ?: 0 }.getOrDefault(0)
+    fun seekTo(ms: Int) { runCatching { mp?.seekTo(ms.coerceIn(0, durationMs)) } }
+
     fun play(file: File): Boolean {
         stop()
-        if (!file.isFile) return false
+        if (!file.isFile) { _lastError.value = "This recording's file couldn't be found."; return false }
         pauseMix()
         return try {
             val p = MediaPlayer()
@@ -32,11 +43,11 @@ class RecordingPlayer(private val pauseMix: () -> Unit) {
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
             p.setDataSource(file.path)
             p.setOnCompletionListener { stop() }
-            p.setOnErrorListener { _, _, _ -> stop(); true }
+            p.setOnErrorListener { _, _, _ -> stop(); _lastError.value = "This recording's file is damaged and can't be played."; true }
             p.prepare(); p.start()
             mp = p; _playing.value = file.path
             true
-        } catch (_: Throwable) { stop(); false }
+        } catch (_: Throwable) { stop(); _lastError.value = "This recording's file is damaged and can't be played."; false }
     }
 
     fun stop() {

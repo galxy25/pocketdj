@@ -80,12 +80,12 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     }
     val mixSessions: MixSessionStore get() = sessionsLazy.value
 
-    /** MIX-12: the persistent house tap, installed once on the engine's graph (start/stop only gates it). */
+    /** MIX-12: the persistent house tap, installed on the engine's graph at first take (start/stop only gates it); plain so launch-time orphan recovery never builds the engine. */
     val recordingTap: com.levi.pocketdj.mix.recording.RecordingTapSink by lazy {
-        com.levi.pocketdj.mix.recording.RecordingTapSink().also { mixEngine.graph.tapSink = it }
+        com.levi.pocketdj.mix.recording.RecordingTapSink()
     }
 
-    /** MIX-12: mix audio recorder. Call [com.levi.pocketdj.mix.recording.MixRecorder.recoverOrphans] at launch. */
+    /** MIX-12: mix audio recorder. AppGraph calls recoverOrphans() off-main at launch. */
     val mixRecorder: com.levi.pocketdj.mix.recording.MixRecorder by lazy {
         val tap = recordingTap
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -94,14 +94,19 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             tap = tap,
             sessions = mixSessions.asRecordingSessions(),
             mixAudible = { mixEngine.isRunning },
-            makeWriter = { com.levi.pocketdj.mix.recording.AacAdtsWriter(it, tap, mixEngine.graph.sampleRate) },
+            makeWriter = {
+                mixEngine.graph.tapSink = tap   // idempotent install
+                com.levi.pocketdj.mix.recording.AacAdtsWriter(it, tap, mixEngine.graph.sampleRate)
+            },
             postMain = { r -> mainHandler.post(r) },
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main),
+            runFinalize = { r -> Thread(r, "pdj-mix-rec-finalize").start() },
         )
     }
 
     /** MIX-12: Sessions-screen take playback; pauses the live mix first. */
     val recordingPlayer: com.levi.pocketdj.mix.recording.RecordingPlayer by lazy {
-        com.levi.pocketdj.mix.recording.RecordingPlayer(pauseMix = { mixEngine.pauseBoth() })
+        com.levi.pocketdj.mix.recording.RecordingPlayer(pauseMix = { autoDj.remotePause() })  // suspends Auto-DJ (resumable), not pauseBoth
     }
 
     /**

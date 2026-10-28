@@ -41,7 +41,27 @@ class AacAdtsWriter(
     private val failureFired = AtomicBoolean(false)
     private var thread: Thread? = null
 
+    private var codec: MediaCodec? = null
+    private var out: FileOutputStream? = null
+
+    /** Opens the file and starts the encoder synchronously; throws on any failure (nothing is left open). */
     override fun start() {
+        try {
+            out = FileOutputStream(file)
+            val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, tap.channels).apply {
+                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 65_536)
+            }
+            val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+            codec = c
+            c.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            c.start()
+        } catch (e: Throwable) {
+            runCatching { codec?.release() }; runCatching { out?.close() }
+            codec = null; out = null
+            throw e
+        }
         val t = Thread({ run() }, "pdj-mix-aac")
         thread = t
         t.start()
@@ -59,19 +79,9 @@ class AacAdtsWriter(
     }
 
     private fun run() {
-        var codec: MediaCodec? = null
-        var out: FileOutputStream? = null
+        val c = codec ?: return
+        val out = out ?: return
         try {
-            out = FileOutputStream(file)
-            val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, tap.channels).apply {
-                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 65_536)
-            }
-            val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-            codec = c
-            c.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            c.start()
             val info = MediaCodec.BufferInfo()
             val scratch = FloatArray(8192)
             var inEos = false
@@ -121,15 +131,23 @@ class AacAdtsWriter(
         } catch (_: Throwable) {
             fail()
         } finally {
-            runCatching { codec?.stop() }; runCatching { codec?.release() }
-            runCatching { out?.close() }
+            runCatching { c.stop() }; runCatching { c.release() }
+            runCatching { out.close() }
         }
+    }
+
+    /** Linear below 0.9, then a tanh knee into +-1: two hot decks round off instead of hard-clipping. */
+    private fun softClip(x: Float): Float {
+        val a = kotlin.math.abs(x)
+        if (a <= 0.9f) return x
+        val y = 0.9f + 0.1f * kotlin.math.tanh((a - 0.9f) / 0.1f)
+        return if (x < 0) -y else y
     }
 
     private fun toPcm16(src: FloatArray, n: Int): ByteArray {
         val b = ByteArray(n * 2)
         for (i in 0 until n) {
-            val s = (src[i].coerceIn(-1f, 1f) * 32767f).toInt()
+            val s = (softClip(src[i]) * 32767f).toInt()
             b[i * 2] = (s and 0xFF).toByte()
             b[i * 2 + 1] = ((s shr 8) and 0xFF).toByte()
         }
@@ -147,6 +165,31 @@ object AdtsScan {
         val durationMs: Int get() = if (sampleRate > 0) (frames.toLong() * SAMPLES_PER_FRAME * 1000 / sampleRate).toInt() else 0
     }
 
+    /** Streams the file (never loads it whole): read each 7-byte header, then skip the frame body. */
+    fun scan(file: File): Result = try {
+        java.io.RandomAccessFile(file, "r").use { raf ->
+            val total = raf.length()
+            val hdr = ByteArray(7)
+            var pos = 0L; var frames = 0; var rate = 0
+            while (pos + 7 <= total) {
+                raf.seek(pos); raf.readFully(hdr)
+                val len = frameLength(hdr) ?: break
+                if (pos + len > total) break
+                if (frames == 0) rate = RATES[(hdr[2].toInt() shr 2) and 0xF]
+                frames++; pos += len
+            }
+            Result(frames, rate)
+        }
+    } catch (_: Throwable) { Result(0, 0) }
+
+    private fun frameLength(b: ByteArray): Int? {
+        val b0 = b[0].toInt() and 0xFF; val b1 = b[1].toInt() and 0xFF
+        if (b0 != 0xFF || (b1 and 0xF0) != 0xF0) return null
+        val idx = (b[2].toInt() shr 2) and 0xF
+        val len = ((b[3].toInt() and 3) shl 11) or ((b[4].toInt() and 0xFF) shl 3) or ((b[5].toInt() and 0xFF) shr 5)
+        return if (len < 7 || idx >= RATES.size) null else len
+    }
+
     fun scan(bytes: ByteArray): Result {
         var pos = 0; var frames = 0; var rate = 0
         while (pos + 7 <= bytes.size) {
@@ -161,6 +204,4 @@ object AdtsScan {
         }
         return Result(frames, rate)
     }
-
-    fun scan(file: File): Result = runCatching { scan(file.readBytes()) }.getOrDefault(Result(0, 0))
 }

@@ -202,6 +202,18 @@ class MixSessionStore(
         }
     }
 
+    /** Drop the metadata of every take [isGone] says is provably gone; returns how many rows were removed. */
+    fun pruneRecordings(isGone: (sessionId: String, fileName: String) -> Boolean): Int = synchronized(lock) {
+        var removed = 0
+        _sessions.value = _sessions.value.map { s ->
+            val keep = s.recordingsList.filterNot { isGone(s.id, it.fileName) }
+            removed += s.recordingsList.size - keep.size
+            if (keep.size == s.recordingsList.size) s else s.copy(recordings = keep)
+        }
+        if (removed > 0) saveNow()
+        removed
+    }
+
     /** Drop one take's metadata. Returns true when a record was removed. */
     fun removeRecording(sessionId: String, recordingId: String): Boolean = synchronized(lock) {
         val list = _sessions.value
