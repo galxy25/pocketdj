@@ -51,6 +51,48 @@
                 <data android:host="*" />
                 <data android:pathPattern=".*\\.pdjdiagkey" />
             </intent-filter>
+            <!-- SURF-4: pocketdj:// custom scheme. Scheme-only so both pocketdj://jukebox/<id> and the
+                 host-less pocketdj:///jukebox/<id> match; DeepLinkParser validates verbs
+                 (play, album, artist, playlist, pocket, setlist, jukebox, mwf, search). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="pocketdj" />
+            </intent-filter>
+            <!-- SURF-4: App Links for jukebox guest pages and /mwf/<id>/ (autoVerify needs
+                 assetlinks.json on the website: device-only). -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="jukebox.pocket-dj.com" />
+                <data android:pathPrefix="/" />
+            </intent-filter>
+            <!-- SURF-4: collection files by MIME (content://) ... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/x-pocketdj-collection" />
+            </intent-filter>
+            <!-- ... and by extension (.pdjcollection / .pocketdj.zip) where the path carries a name. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\\.pdjcollection" />
+                <data android:pathPattern=".*\\..*\\.pdjcollection" />
+                <data android:pathPattern=".*\\.pocketdj\\.zip" />
+                <data android:pathPattern=".*\\..*\\.pocketdj\\.zip" />
+            </intent-filter>
             <!-- Static shortcuts (filled by SURF-9); empty today. -->
             <meta-data
                 android:name="android.app.shortcuts"

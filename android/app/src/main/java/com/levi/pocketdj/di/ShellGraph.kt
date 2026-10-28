@@ -5,7 +5,11 @@ import com.levi.pocketdj.onboarding.LinkDeviceProbe
 import com.levi.pocketdj.onboarding.OnboardingStore
 import com.levi.pocketdj.onboarding.StubLinkDeviceProbe
 import com.levi.pocketdj.screens.settings.SettingsSections
+import com.levi.pocketdj.shell.DeepLinkDispatcher
+import com.levi.pocketdj.shell.DeepLinkHandler
+import com.levi.pocketdj.shell.DeepLinkSeams
 import com.levi.pocketdj.shell.FeatureModule
+import com.levi.pocketdj.shell.OnboardingGate
 import com.levi.pocketdj.shell.SettingsSection
 
 /**
@@ -42,4 +46,22 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
             }
         }
     }
+
+    /** Later packages (SURF-5 ShellActions, JBX-2, SET-2, Games) assign these seams. */
+    val deepLinkSeams = DeepLinkSeams()
+
+    /** SURF-4: pocketdj:// links, jukebox/MwF App Links and collection file opens. */
+    val deepLinks: DeepLinkDispatcher by lazy {
+        DeepLinkDispatcher(
+            scope = app.appScope,
+            gate = object : OnboardingGate {
+                override val isComplete: Boolean get() = onboarding.isComplete
+                override suspend fun waitUntilComplete() = onboarding.waitUntilComplete()
+            },
+            seams = deepLinkSeams,
+            displayName = DeepLinkDispatcher.contentDisplayName(app.appContext.contentResolver),
+        )
+    }
+
+    override val deepLinkHandlers: List<DeepLinkHandler> by lazy { listOf(deepLinks.intentHandler) }
 }
