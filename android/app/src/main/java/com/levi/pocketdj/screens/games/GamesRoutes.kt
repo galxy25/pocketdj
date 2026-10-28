@@ -31,11 +31,18 @@ fun GamesRoute(
         CollectorsPuzzleScreen(graph, onClose = { showPuzzle = false }, modifier = modifier)
         return
     }
+    var showInThePocket by rememberSaveable { mutableStateOf(false) }
+    // The store is app-scoped, so a round keeps tracking after back; the screen saves feedback on leave.
+    if (showInThePocket) {
+        BackHandler { showInThePocket = false }
+        InThePocketScreen(graph, modifier = modifier)
+        return
+    }
     GamesScreen(
         store = graph.gamesGraph.scoreboard,
         modifier = modifier,
         deleteScope = graph.appScope,
         onOpenPuzzle = onOpenPuzzle ?: { showPuzzle = true },
-        onOpenInThePocket = onOpenInThePocket,
+        onOpenInThePocket = onOpenInThePocket ?: { showInThePocket = true },
     )
 }

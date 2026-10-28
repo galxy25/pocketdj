@@ -174,6 +174,17 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
     val pocketsBridge: PocketsBridge
         get() = servicesBridge ?: if (isDebuggable()) debugBridge else NoPocketsBridge
 
+    /**
+     * The opt-in seam (GM-8). The services wave assigns the real Settings-backed handler; until then
+     * debug builds flip the `pdj.pocketsStub` gate and release builds can only show the offer.
+     */
+    @Volatile var pocketsOptIn: com.levi.pocketdj.screens.games.PocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
+        override val recommendationsEnabled: Boolean get() = isDebuggable()
+        override fun choose(on: Boolean) {
+            if (isDebuggable()) stubEnabled.value = on
+        }
+    }
+
     /** Rounds upload half (acks in `pocketdj-in-the-pocket-sync.json`). */
     val roundsClient: InThePocketRoundsClient by lazy {
         InThePocketRoundsClient(
