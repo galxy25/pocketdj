@@ -290,3 +290,13 @@ Emulator results (shots in pocketdj-parity/_shots/wave18/):
 - SURF-9 PASS after a real fix: no DHU on the emulator, so a debug Media3 MediaBrowser (AutoBrowseDebug) drives PlaybackService like a head unit: root = Continue|Playlists|Pockets|Mix; Mix tab: Deck A/B pickers, Start Mix ("Pick Deck A first" -> "Shuffled auto-mix"), live rows "1 / 12 · Deck A", New Mix, Pause/Resume, quick/long skip, Stop; Jukebox node shows "Couldn't reach the jukebox server". BUG: while a Mix (or an Apple Music track) was the session player its command set lacked SET_MEDIA_ITEM, so Media3 silently dropped every car row pick (Pause/Skip/Stop never ran). Fixed: MixSessionPlayer and AppleMusicPlayerAdapter expose SET_MEDIA_ITEM + PREPARE with no-op handlers (SimpleBasePlayer's defaults throw), test added. Harness note: the in-app test controller can crash in Media3's optimistic timeline merge after a refused set; it is not a production path.
 - SVC-14 PASS: Storage > Burn folder > Choose folder (DocumentsUI, /sdcard/W18Burn, persistable grant) shows "primary:W18Burn"; Burn 5 wrote descriptive `Artist-Title-Album-Camelot-BPM-id.mp3` + `.txt` pairs into the folder; deleting the folder made the next burn fall back to app storage (fellBack=true, no UI notice, see Q81).
 No FATAL EXCEPTION / ANR from the final build. Open: Q79-Q83.
+
+## Wave 19
+
+Merged: BRW-17, COL-11, STU-16 (no conflicts). JVM suite 4955 tests, 0 failures; assembleDebug green. Status files set to merged.
+
+Emulator results (shots in pocketdj-parity/_shots/wave19/):
+- BRW-17 PASS after a fix: with no ShazamKit AAR the button was hidden everywhere, so the step could not run; DEBUG builds now use DebugListeningBackend (12 s fake listen, then no-match). Browse -> "?♪?" -> RECORD_AUDIO prompt; Don't allow -> denied; next tap opens app Settings; after grant, tap shows listening animation, second tap cancels back to idle. Live recognition device-only (AAR missing, Q84).
+- COL-11 PASS: local mock api.music.apple.com (debug `pdj.amApiBase` + `pdj.fakeMut`). Opt-in OFF: 0 requests; toggle ON starts ratings GET pull batches; hearting an Apple Music song sent POST /v1/me/favorites?ids[songs]=<id> + PUT /v1/me/ratings/songs/<id>; un-hearting sent DELETE only. Real subscription/MUT device-only.
+- STU-16 PASS: ProducerSmokeTest run on the pocketdj AVD via connectedDebugAndroidTest: 1 test, 0 failures (walks 7 sub-tabs with PDJ_SEED_STUDIO/DEMUX). No FATAL EXCEPTION / ANR from com.levi.pocketdj. Route-change re-prime device-only.
+Open: Q84-Q87.

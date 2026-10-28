@@ -64,6 +64,7 @@ class AppleMusicApi(
     /** Total 429 sleep budget per call; beyond it the call returns RateLimited at once. */
     private val maxBackoffBudgetMs: Long = 15_000,
 ) {
+
     private val client: OkHttpClient = http.newBuilder()
         .callTimeout(20, java.util.concurrent.TimeUnit.SECONDS).build()
 
@@ -335,7 +336,7 @@ class AppleMusicApi(
     // ---- plumbing ------------------------------------------------------------------
 
     private fun url(vararg segments: String, extra: HttpUrl.Builder.() -> Unit = {}): HttpUrl {
-        val b = baseUrl.toHttpUrl().newBuilder()
+        val b = (debugBase?.takeIf { com.levi.pocketdj.BuildConfig.DEBUG } ?: baseUrl).toHttpUrl().newBuilder()
         // addPathSegment percent-escapes, so an opaque id can never splice extra segments.
         segments.forEach { b.addPathSegment(it) }
         b.extra()
@@ -426,6 +427,9 @@ class AppleMusicApi(
     private class Raw(val code: Int, val body: String, val retryAfter: Long?)
 
     companion object {
+        /** DEBUG-only emulator hook (`-e pdj.amApiBase <url>`): points every call at a local mock. */
+        @Volatile var debugBase: String? = null
+
         const val BATCH_SIZE = 250
         const val MAX_ARTIST_IDS = 50
         private val JSON = "application/json".toMediaType()

@@ -26,7 +26,8 @@ class DefaultAppleMusicTokens(
     private val devTokenClient: MusicKitDeveloperTokenClient,
     private val settings: AppSettingsStore,
 ) : AppleMusicTokens {
-    override suspend fun developerToken(): String = devTokenClient.developerToken()
+    override suspend fun developerToken(): String =
+        if (AppleMusicApi.debugBase != null && com.levi.pocketdj.BuildConfig.DEBUG) "debug-dev-token" else devTokenClient.developerToken()
     override suspend fun musicUserToken(): String? =
         settings.current().musicUserToken.trim().takeIf { it.isNotEmpty() }
     override suspend fun invalidateDeveloperToken() = devTokenClient.invalidate()

@@ -146,3 +146,11 @@ object UnavailableRecognitionBackend : RecognitionBackend {
     override val isAvailable: Boolean get() = false
     override suspend fun recognize(): RecognitionResult = RecognitionResult.Error(UNAVAILABLE_MESSAGE)
 }
+
+/** Debug-build stand-in (no ShazamKit AAR): "listens" for 12 s then reports no match, so the button/permission/cancel flow is drivable on the emulator. */
+object DebugListeningBackend : RecognitionBackend {
+    override suspend fun recognize(): RecognitionResult {
+        kotlinx.coroutines.delay(12_000)
+        return RecognitionResult.NoMatch
+    }
+}

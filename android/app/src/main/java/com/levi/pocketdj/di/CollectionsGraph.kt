@@ -308,6 +308,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 intent.getStringExtra("pdj.amSyncBase")?.let { b ->
                     app.appScope.launch { runCatching { app.settings.set(AmSyncSettings.BASE_OVERRIDE, b) } }
                 }
+                intent.getStringExtra("pdj.amApiBase")?.let { com.levi.pocketdj.data.applemusic.AppleMusicApi.debugBase = it }
                 intent.getStringExtra("pdj.fakeMut")?.let { t ->
                     app.appScope.launch { runCatching { app.settings.setMusicUserToken(t) } }
                 }

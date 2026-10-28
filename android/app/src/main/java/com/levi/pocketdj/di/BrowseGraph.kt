@@ -343,7 +343,8 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
      * the repo, so this defaults to the unavailable backend; the AudioRecord/StreamingSession adapter replaces it.
      */
     var shazamBackend: com.levi.pocketdj.screens.shazam.RecognitionBackend =
-        com.levi.pocketdj.screens.shazam.UnavailableRecognitionBackend
+        if (com.levi.pocketdj.BuildConfig.DEBUG) com.levi.pocketdj.screens.shazam.DebugListeningBackend
+        else com.levi.pocketdj.screens.shazam.UnavailableRecognitionBackend
 
     /** Apple Music Web API adapter behind the result sheet's Apple Music block. */
     val appleMusicRecognition: com.levi.pocketdj.screens.shazam.AppleMusicRecognitionPort by lazy {
