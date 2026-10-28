@@ -46,7 +46,7 @@ class StudioClipLoader(private val store: StudioStore, private val render: Studi
  * trigger a debounced re-prime ([REPRIME_DEBOUNCE_MS]).
  */
 /** Result of a play request: only [NOTHING_TO_PLAY] deserves a user-facing message. */
-enum class PlayOutcome { STARTED, SUPERSEDED, NOTHING_TO_PLAY, REFUSED }
+enum class PlayOutcome { STARTED, SUPERSEDED, NOTHING_TO_PLAY, REFUSED, TOO_LARGE }
 
 class MultitrackPlayer(
     private val loader: MultitrackClipLoader,
@@ -116,8 +116,13 @@ class MultitrackPlayer(
         val gen = synchronized(lock) { stopInternal(keepReprime = fromReprime, reason = if (fromReprime) "reprime" else "restart"); generation.get() }
         val rate = StudioAudio.CANONICAL_RATE
         // The ONE planning path shared with ArrangerBouncer (WYSIWYG): decode once, window, warp, beat-snap.
-        val clips = ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate) { gen != generation.get() }
-            ?: return PlayOutcome.SUPERSEDED // stop-during-decode wins
+        // Whole clips are held as float PCM on the Java heap: an over-long arrangement must degrade to a message, never an OOM crash.
+        val clips = try {
+            ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate) { gen != generation.get() }
+        } catch (_: OutOfMemoryError) {
+            synchronized(lock) { stopInternal(keepReprime = false, reason = "oom") }
+            return PlayOutcome.TOO_LARGE
+        } ?: return PlayOutcome.SUPERSEDED // stop-during-decode wins
         if (gen != generation.get()) return PlayOutcome.SUPERSEDED
         if (clips.isEmpty()) return PlayOutcome.NOTHING_TO_PLAY
 

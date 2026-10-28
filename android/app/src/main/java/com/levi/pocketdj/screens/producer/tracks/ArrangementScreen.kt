@@ -221,6 +221,7 @@ fun ArrangementScreen(
         scope.launch {
             val outcome = player.playOutcome(arrLatest, ArrangerMath.effectiveCursorMs(cursorMs, arrLatest.lengthMs), record = true, quantized = quantized)
             if (outcome == PlayOutcome.NOTHING_TO_PLAY) toast("Nothing to record")
+            if (outcome == PlayOutcome.TOO_LARGE) toast("Arrangement too long to play on this device")
             recordStarting = false
         }
     }
@@ -286,7 +287,13 @@ fun ArrangementScreen(
         } else {
             TransportBar(
                 playing = playing, loopEnabled = arr.loopEnabled, fxOpen = fxOpen, canPlay = arr.allClips.isNotEmpty() && !trimming,
-                onPlay = { scope.launch { if (player.playOutcome(arr, cursorMs) == PlayOutcome.NOTHING_TO_PLAY) Toast.makeText(ctx, "Nothing to play", Toast.LENGTH_SHORT).show() } },
+                onPlay = { scope.launch {
+                    when (player.playOutcome(arr, cursorMs)) {
+                        PlayOutcome.NOTHING_TO_PLAY -> Toast.makeText(ctx, "Nothing to play", Toast.LENGTH_SHORT).show()
+                        PlayOutcome.TOO_LARGE -> Toast.makeText(ctx, "Arrangement too long to play on this device", Toast.LENGTH_LONG).show()
+                        else -> Unit
+                    }
+                } },
                 onStop = { player.stop(); bakeRecording() },
                 onToggleLoop = {
                     if (!arr.loopEnabled && !LoopRegionMath.isUsable(arr.loopStartMs, arr.loopEndMs)) {

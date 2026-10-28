@@ -176,8 +176,10 @@ class MasterRecordingBaker(
         arrangementId: String, capture: MasterCapture, dir: File, store: StudioStore, stamp: String,
         now: Double = System.currentTimeMillis().toDouble(),
     ): StudioArrangementArtifact? {
+        var keepCapture = false
         try {
-            val pcm = toCanonical(capture) ?: return null
+            // An unreadable (e.g. out-of-memory) non-empty capture is KEPT on disk, never silently deleted as "nothing recorded".
+            val pcm = toCanonical(capture) ?: run { keepCapture = runCatching { capture.file.length() > 44 }.getOrDefault(false); null } ?: return null
             val fileName = "live-recording-$stamp.m4a"
             dir.mkdirs()
             val dest = File(dir, fileName)
@@ -195,6 +197,6 @@ class MasterRecordingBaker(
             return store.addArrangementArtifact(
                 StudioArrangementArtifact(StudioFactory.newArtifactId(), arrangementId, StudioArrangementArtifact.Kind.RECORDING, "live-recording-$stamp", fileName, ms, now),
             )
-        } finally { runCatching { capture.file.delete() } }
+        } finally { if (!keepCapture) runCatching { capture.file.delete() } }
     }
 }
