@@ -36,7 +36,8 @@ class ShareTextTest {
     }
 
     @Test fun nonAsciiEncodedAsUtf8AndUnreservedKept() {
-        assertEquals("Beyonc%C3%A9%20a-b_c.d~e", ShareText.query("a-b_c.d~e", "Beyoncé"))
+        assertEquals("Beyoncé%20a-b_c.d~e", ShareText.query("a-b_c.d~e", "Beyoncé"))
+        assertEquals("宇多田ヒカル%20First%20Love%21", ShareText.query("First Love!", "宇多田ヒカル"))
     }
 
     @Test fun multiSongJoinsWithBlankLine() {

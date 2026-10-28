@@ -158,7 +158,7 @@ fun SongDetailSheet(
                 }
                 Spacer(Modifier.width(4.dp))
                 FilledTonalIconButton(
-                    onClick = { ShareText.send(context, ShareText.forSong(song), song.name) },
+                    onClick = { ShareText.send(context, ShareText.forSong(song), "${song.name} — ${song.artist}") },
                     modifier = Modifier.testTag("song-share"),
                 ) {
                     Icon(Icons.Filled.Share, contentDescription = "Share")

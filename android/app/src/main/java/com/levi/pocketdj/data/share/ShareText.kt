@@ -12,14 +12,20 @@ import com.levi.pocketdj.data.catalog.IndexSong
  */
 object ShareText {
 
-    /** Whitespace runs collapse to one space, then percent-encode everything but `-._~` + alphanumerics. */
+    /** Whitespace runs collapse to one space, then percent-encode everything but `-._~` + Unicode letters/marks/numbers (Foundation .alphanumerics). */
     fun query(title: String, artist: String): String {
         val raw = "$artist $title".split(Regex("[\\s\\p{Z}]+")).filter { it.isNotEmpty() }.joinToString(" ")
         val sb = StringBuilder()
-        for (b in raw.toByteArray(Charsets.UTF_8)) {
-            val c = (b.toInt() and 0xFF).toChar()
-            if ((c in 'a'..'z') || (c in 'A'..'Z') || (c in '0'..'9') || c in "-._~") sb.append(c)
-            else sb.append('%').append("%02X".format(b.toInt() and 0xFF))
+        var i = 0
+        while (i < raw.length) {
+            val cp = raw.codePointAt(i)
+            i += Character.charCount(cp)
+            val t = Character.getType(cp)
+            val keep = Character.isLetterOrDigit(cp) || (cp < 128 && "-._~".contains(cp.toChar())) ||
+                t == Character.NON_SPACING_MARK.toInt() || t == Character.COMBINING_SPACING_MARK.toInt() ||
+                t == Character.ENCLOSING_MARK.toInt() || t == Character.LETTER_NUMBER.toInt() || t == Character.OTHER_NUMBER.toInt()
+            if (keep) sb.appendCodePoint(cp)
+            else for (b in String(Character.toChars(cp)).toByteArray(Charsets.UTF_8)) sb.append('%').append("%02X".format(b.toInt() and 0xFF))
         }
         return sb.toString()
     }

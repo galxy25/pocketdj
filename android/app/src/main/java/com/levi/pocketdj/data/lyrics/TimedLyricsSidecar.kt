@@ -31,38 +31,59 @@ data class TimedLyrics(
 
 object TimedLyricsSidecar {
     /**
-     * Decode a sidecar. Malformed words (not an object, missing/blank text, non-numeric or negative
-     * times, end before start) are DROPPED individually; the doc fails (null) only when it is not
-     * JSON, not an object, or has no `words` array.
+     * Decode a sidecar (iOS `RipsStore.TimedLyricsSidecar` parity). Fails (null) when not JSON, not an
+     * object, or a present header field is wrong-typed (version/durationMs not integral, model/lang not
+     * string). A missing/non-array `words` yields an empty word list. Words that fail the type checks
+     * (not an object, text not a string, times not integral numbers) are dropped individually; blank
+     * text, negative times and end<start are kept, as on iOS.
      */
     fun decode(raw: String): TimedLyrics? {
         val root = runCatching { Json.parseToJsonElement(raw) }.getOrNull() as? JsonObject ?: return null
-        val arr = root["words"] as? JsonArray ?: return null
-        val words = arr.mapNotNull { word(it) }
+        val arr = root["words"] as? JsonArray
+        val words = arr?.mapNotNull { word(it) } ?: emptyList()
+        val version = optInt(root["version"]) ?: return null
+        val duration = optInt(root["durationMs"]) ?: return null
+        val model = optString(root["model"]) ?: return null
+        val lang = optString(root["lang"]) ?: return null
         return TimedLyrics(
-            version = prim(root["version"])?.longOrNull?.toInt(),
-            model = prim(root["model"])?.takeIf { it.isString }?.contentOrNull,
-            lang = prim(root["lang"])?.takeIf { it.isString }?.contentOrNull,
-            durationMs = prim(root["durationMs"])?.let { it.longOrNull ?: it.doubleOrNull?.toLong() },
+            version = version.value?.toInt(),
+            model = model.value,
+            lang = lang.value,
+            durationMs = duration.value,
             words = words,
         )
+    }
+
+    private class Opt<T>(val value: T?)
+
+    private fun optInt(e: kotlinx.serialization.json.JsonElement?): Opt<Long>? {
+        if (e == null || e is kotlinx.serialization.json.JsonNull) return Opt(null)
+        return ms(e)?.let { Opt(it) }
+    }
+
+    private fun optString(e: kotlinx.serialization.json.JsonElement?): Opt<String>? {
+        if (e == null || e is kotlinx.serialization.json.JsonNull) return Opt(null)
+        val p = e as? JsonPrimitive ?: return null
+        return if (p.isString) Opt(p.content) else null
     }
 
     private fun prim(e: kotlinx.serialization.json.JsonElement?): JsonPrimitive? =
         (e as? JsonPrimitive)?.takeIf { it.contentOrNull != null }
 
+    /** Integral JSON number (30 or 30.0) -> Long; fractional / non-number -> null (Swift Int decode). */
     private fun ms(e: kotlinx.serialization.json.JsonElement?): Long? {
         val p = prim(e) ?: return null
         if (p.isString) return null
-        return p.longOrNull ?: p.doubleOrNull?.takeIf { it.isFinite() }?.toLong()
+        p.longOrNull?.let { return it }
+        val d = p.doubleOrNull ?: return null
+        return if (d.isFinite() && d == Math.floor(d)) d.toLong() else null
     }
 
     private fun word(e: kotlinx.serialization.json.JsonElement): TimedWord? {
         val o = e as? JsonObject ?: return null
-        val t = prim(o["text"])?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() } ?: return null
+        val t = prim(o["text"])?.takeIf { it.isString }?.content ?: return null
         val s = ms(o["startMs"]) ?: return null
         val en = ms(o["endMs"]) ?: return null
-        if (s < 0 || en < s) return null
         return TimedWord(t, s, en)
     }
 

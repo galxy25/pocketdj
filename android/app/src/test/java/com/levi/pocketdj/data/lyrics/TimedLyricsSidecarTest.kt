@@ -22,18 +22,25 @@ class TimedLyricsSidecarTest {
         val d = TimedLyricsSidecar.decode(
             """{"words":[{"text":"ok","startMs":0,"endMs":10},{"text":"nostart","endMs":5},
             {"text":"","startMs":1,"endMs":2},{"text":"str","startMs":"1","endMs":2},
+            {"text":"frac","startMs":1.5,"endMs":2},
             {"text":"backwards","startMs":9,"endMs":3},"junk",null,{"text":"neg","startMs":-1,"endMs":2},
             {"text":"two","startMs":20,"endMs":30.0}]}""",
         )!!
-        assertEquals(listOf("ok", "two"), d.words.map { it.text })
+        // iOS keeps blank text, negatives and end<start; drops non-object, missing/non-integral times.
+        assertEquals(listOf("ok", "", "backwards", "neg", "two"), d.words.map { it.text })
         assertNull(d.version)
+    }
+
+    @Test fun missingWordsYieldsEmptyDoc() {
+        assertEquals(emptyList<TimedWord>(), TimedLyricsSidecar.decode("""{"version":1}""")!!.words)
+        assertEquals(emptyList<TimedWord>(), TimedLyricsSidecar.decode("""{"words":"x"}""")!!.words)
     }
 
     @Test fun docLevelFailuresReturnNull() {
         assertNull(TimedLyricsSidecar.decode("not json"))
         assertNull(TimedLyricsSidecar.decode("[1,2]"))
-        assertNull(TimedLyricsSidecar.decode("""{"words":"x"}"""))
-        assertNull(TimedLyricsSidecar.decode("""{"model":"m"}"""))
+        assertNull(TimedLyricsSidecar.decode("""{"version":"1","words":[]}"""))
+        assertNull(TimedLyricsSidecar.decode("""{"model":5,"words":[]}"""))
     }
 
     @Test fun linesBreakOnGapAndWordCap() {

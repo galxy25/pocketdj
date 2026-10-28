@@ -164,7 +164,7 @@ fun AlbumDetailScreen(
                                     }
                                     Spacer(Modifier.width(8.dp))
                                 }
-                                if (onOpenSetlist != null && tracks.isNotEmpty()) {
+                                if (onOpenSetlist != null && tracks.isNotEmpty() && anyPlayable) {
                                     OutlinedButton(
                                         onClick = {
                                             // Literal ids shuffled into the reserved Now Playing setlist,
@@ -202,7 +202,7 @@ fun AlbumDetailScreen(
                                 }
                                 Spacer(Modifier.width(8.dp))
                                 FilledTonalIconButton(
-                                    onClick = { ShareText.send(context, ShareText.forAlbum(album), album.name) },
+                                    onClick = { ShareText.send(context, ShareText.forAlbum(album), "${album.name} — ${album.artist}") },
                                     modifier = Modifier.testTag("album-share"),
                                 ) {
                                     Icon(Icons.Filled.Share, contentDescription = "Share album")
@@ -404,7 +404,7 @@ private fun AudioAnalysisSection(album: IndexAlbum) {
                     modifier = Modifier.weight(1f),
                 )
                 Text(Fmt.bpm(seg.bpm), style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(36.dp))
-                KeyChip(seg.key?.takeIf { seg.camelot == null }, seg.camelot)
+                Box(Modifier.width(84.dp)) { KeyChip(seg.key?.takeIf { seg.camelot == null }, seg.camelot) }
                 Text(
                     AudioAnalysisFmt.strength(seg),
                     style = MaterialTheme.typography.labelSmall,

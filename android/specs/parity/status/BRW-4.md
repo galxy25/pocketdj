@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 BRW-4 Song/Album detail parity.
 - [x] LyricsStore (memory -> filesDir/lyrics-cache -> CDN; gated on lyricsStatus==found; non-2xx/blank not cached; ids sanitized), wired in BrowseGraph.lyricsStore
@@ -15,3 +15,13 @@ Notes: Timed sidecar is decoded but not yet rendered/fetched (no consumer in sco
 
 ## Questions for Levi
 - none
+
+## Review
+fixes applied
+- ShareText.query ASCII-only encoding -> fixed (per-code-point; keeps Unicode letters/digits/marks/numbers + -._~; test updated, CJK case added)
+- Album Shuffle not gated on anyPlayable -> fixed
+- TimedLyricsSidecar leniency vs iOS -> fixed (missing words => empty doc; blank/negative/backwards words kept; fractional ms dropped; wrong-typed header fields fail the doc; tests updated + 1 added)
+- forSongs has no consumer -> deferred, not rejected: multi-select share needs a hook in History/Browse (outside BRW-4 owned files); ShareText.forSongs is ready for it
+- Share subject lacks artist (NIT) -> fixed (song + album)
+- KeyChip fixed width in analysis rows (NIT) -> fixed (84.dp Box; unknown-key 'U' chip not added)
+Tests: 1387 total, 0 failures (was 1386).
