@@ -176,4 +176,51 @@ class CollectionBurnBarStateTest {
         assertFalse(c.state.value.ripInProgress)
         assertFalse(c.state.value.showStop)
     }
+
+    private fun TestScope.stemController(
+        stem: suspend (List<String>, Boolean) -> com.levi.pocketdj.data.stems.BatchStemResult,
+        cancelled: MutableList<String> = mutableListOf(),
+        stemmed: MutableSet<String> = mutableSetOf(),
+        refreshes: MutableList<Int> = mutableListOf(),
+    ) = CollectionBurnController(
+        scope = this, burn = { BurnResult() }, requestStopBurn = {},
+        ripCollection = { BatchRipResult() }, cancelRips = {},
+        isRipped = { false }, refreshManifest = { refreshes += 1 }, hasServer = { true },
+        tuples = { ids -> ids.map { BurnSong(it, it, "x") } },
+        stemifyCollection = stem, isStemmed = { it in stemmed },
+        cancelStemCollection = { cancelled.addAll(it) },
+        stemPollIntervalMs = 10, stemMaxTicks = 5,
+    )
+
+    @Test fun stopStemifyPostsStemifyCancelWithExactIds() = runTest(StandardTestDispatcher()) {
+        val cancelled = mutableListOf<String>()
+        val c = stemController({ _, _ -> com.levi.pocketdj.data.stems.BatchStemResult(queued = 2, total = 2) }, cancelled)
+        c.stemify(listOf("a", "b")); testScheduler.runCurrent()
+        assertTrue(c.state.value.stemInProgress)
+        c.stop(); testScheduler.runCurrent()
+        assertEquals(listOf("a", "b"), cancelled)
+        assertFalse(c.state.value.stemInProgress); assertFalse(c.state.value.showStop)
+    }
+
+    @Test fun stopDuringStemEnqueueDropsTheStaleResult() = runTest(StandardTestDispatcher()) {
+        val gate = CompletableDeferred<Unit>()
+        val cancelled = mutableListOf<String>()
+        val c = stemController({ _, _ -> gate.await(); com.levi.pocketdj.data.stems.BatchStemResult(queued = 1, total = 1) }, cancelled)
+        c.stemify(listOf("a")); testScheduler.runCurrent()
+        c.stop(); testScheduler.runCurrent()
+        gate.complete(Unit); advanceUntilIdle()
+        assertFalse(c.state.value.showSummary); assertFalse(c.state.value.stemInProgress)
+        assertEquals(listOf("a"), cancelled)
+    }
+
+    @Test fun stemPollUsesItsOwnTickBudgetAndCadence() = runTest(StandardTestDispatcher()) {
+        val refreshes = mutableListOf<Int>()
+        val c = stemController({ _, _ -> com.levi.pocketdj.data.stems.BatchStemResult(queued = 1, total = 1) }, refreshes = refreshes)
+        c.stemify(listOf("a")); testScheduler.runCurrent()
+        testScheduler.advanceTimeBy(1_000); testScheduler.runCurrent()
+        assertEquals(5, refreshes.size) // stemMaxTicks, not the rip cap
+        assertFalse(c.state.value.stemInProgress)
+        assertEquals(5_000L, com.levi.pocketdj.data.burns.BurnSettings.STEM_POLL_INTERVAL_MS)
+        assertEquals(2_880, com.levi.pocketdj.data.burns.BurnSettings.STEM_POLL_MAX_TICKS)
+    }
 }

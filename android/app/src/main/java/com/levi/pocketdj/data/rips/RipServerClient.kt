@@ -328,6 +328,7 @@ class RipServerClient(
                             ready = d.counts.ready, queued = d.counts.queued, inflight = d.counts.inflight,
                             ripping = d.counts.ripping, needsCut = d.counts.needsCut,
                             ineligible = d.counts.ineligible, unknown = d.counts.unknown, total = d.counts.total,
+                            viaBatch = true,
                         )
                     }
                 }
@@ -335,6 +336,33 @@ class RipServerClient(
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error
             stemifyFallback(ids, true, isStemmed, fallbackOne)
+        }
+    }
+
+    /**
+     * STOP an in-flight collection Stemify (`POST /stemify-cancel`): the server cancels queued/active
+     * stem jobs AND any chained rip. Idempotent; an older server's 404 (or any non-2xx / transport
+     * failure) is a silent no-op. Undecodable 2xx => every id reported canceled.
+     */
+    suspend fun cancelStemCollection(songIds: List<String>): List<CancelItem> {
+        val ids = songIds.distinct()
+        if (ids.isEmpty()) return emptyList()
+        val config = configProvider()
+        if (!config.configured) return emptyList()
+        return try {
+            val body = buildJsonObject {
+                put("songIds", kotlinx.serialization.json.JsonArray(ids.map(::JsonPrimitive)))
+            }.toString().toRequestBody("application/json".toMediaType())
+            val request = builder(config, url(config, "stemify-cancel")).post(body).build()
+            val (code, text) = withContext(Dispatchers.IO) {
+                shortClient.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
+            }
+            if (code !in 200..299) return emptyList()
+            runCatching { json.decodeFromString<CancelResponse>(text).results }
+                .getOrElse { ids.map { CancelItem(it, "canceled") } }
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            emptyList()
         }
     }
 

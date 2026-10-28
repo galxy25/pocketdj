@@ -171,6 +171,10 @@ class CollectionBurnController(
         { _, _ -> BatchStemResult() },
     private val isStemmed: (String) -> Boolean = { false },
     private val cancelStems: (List<String>) -> Unit = {},
+    /** POST /stemify-cancel (server-side teardown of queued stems + chained rips). */
+    private val cancelStemCollection: suspend (List<String>) -> Unit = {},
+    private val stemPollIntervalMs: Long = BurnSettings.STEM_POLL_INTERVAL_MS,
+    private val stemMaxTicks: Int = BurnSettings.STEM_POLL_MAX_TICKS,
 ) {
     private val _state = MutableStateFlow(CollectionBurnBarState())
     val state: StateFlow<CollectionBurnBarState> = _state.asStateFlow()
@@ -181,13 +185,14 @@ class CollectionBurnController(
     private var stemPollJob: Job? = null
     private var lastStemIds: List<String> = emptyList()
     private var pendingStemIds: List<String> = emptyList()
+    private var stemEnqueueJob: Job? = null
 
     /** Kick a collection Stemify; the server rips/cuts missing songs first. Over-cap => confirm. */
     fun stemify(ids: List<String>, confirmLarge: Boolean = false): Job? {
         if (_state.value.working) return null
         _state.update { it.copy(working = true, inFlightOp = CollectionOp.STEM) }
         lastStemIds = ids
-        return scope.launch {
+        val job = scope.launch {
             val r = stemifyCollection(ids, confirmLarge)
             if (r.needsConfirm) {
                 pendingStemIds = ids
@@ -206,6 +211,8 @@ class CollectionBurnController(
             }
             if (pending > 0) startStemPoll(ids)
         }
+        stemEnqueueJob = job
+        return job
     }
 
     fun confirmStemify(): Job? {
@@ -227,8 +234,8 @@ class CollectionBurnController(
         _state.update { it.copy(stemInProgress = true) }
         updateStemProgress(ids, total)
         stemPollJob = scope.launch {
-            repeat(maxTicks) {
-                delay(pollIntervalMs)
+            repeat(stemMaxTicks) {
+                delay(stemPollIntervalMs)
                 runCatching { refreshManifest() }
                 if (updateStemProgress(ids, total) == 0) {
                     _state.update { it.copy(stemInProgress = false, stemProgress = null, canRefresh = true) }
@@ -350,10 +357,13 @@ class CollectionBurnController(
         }
         if (s.inFlightOp == CollectionOp.STEM || s.stemInProgress) {
             val stemIds = lastStemIds
+            stemEnqueueJob?.cancel(); stemEnqueueJob = null // a stale enqueue result must not resurrect the UI
             clearStemProgress()
             _state.update { it.copy(working = false, inFlightOp = null) }
+            lastStemIds = emptyList()
             cancelStems(stemIds)
-            if (!s.ripInProgress && s.inFlightOp != CollectionOp.RIP) return null
+            val cancel = if (stemIds.isEmpty()) null else scope.launch { runCatching { cancelStemCollection(stemIds) } }
+            if (!s.ripInProgress && s.inFlightOp != CollectionOp.RIP) return cancel
         }
         val ids = lastRipIds
         clearRipProgress()
@@ -369,6 +379,7 @@ class CollectionBurnController(
     fun dispose() {
         pollJob?.cancel(); pollJob = null
         stemPollJob?.cancel(); stemPollJob = null
+        stemEnqueueJob?.cancel(); stemEnqueueJob = null
     }
 }
 
@@ -388,7 +399,10 @@ fun rememberCollectionBurnController(key: Any? = null): CollectionBurnController
             ripCollection = { ids -> coordinator.ripCollection(ids) { graph.ripsRepository.entry(it) != null } },
             cancelRips = { coordinator.cancelRips(it) },
             isRipped = { graph.ripsRepository.entry(it) != null },
-            refreshManifest = { graph.ripsRepository.refresh() },
+            refreshManifest = {
+                graph.ripsRepository.refresh()
+                graph.ripJobTracker.pruneFinishedStemJobs() // iOS refreshManifest prunes after every refresh
+            },
             hasServer = { graph.ripServerClient.isConfigured() },
             stemifyCollection = { ids, confirm ->
                 graph.ripServerClient.stemifyCollection(
@@ -399,17 +413,22 @@ fun rememberCollectionBurnController(key: Any? = null): CollectionBurnController
                         graph.ripJobTracker.stemJobs.value[id]
                     },
                 ).also { r ->
-                    for (item in r.results) {
-                        val jobId = item.jobId ?: continue
-                        if (item.status in setOf("queued", "inflight", "ripping", "needsCut")) {
-                            graph.ripJobTracker.seedStemJob(item.songId, jobId)
-                            graph.ripJobTracker.pollStemReady(item.songId, jobId)
+                    // iOS parity: seed .queued rows only when the BATCH endpoint answered (never over a
+                    // fallback's live job view), and never poll per song — the controller's manifest
+                    // poll drives completion.
+                    if (r.viaBatch) {
+                        for (item in r.results) {
+                            val jobId = item.jobId ?: continue
+                            if (item.status in setOf("queued", "inflight", "ripping", "needsCut") &&
+                                graph.ripJobTracker.stemJobs.value[item.songId] == null
+                            ) graph.ripJobTracker.seedStemJob(item.songId, jobId)
                         }
                     }
                 }
             },
             isStemmed = { graph.ripsRepository.entry(it)?.isStemmed == true },
             cancelStems = { graph.ripJobTracker.cancelStems(it) },
+            cancelStemCollection = { graph.ripServerClient.cancelStemCollection(it) },
             tuples = { ids ->
                 val cat = graph.catalogRepository.state.value.catalog
                 ids.map { id ->
@@ -518,6 +537,8 @@ fun rememberRowNote(songId: String?, manifestHit: Boolean): String? {
     val stemJob by remember(songId) {
         graph.ripJobTracker.stemJobs.map { it[songId] }.distinctUntilChanged()
     }.collectAsState(null)
-    val stemmed = graph.ripsRepository.entry(songId)?.isStemmed == true
+    val stemmed by remember(songId) {
+        graph.ripsRepository.manifest.map { it[songId]?.isStemmed == true }.distinctUntilChanged()
+    }.collectAsState(false)
     return CollectionBurnReducer.rowNote(burn, job, manifestHit, stemJob, stemmed)
 }

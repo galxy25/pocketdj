@@ -561,9 +561,7 @@ class BurnStore(
     /** Every song id with all 4 stems on disk in the active root. */
     fun localStemSongIds(): List<String> {
         val dir = readRoot()?.dir ?: return emptyList()
-        val candidates = listNames(dir).filter { it.startsWith("stem-") && it.endsWith(".mp3") }
-            .mapNotNull(BurnFileNames::auxFileSongId).toSet()
-        return candidates.filter { stemsBurned(it) }
+        return BurnStems.fullyStemmedIds(listNames(dir)).filter { stemsBurned(it) }
     }
 
     /** BURN the 4 stems (idempotent; never triggers separation). Null if not stemmed / failed. */
@@ -768,9 +766,8 @@ class BurnStore(
 
     private fun sweepAuxFiles(shouldSweep: (String) -> Boolean) {
         for (r in folder.roots()) {
-            for (n in listNames(r.dir)) {
-                val id = BurnFileNames.auxFileSongId(n) ?: continue
-                if (shouldSweep(id) && ownsAux(n, r.isUserFolder)) File(r.dir, n).delete()
+            for (n in BurnStems.auxToSweep(listNames(r.dir), shouldSweep)) {
+                if (ownsAux(n, r.isUserFolder)) File(r.dir, n).delete()
             }
         }
     }

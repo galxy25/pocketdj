@@ -49,6 +49,8 @@ data class BatchStemResult(
     val needsConfirm: Boolean = false,
     val count: Int = 0,
     val cap: Int = 0,
+    /** True only when /stemify-collection itself answered (not the per-song fallback). */
+    val viaBatch: Boolean = false,
 ) {
     /** Songs still going (queued/inflight/ripping/needing a cut). */
     val pending: Int get() = queued + inflight + ripping + needsCut
