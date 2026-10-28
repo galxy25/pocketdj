@@ -43,8 +43,8 @@ class BurnStoreTest {
     @Test fun digitalSongGetsDescriptiveNameEndingInSongId() = runTest {
         val r = Rig(); r.digitalSong("sng_a")
         r.store().burn(listOf(bs("sng_a")))
-        assertTrue(r.names().contains("Artist-Song sng a-alb sng a-1999-Rock-8A-A minor-120-sng_a.mp3"))
-        assertTrue(r.names().contains("Artist-Song sng a-alb sng a-1999-Rock-8A-A minor-120-sng_a.txt"))
+        assertTrue(r.names().contains("Artist-Song sng_a-Album-1999-Rock-8A-A minor-120-sng_a.mp3"))
+        assertTrue(r.names().contains("Artist-Song sng_a-Album-1999-Rock-8A-A minor-120-sng_a.txt"))
     }
 
     @Test fun notInManifestIsErrorItemAndLoopContinues() = runTest {
