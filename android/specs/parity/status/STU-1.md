@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-1 — Studio models + store (pocketdj-studio.json v1 over VersionedJsonWriter) + folders (SAF roots) + reconcile
 
@@ -39,3 +39,13 @@ SAF tree permission persistence on real external storage (SafStudioDir); the rec
 
 ## Questions for Levi
 - Should loops stay .wav on Android, or should we later write CAF so a studio doc could ever be shared with iOS? (Default: .wav, doc stays device-local.)
+
+## Review
+Fixes applied. Suite: 880 tests (875 before, +5), 0 failures; assembleDebug green.
+- MAJOR SAF failure read as "gone" -> fixed. `SafStudioDir.entries()` now throws `StudioDirUnavailableException` on exception/null cursor; reconcile and deleteAll take ONE per-family snapshot (one `userDir()` open + one listing) via `StudioReconcile.Snapshot`; any listing failure keeps the record. usageBytes/deleteAll sweeps skip a root whose listing fails. Tests: listingFailureAfterSuccessfulOpenNeverPrunes, reconcileOpensEachUserRootOncePerFamily, deleteAllKeepsRecordsWhenUserListingFails.
+- MINOR O(N^2) IPC / main thread -> fixed: snapshot = one listing per pass; SafStudioDir has a 1.5 s listing cache (invalidated on delete/openOutput); the store lazy no longer reconciles inline (reconcile runs on Dispatchers.IO); the ON_STOP Flushable skips when the lazy is uninitialized. PARTIAL: no onboarding hook exists on Android yet, so reconcile is not sequenced after onboarding restore; integrator should gate it when the onboarding package lands.
+- MINOR cue mirror clobber -> fixed: `reloadCuesFromDisk` cancels pending cue save, clears dirty, `cueWriter.invalidate(++cueVersion)`. Test: pullInvalidatesAQueuedCueMirrorWrite. NOTE for sync package: `SyncEntry("studio-cues", ...)` still needs a per-entry reload seam routed to `studioStore.reloadCuesFromDisk()`.
+- MINOR openOutput name mismatch -> fixed: display name re-queried after createDocument; mismatch deletes the doc and returns null. `addTakeRelocating` also requires `dest.exists(name)` before deleting the app copy. Device-only.
+- MINOR cold-start seed dropped -> fixed: IntentSink parks intents carrying extras; seed runs on Dispatchers.IO. Emulator step still unverified.
+- NIT schemaVersion -> fixed: saves stamp STUDIO_SCHEMA_VERSION (test saveStampsCurrentSchemaVersion).
+- NIT ledger row -> not done in-file; integrator records STU-1 as PARTIAL (SAF persistence + seed/emulator steps device-only).
