@@ -25,6 +25,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.levi.pocketdj.data.collections.SourceSyncSettings
 
 /**
@@ -342,10 +343,127 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         },
     )
 
+
+    // ---- COL-17: listening pockets service + real PocketsBridge ------------------------------------------
+
+    private val pocketsEnabledMirror = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * The listening-pockets service. Inert (zero network) until BOTH the rec engine and "Find my listening
+     * pockets" are ON and the rec-engine credentials exist. Touch off-main (reads two small docs).
+     */
+    val listeningPockets: com.levi.pocketdj.data.pockets.ListeningPocketsService by lazy {
+        val files = app.appContext.filesDir
+        com.levi.pocketdj.data.pockets.ListeningPocketsService(
+            history = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext),
+            client = com.levi.pocketdj.data.pockets.ListeningPocketsClient(
+                http = app.httpClient,
+                baseUrl = { com.levi.pocketdj.data.config.RemoteEndpoints.url(com.levi.pocketdj.data.config.EndpointKey.LISTENING_POCKETS_BASE) },
+                deviceId = { pocketsDeviceId },
+            ),
+            credentials = ::pocketsCredentials,
+            recEngineEnabled = { app.browseGraph.recEnabled.value },
+            pocketsEnabled = { pocketsEnabledMirror.get() },
+            scope = kotlinx.coroutines.CoroutineScope(app.appScope.coroutineContext + Dispatchers.IO),
+            syncFile = File(files, com.levi.pocketdj.data.pockets.ListeningPocketsService.SYNC_FILE_NAME),
+            cacheFile = File(files, com.levi.pocketdj.data.pockets.ListeningPocketsService.CACHE_FILE_NAME),
+            deviceId = { pocketsDeviceId },
+        ).also { svc ->
+            svc.collectionsProvider = ::pocketsCollectionsInput
+            svc.onDisabled = {
+                app.appScope.launch(Dispatchers.IO) {
+                    runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_LOCATION_ENABLED, false) }
+                }
+            }
+            svc.onUploadFloor = { ms -> app.gamesGraph.roundsClient.setUploadFloor(ms) }
+        }
+    }
+
+    @Volatile private var pocketsDeviceId: String? = null
+
+    private fun pocketsCredentials(): com.levi.pocketdj.data.pockets.PocketsCredentials? =
+        app.browseGraph.recService.sharedCredentials()?.let {
+            com.levi.pocketdj.data.pockets.PocketsCredentials(it.key, it.profileId, it.enrollSecret)
+        }
+
+    /** The membership snapshot input (iOS `collectionsInput`): pockets, playlists, source playlists, add log. */
+    private fun pocketsCollectionsInput(): com.levi.pocketdj.data.pockets.ListeningPocketsCollections.Input {
+        val pockets = app.collections.pockets
+        val playlists = app.collections.playlists
+        val activity = app.collectionActivity.events
+        val catalog = app.catalogRepository.state.value.catalog
+        val albums = com.levi.pocketdj.data.pockets.ListeningPocketsCollections.referencedAlbumCandidates(pockets, playlists, activity)
+        val tracks = if (catalog == null) emptyMap() else albums.mapNotNull { id -> catalog.albumsById[id]?.let { id to it.trackList } }.toMap()
+        val sources = catalog?.playlists.orEmpty().map {
+            com.levi.pocketdj.data.collections.CollectionFlattener.SourcePlaylist(it.playlist.id, it.playlist.name, it.playlist.songIds)
+        }
+        return com.levi.pocketdj.data.pockets.ListeningPocketsCollections.Input(
+            source = com.levi.pocketdj.data.collections.CollectionFlattener.Source(pockets, playlists, sources, tracks),
+            activity = activity,
+        )
+    }
+
+    /** Wires the service into games (real bridge + opt-in), the rec delete cascade and the history probes. Idempotent, off-main. */
+    fun startListeningPockets() {
+        app.appScope.launch(Dispatchers.IO) {
+            pocketsDeviceId = runCatching { app.settings.ensureInstallId() }.getOrNull()
+            val svc = listeningPockets
+            val history = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext)
+            val bridge = com.levi.pocketdj.data.pockets.LivePocketsBridge(
+                service = svc,
+                credentialsSource = ::pocketsCredentials,
+                installIdSource = { history.installId },
+                roundsUploader = { creds, wires, id -> app.gamesGraph.roundsClient.flush(creds, wires, id) },
+            )
+            app.gamesGraph.servicesBridge = bridge
+            app.gamesGraph.pocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
+                override val recommendationsEnabled get() = app.browseGraph.recEnabled
+                override fun choose(on: Boolean) {
+                    app.appScope.launch(Dispatchers.IO) {
+                        runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, on) }
+                    }
+                }
+            }
+            val listener = com.levi.pocketdj.data.pockets.PocketsPlayListener(svc, carConnected = ::carConnected)
+            listener.attach(history)
+            runCatching {
+                app.browseGraph.recService.onDeleteCloudData = { key, profileId ->
+                    svc.deleteCloudData(com.levi.pocketdj.data.pockets.PocketsCredentials(key, profileId, com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET))
+                }
+            }
+            launch {
+                app.settings.flow(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED).collect { on ->
+                    pocketsEnabledMirror.set(on)
+                    svc.enabledDidChange()
+                }
+            }
+            launch {
+                // The rec engine toggle is the other half of the gate.
+                app.browseGraph.recEnabled.collect { svc.enabledDidChange() }
+            }
+            withContext(Dispatchers.Main) {
+                runCatching {
+                    androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+                        androidx.lifecycle.LifecycleEventObserver { _, e ->
+                            if (e == androidx.lifecycle.Lifecycle.Event.ON_STOP) listener.onBackgrounded()
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    /** Car-projection signal: UI_MODE_TYPE_CAR only (a phone running Android Auto is not detectable without the car-app library). */
+    private fun carConnected(): Boolean? = runCatching {
+        val ui = app.appContext.getSystemService(android.content.Context.UI_MODE_SERVICE) as android.app.UiModeManager
+        ui.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_CAR
+    }.getOrNull()
+
     init {
         // Warm the favorites doc off-main: the lazy constructor does a synchronous file read +
         // JSON decode that would otherwise land inside the first ♥ row's composition.
         app.appScope.launch(Dispatchers.IO) { favorites }
+        startListeningPockets()
         // COL-8: drain any write-back queued in a previous session (or backed off after a failure) -
         // the queue has no internal timer, so launch is what re-arms it.
         app.appScope.launch(Dispatchers.IO) { runCatching { writeBack.runSoon() } }

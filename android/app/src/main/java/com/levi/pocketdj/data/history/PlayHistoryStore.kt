@@ -59,6 +59,9 @@ class PlayHistoryStore(
     /** Fired with the surviving local event when the 30 s window collapsed a replay into it. */
     @Volatile var onResume: ((PlayEvent) -> Unit)? = null
 
+    /** "Is a car session connected right now?" - read once per [record] and stamped on the event. null => stays null. */
+    @Volatile var carPlayProbe: (() -> Boolean?)? = null
+
     // Derived, non-persisted indexes rebuilt on load / trim / replace.
     private val lastPlayedIndex = HashMap<String, Double>()
     private val countIndex = HashMap<String, Int>()
@@ -160,6 +163,7 @@ class PlayHistoryStore(
                     originInstallId = installId,
                     tzOffsetMin = tzOffsetMin,
                     originCollectionId = origin,
+                    carPlay = runCatching { carPlayProbe?.invoke() }.getOrNull(),
                 )
                 var events = _state.value.events + event
                 // Max, not assignment: an out-of-order append can't move last-played back.
@@ -209,6 +213,25 @@ class PlayHistoryStore(
             if (old != null && f < old + 0.01) return
             publish(events.toMutableList().also { it[i] = it[i].copy(listenedFraction = f) })
             saveSoon()
+        }
+    }
+
+    /**
+     * Stamp settled listening contexts (event id -> tag). WRITE-ONCE: only fills a null context, and only on
+     * this install's own plays. No-op (no revision bump, no write) when nothing changes. Returns the count stamped.
+     */
+    fun stampContexts(tags: Map<String, com.levi.pocketdj.data.pockets.ListeningContextTag>): Int {
+        if (tags.isEmpty()) return 0
+        synchronized(lock) {
+            var n = 0
+            val events = _state.value.events.map { e ->
+                val t = tags[e.id]
+                if (t != null && e.listeningContext == null && !isFromAnotherDevice(e)) { n++; e.copy(listeningContext = t) } else e
+            }
+            if (n == 0) return 0
+            publish(events)
+            saveSoon()
+            return n
         }
     }
 
