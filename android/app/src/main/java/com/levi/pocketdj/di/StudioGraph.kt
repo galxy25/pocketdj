@@ -135,6 +135,24 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
     val studioEngine: StudioEngine get() = engineLazy.value
 
+    /** STU-12: the Tracks arranger player (one render callback; clip decode/bake via the shared StudioRender). */
+    val multitrackPlayer: com.levi.pocketdj.studio.engine.MultitrackPlayer by lazy {
+        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { multitrackPlayer.stop() } }
+        com.levi.pocketdj.studio.engine.MultitrackPlayer(
+            loader = com.levi.pocketdj.studio.engine.StudioClipLoader(studioStore, studioRender),
+            sinkFactory = { StudioOutputs.create(audioManager) },
+            scope = app.appScope,
+            onFocus = {
+                // One audible owner: park Now Playing (and a running pattern / sample) before the arranger sounds.
+                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                if (patternLazy.isInitialized()) patternEngine.stopPattern()
+                if (engineLazy.isInitialized()) studioEngine.pauseSample()
+                focus.requestPlayback()
+            },
+            onFocusRelease = { focus.abandon() },
+        )
+    }
+
     // ---- STU-4: loops (render / seamless audition) + slice pads (all lazy)
 
     /** Loop preview + Save both render through the REAL renderer from the RAW sample file. */

@@ -38,6 +38,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.withFrameMillis
+import android.widget.Toast
+import com.levi.pocketdj.studio.engine.MultitrackPlayer
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -86,12 +94,14 @@ fun ArrangementScreen(
     onBack: () -> Unit,
     playheadMs: Int? = null,
     modifier: Modifier = Modifier,
+    player: MultitrackPlayer = remember(graph) { graph.studioGraph.multitrackPlayer },
 ) {
     val ctx = LocalContext.current
     val store = actions.store
     val doc by produceState(store.state.value, store) { store.state.collect { value = it } }
     val arr = doc.arrangements.firstOrNull { it.id == arrangementId } ?: return
     val prefs = remember { TracksPrefs(ctx) }
+    val scope = rememberCoroutineScope()
     val compact = LocalConfiguration.current.screenWidthDp < 600
     val density = LocalDensity.current.density
 
@@ -109,7 +119,24 @@ fun ArrangementScreen(
     var deleteTrack by remember { mutableStateOf<String?>(null) }
     var menu by remember { mutableStateOf(false) }
 
-    val cursor = ArrangerMath.effectiveCursorMs(playheadMs ?: cursorMs, arr.lengthMs)
+    // STU-12: live playback. The clock is NOT snapshot state; one frame loop samples it into `liveMs`
+    // only while this arrangement is playing (so an idle screen never recomposes per frame).
+    val playingId by player.playingArrangementId.collectAsState()
+    val playing = playingId == arrangementId
+    var liveMs by remember { mutableIntStateOf(0) }
+    var fxOpen by remember { mutableStateOf(false) }
+    val arrLatest by rememberUpdatedState(arr)
+    LaunchedEffect(playing) {
+        while (playing) {
+            withFrameMillis { }
+            liveMs = player.positionMs(arrLatest) ?: break
+        }
+    }
+    // Live mix / master FX / loop edits reach the running player; bake-affecting edits re-prime (debounced).
+    LaunchedEffect(arr) { if (playing) player.onArrangementChanged(arr) }
+    DisposableEffect(arrangementId) { onDispose { player.stop() } }
+
+    val cursor = ArrangerMath.effectiveCursorMs(playheadMs ?: (if (playing) liveMs else cursorMs), arr.lengthMs)
     val fit = ArrangerMath.fitPx(arr.lengthMs, viewportDp)
     val contentDp = ArrangerMath.timelineWidth(arr.lengthMs, pxPerSec)
 
@@ -153,6 +180,19 @@ fun ArrangementScreen(
                 Button(onClick = { store.addTrack(arrangementId) }, modifier = Modifier.testTag("tracks-empty-add-track")) { Text("Add a track") }
             }
         } else {
+            TransportBar(
+                playing = playing, loopEnabled = arr.loopEnabled, fxOpen = fxOpen, canPlay = arr.allClips.isNotEmpty(),
+                onPlay = { scope.launch { if (!player.play(arr, cursorMs)) Toast.makeText(ctx, "Nothing to play", Toast.LENGTH_SHORT).show() } },
+                onStop = { player.stop() },
+                onToggleLoop = {
+                    if (!arr.loopEnabled && !LoopRegionMath.isUsable(arr.loopStartMs, arr.loopEndMs)) {
+                        val (a, b) = LoopRegionMath.defaultRegion(cursorMs, arr.lengthMs, arr.bpm)
+                        store.setArrangementLoop(arrangementId, enabled = true, startMs = a, endMs = b)
+                    } else store.setArrangementLoop(arrangementId, enabled = !arr.loopEnabled)
+                },
+                onToggleFx = { fxOpen = !fxOpen },
+            )
+            if (fxOpen) MasterFxGrid(arr.masterFX, onChange = { store.setArrangementMasterFX(arrangementId, it) })
             Transport(
                 arr, cursor, compact, transportCollapsed, follow, pxPerSec, fit,
                 onToggleCollapse = { transportCollapsed = !transportCollapsed; prefs.transportCollapsed = transportCollapsed },
@@ -180,7 +220,7 @@ fun ArrangementScreen(
                     }
                     FollowTimeline(cursor, pxPerSec, contentDp, follow, centerNonce, { viewportDp = it }, Modifier.weight(1f)) {
                         Column(Modifier.padding(end = 24.dp)) {
-                            BeatRuler(arr.bpm, pxPerSec, arr.lengthMs, contentDp, onSeek = { cursorMs = it; centerNonce++ })
+                            BeatRuler(arr.bpm, pxPerSec, arr.lengthMs, contentDp, onSeek = { cursorMs = it; centerNonce++; if (playing) scope.launch { player.play(arrLatest, it) } })
                             Box {
                                 Column(verticalArrangement = Arrangement.spacedBy(LANE_GAP.dp)) {
                                     arr.tracks.forEachIndexed { i, t ->
@@ -196,6 +236,12 @@ fun ArrangementScreen(
                         }
                         // Cursor overlay + a REAL layout anchor (spacer flow, not an offset) so a semantics
                         // test can read the cursor's true x after follow/zoom.
+                        if (arr.loopEnabled && LoopRegionMath.isUsable(arr.loopStartMs, arr.loopEndMs)) {
+                            LoopRegionOverlay(
+                                arr.loopStartMs, arr.loopEndMs, pxPerSec, arr.bpm, arr.beatMatchEnabled, arr.lengthMs, arr.tracks.size,
+                                onChange = { a, b -> store.setArrangementLoop(arrangementId, startMs = a, endMs = b) },
+                            )
+                        }
                         CursorOverlay(cursor, pxPerSec, arr.tracks.size)
                     }
                 }
