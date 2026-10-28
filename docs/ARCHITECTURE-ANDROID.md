@@ -410,7 +410,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | COL-6 — Song drag & drop + clipboard (SongTransfer payload, collection-row and whole-list drop ta… | 18 | PARTIAL | Code + JVM tests done; device-only: emulator drag (spring-load tab hover then drop on a Collections row) unverified |
 | COL-9 — Apple Music playlist sync (Lambda WS2): client, coordinator, audit/run persistence, daily… | 18 | PARTIAL (JVM; branch `parity/COL-9`) | Device-only: real subscription + MUT. Emulator MockWebServer step not run. Omitted: reconcile (removals/reorders) and the private-server branch. Debug-only base override. |
 | COL-11 — Favorites two-way Apple Music sync (opt-in) + owner-seed opt-in (default OFF) | 19 | PARTIAL (JVM; branch `parity/COL-11`) | Device-only: real subscription + MUT. Emulator MockWebServer step blocked on an AppGraph Apple Music base-URL override. |
-| COL-17 — ListeningPocketsService (upload cadence, results cache, cursors/flushEpoch, delete cascad… | 20 | Planned | — |
+| COL-17 — ListeningPocketsService (upload cadence, results cache, cursors/flushEpoch, delete cascad… | 20 | DONE (JVM + emulator vs local mock) | Location engine absent (ctx never stamped; pref only); carPlay probe = UiModeManager car mode; no Settings toggle UI (opt-in only via In the Pocket dialog, needs Recommendations ON). Debug-only extras pdj.pocketsBase/pocketsFakeCreds/pocketsEnable | |
 | COL-18 — History ▸ Pockets screen (Recurring/Recent, patterns, detail: features/harmonic/when/song… | 21 | Planned | — |
 | COL-19 — Listening places engine + location store (pure port, no platform APIs) | 21 | Planned | — |
 | COL-20 — Android location source (fused low-power + dwell detection) + Settings rows + wiring (def… | 22 | Planned | Real movement/dwell; emulator uses `adb emu geo fix` sequences. |
@@ -435,7 +435,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | BRW-15 — Discover tab: Apple Music catalog search (SVC-15) ∥ rip-server /search, Songs\|Albums sco… | 17 | Planned | — |
 | BRW-16 — Discover ＋Add: provisional catalog entries, album fan-out, supersede, Remove from Library | 18 | PARTIAL | Device-only: the Apple Music library write needs a signed-in Music-User-Token (unsigned adds store "Apple Music write skipped: ..."). Not ported: pre-release album refresh; "Add to Apple Music again" retry UI (store half only). |
 | BRW-17 — '?♪?' recognizer: vendored ShazamKit-for-Android AAR + AudioRecord + catalog match + resu… | 19 | Planned | Live recognition needs a microphone + the vendored AAR's native libs;… |
-| BRW-14 — New releases feed + screen + release streaming (am:<storeId> rows through the AM resolver) | 20 | Planned | Playing an unowned release (Apple Music DRM playback) — verify on a d… |
+| BRW-14 — New releases feed + screen + release streaming (am:<storeId> rows through the AM resolver) | 20 | DONE (JVM + emulator vs local mock) | Playing an unowned release (Apple Music DRM playback) — verify on a d… |
 
 **Mix**
 

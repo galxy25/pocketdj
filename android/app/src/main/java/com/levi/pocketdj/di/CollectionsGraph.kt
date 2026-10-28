@@ -310,6 +310,13 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 intent.getStringExtra("pdj.amSyncBase")?.let { b ->
                     app.appScope.launch { runCatching { app.settings.set(AmSyncSettings.BASE_OVERRIDE, b) } }
                 }
+                intent.getStringExtra("pdj.pocketsBase")?.let { pocketsDebugBase = it }
+                if (intent.hasExtra("pdj.pocketsFakeCreds")) pocketsDebugCreds = true
+                intent.getStringExtra("pdj.pocketsEnable")?.let { v ->
+                    app.appScope.launch(Dispatchers.IO) {
+                        runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, v == "1") }
+                    }
+                }
                 intent.getStringExtra("pdj.amApiBase")?.let { com.levi.pocketdj.data.applemusic.AppleMusicApi.debugBase = it }
                 intent.getStringExtra("pdj.fakeMut")?.let { t ->
                     app.appScope.launch { runCatching { app.settings.setMusicUserToken(t) } }
@@ -359,11 +366,14 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             history = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext),
             client = com.levi.pocketdj.data.pockets.ListeningPocketsClient(
                 http = app.httpClient,
-                baseUrl = { com.levi.pocketdj.data.config.RemoteEndpoints.url(com.levi.pocketdj.data.config.EndpointKey.LISTENING_POCKETS_BASE) },
+                baseUrl = {
+                    (if (com.levi.pocketdj.BuildConfig.DEBUG) pocketsDebugBase else null)
+                        ?: com.levi.pocketdj.data.config.RemoteEndpoints.url(com.levi.pocketdj.data.config.EndpointKey.LISTENING_POCKETS_BASE)
+                },
                 deviceId = { pocketsDeviceId },
             ),
             credentials = ::pocketsCredentials,
-            recEngineEnabled = { app.browseGraph.recEnabled.value },
+            recEngineEnabled = { (com.levi.pocketdj.BuildConfig.DEBUG && pocketsDebugCreds) || app.browseGraph.recEnabled.value },
             pocketsEnabled = { pocketsEnabledMirror.get() },
             scope = kotlinx.coroutines.CoroutineScope(app.appScope.coroutineContext + Dispatchers.IO),
             syncFile = File(files, com.levi.pocketdj.data.pockets.ListeningPocketsService.SYNC_FILE_NAME),
@@ -382,8 +392,14 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
 
     @Volatile private var pocketsDeviceId: String? = null
 
+    /** DEBUG emulator hooks (`-e pdj.pocketsBase <url>`, `-e pdj.pocketsFakeCreds 1`): mock backend + stand-in creds. */
+    @Volatile private var pocketsDebugBase: String? = null
+    @Volatile private var pocketsDebugCreds = false
+
     private fun pocketsCredentials(): com.levi.pocketdj.data.pockets.PocketsCredentials? =
-        app.browseGraph.recService.sharedCredentials()?.let {
+        if (com.levi.pocketdj.BuildConfig.DEBUG && pocketsDebugCreds) {
+            com.levi.pocketdj.data.pockets.PocketsCredentials("debug-key", "debug-profile", "debug-secret")
+        } else app.browseGraph.recService.sharedCredentials()?.let {
             com.levi.pocketdj.data.pockets.PocketsCredentials(it.key, it.profileId, it.enrollSecret)
         }
 

@@ -300,3 +300,12 @@ Emulator results (shots in pocketdj-parity/_shots/wave19/):
 - COL-11 PASS: local mock api.music.apple.com (debug `pdj.amApiBase` + `pdj.fakeMut`). Opt-in OFF: 0 requests; toggle ON starts ratings GET pull batches; hearting an Apple Music song sent POST /v1/me/favorites?ids[songs]=<id> + PUT /v1/me/ratings/songs/<id>; un-hearting sent DELETE only. Real subscription/MUT device-only.
 - STU-16 PASS: ProducerSmokeTest run on the pocketdj AVD via connectedDebugAndroidTest: 1 test, 0 failures (walks 7 sub-tabs with PDJ_SEED_STUDIO/DEMUX). No FATAL EXCEPTION / ANR from com.levi.pocketdj. Route-change re-prime device-only.
 Open: Q84-Q87.
+
+## Wave 20
+
+Merged: COL-17, BRW-14 (no conflicts). JVM suite 5061 tests, 0 failures (was 4955; +106); assembleDebug green. Status files set to merged.
+
+Emulator results (shots in pocketdj-parity/_shots/wave20/):
+- BRW-14 PASS: local mock api.music.apple.com (`pdj.amApiBase` + `pdj.fakeMut`). Played songs by three artists from Browse; each play triggered GET /v1/catalog/us/artists?ids=<id>&views=latest-release,similar-artists; For You New tile went 0 -> 3 ("From artists you play - last 30 days"); New screen lists Out now rows with More like this / Not for me; menu "Check for new releases" re-fetched. Signed out showed "Apple Music isn't connected". Playing an unowned release is device-only.
+- COL-17 PASS (local mock via new debug extras `pdj.pocketsBase`, `pdj.pocketsFakeCreds`, `pdj.pocketsEnable`): enabling uploaded POST /pockets/events (90-day backfill, then collections snapshot) and GET /pockets/results; 3 fresh plays flushed on app-background as one POST with 3 events; queue plays skipped mid-track went out as outcome `skipped` with fractions (0.417, 0.173). Toggle off: 0 further calls over background/foreground cycles. Browser single-song plays carry no fraction/outcome (Q89c).
+No FATAL EXCEPTION / ANR. Open: Q88-Q90.
