@@ -68,7 +68,7 @@ interface StudioRoots {
 }
 
 /** [StudioDir] over a plain directory (app-private storage; also the JVM test double). */
-class FileStudioDir(private val dir: File) : StudioDir {
+class FileStudioDir(val dir: File) : StudioDir {
     override val key: String get() = dir.absolutePath
 
     private fun file(name: String): File? =

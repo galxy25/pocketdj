@@ -471,7 +471,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 |---|---|---|---|
 | STU-1 — Studio models + store (pocketdj-studio.json v1 over VersionedJsonWriter) + folders (SAF r… | 3 | DONE (JVM + emulator seed/persist; SAF persistence device-only) | SAF tree permission persistence on real external storage |
 | STU-2 — Studio native DSP lib (cpp/pdjdsp: TinySoundFont, Signalsmith Stretch, TrackFX/MasterFX k… | 5 | Planned | Oboe low-latency path, real latency numbers, route-change (headphones… |
-| STU-3 — Producer shell + Samples tab (mic, import, from-track via LocalAudioCache→BurnStore) + sa… | 7 | Planned | Real mic quality, Bluetooth input picker, DRM-protected file rejectio… |
+| STU-3 — Producer shell + Samples tab (mic, import, from-track via LocalAudioCache→BurnStore) + sa… | 7 | PARTIAL (no stem carve; other sub-tabs Coming soon; emulator steps unrun) | Real mic quality, Bluetooth input picker, DRM-protected file rejectio… |
 | STU-4 — Loops tab + slice editor (performance pads) | 10 | Planned | Audible seam-click judgement |
 | STU-5 — Sequencer tab + pattern engine (clock, step modes, per-step loop/stretch) + bounce | 11 | Planned | Timing tightness and .interrupts cut audibility |
 | STU-6 — Cues tab + cue-seek playback plumbing (sequencer seek) + CuePointsProvider for the Mix de… | 11 | Planned | Apple Music native backend play-then-seek |

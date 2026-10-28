@@ -22,6 +22,18 @@ import com.levi.pocketdj.studio.store.StudioFamily
 import com.levi.pocketdj.studio.store.StudioFolders
 import com.levi.pocketdj.studio.store.StudioRoots
 import com.levi.pocketdj.studio.store.StudioStore
+import com.levi.pocketdj.data.burns.BurnSong
+import com.levi.pocketdj.studio.audio.LocalAudioCache
+import com.levi.pocketdj.studio.audio.LocalSource
+import com.levi.pocketdj.studio.audio.NativeStretcher
+import com.levi.pocketdj.studio.audio.PrepareOutcome
+import com.levi.pocketdj.studio.audio.StudioOutputs
+import com.levi.pocketdj.studio.audio.StudioRender
+import com.levi.pocketdj.studio.engine.AudioFocusPolicy
+import com.levi.pocketdj.studio.engine.MicRecorder
+import com.levi.pocketdj.studio.engine.SampleFactory
+import com.levi.pocketdj.studio.engine.SampleRenderCache
+import com.levi.pocketdj.studio.engine.StudioEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
@@ -65,8 +77,75 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
     val studioStore: StudioStore get() = storeLazy.value
 
+    // ---- STU-3: render / engine / recorder / source cache (all lazy: a user who never opens Producer pays nothing)
+
+    private val audioManager get() = app.appContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+
+    val studioRender: StudioRender by lazy { StudioRender(stretcher = NativeStretcher) }
+
+    val sampleRenderCache: SampleRenderCache by lazy { SampleRenderCache(studioRoots, studioStore, studioRender) }
+
+    val sampleFactory: SampleFactory by lazy { SampleFactory(studioRoots, studioStore, studioRender) }
+
+    private val engineLazy = lazy {
+        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { studioEngine.pauseSample() } }
+        StudioEngine(
+            sinkFactory = { StudioOutputs.create(audioManager) },
+            stretcher = NativeStretcher,
+            scope = app.appScope,
+            focus = {
+                // One audible owner: park Now Playing before the Studio sample sounds.
+                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                focus.requestPlayback()
+            },
+            focusRelease = { focus.abandon() },
+        )
+    }
+    val studioEngine: StudioEngine get() = engineLazy.value
+
+    private val micLazy = lazy {
+        val captureFocus = AudioFocusPolicy.FocusHandle(audioManager) { /* a competing app took focus: the take keeps going */ }
+        MicRecorder(
+            studioRoots, studioStore, audioManager,
+            onCaptureBegin = {
+                // Park Now Playing and take transient focus so nothing bleeds into the take.
+                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                captureFocus.requestCapture()
+            },
+            onCaptureEnd = { captureFocus.abandon() },
+        ).also { r -> studioStore.activeTakeFileName = { r.activeTake?.first } }
+    }
+    val micRecorder: MicRecorder get() = micLazy.value
+
+    /** Source ladder for New-sample-from-track: burned file -> burn-on-demand -> 'Rip first'. */
+    val localAudioCache: LocalAudioCache by lazy {
+        val burns = app.servicesGraph.burnStore
+        LocalAudioCache(
+            dir = java.io.File(app.appContext.cacheDir, "studio-src"),
+            http = app.httpClient,
+            backend = object : LocalAudioCache.Backend {
+                override fun local(songId: String): LocalSource? =
+                    burns.localUrlPreferringCut(songId)?.let { LocalSource(it.file, it.isCut, burns.startMs(songId)?.toInt() ?: 0) }
+                override fun inManifest(songId: String) = app.ripsRepository.entry(songId) != null
+                override suspend fun burn(songId: String, title: String, artist: String): PrepareOutcome {
+                    val r = burns.burn(listOf(BurnSong(songId, title, artist)))
+                    return PrepareOutcome(
+                        ok = r.burned > 0, notRipped = r.notRipped > 0,
+                        folderUnavailable = r.folderUnavailable, outOfSpace = r.outOfSpace,
+                    )
+                }
+                override suspend fun durableUrl(songId: String): String? = app.presignCache.urlFor(songId)
+                override fun startMs(songId: String): Int = burns.startMs(songId)?.toInt() ?: 0
+            },
+        ).also { it.sweepPartials() }
+    }
+
     // A user who never touched Studio must not build/reconcile/rewrite the doc on ON_STOP.
-    override val flushables: List<Flushable> = listOf(Flushable { if (storeLazy.isInitialized()) studioStore.flush() })
+    // A take in flight is filed + the store flushed synchronously (Android blocks background mic capture).
+    override val flushables: List<Flushable> = listOf(
+        Flushable { if (micLazy.isInitialized()) micRecorder.finalizeForExit() },
+        Flushable { if (storeLazy.isInitialized()) studioStore.flush() },
+    )
 
     override val resetHooks: List<ResetHook> = listOf(
         ResetHook {

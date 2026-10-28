@@ -47,6 +47,14 @@ interface StudioCodec {
     fun decode(path: String): PcmBuffer?
     /** Whole file at its OWN sample rate (no resample) — the varispeed relabel input. */
     fun decodeNativeRate(path: String): PcmBuffer?
+    /** Only [startMs, startMs+lenMs) of the file -> canonical (never the whole album side on device). Default: whole decode + slice. */
+    fun decodeRange(path: String, startMs: Int, lenMs: Int): PcmBuffer? {
+        val full = decode(path) ?: return null
+        val rate = full.sampleRate.toDouble()
+        val from = StudioAudio.msToFrames(startMs, rate).coerceAtMost(full.frames.toLong())
+        val n = minOf(StudioAudio.msToFrames(lenMs, rate), full.frames - from)
+        return StudioAudio.slice(full, from, n) ?: PcmBuffer(full.sampleRate, full.channels, FloatArray(0))
+    }
     fun isProtected(path: String): Boolean
     fun writeM4a(pcm: PcmBuffer, file: File)
     /** LPCM float WAV with an exact frame count (loops). */
@@ -55,6 +63,9 @@ interface StudioCodec {
 
 object AndroidStudioCodec : StudioCodec {
     override fun decode(path: String) = runCatching { AudioDecoder.decode(path) }.getOrNull()
+
+    override fun decodeRange(path: String, startMs: Int, lenMs: Int): PcmBuffer? =
+        runCatching { AudioDecoder.decode(path, maxSeconds = lenMs / 1000.0, startSeconds = startMs / 1000.0) }.getOrNull()
 
     override fun decodeNativeRate(path: String): PcmBuffer? = runCatching {
         val rate = probe(path) { it.getInteger(MediaFormat.KEY_SAMPLE_RATE) } ?: return null
@@ -379,7 +390,10 @@ class StudioRender(
     }
 
     suspend fun carveTrackRegion(sourcePath: String, startMs: Int, endMs: Int, dest: File): RenderResult = serial {
-        val out = StudioRenderCore.carve(decodeOrThrow(sourcePath), startMs, endMs)
+        if (startMs < 0 || endMs <= startMs) throw StudioRenderException.EmptyWindow()
+        val win = codec.decodeRange(sourcePath, startMs, endMs - startMs) ?: throw StudioRenderException.UnreadableSource(sourcePath)
+        if (win.frames <= 0) throw StudioRenderException.EmptyWindow()
+        val out = StudioRenderCore.carve(win, 0, endMs - startMs)
         writeAtomically(dest) { codec.writeM4a(out, it) }
         result(out.frames).also { log("carve ${File(sourcePath).name} [$startMs-${endMs}ms] -> ${it.frames}f") }
     }
@@ -410,6 +424,10 @@ class StudioRender(
     }
 
     suspend fun decodeBuffer(path: String): PcmBuffer = serial { decodeOrThrow(path) }
+
+    /** Ranged decode: just [startMs, startMs+lenMs) of [path] (null when unreadable/empty). */
+    suspend fun decodeRangeBuffer(path: String, startMs: Int, lenMs: Int): PcmBuffer? =
+        serial { codec.decodeRange(path, startMs, lenMs)?.takeIf { it.frames > 0 } }
 
     suspend fun stretchBuffer(source: PcmBuffer, toFrames: Long): PcmBuffer = serial {
         if (!StudioAudio.isCanonical(source)) throw StudioRenderException.CannotCreateBuffer()
