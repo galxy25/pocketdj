@@ -253,6 +253,21 @@ class PlaybackService : MediaSessionService() {
             return super.onMediaButtonEvent(session, controllerInfo, intent)
         }
 
+        /**
+         * Media-button / Bluetooth resumption after the process was killed (PB-4): restore the durable
+         * queue HELD and refuse to auto-play (iOS held rule) - the failed future leaves the player
+         * untouched; the deck waits for the first explicit play. The file is never written here.
+         */
+        override fun onPlaybackResumption(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            runCatching {
+                com.levi.pocketdj.di.AppGraph.get(applicationContext).playbackGraph.resumptionProvider.onPlaybackResumption()
+            }
+            return Futures.immediateFailedFuture(UnsupportedOperationException("held restore: no auto-play"))
+        }
+
         override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
             refreshCustomLayout()
         }

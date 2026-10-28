@@ -1,6 +1,13 @@
 package com.levi.pocketdj.di
 
 import com.levi.pocketdj.data.history.PlayHistoryStore
+import com.levi.pocketdj.data.store.VersionedJsonWriter
+import com.levi.pocketdj.playback.durable.AppLifecycleFlusher
+import com.levi.pocketdj.playback.durable.PLAYBACK_SESSION_FILE
+import com.levi.pocketdj.playback.durable.PlaybackSessionStore
+import com.levi.pocketdj.playback.durable.ResumptionProvider
+import com.levi.pocketdj.playback.durable.SessionRestorer
+import com.levi.pocketdj.playback.durable.SessionWriter
 import com.levi.pocketdj.playback.health.DeadAirMeter
 import com.levi.pocketdj.playback.health.PlaybackSupervisor
 import com.levi.pocketdj.playback.health.PowerRunwayLock
@@ -12,6 +19,7 @@ import com.levi.pocketdj.screens.nowplaying.NowPlayingRoutes
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.NavEntry
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -56,8 +64,40 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         DeadAirMeter(file = java.io.File(app.appContext.filesDir, DeadAirMeter.FILE_NAME))
     }
 
-    /** Backgrounding persists the meter and logs the day's summary line. */
-    override val flushables: List<Flushable> = listOf(Flushable { deadAirMeter.flush() })
+    /** PB-4 durable playback session (`filesDir/pocketdj-playback-session.json`, iOS snapshot shape). */
+    val sessionStore: PlaybackSessionStore by lazy {
+        val f = java.io.File(app.appContext.filesDir, PLAYBACK_SESSION_FILE)
+        PlaybackSessionStore(f, VersionedJsonWriter(f, VersionedJsonWriter.backgroundExecutor("pdj-session-writer")))
+    }
+
+    /** Sequencer state -> session store (real-time snapshot). Main-thread only. */
+    val sessionWriter: SessionWriter by lazy {
+        val seq = sequencer
+        SessionWriter(
+            store = sessionStore,
+            position = { seq.engine?.positionMs ?: 0L },
+            isPlaying = { seq.engine?.isPlaying == true },
+            heldOffset = { seq.resumeOffsetMs },
+            positionValid = { seq.engine?.hasLoadedItem == true },
+        )
+    }
+
+    /** Held restore at launch (and for the system's playback-resumption request). */
+    val sessionRestorer: SessionRestorer by lazy {
+        SessionRestorer(
+            store = sessionStore,
+            sequencer = sequencer,
+            anyBackendPlaying = { sequencer.engine?.isPlaying == true || app.playbackController.isAppleMusicActive },
+        )
+    }
+
+    val resumptionProvider: ResumptionProvider by lazy { ResumptionProvider(sessionRestorer, sessionStore) }
+
+    /** Backgrounding persists the meter and the live session snapshot. */
+    override val flushables: List<Flushable> = listOf(
+        Flushable { deadAirMeter.flush() },
+        AppLifecycleFlusher(sessionStore),
+    )
 
     /**
      * The 1 Hz keep-playing supervisor over the setlist lane. Ticks only while a run exists
@@ -130,6 +170,16 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) {
             seq.state.map { it.isRunning }.distinctUntilChanged().collect { running ->
                 if (running) supervisor.start() else supervisor.stopTicking()
+            }
+        }
+        // PB-4: held restore FIRST (before the writer observes: a restore is not a write), then the
+        // real-time writer + 1 Hz position tick.
+        app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            runCatching { sessionRestorer.restoreIfIdle() }
+            launch { seq.state.collect { runCatching { sessionWriter.onState(it) } } }
+            while (true) {
+                delay(1_000)
+                runCatching { sessionWriter.tick() }
             }
         }
         // Burned-first rung: a READY burn plays from disk (offline-capable). Without this the

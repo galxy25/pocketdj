@@ -1463,6 +1463,52 @@ class CollectionsStore(
         set
     }
 
+    /** One live-queue row for [materializeNowPlayingSetlist]. */
+    data class QueueRowSnapshot(
+        val id: String,
+        val title: String,
+        val artist: String,
+        val lengthMs: Long? = null,
+        val repeatCount: Int? = null,
+    )
+
+    /**
+     * The Up Next header's SETLIST button target: the reserved Now Playing setlist if it still exists,
+     * else MATERIALIZED from the live queue (a durable-session restore leaves the queue only in the
+     * sequencer). Rows carry their own snapshot; bpm/camelot re-attach from the catalog when the id
+     * still resolves. Does not bump the restart token or touch the origin (it is not a new play).
+     */
+    fun materializeNowPlayingSetlist(name: String?, queue: List<QueueRowSnapshot>): Setlist? = synchronized(lock) {
+        setlist(NOW_PLAYING_SETLIST_ID)?.let { return it }
+        if (queue.isEmpty()) return null
+        val songs = catalogProvider?.invoke()?.songsById
+        val tracks = queue.map { row ->
+            val s = songs?.get(row.id)
+            SetlistTrack(
+                songId = row.id,
+                artist = row.artist,
+                name = row.title,
+                bpm = s?.bpm,
+                camelot = s?.camelot,
+                lengthMs = row.lengthMs ?: s?.length,
+                source = TrackSource.EXPLICIT,
+                repeatCount = CollectionMembership.storedRepeat(row.repeatCount ?: 1),
+            )
+        }
+        val set = Setlist(
+            id = NOW_PLAYING_SETLIST_ID,
+            playlistId = NOW_PLAYING_PLAYLIST_ID,
+            name = name ?: "Now Playing",
+            seed = "now-playing",
+            generatedAt = now(),
+            totalMs = tracks.sumOf { it.shownMs },
+            tracks = tracks,
+        )
+        publish { st -> st.copy(setlists = st.setlists + set) }
+        save()
+        set
+    }
+
     /** ▶ Play a playlist (literal resolved order) — stamps `lastPlayedAt` first. */
     fun playNowPlaylist(playlistId: String, shuffle: Boolean = false, random: Random = Random): Setlist? {
         markPlaylistPlayed(playlistId)
