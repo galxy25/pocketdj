@@ -32,3 +32,5 @@ state: implemented
 
 ## Tests
 New: DiscoverAddsStoreTest, DiscoverAddStateTest, SupersedeTest, DiscoverAddControllerTest, CatalogRepositoryTest, AlbumTracksParseTest.
+
+JVM tests 4744 total, 0 failures; assembleDebug green (my new tests: ~56 across 6 files).
