@@ -19,7 +19,11 @@ enum class AmStatus { STOPPED, PLAYING, PAUSED, BUFFERING }
  * listener pause mid-song never lands there, so the parked shapes count as ended.
  */
 object EndVerdicts {
-    /** Seconds a play the SDK accepted may take to reach PLAYING before it counts as dead. */
+    /**
+     * Seconds a play the SDK accepted may take to reach PLAYING before it counts as dead. NOTE: in production
+     * `AppleMusicBackend.play` already waits (10 s confirm timeout) and returns false, so a never-started row
+     * fails the LOAD before the monitor is armed; this path covers a monitor armed on an already-accepted play.
+     */
     const val START_TIMEOUT_SECONDS = 12.0
 
     /** A STOPPED this far short of the track's length is an interruption, not the natural end. */

@@ -16,6 +16,9 @@ interface AppleMusicController {
 
     fun play()
     fun pause()
+
+    /** Silence the engine for a session handoff: NO listener-intent / intentional-pause bookkeeping. */
+    fun pauseQuiet()
     fun seekTo(positionMs: Long)
     fun stop()
 
@@ -70,6 +73,7 @@ class BackendAppleMusicController(
         onPlayIntent?.invoke(false)
         backend.pauseNow()
     }
+    override fun pauseQuiet() = backend.pauseNow()
     override fun seekTo(positionMs: Long) { monitor.noteSeek(positionMs); backend.seekNow(positionMs) }
     override fun stop() = backend.stopNow()
     override fun setChangeListener(l: (() -> Unit)?) { backend.changeListener = l }

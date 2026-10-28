@@ -219,7 +219,13 @@ class PlaybackController(
             appleMusicBackend?.let { backend ->
                 AppleMusicRowResolver(
                     appleMusicIdFor = { item -> catalog.state.value.catalog?.songsById?.get(item.id)?.appleMusicId },
-                    canPlayFullTrack = { backend.canPlayFullTrack() },
+                    // Cached facts only on the resolve path (a token fetch here is dead air on every row);
+                    // a cold token is warmed off-path so the next row sees it.
+                    canPlayFullTrack = {
+                        val ok = backend.canPlayFullTrackCached()
+                        if (!ok) scope.launch { runCatching { backend.canPlayFullTrack() } }
+                        ok
+                    },
                 )
             },
         ),
@@ -704,8 +710,16 @@ class PlaybackController(
     }
 
     suspend fun seekTo(positionMs: Long) {
-        if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.seekTo(positionMs)
-        else withController { it.seekTo(positionMs) }
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) {
+            // Through the controller so the monitor re-bases (our own backward scrub is not a system previous).
+            withContext(Dispatchers.Main) {
+                val ctl = amController
+                if (ctl != null) ctl.seekTo(positionMs) else amMonitor.noteSeek(positionMs)
+            }
+            if (amController == null) appleMusicBackend?.seekTo(positionMs)
+        } else {
+            withController { it.seekTo(positionMs) }
+        }
     }
 
     suspend fun stop() {
@@ -742,6 +756,9 @@ class PlaybackController(
     private var amAdapter: AppleMusicPlayerAdapter? = null
     @Volatile private var amCurrentAmId: String? = null
 
+    /** An interruption resume is re-queuing the song: the poll loop must not read the gap as a dead source. */
+    @Volatile private var amResuming = false
+
     /** Stop watching the AM row (a foreign play / stop / the next load took over) and hand the session back. */
     private fun disarmAppleMusic() {
         amMonitor.disarm()
@@ -773,6 +790,8 @@ class PlaybackController(
             onSkipNext = { sequencer.skipNext() },
             onSkipPrevious = { sequencer.skipPrevious() },
             canSkip = { sequencer.isRunning },
+            // A session stop is the full set stop (abandon the run + disarm), not a bare engine stop.
+            onStop = { scope.launch { stop() } },
         ).also { amAdapter = it }
     }
 
@@ -780,13 +799,19 @@ class PlaybackController(
     private fun resumeAppleMusicAfterInterruption(backend: AppleMusicBackend, atSeconds: Double) {
         val row = backend.currentRow() ?: return
         val amId = amCurrentAmId ?: return
+        amResuming = true
         sequencerScope.launch {
-            val ok = runCatching {
-                backend.play(amId, row.songId, row.title, row.artist, row.albumId, PlayContext(PlayContext.SOURCE_SETLIST))
-            }.getOrDefault(false)
-            if (ok) {
-                backend.seekNow((atSeconds * 1000).toLong())
-                amMonitor.noteSeek((atSeconds * 1000).toLong())
+            try {
+                val ok = runCatching {
+                    backend.play(amId, row.songId, row.title, row.artist, row.albumId, PlayContext(PlayContext.SOURCE_SETLIST), resume = true)
+                }.getOrDefault(false)
+                if (ok) {
+                    backend.seekNow((atSeconds * 1000).toLong())
+                    amMonitor.noteSeek((atSeconds * 1000).toLong())
+                }
+                // else: it never came back - the interrupted hold (and its notice) stays; nothing advances.
+            } finally {
+                amResuming = false
             }
         }
     }
@@ -798,6 +823,7 @@ class PlaybackController(
         amPollJob = sequencerScope.launch {
             while (this.isActive && !amMonitor.isFinished) {
                 kotlinx.coroutines.delay(AppleMusicEndMonitor.POLL_MS)
+                if (amResuming) continue
                 val row = backend.currentRow()
                 if (row == null) {
                     // The engine dropped the row without us stopping it: a steady-state SDK error => dead source.
@@ -838,7 +864,11 @@ class PlaybackController(
         // Claim ownership first so Exo's IPC-delayed pause/stop events cannot clobber the AM card.
         activeBackend = ActiveBackend.APPLE_MUSIC
         if (prior == ActiveBackend.EXO) withController { it.pause() }
-        withContext(Dispatchers.Main) { ensureAmAdapter(backend) }
+        // Hold the session claim until the Exo teardown below is done: the SDK reaches PLAYING (and the
+        // adapter would take the MediaSession) before play() returns, and a teardown stop() sent through
+        // the session would then land on the adapter and kill the Apple Music audio just started.
+        val adapter = withContext(Dispatchers.Main) { ensureAmAdapter(backend).also { it.holdClaims() } }
+        try {
         amCurrentAmId = src.appleMusicId
         val started = runCatching {
             backend.play(src.appleMusicId, item.id, song?.name ?: item.title, song?.artist ?: item.artist, song?.albumId, request.context)
@@ -859,9 +889,13 @@ class PlaybackController(
             it.clearMediaItems()
         }
         withContext(Dispatchers.Main) {
+            adapter.releaseClaims()
             startAppleMusicMonitor(backend, item.id, item.lengthMs)
             amController?.let { amAdapter?.onEngineChanged() }
             sequencer.onFirstAudio(item.id, "am")
+        }
+        } finally {
+            withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) { adapter.releaseClaims() }
         }
     }
 
@@ -1040,24 +1074,36 @@ class PlaybackController(
                 pausedExo = true
                 withController { it.pause() }
             }
-            val started = runCatching {
+            // Hold the session claim across the Exo teardown (see loadAppleMusic).
+            val adapter = withContext(Dispatchers.Main) { ensureAmAdapter(backend).also { it.holdClaims() } }
+            val started = try { runCatching {
                 backend.play(amId, songId, song.name, song.artist, song.albumId, ctx)
-            }.getOrDefault(false)
+            }.getOrDefault(false) } catch (e: Throwable) {
+                withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) { adapter.releaseClaims() }
+                throw e
+            }
             if (started) {
-                // PB-8: front the session with the adapter so exactly one card exists (device only).
-                withContext(Dispatchers.Main) { ensureAmAdapter(backend).onEngineChanged() }
                 // AM truly owns audio now → release ExoPlayer for good (guarded
                 // events are ignored because activeBackend == APPLE_MUSIC).
                 withContext(Dispatchers.Main) {
                     sequencerOwnsPlayer = false
                     sequencer.retirePendingStart()
                 }
-                withController {
-                    it.stop()
-                    it.clearMediaItems()
+                try {
+                    withController {
+                        it.stop()
+                        it.clearMediaItems()
+                    }
+                } finally {
+                    // PB-8: front the session with the adapter so exactly one card exists (device only).
+                    withContext(kotlinx.coroutines.NonCancellable + Dispatchers.Main) {
+                        adapter.releaseClaims()
+                        adapter.onEngineChanged()
+                    }
                 }
                 return PlayOutcome.Started
             }
+            withContext(Dispatchers.Main) { adapter.releaseClaims() }
             // Full-track failed to start → relinquish ownership to whatever owned
             // audio before, and fall through to the preview rung.
             activeBackend = prior

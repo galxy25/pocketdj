@@ -480,7 +480,9 @@ class SetlistSequencer(
             if (source !is RipOnDemandSource) {
                 // Loaded: the network resolve is over. The start watchdog owns it from here.
                 stallTimer.cancel()
-                armStartStall(gen, item.id)
+                // First audio may already have landed during load() (Apple Music confirms PLAYING inside
+                // play()): the window is closed, and a stray watchdog would later hop a song already playing.
+                if (firstAudioPending) armStartStall(gen, item.id)
             } // a rip-on-demand row stays under the resolve stall until noteSourceResolved()
         }
     }

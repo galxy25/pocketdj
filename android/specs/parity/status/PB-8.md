@@ -23,3 +23,18 @@ Tests: 2498 total, 0 failed; +55 new (EndReasonTest 13, AppleMusicEndMonitorTest
 
 ## Questions for Levi
 - None blocking.
+
+## Review
+fixes applied
+
+- MAJOR PlaybackController:336 Exo teardown kills AM -> fixed. Adapter session claim is gated (AppleMusicSessionCore.holdClaims) across backend.play + the Exo stop/clearMediaItems in loadAppleMusic and tryAppleMusic, then releaseClaims claims. Test: AppleMusicSessionCoreTest.claimIsDeferredWhileHeld_thenGrantedOnRelease.
+- MAJOR AppleMusicPlayerAdapter:159 pauseForHandoff marks listener pause -> fixed. New AppleMusicController.pauseQuiet (backend.pauseNow only, no onPlayIntent/noteIntentionalPause), and only when AM holds a live PLAYING/BUFFERING row. Tests: handoff_* , everyExoStart_doesNotTouchTheAmListenerPath.
+- MAJOR PlaybackController:706 scrubber skips noteSeek -> fixed. seekTo routes through amController.seekTo (noteSeek + seekNow). Tests: ourOwnBackwardScrub_afterNoteSeek_isNotARestart / backwardJumpWithoutNoteSeek_isARestart (monitor contract; the controller routing itself is device-only).
+- MAJOR AppleMusicPlayerAdapter:204 handleStop -> fixed. Adapter takes onStop; the controller wires it to PlaybackController.stop() (abandonRun + disarm + backend stop). Test: sessionStop_routesToTheControllersFullStop_notTheEngine.
+- MINOR PlaybackController:343 stray start watchdog -> fixed in SetlistSequencer: post-load armStartStall only if firstAudioPending. Test: firstAudioDuringLoad_doesNotArmAStrayStartWatchdog (FakePlayerPort.duringLoad hook).
+- MINOR PlaybackController:259 interruption resume -> fixed. amResuming guards the poll loop; AppleMusicBackend.play(resume=true) preserves startedSongId (no duplicate History row) and restores the interrupted row on failure so the hold + notice stay. Device-only, not unit-tested.
+- MINOR PlaybackService:170 onDestroy releases adapter -> fixed. Exo player held in a field and released directly; session released without releasing session.player; non-Exo owner resigned; the adapter stays valid for the next service instance.
+- MINOR AppleMusicRowResolver:726 token fetch on resolve path -> fixed. Resolver uses AppleMusicBackend.canPlayFullTrackCached (no network); a cold token is warmed off-path (scope.launch) so the next row sees it. Trade-off: the first AM row after a cold token falls through to the rip rungs.
+- NIT AppleMusicEndMonitor:641 -> documented (neverStarted covered by the 10 s confirm timeout in production).
+
+Tests: 2508 run, 0 failures (was 2497-class baseline; new AppleMusicSessionCoreTest + 4 added cases). assembleDebug green.

@@ -80,6 +80,16 @@ class AppleMusicBackend(
      * a pre-fetched developer token. False on the emulator / signed-out /
      * no-token — the caller then uses a preview.
      */
+    /**
+     * The resolve-path capability check: cached facts only (NO network). A missing developer token reads
+     * false here; [canPlayFullTrack] warms it off-path so the next row sees it.
+     */
+    suspend fun canPlayFullTrackCached(): Boolean {
+        if (!isArm()) return false
+        if (settings.current().musicUserToken.isBlank()) return false
+        return devTokenClient.cachedTokenOrNull() != null
+    }
+
     suspend fun canPlayFullTrack(): Boolean {
         if (!isArm()) return false
         val s = settings.current()
@@ -107,7 +117,14 @@ class AppleMusicBackend(
         artist: String?,
         albumId: String?,
         context: PlayContext,
+        /**
+         * Same-song resume after an interruption: keeps [startedSongId] (no second PlayStarted / History row)
+         * and, if the SDK cannot restart, leaves the interrupted row in place (the hold survives) instead of
+         * dropping it as a dead source.
+         */
+        resume: Boolean = false,
     ): Boolean {
+        val priorCurrent = current
         userTokenSnapshot = runCatching { settings.current().musicUserToken }.getOrDefault("")
         val confirm = CompletableDeferred<Boolean>()
         playConfirm = confirm
@@ -115,7 +132,7 @@ class AppleMusicBackend(
             try {
                 val c = ensureController()
                 current = Current(songId, title, artist, albumId, context)
-                startedSongId = null
+                if (!resume) startedSongId = null
                 val provider = CatalogPlaybackQueueItemProvider.Builder()
                     .items(MediaItemType.SONG, appleMusicId)
                     .build()
@@ -123,7 +140,7 @@ class AppleMusicBackend(
                 true
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
-                current = null
+                current = if (resume) priorCurrent else null
                 false
             }
         }
@@ -139,8 +156,8 @@ class AppleMusicBackend(
         if (!ok) {
             // Leave no half-started AM playback behind before the caller degrades.
             runCatching { withContext(Dispatchers.Main) { controller?.stop() } }
-            current = null
-            startedSongId = null
+            current = if (resume) priorCurrent else null
+            if (!resume) startedSongId = null
         }
         return ok
     }

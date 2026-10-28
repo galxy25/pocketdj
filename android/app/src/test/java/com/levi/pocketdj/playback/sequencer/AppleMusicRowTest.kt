@@ -146,4 +146,23 @@ class AppleMusicRowTest {
         h.seq.noteAppleMusicResumed("a")
         assertNull(h.seq.state.value.playbackNotice)
     }
+
+    @Test fun firstAudioDuringLoad_doesNotArmAStrayStartWatchdog() = runTest {
+        val h = harness(true)
+        val probe = object : com.levi.pocketdj.playback.health.EngineProbe {
+            override val hasLoadedItem = true
+            override val isPlaying = false // e.g. the AM stream rebuffers later
+            override val positionMs = 0L
+            override val trackEnded = false
+            override fun rekick(by: String) = Unit
+        }
+        h.seq.engine = probe
+        h.port.duringLoad = { id -> h.seq.onFirstAudio(id, "am") }
+        h.seq.play(rows("a", "b"))
+        h.settle()
+        testScheduler.advanceTimeBy(60_000)
+        h.settle()
+        assertEquals(listOf("a"), h.port.loadedIds) // a song already playing was not hopped/advanced
+        assertTrue(h.logs.none { it.contains("start-stall") })
+    }
 }

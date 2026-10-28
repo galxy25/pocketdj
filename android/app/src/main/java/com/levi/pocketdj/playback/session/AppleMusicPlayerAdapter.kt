@@ -124,6 +124,8 @@ class AppleMusicPlayerAdapter(
     private val onSkipPrevious: () -> Unit,
     /** Is a sequencer run active (so next/previous mean something)? */
     private val canSkip: () -> Boolean,
+    /** A session stop (notification / Auto / headset): the controller's full set stop. */
+    onStop: () -> Unit = { engineControl.stop() },
     private val board: SessionSwitchboard = SessionSwitchboard.shared,
 ) : SimpleBasePlayer(looper), TransportOwner {
 
@@ -132,7 +134,15 @@ class AppleMusicPlayerAdapter(
     @Volatile override var hasSounded: Boolean = false
         private set
 
-    @Volatile private var quiet = false
+    private val core = AppleMusicSessionCore(engineControl, onStop)
+
+    /** Suppress the session claim while ExoPlayer is torn down (see [AppleMusicSessionCore]). */
+    fun holdClaims() = core.holdClaims()
+
+    /** Lift the claim gate and, if AM started sounding meanwhile, claim now. */
+    fun releaseClaims() {
+        if (core.releaseClaims()) onEngineChanged()
+    }
 
     init {
         board.register(this)
@@ -144,7 +154,7 @@ class AppleMusicPlayerAdapter(
         val snap = engineControl.snapshot()
         if (snap.status == AmStatus.PLAYING && engineControl.track != null) {
             hasSounded = true
-            if (!board.isActive(this)) board.setOwner(this)
+            if (core.shouldClaim(board.isActive(this))) board.setOwner(this)
         }
         invalidateState()
     }
@@ -158,8 +168,7 @@ class AppleMusicPlayerAdapter(
 
     override fun pauseForHandoff() {
         // Another owner started: silence AM without marking it an intentional listener pause.
-        quiet = true
-        try { engineControl.pause() } finally { quiet = false }
+        core.pauseForHandoff()
     }
 
     override fun getState(): State {
@@ -202,7 +211,7 @@ class AppleMusicPlayerAdapter(
     }
 
     override fun handleStop(): ListenableFuture<*> {
-        engineControl.stop()
+        core.stop()
         return Futures.immediateVoidFuture()
     }
 

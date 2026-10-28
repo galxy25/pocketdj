@@ -133,4 +133,17 @@ class AppleMusicEndMonitorTest {
         m.arm(1000)
         assertFalse(m.intentionalPause)
     }
+
+    @Test fun ourOwnBackwardScrub_afterNoteSeek_isNotARestart() {
+        startPlaying()
+        for (i in 1..40) tick(AmStatus.PLAYING, 0.1 + i) // > 10 s of progress
+        m.noteSeek(500) // the in-app scrubber dragged back to 0:00.5
+        assertNull(tick(AmStatus.PLAYING, 0.9))
+    }
+
+    @Test fun backwardJumpWithoutNoteSeek_isARestart() {
+        startPlaying()
+        for (i in 1..40) tick(AmStatus.PLAYING, 0.1 + i)
+        assertEquals(AmEvent.Restarted, tick(AmStatus.PLAYING, 0.9))
+    }
 }
