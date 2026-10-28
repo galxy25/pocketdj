@@ -109,7 +109,9 @@ class SetlistSequencerTest {
         h.seq.play(listOf(QueueItem("a", repeatCount = 3), QueueItem("b")))
         h.settle()
         repeat(3) { h.seq.handleEnded("a"); h.settle() }
-        assertEquals(listOf("a", "a", "a", "b"), h.port.loadedIds)
+        // Passes 2 and 3 restart the held item in place (no reload = no extra History row).
+        assertEquals(listOf("a", "b"), h.port.loadedIds)
+        assertEquals(listOf("a", "a"), h.port.replays)
         // The repeat loop never moved the cursor.
         assertEquals(1, h.index)
     }
@@ -122,7 +124,8 @@ class SetlistSequencerTest {
         h.settle()
         h.seq.handleEnded("a"); h.settle()
         h.seq.handleEnded("a"); h.settle()
-        assertEquals(listOf("a", "a", "a"), h.port.loadedIds)
+        assertEquals(listOf("a"), h.port.loadedIds)
+        assertEquals(listOf("a", "a"), h.port.replays)
         assertEquals(0, h.index)
     }
 

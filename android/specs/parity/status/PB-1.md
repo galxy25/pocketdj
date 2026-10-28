@@ -1,8 +1,8 @@
-state: implemented
+state: reviewed
 
 # PB-1 - SetlistSequencer core
 
-Tests: 1143 total, 0 failed, 0 skipped (`./gradlew :app:testDebugUnitTest :app:assembleDebug` green at the committed tip).
+Tests: 1154 total (after review fixes; was 1143), 0 failed, 0 skipped (`./gradlew :app:testDebugUnitTest :app:assembleDebug` green at the committed tip).
 New this package: SetlistSequencerTest 31, LiveEditsTest 18, RepeatShuffleTest 9, ResolveLadderTest 15, QueuePlanTest rewritten (6, replaces the old build/Plan tests).
 
 - [x] sequencer/: QueueItem(uid), RepeatMode, AdvanceCause, SequencerState, PlayerPort, RowSourceResolver (+Rung, LocalFileRowResolver, ManifestRowResolver), RowResolverRegistry, LocalFileResolver, EditionDecider, SetlistSequencer
@@ -29,3 +29,17 @@ New this package: SetlistSequencerTest 31, LiveEditsTest 18, RepeatShuffleTest 9
 ## Questions for Levi
 - Should a user-picked playback mode (cloud/device) get a Settings control now, or wait for the burn store (SVC-4)?
 - Inside a run, should an Apple-Music-only row (PB-8) be allowed to take over from the sequencer when AM end detection exists, or skip as today? (Defaulted: skip.)
+
+## Review
+Opus adversarial review - fixes applied.
+- MAJOR repeat/duplicate replays emit extra PlayStarted -> fixed. New `PlayerPort.replay(songId)`; repeat-ONE, repeatCount passes, consecutive duplicate rows (AUTO) and a single-row ALL wrap restart the held item with seekTo(0)+play (no setMediaItems, so no PLAYLIST_CHANGED / second History row). Falls back to a normal load when the engine no longer holds the row. Tests: ReviewFixesTest (repeatOne / repeatCount / duplicate / fallback), SetlistSequencerTest updated.
+- MAJOR foreign play does not retire pending start -> fixed. `SetlistSequencer.retirePendingStart()` (cancel playJob, bump + publish generation) called for non-member singles (setQueueAndPlay), AM full-track take-over, and adoptCursor of the current row; `Media3Port.load` re-checks the published sequencer generation after the presign await and stands down. Tests: foreignPlay_retiresPendingStart, adoptingTheCurrentRow_retiresItsPendingLoad.
+- MINOR lost "not playable" feedback -> fixed. A run that starts no row now raises a notice in every mode (device keeps its banner flag); SetlistDetailScreen surfaces it as the snackbar and acks it. (Per-entry "k not playable" count is still 0; skips are per row at their turn.) Test: cloudRun_thatStartsNothing_raisesNotice.
+- MINOR full-lap guard only counted unplayable -> fixed. Load failures and handleFailed count toward the streak; it resets on a natural end or a user skip. Tests: repeatAll_everyLoadFailing / midSongFailures / aRowThatPlaysThrough_resetsTheLap. PB-3 cascade breaker still supersedes.
+- MINOR system next/prev lost -> fixed interim. `RunAwarePlayer` (ForwardingPlayer) in PlaybackService advertises next/previous while a run is active and routes them through `RunTransportBus` to the sequencer. NOT device-verified: whether the session pushes the changed command set to the notification without a player event is unconfirmed; PB-2 SequencerForwardingPlayer replaces this.
+- MINOR url: pseudo-id in History / presign retry -> fixed. URL items carry EXTRA_IS_STREAM; PlaybackService skips PlayStarted, onPlayerError skips the presign retry.
+- NIT originCollectionId persistence: accepted as stated - persisted into History rows by PB-5; only met at the PlayStarted event seam in PB-1.
+- NIT restoreHeld canonicalOrder -> fixed (optional parameter; PB-4 persists it). Test: restoreHeld_shuffleOff_restoresPersistedCanonicalOrder.
+- NIT saved repeat mode race -> fixed (onRepeatModeChanged assigned first; saved value skipped if the user already changed it).
+
+fixes applied

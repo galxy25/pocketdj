@@ -31,6 +31,9 @@ object PlaybackContract {
     /** Marker for a 30-second Apple Music preview (badge it; cap the scrubber). */
     const val EXTRA_IS_PREVIEW = "pdj.isPreview"
 
+    /** A raw stream (jukebox Tune-In): not a song - no History row, no presign retry. */
+    const val EXTRA_IS_STREAM = "pdj.isStream"
+
     /** Game-run tag ([PlayContext.runTag]) of a sequencer-appended row. */
     const val EXTRA_RUN_TAG = "pdj.runTag"
 

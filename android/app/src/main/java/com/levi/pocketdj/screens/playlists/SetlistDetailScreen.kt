@@ -129,6 +129,17 @@ fun SetlistDetailScreen(
         }
     }
 
+    // A run of THIS set that ended having started nothing (every row unplayable / failed) raises a
+    // one-shot notice on the sequencer; surface it as the old "not playable" snackbar and ack it.
+    val seqState by graph.playbackController.sequencer.state.collectAsState()
+    LaunchedEffect(seqState.playbackNotice, seqState.deviceUnplayableSourceId) {
+        val notice = seqState.playbackNotice
+        if (notice != null && seqState.deviceUnplayableSourceId == setlistId) {
+            snackbar.showSnackbar(notice)
+            graph.playbackController.sequencer.clearDeviceUnplayable()
+        }
+    }
+
     // The ▶/🔀 funnels open this screen autostarting; a bumped key restarts.
     LaunchedEffect(autoplayKey) {
         if (autoplay) start()

@@ -25,9 +25,24 @@ class FakePlayerPort : PlayerPort {
         gates[id]?.await()
         if (id in failing) error("dead source $id")
         sounded += id
+        held = id
+    }
+
+    /** Song ids restarted in place. */
+    val replays = mutableListOf<String>()
+
+    /** What the engine "holds" (last loaded id); [replay] succeeds only for it. */
+    var held: String? = null
+    var replayWorks = true
+
+    override suspend fun replay(songId: String): Boolean {
+        if (!replayWorks || held != songId) return false
+        replays += songId
+        return true
     }
 
     override suspend fun loadUrl(request: UrlRequest) {
+        held = null
         urls += request
     }
 

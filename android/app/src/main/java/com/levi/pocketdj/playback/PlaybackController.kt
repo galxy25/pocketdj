@@ -197,6 +197,9 @@ class PlaybackController(
     /** True while the sequencer's row is what ExoPlayer holds (end / error events feed it). */
     @Volatile private var sequencerOwnsPlayer = false
 
+    /** The listener changed repeat mode before the persisted value finished loading. */
+    @Volatile private var repeatTouched = false
+
     val sequencer: SetlistSequencer = SetlistSequencer(
         scope = sequencerScope,
         port = Media3Port(),
@@ -204,13 +207,22 @@ class PlaybackController(
         modeProvider = { cachedMode },
     ).also { seq ->
         seq.progressProvider = { progressFraction() }
+        seq.onRepeatModeChanged = { mode ->
+            repeatTouched = true
+            scope.launch { runCatching { settings.set(PlaybackPrefKeys.REPEAT_MODE, mode.token) } }
+        }
+        RunTransportBus.handler = object : RunTransportBus.Handler {
+            override val isRunActive: Boolean get() = seq.isRunning && sequencerOwnsPlayer
+            override fun next() = seq.skipNext()
+            override fun previous() = seq.skipPrevious()
+        }
         scope.launch {
             runCatching {
                 cachedMode = PlaybackMode.fromToken(settings.get(PlaybackPrefKeys.PLAYBACK_MODE))
                 val saved = RepeatMode.fromToken(settings.get(PlaybackPrefKeys.REPEAT_MODE))
-                withContext(Dispatchers.Main) { seq.setRepeatMode(saved) }
-                seq.onRepeatModeChanged = { mode ->
-                    scope.launch { runCatching { settings.set(PlaybackPrefKeys.REPEAT_MODE, mode.token) } }
+                withContext(Dispatchers.Main) {
+                    // A cycle the user made before the saved value arrived wins and is persisted.
+                    if (!repeatTouched) seq.setRepeatMode(saved)
                 }
             }
         }
@@ -275,7 +287,10 @@ class PlaybackController(
             val id = item.mediaId
             if (activeBackend != ActiveBackend.EXO) return
             val isPreview = item.requestMetadata.extras?.getBoolean(PlaybackContract.EXTRA_IS_PREVIEW) == true
+            val isStream = item.requestMetadata.extras?.getBoolean(PlaybackContract.EXTRA_IS_STREAM) == true
             // A presigned URL that expired (long pause) or 403'd: mint a fresh one once per song.
+            // A raw stream (jukebox Tune-In) has no song id to presign.
+            if (isStream) return
             if (urlRetriedFor == id || isPreview) {
                 failToSequencer(id)
                 return
@@ -709,6 +724,10 @@ class PlaybackController(
             if (started) {
                 // AM truly owns audio now → release ExoPlayer for good (guarded
                 // events are ignored because activeBackend == APPLE_MUSIC).
+                withContext(Dispatchers.Main) {
+                    sequencerOwnsPlayer = false
+                    sequencer.retirePendingStart()
+                }
                 withController {
                     it.stop()
                     it.clearMediaItems()
@@ -820,7 +839,12 @@ class PlaybackController(
                     sequencer.abandonRun()
                     false
                 }
-                else -> false
+                else -> {
+                    // A non-member single: the run is kept but its in-flight start must not load
+                    // over the user's pick (slow presign window).
+                    sequencer.retirePendingStart()
+                    false
+                }
             }
         }
         withController {
@@ -834,6 +858,9 @@ class PlaybackController(
     private inner class Media3Port : PlayerPort {
         override suspend fun load(request: PlayRequest) {
             val item = request.item
+            // A foreign play retires the sequencer's pending start (generation bump, published); if
+            // that happens while we await the presign we must stand down, not load over it.
+            val entryGeneration = sequencer.state.value.playGeneration
             val merged = catalog.state.value.catalog
             val song = merged?.songsById?.get(item.id)
             val album = song?.albumId?.let { merged.albumsById[it] }
@@ -854,6 +881,7 @@ class PlaybackController(
                 titleFallback = item.title,
                 artistFallback = item.artist,
             )
+            if (sequencer.state.value.playGeneration != entryGeneration) throw CancellationException("superseded by a foreign play")
             playGeneration.incrementAndGet()
             urlRetriedFor = null
             stopAppleMusic()
@@ -880,6 +908,7 @@ class PlaybackController(
                                 PlaybackContract.EXTRA_URL to request.url,
                                 PlaybackContract.EXTRA_SOURCE to PlayContext.SOURCE_BROWSER,
                                 PlaybackContract.EXTRA_IS_LIVE to request.url.contains("/hls/"),
+                                PlaybackContract.EXTRA_IS_STREAM to true,
                             ),
                         )
                         .build(),
@@ -896,6 +925,22 @@ class PlaybackController(
                 it.setMediaItems(listOf(mi), 0, if (request.seekMs > 0) request.seekMs else androidx.media3.common.C.TIME_UNSET)
                 it.prepare()
                 it.play()
+            }
+        }
+
+        override suspend fun replay(songId: String): Boolean {
+            if (!sequencerOwnsPlayer || activeBackend != ActiveBackend.EXO) return false
+            return withController { c ->
+                val cur = c.currentMediaItem
+                if (cur == null || cur.mediaId != songId) {
+                    false
+                } else {
+                    // Same item, no timeline change: no MEDIA_ITEM_TRANSITION, so no second History row.
+                    c.seekTo(0)
+                    c.prepare()
+                    c.play()
+                    true
+                }
             }
         }
 

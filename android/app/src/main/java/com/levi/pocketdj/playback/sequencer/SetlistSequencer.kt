@@ -84,7 +84,9 @@ class SetlistSequencer(
     private var playGeneration = 0L
     private var playsRemaining = 1
     private var playJob: Job? = null
-    private var loadedAnyDeviceTrack = false
+    private var startedAnyRow = false
+    /** Id of the row the engine currently holds as the sequencer's own load (in-place replay gate). */
+    private var lastLoadedId: String? = null
     private var deviceQueueUnplayable = false
     private var deviceUnplayableSourceId: String? = null
     private var pendingResumeMs: Long? = null
@@ -169,7 +171,8 @@ class SetlistSequencer(
         notice = null
         deviceQueueUnplayable = false
         deviceUnplayableSourceId = null
-        loadedAnyDeviceTrack = false
+        startedAnyRow = false
+        lastLoadedId = null
         unplayableStreak = 0
         memberIds = null
         publish()
@@ -210,8 +213,22 @@ class SetlistSequencer(
         capturedOrigin = null
         pendingResumeMs = null
         unplayableStreak = 0
+        lastLoadedId = null
         memberIds = null
         publish()
+    }
+
+    /**
+     * A foreign play (a Browse single that is not a row of this set, an AM take-over) owns the engine:
+     * retire any in-flight start of the sequencer's own so it can never load over the user's pick.
+     * The run itself is kept (cursor untouched).
+     */
+    fun retirePendingStart() {
+        playJob?.cancel()
+        playJob = null
+        playGeneration++
+        lastLoadedId = null
+        if (running) publish()
     }
 
     /** Acknowledge the one-shot device-unplayable banner. */
@@ -224,17 +241,17 @@ class SetlistSequencer(
 
     // ---- the ONE start funnel -----------------------------------------------------------
 
-    private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null) {
+    private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false) {
         playJob?.cancel()
         // LAZY + assign + start: an inline-dispatching scope may run (and even recurse into) this
         // body before launch() returns; the handle must already be in place so a nested start
         // cancels THIS job, not a stale one.
-        val job = scope.launch(start = CoroutineStart.LAZY) { playCurrent(fresh, resumeAtMs) }
+        val job = scope.launch(start = CoroutineStart.LAZY) { playCurrent(fresh, resumeAtMs, inPlace) }
         playJob = job
         job.start()
     }
 
-    private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?) {
+    private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?, inPlace: Boolean) {
         if (!running || index >= queue.size) return
         // A job cancelled BEFORE it ran must do nothing - above all it must not claim a generation.
         if (!currentCoroutineContext().isActive) return
@@ -243,6 +260,24 @@ class SetlistSequencer(
         val item = queue[index]
         val at = index
         publish()
+
+        // Same row again (repeat-ONE / repeatCount pass / consecutive duplicate row): restart the
+        // item the engine already holds. A fresh load would be a PLAYLIST_CHANGED transition and a
+        // second History row; iOS records nothing for a replay.
+        if (inPlace && resumeAtMs == null && lastLoadedId == item.id) {
+            val restarted = try {
+                port.replay(item.id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                false
+            }
+            if (!owns(gen)) return
+            if (restarted) {
+                log("[playback] replay in place song=${item.id} index=${at + 1}/${queue.size}")
+                return
+            }
+        }
 
         val mode = modeProvider()
         val source = try {
@@ -256,16 +291,10 @@ class SetlistSequencer(
 
         if (source is UnplayableSource) {
             log("[playback] advance: unplayable song=${item.id} index=$at/${queue.size} reason=${source.reason}")
-            if (++unplayableStreak >= queue.size.coerceAtLeast(1) && queue.size > 0 && repeatMode == RepeatMode.ALL) {
-                // A full lap with nothing loadable: stop instead of spinning forever on a wrapped set.
-                finishRun()
-                return
-            }
+            if (failureLapComplete()) return
             advanceToNext(AdvanceCause.UNPLAYABLE_HERE)
             return
         }
-        if (source is LocalFileSource) loadedAnyDeviceTrack = true
-
         val request = PlayRequest(
             item = item,
             source = source,
@@ -284,11 +313,29 @@ class SetlistSequencer(
             // A superseded load's error must never advance the newer row.
             if (owns(gen)) {
                 log("[playback] advance: load failed song=${item.id} index=$at/${queue.size} err=${e.message}")
+                lastLoadedId = null
+                if (failureLapComplete()) return
                 advanceToNext(AdvanceCause.AUTO)
             }
             return
         }
-        if (owns(gen)) unplayableStreak = 0
+        if (owns(gen)) {
+            startedAnyRow = true
+            lastLoadedId = item.id
+        }
+    }
+
+    /**
+     * Count one failed row (unplayable, load error, mid-song failure). A full lap of failures with
+     * repeat ALL stops the run instead of spinning forever on a wrapped set (until PB-3's cascade
+     * breaker). The streak resets only when a row plays through or the listener acts.
+     */
+    private fun failureLapComplete(): Boolean {
+        if (++unplayableStreak >= queue.size.coerceAtLeast(1) && repeatMode == RepeatMode.ALL) {
+            finishRun()
+            return true
+        }
+        return false
     }
 
     private fun owns(gen: Long): Boolean = running && gen == playGeneration
@@ -311,13 +358,14 @@ class SetlistSequencer(
     fun handleEnded(songId: String) {
         if (!running || index >= queue.size || !queue[index].matches(songId)) return
         outcomes?.emit(queue[index].id, false, 1.0)
+        unplayableStreak = 0
         if (repeatMode == RepeatMode.ONE) {
-            startPlayCurrent(fresh = true)
+            startPlayCurrent(fresh = true, inPlace = true)
             return
         }
         if (playsRemaining > 1) {
             playsRemaining--
-            startPlayCurrent(fresh = false)
+            startPlayCurrent(fresh = false, inPlace = true)
             return
         }
         advanceToNext(AdvanceCause.AUTO)
@@ -327,6 +375,8 @@ class SetlistSequencer(
     fun handleFailed(songId: String) {
         if (!running || index >= queue.size || !queue[index].matches(songId)) return
         log("[playback] advance: item failed mid-song song=${queue[index].id} index=$index/${queue.size}")
+        lastLoadedId = null
+        if (failureLapComplete()) return
         advanceToNext(AdvanceCause.AUTO)
     }
 
@@ -338,12 +388,15 @@ class SetlistSequencer(
      */
     fun adoptCursor(songId: String): Boolean {
         if (!running || index >= queue.size) return false
-        if (queue[index].matches(songId)) return true
+        if (queue[index].matches(songId)) {
+            // The manual play of the current row owns the engine; a pending start must not load over it.
+            retirePendingStart()
+            return true
+        }
         val pos = nearestOccurrence(songId, index) ?: return false
         noteAdvanceAway()
         exitHoldIfNeeded()
-        playJob?.cancel() // the manual play owns the engine now; a pending resolve must not load over it
-        playGeneration++
+        retirePendingStart() // the manual play owns the engine now; a pending resolve must not load over it
         index = pos
         playsRemaining = CollectionMembership.normalizedRepeat(queue[pos].repeatCount)
         log("[playback] adopt jump index=${pos + 1}/${queue.size} song=$songId")
@@ -374,6 +427,7 @@ class SetlistSequencer(
         if (!running) return
         noteAdvanceAway()
         exitHoldIfNeeded()
+        unplayableStreak = 0
         advanceToNext(AdvanceCause.USER)
     }
 
@@ -394,6 +448,8 @@ class SetlistSequencer(
         if (!running) return
         if (cause == AdvanceCause.AUTO && !autoAdvanceGate()) return
         log("[playback] advance from=${queue.getOrNull(index)?.id ?: "?"} index=$index/${queue.size} cause=$cause")
+        val fromId = queue.getOrNull(index)?.id
+        val dupNext = cause == AdvanceCause.AUTO && fromId != null && queue.getOrNull(index + 1)?.id == fromId
         index += 1
         if (index >= queue.size) {
             if (repeatMode == RepeatMode.ALL && queue.isNotEmpty()) {
@@ -402,25 +458,28 @@ class SetlistSequencer(
                 // canonicalOrder is untouched so shuffle-OFF still restores.
                 if (shuffleEnabled) reshuffleEntireQueue()
                 queueEdited()
-                startPlayCurrent(fresh = true)
+                startPlayCurrent(fresh = true, inPlace = cause == AdvanceCause.AUTO && fromId != null && queue.getOrNull(0)?.id == fromId)
                 return
             }
             finishRun()
         } else {
             publish()
-            startPlayCurrent(fresh = true)
+            startPlayCurrent(fresh = true, inPlace = dupNext)
         }
     }
 
     /** Past the end: tear down; a device-mode run that loaded nothing raises the one-shot banner. */
     private fun finishRun() {
-        val unplayable = modeProvider() == PlaybackMode.DEVICE && !loadedAnyDeviceTrack
+        val nothingStarted = !startedAnyRow
+        val device = modeProvider() == PlaybackMode.DEVICE
         val raisedBy = sourceSetlistId
         stop()
-        if (unplayable) {
-            deviceQueueUnplayable = true
+        if (nothingStarted) {
+            // Device mode keeps its banner signal; cloud mode (every row unplayable / failed) gets a
+            // notice the UI surfaces so a dead set never ends in silence with no feedback.
+            if (device) deviceQueueUnplayable = true
             deviceUnplayableSourceId = raisedBy
-            notice = "Nothing in this set is on this device"
+            notice = if (device) "Nothing in this set is on this device" else "None of these tracks are playable on this device yet"
             publish()
         }
     }
@@ -447,6 +506,7 @@ class SetlistSequencer(
         repeatMode: RepeatMode,
         shuffle: Boolean,
         resumeAtMs: Long?,
+        canonicalOrder: List<String>? = null,
     ) {
         if (items.isEmpty() || running) return
         queue.clear()
@@ -457,7 +517,9 @@ class SetlistSequencer(
         capturedOrigin = origin
         this.repeatMode = repeatMode
         shuffleEnabled = shuffle
-        canonicalOrder = if (shuffle) items.map { it.uid } else null
+        this.canonicalOrder = if (shuffle) (canonicalOrder ?: items.map { it.uid }) else null
+        startedAnyRow = false
+        lastLoadedId = null
         running = true
         held = true
         pendingResumeMs = resumeAtMs
@@ -698,6 +760,7 @@ class SetlistSequencer(
             playJob?.cancel()
             playGeneration++ // a held deck has no job; the bump just retires any straggler
         }
+        lastLoadedId = null
         log("[playback] play url title=$title seek=${seekMs}ms")
         port.loadUrl(UrlRequest(title, artist, url, seekMs))
     }
