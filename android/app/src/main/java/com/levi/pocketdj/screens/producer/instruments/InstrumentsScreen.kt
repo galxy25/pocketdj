@@ -97,7 +97,7 @@ private fun PlaySection(graph: AppGraph, onNeedPacks: () -> Unit) {
         val pack = packs.pack(key)
         val bank = packs.localBankFile(key)
         if (pack == null || bank == null) { message = "Download the ${key.displayName} pack to play it."; onNeedPacks(); return false }
-        if (!engine.loadInstrument(key, bank, pack.program)) { message = "Couldn't load the ${key.displayName} sound bank."; return false }
+        if (!engine.loadInstrument(key, bank)) { message = "Couldn't load the ${key.displayName} sound bank."; return false }
         message = null
         return true
     }

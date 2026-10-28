@@ -150,6 +150,21 @@ class InstrumentPackStoreTest {
         assertTrue(roots.appDir(StudioFamily.INSTRUMENTS).list().isEmpty())
     }
 
+    @Test fun cancelStopsTheDownloadAndNeverInstalls() = runBlocking {
+        server.enqueue(MockResponse().setBody(indexJson()))
+        server.enqueue(MockResponse().setBody(Buffer().write(bytes)).throttleBody(30_000, 100, java.util.concurrent.TimeUnit.MILLISECONDS))
+        val s = store(); s.refreshIndex()
+        val piano = s.state.value.packs.first()
+        val job = s.download(piano)!!
+        withTimeout(10_000) { while ((s.state.value.progress(piano) ?: 0.0) <= 0.0) kotlinx.coroutines.delay(10) }
+        s.cancelDownload(piano)
+        assertNull(s.state.value.progress(piano))                      // progress clears at once
+        withTimeout(10_000) { job.join() }
+        assertFalse(s.state.value.isDownloaded(piano))
+        assertNull(s.state.value.error(piano))                         // a user cancel is not an error
+        assertTrue(roots.appDir(StudioFamily.INSTRUMENTS).list().isEmpty())
+    }
+
     @Test fun httpErrorSurfacesAndRetryClearsIt() = runBlocking {
         server.enqueue(MockResponse().setBody(indexJson()))
         server.enqueue(MockResponse().setResponseCode(403))

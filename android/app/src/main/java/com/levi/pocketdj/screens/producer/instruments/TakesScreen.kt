@@ -99,15 +99,24 @@ fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = M
         val bank = packs.localBankFile(key)
         val pack = packs.pack(key)
         if (bank == null || pack == null) { message = "Download the ${key.displayName} pack to replay this take."; onNeedPacks(); return }
-        if (engine.state.value.currentInstrument != key && !engine.loadInstrument(key, bank, pack.program)) { message = "Couldn't load the ${key.displayName} sound bank."; return }
+        if (engine.state.value.currentInstrument != key && !engine.loadInstrument(key, bank)) { message = "Couldn't load the ${key.displayName} sound bank."; return }
         // Extra staffs each get their own voice from THEIR instrument's bank (engine owns + retires them).
         val extras = ArrayList<Pair<SynthVoice, List<StudioNoteEvent>>>()
-        for (s in t.extraStaffs.orEmpty()) {
-            val b = packs.localBankFile(s.instrument) ?: continue
-            val v = withContext(Dispatchers.Default) { Sf2SynthVoice().takeIf { it.load(b.path) && it.setPreset(0, s.instrument.gmProgram) } }
-            if (v != null) extras.add(v to s.scoreEvents)
+        var handed = false
+        try {
+            for (s in t.extraStaffs.orEmpty()) {
+                val b = packs.localBankFile(s.instrument) ?: continue
+                val v = withContext(Dispatchers.Default) {
+                    val nv = try { engine.createVoice() } catch (e: Exception) { null } catch (e: LinkageError) { null }
+                    if (nv != null && !(runCatching { nv.load(b.path) && nv.setPreset(0, s.instrument.gmProgram) }.getOrDefault(false))) { runCatching { nv.close() }; null } else nv
+                }
+                if (v != null) extras.add(v to s.scoreEvents)
+            }
+            if (engine.replay(t.scoreEvents, 0, extras)) { handed = true; playingId = t.id; message = null } else message = "Nothing to play in this take."
+        } finally {
+            // The engine owns the voices only when replay() accepted them; otherwise (refused / cancelled) free each native synth.
+            if (!handed) extras.forEach { runCatching { it.first.close() } }
         }
-        if (engine.replay(t.scoreEvents, 0, extras)) { playingId = t.id; message = null } else message = "Nothing to play in this take."
     }
 
     Column(modifier.fillMaxSize().testTag("takes-screen")) {

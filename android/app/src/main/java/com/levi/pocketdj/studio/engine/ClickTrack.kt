@@ -82,12 +82,13 @@ object ClickTrack {
      * for one render thread + a control thread: state is swapped as one immutable snapshot.
      */
     class Voice(private val gain: Float = 1f) {
-        private class Snapshot(val bar: FloatArray, val startFrame: Long)
+        private class Snapshot(val bar: FloatArray, val startFrame: Long, val audibleFrom: Long)
         @Volatile private var snap: Snapshot? = null
 
         val isOn: Boolean get() = snap != null
 
-        fun start(bpm: Double, sampleRate: Int, startFrame: Long) { snap = Snapshot(makeBar(bpm, sampleRate), startFrame) }
+        /** [startFrame] is the bar-loop phase origin; output is silent before [audibleFromFrame] (a mid-bar re-entry). */
+        fun start(bpm: Double, sampleRate: Int, startFrame: Long, audibleFromFrame: Long = startFrame) { snap = Snapshot(makeBar(bpm, sampleRate), startFrame, audibleFromFrame) }
         fun stop() { snap = null }
 
         /** Add the click into interleaved-stereo [out] for the block starting at output frame [blockStartFrame]. */
@@ -97,7 +98,7 @@ object ClickTrack {
             if (bar.isEmpty()) return
             for (i in 0 until frames) {
                 val pos = blockStartFrame + i - s.startFrame
-                if (pos < 0) continue
+                if (pos < 0 || blockStartFrame + i < s.audibleFrom) continue
                 val v = bar[(pos % bar.size).toInt()] * gain
                 out[2 * i] += v; out[2 * i + 1] += v
             }

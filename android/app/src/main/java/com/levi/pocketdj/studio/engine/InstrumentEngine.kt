@@ -2,6 +2,7 @@ package com.levi.pocketdj.studio.engine
 
 import com.levi.pocketdj.audio.core.AudioSink
 import com.levi.pocketdj.audio.core.BlockRenderer
+import com.levi.pocketdj.studio.audio.NativeDsp
 import com.levi.pocketdj.studio.audio.Sf2Synth
 import com.levi.pocketdj.studio.model.InstrumentKey
 import com.levi.pocketdj.studio.model.StudioFactory
@@ -37,7 +38,9 @@ interface SynthVoice {
 }
 
 class Sf2SynthVoice(sampleRate: Int = 44_100) : SynthVoice {
-    private val synth = Sf2Synth(sampleRate)
+    // The JNI library loads lazily; load it BEFORE the first native SF2 call, and fail with an Exception (callers map
+    // it to a load error) rather than letting an UnsatisfiedLinkError take the app down.
+    private val synth: Sf2Synth = if (NativeDsp.available) Sf2Synth(sampleRate) else throw IllegalStateException("native synth library unavailable")
     override fun load(path: String) = synth.load(path)
     override fun setPreset(bank: Int, program: Int) = synth.setPreset(bank, program)
     override fun noteOn(key: Int, velocity: Int) = synth.noteOn(key, velocity)
@@ -115,6 +118,8 @@ class InstrumentEngine(
     private var takeBpm = ClickTrack.DEFAULT_BPM
     private var takeInstrument: InstrumentKey? = null
     private var beat1Nanos = 0L
+    /** Output frame of the take's beat 1 (the click grid); -1 outside a take. */
+    @Volatile private var takeBeat1Frame = -1L
     private var takeHadCountIn = false
     private var clickBpm = ClickTrack.DEFAULT_BPM
 
@@ -178,10 +183,12 @@ class InstrumentEngine(
             if (s.isCountingIn && now >= beat1Nanos) _state.update { it.copy(isCountingIn = false) }
             if (s.isRecordingTake && !s.isCountingIn && (now - beat1Nanos) / 1_000_000 > MAX_TAKE_MS) autoStopTake("length cap")
             tick++
-            if (tick % 15 == 0 && isIdle(now)) {
-                stopSink()
-                synchronized(lock) { pump = null }
-                return
+            if (tick % 15 == 0) {
+                // Decide, stop the sink and retire the pump in ONE locked step, re-checking under the lock: a
+                // noteOn that bumped lastActivity first keeps us alive; one that comes later sees pump == null.
+                synchronized(lock) {
+                    if (isIdle(nanoClock())) { stopSink(); pump = null; return }
+                }
             }
         }
     }
@@ -203,8 +210,10 @@ class InstrumentEngine(
         synchronized(lock) { gen = ++loadGeneration }
         _state.update { it.copy(isLoadingInstrument = true, loadError = null) }
         val voice = withContext(loadDispatcher) {
-            val v = synthFactory()
-            if (v.load(bank.path) && v.setPreset(0, program)) v else { v.close(); null }
+            val v = try { synthFactory() } catch (e: Exception) { log("instr: synth unavailable — ${e.message}"); null } catch (e: LinkageError) { log("instr: native synth missing — ${e.message}"); null }
+            if (v == null) null
+            else if (try { v.load(bank.path) && v.setPreset(0, program) } catch (e: Exception) { false } catch (e: LinkageError) { false }) v
+            else { runCatching { v.close() }; null }
         }
         synchronized(lock) {
             if (gen != loadGeneration) { voice?.let { retire(it) }; return false }   // superseded
@@ -227,6 +236,9 @@ class InstrumentEngine(
     }
 
     val isReady: Boolean get() = primary != null
+
+    /** A fresh, unloaded voice from the engine's factory (callers own it unless they hand it to [replay]). */
+    fun createVoice(): SynthVoice = synthFactory()
 
     // ---- on-screen keys / MIDI (calling thread; no dispatcher hop)
 
@@ -267,7 +279,18 @@ class InstrumentEngine(
         clickBpm = b
         ensureRunning()
         val sr = sampleRate
-        click.start(b, sr, framesRendered.get() + (ClickTrack.START_LEAD_SEC * sr).toLong())
+        val g = takeBeat1Frame
+        if (s.isRecordingTake && g >= 0) {
+            // Re-enter ON the take's grid: next beat boundary, bar phase kept so the accent lands on beat 1 only.
+            val beatFrames = ClickTrack.beatFrames(b, sr).toLong()
+            val nowFrame = framesRendered.get()
+            val next = ClickTrack.nextBeatOnGrid(nowFrame.toDouble() / sr, g.toDouble() / sr, beatFrames.toDouble() / sr)
+            val beatIdx = next.beatInBar
+            val atFrame = g + Math.round((next.atSec - g.toDouble() / sr) * sr / beatFrames) * beatFrames
+            click.start(b, sr, atFrame - beatIdx * beatFrames, audibleFromFrame = atFrame)
+        } else {
+            click.start(b, sr, framesRendered.get() + (ClickTrack.START_LEAD_SEC * sr).toLong())
+        }
         _state.update { it.copy(clickEnabled = true) }
         log("instr: click ON at ${b.toInt()} BPM")
     }
@@ -289,12 +312,16 @@ class InstrumentEngine(
         val sr = sampleRate
         val now = nanoClock()
         val countSec = if (countIn) ClickTrack.barSeconds(b) else 0.0
-        beat1Nanos = now + ((ClickTrack.START_LEAD_SEC + countSec) * 1e9).toLong()
+        // Beat 1 is when the user HEARS it: scheduled click time + output latency (ring buffer + device).
+        val latencyNanos = runCatching { sink?.latencyFrames() ?: 0 }.getOrDefault(0).coerceAtLeast(0).toLong() * 1_000_000_000L / sr
+        beat1Nanos = now + ((ClickTrack.START_LEAD_SEC + countSec) * 1e9).toLong() + latencyNanos
+        val startFrame = framesRendered.get() + (ClickTrack.START_LEAD_SEC * sr).toLong()
+        takeBeat1Frame = startFrame + (if (countIn) ClickTrack.beatFrames(b, sr).toLong() * 4 else 0L)
         takeHadCountIn = countSec > 0
         takeId = StudioFactory.newTakeId()
         takeBpm = b; clickBpm = b; takeInstrument = instrument
         eventLog.arm(beat1Nanos)
-        if (click) this.click.start(b, sr, framesRendered.get() + (ClickTrack.START_LEAD_SEC * sr).toLong()) else this.click.stop()
+        if (click) this.click.start(b, sr, startFrame) else this.click.stop()
         _state.update { it.copy(isRecordingTake = true, isCountingIn = countSec > 0, clickEnabled = click) }
         log("instr: take START $takeId bpm=${b.toInt()} click=$click countIn=$countIn")
         return true
@@ -310,6 +337,7 @@ class InstrumentEngine(
         val wasCountingIn = takeHadCountIn && nanoClock() < beat1Nanos
         val endNanos = nanoClock()
         click.stop()
+        takeBeat1Frame = -1L
         val events = eventLog.disarmAndFinish(endNanos)
         _state.update { it.copy(isRecordingTake = false, isCountingIn = false, clickEnabled = false) }
         primary?.allOff()
@@ -337,7 +365,7 @@ class InstrumentEngine(
         all.add(null to TakeScore.actions(events, fromMs))
         extraStaffs.forEach { (v, ev) -> all.add(v to TakeScore.actions(ev, fromMs)) }
         if (all.all { it.second.isEmpty() }) return false
-        backing = extraStaffs.map { it.first }
+        synchronized(lock) { backing = extraStaffs.map { it.first } }
         ensureRunning()
         replayFromMs = fromMs; parkedMs = null
         replayAnchorNanos = nanoClock()
@@ -379,8 +407,7 @@ class InstrumentEngine(
 
     private fun finishReplay(parkAtMs: Int?) {
         primary?.allOff()
-        val extra = backing
-        backing = emptyList()
+        val extra = synchronized(lock) { backing.also { backing = emptyList() } }   // swap once: never retired twice
         extra.forEach { it.allOff(); retire(it) }    // the engine owns replay voices once handed to replay()
         eventLog.clearHighlights()
         parkedMs = parkAtMs

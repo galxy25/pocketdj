@@ -34,7 +34,7 @@ class FakeSynth(val loadOk: Boolean = true) : SynthVoice {
     override fun close() { closed = true }
 }
 
-class FakeSink : AudioSink {
+class FakeSink(private val latency: Int = 0) : AudioSink {
     override val sampleRate = 44_100
     override val clock = RenderClock(44_100)
     override val underruns = 0L
@@ -46,6 +46,6 @@ class FakeSink : AudioSink {
     override fun start(renderer: BlockRenderer) { this.renderer = renderer; isRendering = true; starts++ }
     override fun stop() { isRendering = false; stops++ }
     override fun release() {}
-    override fun latencyFrames() = 0
+    override fun latencyFrames() = latency
     fun pull(frames: Int): FloatArray = FloatArray(frames * 2).also { renderer!!.render(it, frames) }
 }

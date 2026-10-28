@@ -134,6 +134,42 @@ class InstrumentEngineTest {
         assertNull(r.engine.stopTake())
     }
 
+    @Test fun missingNativeLibraryIsALoadErrorNotACrash() = runTest {
+        val sink = FakeSink()
+        val engine = InstrumentEngine({ sink }, backgroundScope, { throw UnsatisfiedLinkError("libpdjdsp") },
+            StandardTestDispatcher(testScheduler), { currentTime * 1_000_000L })
+        assertFalse(engine.loadInstrument(InstrumentKey.PIANO, File("/bank.sf2")))
+        assertNotNull(engine.state.value.loadError)
+        assertFalse(engine.state.value.isLoadingInstrument)
+        assertFalse(engine.isReady)
+    }
+
+    @Test fun clickToggledMidTakeReentersOnTheTakesBeatGrid() = runTest {
+        val r = Rig(this); r.load()
+        r.engine.startTake(120.0, click = false, countIn = false)      // beat 1 = output frame 11025; beat = 22050 frames
+        r.sink.pull(57_330)                                            // 1.3 s of output
+        r.engine.setClickEnabled(true)
+        // next grid beat at/after now+50 ms: 11025 + 3*22050 = 77175 (beat index 3, not the accent)
+        val before = r.sink.pull(77_175 - 57_330)
+        assertTrue("silent until the next grid beat", before.all { it == 0f })
+        val tick = r.sink.pull(441)
+        assertTrue("click starts exactly on the grid beat", tick.any { it != 0f })
+        val bar = ClickTrack.makeBar(120.0, 44_100)
+        for (i in 0 until 441) assertEquals(bar[3 * 22_050 + i], tick[2 * i], 1e-6f)   // beat 4 of the bar (1000 Hz), phase kept
+    }
+
+    @Test fun takeBeat1IncludesOutputLatency() = runTest {
+        val sink = FakeSink(latency = 4_410)                           // 100 ms
+        val engine = InstrumentEngine({ sink }, backgroundScope, { FakeSynth() }, StandardTestDispatcher(testScheduler), { currentTime * 1_000_000L })
+        engine.loadInstrument(InstrumentKey.PIANO, File("/bank.sf2"))
+        engine.startTake(100.0, click = false, countIn = false)
+        advanceTimeBy(250)                                             // the scheduled click time, but not yet AUDIBLE
+        engine.noteOn(60); advanceTimeBy(100); engine.noteOff(60)
+        advanceTimeBy(100)
+        engine.noteOn(62); advanceTimeBy(50); engine.noteOff(62)
+        assertEquals(listOf(StudioNoteEvent(100, 150, 62, 96)), engine.stopTake()!!.events.filter { it.note == 62 })
+    }
+
     @Test fun takeEventsAreMsFromBeat1AfterTheCountInAndTheCountInIsNotRecorded() = runTest {
         val r = Rig(this); r.load()
         assertTrue(r.engine.startTake(bpm = 120.0, click = true, countIn = true))

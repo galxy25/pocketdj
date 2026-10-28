@@ -215,7 +215,7 @@ class TakeFiler(
         if (bank == null) throw TakeFileException(TakeFileFailure.PackMissing(result.instrument))
         try {
             renderer.renderRaw(result.takeId, result.events, result.instrument, bank, result.fileName)
-        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) {   // incl. LinkageError (native lib missing)
             StudioFiles.appFile(roots, StudioFamily.TAKES, result.fileName)?.delete()
             throw TakeFileException(TakeFileFailure.Failed)
         }

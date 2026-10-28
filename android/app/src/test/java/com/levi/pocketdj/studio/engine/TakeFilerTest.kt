@@ -55,6 +55,15 @@ class TakeFilerTest {
         assertTrue(filer.currentAudioFile(t)!!.name == "take-tk_rec.m4a")   // never edited => the raw file is current
     }
 
+    @Test fun missingNativeLibraryFailsTheFilingInsteadOfCrashing() = runBlocking {
+        val env = TestEnv(tmp.newFolder("studio2")); val store = env.store(); val codec = TextCodec()
+        val renderer = TakeRenderer(env.roots, store, { throw UnsatisfiedLinkError("libpdjdsp") }, codec, Dispatchers.Unconfined)
+        val sr = StudioRender(codec, ResampleStretcher, Dispatchers.Unconfined, log = {})
+        val filer = TakeFiler(env.roots, store, renderer, sr) { 42.0 }
+        try { filer.file(result(listOf(ev(0, 500))), "Take 1", bank); fail() } catch (e: TakeFileException) { assertEquals(TakeFileFailure.Failed, e.failure) }
+        assertNull(store.take("tk_rec"))
+    }
+
     @Test fun emptyTakeOrMissingPackFilesNothing() = runBlocking {
         val (env, store, filer) = rig()
         try { filer.file(result(emptyList()), "x", bank); fail() } catch (e: TakeFileException) { assertEquals(TakeFileFailure.NoNotes, e.failure) }

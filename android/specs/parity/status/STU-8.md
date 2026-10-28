@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-8 — Instrument packs + SF2 synth engine (native) + on-screen keys + takes (click/count-in)
 
@@ -32,3 +32,14 @@ Tests: +87 JVM tests (InstrumentPackStoreTest 14 + InstrumentPackGroupsTest 3, I
 
 ## Questions for Levi
 - None blocking. Default: no SoundFont is bundled; the 32 MB bank is a user-initiated download (matches iOS).
+
+## Review
+fixes applied (3473 JVM tests, 0 failures; +5 new tests)
+- MAJOR Sf2SynthVoice UnsatisfiedLinkError -> fixed: Sf2SynthVoice checks NativeDsp.available (loads the lib) and throws an Exception; loadInstrument catches Exception/LinkageError into loadError; TakeFiler catches Throwable (non-cancel). Tests: missingNativeLibraryIsALoadErrorNotACrash, missingNativeLibraryFailsTheFilingInsteadOfCrashing.
+- MAJOR Cancel does not cancel -> fixed: read loop checks job activity, OkHttp Call is cancelled from cancelDownload, progress clears at once, a cancelled download never installs and is not an error. Test: cancelStopsTheDownloadAndNeverInstalls.
+- MAJOR Click mid-take off the grid -> fixed: engine records takeBeat1Frame; setClickEnabled mid-take uses ClickTrack.nextBeatOnGrid and re-enters with bar phase kept (ClickTrack.Voice.start gained audibleFromFrame). Test: clickToggledMidTakeReentersOnTheTakesBeatGrid.
+- MINOR Output latency -> fixed: beat1Nanos includes sink.latencyFrames() (buffer size on AudioTrack/Oboe). Test: takeBeat1IncludesOutputLatency. Still device-verify.
+- MINOR Extra-staff voice leak -> fixed: voices come from engine.createVoice() (synthFactory) and are closed whenever replay() refuses or the call is cancelled. Per-bank voice caching NOT done (iOS backingSamplers pool) - follow-up.
+- MINOR program mismatch -> fixed: gmProgram everywhere (as iOS); live loads no longer pass the manifest program.
+- MINOR pump idle race / double retire -> fixed: idle decision + stopSink + pump=null in one locked step with re-check; backing swapped under the lock so finishReplay retires once. (Other take-state fields still not fully lock-guarded.)
+- NIT sink pre-warm -> not done (optional).

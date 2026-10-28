@@ -65,6 +65,7 @@ class InstrumentPackStore(
     private val _state = MutableStateFlow(InstrumentPackState())
     val state: StateFlow<InstrumentPackState> = _state.asStateFlow()
     private val jobs = HashMap<String, Job>()
+    private val calls = java.util.concurrent.ConcurrentHashMap<String, Call>()
     private val lock = Any()
 
     init {
@@ -148,10 +149,15 @@ class InstrumentPackStore(
             if (expected.isEmpty()) log("packs: WARNING no sha256 for $key — installing unverified")
             _state.update { it.copy(progressByBank = it.progressByBank + (key to 0.0), errorByBank = it.errorByBank - key) }
             val job = scope.launch(io, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+                val self = coroutineContext[Job]!!
                 val outcome = try {
-                    downloadTo(bankUrl(key), dest, expected) { f -> _state.update { it.copy(progressByBank = it.progressByBank + (key to f)) } }
+                    downloadTo(bankUrl(key), dest, expected, key, { self.isActive }) { f -> if (self.isActive) _state.update { it.copy(progressByBank = it.progressByBank + (key to f)) } }
                     null
-                } catch (e: CancellationException) { throw e } catch (e: Exception) { e }
+                } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                    if (!self.isActive) throw CancellationException("cancelled")   // the Call.cancel() IOException is a cancel, not a failure
+                    e
+                }
+                if (!self.isActive) throw CancellationException("cancelled")   // never install a bank the user cancelled
                 finish(key, slug, outcome)
             }
             jobs[key] = job
@@ -162,7 +168,12 @@ class InstrumentPackStore(
     }
 
     /** Cancel a pack's in-flight bank download (a user action: no error surfaced). */
-    fun cancelDownload(pack: InstrumentPack) { synchronized(lock) { jobs[pack.bankKey] }?.cancel() }
+    fun cancelDownload(pack: InstrumentPack) {
+        val key = pack.bankKey
+        synchronized(lock) { jobs[key] }?.cancel()
+        calls[key]?.cancel()    // interrupt the blocking read
+        _state.update { it.copy(progressByBank = it.progressByBank - key) }
+    }
 
     private fun finish(key: String, slug: String, error: Throwable?) {
         synchronized(lock) { jobs.remove(key) }
@@ -180,13 +191,17 @@ class InstrumentPackStore(
     private fun setError(key: String, msg: String) = _state.update { it.copy(errorByBank = it.errorByBank + (key to msg)) }
 
     /** Stream [url] to a staging file NEXT TO [dest] (same volume => atomic rename), then verify + install. */
-    private fun downloadTo(url: String, dest: File, expectedSha: String, onProgress: (Double) -> Unit) {
+    private fun downloadTo(url: String, dest: File, expectedSha: String, key: String, active: () -> Boolean, onProgress: (Double) -> Unit) {
         val dir = dest.parentFile ?: throw InstrumentPackError.FileSystem
         dir.mkdirs()
         val staging = File(dir, ".pack-staging-${UUID.randomUUID()}.tmp")
         try {
             val req = Request.Builder().url(url).build()
-            client.newCall(req).execute().use { r ->
+            val call = client.newCall(req)
+            calls[key] = call
+            if (!active()) call.cancel()
+            val resp = try { call.execute() } finally { calls.remove(key) }
+            resp.use { r ->
                 if (!r.isSuccessful) throw InstrumentPackError.BadResponse
                 val body = r.body ?: throw InstrumentPackError.BadResponse
                 val total = body.contentLength()
@@ -196,6 +211,7 @@ class InstrumentPackStore(
                     staging.outputStream().use { out ->
                         val buf = ByteArray(64 * 1024)
                         while (true) {
+                            if (!active()) throw CancellationException("cancelled")
                             val n = input.read(buf)
                             if (n < 0) break
                             out.write(buf, 0, n)
