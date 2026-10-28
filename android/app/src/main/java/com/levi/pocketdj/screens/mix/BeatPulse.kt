@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
@@ -76,8 +77,11 @@ object BeatPulsePhase {
 @Composable
 fun BeatPulse(engine: MixEngine, deck: Deck, modifier: Modifier = Modifier) {
     var frame by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(deck, engine) {
-        while (true) {
+    val ui by engine.ui.collectAsState()
+    val playing = ui.deck(deck).isPlaying
+    // Frame loop only while the deck plays (iOS TimelineView paused: !isPlaying).
+    LaunchedEffect(deck, engine, playing) {
+        if (playing) while (true) {
             withFrameNanos { frame = it }
         }
     }

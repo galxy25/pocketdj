@@ -2,6 +2,9 @@ package com.levi.pocketdj.screens.mix
 
 import com.levi.pocketdj.studio.model.StudioCue
 import com.levi.pocketdj.studio.store.StudioStore
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.map
 
 /**
  * The deck's view of a track's positional cue points (Performance > Cues, keyed by songId). A seam so
@@ -13,6 +16,9 @@ interface CuePointsProvider {
     /** Drop a cue at [positionMs] into [slot]; false when the store refused (all slots taken). */
     fun setCue(songId: String, slot: Int, positionMs: Int): Boolean
 
+    /** Emits whenever any cue changes (any deck, or the Studio Cues editor); the deck row re-reads on each. */
+    val changes: Flow<Any?> get() = emptyFlow()
+
     object None : CuePointsProvider {
         override fun cues(songId: String) = emptyList<StudioCue>()
         override fun setCue(songId: String, slot: Int, positionMs: Int) = false
@@ -21,6 +27,7 @@ interface CuePointsProvider {
 
 /** Production adapter over the app-scoped [StudioStore]. */
 class StudioCuePoints(private val store: () -> StudioStore) : CuePointsProvider {
+    override val changes: Flow<Any?> get() = store().state.map { it.cues }
     override fun cues(songId: String): List<StudioCue> = store().cues(songId)
     override fun setCue(songId: String, slot: Int, positionMs: Int): Boolean =
         store().setCue(songId, slot, positionMs) != null

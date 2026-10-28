@@ -24,6 +24,14 @@ class WaveformExtractorTest {
         }
     }
 
+    @Test fun foldChecksCancellationEveryChunk() {
+        val s = Fake(1000, 1, 100_000) { 0.5f }
+        var calls = 0
+        val r = runCatching { WaveformExtractor.fold(s, null, null, 10) { if (++calls == 2) throw java.util.concurrent.CancellationException() } }
+        assertTrue(r.exceptionOrNull() is java.util.concurrent.CancellationException)
+        assertEquals(2, calls)
+    }
+
     @Test fun foldsToTargetCountNormalisedToTheLoudestBucket() {
         val s = Fake(1000, 2, 10_000) { i -> if (i < 5000) 0.25f else 0.5f }
         val p = WaveformExtractor.fold(s, null, null, 10)

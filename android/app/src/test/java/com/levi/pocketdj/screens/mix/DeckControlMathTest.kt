@@ -224,7 +224,22 @@ class DeckControlMathTest {
         assertEquals("Play both decks", DeckLayoutRules.masterLabel(false))
         assertFalse(DeckLayoutRules.masterEnabled(false, false))
         assertTrue(DeckLayoutRules.masterEnabled(false, true))
-        assertTrue(DeckLayoutRules.compactControls(DeckLayout.SIDE_BY_SIDE))
-        assertFalse(DeckLayoutRules.compactControls(DeckLayout.STACKED))
+        assertTrue(DeckLayoutRules.compactControls(landscape = false, widthDp = 400))
+        assertFalse(DeckLayoutRules.compactControls(landscape = true, widthDp = 400))
+        assertFalse(DeckLayoutRules.compactControls(landscape = false, widthDp = 800))
+    }
+
+    @Test fun stemChipFollowsPendingHandover() {
+        // Loading stems: committed mode still false, chip must read ON so a second tap sends OFF (cancel).
+        assertTrue(DeckControlMath.stemChipOn(com.levi.pocketdj.mix.engine.StemHandover.TO_STEMS, false))
+        // Returning to full mix: committed still true, chip reads OFF so a tap returns to stems.
+        assertFalse(DeckControlMath.stemChipOn(com.levi.pocketdj.mix.engine.StemHandover.TO_FULL_MIX, true))
+        assertTrue(DeckControlMath.stemChipOn(null, true))
+        assertFalse(DeckControlMath.stemChipOn(null, false))
+    }
+
+    @Test fun seekStepIsOneTwentiethMinOneSecond() {
+        assertEquals(10.0, DeckControlMath.seekStep(200.0), 1e-9)
+        assertEquals(1.0, DeckControlMath.seekStep(10.0), 1e-9)
     }
 }

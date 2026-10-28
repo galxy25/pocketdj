@@ -38,7 +38,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.platform.testTag
@@ -177,6 +179,16 @@ object DeckControlMath {
     }
 
     /** TalkBack increment/decrement: 1/20 of the span. */
+    /** iOS `engine.stemModeOn`: a pending handover decides (TO_STEMS on, TO_FULL_MIX off), else the committed mode. */
+    fun stemChipOn(handover: com.levi.pocketdj.mix.engine.StemHandover?, committed: Boolean): Boolean = when (handover) {
+        com.levi.pocketdj.mix.engine.StemHandover.TO_STEMS -> true
+        com.levi.pocketdj.mix.engine.StemHandover.TO_FULL_MIX -> false
+        null -> committed
+    }
+
+    /** Seek step for TalkBack increase/decrease: max(1, duration/20) seconds (iOS). */
+    fun seekStep(duration: Double): Double = max(1.0, duration / 20)
+
     fun knobAdjust(value: Double, up: Boolean, range: ClosedFloatingPointRange<Double>): Double {
         val step = (range.endInclusive - range.start) / 20
         return if (up) min(value + step, range.endInclusive) else max(value - step, range.start)
@@ -344,7 +356,13 @@ fun MixKnob(
     var totalDy by remember { mutableStateOf(0.0) }
     val latest by rememberUpdatedValue(value)
     Column(
-        modifier.semantics { contentDescription = title; stateDescription = display }.testTag(tag),
+        modifier.semantics {
+            contentDescription = title; stateDescription = display
+            customActions = listOf(
+                CustomAccessibilityAction("Increase $title") { onChange(DeckControlMath.knobAdjust(latest, true, range)); true },
+                CustomAccessibilityAction("Decrease $title") { onChange(DeckControlMath.knobAdjust(latest, false, range)); true },
+            )
+        }.testTag(tag),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         Text(title, fontSize = 12.sp, color = DeckColors.dim)

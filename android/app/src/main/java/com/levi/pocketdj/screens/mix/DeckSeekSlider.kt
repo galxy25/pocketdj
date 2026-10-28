@@ -28,7 +28,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
@@ -76,6 +78,14 @@ fun DeckSeekSlider(engine: MixEngine, deck: Deck, modifier: Modifier = Modifier)
                 .semantics {
                     contentDescription = "Playback position"
                     stateDescription = DeckControlMath.clock(shownSeconds)
+                    if (dur > 0) customActions = listOf(
+                        CustomAccessibilityAction("Forward") {
+                            engine.seek(deck, (engine.position(deck) + DeckControlMath.seekStep(dur)).coerceAtMost(dur)); position = engine.position(deck); true
+                        },
+                        CustomAccessibilityAction("Back") {
+                            engine.seek(deck, (engine.position(deck) - DeckControlMath.seekStep(dur)).coerceAtLeast(0.0)); position = engine.position(deck); true
+                        },
+                    )
                 }
                 .onSizeChanged { widthPx = it.width.toFloat() }
                 .pointerInput(deck, dur > 0) {
@@ -93,10 +103,14 @@ fun DeckSeekSlider(engine: MixEngine, deck: Deck, modifier: Modifier = Modifier)
                                 c.consume()
                                 if (!c.pressed) {
                                     engine.seek(deck, last * engine.duration(deck))
+                                    position = engine.position(deck)
+                                    duration = engine.duration(deck)
                                     break
                                 }
                             }
                         } finally {
+                            position = engine.position(deck)
+                            duration = engine.duration(deck)
                             drag = null
                         }
                     }

@@ -36,7 +36,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -65,6 +64,7 @@ import com.levi.pocketdj.mix.model.FxRack
 import com.levi.pocketdj.mix.model.LoadedTrack
 import com.levi.pocketdj.mix.model.MixRanges
 import com.levi.pocketdj.screens.browse.KeyChip
+import kotlin.math.roundToInt
 
 /**
  * Everything a deck needs from the app, bundled so the composables never reach for globals and the
@@ -150,7 +150,7 @@ fun DeckView(
                 DeckHeader(host, deck, loaded, peaks, a11y, onLoad)
                 DeckSeekSlider(engine, deck)
                 CueJumpRow(host, deck, loaded, a11y)
-                TransportRow(host, deck, ds.loaded != null, stemmed, handover != null, ds.stemMode, compactControls, a11y)
+                TransportRow(host, deck, ds.loaded != null, stemmed, handover != null, DeckControlMath.stemChipOn(handover, ds.stemMode), compactControls, a11y)
                 DeckSlider(
                     title = "Tempo", display = DeckControlMath.tempoLabel(ds.rate), value = ds.rate,
                     range = MixRanges.rate, step = 0.01, tag = "$a11y-tempo",
@@ -232,8 +232,8 @@ private fun KeyOrBpm(t: LoadedTrack, a11y: String) {
 @Composable
 private fun CueJumpRow(host: DeckHost, deck: Deck, loaded: LoadedTrack?, a11y: String) {
     val songId = loaded?.songId ?: return
-    var rev by remember(songId) { mutableIntStateOf(0) }
-    val cues = remember(songId, rev) { host.cues.cues(songId) }
+    val changed by host.cues.changes.collectAsState(null)
+    val cues = remember(songId, changed) { host.cues.cues(songId) }
     val free = DeckControlMath.nextFreeCueSlot(cues.map { it.slot }.toSet())
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row {
@@ -243,8 +243,8 @@ private fun CueJumpRow(host: DeckHost, deck: Deck, loaded: LoadedTrack?, a11y: S
                     .background(DeckColors.gold.copy(alpha = 0.18f))
                     .clickable(enabled = free != null) {
                         val slot = free ?: return@clickable
-                        val ms = (((host.engine.truePlayhead(deck) ?: host.engine.position(deck)) * 1000).toLong()).toInt()
-                        if (host.cues.setCue(songId, slot, maxOf(0, ms))) rev++
+                        val ms = ((host.engine.truePlayhead(deck) ?: host.engine.position(deck)) * 1000).roundToInt()
+                        host.cues.setCue(songId, slot, maxOf(0, ms))
                     }
                     .padding(horizontal = 8.dp, vertical = 4.dp)
                     .testTag("$a11y-drop-cue"),
@@ -306,7 +306,7 @@ private fun TransportRow(
         ) { engine.syncToLead(deck) }
         if (stemmed) {
             ChipButton(
-                label = if (compact || loadingStems) null else "Stems", icon = Icons.Filled.GridView, on = stemModeOn,
+                label = if (compact) null else "Stems", icon = Icons.Filled.GridView, on = stemModeOn,
                 tint = DeckColors.accent, tag = "$a11y-stemmode", desc = "Stems", spinner = loadingStems,
             ) { host.stems.setStemMode(!stemModeOn, deck) }
         }

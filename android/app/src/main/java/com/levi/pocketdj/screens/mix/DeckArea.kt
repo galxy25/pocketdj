@@ -5,7 +5,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
@@ -62,8 +61,8 @@ object DeckLayoutRules {
     /** Either chevron flips to the other deck (only two exist). */
     fun flip(d: Deck): Deck = d.other
 
-    /** Portrait two-up columns are cramped: Lead/Sync/Stems render icon-only there. */
-    fun compactControls(layout: DeckLayout) = layout == DeckLayout.SIDE_BY_SIDE
+    /** iOS: icon-only on a phone in PORTRAIT (compact width, regular height), whatever the layout. */
+    fun compactControls(landscape: Boolean, widthDp: Int) = !landscape && widthDp < 600
 
     fun masterLabel(running: Boolean) = if (running) "Pause both decks" else "Play both decks"
     fun masterEnabled(aLoaded: Boolean, bLoaded: Boolean) = aLoaded || bLoaded
@@ -85,7 +84,7 @@ fun DeckArea(
     sourceMenu: @Composable (Deck) -> Unit = {},
 ) {
     val effective = DeckLayoutRules.effective(layout, landscape)
-    val compact = effective == DeckLayout.SIDE_BY_SIDE
+    val compact = DeckLayoutRules.compactControls(landscape, androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp)
     var visible by rememberSaveable { mutableStateOf(Deck.A.label) }
     val shown = Deck.fromLabel(visible) ?: Deck.A
 

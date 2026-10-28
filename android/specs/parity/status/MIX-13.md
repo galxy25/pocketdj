@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-13 Deck UI: DeckView + controls, seek slider, FX chips, stem pads, VU, loop, cue, beat pulse, waveform, crossfader, master transport
 
@@ -25,3 +25,17 @@ None per roadmap; emulator pass (drag every slider, rotate) is pending the integ
 
 ## Questions for Levi
 - None.
+
+## Review
+fixes applied
+
+- MAJOR Stems chip state: fixed (DeckControlMath.stemChipOn mirrors StemController.modeOn from the collected handovers; toggle uses it; test stemChipFollowsPendingHandover)
+- MINOR seek flicker: fixed (position/duration re-read after seek and in finally)
+- MINOR BeatPulse idle frames: fixed (frame loop keyed on isPlaying)
+- MINOR compact rule: fixed (DeckLayoutRules.compactControls(landscape, widthDp) is the rule DeckArea runs; test updated)
+- MINOR a11y adjust: fixed (MixKnob Increase/Decrease and seek Forward/Back custom actions via knobAdjust/seekStep)
+- MINOR waveform cancellation: fixed (fold takes a per-chunk check; peaks passes ensureActive and rethrows CancellationException; test)
+- MINOR cue row staleness: fixed (CuePointsProvider.changes flow, StudioCuePoints maps StudioStore.state)
+- MINOR open acceptance: ledger row updated to PARTIAL; emulator pass carried over to MIX-14 acceptance
+- NIT cue rounding: fixed (roundToInt); NIT Stems label kept while loading, unused import removed
+- JVM suite: 2803 tests, 0 failures (+3); assembleDebug green.

@@ -16,6 +16,8 @@ import com.levi.pocketdj.audio.core.Mp3Decoder
 import com.levi.pocketdj.audio.core.PcmSource
 import com.levi.pocketdj.data.burns.BurnStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.abs
@@ -35,7 +37,7 @@ object WaveformExtractor {
      * Folds the window into [targetCount] absolute-peak buckets (max |sample| across channels),
      * normalised to 0…1 against the loudest bucket. Returns [] for an unreadable / empty / silent window.
      */
-    fun fold(source: PcmSource, startMs: Int?, lengthMs: Int?, targetCount: Int = DEFAULT_PEAK_COUNT): FloatArray {
+    fun fold(source: PcmSource, startMs: Int?, lengthMs: Int?, targetCount: Int = DEFAULT_PEAK_COUNT, checkCancelled: () -> Unit = {}): FloatArray {
         val rate = source.sampleRate
         val total = source.totalFrames
         val ch = max(1, source.channels)
@@ -54,6 +56,7 @@ object WaveformExtractor {
         var consumed = 0L
         var stalls = 0
         while (remaining > 0) {
+            checkCancelled()
             val want = min(remaining, CHUNK_FRAMES.toLong()).toInt()
             val got = source.read(buf, want)
             if (got < 0) break
@@ -76,7 +79,7 @@ object WaveformExtractor {
     suspend fun peaks(file: File, startMs: Int?, lengthMs: Int?, targetCount: Int = DEFAULT_PEAK_COUNT): FloatArray =
         withContext(Dispatchers.Default) {
             val d = runCatching { Mp3Decoder(file) }.getOrNull() ?: return@withContext FloatArray(0)
-            try { fold(d, startMs, lengthMs, targetCount) } catch (_: Throwable) { FloatArray(0) } finally { runCatching { d.close() } }
+            try { fold(d, startMs, lengthMs, targetCount) { ensureActive() } } catch (e: CancellationException) { throw e } catch (_: Throwable) { FloatArray(0) } finally { runCatching { d.close() } }
         }
 }
 
