@@ -26,11 +26,22 @@ class SafStudioDir private constructor(
 
     private data class Entry(val docId: String, val name: String, val size: Long, val isDir: Boolean)
 
+    @Volatile private var cache: Pair<Long, List<Entry>>? = null
+
+    /** Short-lived listing cache so a pass (usage / reconcile) isn't O(N^2) provider queries. */
     private fun entries(): List<Entry> {
+        val c = cache
+        val nowMs = System.currentTimeMillis()
+        if (c != null && nowMs - c.first < CACHE_MS) return c.second
+        return queryEntries().also { cache = nowMs to it }
+    }
+
+    /** Lists the tree; THROWS [StudioDirUnavailableException] on any failure (never "empty"). */
+    private fun queryEntries(): List<Entry> {
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeDocId)
         val out = ArrayList<Entry>()
         try {
-            cr.query(
+            val cursor = cr.query(
                 children,
                 arrayOf(
                     DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -39,7 +50,8 @@ class SafStudioDir private constructor(
                     DocumentsContract.Document.COLUMN_MIME_TYPE,
                 ),
                 null, null, null,
-            )?.use { c ->
+            ) ?: throw StudioDirUnavailableException("null cursor for $tree")
+            cursor.use { c ->
                 while (c.moveToNext()) {
                     out += Entry(
                         c.getString(0), c.getString(1) ?: "", if (c.isNull(2)) 0L else c.getLong(2),
@@ -47,14 +59,19 @@ class SafStudioDir private constructor(
                     )
                 }
             }
-        } catch (_: Exception) {
-            // Treated as empty; callers gate on reachability first.
+        } catch (e: StudioDirUnavailableException) {
+            throw e
+        } catch (e: Exception) {
+            throw StudioDirUnavailableException("listing failed for $tree", e)
         }
         return out
     }
 
-    private fun find(name: String): Entry? =
-        if (!StudioFolders.isBareName(name)) null else entries().firstOrNull { !it.isDir && it.name == name }
+    /** Point lookups degrade to "not found" on failure; reconcile never uses them (it uses [list]). */
+    private fun find(name: String): Entry? {
+        if (!StudioFolders.isBareName(name)) return null
+        return try { entries().firstOrNull { !it.isDir && it.name == name } } catch (_: StudioDirUnavailableException) { null }
+    }
 
     private fun docUri(e: Entry): Uri = DocumentsContract.buildDocumentUriUsingTree(tree, e.docId)
 
@@ -63,6 +80,7 @@ class SafStudioDir private constructor(
     override fun length(name: String) = find(name)?.size ?: 0L
     override fun delete(name: String): Boolean {
         val e = find(name) ?: return false
+        cache = null
         return try { DocumentsContract.deleteDocument(cr, docUri(e)) } catch (_: Exception) { false }
     }
 
@@ -74,14 +92,27 @@ class SafStudioDir private constructor(
     override fun openOutput(name: String): OutputStream? {
         if (!StudioFolders.isBareName(name)) return null
         return try {
+            cache = null
             find(name)?.let { DocumentsContract.deleteDocument(cr, docUri(it)) }
+            cache = null
             val parent = DocumentsContract.buildDocumentUriUsingTree(tree, treeDocId)
             val created = DocumentsContract.createDocument(cr, parent, mimeFor(name), name) ?: return null
+            // The provider may de-dupe ("x (1).m4a") or fix the extension: a record whose fileName
+            // matches nothing would be pruned later, so refuse a renamed result.
+            if (displayName(created) != name) {
+                try { DocumentsContract.deleteDocument(cr, created) } catch (_: Exception) {}
+                return null
+            }
             cr.openOutputStream(created, "wt")
         } catch (_: Exception) {
             null
         }
     }
+
+    private fun displayName(doc: Uri): String? = try {
+        cr.query(doc, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)
+            ?.use { if (it.moveToFirst()) it.getString(0) else null }
+    } catch (_: Exception) { null }
 
     private fun mimeFor(name: String) = when (name.substringAfterLast('.', "")) {
         "m4a" -> "audio/mp4"
@@ -91,6 +122,8 @@ class SafStudioDir private constructor(
     }
 
     companion object {
+        private const val CACHE_MS = 1500L
+
         /** null when the permission was revoked / the tree no longer answers — i.e. UNREACHABLE. */
         fun open(context: Context, treeUri: String?): SafStudioDir? {
             if (treeUri.isNullOrEmpty()) return null

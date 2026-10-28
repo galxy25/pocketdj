@@ -9,6 +9,7 @@ import com.levi.pocketdj.studio.model.StudioClip
 import com.levi.pocketdj.studio.model.StudioCue
 import com.levi.pocketdj.studio.model.StudioCueDoc
 import com.levi.pocketdj.studio.model.StudioDocument
+import com.levi.pocketdj.studio.model.STUDIO_SCHEMA_VERSION
 import com.levi.pocketdj.studio.model.StudioFactory
 import com.levi.pocketdj.studio.model.StudioFolder
 import com.levi.pocketdj.studio.model.StudioGrid
@@ -148,7 +149,7 @@ class StudioStore(
         cancelSave?.invoke(); cancelSave = null
         val v = ++saveVersion
         val snap = _state.value
-        writer.write(v) { snap.encode() }
+        writer.write(v) { snap.copy(schemaVersion = STUDIO_SCHEMA_VERSION).encode() }
     }
 
     private fun scheduleSave() {
@@ -183,7 +184,7 @@ class StudioStore(
         cancelCueSave?.invoke(); cancelCueSave = null
         val v = ++saveVersion
         val snap = _state.value
-        writer.flushNow(v) { snap.encode() }
+        writer.flushNow(v) { snap.copy(schemaVersion = STUDIO_SCHEMA_VERSION).encode() }
         if (cueMirrorDirty) {
             cueMirrorDirty = false
             val cv = ++cueVersion
@@ -571,7 +572,7 @@ class StudioStore(
             if (src != null) {
                 val ok = runCatching {
                     dest.openOutput(take.fileName)?.use { out -> src.inputStream().use { it.copyTo(out) } } != null
-                }.getOrDefault(false)
+                }.getOrDefault(false) && dest.exists(take.fileName)
                 if (ok) {
                     appDir.delete(take.fileName)
                     t = t.copy(wasUserFolder = true)
@@ -760,6 +761,11 @@ class StudioStore(
     fun reloadCuesFromDisk(): Boolean = synchronized(lock) {
         val text = try { cuesFile.readText() } catch (_: Exception) { return false }
         val cdoc = StudioCueDoc.decode(text) ?: return false
+        // Drop any queued/pending local mirror write: it would overwrite the pulled mirror with
+        // stale cues and push them back.
+        cancelCueSave?.invoke(); cancelCueSave = null
+        cueMirrorDirty = false
+        cueWriter.invalidate(++cueVersion)
         _state.value = _state.value.copy(cues = cdoc.cues)
         cancelSave?.invoke(); cancelSave = null
         val v = ++saveVersion

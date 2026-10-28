@@ -22,6 +22,8 @@ import com.levi.pocketdj.studio.store.StudioFamily
 import com.levi.pocketdj.studio.store.StudioFolders
 import com.levi.pocketdj.studio.store.StudioRoots
 import com.levi.pocketdj.studio.store.StudioStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.RandomAccessFile
 import kotlin.math.PI
@@ -53,13 +55,18 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     private val writerExecutor by lazy { VersionedJsonWriter.backgroundExecutor("pdj-studio-writer") }
 
     /** The studio document store. Construction reads the doc and reconciles against disk once. */
-    val studioStore: StudioStore by lazy {
+    private val storeLazy = lazy {
         StudioStore(
             File(app.appContext.filesDir, StudioStore.FILE_NAME), studioRoots, writerExecutor, ExecutorStudioScheduler(),
-        ).also { it.reconcileOnLaunch() }
+        ).also { s ->
+            // Reconcile lists SAF trees: never on the first caller's (possibly main) thread.
+            app.appScope.launch(Dispatchers.IO) { runCatching { s.reconcileOnLaunch() } }
+        }
     }
+    val studioStore: StudioStore get() = storeLazy.value
 
-    override val flushables: List<Flushable> = listOf(Flushable { studioStore.flush() })
+    // A user who never touched Studio must not build/reconcile/rewrite the doc on ON_STOP.
+    override val flushables: List<Flushable> = listOf(Flushable { if (storeLazy.isInitialized()) studioStore.flush() })
 
     override val resetHooks: List<ResetHook> = listOf(
         ResetHook {
@@ -74,7 +81,9 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     override val deepLinkHandlers: List<DeepLinkHandler> = listOf(
         DeepLinkHandler { intent ->
-            if (isDebuggable() && intent.getBooleanExtra(SEED_EXTRA, false)) seedFixture()
+            if (isDebuggable() && intent.getBooleanExtra(SEED_EXTRA, false)) {
+                app.appScope.launch(Dispatchers.IO) { runCatching { seedFixture() } }
+            }
             false   // never consumes the intent
         },
     )

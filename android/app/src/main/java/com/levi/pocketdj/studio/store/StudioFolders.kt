@@ -29,6 +29,9 @@ enum class StudioFamily(
 /** A resolved artifact: a [file] when app-private/JVM, always a [uri] string for the player. */
 data class StudioFileRef(val file: File?, val uri: String)
 
+/** A directory listing/query FAILED (provider offline, permission revoked): "can't check", never "empty". */
+class StudioDirUnavailableException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
+
 /**
  * One physical folder holding a family's artifacts — the app-private dir or a user-picked SAF
  * tree. The seam that keeps reconcile/usage/delete logic JVM-testable and SAF-agnostic.
@@ -37,6 +40,7 @@ interface StudioDir {
     /** Stable identity (path / uri) used to visit each root once. */
     val key: String
     fun exists(name: String): Boolean
+    /** File names in the folder. THROWS [StudioDirUnavailableException] when the listing itself failed. */
     fun list(): List<String>
     fun length(name: String): Long
     fun delete(name: String): Boolean
@@ -190,7 +194,8 @@ object StudioFolders {
     fun usageBytes(roots: StudioRoots, family: StudioFamily, knownIds: Set<String>? = null): Long {
         var total = 0L
         forEachRoot(roots, family) { dir, isUser ->
-            for (n in dir.list()) {
+            val names = try { dir.list() } catch (_: Exception) { return@forEachRoot }   // can't list -> count nothing
+            for (n in names) {
                 val id = fileId(family, n) ?: continue
                 if (isUser && knownIds != null && id !in knownIds) continue
                 total += dir.length(n)

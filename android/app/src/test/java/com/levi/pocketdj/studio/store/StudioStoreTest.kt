@@ -15,6 +15,7 @@ import com.levi.pocketdj.studio.model.StudioPatternRow
 import com.levi.pocketdj.studio.model.StudioSample
 import com.levi.pocketdj.studio.model.StudioSampleEdit
 import com.levi.pocketdj.studio.model.StudioTake
+import com.levi.pocketdj.studio.model.STUDIO_SCHEMA_VERSION
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -492,6 +493,25 @@ class StudioStoreTest {
         s.cueSyncFile.writeText("garbage")
         assertFalse(s.reloadCuesFromDisk())                              // corrupt pull is ignored
         assertEquals(1, s.cues.size)
+    }
+
+    @Test fun pullInvalidatesAQueuedCueMirrorWrite() {
+        val ex = QueueExecutor()
+        val s = env.store(executor = ex)
+        s.setCue("sng_1", 0, 1)                                          // queues a v-N mirror write
+        val pulled = StudioCueDoc(cues = listOf(com.levi.pocketdj.studio.model.StudioCue("cue_remote", "sng_9", 4, 777)))
+        s.cueSyncFile.writeText(pulled.encode())
+        val written = s.cueSyncFile.readText()
+        assertTrue(s.reloadCuesFromDisk())
+        ex.runAll()                                                      // the stale queued write runs late
+        assertEquals(written, s.cueSyncFile.readText())                  // ...and must NOT clobber the pulled mirror
+    }
+
+    @Test fun saveStampsCurrentSchemaVersion() {
+        val s = env.store()
+        s.addSample(StudioSample("smp_v", "v", "sample-smp_v.m4a"))
+        s.flush()
+        assertEquals(STUDIO_SCHEMA_VERSION, StudioDocument.decode(env.docFile.readText())!!.schemaVersion)
     }
 
     @Test fun clearCuesWipesDocAndMirror() {

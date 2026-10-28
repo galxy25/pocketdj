@@ -116,4 +116,41 @@ class StudioReconcileTest {
         assertFalse(s.reconcileOnLaunch().changed)
         assertEquals(bytes, env.docFile.readText()); assertEquals(before, env.docFile.lastModified())
     }
+
+    /** A user root that opens fine but whose listing (and point queries) then FAIL, like a flaky SAF provider. */
+    private class FlakyUserDir(val inner: StudioDir) : StudioDir by inner {
+        override fun list(): List<String> = throw StudioDirUnavailableException("provider offline")
+        override fun resolve(name: String): StudioFileRef? = null
+        override fun exists(name: String) = false
+    }
+
+    private fun flakyRoots(opens: IntArray) = object : StudioRoots by env.roots {
+        override fun userDir(family: StudioFamily): StudioDir? {
+            opens[0]++
+            return FlakyUserDir(FileStudioDir(env.userFile(family, "x").parentFile!!))
+        }
+    }
+
+    @Test fun listingFailureAfterSuccessfulOpenNeverPrunes() {
+        val s = env.store()
+        s.addSample(sample("smp_user", user = true)); s.addLoop(loop("lp_u").copy(wasUserFolder = true))
+        val r = StudioReconcile.reconcile(s.doc, flakyRoots(IntArray(1)))
+        assertFalse(r.changed)
+        assertEquals(1, r.doc.samples.size); assertEquals(1, r.doc.loops.size)
+    }
+
+    @Test fun reconcileOpensEachUserRootOncePerFamily() {
+        val s = env.store()
+        (1..5).forEach { s.addSample(sample("smp_$it", user = true)) }
+        val opens = IntArray(1)
+        StudioReconcile.reconcile(s.doc, flakyRoots(opens))
+        assertEquals(1, opens[0])
+    }
+
+    @Test fun deleteAllKeepsRecordsWhenUserListingFails() {
+        val s = env.store()
+        s.addSample(sample("smp_user", user = true))
+        val out = StudioReconcile.deleteAll(s.doc, flakyRoots(IntArray(1)), StudioFamily.SAMPLES)
+        assertEquals(1, out.samples.size)
+    }
 }

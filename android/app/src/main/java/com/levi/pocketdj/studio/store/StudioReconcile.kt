@@ -28,14 +28,11 @@ object StudioReconcile {
 
     fun reconcile(doc: StudioDocument, roots: StudioRoots): Result {
         var changed = false
-        val reach = HashMap<StudioFamily, Boolean>()
-        fun userReachable(f: StudioFamily) = reach.getOrPut(f) { StudioFolders.userRootReachable(roots, f) }
+        val snaps = HashMap<StudioFamily, Snapshot>()
 
-        /** True only when the file is PROVABLY gone: its root resolves and the file isn't there. */
-        fun provablyGone(f: StudioFamily, fileName: String, wasUser: Boolean): Boolean {
-            if (wasUser && !userReachable(f)) return false   // can't check -> never prune
-            return StudioFolders.fileRef(roots, f, fileName, wasUser) == null
-        }
+        /** True only when the file is PROVABLY gone, judged from ONE per-family snapshot. */
+        fun provablyGone(f: StudioFamily, fileName: String, wasUser: Boolean): Boolean =
+            snaps.getOrPut(f) { Snapshot(roots, f) }.provablyGone(fileName, wasUser)
 
         val samplesKept = doc.samples.filterNot { provablyGone(StudioFamily.SAMPLES, it.fileName, it.wasUserFolder) }
         val prunedSamples = doc.samples.size - samplesKept.size
@@ -79,6 +76,25 @@ object StudioReconcile {
         )
     }
 
+    /**
+     * ONE listing per root per pass: reachability AND presence are decided from the same data.
+     * Any listing failure (root unreachable, provider threw) => user names are null => nothing
+     * in that root is provably gone.
+     */
+    private class Snapshot(roots: StudioRoots, private val family: StudioFamily) {
+        private val appNames: Set<String> by lazy { try { roots.appDir(family).list().toSet() } catch (_: Exception) { emptySet() } }
+        private val userDir: StudioDir? by lazy { roots.userDir(family) }   // exactly one open per pass
+        private val userNames: Set<String>? by lazy {
+            try { userDir?.list()?.toSet() } catch (_: Exception) { null }
+        }
+
+        fun provablyGone(fileName: String, wasUser: Boolean): Boolean {
+            if (!StudioFolders.isBareName(fileName)) return !wasUser   // corrupt name can't be checked in a user root
+            if (wasUser) return userNames?.let { fileName !in it } ?: false
+            return fileName !in appNames
+        }
+    }
+
     /** Ids the document knows for a family — the user-root ownership gate. */
     fun documentIds(doc: StudioDocument, family: StudioFamily): Set<String> = when (family) {
         StudioFamily.SAMPLES -> doc.samples.map { it.id }.toSet()
@@ -102,18 +118,18 @@ object StudioReconcile {
     fun deleteAll(doc: StudioDocument, roots: StudioRoots, family: StudioFamily, activeFileName: String? = null): StudioDocument {
         val known = documentIds(doc, family)
         StudioFolders.forEachRoot(roots, family) { dir, isUser ->
-            for (n in dir.list()) {
+            val names = try { dir.list() } catch (_: Exception) { return@forEachRoot }   // can't list -> sweep nothing here
+            for (n in names) {
                 if (n == activeFileName) continue
                 val id = StudioFolders.fileId(family, n) ?: continue
                 if (isUser && id !in known) continue
                 dir.delete(n)
             }
         }
-        val userReachable = StudioFolders.userRootReachable(roots, family)
+        val snap = Snapshot(roots, family)   // taken AFTER the sweep: one listing per root
         fun keep(fileName: String?, wasUser: Boolean): Boolean {
             if (fileName.isNullOrEmpty()) return false
-            if (wasUser && !userReachable) return true
-            return StudioFolders.fileRef(roots, family, fileName, wasUser) != null
+            return !snap.provablyGone(fileName, wasUser)   // unreachable / listing failed => keep
         }
         return when (family) {
             StudioFamily.SAMPLES -> doc.copy(samples = doc.samples.filter { keep(it.fileName, it.wasUserFolder) })
