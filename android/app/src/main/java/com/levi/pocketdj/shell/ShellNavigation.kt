@@ -53,6 +53,7 @@ import com.levi.pocketdj.screens.browse.AlbumDetailScreen
 import com.levi.pocketdj.screens.browse.ArtistDetailScreen
 import com.levi.pocketdj.screens.browse.BrowseScreen
 import com.levi.pocketdj.screens.browse.MiniPlayerBar
+import com.levi.pocketdj.screens.nowplaying.NOW_PLAYING_ROUTE
 import com.levi.pocketdj.screens.browse.SongDetailSheet
 import com.levi.pocketdj.screens.history.HistoryScreen
 import com.levi.pocketdj.screens.jukebox.JukeboxScreen
@@ -273,6 +274,7 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
                 "Set list"
             }
         SOURCE_PLAYLIST_ROUTE -> "Source playlist"
+        NOW_PLAYING_ROUTE -> "Now Playing"
         else -> currentTab?.label ?: "PocketDJ"
     }
 
@@ -328,7 +330,11 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
                 )
             },
             // Renders nothing while idle; docks above the nav bar when playing.
-            bottomBar = { MiniPlayerBar() },
+            bottomBar = {
+                MiniPlayerBar(onExpand = {
+                    if (currentRoute != NOW_PLAYING_ROUTE) navController.navigate(NOW_PLAYING_ROUTE)
+                })
+            },
         ) { innerPadding ->
             ShellNavHost(navController, startTab, appSnackbar, graph, Modifier.padding(innerPadding))
         }
