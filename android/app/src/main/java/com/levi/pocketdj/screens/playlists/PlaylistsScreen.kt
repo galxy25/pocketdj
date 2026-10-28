@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
@@ -138,6 +139,8 @@ fun PlaylistsScreen(
     var deleteItem by remember { mutableStateOf<RowRef?>(null) }
     var moveItem by remember { mutableStateOf<RowRef?>(null) }
     var addPocketToPlaylist by remember { mutableStateOf<RowRef?>(null) }
+    val exporter = com.levi.pocketdj.screens.collections.rememberCollectionExporter()
+    val startImport = com.levi.pocketdj.screens.collections.rememberCollectionImporter()
     var dedupeConfirm by rememberSaveable { mutableStateOf(false) }
     var dedupeResult by rememberSaveable { mutableStateOf<Int?>(null) }
 
@@ -180,6 +183,9 @@ fun PlaylistsScreen(
                     onClick = { dismiss(); dedupeConfirm = true },
                 )
             }
+            IconButton(onClick = startImport, modifier = Modifier.testTag("collections-import")) {
+                Icon(Icons.Filled.FileOpen, contentDescription = "Import")
+            }
             IconButton(onClick = { createDialog = CreateKind.FOLDER }) {
                 Icon(Icons.Filled.CreateNewFolder, contentDescription = "New folder")
             }
@@ -216,6 +222,7 @@ fun PlaylistsScreen(
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             if (mode == "user") {
                 userTab(
+                    onExport = exporter::export,
                     state = state,
                     store = store,
                     sort = sort,
@@ -403,6 +410,7 @@ fun PlaylistsScreen(
 // ---- User tab --------------------------------------------------------------
 
 private fun LazyListScope.userTab(
+    onExport: (com.levi.pocketdj.screens.collections.ExportRequest) -> Unit,
     state: CollectionsStore.State,
     store: CollectionsStore,
     sort: CollectionSortOrder,
@@ -429,6 +437,7 @@ private fun LazyListScope.userTab(
                 onRename = { onRename(RowRef(RowRef.Kind.PLAYLIST, pl.id, pl.name)) },
                 onMove = { onMove(RowRef(RowRef.Kind.PLAYLIST, pl.id, pl.name)) },
                 onDelete = { onDelete(RowRef(RowRef.Kind.PLAYLIST, pl.id, pl.name)) },
+                onExport = onExport,
             )
         }
     }
@@ -443,6 +452,7 @@ private fun LazyListScope.userTab(
                 onMove = { onMove(RowRef(RowRef.Kind.POCKET, p.id, p.name)) },
                 onAddToPlaylist = { onAddPocketToPlaylist(RowRef(RowRef.Kind.POCKET, p.id, p.name)) },
                 onDelete = { onDelete(RowRef(RowRef.Kind.POCKET, p.id, p.name)) },
+                onExport = onExport,
             )
         }
     }
@@ -606,6 +616,7 @@ private fun PlaylistRow(
     onRename: () -> Unit,
     onMove: () -> Unit,
     onDelete: () -> Unit,
+    onExport: (com.levi.pocketdj.screens.collections.ExportRequest) -> Unit,
 ) {
     val stats = store.statsForPlaylist(playlist.id)
     CollectionRow(
@@ -618,6 +629,14 @@ private fun PlaylistRow(
             OverflowMenu { dismiss ->
                 DropdownMenuItem(text = { Text("Rename") }, onClick = { dismiss(); onRename() })
                 DropdownMenuItem(text = { Text("Move to folder…") }, onClick = { dismiss(); onMove() })
+                DropdownMenuItem(
+                    text = { Text("Export…") },
+                    onClick = { dismiss(); onExport(com.levi.pocketdj.screens.collections.CollectionExportRequests.playlistZip(store, playlist.id, playlist.name)) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Export CSV") },
+                    onClick = { dismiss(); onExport(com.levi.pocketdj.screens.collections.CollectionExportRequests.playlistCsv(store, playlist.id, playlist.name)) },
+                )
                 DropdownMenuItem(text = { Text("Delete") }, onClick = { dismiss(); onDelete() })
             }
         },
@@ -633,6 +652,7 @@ private fun PocketRow(
     onMove: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onDelete: () -> Unit,
+    onExport: (com.levi.pocketdj.screens.collections.ExportRequest) -> Unit,
 ) {
     val stats = store.statsForPocket(pocket.id)
     CollectionRow(
@@ -648,6 +668,14 @@ private fun PocketRow(
                 DropdownMenuItem(
                     text = { Text("Add to playlist…") },
                     onClick = { dismiss(); onAddToPlaylist() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Export…") },
+                    onClick = { dismiss(); onExport(com.levi.pocketdj.screens.collections.CollectionExportRequests.pocketZip(store, pocket.id, pocket.name)) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Export CSV") },
+                    onClick = { dismiss(); onExport(com.levi.pocketdj.screens.collections.CollectionExportRequests.pocketCsv(store, pocket.id, pocket.name)) },
                 )
                 DropdownMenuItem(text = { Text("Delete") }, onClick = { dismiss(); onDelete() })
             }

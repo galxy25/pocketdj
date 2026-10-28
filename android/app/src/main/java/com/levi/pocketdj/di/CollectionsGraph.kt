@@ -97,6 +97,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
      * The queue itself is created lazily: nothing is read from disk until the first add/drain.
      */
     fun wireWriteBack(store: CollectionsStore) {
+        wireImported(store)
         store.enqueueSourceWriteBack = { item ->
             val wb = writeBack
             if (!wb.canWriteBack) {
@@ -124,8 +125,52 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         store.cancelPendingWriteBacks = { indexPlaylistId, songIds -> writeBack.cancelPending(indexPlaylistId, songIds) }
     }
 
+    /** Provisional "Imported" catalog source (COL-15); lazy - reads its small doc on first touch. */
+    val importedSongs: com.levi.pocketdj.data.catalog.ImportedSongsStore by lazy {
+        com.levi.pocketdj.data.catalog.ImportedSongsStore(
+            File(app.appContext.filesDir, com.levi.pocketdj.data.catalog.ImportedSongsStore.FILE_NAME),
+        )
+    }
+
+    /**
+     * Wire portable-zip imports into the catalog (called from [wireWriteBack], i.e. once from the
+     * `collections` initializer - touching `app.collections` from this graph's own init would recurse).
+     * Imported items append LAST in the merge (real sources shadow them); a change refreshes the catalog.
+     */
+    private fun wireImported(store: CollectionsStore) {
+        wireCatalogSource()
+        importedSongs.onChanged = { app.catalogRepository.refresh() }
+        store.onPortableItems = { payload ->
+            app.appScope.launch(Dispatchers.IO) { runCatching { importedSongs.addPortable(payload) } }
+        }
+    }
+
+    /** Idempotent: the "Imported" synthetic source joins every catalog merge (also at cold-start seed). */
+    private fun wireCatalogSource() {
+        app.catalogRepository.syntheticDocuments = { listOfNotNull(importedSongs.syntheticDocument()) }
+    }
+
+    /** Tapped `.pdjcollection` → importAny → snackbar counts (claims DeepLinkSeams.importCollection). */
+    private val importSeam: com.levi.pocketdj.shell.CollectionImportSeam by lazy {
+        com.levi.pocketdj.shell.CollectionImportSeam(
+            scope = app.appScope,
+            read = { uri ->
+                com.levi.pocketdj.data.backup.CollectionShare.readUri(app.appContext.contentResolver, android.net.Uri.parse(uri))
+            },
+            import = { app.collections.importAny(it) },
+        )
+    }
+
+    override val deepLinkHandlers: List<com.levi.pocketdj.shell.DeepLinkHandler> by lazy {
+        // The dispatcher (ShellGraph) parses/gates file links and calls the seam; claim it here.
+        wireCatalogSource()
+        runCatching { importSeam.install(app.shellGraph.deepLinkSeams) }
+        emptyList()
+    }
+
     override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> by lazy {
         listOf(
+            com.levi.pocketdj.screens.settings.sections.backupSection(),
             com.levi.pocketdj.screens.settings.sections.collectionsSyncSection(),
             com.levi.pocketdj.screens.settings.appleMusicWriteBackSection(),
         )
