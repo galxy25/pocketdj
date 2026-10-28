@@ -138,6 +138,72 @@ class CatalogService(
         }
     }
 
+    data class DocumentLoad<T>(val value: T?, val validated: Boolean)
+
+    /**
+     * Offline-first conditional GET for a small NON-index document (e.g. `timbre.json`), sharing
+     * this service's cache dir + validator files. Same contract as [load]: 304 serves the cached
+     * bytes; a 2xx is cached ONLY after [decode] returns non-null (never cache the SPA-shell HTML
+     * a missing file comes back as); any failure serves the last-good cache; null when there is
+     * neither a usable response nor a usable cache. [DocumentLoad.validated] is true only when
+     * the server answered 2xx/304 (so callers can stamp a freshness clock only then).
+     */
+    suspend fun <T : Any> loadDocument(url: String, warm: Boolean = false, decode: (ByteArray) -> T?): DocumentLoad<T> = withContext(Dispatchers.IO) {
+        // warm = caller already holds a decoded copy: 304/failure return value=null WITHOUT re-decoding disk.
+        fun cached(): T? {
+            if (warm) return null
+            val f = cacheFile(url)
+            if (!f.isFile) return null
+            return runCatching { decode(f.readBytes()) }.getOrNull()
+        }
+        val validators = readValidators(url)
+        val request = Request.Builder()
+            .url(url)
+            .cacheControl(CacheControl.FORCE_NETWORK)
+            .apply {
+                validators?.etag?.let { header("If-None-Match", it) }
+                validators?.lastModified?.let { header("If-Modified-Since", it) }
+            }
+            .build()
+        try {
+            http.newCall(request).execute().use { response ->
+                when {
+                    response.code == 304 -> DocumentLoad(cached(), validated = true)
+                    response.isSuccessful -> {
+                        val bytes = (response.body ?: throw IOException("Empty body for $url")).bytes()
+                        val decoded = decode(bytes) ?: throw IOException("Undecodable document for $url")
+                        runCatching {
+                            val temp = File.createTempFile("doc-", ".part", cacheDir)
+                            try {
+                            temp.writeBytes(bytes)
+                            Files.move(
+                                temp.toPath(),
+                                cacheFile(url).toPath(),
+                                StandardCopyOption.REPLACE_EXISTING,
+                                StandardCopyOption.ATOMIC_MOVE,
+                            )
+                            writeValidators(
+                                url,
+                                Validators(
+                                    lastModified = response.header("Last-Modified"),
+                                    etag = response.header("ETag"),
+                                ),
+                            )
+                            } finally {
+                                temp.delete()
+                            }
+                        }
+                        DocumentLoad(decoded, validated = true)
+                    }
+                    else -> DocumentLoad(cached(), validated = false)
+                }
+            }
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            DocumentLoad(cached(), validated = false)
+        }
+    }
+
     /** Wipe the whole cache directory (Settings "Reset all app state"). */
     fun clearCache() {
         cacheDir.listFiles()?.forEach { it.delete() }

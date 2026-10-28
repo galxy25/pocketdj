@@ -1,0 +1,11 @@
+{"v":1,"timbreVersion":1,"songs":{
+"sng_a":{"v":1,"f":{"bright":0.2,"brightVar":0.2,"air":0.3,"width":0.4,"noisy":0.1,"fizz":0.1,"punch":0.3,"busy":0.7,"dynamic":0.1,"loud":0.1,"m1":0.8,"m2":0.6,"m3":0.4,"m4":0.04}},
+"sng_b":{"alias":"sng_a"},
+"sng_chain":{"alias":"sng_b"},
+"sng_dangling":{"alias":"sng_missing"},
+"sng_nullaxis":{"v":1,"f":{"bright":0.2,"brightVar":0.2,"air":0.3,"width":0.4,"noisy":0.1,"fizz":0.1,"punch":0.3,"busy":null,"dynamic":0.1,"loud":0.1,"m1":0.8,"m2":0.6,"m3":0.4,"m4":0.04}},
+"sng_degenerate":{"v":1,"f":{"bright":0,"brightVar":0,"air":0,"width":0,"noisy":0,"fizz":0,"punch":0,"busy":0.5,"dynamic":0.5,"loud":0.5,"m1":0.5,"m2":0.5,"m3":0.5,"m4":0.5}},
+"sng_stale":{"v":2,"f":{"bright":0.9,"brightVar":0.9,"air":0.9,"width":0.9,"noisy":0.9,"fizz":0.9,"punch":0.9,"busy":0.9,"dynamic":0.9,"loud":0.9,"m1":0.9,"m2":0.9,"m3":0.9,"m4":0.9}},
+"sng_sparse":{"v":1,"f":{"bright":0.5,"brightVar":0.5,"air":0.5,"width":0.5,"noisy":0.5,"fizz":0.5,"punch":0.5,"busy":0.5,"extra":3}},
+"sng_toofew":{"v":1,"f":{"bright":0.5,"brightVar":0.5,"air":0.5}}
+}}
