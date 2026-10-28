@@ -490,7 +490,9 @@ class SetlistSequencer(
             if (source !is RipOnDemandSource) {
                 // Loaded: the network resolve is over. The start watchdog owns it from here.
                 stallTimer.cancel()
-                armStartStall(gen, item.id)
+                // First audio may already have landed during load() (Apple Music confirms PLAYING inside
+                // play()): the window is closed, and a stray watchdog would later hop a song already playing.
+                if (firstAudioPending) armStartStall(gen, item.id)
             } // a rip-on-demand row stays under the resolve stall until noteSourceResolved()
         }
     }
@@ -540,6 +542,60 @@ class SetlistSequencer(
             return
         }
         advanceToNext(AdvanceCause.AUTO)
+    }
+
+    // ---- PB-8: Apple Music rows (iOS handleAppleMusicEnded / handleAppleMusicRestarted) ------------
+
+    /**
+     * An Apple Music row ended. Ownership guard like [handleEnded]. [reason] decides repeat semantics:
+     * NEVER_STARTED = dead source (advance, never replay under repeat-one); SYSTEM_SKIP = the listener's
+     * lock-screen / Auto next, which the SDK handled itself (advance exactly like the in-app next, never a
+     * cascade); NATURAL honours repeat-one / the per-track repeat count.
+     */
+    fun handleAppleMusicEnded(songId: String, reason: com.levi.pocketdj.playback.am.EndReason) {
+        if (!running || index >= queue.size || !queue[index].matches(songId)) return
+        when (reason) {
+            com.levi.pocketdj.playback.am.EndReason.NEVER_STARTED -> {
+                log("[playback] advance: AM never started song=${queue[index].id} index=$index/${queue.size}")
+                lastLoadedId = null
+                if (failureLapComplete()) return
+                advanceToNext(AdvanceCause.AUTO)
+            }
+            com.levi.pocketdj.playback.am.EndReason.SYSTEM_SKIP -> {
+                log("[playback] setlist AM system-skip -> advance from index $index")
+                noteAdvanceAway() // the live AM position reads ~0 here; SkipTracker's high-water samples carry the truth
+                advanceToNext(AdvanceCause.USER)
+            }
+            com.levi.pocketdj.playback.am.EndReason.NATURAL -> handleEnded(songId)
+        }
+    }
+
+    /** System previous during an AM stream (the SDK's one-song queue rewound): the in-app previous. */
+    fun handleAppleMusicRestarted(songId: String) {
+        if (!running || index >= queue.size || !queue[index].matches(songId)) return
+        log("[playback] setlist AM restart -> skipPrevious from index $index")
+        skipPrevious()
+    }
+
+    /**
+     * Another player took over the AM stream (stopped far short of its length): HOLD - nothing advances,
+     * the notice says why, ▶ resumes at the interruption point. Reading it as the end advanced the set,
+     * whose next start queued another capture (iOS 2026-10-13 cascade).
+     */
+    fun noteAppleMusicInterrupted(songId: String) {
+        if (!running || index >= queue.size || !queue[index].matches(songId)) return
+        log("[playback] AM interrupted song=${queue[index].id} -> hold")
+        notice = com.levi.pocketdj.playback.health.AutoAdvanceCascadeBreaker.APPLE_MUSIC_NOTICE
+        publish()
+    }
+
+    /** The interrupted AM row is back on air: drop the hold notice. */
+    fun noteAppleMusicResumed(songId: String) {
+        if (!running || index >= queue.size || !queue[index].matches(songId)) return
+        if (notice == com.levi.pocketdj.playback.health.AutoAdvanceCascadeBreaker.APPLE_MUSIC_NOTICE) {
+            notice = null
+            publish()
+        }
     }
 
     /** The row failed mid-song (dead source): advance, never replay. */

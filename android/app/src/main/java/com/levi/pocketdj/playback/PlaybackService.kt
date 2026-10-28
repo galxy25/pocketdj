@@ -39,6 +39,7 @@ class PlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private var forwardingPlayer: SequencerForwardingPlayer? = null
     private var exoOwner: ExoOwner? = null
+    private var exoPlayer: ExoPlayer? = null
 
     /** Id-changed gate: a same-song restart/seek must not re-fire the play hook. */
     private var lastPlayEventSongId: String? = null
@@ -62,6 +63,7 @@ class PlaybackService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK) // holds CPU+wifi while buffering a long rip-on-demand wait
             .build()
+        exoPlayer = player
 
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -164,12 +166,15 @@ class PlaybackService : MediaSessionService() {
         RunTransportBus.clearInstantMetadata = null
         SessionSwitchboard.shared.onChange = {}
         exoOwner?.let { SessionSwitchboard.shared.unregister(it) }
-        exoOwner = null
         forwardingPlayer = null
-        mediaSession?.run {
-            player.release()
-            release()
-        }
+        // The session's player is the Apple Music adapter whenever it owns the session: releasing
+        // `session.player` would leak ExoPlayer and kill the process-lived adapter. Release Exo directly
+        // and hand the session back (the adapter stays valid for the next service instance).
+        SessionSwitchboard.shared.current?.let { if (it !== exoOwner) SessionSwitchboard.shared.resign(it) }
+        mediaSession?.release()
+        exoPlayer?.release()
+        exoPlayer = null
+        exoOwner = null
         mediaSession = null
         super.onDestroy()
     }

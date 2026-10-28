@@ -19,6 +19,9 @@ class FakePlayerPort : PlayerPort {
     /** Ids in load-COMPLETION order (the audio that actually "sounded"). */
     val sounded = mutableListOf<String>()
 
+    /** Runs inside load() just before it returns (e.g. an engine reporting first audio mid-load). */
+    var duringLoad: ((String) -> Unit)? = null
+
     override suspend fun load(request: PlayRequest) {
         loads += request
         val id = request.item.id
@@ -26,6 +29,7 @@ class FakePlayerPort : PlayerPort {
         if (id in failing) error("dead source $id")
         sounded += id
         held = id
+        duringLoad?.invoke(id)
     }
 
     /** Song ids restarted in place. */

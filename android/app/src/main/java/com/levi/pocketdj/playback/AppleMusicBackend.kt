@@ -12,6 +12,8 @@ import com.apple.android.music.playback.queue.CatalogPlaybackQueueItemProvider
 import com.apple.android.sdk.authentication.TokenProvider
 import com.levi.pocketdj.data.applemusic.MusicKitDeveloperTokenClient
 import com.levi.pocketdj.data.settings.AppSettingsStore
+import com.levi.pocketdj.playback.am.AmSnapshot
+import com.levi.pocketdj.playback.am.AmStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +80,16 @@ class AppleMusicBackend(
      * a pre-fetched developer token. False on the emulator / signed-out /
      * no-token — the caller then uses a preview.
      */
+    /**
+     * The resolve-path capability check: cached facts only (NO network). A missing developer token reads
+     * false here; [canPlayFullTrack] warms it off-path so the next row sees it.
+     */
+    suspend fun canPlayFullTrackCached(): Boolean {
+        if (!isArm()) return false
+        if (settings.current().musicUserToken.isBlank()) return false
+        return devTokenClient.cachedTokenOrNull() != null
+    }
+
     suspend fun canPlayFullTrack(): Boolean {
         if (!isArm()) return false
         val s = settings.current()
@@ -105,7 +117,14 @@ class AppleMusicBackend(
         artist: String?,
         albumId: String?,
         context: PlayContext,
+        /**
+         * Same-song resume after an interruption: keeps [startedSongId] (no second PlayStarted / History row)
+         * and, if the SDK cannot restart, leaves the interrupted row in place (the hold survives) instead of
+         * dropping it as a dead source.
+         */
+        resume: Boolean = false,
     ): Boolean {
+        val priorCurrent = current
         userTokenSnapshot = runCatching { settings.current().musicUserToken }.getOrDefault("")
         val confirm = CompletableDeferred<Boolean>()
         playConfirm = confirm
@@ -113,7 +132,7 @@ class AppleMusicBackend(
             try {
                 val c = ensureController()
                 current = Current(songId, title, artist, albumId, context)
-                startedSongId = null
+                if (!resume) startedSongId = null
                 val provider = CatalogPlaybackQueueItemProvider.Builder()
                     .items(MediaItemType.SONG, appleMusicId)
                     .build()
@@ -121,7 +140,7 @@ class AppleMusicBackend(
                 true
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
-                current = null
+                current = if (resume) priorCurrent else null
                 false
             }
         }
@@ -137,10 +156,50 @@ class AppleMusicBackend(
         if (!ok) {
             // Leave no half-started AM playback behind before the caller degrades.
             runCatching { withContext(Dispatchers.Main) { controller?.stop() } }
-            current = null
-            startedSongId = null
+            current = if (resume) priorCurrent else null
+            if (!resume) startedSongId = null
         }
         return ok
+    }
+
+    // ---- PB-8: main-thread, non-suspending surface for the Media3 adapter + end monitor ----
+
+    /** The row the engine holds (songId = OUR id), or null when idle. */
+    data class Row(val songId: String, val title: String?, val artist: String?, val albumId: String?)
+
+    fun currentRow(): Row? = current?.let { Row(it.songId, it.title, it.artist, it.albumId) }
+
+    /** Fires (Main) on any state/position/metadata change the adapter renders. */
+    @Volatile var changeListener: (() -> Unit)? = null
+
+    /** Fires (Main) when the SDK reports the one-song queue's item ended. */
+    @Volatile var itemEndedListener: (() -> Unit)? = null
+
+    /** Cold SDK read; [AmSnapshot.IDLE] when no controller / any SDK failure. */
+    fun snapshot(): AmSnapshot {
+        val c = controller ?: return AmSnapshot.IDLE
+        return runCatching {
+            val st = when (c.playbackState) {
+                PlaybackState.PLAYING -> AmStatus.PLAYING
+                PlaybackState.PAUSED -> AmStatus.PAUSED
+                else -> AmStatus.STOPPED
+            }
+            val buffering = c.isBuffering
+            val pos = c.currentPosition.takeIf { it != MediaPlayerController.POSITION_UNKNOWN } ?: 0L
+            val dur = c.duration.takeIf { it != MediaPlayerController.DURATION_UNKNOWN && it > 0 }
+            AmSnapshot(if (buffering && st != AmStatus.PLAYING) AmStatus.BUFFERING else st, pos, dur, buffering)
+        }.getOrDefault(AmSnapshot.IDLE)
+    }
+
+    fun pauseNow() { runCatching { controller?.pause() } }
+    fun resumeNow() { runCatching { controller?.play() } }
+    fun seekNow(positionMs: Long) { runCatching { controller?.seekToPosition(positionMs) } }
+    fun stopNow() {
+        runCatching { controller?.stop() }
+        current = null
+        startedSongId = null
+        onNowPlaying(null)
+        changeListener?.invoke()
     }
 
     suspend fun pause() = onController { it.pause() }
@@ -192,6 +251,7 @@ class AppleMusicBackend(
         }
 
     private fun publishNowPlaying() {
+        changeListener?.invoke()
         val info = current ?: return
         val c = controller
         val isPlaying = runCatching { c?.playbackState == PlaybackState.PLAYING }.getOrDefault(false)
@@ -251,7 +311,9 @@ class AppleMusicBackend(
             publishNowPlaying()
         }
 
-        override fun onItemEnded(c: MediaPlayerController, item: PlayerQueueItem, endPositionMs: Long) = Unit
+        override fun onItemEnded(c: MediaPlayerController, item: PlayerQueueItem, endPositionMs: Long) {
+            itemEndedListener?.invoke()
+        }
 
         override fun onMetadataUpdated(c: MediaPlayerController, item: PlayerQueueItem) = publishNowPlaying()
 

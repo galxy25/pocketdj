@@ -130,7 +130,8 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
                     val audible = engine.isPlaying && lastPos >= 0 && kotlin.math.abs(pos - lastPos) > 100
                     lastPos = pos
                     probe = probe.copy(
-                        lane = PlaybackSupervisor.Lane.LOCAL,
+                        // PB-8: the Apple Music lane is detector-only (the SDK owns its own buffering).
+                        lane = if (app.playbackController.isAppleMusicActive) PlaybackSupervisor.Lane.APPLE_MUSIC else PlaybackSupervisor.Lane.LOCAL,
                         userPaused = d.pausedByListener,
                         trackEnded = engine.trackEnded,
                         audible = audible,
