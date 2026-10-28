@@ -78,6 +78,7 @@ const val ARTIST_ROUTE = "artist/{artistName}"
 const val PLAYLIST_ROUTE = "playlist/{playlistId}"
 const val POCKET_ROUTE = "pocket/{pocketId}"
 const val SETLIST_ROUTE = "setlist/{setlistId}?autoplay={autoplay}"
+const val JUKEBOX_JOIN_ROUTE = "jukebox/join/{jukeboxId}"
 const val SOURCE_PLAYLIST_ROUTE = "sourcePlaylist/{playlistId}/{sourceName}"
 
 fun albumRoute(albumId: String): String = "album/${Uri.encode(albumId)}"
@@ -86,6 +87,7 @@ fun playlistRoute(playlistId: String): String = "playlist/${Uri.encode(playlistI
 fun pocketRoute(pocketId: String): String = "pocket/${Uri.encode(pocketId)}"
 fun setlistRoute(setlistId: String, autoplay: Boolean): String =
     "setlist/${Uri.encode(setlistId)}?autoplay=$autoplay"
+fun jukeboxJoinRoute(jukeboxId: String): String = "jukebox/join/${Uri.encode(jukeboxId)}"
 fun sourcePlaylistRoute(playlistId: String, sourceName: String): String =
     "sourcePlaylist/${Uri.encode(playlistId)}/${Uri.encode(sourceName)}"
 
@@ -97,8 +99,8 @@ fun pushRouteFor(route: ShellRoute): String? = when (route) {
     is ShellRoute.Pocket -> pocketRoute(route.id)
     is ShellRoute.Setlist -> setlistRoute(route.id, route.autoplay)
     is ShellRoute.SourcePlaylist -> sourcePlaylistRoute(route.id, route.sourceName)
-    // The join screen ships with JBX-2; until then the Jukebox tab itself is the landing.
-    is ShellRoute.JukeboxJoin, is ShellRoute.BrowseSearch, is ShellRoute.Tab -> null
+    is ShellRoute.JukeboxJoin -> jukeboxJoinRoute(route.id)
+    is ShellRoute.BrowseSearch, is ShellRoute.Tab -> null
 }
 
 /** Compact windows get the bottom bar, medium+ (>= 600 dp) a rail. Pure for tests. */
@@ -123,8 +125,8 @@ private class GraphRouteLookup(private val graph: AppGraph) : RouteLookup {
     override fun sourcePlaylistExists(id: String) =
         catalog?.playlists?.any { it.playlist.id == id } == true
 
-    // Joined jukebox sessions arrive with JBX-2; until then no session can be "joined".
-    override fun jukeboxSessionJoined(id: String) = false
+    override fun jukeboxSessionJoined(id: String) =
+        com.levi.pocketdj.data.jukebox.JukeboxGraph.joinedSessions(graph.appContext).contains(id)
 }
 
 private suspend fun resolveOffMain(graph: AppGraph, route: ShellRoute): RouteResolution =
@@ -274,6 +276,7 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
                 "Set list"
             }
         SOURCE_PLAYLIST_ROUTE -> "Source playlist"
+        JUKEBOX_JOIN_ROUTE -> "Jukebox"
         NOW_PLAYING_ROUTE -> "Now Playing"
         else -> currentTab?.label ?: "PocketDJ"
     }
@@ -414,7 +417,16 @@ private fun ShellNavHost(
             }
         }
         composable(PocketDjDestination.Jukebox.route) {
-            JukeboxScreen()
+            JukeboxScreen(onOpenJoin = { id -> nav.navigate(jukeboxJoinRoute(id)) })
+        }
+        composable(
+            route = JUKEBOX_JOIN_ROUTE,
+            arguments = listOf(navArgument("jukeboxId") { type = NavType.StringType }),
+        ) { entry ->
+            com.levi.pocketdj.screens.jukebox.JukeboxJoinScreen(
+                jukeboxId = entry.arguments?.getString("jukeboxId").orEmpty(),
+                onClose = { nav.popBackStack() },
+            )
         }
         composable(PocketDjDestination.Playlists.route) {
             PlaylistsScreen(

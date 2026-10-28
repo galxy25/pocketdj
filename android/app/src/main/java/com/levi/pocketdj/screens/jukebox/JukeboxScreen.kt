@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -47,6 +48,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.jukebox.JukeboxDecisionAction
+import com.levi.pocketdj.data.jukebox.JukeboxLink
 import com.levi.pocketdj.data.jukebox.JukeboxGraph
 import com.levi.pocketdj.data.jukebox.JukeboxRepository
 import com.levi.pocketdj.data.jukebox.JukeboxSessionInfo
@@ -62,7 +64,7 @@ import com.levi.pocketdj.di.AppGraph
  * renders its state, so navigation away never stops the party.
  */
 @Composable
-fun JukeboxScreen(modifier: Modifier = Modifier) {
+fun JukeboxScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit = {}) {
     val context = LocalContext.current
     val graph = remember(context) { JukeboxGraph.get(context) }
     val appGraph = remember(context) { AppGraph.get(context) }
@@ -70,31 +72,82 @@ fun JukeboxScreen(modifier: Modifier = Modifier) {
 
     val state by graph.repository.state.collectAsState()
     val settings by appGraph.settings.settings.collectAsState(initial = null)
+    val joined by graph.joined.sessions.collectAsState()
+    var joinDialog by remember { mutableStateOf(false) }
     val loadedSettings = settings ?: return
     val pocketDjName by appGraph.settings.flow(com.levi.pocketdj.onboarding.OnboardingPrefs.PROFILE_NAME)
         .collectAsState(initial = "")
 
-    when {
-        state.session != null -> LiveView(
-            state = state,
-            repository = graph.repository,
-            modifier = modifier,
-        )
-        loadedSettings.jukeboxServerUrl.isBlank() -> NotConfiguredView(modifier)
-        else -> CreateView(
-            state = state,
-            defaultRequireToken = loadedSettings.jukeboxTokensRequiredByDefault,
-            defaultName = JukeboxSettings.defaultSessionName(pocketDjName),
-            onStart = graph.repository::start,
-            modifier = modifier,
+    Column(modifier.fillMaxSize()) {
+        // Guest strip: joined jukeboxes above whichever host state is showing (iOS safeAreaInset top).
+        if (joined.isNotEmpty() || joinDialog) {
+            JoinedSessionsStrip(
+                sessions = joined,
+                onOpen = onOpenJoin,
+                onLeave = graph.joined::remove,
+                onJoinByLink = { joinDialog = true },
+            )
+        }
+        Box(Modifier.weight(1f)) {
+            when {
+                state.session != null -> LiveView(
+                    state = state,
+                    repository = graph.repository,
+                )
+                loadedSettings.jukeboxServerUrl.isBlank() -> NotConfiguredView(
+                    onJoinByLink = if (joined.isEmpty()) ({ joinDialog = true }) else null,
+                )
+                else -> CreateView(
+                    state = state,
+                    defaultRequireToken = loadedSettings.jukeboxTokensRequiredByDefault,
+                    defaultName = JukeboxSettings.defaultSessionName(pocketDjName),
+                    onStart = graph.repository::start,
+                    onJoinByLink = if (joined.isEmpty()) ({ joinDialog = true }) else null,
+                )
+            }
+        }
+    }
+    if (joinDialog) {
+        JoinByLinkDialog(
+            onDismiss = { joinDialog = false },
+            onJoin = { link ->
+                graph.joined.addJoined(link)
+                joinDialog = false
+                onOpenJoin(link.jukeboxId)
+            },
         )
     }
+}
+
+/** Manual "Join by link or id" entry (also the emulator-verifiable path without a deep link). */
+@Composable
+private fun JoinByLinkDialog(onDismiss: () -> Unit, onJoin: (JukeboxLink) -> Unit) {
+    var text by remember { mutableStateOf("") }
+    val link = JukeboxLink.parseLoose(text)
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Join a jukebox") },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                label = { Text("Link or id") },
+                singleLine = true,
+                isError = text.isNotBlank() && link == null,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { link?.let(onJoin) }, enabled = link != null) { Text("Join") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 // ---- not configured --------------------------------------------------------
 
 @Composable
-private fun NotConfiguredView(modifier: Modifier = Modifier) {
+private fun NotConfiguredView(modifier: Modifier = Modifier, onJoinByLink: (() -> Unit)? = null) {
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -122,6 +175,7 @@ private fun NotConfiguredView(modifier: Modifier = Modifier) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
+        onJoinByLink?.let { TextButton(onClick = it) { Text("Join a jukebox by link\u2026") } }
     }
 }
 
@@ -134,6 +188,7 @@ private fun CreateView(
     defaultName: String,
     onStart: (name: String, requiresToken: Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    onJoinByLink: (() -> Unit)? = null,
 ) {
     var name by remember { mutableStateOf("") }
     // Seeded from the Settings default each time the create view appears (§6).
@@ -194,6 +249,7 @@ private fun CreateView(
             }
             Text(if (state.starting) "Starting…" else "Start Jukebox")
         }
+        onJoinByLink?.let { TextButton(onClick = it) { Text("Join a jukebox by link\u2026") } }
     }
 }
 
