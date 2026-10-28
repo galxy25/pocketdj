@@ -457,7 +457,19 @@ private fun NodeRow(
         PlaylistNode.Kind.SONG -> {
             val songId = node.songId
             val song = songId?.let { catalog?.songsById?.get(it) }
-            if (song == null || (songId != null && PlayResolver.isStudioId(songId))) {
+            val studio = rememberStudioInfo(songId)
+            if (studio != null) {
+                StudioItemRow(
+                    info = studio,
+                    badges = {
+                        node.repeatCount?.takeIf { it > 1 }?.let {
+                            Spacer(Modifier.width(6.dp))
+                            CapsuleBadge("×$it")
+                        }
+                    },
+                    trailing = { OverflowMenu(content = menu) },
+                )
+            } else if (song == null || (songId != null && PlayResolver.isStudioId(songId))) {
                 // Unresolvable + Studio ids degrade honestly (§5.2).
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     MissingItemRow(modifier = Modifier.weight(1f))

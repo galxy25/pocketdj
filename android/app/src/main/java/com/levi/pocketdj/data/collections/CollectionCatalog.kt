@@ -38,6 +38,15 @@ fun studioSyntheticSong(id: String, info: StudioItemInfo, artist: String = STUDI
 
 const val STUDIO_ARTIST = "Studio"
 
+/** Row-badge label from the id shape alone (a frozen setlist row carries no lookup): "Sample"/"Loop"/"Sequence"/"Instrumental". */
+fun studioKindLabel(id: String): String? = when {
+    id.startsWith("smp_") -> "Sample"
+    id.startsWith("lp_") -> "Loop"
+    id.startsWith("ptn_") -> "Sequence"
+    id.startsWith("tk_") -> "Instrumental"
+    else -> null
+}
+
 /** Catalog first, then a synthesized pseudo-song for a studio id the [lookup] knows; null otherwise. */
 fun resolveSongOrStudio(
     songsById: Map<String, IndexSong>,

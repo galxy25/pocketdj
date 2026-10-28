@@ -133,7 +133,7 @@ class StudioPlayback(
         fun patternFileName(patternId: String): String = StudioFolders.fileName(StudioFamily.SEQUENCES, patternId)
 
         /** Loop buffers play at their EXACT frame count (seamless): trim/pad the decoded file to it. */
-        fun exactLoopBuffer(decoded: PcmBuffer, frames: Int): PcmBuffer =
-            if (frames > 0) StudioAudio.trimmedOrPadded(decoded, frames.toLong()) ?: decoded else decoded
+        fun exactLoopBuffer(decoded: PcmBuffer, frames: Long): PcmBuffer =
+            if (frames > 0) StudioAudio.trimmedOrPadded(decoded, frames) ?: decoded else decoded
     }
 }

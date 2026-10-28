@@ -487,6 +487,11 @@ private fun SetlistTrackRow(
                 )
             },
             badges = {
+                // STU-7: kind badge for a studio row (sample / loop / sequence / instrumental).
+                com.levi.pocketdj.data.collections.studioKindLabel(track.songId)?.let {
+                    Spacer(Modifier.width(6.dp))
+                    CapsuleBadge(it)
+                }
                 // Provenance badges (§7.1): pocket / ↔ bridge; nothing explicit.
                 when (track.source) {
                     TrackSource.POCKET -> {

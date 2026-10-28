@@ -341,7 +341,19 @@ fun PocketDetailScreen(
                                     onClick = { dismiss(); store.removeSongFromPocket(songId, pocketId) },
                                 )
                             }
-                        if (song == null || PlayResolver.isStudioId(songId)) {
+                        val studio = rememberStudioInfo(songId)
+                        if (studio != null) {
+                            StudioItemRow(
+                                info = studio,
+                                badges = {
+                                    pocket.songRepeats[songId]?.takeIf { it > 1 }?.let {
+                                        Spacer(Modifier.width(6.dp))
+                                        CapsuleBadge("×$it")
+                                    }
+                                },
+                                trailing = { OverflowMenu(content = menu) },
+                            )
+                        } else if (song == null || PlayResolver.isStudioId(songId)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 MissingItemRow(modifier = Modifier.weight(1f))
                                 OverflowMenu(content = menu)
