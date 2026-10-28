@@ -1,125 +1,125 @@
 package com.levi.pocketdj.screens.history
 
-import com.levi.pocketdj.data.activity.ActivityEvent
+import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.history.PlayEvent
 import com.levi.pocketdj.data.history.PlayOutcome
 import com.levi.pocketdj.data.history.PlaySource
+import com.levi.pocketdj.screens.browse.Fmt
+import com.levi.pocketdj.screens.browse.Genre
+import com.levi.pocketdj.screens.browse.SongRow
+import java.util.IdentityHashMap
 
 /**
- * One derived Playback-timeline row (specs/history.md §5): identity is the EVENT
- * id — a song played three times is three rows. Title/artist resolve live-catalog
- * first, event snapshot second, so history outlives the catalog.
+ * What the History row chrome needs beyond the shared song row (iOS `PlayRef`): identity is the
+ * EVENT id — a song played three times is three rows. Title/artist on the paired [SongRow]
+ * resolve live-catalog first, event snapshot second, so history outlives the catalog.
  */
-internal data class HistoryRow(
+internal data class PlayRef(
     val eventId: String,
     val songId: String,
-    val title: String,
-    val artist: String,
-    val artUrl: String?,
+    val playedAtMs: Long,
     val source: PlaySource,
     val contextName: String?,
-    val playedAtMs: Long,
     /** Total plays of this song in the log (badge shows only when > 1). */
-    val playCount: Int,
-    /** Derived completed / skipped / partial / unknown; UNKNOWN draws nothing. */
+    val count: Int,
+    val fromAnotherDevice: Boolean,
+    val wasSkipped: Boolean,
     val outcome: PlayOutcome = PlayOutcome.UNKNOWN,
+    val artUrl: String? = null,
 )
 
 /**
- * Playback rows with live-catalog-first, snapshot-second resolution, filtered by
- * the search [query] (title or artist, case-folded) and the played-between range
- * ([rangeStartMs] inclusive, [rangeEndMs] exclusive), sorted by playedAt in the
- * requested direction (§6.4). [playCountOf] resolves a song's total play count
- * (injected so the pure builder needs no store — the unified view and tests reuse
- * it directly).
+ * The expensive per-event base the filter/sort engine runs over: [rows] and [keys] are PARALLEL
+ * (folded search haystacks); [refs] maps each row INSTANCE (identity — two identical plays must
+ * not collide) to its [PlayRef].
  */
-internal fun buildRows(
+internal class HistoryBase(
+    val rows: List<SongRow>,
+    val keys: List<String>,
+    private val refs: IdentityHashMap<SongRow, PlayRef>,
+) {
+    fun refOf(row: SongRow): PlayRef? = refs[row]
+
+    companion object {
+        val EMPTY = HistoryBase(emptyList(), emptyList(), IdentityHashMap())
+    }
+}
+
+/**
+ * The events the Playback timeline builds rows from under the current Hide-skips setting (iOS
+ * `visibleEvents`). `wasSkipped == null` — legacy docs, peer docs, and the LIVE track whose
+ * verdict hasn't happened yet — reads as NOT skipped and stays visible.
+ */
+internal fun visibleEvents(events: List<PlayEvent>, hideSkips: Boolean): List<PlayEvent> =
+    if (!hideSkips) events else events.filter { it.wasSkipped != true }
+
+/**
+ * Build the base rows (iOS `buildItems`, timeline mode): one row per event, NEWEST FIRST so the
+ * engine's stable tiebreak keeps newest-first among equal keys. Hide-skips is applied HERE, on
+ * the events, so it is part of the base key (a hidden skip must not inflate nothing else).
+ * [events] arrive oldest -> newest (the store's insertion order).
+ */
+internal fun buildItems(
     events: List<PlayEvent>,
     catalog: MergedCatalog,
+    hideSkips: Boolean,
     playCountOf: (songId: String) -> Int,
-    query: String,
-    newestFirst: Boolean,
-    rangeStartMs: Long?,
-    rangeEndMs: Long?,
-): List<HistoryRow> {
-    val needle = query.trim()
-    val ordered = if (newestFirst) events.asReversed() else events
-    return ordered.mapNotNull { event ->
+    isFromAnotherDevice: (PlayEvent) -> Boolean = { false },
+): HistoryBase {
+    val visible = visibleEvents(events, hideSkips)
+    if (visible.isEmpty()) return HistoryBase.EMPTY
+    val rows = ArrayList<SongRow>(visible.size)
+    val keys = ArrayList<String>(visible.size)
+    val refs = IdentityHashMap<SongRow, PlayRef>(visible.size * 2)
+    for (event in visible.asReversed()) {
+        val live = catalog.songsById[event.songId]
+        val song = live ?: IndexSong(
+            id = event.songId,
+            artist = event.artist.orEmpty(),
+            name = event.title ?: "Unknown",
+        )
+        val album = live?.albumId?.let { catalog.albumsById[it] }
+        val albumName = album?.name
         val playedAtMs = event.playedAt.toLong()
-        if (rangeStartMs != null && playedAtMs < rangeStartMs) return@mapNotNull null
-        if (rangeEndMs != null && playedAtMs >= rangeEndMs) return@mapNotNull null
-        val song = catalog.songsById[event.songId]
-        val title = song?.name ?: event.title ?: event.songId
-        val artist = song?.artist ?: event.artist ?: ""
-        if (needle.isNotEmpty() &&
-            !title.contains(needle, ignoreCase = true) &&
-            !artist.contains(needle, ignoreCase = true)
-        ) {
-            return@mapNotNull null
-        }
-        val album = song?.albumId?.let { catalog.albumsById[it] }
-        HistoryRow(
+        val key = Fmt.fold("${song.name}\n${song.artist}\n${albumName.orEmpty()}")
+        val row = SongRow(
+            song = song,
+            albumName = albumName,
+            source = catalog.sourceOfSong[event.songId],
+            genreCategory = Genre.category(album?.genre),
+            searchKey = key,
+            playedAt = playedAtMs.toDouble(),
+        )
+        rows += row
+        keys += key
+        refs[row] = PlayRef(
             eventId = event.id,
             songId = event.songId,
-            title = title,
-            artist = artist,
-            artUrl = album?.artCandidates()?.firstOrNull(),
+            playedAtMs = playedAtMs,
             source = event.source,
             contextName = event.contextName,
-            playedAtMs = playedAtMs,
-            playCount = playCountOf(event.songId),
+            count = playCountOf(event.songId),
+            fromAnotherDevice = isFromAnotherDevice(event),
+            wasSkipped = event.wasSkipped ?: false,
             outcome = event.outcome,
+            artUrl = album?.artCandidates()?.firstOrNull(),
         )
     }
+    return HistoryBase(rows, keys, refs)
+}
+
+/** `Source · contextName · on another device` — the label half of the context line. */
+internal fun contextLabel(ref: PlayRef): String {
+    var label = ref.source.label
+    if (!ref.contextName.isNullOrBlank()) label += " · ${ref.contextName}"
+    if (ref.fromAnotherDevice) label += " · on another device"
+    return label
 }
 
 /**
- * One entry in the UNIFIED History timeline (iOS `HistoryView.HistoryEntry`):
- * either a song play or a collection-activity event, each carrying its own
- * epoch-ms timestamp for the merge sort. Ids are namespaced (`p:` / `a:`) so a
- * play event and an activity event can never collide on a LazyColumn key.
+ * Live speaker indicator rule: the row is the CURRENT event AND the player is actually sounding
+ * (a paused/stopped current row shows no speaker — the indicator must not lie).
  */
-internal sealed interface HistoryEntry {
-    val id: String
-    val atMs: Long
-
-    data class Play(val row: HistoryRow) : HistoryEntry {
-        override val id get() = "p:${row.eventId}"
-        override val atMs get() = row.playedAtMs
-    }
-
-    data class Activity(val row: ActivityRowUi) : HistoryEntry {
-        override val id get() = "a:${row.eventId}"
-        override val atMs get() = row.atMs
-    }
-}
-
-/**
- * The merged Unified timeline (iOS `buildUnified`): song plays and collection
- * activity interleaved NEWEST FIRST, both filtered by the search [query]
- * (title/artist for plays; item title + collection name for activity). The
- * date-range filter is deliberately NOT applied here — Unified honours only the
- * shared search query; sort/range stay Playback-only.
- */
-internal fun buildUnified(
-    playEvents: List<PlayEvent>,
-    activityEvents: List<ActivityEvent>,
-    catalog: MergedCatalog,
-    playCountOf: (songId: String) -> Int,
-    query: String,
-): List<HistoryEntry> {
-    val plays = buildRows(
-        events = playEvents,
-        catalog = catalog,
-        playCountOf = playCountOf,
-        query = query,
-        newestFirst = true,
-        rangeStartMs = null,
-        rangeEndMs = null,
-    ).map { HistoryEntry.Play(it) }
-    val acts = buildActivityRows(activityEvents, catalog, query)
-        .map { HistoryEntry.Activity(it) }
-    // Stable descending sort keeps the per-stream newest-first order on ties.
-    return (plays + acts).sortedByDescending { it.atMs }
-}
+internal fun isLiveRow(ref: PlayRef, currentEventId: String?, playerPlaying: Boolean): Boolean =
+    playerPlaying && currentEventId != null && ref.eventId == currentEventId
