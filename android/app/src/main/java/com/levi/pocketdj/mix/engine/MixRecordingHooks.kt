@@ -25,6 +25,9 @@ class MixRecordingHooks {
     /** (songId, playedSeconds, durationSeconds, reason, deck). */
     var onDeckTrackEnded: ((songId: String, played: Double, duration: Double, reason: MixTrackEndReason, deck: Deck) -> Unit)? = null
 
+    /** Play-stats feed (LRP ordering): fired on EVERY deck play transition; the store's 30 s window dedupes. */
+    var onPlayStat: ((songId: String) -> Unit)? = null
+
     private val playNoted = HashSet<Deck>()
     private val endReported = HashSet<Deck>()
     private val highWater = HashMap<Deck, Double>()
@@ -52,6 +55,7 @@ class MixRecordingHooks {
     fun notePlay(deck: Deck, songId: String?) {
         if (songId == null) return
         recorder?.notePlayed(songId)
+        onPlayStat?.invoke(songId)
         if (playNoted.add(deck)) onSongPlayed?.invoke(songId, deck)
     }
 

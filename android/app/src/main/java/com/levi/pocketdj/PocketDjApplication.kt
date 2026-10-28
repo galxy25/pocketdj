@@ -8,6 +8,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Installs the lifecycle doctrine. The AppGraph is NOT built here: a WorkManager cold start
@@ -26,6 +28,15 @@ class PocketDjApplication : Application() {
                 { AppGraph.get(this).refreshEndpoints(force = firstForeground.getAndSet(false)) },
                 { AppLifecycleObserver.widgetDrain() },
                 { scheduler.ensureScheduled(AppGraph.get(this).features.periodicWork) },
+                // WorkManager periodic work can slip for days under Doze/standby: also try the (self-gated,
+                // cheap) soft-cap prune on every foreground, deferred well past launch (iOS does the same).
+                {
+                    val g = AppGraph.get(this)
+                    g.appScope.launch(Dispatchers.IO) {
+                        delay(15_000)
+                        runCatching { g.servicesGraph.storageManager.pruneIfDue() }
+                    }
+                },
             ),
             flush = { AppGraph.get(this).flushNow() },
         ).install()

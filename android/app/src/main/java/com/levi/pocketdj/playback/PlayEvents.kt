@@ -80,6 +80,8 @@ data class PlayStarted(
      * sequencer so History rows can attribute the play to the collection it came from.
      */
     val originCollectionId: String? = null,
+    /** True when the Apple Music backend (streamed, not a burned file) produced this start; tagged at emit time. */
+    val appleCounted: Boolean = false,
 )
 
 /**

@@ -103,6 +103,54 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** SVC-6 per-song play stats (LRP ordering signal), recorded from the core play-event seam. */
+    private val playStatsLazy = lazy {
+        val f = File(app.appContext.filesDir, com.levi.pocketdj.data.stats.PlayStatsStore.FILE_NAME)
+        com.levi.pocketdj.data.stats.PlayStatsStore(f, VersionedJsonWriter(f, VersionedJsonWriter.backgroundExecutor("pdj-play-stats-writer")))
+    }
+    val playStats: com.levi.pocketdj.data.stats.PlayStatsStore get() = playStatsLazy.value
+
+    /** Starts the recorder once; idempotent. Call off-main (the store reads its doc from disk). */
+    fun startPlayStats() {
+        if (playStatsStarted.compareAndSet(false, true)) {
+            com.levi.pocketdj.data.stats.PlayStatsRecorder(playStats).start(app.appScope)
+        }
+    }
+    private val playStatsStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    val storageSettings: com.levi.pocketdj.data.storage.DataStoreStorageSettings by lazy {
+        com.levi.pocketdj.data.storage.DataStoreStorageSettings(app.settings)
+    }
+
+    /** SVC-6 soft-cap prune engine (protected = now-playing row + both Mix decks). */
+    val storageManager: com.levi.pocketdj.data.storage.StorageManager by lazy {
+        com.levi.pocketdj.data.storage.StorageManager(
+            burns = com.levi.pocketdj.data.storage.BurnStorePruneAdapter(burnStore),
+            playStats = playStats,
+            settings = storageSettings,
+            protectedSongIds = {
+                com.levi.pocketdj.data.storage.protectedIds(
+                    current = app.playbackGraph.sequencer.state.value.current,
+                    deckSongIds = runCatching {
+                        val e = app.mixGraph.mixEngine
+                        com.levi.pocketdj.mix.model.Deck.entries.map { d -> e.loaded(d)?.songId }
+                    }.getOrDefault(emptyList()),
+                )
+            },
+            log = { android.util.Log.i("PocketDJ", "[storage] $it") },
+        )
+    }
+
+    val burnStorageOps: com.levi.pocketdj.data.storage.StorageService.BurnStorageOps by lazy {
+        object : com.levi.pocketdj.data.storage.StorageService.BurnStorageOps {
+            override fun usageByArtist() = burnStore.usageByArtist()
+            override fun stemUsageByArtist() = burnStore.stemUsageByArtist()
+            override fun approximateBytes(ids: List<String>) = burnStore.approximateBytes(ids)
+            override fun removeBurns(songIds: List<String>) = burnStore.removeBurns(songIds)
+            override fun removeStems(songIds: List<String>) = burnStore.removeStems(songIds, protecting = storageManager.protectedSongIds())
+        }
+    }
+
     override val settingsSections: List<SettingsSection> by lazy {
         if (diag.channel) listOf(debugSection()) else emptyList()
     }
@@ -114,6 +162,10 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     }
 
     override val flushables: List<Flushable> by lazy {
-        listOf(diag.flushable, Flushable { if (burnStoreLazy.isInitialized()) burnStore.flush() })
+        listOf(
+            diag.flushable,
+            Flushable { if (burnStoreLazy.isInitialized()) burnStore.flush() },
+            Flushable { if (playStatsLazy.isInitialized()) playStats.flush() },
+        )
     }
 }

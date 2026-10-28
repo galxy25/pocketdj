@@ -21,7 +21,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.text.KeyboardOptions
+import com.levi.pocketdj.data.burns.ArtistUsage
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -126,6 +131,12 @@ fun StorageScreen(modifier: Modifier = Modifier) {
                 HorizontalDivider()
                 Spacer(Modifier.height(4.dp))
             }
+
+            DownloadSections(
+                graph = graph,
+                onChanged = { scope.launch { sizes.putAll(storage.measureAll()) } },
+                snackbar = snackbar,
+            )
 
             Spacer(Modifier.height(8.dp))
             Row(
@@ -320,3 +331,178 @@ internal fun storageCategoryMeta(category: Category): StorageCategoryMeta = when
             "collections it references are untouched. This can't be undone.",
     )
 }
+
+
+/** What the by-artist / by-collection delete dialog is currently offering. */
+private enum class DeleteKind(val label: String, val stems: Boolean) {
+    BURN_ARTIST("Delete songs by artist", false),
+    BURN_COLLECTION("Delete songs by collection", false),
+    STEM_ARTIST("Delete stems by artist", true),
+}
+
+private data class DeleteChoice(val label: String, val detail: String, val songIds: List<String>)
+
+/**
+ * SVC-6: Settings ▸ Storage cap + prune controls and targeted deletes. Media only — the
+ * library, collections, catalog and settings are never touched.
+ */
+@Composable
+private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: SnackbarHostState) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val services = graph.servicesGraph
+    val storage = graph.storageService
+    var capGb by remember { mutableStateOf("") }
+    var capSongs by remember { mutableStateOf("") }
+    var status by remember { mutableStateOf<String?>(null) }
+    var pruning by remember { mutableStateOf(false) }
+    var kind by remember { mutableStateOf<DeleteKind?>(null) }
+    var choices by remember { mutableStateOf<List<DeleteChoice>>(emptyList()) }
+    var confirm by remember { mutableStateOf<Pair<DeleteKind, DeleteChoice>?>(null) }
+
+    LaunchedEffect(Unit) {
+        val gb = services.storageSettings.capGB()
+        val n = services.storageSettings.capSongs()
+        capGb = gb?.let { if (it % 1.0 == 0.0) it.toLong().toString() else it.toString() } ?: ""
+        capSongs = n?.toString() ?: ""
+        services.storageManager.lastResult?.let { status = describe(context, it) }
+    }
+
+    Spacer(Modifier.height(16.dp))
+    SectionHeader("Automatic cleanup")
+    Caption(
+        "Optional soft cap on downloaded songs. When set, PocketDJ removes the songs you " +
+            "have played least recently (never-played first), at most once a day, until the " +
+            "downloads fit. Leave both empty to manage storage yourself.",
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        OutlinedTextField(
+            value = capGb,
+            onValueChange = { v -> capGb = v.filter { it.isDigit() || it == '.' }.take(7) },
+            label = { Text("Cap (GB)") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            modifier = Modifier.weight(1f),
+        )
+        OutlinedTextField(
+            value = capSongs,
+            onValueChange = { v -> capSongs = v.filter { it.isDigit() }.take(7) },
+            label = { Text("Cap (songs)") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            modifier = Modifier.weight(1f),
+        )
+    }
+    Spacer(Modifier.height(8.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        OutlinedButton(onClick = {
+            scope.launch {
+                if (capGb.isNotBlank() && capGb.toDoubleOrNull() == null) {
+                    snackbar.showSnackbar("Enter the GB cap as a number, e.g. 12.5")
+                    return@launch
+                }
+                services.storageSettings.setCapGB(capGb.toDoubleOrNull())
+                services.storageSettings.setCapSongs(capSongs.toIntOrNull())
+                snackbar.showSnackbar("Cap saved")
+            }
+        }) { Text("Save cap") }
+        OutlinedButton(
+            enabled = !pruning,
+            onClick = {
+                scope.launch {
+                    if (capGb.isNotBlank() && capGb.toDoubleOrNull() == null) {
+                        status = "Enter the GB cap as a number, e.g. 12.5"
+                        return@launch
+                    }
+                    services.storageSettings.setCapGB(capGb.toDoubleOrNull())
+                    services.storageSettings.setCapSongs(capSongs.toIntOrNull())
+                    pruning = true
+                    val r = services.storageManager.prune()
+                    pruning = false
+                    status = r?.let { describe(context, it) }
+                        ?: if (services.storageManager.isPruning) "A prune is already running - try again shortly."
+                        else "No cap set - nothing to prune."
+                    onChanged()
+                }
+            },
+        ) { Text(if (pruning) "Pruning…" else "Prune now") }
+    }
+    status?.let { Caption(it) }
+
+    Spacer(Modifier.height(16.dp))
+    SectionHeader("Delete downloads")
+    Caption("Removes downloaded files only. Songs stay in your library and collections.")
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (k in DeleteKind.entries) {
+            OutlinedButton(onClick = {
+                scope.launch {
+                    choices = loadChoices(graph, k)
+                    kind = k
+                }
+            }) { Text(k.label, style = MaterialTheme.typography.labelSmall) }
+        }
+    }
+
+    kind?.let { k ->
+        AlertDialog(
+            onDismissRequest = { kind = null },
+            title = { Text(k.label) },
+            text = {
+                if (choices.isEmpty()) Text("Nothing downloaded.")
+                else Column(Modifier.verticalScroll(rememberScrollState())) {
+                    choices.forEach { c ->
+                        Column(
+                            Modifier.fillMaxWidth().clickable { confirm = k to c; kind = null }.padding(vertical = 8.dp),
+                        ) {
+                            Text(c.label, style = MaterialTheme.typography.bodyMedium)
+                            Text(c.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { kind = null }) { Text("Close") } },
+        )
+    }
+    confirm?.let { (k, c) ->
+        AlertDialog(
+            onDismissRequest = { confirm = null },
+            title = { Text("Delete ${c.label}?") },
+            text = { Text("Removes ${c.detail} from this device. Your library and collections are kept.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = null
+                    scope.launch {
+                        if (k.stems) storage.deleteStems(c.songIds) else storage.deleteBurns(c.songIds)
+                        snackbar.showSnackbar("Deleted ${c.label}")
+                        onChanged()
+                    }
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirm = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+private suspend fun loadChoices(graph: AppGraph, k: DeleteKind): List<DeleteChoice> {
+    val storage = graph.storageService
+    fun fmt(a: ArtistUsage) = DeleteChoice(a.artist, "${a.songIds.size} songs, ${a.bytes / 1_000_000} MB", a.songIds)
+    return when (k) {
+        DeleteKind.BURN_ARTIST -> storage.burnUsageByArtist().map(::fmt)
+        DeleteKind.STEM_ARTIST -> storage.stemUsageByArtist().map(::fmt)
+        DeleteKind.BURN_COLLECTION -> {
+            val col = graph.collections
+            val st = col.state.value
+            val raw = st.pockets.map { it.name to col.songIdsForPocket(it.id) } +
+                st.playlists.map { it.name to col.songIdsForPlaylist(it.id) }
+            raw.sortedBy { it.first.lowercase() }.mapNotNull { (name, ids) ->
+                val ready = graph.servicesGraph.burnStore.readyBurnedIds(ids)
+                if (ready.isEmpty()) null
+                else DeleteChoice(name, "${ready.size} downloaded songs, ${storage.approximateBurnBytes(ready) / 1_000_000} MB", ready)
+            }
+        }
+    }
+}
+
+private fun describe(context: android.content.Context, r: com.levi.pocketdj.data.storage.StorageManager.PruneResult): String =
+    "Pruned ${r.evicted} songs, freed ${Formatter.formatFileSize(context, r.freedBytes)}. " +
+        "Now ${r.usageSongs} songs / ${Formatter.formatFileSize(context, r.usageBytes)}."

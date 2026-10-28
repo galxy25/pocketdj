@@ -286,6 +286,7 @@ class AppleMusicBackend(
                 artist = info.artist,
                 context = info.context,
                 atMs = System.currentTimeMillis(),
+                appleCounted = true,
             ),
         )
     }
