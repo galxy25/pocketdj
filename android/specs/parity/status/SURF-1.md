@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SURF-1 — Shell foundation
 
@@ -22,3 +22,15 @@ state: implemented
 - `PlayOutcomeListener` is a minimal shell-package interface; PB-5 may supersede/adapt.
 - Games destination is a PlaceholderScreen (phase 5).
 - Not done by design: docs/ARCHITECTURE-ANDROID.md ledger (integrator). Emulator steps not run (emulator owned by integrator).
+
+## Review
+- MAJOR NavRequestBus consumer cancelled by take() -> fixed: long-lived LaunchedEffect(Unit) running extracted `consumeNavRequests` (per-route child coroutine); ConsumeNavRequestsTest asserts staged push lands after delay and the message coroutine runs to completion.
+- MAJOR in-memory secret fallback -> fixed: `SecretStore.isAvailable`; DeferredSecretStore + EncryptedSecretStore.createOrNull (wipe prefs + master key, retry once, else unavailable); migration skipped and writes stay on legacy plaintext path when unavailable; sharedpref pocketdj-secrets.xml excluded in backup_rules + data_extraction_rules (cloud + transfer). UnavailableSecretStoreTest covers it.
+- MINOR apply() ordering -> fixed: put/remove use commit().
+- MINOR eager main-thread Keystore -> fixed: store created lazily; settings flow runs flowOn(IO); secret writes in withContext(IO).
+- MINOR start destination on re-creation -> fixed: start token held in rememberSaveable (original start reused). Emulator rotation check not run (emulator owned by integrator): integrator to verify.
+- MINOR routeMessage no consumer -> fixed: shell collects routeMessage, shows snackbar, clears it.
+- MINOR amrec_album_ preview fallback -> deferred (not rejected): no Apple Music album preview screen exists yet; follow-up for the package owning the AM preview (Discover/AM). Resolver still reports the miss message meanwhile.
+- NIT IntentSink parking -> fixed: park only data/non-MAIN intents, keep newest only.
+
+fixes applied. 310 tests, 0 failures; assembleDebug green.

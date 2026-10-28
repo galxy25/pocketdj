@@ -16,6 +16,7 @@ import com.levi.pocketdj.data.collections.CollectionsStore
 import com.levi.pocketdj.data.config.RemoteEndpoints
 import com.levi.pocketdj.data.credentials.EncryptedSecretStore
 import com.levi.pocketdj.data.credentials.InMemorySecretStore
+import com.levi.pocketdj.data.credentials.DeferredSecretStore
 import com.levi.pocketdj.data.credentials.SecretMigration
 import com.levi.pocketdj.data.credentials.SecretStore
 import com.levi.pocketdj.data.history.PlayHistoryStore
@@ -92,14 +93,10 @@ class AppGraph private constructor(context: Context) {
     /**
      * Keystore-backed secrets (rip token, jukebox token, Music-User-Token, later more —
      * decision D6). Built off the settings DataStore's thread-safe path; the construction
-     * touches the Keystore so it is lazy-by-use, and failures degrade to the legacy
+     * touches the Keystore so it is created lazily on first (off-main) use, and failures degrade to the legacy
      * plaintext path rather than crashing launch.
      */
-    val secrets: SecretStore = runCatching { EncryptedSecretStore(appContext) }
-        .getOrElse { error ->
-            android.util.Log.e("PocketDJ", "[secrets] keystore unavailable, using memory store", error)
-            InMemorySecretStore()
-        }
+    val secrets: SecretStore = DeferredSecretStore { EncryptedSecretStore.createOrNull(appContext) }
 
     val settings: AppSettingsStore = AppSettingsStore(settingsDataStore, json, secrets)
 

@@ -13,6 +13,7 @@ import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
@@ -169,6 +170,7 @@ class AppSettingsStore(
     /** Live settings; IO errors surface as defaults rather than a crash. */
     val settings: Flow<AppSettings> =
         combine(prefsFlow, secrets?.revision ?: flowOf(0L)) { prefs, _ -> toSettings(prefs) }
+            .flowOn(kotlinx.coroutines.Dispatchers.IO) // secret reads may touch the Keystore
 
     suspend fun current(): AppSettings = settings.first()
 
@@ -253,10 +255,10 @@ class AppSettingsStore(
     /** Secret write: into [secrets] when wired (and blank any stale plaintext), else DataStore. */
     private suspend fun putSecret(secretName: String, legacy: PrefKey<String>, value: String) {
         val store = secrets
-        if (store == null) {
+        if (store == null || !store.isAvailable) {
             dataStore.edit { it[legacy.key] = value }
         } else {
-            store.put(secretName, value)
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { store.put(secretName, value) }
             dataStore.edit { prefs -> if (prefs[legacy.key] != null) prefs[legacy.key] = "" }
         }
     }

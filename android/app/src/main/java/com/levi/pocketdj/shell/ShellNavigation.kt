@@ -23,7 +23,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.filterNotNull
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -129,6 +132,41 @@ private suspend fun resolveOffMain(graph: AppGraph, route: ShellRoute): RouteRes
         ShellRouteResolver.resolve(route, GraphRouteLookup(graph))
     }
 
+/**
+ * Long-lived NavRequestBus consumer. Each taken route is handled in its own child
+ * coroutine so a slow resolve / staged-push delay / snackbar never blocks or is
+ * cancelled by the signal clearing. Extracted from the composable so it is testable.
+ */
+suspend fun consumeNavRequests(
+    resolve: suspend (ShellRoute) -> RouteResolution,
+    switchTab: (PocketDjDestination) -> Unit,
+    push: (String) -> Unit,
+    showMessage: suspend (String) -> Unit,
+    stagedDelayMs: Long = STAGED_PUSH_DELAY_MS,
+    pushTarget: (ShellRoute) -> String? = ::pushRouteFor,
+) = coroutineScope {
+    NavRequestBus.signal.filterNotNull().collect {
+        val route = NavRequestBus.take() ?: return@collect // another consumer won
+        launch {
+            when (val resolved = resolve(route)) {
+                is RouteMessage -> {
+                    // The section still lands (iOS sets `section` before checking the target).
+                    route.homeTab()?.let(switchTab)
+                    showMessage("${ShellRouteResolver.ALERT_TITLE} — ${resolved.text}")
+                }
+                is NavCommand -> {
+                    resolved.pendingBrowseQuery?.let { NavRequestBus.setPendingBrowseQuery(it) }
+                    switchTab(resolved.tab)
+                    resolved.push?.let(pushTarget)?.let { target ->
+                        delay(stagedDelayMs)
+                        push(target)
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun NavController.switchTab(dest: PocketDjDestination, fresh: Boolean) {
     navigate(dest.route) {
         popUpTo(graph.findStartDestination().id) { saveState = !fresh }
@@ -143,8 +181,14 @@ fun PocketDjApp() {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     // Restore the last-visited section before the NavHost exists (its start destination is fixed).
-    val start by produceState<PocketDjDestination?>(null, graph) { value = graph.lastSection.restore() }
-    val resolvedStart = start
+    // rememberSaveable (token) so a re-created activity reuses the ORIGINAL start: the
+    // restored NavController back stack is rooted there, and popUpTo(findStartDestination)
+    // must keep pointing at that root.
+    var startToken by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(graph) {
+        if (startToken == null) startToken = graph.lastSection.restore().token
+    }
+    val resolvedStart = startToken?.let { PocketDjDestination.fromToken(it) }
     if (resolvedStart == null) {
         Box(Modifier.fillMaxSize())
     } else {
@@ -177,24 +221,21 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
 
     // NavRequestBus consumer: atomic take (clear first), tab switches NOW on a fresh stack,
     // the push is staged after the settle delay — RootView.consumeIntentRoute's discipline.
-    val signal by NavRequestBus.signal.collectAsState()
-    LaunchedEffect(signal) {
-        if (signal == null) return@LaunchedEffect
-        val route = NavRequestBus.take() ?: return@LaunchedEffect // another consumer won
-        when (val resolved = resolveOffMain(graph, route)) {
-            is RouteMessage -> {
-                // The section still lands (iOS sets `section` before checking the target).
-                (route.homeTab())?.let { navController.switchTab(it, fresh = true) }
-                appSnackbar.showSnackbar("${ShellRouteResolver.ALERT_TITLE} — ${resolved.text}")
-            }
-            is NavCommand -> {
-                resolved.pendingBrowseQuery?.let { NavRequestBus.setPendingBrowseQuery(it) }
-                navController.switchTab(resolved.tab, fresh = true)
-                resolved.push?.let(::pushRouteFor)?.let { push ->
-                    delay(STAGED_PUSH_DELAY_MS)
-                    navController.navigate(push)
-                }
-            }
+    // Keyed on Unit: take() clears the signal, so keying on it would cancel the very
+    // coroutine that is mid-resolve / mid-delay / showing the snackbar.
+    LaunchedEffect(Unit) {
+        consumeNavRequests(
+            resolve = { route -> resolveOffMain(graph, route) },
+            switchTab = { navController.switchTab(it, fresh = true) },
+            push = { navController.navigate(it) },
+            showMessage = { appSnackbar.showSnackbar(it) },
+        )
+    }
+    // Direct postMessage callers (deep links) must never be a silent no-op.
+    LaunchedEffect(Unit) {
+        NavRequestBus.routeMessage.filterNotNull().collect { text ->
+            NavRequestBus.clearMessage()
+            launch { appSnackbar.showSnackbar("${ShellRouteResolver.ALERT_TITLE} — $text") }
         }
     }
 

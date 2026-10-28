@@ -29,7 +29,12 @@ object IntentSink {
     fun dispatch(intent: Intent): Boolean {
         val snapshot = synchronized(lock) {
             if (handlers.isEmpty()) {
-                parked.addLast(intent)
+                // Park only meaningful intents (data or a non-MAIN action) and keep just the
+                // newest: a plain launcher intent carries nothing to replay later.
+                if (intent.data != null || (intent.action != null && intent.action != Intent.ACTION_MAIN)) {
+                    parked.clear()
+                    parked.addLast(intent)
+                }
                 return false
             }
             handlers

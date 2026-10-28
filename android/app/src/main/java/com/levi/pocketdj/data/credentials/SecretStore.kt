@@ -21,6 +21,12 @@ interface SecretStore {
     /** Bumps on every mutation so combined flows can re-read. */
     val revision: Flow<Long>
 
+    /**
+     * False when the secure backing store could not be created. Callers must then use the
+     * legacy plaintext path and the migration must NOT run (it would blank the plaintext).
+     */
+    val isAvailable: Boolean get() = true
+
     fun get(name: String): String
     fun put(name: String, value: String)
     fun remove(name: String)
@@ -29,6 +35,30 @@ interface SecretStore {
         const val RIP_TOKEN = "ripToken"
         const val JUKEBOX_TOKEN = "jukeboxToken"
         const val MUSIC_USER_TOKEN = "musicUserToken"
+    }
+}
+
+/**
+ * Defers creating the real store until first use (always off-main: migration coroutine,
+ * the settings flow on IO, DataStore-path writes). When creation fails (after one
+ * wipe-and-retry) [isAvailable] is false and every call is a harmless no-op.
+ */
+class DeferredSecretStore(factory: () -> SecretStore?) : SecretStore {
+    private val delegate: SecretStore? by lazy(LazyThreadSafetyMode.SYNCHRONIZED, factory)
+    private val rev = MutableStateFlow(0L)
+    override val revision: Flow<Long> = rev
+    override val isAvailable: Boolean get() = delegate != null
+
+    override fun get(name: String): String = delegate?.get(name).orEmpty()
+
+    override fun put(name: String, value: String) {
+        delegate?.put(name, value)
+        rev.value = rev.value + 1
+    }
+
+    override fun remove(name: String) {
+        delegate?.remove(name)
+        rev.value = rev.value + 1
     }
 }
 
@@ -51,17 +81,37 @@ class EncryptedSecretStore(context: Context) : SecretStore {
     override fun get(name: String): String = prefs.getString(name, null) ?: ""
 
     override fun put(name: String, value: String) {
-        prefs.edit().putString(name, value).apply()
+        // commit(): the secret must be on disk before the migration blanks the plaintext.
+        prefs.edit().putString(name, value).commit()
         rev.value = rev.value + 1
     }
 
     override fun remove(name: String) {
-        prefs.edit().remove(name).apply()
+        prefs.edit().remove(name).commit()
         rev.value = rev.value + 1
     }
 
     companion object {
         const val FILE_NAME = "pocketdj-secrets"
+        private const val MASTER_KEY_ALIAS = "_androidx_security_master_key_"
+
+        /**
+         * Build the store; on failure (Keystore glitch, corrupt/foreign-keyed prefs after a
+         * restore) wipe the prefs file + master key once and retry. null ⇒ unavailable.
+         */
+        fun createOrNull(context: Context): SecretStore? {
+            runCatching { return EncryptedSecretStore(context) }
+            runCatching {
+                context.applicationContext.deleteSharedPreferences(FILE_NAME)
+                java.security.KeyStore.getInstance("AndroidKeyStore").apply {
+                    load(null)
+                    deleteEntry(MASTER_KEY_ALIAS)
+                }
+            }
+            return runCatching { EncryptedSecretStore(context) }
+                .onFailure { android.util.Log.e("PocketDJ", "[secrets] keystore unavailable", it) }
+                .getOrNull()
+        }
     }
 }
 
@@ -104,6 +154,7 @@ object SecretMigration {
 
     /** @return true when this call performed the migration, false if already done. */
     suspend fun run(dataStore: DataStore<Preferences>, secrets: SecretStore): Boolean {
+        if (!secrets.isAvailable) return false // never blank plaintext we could not secure
         val before = dataStore.data.first()
         if (before[LegacyPrefKeys.SECRETS_MIGRATED.key] == true) return false
         for ((dsName, secretName) in moved) {

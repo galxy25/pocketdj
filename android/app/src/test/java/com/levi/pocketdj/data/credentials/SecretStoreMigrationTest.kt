@@ -109,3 +109,28 @@ class SecretStoreMigrationTest {
         assertFalse(store.current().hasAppleMusic)
     }
 }
+
+class UnavailableSecretStoreTest {
+    @get:Rule val tmp = TemporaryFolder()
+
+    private class Dead : SecretStore {
+        override val revision = kotlinx.coroutines.flow.flowOf(0L)
+        override val isAvailable = false
+        override fun get(name: String) = ""
+        override fun put(name: String, value: String) = error("must not be written")
+        override fun remove(name: String) = error("must not be written")
+    }
+
+    @Test
+    fun unavailableStore_skipsMigration_andKeepsPlaintext() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.IO + Job())
+        val ds = PreferenceDataStoreFactory.create(scope = scope) { File(tmp.root, "p.preferences_pb") }
+        AppSettingsStore(ds).setRipServer("https://rip", "rip-secret")
+        assertFalse(SecretMigration.run(ds, Dead()))
+        val store = AppSettingsStore(ds, secrets = Dead())
+        assertEquals("rip-secret", store.current().ripToken)
+        store.setRipServer("https://rip", "new-secret") // legacy path, no put() on the dead store
+        assertEquals("new-secret", store.current().ripToken)
+        scope.cancel()
+    }
+}
