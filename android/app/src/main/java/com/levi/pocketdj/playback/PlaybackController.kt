@@ -19,11 +19,17 @@ import com.levi.pocketdj.data.applemusic.AppleMusicPreviewResolver
 import com.levi.pocketdj.data.applemusic.MusicKitDeveloperTokenClient
 import com.levi.pocketdj.data.rips.PlayAction
 import com.levi.pocketdj.data.rips.PlayResolver
+import com.levi.pocketdj.data.rips.PresignCache
+import com.levi.pocketdj.data.rips.RipJobTracker
+import com.levi.pocketdj.data.rips.RipWaitOutcome
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.rips.RipsRepository
 import com.levi.pocketdj.data.settings.AppSettingsStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -91,6 +97,13 @@ class PlaybackController(
      */
     devTokenClient: MusicKitDeveloperTokenClient? = null,
     private val previewResolver: AppleMusicPreviewResolver? = null,
+    /**
+     * Presigned-URL cache (the rips bucket is private). Null = direct manifest URLs (tests,
+     * serverless); also falls back to the direct URL when no server is configured.
+     */
+    private val presigns: PresignCache? = null,
+    /** Watches a rip past the 20 s interactive wait and fires onRipReady. Null in tests. */
+    private val ripTracker: RipJobTracker? = null,
 ) {
     /** One immutable now-playing snapshot; null when nothing is loaded. */
     data class NowPlayingInfo(
@@ -218,7 +231,7 @@ class PlaybackController(
                 } else {
                     val item = mediaItem(
                         songId = songId,
-                        action = action,
+                        action = presigned(songId, action, ripConfigured),
                         song = song,
                         album = song?.albumId?.let { merged?.albumsById?.get(it) },
                         playContext = playContext ?: PlayContext.BROWSER,
@@ -400,7 +413,21 @@ class PlaybackController(
             .firstOrNull { (index, entry) -> index >= startIndex && entry.second.isUnboundedAnalog }
             ?.index ?: playable.lastIndex
 
-        val queue = playable.subList(0, lastIndex + 1).map { (song, action) ->
+        val serverConfigured = ripConfigured
+        val queueEntries = playable.subList(0, lastIndex + 1)
+        // Resolve presigned URLs for the whole queue (deduplicated, 6 h TTL so a long album
+        // never expires mid-queue); the start item is requested first.
+        val resolved = if (presigns != null && serverConfigured) {
+            coroutineScope {
+                queueEntries.map { (song, action) ->
+                    async { presigned(song.id, action, true) }
+                }.awaitAll()
+            }
+        } else {
+            queueEntries.map { it.second }
+        }
+        val queue = queueEntries.mapIndexed { index, (song, _) ->
+            val action = resolved[index]
             mediaItem(
                 songId = song.id,
                 action = action,
@@ -430,15 +457,24 @@ class PlaybackController(
         val jobId = job.jobId
             ?: return PlayOutcome.Failed(job.error ?: "Rip did not start")
 
-        // "Preparing…" path (specs/playback.md §4.5 Phase-1 minimum): wait for
-        // the durable mp3, refresh the manifest, then start playback.
+        // "Preparing…" path: bounded 20 s interactive wait. A queued rip that outlives it is
+        // NOT a failure ("Still ripping…"): the tracker keeps polling and refreshes the manifest
+        // + fires onRipReady when it lands, so the row flips playable without another tap.
         _preparingSongId.value = songId
         _lastError.value = null
         scope.launch {
             try {
-                val url = ripServer.awaitReady(jobId)
-                runCatching { rips.refresh() }
-                playResolvedUrl(songId, url, playContext)
+                when (val outcome = ripServer.awaitReadyInteractive(jobId)) {
+                    is RipWaitOutcome.Ready -> {
+                        runCatching { rips.refresh() }
+                        val url = presigns?.urlFor(songId) ?: outcome.url
+                        playResolvedUrl(songId, url, playContext)
+                    }
+                    is RipWaitOutcome.StillRipping -> {
+                        ripTracker?.pollToReady(songId, outcome.jobId)
+                        _lastError.value = "Still ripping — this track will be playable in a few minutes."
+                    }
+                }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 _lastError.value = error.message ?: "Rip failed"
@@ -521,6 +557,17 @@ class PlaybackController(
         )
         setQueueAndPlay(listOf(item), 0)
         return PlayOutcome.Started
+    }
+
+    /**
+     * Manifest-hit URL: the presigned URL when a server is configured (the bucket is private),
+     * else the direct URL. A failed presign falls back to the direct URL rather than blocking.
+     */
+    private suspend fun presigned(songId: String, action: PlayAction.Stream, serverConfigured: Boolean): PlayAction.Stream {
+        val cache = presigns ?: return action
+        if (!serverConfigured) return action
+        val url = cache.urlFor(songId) ?: return action
+        return action.copy(url = url)
     }
 
     private suspend fun playResolvedUrl(songId: String, url: String, playContext: PlayContext) {

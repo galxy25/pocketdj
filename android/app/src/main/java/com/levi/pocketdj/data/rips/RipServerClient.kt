@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -49,6 +50,10 @@ class RipServerClient(
     /** 12 s doctrine: an unreachable server fails fast instead of hanging the UI. */
     private val shortClient: OkHttpClient =
         http.newBuilder().callTimeout(12, TimeUnit.SECONDS).build()
+
+    /** One /jobs poll must not outlive the poll cadence by much on a dead link. */
+    private val pollClient: OkHttpClient =
+        http.newBuilder().callTimeout(RipSettings.JOB_POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS).build()
 
     suspend fun isConfigured(): Boolean = configProvider().configured
 
@@ -93,26 +98,31 @@ class RipServerClient(
     suspend fun job(jobId: String): RipJob {
         val config = requireConfig()
         val request = builder(config, url(config, "jobs", jobId)).get().build()
-        return execute(request) { text -> json.decodeFromString<RipJob>(text) }
+        return execute(request, pollClient) { text -> json.decodeFromString<RipJob>(text) }
     }
 
     /**
-     * Foreground wait (iOS contract): poll every 1 s up to 1800 tries (~30 min);
-     * returns the durable URL on `ready`; THROWS on `phase == "error"` (only the
-     * foreground wait does — the server may still re-queue in the background).
+     * Interactive ▶ wait (iOS `ensureURL` contract): poll every 1 s, bounded by WALL-CLOCK
+     * [maxWaitMs] (20 s) — a count of iterations would let a dead link park the UI for minutes.
+     * Returns [RipWaitOutcome.Ready] with the durable URL on `ready`; THROWS on
+     * `phase == "error"` (only this foreground wait does — the server may still re-queue in the
+     * background); when the deadline passes with the job still working returns
+     * [RipWaitOutcome.StillRipping] (NOT a failure: the caller hands the job to RipJobTracker).
      *
-     * A single dropped poll (flaky Funnel, brief network change) must NOT abort
-     * a minutes-long rip wait — like [pollUntilDurable], each poll is wrapped;
-     * only [maxPollFailures] CONSECUTIVE failures give up (server truly gone).
+     * A single dropped poll must not abort the wait; only [maxPollFailures] CONSECUTIVE failures
+     * give up (server truly gone). [clock] is injectable so tests drive a virtual clock.
      */
-    suspend fun awaitReady(
+    suspend fun awaitReadyInteractive(
         jobId: String,
-        pollMs: Long = 1_000,
-        maxTries: Int = 1_800,
-        maxPollFailures: Int = 10,
-    ): String {
+        maxWaitMs: Long = RipSettings.INTERACTIVE_WAIT_MS,
+        pollMs: Long = RipSettings.INTERACTIVE_POLL_MS,
+        maxPollFailures: Int = RipSettings.MAX_POLL_FAILURES,
+        clock: () -> Long = System::currentTimeMillis,
+    ): RipWaitOutcome {
+        val deadline = clock() + maxWaitMs.coerceAtLeast(1)
         var consecutiveFailures = 0
-        repeat(maxTries) {
+        while (clock() < deadline) {
+            delay(pollMs)
             val result = runCatching { job(jobId) }
             result.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
             val view = result.getOrNull()
@@ -122,17 +132,136 @@ class RipServerClient(
                     throw result.exceptionOrNull() as? RipServerException
                         ?: RipServerException(null, "Import server unreachable while waiting for the rip")
                 }
-            } else {
-                consecutiveFailures = 0
-                view.url?.takeIf { view.isReady }?.let { return it }
-                if (view.phase == RipJob.PHASE_ERROR) {
-                    throw RipServerException(null, view.error ?: "Rip failed")
+                continue
+            }
+            consecutiveFailures = 0
+            view.url?.takeIf { view.isReady }?.let { return RipWaitOutcome.Ready(it) }
+            if (view.phase == RipJob.PHASE_ERROR) {
+                throw RipServerException(null, view.error ?: "Rip failed")
+            }
+        }
+        return RipWaitOutcome.StillRipping(jobId)
+    }
+
+    /**
+     * `GET /rips/presign?songId=&ttl=` — the rips bucket is private, so a cached song's playable
+     * URL costs one bearer-gated round trip. [ttlSeconds] null = server default (1 h).
+     */
+    suspend fun presign(songId: String, ttlSeconds: Int? = null): String {
+        val config = requireConfig()
+        val url = url(config, "rips", "presign").newBuilder().apply {
+            addQueryParameter("songId", songId)
+            if (ttlSeconds != null) addQueryParameter("ttl", ttlSeconds.toString())
+        }.build()
+        val request = builder(config, url).get().build()
+        return execute(request) { text ->
+            json.parseToJsonElement(text).jsonObject["url"]?.jsonPrimitive?.content
+                ?.takeIf { it.isNotBlank() } ?: error("no url")
+        }
+    }
+
+    /**
+     * Batch-enqueue a collection (`POST /rip-collection`). Dedups ids (order kept) and fences
+     * device-local ids BEFORE the network. A 404 (older server) / unconfigured / transport
+     * failure falls back to a per-song `/rip` loop that synthesizes the counts; a non-2xx
+     * answer yields an empty result (iOS). [isRipped] short-circuits already-ripped songs in
+     * the fallback.
+     */
+    suspend fun ripCollection(
+        songIds: List<String>,
+        isRipped: (String) -> Boolean = { false },
+    ): BatchRipResult {
+        val ids = songIds.filterNot(::isDeviceLocalId).distinct()
+        if (ids.isEmpty()) return BatchRipResult()
+        val config = configProvider()
+        if (!config.configured) return ripCollectionFallback(ids, isRipped)
+        return try {
+            val body = buildJsonObject {
+                put("songIds", kotlinx.serialization.json.JsonArray(ids.map(::JsonPrimitive)))
+            }.toString().toRequestBody("application/json".toMediaType())
+            val request = builder(config, url(config, "rip-collection")).post(body).build()
+            val (code, text) = withContext(Dispatchers.IO) {
+                shortClient.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
+            }
+            when {
+                code == 404 -> ripCollectionFallback(ids, isRipped)
+                code !in 200..299 -> BatchRipResult()
+                else -> {
+                    val decoded = json.decodeFromString<BatchRipResponse>(text)
+                    BatchRipResult(
+                        results = decoded.results,
+                        ready = decoded.counts.ready,
+                        queued = decoded.counts.queued,
+                        inflight = decoded.counts.inflight,
+                        unknown = decoded.counts.unknown,
+                        total = decoded.counts.total,
+                    )
                 }
             }
-            delay(pollMs)
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            ripCollectionFallback(ids, isRipped)
         }
-        throw RipServerException(null, "Rip timed out")
     }
+
+    private suspend fun ripCollectionFallback(ids: List<String>, isRipped: (String) -> Boolean): BatchRipResult {
+        val configured = configProvider().configured
+        val items = ids.map { id ->
+            when {
+                isRipped(id) -> BatchRipItem(id, "ready")
+                configured -> {
+                    val job = try {
+                        requestRip(id)
+                    } catch (error: Exception) {
+                        if (error is kotlinx.coroutines.CancellationException) throw error
+                        null
+                    }
+                    val status = if (job?.isReady == true) "ready" else RipPhases.batchStatus(job?.phase)
+                    BatchRipItem(id, status, job?.jobId, job?.url)
+                }
+                else -> BatchRipItem(id, "unknown")
+            }
+        }
+        fun count(status: String) = items.count { it.status == status }
+        return BatchRipResult(
+            results = items,
+            ready = count("ready"), queued = count("queued"),
+            inflight = count("inflight"), unknown = count("unknown"),
+            total = items.size,
+        )
+    }
+
+    /**
+     * STOP in-flight rips (`POST /rip-cancel`): the server drops still-queued matching jobs and
+     * kills the running worker. Idempotent, dedups ids, no-op without a server; an older server
+     * that 404s is a silent no-op. If the answer is undecodable but 2xx, every requested id is
+     * reported canceled (best effort).
+     */
+    suspend fun cancelRips(songIds: List<String>): List<CancelItem> {
+        val ids = songIds.distinct()
+        if (ids.isEmpty()) return emptyList()
+        val config = configProvider()
+        if (!config.configured) return emptyList()
+        return try {
+            val body = buildJsonObject {
+                put("songIds", kotlinx.serialization.json.JsonArray(ids.map(::JsonPrimitive)))
+            }.toString().toRequestBody("application/json".toMediaType())
+            val request = builder(config, url(config, "rip-cancel")).post(body).build()
+            val (code, text) = withContext(Dispatchers.IO) {
+                shortClient.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
+            }
+            if (code !in 200..299) return emptyList()
+            runCatching { json.decodeFromString<CancelResponse>(text).results }
+                .getOrElse { ids.map { CancelItem(it, "canceled") } }
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            emptyList()
+        }
+    }
+
+    /** Studio ids and "Pocket DJ" profile ids (pdj_) are device-local and never rip. */
+    private fun isDeviceLocalId(id: String): Boolean =
+        PlayResolver.isStudioId(id) || id.startsWith("pdj_")
 
     /**
      * Background poll (iOS contract): every 2 s up to 1800 tries (~1 h), used
@@ -181,9 +310,9 @@ class RipServerClient(
         return builder
     }
 
-    private suspend fun <T> execute(request: Request, decode: (String) -> T): T =
+    private suspend fun <T> execute(request: Request, client: OkHttpClient = shortClient, decode: (String) -> T): T =
         withContext(Dispatchers.IO) {
-            shortClient.newCall(request).execute().use { response ->
+            client.newCall(request).execute().use { response ->
                 val text = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     throw RipServerException(response.code, errorMessage(response.code, text))
