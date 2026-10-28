@@ -60,7 +60,7 @@ WORKSPACE + RESUME PROTOCOL (follow exactly — a previous attempt may have been
 4. Do NOT edit docs/ARCHITECTURE-ANDROID.md (the integrator updates its status ledger for every package — ignore that acceptance line). Stay inside your owned files + shared_touchpoints; other packages in this wave run in parallel on other files. If you must touch another file, keep the edit minimal and additive and note it in the status file.
 5. Write real JVM unit tests for the logic (pure functions/state machines/serialization/iOS-shape JSON compat); no tests that assert nothing.
 6. ${BUILD}
-7. Finish: status file \`state: implemented\` + summary + test count; final commit "${p.id}: <roadmap title>" with trailer lines:
+7. If something needs a product/infra decision from Levi, pick a sensible default, keep going, and list it under "## Questions for Levi" in the status file (the integrator collects them). Finish: status file \`state: implemented\` + summary + test count; final commit "${p.id}: <roadmap title>" with trailer lines:
 ${TRAILER}
 Return the result object (head_sha = git rev-parse HEAD).`, { label: `impl:${p.id}`, phase: 'Implement', schema: IMPL_SCHEMA, model: 'sonnet' })
 
