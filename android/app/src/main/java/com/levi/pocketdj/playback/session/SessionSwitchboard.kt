@@ -76,7 +76,7 @@ class SessionSwitchboard(
         val o: TransportOwner
         synchronized(lock) {
             val t = owner ?: preferred ?: return false
-            if (t.engine != "mix") return false
+            if (t.engine != "mix" && t.engine != "npdsp") return false   // MIX-18: the Now Playing DSP engine is a SimpleBasePlayer too
             o = t
             if (owner === t) owner = null
             if (preferred === t) preferred = null
