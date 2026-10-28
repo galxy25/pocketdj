@@ -130,6 +130,77 @@ final class SetlistEndOfSongTests: XCTestCase {
         r.seq.stop()
     }
 
+    /// "If we skip ahead because the next song can't download, play it AFTER the song we skipped
+    /// to — don't skip back to it" (Levi, drive 2026-10-28 03:01). The stalled row is placed
+    /// IMMEDIATELY after the hop target (even when the hop target sat further down), its late
+    /// resolve never interrupts the hop target, and it plays next when the hop target ends —
+    /// instantly, from the URL resolved while the hop target played.
+    func testDeferredRowsLateResolveNeverInterruptsTheHopTargetAndPlaysNextAtItsEnd() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["slow", "x", "b1", "c4"])
+        await burn(r, "b1")
+        EOSStub.delayedPresign = ["slow": 0.6]      // lands AFTER the hop
+        EOSStub.hangPresign = ["x"]                 // x can't start either — the hop skips it
+        r.seq.play([item("slow"), item("x"), item("b1"), item("c4")])
+        await waitUntil("hopped onto the burned row") { r.rips.nowPlaying?.songId == "b1" }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "slow", "x", "c4"],
+                       "the stalled row sits IMMEDIATELY after the hop target — deferred, not dropped")
+
+        // Well past the stalled row's late resolve (0.6 s) + the presign prefetched for it
+        // while b1 plays: nothing may take b1's place.
+        await waitUntil("the deferred row's URL resolved while b1 plays") { r.rips.prefetchedURL("slow") != nil }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(r.rips.nowPlaying?.songId, "b1", "the late resolve did not interrupt the hop target")
+        XCTAssertEqual(r.seq.index, 0)
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "slow", "x", "c4"])
+
+        let before = EOSStub.presignCount["slow", default: 0]
+        r.player.onTrackEnded?()                    // b1 ends
+        await waitUntil("the deferred row plays next") { r.rips.nowPlaying?.songId == "slow" }
+        XCTAssertEqual(r.seq.index, 1)
+        XCTAssertEqual(EOSStub.presignCount["slow", default: 0], before, "started instantly — no new round trip")
+        r.seq.stop()
+    }
+
+    /// THE field mechanism (drive log 2026-10-28 03:01:34): the hop CANCELS the stalled row's
+    /// start; Apple Music (first provider) fails with that CancellationError, and the coordinator
+    /// fell through to the rip provider — whose presign was PREFETCHED, so no await threw the
+    /// cancel — and it loaded the stalled song over the on-device row, which the set then adopted
+    /// as a jump back. A cancelled play must stand down: no load, no nowPlaying, no error.
+    func testCancelledPlayDoesNotFallThroughToAnInstantRip() async {
+        let r = makeRig()
+        manifest(r.rips, ["honey"])
+        r.coord.sourceOfSong = { _ in Config.appleMusicSourceName }   // AM first, rip behind it
+        r.coord.appleMusicReadyOverrideForTests = true
+        XCTAssertTrue(r.coord.streamsAppleMusicFirst(id: "honey", title: "honey", artist: "A", variant: nil),
+                      "precondition: Apple Music is tried first")
+        r.rips.prefetchPresigned(["honey"])
+        await waitUntil("honey's presign prefetched") { r.rips.prefetchedURL("honey") != nil }
+
+        let t = Task { await r.coord.play(id: "honey", title: "honey", artist: "A") }
+        t.cancel()                                   // the set hopped off this row
+        await t.value
+        XCTAssertNil(r.rips.nowPlaying, "a cancelled play never stamps nowPlaying (the set would adopt it)")
+        XCTAssertFalse(r.player.hasLoadedItem, "a cancelled play never loads the engine")
+        XCTAssertNil(r.coord.activeBackend)
+        XCTAssertNil(r.coord.lastErrorMessage, "a cancel is not a dead source")
+    }
+
+    /// The same guard one layer down: a cancelled rip resolve served from the prefetch throws
+    /// instead of handing back a NowPlaying.
+    func testCancelledRipResolveFromThePrefetchThrows() async {
+        let r = makeRig()
+        manifest(r.rips, ["c1"])
+        r.rips.prefetchPresigned(["c1"])
+        await waitUntil("c1's presign prefetched") { r.rips.prefetchedURL("c1") != nil }
+        let t = Task { try await r.rips.play((id: "c1", title: "c1", artist: "A"), playback: true) }
+        t.cancel()
+        let result = await t.result
+        XCTAssertThrowsError(try result.get())
+        XCTAssertNil(r.rips.nowPlaying)
+    }
+
     /// ▶ in the app while the row's start is still in flight must NOT restart it — that cancelled
     /// the wait each time (six taps, six restarts, never played: drive 2026-10-25 05:15).
     func testPanelPlayDuringAnInFlightStartDoesNotRestartIt() async {
@@ -269,6 +340,7 @@ private final class EOSStub: URLProtocol {
     nonisolated(unsafe) static var offline = false
     nonisolated(unsafe) static var hangPresign: Set<String> = []
     nonisolated(unsafe) static var delayedFailPresign: [String: Double] = [:]
+    nonisolated(unsafe) static var delayedPresign: [String: Double] = [:]
     nonisolated(unsafe) static var presignCount: [String: Int] = [:]
     nonisolated(unsafe) static var ripPostBody = Data("{}".utf8)
     nonisolated(unsafe) static var hangJobs = false
@@ -277,7 +349,7 @@ private final class EOSStub: URLProtocol {
 
     static func reset() {
         lock.lock(); defer { lock.unlock() }
-        offline = false; hangPresign = []; delayedFailPresign = [:]; presignCount = [:]
+        offline = false; hangPresign = []; delayedFailPresign = [:]; delayedPresign = [:]; presignCount = [:]
         ripPostBody = Data("{}".utf8); hangJobs = false; jobPolls = 0
     }
 
@@ -306,8 +378,15 @@ private final class EOSStub: URLProtocol {
             Self.presignCount[song, default: 0] += 1
             let hang = Self.hangPresign.contains(song)
             let delayFail = Self.delayedFailPresign[song]
+            let delay = Self.delayedPresign[song]
             Self.lock.unlock()
             if hang { return }                                   // never answers
+            if let delay {                                       // answers OK, late
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [self] in
+                    respond(200, Data(#"{"url":"https://s3.test/rips/\#(song).mp3?X-Amz-Signature=x"}"#.utf8), json: true)
+                }
+                return
+            }
             if let delayFail {
                 DispatchQueue.global().asyncAfter(deadline: .now() + delayFail) { [self] in
                     respond(500, Data())

@@ -1811,6 +1811,10 @@ final class SetlistPlayer {
         if let d = range.first(where: { rowOnDevice(queue[$0]) }) { j = d; kind = "on-device" }
         else if let c = range.first(where: { rowStartsInstantly(queue[$0]) }) { j = c; kind = "instant" }
         else { return false }
+        // [.., stalled, x, y, row, ..] → [.., row, stalled, x, y, ..]: the hop target plays NOW
+        // and the stalled row is the very next one (instant by then if its download landed).
+        // The stalled row's in-flight resolve is cancelled + superseded by the restart below and
+        // must NEVER start it early — it plays only when the hop target ends.
         let row = queue.remove(at: j)
         queue.insert(row, at: index)
         DiagLog.shared.log("playback", "\(reason) song=\(stalled.id) → hop to \(kind) \(row.id) (deferred stalled row)")
@@ -1888,6 +1892,11 @@ final class SetlistPlayer {
         // what kind of row the newer skip landed on (see the SUPERSEDE GUARD at the await).
         playGeneration &+= 1
         let playGen = playGeneration
+        // …and at the COORDINATOR too: the local-file branches below never call
+        // `coordinator.play`, so without this an older row's resolve still in flight (the row the
+        // stall hop just deferred) has nothing newer to be superseded by and can land its audio
+        // over this row — the "jumps back to the buffered song" bug (drive log 2026-10-28 03:01).
+        coordinator.supersedePendingPlay()
         let it = queue[index]
         resolveStallTask?.cancel(); resolveStallTask = nil
         liveBackstopTask?.cancel(); liveBackstopTask = nil
