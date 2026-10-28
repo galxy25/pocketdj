@@ -435,15 +435,108 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             }),
     )
 
+    // The cloud-sync state clear and the profile-secret clear are NOT hooks any more: SVC-13's
+    // [accountDeletion] runs them explicitly in the iOS order (sync state after settings; identity LAST, once).
     override val resetHooks: List<ResetHook> = listOf(
-        ResetHook { if (cloudSyncLazy.isInitialized()) cloudSync.clearLocalSyncState() },
-        ResetHook { profileSecrets.clear() },
         // iOS AccountDeletionService: timelineCues?.clear(). Clears (and deletes the file) even if never opened.
         ResetHook { timelineCues.clear() },
     )
 
+    // ---- SVC-13 reset everything + account deletion ----------------------------------------------
+
+    /** Cloud-sync state files + `.pre-cloud` backups; works whether or not the engine was built this process. */
+    private fun clearSyncState() {
+        if (cloudSyncLazy.isInitialized()) {
+            cloudSync.clearLocalSyncState()
+        } else {
+            val files = app.appContext.filesDir
+            File(files, "pocketdj-cloudsync-state.json").delete()
+            files.listFiles()?.filter { it.name.endsWith(".pre-cloud") }?.forEach { it.delete() }
+        }
+    }
+
+    private fun holdPushes() {
+        if (cloudSyncLazy.isInitialized()) cloudSync.holdPushesForIdentityChange()
+    }
+
+    /** Settings > Reset all app state (device-local). Never touches cloud docs or the profile identity. */
+    val appReset: com.levi.pocketdj.data.reset.AppResetService by lazy {
+        val files = app.appContext.filesDir
+        com.levi.pocketdj.data.reset.AppResetService(
+            holdPushes = ::holdPushes,
+            clearCollections = { app.collections.clear() },
+            deleteCatalogCache = { app.catalogService.clearCache() },
+            deleteCredentialsMirror = {
+                File(files, com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.FILE_NAME).delete()
+            },
+            clearArtwork = { com.levi.pocketdj.data.storage.CoilArtworkCache(app.appContext).clear() },
+            clearSecrets = {
+                for (n in listOf(
+                    com.levi.pocketdj.data.credentials.SecretStore.RIP_TOKEN,
+                    com.levi.pocketdj.data.credentials.SecretStore.JUKEBOX_TOKEN,
+                    com.levi.pocketdj.data.credentials.SecretStore.MUSIC_USER_TOKEN,
+                )) app.secrets.remove(n)
+                com.levi.pocketdj.data.search.SearchSettings.clearCreds(app.secrets)
+            },
+            resetSettings = { app.settings.resetToDefaultsKeepingInstallId() },
+            markOnboardingPending = {
+                com.levi.pocketdj.onboarding.OnboardingStore.markPendingAfterReset(
+                    com.levi.pocketdj.onboarding.DataStoreOnboardingMarkerStorage(app.settings),
+                )
+            },
+            clearSyncState = ::clearSyncState,
+            log = { android.util.Log.i("PocketDJ", "[reset] $it") },
+        )
+    }
+
+    /** Settings > Delete account (cloud + device). */
+    val accountDeletion: com.levi.pocketdj.data.reset.AccountDeletionService by lazy {
+        com.levi.pocketdj.data.reset.AccountDeletionService(
+            holdPushes = ::holdPushes,
+            stopLiveActivity = listOf(
+                "jukebox" to { com.levi.pocketdj.data.jukebox.JukeboxGraph.get(app.appContext).repository.end() },
+                "playback" to { app.playbackGraph.sequencer.stop() },
+                "mix" to { app.mixGraph.mixEngine.ejectAll() },
+                "transfers" to { transfers.cancelAll() },
+            ),
+            // The S3 backend needs a configured endpoint doc AND an enrolled secret; the debug in-memory db always runs.
+            cloudDeleteEnabled = {
+                cloudDocDatabase !== s3Database ||
+                    (com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase != null && profileSecrets.hasSecret())
+            },
+            deleteCloudDocs = { keys ->
+                cloudDocDatabase.deleteAll((keys + app.features.syncEntries.map { it.key }).distinct())
+            },
+            deleteCloudProfile = { if (cloudDocDatabase === s3Database) s3Database.deleteProfile() },
+            localStores = buildList {
+                add("collections" to { app.collections.clear() })
+                add("favorites" to { app.collectionsGraph.favorites.clear() })
+                add("play-stats" to { playStats.clear() })
+                add("play-history" to { com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext).clear() })
+                add("collection-activity" to { app.collectionActivity.clear() })
+                add("playlist-writeback" to { app.collectionsGraph.writeBack.clear() })
+                // Every area's own hooks (Mix, Studio, Games, Browse recs, timeline cues), named by area.
+                app.features.modules.forEach { m ->
+                    m.resetHooks.forEachIndexed { i, h -> add("hook:${m.area}#$i" to { h.reset() }) }
+                }
+            },
+            mediaDeletes = listOf(
+                "burns" to { burnStore.removeAllBurns() },
+                "stems" to { burnStore.removeAllStems() },
+                "lyrics" to { app.browseGraph.lyricsStore.clearDisk() },
+            ),
+            appReset = appReset,
+            clearSyncState = ::clearSyncState,
+            resetProfile = { profile.reset() },
+            clearProfileSecret = { profileSecrets.clear() },
+            resetInstallId = { app.settings.resetInstallId() },
+            log = { android.util.Log.i("PocketDJ", "[account-deletion] $it") },
+        )
+    }
+
     override val settingsSections: List<SettingsSection> by lazy {
-        listOf(com.levi.pocketdj.screens.settings.linkDeviceSection()) + if (diag.channel) listOf(debugSection()) else emptyList()
+        listOf(com.levi.pocketdj.screens.settings.linkDeviceSection(), com.levi.pocketdj.screens.settings.sections.resetSection()) +
+            if (diag.channel) listOf(debugSection()) else emptyList()
     }
 
     override val deepLinkHandlers: List<DeepLinkHandler> by lazy {
