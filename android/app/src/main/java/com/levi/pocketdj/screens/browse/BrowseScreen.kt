@@ -77,6 +77,7 @@ import androidx.compose.material.icons.filled.CloudQueue
 import com.levi.pocketdj.ui.FavoriteToggle
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
 import com.levi.pocketdj.screens.collections.AddToItem
+import com.levi.pocketdj.screens.collections.AddToPlaylistMenu
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -133,6 +134,7 @@ fun BrowseScreen(
     // Long-press add-to-collection target (specs/playlists-ui.md §8; the
     // long-press launch point is an Android addition to the iOS ＋-only set).
     var addItem by remember { mutableStateOf<AddToItem?>(null) }
+    var addSheetOpen by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
         when {
@@ -223,8 +225,22 @@ fun BrowseScreen(
         )
     }
 
+    // Long-press → "Add to Playlist" submenu (top-5 ✓ toggles + More…); More… opens the full
+    // sheet with the search field focused.
     addItem?.let { item ->
-        AddToCollectionSheet(item = item, onDismiss = { addItem = null })
+        if (addSheetOpen) {
+            AddToCollectionSheet(
+                item = item,
+                searchFirst = true,
+                onDismiss = { addItem = null; addSheetOpen = false },
+            )
+        } else {
+            AddToPlaylistMenu(
+                item = item,
+                onDismiss = { addItem = null },
+                onMore = { addSheetOpen = true },
+            )
+        }
     }
 }
 
