@@ -160,4 +160,32 @@ class CollectionActivityStoreTest {
         assertEquals("ABC-DEF", store.events[0].id)
         assertEquals("INSTALL-UPPER", store.installId)
     }
+
+    @Test
+    fun flushNow_isNoOpWhenUntouched_andNeverClobbersDisk() {
+        val file = newFile()
+        val seed = newStore(file)
+        seed.recordAll(ActivityKind.ADD, listOf(CollectionActivityStore.Entry("a"), CollectionActivityStore.Entry("b")))
+        val bytes = file.readText()
+        val w = com.levi.pocketdj.data.store.VersionedJsonWriter(file)
+        val again = CollectionActivityStore(file = file, json = PdjJson.lenient, writer = w)
+        again.flushNow()
+        assertEquals(0, w.writeCount)
+        assertEquals(bytes, file.readText())
+    }
+
+    @Test
+    fun flushNow_afterUnreadableLaunch_keepsDiskEvents() {
+        val file = newFile()
+        newStore(file).recordAll(ActivityKind.ADD, listOf(CollectionActivityStore.Entry("a"), CollectionActivityStore.Entry("b")))
+        val bytes = file.readText()
+        org.junit.Assume.assumeTrue(file.setReadable(false))
+        val fresh = try { newStore(file) } finally { file.setReadable(true) }
+        assertEquals(0, fresh.events.size) // transient IO failure -> empty memory, salvage pending
+        fresh.flushNow() // backgrounding without edits must not clobber
+        assertEquals(bytes, file.readText())
+        fresh.record(ActivityKind.ADD, "c") // first real edit unions with disk
+        fresh.flushNow()
+        assertEquals(setOf("a", "b", "c"), newStore(file).events.map { it.itemId }.toSet())
+    }
 }

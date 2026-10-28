@@ -4,6 +4,7 @@ import com.levi.pocketdj.data.PdjJson
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.catalog.SourcePlaylist
 import com.levi.pocketdj.data.rips.PlayResolver
+import com.levi.pocketdj.data.store.VersionedJsonWriter
 import com.levi.pocketdj.playback.PlayContext
 import java.io.File
 import kotlin.random.Random
@@ -31,6 +32,8 @@ class CollectionsStore(
     private val json: Json = PdjJson.lenient,
     /** Injectable clock (epoch ms) for tests. */
     private val now: () -> Double = { System.currentTimeMillis().toDouble() },
+    /** Version-ordered document writer; production wires a background executor (AppGraph). */
+    private val writer: VersionedJsonWriter = VersionedJsonWriter(file),
 ) {
     /** One immutable snapshot for Compose; recompute keys off [State.revision]. */
     data class State(
@@ -101,7 +104,14 @@ class CollectionsStore(
      */
     var onActivity: ((ActivityHook) -> Unit)? = null
 
+    /**
+     * Batch seam: ONE emission per gesture (a select-all add). When unwired the
+     * batch falls back to N [onActivity] calls.
+     */
+    var onActivityBatch: ((List<ActivityHook>) -> Unit)? = null
+
     private val lock = Any()
+    private var saveVersion = 0L
     private val _state: MutableStateFlow<State>
     val state: StateFlow<State>
 
@@ -954,6 +964,110 @@ class CollectionsStore(
         emitAddActivity(itemId = albumId, target = target)
     }
 
+    /** Which membership an [addSongs] batch dedupes against on a playlist. */
+    enum class BatchDedupe { WHOLE_COLLECTION, TARGET_CHAPTER }
+
+    /**
+     * Batch add choke point: ONE document write, ONE MRU stamp, ONE activity
+     * batch for the whole gesture. Dedupes against existing membership AND
+     * within [songIds]; appends in order; returns the count added. Zero added
+     * => no MRU stamp, no activity (a playlist self-heal still persists once).
+     */
+    fun addSongs(
+        songIds: List<String>,
+        target: AddTarget,
+        dedupe: BatchDedupe = BatchDedupe.WHOLE_COLLECTION,
+    ): Int = synchronized(lock) {
+        val added: List<String> = when (target.kind) {
+            AddTarget.Kind.POCKET -> {
+                val idx = pockets.indexOfFirst { it.id == target.id }
+                if (idx < 0) return 0
+                val p = pockets[idx]
+                val seen = HashSet(p.songIds)
+                val fresh = songIds.filter { it.isNotEmpty() && seen.add(it) }
+                if (fresh.isEmpty()) return 0
+                publish { s ->
+                    s.copy(pockets = s.pockets.replaceAt(idx, p.copy(songIds = p.songIds + fresh, updatedAt = now())))
+                }
+                fresh
+            }
+            AddTarget.Kind.PLAYLIST -> {
+                val idx = playlists.indexOfFirst { it.id == target.id }
+                if (idx < 0) return 0
+                var pl = playlists[idx]
+                // Self-heal: a playlist with no chapters gets a Default one.
+                val healed = pl.sequences.isEmpty()
+                if (healed) pl = pl.copy(sequences = listOf(CollectionsFactory.makeSequence("Default")))
+                val seqIdx = target.sequenceId
+                    ?.let { sid -> pl.sequences.indexOfFirst { it.nodeId == sid }.takeIf { it >= 0 } } ?: 0
+                val seq = pl.sequences.getOrNull(seqIdx)
+                val seen = HashSet<String>()
+                if (seq != null) {
+                    seen += when (dedupe) {
+                        BatchDedupe.WHOLE_COLLECTION -> songIdsInNodes(pl.sequences)
+                        BatchDedupe.TARGET_CHAPTER -> songIdsInNodes(seq.children.orEmpty())
+                    }
+                }
+                val fresh = if (seq == null) emptyList() else songIds.filter { it.isNotEmpty() && seen.add(it) }
+                if (fresh.isEmpty() && !healed) return 0
+                val nodes = fresh.map {
+                    PlaylistNode(nodeId = CollectionsFactory.newNodeId(), kind = PlaylistNode.Kind.SONG, songId = it)
+                }
+                val next = if (seq == null) pl else pl.copy(
+                    sequences = pl.sequences.replaceAt(seqIdx, seq.copy(children = seq.children.orEmpty() + nodes)),
+                )
+                publish { s -> s.copy(playlists = s.playlists.replaceAt(idx, next.copy(updatedAt = now()))) }
+                if (fresh.isEmpty()) {
+                    save()
+                    return 0
+                }
+                fresh
+            }
+        }
+        noteRecentTarget(target)
+        publish { it.copy(lastAddTarget = target) }
+        save()
+        emitBatch(added.map { addHook(it, target) })
+        added.size
+    }
+
+    /** Remove many songs from a pocket in ONE mutate/write/activity batch. */
+    fun removeSongsFromPocket(songIds: Collection<String>, pocketId: String): Int = synchronized(lock) {
+        val p = pocket(pocketId) ?: return 0
+        val drop = songIds.toSet()
+        val gone = p.songIds.filter { it in drop }.distinct()
+        if (gone.isEmpty()) return 0
+        mutatePocketLocked(pocketId) {
+            it.copy(songIds = it.songIds.filterNot { id -> id in drop }, songRepeats = it.songRepeats - drop)
+        }
+        emitBatch(gone.map { removeHook(it, pocketId, AddTarget.Kind.POCKET, p.name) })
+        gone.size
+    }
+
+    /** Prune every `.song` node with these ids across nested sequences in ONE mutate. */
+    fun removeSongsFromPlaylist(songIds: Collection<String>, playlistId: String): Int = synchronized(lock) {
+        val pl = playlist(playlistId) ?: return 0
+        val drop = songIds.toSet()
+        val present = songIdsInNodes(pl.sequences).filter { it in drop }
+        if (present.isEmpty()) return 0
+        fun prune(nodes: List<PlaylistNode>): List<PlaylistNode> = nodes.mapNotNull { n ->
+            if (n.kind == PlaylistNode.Kind.SONG && n.songId in drop) {
+                null
+            } else {
+                n.children?.let { n.copy(children = prune(it)) } ?: n
+            }
+        }
+        mutatePlaylistLocked(playlistId) { it.copy(sequences = prune(it.sequences)) }
+        emitBatch(songIds.filter { it in present }.distinct().map { removeHook(it, playlistId, AddTarget.Kind.PLAYLIST, pl.name) })
+        present.size
+    }
+
+    private fun emitBatch(hooks: List<ActivityHook>) {
+        if (hooks.isEmpty()) return
+        val batch = onActivityBatch
+        if (batch != null) batch(hooks) else onActivity?.let { f -> hooks.forEach(f) }
+    }
+
     /**
      * MRU push: dedupe by (kind,id) IGNORING sequenceId (freshest chapter wins),
      * move-to-front, cap at [MAX_RECENT_TARGETS].
@@ -998,7 +1112,10 @@ class CollectionsStore(
     }
 
     private fun emitAddActivity(itemId: String, target: AddTarget) {
-        onActivity?.invoke(
+        onActivity?.invoke(addHook(itemId, target))
+    }
+
+    private fun addHook(itemId: String, target: AddTarget): ActivityHook =
             ActivityHook(
                 kind = ActivityHook.Kind.ADD,
                 itemId = itemId,
@@ -1007,9 +1124,7 @@ class CollectionsStore(
                 collectionId = target.id,
                 collectionKind = target.kind.token,
                 collectionName = plainCollectionName(target),
-            ),
-        )
-    }
+            )
 
     private fun emitRemoveActivity(
         itemId: String,
@@ -1018,7 +1133,16 @@ class CollectionsStore(
         name: String?,
         itemTitle: String? = null,
     ) {
-        onActivity?.invoke(
+        onActivity?.invoke(removeHook(itemId, collectionId, kind, name, itemTitle))
+    }
+
+    private fun removeHook(
+        itemId: String,
+        collectionId: String,
+        kind: AddTarget.Kind,
+        name: String?,
+        itemTitle: String? = null,
+    ): ActivityHook =
             ActivityHook(
                 kind = ActivityHook.Kind.REMOVE,
                 itemId = itemId,
@@ -1027,9 +1151,7 @@ class CollectionsStore(
                 collectionId = collectionId,
                 collectionKind = kind.token,
                 collectionName = name,
-            ),
-        )
-    }
+            )
 
     // MARK: Resolution (songIds = rip/burn-facing, studio-stripped · playableIds = playback)
 
@@ -1371,7 +1493,8 @@ class CollectionsStore(
                 recentAddTargets = emptyList(),
             )
         }
-        runCatching { file.delete() }
+        dirty = false
+        writer.delete(++saveVersion)
         onChange?.invoke()
     }
 
@@ -1505,11 +1628,9 @@ class CollectionsStore(
         }
     }
 
-    /** Atomic write (temp + rename), ordered after every mutation. */
-    private fun save() {
-        salvageIfPending()
+    private fun snapshotDocument(): CollectionsDocument {
         val s = _state.value
-        val doc = CollectionsDocument(
+        return CollectionsDocument(
             schemaVersion = COLLECTIONS_SCHEMA_VERSION,
             pockets = s.pockets,
             playlists = s.playlists,
@@ -1519,22 +1640,36 @@ class CollectionsStore(
             // Written as ABSENT when empty (iOS parity).
             recentAddTargets = s.recentAddTargets.ifEmpty { null },
         )
-        try {
-            file.parentFile?.mkdirs()
-            val tmp = File(file.parentFile, file.name + ".tmp")
-            tmp.writeText(CollectionsCodec.encode(json, doc))
-            if (!tmp.renameTo(file)) {
-                // renameTo can fail when the destination exists. Overwrite-copy
-                // in place (no file.delete() window that a process kill could turn
-                // into total loss with a complete .tmp sitting unused) then drop
-                // the temp.
-                tmp.copyTo(file, overwrite = true)
-                tmp.delete()
-            }
-        } catch (_: Exception) {
-            // Persistence is best-effort; in-memory state stays authoritative.
-        }
+    }
+
+    /**
+     * Snapshot (immutable data classes) + hand to the version-ordered writer;
+     * encode and disk IO happen on the writer's executor. Call under [lock].
+     */
+    /** True when a mutation was handed to the writer and no inline flush has superseded it. */
+    private var dirty = false
+
+    private fun save() {
+        salvageIfPending()
+        dirty = true
+        val doc = snapshotDocument()
+        val version = ++saveVersion
+        writer.write(version) { CollectionsCodec.encode(json, doc) }
         onChange?.invoke()
+    }
+
+    /**
+     * Background barrier (ON_STOP): supersede queued stragglers, then write the
+     * latest state inline so a process kill right after cannot lose it.
+     */
+    fun flushNow() = synchronized(lock) {
+        // Nothing mutated since the last write/flush: never rewrite an untouched document.
+        if (!dirty) return@synchronized
+        salvageIfPending()
+        dirty = false
+        val doc = snapshotDocument()
+        val version = ++saveVersion
+        writer.flushNow(version) { CollectionsCodec.encode(json, doc) }
     }
 
     companion object {
