@@ -28,6 +28,20 @@ android {
             p.inputStream.bufferedReader().readText().trim().also { p.waitFor() }
         }.getOrNull()?.takeIf { it.matches(Regex("[0-9a-f]{4,40}")) } ?: "unknown"
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
+
+        // STU-2: Studio native DSP lib (cpp/pdjdsp). Real devices are arm64; x86_64 serves the emulator.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        externalNativeBuild {
+            cmake { cppFlags += "-std=c++17"; arguments += listOf("-DANDROID_STL=c++_shared") }
+        }
+    }
+
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/pdjdsp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
@@ -55,6 +69,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        prefab = true // Oboe ships as a prefab AAR (STU-2)
     }
 }
 
@@ -110,6 +125,9 @@ dependencies {
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.media3.common)
     implementation(libs.play.services.location)
+
+    // STU-2: Oboe low-latency output (prefab; linked from cpp/pdjdsp).
+    implementation(libs.oboe)
 
     debugImplementation(libs.androidx.ui.tooling)
 
