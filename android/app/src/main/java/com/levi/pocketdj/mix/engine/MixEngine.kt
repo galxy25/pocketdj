@@ -11,6 +11,7 @@ import com.levi.pocketdj.mix.model.EQBand
 import com.levi.pocketdj.mix.model.Effect
 import com.levi.pocketdj.mix.model.EffectVariant
 import com.levi.pocketdj.mix.model.FilterMode
+import com.levi.pocketdj.mix.model.FXSlot
 import com.levi.pocketdj.mix.model.FxRack
 import com.levi.pocketdj.mix.model.LoadedTrack
 import com.levi.pocketdj.mix.model.MeterSource
@@ -108,6 +109,10 @@ class MixEngine(
     var onTransport: ((Deck, Boolean) -> Unit)? = null
     /** A track finished loading onto a deck (MIX-8: beat-grid hydrate). */
     var onDeckLoaded: ((Deck, LoadedTrack) -> Unit)? = null
+    /** MIX-17: the LIVE (modulated) strength for a slot; null = the stored strength. */
+    var slotStrengthProvider: ((Deck, Int, FXSlot) -> Double)? = null
+    /** MIX-17: a rack/transport change that may start or stop the mod tick; `modChanged` = a slot's SlotMod was set. */
+    var onSlotsChanged: ((Deck, Boolean) -> Unit)? = null
     /** A load/eject dropped the deck's stem intent (MIX-8). */
     var onStemsReset: ((Deck) -> Unit)? = null
     /** Not-on-disk loads: MIX-10 may open a growing-file stream instead. True = handled. */
@@ -432,6 +437,7 @@ class MixEngine(
         updateDeck(deck) { it.copy(isPlaying = playing) }
         if (playing == was) return
         onTransport?.invoke(deck, playing)
+        onSlotsChanged?.invoke(deck, false)
         if (playing) {
             if (!isRestoringMixSession) onAudioStarted?.invoke()
             rec(MixEventKind.Play, deck)
@@ -626,7 +632,22 @@ class MixEngine(
 
     // ------------------------------------------------------------------------------ params
 
-    private fun slotParams(s: DeckState): List<SlotParams?> = s.slots.map { SlotParams(it, it.strength) }
+    /**
+     * The rack as the render thread sees it: each slot's stored strength, replaced by the LIVE
+     * (possibly modulated) value when [slotStrengthProvider] is wired (MIX-17). The Auto-DJ glide
+     * and every engine write go through here, so the glide moves the BASE while the LFO wobbles
+     * around it.
+     */
+    private fun slotParams(deck: Deck, s: DeckState): List<SlotParams?> {
+        val p = slotStrengthProvider
+        return s.slots.mapIndexed { i, x -> SlotParams(x, p?.invoke(deck, i, x) ?: x.strength) }
+    }
+
+    /** The current live rack snapshot for [deck] (GlideMachine, ModController). */
+    fun slotParamList(deck: Deck): List<SlotParams?> = slotParams(deck, st(deck))
+
+    /** Land the deck's nodes on the stored strengths / current live values (mod snap-back). */
+    fun reapplySlots(deck: Deck) = applySlot(deck)
 
     /** Push a deck's whole state onto the graph snapshot (after a reset / eject / restore). */
     private fun pushAllParams(deck: Deck) {
@@ -636,10 +657,10 @@ class MixEngine(
         params.setCueVolume(deck, s.cueVol)
         params.setEq(deck, s.eqLow, s.eqMid, s.eqHigh)
         params.setTempoPitch(deck, s.rate, s.pitch)
-        params.setSlots(deck, slotParams(s))
+        params.setSlots(deck, slotParams(deck, s))
     }
 
-    private fun applySlot(deck: Deck) = params.setSlots(deck, slotParams(st(deck)))
+    private fun applySlot(deck: Deck) = params.setSlots(deck, slotParams(deck, st(deck)))
 
     fun setRate(rate: Double, deck: Deck) {
         updateDeck(deck) { it.copy(rate = rate.coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)) }
@@ -795,6 +816,7 @@ class MixEngine(
         updateDeck(deck) { it.withSlot(i) { x -> x.setEnabled(enabled) } }
         applySlot(deck)
         rec(MixEventKind.EffectToggle, deck, param = s.effect.raw, flag = enabled, slot = i)
+        onSlotsChanged?.invoke(deck, false)
         persist()
     }
 
@@ -814,6 +836,7 @@ class MixEngine(
         updateDeck(deck) { it.withSlot(slot) { x -> x.setEffect(effect) } }
         applySlot(deck)
         rec(MixEventKind.EffectSlot, deck, param = effect.raw, slot = slot)
+        onSlotsChanged?.invoke(deck, false)
         persist()
     }
 
@@ -826,6 +849,7 @@ class MixEngine(
             MixEventKind.EffectMod, deck, param = "${mod.source.raw}:${mod.rate.raw}:${mod.shape.raw}",
             value = mod.depth, slot = slot,
         )
+        onSlotsChanged?.invoke(deck, true)
         persist()
     }
 

@@ -134,7 +134,7 @@ private fun FxReveal(engine: MixEngine, deck: Deck, index: Int, tag: String, onM
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 EffectMenu(engine, deck, index, slot, tag)
                 Box(Modifier.weight(1f))
-                ModButton(slot, tag, deck, index, onMod)
+                ModButton(slot, tag, deck, index, onMod, onDismiss)
                 Box(Modifier.width(6.dp))
                 VariantMenu(engine, deck, index, slot, tag)
             }
@@ -199,7 +199,7 @@ private fun VariantMenu(engine: MixEngine, deck: Deck, index: Int, slot: FXSlot,
 
 /** MOD slot: opens the MIX-17 modulation sheet when wired; a disabled placeholder until then. */
 @Composable
-private fun ModButton(slot: FXSlot, tag: String, deck: Deck, index: Int, onMod: ((Deck, Int) -> Unit)?) {
+private fun ModButton(slot: FXSlot, tag: String, deck: Deck, index: Int, onMod: ((Deck, Int) -> Unit)?, onDone: () -> Unit = {}) {
     val active = slot.mod.source != ModSource.OFF
     val shape = RoundedCornerShape(5.dp)
     Box(
@@ -207,7 +207,7 @@ private fun ModButton(slot: FXSlot, tag: String, deck: Deck, index: Int, onMod: 
             .size(width = 24.dp, height = 22.dp)
             .background(if (active) DeckColors.accent.copy(alpha = 0.3f) else DeckColors.overlay, shape)
             .border(1.dp, if (active) DeckColors.accent else DeckColors.border, shape)
-            .clickable(enabled = onMod != null) { onMod?.invoke(deck, index) }
+            .clickable(enabled = onMod != null) { onMod?.invoke(deck, index); onDone() }
             .testTag("$tag-mod")
             .semantics { contentDescription = "Modulation"; stateDescription = slot.mod.source.label },
         contentAlignment = Alignment.Center,

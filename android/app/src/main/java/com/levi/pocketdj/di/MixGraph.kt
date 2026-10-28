@@ -168,6 +168,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     /** MIX-8: the stem / loop / beat-grid controllers (built with, and hooked into, [mixEngine]). */
     val mixDeckExtras: MixDeckExtras get() { mixEngine; return checkNotNull(deckExtras) }
 
+    @Volatile private var modControllerInst: com.levi.pocketdj.mix.engine.ModController? = null
+
+    /** MIX-17: the ~60 Hz slot-modulation tick (built with, and hooked into, [mixEngine]). */
+    val modController: com.levi.pocketdj.mix.engine.ModController get() { mixEngine; return checkNotNull(modControllerInst) }
+
     @Volatile private var autoDjInst: com.levi.pocketdj.mix.engine.AutoDj? = null
 
     /** MIX-9: the Auto-DJ machine (built with, and hooked into, [mixEngine]). */
@@ -226,6 +231,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 downloadGrid = { id -> burns.burnBeatGrid(id) },
             )
             deckExtras = extras
+            modControllerInst = com.levi.pocketdj.mix.engine.ModController(
+                engine = it, driver = com.levi.pocketdj.mix.engine.CoroutineTickDriver(main), hydrator = extras.hydrator,
+            ).also { m -> m.diag = { l -> com.levi.pocketdj.mix.service.MixDiag.log(l) }; m.install() }
             mixStreamLoader.addStemListener { id -> extras.stems.streamProgressed(id) }
             // MIX-10: streaming decks. Progress events (main thread) pump every deck streaming the song;
             // the loader never evicts a stream a deck is playing.

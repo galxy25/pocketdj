@@ -268,7 +268,7 @@ class GlideMachine internal constructor(private val dj: AutoDj) {
     internal fun setSlot(i: Int?, enabled: Boolean, strength: Double, deck: Deck) {
         if (i == null || e.deckState(deck).slots.getOrNull(i) == null) return
         e.updateDeck(deck) { s -> s.withSlot(i) { it.setEnabled(enabled).setStrength(strength) } }
-        e.params.setSlots(deck, e.deckState(deck).slots.map { SlotParams(it, it.strength) })
+        e.params.setSlots(deck, e.slotParamList(deck))
     }
 
     // ---------------------------------------------------------------------------------- recording

@@ -73,6 +73,8 @@ fun MixScreen(
     val auto by vm.autoUi.collectAsState()
     val sessionName by sessions.currentNameFlow.collectAsState()
     var confirmingReset by remember { mutableStateOf(false) }
+    // MIX-17: the slot whose modulation sheet is open (deck, slot index).
+    var modTarget by remember { mutableStateOf<Pair<com.levi.pocketdj.mix.model.Deck, Int>?>(null) }
 
     // First composition: warm the graph, push the four settings, THEN materialize a parked restore;
     // afterwards each changed setting is pushed immediately. Lives as long as the screen.
@@ -99,6 +101,7 @@ fun MixScreen(
         DeckHost(
             engine = engine, stems = mix.mixDeckExtras.stems, loops = mix.mixDeckExtras.loops,
             streams = mix.mixStreamDecks, cues = graph.studioGraph.cuePoints,
+            onMod = { d, i -> modTarget = d to i },
             isStemmed = { id -> burns.stemsBurned(id) || burns.stemsRemote(id) },
             peaksFor = { t -> MixWaveform.peaksForSong(t.songId, null, burns) },
             art = { albumId, m ->
@@ -214,6 +217,10 @@ fun MixScreen(
             onDismiss = vm::closeLoader,
         )
     }
+    modTarget?.let { (d, i) ->
+        SlotModSheet(engine, d, i, "mix-deck-${d.label.lowercase()}-fx-slot-$i", onDismiss = { modTarget = null })
+    }
+
     if (confirmingReset) ResetSessionDialog(
         onConfirm = { sessions.reset(); confirmingReset = false },
         onDismiss = { confirmingReset = false },
