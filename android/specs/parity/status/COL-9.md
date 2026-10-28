@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 COL-9 Apple Music playlist sync (Lambda WS2): client, coordinator, audit/run persistence, daily auto-sync, Settings pane.
 

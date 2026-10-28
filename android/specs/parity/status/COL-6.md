@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 COL-6: Song drag & drop + clipboard (SongTransfer, SongDrop, Compose DnD, paste).
 

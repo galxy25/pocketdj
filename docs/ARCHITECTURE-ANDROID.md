@@ -408,8 +408,6 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | COL-13 — Per-collection sort/filter on every collection detail (BrowseEngine over the song subset,… | 17 | DONE | No device-only items. Deviations: setlist detail not wired (iOS has none); Remove hidden in non-default order. Unit tests: 4476 on parity/COL-13 (feat/android-parity baseline not recorded; +10 COL-13 tests) |
 | COL-15 — .pdjcollection / backup SAF export-import UI, tapped-file open (deep-link handler), provi… | 17 | Planned | — |
 | COL-6 — Song drag & drop + clipboard (SongTransfer payload, collection-row and whole-list drop ta… | 18 | PARTIAL | Code + JVM tests done; device-only: emulator drag (spring-load tab hover then drop on a Collections row) unverified |
-| COL-9 — Apple Music playlist sync (Lambda WS2): client, coordinator, audit/run persistence, daily… | 18 | Planned | Real subscription + MUT. |
-| COL-6 — Song drag & drop + clipboard (SongTransfer payload, collection-row and whole-list drop ta… | 18 | Planned | — |
 | COL-9 — Apple Music playlist sync (Lambda WS2): client, coordinator, audit/run persistence, daily… | 18 | PARTIAL (JVM; branch `parity/COL-9`) | Device-only: real subscription + MUT. Emulator MockWebServer step not run. Omitted: reconcile (removals/reorders) and the private-server branch. Debug-only base override. |
 | COL-11 — Favorites two-way Apple Music sync (opt-in) + owner-seed opt-in (default OFF) | 19 | Planned | Real subscription + MUT. |
 | COL-17 — ListeningPocketsService (upload cadence, results cache, cursors/flushEpoch, delete cascad… | 20 | Planned | — |

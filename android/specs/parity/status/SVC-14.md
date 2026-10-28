@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-14 User-browsable burn folder via SAF
 
