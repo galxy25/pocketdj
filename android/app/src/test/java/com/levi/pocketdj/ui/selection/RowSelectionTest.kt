@@ -43,6 +43,15 @@ class RowSelectionTest {
     }
 
     @Test
+    fun longPressOnSelectedRowKeepsItSelectedSoItCanBeTheDragHandle() {
+        val sel = RowSelection()
+        sel.handleLongPress("a", "browse")
+        sel.handleTap("b", "browse")
+        sel.handleLongPress("b", "browse") // selected row: drag handle, not a toggle-off
+        assertEquals(setOf("a", "b"), sel.state.value.ids)
+    }
+
+    @Test
     fun selectAllUsesAllIds() {
         // allIds is the FULL filtered universe, not the rendered page.
         val universe = (1..500).map { "s$it" }

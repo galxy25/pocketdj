@@ -73,9 +73,15 @@ class RowSelection {
         return TapOutcome.NAVIGATE
     }
 
-    /** Long-press: arm select mode in [scope] (selecting [initial]); already armed ⇒ toggle. */
+    /**
+     * Long-press: arm select mode in [scope] (selecting [id]); already armed ⇒ select an unselected
+     * row, but leave a SELECTED row alone - it is the drag handle (COL-6), and toggling it off at
+     * long-press time shrank the drag payload to that one row (emulator-verified).
+     */
     fun handleLongPress(id: String, scope: String) {
-        if (_state.value.selectModeScope == scope) handleTap(id, scope) else enterSelectMode(scope, id)
+        if (_state.value.selectModeScope == scope) {
+            if (!_state.value.isSelected(id, scope)) handleTap(id, scope)
+        } else enterSelectMode(scope, id)
     }
 
     fun enterSelectMode(scope: String, initial: String?) {

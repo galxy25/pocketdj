@@ -12,6 +12,7 @@ import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.shell.IntentSink
 import com.levi.pocketdj.shell.PocketDjApp
 import com.levi.pocketdj.ui.theme.PocketDjTheme
+import com.levi.pocketdj.ui.dnd.songDropRoot
 import kotlinx.coroutines.launch
 
 /**
@@ -40,7 +41,7 @@ class MainActivity : ComponentActivity() {
         graph.servicesGraph.startCloudSync() // SVC-7: launch pass after onboarding, foreground + tick triggers
         setContent {
             PocketDjTheme {
-                PocketDjApp()
+                androidx.compose.foundation.layout.Box(androidx.compose.ui.Modifier.songDropRoot()) { PocketDjApp() }
             }
         }
         // A cold launch carries its intent (deep link, file open); a re-created activity

@@ -7,7 +7,10 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.draganddrop.dragAndDropSource
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -16,6 +19,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draganddrop.DragAndDropEvent
 import androidx.compose.ui.draganddrop.DragAndDropTarget
@@ -118,39 +123,112 @@ fun Modifier.songDragSource(enabled: Boolean, payload: () -> SongTransfer?): Mod
         // The system drag starts only once the finger moves past touch slop AFTER the long-press,
         // so a stationary long-press keeps the row's own long-click (Add-to menu / select toggle).
         val slop = viewConfiguration.touchSlop
-        var dx = 0f
-        var dy = 0f
-        var started = false
-        detectDragGesturesAfterLongPress(
-            onDragStart = { dx = 0f; dy = 0f; started = false },
-            onDragEnd = { started = false },
-            onDragCancel = { started = false },
-            onDrag = { change, amount ->
-                if (!started) {
-                    dx += amount.x
-                    dy += amount.y
-                    if (SongDragSemantics.movedPastSlop(dx, dy, slop)) {
-                        val t = payloadL()
-                        if (t != null && t.songIds.isNotEmpty()) {
-                            started = true
-                            change.consume()
-                            startTransfer(
-                                DragAndDropTransferData(clipData = dragClipOf(t), localState = t, flags = 0),
-                            )
-                        }
-                    }
+        // Initial pass: the row's own combinedClickable (a child) consumes the move events after its
+        // long-click fires, so a Main-pass detector never saw the drag (emulator-verified).
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            val id = down.id
+            val cancelled = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                while (true) {
+                    val ev = awaitPointerEvent(PointerEventPass.Initial)
+                    val c = ev.changes.firstOrNull { it.id == id } ?: return@withTimeoutOrNull true
+                    if (!c.pressed) return@withTimeoutOrNull true
+                    val d = c.position - down.position
+                    if (SongDragSemantics.movedPastSlop(d.x, d.y, slop)) return@withTimeoutOrNull true
                 }
-            },
-        )
+                @Suppress("UNREACHABLE_CODE") false
+            }
+            if (cancelled == true) return@awaitEachGesture
+            while (true) {
+                val ev = awaitPointerEvent(PointerEventPass.Initial)
+                val c = ev.changes.firstOrNull { it.id == id } ?: return@awaitEachGesture
+                if (!c.pressed) return@awaitEachGesture
+                val d = c.position - down.position
+                if (SongDragSemantics.movedPastSlop(d.x, d.y, slop)) {
+                    val t = payloadL()
+                    if (t != null && t.songIds.isNotEmpty()) {
+                        c.consume()
+                        startTransfer(DragAndDropTransferData(clipData = dragClipOf(t), localState = t, flags = 0))
+                    }
+                    return@awaitEachGesture
+                }
+            }
+        }
     }
+}
+
+/**
+ * Registry behind [songDropTarget]. Compose DnD only offers a drag to targets that existed when the
+ * drag STARTED, so targets composed after a spring-load tab switch would never get the drop. One
+ * root target ([songDropRoot], always composed) therefore routes every drop by pointer position to
+ * the registered entries (smallest containing bounds wins).
+ */
+object SongDropRegistry {
+    class Entry(
+        val bounds: () -> androidx.compose.ui.geometry.Rect?,
+        val onHover: (Boolean) -> Unit,
+        val onDrop: (SongTransfer) -> Boolean,
+    )
+
+    private val entries = java.util.concurrent.CopyOnWriteArrayList<Entry>()
+    private var hovered: Entry? = null
+
+    fun register(e: Entry) { entries.add(e) }
+    fun unregister(e: Entry) { entries.remove(e); if (hovered === e) hovered = null }
+
+    fun entryAt(x: Float, y: Float): Entry? = entries
+        .mapNotNull { e -> e.bounds()?.takeIf { it.contains(Offset(x, y)) }?.let { e to it.width * it.height } }
+        .minByOrNull { it.second }?.first
+
+    fun hoverAt(x: Float, y: Float) {
+        val e = entryAt(x, y)
+        if (e === hovered) return
+        hovered?.onHover?.invoke(false)
+        hovered = e
+        e?.onHover?.invoke(true)
+    }
+
+    fun clearHover() { hovered?.onHover?.invoke(false); hovered = null }
+
+    fun dropAt(x: Float, y: Float, t: SongTransfer): Boolean {
+        val e = entryAt(x, y)
+        clearHover()
+        return e?.onDrop?.invoke(t) ?: false
+    }
+}
+
+/** Always-composed root drop target: routes song drops to the [SongDropRegistry] entry under the pointer. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun Modifier.songDropRoot(): Modifier {
+    val target = remember {
+        object : DragAndDropTarget {
+            override fun onMoved(event: DragAndDropEvent) {
+                val a = event.toAndroidDragEvent(); SongDropRegistry.hoverAt(a.x, a.y)
+            }
+            override fun onExited(event: DragAndDropEvent) { SongDropRegistry.clearHover() }
+            override fun onEnded(event: DragAndDropEvent) { SongDropRegistry.clearHover() }
+            override fun onDrop(event: DragAndDropEvent): Boolean {
+                val t = event.songTransfer() ?: return false
+                val a = event.toAndroidDragEvent()
+                return SongDropRegistry.dropAt(a.x, a.y, t)
+            }
+        }
+    }
+    return this.dragAndDropTarget(
+        shouldStartDragAndDrop = { ev ->
+            ev.toAndroidDragEvent().clipDescription?.label?.toString() == SongTransfer.CLIP_LABEL
+        },
+        target = target,
+    )
 }
 
 /**
  * Drop target for song payloads. [onDrop] gets the decoded transfer (already refused if foreign /
  * oversize) and returns whether anything was added. The highlight shows ONLY while a song payload
  * hovers the target. Folder headers / source rows simply never attach this modifier.
+ * Routed through [SongDropRegistry] (see there for why).
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Modifier.songDropTarget(
     enabled: Boolean = true,
@@ -161,25 +239,18 @@ fun Modifier.songDropTarget(
     val dropL by rememberUpdatedState(onDrop)
     var hovered by remember { mutableStateOf(false) }
     val accent = MaterialTheme.colorScheme.primary
-    val target = remember {
-        object : DragAndDropTarget {
-            override fun onEntered(event: DragAndDropEvent) { hovered = true }
-            override fun onExited(event: DragAndDropEvent) { hovered = false }
-            override fun onEnded(event: DragAndDropEvent) { hovered = false }
-            override fun onDrop(event: DragAndDropEvent): Boolean {
-                hovered = false
-                val t = event.songTransfer() ?: return false
-                return dropL(t)
-            }
-        }
+    var coords by remember { mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null) }
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        val e = SongDropRegistry.Entry(
+            bounds = { coords?.takeIf { it.isAttached }?.boundsInRoot() },
+            onHover = { hovered = it },
+            onDrop = { t -> hovered = false; dropL(t) },
+        )
+        SongDropRegistry.register(e)
+        onDispose { SongDropRegistry.unregister(e) }
     }
     return this
-        .dragAndDropTarget(
-            shouldStartDragAndDrop = { ev ->
-                ev.toAndroidDragEvent().clipDescription?.label?.toString() == SongTransfer.CLIP_LABEL
-            },
-            target = target,
-        )
+        .androidx_onPlaced { coords = it }
         .let {
             if (!hovered) it else when (highlight) {
                 DropHighlight.ROW -> it.background(accent.copy(alpha = 0.18f))
@@ -197,6 +268,9 @@ fun Modifier.songDropTarget(
             }
         }
 }
+
+private fun Modifier.androidx_onPlaced(f: (androidx.compose.ui.layout.LayoutCoordinates) -> Unit): Modifier =
+    this.onGloballyPositioned(f)
 
 /** Drop/paste onto a whole collection: default chapter / the pocket, resolve-gated, ONE addSongs call. */
 fun acceptSongsInto(
