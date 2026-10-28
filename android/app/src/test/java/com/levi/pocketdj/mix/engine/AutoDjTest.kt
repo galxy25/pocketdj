@@ -27,8 +27,10 @@ internal class FakeSeams : AutoSeams {
 internal class AutoRig(
     n: Int = 4, val seconds: Double = 30.0, val lead: Double = 10.0, val fade: Double = 4.0,
     seed: Int = 7,
+    store: com.levi.pocketdj.mix.store.MixDeckSessionStore? = null,
+    tweak: (Int, com.levi.pocketdj.mix.model.MixLoadable) -> com.levi.pocketdj.mix.model.MixLoadable = { _, l -> l },
 ) {
-    val h = EngineHarness()
+    val h = EngineHarness(store)
     val e get() = h.engine
     val seams = FakeSeams()
     val dj = AutoDj(h.engine, seams, Random(seed))
@@ -39,7 +41,7 @@ internal class AutoRig(
     init {
         e.autoDj = dj
         e.streamHeldProvider = { it in held }
-        items = (0 until n).map { AutoMixItem(h.addSong("s$it", seconds), (seconds * 1000).toInt(), "crate") }
+        items = (0 until n).map { AutoMixItem(tweak(it, h.addSong("s$it", seconds)), (seconds * 1000).toInt(), "crate") }
     }
 
     fun start(shuffled: Boolean = false) = dj.startAutoMix(items, shuffled, lead, fade, "crate")
