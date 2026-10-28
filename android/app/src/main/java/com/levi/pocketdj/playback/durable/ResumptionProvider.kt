@@ -16,10 +16,15 @@ class SessionRestorer(
     private val disabled: () -> Boolean = { System.getProperty(DISABLE_PROPERTY) != null },
 ) {
     /** True when a held deck was installed. Skipped when running / playing / disabled / nothing persisted. */
-    fun restoreIfIdle(): Boolean {
+    fun restoreIfIdle(): Boolean = restoreIfIdle(preloaded = null, haveSnapshot = false)
+
+    /** Same gates, with the snapshot decoded by the CALLER (off the main thread); [snap] may be null = nothing persisted. */
+    fun restoreIfIdle(snap: SessionSnapshot?): Boolean = restoreIfIdle(preloaded = snap, haveSnapshot = true)
+
+    private fun restoreIfIdle(preloaded: SessionSnapshot?, haveSnapshot: Boolean): Boolean {
         if (disabled()) return false
         if (sequencer.isRunning || anyBackendPlaying()) return false
-        val snap = store.load() ?: return false
+        val snap = (if (haveSnapshot) preloaded else store.load()) ?: return false
         restore(snap)
         return sequencer.isRunning
     }

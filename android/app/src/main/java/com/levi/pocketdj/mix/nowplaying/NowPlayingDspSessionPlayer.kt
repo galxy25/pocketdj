@@ -96,6 +96,13 @@ class NowPlayingDspSessionPlayer(
         return Futures.immediateVoidFuture()
     }
 
+    // Final review: model() advertises SET_MEDIA_ITEM / PREPARE (shared with the Mix map); SimpleBasePlayer's defaults
+    // THROW. A supervisor re-kick or an external controller can reach them: harmless no-ops (the sequencer owns the queue).
+    override fun handleSetMediaItems(mediaItems: List<androidx.media3.common.MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> =
+        Futures.immediateVoidFuture()
+
+    override fun handlePrepare(): ListenableFuture<*> = Futures.immediateVoidFuture()
+
     override fun handleStop(): ListenableFuture<*> { port.pause(); return Futures.immediateVoidFuture() }
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {

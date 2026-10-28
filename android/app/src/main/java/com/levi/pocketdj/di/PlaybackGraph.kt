@@ -205,7 +205,9 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         // PB-4: held restore FIRST (before the writer observes: a restore is not a write), then the
         // real-time writer + 1 Hz position tick.
         app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) {
-            runCatching { sessionRestorer.restoreIfIdle() }
+            // Final review: the whole session JSON (hundreds of rows) is decoded on IO, only the install runs on Main.
+            val snap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { sessionStore.load() }.getOrNull() }
+            runCatching { sessionRestorer.restoreIfIdle(snap) }
             launch { seq.state.collect { runCatching { sessionWriter.onState(it) } } }
             while (true) {
                 delay(1_000)

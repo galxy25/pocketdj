@@ -551,7 +551,15 @@ class PlaybackService : MediaLibraryService() {
             val item = mediaItems.singleOrNull()
                 ?.takeIf { it.mediaId.isEmpty() || it.localConfiguration == null }
             val query = item?.requestMetadata?.searchQuery
-            val handler = com.levi.pocketdj.assistant.SearchPlayBridge.handler
+            var handler = com.levi.pocketdj.assistant.SearchPlayBridge.handler
+            if (item != null && !query.isNullOrBlank() && handler == null) {
+                // Cold service start: the bridge is only assigned once the shell graph's deep-link handlers exist.
+                runCatching { com.levi.pocketdj.di.AppGraph.get(applicationContext).features.deepLinkHandlers }
+                handler = com.levi.pocketdj.assistant.SearchPlayBridge.handler
+            }
+            if (item != null && !query.isNullOrBlank() && handler == null) {
+                return Futures.immediateFailedFuture(UnsupportedOperationException("search handler unavailable"))
+            }
             if (item != null && !query.isNullOrBlank() && handler != null) {
                 val extras = item.requestMetadata.extras
                 val base = com.levi.pocketdj.assistant.MediaSearchRequest.from { extras?.getString(it) }

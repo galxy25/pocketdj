@@ -20,12 +20,9 @@ class AppAutoData(private val app: AppGraph) : AutoLibraryData {
     /** Set by the service: the open lists must be re-read (sign-in flipped, held row changed, collections changed). */
     @Volatile var onLibraryChanged: () -> Unit = {}
 
-    // Seeded synchronously (off the main thread) so the first Collection listing already knows the AM state.
-    @Volatile private var amSignedIn = runCatching {
-        kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
-            kotlinx.coroutines.withTimeoutOrNull(1500) { app.settings.settings.first().musicUserToken.isNotBlank() }
-        }
-    }.getOrNull() ?: false
+    // Final review: never block the (main-thread) browse root on a settings read. Starts false; the collector below
+    // delivers the stored value immediately and fires onLibraryChanged when it differs.
+    @Volatile private var amSignedIn = false
 
     // Continue row: decoded off the main thread, throttled, then served from memory.
     @Volatile private var cachedHeld: AutoHeld? = null
