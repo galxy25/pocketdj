@@ -6,6 +6,7 @@ import com.levi.pocketdj.data.burns.EvictionPlan
 import com.levi.pocketdj.data.stats.PlayStatsStore
 import java.io.File
 import java.nio.file.Files
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -27,15 +28,19 @@ class StorageManagerPlanTest {
             source = "digital", bytes = bytes, downloadedAt = downloadedAt, state = state)
 
     /** Evicts in `order` until bytes fit / songs fit — the same rule as EvictionPlanner, no disk. */
-    private class FakeBurns(val list: List<BurnItem>, val settings: FakeSettings? = null, val failPlan: Boolean = false) : PruneBurns {
+    private class FakeBurns(initial: List<BurnItem>, val settings: FakeSettings? = null, val failPlan: Boolean = false, val swept: Long = 0L) : PruneBurns {
+        val list = initial.toMutableList()
+        var removeThread: String? = null
         var planCalls = 0
         var lastOrder: List<String> = emptyList()
         val removed = mutableListOf<List<String>>()
+        var planThread: String? = null
         var onRemove: (List<String>) -> Unit = {}
-        override fun items() = list
+        override fun items() = list.toList()
         override fun plan(order: List<String>, capBytes: Long, capSongs: Int): EvictionPlan {
             settings?.events?.add("plan")
             planCalls++
+            planThread = Thread.currentThread().name
             if (failPlan) throw IllegalStateException("disk scan blew up")
             lastOrder = order
             val byId = list.associateBy { it.songId }
@@ -47,9 +52,9 @@ class StorageManagerPlanTest {
                 if (!(usage > capBytes || count > capSongs)) break
                 evict += id; usage -= byId.getValue(id).bytes; count--
             }
-            return EvictionPlan(before, usage, evict)
+            return EvictionPlan(before, usage, evict, sweptBytes = swept, freedById = evict.associateWith { byId.getValue(it).bytes })
         }
-        override fun removeBurns(songIds: List<String>) { settings?.events?.add("remove"); removed += songIds; onRemove(songIds) }
+        override fun removeBurns(songIds: List<String>) { settings?.events?.add("remove"); removed += songIds; removeThread = Thread.currentThread().name; list.removeAll { it.songId in songIds }; onRemove(songIds) }
     }
 
     private fun stats(vararg plays: Pair<String, Long>): PlayStatsStore {
@@ -156,5 +161,40 @@ class StorageManagerPlanTest {
         b.onRemove = { running = m.isPruning }           // observed from inside the eviction
         assertEquals(1, m.prune()!!.evicted)
         assertTrue(running); assertFalse(m.isPruning)
+    }
+
+    @Test fun diskWorkNeverRunsOnTheCallingDispatcher() = kotlinx.coroutines.runBlocking {
+        val caller = Thread.currentThread().name
+        val b = FakeBurns(listOf(item("a"), item("b")))
+        val ex = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "pdj-test-io") }
+        try {
+            val m = StorageManager(b, stats(), FakeSettings(songs = 1), clock = { 1L }, io = ex.asCoroutineDispatcher())
+            assertEquals(1, m.prune()!!.evicted)
+            assertTrue(b.planThread!!.startsWith("pdj-test-io"))
+            assertTrue(b.removeThread!!.startsWith("pdj-test-io"))
+            assertTrue(b.planThread != caller && b.removeThread != caller)
+        } finally { ex.shutdown() }
+    }
+
+    @Test fun protectedIdsCoverTheSubstitutedStorageIdAndDecks() {
+        val cur = com.levi.pocketdj.playback.sequencer.QueueItem(id = "sng_abc", resolveId = "sng_abc_clean")
+        assertEquals(setOf("sng_abc", "sng_abc_clean", "d1"), protectedIds(cur, listOf("d1", null)))
+        assertEquals(emptySet<String>(), protectedIds(null))
+    }
+
+    @Test fun aPlayingCleanVariantBurnIsNotEvicted() = runTest {
+        val cur = com.levi.pocketdj.playback.sequencer.QueueItem(id = "sng_abc", resolveId = "sng_abc_clean")
+        val b = FakeBurns(listOf(item("sng_abc_clean", downloadedAt = 1.0), item("sng_zzz", downloadedAt = 2.0)))
+        mgr(b, stats(), FakeSettings(songs = 1), protect = { protectedIds(cur) }).prune()
+        assertEquals(listOf("sng_zzz"), b.removed.flatten())
+        assertEquals(listOf("sng_zzz"), b.lastOrder)
+    }
+
+    @Test fun freedBytesCountSweptOrphansAndEvictedCountsActualRemovals() = runTest {
+        val b = FakeBurns(listOf(item("a", bytes = 100, downloadedAt = 1.0), item("b", bytes = 100, downloadedAt = 2.0)), swept = 5_000L)
+        val r = mgr(b, stats(), FakeSettings(songs = 1)).prune()!!
+        assertEquals(5_100L, r.freedBytes)      // 5000 swept orphans + the evicted 100
+        assertEquals(100L, r.usageBytes)
+        assertEquals(1, r.evicted)
     }
 }

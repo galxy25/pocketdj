@@ -265,6 +265,10 @@ class AppGraph private constructor(context: Context) {
     // PB-1: connect the sequencer's history-context / origin / outcome seams (additive).
     init { playbackGraph.wire() }
 
+    // SVC-6: subscribe the play-stats recorder at app init (not from a lazy getter) so a restored
+    // session's first play is never lost; SharedFlow has no replay.
+    init { appScope.launch(Dispatchers.IO) { servicesGraph.startPlayStats() } }
+
     /**
      * Settings ▸ Storage measurement + clears (specs/storage.md §2). Clears are
      * wired to the REAL stores/caches and never touch settings/installId. Lazy —

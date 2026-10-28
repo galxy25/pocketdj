@@ -157,6 +157,10 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             diagSink = { NPLog.lane(NPLog.MIX, it) },
         ).also {
             it.recorder = mixSessions
+            // SVC-6: Mix deck plays count for the LRP prune (iOS funnels MixEngine.setPlaying -> notePlayed).
+            com.levi.pocketdj.data.stats.PlayStatsRecorder.attachMix(it.hooks) { id ->
+                app.appScope.launch(Dispatchers.IO) { app.servicesGraph.playStats.notePlayed(id) }
+            }
             autoDjInst = com.levi.pocketdj.mix.engine.AutoDj(it).also { dj ->
                 it.autoDj = dj
                 val b = app.servicesGraph.burnStore

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SVC-6 PlayStatsStore + StorageManager prune + StoragePruneWorker + Storage screen sections
 
@@ -23,3 +23,19 @@ state: implemented
 
 ## Questions for Levi
 - None blocking. Delete-by-collection covers pockets + playlists (not setlists).
+
+## Review
+fixes applied
+
+- MAJOR protected set missing resolveId -> fixed (`protectedIds(current, decks)` adds id + resolveId; tests: protectedIdsCover..., aPlayingCleanVariantBurnIsNotEvicted)
+- MAJOR prune on caller dispatcher -> fixed (`io` context; begin() and each removeBurns chunk under withContext; test diskWorkNeverRunsOnTheCallingDispatcher)
+- MAJOR Mix plays never reach PlayStatsStore -> fixed (MixRecordingHooks.onPlayStat + PlayStatsRecorder.attachMix wired in MixGraph; test mixDeckPlayUpdatesLastPlayedAtUnderTheBaseId)
+- MAJOR ledger row Planned -> fixed (DONE, device-only + open points listed)
+- MINOR skip re-derivation / appleCounted at collect time -> fixed (SkipTracker noteSkip sink feeds the store, recorder's isSkip removed; PlayStarted.appleCounted tagged at emit in AppleMusicBackend)
+- MINOR PruneResult arithmetic -> fixed (EvictionPlan.sweptBytes + freedById; freed uses pre-sweep usage, spared songs keep full footprint, evicted = actually dropped from ledger)
+- MINOR PruneWorkerGate dead code -> fixed (deleted with its test)
+- MINOR prune only from periodic worker -> fixed (foreground hook, deferred 15 s, IO, self-gated; no 15 min tick)
+- NIT Prune now messaging / unparseable cap -> fixed (distinct "already running" message; invalid GB refused, blank still clears)
+- NIT recorder started from flushables getter -> fixed (started from AppGraph init on IO)
+
+Suite 2787 green, 0 failures; assembleDebug OK.

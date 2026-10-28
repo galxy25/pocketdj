@@ -20,11 +20,3 @@ open class StoragePruneWorker(ctx: Context, params: WorkerParameters) : Coroutin
             WorkOutcome.RETRY -> Result.retry()
         }
 }
-
-/** The gate the worker body applies, as a pure function: only a SET cap may ever run a prune. */
-object PruneWorkerGate {
-    fun shouldRun(capGB: Double?, capSongs: Int?, lastPruneAt: Long?, nowMs: Long, intervalMs: Long): Boolean {
-        if ((capGB == null || capGB <= 0.0) && (capSongs == null || capSongs <= 0)) return false
-        return lastPruneAt == null || nowMs - lastPruneAt >= intervalMs
-    }
-}

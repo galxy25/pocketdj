@@ -7,7 +7,21 @@ import com.levi.pocketdj.data.burns.EvictionPlan
 import com.levi.pocketdj.data.edition.SongVariant
 import com.levi.pocketdj.data.stats.PlayStatsStore
 import java.util.concurrent.atomic.AtomicBoolean
+import com.levi.pocketdj.playback.sequencer.QueueItem
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+
+/**
+ * Song ids the prune must spare RIGHT NOW. A substituted clean/explicit row's burn is keyed by its
+ * [QueueItem.resolveId] ("sng_x_clean"), not its base id, so BOTH are protected (iOS inserts
+ * `queue[index].id` and `.resolveId`); deck-loaded ids are added as-is.
+ */
+fun protectedIds(current: QueueItem?, deckSongIds: List<String?> = emptyList()): Set<String> = buildSet {
+    current?.let { add(it.id); add(it.resolveId) }
+    deckSongIds.forEach { it?.let(::add) }
+}
 
 /** The slice of BurnStore the prune needs — a port so the ordering/gate logic is a pure JVM test. */
 interface PruneBurns {
@@ -44,6 +58,8 @@ class StorageManager(
     var protectedSongIds: () -> Set<String> = { emptySet() },
     private val clock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
+    /** Disk work (listing, orphan deletes, burn removal) runs here, never on the caller (Main) dispatcher. */
+    private val io: CoroutineContext = Dispatchers.IO,
 ) {
     data class PruneResult(
         val evicted: Int = 0,
@@ -77,20 +93,22 @@ class StorageManager(
     suspend fun prune(): PruneResult? {
         if (!pruning.compareAndSet(false, true)) return null
         try {
-            val run = begin() ?: return null
+            val run = withContext(io) { begin() } ?: return null
             var start = 0
             val skipped = ArrayList<String>()
+            val gone = ArrayList<String>()
             while (start < run.plan.evict.size) {
                 val end = minOf(start + StorageSettings.EVICTION_CHUNK, run.plan.evict.size)
                 // Re-read per chunk: a song loaded onto a deck mid-prune is spared.
                 val protected = protectedSongIds()
                 val (spare, go) = run.plan.evict.subList(start, end).partition { it in protected }
                 skipped += spare
-                burns.removeBurns(go)
+                withContext(io) { burns.removeBurns(go) }
+                gone += go.filter { id -> burns.items().none { it.songId == id } }
                 start = end
                 yield()
             }
-            return finish(run, skipped)
+            return finish(run, skipped, gone)
         } finally {
             pruning.set(false)
         }
@@ -116,18 +134,20 @@ class StorageManager(
         return Run(cap, plan, items.associateBy { it.songId })
     }
 
-    private fun finish(run: Run, skipped: List<String>): PruneResult {
-        val evictedIds = run.plan.evict.filter { it !in skipped }
-        // Arithmetic, not a rescan: planned freed bytes less what the spared songs kept on disk.
-        val keptBack = skipped.sumOf { run.itemsBefore[it]?.bytes ?: 0L }
+    private fun finish(run: Run, skipped: List<String>, gone: List<String>): PruneResult {
+        // Arithmetic, not a rescan: planned freed bytes less what the spared songs kept on disk
+        // (their FULL planned footprint: sidecar, cut, stems, grid, shared-aware audio).
+        val keptBack = skipped.sumOf { run.plan.freedById[it] ?: run.itemsBefore[it]?.bytes ?: 0L }
         val usage = run.plan.projectedBytes + keptBack
+        // Pre-sweep footprint (iOS usageBefore) so swept orphan stems/grids count as freed.
+        val usageBefore = run.plan.usageBytes + run.plan.sweptBytes
         val readyBefore = run.itemsBefore.values.count { it.state == BurnState.READY }
         val result = PruneResult(
-            evicted = evictedIds.size,
-            freedBytes = maxOf(0L, run.plan.usageBytes - usage),
+            evicted = gone.size, // actually dropped from the ledger, not merely requested
+            freedBytes = maxOf(0L, usageBefore - usage),
             usageBytes = usage,
             capBytes = run.cap.bytes ?: 0L,
-            usageSongs = maxOf(0, readyBefore - evictedIds.size),
+            usageSongs = maxOf(0, readyBefore - gone.count { run.itemsBefore[it]?.state == BurnState.READY }),
             capSongs = run.cap.songs ?: 0,
         )
         log("prune done evicted=${result.evicted} freed=${result.freedBytes} usage=$usage")

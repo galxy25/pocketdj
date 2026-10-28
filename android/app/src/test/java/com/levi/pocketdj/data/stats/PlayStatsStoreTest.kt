@@ -1,6 +1,5 @@
 package com.levi.pocketdj.data.stats
 
-import com.levi.pocketdj.playback.PlayAdvancedAway
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.playback.PlayStarted
 import java.io.File
@@ -112,18 +111,22 @@ class PlayStatsStoreTest {
         assertEquals(mapOf("a" to 2), s.skipCountsSnapshot())
     }
 
-    @Test fun recorderCountsStartsTagsAppleAndClassifiesSkips() {
+    @Test fun recorderCountsStartsAndTagsAppleFromTheEventNotTheLiveBackend() {
         val s = PlayStatsStore(file(), nowMs = 0)
-        var apple = true
-        val r = PlayStatsRecorder(s) { apple }
-        r.onStarted(PlayStarted("a", null, null, PlayContext.BROWSER, 1_000_000))
-        apple = false
+        val r = PlayStatsRecorder(s)
+        r.onStarted(PlayStarted("a", null, null, PlayContext.BROWSER, 1_000_000, appleCounted = true))
         r.onStarted(PlayStarted("b", null, null, PlayContext.BROWSER, 1_000_000))
+        r.onStarted(PlayStarted("sng_0123456789ab_clean", null, null, PlayContext.BROWSER, 1_000_000))
         assertEquals(1, s.stat("a")!!.appleCount); assertNull(s.stat("b")!!.appleCount)
-        r.onAdvancedAway(PlayAdvancedAway("a", 10_000, 100_000))   // 10% => skip
-        r.onAdvancedAway(PlayAdvancedAway("b", 60_000, 100_000))   // 60% => not a skip
-        r.onAdvancedAway(PlayAdvancedAway("b", null, null))        // unknown => not a skip
-        assertEquals(1, s.skipCount("a")); assertEquals(0, s.skipCount("b"))
-        assertNotNull(s.stat("a"))
+        assertNotNull("variant plays are recorded against the base id", s.lastPlayedAt("sng_0123456789ab"))
+    }
+
+    @Test fun mixDeckPlayUpdatesLastPlayedAtUnderTheBaseId() {
+        val s = PlayStatsStore(file(), nowMs = 0)
+        val hooks = com.levi.pocketdj.mix.engine.MixRecordingHooks()
+        PlayStatsRecorder.attachMix(hooks) { s.notePlayed(it, 2_000_000) }
+        assertNull(s.lastPlayedAt("sng_0123456789ab"))
+        hooks.notePlay(com.levi.pocketdj.mix.model.Deck.A, "sng_0123456789ab_clean")
+        assertEquals(2_000_000.0, s.lastPlayedAt("sng_0123456789ab")!!, 0.0)
     }
 }

@@ -113,8 +113,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     /** Starts the recorder once; idempotent. Call off-main (the store reads its doc from disk). */
     fun startPlayStats() {
         if (playStatsStarted.compareAndSet(false, true)) {
-            com.levi.pocketdj.data.stats.PlayStatsRecorder(playStats, appleStreaming = { app.playbackController.isAppleMusicActive })
-                .start(app.appScope)
+            com.levi.pocketdj.data.stats.PlayStatsRecorder(playStats).start(app.appScope)
         }
     }
     private val playStatsStarted = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -130,13 +129,13 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             playStats = playStats,
             settings = storageSettings,
             protectedSongIds = {
-                buildSet {
-                    app.playbackGraph.sequencer.state.value.currentSongId?.let(::add)
-                    runCatching {
+                com.levi.pocketdj.data.storage.protectedIds(
+                    current = app.playbackGraph.sequencer.state.value.current,
+                    deckSongIds = runCatching {
                         val e = app.mixGraph.mixEngine
-                        com.levi.pocketdj.mix.model.Deck.entries.forEach { d -> e.loaded(d)?.songId?.let(::add) }
-                    }
-                }
+                        com.levi.pocketdj.mix.model.Deck.entries.map { d -> e.loaded(d)?.songId }
+                    }.getOrDefault(emptyList()),
+                )
             },
             log = { android.util.Log.i("PocketDJ", "[storage] $it") },
         )
@@ -163,8 +162,6 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     }
 
     override val flushables: List<Flushable> by lazy {
-        // Subscribe the play-stats recorder off-main as soon as the registry materializes the module.
-        app.appScope.launch(Dispatchers.IO) { startPlayStats() }
         listOf(
             diag.flushable,
             Flushable { if (burnStoreLazy.isInitialized()) burnStore.flush() },

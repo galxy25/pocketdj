@@ -55,6 +55,12 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         SkipTracker(
             markSkipped = { PlayHistoryStore.get(app.appContext).markSkipped(it) },
             noteListened = { id, f -> PlayHistoryStore.get(app.appContext).noteListened(id, f) },
+            // SVC-6: the ONE skip verdict feeds PlayStatsStore (stats are keyed by base id); off the caller's thread.
+            noteSkip = { id ->
+                app.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    app.servicesGraph.playStats.noteSkipped(com.levi.pocketdj.data.edition.SongVariant.baseId(id))
+                }
+            },
             onVerdict = { song, skipped, f -> outcomes.emit(song, skipped, f) },
         )
     }

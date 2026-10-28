@@ -397,6 +397,10 @@ private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: S
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
         OutlinedButton(onClick = {
             scope.launch {
+                if (capGb.isNotBlank() && capGb.toDoubleOrNull() == null) {
+                    snackbar.showSnackbar("Enter the GB cap as a number, e.g. 12.5")
+                    return@launch
+                }
                 services.storageSettings.setCapGB(capGb.toDoubleOrNull())
                 services.storageSettings.setCapSongs(capSongs.toIntOrNull())
                 snackbar.showSnackbar("Cap saved")
@@ -406,12 +410,18 @@ private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: S
             enabled = !pruning,
             onClick = {
                 scope.launch {
+                    if (capGb.isNotBlank() && capGb.toDoubleOrNull() == null) {
+                        status = "Enter the GB cap as a number, e.g. 12.5"
+                        return@launch
+                    }
                     services.storageSettings.setCapGB(capGb.toDoubleOrNull())
                     services.storageSettings.setCapSongs(capSongs.toIntOrNull())
                     pruning = true
                     val r = services.storageManager.prune()
                     pruning = false
-                    status = r?.let { describe(context, it) } ?: "No cap set - nothing to prune."
+                    status = r?.let { describe(context, it) }
+                        ?: if (services.storageManager.isPruning) "A prune is already running - try again shortly."
+                        else "No cap set - nothing to prune."
                     onChanged()
                 }
             },

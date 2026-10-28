@@ -368,7 +368,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | SVC-4 — Burned-first row resolver + device/cloud PlaybackMode + collection Rip/Burn bar with Stop… | 6 | PARTIAL | JVM-tested (1645 tests green), not emulator-verified; Stemify from the iOS bar not ported |
 | SVC-11 — Cloud stems client (stemify/stem jobs) + burned stems/beat-grids pull + Stemify action on… | 7 | PARTIAL | Unit-tested (1946 green); NOT emulator-verified (device-only: History glyph/live row, skip on real playback). Open: `noteSkip` cumulative per-song skip count unwired until a Kotlin PlayCountService port exists (Browse wasSkipped / recs read it) |
 | SVC-15 — Apple Music Web API client: catalog search, library playlists CRUD, favorites, artists la… | 7 | Merged (`a6626196`) | Library (write) endpoints need a real Music-User-Token from the vendo… |
-| SVC-6 — PlayStatsStore + StorageManager prune engine + StoragePruneWorker + Storage screen burn/s… | 10 | Planned | Periodic worker cadence under Doze. |
+| SVC-6 — PlayStatsStore + StorageManager prune engine + StoragePruneWorker + Storage screen burn/s… | 10 | DONE (device-only: worker cadence under Doze) | Periodic worker cadence under Doze (also pruneIfDue on each foreground). Open: delete-by-collection excludes setlists; play-stats cloud sync not wired. |
 | SVC-8 — Backend: pocketdj-profile-sync Lambda (S3 document store) + optional endpoint key | 10 | Planned | Deploy to the green account needs AWS profile llc; unit tests run aga… |
 | SVC-7 — Document sync engine (CloudSyncService verbatim port) + ProfileStore + in-memory CloudDoc… | 12 | Planned | — |
 | SVC-9 — S3CloudDocDatabase + enroll + link-a-device (QR/code) + onboarding stage-1 probe | 13 | Planned | QR camera scanning is deferred (code entry only); nothing else. |

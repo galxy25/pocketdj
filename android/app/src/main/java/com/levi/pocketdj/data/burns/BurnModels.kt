@@ -91,7 +91,15 @@ data class BurnResult(
 data class ArtistUsage(val artist: String, val songIds: List<String>, val bytes: Long)
 
 /** Soft-cap prune plan (iOS `EvictionPlan`). */
-data class EvictionPlan(val usageBytes: Long, val projectedBytes: Long, val evict: List<String>)
+data class EvictionPlan(
+    val usageBytes: Long,
+    val projectedBytes: Long,
+    val evict: List<String>,
+    /** Bytes of orphan stem/grid files swept BEFORE planning (usageBytes is measured after the sweep). */
+    val sweptBytes: Long = 0L,
+    /** Bytes each planned eviction frees (sidecar, cut, shared-aware audio, stems, grid). */
+    val freedById: Map<String, Long> = emptyMap(),
+)
 
 /** A resolved playback file; [isCut] means the standalone per-song cut (do NOT apply startMs). */
 data class CutResolved(val file: java.io.File, val isCut: Boolean)

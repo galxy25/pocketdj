@@ -806,16 +806,18 @@ class BurnStore(
         var snaps = roots.map { r ->
             RootSnapshot(r.isUserFolder, r.dir.listFiles()?.filter { it.isFile }?.associate { it.name to it.length() } ?: emptyMap())
         }
+        var swept = 0L
         if (EvictionPlanner.usageBytes(items.values, snaps, ::ownsAux) > capBytes) {
             snaps = snaps.mapIndexed { i, snap ->
                 val dir = roots.getOrNull(i)?.dir ?: return@mapIndexed snap
                 val gone = BurnStems.auxToSweep(snap.files.keys.toList()) { items[it] == null }
                     .filter { ownsAux(it, snap.isUserFolder) }
+                swept += gone.sumOf { snap.files[it] ?: 0L }
                 gone.forEach { File(dir, it).delete() }
                 snap.copy(files = snap.files - gone.toSet())
             }
         }
-        return EvictionPlanner.plan(items, snaps, order, capBytes, capSongs, ::ownsAux)
+        return EvictionPlanner.plan(items, snaps, order, capBytes, capSongs, ::ownsAux).copy(sweptBytes = swept)
     }
 
     private fun uniqueAudioBytes(group: Collection<BurnItem>): Long {

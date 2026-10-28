@@ -7,7 +7,6 @@ import com.levi.pocketdj.data.burns.BurnState
 import com.levi.pocketdj.data.burns.AppPrivateBurnFolder
 import com.levi.pocketdj.data.burns.Rig
 import com.levi.pocketdj.data.burns.bs
-import com.levi.pocketdj.data.transfers.PruneWorkerGate
 import java.io.File
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -16,16 +15,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PruneWorkerGateTest {
-    private val h20 = StorageSettings.PRUNE_INTERVAL_MS
-
-    @Test fun workerGateRequiresACapAndATwentyHourGap() {
-        assertFalse(PruneWorkerGate.shouldRun(null, null, null, 1_000, h20))
-        assertFalse(PruneWorkerGate.shouldRun(0.0, 0, null, 1_000, h20))
-        assertTrue(PruneWorkerGate.shouldRun(5.0, null, null, 1_000, h20))
-        assertTrue(PruneWorkerGate.shouldRun(null, 100, 0L, h20, h20))
-        assertFalse(PruneWorkerGate.shouldRun(null, 100, 1L, h20, h20))
-    }
-
     @Test fun periodicWorkIsDeclaredAndRegisteredForTheShell() {
         val spec = com.levi.pocketdj.work.ShellWork.specs.single { it.id == com.levi.pocketdj.work.WorkIds.STORAGE_PRUNE }
         assertEquals(24 * 60L, spec.repeatMinutes)

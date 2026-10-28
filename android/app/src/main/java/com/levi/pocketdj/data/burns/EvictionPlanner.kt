@@ -60,6 +60,7 @@ object EvictionPlanner {
         var projected = usage
         var songCount = items.values.count { it.state == BurnState.READY }
         val evict = ArrayList<String>()
+        val freedById = HashMap<String, Long>()
         for (id in order) {
             if (!(projected > capBytes || songCount > capSongs)) break
             val item = items[id] ?: continue
@@ -83,9 +84,10 @@ object EvictionPlanner {
                 BurnFileNames.beatgridFileName(id)
             for (c in countedByRoot.values) for (n in aux) freed += c[n] ?: 0L
             projected -= freed
+            freedById[id] = freed
             evict += id
             if (item.state == BurnState.READY) songCount -= 1
         }
-        return EvictionPlan(usageBytes = usage, projectedBytes = projected, evict = evict)
+        return EvictionPlan(usageBytes = usage, projectedBytes = projected, evict = evict, freedById = freedById)
     }
 }
