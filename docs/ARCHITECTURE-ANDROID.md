@@ -470,7 +470,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | STU-3 — Producer shell + Samples tab (mic, import, from-track via LocalAudioCache→BurnStore) + sa… | 7 | PARTIAL (no stem carve; other sub-tabs Coming soon; emulator steps unrun) | Real mic quality, Bluetooth input picker, DRM-protected file rejectio… |
 | STU-4 — Loops tab + slice editor (performance pads) | 10 | Partial (emulator steps + seam click device-only, unrun) | Audible seam-click judgement |
 | STU-5 — Sequencer tab + pattern engine (clock, step modes, per-step loop/stretch) + bounce | 11 | Planned | Timing tightness and .interrupts cut audibility |
-| STU-6 — Cues tab + cue-seek playback plumbing (sequencer seek) + CuePointsProvider for the Mix de… | 11 | Planned | Apple Music native backend play-then-seek |
+| STU-6 — Cues tab + cue-seek playback plumbing (sequencer seek) + CuePointsProvider for the Mix de… | 11 | PARTIAL | Apple Music native backend play-then-seek (device-only); emulator cue-seek step not run |
 | STU-7 — Collections integration: StudioRowResolver (play studio ids as local files), counts, real… | 12 | Planned | — |
 | STU-11 — Tracks arranger: model CRUD, home list + folders, lanes/clips UI, clip baker, artifacts b… | 13 | Planned | — |
 | STU-8 — Instrument packs + SF2 synth engine (native) + on-screen keys + takes (click/count-in) | 13 | Planned | Latency feel on Oboe; large-bank parse time on a real device |
