@@ -8,4 +8,5 @@
 <full-backup-content>
     <exclude domain="file" path="pocketdj-settings.preferences_pb" />
     <exclude domain="file" path="pocketdj-settings.preferences_pb.tmp" />
+    <exclude domain="sharedpref" path="pocketdj-secrets.xml" />
 </full-backup-content>

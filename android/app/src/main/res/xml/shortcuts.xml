@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Static launcher shortcuts. Intentionally empty in SURF-1; SURF-9 adds entries. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android" />

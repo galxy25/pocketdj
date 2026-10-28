@@ -4,14 +4,14 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** Exercises the tab registry that drives the bottom navigation bar. */
+/** Exercises the tab registry that drives the navigation bar / rail. */
 class PocketDjDestinationTest {
 
     @Test
-    fun bottomNav_hasSixTabsInProductOrder() {
+    fun bottomNav_hasSevenDestinationsInPinnedOrder() {
         val labels = PocketDjDestination.bottomNav.map { it.label }
         assertEquals(
-            listOf("Browse", "History", "Jukebox", "Collections", "Mix", "Producer"),
+            listOf("Browse", "History", "Jukebox", "Collections", "Mix", "Producer", "Games"),
             labels,
         )
     }
@@ -31,5 +31,30 @@ class PocketDjDestinationTest {
         val routes = PocketDjDestination.bottomNav.map { it.route }
         assertEquals("routes must be unique", routes.size, routes.toSet().size)
         assertTrue("routes must be non-blank", routes.all { it.isNotBlank() })
+    }
+
+    @Test
+    fun token_roundTripsForAllSevenDestinations() {
+        PocketDjDestination.entries.forEach { dest ->
+            assertEquals(dest, PocketDjDestination.fromToken(dest.token))
+        }
+        assertEquals(7, PocketDjDestination.entries.map { it.token }.toSet().size)
+    }
+
+    @Test
+    fun tokens_arePinnedToTheIosSectionRawValues() {
+        assertEquals("Browser", PocketDjDestination.Browse.token)
+        assertEquals("Jukebox Hero", PocketDjDestination.Jukebox.token)
+        assertEquals("Playlists", PocketDjDestination.Playlists.token) // label is Collections
+        assertEquals("Performance", PocketDjDestination.Producer.token) // label is Producer
+        assertEquals("Games", PocketDjDestination.Games.token)
+    }
+
+    @Test
+    fun unknownOrBlankToken_landsOnHistory() {
+        assertEquals(PocketDjDestination.History, PocketDjDestination.fromToken(null))
+        assertEquals(PocketDjDestination.History, PocketDjDestination.fromToken(""))
+        assertEquals(PocketDjDestination.History, PocketDjDestination.fromToken("Settings"))
+        assertEquals(PocketDjDestination.History, PocketDjDestination.default)
     }
 }

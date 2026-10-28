@@ -17,6 +17,10 @@ android {
         versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Diagnostics upload channel gate (decision D8): DEBUG || DIAG_CHANNEL.
+        // Release builds stay false; a TestFlight-style internal channel flips it.
+        buildConfigField("boolean", "DIAG_CHANNEL", "false")
     }
 
     buildTypes {
@@ -40,6 +44,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -84,9 +89,20 @@ dependencies {
     // AARs assume but don't declare (specs/applemusic.md §1, fact 0.4).
     implementation(libs.androidx.appcompat)
 
+    // Decision D4 dependency sweep: later packages add files, not build lines.
+    implementation(libs.androidx.material3.adaptive.navigation.suite)
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.lifecycle.process)
+    implementation(libs.androidx.security.crypto)
+    implementation(libs.androidx.glance.appwidget)
+    implementation(libs.androidx.media3.common)
+    implementation(libs.play.services.location)
+
     debugImplementation(libs.androidx.ui.tooling)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.androidx.work.testing)
 }
