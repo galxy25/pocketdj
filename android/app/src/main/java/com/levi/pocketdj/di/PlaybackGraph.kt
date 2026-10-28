@@ -107,6 +107,11 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         AppLifecycleFlusher(sessionStore),
     )
 
+    /** Final review: continue-on-another-device session (iOS registers it file-only). */
+    override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = listOf(
+        com.levi.pocketdj.shell.SyncEntry("playback-session", com.levi.pocketdj.playback.durable.PLAYBACK_SESSION_FILE),
+    )
+
     /**
      * The 1 Hz keep-playing supervisor over the setlist lane. Ticks only while a run exists
      * ([wire] starts/stops it from the sequencer state).

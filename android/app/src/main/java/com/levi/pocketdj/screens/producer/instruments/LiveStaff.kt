@@ -87,7 +87,8 @@ fun LiveStaff(graph: AppGraph, onMessage: (String) -> Unit, modifier: Modifier =
                         saving = true
                         // Snapshot + clear at TAP time (iOS clears synchronously): notes played during the render belong to the next take.
                         engine.clearLive(); engine.overdub.clearStaffs(); editing = false
-                        scope.launch {
+                        // Final review: file on the app scope so leaving the screen / rotating mid-render cannot cancel (and lose) the take.
+                        graph.appScope.launch {
                             try {
                                 val name = "Take ${studio.studioStore.takes(null).size + 1}"
                                 val bank = studio.instrumentPacks.localBankFile(instrument)

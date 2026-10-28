@@ -883,6 +883,13 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         },
     )
 
+    /** Final review: recorded Mix sessions (reload on pull) and the live deck snapshot (file-only), iOS keys. */
+    override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = listOf(
+        com.levi.pocketdj.shell.SyncEntry("mix-sessions", com.levi.pocketdj.mix.store.MixSessionStore.FILE_NAME,
+            onPulled = { if (sessionsLazy.isInitialized()) mixSessions.reloadFromDisk(); false }),
+        com.levi.pocketdj.shell.SyncEntry("mix-decks", MixDeckSessionStore.FILE_NAME),
+    )
+
     override val resetHooks: List<ResetHook> = listOf(
         ResetHook {
             if (deckLazy.isInitialized()) deckLazy.value.clear()

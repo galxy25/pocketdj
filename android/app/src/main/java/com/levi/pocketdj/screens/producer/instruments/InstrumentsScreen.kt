@@ -179,7 +179,8 @@ private fun PlaySection(graph: AppGraph, onNeedPacks: () -> Unit) {
                         if (r == null) message = "Take cancelled."
                         else {
                             filing = true
-                            scope.launch {
+                            // Final review: filing outlives this screen (leaving it mid-render used to cancel it and lose the take).
+                            graph.appScope.launch {
                                 try {
                                     val name = "Take ${studio.studioStore.takes(null).size + 1}"
                                     val bank = packs.localBankFile(r.instrument)

@@ -98,6 +98,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         StudioStore(
             File(app.appContext.filesDir, StudioStore.FILE_NAME), studioRoots, writerExecutor, ExecutorStudioScheduler(),
         ).also { s ->
+            s.onFamilyDeleted = { f -> if (f == StudioFamily.INSTRUMENTS) instrumentPacks.rescanDownloads() }
             // Reconcile lists SAF trees: never on the first caller's (possibly main) thread.
             app.appScope.launch(Dispatchers.IO) { runCatching { s.reconcileOnLaunch() } }
         }
@@ -223,7 +224,9 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         app.appScope.launch(Dispatchers.Main) {
             androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(object : androidx.lifecycle.DefaultLifecycleObserver {
                 override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
-                    loopAudition.stop("superseded")
+                    // Final review: a take ends when the APP backgrounds, not on every activity pause (rotation, Recents, split-screen).
+                    if (micLazy.isInitialized()) micRecorder.finalizeForExit()
+                    if (loopLazy.isInitialized()) loopAudition.stop("superseded")
                     if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
                 }
             })
@@ -318,7 +321,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             onCaptureEnd = { captureFocus.abandon() },
         ).also { r -> studioStore.activeTakeFileName = { r.activeTake?.first } }
     }
-    val micRecorder: MicRecorder get() = micLazy.value
+    val micRecorder: MicRecorder get() = micLazy.value.also { ensureLoopStopObserver() }
 
     /** Source ladder for New-sample-from-track: burned file -> burn-on-demand -> 'Rip first'. */
     val localAudioCache: LocalAudioCache by lazy {
@@ -575,7 +578,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     // A user who never touched Studio must not build/reconcile/rewrite the doc on ON_STOP.
     // A take in flight is filed + the store flushed synchronously (Android blocks background mic capture).
     override val flushables: List<Flushable> = listOf(
-        Flushable { if (micLazy.isInitialized()) micRecorder.finalizeForExit() },
+        // (the mic take is finalized by the process ON_STOP observer, NOT here: this funnel also runs on onPause/rotation)
         Flushable { if (storeLazy.isInitialized()) studioStore.flush() },
     )
 
@@ -588,7 +591,11 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         },
     )
 
-    override val syncEntries: List<SyncEntry> = listOf(SyncEntry("studio-cues", "pocketdj-studio.cues.json"))
+    override val syncEntries: List<SyncEntry> = listOf(
+        // Final review: adopt pulled cues (building the store off the sync thread if need be); otherwise the next
+        // local cue edit rewrites the mirror from stale memory and wipes the other device's cues in the cloud.
+        SyncEntry("studio-cues", "pocketdj-studio.cues.json", onPulled = { studioStore.reloadCuesFromDisk() }),
+    )
 
     override val deepLinkHandlers: List<DeepLinkHandler> = listOf(
         DeepLinkHandler { intent ->

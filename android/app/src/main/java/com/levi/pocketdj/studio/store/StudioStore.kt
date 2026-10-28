@@ -101,6 +101,8 @@ class StudioStore(
 
     /** The mic/instrument recorder's IN-FLIGHT capture file name (skipped by [deleteAll]). */
     @Volatile var activeTakeFileName: (() -> String?)? = null
+    /** A family-wide delete finished (Final review: the instrument-pack ledger must rescan the swept folder). */
+    @Volatile var onFamilyDeleted: ((StudioFamily) -> Unit)? = null
 
     /** Fired ONCE for each NEWLY created sample (never on an upsert / crash-retry re-file). */
     @Volatile var onSampleAdded: ((StudioSample) -> Unit)? = null
@@ -941,6 +943,7 @@ class StudioStore(
     /** Storage manager: delete EVERYTHING in one family (files + records), safely. */
     fun deleteAll(family: StudioFamily) = synchronized(lock) {
         commit(StudioReconcile.deleteAll(_state.value, roots, family, activeTakeFileName?.invoke()))
+        runCatching { onFamilyDeleted?.invoke(family) }
     }
 
     // ------------------------------------------------------------------------------------------

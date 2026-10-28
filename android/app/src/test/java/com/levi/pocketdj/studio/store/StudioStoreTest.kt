@@ -650,6 +650,14 @@ class StudioStoreTest {
         assertEquals(listOf("tk_away"), s.takes.map { it.id })
     }
 
+    @Test fun deleteAllNotifiesFamilyListener() {
+        val s = env.store()
+        val seen = mutableListOf<StudioFamily>()
+        s.onFamilyDeleted = { seen += it }
+        s.deleteAll(StudioFamily.INSTRUMENTS)
+        assertEquals(listOf(StudioFamily.INSTRUMENTS), seen)
+    }
+
     // ---------------- arrangements ----------------
 
     @Test fun arrangementTrackClipCrudAndFiles() {

@@ -356,6 +356,12 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         },
     )
 
+    /** Final review: hearts sync across devices (iOS key "favorites"); a pull re-adopts the file. */
+    override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = listOf(
+        com.levi.pocketdj.shell.SyncEntry("favorites", com.levi.pocketdj.data.favorites.FavoritesStore.FILE_NAME,
+            onPulled = { favorites.reloadFromDisk(); false }),
+    )
+
 
     // ---- COL-17: listening pockets service + real PocketsBridge ------------------------------------------
 
