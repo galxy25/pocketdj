@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.CacheControl
@@ -115,11 +116,16 @@ class RipsRepository(
             changed = decoded != _manifest.value
             if (changed) _manifest.value = decoded
         }
-        if (changed || !manifestFile.isFile) persist(text)
+        if (changed || !manifestFile.isFile) persist(gen, text)
         return decoded
     }
 
-    private suspend fun persist(text: String) = withContext(Dispatchers.IO) {
+    private val persistMutex = kotlinx.coroutines.sync.Mutex()
+
+    private suspend fun persist(gen: Long, text: String) = persistMutex.withLock {
+      withContext(Dispatchers.IO) {
+        // A newer arrival owns the disk copy now (its own persist is queued behind us).
+        if (generation.get() != gen && manifestFile.isFile) return@withContext
         // Persist raw bytes only after the decode succeeded; best-effort.
         runCatching {
             val temp = File.createTempFile("rips-", ".part", cacheDir)
@@ -131,6 +137,7 @@ class RipsRepository(
                 StandardCopyOption.ATOMIC_MOVE,
             )
         }
+      }
     }
 
     private suspend fun fetchManifest(): RipsManifest {

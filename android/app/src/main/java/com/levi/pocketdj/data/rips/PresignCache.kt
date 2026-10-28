@@ -2,8 +2,10 @@ package com.levi.pocketdj.data.rips
 
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 
 /**
@@ -28,7 +30,7 @@ class PresignCache(
     private data class Entry(val url: String, val at: Long)
 
     private val entries = ConcurrentHashMap<String, Entry>()
-    private val inFlight = ConcurrentHashMap<String, CompletableDeferred<String?>>()
+    private val inFlight = ConcurrentHashMap<String, Deferred<String?>>()
 
     /** A still-fresh cached URL for [songId], else null (a stale entry is dropped). */
     fun cached(songId: String): String? {
@@ -47,26 +49,31 @@ class PresignCache(
     suspend fun urlFor(songId: String): String? {
         cached(songId)?.let { return it }
         if (!isConfigured()) return null
-        val mine = CompletableDeferred<String?>()
-        val existing = inFlight.putIfAbsent(songId, mine)
-        if (existing != null) return existing.await()
-        try {
-            val url = try {
-                presigner(songId, ttlSeconds)
-            } catch (error: Exception) {
-                if (error is CancellationException) throw error
-                null
-            }
-            if (url != null) entries[songId] = Entry(url, clock())
-            onTrace("presign $songId ${if (url != null) "ok" else "FAILED"}")
-            mine.complete(url)
-            return url
-        } catch (error: CancellationException) {
-            mine.complete(null)
-            throw error
-        } finally {
-            inFlight.remove(songId, mine)
+        // The mint runs in the CACHE's scope, so one caller's cancellation (a screen scope torn
+        // down mid-play) never hands the other waiters a null (=> unsigned 403 URL).
+        val minted = inFlight.computeIfAbsent(songId) {
+            scope.async(start = CoroutineStart.LAZY) { mint(songId) }
         }
+        minted.invokeOnCompletion { inFlight.remove(songId, minted) }
+        minted.start()
+        return minted.await()
+    }
+
+    private suspend fun mint(songId: String): String? {
+        val url = try {
+            presigner(songId, ttlSeconds)
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            null
+        }
+        if (url != null) entries[songId] = Entry(url, clock())
+        onTrace("presign $songId ${if (url != null) "ok" else "FAILED"}")
+        return url
+    }
+
+    /** Drop a cached URL (e.g. it 403'd) so the next [urlFor] mints a fresh one. */
+    fun invalidate(songId: String) {
+        entries.remove(songId)
     }
 
     /**

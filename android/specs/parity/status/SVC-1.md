@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SVC-1 Rip client parity
 
@@ -18,3 +18,15 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+fixes applied (JVM tests 839 -> 852, 0 failures; assembleDebug green)
+
+- MAJOR album-queue presign: FIXED. Only the start item is presigned before play; next 3 are prefetched non-blocking (PlaybackUrlResolver) and swapped in via refreshAhead() on every item transition; onPlayerError re-mints once per song (PresignCache.invalidate) for expired/403 URLs. Tests: PlaybackUrlResolverTest (configured/unconfigured/failure/non-blocking prefetch/ahead window).
+- MINOR background wait hijack: FIXED. playGeneration bumped on play() entry and every queue commit; RipPlayWait.run takes an isCurrent guard (Superseded = refresh manifest only). Test: RipPlayWaitTest.readyAfterUserPlayedSomethingElse.
+- MINOR ripCollection/cancelRips side effects: FIXED. New RipCollectionCoordinator (markUserRequested, adopt + poll queued/inflight; cancel -> RipJobTracker.cancel drops polls/rows/protection). Tests: RipCollectionCoordinatorTest. Still needs wiring by the first collection-RIP caller (no caller exists yet).
+- MINOR PlaybackController tests: FIXED via extraction (controller needs Context/MediaController, not JVM-constructible): URL policy in PlaybackUrlResolver, StillRipping/tracker handoff in RipPlayWait; both tested with fake presigner/tracker.
+- MINOR docs ledger: FIXED. SVC-1 row set to PARTIAL (emulator steps not run).
+- MINOR PresignCache cancellation: FIXED. Mint runs in the cache scope (async LAZY, shared); a cancelled caller no longer completes waiters with null. Tests: cancelledCaller_doesNotHandOtherWaitersNull, invalidate.
+- NIT RipsRepository.persist ordering: FIXED (Mutex + skip when generation moved on).
+- NIT AppGraph.kt outside owned files: ACKNOWLEDGED, not changed; merge plan: PB-1 must keep presignCache/ripJobTracker args in the PlaybackController(...) call when resolving the conflict.

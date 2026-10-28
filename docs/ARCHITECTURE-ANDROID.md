@@ -362,7 +362,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 |---|---|---|---|
 | SVC-12 — Catalog cache polish + green compiled-in endpoints pinned by test | 1 | Planned | — |
 | SVC-5 — Diagnostics: DiagLog + NPLog lanes, shared SigV4 S3 uploader, .pdjdiagkey import, jank wa… | 2 | Planned | — |
-| SVC-1 — Rip client parity: presign + prefetch, 20 s bounded interactive wait + StillRipping, job … | 3 | Planned | — |
+| SVC-1 — Rip client parity: presign + prefetch, 20 s bounded interactive wait + StillRipping, job … | 3 | PARTIAL | emulator steps not run (presigned playback on a private bucket, "Still ripping" flow, mid-queue URL refresh) |
 | SVC-2 — BurnStore core (ONE offline store): ledger, byte-identical file names, sidecar, stems + b… | 4 | Planned | — |
 | SVC-3 — TransferCoordinator over WorkManager: background burn downloads surviving process death, … | 5 | Planned | Doze-deferred periodic timing is only observable on hardware; the emu… |
 | SVC-4 — Burned-first row resolver + device/cloud PlaybackMode + collection Rip/Burn bar with Stop… | 6 | Planned | — |

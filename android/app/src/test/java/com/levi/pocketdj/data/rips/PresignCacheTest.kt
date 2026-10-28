@@ -80,4 +80,27 @@ class PresignCacheTest {
         assertNull(cache.urlFor("a"))
         assertEquals("ok", cache.urlFor("a"))
     }
+
+    @Test
+    fun cancelledCaller_doesNotHandOtherWaitersNull() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val cache = PresignCache(backgroundScope, { true }, { id, _ -> gate.await(); "u-$id" })
+        val first = async { cache.urlFor("a") }
+        runCurrent()
+        val second = async { cache.urlFor("a") }
+        runCurrent()
+        first.cancel()
+        runCurrent()
+        gate.complete(Unit)
+        assertEquals("u-a", second.await())
+    }
+
+    @Test
+    fun invalidate_forcesFreshMint() = runTest {
+        var n = 0
+        val cache = PresignCache(backgroundScope, { true }, { id, _ -> "u-$id-${++n}" })
+        assertEquals("u-a-1", cache.urlFor("a"))
+        cache.invalidate("a")
+        assertEquals("u-a-2", cache.urlFor("a"))
+    }
 }

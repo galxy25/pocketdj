@@ -45,6 +45,16 @@ class RipJobTracker(
     fun adopt(songId: String, job: RipJob) { _jobs.update { it + (songId to job) } }
     fun clear(songIds: Collection<String>) { _jobs.update { it - songIds.toSet() } }
 
+    /**
+     * A canceled rip (iOS `cancelCollection`): stop its polls, drop its job rows and lift the
+     * user-requested protection.
+     */
+    fun cancel(songIds: Collection<String>) {
+        for (id in songIds) polls.remove(id)?.cancel()
+        userRequested.removeAll(songIds.toSet())
+        clear(songIds)
+    }
+
     /** Whether a [pollToReady] for this song is still running. */
     fun isPolling(songId: String): Boolean = polls[songId]?.isActive == true
 
