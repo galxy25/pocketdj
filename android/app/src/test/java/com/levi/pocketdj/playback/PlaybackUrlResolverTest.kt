@@ -56,4 +56,12 @@ class PlaybackUrlResolverTest {
         assertEquals(18..19, PlaybackUrlResolver.aheadIndices(17, 20))
         assertTrue(PlaybackUrlResolver.aheadIndices(19, 20).isEmpty())
     }
+
+    @Test
+    fun localItems_areNeverRefreshedToNetworkUrls() {
+        assertTrue(PlaybackUrlResolver.isLocalItemUrl("file:///burn/a.mp3", null))
+        assertTrue(PlaybackUrlResolver.isLocalItemUrl(null, "file:///burn/a.mp3"))
+        assertTrue(!PlaybackUrlResolver.isLocalItemUrl("https://bucket/a.mp3", "https://bucket/a.mp3"))
+        assertTrue(!PlaybackUrlResolver.isLocalItemUrl(null, null))
+    }
 }

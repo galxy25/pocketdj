@@ -98,7 +98,12 @@ fun PocketDetailScreen(
             onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
         }
 
+        val burnController = rememberCollectionBurnController(pocketId)
+
         LazyColumn(modifier = Modifier.fillMaxSize()) {
+            item(key = "burn-bar") {
+                CollectionBurnBar(burnController, songIds = { store.songIdsForPocket(pocketId) }, noun = "pocket")
+            }
             item(key = "actions") {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -292,7 +297,8 @@ fun PocketDetailScreen(
                         } else {
                             CollectionTrackRow(
                                 title = song.name,
-                                subtitle = song.artist,
+                                subtitle = rememberRowNote(songId, manifest.containsKey(songId))
+                                    ?.let { "${song.artist} · $it" } ?: song.artist,
                                 album = song.albumId?.let { catalog.albumsById[it] },
                                 bpm = song.bpm,
                                 camelot = song.camelot,

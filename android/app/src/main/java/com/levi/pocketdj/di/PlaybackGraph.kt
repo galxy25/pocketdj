@@ -110,15 +110,6 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         }
         // Burned-first rung: a READY burn plays from disk (offline-capable). Without this the
         // ladder fell straight through to the network manifest rung.
-        app.playbackController.localFiles = com.levi.pocketdj.playback.sequencer.LocalFileResolver { item ->
-            val store = app.servicesGraph.burnStore
-            val id = item.resolveId
-            store.localUrlPreferringCut(id)?.let { cut ->
-                com.levi.pocketdj.playback.sequencer.burnedLocalFile(
-                    cut.file, cut.isCut, store.startMs(id), store.items.value[id]?.durationMs,
-                    toUri = { android.net.Uri.fromFile(it).toString() },
-                )
-            }
-        }
+        app.playbackController.localFiles = app.servicesGraph.burnedFirst
     }
 }

@@ -1,6 +1,7 @@
 package com.levi.pocketdj.playback
 
 import com.levi.pocketdj.data.rips.PlayAction
+import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.data.rips.PresignCache
 
 /**
@@ -11,6 +12,7 @@ import com.levi.pocketdj.data.rips.PresignCache
 class PlaybackUrlResolver(private val presigns: PresignCache?) {
 
     suspend fun resolve(songId: String, action: PlayAction.Stream, serverConfigured: Boolean): PlayAction.Stream {
+        if (PlayResolver.isLocalUrl(action.url)) return action // burned file: never presigned
         val cache = presigns ?: return action
         if (!serverConfigured) return action
         val url = cache.urlFor(songId) ?: return action
@@ -23,6 +25,10 @@ class PlaybackUrlResolver(private val presigns: PresignCache?) {
     }
 
     companion object {
+        /** True when a queue item is a burned local file (must never be swapped to a network URL). */
+        fun isLocalItemUrl(extraUrl: String?, uri: String?): Boolean =
+            (extraUrl != null && PlayResolver.isLocalUrl(extraUrl)) || (uri != null && PlayResolver.isLocalUrl(uri))
+
         /** How many queue items ahead of the current one are kept freshly presigned. */
         const val AHEAD = 3
 

@@ -36,6 +36,7 @@ import com.levi.pocketdj.playback.session.RipOnDemandSession
 import com.levi.pocketdj.playback.session.RipResolution
 import com.levi.pocketdj.playback.sequencer.LocalFileResolver
 import com.levi.pocketdj.playback.sequencer.LocalFileRowResolver
+import com.levi.pocketdj.playback.sequencer.QueueItem
 import com.levi.pocketdj.playback.sequencer.LocalFileSource
 import com.levi.pocketdj.playback.sequencer.ManifestRowResolver
 import com.levi.pocketdj.playback.sequencer.PlayRequest
@@ -189,6 +190,11 @@ class PlaybackController(
     /** Burned / studio local-file seam (SVC-4 / STU-7 swap the real one in). */
     @Volatile
     var localFiles: LocalFileResolver = LocalFileResolver.None
+
+    /** SVC-4 burned-first: the local file for a plain song id, via the same seam as the ladder. */
+    /** File.exists()/dir.list() (analog heal) must not run on the main thread: callers are on Main. */
+    private suspend fun burnedFile(songId: String) =
+        withContext(Dispatchers.IO) { localFiles.localUrlForPlayback(QueueItem(id = songId)) }
 
     @Volatile private var cachedMode: PlaybackMode = PlaybackMode.CLOUD
     @Volatile private var cachedRipConfigured: Boolean = false
@@ -472,6 +478,17 @@ class PlaybackController(
                     range.first to range.map { c.getMediaItemAt(it).mediaId }
                 }
                 for ((offset, id) in ids.withIndex()) {
+                    // Burned-first: a local file item is never swapped back to a network URL.
+                    val isLocal = withController { c ->
+                        val idx = from + offset
+                        idx < c.mediaItemCount && c.getMediaItemAt(idx).let {
+                            PlaybackUrlResolver.isLocalItemUrl(
+                                it.requestMetadata.extras?.getString(PlaybackContract.EXTRA_URL),
+                                it.localConfiguration?.uri?.toString(),
+                            )
+                        }
+                    }
+                    if (isLocal) continue
                     val fresh = presigns?.urlFor(id) ?: continue
                     withController { c ->
                         val idx = from + offset
@@ -517,7 +534,7 @@ class PlaybackController(
         val queueAlbumContext = queueAlbumContext &&
             !withContext(Dispatchers.Main) { sequencer.inRunningQueue(songId) }
 
-        return when (val action = PlayResolver.resolve(songId, rips.entry(songId), ripConfigured)) {
+        return when (val action = PlayResolver.resolveBurnedFirst(songId, rips.entry(songId), ripConfigured, burnedFile(songId))) {
             // AM ladder (specs/applemusic.md §6.0): a manifest hit (Stream) always
             // wins first; only for a non-manifest song with an appleMusicId do the
             // AM rungs (full-track → preview) sit BEFORE rip-on-demand / metadata.
@@ -702,7 +719,7 @@ class PlaybackController(
 
         // Manifest hits only — metadata-only tracks are skipped in queues.
         val playable = merged.tracks(album).mapNotNull { song ->
-            val action = PlayResolver.resolve(song.id, rips.entry(song.id), false)
+            val action = PlayResolver.resolveBurnedFirst(song.id, rips.entry(song.id), false, burnedFile(song.id))
             (action as? PlayAction.Stream)?.let { song to it }
         }
         if (playable.isEmpty()) {

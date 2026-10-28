@@ -164,7 +164,12 @@ fun SetlistDetailScreen(
             .distinct()
             .joinToString(" · ")
 
+        val burnController = rememberCollectionBurnController(setlistId)
+
         LazyColumn(modifier = Modifier.fillMaxSize()) {
+            item(key = "burn-bar") {
+                CollectionBurnBar(burnController, songIds = { store.songIdsForSetlist(setlistId) }, noun = "set list")
+            }
             item(key = "header") {
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -426,9 +431,10 @@ private fun SetlistTrackRow(
     Column {
         val song = catalog?.songsById?.get(track.songId)
         val album = song?.albumId?.let { catalog.albumsById[it] }
+        val rowNote = rememberRowNote(track.songId, !dimmed)
         CollectionTrackRow(
             title = track.name,
-            subtitle = track.artist,
+            subtitle = rowNote?.let { "${track.artist} · $it" } ?: track.artist,
             album = album,
             bpm = track.bpm,
             camelot = track.camelot,
