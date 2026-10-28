@@ -7,6 +7,12 @@ object PocketsSettings {
     /** "Find my listening pockets" - default OFF; also requires the rec engine ON to open the gate. */
     val LISTENING_POCKETS_ENABLED = PrefKey.boolean("listeningPocketsEnabled", false)
 
+    /** COL-18: was the opt-in ever answered (iOS `listeningPocketsChoice != nil`)? Set by Not now / Turn on. */
+    val LISTENING_POCKETS_ANSWERED = PrefKey.boolean("listeningPocketsAnswered", false)
+
+    /** Builds before COL-18 wrote only ENABLED on a choice, so a stored ENABLED with no ANSWERED means it was answered. */
+    fun needsAnsweredMigration(answered: Boolean, enabledStored: Boolean): Boolean = !answered && enabledStored
+
     /** "Places & trips" - collection exists only to feed pockets, so it is forced OFF when the gate closes. */
     val LISTENING_LOCATION_ENABLED = PrefKey.boolean("listeningLocationEnabled", false)
 

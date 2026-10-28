@@ -48,16 +48,21 @@ object PocketsOptInCopy {
 
 /** The opt-in offer ("Not now" / "Turn on"); the game never turns pockets on by itself. */
 @Composable
-fun PocketsOptInView(optIn: PocketsOptIn, modifier: Modifier = Modifier) {
+fun PocketsOptInView(
+    optIn: PocketsOptIn,
+    modifier: Modifier = Modifier,
+    title: String = PocketsOptInCopy.TITLE,
+    lead: String = PocketsOptInCopy.LEAD,
+) {
     val recsEnabled by optIn.recommendationsEnabled.collectAsState()
     Column(
         modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(32.dp).testTag("pockets-optin"),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(PocketsOptInCopy.TITLE, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
+        Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold,
             textAlign = TextAlign.Center)
-        Text(PocketsOptInCopy.LEAD, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(lead, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(PocketsOptInCopy.CONSENT, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         if (PocketsOptInCopy.showNeedsRecs(recsEnabled)) {

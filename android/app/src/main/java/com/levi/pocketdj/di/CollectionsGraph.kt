@@ -314,6 +314,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 if (intent.hasExtra("pdj.pocketsFakeCreds")) pocketsDebugCreds = true
                 intent.getStringExtra("pdj.pocketsEnable")?.let { v ->
                     app.appScope.launch(Dispatchers.IO) {
+                        runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ANSWERED, true) }
                         runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, v == "1") }
                     }
                 }
@@ -360,6 +361,10 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
      * The listening-pockets service. Inert (zero network) until BOTH the rec engine and "Find my listening
      * pockets" are ON and the rec-engine credentials exist. Touch off-main (reads two small docs).
      */
+    /** The on-device place/trip labeller shared by the service and the Pockets screen (Noop until COL-19 wires the real store). */
+    val listeningContextProvider: com.levi.pocketdj.data.location.ListeningContextProviding =
+        com.levi.pocketdj.data.location.NoopListeningContextProvider
+
     val listeningPockets: com.levi.pocketdj.data.pockets.ListeningPocketsService by lazy {
         val files = app.appContext.filesDir
         com.levi.pocketdj.data.pockets.ListeningPocketsService(
@@ -378,6 +383,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             scope = kotlinx.coroutines.CoroutineScope(app.appScope.coroutineContext + Dispatchers.IO),
             syncFile = File(files, com.levi.pocketdj.data.pockets.ListeningPocketsService.SYNC_FILE_NAME),
             cacheFile = File(files, com.levi.pocketdj.data.pockets.ListeningPocketsService.CACHE_FILE_NAME),
+            provider = listeningContextProvider,
             deviceId = { pocketsDeviceId },
         ).also { svc ->
             svc.collectionsProvider = ::pocketsCollectionsInput
@@ -437,6 +443,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 override val recommendationsEnabled get() = app.browseGraph.recEnabled
                 override fun choose(on: Boolean) {
                     app.appScope.launch(Dispatchers.IO) {
+                        runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ANSWERED, true) }
                         runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, on) }
                     }
                 }
@@ -446,6 +453,14 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             runCatching {
                 app.browseGraph.recService.onDeleteCloudData = { key, profileId ->
                     svc.deleteCloudData(com.levi.pocketdj.data.pockets.PocketsCredentials(key, profileId, com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET))
+                }
+            }
+            // One-time migration: builds before COL-18 wrote only ENABLED on "Not now"/"Turn on", so a stored
+            // ENABLED key means the offer was already answered (offer once, as iOS listeningPocketsChoice).
+            runCatching {
+                val ps = com.levi.pocketdj.data.pockets.PocketsSettings
+                if (ps.needsAnsweredMigration(app.settings.get(ps.LISTENING_POCKETS_ANSWERED), app.settings.isSet(ps.LISTENING_POCKETS_ENABLED))) {
+                    app.settings.set(ps.LISTENING_POCKETS_ANSWERED, true)
                 }
             }
             // Seed the mirror from the stored pref BEFORE the first gate evaluation, so a cold start never reads
