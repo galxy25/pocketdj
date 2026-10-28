@@ -341,6 +341,74 @@ class MultitrackPlayerTest {
         assertTrue(MultitrackPlayer.bakeSignature(arr(t).copy(beatMatchEnabled = true)) != MultitrackPlayer.bakeSignature(arr(t).copy(beatMatchEnabled = true, bpm = 99.0)))
     }
 
+    private fun shortArr(durationMs: Int) =
+        arr(StudioTrack("t1", "t1", listOf(StudioClip("c", "c", "a", durationMs = durationMs))))
+
+    private fun awaitCond(ms: Long = 3000, c: () -> Boolean) {
+        val d = System.currentTimeMillis() + ms
+        while (!c() && System.currentTimeMillis() < d) Thread.sleep(10)
+    }
+
+    @Test fun loopTurnedOnMidPlayRestartsAndCancelsTheOldAutoStop() = runBlocking {
+        val sinks = mutableListOf<FakeSink>()
+        val p = player(Loader(files), sinks)
+        val a = shortArr(150)
+        assertTrue(p.play(a)) // non-looping: auto-stop armed ~150 + 470 ms
+        p.onArrangementChanged(a.copy(loopEnabled = true, loopStartMs = 0, loopEndMs = 100))
+        awaitCond { sinks.size == 2 }
+        assertEquals(2, sinks.size) // restarted through a fresh pass, not a live setLoop
+        Thread.sleep(900)           // well past the original auto-stop
+        assertTrue(p.isPlaying.value)
+        p.stop()
+    }
+
+    @Test fun loopTurnedOffMidPlaySchedulesAnAutoStop() = runBlocking {
+        val sinks = mutableListOf<FakeSink>()
+        val p = player(Loader(files), sinks)
+        val looped = shortArr(150).copy(loopEnabled = true, loopStartMs = 0, loopEndMs = 100)
+        assertTrue(p.play(looped)) // looping: no auto-stop
+        Thread.sleep(800)
+        assertTrue(p.isPlaying.value)
+        p.onArrangementChanged(looped.copy(loopEnabled = false))
+        awaitCond { sinks.size == 2 }
+        awaitCond { !p.isPlaying.value } // the restarted pass now ends on its own
+        assertFalse(p.isPlaying.value)
+    }
+
+    @Test fun cursorUsesPrimedLoopUntilTheRestartLands() = runBlocking {
+        val p = player(Loader(files), mutableListOf(), debounce = 5_000)
+        val looped = shortArr(150).copy(loopEnabled = true, loopStartMs = 20, loopEndMs = 120)
+        assertTrue(p.play(looped))
+        val dragged = looped.copy(loopStartMs = 60, loopEndMs = 90) // pending re-prime
+        p.onArrangementChanged(dragged)
+        val pos = p.positionMs(dragged)!!
+        assertTrue("cursor must stay in the region the audio is looping ($pos)", pos in 20..120)
+        p.stop()
+    }
+
+    @Test fun playOutcomeDistinguishesSupersededFromNothingToPlay() = runBlocking {
+        val loader = Loader(files).also { it.firstGate = CompletableDeferred() }
+        val sinks = mutableListOf<FakeSink>()
+        val p = player(loader, sinks)
+        val a = arr(track("t1", "a"))
+        val first = async(Dispatchers.Default) { p.playOutcome(a) }
+        while (loader.decodes.get() < 1) Thread.sleep(2)
+        assertEquals(PlayOutcome.STARTED, p.playOutcome(a))
+        loader.firstGate!!.complete(Unit)
+        assertEquals(PlayOutcome.SUPERSEDED, first.await())
+        p.stop()
+        assertEquals(PlayOutcome.NOTHING_TO_PLAY, player(Loader(emptyMap()), mutableListOf()).playOutcome(arr(track("t1", "missing"))))
+    }
+
+    @Test fun sameFileDecodedOncePerPass() = runBlocking {
+        val loader = Loader(files)
+        val p = player(loader, mutableListOf())
+        val two = arr(track("t1", "a"), track("t2", "a"))
+        assertTrue(p.play(two))
+        assertEquals(1, loader.decodes.get())
+        p.stop()
+    }
+
     @Test fun autoStopsAtNaturalEnd() = runBlocking {
         val sinks = mutableListOf<FakeSink>()
         val short = StudioTrack("t1", "t1", listOf(StudioClip("c", "c", "a", durationMs = 50)))

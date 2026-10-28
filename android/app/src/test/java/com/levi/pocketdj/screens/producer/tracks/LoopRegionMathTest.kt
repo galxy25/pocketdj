@@ -31,11 +31,20 @@ class LoopRegionMathTest {
         assertEquals(1_120, LoopRegionMath.snap(1_120, 120.0, false))
     }
 
-    @Test fun defaultRegionIsTwoBarsFromCursorClampedToLength() {
-        assertEquals(4_000 to 8_000, LoopRegionMath.defaultRegion(4_000, 60_000, 120.0)) // 8 beats = 4 s
-        val tail = LoopRegionMath.defaultRegion(9_000, 10_000, 120.0)
-        assertEquals(9_000, tail.first); assertEquals(10_000, tail.second)
-        assertTrue(LoopRegionMath.isUsable(tail.first, tail.second))
+    @Test fun defaultRegionIsFourBeatsFromZeroLikeIos() {
+        assertEquals(0 to 2_000, LoopRegionMath.defaultRegion(60_000, 120.0)) // 4 beats = 2 s
+        val short = LoopRegionMath.defaultRegion(1_000, 120.0)
+        assertEquals(0, short.first); assertEquals(1_000, short.second)
+        assertTrue(LoopRegionMath.isUsable(short.first, short.second))
         assertFalse(LoopRegionMath.isUsable(1_000, 1_100))
+    }
+
+    @Test fun manySmallDragDeltasMoveAcrossBeatsWhenSnapped() {
+        // 120 bpm (500 ms/beat) at 48 px/s: a 2 dp event = ~42 ms, far below half a beat. Measured from the
+        // gesture origin, 60 events (120 dp = 2,500 ms) must land on 1,000 + 2,500 -> 3,500.
+        var total = 0f
+        var last = 1_000
+        repeat(60) { total += 2f; last = LoopRegionMath.dragEnd(1_000, 1_000, total, 48f, 120.0, true, 0) }
+        assertEquals(3_500, last)
     }
 }

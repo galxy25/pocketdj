@@ -45,6 +45,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.withFrameMillis
 import android.widget.Toast
 import com.levi.pocketdj.studio.engine.MultitrackPlayer
+import com.levi.pocketdj.studio.engine.PlayOutcome
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -134,7 +135,10 @@ fun ArrangementScreen(
     }
     // Live mix / master FX / loop edits reach the running player; bake-affecting edits re-prime (debounced).
     LaunchedEffect(arr) { if (playing) player.onArrangementChanged(arr) }
-    DisposableEffect(arrangementId) { onDispose { player.stop() } }
+    DisposableEffect(arrangementId) {
+        // Rotation / split-screen resize recreates the activity: playback must survive that, only a real exit stops it.
+        onDispose { if (ctx.findActivity()?.isChangingConfigurations != true) player.stop() }
+    }
 
     val cursor = ArrangerMath.effectiveCursorMs(playheadMs ?: (if (playing) liveMs else cursorMs), arr.lengthMs)
     val fit = ArrangerMath.fitPx(arr.lengthMs, viewportDp)
@@ -182,11 +186,11 @@ fun ArrangementScreen(
         } else {
             TransportBar(
                 playing = playing, loopEnabled = arr.loopEnabled, fxOpen = fxOpen, canPlay = arr.allClips.isNotEmpty(),
-                onPlay = { scope.launch { if (!player.play(arr, cursorMs)) Toast.makeText(ctx, "Nothing to play", Toast.LENGTH_SHORT).show() } },
+                onPlay = { scope.launch { if (player.playOutcome(arr, cursorMs) == PlayOutcome.NOTHING_TO_PLAY) Toast.makeText(ctx, "Nothing to play", Toast.LENGTH_SHORT).show() } },
                 onStop = { player.stop() },
                 onToggleLoop = {
                     if (!arr.loopEnabled && !LoopRegionMath.isUsable(arr.loopStartMs, arr.loopEndMs)) {
-                        val (a, b) = LoopRegionMath.defaultRegion(cursorMs, arr.lengthMs, arr.bpm)
+                        val (a, b) = LoopRegionMath.defaultRegion(arr.lengthMs, arr.bpm)
                         store.setArrangementLoop(arrangementId, enabled = true, startMs = a, endMs = b)
                     } else store.setArrangementLoop(arrangementId, enabled = !arr.loopEnabled)
                 },
@@ -238,7 +242,7 @@ fun ArrangementScreen(
                         // test can read the cursor's true x after follow/zoom.
                         if (arr.loopEnabled && LoopRegionMath.isUsable(arr.loopStartMs, arr.loopEndMs)) {
                             LoopRegionOverlay(
-                                arr.loopStartMs, arr.loopEndMs, pxPerSec, arr.bpm, arr.beatMatchEnabled, arr.lengthMs, arr.tracks.size,
+                                arr.loopStartMs, arr.loopEndMs, pxPerSec, arr.bpm, arr.lengthMs, arr.tracks.size,
                                 onChange = { a, b -> store.setArrangementLoop(arrangementId, startMs = a, endMs = b) },
                             )
                         }
@@ -374,3 +378,9 @@ private fun BpmDialog(bpm: Double, onDismiss: () -> Unit, onSet: (Double) -> Uni
 
 private fun Modifier.clickableNoRipple(onClick: () -> Unit): Modifier =
     this.then(Modifier.clickable(interactionSource = null, indication = null, onClick = onClick))
+
+private tailrec fun android.content.Context.findActivity(): android.app.Activity? = when (this) {
+    is android.app.Activity -> this
+    is android.content.ContextWrapper -> baseContext.findActivity()
+    else -> null
+}

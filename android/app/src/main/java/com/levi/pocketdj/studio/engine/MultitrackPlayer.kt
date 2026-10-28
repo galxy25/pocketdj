@@ -44,6 +44,9 @@ class StudioClipLoader(private val store: StudioStore, private val render: Studi
  * delete/duplicate mid-play never shifts another track's mix; changes that alter the baked buffers
  * trigger a debounced re-prime ([REPRIME_DEBOUNCE_MS]).
  */
+/** Result of a play request: only [NOTHING_TO_PLAY] deserves a user-facing message. */
+enum class PlayOutcome { STARTED, SUPERSEDED, NOTHING_TO_PLAY }
+
 class MultitrackPlayer(
     private val loader: MultitrackClipLoader,
     private val sinkFactory: () -> AudioSink,
@@ -75,15 +78,29 @@ class MultitrackPlayer(
     @Volatile private var primedSignature: BakeSignature? = null
     @Volatile private var latest: StudioArrangement? = null
     @Volatile private var looping = false
+    @Volatile private var primedLoopStartMs = 0
+    @Volatile private var primedLoopEndMs = 0
     private var autoStop: Job? = null
     private var reprime: Job? = null
 
-    /** Decode + build the render context and start the sink. [fromMs] is a timeline seek (ignored while looping). */
-    suspend fun play(arrangement: StudioArrangement, fromMs: Int = 0): Boolean = playInternal(arrangement, fromMs, fromReprime = false)
+    /** Guards every publish/teardown of the sink + context + jobs: the UI (Main) and the re-prime / auto-stop jobs (any dispatcher) both reach them. */
+    private val lock = Any()
 
-    private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean): Boolean {
-        stopInternal(keepReprime = fromReprime)
-        val gen = generation.get()
+    /** Decode + build the render context and start the sink. [fromMs] is a timeline seek (ignored while looping). */
+    suspend fun play(arrangement: StudioArrangement, fromMs: Int = 0): Boolean =
+        playOutcome(arrangement, fromMs) == PlayOutcome.STARTED
+
+    /** Like [play] but distinguishes "superseded by a newer play/stop" (silent) from "no playable clips" (toast). */
+    suspend fun playOutcome(arrangement: StudioArrangement, fromMs: Int = 0): PlayOutcome =
+        playInternal(arrangement, fromMs, fromReprime = false)
+
+    private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean): PlayOutcome {
+        val gen = synchronized(lock) { stopInternal(keepReprime = fromReprime); generation.get() }
+        // Each source file is decoded once per pass and released after its last clip; only the clip's
+        // window (not the whole file) is retained by the render context.
+        val uses = HashMap<String, Int>()
+        for (t in arrangement.tracks) for (c in t.clips) uses.merge(c.fileName, 1, Int::plus)
+        val decoded = HashMap<String, PcmBuffer?>()
         val rate = StudioAudio.CANONICAL_RATE
         val clips = ArrayList<MultitrackRenderContext.Clip>()
         val beatMatch = arrangement.beatMatchEnabled
@@ -92,8 +109,11 @@ class MultitrackPlayer(
         for ((ti, track) in arrangement.tracks.withIndex()) {
             val strip = track.strip.clamped()
             for (clip in track.clips) {
-                val buf = loader.decode(clip.fileName)
-                if (gen != generation.get()) return false // stop-during-decode wins
+                val left = (uses[clip.fileName] ?: 1) - 1
+                uses[clip.fileName] = left
+                val buf = if (decoded.containsKey(clip.fileName)) decoded[clip.fileName] else loader.decode(clip.fileName).also { decoded[clip.fileName] = it }
+                if (left <= 0) decoded.remove(clip.fileName)
+                if (gen != generation.get()) return PlayOutcome.SUPERSEDED // stop-during-decode wins
                 if (buf == null || buf.frames <= 0) continue
                 val r = ArrangerBeatMatch.rate(clip.grid?.bpm ?: 0.0, masterBpm, strip.tempoRatio, beatMatch)
                 val pitchCents = strip.pitchSemitones * 100
@@ -103,15 +123,18 @@ class MultitrackPlayer(
                 val window = clipWindow(buf.frames, clip.fileStartMs, clip.durationMs, rate)
                 if (window.frameLength <= 0) continue
                 val warped = if (needsBake) loader.transform(buf, window.srcStart.toLong(), window.frameLength.toLong(), r, pitchCents) else null
-                if (gen != generation.get()) return false
+                if (gen != generation.get()) return PlayOutcome.SUPERSEDED
                 if (warped != null && warped.frames > 0) {
                     clips += MultitrackRenderContext.Clip(ti, startFrame, warped.frames, 0, warped.toStereo().samples)
                 } else {
-                    clips += MultitrackRenderContext.Clip(ti, startFrame, window.frameLength, window.srcStart, buf.toStereo().samples)
+                    val all = buf.toStereo().samples
+                    val win = all.copyOfRange(window.srcStart * 2, (window.srcStart + window.frameLength) * 2)
+                    clips += MultitrackRenderContext.Clip(ti, startFrame, window.frameLength, 0, win)
                 }
             }
         }
-        if (clips.isEmpty() || gen != generation.get()) return false
+        if (gen != generation.get()) return PlayOutcome.SUPERSEDED
+        if (clips.isEmpty()) return PlayOutcome.NOTHING_TO_PLAY
 
         val isLoop = arrangement.loopEnabled && arrangement.loopEndMs > arrangement.loopStartMs
         val seekMs = fromMs.coerceIn(0, arrangement.lengthMs)
@@ -121,31 +144,37 @@ class MultitrackPlayer(
 
         val ctx = newContext()
         ctx.load(clips, arrangement.tracks.size, if (isLoop) loopStart else seekFrame, isLoop, loopStart, loopEnd)
-        context = ctx
-        trackIds = arrangement.tracks.map { it.id }
-        startOffsetMs = if (isLoop) 0 else seekMs
-        looping = isLoop
-        applyMix(arrangement.tracks, arrangement.bpm)
-        applyMasterFX(arrangement)
-        latest = arrangement
-        primedSignature = bakeSignature(arrangement)
+        synchronized(lock) {
+            // Re-check under the same lock stop() takes: a Stop that landed since the last await must not be followed by a sink start.
+            if (gen != generation.get()) { ctx.release(); return PlayOutcome.SUPERSEDED }
+            context = ctx
+            trackIds = arrangement.tracks.map { it.id }
+            startOffsetMs = if (isLoop) 0 else seekMs
+            looping = isLoop
+            applyMix(arrangement.tracks, arrangement.bpm)
+            applyMasterFX(arrangement)
+            latest = arrangement
+            primedLoopStartMs = if (isLoop) arrangement.loopStartMs else 0
+            primedLoopEndMs = if (isLoop) arrangement.loopEndMs else 0
+            primedSignature = bakeSignature(arrangement)
 
-        onFocus()
-        val s = sinkFactory()
-        sink = s
-        s.start(ctx)
-        clock.latencyMs = (s.latencyFrames() * 1000L / rate).toInt()
-        clock.start()
-        _isPlaying.value = true
-        _playingArrangementId.value = arrangement.id
-        logD("play ${arrangement.id} from=${seekMs}ms loop=$isLoop clips=${clips.size}")
-        if (!isLoop) scheduleAutoStop(gen, (arrangement.lengthMs - seekMs).coerceAtLeast(0))
-        return true
+            onFocus()
+            val s = sinkFactory()
+            sink = s
+            s.start(ctx)
+            clock.latencyMs = (s.latencyFrames() * 1000L / rate).toInt()
+            clock.start()
+            _isPlaying.value = true
+            _playingArrangementId.value = arrangement.id
+            logD("play ${arrangement.id} from=${seekMs}ms loop=$isLoop clips=${clips.size}")
+            if (!isLoop) scheduleAutoStop(gen, (arrangement.lengthMs - seekMs).coerceAtLeast(0))
+        }
+        return PlayOutcome.STARTED
     }
 
     fun stop() = stopInternal(keepReprime = false)
 
-    private fun stopInternal(keepReprime: Boolean) {
+    private fun stopInternal(keepReprime: Boolean) = synchronized(lock) {
         generation.incrementAndGet()
         autoStop?.cancel(); autoStop = null
         if (!keepReprime) { reprime?.cancel(); reprime = null }
@@ -167,7 +196,8 @@ class MultitrackPlayer(
     /** Current timeline position while playing (cursor), else null. */
     fun positionMs(arrangement: StudioArrangement): Int? {
         if (!_isPlaying.value) return null
-        return clock.timelineMs(startOffsetMs, arrangement.lengthMs, arrangement.loopStartMs, arrangement.loopEndMs, looping)
+        // The PRIMED loop state (what the audio is actually doing), not the edited arrangement's: a pending loop edit re-primes and re-anchors.
+        return clock.timelineMs(startOffsetMs, arrangement.lengthMs, primedLoopStartMs, primedLoopEndMs, looping)
     }
 
     /** Recompute each track's audible gain + pan and live strip FX, MATCHED BY TRACK ID (mid-play delete safe). */
@@ -196,33 +226,36 @@ class MultitrackPlayer(
      */
     fun onArrangementChanged(arrangement: StudioArrangement) {
         if (!_isPlaying.value || _playingArrangementId.value != arrangement.id) return
-        latest = arrangement
-        applyMix(arrangement.tracks, arrangement.bpm)
-        applyMasterFX(arrangement)
-        val isLoop = arrangement.loopEnabled && arrangement.loopEndMs > arrangement.loopStartMs
-        looping = isLoop
-        context?.setLoop(isLoop,
-            MultitrackRenderContext.msToFrames(arrangement.loopStartMs), MultitrackRenderContext.msToFrames(arrangement.loopEndMs))
-        if (bakeSignature(arrangement) == primedSignature) { reprime?.cancel(); reprime = null; return }
-        reprime?.cancel()
-        reprime = scope.launch {
-            delay(reprimeDebounceMs)
-            val a = latest ?: return@launch
-            val at = positionMs(a) ?: return@launch
-            playInternal(a, at, fromReprime = true)
+        synchronized(lock) {
+            latest = arrangement
+            applyMix(arrangement.tracks, arrangement.bpm)
+            applyMasterFX(arrangement)
+            // Loop on/off and region edits are NOT pushed into the running context (iOS restarts instead): the
+            // auto-stop schedule, startOffsetMs and the clock anchor all depend on them, so they ride the re-prime.
+            if (bakeSignature(arrangement) == primedSignature) { reprime?.cancel(); reprime = null; return }
+            reprime?.cancel()
+            reprime = scope.launch {
+                delay(reprimeDebounceMs)
+                val a = latest ?: return@launch
+                val at = positionMs(a) ?: return@launch
+                playInternal(a, at, fromReprime = true)
+            }
         }
     }
 
     private fun scheduleAutoStop(gen: Int, lengthMs: Int) {
-        autoStop?.cancel()
-        autoStop = scope.launch {
+        synchronized(lock) { autoStop?.cancel() }
+        val job = scope.launch {
             delay(lengthMs + 350L + 120L)
             if (gen == generation.get()) stop()
         }
+        synchronized(lock) { autoStop = job }
     }
 
     /** Everything that changes the baked clip buffers or their placement (NOT live-mix scalars). */
-    data class BakeSignature(val beatMatch: Boolean, val bpmIfBeatMatch: Double, val tracks: List<TrackBake>)
+    data class BakeSignature(val beatMatch: Boolean, val bpmIfBeatMatch: Double, val tracks: List<TrackBake>, val loop: LoopBake = LoopBake())
+    /** Loop on/off + region (region only matters while looping). Changing it restarts playback like iOS. */
+    data class LoopBake(val on: Boolean = false, val startMs: Int = 0, val endMs: Int = 0)
     data class TrackBake(val id: String, val pitch: Double, val tempo: Double, val clips: List<List<Any?>>)
 
     companion object {
@@ -234,10 +267,14 @@ class MultitrackPlayer(
 
         fun bakeSignature(a: StudioArrangement) = BakeSignature(
             a.beatMatchEnabled, if (a.beatMatchEnabled) a.bpm else 0.0,
-            a.tracks.map { t ->
+            tracks = a.tracks.map { t ->
                 val s = t.strip.clamped()
                 TrackBake(t.id, s.pitchSemitones, s.tempoRatio,
                     t.clips.map { listOf(it.id, it.startMs, it.durationMs, it.fileStartMs, it.grid?.bpm) })
+            },
+            loop = a.loopEnabled.let { on ->
+                val usable = on && a.loopEndMs > a.loopStartMs
+                if (usable) LoopBake(true, a.loopStartMs, a.loopEndMs) else LoopBake()
             },
         )
 

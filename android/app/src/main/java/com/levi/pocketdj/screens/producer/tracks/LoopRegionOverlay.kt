@@ -10,6 +10,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,12 +54,12 @@ object LoopRegionMath {
         return raw.coerceIn(startMs + MIN_LENGTH_MS, upper)
     }
 
-    /** The region used when Loop is first switched on with no usable region: 2 bars from the cursor, inside the arrangement. */
-    fun defaultRegion(cursorMs: Int, lengthMs: Int, bpm: Double): Pair<Int, Int> {
-        val twoBars = if (bpm > 0) (60_000.0 / bpm * 8).toInt() else 4_000
-        val start = cursorMs.coerceIn(0, max(0, lengthMs - MIN_LENGTH_MS))
-        val end = min(max(lengthMs, start + MIN_LENGTH_MS), start + twoBars)
-        return start to max(end, start + MIN_LENGTH_MS)
+    /** iOS default when Loop is first enabled with no usable region: 4 beats from 0:00, capped to the arrangement. */
+    fun defaultRegion(lengthMs: Int, bpm: Double): Pair<Int, Int> {
+        val fourBeats = if (bpm > 0) (60_000.0 / bpm * 4).toInt() else 2_000
+        var end = if (lengthMs > 0) min(fourBeats, lengthMs) else fourBeats
+        if (end <= 0) end = fourBeats
+        return 0 to max(end, MIN_LENGTH_MS)
     }
 
     fun isUsable(startMs: Int, endMs: Int) = endMs - startMs >= MIN_LENGTH_MS
@@ -65,11 +68,11 @@ object LoopRegionMath {
 /**
  * The loop band + two draggable handles, laid out in the SAME coordinate space as the cursor overlay
  * (a child of the horizontally-scrolling timeline, so dp x = ms * pxPerSec). Drags report the new
- * region through [onChange]; Beat Match snaps handles to the beat grid.
+ * region through [onChange]; handles always snap to the beat grid when bpm > 0 (iOS rule).
  */
 @Composable
 fun LoopRegionOverlay(
-    startMs: Int, endMs: Int, pxPerSec: Float, bpm: Double, snapToBeats: Boolean, lengthMs: Int, laneCount: Int,
+    startMs: Int, endMs: Int, pxPerSec: Float, bpm: Double, lengthMs: Int, laneCount: Int,
     onChange: (startMs: Int, endMs: Int) -> Unit, modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current.density
@@ -80,28 +83,34 @@ fun LoopRegionOverlay(
     val curEnd by rememberUpdatedState(endMs)
     val curPx by rememberUpdatedState(pxPerSec)
     val curBpm by rememberUpdatedState(bpm)
-    val curSnap by rememberUpdatedState(snapToBeats)
     val curLen by rememberUpdatedState(lengthMs)
+    var originStart by remember { mutableIntStateOf(startMs) }
+    var originEnd by remember { mutableIntStateOf(endMs) }
     val accent = MaterialTheme.colorScheme.secondary
     Box(modifier.height(height).width((x1 + 24f).dp)) {
         Box(
             Modifier.offset(x = x0.dp).width((x1 - x0).coerceAtLeast(1f).dp).fillMaxHeight().background(accent).alpha(0.16f)
                 .testTag("tracks-loop-band"),
         )
-        Handle(x0 - 10f, accent, "Loop start", "tracks-loop-start") { dx ->
-            onChange(LoopRegionMath.dragStart(curStart, curEnd, dx / density, curPx, curBpm, curSnap), curEnd)
+        // Drags are measured from where the gesture BEGAN (origin + accumulated dx), then snapped: per-event
+        // deltas smaller than half a beat would otherwise round back to the same beat and the handle would never move.
+        Handle(x0 - 10f, accent, "Loop start", "tracks-loop-start", onBegin = { originStart = curStart }) { totalPx ->
+            onChange(LoopRegionMath.dragStart(originStart, curEnd, totalPx / density, curPx, curBpm, true), curEnd)
         }
-        Handle(x1 - 10f, accent, "Loop end", "tracks-loop-end") { dx ->
-            onChange(curStart, LoopRegionMath.dragEnd(curStart, curEnd, dx / density, curPx, curBpm, curSnap, curLen))
+        Handle(x1 - 10f, accent, "Loop end", "tracks-loop-end", onBegin = { originEnd = curEnd }) { totalPx ->
+            onChange(curStart, LoopRegionMath.dragEnd(curStart, originEnd, totalPx / density, curPx, curBpm, true, curLen))
         }
     }
 }
 
 @Composable
-private fun Handle(xDp: Float, color: androidx.compose.ui.graphics.Color, label: String, tag: String, onDrag: (Float) -> Unit) {
+private fun Handle(xDp: Float, color: androidx.compose.ui.graphics.Color, label: String, tag: String, onBegin: () -> Unit, onDrag: (Float) -> Unit) {
     Box(
         Modifier.offset(x = xDp.coerceAtLeast(0f).dp).width(20.dp).fillMaxHeight()
-            .pointerInput(tag) { detectHorizontalDragGestures { change, dx -> change.consume(); onDrag(dx) } }
+            .pointerInput(tag) {
+                var total = 0f
+                detectHorizontalDragGestures(onDragStart = { total = 0f; onBegin() }) { change, dx -> change.consume(); total += dx; onDrag(total) }
+            }
             .semantics { contentDescription = label }.testTag(tag),
         contentAlignment = Alignment.TopCenter,
     ) { Box(Modifier.width(4.dp).fillMaxHeight().background(color)) }
