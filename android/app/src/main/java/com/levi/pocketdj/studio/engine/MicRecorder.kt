@@ -354,7 +354,7 @@ class MicRecorder(
         if (had) store.flush()
     }
 
-    private fun fileSample(t: MicTake) {
+    fun fileSample(t: MicTake) {
         store.addSample(
             StudioSample(
                 id = t.id, name = DEFAULT_NAME, fileName = t.fileName, wasUserFolder = t.wasUserFolder,

@@ -425,9 +425,11 @@ private fun ShellNavHost(
                 },
             )
         }
+        composable(PocketDjDestination.Producer.route) {
+            com.levi.pocketdj.screens.producer.ProducerRoute(graph)
+        }
         listOf(
             PocketDjDestination.Mix,
-            PocketDjDestination.Producer,
             PocketDjDestination.Games,
         ).forEach { dest ->
             composable(dest.route) {
