@@ -2,7 +2,7 @@ state: implemented
 
 # GM-3 Gem Collector engine + GameRunPlayer over the sequencer
 
-Tests: 2497 total, 0 failed (`./gradlew :app:testDebugUnitTest :app:assembleDebug` green). New: CollectorsPuzzleEngineTest (37), GameRunPlayerContractTest (8).
+Tests: 2497 total, 0 failed (`./gradlew :app:testDebugUnitTest :app:assembleDebug` green). New: CollectorsPuzzleEngineTest (45), GameRunPlayerContractTest (9).
 
 - [x] playback/GameRunPlayer.kt: RunItem + GameRunPlayer (runningTag/isRunning/position, ownsRun, playRun, appendRun, skipNext, stopRun, filterResolvable)
 - [x] playback/SequencerGameRunPlayer.kt: adapter over SetlistSequencer (play with PlayContext.game(tag,label), appendRows(runTag), ownership = running && capturedContext.contextId==tag), GamePreviewResolver (local rip/burn instant; AM-only via cached 30 s preview, chunks of 12, first chunk awaited, 4 s probe budget), GamePreviewRowResolver (FALLBACK rung, run-tagged rows only)
