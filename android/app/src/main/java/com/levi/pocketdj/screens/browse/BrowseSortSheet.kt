@@ -54,8 +54,10 @@ fun BrowseSortSheet(
     onDismiss: () -> Unit,
     /** History mode adds the history-only "Last played" key (BRW-6). */
     historyMode: Boolean = false,
+    /** Per-collection sort (COL-13) offers "Date added". */
+    includeDateAdded: Boolean = false,
 ) {
-    val sortable = SortField.forKind(kind, includeHistory = historyMode)
+    val sortable = SortField.forKind(kind, includeHistory = historyMode, includeDateAdded = includeDateAdded)
     val usedIds = sortKeys.map { it.field.id }.toSet()
     val unused = sortable.filter { it.id !in usedIds }
 

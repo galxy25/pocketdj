@@ -113,6 +113,11 @@ fun SourcePlaylistDetailScreen(
     }
 
     var detailSongId by remember { mutableStateOf<String?>(null) }
+    // COL-13: per-collection sort/filter (key pdj.collection.<id>), independent of the Browse session.
+    val sortState = rememberCollectionSortState("source:$sourceName:$playlistId")
+    val playCountOf = rememberPlayCountOf()
+    var showSort by remember { mutableStateOf(false) }
+    var showFilter by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
         if (source == null || catalog == null) {
@@ -137,18 +142,33 @@ fun SourcePlaylistDetailScreen(
         // Rows are keyed by SONG id (as iOS); a repeat gets an occurrence suffix so keys stay
         // unique, and a reorder never moves the selection onto different songs.
         val rowKeys = com.levi.pocketdj.ui.selection.stableKeys(songIds)
-        fun selectableIds() = songIds.indices.filter {
-            catalog.songsById.containsKey(songIds[it]) && !PlayResolver.isStudioId(songIds[it])
-        }.map { rowKeys[it] }
+        // Sorted/filtered display order, resolved OFF-main; keyed on the stored ids + inputs + catalog.
+        // Null = not resolved yet (skeleton-free: show the stored rows' count honestly as loading).
+        val inputs = sortState.inputs
+        val readTime = rememberCollectionReadTime(inputs)
+        val displayed by produceState<List<String>?>(
+            initialValue = null, songIds, inputs, catalog, readTime,
+        ) {
+            value = if (inputs.isDefaultOrder) null else withContext(Dispatchers.Default) {
+                CollectionSortFilter.resolveSongIds(songIds, catalog, inputs, playCountOf, readTime)
+            }
+        }
+        val displayedIds: List<String>? = if (inputs.isDefaultOrder) null else displayed
+        // Selection acts on what is DISPLAYED (resolved order while sorted/filtered); keys follow the rows.
+        val selIds: List<String> = displayedIds ?: if (inputs.isDefaultOrder) songIds else emptyList()
+        val selKeys = if (displayedIds != null) com.levi.pocketdj.ui.selection.stableKeys(selIds) else rowKeys
+        fun selectableIds() = selIds.indices.filter {
+            catalog.songsById.containsKey(selIds[it]) && !PlayResolver.isStudioId(selIds[it])
+        }.map { selKeys[it] }
         SelectionScope(
             selection = rowSelection,
             scope = selScope,
-            pruneKey = songIds,
+            pruneKey = listOf(songIds, displayedIds),
             allIds = { selectableIds() },
             payload = {
                 SongTransfer.make(
                     rowSelection.orderedSelection(selectableIds()).mapNotNull { k ->
-                        rowKeys.indexOf(k).takeIf { it >= 0 }?.let { songIds[it] }
+                        selKeys.indexOf(k).takeIf { it >= 0 }?.let { selIds[it] }
                     },
                     catalog.songsById,
                 )
@@ -173,6 +193,11 @@ fun SourcePlaylistDetailScreen(
                         modifier = Modifier.weight(1f),
                     )
                     CapsuleBadge(sourceName)
+                    CollectionSortFilterButtons(
+                        sortState,
+                        onSort = { showSort = true },
+                        onFilter = { showFilter = true },
+                    )
                 }
             }
 
@@ -236,7 +261,18 @@ fun SourcePlaylistDetailScreen(
             }
 
             item(key = "hdr-songs") { SectionHeader("Songs") }
-            songIds.forEachIndexed { index, songId ->
+            if (!inputs.isDefaultOrder && displayedIds == null) {
+                item(key = "resolving") { SectionCaption("Sorting…") }
+            } else if (displayedIds != null && displayedIds.isEmpty()) {
+                item(key = "no-match") { SectionCaption("No songs match the filter.") }
+            }
+            // Default order: the stored list (missing / Studio rows degrade honestly). Sorted or
+            // filtered: only catalog songs, in pipeline order; the stored list is never mutated.
+            val shownIds: List<String> = displayedIds ?: if (inputs.isDefaultOrder) songIds else emptyList()
+            val shownKeys = if (displayedIds != null) {
+                com.levi.pocketdj.ui.selection.stableKeys(shownIds)
+            } else rowKeys
+            shownIds.forEachIndexed { index, songId ->
                 item(key = "song-$index-$songId") {
                     val song = catalog.songsById[songId]
                     if (song == null || PlayResolver.isStudioId(songId)) {
@@ -250,7 +286,7 @@ fun SourcePlaylistDetailScreen(
                             camelot = song.camelot,
                             lengthMs = song.length,
                             dimmed = !manifest.containsKey(songId),
-                            modifier = Modifier.selectableRow(rowSelection, rowKeys[index], selScope) { detailSongId = songId },
+                            modifier = Modifier.selectableRow(rowSelection, shownKeys[index], selScope) { detailSongId = songId },
                             favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                         )
                     }
@@ -261,6 +297,16 @@ fun SourcePlaylistDetailScreen(
 
         SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter))
     }
+
+    CollectionSortFilterSheets(
+        state = sortState,
+        catalog = catalog,
+        songIds = source?.playlist?.songIds.orEmpty(),
+        showSort = showSort,
+        showFilter = showFilter,
+        onDismissSort = { showSort = false },
+        onDismissFilter = { showFilter = false },
+    )
 
     detailSongId?.let { songId ->
         SongDetailSheet(
