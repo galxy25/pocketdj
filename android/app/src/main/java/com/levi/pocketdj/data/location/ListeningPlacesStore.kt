@@ -170,13 +170,13 @@ class ListeningLocationStore(
     }
 
     fun ingestVisit(visit: LocationVisitSample) = synchronized(lock) {
-        if (!isSupported || !enabled) return@synchronized
+        if (!isSupported || !enabled || !auth.isGranted) return@synchronized
         engineState.ingest(visit, now())
         bumpLocked()
     }
 
     fun noteMovement(fix: LocationFixSample) = synchronized(lock) {
-        if (!isSupported || !enabled) return@synchronized
+        if (!isSupported || !enabled || !auth.isGranted) return@synchronized
         engineState.noteMovement(fix, now())
         bumpLocked()
     }

@@ -13,6 +13,11 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequest
+import androidx.work.WorkManager
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.withLock
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -23,29 +28,50 @@ import kotlin.coroutines.resume
  * [DwellDetector] needs recurring fixes to prove a stay. Raw fixes go straight into the detector;
  * only visit / hint samples reach the store. Nothing is logged, nothing leaves the device.
  *
- * Detector state is in-memory: after process death the next fix re-anchors, so a stay's arrival
- * can be recorded up to one dwell later than the true arrival (never earlier).
+ * The detector's tiny state (anchor, last in-radius time, visit-emitted) is persisted to a no-backup file
+ * while the feature is on, so a killed process resumes the stay (and an open visit still closes with a
+ * hint when the first far fix arrives). It is erased on stop. The periodic poll is enqueued on start and
+ * cancelled on stop, so a default-off install never wakes for it.
  */
 class FusedVisitSource(
     private val context: Context,
     private val detector: DwellDetector = DwellDetector(),
+    /** Detector state file; null disables persistence (tests). Default: no-backup dir. */
+    private val stateFile: java.io.File? = java.io.File(context.noBackupFilesDir, "pdj-dwell-state.txt"),
+    /** Clears the graph's reference to this source when stopped. */
+    private val onStopped: () -> Unit = {},
     /** Called after any ingest so the pockets service can settle contexts onto plays. */
     private val onIngested: () -> Unit = {},
 ) : ListeningLocationSource {
 
     @Volatile private var store: ListeningLocationStore? = null
+    private val feedLock = java.util.concurrent.locks.ReentrantLock()
 
     override val authorization: ListeningLocationAuthorization get() = LocationSettings.current(context)
 
     override fun start(store: ListeningLocationStore) {
         this.store = store
+        runCatching { stateFile?.takeIf { it.exists() }?.readText() }.getOrNull()?.let { detector.restore(it) }
         registerUpdates()
+        schedulePoll()
     }
 
     override fun stop() {
         runCatching { LocationServices.getFusedLocationProviderClient(context).removeLocationUpdates(pendingIntent(context)) }
-        detector.reset()
-        store = null
+        runCatching { WorkManager.getInstance(context).cancelUniqueWork(WORK_ID) }
+        feedLock.withLock {
+            detector.reset()
+            store = null
+            runCatching { stateFile?.delete() }
+        }
+        onStopped()
+    }
+
+    private fun schedulePoll() {
+        runCatching {
+            val req = PeriodicWorkRequest.Builder(LocationPollWorker::class.java, 15, TimeUnit.MINUTES).build()
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(WORK_ID, ExistingPeriodicWorkPolicy.KEEP, req)
+        }
     }
 
     /** The system permission sheet needs an Activity: the Settings row launches it, then calls this to re-sync. */
@@ -66,13 +92,22 @@ class FusedVisitSource(
 
     /** One fix in; visit/hint samples out to the store. */
     fun feed(fix: DwellDetector.Fix) {
-        val s = store ?: return
-        val out = detector.onFix(fix)
-        for (o in out) when (o) {
-            is DwellDetector.Output.Visit -> s.ingestVisit(o.sample)
-            is DwellDetector.Output.Hint -> s.noteMovement(o.sample)
+        // One lock over detector + store calls so concurrent deliveries (receiver, poll) reach the store in order.
+        val delivered = feedLock.withLock {
+            val s = store ?: return
+            if (!LocationSettings.current(context).isGranted) return
+            val out = detector.onFix(fix)
+            for (o in out) when (o) {
+                is DwellDetector.Output.Visit -> s.ingestVisit(o.sample)
+                is DwellDetector.Output.Hint -> s.noteMovement(o.sample)
+            }
+            runCatching {
+                val snap = detector.snapshot()
+                if (snap == null) stateFile?.delete() else stateFile?.writeText(snap)
+            }
+            out.isNotEmpty()
         }
-        if (out.isNotEmpty()) onIngested()
+        if (delivered) onIngested()
     }
 
     /** Periodic poll body: one balanced fix (no-op without permission / when off). */

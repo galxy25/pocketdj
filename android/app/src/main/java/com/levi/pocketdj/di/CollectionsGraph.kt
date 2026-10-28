@@ -255,14 +255,9 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
 
     override val periodicWork: List<com.levi.pocketdj.shell.PeriodicWorkSpec> by lazy {
         com.levi.pocketdj.work.WorkerRegistry.register(AppleMusicAutoSync.WORK_ID, AmAutoSyncWorker::class.java)
-        com.levi.pocketdj.work.WorkerRegistry.register(
-            com.levi.pocketdj.data.location.FusedVisitSource.WORK_ID,
-            com.levi.pocketdj.data.location.LocationPollWorker::class.java,
-        )
         listOf(
             com.levi.pocketdj.shell.PeriodicWorkSpec(AppleMusicAutoSync.WORK_ID, repeatMinutes = 60, requiresNetwork = true),
-            // COL-20: stationary coverage for the dwell detector (self-gated; no-op while places & trips is off).
-            com.levi.pocketdj.shell.PeriodicWorkSpec(com.levi.pocketdj.data.location.FusedVisitSource.WORK_ID, repeatMinutes = 15),
+            // COL-20: the dwell-detector poll is NOT declared here: FusedVisitSource enqueues it on start and cancels it on stop.
         )
     }
 
@@ -387,6 +382,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                     context = app.appContext,
                     // iOS: settle after each ingest so plays pick up their place/trip id promptly.
                     onIngested = { app.appScope.launch(Dispatchers.IO) { runCatching { listeningPockets.settleContexts() } } },
+                    onStopped = { fusedSource = null },
                 ).also { fusedSource = it }
             },
         ).also { it.startIfEnabled() }

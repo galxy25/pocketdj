@@ -63,6 +63,25 @@ class LocationSettingsTest {
         assertEquals(A.DENIED, store.authorization)
         assertFalse(store.isActive)
         assertEquals(ListeningContextLookup.Unavailable, store.context((clock - 1000).toDouble()))
+        // a source (or stale cached fix) delivering while DENIED must not be ingested
+        store.ingestVisit(LocationVisitSample(37.8, -122.4, 20.0, arrivalMs = clock - 3_600_000, departureMs = null))
+        store.noteMovement(LocationFixSample(37.9, -122.4, 20.0, clock - 1000))
+        assertTrue(store.engine.places.isEmpty())
+        assertTrue(store.engine.timeline.isEmpty())
+    }
+
+    @Test fun approximateOnlyAndRetryRules() {
+        assertTrue(LocationSettings.approximateOnly(coarse = true, fine = false))
+        assertFalse(LocationSettings.approximateOnly(coarse = true, fine = true))
+        assertFalse(LocationSettings.approximateOnly(coarse = false, fine = false))
+        // lapsed one-time grant / first dismissal: re-askable; permanent: Settings only
+        assertTrue(LocationSettings.canRequestAgain(denials = 0, shouldShowRationale = false))
+        assertTrue(LocationSettings.canRequestAgain(denials = 1, shouldShowRationale = true))
+        assertFalse(LocationSettings.canRequestAgain(denials = 1, shouldShowRationale = false))
+        assertFalse(LocationSettings.canRequestAgain(denials = 2, shouldShowRationale = true))
+        assertEquals(AuthAction.REQUEST_FOREGROUND, ListeningLocationCopy.authAction(A.DENIED, false, canRequestAgain = true))
+        assertEquals(AuthAction.OPEN_SETTINGS, ListeningLocationCopy.authAction(A.DENIED, false, canRequestAgain = false))
+        assertEquals(AuthAction.OPEN_SETTINGS, ListeningLocationCopy.authAction(A.RESTRICTED, false, canRequestAgain = true))
     }
 
     /** Detector -> store -> settled play -> upload event: only plc_ ids, no coordinates anywhere in the wire JSON. */

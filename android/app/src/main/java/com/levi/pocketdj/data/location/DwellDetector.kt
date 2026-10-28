@@ -7,7 +7,10 @@ package com.levi.pocketdj.data.location
  *
  * Rules:
  *  - a fix worse than [maxMovementAccuracyM] is ignored outright;
- *  - a fix worse than [maxAnchorAccuracyM] is only ever a movement hint (never anchors / extends a stay);
+ *  - a fix worse than [maxAnchorAccuracyM] is only ever a movement hint (never anchors / extends a stay /
+ *    yields a visit). With no precise anchor yet, the first coarse fix becomes a provisional HINT anchor and
+ *    later coarse fixes farther than radius + both accuracies emit hints (approximate-only grants thus
+ *    still produce movement hints, but never places);
  *  - the first good fix anchors a candidate stay; further good fixes within [radiusM] extend it;
  *    once stationary for >= [minDwellMs] an OPEN visit (departure = null) is emitted;
  *  - a good fix farther than radius + its accuracy closes an emitted visit (departure = last
@@ -28,6 +31,7 @@ class DwellDetector(
     }
 
     private var anchor: Fix? = null
+    private var coarseAnchor: Fix? = null
     private var lastInRadiusMs: Long = 0
     private var visitEmitted = false
 
@@ -41,13 +45,17 @@ class DwellDetector(
         }
         val a = anchor
         if (f.accuracyM > maxAnchorAccuracyM) {
-            // Coarse fix: a hint only. Offer it only when it is plausibly away from the anchor.
-            if (a == null) return emptyList()
-            val d = ListeningPlaceEngine.distanceM(a.latitude, a.longitude, f.latitude, f.longitude)
-            return if (d > radiusM + f.accuracyM) listOf(hint(f)) else emptyList()
+            // Coarse fix: a hint only. Offer it only when it is plausibly away from the reference.
+            val ref = a ?: coarseAnchor
+            if (ref == null) { coarseAnchor = f; return emptyList() }
+            val d = ListeningPlaceEngine.distanceM(ref.latitude, ref.longitude, f.latitude, f.longitude)
+            val slack = if (a == null) maxOf(f.accuracyM, ref.accuracyM) else f.accuracyM
+            if (d <= radiusM + slack) return emptyList()
+            if (a == null) coarseAnchor = f
+            return listOf(hint(f))
         }
         if (a == null) {
-            anchor = f; lastInRadiusMs = f.atMs; visitEmitted = false
+            anchor = f; coarseAnchor = null; lastInRadiusMs = f.atMs; visitEmitted = false
             return emptyList()
         }
         if (f.atMs < lastInRadiusMs) return emptyList() // out-of-order delivery
@@ -72,7 +80,23 @@ class DwellDetector(
     }
 
     @Synchronized
-    fun reset() { anchor = null; visitEmitted = false; lastInRadiusMs = 0 }
+    fun reset() { anchor = null; coarseAnchor = null; visitEmitted = false; lastInRadiusMs = 0 }
+
+    /** The small persisted state (precise anchor + dwell bookkeeping) so a killed process resumes the stay. */
+    @Synchronized
+    fun snapshot(): String? = anchor?.let {
+        listOf(it.latitude, it.longitude, it.accuracyM, it.atMs, lastInRadiusMs, if (visitEmitted) 1 else 0).joinToString(",")
+    }
+
+    @Synchronized
+    fun restore(encoded: String?) {
+        val p = encoded?.split(",") ?: return
+        if (p.size != 6) return
+        val lat = p[0].toDoubleOrNull(); val lon = p[1].toDoubleOrNull(); val acc = p[2].toDoubleOrNull()
+        val at = p[3].toLongOrNull(); val last = p[4].toLongOrNull(); val emitted = p[5].toIntOrNull()
+        if (lat == null || lon == null || acc == null || at == null || last == null || emitted == null) return
+        anchor = Fix(lat, lon, acc, at); lastInRadiusMs = last; visitEmitted = emitted == 1
+    }
 
     private fun open(a: Fix) = LocationVisitSample(a.latitude, a.longitude, a.accuracyM, arrivalMs = a.atMs, departureMs = null)
     private fun hint(f: Fix) = Output.Hint(LocationFixSample(f.latitude, f.longitude, f.accuracyM, f.atMs))

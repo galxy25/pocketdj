@@ -70,8 +70,10 @@ class ListeningPlacesStoreTest {
         val s = store(tmp(), src)
         val enabledAt = clock
         s.setEnabled(true)
+        s.sourceAuthorizationDidChange(ListeningLocationAuthorization.WHEN_IN_USE)
         clock += 10 * H
         s.ingestVisit(LocationVisitSample(45.0, -122.0, 20.0, enabledAt + H, enabledAt + 2 * H))
+        s.sourceAuthorizationDidChange(ListeningLocationAuthorization.DENIED)
         val inside = (enabledAt + H + 30 * 60_000L).toDouble()
         // Permission not granted => inactive => unavailable, even with a visit ingested.
         assertEquals(ListeningContextLookup.Unavailable, s.context(inside))

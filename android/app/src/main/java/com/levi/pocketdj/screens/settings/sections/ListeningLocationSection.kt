@@ -30,11 +30,14 @@ import com.levi.pocketdj.data.location.ListeningLocationAuthorization
 import com.levi.pocketdj.data.location.ListeningLocationStore
 import com.levi.pocketdj.data.location.LocationSettings
 import com.levi.pocketdj.data.pockets.PocketsSettings
+import com.levi.pocketdj.data.recs.RecsSettings
 import com.levi.pocketdj.screens.settings.SettingsCaption
 import com.levi.pocketdj.shell.SettingsSection
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** Pure copy for the places & trips rows (iOS `ListeningLocationSettingsSection`). */
@@ -45,6 +48,8 @@ object ListeningLocationCopy {
     const val TOGGLE = "Use places & trips in pockets"
     const val NO_PLACES = "No places yet. They appear after you've spent some time somewhere."
     const val ALWAYS_HINT = "Always lets PocketDJ notice trips between your places while music plays in the background."
+    const val PRECISE_HINT =
+        "Approximate location is too coarse to learn places. Allow precise location so PocketDJ can recognise where you listen."
     const val ERASE = "Erase places & trips"
     const val ERASE_TITLE = "Erase your places and trips from this device?"
     const val ERASE_MESSAGE =
@@ -59,8 +64,9 @@ object ListeningLocationCopy {
     /** Which action the authorization row offers. */
     enum class AuthAction { NONE, OPEN_SETTINGS, ALLOW_ALWAYS, ALLOW_ALWAYS_IN_SETTINGS, REQUEST_FOREGROUND }
 
-    fun authAction(a: ListeningLocationAuthorization, didRequestAlways: Boolean): AuthAction = when (a) {
-        ListeningLocationAuthorization.DENIED, ListeningLocationAuthorization.RESTRICTED -> AuthAction.OPEN_SETTINGS
+    fun authAction(a: ListeningLocationAuthorization, didRequestAlways: Boolean, canRequestAgain: Boolean = false): AuthAction = when (a) {
+        ListeningLocationAuthorization.DENIED -> if (canRequestAgain) AuthAction.REQUEST_FOREGROUND else AuthAction.OPEN_SETTINGS
+        ListeningLocationAuthorization.RESTRICTED -> AuthAction.OPEN_SETTINGS
         ListeningLocationAuthorization.WHEN_IN_USE ->
             if (didRequestAlways) AuthAction.ALLOW_ALWAYS_IN_SETTINGS else AuthAction.ALLOW_ALWAYS
         ListeningLocationAuthorization.NOT_DETERMINED -> AuthAction.REQUEST_FOREGROUND
@@ -68,10 +74,14 @@ object ListeningLocationCopy {
     }
 }
 
+private val toggleMutex = Mutex()
+@Volatile private var latestToggle = false
+
 internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.ID, ListeningLocationCopy.ORDER) { host ->
     val graph = host.graph
     val ctx = LocalContext.current
     val pocketsOn by graph.settings.flow(PocketsSettings.LISTENING_POCKETS_ENABLED).collectAsState(initial = false)
+    val recEngineOn by graph.settings.flow(RecsSettings.REC_ENGINE_ENABLED).collectAsState(initial = false)
     val store by produceState<ListeningLocationStore?>(null) {
         value = withContext(Dispatchers.IO) { graph.collectionsGraph.locationStore }
     }
@@ -84,7 +94,9 @@ internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.
     fun openSettings() = runCatching { ctx.startActivity(LocationSettings.appSettingsIntent(ctx)) }
 
     val foreground = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        LocationSettings.markAsked(ctx); resync()
+        LocationSettings.markAsked(ctx)
+        LocationSettings.recordForegroundResult(ctx, granted = it.values.any { g -> g })
+        resync()
     }
     val background = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { resync() }
 
@@ -98,7 +110,8 @@ internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.
 
     @Suppress("UNUSED_EXPRESSION") rev // recompose on engine changes
     val on = s.isEnabled
-    if (!pocketsOn && !on) return@SettingsSection // the toggle only exists under an enabled pockets toggle
+    // iOS: the whole group lives under the enabled rec engine; with pockets off the toggle shows disabled.
+    if (!recEngineOn) return@SettingsSection
 
     Row(
         Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -111,12 +124,21 @@ internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.
             enabled = LocationSettings.toggleEnabled(on, pocketsOn),
             onCheckedChange = { want ->
                 if (!LocationSettings.canSetEnabled(want, pocketsOn)) return@Switch
+                latestToggle = want
                 host.scope.launch(Dispatchers.IO) {
-                    s.setEnabled(want)
-                    runCatching { graph.settings.set(PocketsSettings.LISTENING_LOCATION_ENABLED, want) }
-                    if (want && !LocationSettings.current(ctx).isGranted) {
-                        withContext(Dispatchers.Main) { foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS) }
-                    } else if (want) resync()
+                    // Writes are serialized and always apply the LATEST requested value, so a fast on->off
+                    // can never leave the store enabled (or prompt) after the user switched it off.
+                    val v = toggleMutex.withLock {
+                        val v = latestToggle
+                        s.setEnabled(v)
+                        runCatching { graph.settings.set(PocketsSettings.LISTENING_LOCATION_ENABLED, v) }
+                        v
+                    }
+                    if (v && latestToggle) {
+                        if (!LocationSettings.current(ctx).isGranted) {
+                            withContext(Dispatchers.Main) { if (latestToggle) foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS) }
+                        } else resync()
+                    }
                 }
             },
             modifier = Modifier.testTag("pockets-location-toggle"),
@@ -137,7 +159,18 @@ internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.
                 modifier = Modifier.testTag("pockets-location-status"),
             )
         }
-        when (ListeningLocationCopy.authAction(auth, s.didRequestAlways)) {
+        val canRetry = remember(auth, rev) {
+            val act = generateSequence(ctx) { (it as? android.content.ContextWrapper)?.baseContext }.filterIsInstance<android.app.Activity>().firstOrNull()
+            LocationSettings.canRequestAgain(
+                LocationSettings.denials(ctx),
+                act != null && LocationSettings.FOREGROUND_PERMISSIONS.any { p -> act.shouldShowRequestPermissionRationale(p) },
+            )
+        }
+        if (auth.isGranted && LocationSettings.isApproximateOnly(ctx)) {
+            TextButton(onClick = { foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS) }, modifier = Modifier.testTag("pockets-location-allow-precise")) { Text("Allow precise location") }
+            SettingsCaption(ListeningLocationCopy.PRECISE_HINT)
+        }
+        when (ListeningLocationCopy.authAction(auth, s.didRequestAlways, canRetry)) {
             ListeningLocationCopy.AuthAction.OPEN_SETTINGS ->
                 TextButton(onClick = { openSettings() }, modifier = Modifier.testTag("pockets-location-open-settings")) { Text("Open Settings") }
             ListeningLocationCopy.AuthAction.REQUEST_FOREGROUND ->

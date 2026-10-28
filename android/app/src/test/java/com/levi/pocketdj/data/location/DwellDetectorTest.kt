@@ -4,6 +4,7 @@ import com.levi.pocketdj.data.location.DwellDetector.Fix
 import com.levi.pocketdj.data.location.DwellDetector.Output
 import org.junit.Test
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 
 class DwellDetectorTest {
@@ -88,5 +89,39 @@ class DwellDetectorTest {
         feed(d.onFix(fix(home.first + 0.01, home.second, 20.0, 30)))
         assertEquals(1, e.places.size)
         assertEquals(30 * 0 + 6 * min, e.timeline.single().endMs)
+    }
+
+    @Test fun coarseOnlyYieldsHintsButNoVisits() {
+        val d = DwellDetector()
+        // ~2 km accuracy fixes: first sets the provisional anchor, repeats in place do nothing
+        assertTrue(d.onFix(fix(home.first, home.second, 2000.0, 0)).isEmpty())
+        assertTrue(d.onFix(fix(home.first, home.second, 2000.0, 20)).isEmpty())
+        assertTrue(d.onFix(fix(home.first, home.second, 2000.0, 40)).isEmpty())
+        assertFalse(d.hasOpenVisit)
+        // ~11 km away: a movement hint, never a visit
+        val out = d.onFix(fix(home.first + 0.1, home.second, 2000.0, 60))
+        assertEquals(1, out.size)
+        assertTrue(out[0] is Output.Hint)
+        assertFalse(d.hasOpenVisit)
+        assertEquals(null, d.snapshot())
+    }
+
+    @Test fun snapshotRestoreResumesStayAfterProcessDeath() {
+        val d1 = DwellDetector()
+        d1.onFix(fix(home.first, home.second, 20.0, 0))
+        d1.onFix(fix(home.first, home.second, 20.0, 6)) // open visit emitted
+        val snap = d1.snapshot()
+        val d2 = DwellDetector() // fresh process
+        d2.restore(snap)
+        assertTrue(d2.hasOpenVisit)
+        val out = d2.onFix(fix(home.first + 0.01, home.second, 30.0, 30))
+        assertEquals(2, out.size)
+        assertEquals(6L * min, ((out[0] as Output.Visit).sample.departureMs))
+        assertTrue(out[1] is Output.Hint)
+        // a stationary phone with only poll-rate fixes in fresh processes still reaches the dwell
+        val d3 = DwellDetector(); d3.onFix(fix(home.first, home.second, 20.0, 0))
+        val d4 = DwellDetector(); d4.restore(d3.snapshot())
+        assertTrue(d4.onFix(fix(home.first, home.second, 20.0, 15)).single() is Output.Visit)
+        DwellDetector().restore("garbage") // never throws
     }
 }
