@@ -204,6 +204,50 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
     val patternEngine: PatternEngine get() = patternLazy.value.also { ensureLoopStopObserver() }
 
+    // ---- STU-8: instrument packs + SF2 engine + takes (all lazy)
+
+    /** Instrument-pack index + bank downloads (`studio/instruments/`); the index cache lives in app files. */
+    val instrumentPacks: com.levi.pocketdj.studio.packs.InstrumentPackStore by lazy {
+        com.levi.pocketdj.studio.packs.InstrumentPackStore(
+            studioRoots, File(app.appContext.filesDir, "instruments-index-cache.json"), app.appScope,
+            log = { msg -> runCatching { com.levi.pocketdj.audio.core.AudioDiag.emit("studio.packs $msg") } },
+        )
+    }
+
+    val takeRenderer: com.levi.pocketdj.studio.engine.TakeRenderer by lazy {
+        com.levi.pocketdj.studio.engine.TakeRenderer(studioRoots, studioStore)
+    }
+
+    val takeFiler: com.levi.pocketdj.studio.engine.TakeFiler by lazy {
+        com.levi.pocketdj.studio.engine.TakeFiler(studioRoots, studioStore, takeRenderer, studioRender)
+    }
+
+    private val instrumentLazy: Lazy<com.levi.pocketdj.studio.engine.InstrumentEngine> = lazy {
+        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { instrumentEngine.stopReplay(); instrumentEngine.allNotesOff() } }
+        com.levi.pocketdj.studio.engine.InstrumentEngine(
+            sinkFactory = { StudioOutputs.create(audioManager) },
+            scope = app.appScope,
+            focus = {
+                // One audible owner: park Now Playing and every other Studio voice before the keys sound.
+                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                if (engineLazy.isInitialized()) studioEngine.pauseSample()
+                if (loopLazy.isInitialized()) loopAudition.stop()
+                if (patternLazy.isInitialized()) patternEngine.stopPattern()
+                focus.requestPlayback()
+            },
+            focusRelease = { focus.abandon() },
+            log = { msg -> runCatching { com.levi.pocketdj.audio.core.AudioDiag.emit("studio.instr $msg") } },
+        ).also { eng ->
+            // An engine-ended take (length cap) is filed, never silently dropped.
+            eng.setOnTakeAutoStopped { r ->
+                app.appScope.launch(Dispatchers.IO) {
+                    runCatching { takeFiler.file(r, "Take ${studioStore.takes(null).size + 1}", instrumentPacks.localBankFile(r.instrument)) }
+                }
+            }
+        }
+    }
+    val instrumentEngine: com.levi.pocketdj.studio.engine.InstrumentEngine get() = instrumentLazy.value
+
     private val micLazy = lazy {
         val captureFocus = AudioFocusPolicy.FocusHandle(audioManager) { /* a competing app took focus: the take keeps going */ }
         MicRecorder(
@@ -246,6 +290,12 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     private val prepareBackend by lazy {
         object : StudioPrepareBackend {
             override suspend fun ensureSampleRendered(sampleId: String): Boolean = sampleRenderCache.playableFile(sampleId) != null
+
+            // STU-8: a stale instrumental renders through the native SF2 synth from its pack's bank.
+            override suspend fun renderTake(takeId: String): Boolean {
+                val take = studioStore.take(takeId) ?: return false
+                return runCatching { takeRenderer.render(take) { instrumentPacks.localBankFile(it) } }.getOrNull() != null
+            }
 
             override suspend fun targetBuffer(targetId: String): PcmBuffer? {
                 val file: File? = when {
