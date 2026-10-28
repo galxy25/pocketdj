@@ -116,6 +116,22 @@ class SetlistSequencer(
     /** Apple Music engine active? Picks the cascade notice variant. */
     @Volatile var appleMusicActive: () -> Boolean = { false }
 
+    // ---- PB-10: gapless preload window ---------------------------------------------------------------
+
+    /** Decision + bookkeeping for engine window slot 1. Disabled by default (= PB-3 behaviour); the controller arms it. */
+    val preloader = NextRowPreloader(enabled = false)
+    private var preloadJob: Job? = null
+    private var preloadToken = 0L
+
+    /** Feature flag: pre-add the next resolved local / rip row so the boundary is gapless. */
+    var preloadEnabled: Boolean
+        get() = preloader.enabled
+        set(value) {
+            if (preloader.enabled == value) return
+            preloader.enabled = value
+            reconcilePreload()
+        }
+
     private val _state = MutableStateFlow(SequencerState(repeatMode = initialRepeatMode))
     val state: StateFlow<SequencerState> = _state.asStateFlow()
 
@@ -247,6 +263,7 @@ class SetlistSequencer(
     private fun queueEdited() {
         memberIds = null
         publish()
+        reconcilePreload()
         scheduleRipWindowReconcile()
     }
 
@@ -347,6 +364,7 @@ class SetlistSequencer(
         playJob?.cancel()
         playJob = null
         playGeneration++ // a resolve past its last cancellation point must stand down
+        resetPreload()
         running = false
         held = false
         sessionId = null
@@ -412,6 +430,7 @@ class SetlistSequencer(
         if (!currentCoroutineContext().isActive) return
         if (fresh) playsRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
         val gen = ++playGeneration
+        resetPreload() // a load replaces the whole engine playlist: slot 1 is gone with it
         val item = queue[index]
         val at = index
         // A new generation retires the previous start's timers; the start window + resolve stall guard this one.
@@ -857,6 +876,7 @@ class SetlistSequencer(
         repeatMode = mode
         onRepeatModeChanged(mode)
         publish()
+        reconcilePreload()
     }
 
     fun toggleShuffle() = setShuffle(!shuffleEnabled)
@@ -1111,6 +1131,143 @@ class SetlistSequencer(
         stallTimer.cancel()
         startWindow?.let { log("[playback] start-ok song=${it.songId} after=${clockMs() - it.beganMs}ms") }
         endStartWindow("firstAudio.$source")
+        reconcilePreload() // the current row is READY: now resolve + pre-add the next one
+    }
+
+    // ---- PB-10: preload window ------------------------------------------------------------------------
+
+    private fun resetPreload() {
+        preloadToken++
+        preloadJob?.cancel()
+        preloadJob = null
+        preloader.noteCleared()
+    }
+
+    private fun preloadArmed(): Boolean =
+        preloader.enabled && running && !held && !pausedByCascade && !waitingForLive && !firstAudioPending
+
+    /**
+     * Make engine window slot 1 hold exactly the row that plays next by natural end (or nothing).
+     * A stale slot is emptied immediately (same dispatcher turn when the scope dispatches inline);
+     * resolution of the new next row then runs under [preloadToken] + [playGeneration] guards.
+     */
+    fun reconcilePreload() {
+        val token = ++preloadToken
+        preloadJob?.cancel()
+        preloadJob = null
+        val armed = preloadArmed()
+        if (!armed && preloader.slot == null) return
+        val target = if (armed) {
+            preloader.target(queue, index, repeatMode, shuffleEnabled, playsRemaining, true)
+        } else {
+            null
+        }
+        if (target == null && preloader.slot == null) return
+        val gen = playGeneration
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            if (preloader.isStale(target)) {
+                try { port.preloadNext(null) } catch (e: CancellationException) { throw e } catch (e: Exception) { }
+                preloader.noteCleared()
+                log("[playback] preload cleared")
+            }
+            if (target == null) return@launch
+            if (preloader.slot?.uid == target.item.uid) return@launch // already the next row
+            val source = try {
+                registry.resolve(target.item, modeProvider())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                null
+            }
+            if (token != preloadToken || !owns(gen)) return@launch
+            val plan = preloader.decide(target, source)
+            if (plan !is NextRowPreloader.Plan.Add && plan !is NextRowPreloader.Plan.Replace) {
+                if (plan is NextRowPreloader.Plan.Remove) {
+                    try { port.preloadNext(null) } catch (e: CancellationException) { throw e } catch (e: Exception) { }
+                    preloader.noteCleared()
+                }
+                return@launch
+            }
+            val request = PlayRequest(
+                item = target.item,
+                source = source!!,
+                context = requestContext(target.item),
+                originCollectionId = originCollectionIdFor(),
+                resumeAtMs = null,
+                index = target.index,
+                count = queue.size,
+            )
+            val ok = try {
+                port.preloadNext(request)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                false
+            }
+            if (token != preloadToken || !owns(gen)) return@launch
+            if (ok) {
+                preloader.noteInstalled(target.item, source)
+                log("[playback] preload song=${target.item.id} index=${target.index + 1}/${queue.size} backend=${source.backend}")
+            }
+        }
+        preloadJob = job
+        job.start()
+    }
+
+    /**
+     * The engine rolled onto its window slot 1 by itself (MEDIA_ITEM_TRANSITION_REASON_AUTO). Advance the
+     * cursor to the PRELOADED row's uid (never blindly +1: a live edit may have moved things), fire the
+     * per-track start bookkeeping once, and close the dead-air transition at ~0. Returns false when
+     * [songId] is not the preloaded row (the caller treats it as a stray engine event).
+     */
+    fun handlePreloadedTransition(songId: String): Boolean {
+        if (!running || held) return false
+        val slot = preloader.consumeAutoTransition(songId) ?: return false
+        val from = queue.getOrNull(index)
+        val pos = queue.indexOfFirst { it.uid == slot.uid }
+        preloadToken++
+        preloadJob?.cancel()
+        preloadJob = null
+        if (from == null || pos < 0) {
+            // The row left the queue after the engine had already committed to it: realign by reloading the cursor row.
+            log("[playback] preload transition for song=$songId lost its row; reloading cursor")
+            startPlayCurrent(fresh = true)
+            return true
+        }
+        outcomes?.emit(from.id, false, 1.0)
+        skipTracker?.noteNaturalEnd(from.id)
+        unplayableStreak = 0
+        index = pos
+        if (!autoAdvanceGate()) {
+            pausedByCascade = true
+            scope.launch { runCatching { port.pause() } }
+            publish()
+            reconcilePreload()
+            return true
+        }
+        if (engine != null && breaker.shouldHalt(trackAudibleSeconds)) {
+            haltCascade()
+            return true
+        }
+        val item = queue[pos]
+        meter?.transitionBegan("advance")
+        log("[playback] advance from=${from.id} index=$pos/${queue.size} cause=${AdvanceCause.AUTO} preloaded=true")
+        waitingForLive = false
+        cancelHealthTimers()
+        playsRemaining = CollectionMembership.normalizedRepeat(item.repeatCount)
+        val gen = ++playGeneration
+        resetTrackAudible()
+        reconcileRipWindow()
+        startedAnyRow = true
+        lastLoadedId = item.id
+        firstAudioPending = true
+        currentBackend = slot.source.backend
+        meter?.trackStarting(slot.source.backend)
+        beginStartWindow(item, gen)
+        log("[playback] track start song=${item.id} index=${pos + 1}/${queue.size} backend=${slot.source.backend} preloaded=true")
+        publish()
+        handleFirstAudio("preload") // the engine is already rendering it: gap ~0
+        return true
     }
 
     /** A rip-on-demand row's url resolved (the data source is about to read it): the start watchdog takes over. */
@@ -1322,6 +1479,7 @@ class SetlistSequencer(
             AutoAdvanceCascadeBreaker.GENERIC_NOTICE
         }
         publish()
+        reconcilePreload() // disarmed: empties slot 1 so the engine cannot roll on past the halt
     }
 
     /** The ids inside the rip window: the playing row + the next [PlaybackRipWindow.AHEAD], base + resolve. */

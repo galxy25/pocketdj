@@ -29,6 +29,7 @@ class FakePlayerPort : PlayerPort {
         if (id in failing) error("dead source $id")
         sounded += id
         held = id
+        preloadedId = null // setMediaItems replaces the whole window
         duringLoad?.invoke(id)
     }
 
@@ -48,6 +49,16 @@ class FakePlayerPort : PlayerPort {
     override suspend fun loadUrl(request: UrlRequest) {
         held = null
         urls += request
+    }
+
+    /** PB-10: every preloadNext call (song id, or null = slot emptied) and the slot the "engine" holds now. */
+    val preloadCalls = mutableListOf<String?>()
+    var preloadedId: String? = null
+
+    override suspend fun preloadNext(request: PlayRequest?): Boolean {
+        preloadCalls += request?.item?.id
+        preloadedId = request?.item?.id
+        return true
     }
 
     override suspend fun pause() { pauses++ }

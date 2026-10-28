@@ -335,6 +335,7 @@ class PlaybackController(
         seq.progressProvider = { progressFraction() }
         seq.ripWaitProbe = { ripSession.isResolving() }
         seq.engine = engineProbe
+        seq.preloadEnabled = true // PB-10: gapless window for local / manifest-rip boundaries
         seq.appleMusicActive = { activeBackend == ActiveBackend.APPLE_MUSIC }
         seq.rowOnDevice = { item -> localFiles.localUrlForPlayback(item) != null }
         seq.rowStartsInstantly = { item ->
@@ -428,6 +429,25 @@ class PlaybackController(
             ) {
                 // Natural end of the row the sequencer loaded -> advance (repeat / next / stop).
                 player.currentMediaItem?.mediaId?.let(sequencer::handleEnded)
+            }
+        }
+
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            // PB-10: the engine rolled onto the preloaded window slot by itself. The sequencer advances to
+            // that row's uid; everything else (setMediaItems, seeks) is the sequencer's own load.
+            if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO || mediaItem == null) return
+            if (activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer) return
+            if (!sequencer.handlePreloadedTransition(mediaItem.mediaId)) return
+            urlRetriedFor = null
+            playGeneration.incrementAndGet()
+            scope.launch {
+                withController { c ->
+                    // Drop the finished row(s) so the window stays [current, next].
+                    val cur = c.currentMediaItemIndex
+                    if (cur > 0 && c.currentMediaItem?.mediaId == mediaItem.mediaId) c.removeMediaItems(0, cur)
+                }
+                val ahead = sequencer.state.value.upcoming.take(PlaybackUrlResolver.AHEAD).map { it.resolveId }
+                urls.prefetch(ahead, settings.current().hasRipServer)
             }
         }
 
@@ -1398,6 +1418,44 @@ class PlaybackController(
                     c.play()
                     true
                 }
+            }
+        }
+
+        override suspend fun preloadNext(request: PlayRequest?): Boolean {
+            if (!sequencerOwnsPlayer || activeBackend != ActiveBackend.EXO) return false
+            if (request == null) {
+                withController { c ->
+                    val next = c.currentMediaItemIndex + 1
+                    if (c.mediaItemCount > next) c.removeMediaItems(next, c.mediaItemCount)
+                }
+                return true
+            }
+            val item = request.item
+            val merged = catalog.state.value.catalog
+            val song = merged?.songsById?.get(item.id)
+            val album = song?.albumId?.let { merged.albumsById[it] }
+            val ripConfigured = settings.current().hasRipServer
+            val action = when (val src = request.source) {
+                is LocalFileSource -> PlayAction.Stream(src.file.url, src.file.startMs, src.file.endMs)
+                is StreamSource -> urls.resolve(item.resolveId, src.action, ripConfigured)
+                else -> return false // AM / rip-on-demand / unplayable never enter the window
+            }
+            val mi = mediaItem(
+                songId = item.id,
+                action = action,
+                song = song,
+                album = album,
+                playContext = request.context,
+                originCollectionId = request.originCollectionId,
+                titleFallback = item.title,
+                artistFallback = item.artist,
+            )
+            return withController { c ->
+                if (c.mediaItemCount == 0) return@withController false
+                val next = c.currentMediaItemIndex + 1
+                if (c.mediaItemCount > next) c.removeMediaItems(next, c.mediaItemCount)
+                c.addMediaItem(next, mi)
+                true
             }
         }
 
