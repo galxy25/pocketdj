@@ -67,6 +67,8 @@ object CollectionTimeline {
         val query: String = "",
         val zone: ZoneId = ZoneId.systemDefault(),
         val locale: Locale = Locale.getDefault(),
+        /** Called periodically inside the builder loops; throw (e.g. CancellationException) to abandon a superseded build. */
+        val cancelCheck: () -> Unit = {},
     )
 
     fun build(input: Input): Result {
@@ -79,7 +81,9 @@ object CollectionTimeline {
         val needle = fold(i.query)
         val rows = ArrayList<Row>(minOf(i.songsById.size, 4096))
         var undated = 0; var before = 0; var songs = 0; var heard = 0; var plays = 0
+        var tick = 0
         for ((id, song) in i.songsById) {
+            if (++tick and 1023 == 0) i.cancelCheck()
             val at = i.addedAt[id]
             if (at == null || at <= 0) { undated++; continue }
             if (i.afterMs != null && at < i.afterMs) { before++; continue }
@@ -97,7 +101,9 @@ object CollectionTimeline {
         val needle = fold(i.query)
         val byAlbum = HashMap<String, Agg>()
         var undated = 0; var ungrouped = 0; var before = 0; var songs = 0; var heard = 0; var plays = 0
+        var tick = 0
         for ((id, song) in i.songsById) {
+            if (++tick and 1023 == 0) i.cancelCheck()
             val at = i.addedAt[id] ?: 0.0
             val aid = song.albumId
             if (aid == null || !i.albumsById.containsKey(aid)) {
@@ -158,6 +164,33 @@ object CollectionTimeline {
             if (reached) hi = mid else lo = mid + 1
         }
         return minOf(lo, rows.size - 1)
+    }
+
+    /**
+     * Material3 DatePicker reports 00:00 UTC of the chosen day; the filter wants LOCAL start of that
+     * calendar day (iOS `Calendar.startOfDay`).
+     */
+    fun pickerMillisToLocalStartOfDay(selectedUtcMs: Long, zone: ZoneId = ZoneId.systemDefault()): Double =
+        Instant.ofEpochMilli(selectedUtcMs).atZone(java.time.ZoneOffset.UTC).toLocalDate()
+            .atStartOfDay(zone).toInstant().toEpochMilli().toDouble()
+
+    /** Inverse for seeding the picker: the local calendar day of [ms] expressed as 00:00 UTC. */
+    fun localToPickerMillis(ms: Double, zone: ZoneId = ZoneId.systemDefault()): Long =
+        Instant.ofEpochMilli(ms.toLong()).atZone(zone).toLocalDate()
+            .atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+
+    /** Empty / loading copy for the stream; null when there are rows to show. */
+    fun emptyMessage(building: Boolean, result: Result?, afterMs: Double?, query: String): String? {
+        if (building || result == null) return "Building your timeline\u2026"
+        if (result.rows.isNotEmpty()) return null
+        val s = result.summary
+        return when {
+            query.isNotBlank() -> "Nothing matches \u201c${query.trim()}\u201d in this window."
+            afterMs != null && s.beforeCutoff > 0 -> "Nothing in this window. Move the since-date back to see ${s.beforeCutoff} earlier."
+            afterMs != null -> "Nothing in this window. Move the since-date back."
+            s.undated > 0 -> "None of your items have an add date yet, so there is nothing to place on the timeline."
+            else -> "Nothing in this window."
+        }
     }
 
     private fun fold(s: String): String {

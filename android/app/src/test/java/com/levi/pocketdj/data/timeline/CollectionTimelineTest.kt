@@ -94,4 +94,43 @@ class CollectionTimelineTest {
         assertEquals(4, CollectionTimeline.jumpIndex(desc, ms(2000, 1, 1), false))
         assertNull(CollectionTimeline.jumpIndex(emptyList(), 1.0, true))
     }
+
+    @Test fun pickerDayIsLocalStartOfDayInNegativeOffsetZone() {
+        val pdt = ZoneId.of("America/Los_Angeles")
+        // Material3 DatePicker: Oct 10 2026 -> 00:00 UTC
+        val picked = ZonedDateTime.of(2026, 10, 10, 0, 0, 0, 0, ZoneId.of("UTC")).toInstant().toEpochMilli()
+        val local = CollectionTimeline.pickerMillisToLocalStartOfDay(picked, pdt)
+        assertEquals(ZonedDateTime.of(2026, 10, 10, 0, 0, 0, 0, pdt).toInstant().toEpochMilli().toDouble(), local, 0.0)
+        // an Oct 9 evening add stays out of "since Oct 10"
+        assertTrue(ZonedDateTime.of(2026, 10, 9, 20, 0, 0, 0, pdt).toInstant().toEpochMilli() < local)
+        // round trip seeds the picker with the same calendar day
+        assertEquals(picked, CollectionTimeline.localToPickerMillis(local, pdt))
+    }
+
+    @Test fun pickerDayInPositiveOffsetZoneKeepsWholeChosenDay() {
+        val tokyo = ZoneId.of("Asia/Tokyo")
+        val picked = ZonedDateTime.of(2026, 10, 10, 0, 0, 0, 0, ZoneId.of("UTC")).toInstant().toEpochMilli()
+        val local = CollectionTimeline.pickerMillisToLocalStartOfDay(picked, tokyo)
+        assertEquals(ZonedDateTime.of(2026, 10, 10, 0, 0, 0, 0, tokyo).toInstant().toEpochMilli().toDouble(), local, 0.0)
+        assertEquals(picked, CollectionTimeline.localToPickerMillis(local, tokyo))
+    }
+
+    @Test fun emptyMessageVariants() {
+        assertTrue(CollectionTimeline.emptyMessage(true, null, null, "")!!.startsWith("Building"))
+        val some = CollectionTimeline.Result(listOf(CollectionTimeline.Row(false, "a", "t", "a", null, 1.0, 0, 1, 0)))
+        assertNull(CollectionTimeline.emptyMessage(false, some, null, ""))
+        val none = CollectionTimeline.Result(emptyList(), CollectionTimeline.Summary(beforeCutoff = 3))
+        assertTrue(CollectionTimeline.emptyMessage(false, none, 5.0, "")!!.contains("since-date"))
+        assertTrue(CollectionTimeline.emptyMessage(false, none, null, "zz")!!.contains("zz"))
+        assertTrue(CollectionTimeline.emptyMessage(false, CollectionTimeline.Result(summary = CollectionTimeline.Summary(undated = 2)), null, "")!!.contains("add date"))
+    }
+
+    @Test fun cancelCheckAbandonsSupersededBuild() {
+        val songs = (0 until 3000).map { song("s$it") }
+        val added = songs.associate { it.id to ms(2024, 1, 1) }
+        var calls = 0
+        val i = CollectionTimeline.Input(songs.associateBy { it.id }, emptyMap(), added, emptyMap(), TimelineGrain.SONGS,
+            cancelCheck = { calls++; if (calls >= 2) throw IllegalStateException("cancelled") })
+        try { CollectionTimeline.build(i); org.junit.Assert.fail("expected cancel") } catch (e: IllegalStateException) { assertEquals(2, calls) }
+    }
 }

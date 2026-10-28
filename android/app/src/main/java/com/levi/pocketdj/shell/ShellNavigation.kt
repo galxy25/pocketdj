@@ -406,7 +406,10 @@ private fun ShellNavHost(
             // Row tap → song detail (specs/history.md §6); the sheet's album row navigates
             // on to album detail like Browse.
             var detailSongId by remember { mutableStateOf<String?>(null) }
-            HistoryScreen(onSongClick = { detailSongId = it })
+            HistoryScreen(
+                onSongClick = { detailSongId = it },
+                onAlbumClick = { albumId -> nav.navigate(albumRoute(albumId)) },
+            )
             detailSongId?.let { songId ->
                 SongDetailSheet(
                     songId = songId,

@@ -32,6 +32,11 @@ class SyncRegistryTest {
         assertEquals("pocketdj-profile.json", ProfileStore.FILE_NAME)
     }
 
+    @Test fun timelineCuesUseTheIosSyncKeyAndFile() {
+        assertEquals("timeline-cues", SyncRegistry.KEY_TIMELINE_CUES)
+        assertEquals("pocketdj-timeline-cues.json", com.levi.pocketdj.data.timeline.TimelineCueStore.FILE_NAME)
+    }
+
     @Test fun registersEveryModuleEntryUnderFilesDirInOrder() = runTest {
         val a = module("a", SyncEntry("profile", "pocketdj-profile.json"), SyncEntry("collections", "pocketdj-collections.json"))
         val b = module("b", SyncEntry("studio-cues", "pocketdj-studio.cues.json"))

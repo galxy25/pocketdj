@@ -428,7 +428,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | BRW-2 — Filter/sort sheets at full width + membership (in/not-in, none-of) + favorite + hide-skip… | 8 | Merged (`b6873a6e`) | Emulator-verified wave 8: In-pocket filter narrows to members, add-to-pocket while filtered drops the row with no scroll reset. Hide-skips wiring PARTIAL (History). |
 | BRW-6 — History screen parity: tab model (Playback \| Collection \| Pockets \| For You slots), en… | 9 | Merged (wave 9) | — |
 | BRW-10 — ZoneEngine: In Da Zone + collection suggestions + cloud shaping | 11 | PARTIAL | device-only: none (pure); emulator "rank now" debug action deferred to REC-5 / debug-screen owner |
-| BRW-7 — Collection timeline (F8) + timeline cue store + History ▸ Collection tab | 13 | Planned | — |
+| BRW-7 — Collection timeline (F8) + timeline cue store + History ▸ Collection tab | 13 | PARTIAL | Follow-ups: timeline rows have no artwork thumbnails; owner-gate (`filterToOwnLibrary`) not applied until Android has owner identity (shared helper with COL-12); cue store synced as `timeline-cues` + cleared on account deletion (done) |
 | BRW-11 — For You feed store, feedback store, read-time refresh schedule, tiles/grid, recsEnabled t… | 14 | Planned | — |
 | BRW-12 — For You UI: History ▸ For You tab, tiles grid, song list, feedback buttons, recs toggle, … | 15 | Planned | — |
 | BRW-13 — Cloud recommendation engine service + client + rec key (device-local) + Settings ▸ Recomm… | 16 | Planned | — |

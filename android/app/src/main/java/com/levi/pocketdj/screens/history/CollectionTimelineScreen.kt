@@ -26,8 +26,10 @@ import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,15 +45,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.collections.RecentlyAdded
-import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.data.timeline.CollectionTimeline
 import com.levi.pocketdj.data.timeline.TimelineCueStore
 import com.levi.pocketdj.data.timeline.TimelineGrain
 import com.levi.pocketdj.di.AppGraph
-import java.io.File
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -62,6 +66,7 @@ internal fun CollectionTab(
     catalog: MergedCatalog,
     query: String,
     onSongClick: (String) -> Unit,
+    onAlbumClick: (String) -> Unit,
     activityContent: @Composable () -> Unit,
 ) {
     // Ephemeral by design: every open of the tab lands on Activity.
@@ -78,7 +83,7 @@ internal fun CollectionTab(
             }
         }
         if (grain == TimelineGrain.ACTIVITY) activityContent()
-        else CollectionTimelineScreen(grain, catalog, query, onSongClick)
+        else CollectionTimelineScreen(grain, catalog, query, onSongClick, onAlbumClick)
     }
 }
 
@@ -89,6 +94,7 @@ internal fun CollectionTimelineScreen(
     catalog: MergedCatalog,
     query: String,
     onSongClick: (String) -> Unit,
+    onAlbumClick: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -97,27 +103,56 @@ internal fun CollectionTimelineScreen(
         val store = withContext(Dispatchers.IO) { graph.collectionActivity }
         store.state.collect { value = it.events }
     }
-    val cueStore = remember { TimelineCueStore(File(context.filesDir, TimelineCueStore.FILE_NAME)) }
-    val cues by cueStore.state.collectAsState()
+    // One graph-owned store (synced, cleared on account deletion); loaded off main.
+    val cueStoreOrNull by produceState<TimelineCueStore?>(null) {
+        value = withContext(Dispatchers.IO) { graph.servicesGraph.timelineCues }
+    }
+    val cueStore = cueStoreOrNull
+    val cues by (cueStore?.state ?: remember { MutableStateFlow(TimelineCueStore.State(emptyList(), 0)) }).collectAsState()
 
     var afterMs by remember { mutableStateOf<Double?>(null) }
     var ascending by remember { mutableStateOf(false) }
     var showDate by remember { mutableStateOf(false) }
     var showCues by remember { mutableStateOf(false) }
     var showAddCue by remember { mutableStateOf(false) }
+    var renameCue by remember { mutableStateOf<TimelineCueStore.Cue?>(null) }
 
-    // Heavy derivation OFF main; the body only indexes the finished list.
-    val resultOrNull by produceState<CollectionTimeline.Result?>(null, grain, catalog, query, afterMs, ascending, activity) {
+    // Debounce typing (a non-empty query waits 180 ms; clearing is immediate).
+    val builtQuery by produceState(query, query) {
+        if (query.isNotBlank()) delay(180)
+        value = query
+    }
+    // Memoised separately from grain/direction/query: add-dates by (catalog, activity), plays by the stats revision.
+    val addedAt by produceState<Map<String, Double>?>(null, catalog, activity) {
         value = withContext(Dispatchers.Default) {
-            val added = RecentlyAdded.addedAtBySongId(catalog.songs, RecentlyAdded.addTimeOverrides(activity))
-            val plays = PlayHistoryStore.get(context.applicationContext).events.groupingBy { it.songId }.eachCount()
-            CollectionTimeline.build(
-                CollectionTimeline.Input(catalog.songsById, catalog.albumsById, added, plays, grain, afterMs, ascending, query),
-            )
+            RecentlyAdded.addedAtBySongId(catalog.songs, RecentlyAdded.addTimeOverrides(activity))
         }
     }
-    val result = resultOrNull
+    val plays by produceState<Map<String, Int>?>(null) {
+        val stats = withContext(Dispatchers.IO) { graph.servicesGraph.playStats }
+        stats.revision.collect { value = withContext(Dispatchers.Default) { stats.playCountsSnapshot() } }
+    }
+
+    // Heavy derivation OFF main; superseded builds are cancelled (key change) and abandon via cancelCheck.
+    val built by produceState<Built?>(null, grain, catalog, builtQuery, afterMs, ascending, addedAt, plays) {
+        val a = addedAt ?: return@produceState
+        val p = plays ?: return@produceState
+        val key = listOf(grain, ascending, afterMs, builtQuery)
+        val r = withContext(Dispatchers.Default) {
+            val job = coroutineContext
+            CollectionTimeline.build(
+                CollectionTimeline.Input(
+                    catalog.songsById, catalog.albumsById, a, p, grain, afterMs, ascending, builtQuery,
+                    cancelCheck = { job.ensureActive() },
+                ),
+            )
+        }
+        value = Built(key, r)
+    }
+    val result = built?.result
     val listState = rememberLazyListState()
+    // A new stream (grain / direction / since-date / query) starts at the top; a cue jump scrolls explicitly after.
+    LaunchedEffect(built?.key) { if (built != null) listState.scrollToItem(0) }
     val dateFmt = remember { DateFormat.getDateInstance(DateFormat.MEDIUM) }
 
     Column(Modifier.fillMaxSize()) {
@@ -136,6 +171,13 @@ internal fun CollectionTimelineScreen(
             }
             TextButton(onClick = { showCues = true }, modifier = Modifier.testTag("timeline-cues")) { Text("Cues") }
         }
+        val emptyMsg = CollectionTimeline.emptyMessage(built == null, result, afterMs, builtQuery)
+        if (emptyMsg != null) Text(
+            emptyMsg,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(24.dp).testTag("timeline-empty"),
+        )
         if (result != null) {
             val s = result.summary
             Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
@@ -164,7 +206,7 @@ internal fun CollectionTimelineScreen(
                     )
                     Row(
                         Modifier.fillMaxWidth()
-                            .clickable(enabled = !row.isAlbum) { onSongClick(row.itemId) }
+                            .clickable { if (row.isAlbum) onAlbumClick(row.itemId) else onSongClick(row.itemId) }
                             .padding(horizontal = 16.dp, vertical = 8.dp)
                             .testTag("timeline-row"),
                         verticalAlignment = Alignment.CenterVertically,
@@ -191,10 +233,18 @@ internal fun CollectionTimelineScreen(
     }
 
     if (showDate) {
-        val st = rememberDatePickerState(initialSelectedDateMillis = afterMs?.toLong())
+        val st = rememberDatePickerState(
+            initialSelectedDateMillis = afterMs?.let { CollectionTimeline.localToPickerMillis(it) },
+            selectableDates = PastOrToday,
+        )
         DatePickerDialog(
             onDismissRequest = { showDate = false },
-            confirmButton = { TextButton(onClick = { afterMs = st.selectedDateMillis?.toDouble(); showDate = false }) { Text("Apply") } },
+            confirmButton = {
+                TextButton(onClick = {
+                    afterMs = st.selectedDateMillis?.let { CollectionTimeline.pickerMillisToLocalStartOfDay(it) }
+                    showDate = false
+                }) { Text("Apply") }
+            },
             dismissButton = { TextButton(onClick = { showDate = false }) { Text("Cancel") } },
         ) { DatePicker(state = st) }
     }
@@ -216,7 +266,8 @@ internal fun CollectionTimelineScreen(
                                 },
                                 modifier = Modifier.weight(1f),
                             ) { Text("${cue.name} · ${dateFmt.format(Date(cue.atMs.toLong()))}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                            TextButton(onClick = { cueStore.remove(cue.id) }) { Text("Delete") }
+                            TextButton(onClick = { renameCue = cue; showCues = false }) { Text("Rename") }
+                            TextButton(onClick = { cueStore?.remove(cue.id) }) { Text("Delete") }
                         }
                     }
                 }
@@ -226,25 +277,70 @@ internal fun CollectionTimelineScreen(
         )
     }
 
+    renameCue?.let { cue ->
+        var name by remember(cue.id) { mutableStateOf(cue.name) }
+        AlertDialog(
+            onDismissRequest = { renameCue = null },
+            title = { Text("Rename cue") },
+            text = { OutlinedTextField(name, { name = it }, singleLine = true, modifier = Modifier.testTag("timeline-cue-rename")) },
+            confirmButton = {
+                TextButton(enabled = name.isNotBlank(), onClick = { cueStore?.rename(cue.id, name); renameCue = null }) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { renameCue = null }) { Text("Cancel") } },
+        )
+    }
+
     if (showAddCue) {
         var name by remember { mutableStateOf("") }
-        val first = result?.rows?.getOrNull(listState.firstVisibleItemIndex.coerceAtMost((result.rows.size - 1).coerceAtLeast(0)))
+        // Default: the first visible row's date (read once at open), else today; any past date is allowed.
+        var atMs by remember {
+            val first = result?.rows?.getOrNull(listState.firstVisibleItemIndex.coerceAtMost((result.rows.size - 1).coerceAtLeast(0)))
+            mutableStateOf(first?.addedAtMs ?: System.currentTimeMillis().toDouble())
+        }
+        var pickDate by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { showAddCue = false },
             title = { Text("Name this cue") },
             text = {
                 Column {
-                    first?.let { Text(dateFmt.format(Date(it.addedAtMs.toLong())), style = MaterialTheme.typography.labelMedium) }
+                    TextButton(onClick = { pickDate = true }, modifier = Modifier.testTag("timeline-cue-date")) {
+                        Text(dateFmt.format(Date(atMs.toLong())))
+                    }
                     OutlinedTextField(name, { name = it }, singleLine = true, modifier = Modifier.testTag("timeline-cue-name"))
                 }
             },
             confirmButton = {
                 TextButton(
-                    enabled = first != null && name.isNotBlank(),
-                    onClick = { first?.let { cueStore.add(name, it.addedAtMs) }; showAddCue = false },
+                    enabled = name.isNotBlank(),
+                    onClick = { cueStore?.add(name, atMs); showAddCue = false },
                 ) { Text("Add") }
             },
             dismissButton = { TextButton(onClick = { showAddCue = false }) { Text("Cancel") } },
         )
+        if (pickDate) {
+            val st = rememberDatePickerState(
+                initialSelectedDateMillis = CollectionTimeline.localToPickerMillis(atMs),
+                selectableDates = PastOrToday,
+            )
+            DatePickerDialog(
+                onDismissRequest = { pickDate = false },
+                confirmButton = {
+                    TextButton(onClick = {
+                        st.selectedDateMillis?.let { atMs = CollectionTimeline.pickerMillisToLocalStartOfDay(it) }
+                        pickDate = false
+                    }) { Text("Set") }
+                },
+                dismissButton = { TextButton(onClick = { pickDate = false }) { Text("Cancel") } },
+            ) { DatePicker(state = st) }
+        }
     }
+}
+
+private class Built(val key: List<Any?>, val result: CollectionTimeline.Result)
+
+/** Dates up to and including today (iOS `in: ...Date()`); the picker's UTC-midnight values compare against now + 1 day. */
+@OptIn(ExperimentalMaterial3Api::class)
+private val PastOrToday = object : SelectableDates {
+    override fun isSelectableDate(utcTimeMillis: Long): Boolean =
+        CollectionTimeline.pickerMillisToLocalStartOfDay(utcTimeMillis) <= System.currentTimeMillis()
 }
