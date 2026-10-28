@@ -15,6 +15,9 @@ interface EngineProbe {
     /** Current position inside the loaded item (ms). */
     val positionMs: Long
 
+    /** Duration of the loaded item (ms), or null when unknown. */
+    val durationMs: Long? get() = null
+
     /** The loaded item already reported its natural end (STATE_ENDED). */
     val trackEnded: Boolean
 

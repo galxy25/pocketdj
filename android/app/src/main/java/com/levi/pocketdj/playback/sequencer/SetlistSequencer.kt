@@ -2,7 +2,11 @@ package com.levi.pocketdj.playback.sequencer
 
 import com.levi.pocketdj.data.collections.CollectionMembership
 import com.levi.pocketdj.diag.NPLog
+import com.levi.pocketdj.playback.PlayAdvancedAway
 import com.levi.pocketdj.playback.PlayContext
+import com.levi.pocketdj.playback.PlayEventBus
+import com.levi.pocketdj.playback.PlayProgress
+import com.levi.pocketdj.playback.PlayStopped
 import com.levi.pocketdj.playback.PlaybackMode
 import com.levi.pocketdj.playback.health.AutoAdvanceCascadeBreaker
 import com.levi.pocketdj.playback.health.DeadAirMeter
@@ -69,6 +73,9 @@ class SetlistSequencer(
 
     /** Fan-out target for natural-end / skip outcomes. */
     @Volatile var outcomes: PlayOutcomeRegistry? = null
+
+    /** PB-5: the strict <50 % classifier. When set it owns advance-away verdicts; null = legacy path. */
+    @Volatile var skipTracker: com.levi.pocketdj.playback.outcome.SkipTracker? = null
 
     /** Listened fraction of the current track right now (0..1), or null when unknown. */
     @Volatile var progressProvider: () -> Double? = { null }
@@ -295,6 +302,8 @@ class SetlistSequencer(
     fun abandonRun() = endRun()
 
     private fun endRun() {
+        skipTracker?.checkpoint() // a stop / set end never advances away: still land the final fraction
+        PlayEventBus.emit(PlayStopped(queue.getOrNull(index)?.id))
         endRipWindowSession("stop") // before the queue is cleared: the playing row is exempt
         cancelHealthTimers()
         endStartWindow("stop")
@@ -354,6 +363,7 @@ class SetlistSequencer(
 
     private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false) {
         if (pausedByCascade) { pausedByCascade = false; publish() }
+        if (inPlace) queue.getOrNull(index)?.let { skipTracker?.noteTrackRestarted(it.id) }
         resetTrackAudible()
         reconcileRipWindow() // the playhead (may have) moved: rips outside the window go
         ensureHealthTicker()
@@ -488,6 +498,7 @@ class SetlistSequencer(
     fun handleEnded(songId: String) {
         if (!running || index >= queue.size || !queue[index].matches(songId)) return
         outcomes?.emit(queue[index].id, false, 1.0)
+        skipTracker?.noteNaturalEnd(queue[index].id)
         unplayableStreak = 0
         if (repeatMode == RepeatMode.ONE) {
             startPlayCurrent(fresh = true, inPlace = true)
@@ -642,6 +653,15 @@ class SetlistSequencer(
     /** The listener moved away from the current track by their own action (never a natural end). */
     private fun noteAdvanceAway() {
         val cur = queue.getOrNull(index) ?: return
+        val tracker = skipTracker
+        if (tracker != null) {
+            val e = engine
+            val pos = if (e != null && e.hasLoadedItem) e.positionMs else null
+            val dur = if (e != null && e.hasLoadedItem) e.durationMs else null
+            PlayEventBus.emit(PlayAdvancedAway(cur.id, pos, dur))
+            tracker.noteAdvanceAway(cur.id, pos, dur)
+            return
+        }
         val f = progressProvider() ?: return
         outcomes?.emit(cur.id, f < 0.5, f)
     }
@@ -1114,6 +1134,14 @@ class SetlistSequencer(
         lastAudibleSampleMs = now
         val e = engine ?: return
         if (!running || held) return
+        if (e.hasLoadedItem && !pausedByCascade) {
+            queue.getOrNull(index)?.let { cur ->
+                val pos = e.positionMs
+                val dur = e.durationMs
+                skipTracker?.samplePosition(cur.id, pos, dur)
+                PlayEventBus.emit(PlayProgress(cur.id, pos, dur))
+            }
+        }
         if (!(e.hasLoadedItem && e.isPlaying)) return
         addAudibleSeconds((dtMs / 1000.0).coerceIn(0.0, 5.0))
     }

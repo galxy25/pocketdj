@@ -2,6 +2,7 @@ package com.levi.pocketdj.data.history
 
 import android.content.Context
 import com.levi.pocketdj.data.PdjJson
+import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.playback.PlayEventBus
 import java.io.File
@@ -49,6 +50,15 @@ class PlayHistoryStore(
 
     private val lock = Any()
 
+    /**
+     * Fired (under no lock held by callers' expectation; keep cheap) with every NEWLY appended
+     * event - the one choke point every play surface funnels through. Feeds the SkipTracker.
+     */
+    @Volatile var onRecord: ((PlayEvent) -> Unit)? = null
+
+    /** Fired with the surviving local event when the 30 s window collapsed a replay into it. */
+    @Volatile var onResume: ((PlayEvent) -> Unit)? = null
+
     // Derived, non-persisted indexes rebuilt on load / trim / replace.
     private val lastPlayedIndex = HashMap<String, Double>()
     private val countIndex = HashMap<String, Int>()
@@ -90,7 +100,7 @@ class PlayHistoryStore(
             events = events.takeLast(maxEvents)
             needsSave = true
         }
-        rebuildIndexes(events)
+        rebuildIndexes(events, loaded.installId)
         _state = MutableStateFlow(State(events, loaded.installId, revision = 0))
         state = _state.asStateFlow()
         if (needsSave) synchronized(lock) { save() }
@@ -119,34 +129,113 @@ class PlayHistoryStore(
         artist: String? = null,
         context: PlayContext = PlayContext.BROWSER,
         nowMs: Long = System.currentTimeMillis(),
-    ): PlayEvent? = synchronized(lock) {
-        if (songId.isEmpty()) return null
-        val nowDouble = nowMs.toDouble()
-        val last = lastPlayedIndex[songId]
-        if (last != null && nowDouble >= last && nowDouble - last < RECOUNT_WINDOW_MS) {
-            return null // Same listen: seek / restart / double-hook.
+        /** The navigable origin collection of a `set_now_playing` run (sequencer-captured). */
+        originCollectionId: String? = null,
+        /** Minutes from UTC at play time; injectable for tests. */
+        tzOffsetMin: Int = java.util.TimeZone.getDefault().getOffset(nowMs) / 60_000,
+    ): PlayEvent? {
+        var resumed: PlayEvent? = null
+        val appended: PlayEvent? = synchronized(lock) {
+            if (songId.isEmpty()) return null
+            val nowDouble = nowMs.toDouble()
+            val last = lastPlayedIndex[songId]
+            if (last != null && nowDouble >= last && nowDouble - last < RECOUNT_WINDOW_MS) {
+                // Same listen: seek / restart / double-hook. The audio still moved onto this song, so
+                // hand the surviving LOCAL row to onResume (a peer's newer row must not become ours).
+                resumed = _state.value.events.lastOrNull { it.songId == songId && !isFromAnotherDevice(it) }
+                null
+            } else {
+                val installId = _state.value.installId
+                // Stamped only for the Now Playing run, whose contextId is not navigable by itself.
+                val origin = if (context.contextId == NOW_PLAYING_SETLIST_ID) originCollectionId else null
+                val event = PlayEvent(
+                    id = UUID.randomUUID().toString(),
+                    songId = songId,
+                    playedAt = nowDouble,
+                    source = PlaySource.fromToken(context.source),
+                    contextId = context.contextId,
+                    contextName = context.contextName,
+                    title = title,
+                    artist = artist,
+                    originInstallId = installId,
+                    tzOffsetMin = tzOffsetMin,
+                    originCollectionId = origin,
+                )
+                var events = _state.value.events + event
+                // Max, not assignment: an out-of-order append can't move last-played back.
+                lastPlayedIndex[songId] = max(lastPlayedIndex[songId] ?: 0.0, nowDouble)
+                countIndex[songId] = (countIndex[songId] ?: 0) + 1
+                if (events.size > maxEvents) {
+                    events = events.takeLast(maxEvents)
+                    rebuildIndexes(events)
+                }
+                publish(events)
+                save()
+                event
+            }
         }
-        val event = PlayEvent(
-            id = UUID.randomUUID().toString(),
-            songId = songId,
-            playedAt = nowDouble,
-            source = PlaySource.fromToken(context.source),
-            contextId = context.contextId,
-            contextName = context.contextName,
-            title = title,
-            artist = artist,
-        )
-        var events = _state.value.events + event
-        // Max, not assignment: an out-of-order append can't move last-played back.
-        lastPlayedIndex[songId] = max(lastPlayedIndex[songId] ?: 0.0, nowDouble)
-        countIndex[songId] = (countIndex[songId] ?: 0) + 1
-        if (events.size > maxEvents) {
-            events = events.takeLast(maxEvents)
-            rebuildIndexes(events)
+        if (appended != null) runCatching { onRecord?.invoke(appended) }
+        else resumed?.let { r -> runCatching { onResume?.invoke(r) } }
+        return appended
+    }
+
+    /**
+     * Mark an already-recorded event as a SKIP. In-place edit + persist; NO onRecord. Unknown id or
+     * already-true = no-op (a double classification must not dirty the file). Only flips false -> true.
+     */
+    fun markSkipped(eventId: String) {
+        synchronized(lock) {
+            val events = _state.value.events
+            val i = events.indexOfLast { it.id == eventId }
+            if (i < 0 || events[i].wasSkipped == true) return
+            publish(events.toMutableList().also { it[i] = it[i].copy(wasSkipped = true) })
+            save()
         }
-        publish(events)
-        save()
-        event
+    }
+
+    /**
+     * Record how much of a playback was heard. Clamped 0..1 and MAX-merged (a later smaller report
+     * never lowers it); a change under one percentage point is dropped so 1 Hz reporters can't churn
+     * the file. Same contract as [markSkipped].
+     */
+    fun noteListened(eventId: String, fraction: Double) {
+        if (!fraction.isFinite()) return
+        val f = fraction.coerceIn(0.0, 1.0)
+        synchronized(lock) {
+            val events = _state.value.events
+            val i = events.indexOfLast { it.id == eventId }
+            if (i < 0) return
+            val old = events[i].listenedFraction
+            if (old != null && f < old + 0.01) return
+            publish(events.toMutableList().also { it[i] = it[i].copy(listenedFraction = f) })
+            save()
+        }
+    }
+
+    /** Did this play happen on a DIFFERENT device? A null origin is a legacy event = local. */
+    fun isFromAnotherDevice(e: PlayEvent): Boolean {
+        val origin = e.originInstallId ?: return false
+        return origin != _state.value.installId
+    }
+
+    /** The newest LOCAL event for [songId] (tail search). */
+    fun lastLocalEvent(songId: String): PlayEvent? =
+        _state.value.events.lastOrNull { it.songId == songId && !isFromAnotherDevice(it) }
+
+    /**
+     * Recent plays for the For You ranking: the newest [limit] events as a FLOOR, then keep walking
+     * back while events are still inside [coverageDays] (a ceiling would silently drop in-window plays).
+     */
+    fun recentPlaysForZone(
+        limit: Int = 2000,
+        coverageDays: Double = 60.0,
+        nowMs: Double = System.currentTimeMillis().toDouble(),
+    ): List<PlayEvent> {
+        val events = _state.value.events
+        var start = max(0, events.size - limit)
+        val cutoff = nowMs - coverageDays * 86_400_000.0
+        while (start > 0 && events[start - 1].playedAt >= cutoff) start -= 1
+        return events.subList(start, events.size).toList()
     }
 
     /** Wipe the log but KEEP the installId (Settings "clear history"). */
@@ -176,11 +265,15 @@ class PlayHistoryStore(
         _state.value = _state.value.copy(events = events, revision = _state.value.revision + 1)
     }
 
-    private fun rebuildIndexes(events: List<PlayEvent>) {
+    private fun rebuildIndexes(events: List<PlayEvent>, me: String = _state.value.installId) {
         lastPlayedIndex.clear()
         countIndex.clear()
         for (event in events) {
-            lastPlayedIndex[event.songId] = max(lastPlayedIndex[event.songId] ?: 0.0, event.playedAt)
+            // Counts span every device; the re-count WINDOW is local-only (a peer's play must not
+            // swallow a real play here seconds later). Null origin = legacy = local.
+            if (event.originInstallId == null || event.originInstallId == me) {
+                lastPlayedIndex[event.songId] = max(lastPlayedIndex[event.songId] ?: 0.0, event.playedAt)
+            }
             countIndex[event.songId] = (countIndex[event.songId] ?: 0) + 1
         }
     }
@@ -226,10 +319,11 @@ class PlayHistoryStore(
         var events = disk.events + memory.events.filterNot { it.id in seen }
         events = events.sortedBy { it.playedAt }
         if (events.size > maxEvents) events = events.takeLast(maxEvents)
-        rebuildIndexes(events)
+        val adopted = disk.installId.ifBlank { memory.installId }
+        rebuildIndexes(events, adopted)
         _state.value = State(
             events = events,
-            installId = disk.installId.ifBlank { memory.installId },
+            installId = adopted,
             revision = memory.revision + 1,
         )
     }
@@ -289,6 +383,7 @@ class PlayHistoryStore(
                                 artist = played.artist,
                                 context = played.context,
                                 nowMs = played.atMs,
+                                originCollectionId = played.originCollectionId,
                             )
                         }
                     }

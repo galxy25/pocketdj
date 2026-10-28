@@ -721,6 +721,7 @@ private fun PlaySource.icon(): ImageVector = when (this) {
     PlaySource.SETLIST -> Icons.AutoMirrored.Filled.QueueMusic
     PlaySource.MIX -> Icons.Filled.Tune
     PlaySource.ARTIST -> Icons.Filled.Mic
+    PlaySource.GAME -> Icons.Filled.Tune
 }
 
 /** Abbreviated relative time ("2 hr. ago") from an epoch-ms play time. */

@@ -275,6 +275,8 @@ class PlaybackController(
             get() = sequencerOwnsPlayer && activeBackend == ActiveBackend.EXO && (c?.mediaItemCount ?: 0) > 0
         override val isPlaying: Boolean get() = c?.isPlaying == true
         override val positionMs: Long get() = c?.currentPosition ?: 0L
+        override val durationMs: Long?
+            get() = c?.duration?.takeIf { it > 0 && it != androidx.media3.common.C.TIME_UNSET }
         override val trackEnded: Boolean get() = c?.playbackState == Player.STATE_ENDED
         override fun rekick(by: String) {
             val ctl = c ?: return

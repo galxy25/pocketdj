@@ -1,9 +1,11 @@
 package com.levi.pocketdj.di
 
+import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.playback.health.DeadAirMeter
 import com.levi.pocketdj.playback.health.PlaybackSupervisor
 import com.levi.pocketdj.playback.health.PowerRunwayLock
 import com.levi.pocketdj.playback.outcome.PlayOutcomeRegistry
+import com.levi.pocketdj.playback.outcome.SkipTracker
 import com.levi.pocketdj.playback.sequencer.RowResolverRegistry
 import com.levi.pocketdj.playback.sequencer.SetlistSequencer
 import com.levi.pocketdj.screens.nowplaying.NowPlayingRoutes
@@ -36,6 +38,18 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
 
     /** Fan-out of play outcomes to every FeatureModule.playOutcomeListeners entry. */
     val outcomes: PlayOutcomeRegistry = PlayOutcomeRegistry { app.features.playOutcomeListeners }
+
+    /**
+     * The strict <50 % skip classifier (PB-5). Verdicts mark the history event, max-merge the listened
+     * fraction and fan out to every FeatureModule outcome listener.
+     */
+    val skipTracker: SkipTracker by lazy {
+        SkipTracker(
+            markSkipped = { PlayHistoryStore.get(app.appContext).markSkipped(it) },
+            noteListened = { id, f -> PlayHistoryStore.get(app.appContext).noteListened(id, f) },
+            onVerdict = { song, skipped, f -> outcomes.emit(song, skipped, f) },
+        )
+    }
 
     /** The dead-air KPI (`filesDir/pocketdj-dead-air.json`, iOS document shape). */
     val deadAirMeter: DeadAirMeter by lazy {
@@ -100,6 +114,14 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         seq.historyContextProvider = { id -> app.collections.historyContext(id) }
         seq.originProvider = { id -> app.collections.originCollection(id) }
         seq.outcomes = outcomes
+        // PB-5: the History choke point arms the tracker; the sequencer feeds samples + advance-aways.
+        seq.skipTracker = skipTracker
+        // Off-main: the store reads the (up to 20k-row) log from disk on first touch.
+        app.appScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            val history = PlayHistoryStore.get(app.appContext)
+            history.onRecord = { e -> skipTracker.noteTrackStarted(e.id, e.songId) }
+            history.onResume = { e -> skipTracker.noteTrackResumed(e.id, e.songId, e.wasSkipped == true) }
+        }
         // PB-3 zero-dead-air: the KPI, the start runway, and the supervisor that ticks only while a run exists.
         seq.meter = deadAirMeter
         seq.runwayLock = PowerRunwayLock(app.appContext)
