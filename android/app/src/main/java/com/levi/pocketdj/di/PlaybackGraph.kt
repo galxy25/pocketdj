@@ -78,7 +78,8 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
             position = { seq.engine?.positionMs ?: 0L },
             isPlaying = { seq.engine?.isPlaying == true },
             heldOffset = { seq.resumeOffsetMs },
-            positionValid = { seq.engine?.hasLoadedItem == true },
+            positionValid = { seq.engine?.hasLoadedItem == true && seq.currentRowLoaded },
+            consumedResumeOffset = { seq.lastResumeOffsetMs },
         )
     }
 

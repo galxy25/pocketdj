@@ -25,6 +25,8 @@ class DurableHarness(val scope: TestScope, dir: File, vararg playable: String) {
         position = { pos },
         isPlaying = { playing },
         heldOffset = { seq.resumeOffsetMs },
+        positionValid = { seq.currentRowLoaded },
+        consumedResumeOffset = { seq.lastResumeOffsetMs },
     )
 
     fun observe() {

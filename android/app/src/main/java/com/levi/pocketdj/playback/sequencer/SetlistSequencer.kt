@@ -197,6 +197,13 @@ class SetlistSequencer(
     /** PB-4: the offset the first ▶ of a held deck resumes at (song-relative ms), or null. */
     val resumeOffsetMs: Long? get() = pendingResumeMs
 
+    /** PB-4: the offset [resumeFromHold] last consumed (null after any fresh play / clear). */
+    @Volatile var lastResumeOffsetMs: Long? = null
+        private set
+
+    /** PB-4: the engine holds THIS cursor row (not the previous row still loaded mid-resolve). */
+    val currentRowLoaded: Boolean get() = lastLoadedId != null && lastLoadedId == queue.getOrNull(index)?.id
+
     /** Cursor position (game runs read it before [appendRows]). */
     fun currentIndex(): Int = index
 
@@ -278,6 +285,7 @@ class SetlistSequencer(
         held = false
         sessionId = "pses_" + java.util.UUID.randomUUID().toString().uppercase()
         pendingResumeMs = null
+        lastResumeOffsetMs = null
         notice = null
         deviceQueueUnplayable = false
         deviceUnplayableSourceId = null
@@ -339,6 +347,7 @@ class SetlistSequencer(
         capturedContext = null
         capturedOrigin = null
         pendingResumeMs = null
+        lastResumeOffsetMs = null
         unplayableStreak = 0
         lastLoadedId = null
         memberIds = null
@@ -719,6 +728,7 @@ class SetlistSequencer(
     fun resumeFromHold() {
         if (!running || !held) return
         val at = pendingResumeMs
+        lastResumeOffsetMs = at
         noteUserTransport()
         held = false
         pendingResumeMs = null

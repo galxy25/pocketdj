@@ -255,8 +255,11 @@ class PlaybackService : MediaSessionService() {
 
         /**
          * Media-button / Bluetooth resumption after the process was killed (PB-4): restore the durable
-         * queue HELD and refuse to auto-play (iOS held rule) - the failed future leaves the player
-         * untouched; the deck waits for the first explicit play. The file is never written here.
+         * queue HELD. The future fails (nothing for Media3 to load: the sequencer, not the session
+         * timeline, owns the queue), but Media3 1.6.1 then calls handlePlayButtonAction -> player.play(),
+         * which reaches the forwarding player's held-resume path. So an explicit media-button / Bluetooth
+         * play after process death DOES resume at the saved offset (iOS latched remote play). Only the
+         * restore itself never plays or writes the file.
          */
         override fun onPlaybackResumption(
             mediaSession: MediaSession,
@@ -265,7 +268,7 @@ class PlaybackService : MediaSessionService() {
             runCatching {
                 com.levi.pocketdj.di.AppGraph.get(applicationContext).playbackGraph.resumptionProvider.onPlaybackResumption()
             }
-            return Futures.immediateFailedFuture(UnsupportedOperationException("held restore: no auto-play"))
+            return Futures.immediateFailedFuture(IllegalStateException("held restore: sequencer owns the queue"))
         }
 
         override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {

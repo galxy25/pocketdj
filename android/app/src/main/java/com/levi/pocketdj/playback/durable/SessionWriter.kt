@@ -26,6 +26,8 @@ class SessionWriter(
     private val heldOffset: () -> Long? = { null },
     /** False while the engine does not hold the current row yet (position would be stale). */
     private val positionValid: () -> Boolean = { true },
+    /** The offset a launch-time resume consumed before this writer observed the deck (it never saw it held). */
+    private val consumedResumeOffset: () -> Long? = { null },
     private val stemLock: () -> SessionStemLock? = { null },
 ) {
     private var last: SequencerState? = null
@@ -46,8 +48,8 @@ class SessionWriter(
             heldOffsetMs = heldOffset()
             return
         }
-        val resumed = prev?.isRunning == true && prev.isHeldForResume
         val fresh = prev == null || !prev.isRunning || prev.sessionId != st.sessionId
+        val resumed = prev?.isRunning == true && prev.isHeldForResume && !fresh
         val moved = prev != null && prev.index != st.index
         when {
             resumed -> {
@@ -56,7 +58,15 @@ class SessionWriter(
                 heldOffsetMs = null
                 save(st, at)
             }
-            fresh || moved -> save(st, 0)
+            // A latched remote play consumed the launch restore before we observed it held: keep its offset.
+            (prev == null || !prev.isRunning) && !moved -> {
+                heldOffsetMs = null
+                save(st, consumedResumeOffset() ?: 0L)
+            }
+            fresh || moved -> {
+                heldOffsetMs = null
+                save(st, 0)
+            }
             prev != null && structurallyChanged(prev, st) -> save(st, livePosition(st))
         }
     }

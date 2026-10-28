@@ -87,7 +87,9 @@ data class SessionSnapshot(
 
     companion object {
         /** iOS edition id convention: `sng_x` + variant -> `sng_x_clean`. */
-        fun variantStorageId(songId: String, variant: String): String = "${songId}_$variant"
+        fun variantStorageId(songId: String, variant: String): String =
+            com.levi.pocketdj.data.edition.SongVariant.entries.firstOrNull { it.raw == variant }
+                ?.let { com.levi.pocketdj.data.edition.SongVariant.variantId(songId, it) } ?: songId
 
         fun row(q: QueueItem) = SessionRow(
             songId = q.id,

@@ -103,4 +103,42 @@ class SessionWriterRulesTest {
         assertFalse(d.seq.isRunning)
         assertFalse(d.file.exists())
     }
+
+    @Test
+    fun staleOldRowPositionNeverOverwritesAfterAnIndexMove() = runTest {
+        val d = DurableHarness(this, tmp.root, "a", "b", "c")
+        d.observe()
+        d.seq.play(rows("a", "b", "c")); d.h.settle()
+        d.pos = 240_000; d.playing = true
+        d.seq.skipNext() // B's resolve has not landed: the engine still holds A at 4:00
+        assertEquals(0L, d.snapshotOnDisk()!!.positionMs)
+        d.clockMs += 60_000
+        d.writer.tick()
+        d.seq.appendToQueue(rows("c")) // live edit while B is unresolved
+        assertEquals(0L, d.snapshotOnDisk()!!.positionMs)
+    }
+
+    @Test
+    fun heldThenFreshPlay_newSession_persistsZeroNotTheHeldOffset() = runTest {
+        val d = DurableHarness(this, tmp.root, "a", "b")
+        d.observe()
+        d.seq.restoreHeld(
+            rows("a", "b"), 0, null, null, null,
+            com.levi.pocketdj.playback.sequencer.RepeatMode.OFF, false, 42_000, sessionId = "pses_OLD",
+        )
+        d.seq.play(rows("a", "b")); d.h.settle()
+        assertEquals(0L, d.snapshotOnDisk()!!.positionMs)
+    }
+
+    @Test
+    fun resumeConsumedBeforeObserving_keepsTheOffset() = runTest {
+        val d = DurableHarness(this, tmp.root, "a", "b")
+        d.seq.restoreHeld(
+            rows("a", "b"), 0, null, null, null,
+            com.levi.pocketdj.playback.sequencer.RepeatMode.OFF, false, 90_000, sessionId = "pses_OLD",
+        )
+        d.seq.resumeFromHold()
+        d.observe() // first observed state is running, never held
+        assertEquals(90_000L, d.snapshotOnDisk()!!.positionMs)
+    }
 }

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # PB-4 - Durable playback session: real-time snapshot, held restore, resume at position, materialize Now Playing setlist, playback-resumption provider
 
@@ -26,3 +26,15 @@ Tests: 2223 total, 0 failed at the committed tip (`./gradlew :app:testDebugUnitT
 
 ## Questions for Levi
 - None blocking.
+
+## Review
+fixes applied
+
+- MAJOR positionValid not row-aware -> fixed: `SetlistSequencer.currentRowLoaded` (lastLoadedId == current row id); positionValid = engine loaded AND current row loaded. Test `staleOldRowPositionNeverOverwritesAfterAnIndexMove`.
+- MINOR onPlaybackResumption claim -> fixed (comment/doc): Media3 1.6.1 calls play() after a failed future, so an explicit media-button/Bluetooth play resumes the held deck (iOS latched remote play). Exception changed to IllegalStateException (no UnsupportedOperation warning). Media3 onFailure->play path itself is not unit-testable (device-only).
+- MINOR writer `resumed` ignored sessionId -> fixed: resumed requires same session (not fresh). Test `heldThenFreshPlay_newSession_persistsZeroNotTheHeldOffset`.
+- MINOR restore consumed before collector -> fixed: sequencer `lastResumeOffsetMs`; writer uses it on the first observed running state. Test `resumeConsumedBeforeObserving_keepsTheOffset`.
+- MINOR PlaybackController repeat gate -> fixed: skip saved-repeat only for a held restored run (`isRunning && isHeldForResume`).
+- MINOR ledger/docs -> rejected for docs/ARCHITECTURE-ANDROID.md edit in this branch (integrator owns the ledger; status file lists gaps: stem lock, AM position, run-tag rule, emulator steps not run). `materializeNowPlayingSetlist` has no UI caller: follow-up (Up Next SETLIST button wiring).
+- NIT variantStorageId -> fixed via SongVariant.variantId.
+- NIT main-thread double load in provider -> not changed (optional).
