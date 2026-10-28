@@ -73,6 +73,9 @@ class ModDelay(private val sampleRate: Float = 44_100f, maxDelaySec: Float = 1f)
         curDelay = cur.toDouble()
     }
 
+    /** Jump the read head straight to [delayTime] (no glide), e.g. when the node leaves bypass. */
+    fun snap() { curDelay = delayTime * sampleRate }
+
     override fun reset() {
         lineL.fill(0f); lineR.fill(0f); w = 0; lpL = 0f; lpR = 0f
         curDelay = delayTime * sampleRate

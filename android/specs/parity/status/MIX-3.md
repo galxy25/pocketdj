@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-3 Shared DSP nodes (audio/dsp)
 
@@ -17,3 +17,16 @@ state: implemented
 - Reverb "rebuild" = loadPreset (retune + clear tail), counted by presetLoads.
 - Device-only: subjective quality of Sonic at large stretch ratios, reverb/compressor voicing vs. Apple units.
 - No files touched outside owned set. docs/ARCHITECTURE-ANDROID.md untouched per instructions.
+
+## Review
+- Limiter deque overflow (MAJOR) -> fixed: evict head before push; new test lowFrequencyOverdriveNeedsNoHardClamp (pre-clamp `clampedSamples` == 0)
+- TimePitch Sonic rebuild per change (MAJOR) -> fixed (partial): changes quantised (>=0.25% tempo / 0.04 st pitch), AudioFormat built once, `reconfigureCount` + glide test. Residual: each applied step still recreates Sonic inside Media3 (known exception; no seam crossfade, device-verify)
+- Filter Q (MINOR) -> fixed: qFromBandwidth for all shapes, RESONANT_Q dropped; resonance test
+- Hard-coded SR (MINOR) -> fixed: constructor sampleRate
+- Eq3 stale state (MINOR) -> fixed: band reset when leaving 0 dB
+- Meter parity (MINOR) -> fixed: pre/post smoothed peak/RMS (0.85 / 0.5 / 0.2) + updatedAtNanos on MixDeckLevels; `post` tap flag; raw fields kept
+- EnvelopeFollower mid RMS (MINOR) -> fixed: both-channel RMS
+- ModDelay glide on engage (MINOR) -> fixed: snap() after writeSlotParams when leaving bypass; test
+- drainSonic asShortBuffer / isPassthrough (NIT) -> fixed
+
+fixes applied

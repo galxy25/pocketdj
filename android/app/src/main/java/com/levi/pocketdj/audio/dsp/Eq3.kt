@@ -18,9 +18,24 @@ class Eq3(sampleRate: Float = 44_100f) : DspNode {
     var midDb = 0f; private set
     var highDb = 0f; private set
 
-    fun setLowDb(db: Float) { lowDb = db.coerceIn(-MAX_DB, MAX_DB); low.setGainDb(lowDb) }
-    fun setMidDb(db: Float) { midDb = db.coerceIn(-MAX_DB, MAX_DB); mid.setGainDb(midDb) }
-    fun setHighDb(db: Float) { highDb = db.coerceIn(-MAX_DB, MAX_DB); high.setGainDb(highDb) }
+    fun setLowDb(db: Float) {
+        val old = lowDb
+        lowDb = db.coerceIn(-MAX_DB, MAX_DB)
+        if (old == 0f && lowDb != 0f) low.reset() // skipped band: drop stale history
+        low.setGainDb(lowDb)
+    }
+    fun setMidDb(db: Float) {
+        val old = midDb
+        midDb = db.coerceIn(-MAX_DB, MAX_DB)
+        if (old == 0f && midDb != 0f) mid.reset() // skipped band: drop stale history
+        mid.setGainDb(midDb)
+    }
+    fun setHighDb(db: Float) {
+        val old = highDb
+        highDb = db.coerceIn(-MAX_DB, MAX_DB)
+        if (old == 0f && highDb != 0f) high.reset() // skipped band: drop stale history
+        high.setGainDb(highDb)
+    }
 
     override fun process(buf: FloatArray, frames: Int) {
         if (bypass) return

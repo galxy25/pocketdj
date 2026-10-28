@@ -92,4 +92,17 @@ class TimePitchTest {
         tp.push(sine(440f, 1024, 0.7f, 8192), 1024)
         assertTrue(tp.availableFrames >= before) // nothing dropped by the parameter change
     }
+
+    @Test fun continuousGlideDoesNotRebuildSonicEveryStep() {
+        val tp = TimePitch(sr)
+        tp.setSpeed(1.0f); tp.push(sine(440f, 512, 0.5f), 512)
+        val base = tp.reconfigureCount
+        var s = 1.0f
+        for (k in 0 until 80) { // 10 Hz-style glide 1.00 -> 1.06
+            s += 0.06f / 80f
+            tp.setSpeed(s)
+            tp.push(sine(440f, 4410, 0.5f, 512 + k * 4410), 4410)
+        }
+        assertTrue("reconfigures ${tp.reconfigureCount - base}", tp.reconfigureCount - base <= 30)
+    }
 }

@@ -33,6 +33,8 @@ class Limiter(sampleRate: Float = 44_100f, lookaheadMs: Float = 3f, val ceiling:
 
     /** Lowest gain applied since the last [takeMinGain]; for a GR meter. */
     private var minGain = 1f
+    /** Frames whose pre-clamp output exceeded the ceiling (should stay 0: the gain curve alone limits). */
+    var clampedSamples = 0L; private set
     fun takeMinGain(): Float { val g = minGain; minGain = 1f; return g }
 
     override fun process(buf: FloatArray, frames: Int) {
@@ -44,11 +46,13 @@ class Limiter(sampleRate: Float = 44_100f, lookaheadMs: Float = 3f, val ceiling:
             val target = if (peak > ceiling) ceiling / peak else 1f
 
             // Sliding minimum over the last `look` targets.
+            // Evict the expired head BEFORE pushing: the ring holds `look` slots and a push onto a
+            // full ring would overwrite the head and corrupt the window minimum.
+            if (dqSize > 0 && dqIdx[dqHead] <= n - look) { dqHead = (dqHead + 1) % look; dqSize-- }
             while (dqSize > 0 && dqVal[(dqHead + dqSize - 1) % look] >= target) dqSize--
             dqVal[(dqHead + dqSize) % look] = target
             dqIdx[(dqHead + dqSize) % look] = n
             dqSize++
-            if (dqIdx[dqHead] <= n - look) { dqHead = (dqHead + 1) % look; dqSize-- }
             val m = dqVal[dqHead]
 
             // Box average of the last `look` minima.
@@ -62,8 +66,10 @@ class Limiter(sampleRate: Float = 44_100f, lookaheadMs: Float = 3f, val ceiling:
             val ol = delay[2 * dPos]; val orr = delay[2 * dPos + 1]
             delay[2 * dPos] = l; delay[2 * dPos + 1] = r
             dPos++; if (dPos == dLen) dPos = 0
-            buf[2 * i] = (ol * g).coerceIn(-ceiling, ceiling)
-            buf[2 * i + 1] = (orr * g).coerceIn(-ceiling, ceiling)
+            val yl = ol * g; val yr = orr * g
+            if (abs(yl) > ceiling + 1e-6f || abs(yr) > ceiling + 1e-6f) clampedSamples++
+            buf[2 * i] = yl.coerceIn(-ceiling, ceiling)
+            buf[2 * i + 1] = yr.coerceIn(-ceiling, ceiling)
             n++; i++
         }
     }

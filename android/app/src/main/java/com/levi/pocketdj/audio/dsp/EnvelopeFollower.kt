@@ -29,10 +29,10 @@ class EnvelopeFollower(private val sampleRate: Float = 44_100f) : DspNode {
         if (bypass) return
         var i = 0
         while (i < frames) {
-            val m = (buf[2 * i] + buf[2 * i + 1]) * 0.5f
-            sumSq += (m * m).toDouble()
+            val l = buf[2 * i]; val r = buf[2 * i + 1]
+            sumSq += (l * l + r * r).toDouble() // both channels, like iOS vuMeter
             if (++count == CHUNK) {
-                val target = FxParams.envelopeCurve(sqrt(sumSq / CHUNK).toFloat()).toFloat()
+                val target = FxParams.envelopeCurve(sqrt(sumSq / (2 * CHUNK)).toFloat()).toFloat()
                 v += (target - v) * (if (target > v) atk else rel)
                 sumSq = 0.0; count = 0
             }

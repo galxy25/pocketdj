@@ -92,4 +92,28 @@ class FxSlotNodesTest {
         assertTrue(gainDbAt(n, 5_000f) < -30)
         assertEquals(0.0, gainDbAt(n, 60f), 1.0)
     }
+
+    @Test fun lowPassFilterIsResonantLikeIos() {
+        val n = FxSlotNodes(48_000f)
+        val slot = FXSlot(Effect.FILTER, enabled = true, strength = 0.5)
+        n.applySlot(slot, 0.5)
+        val f = com.levi.pocketdj.mix.model.FxParams.filterFrequency(slot.variant, 0.5)
+        val x = FloatArray(2 * 48_000)
+        for (i in 0 until 48_000) { val v = (0.1 * Math.sin(2 * Math.PI * f * i / 48_000)).toFloat(); x[2 * i] = v; x[2 * i + 1] = v }
+        n.run(x)
+        var pk = 0f
+        for (i in 24_000 until 48_000) pk = maxOf(pk, Math.abs(x[2 * i]))
+        assertTrue("resonant peak at cutoff, got $pk", pk > 0.1f * 1.5f) // Q ~2.9 => ~+9 dB
+    }
+
+    @Test fun echoEngageDoesNotGlideFromDefaultDelay() {
+        val n = FxSlotNodes()
+        n.applySlot(FXSlot(Effect.FLANGER, enabled = true, strength = 1.0), 1.0)
+        val target = (n.mod.delayTime * 44_100).toInt()
+        val x = FloatArray(2 * 40_000); x[0] = 1f; x[1] = 1f
+        n.run(x)
+        var best = 0; var bv = 0f
+        for (i in 100 until 40_000) if (Math.abs(x[2 * i]) > bv) { bv = Math.abs(x[2 * i]); best = i }
+        assertTrue("echo at $best vs $target", Math.abs(best - target) <= 3)
+    }
 }

@@ -38,12 +38,18 @@ class TimePitch(
     private var ringCount = 0 // frames
     private var dirty = true
     private var active = false
+    private val fmt = AudioProcessor.AudioFormat(sampleRate, CHANNELS, C.ENCODING_PCM_16BIT)
+    private var appliedSpeed = 1f
+    private var appliedPitch = 0f
+
+    /** Number of Sonic reconfigure+flush cycles (Media3 allocates a new Sonic each); diagnostic. */
+    var reconfigureCount = 0; private set
 
     /** Frames dropped because the consumer fell behind (diagnostic). */
     var overflowFrames: Long = 0; private set
 
     init {
-        sonic.configure(AudioProcessor.AudioFormat(sampleRate, CHANNELS, C.ENCODING_PCM_16BIT))
+        sonic.configure(fmt)
     }
 
     fun setSpeed(s: Float) {
@@ -57,18 +63,22 @@ class TimePitch(
 
     private val pitchRatio: Float get() = 2.0.pow(pitchSemitones / 12.0).toFloat()
 
-    private fun isPassthrough() = abs(speed - 1f) < 1e-4f && abs(pitchRatio - 1f) < 1e-4f
-
     private fun applyIfDirty() {
         if (!dirty) return
+        // Media3 rebuilds Sonic on every apply (allocation + a cold-start seam), so continuous
+        // glides are quantised: re-apply only once the tempo moved >= 0.25% or the pitch >= 0.04 st.
+        // A sub-threshold residual stays pending (inaudible) until it grows or flush() applies it.
+        if (abs(speed / appliedSpeed - 1f) < MIN_REL_STEP && abs(pitchSemitones - appliedPitch) < MIN_PITCH_STEP) return
         dirty = false
+        reconfigureCount++
+        appliedSpeed = speed; appliedPitch = pitchSemitones
         if (active) { // keep what is already inside Sonic
             sonic.queueEndOfStream()
             drainSonic()
         }
         sonic.setSpeed(speed)
         sonic.setPitch(pitchRatio)
-        sonic.configure(AudioProcessor.AudioFormat(sampleRate, CHANNELS, C.ENCODING_PCM_16BIT))
+        sonic.configure(fmt)
         sonic.flush()
         active = sonic.isActive
     }
@@ -108,7 +118,7 @@ class TimePitch(
         val out = sonic.getOutput()
         val shorts = out.remaining() / 2
         if (shorts <= 0) return
-        val sb = out.order(ByteOrder.nativeOrder()).asShortBuffer()
+        out.order(ByteOrder.nativeOrder())
         var n = shorts / CHANNELS
         // Overflow: drop the oldest frames.
         if (ringCount + n > ringCap) {
@@ -119,14 +129,14 @@ class TimePitch(
             overflowFrames += drop
             if (drop > d) { // output block itself bigger than the ring: skip its head
                 val skip = drop - d
-                sb.position(skip * CHANNELS)
+                out.position(out.position() + skip * CHANNELS * 2)
                 n -= skip
             }
         }
         var w = (ringRead + ringCount) % ringCap
         for (f in 0 until n) {
-            ring[w * 2] = sb.get() / 32768f
-            ring[w * 2 + 1] = sb.get() / 32768f
+            ring[w * 2] = out.getShort() / 32768f
+            ring[w * 2 + 1] = out.getShort() / 32768f
             w++; if (w == ringCap) w = 0
         }
         ringCount += n
@@ -182,14 +192,17 @@ class TimePitch(
     fun flush() {
         ringRead = 0; ringCount = 0
         dirty = false
+        appliedSpeed = speed; appliedPitch = pitchSemitones
         sonic.setSpeed(speed)
         sonic.setPitch(pitchRatio)
-        sonic.configure(AudioProcessor.AudioFormat(sampleRate, CHANNELS, C.ENCODING_PCM_16BIT))
+        sonic.configure(fmt)
         sonic.flush()
         active = sonic.isActive
     }
 
     companion object {
+        const val MIN_REL_STEP = 0.0025f
+        const val MIN_PITCH_STEP = 0.04f
         const val MIN_SPEED = 0.5f
         const val MAX_SPEED = 2.0f
     }

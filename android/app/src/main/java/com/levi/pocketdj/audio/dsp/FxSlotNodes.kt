@@ -14,7 +14,7 @@ import com.levi.pocketdj.mix.model.FxParams
  * `effectiveStrength` is the live (possibly modulated) value; the delay time is always derived
  * from the slot's BASE strength.
  */
-class FxSlotNodes(sampleRate: Float = 44_100f) : DspNode {
+class FxSlotNodes(private val sampleRate: Float = 44_100f) : DspNode {
     val comp = Compressor(sampleRate)
     val filter = Biquad(sampleRate)
     val reverb = Reverb(sampleRate)
@@ -36,6 +36,7 @@ class FxSlotNodes(sampleRate: Float = 44_100f) : DspNode {
 
     fun applySlot(slot: FXSlot, effectiveStrength: Double) {
         val live = slot.enabled
+        val wasBypassed = mod.bypass
         setBypass(comp, !(live && slot.effect == Effect.COMPRESSOR))
         setBypass(filter, !(live && slot.effect == Effect.FILTER))
         setBypass(reverb, !(live && slot.effect == Effect.REVERB))
@@ -46,6 +47,7 @@ class FxSlotNodes(sampleRate: Float = 44_100f) : DspNode {
             if (loadedReverbPreset != p) { reverb.loadPreset(p); loadedReverbPreset = p }
         }
         writeSlotParams(slot, effectiveStrength)
+        if (slot.effect == Effect.FLANGER && wasBypassed) mod.snap()
     }
 
     /** Pure value writes for one live slot. */
@@ -60,9 +62,8 @@ class FxSlotNodes(sampleRate: Float = 44_100f) : DspNode {
                     FxParams.FilterShape.BAND_PASS -> Biquad.Type.BAND_PASS
                 }
                 val f = FxParams.filterFrequency(v, strength)
-                val q = if (shape == Biquad.Type.BAND_PASS)
-                    Biquad.qFromBandwidth(FxParams.filterBandwidth(v, strength).toDouble(), f.toDouble(), SR).toFloat()
-                else RESONANT_Q
+                // Same bandwidth semantics as iOS for every shape (0.5 oct for LP/HP = resonant).
+                val q = Biquad.qFromBandwidth(FxParams.filterBandwidth(v, strength).toDouble(), f.toDouble(), sampleRate.toDouble()).toFloat()
                 filter.set(shape, f, q)
             }
             Effect.FLANGER -> {
@@ -92,10 +93,4 @@ class FxSlotNodes(sampleRate: Float = 44_100f) : DspNode {
     }
 
     override fun reset() { comp.reset(); filter.reset(); reverb.reset(); mod.reset() }
-
-    private companion object {
-        const val SR = 44_100.0
-        /** Mild resonance for LP/HP (Butterworth 0.707 plus a touch). */
-        const val RESONANT_Q = 1.0f
-    }
 }

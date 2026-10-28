@@ -49,4 +49,10 @@ class LimiterTest {
         assertEquals(0.5f, lim.takeMinGain(), 0.01f)
         assertEquals(1f, lim.takeMinGain(), 0f)
     }
+
+    @Test fun lowFrequencyOverdriveNeedsNoHardClamp() {
+        val lim = Limiter(SR)
+        lim.run(sine(40f, 8820, 2f), 512)
+        assertEquals("pre-clamp overs", 0L, lim.clampedSamples)
+    }
 }
