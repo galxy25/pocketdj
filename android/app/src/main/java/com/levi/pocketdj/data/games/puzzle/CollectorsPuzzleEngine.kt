@@ -125,6 +125,9 @@ class CollectorsPuzzleEngine(
     @Volatile var inputsBuilder: suspend (PuzzleSampler.RawInputs) -> PuzzleSampler.Inputs =
         { raw -> withContext(computeContext) { PuzzleSampler.Inputs.fromRaw(raw) } }
 
+    /** Tests drive [tickOnce] directly; false keeps the background ticker from racing them. */
+    @Volatile var tickerEnabled = true
+
     @Volatile var cloudBudgetMs: Long = CLOUD_BUDGET_MS
 
     // ---- state ----------------------------------------------------------------------------
@@ -355,6 +358,7 @@ class CollectorsPuzzleEngine(
 
     private fun startTicker() {
         tickerJob?.cancel()
+        if (!tickerEnabled) return
         tickerJob = scope.launch {
             while (isActive) {
                 tickOnce()
