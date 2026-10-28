@@ -490,7 +490,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | GM-1 — Games tab (7th destination via nav registry) + Scoreboard store (tombstones, union merge)… | 8 | Merged (`bb31d846`) | Emulator-verified wave 8: cards, seed, per-game delete, delete-all, persistence after relaunch, rotation during dialog. Gem Collector/In the Pocket openers pending their packages. |
 | GM-5 — In the Pocket core: models, pockets results decode (PocketsModels owner), scorer, members… | 8 | Merged (`73c168bd`) | Pure JVM (79 tests). Golden cross-platform scorer test OPEN. |
 | GM-3 — Gem Collector engine + GameRunPlayer over the sequencer (appendRows(runTag), preview-reso… | 9 | Merged (wave 9) | Apple Music preview resolution needs network; full-track AM is delibe… |
-| GM-4 — Gem Collector screens (setup / countdown / running / summary) + multi-collection filing v… | 10 | Planned | — |
+| GM-4 — Gem Collector screens (setup / countdown / running / summary) + multi-collection filing v… | 10 | PARTIAL | UI shipped; emulator steps not run (device-only, unverified) |
 | GM-7 — In the Pocket store + PocketsBridge interface (NoPocketsBridge default) + rounds upload c… | 11 | Planned | Cloud mode needs real pockets results (services area + rec key) — ver… |
 | GM-9 — Music with Friends link, models, client, join secret, session file, store (broker-driven,… | 12 | Planned | — |
 | GM-8 — In the Pocket screen + on-device feedback dictation | 14 | Planned | SpeechRecognizer dictation needs a real microphone/Google app; emulat… |

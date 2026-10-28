@@ -1,6 +1,11 @@
 package com.levi.pocketdj.screens.games
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.levi.pocketdj.di.AppGraph
 
@@ -15,11 +20,22 @@ fun GamesRoute(
     onOpenPuzzle: (() -> Unit)? = null,
     onOpenInThePocket: (() -> Unit)? = null,
 ) {
+    var showPuzzle by rememberSaveable { mutableStateOf(false) }
+    // A round survives leaving the screen (app-scoped engine); back from setup/summary closes it.
+    if (showPuzzle) {
+        BackHandler {
+            val engine = graph.gamesGraph.puzzleEngine
+            if (engine.currentPhase == com.levi.pocketdj.data.games.puzzle.PuzzleRoundState.Phase.FINISHED) engine.reset()
+            showPuzzle = false
+        }
+        CollectorsPuzzleScreen(graph, onClose = { showPuzzle = false }, modifier = modifier)
+        return
+    }
     GamesScreen(
         store = graph.gamesGraph.scoreboard,
         modifier = modifier,
         deleteScope = graph.appScope,
-        onOpenPuzzle = onOpenPuzzle,
+        onOpenPuzzle = onOpenPuzzle ?: { showPuzzle = true },
         onOpenInThePocket = onOpenInThePocket,
     )
 }
