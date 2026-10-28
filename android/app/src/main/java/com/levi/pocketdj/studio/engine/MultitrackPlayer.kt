@@ -155,6 +155,11 @@ class MultitrackPlayer(
             // begin() always discards the previous partial first (restart keeps recording, never leaks/concats).
             val tapped = recorder.begin(record, s.sampleRate, quantized) && record
             s.start(if (tapped) BlockRenderer { out, n -> ctx.render(out, n); recorder.tap(out, n) } else ctx)
+            if (!s.isRendering) {
+                // The output stream never opened (another app holds it, route transition): do not show "Playing".
+                stopInternal(keepReprime = false, reason = "output-unavailable")
+                return PlayOutcome.REFUSED
+            }
             clock.latencyMs = (s.latencyFrames() * 1000L / rate).toInt()
             clock.start()
             _isPlaying.value = true

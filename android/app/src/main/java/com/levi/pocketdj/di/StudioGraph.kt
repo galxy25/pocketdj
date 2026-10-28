@@ -149,7 +149,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     val studioEngine: StudioEngine get() = engineLazy.value
 
     /** STU-12: the Tracks arranger player (one render callback; clip decode/bake via the shared StudioRender). */
-    val multitrackPlayer: com.levi.pocketdj.studio.engine.MultitrackPlayer by lazy {
+    private val multitrackLazy: Lazy<com.levi.pocketdj.studio.engine.MultitrackPlayer> = lazy {
         val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { multitrackPlayer.stop("focus-loss") } }
         com.levi.pocketdj.studio.engine.MultitrackPlayer(
             loader = com.levi.pocketdj.studio.engine.StudioClipLoader(studioStore, studioRender),
@@ -166,6 +166,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             recorder = com.levi.pocketdj.studio.engine.MasterRecorder(tempDir = { File(app.appContext.cacheDir, "master-rec") }),
         )
     }
+    val multitrackPlayer: com.levi.pocketdj.studio.engine.MultitrackPlayer get() = multitrackLazy.value.also { ensureLoopStopObserver() }
 
     /** STU-13: artifact-only Bounce (same clip planner + render context as the live player). */
     val arrangerBouncer: com.levi.pocketdj.studio.engine.ArrangerBouncer by lazy {
@@ -228,6 +229,15 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
                     if (micLazy.isInitialized()) micRecorder.finalizeForExit()
                     if (loopLazy.isInitialized()) loopAudition.stop("superseded")
                     if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
+                    // Final review: the same "stops when backgrounded" default for the other Studio voices (no notification
+                    // or lock-screen control exists for them, and the frozen-app freezer makes them stutter).
+                    if (multitrackLazy.isInitialized()) multitrackPlayer.stop("superseded")
+                    if (instrumentLazy.isInitialized()) instrumentEngine.let {
+                        it.stopReplay("superseded")
+                        it.setClickEnabled(false)
+                        it.arp.stop()
+                    }
+                    if (demuxPlayerLazy.isInitialized()) demuxPlayer.stop()
                 }
             })
         }
@@ -298,7 +308,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             }
         }
     }
-    val instrumentEngine: com.levi.pocketdj.studio.engine.InstrumentEngine get() = instrumentLazy.value
+    val instrumentEngine: com.levi.pocketdj.studio.engine.InstrumentEngine get() = instrumentLazy.value.also { ensureLoopStopObserver() }
 
     // MIDI input is app-scoped (iOS keeps BLEMIDIManager + the CoreMIDI client alive): connections survive tab switches / rotation.
     private val midiManager: android.media.midi.MidiManager? by lazy { app.appContext.getSystemService(android.media.midi.MidiManager::class.java) }
@@ -465,7 +475,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
-    private val demuxPlayer: com.levi.pocketdj.studio.demux.StemPlayer by lazy {
+    private val demuxPlayerLazy: Lazy<com.levi.pocketdj.studio.demux.StemPlayer> = lazy {
         val focus = AudioFocusPolicy.FocusHandle(audioManager) {
             app.appScope.launch(Dispatchers.Main) { if (demuxPlayer.isPlaying) { StudioDiag.stop("demux", "focus-loss"); demuxPlayer.togglePlayPause() } }
         }
@@ -488,6 +498,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             scope = app.appScope,
         )
     }
+    private val demuxPlayer: com.levi.pocketdj.studio.demux.StemPlayer get() = demuxPlayerLazy.value.also { ensureLoopStopObserver() }
 
     /** The Demuxer's selection/resolve/stems state machine (one per app; the screen is a pure renderer of it). */
     /** STU-15: drum-pattern / melody analyzers + cloud lyrics (one run per source key). */

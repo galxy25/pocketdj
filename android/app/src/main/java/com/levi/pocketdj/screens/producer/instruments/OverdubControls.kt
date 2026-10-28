@@ -73,6 +73,10 @@ fun OverdubControls(graph: AppGraph, engine: InstrumentEngine, bpm: Int, onMessa
         scope.launch {
             val extras = ArrayList<Pair<SynthVoice, List<com.levi.pocketdj.studio.model.StudioNoteEvent>>>()
             var primaryEvents = es.liveEvents
+            // Each voice is a full float copy of the SF2 (tens of MB native): ANY exit that did not hand them to replay()
+            // (cancellation while preparing included) must close them.
+            var handedOff = false
+            try {
             withContext(Dispatchers.Default) {
                 // Staff 1 plays through its OWN voice: the engine's live voice is the user's overdub voice and must stay free (iOS).
                 val bank1 = packs.localBankFile(instrument)
@@ -89,8 +93,11 @@ fun OverdubControls(graph: AppGraph, engine: InstrumentEngine, bpm: Int, onMessa
             }
             if (!od.isActive) { extras.forEach { runCatching { it.first.close() } }; return@launch }
             val ok = engine.replay(primaryEvents, 0, extras, if (loop.value) 0 to end else null)
-            if (ok) { od.setBackingReady(true); od.reanchorIfEmpty() }
+            if (ok) { handedOff = true; od.setBackingReady(true); od.reanchorIfEmpty() }
             else { od.setBackingPreparing(false); od.reanchorIfEmpty(); extras.forEach { runCatching { it.first.close() } } }
+            } finally {
+                if (!handedOff) extras.forEach { runCatching { it.first.close() } }
+            }
         }
     }
 

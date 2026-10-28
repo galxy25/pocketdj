@@ -181,8 +181,10 @@ class InstrumentEngine(
                 val k = sink ?: sinkFactory().also { sink = it }
                 focus()
                 k.start(renderer)
-                sinkRunning = true
-                log("instr: sink start")
+                // Final review: an Oboe stream that failed to open leaves isRendering=false; stay "not running" so the
+                // NEXT note retries instead of silently playing into nothing.
+                sinkRunning = k.isRendering
+                log("instr: sink start rendering=${k.isRendering}")
             }
         }
     }
