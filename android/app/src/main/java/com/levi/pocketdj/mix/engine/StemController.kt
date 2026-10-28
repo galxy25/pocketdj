@@ -236,6 +236,8 @@ class StemController(
     var streamHeld: (Deck) -> Boolean = { false }
     /** A held/streaming deck un-holds because the stems carry it now (MIX-10 clears its hold). */
     var onUnhold: ((Deck) -> Unit)? = null
+    /** A stem-side hold turned ON (MIX-10 republishes the Buffering badge). */
+    var onHold: ((Deck) -> Unit)? = null
     /** The song got shorter than catalogued (no voice can grow): the auto end must be re-stamped. */
     var onDurationShortened: ((Deck) -> Unit)? = null
 
@@ -464,6 +466,19 @@ class StemController(
     fun onMainProgressed(deck: Deck) {
         if (s(deck).handover != null) advance(deck)
         releaseHoldIfRunway(deck)
+    }
+
+    /**
+     * The full mix's stream DIED while the stems carry the deck (MIX-10; the caller already marked the main
+     * truncated): "back to the full mix" can no longer carry the rest of the song, so the deck stays on
+     * stems; and if neither voice can grow any more the song ends where its audio does.
+     */
+    fun mainStreamDied(deck: Deck) {
+        if (s(deck).handover == StemHandover.TO_FULL_MIX) {
+            log("deck ${deck.label} full mix truncated - stems stay")
+            setHandover(deck, null)
+        }
+        settleDeadSources(deck)
     }
 
     private fun frontierOf(srcs: List<PcmSource>): Double =
@@ -760,6 +775,7 @@ class StemController(
                 if (a.toStems) setHandover(deck, StemHandover.TO_STEMS)
                 core.setPosition(deck, min(pos, end))
                 d.held = true
+                onHold?.invoke(deck)
             }
             StemRules.Underrun.EndSong -> settleDeadSources(deck)
         }
@@ -784,6 +800,7 @@ class StemController(
                 setHandover(deck, StemHandover.TO_STEMS)   // the stems' pump (or fetch) resumes the deck
                 core.setPosition(deck, min(pos, main.endSeconds(deck)))
                 d.held = true
+                onHold?.invoke(deck)
             }
             StemRules.MainUnderrun.EndSong -> settleDeadSources(deck)
         }

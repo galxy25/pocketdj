@@ -29,12 +29,12 @@ class DeckController(
     val windowSeconds: Double get() = (endFrame - startFrame).toDouble() / sampleRate
 
     /** Install [v] over [w], replacing (and closing) the previous track. The voice starts paused. */
-    fun open(v: Voice, w: LoadWindow.Frames) {
+    fun open(v: Voice, w: LoadWindow.Frames, final: Boolean = true) {
         val old = voice
         val oldPump = pump
         startFrame = w.startFrame
         endFrame = w.endFrame
-        v.schedule(w.startFrame, w.endFrame, final = true)
+        v.schedule(w.startFrame, w.endFrame, final = final)
         voice = v
         pump = runner.run(v)
         graph.setMain(deck, v)
@@ -42,6 +42,17 @@ class DeckController(
         old?.pause()
         runCatching { oldPump?.close() }
         runCatching { old?.close() }
+    }
+
+    /**
+     * Raise a GROWING window's end to [frame] (MIX-10 streaming): only ever raises, [final] marks the true
+     * end of the file. The voice keeps decoding past what it had; a playhead that caught the old end
+     * resumes by itself.
+     */
+    fun growTo(frame: Long, final: Boolean = false) {
+        val v = voice ?: return
+        if (frame > endFrame) endFrame = frame
+        v.append(frame, final)
     }
 
     /** Install the deck's stem group (replacing any previous one) and start its decoder threads. */

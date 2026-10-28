@@ -348,6 +348,23 @@ class MixEngine(
         install(deck, p.voice!!, p.window!!, p.meta!!, p.startMs)
     }
 
+    /**
+     * MIX-10 streaming load, first half: the deck forgets its previous track's voice / stem intent so the
+     * stream machine can take it. A parked restore is superseded exactly like a real load.
+     */
+    internal fun beginStreamLoad(deck: Deck) {
+        if (!isRestoringMixSession) { pendingRestore = null; restoreSettled = true }
+        loadSeq[deck.ordinal]++
+        ensureEngine(startNow = !isRestoringMixSession)
+        masterPausedDecks = masterPausedDecks - deck
+        onStemsReset?.invoke(deck)
+        controller(deck).release()
+    }
+
+    /** MIX-10 streaming load, second half: the track takes the deck with a provisional [durationSeconds]. */
+    internal fun commitStreamLoad(deck: Deck, meta: LoadedTrack, durationSeconds: Double) =
+        commitLoad(deck, meta, null, durationSeconds)
+
     /** Internal load seam (shared with tests): open [file] and load it as [meta]. False = deck untouched. */
     fun loadFile(file: java.io.File, startMs: Int?, lengthMs: Int?, meta: LoadedTrack, deck: Deck): Boolean {
         if (!isRestoringMixSession) { pendingRestore = null; restoreSettled = true }
@@ -524,9 +541,10 @@ class MixEngine(
         val was = st(deck).isPlaying
         onLoopInvalidated?.invoke(deck)   // rewinding past a window would leave a stale loop half-armed
         val c = controller(deck)
-        if (!c.isOpen) return
+        if (!c.isOpen && !streamHeld(deck)) return   // a stream still waiting for its first bytes has no voice yet
         c.seekSeconds(0.0)
         setPosition(deck, 0.0)
+        if (streamHeld(deck)) onSeeked?.invoke(deck, 0.0)   // held: the stream pump re-checks runway at 0:00
         if (was) {
             startEngineIfNeeded()
             if (!streamHeld(deck)) c.play()
@@ -590,7 +608,7 @@ class MixEngine(
     override fun seek(deck: Deck, sec: Double) {
         val clamped = sec.coerceIn(0.0, duration(deck))
         val c = controller(deck)
-        if (!c.isOpen) return
+        if (!c.isOpen && !streamHeld(deck)) return   // (a held stream has no voice before its first bytes)
         c.seekSeconds(clamped)
         setPosition(deck, clamped)
         onSeeked?.invoke(deck, clamped)
@@ -836,7 +854,7 @@ class MixEngine(
 
     // ------------------------------------------------------------------------------ outcomes
 
-    private fun reportDeckEnded(deck: Deck, reason: MixTrackEndReason) {
+    internal fun reportDeckEnded(deck: Deck, reason: MixTrackEndReason) {
         hooks.reportEnded(deck, st(deck).loaded?.songId, position(deck), duration(deck), reason)
     }
 

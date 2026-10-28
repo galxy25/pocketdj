@@ -18,6 +18,8 @@ import java.io.File
 class Mp3Decoder(
     private val bytes: ByteSource,
     private var complete: Boolean = true,
+    /** Full download size: lets an untagged partial CBR file report an estimated length (streaming attach). */
+    private val expectedBytes: Long? = null,
 ) : PcmSource {
     constructor(file: File, complete: Boolean = true) : this(FileByteSource(file), complete)
 
@@ -45,7 +47,11 @@ class Mp3Decoder(
     // The layout [read] hands out is ALWAYS reader.channels (fill() remaps the codec's layout).
     override val channels: Int get() = if (ensureOpen()) reader.channels else outChannels
     override val isComplete: Boolean get() = complete
-    override val totalFrames: Long get() = if (ensureOpen()) reader.totalFrames(complete) else -1
+    override val totalFrames: Long get() {
+        if (!ensureOpen()) return -1
+        val exact = reader.totalFrames(complete)
+        return if (exact >= 0 || complete) exact else reader.estimateTotalFrames(expectedBytes)
+    }
     override val availableFrames: Long get() = if (ensureOpen()) reader.playableFrames(bytes.length, complete = complete) else 0
 
     /** The writer finished appending: the frontier is now the whole file. */

@@ -191,6 +191,18 @@ class Mp3FrameReader(private val src: ByteSource) {
         return maxOf(0L, present * h.samplesPerFrame - startSkip)
     }
 
+    /**
+     * Length estimate for an UNTAGGED partial file from the full download size (CBR): audio bytes / frame
+     * bytes * samplesPerFrame. -1 when unknown. (iOS AVAudioFile estimates a partial CBR file the same way.)
+     */
+    fun estimateTotalFrames(expectedBytes: Long?): Long {
+        val h = header ?: return -1
+        val total = expectedBytes ?: return -1
+        val audioBytes = total - audioStart
+        if (audioBytes <= 0 || h.frameBytes <= 0) return -1
+        return maxOf(0L, audioBytes / h.frameBytes * h.samplesPerFrame - startSkip)
+    }
+
     /** Audio frames fully contained in the first [bytes] bytes of the file. */
     fun presentFrames(bytes: Long): Long {
         val h = header ?: return 0
