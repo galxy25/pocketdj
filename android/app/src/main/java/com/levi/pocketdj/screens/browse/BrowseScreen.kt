@@ -80,7 +80,9 @@ import com.levi.pocketdj.screens.collections.AddToItem
 import com.levi.pocketdj.screens.collections.AddToPlaylistMenu
 import com.levi.pocketdj.ui.selection.SelectionBar
 import com.levi.pocketdj.ui.selection.SelectionScope
+import com.levi.pocketdj.ui.selection.SelectionBarSemantics
 import com.levi.pocketdj.ui.selection.SongTransfer
+import com.levi.pocketdj.ui.selection.writeSongTransfer
 import com.levi.pocketdj.ui.selection.selectionDecor
 import com.levi.pocketdj.ui.selection.selectionTap
 import kotlinx.coroutines.Dispatchers
@@ -255,10 +257,24 @@ fun BrowseScreen(
                 onDismiss = { addItem = null; addSheetOpen = false },
             )
         } else {
+            val songId = (item as? AddToItem.Song)?.id
+            val ctx = LocalContext.current
+            val sel = remember { graph.collectionsGraph.rowSelection }
+            val extras = if (songId == null) emptyList() else listOf<Pair<String, () -> Unit>>(
+                "Select" to { sel.enterSelectMode(BROWSE_SELECTION_SCOPE, songId) },
+                "Copy" to {
+                    val st = sel.state.value
+                    val picked = if (st.scopeId == BROWSE_SELECTION_SCOPE) sel.currentPayload()?.songIds else null
+                    val ids = SelectionBarSemantics.rowOrSelectionIds(picked, songId)
+                    val songs = catalogState.catalog?.songsById.orEmpty()
+                    writeSongTransfer(ctx, SongTransfer.make(ids, songs))
+                },
+            )
             AddToPlaylistMenu(
                 item = item,
                 onDismiss = { addItem = null },
                 onMore = { addSheetOpen = true },
+                extraActions = extras,
             )
         }
     }
@@ -677,8 +693,14 @@ private fun BrowseContent(
                                     selectionTap(rowSelection, songId, BROWSE_SELECTION_SCOPE) { onOpenSong(songId) }
                                 },
                                 onPlay = { onPlaySong(songId) },
-                                // Long-press arms select mode (Add to… lives in the selection bar).
-                                onLongClick = { rowSelection.handleLongPress(songId, BROWSE_SELECTION_SCOPE) },
+                                // Armed: long-press toggles. Otherwise the COL-4 Add-to menu (with Select / Copy).
+                                onLongClick = {
+                                    if (rowSelection.state.value.isSelectMode(BROWSE_SELECTION_SCOPE)) {
+                                        rowSelection.handleLongPress(songId, BROWSE_SELECTION_SCOPE)
+                                    } else {
+                                        onAddSong(songId)
+                                    }
+                                },
                             )
                         }
                         if (visible.size < shownSongs.size) {

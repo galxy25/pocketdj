@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 COL-5: Multi-select (RowSelection + SelectableRow + SelectionBar), Android port.
 
@@ -17,3 +17,17 @@ COL-5: Multi-select (RowSelection + SelectableRow + SelectionBar), Android port.
 
 ## Questions for Levi
 - Should Browse long-press keep a quick single-song Add-to (as before) in addition to arming select mode?
+
+## Shared touchpoints
+- SourcePlaylistDetailScreen.kt, SetlistDetailScreen.kt (LazyColumn re-wrapped in Column+weight; likely overlap with COL-6 drag-and-drop), AddToPlaylistMenu.kt (new optional `extraActions`), PlaylistDetailScreen.kt, BrowseScreen.kt.
+
+## Review
+fixes applied
+- MAJOR clipboard Binder overflow -> fixed: `clipPayloadOrNull` refuses > 200k chars (Toast "Too many songs to copy"), setPrimaryClip in runCatching; test hugeSelectionIsRefusedBeforeTheBinder.
+- MAJOR ledger row -> fixed: COL-5 PARTIAL in docs/ARCHITECTURE-ANDROID.md (no paste UI, no hw-keyboard range-select, emulator not run).
+- MINOR setlist/source index keys -> fixed: `stableKeys` (rowId / song id + occurrence suffix); test stableKeysFollowTheEntryNotThePosition.
+- MINOR Browse long-press -> fixed: long-press opens the COL-4 Add-to menu again with added Select and Copy rows; while armed it toggles. Copy copies the selection if the row is in it, else the row (test rowCopyUsesSelectionOnlyWhenRowIsInIt).
+- MINOR TalkBack -> fixed: stateDescription Selected/Not selected only while armed (contentDescription removed).
+- MINOR playlist payload test -> fixed: extracted `playlistSelectionPayload`, used by PlaylistDetailScreen, tested with repeats + missing/studio nodes.
+- NIT touchpoints -> recorded above.
+Tests: 2461 -> 2465, 0 failures; assembleDebug green. Emulator not used.

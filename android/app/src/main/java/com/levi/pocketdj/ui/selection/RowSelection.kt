@@ -228,3 +228,28 @@ class RowSelection {
         )
     }
 }
+
+/**
+ * Stable selection keys for a list that may repeat entries: the entry itself for its first
+ * occurrence, `entry#n` for later ones. Keys follow the ENTRY, not its position.
+ */
+fun stableKeys(entries: List<String>): List<String> {
+    val seen = HashMap<String, Int>()
+    return entries.map { e ->
+        val n = seen.merge(e, 1, Int::plus)!!
+        if (n == 1) e else "$e#$n"
+    }
+}
+
+/** Playlist chapter selection payload: node ids -> song ids in display order (missing/studio nodes skipped). */
+fun playlistSelectionPayload(
+    nodes: List<Pair<String, String?>>, // (nodeId, songId) in display order, SONG nodes only
+    selection: RowSelection,
+    songsById: Map<String, IndexSong>,
+    isStudioId: (String) -> Boolean = { false },
+): SongTransfer {
+    val eligible = nodes.filter { (_, sid) -> sid != null && songsById.containsKey(sid) && !isStudioId(sid) }
+    val byNode = eligible.associate { it.first to it.second!! }
+    val ordered = selection.orderedSelection(eligible.map { it.first })
+    return SongTransfer.make(ordered.mapNotNull { byNode[it] }, songsById)
+}

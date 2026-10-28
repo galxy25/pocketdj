@@ -96,4 +96,48 @@ class SelectionBarSemanticsTest {
         assertEquals(listOf("P4", "P3", "P2"), rows.map { it.second })
         assertEquals(listOf("alpha", "Beta", "gamma"), SelectionBarSemantics.sortedAZ(listOf("gamma", "Beta", "alpha")) { it })
     }
+
+    @Test
+    fun hugeSelectionIsRefusedBeforeTheBinder() {
+        // ~97k Apple Music ids: select-all then Copy must not reach setPrimaryClip.
+        val ids = (1..97_000).map { "sng_%012x".format(it) }
+        assertEquals(null, SelectionBarSemantics.clipPayloadOrNull(SongTransfer.make(ids, emptyMap())))
+        val small = SongTransfer.make(ids.take(500), emptyMap())
+        assertTrue(SelectionBarSemantics.clipPayloadOrNull(small) != null)
+        assertEquals(null, SelectionBarSemantics.clipPayloadOrNull(SongTransfer(emptyList())))
+    }
+
+    @Test
+    fun rowCopyUsesSelectionOnlyWhenRowIsInIt() {
+        assertEquals(listOf("a", "b"), SelectionBarSemantics.rowOrSelectionIds(listOf("a", "b"), "b"))
+        assertEquals(listOf("z"), SelectionBarSemantics.rowOrSelectionIds(listOf("a", "b"), "z"))
+        assertEquals(listOf("z"), SelectionBarSemantics.rowOrSelectionIds(null, "z"))
+    }
+
+    @Test
+    fun stableKeysFollowTheEntryNotThePosition() {
+        val before = stableKeys(listOf("x", "y", "x", "z"))
+        assertEquals(listOf("x", "y", "x#2", "z"), before)
+        // Remove the first row: the surviving entries keep their keys except repeats re-count.
+        val after = stableKeys(listOf("y", "x", "z"))
+        assertEquals("y", after[0]); assertEquals("z", after[2])
+        assertEquals(before.toSet().size, before.size)
+    }
+
+    @Test
+    fun playlistPayloadFiltersMissingAndStudioNodesAndKeepsRepeats() {
+        fun song(id: String) = com.levi.pocketdj.data.catalog.IndexSong(id = id, name = id, artist = "A")
+        val songs = listOf("s1", "s2").associateWith { song(it) }
+        val nodes = listOf("n1" to "s1", "n2" to "s2", "n3" to "s1", "n4" to "gone", "n5" to "studio_x", "n6" to null)
+        val sel = RowSelection()
+        val eligible = listOf("n1", "n2", "n3")
+        sel.registerActiveList("playlist:p", { eligible }, {
+            playlistSelectionPayload(nodes, sel, songs) { it.startsWith("studio_") }
+        })
+        sel.enterSelectMode("playlist:p", "n3")
+        sel.handleTap("n1", "playlist:p")
+        sel.handleTap("n4", "playlist:p") // not selectable: ignored or filtered
+        val t = playlistSelectionPayload(nodes, sel, songs) { it.startsWith("studio_") }
+        assertEquals(listOf("s1", "s1"), t.songIds)
+    }
 }

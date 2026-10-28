@@ -139,9 +139,14 @@ fun PlaylistDetailScreen(
             pruneKey = playlist.sequences,
             allIds = { songNodes().map { it.nodeId } },
             payload = {
-                val byNode = songNodes().associate { it.nodeId to it.songId!! }
-                val ordered = rowSelection.orderedSelection(songNodes().map { it.nodeId })
-                SongTransfer.make(ordered.mapNotNull { byNode[it] }, catalog?.songsById.orEmpty())
+                com.levi.pocketdj.ui.selection.playlistSelectionPayload(
+                    nodes = playlist.sequences.flatMap { it.children.orEmpty() }
+                        .filter { it.kind == PlaylistNode.Kind.SONG }
+                        .map { it.nodeId to it.songId },
+                    selection = rowSelection,
+                    songsById = catalog?.songsById.orEmpty(),
+                    isStudioId = PlayResolver::isStudioId,
+                )
             },
         )
 

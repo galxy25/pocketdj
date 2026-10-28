@@ -172,10 +172,12 @@ fun SetlistDetailScreen(
 
         val rowSelection = remember { graph.collectionsGraph.rowSelection }
         val selScope = "setlist:$setlistId"
-        // Tracks are keyed by POSITION (a set list may repeat a song); payload maps back to song ids.
+        // Tracks are keyed by a STABLE per-row id (rowId + occurrence counter for repeats), so a
+        // move/remove never shifts the selection onto different songs.
+        val trackKeys = setlist.tracks.map { it.rowId }.let { com.levi.pocketdj.ui.selection.stableKeys(it) }
         fun selectableIds() = setlist.tracks.indices.filter {
             setlist.tracks[it].isText != true && setlist.tracks[it].songId.isNotEmpty()
-        }.map { it.toString() }
+        }.map { trackKeys[it] }
         SelectionScope(
             selection = rowSelection,
             scope = selScope,
@@ -183,7 +185,9 @@ fun SetlistDetailScreen(
             allIds = { selectableIds() },
             payload = {
                 SongTransfer.make(
-                    rowSelection.orderedSelection(selectableIds()).map { setlist.tracks[it.toInt()].songId },
+                    rowSelection.orderedSelection(selectableIds()).mapNotNull { k ->
+                        trackKeys.indexOf(k).takeIf { it >= 0 }?.let { setlist.tracks[it].songId }
+                    },
                     catalog?.songsById.orEmpty(),
                 )
             },
@@ -303,6 +307,7 @@ fun SetlistDetailScreen(
                     SetlistTrackRow(
                         selection = rowSelection,
                         selectionScope = selScope,
+                        selectionKey = trackKeys[index],
                         rowNumber = index + 1,
                         track = track,
                         catalog = catalog,
@@ -400,6 +405,7 @@ fun SetlistDetailScreen(
 private fun SetlistTrackRow(
     selection: com.levi.pocketdj.ui.selection.RowSelection,
     selectionScope: String,
+    selectionKey: String,
     rowNumber: Int,
     track: SetlistTrack,
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
@@ -470,7 +476,7 @@ private fun SetlistTrackRow(
             camelot = track.camelot,
             lengthMs = track.lengthMs,
             dimmed = dimmed,
-            modifier = Modifier.selectableRow(selection, (rowNumber - 1).toString(), selectionScope, onTap),
+            modifier = Modifier.selectableRow(selection, selectionKey, selectionScope, onTap),
             favoriteSongId = song?.id, favoriteAppleMusicId = song?.appleMusicId,
             leading = {
                 Text(

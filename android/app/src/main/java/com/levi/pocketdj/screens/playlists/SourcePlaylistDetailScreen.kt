@@ -111,10 +111,12 @@ fun SourcePlaylistDetailScreen(
 
         val rowSelection = remember { graph.collectionsGraph.rowSelection }
         val selScope = "source:$sourceName:$playlistId"
-        // Rows are keyed by INDEX (a source list may repeat a song); payload maps back to song ids.
+        // Rows are keyed by SONG id (as iOS); a repeat gets an occurrence suffix so keys stay
+        // unique, and a reorder never moves the selection onto different songs.
+        val rowKeys = com.levi.pocketdj.ui.selection.stableKeys(songIds)
         fun selectableIds() = songIds.indices.filter {
             catalog.songsById.containsKey(songIds[it]) && !PlayResolver.isStudioId(songIds[it])
-        }.map { it.toString() }
+        }.map { rowKeys[it] }
         SelectionScope(
             selection = rowSelection,
             scope = selScope,
@@ -122,7 +124,9 @@ fun SourcePlaylistDetailScreen(
             allIds = { selectableIds() },
             payload = {
                 SongTransfer.make(
-                    rowSelection.orderedSelection(selectableIds()).map { songIds[it.toInt()] },
+                    rowSelection.orderedSelection(selectableIds()).mapNotNull { k ->
+                        rowKeys.indexOf(k).takeIf { it >= 0 }?.let { songIds[it] }
+                    },
                     catalog.songsById,
                 )
             },
@@ -223,7 +227,7 @@ fun SourcePlaylistDetailScreen(
                             camelot = song.camelot,
                             lengthMs = song.length,
                             dimmed = !manifest.containsKey(songId),
-                            modifier = Modifier.selectableRow(rowSelection, index.toString(), selScope) { detailSongId = songId },
+                            modifier = Modifier.selectableRow(rowSelection, rowKeys[index], selScope) { detailSongId = songId },
                             favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                         )
                     }

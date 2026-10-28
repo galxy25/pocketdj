@@ -39,7 +39,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.collections.AddTarget
@@ -86,6 +86,23 @@ object SelectionBarSemantics {
     /** Clipboard items: plain text FIRST (what other apps paste), then the typed JSON. */
     fun clipTexts(t: SongTransfer): List<String> = listOf(t.plainTextExport, t.toJson())
 
+    /**
+     * Binder transactions cap at ~1 MB and ClipData parcels as UTF-16 (2 bytes/char), so the
+     * encoded payload (text + JSON) must stay well under that. Above this we refuse to copy.
+     */
+    const val MAX_CLIP_CHARS = 200_000
+
+    /** The (text, json) clip items, or null when the payload is too big for a safe Binder trip. */
+    fun clipPayloadOrNull(t: SongTransfer): Pair<String, String>? {
+        if (t.songIds.isEmpty()) return null
+        val (text, json) = clipTexts(t)
+        return if (text.length + json.length > MAX_CLIP_CHARS) null else text to json
+    }
+
+    /** Copy-from-a-row: the whole selection when the row is part of it, else just that row. */
+    fun rowOrSelectionIds(selected: List<String>?, rowId: String): List<String> =
+        if (selected != null && rowId in selected) selected else listOf(rowId)
+
     sealed interface AddResult {
         data object StaleCleared : AddResult
         data class Added(val requested: Int, val added: Int) : AddResult
@@ -93,13 +110,17 @@ object SelectionBarSemantics {
 }
 
 /** Put [t] on the system clipboard: text fallback + SongTransfer JSON (label `com.pocketdj.songlist`). */
-fun writeSongTransfer(context: Context, t: SongTransfer) {
-    if (t.songIds.isEmpty()) return
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-    val (text, json) = SelectionBarSemantics.clipTexts(t)
-    val clip = ClipData.newPlainText(SongTransfer.CLIP_LABEL, text)
-    clip.addItem(ClipData.Item(json))
-    cm.setPrimaryClip(clip)
+fun writeSongTransfer(context: Context, t: SongTransfer): Boolean {
+    if (t.songIds.isEmpty()) return false
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return false
+    val payload = SelectionBarSemantics.clipPayloadOrNull(t)
+    if (payload == null) {
+        Toast.makeText(context, "Too many songs to copy", Toast.LENGTH_SHORT).show()
+        return false
+    }
+    val clip = ClipData.newPlainText(SongTransfer.CLIP_LABEL, payload.first)
+    clip.addItem(ClipData.Item(payload.second))
+    return runCatching { cm.setPrimaryClip(clip) }.isSuccess
 }
 
 /** Read a SongTransfer back (item 1 JSON, byte-capped); null when the clip isn't ours. */
@@ -155,7 +176,7 @@ fun Modifier.selectionDecor(selection: RowSelection, id: String, scope: String):
                 drawCircle(if (selected) accent else dim, radius = 6.5.dp.toPx(), center = c, style = Stroke(1.5.dp.toPx()))
             }
         }
-        .semantics { if (selected) contentDescription = "selected" }
+        .semantics { if (armed) stateDescription = if (selected) "Selected" else "Not selected" }
 }
 
 /**
