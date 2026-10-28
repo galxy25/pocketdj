@@ -89,10 +89,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             initial = runCatching { kotlinx.coroutines.runBlocking(Dispatchers.IO) { client.isConfigured() } }.getOrDefault(false),
         )
         val rips = object : MixStreamRips {
-            override fun hasServer(): Boolean = flag.get()
+            override fun hasServer(): Boolean = MixDebug.publicRips || flag.get()
             override fun entry(songId: String) = ripsRepo.entry(songId)
             override suspend fun presignedUrl(songId: String, ttlSeconds: Int): String? =
-                if (client.isConfigured()) client.presign(songId, ttlSeconds) else null
+                if (MixDebug.publicRips) ripsRepo.entry(songId)?.let { Endpoints.ripAudioUrl(it.key) }
+                else if (client.isConfigured()) client.presign(songId, ttlSeconds) else null
             override fun urlForKey(key: String) = Endpoints.ripAudioUrl(key)
             override fun stemUrls(songId: String) = ripsRepo.entry(songId)?.stemUrls(Endpoints.RIPS_BASE)
         }
@@ -330,3 +331,7 @@ class EngineAutoMixHost(
         loader.onFailed = onFailed
     }
 }
+
+
+/** Debug-only (Settings > Debug): stream from the public rips object URL when no reachable rip server exists (emulator). */
+object MixDebug { @Volatile var publicRips: Boolean = false }

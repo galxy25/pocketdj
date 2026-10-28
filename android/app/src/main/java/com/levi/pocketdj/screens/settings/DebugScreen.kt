@@ -234,6 +234,50 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             }
         }) { Text("Burn first 3") }
     }
+    // SVC-3 verify seeds: the 5 LONGEST ripped digital songs (bigger files so a force-stop can land mid-download).
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        fun burn5(bad: Boolean) {
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val ids = songs.keys.filter { manifest[it]?.source == "digital" }
+                    .sortedByDescending { manifest[it]?.durationMs ?: 0L }.take(5)
+                val store = host.graph.servicesGraph.burnStore
+                android.util.Log.d("PdjVerify", "burn5 start bad=$bad ids=$ids")
+                ripStatus = "Rip seed: burn5 running ${ids.size}"
+                withContext(Dispatchers.IO) { store.removeBurns(ids) }
+                store.debugUrlTransform = if (bad) { u -> u + "?X-Amz-Algorithm=BAD&X-Amz-Credential=x&X-Amz-Date=x&X-Amz-Expires=x&X-Amz-SignedHeaders=host&X-Amz-Signature=x" } else null
+                val r = store.burn(ids.map { com.levi.pocketdj.data.burns.BurnSong(it, songs[it]?.name ?: it, songs[it]?.artist ?: "") })
+                store.debugUrlTransform = null
+                ripStatus = "Rip seed: burn5 bad=$bad -> $r"
+                android.util.Log.d("PdjVerify", ripStatus)
+            }
+        }
+        OutlinedButton(onClick = {
+            // MIX-6: stream the 6th-longest ripped digital song (NOT burned) through MixStreamLoader and poll it.
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val store = host.graph.servicesGraph.burnStore
+                val id = songs.keys.filter { manifest[it]?.source == "digital" && !store.hasLocalFile(it) }
+                    .sortedByDescending { manifest[it]?.durationMs ?: 0L }.firstOrNull()
+                if (id == null) { ripStatus = "Mix stream: no candidate"; return@launch }
+                com.levi.pocketdj.di.MixDebug.publicRips = true
+                val loader = host.graph.mixGraph.mixStreamLoader
+                val s = loader.open(id, songs[id]?.name ?: id, songs[id]?.artist ?: "")
+                android.util.Log.d("PdjVerify", "mixstream debug open $id can=${loader.canStream(id)} stream=${s != null}")
+                repeat(40) {
+                    kotlinx.coroutines.delay(1000)
+                    val st = loader.stream(id)
+                    android.util.Log.d("PdjVerify", "mixstream poll $id bytes=${st?.bytesReceived} expected=${st?.expectedBytes} complete=${st?.isComplete} failed=${st?.failed} adopted=${st?.adopted} burned=${store.hasLocalFile(id)}")
+                    ripStatus = "Mix stream $id bytes=${st?.bytesReceived} burned=${store.hasLocalFile(id)}"
+                    if (st == null || st.isComplete || st.failed) return@launch
+                }
+            }
+        }) { Text("Mix stream open") }
+        OutlinedButton(onClick = { burn5(false) }) { Text("Burn 5 long") }
+        OutlinedButton(onClick = { burn5(true) }) { Text("Burn 5 (HTTP 400)") }
+    }
     Text(ripStatus, style = MaterialTheme.typography.bodySmall)
 
     // MIX-5 verify seeds (debug only): drive the MixEngine until the Mix screen (MIX-14) owns it.

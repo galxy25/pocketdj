@@ -40,6 +40,19 @@ class SequencerForwardingPlayerTest {
         assertEquals(RepeatMode.OFF, SequencerForwardingPlayer.fromExo(99))
     }
 
+    @Test fun playerBuiltAfterTheSetStartedMasksSkipUntilTheServiceSeedsTheGate() {
+        // Regression (emulator, PB-2): the MediaSessionService is created by the first play, AFTER the
+        // sequencer already runs, so no state event reaches it. Without the seed `syncGate()` the first
+        // row has no next/prev/repeat/shuffle and a media-session `next` is dropped.
+        ctl.isRunning = true
+        val late = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { _, _, _ -> })
+        assertFalse(late.availableCommands.contains(Player.COMMAND_SEEK_TO_NEXT))
+        late.syncGate() // PlaybackService.onCreate now seeds this once the session is built
+        assertTrue(late.availableCommands.contains(Player.COMMAND_SEEK_TO_NEXT))
+        assertTrue(late.availableCommands.contains(Player.COMMAND_SET_REPEAT_MODE))
+        assertTrue(late.availableCommands.contains(Player.COMMAND_SET_SHUFFLE_MODE))
+    }
+
     @Test fun availableCommandsFollowRunningState() {
         assertFalse(p.availableCommands.contains(Player.COMMAND_SEEK_TO_NEXT))
         assertFalse(p.isCommandAvailable(Player.COMMAND_SET_REPEAT_MODE))

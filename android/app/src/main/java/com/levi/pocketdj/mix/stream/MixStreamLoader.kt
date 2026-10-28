@@ -554,7 +554,10 @@ class MixStreamLoader(
         DiagLog.shared?.log("warn", "mixstream server down ($why) - streaming paused ${serverDownCooldownMs / 1000}s")
     }
 
-    private fun telemetry(msg: String) { DiagLog.shared?.telemetry("mixstream", msg) }
+    private fun telemetry(msg: String) {
+        runCatching { android.util.Log.d("PocketDJ.mixstream", msg) } // logcat mirror (stubbed android.util.Log on the JVM would throw)
+        DiagLog.shared?.telemetry("mixstream", msg)
+    }
 
     // ---- tunables (instance-level so tests need no global state) --------------------------------
 

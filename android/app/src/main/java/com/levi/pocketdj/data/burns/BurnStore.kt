@@ -276,6 +276,9 @@ class BurnStore(
     /** Disk IO (probe, stats, sidecars, listings) runs on [io], never the caller's (Main) thread. */
     private suspend fun burnLocked(songs: List<BurnSong>): BurnResult = withContext(io) { burnLockedIo(songs) }
 
+    /** Debug-only seam (Settings > Debug): rewrites the enqueue URL, e.g. to force an HTTP 400. */
+    @Volatile var debugUrlTransform: ((String) -> String)? = null
+
     private suspend fun burnLockedIo(songs: List<BurnSong>): BurnResult {
         stopRequested = false
         val unique = LinkedHashMap<String, BurnSong>().also { m -> songs.forEach { if (it.id.isNotEmpty()) m.putIfAbsent(it.id, it) } }.values.toList()
@@ -357,7 +360,7 @@ class BurnStore(
                             // Persist the ledger row + the transfer record BEFORE the work exists.
                             save()
                             transfers.enqueue(
-                                url,
+                                debugUrlTransform?.invoke(url) ?: url,
                                 TransferRecord(
                                     songId = song.id, kind = TransferKind.BURN,
                                     audioFileName = names.audio, sidecarFileName = names.sidecar, sidecarText = sidecarText,

@@ -31,6 +31,9 @@ import androidx.media3.session.SessionResult
  * id-changed gate emits [PlayStarted] into [PlayEventBus] (specs/history.md §4)
  * — never `onIsPlayingChanged`, which would double-count pause/resume.
  */
+/** Connection hint set by the in-app MediaController so its commands are not logged as remote `rc`. */
+const val INTERNAL_HINT = "pdj.internal"
+
 class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
@@ -138,6 +141,10 @@ class PlaybackService : MediaSessionService() {
             .setCallback(SessionCallback())
             .apply { sessionActivity?.let(::setSessionActivity) }
             .build()
+        // The service can start AFTER the sequencer already runs (cold start from a first play): the
+        // stateChanged events fired before this hook existed, so seed the gate now (else the first
+        // row shows no next/prev/repeat/shuffle and media-session `next` is dropped).
+        forwarding.syncGate()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
@@ -228,7 +235,9 @@ class PlaybackService : MediaSessionService() {
             playerCommand: Int,
         ): Int {
             // The in-app MediaController is not a remote: its play/pause must not log as `rc`.
-            forwardingPlayer?.callerInternal = controller.packageName == packageName
+            // Media-button / legacy controllers report OUR package name too, so match the in-app
+            // MediaController by its connection hint instead (else system `next` never logs an rc line).
+            forwardingPlayer?.callerInternal = controller.connectionHints.getBoolean(INTERNAL_HINT, false)
             return super.onPlayerCommandRequest(session, controller, playerCommand)
         }
 

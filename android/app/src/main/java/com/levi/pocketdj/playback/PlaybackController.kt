@@ -1223,7 +1223,9 @@ class PlaybackController(
         return controllerMutex.withLock {
             controller ?: run {
                 val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-                val built = MediaController.Builder(context, token).buildAsync().await()
+                val built = MediaController.Builder(context, token)
+                    .setConnectionHints(android.os.Bundle().apply { putBoolean(INTERNAL_HINT, true) })
+                    .buildAsync().await()
                 built.addListener(playerListener)
                 _nowPlaying.value = snapshot(built)
                 controller = built

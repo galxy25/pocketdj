@@ -366,6 +366,12 @@ class AppGraph private constructor(context: Context) {
             runCatching { SecretMigration.run(settingsDataStore, secrets) }
                 .onFailure { android.util.Log.e("PocketDJ", "[secrets] migration failed", it) }
         }
+        // PB-2: the notification/lock-screen heart binds to the favorites store (lazy: touched on first use).
+        com.levi.pocketdj.playback.session.FavoriteCommand.seam = object : com.levi.pocketdj.playback.session.FavoriteSeam {
+            override val isAvailable: Boolean get() = true // the service already hides it while Mix owns audio
+            override fun isFavorite(songId: String) = collectionsGraph.favoriteAccess.isFavorite(songId)
+            override fun toggle(songId: String) { collectionsGraph.favoriteAccess.toggle(songId) }
+        }
         // SVC-2: drop ledger items whose file vanished / were poisoned (after the onboarding gate).
         appScope.launch(Dispatchers.IO) {
             runCatching {
