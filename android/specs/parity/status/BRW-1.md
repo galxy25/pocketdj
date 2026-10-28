@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # BRW-1 — Full filter/sort clause engine + persistence migration
 

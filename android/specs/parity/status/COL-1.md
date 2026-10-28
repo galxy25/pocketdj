@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 COL-1 Collections + activity schema parity.
 - [x] CollectionSyncDirection enum; Pocket/Playlist amSyncDirection/cleanOnly/recsEnabled (+wantsRecommendations, amSyncDir)

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # GM-2 Gem Collector core (pure)
 

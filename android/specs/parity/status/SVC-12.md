@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 - [x] CatalogService.load(url, seed): 304/error/network failure with seed returns seed identity, changed=false
 - [x] CatalogRepository: skips merge when all inputs identical by identity; catalog instance unchanged; mergeCount seam

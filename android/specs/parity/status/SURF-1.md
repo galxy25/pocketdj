@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SURF-1 — Shell foundation
 
