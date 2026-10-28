@@ -1,5 +1,6 @@
 package com.levi.pocketdj.di
 
+import android.content.Context
 import com.levi.pocketdj.data.burns.BurnDestinationResolver
 import com.levi.pocketdj.data.burns.ContentResolverBurnTree
 import com.levi.pocketdj.data.burns.SafBurnFolder
@@ -502,7 +503,29 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 )) app.secrets.remove(n)
                 com.levi.pocketdj.data.search.SearchSettings.clearCreds(app.secrets)
             },
-            resetSettings = { app.settings.resetToDefaultsKeepingInstallId() },
+            resetSettings = {
+                app.settings.resetToDefaultsKeepingInstallId()
+                // Final review: the SharedPreferences-backed settings (iOS resetEverything resets these too).
+                val ctx = app.appContext
+                runCatching {
+                    val burn = ctx.getSharedPreferences("pdj-burn-folder", Context.MODE_PRIVATE)
+                    burn.getString("treeUri", null)?.let { u ->
+                        runCatching {
+                            ctx.contentResolver.releasePersistableUriPermission(
+                                android.net.Uri.parse(u),
+                                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                            )
+                        }
+                    }
+                    burn.edit().clear().apply()
+                }
+                runCatching { ctx.getSharedPreferences("pocketdj-studio-folders", Context.MODE_PRIVATE).edit().clear().apply() }
+                runCatching {
+                    ctx.getSharedPreferences("pocketdj-diag", Context.MODE_PRIVATE).edit()
+                        .remove(com.levi.pocketdj.diag.DiagSettings.K_TELEMETRY).apply()
+                    diag.log.telemetryEnabled = false
+                }
+            },
             markOnboardingPending = {
                 com.levi.pocketdj.onboarding.OnboardingStore.markPendingAfterReset(
                     com.levi.pocketdj.onboarding.DataStoreOnboardingMarkerStorage(app.settings),

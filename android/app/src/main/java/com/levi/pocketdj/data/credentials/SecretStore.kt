@@ -94,13 +94,42 @@ class EncryptedSecretStore(context: Context) : SecretStore {
     companion object {
         const val FILE_NAME = "pocketdj-secrets"
         private const val MASTER_KEY_ALIAS = "_androidx_security_master_key_"
+        private const val CREATE_ATTEMPTS = 3
+
+        /**
+         * True when [t] says the file/key pair can never open again (bad AEAD tag, invalidated or foreign key,
+         * corrupt keyset): the only case where wiping and recreating is right. A bare KeyStoreException is transient.
+         */
+        internal fun isKeyMismatch(t: Throwable): Boolean {
+            var c: Throwable? = t
+            var depth = 0
+            while (c != null && depth++ < 8) {
+                if (c is javax.crypto.AEADBadTagException || c is javax.crypto.BadPaddingException ||
+                    c is java.security.InvalidKeyException || c is java.security.UnrecoverableKeyException ||
+                    c is java.io.IOException || c.javaClass.simpleName == "KeyPermanentlyInvalidatedException"
+                ) return true
+                c = c.cause
+            }
+            return false
+        }
 
         /**
          * Build the store; on failure (Keystore glitch, corrupt/foreign-keyed prefs after a
          * restore) wipe the prefs file + master key once and retry. null ⇒ unavailable.
          */
         fun createOrNull(context: Context): SecretStore? {
-            runCatching { return EncryptedSecretStore(context) }
+            // Final review: a transient Keystore error (busy daemon after boot/update, OEM glitch) must NOT wipe every
+            // secret incl. the profile-sync identity. Retry briefly; only a key MISMATCH / corrupt file justifies a wipe.
+            var failure: Throwable? = null
+            for (attempt in 0 until CREATE_ATTEMPTS) {
+                try { return EncryptedSecretStore(context) } catch (t: Throwable) { failure = t }
+                if (isKeyMismatch(failure!!)) break
+                runCatching { Thread.sleep(250L * (attempt + 1)) }
+            }
+            if (failure != null && !isKeyMismatch(failure)) {
+                android.util.Log.e("PocketDJ", "[secrets] keystore unavailable this launch (kept for the next)", failure)
+                return null
+            }
             runCatching {
                 context.applicationContext.deleteSharedPreferences(FILE_NAME)
                 java.security.KeyStore.getInstance("AndroidKeyStore").apply {

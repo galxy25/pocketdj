@@ -11,6 +11,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,13 +62,22 @@ internal fun resetSection() = SettingsSection(RESET_SECTION_ID, 950) { host -> R
 
 private enum class Pending { None, Reset, Delete }
 
+/**
+ * Process-scoped run state: the wipe runs on the app scope, so its busy flag and failure report must live there
+ * too (rotation / leaving Settings mid-run would otherwise lose the "Restart" dialog and re-enable the buttons).
+ */
+internal object ResetRunState {
+    val busy = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val finished = kotlinx.coroutines.flow.MutableStateFlow<ResetReport?>(null)
+}
+
 @Composable
 private fun ResetPanel(host: SettingsHost) {
     val context = LocalContext.current
     var pending by remember { mutableStateOf(Pending.None) }
-    var busy by remember { mutableStateOf(false) }
+    val busy by ResetRunState.busy.collectAsState()
     // Shown BEFORE the restart when a step failed, so the honest "N things were skipped" copy is actually seen.
-    var finished by remember { mutableStateOf<ResetReport?>(null) }
+    val finished by ResetRunState.finished.collectAsState()
 
     SettingsDivider()
     SettingsHeader("Reset")
@@ -123,7 +133,7 @@ private fun ResetPanel(host: SettingsHost) {
                     enabled = ResetConfirmation.armed(typed, word),
                     onClick = {
                         pending = Pending.None
-                        busy = true
+                        ResetRunState.busy.value = true
                         // App scope: the wipe must outlive this composition (the section can leave composition mid-run).
                         host.graph.appScope.launch(Dispatchers.IO) {
                             val services = host.graph.servicesGraph
@@ -132,7 +142,7 @@ private fun ResetPanel(host: SettingsHost) {
                             // Wait for the stores' async writers (queued deletes) instead of a fixed sleep.
                             services.drainWriters()
                             withContext(Dispatchers.Main) {
-                                if (report.ok) relaunchApp(context) else finished = report
+                                if (report.ok) relaunchApp(context) else ResetRunState.finished.value = report
                             }
                         }
                     },
