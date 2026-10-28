@@ -285,6 +285,13 @@ class AppGraph private constructor(context: Context) {
         }
     }
 
+    // Final review: a hosted jukebox party resumes at launch (iOS resumePersistedSession), not only once the Jukebox tab opens.
+    init {
+        appScope.launch(Dispatchers.IO) {
+            runCatching { com.levi.pocketdj.data.jukebox.JukeboxGraph.get(appContext).repository.bootstrap() }
+        }
+    }
+
     // STU-7: register the STUDIO_LOCAL row rung (after playbackGraph.wire so the sequencer exists).
     init { studioGraph.wire() }
 

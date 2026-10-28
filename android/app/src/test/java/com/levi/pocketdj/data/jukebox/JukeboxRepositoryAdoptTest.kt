@@ -137,4 +137,13 @@ class JukeboxRepositoryAdoptTest {
         // Exactly one session wins and the persisted copy matches the live one.
         assertEquals(r.state.value.session?.jukeboxId, store.load()?.session?.jukeboxId)
     }
+
+    @Test fun endAndAwait_endsAPersistedSessionThisProcessNeverOpened() = runBlocking {
+        store.save(JukeboxSessionInfo(jukeboxId = "X", hostKey = "hx"))
+        val r = repo()
+        r.endAndAwait()
+        assertNull(store.load())
+        assertNull(r.state.value.session)
+        assertTrue(requestLog.toString(), requestLog.any { it.contains("/X") })
+    }
 }

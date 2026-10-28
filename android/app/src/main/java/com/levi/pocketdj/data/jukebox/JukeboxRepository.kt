@@ -240,6 +240,20 @@ class JukeboxRepository(
         }
     }
 
+    /**
+     * Account deletion / reset (iOS awaits `jukebox.end()`): end the party even when this process never opened the
+     * Jukebox tab (load the persisted session), bounded POST /end, then clear the store and the in-memory state.
+     */
+    suspend fun endAndAwait(timeoutMs: Long = 8_000) {
+        loopJob?.cancel()
+        loopJob = null
+        val session = _state.value.session ?: runCatching { sessionStore.load()?.session }.getOrNull()
+        if (session != null) kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { runCatching { client.end(session) } }
+        sessionStore.clear()
+        resetLoopBookkeeping()
+        _state.value = UiState()
+    }
+
     /** Flip View + Hear; an immediate tick shows guests the flip promptly. */
     fun setHear(enabled: Boolean) {
         if (_state.value.session == null) return

@@ -540,7 +540,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         com.levi.pocketdj.data.reset.AccountDeletionService(
             holdPushes = ::holdPushes,
             stopLiveActivity = listOf(
-                "jukebox" to { com.levi.pocketdj.data.jukebox.JukeboxGraph.get(app.appContext).repository.end() },
+                "jukebox" to { com.levi.pocketdj.data.jukebox.JukeboxGraph.get(app.appContext).repository.endAndAwait() },
                 // SetlistSequencer / MixEngine state mutations are Main-confined.
                 "playback" to { withContext(Dispatchers.Main) { app.playbackGraph.sequencer.stop() } },
                 "mix" to { withContext(Dispatchers.Main) { app.mixGraph.mixEngine.ejectAll() } },
