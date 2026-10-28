@@ -192,6 +192,10 @@ object PlaylistSerializer : KSerializer<Playlist> {
             sourceSongIds = obj.optStringList("sourceSongIds"),
             sourceSyncEnabled = obj.optBoolean("sourceSyncEnabled"),
             sourceSyncedAt = obj.optDouble("sourceSyncedAt"),
+            amSyncDirection = obj.optString("amSyncDirection"),
+            // Lenient on purpose (iOS `try?`): a garbled value must not cost the playlist.
+            cleanOnly = runCatching { obj.optBoolean("cleanOnly") }.getOrNull(),
+            recsEnabled = runCatching { obj.optBoolean("recsEnabled") }.getOrNull(),
             lastPlayedAt = obj.optDouble("lastPlayedAt"),
             createdAt = obj.doubleOrThrow("createdAt"),
             updatedAt = obj.doubleOrThrow("updatedAt"),
@@ -218,6 +222,9 @@ object PlaylistSerializer : KSerializer<Playlist> {
             value.sourceSongIds?.let { ids -> put("sourceSongIds", JsonArray(ids.map(::JsonPrimitive))) }
             value.sourceSyncEnabled?.let { put("sourceSyncEnabled", it) }
             value.sourceSyncedAt?.let { put("sourceSyncedAt", epochMsPrimitive(it)) }
+            value.amSyncDirection?.let { put("amSyncDirection", it) }
+            value.cleanOnly?.let { put("cleanOnly", it) }
+            value.recsEnabled?.let { put("recsEnabled", it) }
             value.lastPlayedAt?.let { put("lastPlayedAt", epochMsPrimitive(it)) }
             put("createdAt", epochMsPrimitive(value.createdAt))
             put("updatedAt", epochMsPrimitive(value.updatedAt))

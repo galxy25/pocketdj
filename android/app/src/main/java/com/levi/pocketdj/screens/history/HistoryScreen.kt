@@ -669,6 +669,8 @@ private fun ActivityKind.icon(): ImageVector = when (this) {
     ActivityKind.HEART -> Icons.Filled.Favorite
     ActivityKind.UNHEART -> Icons.Filled.HeartBroken
     ActivityKind.REMOVE -> Icons.Filled.RemoveCircleOutline
+    ActivityKind.CATALOG_ADD -> Icons.Filled.AddCircleOutline
+    ActivityKind.CATALOG_REMOVE -> Icons.Filled.RemoveCircleOutline
 }
 
 @Composable

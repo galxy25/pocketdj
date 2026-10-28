@@ -645,7 +645,19 @@ class CollectionsStore(
             }
         }
         walk(pl.sequences)
-        return makeAndSavePocket(pl.name, songIds, albumIds, childPocketIds, noteTexts)
+        val made = makeAndSavePocket(pl.name, songIds, albumIds, childPocketIds, noteTexts)
+        // Carry the source link (iOS 113508b): duplicate → convert must stay two-way-synced.
+        if (pl.sourcePlaylistId != null) {
+            mutatePocket(made.id) {
+                it.copy(
+                    sourcePlaylistId = pl.sourcePlaylistId,
+                    sourceName = pl.sourceName,
+                    sourceSongIds = pl.sourceSongIds,
+                    sourceSyncEnabled = pl.sourceSyncEnabled,
+                )
+            }
+        }
+        return pocket(made.id) ?: made
     }
 
     /**
@@ -1356,6 +1368,43 @@ class CollectionsStore(
     }
 
     // MARK: Internals (call under lock)
+
+    // MARK: Per-collection flags (iOS setAMSyncDirection / setCleanOnly / setRecommendationsEnabled)
+
+    fun setAMSyncDirectionForPocket(direction: CollectionSyncDirection, pocketId: String) =
+        mutatePocket(pocketId) { it.copy(amSyncDirection = direction.raw) }
+
+    fun setAMSyncDirectionForPlaylist(direction: CollectionSyncDirection, playlistId: String) =
+        mutatePlaylist(playlistId) { it.copy(amSyncDirection = direction.raw) }
+
+    /** Stored `true`/null (never false) so an untouched collection's bytes are unchanged. */
+    fun setCleanOnlyForPocket(on: Boolean, pocketId: String) =
+        mutatePocket(pocketId) { it.copy(cleanOnly = if (on) true else null) }
+
+    fun setCleanOnlyForPlaylist(on: Boolean, playlistId: String) =
+        mutatePlaylist(playlistId) { it.copy(cleanOnly = if (on) true else null) }
+
+    /** Stored `false`/null (never true) — ON is the default. */
+    fun setRecommendationsEnabledForPocket(on: Boolean, pocketId: String) =
+        mutatePocket(pocketId) { it.copy(recsEnabled = if (on) null else false) }
+
+    fun setRecommendationsEnabledForPlaylist(on: Boolean, playlistId: String) =
+        mutatePlaylist(playlistId) { it.copy(recsEnabled = if (on) null else false) }
+
+    /** Binds a collection to its Apple Music playlist. DIRECT write (updatedAt untouched), idempotent. */
+    fun linkToAppleMusic(playlistId: String, amPlaylistId: String) = synchronized(lock) {
+        val idx = playlists.indexOfFirst { it.id == playlistId }
+        if (idx < 0 || playlists[idx].amPlaylistId == amPlaylistId) return@synchronized
+        publish { s -> s.copy(playlists = s.playlists.replaceAt(idx, s.playlists[idx].copy(amPlaylistId = amPlaylistId))) }
+        save()
+    }
+
+    fun linkPocketToAppleMusic(pocketId: String, amPlaylistId: String) = synchronized(lock) {
+        val idx = pockets.indexOfFirst { it.id == pocketId }
+        if (idx < 0 || pockets[idx].amPlaylistId == amPlaylistId) return@synchronized
+        publish { s -> s.copy(pockets = s.pockets.replaceAt(idx, s.pockets[idx].copy(amPlaylistId = amPlaylistId))) }
+        save()
+    }
 
     private fun publish(transform: (State) -> State) {
         val next = transform(_state.value)

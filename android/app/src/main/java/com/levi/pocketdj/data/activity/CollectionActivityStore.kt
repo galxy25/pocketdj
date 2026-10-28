@@ -93,6 +93,8 @@ class CollectionActivityStore(
         collectionKind: String? = null,
         collectionName: String? = null,
         atMs: Double = System.currentTimeMillis().toDouble(),
+        itemArtist: String? = null,
+        libraryWrite: String? = null,
     ): ActivityEvent? = synchronized(lock) {
         if (itemId.isEmpty()) return null
         val event = ActivityEvent(
@@ -101,9 +103,12 @@ class CollectionActivityStore(
             kind = kind,
             itemId = itemId,
             itemTitle = itemTitle,
+            itemArtist = itemArtist,
             collectionId = collectionId,
             collectionKind = collectionKind,
             collectionName = collectionName,
+            originInstallId = _state.value.installId,
+            libraryWrite = libraryWrite,
         )
         var events = _state.value.events + event
         if (events.size > maxEvents) events = events.takeLast(maxEvents)

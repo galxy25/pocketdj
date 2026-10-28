@@ -67,6 +67,26 @@ internal fun epochMsPrimitive(value: Double): JsonPrimitive =
         JsonPrimitive(value)
     }
 
+/**
+ * Per-collection Apple Music sync direction (iOS `CollectionSyncDirection`). Stored as an
+ * OPTIONAL raw string on the collection (null ⇒ [BOTH]); an unknown raw reads as [BOTH].
+ */
+enum class CollectionSyncDirection(val raw: String, val label: String) {
+    BOTH("both", "Two-way"),
+    PUSH("push", "Send only"),
+    PULL("pull", "Get only"),
+    OFF("off", "Off"),
+    ;
+
+    val allowsPush: Boolean get() = this == BOTH || this == PUSH
+    val allowsPull: Boolean get() = this == BOTH || this == PULL
+
+    companion object {
+        fun fromRaw(raw: String?): CollectionSyncDirection =
+            entries.firstOrNull { it.raw == raw } ?: BOTH
+    }
+}
+
 /** Pocket kind — raw tokens are persisted, never rename. Unknown coerces to harmonic. */
 @Serializable
 enum class PocketKind {
@@ -119,6 +139,18 @@ data class Pocket(
     val sourceSyncEnabled: Boolean? = null,
     @Serializable(with = EpochMsSerializer::class)
     val sourceSyncedAt: Double? = null,
+    /** Raw [CollectionSyncDirection]; null ⇒ two-way. */
+    val amSyncDirection: String? = null,
+    /** Clean-only; stored `true`/null (never false) so untouched bytes never change. */
+    val cleanOnly: Boolean? = null,
+    /** Recommendations OFF marker; stored `false`/null (never true). */
+    val recsEnabled: Boolean? = null,
+    /**
+     * Apple Music library playlist this pocket is bound to. IN-MEMORY ONLY: iOS `Pocket`
+     * CodingKeys deliberately omit it (privacy — a handle into the user's own library).
+     */
+    @kotlinx.serialization.Transient
+    val amPlaylistId: String? = null,
     /** v7: stamped by markPlayed OUTSIDE mutate — never disturbs updatedAt. */
     @Serializable(with = EpochMsSerializer::class)
     override val lastPlayedAt: Double? = null,
@@ -133,6 +165,8 @@ data class Pocket(
         get() = songIds.isEmpty() && albumIds.isEmpty() && childPocketIds.isEmpty() && notes.isEmpty()
     val hasSource: Boolean get() = sourcePlaylistId != null
     val syncsWithSource: Boolean get() = hasSource && (sourceSyncEnabled ?: true)
+    val wantsRecommendations: Boolean get() = recsEnabled ?: true
+    val amSyncDir: CollectionSyncDirection get() = CollectionSyncDirection.fromRaw(amSyncDirection)
 }
 
 /**
@@ -229,6 +263,11 @@ data class Playlist(
     val sourceSongIds: List<String>? = null,
     val sourceSyncEnabled: Boolean? = null,
     val sourceSyncedAt: Double? = null,
+    val amSyncDirection: String? = null,
+    val cleanOnly: Boolean? = null,
+    val recsEnabled: Boolean? = null,
+    /** In-memory only (iOS Playlist CodingKeys omit it too); see [Pocket.amPlaylistId]. */
+    val amPlaylistId: String? = null,
     /** v7 "Recently played" key — stamped OUTSIDE mutate. */
     override val lastPlayedAt: Double? = null,
     val createdAt: Double = 0.0,
@@ -236,6 +275,8 @@ data class Playlist(
 ) : CollectionSortable {
     val hasSource: Boolean get() = sourcePlaylistId != null
     val syncsWithSource: Boolean get() = hasSource && (sourceSyncEnabled ?: true)
+    val wantsRecommendations: Boolean get() = recsEnabled ?: true
+    val amSyncDir: CollectionSyncDirection get() = CollectionSyncDirection.fromRaw(amSyncDirection)
 }
 
 /** How a track ended up in a setlist. Raw tokens persisted — never rename. */

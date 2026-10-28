@@ -77,5 +77,7 @@ internal fun activityHeadline(
         ActivityKind.HEART -> "Hearted $item"
         ActivityKind.UNHEART -> "Removed heart from $item"
         ActivityKind.REMOVE -> "Removed $item from $coll"
+        ActivityKind.CATALOG_ADD -> "Added $item to your library"
+        ActivityKind.CATALOG_REMOVE -> "Removed $item from your library"
     }
 }
