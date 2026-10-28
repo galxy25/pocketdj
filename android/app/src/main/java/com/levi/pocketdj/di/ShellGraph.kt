@@ -177,7 +177,13 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** SURF-7: Now Playing widget snapshot sync + command executor + offline drain. */
+    private val widgets: com.levi.pocketdj.widget.WidgetBridge by lazy {
+        com.levi.pocketdj.widget.WidgetBridge(app, app.appContext)
+    }
+
     override val deepLinkHandlers: List<DeepLinkHandler> by lazy {
+        widgets.start()
         // Cheap and side-effect-light: runs on the main thread during cold start. Nothing heavy
         // (history decode, catalog/collections graphs) is forced here.
         // JBX-2: a tapped/parked jukebox link joins as a guest and opens the join panel.
