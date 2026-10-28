@@ -464,6 +464,11 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         val files = app.appContext.filesDir
         com.levi.pocketdj.data.reset.AppResetService(
             holdPushes = ::holdPushes,
+            ejectMix = {
+                // iOS `mix.ejectAll()` before resetEverything: decks off, durable deck snapshot gone. MixEngine is Main-only.
+                withContext(Dispatchers.Main) { app.mixGraph.mixEngine.ejectAll() }
+                app.mixGraph.mixDeckSession.clear()
+            },
             clearCollections = { app.collections.clear() },
             deleteCatalogCache = { app.catalogService.clearCache() },
             deleteCredentialsMirror = {
@@ -489,14 +494,37 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** Tombstone for an account deletion whose server-side erase failed; retried on launch. */
+    val pendingErasure: com.levi.pocketdj.data.reset.PendingCloudErasure by lazy {
+        com.levi.pocketdj.data.reset.PendingCloudErasure(app.secrets)
+    }
+
+    /** Finish an interrupted account erasure (no-op without a tombstone or endpoint). Off-main. */
+    suspend fun retryPendingErasure() {
+        if (com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase == null) return
+        pendingErasure.retry { id, secret -> s3Database.deleteProfileAs(id, secret) }
+    }
+
+    /**
+     * Before the process is killed after a reset/deletion: flush every module, then wait for the
+     * stores' async writers so queued deletes (collections, sessions, mix) have actually landed.
+     */
+    suspend fun drainWriters() = withContext(Dispatchers.IO) {
+        runCatching { app.features.flushAll() }
+        runCatching { app.collections.awaitWrites() }
+        runCatching { app.playbackGraph.sessionStore.awaitWrites() }
+        runCatching { app.mixGraph.mixDeckSession.awaitWrites() }
+    }
+
     /** Settings > Delete account (cloud + device). */
     val accountDeletion: com.levi.pocketdj.data.reset.AccountDeletionService by lazy {
         com.levi.pocketdj.data.reset.AccountDeletionService(
             holdPushes = ::holdPushes,
             stopLiveActivity = listOf(
                 "jukebox" to { com.levi.pocketdj.data.jukebox.JukeboxGraph.get(app.appContext).repository.end() },
-                "playback" to { app.playbackGraph.sequencer.stop() },
-                "mix" to { app.mixGraph.mixEngine.ejectAll() },
+                // SetlistSequencer / MixEngine state mutations are Main-confined.
+                "playback" to { withContext(Dispatchers.Main) { app.playbackGraph.sequencer.stop() } },
+                "mix" to { withContext(Dispatchers.Main) { app.mixGraph.mixEngine.ejectAll() } },
                 "transfers" to { transfers.cancelAll() },
             ),
             // The S3 backend needs a configured endpoint doc AND an enrolled secret; the debug in-memory db always runs.
@@ -508,6 +536,10 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 cloudDocDatabase.deleteAll((keys + app.features.syncEntries.map { it.key }).distinct())
             },
             deleteCloudProfile = { if (cloudDocDatabase === s3Database) s3Database.deleteProfile() },
+            tombstoneCloudProfile = {
+                // Only the S3 backend has server-side state a later launch can still erase.
+                if (cloudDocDatabase === s3Database) pendingErasure.save(profile.id, profileSecrets.secret())
+            },
             localStores = buildList {
                 add("collections" to { app.collections.clear() })
                 add("favorites" to { app.collectionsGraph.favorites.clear() })
@@ -515,6 +547,13 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 add("play-history" to { com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext).clear() })
                 add("collection-activity" to { app.collectionActivity.clear() })
                 add("playlist-writeback" to { app.collectionsGraph.writeBack.clear() })
+                // iOS `playbackSession.clear()` explicitly: the sequencer.stop() path only clears via an async collector.
+                add("playback-session" to { app.playbackGraph.sessionStore.clear() })
+                // Local diag-key file + stored secret, or the next launch's materialize() re-pushes it under the new identity.
+                add("diag-key" to {
+                    File(app.appContext.filesDir, com.levi.pocketdj.data.credentials.DiagKeySync.FILE_NAME).delete()
+                    diag.credentials.clear()
+                })
                 // Every area's own hooks (Mix, Studio, Games, Browse recs, timeline cues), named by area.
                 app.features.modules.forEach { m ->
                     m.resetHooks.forEachIndexed { i, h -> add("hook:${m.area}#$i" to { h.reset() }) }
@@ -542,6 +581,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     override val deepLinkHandlers: List<DeepLinkHandler> by lazy {
         // Keystore/prefs work must not run on the registry (main) path: start on IO.
         if (diag.channel) app.appScope.launch(Dispatchers.IO) { diag.start() }
+        app.appScope.launch(Dispatchers.IO) { runCatching { retryPendingErasure() } }
         listOf(diag.deepLink)
     }
 

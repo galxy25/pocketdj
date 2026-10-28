@@ -2144,6 +2144,9 @@ class CollectionsStore(
     // MARK: Full wipe
 
     /** Reset every family AND delete the on-disk document (Settings/tests seam). */
+    /** Block until every queued disk write/delete has executed (reset drain). */
+    fun awaitWrites() = writer.awaitIdle()
+
     fun clear() = synchronized(lock) {
         salvagePending = false
         publish {

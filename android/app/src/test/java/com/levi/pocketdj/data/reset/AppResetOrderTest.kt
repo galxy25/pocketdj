@@ -38,6 +38,7 @@ class AppResetOrderTest {
         fun step(n: String): suspend () -> Unit = { calls += n; if (n in fail) error("boom $n") }
         return AppResetService(
             holdPushes = { calls += "holdPushes" },
+            ejectMix = step("mix"),
             clearCollections = step("collections"),
             deleteCatalogCache = step("catalog"),
             deleteCredentialsMirror = step("mirror"),
@@ -49,11 +50,11 @@ class AppResetOrderTest {
         )
     }
 
-    @Test fun order_isHoldCollectionsCachesSecretsSettingsPendingSync() = runBlocking {
+    @Test fun order_isHoldMixCollectionsCachesSecretsSettingsPendingSync() = runBlocking {
         val calls = mutableListOf<String>()
         val report = recordingService(calls).resetEverything()
         assertEquals(
-            listOf("holdPushes", "collections", "catalog", "mirror", "artwork", "secrets", "settings", "pending", "sync"),
+            listOf("holdPushes", "mix", "collections", "catalog", "mirror", "artwork", "secrets", "settings", "pending", "sync"),
             calls,
         )
         assertTrue(report.ok)

@@ -373,7 +373,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | SVC-7 — Document sync engine (CloudSyncService verbatim port) + ProfileStore + in-memory CloudDoc… | 12 | PARTIAL | Engine + ProfileStore + registry done; backend is UnavailableCloudDocDatabase until SVC-9; emulator step (Profile debug toggle + Sync now) not yet run. |
 | SVC-9 — S3CloudDocDatabase + enroll + link-a-device (QR/code) + onboarding stage-1 probe | 13 | PARTIAL | Enroll token provisioning for release builds pending (sync inert until profileSyncBase + token); QR camera scanning deferred (code entry + QR display only); pocketdj://link deep link left to SURF-4; deleteProfile() not yet wired to account deletion; device-only verification of restore/relink. |
 | SVC-10 — Synced connection credentials doc (empty-secret guard) + diag-key sync doc + X-PocketDJ-P… | 14 | PARTIAL | Unverified: two-device emulator token sync; Android re-emits (does not adopt) iOS `sources`/`appleMusicPrivateSync` — adoption needs UUID-vs-"vinyl" id reconciliation. |
-| SVC-13 — Reset everything (FeatureModule.resetHooks orchestrator, iOS mushroom-cloud order) + acco… | 15 | Planned | — |
+| SVC-13 — Reset everything (FeatureModule.resetHooks orchestrator, iOS mushroom-cloud order) + acco… | 15 | Reviewed (`parity/SVC-13`) | Reset ejects Mix; failed DELETE /profile tombstoned + retried on launch; relaunch not emulator-verified. |
 | SVC-14 — User-browsable burn folder via SAF (destination captured on the transfer record at enqueu… | 18 | Planned | Removable media on a real device; emulator verifies the picker + inte… |
 
 **Playback core + Now Playing**

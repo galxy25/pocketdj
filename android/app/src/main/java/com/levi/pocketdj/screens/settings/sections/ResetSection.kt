@@ -1,7 +1,5 @@
 package com.levi.pocketdj.screens.settings.sections
 
-import android.app.AlarmManager
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.Column
@@ -27,7 +25,7 @@ import com.levi.pocketdj.screens.settings.SettingsHeader
 import com.levi.pocketdj.shell.SettingsHost
 import com.levi.pocketdj.shell.SettingsSection
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.padding
 
@@ -68,7 +66,8 @@ private fun ResetPanel(host: SettingsHost) {
     val context = LocalContext.current
     var pending by remember { mutableStateOf(Pending.None) }
     var busy by remember { mutableStateOf(false) }
-    var failures by remember { mutableStateOf(0) }
+    // Shown BEFORE the restart when a step failed, so the honest "N things were skipped" copy is actually seen.
+    var finished by remember { mutableStateOf<ResetReport?>(null) }
 
     SettingsDivider()
     SettingsHeader("Reset")
@@ -84,7 +83,21 @@ private fun ResetPanel(host: SettingsHost) {
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
     ) { Text("Delete account", color = MaterialTheme.colorScheme.error) }
     SettingsCaption("Removes your synced copies from the cloud AND everything on this device.")
-    if (failures > 0) SettingsCaption("$failures step(s) hit a problem and were skipped; the rest completed.")
+    finished?.let { report ->
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Finished with ${report.failures.size} problem(s)") },
+            text = {
+                Text(
+                    "These steps hit a problem and were skipped; the rest completed: " +
+                        report.failures.joinToString { it.name } +
+                        ". If the cloud step failed, your synced copies are still being erased in the background " +
+                        "and will be retried the next time the app starts.",
+                )
+            },
+            confirmButton = { TextButton(onClick = { relaunchApp(context) }) { Text("Restart") } },
+        )
+    }
 
     if (pending != Pending.None) {
         val isDelete = pending == Pending.Delete
@@ -116,9 +129,11 @@ private fun ResetPanel(host: SettingsHost) {
                             val services = host.graph.servicesGraph
                             val report: ResetReport = if (isDelete) services.accountDeletion.deleteAccountAndAllData()
                             else services.appReset.resetEverything()
-                            failures = report.failures.size
-                            delay(400)
-                            relaunchApp(context)
+                            // Wait for the stores' async writers (queued deletes) instead of a fixed sleep.
+                            services.drainWriters()
+                            withContext(Dispatchers.Main) {
+                                if (report.ok) relaunchApp(context) else finished = report
+                            }
                         }
                     },
                 ) { Text(if (isDelete) "Delete everything" else "Reset everything", color = MaterialTheme.colorScheme.error) }
@@ -128,13 +143,14 @@ private fun ResetPanel(host: SettingsHost) {
     }
 }
 
-/** Restart the process into the launcher activity (alarm-scheduled so the new process starts after this one dies). */
+/**
+ * Restart into the launcher activity (ProcessPhoenix pattern): start a fresh task from the foreground
+ * app, then exit. Starting the activity while still foreground avoids the background-activity-launch
+ * restriction and the inexact-alarm deferral. Call on the main thread.
+ */
 internal fun relaunchApp(context: Context) {
     val app = context.applicationContext
-    val launch = app.packageManager.getLaunchIntentForPackage(app.packageName) ?: return
-    launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-    val pi = PendingIntent.getActivity(app, 7013, launch, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_CANCEL_CURRENT)
-    (app.getSystemService(Context.ALARM_SERVICE) as AlarmManager)
-        .set(AlarmManager.RTC, System.currentTimeMillis() + 300, pi)
-    android.os.Process.killProcess(android.os.Process.myPid())
+    val component = app.packageManager.getLaunchIntentForPackage(app.packageName)?.component ?: return
+    context.startActivity(Intent.makeRestartActivityTask(component).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    Runtime.getRuntime().exit(0)
 }

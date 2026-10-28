@@ -45,6 +45,7 @@ class AccountDeletionTest {
                 deletedKeys = keys
             },
             deleteCloudProfile = { calls += "cloud-profile"; if (failCloudProfile) throw IOException("offline") },
+            tombstoneCloudProfile = { calls += "tombstone" },
             localStores = listOf("collections" to s("clear-collections"), "favorites" to s("clear-favorites"), "hook" to s("clear-hook")),
             mediaDeletes = listOf("burns" to s("media-burns"), "lyrics" to s("media-lyrics")),
             appReset = appReset,
@@ -98,6 +99,27 @@ class AccountDeletionTest {
         for (n in listOf("clear-collections", "clear-favorites", "media-burns", "settings", "pending", "sync-state", "id-profile", "id-secret", "id-install")) {
             assertTrue("$n must still run", n in r.calls)
         }
+    }
+
+    @Test fun cloudProfileFailure_writesTheTombstone_beforeAnyIdentityClear() = runBlocking {
+        val r = Rig(failCloudProfile = true)
+        r.service.deleteAccountAndAllData()
+        assertEquals(1, r.calls.count { it == "tombstone" })
+        assertTrue(r.calls.indexOf("tombstone") < r.calls.indexOf("id-profile"))
+        assertTrue(r.calls.indexOf("tombstone") < r.calls.indexOf("id-secret"))
+    }
+
+    @Test fun docsTimeout_butProfileDeleted_needsNoTombstone() = runBlocking {
+        val r = Rig(hangCloud = true)
+        r.service.deleteAccountAndAllData()
+        assertFalse("DELETE /profile wipes the prefix, so no tombstone", "tombstone" in r.calls)
+    }
+
+    @Test fun cloudProfileSuccess_orDisabledCloud_writesNoTombstone() = runBlocking {
+        val ok = Rig(); ok.service.deleteAccountAndAllData()
+        assertFalse("tombstone" in ok.calls)
+        val off = Rig(cloudEnabled = false); off.service.deleteAccountAndAllData()
+        assertFalse("tombstone" in off.calls)
     }
 
     @Test fun hangingCloud_isBounded_andDoesNotBlockTheWipe() = runBlocking {

@@ -22,6 +22,12 @@ class AccountDeletionService(
     private val deleteCloudDocs: suspend (List<String>) -> Unit,
     /** `DELETE /profile` — wipes the server-side prefix; a no-op port when there is no enrolled profile. */
     private val deleteCloudProfile: suspend () -> Unit,
+    /**
+     * Runs when `DELETE /profile` did NOT succeed: persists (profile id + secret) to a device-local
+     * tombstone so a later launch can finish the erasure (iOS `recDeleteCloudData`). Must complete
+     * BEFORE the identity is cleared.
+     */
+    private val tombstoneCloudProfile: suspend () -> Unit = {},
     /** Every local store + each area's FeatureModule reset hook, named for the log. */
     private val localStores: List<Pair<String, suspend () -> Unit>>,
     /** Burned/stem/lyrics media deletes (run before settings reset). */
@@ -46,7 +52,8 @@ class AccountDeletionService(
         // 2) cloud copies (before the local wipe). Never gates the local wipe.
         if (cloudDeleteEnabled()) {
             r.run(STEP_CLOUD_DOCS) { boundedCloud(STEP_CLOUD_DOCS) { deleteCloudDocs(cloudKeys) } }
-            r.run(STEP_CLOUD_PROFILE) { boundedCloud(STEP_CLOUD_PROFILE) { deleteCloudProfile() } }
+            val erased = r.run(STEP_CLOUD_PROFILE) { boundedCloud(STEP_CLOUD_PROFILE) { deleteCloudProfile() } }
+            if (!erased) r.run(STEP_TOMBSTONE) { tombstoneCloudProfile() }
         } else {
             log("cloud deletion skipped (disabled / not configured)")
         }
@@ -75,6 +82,7 @@ class AccountDeletionService(
         const val STEP_HOLD_PUSHES = "hold-pushes"
         const val STEP_CLOUD_DOCS = "cloud-docs"
         const val STEP_CLOUD_PROFILE = "cloud-profile"
+        const val STEP_TOMBSTONE = "cloud-erasure-tombstone"
         const val STEP_SYNC_STATE = "sync-state"
         const val STEP_IDENTITY_PROFILE = "identity:profile"
         const val STEP_IDENTITY_SECRET = "identity:secret"

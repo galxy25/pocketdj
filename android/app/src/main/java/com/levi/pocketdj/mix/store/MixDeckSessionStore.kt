@@ -283,6 +283,9 @@ class MixDeckSessionStore(
     }
 
     /** The mix is genuinely over: forget it and delete the file (version-ordered). */
+    /** Block until queued writes (this store's and the sibling session store's, same executor) have run. */
+    fun awaitWrites() = writer.awaitIdle()
+
     fun clear() = synchronized(lock) {
         cancelDebounce()
         current = null

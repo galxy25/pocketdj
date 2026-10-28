@@ -22,15 +22,18 @@ data class ResetReport(val steps: List<StepResult>) {
 internal class StepRunner(private val log: (String) -> Unit) {
     private val results = mutableListOf<StepResult>()
 
-    suspend fun run(name: String, block: suspend () -> Unit) {
+    /** @return true when the step succeeded. */
+    suspend fun run(name: String, block: suspend () -> Unit): Boolean {
         try {
             block()
             results += StepResult(name)
+            return true
         } catch (e: CancellationException) {
             throw e
         } catch (t: Throwable) {
             log("reset step '$name' failed (continuing): ${t.javaClass.simpleName}: ${t.message}")
             results += StepResult(name, t)
+            return false
         }
     }
 
@@ -44,6 +47,7 @@ internal class StepRunner(private val log: (String) -> Unit) {
  *
  * Order (load-bearing):
  *  1. hold cloud pushes, so the clears below can never upload empty documents;
+ *  1b. eject the Mix decks + clear the durable deck snapshot (iOS `mix.ejectAll()`);
  *  2. collections cleared;
  *  3. catalog disk cache, synced-credentials mirror file, artwork caches;
  *  4. connection secrets (rip/jukebox/Music-User/search keys);
@@ -55,6 +59,8 @@ internal class StepRunner(private val log: (String) -> Unit) {
  */
 class AppResetService(
     private val holdPushes: () -> Unit,
+    /** iOS `mix.ejectAll()`: eject both decks and clear the durable mix-deck snapshot (Main-confined work inside). */
+    private val ejectMix: suspend () -> Unit = {},
     private val clearCollections: suspend () -> Unit,
     private val deleteCatalogCache: suspend () -> Unit,
     private val deleteCredentialsMirror: suspend () -> Unit,
@@ -70,6 +76,7 @@ class AppResetService(
     suspend fun resetEverything(): ResetReport {
         val r = StepRunner(log)
         r.run(STEP_HOLD_PUSHES) { holdPushes() }
+        r.run(STEP_MIX_DECKS) { ejectMix() }
         r.run(STEP_COLLECTIONS) { clearCollections() }
         resetSettingsState(r)
         r.run(STEP_SYNC_STATE) { clearSyncState() }
@@ -97,6 +104,7 @@ class AppResetService(
 
     companion object {
         const val STEP_HOLD_PUSHES = "hold-pushes"
+        const val STEP_MIX_DECKS = "mix-decks"
         const val STEP_COLLECTIONS = "collections"
         const val STEP_CATALOG_CACHE = "catalog-cache"
         const val STEP_CREDENTIALS_MIRROR = "credentials-mirror"

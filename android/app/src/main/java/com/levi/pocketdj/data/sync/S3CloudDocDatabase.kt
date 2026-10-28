@@ -149,6 +149,28 @@ class S3CloudDocDatabase(
         }
     }
 
+    /**
+     * Retry of an interrupted account deletion with the OLD identity (the tombstone's id + secret),
+     * independent of the current profile. @return true when the erasure is final: server success, or
+     * 401/404 (the credential/profile no longer exists server-side, retrying can never help).
+     * Network errors and 5xx throw so the tombstone survives.
+     */
+    suspend fun deleteProfileAs(profileId: String, secret: String): Boolean {
+        val b = base() ?: throw IOException("no profile-sync endpoint")
+        val request = Request.Builder().url("$b/profile")
+            .header("X-PocketDJ-Profile", profileId.lowercase())
+            .header("Authorization", "Bearer $secret")
+            .delete().build()
+        return withContext(Dispatchers.IO) {
+            http.newCall(request).execute().use { r ->
+                when {
+                    r.isSuccessful || r.code == 404 || r.code == 401 -> true
+                    else -> throw IOException("delete profile failed: HTTP ${r.code}")
+                }
+            }
+        }
+    }
+
     private fun checkKey(key: String) = require(KEY_RE.matches(key)) { "bad doc key '$key'" }
 
     companion object {
