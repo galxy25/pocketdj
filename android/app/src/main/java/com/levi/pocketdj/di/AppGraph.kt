@@ -21,6 +21,8 @@ import com.levi.pocketdj.data.credentials.DeferredSecretStore
 import com.levi.pocketdj.data.credentials.SecretMigration
 import com.levi.pocketdj.data.credentials.SecretStore
 import com.levi.pocketdj.data.history.PlayHistoryStore
+import com.levi.pocketdj.data.rips.PresignCache
+import com.levi.pocketdj.data.rips.RipJobTracker
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.rips.RipsRepository
 import com.levi.pocketdj.data.settings.AppSettingsStore
@@ -177,6 +179,20 @@ class AppGraph private constructor(context: Context) {
         configProvider = ripConfigProvider,
     )
 
+    /** Presigned-URL cache + prefetch for the private rips bucket (SVC-1). */
+    val presignCache: PresignCache = PresignCache(
+        scope = appScope,
+        isConfigured = { ripServerClient.isConfigured() },
+        presigner = { songId, ttl -> ripServerClient.presign(songId, ttl) },
+    )
+
+    /** Keeps polling rips that outlived the interactive wait; fires onRipReady (SVC-1). */
+    val ripJobTracker: RipJobTracker = RipJobTracker(
+        scope = appScope,
+        fetchJob = { ripServerClient.job(it) },
+        refreshManifest = { ripsRepository.refresh() },
+    )
+
     /** Apple Music developer-token client (fetch + cache from the rip server). */
     val musicKitDevTokenClient: MusicKitDeveloperTokenClient = MusicKitDeveloperTokenClient(
         http = httpClient,
@@ -206,6 +222,8 @@ class AppGraph private constructor(context: Context) {
         scope = appScope,
         devTokenClient = musicKitDevTokenClient,
         previewResolver = appleMusicPreviewResolver,
+        presigns = presignCache,
+        ripTracker = ripJobTracker,
     )
 
     /**

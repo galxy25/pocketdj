@@ -4,6 +4,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import com.levi.pocketdj.data.rips.RipPlayWait
 import androidx.core.os.bundleOf
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -19,11 +20,17 @@ import com.levi.pocketdj.data.applemusic.AppleMusicPreviewResolver
 import com.levi.pocketdj.data.applemusic.MusicKitDeveloperTokenClient
 import com.levi.pocketdj.data.rips.PlayAction
 import com.levi.pocketdj.data.rips.PlayResolver
+import com.levi.pocketdj.data.rips.PresignCache
+import com.levi.pocketdj.data.rips.RipJobTracker
+import com.levi.pocketdj.data.rips.RipWaitOutcome
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.rips.RipsRepository
 import com.levi.pocketdj.data.settings.AppSettingsStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -91,6 +98,13 @@ class PlaybackController(
      */
     devTokenClient: MusicKitDeveloperTokenClient? = null,
     private val previewResolver: AppleMusicPreviewResolver? = null,
+    /**
+     * Presigned-URL cache (the rips bucket is private). Null = direct manifest URLs (tests,
+     * serverless); also falls back to the direct URL when no server is configured.
+     */
+    private val presigns: PresignCache? = null,
+    /** Watches a rip past the 20 s interactive wait and fires onRipReady. Null in tests. */
+    private val ripTracker: RipJobTracker? = null,
 ) {
     /** One immutable now-playing snapshot; null when nothing is loaded. */
     data class NowPlayingInfo(
@@ -145,6 +159,12 @@ class PlaybackController(
         _lastError.value = null
     }
 
+    private val urls = PlaybackUrlResolver(presigns)
+
+    /** Bumped at every play entry/commit; a background rip wait only plays if still the owner. */
+    private val playGeneration = java.util.concurrent.atomic.AtomicLong()
+    private var urlRetriedFor: String? = null
+
     private var controller: MediaController? = null
     private val controllerMutex = Mutex()
 
@@ -167,6 +187,73 @@ class PlaybackController(
                 )
             ) {
                 _nowPlaying.value = snapshot(player)
+            }
+            if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION)) refreshAhead()
+        }
+
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            // A presigned URL that expired (long pause) or 403'd: mint a fresh one once per song.
+            val c = controller ?: return
+            val item = c.currentMediaItem ?: return
+            val id = item.mediaId
+            if (activeBackend != ActiveBackend.EXO || urlRetriedFor == id) return
+            if (item.requestMetadata.extras?.getBoolean(PlaybackContract.EXTRA_IS_PREVIEW) == true) return
+            urlRetriedFor = id
+            presigns?.invalidate(id)
+            scope.launch {
+                if (!settings.current().hasRipServer) return@launch
+                val fresh = presigns?.urlFor(id) ?: return@launch
+                withController { ctl ->
+                    val idx = ctl.currentMediaItemIndex
+                    val cur = ctl.currentMediaItem ?: return@withController
+                    if (cur.mediaId != id) return@withController
+                    val pos = ctl.currentPosition
+                    ctl.replaceMediaItem(idx, withUrl(cur, fresh))
+                    ctl.seekTo(idx, pos)
+                    ctl.prepare()
+                    ctl.play()
+                }
+            }
+        }
+    }
+
+    private fun withUrl(item: MediaItem, url: String): MediaItem {
+        val extras = Bundle(item.requestMetadata.extras ?: Bundle()).apply {
+            putString(PlaybackContract.EXTRA_URL, url)
+        }
+        return item.buildUpon()
+            .setUri(url)
+            .setRequestMetadata(
+                MediaItem.RequestMetadata.Builder().setMediaUri(Uri.parse(url)).setExtras(extras).build(),
+            )
+            .build()
+    }
+
+    /**
+     * Keep the next few queue items freshly presigned (iOS prefetch-3-ahead): resolved off the
+     * critical path while the current song plays, swapped in only if the slot is unchanged.
+     */
+    private fun refreshAhead() {
+        scope.launch {
+            try {
+                if (activeBackend != ActiveBackend.EXO || !settings.current().hasRipServer) return@launch
+                val (from, ids) = withController { c ->
+                    val range = PlaybackUrlResolver.aheadIndices(c.currentMediaItemIndex, c.mediaItemCount)
+                    range.first to range.map { c.getMediaItemAt(it).mediaId }
+                }
+                for ((offset, id) in ids.withIndex()) {
+                    val fresh = presigns?.urlFor(id) ?: continue
+                    withController { c ->
+                        val idx = from + offset
+                        if (idx >= c.mediaItemCount || idx <= c.currentMediaItemIndex) return@withController
+                        val item = c.getMediaItemAt(idx)
+                        if (item.mediaId != id) return@withController
+                        if (item.requestMetadata.extras?.getString(PlaybackContract.EXTRA_URL) == fresh) return@withController
+                        c.replaceMediaItem(idx, withUrl(item, fresh))
+                    }
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
             }
         }
     }
@@ -191,6 +278,7 @@ class PlaybackController(
         queueAlbumContext: Boolean = true,
         playContext: PlayContext? = null,
     ): PlayOutcome {
+        playGeneration.incrementAndGet()
         val merged = catalog.state.value.catalog
         val song = merged?.songsById?.get(songId)
         val ripConfigured = settings.current().hasRipServer
@@ -218,7 +306,7 @@ class PlaybackController(
                 } else {
                     val item = mediaItem(
                         songId = songId,
-                        action = action,
+                        action = urls.resolve(songId, action, ripConfigured),
                         song = song,
                         album = song?.albumId?.let { merged?.albumsById?.get(it) },
                         playContext = playContext ?: PlayContext.BROWSER,
@@ -400,7 +488,20 @@ class PlaybackController(
             .firstOrNull { (index, entry) -> index >= startIndex && entry.second.isUnboundedAnalog }
             ?.index ?: playable.lastIndex
 
-        val queue = playable.subList(0, lastIndex + 1).map { (song, action) ->
+        val serverConfigured = ripConfigured
+        val queueEntries = playable.subList(0, lastIndex + 1)
+        // Presign ONLY the start item before playback begins (a hung presign must not hold ▶);
+        // the rest start from the direct URL and are swapped to fresh presigned URLs by
+        // refreshAhead() while the current song plays (and re-resolved again at each transition).
+        val resolved = queueEntries.mapIndexed { index, (song, action) ->
+            if (index == startIndex) urls.resolve(song.id, action, serverConfigured) else action
+        }
+        urls.prefetch(
+            queueEntries.drop(startIndex + 1).take(PlaybackUrlResolver.AHEAD).map { it.first.id },
+            serverConfigured,
+        )
+        val queue = queueEntries.mapIndexed { index, (song, _) ->
+            val action = resolved[index]
             mediaItem(
                 songId = song.id,
                 action = action,
@@ -410,6 +511,7 @@ class PlaybackController(
             )
         }
         setQueueAndPlay(queue, startIndex)
+        refreshAhead()
         return PlayOutcome.Started
     }
 
@@ -430,20 +532,37 @@ class PlaybackController(
         val jobId = job.jobId
             ?: return PlayOutcome.Failed(job.error ?: "Rip did not start")
 
-        // "Preparing…" path (specs/playback.md §4.5 Phase-1 minimum): wait for
-        // the durable mp3, refresh the manifest, then start playback.
+        // "Preparing…" path: bounded 20 s interactive wait. A queued rip that outlives it is
+        // NOT a failure ("Still ripping…"): the tracker keeps polling and refreshes the manifest
+        // + fires onRipReady when it lands, so the row flips playable without another tap.
         _preparingSongId.value = songId
         _lastError.value = null
+        val gen = playGeneration.get()
+        val wait = RipPlayWait(
+            awaitReady = { ripServer.awaitReadyInteractive(it) },
+            refreshManifest = { rips.refresh() },
+            presignedUrl = { presigns?.urlFor(it) },
+            tracker = ripTracker,
+        )
         scope.launch {
             try {
-                val url = ripServer.awaitReady(jobId)
-                runCatching { rips.refresh() }
-                playResolvedUrl(songId, url, playContext)
+                when (
+                    val result = wait.run(songId, jobId) {
+                        playGeneration.get() == gen && _preparingSongId.value == songId
+                    }
+                ) {
+                    is RipPlayWait.Result.Play -> playResolvedUrl(songId, result.url, playContext)
+                    RipPlayWait.Result.StillRipping ->
+                        if (playGeneration.get() == gen) {
+                            _lastError.value = "Still ripping — this track will be playable in a few minutes."
+                        }
+                    RipPlayWait.Result.Superseded -> Unit
+                }
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
-                _lastError.value = error.message ?: "Rip failed"
+                if (playGeneration.get() == gen) _lastError.value = error.message ?: "Rip failed"
             } finally {
-                _preparingSongId.value = null
+                _preparingSongId.compareAndSet(songId, null)
             }
         }
         return PlayOutcome.Preparing(songId, jobId)
@@ -580,6 +699,8 @@ class PlaybackController(
 
     private suspend fun setQueueAndPlay(items: List<MediaItem>, startIndex: Int) {
         // Single-owner: hand audio to ExoPlayer, stopping the AM engine first.
+        playGeneration.incrementAndGet()
+        urlRetriedFor = null
         stopAppleMusic()
         activeBackend = ActiveBackend.EXO
         withController {

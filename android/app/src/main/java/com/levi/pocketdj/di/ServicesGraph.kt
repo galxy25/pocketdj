@@ -19,6 +19,11 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     /** SVC-5 diagnostics stack. Touching [FeatureModule] lists below materializes the log. */
     val diag: DiagServices by lazy { DiagServices.get(app) }
 
+    /** SVC-1 rip client plumbing (constructed in AppGraph because PlaybackController needs it). */
+    val ripClient get() = app.ripServerClient
+    val presignCache get() = app.presignCache
+    val ripJobTracker get() = app.ripJobTracker
+
     override val settingsSections: List<SettingsSection> by lazy {
         if (diag.channel) listOf(debugSection()) else emptyList()
     }
