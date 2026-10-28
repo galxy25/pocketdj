@@ -519,7 +519,7 @@ class MixEngine(
         if (!c.isOpen && !streamHeld(deck)) return   // a stream still waiting for its first bytes has no voice yet
         c.seekSeconds(0.0)
         setPosition(deck, 0.0)
-        if (!c.isOpen) onSeeked?.invoke(deck, 0.0)   // held: the stream pump re-checks runway at 0:00
+        if (streamHeld(deck)) onSeeked?.invoke(deck, 0.0)   // held: the stream pump re-checks runway at 0:00
         if (was) {
             startEngineIfNeeded()
             if (!streamHeld(deck)) c.play()
