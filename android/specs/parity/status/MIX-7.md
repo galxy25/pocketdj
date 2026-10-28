@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-7 MixResolver + CollectionMixDownloader + AutoMixHost
 - [x] MixResolver (+ MixResolverSources seam, memberIds)
