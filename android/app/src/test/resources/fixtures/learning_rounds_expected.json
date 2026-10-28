@@ -1,0 +1,58 @@
+{
+ "contexts": [
+  {
+   "key": "weekday|evening|*",
+   "rounds": 8,
+   "weights": [
+    {
+     "dim": "artist",
+     "value": "ada",
+     "pos": 4,
+     "neg": 0,
+     "multiplier": 1.667
+    },
+    {
+     "dim": "genre",
+     "value": "funk",
+     "pos": 4,
+     "neg": 0,
+     "multiplier": 1.667
+    },
+    {
+     "dim": "genre",
+     "value": "rock",
+     "pos": 0,
+     "neg": 2,
+     "multiplier": 0.5
+    }
+   ]
+  },
+  {
+   "key": "weekday|evening|place:plc_0f1e2d3c4b5a6978",
+   "rounds": 7,
+   "weights": [
+    {
+     "dim": "artist",
+     "value": "ada",
+     "pos": 3,
+     "neg": 0,
+     "multiplier": 1.6
+    },
+    {
+     "dim": "genre",
+     "value": "funk",
+     "pos": 3,
+     "neg": 0,
+     "multiplier": 1.6
+    },
+    {
+     "dim": "genre",
+     "value": "rock",
+     "pos": 0,
+     "neg": 2,
+     "multiplier": 0.5
+    }
+   ]
+  }
+ ]
+}
