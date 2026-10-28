@@ -141,3 +141,17 @@ Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave8:
 - GM-5: pure JVM, no emulator steps.
 
 Open: Q29-Q34.
+
+## Wave 9
+
+Merged: BRW-6, GM-3, COL-5, MIX-9, MIX-10, PB-8 (one conflict: di/MixGraph.kt, MIX-9's autoDj and MIX-10's streamDecks accessors are both kept). JVM: 2759 tests, 0 failures (the merge baseline of 2755 + 4 regression tests). assembleDebug green.
+
+Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave9. Mix and Games have no screens yet, so MIX-9/10 and GM-3 were driven through new Settings > Debug probes ("AutoDJ: start / start streamed / skip / pause / resume / status", "Gem: start / skip / status / end").
+- BRW-6 PASS: Playback + Collection tabs; live (playing) glyph on the current row and "skipped" badges after quick skips; Hide skips hides them (list also lost the just-rewound song, which Rewind marks skipped); long-press -> Rewind to here -> confirm restarts at that song (cursor move in the live queue); Last played From/To date pickers filter correctly (a future From gives "No matches"); filters persist across force-stop + relaunch. Note: the Hide skips label is not tappable, only the switch.
+- COL-5 PASS: long-press -> Select -> "1 selected"; Select all = 110833 (full list) and a search narrowed to 153 gave 153; Add to -> Pockets -> SeedDup grew by 153; with select mode armed in Browse, a pocket song tap opens the detail (no toggle). History > Collection shows one Added row per song.
+- MIX-9 PASS after fixes: Auto-DJ banner "n / total - Deck X", skip and double-skip, pause -> hand-load -> resume, mixadvance lines. Lock-screen media pause does not suspend it (MIX-11 not wired, Q37). Fixed: the "no loadable next - N deferred" line was logged at 10 Hz (now once per change).
+- MIX-10 PASS after fixes: ripped-not-burned crate streams (deck held 1.2 s then started on 7 s runway, completes, adopted into files/burns). Emulator netspeed throttling has no effect on the host-forwarded network, so hold/extend/"fade frozen" are covered by JVM only. Wifi cut right after start found two real bugs: (1) StreamDecks.autoHooks was never assigned, so a live deck whose stream died before audio never skipped ahead (now wired in MixGraph; wasLive also covers a held deck); (2) the Auto-DJ stayed "mixing" over two empty decks forever (new dead-live-deck lane in idleStep hands over to the next loadable song or ends the mix; recovered ~60 s after the network returned). Regression tests: StreamDecksTest, AutoDjTest x2.
+- GM-3 PASS (engine, via debug probes): countdown -> RUNNING with audio, History rows read "Game - Gem Collector", Skip x3 advances cards and the player (cause=USER), playing an album mid-round ends the round (FINISHED) while the album plays, airplane mode: sequencer cascade-halts after 3 failed rows, round keeps running, no loop. Natural-end drift not run (rips are full length), JVM-covered.
+- PB-8 PASS (no behaviour change with AM unavailable: rip/burn playback and the preview path verified, unit suite green); full-track DRM is device-only. Fixed: the AM rung now skips run-tagged game rows (GM-3 note), test added.
+
+Open: Q35-Q40.

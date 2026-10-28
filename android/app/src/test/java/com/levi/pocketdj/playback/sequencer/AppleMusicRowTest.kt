@@ -32,6 +32,11 @@ class AppleMusicRowTest {
         assertNull(r.resolve(QueueItem("a"), ResolveContext(com.levi.pocketdj.playback.PlaybackMode.CLOUD, true, false)))
     }
 
+    @Test fun resolver_skipsRunTaggedGameRows() = runTest {
+        val r = AppleMusicRowResolver({ "123" }, { true })
+        assertNull(r.resolve(QueueItem("a", runTag = "puzzle_X"), ResolveContext(com.levi.pocketdj.playback.PlaybackMode.CLOUD, true, false)))
+    }
+
     @Test fun resolver_noAppleMusicId_fallsThrough() = runTest {
         val r = AppleMusicRowResolver({ null }, { true })
         assertNull(r.resolve(QueueItem("a"), ResolveContext(com.levi.pocketdj.playback.PlaybackMode.CLOUD, true, false)))

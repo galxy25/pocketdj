@@ -387,7 +387,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | PB-5 — History outcomes: SkipTracker + additive PlayEvent fields + progress/advance-away events … | 7 | PARTIAL | Unit-tested (1946 green), NOT emulator-verified (device-only: History glyph + live row, skip on real playback). Open: noteSkip per-song skip count unwired until a Kotlin PlayCountService exists |
 | PB-4 — Durable playback session: real-time snapshot, held restore, resume at position, materiali… | 8 | Merged (`ab68b736`) | Emulator-verified wave 8: held restore after force-stop (strip + deck, no audio, file mtime untouched), iOS-shape JSON, first play resumes. Fixed: MiniPlayerBar never showed the held deck. Device-only: Bluetooth resumption. |
 | PB-7 — Up Next, previously played, add-search, open set list, queue reorder; jukebox routed thro… | 8 | Merged (`9488b905`) | Emulator-verified wave 8: live reorder, remove, album+song Add next from search. Jukebox accept placement JVM-only (needs a guest request). |
-| PB-8 — Apple Music rows in a run: AppleMusicPlayerAdapter (SimpleBasePlayer TransportOwner) + en… | 9 | Planned | Full-track DRM playback requires a real device with a subscription (v… |
+| PB-8 — Apple Music rows in a run: AppleMusicPlayerAdapter (SimpleBasePlayer TransportOwner) + en… | 9 | Merged (wave 9) | Full-track DRM playback requires a real device with a subscription (v… |
 | PB-10 — Gapless preload window (next resolved row pre-added to ExoPlayer) | 17 | Planned | — |
 
 **Collections**
@@ -399,7 +399,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | COL-10 — Favorites store + ♥ toggle + Browse favorite tri-state filter model + heart/unheart activ… | 3 | PARTIAL (JVM) | Browse ♥ + tri-state filter (song mode) wired in BrowseScreen/SongDetailSheet/AlbumDetailScreen; emulator drive not run (integrator). Open: backup-zip + profile-sync registration of `pocketdj-favorites.json`; `favorites.remapSongIds` has no caller (no Discover/amrec_ supersede path on Android yet — wire alongside CollectionsStore remap). |
 | COL-4 — AddToActions + Add-to sheet parity (Suggested + Recent, pockets A–Z, playlists A–Z, More…… | 5 | Merged (`796e5923`) | — |
 | COL-3 — SongDuplicateJudge (deterministic tiers) + Remove duplicates (collection, all collections… | 6 | Merged (`42809a00`) | — |
-| COL-5 — Multi-select: RowSelection + SelectableRow + SelectionBar on Browse and every collection … | 9 | PARTIAL | Multi-select on Browse, pocket, playlist, source playlist, set list (bar: Select all, Add to, Copy, Clear; clipboard capped). No paste UI, no hardware-keyboard range-select. Emulator steps NOT run (device-only). |
+| COL-5 — Multi-select: RowSelection + SelectableRow + SelectionBar on Browse and every collection … | 9 | Merged (wave 9) | Multi-select on Browse, pocket, playlist, source playlist, set list (bar: Select all, Add to, Copy, Clear; clipboard capped). No paste UI, no hardware-keyboard range-select. Emulator steps NOT run (device-only). |
 | COL-7 — Source-sync completion: auto reconcile on catalog refresh, global + per-item toggles, dir… | 10 | Planned | — |
 | COL-12 — Recently added virtual playlist (derivation from IndexSong.dateAdded + add history) + Set… | 12 | Planned | — |
 | COL-8 — Apple Music write-back queue (durable, Web API transport via SVC-15, batch confirm, backf… | 13 | Planned | Needs a real Apple Music subscription + Music-User-Token; emulator ve… |
@@ -426,7 +426,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | BRW-9 — Recs core B: identity + shaping (version/recording identity, membership, novelty, composi… | 4 | DONE | device-only: none (pure) |
 | BRW-4 — Song/Album detail parity: lyrics store + timed-lyrics sidecar + lyrics panel, share text,… | 5 | Merged (`01deb63a`) | — |
 | BRW-2 — Filter/sort sheets at full width + membership (in/not-in, none-of) + favorite + hide-skip… | 8 | Merged (`b6873a6e`) | Emulator-verified wave 8: In-pocket filter narrows to members, add-to-pocket while filtered drops the row with no scroll reset. Hide-skips wiring PARTIAL (History). |
-| BRW-6 — History screen parity: tab model (Playback \| Collection \| Pockets \| For You slots), en… | 9 | Planned | — |
+| BRW-6 — History screen parity: tab model (Playback \| Collection \| Pockets \| For You slots), en… | 9 | Merged (wave 9) | — |
 | BRW-10 — ZoneEngine: In Da Zone + collection suggestions + cloud shaping | 11 | Planned | — |
 | BRW-7 — Collection timeline (F8) + timeline cue store + History ▸ Collection tab | 13 | Planned | — |
 | BRW-11 — For You feed store, feedback store, read-time refresh schedule, tiles/grid, recsEnabled t… | 14 | Planned | — |
@@ -450,8 +450,8 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | MIX-5 — MixEngine core: decks, load/seek/transport, EQ, FX rack, Vol/crossfader, cue, lead/sync, … | 6 | PARTIAL | Device-only: audible tempo/pitch quality and cue routing, force-stop/relaunch restore. Deferred hooks: loop/stems (MIX-8), Auto-DJ (MIX-9), stream (MIX-10), silent-playing detector (MIX-11); launch-time `restorePersistedMixIfIdle` not auto-called (Mix tab parks via `materializePendingRestoreIfNeeded`) |
 | MIX-7 — MixResolver + CollectionMixDownloader (collection pull with progress/ETA + progressive el… | 7 | Merged (`1226d3a4`) | — |
 | MIX-8 — Loop (∞) + stem decks + zero-dead-air handover + beat-grid hydrate | 8 | Merged (`db38384e`) | JVM only (50 tests); emulator smoke: two-deck Mix plays with the new hooks, no crash. Stem/loop/beat-pulse steps NOT drivable: no stem/loop UI (MIX-13/14) and no stemmed burn. Device-only: handover seam, loop click-freeness. |
-| MIX-10 — Streaming decks in the engine (growing-file playback, hold/resume, truncation, stem strea… | 9 | Planned | Cellular dead-zone behaviour |
-| MIX-9 — Auto-DJ machine + readiness rules + glide + remote freeze + jukebox queue seams | 9 | Planned | Real lock-screen transport and headset-button behaviour |
+| MIX-10 — Streaming decks in the engine (growing-file playback, hold/resume, truncation, stem strea… | 9 | Merged (wave 9) | Cellular dead-zone behaviour |
+| MIX-9 — Auto-DJ machine + readiness rules + glide + remote freeze + jukebox queue seams | 9 | Merged (wave 9) | Real lock-screen transport and headset-button behaviour |
 | MIX-13 — Deck UI: DeckView + controls (sliders/knobs/steppers), seek slider, FX chips, stem pads, … | 10 | Planned | — |
 | MIX-11 — Mix transport owner: MixSessionPlayer (SimpleBasePlayer TransportOwner) into the ONE Medi… | 11 | Planned | Bluetooth route changes, phone-call interruption, headset buttons, re… |
 | MIX-14 — Mix screen shell: session header, Auto setup bar/banner/skip, crate menus A/B (scroll res… | 12 | Planned | — |
@@ -489,7 +489,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | GM-2 — Gem Collector core: settings, recency, sampler, similarity, decision store, rec bridge (p… | 1 | DONE | device-only: none |
 | GM-1 — Games tab (7th destination via nav registry) + Scoreboard store (tombstones, union merge)… | 8 | Merged (`bb31d846`) | Emulator-verified wave 8: cards, seed, per-game delete, delete-all, persistence after relaunch, rotation during dialog. Gem Collector/In the Pocket openers pending their packages. |
 | GM-5 — In the Pocket core: models, pockets results decode (PocketsModels owner), scorer, members… | 8 | Merged (`73c168bd`) | Pure JVM (79 tests). Golden cross-platform scorer test OPEN. |
-| GM-3 — Gem Collector engine + GameRunPlayer over the sequencer (appendRows(runTag), preview-reso… | 9 | Planned | Apple Music preview resolution needs network; full-track AM is delibe… |
+| GM-3 — Gem Collector engine + GameRunPlayer over the sequencer (appendRows(runTag), preview-reso… | 9 | Merged (wave 9) | Apple Music preview resolution needs network; full-track AM is delibe… |
 | GM-4 — Gem Collector screens (setup / countdown / running / summary) + multi-collection filing v… | 10 | Planned | — |
 | GM-7 — In the Pocket store + PocketsBridge interface (NoPocketsBridge default) + rounds upload c… | 11 | Planned | Cloud mode needs real pockets results (services area + rec key) — ver… |
 | GM-9 — Music with Friends link, models, client, join secret, session file, store (broker-driven,… | 12 | Planned | — |

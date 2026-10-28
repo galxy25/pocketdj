@@ -323,6 +323,74 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }
     Text(mixStatus, style = MaterialTheme.typography.bodySmall)
 
+    // MIX-9 verify probes (debug only): Auto-DJ over the burned songs until the Mix screen owns it.
+    var autoStatus by remember { mutableStateOf("AutoDJ: idle") }
+    fun autoLine(): String {
+        val dj = host.graph.mixGraph.autoDj
+        val u = dj.ui.value
+        return "AutoDJ mixing=${u.mixing} paused=${u.paused} trans=${u.transitioning} pos=${u.livePos}/${u.queueSize} deck=${u.liveDeck.label} status=${u.status} buf=${host.graph.mixGraph.mixStreamDecks.buffering.value.map { it.label }} strm=${host.graph.mixGraph.mixStreamDecks.streaming.value.map { it.label }} | ${mixLine()}"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val items = host.graph.servicesGraph.burnStore.items.value.values.filter { host.graph.servicesGraph.burnStore.hasLocalFile(it.songId) }.take(5).map { b ->
+                    val song = songs[b.songId]
+                    com.levi.pocketdj.mix.model.AutoMixItem(
+                        com.levi.pocketdj.mix.model.MixLoadable(b.songId, b.title, b.artist, b.bpm, b.camelot, b.musicalKey, song?.albumId, b.durationMs?.toInt()),
+                        b.durationMs?.toInt() ?: 30000,
+                        "SeedBurns",
+                    )
+                }
+                host.graph.mixGraph.autoDj.startAutoMix(items, false, 5.0, 3.0, "SeedBurns")
+                kotlinx.coroutines.delay(2500)
+                autoStatus = autoLine()
+            }
+        }) { Text("AutoDJ: start") }
+        OutlinedButton(onClick = { host.graph.mixGraph.autoDj.skipToNext(2.0); autoStatus = autoLine() }) { Text("AutoDJ: skip") }
+        OutlinedButton(onClick = {
+            // MIX-10: Auto-DJ over three ripped-but-NOT-burned digital songs (STREAMING MODE).
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val store = host.graph.servicesGraph.burnStore
+                com.levi.pocketdj.di.MixDebug.publicRips = true
+                val ids = songs.keys.filter { manifest[it]?.source == "digital" && !store.hasLocalFile(it) }
+                    .sortedByDescending { manifest[it]?.durationMs ?: 0L }.take(3)
+                val items = ids.map { id ->
+                    val sg = songs[id]
+                    com.levi.pocketdj.mix.model.AutoMixItem(
+                        com.levi.pocketdj.mix.model.MixLoadable(id, sg?.name ?: id, sg?.artist ?: "", null, null, null, sg?.albumId, manifest[id]?.durationMs?.toInt()),
+                        manifest[id]?.durationMs?.toInt() ?: 200000,
+                        "SeedStream",
+                    )
+                }
+                host.graph.mixGraph.autoDj.startAutoMix(items, true, 5.0, 3.0, "SeedStream")
+                autoStatus = "AutoDJ stream start ids=${ids.size}"
+            }
+        }) { Text("AutoDJ: start streamed") }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { host.graph.mixGraph.autoDj.pauseAuto(); autoStatus = autoLine() }) { Text("AutoDJ: pause") }
+        OutlinedButton(onClick = { host.graph.mixGraph.autoDj.resumeAuto(); autoStatus = autoLine() }) { Text("AutoDJ: resume") }
+        OutlinedButton(onClick = { autoStatus = autoLine() }) { Text("AutoDJ: status") }
+    }
+    Text(autoStatus, style = MaterialTheme.typography.bodySmall)
+
+    // GM-3 verify probes (debug only): the Gem Collector round engine has no screen yet.
+    var gemStatus by remember { mutableStateOf("Gem: idle") }
+    fun gemLine(): String {
+        val st = host.graph.gamesGraph.puzzleEngine.state.value
+        return "Gem phase=${st.phase} cd=${st.countdown} q=${st.queueIndex}/${st.queue.size} score=${st.score} cur=${st.current?.name} err=${st.lastError} exhausted=${st.poolExhausted}"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.startRoundDetached(); gemStatus = "Gem: starting" }) { Text("Gem: start") }
+        OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.skip(); gemStatus = gemLine() }) { Text("Gem: skip") }
+        OutlinedButton(onClick = { gemStatus = gemLine() }) { Text("Gem: status") }
+        OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.endRound(); gemStatus = gemLine() }) { Text("Gem: end") }
+    }
+    Text(gemStatus, style = MaterialTheme.typography.bodySmall)
+
     // SVC-15 verify probe (debug only): catalog search (dev token) + a user-scoped call (NeedsUserToken when signed out).
     var amStatus by remember { mutableStateOf("AM API: idle") }
     OutlinedButton(onClick = {

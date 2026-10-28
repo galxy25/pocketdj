@@ -23,6 +23,8 @@ class AppleMusicRowResolver(
     override val rung: Rung = Rung.APPLE_MUSIC
 
     override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? {
+        // Game runs never use the full-track Apple Music engine (they ride 30 s previews instead).
+        if (item.runTag != null) return null
         val amId = appleMusicIdFor(item)?.takeIf { it.isNotBlank() } ?: return null
         if (ctx.ripStartsNow && !isAppleMusicSourced(item)) return null
         if (!canPlayFullTrack()) return null

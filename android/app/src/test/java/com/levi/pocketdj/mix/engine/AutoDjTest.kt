@@ -155,6 +155,28 @@ class AutoDjTest {
         assertFalse(r.e.isPlaying(A)); assertFalse(r.e.isPlaying(B))
     }
 
+    @Test fun aDroppedLiveDeckHandsOverToTheNextSongInsteadOfStallingForever() {
+        // Emulator regression (wave 9): a live stream died before audio, the deck was ejected, and the mix
+        // sat "mixing" over two empty decks.
+        val r = AutoRig(n = 3)
+        r.start()
+        r.run(1.0)
+        r.e.ejectDeckCore(A)
+        r.run(6.0)
+        assertEquals("s1", r.id(B))
+        assertTrue(r.e.isPlaying(B))
+        assertTrue(r.advLines().any { it.contains("live deck empty") })
+    }
+
+    @Test fun aDroppedLiveDeckOnTheLastSongEndsTheMix() {
+        val r = AutoRig(n = 1)
+        r.start()
+        r.run(1.0)
+        r.e.ejectDeckCore(A)
+        r.run(2.0)
+        assertFalse(r.dj.ui.value.mixing)
+    }
+
     @Test fun aManualLoadDisarmsTheExhaustedFlag() {
         val r = AutoRig(n = 2, seconds = 10.0, lead = 3.0, fade = 1.0)
         r.start(); r.run(40.0)

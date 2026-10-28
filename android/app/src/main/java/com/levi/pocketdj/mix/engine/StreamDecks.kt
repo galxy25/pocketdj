@@ -422,7 +422,7 @@ class StreamDecks(
             return
         }
         if (!c.isOpen || c.endFrame == c.startFrame) {
-            val wasLive = autoHooks?.isLiveDeck(deck) == true && engine.deckState(deck).isPlaying
+            val wasLive = autoHooks?.isLiveDeck(deck) == true && (engine.deckState(deck).isPlaying || d.holding)
             logError("deck ${deck.label} drop $songId - stream failed before audio")
             engine.reportDeckEnded(deck, MixTrackEndReason.STOPPED)   // a dead stream is not the listener skipping it
             engine.ejectDeckCore(deck)

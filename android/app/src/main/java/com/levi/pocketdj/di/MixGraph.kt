@@ -189,6 +189,14 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 stems = extras.stems, hasLocalFile = { id -> burns.hasLocalFile(id) },
             )
             decks.install()
+            // The Auto-DJ facts the stream machine needs: a live deck whose stream dies before audio skips ahead.
+            autoDjInst?.let { dj ->
+                decks.autoHooks = object : com.levi.pocketdj.mix.engine.AutoStreamHooks {
+                    override fun isLiveDeck(deck: com.levi.pocketdj.mix.model.Deck) = dj.ui.value.mixing && dj.liveDeck == deck
+                    override val isTransitioning: Boolean get() = dj.ui.value.transitioning
+                    override fun skipToNext(fadeSeconds: Double) = dj.skipToNext(fadeSeconds)
+                }
+            }
             streamDecksRef = decks
             loader.onProgress = { id -> decks.streamProgressed(id) }
             loader.pinnedIds = { decks.streamingSongIds }

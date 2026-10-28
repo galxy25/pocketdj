@@ -368,6 +368,19 @@ class StreamDecksTest {
         assertTrue(r.decks.buffering.value.isEmpty())
     }
 
+    @Test fun failureBeforeAudioOnAHeldLiveDeckSkipsAhead() {
+        // Emulator regression (wave 9): the live auto deck was still HOLDING at 0 s (never sounded) when the
+        // stream died; the old isPlaying-only test left the Auto-DJ mixing with two empty decks forever.
+        val r = Rig(); r.load(lengthMs = 100_000)
+        val live = FakeAutoStream(live = A); r.decks.autoHooks = live
+        r.engine.autoDj = HeldCountingAuto()
+        assertTrue(r.decks.isBuffering(A))
+        r.handle.failed = true
+        r.decks.streamProgressed("s")
+        assertNull(r.engine.loaded(A))
+        assertEquals(listOf(0.5), live.skips)
+    }
+
     @Test fun failureBeforeAudioOnAStoppedDeckJustEjectsIt() {
         val r = Rig(); r.load(lengthMs = 100_000)
         val live = FakeAutoStream(live = Deck.B); r.decks.autoHooks = live

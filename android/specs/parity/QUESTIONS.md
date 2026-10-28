@@ -44,6 +44,13 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q33 [GM-1]** Games tab: Gem Collector / In the Pocket cards are inert and Music with Friends New/Join absent until GM-3/4, GM-7/8, GM-10; no sync engine calls GameScoreboardStore.reloadFromDisk. -- *Default: tracking only.*
 - **Q34 [MIX-8]** Loop, stem decks and beat-pulse have no UI until MIX-13/14 and the emulator has no stemmed burn / stem server, so only a smoke run was possible. -- *Default: JVM-verified; verify on device once the Mix UI lands.*
 
+- **Q35 [GM-3]** Gem Collector has an engine but no screen (Games card is inert); emulator steps were driven through Settings > Debug "Gem:" probes. Build the round UI in GM-4. -- *Default: engine-only; debug probes.*
+- **Q36 [PB-8]** The AM full-track rung now skips run-tagged (game) rows so game rounds keep riding 30 s previews (integration fix). Confirm games should never use full-track AM. -- *Default: previews only.*
+- **Q37 [MIX-9/10]** Mix UI (MIX-14) and lock-screen transport (MIX-11) do not exist: Auto-DJ and streaming decks were driven through Settings > Debug "AutoDJ:" probes; remote pause/play/skip verbs are not wired to the media session, so `cmd media_session dispatch pause` does not suspend Auto-DJ. -- *Default: MIX-11 wires `AutoDj.remotePause/remotePlay/remoteSkip`.*
+- **Q38 [MIX-10]** A stream that fails before audio now skips ahead / the Auto-DJ recovers from an empty live deck, but a song that failed is deferred by the loader's failure cooldown (about 60 s) before it is retried. Shorten the cooldown for Auto-DJ? -- *Default: loader default.*
+- **Q39 [BRW-6]** History Pockets and For You tabs are gated placeholders; the Hide skips row only toggles from the switch, not the label. Make the whole row tappable? -- *Default: switch only.*
+- **Q40 [COL-5]** After Add to from the selection bar the selection stays armed (iOS clears it?). Confirm; also the Collection History tab logs one Added row per song (153 rows for a 153-song batch) rather than one grouped batch row. -- *Default: as built.*
+
 ## ANSWERED
 
 (none yet)

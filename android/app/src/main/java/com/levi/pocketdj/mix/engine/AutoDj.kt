@@ -53,6 +53,7 @@ class AutoDj(
 ) : AutoDjHooks {
 
     var seams: AutoSeams = seams ?: EngineAutoSeams(engine)
+    private var lastNoLoadableKey: String? = null
 
     val glide = GlideMachine(this)
     internal val readiness = AutoReadinessOps(this)
@@ -545,6 +546,23 @@ class AutoDj(
         }
         // PAUSED: the DJ is hand-mixing - never auto-advance (nor auto-stop at end-of-track).
         if (paused) return false
+        // DEAD LIVE DECK: the on-air song was dropped under us (a stream that died before audio) - hand
+        // over to the next loadable song, or end the mix; never sit "mixing" over two empty decks.
+        if (engine.loaded(liveDeck) == null) {
+            if (livePos + 1 < queue.size) {
+                if (!ensureNextPreloaded()) return false      // only stream-gated songs left: retry next tick
+                advLog("live deck empty - handing over to ${engine.loaded(liveDeck.other)?.songId ?: "-"}")
+                extending = false
+                awaitLogged = null
+                beginImmediateTransition(1.0)
+                refreshStatus()
+                return false
+            }
+            advLog("live deck empty and queue exhausted - mix ends")
+            stopAutoMix()
+            engine.autoEndedExhausted = true
+            return false
+        }
         // LOOPING: an engaged loop is a hand-mix hold; releasing it re-times the transition.
         if (engine.deckState(liveDeck).loopOn) return false
         val endsAt = deckEndsAt[liveDeck] ?: return false
@@ -811,7 +829,14 @@ class AutoDj(
             queue.removeAt(j)                     // permanently unloadable: drop it
             if (nextToLoad > j) nextToLoad -= 1
         }
-        if (deferred.isNotEmpty()) advLog("no loadable next - ${deferred.size} deferred (stream gate closed)")
+        if (deferred.isNotEmpty()) {
+            // Runs every tick while the gate stays closed: log once per distinct deferred set, not at 10 Hz.
+            val key = deferred.joinToString(",")
+            if (key != lastNoLoadableKey) {
+                lastNoLoadableKey = key
+                advLog("no loadable next - ${deferred.size} deferred (stream gate closed)")
+            }
+        } else lastNoLoadableKey = null
         return false
     }
 
