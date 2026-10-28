@@ -326,7 +326,8 @@ fun ScoreEditor(
         if (events.isEmpty()) Text(if (editing) "Tap the staff to place a note." else "No notes yet.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         for ((i, page) in pages.withIndex()) {
             BoxWithConstraints(Modifier.fillMaxWidth().testTag("$tagPrefix-page-$i")) {
-                val wPx = with(density) { maxWidth.toPx() }
+                val boxW = maxWidth
+                val wPx = with(density) { boxW.toPx() }
                 val scale = wPx / page.width
                 val heightDp = with(density) { (page.height * scale).toDp() }
                 val highlights = remember(st.selection, events, pages) {
@@ -335,7 +336,7 @@ fun ScoreEditor(
                     }
                 }
                 Box(
-                    Modifier.fillMaxWidth().size(maxWidth, heightDp)
+                    Modifier.fillMaxWidth().size(boxW, heightDp)
                         .border(1.dp, GREY.copy(alpha = 0.4f))
                         .pointerInput(editing, st.mode, st.granularity, events, pages, onSeek) {
                             detectTapGestures { off ->
@@ -354,13 +355,13 @@ fun ScoreEditor(
                             }
                         },
                 ) {
-                    androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().size(maxWidth, heightDp)) {
+                    androidx.compose.foundation.Canvas(Modifier.fillMaxWidth().size(boxW, heightDp)) {
                         drawIntoNative(scale) { c -> ScoreRenderer.draw(page, c) }
                         highlights.forEach { h ->
                             drawCircle(Color(0xF26EA8FF), radius = 8f * scale, center = Offset(h.x * scale, h.y * scale), style = Stroke(width = 1.6f * scale))
                         }
                     }
-                    if (positionMs != null) PlaybackLayer(page, i, pages, marks.filter { it.page == i }, slots, bpm, positionMs, scale, maxWidth, heightDp)
+                    if (positionMs != null) PlaybackLayer(page, i, pages, marks.filter { it.page == i }, slots, bpm, positionMs, scale, boxW, heightDp)
                     if (editing && st.mode == ScoreEditMode.SELECT && i == pages.lastIndex) {
                         val sys = page.systems.lastOrNull()
                         val last = sys?.measures?.lastOrNull()
