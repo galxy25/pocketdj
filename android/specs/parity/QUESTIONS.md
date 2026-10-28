@@ -16,6 +16,8 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q5 [SVC-7..9, profile sync, D7]** Android has no CloudKit, so profile sync = new `pocketdj-profile-sync` Lambda + S3 on the green account, link-a-device by code (QR scanning deferred). OK to deploy that AWS infra when waves 12–13 land? — *Default: build + test against an in-memory store; deploy only with your OK.*
 - **Q6 [D1, Mix engine]** Mix tempo/pitch uses Media3 Sonic (pure Kotlin/Java); quality degrades beyond ±25 % stretch. Acceptable, or should the Mix move to the Oboe/C++ path (Signalsmith) later? — *Default: Sonic for Mix, Oboe+C++ for Studio.*
 - **Q7 [UX, shell]** Android shows 7 bottom tabs (Browse, History, Jukebox, Collections, Mix, Producer, Games) with the label only on the selected tab. OK, or would you rather fold some (e.g. Jukebox/Games) into a "More" tab? — *Default: 7 tabs, selected-label-only.*
+- **Q8 [STU-1]** Studio loops are `.wav` on Android (iOS uses `.caf`) because the document is device-local. Keep, or write CAF later so a studio doc can be shared with iOS? — *Default: .wav.* — Affects any future cross-platform Studio sharing.
+- **Q9 [MIX-2]** Mp3Decoder warm-up is 12 frames after seek (emulator's software decoder emits ~8 frames of silence after flush). Real-device codecs may differ; OK to confirm on a phone once Q1 is settled? — *Default: 12 frames (about 300 ms of decode per seek).* — Seek latency vs. gap-free seeks.
 
 ## ANSWERED
 

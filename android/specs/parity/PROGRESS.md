@@ -20,3 +20,15 @@ Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave2/). Debug-only sea
 - MIX-3: no emulator steps (pure DSP, unit tests only).
 No FATAL/ANR from com.levi.pocketdj in logcat.
 Open issues: nothing calls NPLog/DiagLog yet outside diag/ and Debug (a capture with no app traffic saves no session); PlaybackController edition wiring; worker cold start still builds AppGraph (SURF-2); TimePitch allocates a new Sonic per applied step, no seam crossfade, needs device check (MIX-3); WorkManager periodic body untested on emulator; "Add to playlist" write-back resolution / membershipRevision not built (COL-2).
+
+## Wave 3
+Merged (all clean, no conflicts): SVC-1, SURF-3, MIX-2, COL-10, MIX-1, STU-1. Tests: 1070 run in the XML results, 0 failures/errors. assembleDebug green; connectedDebugAndroidTest 6/6 on the pocketdj AVD after one fix.
+Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave3/):
+- SURF-3: PASS. pm clear -> stage 1 (name, Use on this device) -> stage 2 (killed + relaunched: resumes stage 2; Continue without Apple Music) -> stage 3 (toggled AM off) -> Browse loads with only My Vinyl + My Digital; relaunch shows no onboarding; forced flow via `--ez pdj.showOnboarding true` shows it on an existing install. Real AM sign-in is device-only.
+- COL-10: PASS. Songs row heart -> History "Hearted"; Favorites filter shows only it; unheart -> "Removed heart" row; relaunch -> still unfavorited.
+- MIX-2: instrumented Mp3DecoderInstrumentedTest 6/6. FOUND + FIXED: after any mid-file seek the emulator decoder returned ~8 frames (about 8.8k samples) of silence, failing seekMidFileLandsOnTheSameSamplesAsLinearDecode; Mp3Decoder.WARMUP_FRAMES 2 -> 12 makes seek bit-exact (lag 0). The 529-sample click test passes (CODEC_TRIMS_DECODER_DELAY=true is right). Audible output: device-only.
+- STU-1: PASS (partial). `--ez PDJ_SEED_STUDIO true` writes pocketdj-studio.json + tone files; relaunch persists. NOT run: delete-tone -> prune and revoked-SAF steps (the sandbox blocked an adb rm; both are covered by JVM StudioReconcile tests); SAF persistence is device-only.
+- SVC-1: PASS with a throwaway mock rip server and a temporary debug cleartext config (not committed): POST /rip -> Preparing -> the 20 s interactive wait ends and RipJobTracker keeps polling /jobs until ready; on ready the app asks /rips/presign once and plays the presigned URL. The "Still ripping" snackbar text was not caught on screen (shown for a few seconds only).
+- MIX-1: stores have no UI yet (Mix tab is a placeholder), so the adb run-as file check could not be exercised; covered by 42 JVM tests with iOS fixtures.
+No FATAL/ANR from com.levi.pocketdj in logcat.
+Open issues: COL-10 remapSongIds + backup/profile-sync registration; SURF-5 must call onboarding.vetoIfIncomplete(); launch work outside screens must await waitUntilComplete(); Browse debug seeds should be added for Mix stores; STU-1 reconcile not sequenced after onboarding; Q8/Q9 added.

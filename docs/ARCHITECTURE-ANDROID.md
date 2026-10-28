@@ -362,7 +362,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 |---|---|---|---|
 | SVC-12 — Catalog cache polish + green compiled-in endpoints pinned by test | 1 | Planned | — |
 | SVC-5 — Diagnostics: DiagLog + NPLog lanes, shared SigV4 S3 uploader, .pdjdiagkey import, jank wa… | 2 | Planned | — |
-| SVC-1 — Rip client parity: presign + prefetch, 20 s bounded interactive wait + StillRipping, job … | 3 | PARTIAL | emulator steps not run (presigned playback on a private bucket, "Still ripping" flow, mid-queue URL refresh) |
+| SVC-1 — Rip client parity: presign + prefetch, 20 s bounded interactive wait + StillRipping, job … | 3 | PARTIAL | emulator-verified 2026-10-27 with a mock rip server (presign, bounded wait + tracker hand-off); not verified: presigned playback on a private bucket, "Still ripping" flow, mid-queue URL refresh) |
 | SVC-2 — BurnStore core (ONE offline store): ledger, byte-identical file names, sidecar, stems + b… | 4 | Planned | — |
 | SVC-3 — TransferCoordinator over WorkManager: background burn downloads surviving process death, … | 5 | Planned | Doze-deferred periodic timing is only observable on hardware; the emu… |
 | SVC-4 — Burned-first row resolver + device/cloud PlaybackMode + collection Rip/Burn bar with Stop… | 6 | Planned | — |
@@ -443,8 +443,8 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 |---|---|---|---|
 | MIX-0 — Mix models, FX rack types, pure math (BeatMath, MixMath, Camelot, FxParams) | 1 | In progress (parity/MIX-0) | — |
 | MIX-3 — Shared DSP nodes (`audio/dsp`): Biquad/Eq3/Trim, TimePitch (Sonic), Compressor, Reverb, M… | 2 | Planned | Subjective quality of Sonic at large stretch ratios |
-| MIX-1 — Durable Mix stores over the shared VersionedJsonWriter: MixDeckSessionStore (decks v1) + … | 3 | Planned | — |
-| MIX-2 — Shared audio core (`audio/`): AudioSink + AudioTrackSink, RenderClock, FloatRing, PcmSour… | 3 | Planned | Audible output and AudioTrack low-latency behaviour on real hardware. |
+| MIX-1 — Durable Mix stores over the shared VersionedJsonWriter: MixDeckSessionStore (decks v1) + … | 3 | DONE (JVM; stores unreachable from UI until MIX-14) | — |
+| MIX-2 — Shared audio core (`audio/`): AudioSink + AudioTrackSink, RenderClock, FloatRing, PcmSour… | 3 | DONE (JVM + emulator decode; audible output device-only) | Audible output and AudioTrack low-latency behaviour on real hardware. |
 | MIX-4 — MixGraph: deck chains, house/cue/limiter, taps, render-thread handover + parameter snapsh… | 4 | Planned | Hearing cue on the chosen channel of a real stereo interface |
 | MIX-6 — MixStreamLoader: growing-file song streams (public rips object + Range) + stem sets, adop… | 5 | Planned | — |
 | MIX-5 — MixEngine core: decks, load/seek/transport, EQ, FX rack, Vol/crossfader, cue, lead/sync, … | 6 | Planned | Audible verification of tempo/pitch quality and cue routing |
@@ -465,7 +465,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
-| STU-1 — Studio models + store (pocketdj-studio.json v1 over VersionedJsonWriter) + folders (SAF r… | 3 | Planned | SAF tree permission persistence on real external storage |
+| STU-1 — Studio models + store (pocketdj-studio.json v1 over VersionedJsonWriter) + folders (SAF r… | 3 | DONE (JVM + emulator seed/persist; SAF persistence device-only) | SAF tree permission persistence on real external storage |
 | STU-2 — Studio native DSP lib (cpp/pdjdsp: TinySoundFont, Signalsmith Stretch, TrackFX/MasterFX k… | 5 | Planned | Oboe low-latency path, real latency numbers, route-change (headphones… |
 | STU-3 — Producer shell + Samples tab (mic, import, from-track via LocalAudioCache→BurnStore) + sa… | 7 | Planned | Real mic quality, Bluetooth input picker, DRM-protected file rejectio… |
 | STU-4 — Loops tab + slice editor (performance pads) | 10 | Planned | Audible seam-click judgement |
