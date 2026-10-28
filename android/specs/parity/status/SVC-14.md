@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SVC-14 User-browsable burn folder via SAF
 
@@ -18,3 +18,17 @@ state: implemented
 ## Questions for Levi
 - Should deleting a burn also delete its copy in the user's folder? Default: no.
 - Show a notice on silent fallback to app storage? Default: not yet.
+
+## Review
+fixes applied
+
+- MAJOR roots() tied to tree reachability -> fixed: the staging root is listed whenever the local dir exists; reachability gates only new writes and the mirror. Tests: revokedOrClearedFolderKeepsStagedFilesResolvable, userFilesStayPlayableAndDeletableAfterClearingFolder.
+- MAJOR binder calls on hot paths -> fixed: roots()/dirFor() make no tree calls (test readPathNeverQueriesTreeReachability asserts 0 isReachable calls).
+- MAJOR readRoot() single-root aux lookup -> fixed: stems/beat grids resolved across every root (findAux). Test: auxFilesBurnedBeforePickingFolderStayVisible.
+- MAJOR moveToApp data loss -> fixed: moveToApp removed; a failed tree copy keeps staged files and wasAppStorage=false (still local). Test: copyFailureKeepsStagedFilesAndUserFolderFlag.
+- MAJOR storage doubling -> rejected as a code change, escalated: playback is File-based end to end (Media3 content:// would be a pipeline rewrite); staged copy kept by design. Open question for Levi: play from the tree and drop the staged copy?
+- MINOR mirror only in worker path -> fixed for audio + sidecar + analog cut: BurnFolder.mirrorFiles called from the sync path, adoptStreamedFile and exportAnalogCut. Stems / beat grids deliberately not mirrored (large engine-internal files). Test: mirrorFilesCopiesStagedFilesAndSwallowsFailure.
+- MINOR no fallback notice -> fixed: BurnFolder.fellBack() -> BurnResult.fellBack -> burn summary appends FOLDER_FELL_BACK. Test: fellBackIsReportedWhenChosenFolderIsUnusable. (A worker-side fallback after enqueue has no notice.)
+- MINOR ledger row / test count -> fixed: ARCHITECTURE-ANDROID row now PARTIAL; tests 4716 -> 4722, 0 failures.
+- MINOR stale localMemo -> fixed: BurnStore.invalidateLocalCache() called on pick/clear.
+- NIT grant release -> fixed: READ|WRITE released; old URI released on Change folder.

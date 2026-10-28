@@ -174,12 +174,10 @@ class BurnDownloadRunner(
                 if (tree == null) {
                     coordinator.onFinished(record, outcome.bytes)
                 } else {
-                    val landed = withContext(Dispatchers.IO) { mirrorToTree(record, dir, tree) }
-                    if (landed) coordinator.onFinished(record, outcome.bytes)
-                    else coordinator.onFinished(
-                        record.copy(wasAppStorage = true),
-                        withContext(Dispatchers.IO) { moveToApp(record, dir, resolver!!.appDir) } ?: outcome.bytes,
-                    )
+                    // A failed tree copy keeps the staged files and wasAppStorage=false: they are local,
+                    // playable and (for analog) shared with finished siblings; the mirror can be redone.
+                    withContext(Dispatchers.IO) { mirrorToTree(record, dir, tree) }
+                    coordinator.onFinished(record, outcome.bytes)
                 }
                 Result.SUCCESS
             }
@@ -200,20 +198,6 @@ class BurnDownloadRunner(
         true
     } catch (_: IOException) {
         false
-    }
-
-    private fun moveToApp(record: TransferRecord, stage: File, app: File): Long? = try {
-        app.mkdirs()
-        val audio = File(stage, record.audioFileName)
-        val dest = File(app, record.audioFileName)
-        if (audio.isFile) Files.move(audio.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        if (record.sidecarFileName.isNotEmpty()) {
-            val sc = File(stage, record.sidecarFileName)
-            if (sc.isFile) Files.move(sc.toPath(), File(app, record.sidecarFileName).toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }
-        dest.length()
-    } catch (_: IOException) {
-        null
     }
 
     private suspend fun fetch(record: TransferRecord, dir: File, url: String, attachBearer: Boolean): DownloadOutcome {

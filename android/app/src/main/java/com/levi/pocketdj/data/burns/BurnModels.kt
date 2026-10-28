@@ -81,6 +81,8 @@ data class BurnResult(
     val total: Int = 0,
     val outOfSpace: Boolean = false,
     val folderUnavailable: Boolean = false,
+    /** SVC-14: a chosen user folder was unreachable, so this run wrote to app storage. */
+    val fellBack: Boolean = false,
     val stopped: Boolean = false,
     val stemmedSongs: Int = 0,
     val beatGridded: Int = 0,

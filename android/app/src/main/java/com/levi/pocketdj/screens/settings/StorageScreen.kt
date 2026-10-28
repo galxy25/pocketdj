@@ -598,7 +598,10 @@ private fun BurnFolderSection(graph: AppGraph, snackbar: SnackbarHostState) {
                 )
             }.isSuccess
             if (ok) {
+                // Release the grant of the folder being replaced (grants are capped per app).
+                chosen?.takeIf { it != uri.toString() }?.let { old -> releaseBurnGrant(context, old) }
                 prefs.setTreeUri(uri.toString()); chosen = uri.toString()
+                graph.servicesGraph.burnStore.invalidateLocalCache()
             } else scope.launch { snackbar.showSnackbar("Couldn’t keep access to that folder") }
         }
     }
@@ -617,15 +620,20 @@ private fun BurnFolderSection(graph: AppGraph, snackbar: SnackbarHostState) {
         OutlinedButton(onClick = { picker.launch(null) }) { Text(if (chosen == null) "Choose folder" else "Change folder") }
         if (chosen != null) {
             OutlinedButton(onClick = {
-                chosen?.let { u ->
-                    runCatching {
-                        context.contentResolver.releasePersistableUriPermission(
-                            android.net.Uri.parse(u), android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-                        )
-                    }
-                }
+                chosen?.let { u -> releaseBurnGrant(context, u) }
                 prefs.setTreeUri(null); chosen = null
+                graph.servicesGraph.burnStore.invalidateLocalCache()
             }) { Text("Use app storage") }
         }
+    }
+}
+
+/** Release BOTH halves of the persisted grant taken at pick time. */
+private fun releaseBurnGrant(context: android.content.Context, uri: String) {
+    runCatching {
+        context.contentResolver.releasePersistableUriPermission(
+            android.net.Uri.parse(uri),
+            android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+        )
     }
 }

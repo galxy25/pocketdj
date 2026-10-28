@@ -75,12 +75,13 @@ class DestinationCaptureTest {
         assertTrue(File(app, "s2.mp3").isFile)
     }
 
-    @Test fun copyFailureAfterDownloadMovesFilesToAppStorage() = runTest {
+    @Test fun copyFailureKeepsStagedFilesAndUserFolderFlag() = runTest {
         tree.failCopies = true
         val (_, done) = run(userRec("s1"))
-        assertTrue(done.single().wasAppStorage)
-        assertTrue(File(app, "s1.mp3").isFile)
-        assertFalse(File(stage, "s1.mp3").exists())
+        // Staged files are local + playable (and possibly shared with analog siblings): never moved.
+        assertFalse(done.single().wasAppStorage)
+        assertTrue(File(stage, "s1.mp3").isFile)
+        assertFalse(File(app, "s1.mp3").exists())
     }
 
     @Test fun destinationComesFromRecordNotLiveSettings() {

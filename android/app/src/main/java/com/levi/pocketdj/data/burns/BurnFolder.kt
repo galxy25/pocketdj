@@ -27,6 +27,15 @@ interface BurnFolder {
     fun dirFor(wasAppStorage: Boolean?): File? =
         roots().firstOrNull { it.isUserFolder == (wasAppStorage == false) }?.dir
 
+    /**
+     * Best-effort copy of [names] (files in [dir]) into the user's tree when [dir] is the user
+     * staging root; no-op otherwise. Never throws (a mirror failure leaves the staged file playable).
+     */
+    fun mirrorFiles(dir: File, names: List<String>) {}
+
+    /** True when the last [activeWritable] had to ignore a chosen user folder (surface a notice). */
+    fun fellBack(): Boolean = false
+
     /** Sentinel write+delete; false on failure (folder unavailable). */
     fun probeWrite(root: BurnRoot): Boolean = try {
         val sentinel = File(root.dir, ".pdj-burn-probe-${UUID.randomUUID()}")
@@ -81,8 +90,11 @@ data class BurnDestination(val wasAppStorage: Boolean, val treeUri: String?)
 /**
  * App-private root PLUS an optional SAF user folder. The user root's [BurnRoot.dir] is a local
  * staging dir the app plays from; the tree holds the user-browsable copy (SAF has no File path).
- * A revoked / unavailable tree makes the user root vanish from [roots], so [dirFor] returns null
- * for items written there (skipped, never pruned) and new burns fall back to app storage.
+ *
+ * READ-PATH resolution never touches the tree (no ContentResolver binder calls on hot paths):
+ * the staging root is a local directory, so [roots]/[dirFor] list it whenever it exists, even if
+ * the tree is revoked/ejected or the user went back to app storage. Tree reachability gates only
+ * NEW writes ([activeWritable]) and the tree mirror ([mirrorFiles]).
  */
 class SafBurnFolder(
     private val appDir: File,
@@ -91,6 +103,8 @@ class SafBurnFolder(
     private val openTree: (String) -> BurnTree?,
 ) : BurnFolder {
     private val app = AppPrivateBurnFolder(appDir)
+
+    @Volatile private var fellBackFlag = false
 
     private fun reachableTree(): Pair<String, BurnTree>? {
         val uri = prefs.treeUri() ?: return null
@@ -101,17 +115,36 @@ class SafBurnFolder(
     override fun roots(): List<BurnRoot> {
         val out = ArrayList<BurnRoot>()
         out += BurnRoot(appDir, isUserFolder = false)
-        reachableTree()?.let { (uri, _) -> out += BurnRoot(userStageDir, isUserFolder = true, treeUri = uri) }
+        if (userStageDir.isDirectory) out += BurnRoot(userStageDir, isUserFolder = true, treeUri = prefs.treeUri())
         return out
     }
 
     override fun activeWritable(): BurnRoot? {
+        val wanted = prefs.treeUri()
         val chosen = reachableTree()
         if (chosen != null && chosen.second.probeWrite()) {
-            if (!userStageDir.isDirectory && !userStageDir.mkdirs() && !userStageDir.isDirectory) return app.activeWritable()
+            if (!userStageDir.isDirectory && !userStageDir.mkdirs() && !userStageDir.isDirectory) {
+                fellBackFlag = true
+                return app.activeWritable()
+            }
+            fellBackFlag = false
             return BurnRoot(userStageDir, isUserFolder = true, treeUri = chosen.first)
         }
+        fellBackFlag = wanted != null
         return app.activeWritable()
+    }
+
+    override fun fellBack(): Boolean = fellBackFlag
+
+    override fun mirrorFiles(dir: File, names: List<String>) {
+        if (dir != userStageDir) return
+        val tree = prefs.treeUri()?.let(openTree) ?: return
+        for (n in names) {
+            if (n.isEmpty()) continue
+            val f = File(dir, n)
+            if (!f.isFile) continue
+            try { tree.copyIn(n, f) } catch (_: Exception) { return }
+        }
     }
 
     override fun probeWrite(root: BurnRoot): Boolean {
