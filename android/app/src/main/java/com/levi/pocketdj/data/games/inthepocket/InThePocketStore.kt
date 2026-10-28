@@ -95,7 +95,7 @@ class InThePocketStore(
         { emptyMap<String, IndexSong>() to emptyMap() }
 
     /** What can make sound right now. */
-    var audioAvailability: () -> InThePocketAudio = { InThePocketAudio() }
+    var audioAvailability: suspend () -> InThePocketAudio = { InThePocketAudio() }
 
     /** This device's collections (pockets x collections). Empty => the scorer ignores them. */
     var collectionsInput: () -> List<InThePocketScorer.CollectionInfo> = { emptyList() }
@@ -189,7 +189,7 @@ class InThePocketStore(
                         // An unstarted round is simply replaced (it predicted nothing yet).
                         val cur = _state.value.current
                         if (cur != null && cur.startedAtMs == null) list = list.filter { it.id != cur.id }
-                        list = trimmed(list + round, round.id)
+                        list = trim(list + round, round.id)
                         _state.value = _state.value.copy(
                             rounds = list, currentRoundId = round.id, buildState = BuildState.Idle,
                         )
@@ -385,15 +385,6 @@ class InThePocketStore(
         publish { st -> st.copy(rounds = st.rounds.map { if (it.id == round.id) round else it }) }
     }
 
-    /** Keep <= [MAX_ROUNDS], dropping the OLDEST that are neither active nor the current round. */
-    private fun trimmed(list: List<InThePocketRound>, currentId: UUID?): List<InThePocketRound> {
-        if (list.size <= MAX_ROUNDS) return list
-        var overflow = list.size - MAX_ROUNDS
-        return list.filter { r ->
-            if (overflow > 0 && !r.isActive && r.id != currentId) { overflow--; false } else true
-        }
-    }
-
     private val writePending = AtomicBoolean(false)
 
     private fun persist() {
@@ -438,6 +429,15 @@ class InThePocketStore(
         const val RUN_TAG_PREFIX = "itp_"
         const val MAX_ROUNDS = 300
         const val FILE_NAME = "pocketdj-in-the-pocket.json"
+
+        /** Keep <= [MAX_ROUNDS], dropping the OLDEST that are neither active nor the current round. */
+        internal fun trim(list: List<InThePocketRound>, currentId: UUID?): List<InThePocketRound> {
+            if (list.size <= MAX_ROUNDS) return list
+            var overflow = list.size - MAX_ROUNDS
+            return list.filter { r ->
+                if (overflow > 0 && !r.isActive && r.id != currentId) { overflow--; false } else true
+            }
+        }
 
         fun runTag(id: UUID): String = RUN_TAG_PREFIX + id.toString().uppercase()
 
