@@ -1,5 +1,8 @@
 package com.levi.pocketdj.data.rips
 
+import com.levi.pocketdj.data.stems.StemClient
+import com.levi.pocketdj.data.stems.StemJob
+import com.levi.pocketdj.data.stems.StemPhase
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -25,6 +28,15 @@ class RipJobTracker(
     private val refreshManifest: suspend () -> Unit = {},
     private val pollMs: Long = RipSettings.TRACKER_POLL_MS,
     private val maxTries: Int = RipSettings.TRACKER_MAX_TRIES,
+    /** Stemify (SVC-11): POST /stemify for one song; null = refused/unreachable. */
+    private val requestStemify: suspend (songId: String) -> StemJob? = { null },
+    private val fetchStemJob: suspend (jobId: String) -> StemJob = { error("stem polling not wired") },
+    /** Manifest truth: presence of stemVersion. */
+    private val isStemmed: (songId: String) -> Boolean = { false },
+    private val hasServer: suspend () -> Boolean = { true },
+    private val stemPollMs: Long = 3_000L,
+    /** 4 h — well past the slowest Demucs run. */
+    private val stemDeadlineMs: Long = 4L * 60 * 60 * 1000,
 ) {
     private val _jobs = MutableStateFlow<Map<String, RipJob>>(emptyMap())
 
@@ -79,5 +91,82 @@ class RipJobTracker(
         }
         polls[songId] = job
         return job
+    }
+
+    // ---- Stemify (iOS RipsStore.stemify / pollStemReady) ----------------------------------------
+
+    private val _stemJobs = MutableStateFlow<Map<String, StemJob>>(emptyMap())
+
+    /** Active / last STEM job per songId (drives the row's Stemify phase label). */
+    val stemJobs: StateFlow<Map<String, StemJob>> = _stemJobs.asStateFlow()
+
+    private val requestingStems = ConcurrentHashMap.newKeySet<String>()
+    private val stemPolls = ConcurrentHashMap<String, Job>()
+
+    /** StateFlow dedups equal values already; kept as the named iOS seam. */
+    fun adoptStemJob(songId: String, job: StemJob) { _stemJobs.update { it + (songId to job) } }
+
+    /** Seed a queued stem job (collection batch) so the row shows "Queued\u2026" at once. */
+    fun seedStemJob(songId: String, jobId: String) {
+        adoptStemJob(songId, StemJob(phase = StemPhase.QUEUED, jobId = jobId, songId = songId))
+    }
+
+    /** Drop stem-job rows whose song is now stemmed (a stale job must not read "Queued\u2026" forever). */
+    fun pruneFinishedStemJobs() {
+        _stemJobs.update { m -> m.filterKeys { !isStemmed(it) } }
+    }
+
+    fun isStemPolling(songId: String): Boolean = stemPolls[songId]?.isActive == true
+
+    /**
+     * FIRE-AND-FORGET Stemify for ONE song. Idempotent at three layers (already stemmed /
+     * in-flight phase / requesting set); never fires for studio ids. Stores the returned job and,
+     * if still working, polls to a terminal phase. Never throws (except cancellation).
+     */
+    suspend fun stemify(songId: String) {
+        if (!StemClient.shouldRequest(
+                songId, isStemmed(songId), _stemJobs.value[songId]?.phase,
+                songId in requestingStems, hasServer(),
+            )
+        ) return
+        if (!requestingStems.add(songId)) return
+        try {
+            val view = requestStemify(songId) ?: return
+            adoptStemJob(songId, view)
+            if (view.phase == StemPhase.READY) { runCatching { refreshManifest() }; return }
+            if (view.phase == StemPhase.INELIGIBLE || view.phase == StemPhase.ERROR) return
+            view.jobId?.let { pollStemReady(songId, it) }
+        } finally {
+            requestingStems.remove(songId)
+        }
+    }
+
+    /** One poll per song; keeps going through queued/ripping/stemming, stops on ready/error/ineligible. */
+    fun pollStemReady(songId: String, jobId: String): Job {
+        stemPolls[songId]?.takeIf { it.isActive }?.let { return it }
+        val job = scope.launch {
+            var waited = 0L
+            while (waited < stemDeadlineMs) {
+                delay(stemPollMs)
+                waited += stemPollMs
+                val r = runCatching { fetchStemJob(jobId) }
+                r.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
+                val view = r.getOrNull() ?: continue
+                adoptStemJob(songId, view)
+                when (view.phase) {
+                    StemPhase.READY -> { runCatching { refreshManifest() }; pruneFinishedStemJobs(); return@launch }
+                    StemPhase.ERROR, StemPhase.INELIGIBLE -> return@launch
+                    else -> Unit
+                }
+            }
+        }
+        stemPolls[songId] = job
+        return job
+    }
+
+    /** Stop stem polls + drop job rows (collection Stop). */
+    fun cancelStems(songIds: Collection<String>) {
+        for (id in songIds) stemPolls.remove(id)?.cancel()
+        _stemJobs.update { it - songIds.toSet() }
     }
 }

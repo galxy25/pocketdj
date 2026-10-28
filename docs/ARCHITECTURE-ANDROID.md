@@ -366,7 +366,11 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | SVC-2 — BurnStore core (ONE offline store): ledger, byte-identical file names, sidecar, stems + b… | 4 | Planned | — |
 | SVC-3 — TransferCoordinator over WorkManager: background burn downloads surviving process death, … | 5 | PARTIAL (device-only: force-stop survival, notification, periodic jobscheduler run, Doze timing) | Doze-deferred periodic timing is only observable on hardware; the emu… |
 | SVC-4 — Burned-first row resolver + device/cloud PlaybackMode + collection Rip/Burn bar with Stop… | 6 | PARTIAL | JVM-tested (1645 tests green), not emulator-verified; Stemify from the iOS bar not ported |
+<<<<<<< HEAD
 | SVC-11 — Cloud stems client (stemify/stem jobs) + burned stems/beat-grids pull + Stemify action on… | 7 | PARTIAL | Unit-tested (1946 green); NOT emulator-verified (device-only: History glyph/live row, skip on real playback). Open: `noteSkip` cumulative per-song skip count unwired until a Kotlin PlayCountService port exists (Browse wasSkipped / recs read it) |
+=======
+| SVC-11 — Cloud stems client (stemify/stem jobs) + burned stems/beat-grids pull + Stemify action on… | 7 | PARTIAL | Code + JVM tests done; emulator steps unverified (device-only) |
+>>>>>>> parity/SVC-11
 | SVC-15 — Apple Music Web API client: catalog search, library playlists CRUD, favorites, artists la… | 7 | Planned | Library (write) endpoints need a real Music-User-Token from the vendo… |
 | SVC-6 — PlayStatsStore + StorageManager prune engine + StoragePruneWorker + Storage screen burn/s… | 10 | Planned | Periodic worker cadence under Doze. |
 | SVC-8 — Backend: pocketdj-profile-sync Lambda (S3 document store) + optional endpoint key | 10 | Planned | Deploy to the green account needs AWS profile llc; unit tests run aga… |

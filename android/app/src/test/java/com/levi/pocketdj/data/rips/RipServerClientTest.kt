@@ -6,6 +6,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -237,5 +238,26 @@ class RipServerClientTest {
     fun cancelRips_undecodable2xx_reportsAllCanceled() = runTest {
         server.enqueue(MockResponse().setBody("ok"))
         assertEquals(listOf(CancelItem("a", "canceled")), client().cancelRips(listOf("a")))
+    }
+
+    @Test
+    fun cancelStemCollection_postsToStemifyCancel_dedups_andIsSilentOn404() = runTest {
+        server.enqueue(MockResponse().setBody("""{"results":[{"songId":"a","status":"canceled"}]}"""))
+        val items = client().cancelStemCollection(listOf("a", "a"))
+        assertEquals(listOf(CancelItem("a", "canceled")), items)
+        val req = server.takeRequest()
+        assertEquals("/stemify-cancel", req.path)
+        assertEquals("""{"songIds":["a"]}""", req.body.readUtf8())
+        server.enqueue(MockResponse().setResponseCode(404))
+        assertTrue(client().cancelStemCollection(listOf("a")).isEmpty())
+    }
+
+    @Test
+    fun stemifyCollection_flagsViaBatchOnlyWhenBatchEndpointAnswered() = runTest {
+        server.enqueue(MockResponse().setBody("""{"results":[{"songId":"a","status":"queued","jobId":"j"}],"counts":{"queued":1,"total":1}}"""))
+        assertTrue(client().stemifyCollection(listOf("a")).viaBatch)
+        server.enqueue(MockResponse().setResponseCode(404))
+        server.enqueue(MockResponse().setResponseCode(500)) // per-song fallback
+        assertFalse(client().stemifyCollection(listOf("a"), fallbackOne = { null }).viaBatch)
     }
 }
