@@ -274,6 +274,14 @@ class AppGraph private constructor(context: Context) {
         appScope.launch(Dispatchers.IO) { runCatching { mixGraph.mixRecorder.recoverOrphans() } }
     }
 
+    // MIX-18: Now Playing DSP panel + Stem Lock observers (after playbackGraph.wire so the sequencer exists).
+    init {
+        appScope.launch(Dispatchers.Main) {
+            runCatching { mixGraph.installNowPlayingDsp() }
+                .onFailure { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.NP, "npdsp install FAILED: ${it.message}") }
+        }
+    }
+
     // STU-7: register the STUDIO_LOCAL row rung (after playbackGraph.wire so the sequencer exists).
     init { studioGraph.wire() }
 
