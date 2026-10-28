@@ -26,8 +26,8 @@ class NowPlayingViewModelTest {
 
     private fun build(
         s: SequencerState, au: AudibleTrack?, facts: SongFacts? = null,
-        pending: Boolean = false, am: Boolean = false,
-    ) = NowPlayingModel.build(s, au, facts, pending, am)
+        pending: Boolean = false, am: Boolean = false, neverSounded: Boolean = false,
+    ) = NowPlayingModel.build(s, au, facts, pending, am, neverSounded)
 
     // ---- deck state ----------------------------------------------------------------------
 
@@ -97,11 +97,37 @@ class NowPlayingViewModelTest {
         assertFalse(build(seq(held = false), audible("a")).transport.held)
     }
 
-    @Test fun cascadeHaltedDeckIsRunningWithNothingLoadedAndNoStartPending() {
-        val halted = build(seq(), null, pending = false).transport
-        assertTrue(halted.pausedByCascade)
-        assertFalse(build(seq(), null, pending = true).transport.pausedByCascade)
+    @Test fun neverSoundedDeckIsCascadePausedUnlessStartPending() {
+        assertTrue(build(seq(), null, neverSounded = true).transport.pausedByCascade)
+        assertFalse(build(seq(), null, pending = true, neverSounded = true).transport.pausedByCascade)
         assertFalse(build(seq(), audible("a")).transport.pausedByCascade)
+        // Merely idle (no signal) is NOT a cascade halt; the idle rung handles it.
+        assertFalse(build(seq(), null).transport.pausedByCascade)
+    }
+
+    @Test fun realCascadeHaltWithStaleAudibleStillRetriesTheRow() {
+        // The ended previous item is still loaded in the player (audible != null).
+        val halted = seq().copy(pausedByCascade = true)
+        val t = build(halted, audible("a", playing = false)).transport
+        assertTrue(t.pausedByCascade)
+        assertEquals(TransportVerdict.START_CURRENT, NowPlayingTransport.decide(t))
+    }
+
+    @Test fun staleItemFromAnotherRowCountsAsEngineIdle() {
+        assertTrue(build(seq(index = 1), audible("a", playing = false)).transport.engineIdle)
+        assertFalse(build(seq(index = 1), audible("b")).transport.engineIdle)
+    }
+
+    @Test fun browseSingleWithNoSetSpinsTheRecord() {
+        val st = build(SequencerState(), audible("zzz"))
+        assertTrue(st.spinning)
+    }
+
+    @Test fun appleMusicIdAndCatalogFlagRideOnTheState() {
+        val st = build(seq(), audible("a"), facts = SongFacts(inCatalog = true, appleMusicId = "123"))
+        assertEquals("123", st.appleMusicId)
+        assertTrue(st.inCatalog)
+        assertFalse(build(seq(), audible("a")).inCatalog)
     }
 
     // ---- ladder --------------------------------------------------------------------------

@@ -11,7 +11,8 @@ import com.levi.pocketdj.ui.FavoriteToggle
 object NowPlayingSeams {
     /** The ♥ control for the current song. Defaults to the shared [FavoriteToggle]. */
     @Volatile
-    var heart: (@Composable (songId: String) -> Unit)? = { id -> FavoriteToggle(id) }
+    var heart: (@Composable (songId: String, appleMusicId: String?) -> Unit)? =
+        { id, amId -> FavoriteToggle(id, appleMusicId = amId) }
 
     /** 👍/👎 mic-feedback style rating cluster (null until the recs package installs it). */
     @Volatile
@@ -25,7 +26,14 @@ object NowPlayingSeams {
     @Volatile
     var dspSlot: (@Composable () -> Unit)? = null
 
-    /** True while a Mix session owns the deck (the mini bar renders nothing then). */
-    @Volatile
-    var mixSessionActive: () -> Boolean = { false }
+    /**
+     * True while a Mix session owns the deck (the mini bar renders nothing then). Observable: Mix
+     * flips this flow so the mini bar recomposes when a session starts or ends.
+     */
+    val mixSessionActiveFlow: kotlinx.coroutines.flow.MutableStateFlow<Boolean> =
+        kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    var mixSessionActive: Boolean
+        get() = mixSessionActiveFlow.value
+        set(v) { mixSessionActiveFlow.value = v }
 }

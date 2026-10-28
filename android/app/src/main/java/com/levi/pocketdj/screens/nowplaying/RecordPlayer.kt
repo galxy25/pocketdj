@@ -41,7 +41,7 @@ fun RecordPlayer(
     progress: Double?,
     modifier: Modifier = Modifier,
 ) {
-    var angle by remember { mutableFloatStateOf(0f) }
+    var angle by androidx.compose.runtime.saveable.rememberSaveable { mutableFloatStateOf(0f) }
     val spinningNow by rememberUpdatedState(spinning)
     val bpmNow by rememberUpdatedState(bpm)
     LaunchedEffect(spinning) {
@@ -78,9 +78,10 @@ fun RecordPlayer(
                 drawCircle(Color.White, radius = r * 0.03f, center = center)
             }
             // Tonearm: pivot at top-right of the chassis, needle sweeps with [arm].
-            val pivot = Offset(s * 0.90f, s * 0.10f)
-            rotate(-arm, pivot) {
-                val tip = Offset(pivot.x - s * 0.08f, pivot.y + s * 0.62f)
+            val pivot = Offset(s * RecordMath.ARM_PIVOT_X.toFloat(), s * RecordMath.ARM_PIVOT_Y.toFloat())
+            // Positive degrees are clockwise: the arm swings from the outer edge toward the label.
+            rotate(arm, pivot) {
+                val tip = Offset(pivot.x, pivot.y + s * RecordMath.ARM_LENGTH.toFloat())
                 drawLine(Color(0xFFE8ECF6), pivot, tip, strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
                 drawCircle(Color(0xFFE8ECF6), radius = 6.dp.toPx(), center = pivot)
             }
@@ -132,8 +133,27 @@ object RecordMath {
         return (elapsedMs.toDouble() / len).coerceIn(0.0, 1.0)
     }
 
-    const val TONEARM_OUTER_DEG = 8.0
-    const val TONEARM_INNER_DEG = 32.0
+    const val TONEARM_OUTER_DEG = 1.0
+    const val TONEARM_INNER_DEG = 33.0
+
+    // Geometry in chassis-size units (platter centre 0.5,0.5; record radius 0.42; label 0.30 of it).
+    const val ARM_PIVOT_X = 0.90
+    const val ARM_PIVOT_Y = 0.10
+    const val ARM_LENGTH = 0.50
+    const val RECORD_RADIUS = 0.42
+    const val LABEL_RADIUS = RECORD_RADIUS * 0.30
+
+    /** Stylus tip for a clockwise arm rotation of [degrees] (arm hangs straight down at 0). */
+    fun tipPosition(degrees: Double): Pair<Double, Double> {
+        val t = Math.toRadians(degrees)
+        return (ARM_PIVOT_X - ARM_LENGTH * Math.sin(t)) to (ARM_PIVOT_Y + ARM_LENGTH * Math.cos(t))
+    }
+
+    /** Distance of the stylus tip from the platter centre at [fraction] of the song. */
+    fun tipDistanceFromCentre(fraction: Double?): Double {
+        val (x, y) = tipPosition(tonearmAngle(fraction))
+        return Math.hypot(x - 0.5, y - 0.5)
+    }
 
     /** Tonearm pivot angle: outer edge at 0 progress, record center at 1. */
     fun tonearmAngle(fraction: Double?): Double {

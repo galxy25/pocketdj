@@ -85,6 +85,8 @@ class SetlistSequencer(
     private var playsRemaining = 1
     private var playJob: Job? = null
     private var startedAnyRow = false
+    /** An AUTO advance was halted by [autoAdvanceGate]; the deck sits on a stale/ended row until ▶. */
+    private var cascadeHalted = false
     /** Id of the row the engine currently holds as the sequencer's own load (in-place replay gate). */
     private var lastLoadedId: String? = null
     private var deviceQueueUnplayable = false
@@ -139,6 +141,7 @@ class SetlistSequencer(
             playGeneration = playGeneration,
             deviceQueueUnplayable = deviceQueueUnplayable,
             deviceUnplayableSourceId = deviceUnplayableSourceId,
+            pausedByCascade = running && cascadeHalted,
         )
     }
 
@@ -209,6 +212,7 @@ class SetlistSequencer(
     fun abandonRun() = endRun()
 
     private fun endRun() {
+        cascadeHalted = false
         playJob?.cancel()
         playJob = null
         playGeneration++ // a resolve past its last cancellation point must stand down
@@ -251,6 +255,7 @@ class SetlistSequencer(
     // ---- the ONE start funnel -----------------------------------------------------------
 
     private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false) {
+        if (cascadeHalted) { cascadeHalted = false; publish() }
         playJob?.cancel()
         // LAZY + assign + start: an inline-dispatching scope may run (and even recurse into) this
         // body before launch() returns; the handle must already be in place so a nested start
@@ -455,7 +460,11 @@ class SetlistSequencer(
 
     private fun advanceToNext(cause: AdvanceCause) {
         if (!running) return
-        if (cause == AdvanceCause.AUTO && !autoAdvanceGate()) return
+        if (cause == AdvanceCause.AUTO && !autoAdvanceGate()) {
+            cascadeHalted = true
+            publish()
+            return
+        }
         log("[playback] advance from=${queue.getOrNull(index)?.id ?: "?"} index=$index/${queue.size} cause=$cause")
         val fromId = queue.getOrNull(index)?.id
         val dupNext = cause == AdvanceCause.AUTO && fromId != null && queue.getOrNull(index + 1)?.id == fromId

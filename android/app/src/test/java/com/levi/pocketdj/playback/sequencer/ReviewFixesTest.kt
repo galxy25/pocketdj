@@ -156,4 +156,23 @@ class ReviewFixesTest {
         h.seq.setShuffle(false)
         assertEquals(listOf("a", "b", "c"), h.ids)
     }
+
+    // ---- PB-6: cascade halt is a real sequencer signal (not inferred from player nullity) ---------
+
+    @Test
+    fun cascadeHaltOnAutoAdvance_setsPausedByCascade_andStartCurrentClearsIt() = runTest {
+        val h = harness("a", "b")
+        h.seq.play(rows("a", "b"))
+        h.settle()
+        assertFalse(h.seq.state.value.pausedByCascade)
+        h.seq.autoAdvanceGate = { false }
+        h.seq.handleEnded("a"); h.settle()
+        // Halted: still on row 0 (a row HAS sounded, so currentNeverSounded alone would miss this).
+        assertEquals(0, h.index)
+        assertTrue(h.seq.state.value.pausedByCascade)
+        assertFalse(h.seq.currentNeverSounded)
+        h.seq.autoAdvanceGate = { true }
+        h.seq.startCurrent(); h.settle()
+        assertFalse(h.seq.state.value.pausedByCascade)
+    }
 }

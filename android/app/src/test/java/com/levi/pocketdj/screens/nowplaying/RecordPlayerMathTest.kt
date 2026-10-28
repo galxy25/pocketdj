@@ -2,6 +2,7 @@ package com.levi.pocketdj.screens.nowplaying
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RecordPlayerMathTest {
@@ -59,5 +60,24 @@ class RecordPlayerMathTest {
         assertEquals(RecordMath.TONEARM_OUTER_DEG, RecordMath.tonearmAngle(0.0), 1e-9)
         assertEquals(RecordMath.TONEARM_INNER_DEG, RecordMath.tonearmAngle(1.0), 1e-9)
         assertEquals(RecordMath.TONEARM_OUTER_DEG, RecordMath.tonearmAngle(null), 1e-9)
+    }
+
+    @Test fun tonearmTipSweepsFromRecordEdgeToLabel() {
+        val outer = RecordMath.tipDistanceFromCentre(0.0)
+        val inner = RecordMath.tipDistanceFromCentre(1.0)
+        // Starts on the outer groove (inside the record, near its rim) ...
+        assertTrue("outer=$outer", outer <= RecordMath.RECORD_RADIUS && outer >= RecordMath.RECORD_RADIUS * 0.9)
+        // ... ends at the label edge.
+        assertEquals(RecordMath.LABEL_RADIUS, inner, RecordMath.RECORD_RADIUS * 0.1)
+        // Monotonically toward the centre, and never off the chassis.
+        var prev = Double.MAX_VALUE
+        for (i in 0..20) {
+            val f = i / 20.0
+            val d = RecordMath.tipDistanceFromCentre(f)
+            assertTrue("f=$f d=$d prev=$prev", d < prev)
+            prev = d
+            val (x, y) = RecordMath.tipPosition(RecordMath.tonearmAngle(f))
+            assertTrue(x in 0.0..1.0 && y in 0.0..1.0)
+        }
     }
 }

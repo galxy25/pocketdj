@@ -37,6 +37,7 @@ data class SongFacts(
     val catalogLengthMs: Long? = null,
     val albumId: String? = null,
     val inCatalog: Boolean = false,
+    val appleMusicId: String? = null,
 )
 
 /** The whole deck, computed purely from sequencer + player + catalog facts. */
@@ -46,6 +47,8 @@ data class NowPlayingUiState(
     val title: String = "Nothing playing",
     val artist: String = "",
     val albumId: String? = null,
+    val appleMusicId: String? = null,
+    val inCatalog: Boolean = false,
     /** The audible track IS the deck's current row. */
     val audibleIsCurrent: Boolean = false,
     /** Record should rotate right now. */
@@ -79,6 +82,8 @@ object NowPlayingModel {
         facts: SongFacts?,
         startPending: Boolean,
         appleMusicActive: Boolean,
+        /** [com.levi.pocketdj.playback.sequencer.SetlistSequencer.currentNeverSounded]. */
+        currentNeverSounded: Boolean = false,
     ): NowPlayingUiState {
         val row = seq.current
         // Deck identity: the sequencer's current row; else whatever is audible (a Browse single).
@@ -87,15 +92,22 @@ object NowPlayingModel {
         val artist = row?.artist ?: audible?.artist
         val audibleIsCurrent = row != null && audible != null && row.matches(audible.songId)
         val playing = audible?.isPlaying == true
-        val neverSounded = seq.isRunning && !seq.isHeldForResume && audible == null && !startPending
+        // Real sequencer signals: the cascade breaker halted an AUTO advance, or no row ever sounded.
+        val cascade = seq.isRunning && !seq.isHeldForResume &&
+            (seq.pausedByCascade || (currentNeverSounded && !startPending))
+        // The engine holds no item for the CURRENT row (nothing loaded, or a stale/other item).
+        val engineIdle = audible == null || (row != null && !row.matches(audible.songId))
         return NowPlayingUiState(
             hasTrack = songId != null,
             songId = songId,
             title = title ?: "Nothing playing",
             artist = artist.orEmpty(),
             albumId = facts?.albumId ?: audible?.albumId,
+            appleMusicId = facts?.appleMusicId,
+            inCatalog = facts?.inCatalog == true,
             audibleIsCurrent = audibleIsCurrent,
-            spinning = audibleIsCurrent && playing,
+            // With no set running the audible Browse single IS the deck identity, so it spins too.
+            spinning = playing && (audibleIsCurrent || row == null),
             bpm = facts?.let { RecordMath.effectiveBpm(it.manifestBeatGridBpm, it.catalogBpm) },
             lengthMs = RecordMath.lengthMs(facts?.catalogLengthMs ?: row?.lengthMs, audible?.durationMs),
             runActive = seq.isRunning,
@@ -107,9 +119,9 @@ object NowPlayingModel {
             isPreview = audible?.isPreview == true,
             transport = TransportInputs(
                 held = seq.isRunning && seq.isHeldForResume,
-                pausedByCascade = neverSounded,
+                pausedByCascade = cascade,
                 appleMusicActive = appleMusicActive,
-                engineIdle = audible == null,
+                engineIdle = engineIdle,
                 startPending = startPending,
             ),
         )
@@ -159,11 +171,13 @@ class NowPlayingViewModel(
             catalogLengthMs = song?.length,
             albumId = song?.albumId,
             inCatalog = song != null,
+            appleMusicId = song?.appleMusicId,
         )
     }
 
     fun inputsStartPending(): Boolean = sequencer.isStartPending
     fun appleMusicActive(): Boolean = controller.isAppleMusicActive
+    fun currentNeverSounded(): Boolean = sequencer.currentNeverSounded
 
     private val port = object : TransportPort {
         override fun resumeFromHold() { sequencer.resumeFromHold() }
@@ -187,6 +201,7 @@ class NowPlayingViewModel(
         facts = null,
         startPending = sequencer.isStartPending,
         appleMusicActive = controller.isAppleMusicActive,
+        currentNeverSounded = sequencer.currentNeverSounded,
     ).transport
 
     fun next() { scope.launch { controller.next() } }

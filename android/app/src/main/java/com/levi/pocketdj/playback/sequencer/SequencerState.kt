@@ -21,6 +21,8 @@ data class SequencerState(
     /** A device-mode run ended having loaded no on-device file (one-shot banner signal). */
     val deviceQueueUnplayable: Boolean = false,
     val deviceUnplayableSourceId: String? = null,
+    /** The cascade breaker halted an AUTO advance; ▶ must retry the row with a fresh resolve. */
+    val pausedByCascade: Boolean = false,
 ) {
     val current: QueueItem? get() = if (isRunning) queue.getOrNull(index) else null
 

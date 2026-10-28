@@ -51,6 +51,8 @@ fun MiniPlayerBar(
     onTap: (() -> Unit)? = null,
     /** Expand chevron / strip tap target (navigates to Now Playing). */
     onExpand: (() -> Unit)? = null,
+    /** Hide the bar (the Now Playing deck already shows the transport). */
+    hidden: Boolean = false,
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -63,9 +65,10 @@ fun MiniPlayerBar(
 
     val np = nowPlaying
     val preparing = preparingId
-    if (np == null && preparing == null) return
+    if (hidden || (np == null && preparing == null)) return
     // A Mix session owns the transport; the Mix screen is its own deck.
-    if (NowPlayingSeams.mixSessionActive()) return
+    val mixActive by NowPlayingSeams.mixSessionActiveFlow.collectAsState()
+    if (mixActive) return
     val tap = onExpand ?: onTap
 
     val catalog = catalogState.catalog

@@ -153,7 +153,7 @@ fun NowPlayingTransportRow(
                     )
                 }
                 state.songId?.let { id ->
-                    NowPlayingSeams.heart?.invoke(id)
+                    NowPlayingSeams.heart?.invoke(id, state.appleMusicId)
                     NowPlayingSeams.rating?.invoke(id)
                 }
             }
@@ -166,15 +166,15 @@ fun NowPlayingTransportRow(
 fun NowPlayingNotice(text: String?, modifier: Modifier = Modifier) {
     if (text == null) return
     Surface(
-        color = MaterialTheme.colorScheme.errorContainer,
+        color = Color.Transparent,
         shape = MaterialTheme.shapes.small,
         modifier = modifier.fillMaxWidth().testTag("np-playback-notice"),
     ) {
         Text(
             text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onErrorContainer,
-            modifier = Modifier.padding(12.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(4.dp),
         )
     }
 }

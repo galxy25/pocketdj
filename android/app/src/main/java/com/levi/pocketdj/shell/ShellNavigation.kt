@@ -331,9 +331,12 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
             },
             // Renders nothing while idle; docks above the nav bar when playing.
             bottomBar = {
-                MiniPlayerBar(onExpand = {
-                    if (currentRoute != NOW_PLAYING_ROUTE) navController.navigate(NOW_PLAYING_ROUTE)
-                })
+                MiniPlayerBar(
+                    hidden = currentRoute == NOW_PLAYING_ROUTE,
+                    onExpand = {
+                        if (currentRoute != NOW_PLAYING_ROUTE) navController.navigate(NOW_PLAYING_ROUTE)
+                    },
+                )
             },
         ) { innerPadding ->
             ShellNavHost(navController, startTab, appSnackbar, graph, Modifier.padding(innerPadding))
@@ -365,6 +368,24 @@ private fun ShellNavHost(
             override fun pop() {
                 nav.popBackStack()
             }
+        }
+    }
+    val funnelScope = androidx.compose.runtime.rememberCoroutineScope()
+    // ▶/🔀 funnels target the reserved Now Playing setlist: start the run, then open the deck.
+    val openSetlist: (String, Boolean) -> Unit = { id, autoplay ->
+        if (id == NOW_PLAYING_SETLIST_ID && autoplay) {
+            funnelScope.launch {
+                val sl = graph.collections.setlist(id)
+                when (val outcome = sl?.let { graph.playbackController.playSetlist(it) }) {
+                    is com.levi.pocketdj.playback.QueueOutcome.NothingPlayable ->
+                        appSnackbar.showSnackbar("None of these tracks are playable on this device yet")
+                    is com.levi.pocketdj.playback.QueueOutcome.Failed -> appSnackbar.showSnackbar(outcome.message)
+                    else -> Unit
+                }
+            }
+            if (nav.currentDestination?.route != NOW_PLAYING_ROUTE) nav.navigate(NOW_PLAYING_ROUTE)
+        } else {
+            nav.navigate(setlistRoute(id, autoplay))
         }
     }
     NavHost(
@@ -419,7 +440,7 @@ private fun ShellNavHost(
         ) { entry ->
             PlaylistDetailScreen(
                 playlistId = entry.arguments?.getString("playlistId").orEmpty(),
-                onOpenSetlist = { id, autoplay -> nav.navigate(setlistRoute(id, autoplay)) },
+                onOpenSetlist = openSetlist,
                 onOpenPocket = { id -> nav.navigate(pocketRoute(id)) },
                 onOpenAlbum = { albumId -> nav.navigate(albumRoute(albumId)) },
                 onDeleted = { nav.popBackStack() },
@@ -433,7 +454,7 @@ private fun ShellNavHost(
                 pocketId = entry.arguments?.getString("pocketId").orEmpty(),
                 onOpenPocket = { id -> nav.navigate(pocketRoute(id)) },
                 onOpenAlbum = { albumId -> nav.navigate(albumRoute(albumId)) },
-                onOpenSetlist = { id, autoplay -> nav.navigate(setlistRoute(id, autoplay)) },
+                onOpenSetlist = openSetlist,
                 onDeleted = { nav.popBackStack() },
             )
         }
@@ -464,7 +485,7 @@ private fun ShellNavHost(
             SourcePlaylistDetailScreen(
                 playlistId = entry.arguments?.getString("playlistId").orEmpty(),
                 sourceName = entry.arguments?.getString("sourceName").orEmpty(),
-                onOpenSetlist = { id, autoplay -> nav.navigate(setlistRoute(id, autoplay)) },
+                onOpenSetlist = openSetlist,
                 onOpenPlaylist = { id -> nav.navigate(playlistRoute(id)) },
                 onOpenPocket = { id -> nav.navigate(pocketRoute(id)) },
                 onOpenAlbum = { albumId -> nav.navigate(albumRoute(albumId)) },
@@ -476,7 +497,7 @@ private fun ShellNavHost(
         ) { entry ->
             AlbumDetailScreen(
                 albumId = entry.arguments?.getString("albumId").orEmpty(),
-                onOpenSetlist = { id, autoplay -> nav.navigate(setlistRoute(id, autoplay)) },
+                onOpenSetlist = openSetlist,
             )
         }
         composable(
@@ -486,7 +507,7 @@ private fun ShellNavHost(
             ArtistDetailScreen(
                 artistName = entry.arguments?.getString("artistName").orEmpty(),
                 onOpenAlbum = { albumId -> nav.navigate(albumRoute(albumId)) },
-                onOpenSetlist = { id, autoplay -> nav.navigate(setlistRoute(id, autoplay)) },
+                onOpenSetlist = openSetlist,
             )
         }
         composable(SETTINGS_ROUTE) {

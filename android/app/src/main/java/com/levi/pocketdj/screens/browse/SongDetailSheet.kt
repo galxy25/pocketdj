@@ -57,6 +57,9 @@ import kotlinx.coroutines.launch
  * tag, album row (navigates when [onOpenAlbum] is provided), ordered metadata
  * grid, sentiment chips, play action.
  */
+/** Minimal song facts for rows that are not in the catalog. */
+data class MinimalSong(val title: String, val artist: String, val lengthMs: Long?)
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SongDetailSheet(
@@ -64,6 +67,8 @@ fun SongDetailSheet(
     onDismiss: () -> Unit,
     snackbar: SnackbarHostState,
     onOpenAlbum: ((String) -> Unit)? = null,
+    /** Off-catalog rows (AM-only, amrec_, Studio): a minimal title/artist/length surface instead of "not found". */
+    fallback: MinimalSong? = null,
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -97,7 +102,31 @@ fun SongDetailSheet(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             if (song == null) {
-                Text("Song not found", style = MaterialTheme.typography.bodyLarge)
+                if (fallback == null) {
+                    Text("Song not found", style = MaterialTheme.typography.bodyLarge)
+                } else {
+                    Text(fallback.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                    if (fallback.artist.isNotBlank()) {
+                        Text(fallback.artist, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                    }
+                    fallback.lengthMs?.takeIf { it > 0 }?.let {
+                        Text("Length ${Fmt.duration(it)}", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        FavoriteToggle(songId = songId)
+                        Spacer(Modifier.width(4.dp))
+                        FilledTonalIconButton(
+                            onClick = { showAddSheet = true },
+                            modifier = Modifier.testTag("song-add-to-collection"),
+                        ) { Icon(Icons.Filled.AddCircleOutline, contentDescription = "Add to collection") }
+                        Spacer(Modifier.width(4.dp))
+                        FilledTonalIconButton(
+                            onClick = { ShareText.send(context, "${fallback.title} — ${fallback.artist}", "${fallback.title} — ${fallback.artist}") },
+                            modifier = Modifier.testTag("song-share"),
+                        ) { Icon(Icons.Filled.Share, contentDescription = "Share") }
+                    }
+                }
                 return@Column
             }
 

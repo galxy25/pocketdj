@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # PB-6 Now Playing deck + mini bar upgrade
 
@@ -23,3 +23,16 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+Fixes applied (Opus adversarial review).
+- MAJOR tonearm direction: fixed. Clockwise `rotate(arm, pivot)`, new geometry (OUTER 1 deg, INNER 33 deg, arm 0.5s). `RecordMath.tipPosition/tipDistanceFromCentre` + test asserts tip goes from the record rim to the label edge, monotonic, on-chassis.
+- MAJOR pausedByCascade: fixed. `SequencerState.pausedByCascade` set when the gate halts an AUTO advance (cleared on start/stop); model also uses `currentNeverSounded`; engineIdle = no loaded item for the CURRENT row. Tests: sequencer halt test, stale-audible ladder test.
+- MAJOR PlaylistsComponents funnels: fixed at the shell. The detail-screen funnels (all call `onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)`) now start the run via `playSetlist` and navigate to NOW_PLAYING_ROUTE (ShellNavigation `openSetlist`); PlaylistsComponents.kt itself holds no ▶/🔀 callbacks, so it needed no change.
+- MAJOR long-press synthesized song: fixed. `SongDetailSheet(fallback = MinimalSong)` shows title/artist/length + favorite/add/share for off-catalog rows.
+- MINOR no-set record frozen: fixed (record spins when the audible Browse single is the deck identity).
+- MINOR deck stale inputs: fixed (`vm.togglePlayPause(vm.currentInputs())`).
+- MINOR heart appleMusicId: fixed (seam takes appleMusicId; SongFacts/UiState carry it).
+- MINOR mini bar: fixed (`mixSessionActiveFlow` StateFlow collected; bar hidden on the Now Playing route).
+- MINOR ledger doc: rejected for this package commit: docs/ARCHITECTURE-ANDROID.md is outside the owned set and integrator-owned; open items (mix seam install) listed here.
+- NIT platter angle: fixed (rememberSaveable). NIT notice: fixed (caption under the transport).
