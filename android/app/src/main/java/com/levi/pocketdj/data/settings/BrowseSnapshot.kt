@@ -17,6 +17,12 @@ data class BrowseSnapshot(
     val kind: String = "albums",
     val layout: String = "grid",
     val searchMode: String = "device",
+    /**
+     * Full filter clauses (iOS `Clause` Codable shape). `null` = an older doc
+     * written before clauses existed → the legacy fields below migrate in.
+     */
+    val clauses: List<ClauseDoc>? = null,
+    /** Legacy (pre-clause) fields — still decoded, never written non-empty. */
     val genres: List<String> = emptyList(),
     val bpmMin: Double? = null,
     val bpmMax: Double? = null,
@@ -30,4 +36,19 @@ data class BrowseSnapshot(
 data class BrowseSortKeyDoc(
     val field: String,
     val ascending: Boolean = true,
+)
+
+/**
+ * One persisted filter clause — iOS-shaped (`id, field, op, value, values[], min?, max?`).
+ * Strings stay raw so a future field/op id decodes and is dropped by the mapper.
+ */
+@Serializable
+data class ClauseDoc(
+    val id: String = "",
+    val field: String,
+    val op: String,
+    val value: String = "",
+    val values: List<String> = emptyList(),
+    val min: Double? = null,
+    val max: Double? = null,
 )

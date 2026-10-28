@@ -8,72 +8,65 @@ package com.levi.pocketdj.screens.browse
  * false < true. No keys → catalog order (albums arrive artist › title already).
  */
 
-/** A sortable field from the registry (§6.1) — the subset that applies to a kind. */
-enum class SortField(
-    val id: String,
-    val label: String,
-    val kinds: Set<BrowseKind>,
-) {
-    // Order mirrors iOS `Fields.all` so `forKind` (and the "Add key" list) match.
-    ARTIST("artist", "Artist", setOf(BrowseKind.ALBUMS, BrowseKind.SONGS)),
-    NAME("name", "Title", setOf(BrowseKind.ALBUMS, BrowseKind.SONGS)),
-    YEAR("year", "Year", setOf(BrowseKind.ALBUMS, BrowseKind.SONGS)),
-    GENRE("genre", "Genre", setOf(BrowseKind.ALBUMS, BrowseKind.SONGS)),
-    FILE_TYPE("fileType", "File type", setOf(BrowseKind.ALBUMS, BrowseKind.SONGS)),
-    SOURCE("source", "Source", setOf(BrowseKind.ALBUMS, BrowseKind.SONGS)),
-    COUNTRY("country", "Country", setOf(BrowseKind.ALBUMS)),
-    TRACK_COUNT("trackCount", "Track count", setOf(BrowseKind.ALBUMS)),
-    TRACK_NUMBER("trackNumber", "Track #", setOf(BrowseKind.SONGS)),
-    LENGTH("length", "Length", setOf(BrowseKind.SONGS)),
-    BPM("bpm", "BPM", setOf(BrowseKind.SONGS)),
-    KEY("key", "Key", setOf(BrowseKind.SONGS)),
-    CAMELOT("camelot", "Key (Camelot)", setOf(BrowseKind.SONGS)),
-    EXPLICIT("explicit", "Explicit", setOf(BrowseKind.SONGS));
+/**
+ * A sortable field from the registry (§6.1). Entry order mirrors [Fields.all]
+ * (iOS `Fields.all`), so [forKind] and the "Add key" list match; applicability
+ * is read from the registry so there is one source of truth.
+ */
+enum class SortField(val id: String, val label: String) {
+    ARTIST("artist", "Artist"),
+    ALBUM_COUNT("albumCount", "Albums"),
+    SONG_COUNT("songCount", "Songs"),
+    NAME("name", "Title"),
+    YEAR("year", "Year"),
+    PLAY_COUNT("playCount", "Plays"),
+    GENRE("genre", "Genre"),
+    FILE_TYPE("fileType", "File type"),
+    SOURCE("source", "Source"),
+    COUNTRY("country", "Country"),
+    TRACK_COUNT("trackCount", "Track count"),
+    TRACK_NUMBER("trackNumber", "Track #"),
+    LENGTH("length", "Length"),
+    BPM("bpm", "BPM"),
+    KEY("key", "Key"),
+    CAMELOT("camelot", "Key (Camelot)"),
+    EXPLICIT("explicit", "Explicit"),
+    DATE_ADDED("dateAdded", "Date added"),
+    LAST_PLAYED_AT("lastPlayedAt", "Last played");
 
-    /** Sort value for an album row — `null` for song-only fields (nulls last). */
-    fun value(row: AlbumRow): SortVal? = when (this) {
-        ARTIST -> str(row.album.artist)
-        NAME -> str(row.album.name)
-        YEAR -> num(row.album.year)
-        // Genre collapses to the top-tier category (a plain string sort — iOS
-        // compares `.string(Genre.category(...))` case-insensitively, so genre
-        // sorts ALPHABETICALLY, not by the options-list priority order).
-        GENRE -> str(row.genreCategory)
-        FILE_TYPE -> str(row.album.fileType)
-        SOURCE -> str(row.source)
-        COUNTRY -> str(row.album.country)
-        TRACK_COUNT -> SortVal.Num(row.album.trackList.size.toDouble())
-        else -> null
+    val kinds: Set<BrowseKind> get() = Fields.byId.getValue(id).appliesTo
+    val historyOnly: Boolean get() = Fields.byId.getValue(id).historyOnly
+
+    /**
+     * Sort value for any row — `null` when the field doesn't exist on the row's
+     * kind or is missing (nulls last). Camelot sorts by wheel rank as a number
+     * (unparseable → null); a missing `explicit` reads as false (a Flag, never
+     * null). Genre sorts ALPHABETICALLY on the collapsed category.
+     */
+    fun value(row: BrowseRow, playCounts: Map<String, Int> = emptyMap()): SortVal? {
+        val raw = Fields.value(row, id, playCounts)
+        if (this == CAMELOT) {
+            val code = (raw as? FieldValue.Str)?.v
+            return Camelot.rank(code)?.let { SortVal.Num(it.toDouble()) }
+        }
+        return when (raw) {
+            is FieldValue.Str -> SortVal.Str(raw.v)
+            is FieldValue.Num -> SortVal.Num(raw.v)
+            is FieldValue.Flag -> SortVal.Flag(raw.v)
+            is FieldValue.Strs, FieldValue.None -> null
+        }
     }
-
-    /** Sort value for a song row — `null` for album-only fields (nulls last). */
-    fun value(row: SongRow): SortVal? = when (this) {
-        ARTIST -> str(row.song.artist)
-        NAME -> str(row.song.name)
-        YEAR -> num(row.song.year)
-        GENRE -> str(row.genreCategory)
-        FILE_TYPE -> str(row.song.fileType)
-        SOURCE -> str(row.source)
-        TRACK_NUMBER -> num(row.song.trackNumber)
-        LENGTH -> row.song.length?.let { SortVal.Num(it.toDouble()) }
-        BPM -> row.song.bpm?.let { SortVal.Num(it) }
-        KEY -> str(row.song.key)
-        // Camelot is a numeric field here — sort by wheel rank, unparseable → null.
-        CAMELOT -> Camelot.rank(row.song.camelot)?.let { SortVal.Num(it.toDouble()) }
-        // Missing explicit reads as false (iOS `s.explicit ?? false`); a bool is
-        // never null, so it never falls to the nulls-last bucket.
-        EXPLICIT -> SortVal.Flag(row.song.explicit ?: false)
-        else -> null
-    }
-
-    private fun str(value: String?): SortVal? = value?.let { SortVal.Str(it) }
-    private fun num(value: Int?): SortVal? = value?.let { SortVal.Num(it.toDouble()) }
 
     companion object {
         val byId: Map<String, SortField> = entries.associateBy { it.id }
 
         /** Sortable fields for a kind, in registry order (drives the sort sheet). */
-        fun forKind(kind: BrowseKind): List<SortField> = entries.filter { kind in it.kinds }
+        fun forKind(kind: BrowseKind, includeHistory: Boolean = false): List<SortField> =
+            entries.filter {
+                kind in it.kinds && (includeHistory || !it.historyOnly) && it != DATE_ADDED
+            }
+        // DATE_ADDED stays hidden from the sort sheet until BRW-3 wires
+        // IndexSong.dateAdded into SongRow (BrowseRows); re-enable then.
     }
 }
 
@@ -90,11 +83,22 @@ data class SortKey(val field: SortField, val ascending: Boolean = true)
 /** The multi-key stable sort (§6.4). Public entry points per kind below. */
 object BrowseSort {
 
-    fun albums(rows: List<AlbumRow>, keys: List<SortKey>): List<AlbumRow> =
-        apply(rows, keys) { field, row -> field.value(row) }
+    fun albums(rows: List<AlbumRow>, keys: List<SortKey>): List<AlbumRow> = sorted(rows, keys)
 
-    fun songs(rows: List<SongRow>, keys: List<SortKey>): List<SongRow> =
-        apply(rows, keys) { field, row -> field.value(row) }
+    fun songs(
+        rows: List<SongRow>,
+        keys: List<SortKey>,
+        playCounts: Map<String, Int> = emptyMap(),
+    ): List<SongRow> = sorted(rows, keys, playCounts)
+
+    fun artists(rows: List<ArtistRow>, keys: List<SortKey>): List<ArtistRow> = sorted(rows, keys)
+
+    /** Generic entry point: any row kind, with the play-count snapshot for `playCount`. */
+    fun <T : BrowseRow> sorted(
+        rows: List<T>,
+        keys: List<SortKey>,
+        playCounts: Map<String, Int> = emptyMap(),
+    ): List<T> = apply(rows, keys) { field, row -> field.value(row, playCounts) }
 
     private class Decorated<T>(val item: T, val index: Int, val vals: List<SortVal?>)
 

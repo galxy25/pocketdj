@@ -2,6 +2,7 @@ package com.levi.pocketdj.screens.browse
 
 import com.levi.pocketdj.data.settings.BrowseSnapshot
 import com.levi.pocketdj.data.settings.BrowseSortKeyDoc
+import com.levi.pocketdj.data.settings.ClauseDoc
 
 /**
  * The persistable slice of [BrowseSession] and its pure mapping to/from the
@@ -24,11 +25,9 @@ fun BrowseSessionState.toSnapshot(): BrowseSnapshot = BrowseSnapshot(
     kind = kind.name.lowercase(),
     layout = layout.name.lowercase(),
     searchMode = searchMode.name.lowercase(),
-    genres = filters.genres.toList(),
-    bpmMin = filters.bpmMin,
-    bpmMax = filters.bpmMax,
-    camelots = filters.camelots.toList(),
-    sources = filters.sources.toList(),
+    // Clauses are the source of truth; the legacy fields are left empty so the
+    // next write retires them (one-way migration).
+    clauses = filters.clauses.map(Clause::toDoc),
     sortKeys = sortKeys.map { BrowseSortKeyDoc(it.field.id, it.ascending) },
 )
 
@@ -42,11 +41,8 @@ fun BrowseSnapshot.toSessionState(): BrowseSessionState = BrowseSessionState(
     layout = parseLayout(layout),
     searchMode = parseSearchMode(searchMode),
     filters = BrowseFilters(
-        genres = genres.toSet(),
-        bpmMin = bpmMin,
-        bpmMax = bpmMax,
-        camelots = camelots.toSet(),
-        sources = sources.toSet(),
+        // A doc with clauses wins; unknown field/op ids drop (iOS compactMap).
+        clauses = clauses?.mapNotNull(ClauseDoc::toClause) ?: legacyClauses(),
     ),
     sortKeys = sortKeys.mapNotNull { doc ->
         SortField.byId[doc.field]?.let { SortKey(it, doc.ascending) }
@@ -65,3 +61,32 @@ private fun parseLayout(value: String): AlbumLayout =
 
 private fun parseSearchMode(value: String): SearchMode =
     if (value.lowercase() == "online") SearchMode.ONLINE else SearchMode.DEVICE
+
+/**
+ * Pre-clause snapshot (genres / bpm range / camelots / sources) → the equivalent
+ * clauses: the same shape the old sheet produced, so the filtered results and
+ * the active-filter count are unchanged by the upgrade.
+ */
+internal fun BrowseSnapshot.legacyClauses(): List<Clause> = BrowseFilters()
+    .withGenres(genres.toSet())
+    .withBpm(bpmMin, bpmMax)
+    .withCamelots(camelots.toSet())
+    .withSources(sources.toSet())
+    .clauses
+
+internal fun Clause.toDoc(): ClauseDoc =
+    ClauseDoc(id, field, op.id, value, values.sorted(), min, max)
+
+internal fun ClauseDoc.toClause(): Clause? {
+    if (Fields.byId[field] == null) return null
+    val filterOp = FilterOp.byId[op] ?: return null
+    return Clause(
+        field = field,
+        op = filterOp,
+        value = value,
+        values = values.toSet(),
+        min = min,
+        max = max,
+        id = id.ifEmpty { java.util.UUID.randomUUID().toString() },
+    )
+}

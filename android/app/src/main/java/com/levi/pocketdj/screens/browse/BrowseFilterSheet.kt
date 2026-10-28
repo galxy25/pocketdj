@@ -84,7 +84,7 @@ fun BrowseFilterSheet(
                 OptionChips(
                     options = genreOptions,
                     selected = filters.genres,
-                    onSelected = { onFilters(filters.copy(genres = it)) },
+                    onSelected = { onFilters(filters.withGenres(it)) },
                 )
             }
 
@@ -97,7 +97,7 @@ fun BrowseFilterSheet(
                     value = bpmMinText,
                     onValueChange = { text ->
                         bpmMinText = text
-                        onFilters(filters.copy(bpmMin = text.toDoubleOrNull()))
+                        onFilters(filters.withBpm(text.toDoubleOrNull(), filters.bpmMax))
                     },
                     label = { Text("Min") },
                     singleLine = true,
@@ -111,7 +111,7 @@ fun BrowseFilterSheet(
                     value = bpmMaxText,
                     onValueChange = { text ->
                         bpmMaxText = text
-                        onFilters(filters.copy(bpmMax = text.toDoubleOrNull()))
+                        onFilters(filters.withBpm(filters.bpmMin, text.toDoubleOrNull()))
                     },
                     label = { Text("Max") },
                     singleLine = true,
@@ -131,7 +131,7 @@ fun BrowseFilterSheet(
                 OptionChips(
                     options = camelotOptions,
                     selected = filters.camelots,
-                    onSelected = { onFilters(filters.copy(camelots = it)) },
+                    onSelected = { onFilters(filters.withCamelots(it)) },
                 )
             }
 
@@ -140,7 +140,7 @@ fun BrowseFilterSheet(
                 OptionChips(
                     options = sourceOptions,
                     selected = filters.sources,
-                    onSelected = { onFilters(filters.copy(sources = it)) },
+                    onSelected = { onFilters(filters.withSources(it)) },
                 )
             }
         }
