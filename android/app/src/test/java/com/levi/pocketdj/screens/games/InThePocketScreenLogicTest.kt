@@ -191,9 +191,9 @@ class InThePocketScreenLogicTest {
         assertEquals(State.Idle, c.state.value)
         assertEquals("hello", field)
         c.toggle(field) { field = it }
-        engine.finish("Dictation stopped - try again.")
-        assertEquals(State.Failed("Dictation stopped - try again."), c.state.value)
-        assertEquals("Dictation stopped - try again.", c.explanation)
+        engine.finish("Dictation stopped — try again.")
+        assertEquals(State.Failed("Dictation stopped — try again."), c.state.value)
+        assertEquals("Dictation stopped — try again.", c.explanation)
         engine.startThrows = true
         c.toggle(field) { field = it }
         assertEquals(State.Failed("Couldn't start dictation."), c.state.value)

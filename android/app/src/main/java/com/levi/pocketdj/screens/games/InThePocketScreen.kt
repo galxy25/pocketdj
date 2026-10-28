@@ -24,6 +24,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -67,6 +68,13 @@ fun InThePocketScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     val games = graph.gamesGraph
     val bridge = remember { games.pocketsBridge }
     val enabled by bridge.isEnabled.collectAsState()
+    if (!enabled && bridge === com.levi.pocketdj.data.pockets.NoPocketsBridge) {
+        // No pockets service in this build (iOS third branch).
+        Box(modifier.fillMaxSize().testTag("itp-unavailable"), contentAlignment = Alignment.Center) {
+            Text(InThePocketScreenLogic.UNAVAILABLE_TEXT, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
     if (!enabled) {
         PocketsOptInView(games.pocketsOptIn, modifier)
         return
@@ -97,6 +105,7 @@ private fun InThePocketContent(
             if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) ==
                 PackageManager.PERMISSION_GRANTED) true
             else {
+                pending?.complete(false)
                 val d = CompletableDeferred<Boolean>()
                 pending = d
                 launcher.launch(Manifest.permission.RECORD_AUDIO)
@@ -273,7 +282,8 @@ private fun FeedbackEditor(
                     onClick = onMic,
                     enabled = InThePocketScreenLogic.micEnabled(
                         denied = dictState == FeedbackDictationController.State.Denied,
-                        unavailable = dictState == FeedbackDictationController.State.Unavailable),
+                        unavailable = dictState == FeedbackDictationController.State.Unavailable,
+                        requesting = dictState == FeedbackDictationController.State.Requesting),
                     modifier = Modifier.size(48.dp).testTag("itp-mic"),
                 ) {
                     Icon(

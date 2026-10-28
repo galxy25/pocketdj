@@ -1,5 +1,7 @@
 package com.levi.pocketdj.screens.games
 
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -44,9 +46,9 @@ object InThePocketScreenLogic {
     fun modeNote(mode: InThePocketMode): String = when (mode) {
         InThePocketMode.CLOUD -> "Built from your listening pockets for this moment."
         InThePocketMode.HISTORY ->
-            "No pocket results for this moment yet - built from what you've played through at this time of day."
+            "No pocket results for this moment yet — built from what you've played through at this time of day."
         InThePocketMode.COLD ->
-            "No pocket results yet - built from everything you've played through. Play more and the bets get sharper."
+            "No pocket results yet — built from everything you've played through. Play more and the bets get sharper."
     }
 
     fun outcomeText(o: InThePocketOutcome): String = when (o) {
@@ -79,12 +81,12 @@ object InThePocketScreenLogic {
     fun buildButtonLabel(building: Boolean) = if (building) "Finding your pocket…" else "Build a round"
 
     const val BUILD_BLURB =
-        "PocketDJ reads the time, the day and - if places & trips is on - where you are, then bets on songs " +
+        "PocketDJ reads the time, the day and — if places & trips is on — where you are, then bets on songs " +
             "you'll play straight through. Skip one and the pocket breaks. Pausing is fine."
-    const val PLAYING_NOTE = "Play straight through - skipping breaks the pocket. Pausing doesn't."
+    const val PLAYING_NOTE = "Play straight through — skipping breaks the pocket. Pausing doesn't."
     const val PRIVACY_NOTE =
         "Rounds upload with your listening pockets as training data. Spoken feedback is transcribed on this " +
-            "device - the audio never leaves it; only the text you write or dictate is sent."
+            "device — the audio never leaves it; only the text you write or dictate is sent."
     const val FEEDBACK_HINT = "How does this pocket feel? Is the algorithm getting you?"
 
     /** The live cap: over-long input (typed, pasted or dictated) is cut without splitting a surrogate pair. */
@@ -106,7 +108,10 @@ object InThePocketScreenLogic {
 
     /** Mic is shown only when the engine reports available; disabled once denied/unavailable. */
     fun micVisible(engineAvailable: Boolean) = engineAvailable
-    fun micEnabled(denied: Boolean, unavailable: Boolean) = !(denied || unavailable)
+    fun micEnabled(denied: Boolean, unavailable: Boolean, requesting: Boolean = false) =
+        !(denied || unavailable || requesting)
+
+    const val UNAVAILABLE_TEXT = "In the Pocket isn't available."
 }
 
 @Composable
@@ -140,7 +145,10 @@ fun ProgressDots(round: InThePocketRound, modifier: Modifier = Modifier) {
             Box(Modifier.size(22.dp).border(2.dp, border, CircleShape), contentAlignment = Alignment.Center) {
                 when (s.state) {
                     InThePocketSongState.COMPLETED -> Box(Modifier.size(22.dp).background(accent, CircleShape))
-                    InThePocketSongState.PLAYING -> Box(Modifier.size(11.dp).background(accent.copy(alpha = 0.7f), CircleShape))
+                    InThePocketSongState.PLAYING -> Canvas(Modifier.size(11.dp)) {
+                        drawCircle(accent.copy(alpha = 0.7f), style = Stroke(width = 1.5.dp.toPx()))
+                        drawArc(accent.copy(alpha = 0.7f), startAngle = 90f, sweepAngle = 180f, useCenter = true)
+                    }
                     InThePocketSongState.SKIPPED -> Icon(Icons.Filled.Close, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.error)
                     InThePocketSongState.NOT_PLAYED -> Box(Modifier.size(22.dp).background(border.copy(alpha = 0.4f), CircleShape))
                     InThePocketSongState.PENDING -> Unit

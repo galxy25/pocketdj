@@ -7,6 +7,8 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
+import android.speech.RecognitionSupport
+import android.speech.RecognitionSupportCallback
 import android.speech.SpeechRecognizer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -63,6 +65,7 @@ class FeedbackDictationController(private val engine: FeedbackSpeechEngine?) {
     /** Mic button. [current] is the field's text now; [update] writes the field. */
     suspend fun toggle(current: String, update: (String) -> Unit) {
         if (_state.value == State.Listening) { stop(); return }
+        if (_state.value == State.Requesting) return // permission sheet already up
         val engine = engine
         if (engine == null || !engine.isAvailable) { _state.value = State.Unavailable; return }
         _state.value = State.Requesting
@@ -81,7 +84,8 @@ class FeedbackDictationController(private val engine: FeedbackSpeechEngine?) {
                     if (_state.value == State.Listening) sink?.invoke(join(base, text))
                 },
                 onFinish = { error ->
-                    if (error != null && _state.value == State.Listening) _state.value = State.Failed(error)
+                    if (error == UNAVAILABLE_MARKER && _state.value == State.Listening) _state.value = State.Unavailable
+                    else if (error != null && _state.value == State.Listening) _state.value = State.Failed(error)
                     else if (_state.value == State.Listening) _state.value = State.Idle
                     sink = null
                 },
@@ -101,8 +105,10 @@ class FeedbackDictationController(private val engine: FeedbackSpeechEngine?) {
     }
 
     companion object {
+        /** onFinish error meaning "no language pack" (-> Unavailable, not Failed). */
+        const val UNAVAILABLE_MARKER = "\u0000language-unavailable"
         const val DENIED_TEXT =
-            "Dictation needs microphone access - turn it on for PocketDJ in Settings. You can still type."
+            "Dictation needs microphone access — turn it on for PocketDJ in Settings. You can still type."
         const val UNAVAILABLE_TEXT = "Dictation isn't available on this device. You can still type."
 
         fun explanationFor(s: State): String? = when (s) {
@@ -137,8 +143,36 @@ class SystemFeedbackSpeechEngine(
     private var recognizer: SpeechRecognizer? = null
     private var finished = true
 
+    /** Locale pack check (checkRecognitionSupport) is async: cached; null = not asked yet. */
+    @Volatile private var localeInstalled: Boolean? = null
+    @Volatile private var localeAsked = false
+
     override val isAvailable: Boolean
-        get() = runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }.getOrDefault(false)
+        get() {
+            val service = runCatching { SpeechRecognizer.isOnDeviceRecognitionAvailable(context) }.getOrDefault(false)
+            if (!service) return false
+            if (!localeAsked) checkLocale()
+            return localeInstalled ?: true // optimistic until the answer lands; ERROR_LANGUAGE_* is mapped below
+        }
+
+    private fun checkLocale() {
+        localeAsked = true
+        runCatching {
+            val rec = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            }
+            rec.checkRecognitionSupport(intent, context.mainExecutor, object : RecognitionSupportCallback {
+                override fun onSupportResult(s: RecognitionSupport) {
+                    val tag = java.util.Locale.getDefault().toLanguageTag()
+                    val lang = java.util.Locale.getDefault().language
+                    localeInstalled = s.installedOnDeviceLanguages.any { it == tag || it.substringBefore('-') == lang }
+                    rec.destroy()
+                }
+                override fun onError(error: Int) { rec.destroy() } // unknown: stay optimistic
+            })
+        }
+    }
 
     override suspend fun requestAuthorization(): FeedbackDictationAuthorization {
         if (!isAvailable) return FeedbackDictationAuthorization.UNAVAILABLE
@@ -148,6 +182,9 @@ class SystemFeedbackSpeechEngine(
 
     override fun start(onTranscript: (String) -> Unit, onFinish: (String?) -> Unit) {
         stop()
+        // Asymmetry vs iOS (which brackets begin/endMicCapture): refuse while the Studio sampler owns the
+        // mic, but do NOT set micCaptureActive ourselves - that would block playback via mayStartPlayback.
+        if (com.levi.pocketdj.studio.engine.AudioFocusPolicy.micCaptureActive) error("busy: mic in use")
         val rec = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
         recognizer = rec
         finished = false
@@ -168,8 +205,13 @@ class SystemFeedbackSpeechEngine(
             }
             override fun onError(error: Int) {
                 // A stop/no-speech timeout is not a failure when something was heard.
+                if (error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ||
+                    error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED) {
+                    localeInstalled = false
+                    end(FeedbackDictationController.UNAVAILABLE_MARKER); return
+                }
                 end(if (heard || error == SpeechRecognizer.ERROR_NO_MATCH ||
-                    error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) null else "Dictation stopped - try again.")
+                    error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) null else "Dictation stopped — try again.")
             }
             override fun onReadyForSpeech(params: Bundle?) = Unit
             override fun onBeginningOfSpeech() = Unit
@@ -184,6 +226,9 @@ class SystemFeedbackSpeechEngine(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            // iOS keeps listening until tapped; Android ends on silence, so widen the window.
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 6_000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 6_000L)
         }
         rec.startListening(intent)
     }
