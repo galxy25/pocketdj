@@ -2,8 +2,12 @@ package com.levi.pocketdj.shell
 
 import android.content.Intent
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavGraphBuilder
+import com.levi.pocketdj.data.settings.AppSettings
+import com.levi.pocketdj.di.AppGraph
+import kotlinx.coroutines.CoroutineScope
 
 /**
  * The extension point every area plugs into (decision D3). One sidecar graph per area
@@ -40,8 +44,16 @@ class NavEntry(
     val register: NavGraphBuilder.(ShellNavActions) -> Unit,
 )
 
-/** What a section composable gets from the Settings screen (concrete type: screens/settings). */
-interface SettingsHost
+/** What a section composable gets from the Settings screen. */
+interface SettingsHost {
+    val graph: AppGraph
+
+    /** Latest persisted settings; null until the first emission. */
+    val settings: AppSettings?
+    val snackbar: SnackbarHostState
+    val scope: CoroutineScope
+    fun openStorage()
+}
 
 /**
  * A Settings block. [order] sorts the registry (ties keep registration order); [id] is

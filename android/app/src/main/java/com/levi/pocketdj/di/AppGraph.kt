@@ -14,6 +14,10 @@ import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.CatalogService
 import com.levi.pocketdj.data.collections.CollectionsStore
 import com.levi.pocketdj.data.config.RemoteEndpoints
+import com.levi.pocketdj.data.credentials.EncryptedSecretStore
+import com.levi.pocketdj.data.credentials.InMemorySecretStore
+import com.levi.pocketdj.data.credentials.SecretMigration
+import com.levi.pocketdj.data.credentials.SecretStore
 import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.rips.RipsRepository
@@ -23,6 +27,9 @@ import com.levi.pocketdj.data.storage.StorageService
 import com.levi.pocketdj.playback.PlayEventBus
 import com.levi.pocketdj.playback.PlaybackController
 import com.levi.pocketdj.screens.browse.BrowseSession
+import com.levi.pocketdj.shell.FeatureModuleRegistry
+import com.levi.pocketdj.shell.IntentSink
+import com.levi.pocketdj.shell.LastSectionStore
 import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -82,7 +89,42 @@ class AppGraph private constructor(context: Context) {
         File(appContext.filesDir, "pocketdj-settings.preferences_pb")
     }
 
-    val settings: AppSettingsStore = AppSettingsStore(settingsDataStore, json)
+    /**
+     * Keystore-backed secrets (rip token, jukebox token, Music-User-Token, later more —
+     * decision D6). Built off the settings DataStore's thread-safe path; the construction
+     * touches the Keystore so it is lazy-by-use, and failures degrade to the legacy
+     * plaintext path rather than crashing launch.
+     */
+    val secrets: SecretStore = runCatching { EncryptedSecretStore(appContext) }
+        .getOrElse { error ->
+            android.util.Log.e("PocketDJ", "[secrets] keystore unavailable, using memory store", error)
+            InMemorySecretStore()
+        }
+
+    val settings: AppSettingsStore = AppSettingsStore(settingsDataStore, json, secrets)
+
+    /** Last-visited shell section (History default). */
+    val lastSection: LastSectionStore = LastSectionStore(settings)
+
+    // ---- Feature modules (decision D3): the ONLY place the eight sidecars are listed ----
+    // Aggregation order is area order and is stable; consumers read [features].
+    val playbackGraph: PlaybackGraph by lazy { PlaybackGraph(this) }
+    val mixGraph: MixGraph by lazy { MixGraph(this) }
+    val studioGraph: StudioGraph by lazy { StudioGraph(this) }
+    val gamesGraph: GamesGraph by lazy { GamesGraph(this) }
+    val collectionsGraph: CollectionsGraph by lazy { CollectionsGraph(this) }
+    val browseGraph: BrowseGraph by lazy { BrowseGraph(this) }
+    val servicesGraph: ServicesGraph by lazy { ServicesGraph(this) }
+    val shellGraph: ShellGraph by lazy { ShellGraph(this) }
+
+    val features: FeatureModuleRegistry by lazy {
+        FeatureModuleRegistry(
+            listOf(
+                playbackGraph, mixGraph, studioGraph, gamesGraph,
+                collectionsGraph, browseGraph, servicesGraph, shellGraph,
+            ),
+        )
+    }
 
     val catalogService: CatalogService = CatalogService(
         cacheDir = File(appContext.filesDir, "catalog-cache"),
@@ -217,6 +259,14 @@ class AppGraph private constructor(context: Context) {
         // browse.md §7). Wired here (once, app-scoped) so it survives regardless
         // of which screen renders first.
         BrowseSession.attach(settings, appScope)
+        // One-shot, idempotent move of plaintext tokens into the SecretStore. Reads fall
+        // back to the plaintext copy until it lands, so nothing races it.
+        appScope.launch(Dispatchers.IO) {
+            runCatching { SecretMigration.run(settingsDataStore, secrets) }
+                .onFailure { android.util.Log.e("PocketDJ", "[secrets] migration failed", it) }
+        }
+        // MainActivity forwards every intent to IntentSink; the modules' handlers answer.
+        appScope.launch { IntentSink.install(features.deepLinkHandlers) }
     }
 
     companion object {
