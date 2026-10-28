@@ -42,7 +42,13 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        // PB-3: `pdj-resolve://song/<id>` rows (rip-on-demand inside a run) load immediately and resolve their
+        // real url on the loader thread; every other uri passes through the resolver untouched.
+        val dataSources = com.levi.pocketdj.playback.session.ResolvingSongDataSource.wrap(
+            androidx.media3.datasource.DefaultDataSource.Factory(this),
+        )
         val player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSources))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)

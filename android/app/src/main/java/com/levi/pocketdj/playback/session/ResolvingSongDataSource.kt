@@ -35,9 +35,9 @@ class RipOnDemandResolver(
     /** Polls the job to its durable url (suspends for as long as the rip takes; throws on a rip error). */
     private val awaitDurable: suspend (job: RipJob) -> String,
     /** Relative `/hls/<id>/index.m3u8` -> absolute playable url (server base + token). */
-    private val liveUrl: (streamPath: String) -> String,
+    private val liveUrl: suspend (streamPath: String) -> String,
     /** The server queued a playback rip (the session tracks it for the rip window). */
-    private val onQueued: (songId: String) -> Unit = {},
+    private val onQueued: suspend (songId: String) -> Unit = {},
     private val log: (String) -> Unit = { NPLog.lane(NPLog.RIPREQ, it) },
 ) {
     suspend fun resolve(songId: String): RipResolution {

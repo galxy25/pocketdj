@@ -56,7 +56,7 @@ class DeadAirMeter(
 
     private data class Open(val atMs: Long, val from: String, val cause: String)
 
-    var document: Document = load()
+    @get:Synchronized var document: Document = load()
         private set
 
     private var open: Open? = null
@@ -85,7 +85,7 @@ class DeadAirMeter(
         return String.format(Locale.US, "%04d-%02d-%02d", d.year, d.monthValue, d.dayOfMonth)
     }
 
-    fun day(ms: Long = nowMs()): Day = document.days[dayKey(ms)] ?: Day()
+    @Synchronized fun day(ms: Long = nowMs()): Day = document.days[dayKey(ms)] ?: Day()
 
     // ---- per-transition (sequencer) --------------------------------------------------------
 
@@ -93,19 +93,19 @@ class DeadAirMeter(
      * A start began. If a transition is already open (a hop / retry / dead-source advance inside the same
      * silence), it keeps its original start and cause.
      */
-    fun transitionBegan(cause: String, ms: Long = nowMs()) {
+    @Synchronized fun transitionBegan(cause: String, ms: Long = nowMs()) {
         if (open != null) return
         open = Open(ms, lastAudibleBackend ?: "none", cause)
         openTo = null
     }
 
     /** The open transition is now trying [backend] (called at each track start). */
-    fun trackStarting(backend: String) {
+    @Synchronized fun trackStarting(backend: String) {
         if (open != null) openTo = backend
     }
 
     /** First proof of audio: close the open transition and record its gap. */
-    fun firstAudio(backend: String? = null, ms: Long = nowMs()) {
+    @Synchronized fun firstAudio(backend: String? = null, ms: Long = nowMs()) {
         val to = backend ?: openTo ?: "?"
         lastAudibleBackend = to
         val o = open ?: return
@@ -128,7 +128,7 @@ class DeadAirMeter(
     }
 
     /** The listener stopped / paused / took a call mid-transition: that silence is theirs - drop it unrecorded. */
-    fun transitionAbandoned(reason: String) {
+    @Synchronized fun transitionAbandoned(reason: String) {
         val o = open ?: return
         open = null
         openTo = null
@@ -137,7 +137,7 @@ class DeadAirMeter(
 
     // ---- continuous (supervisor, 1 Hz) ------------------------------------------------------
 
-    fun accumulate(active: Double, dead: Double, transitionDead: Double, nowMs: Long = this.nowMs()) {
+    @Synchronized fun accumulate(active: Double, dead: Double, transitionDead: Double, nowMs: Long = this.nowMs()) {
         if (active <= 0 && dead <= 0) return
         mutate(nowMs) { d ->
             d.activeSeconds += active
@@ -155,7 +155,7 @@ class DeadAirMeter(
     // ---- reporting + persistence --------------------------------------------------------------
 
     /** The `day=... active=...s dead=...s ratio=...%` line (iOS format, parsed by deadair-report.py). */
-    fun summaryLine(ms: Long = nowMs()): String {
+    @Synchronized fun summaryLine(ms: Long = nowMs()): String {
         val d = day(ms)
         return String.format(
             Locale.US,
@@ -165,10 +165,10 @@ class DeadAirMeter(
         )
     }
 
-    fun logSummary(ms: Long = nowMs()) = log(summaryLine(ms))
+    @Synchronized fun logSummary(ms: Long = nowMs()) = log(summaryLine(ms))
 
     /** Persist now (backgrounding) and log the day's summary. */
-    fun flush(ms: Long = nowMs()) {
+    @Synchronized fun flush(ms: Long = nowMs()) {
         if (day(ms).activeSeconds > 0) logSummary(ms)
         save(force = true, ms = ms)
     }
