@@ -298,6 +298,7 @@ class PatternEngine(
         _isPlaying.value = false
         _soloedRow.value = null
         sink?.stop()
+        StudioDiag.stop("pattern", "focus-transient")
         diag("pattern parked (interruption)")
     }
 
@@ -349,12 +350,13 @@ class PatternEngine(
         lastRefusal = null
         clock.running = true
         _isPlaying.value = true
+        StudioDiag.play("pattern", "user-play", started = true)
         diag("pattern start bpm=${scheduler.patternBpm} from=${clock.startStep} loop=${if (clock.loopEnabled) clock.loopBars else 0}")
         return true
     }
 
     /** Stop (rows keep their buffers - start replays from the top). Read [clock] BEFORE this to park the cursor. */
-    fun stopPattern() {
+    fun stopPattern(reason: String = "user-stop") {
         val was = _isPlaying.value
         val wasParked = parkedForInterruption
         parkedForInterruption = false
@@ -362,7 +364,7 @@ class PatternEngine(
         clock.running = false
         _isPlaying.value = false
         _soloedRow.value = null
-        if (was) { sink?.stop(); focusRelease?.invoke(); diag("stopPattern") }
+        if (was) { sink?.stop(); focusRelease?.invoke(); StudioDiag.stop("pattern", reason); diag("stopPattern") }
         else if (wasParked) { focusRelease?.invoke(); diag("stopPattern (parked)") }
     }
 

@@ -112,6 +112,9 @@ class SequencerForwardingPlayer(
         if (!quiet && !callerInternal) log(cmd, engine, verdict)
     }
 
+    /** Mic-capture start gate (AudioFocusPolicy.gateStartRaw by default; injectable for JVM tests). */
+    var micGate: (String) -> Boolean = { com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStartRaw(it) }
+
     /** Arbiter gate: another engine owning the session, or a restored-never-sounded owner, refuses the command. */
     private fun permitted(cmd: String): Boolean {
         val b = board ?: return true
@@ -189,6 +192,8 @@ class SequencerForwardingPlayer(
     }
 
     override fun play() {
+        // Notification / lock-screen / headset play must honour the mic-capture gate exactly like PlaybackController.play.
+        if (!micGate("playback.remote")) { emit(TransportLog.Cmd.PLAY, TransportLog.Verdict.REFUSED_MIC); return }
         if (!permitted(TransportLog.Cmd.PLAY)) return
         // iOS onIdlePlay: a cascade halt keeps its item loaded (paused); ▶ retries the row, never resumes in place.
         if (control.isRunning && control.isPausedByCascade) {

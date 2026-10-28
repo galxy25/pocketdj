@@ -271,4 +271,14 @@ class InstrumentEngineTest {
         assertFalse(r.engine.isReady)
         assertNull(r.engine.state.value.currentInstrument)
     }
+
+    @Test fun replayLogsStartAndStopReason() = runTest {
+        captureAudioDiag { lines ->
+            val r = Rig(this); r.load()
+            assertTrue(r.engine.replay(listOf(StudioNoteEvent(0, 5_000, 60, 90))))
+            assertTrue(lines.any { it.startsWith("audio.play owner=studio.instrument reason=user-play") })
+            r.engine.stopReplay("focus-loss")
+            assertTrue(lines.contains("audio.stop owner=studio.instrument reason=focus-loss"))
+        }
+    }
 }

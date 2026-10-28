@@ -589,7 +589,7 @@ class PlaybackController(
         startMs: Long = 0L,
     ): PlayOutcome {
         // Studio mic capture owns the audio path: nothing may start sounding into the take.
-        if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStart("playback")) return PlayOutcome.Failed("Recording in progress")
+        if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStartRaw("nowplaying")) return PlayOutcome.Failed("Recording in progress")
         val gen = playGeneration.incrementAndGet()
         lastStartHonored = false
         val merged = catalog.state.value.catalog
@@ -758,7 +758,7 @@ class PlaybackController(
     }
 
     suspend fun resume() {
-        if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStart("playback.resume")) return
+        if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStartRaw("nowplaying.resume")) return
         if (activeBackend == ActiveBackend.APPLE_MUSIC) {
             withContext(Dispatchers.Main) { amController?.play() ?: run { amMonitor.noteIntentionalPause(false) } }
             if (amController == null) appleMusicBackend?.resume()

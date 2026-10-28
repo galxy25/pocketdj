@@ -113,7 +113,7 @@ class MultitrackPlayer(
 
     private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean, record: Boolean = false, quantized: Boolean = false): PlayOutcome {
         if (!AudioFocusPolicy.gateStart("multitrack")) return PlayOutcome.REFUSED
-        val gen = synchronized(lock) { stopInternal(keepReprime = fromReprime); generation.get() }
+        val gen = synchronized(lock) { stopInternal(keepReprime = fromReprime, reason = if (fromReprime) "reprime" else "restart"); generation.get() }
         val rate = StudioAudio.CANONICAL_RATE
         // The ONE planning path shared with ArrangerBouncer (WYSIWYG): decode once, window, warp, beat-snap.
         val clips = ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate) { gen != generation.get() }
@@ -154,15 +154,16 @@ class MultitrackPlayer(
             clock.start()
             _isPlaying.value = true
             _playingArrangementId.value = arrangement.id
+            StudioDiag.play("multitrack", "user-play", started = true, detail = "id=${arrangement.id}")
             logD("play ${arrangement.id} from=${seekMs}ms loop=$isLoop clips=${clips.size}")
             if (!isLoop) scheduleAutoStop(gen, (arrangement.lengthMs - seekMs).coerceAtLeast(0))
         }
         return PlayOutcome.STARTED
     }
 
-    fun stop() { stopInternal(keepReprime = false); recordWanted = false; recordQuantized = false }
+    fun stop(reason: String = "user-stop") { stopInternal(keepReprime = false, reason = reason); recordWanted = false; recordQuantized = false }
 
-    private fun stopInternal(keepReprime: Boolean, naturalEnd: Boolean = false) = synchronized(lock) {
+    private fun stopInternal(keepReprime: Boolean, naturalEnd: Boolean = false, reason: String = if (naturalEnd) "natural-end" else "user-stop") = synchronized(lock) {
         generation.incrementAndGet()
         autoStop?.cancel(); autoStop = null
         if (!keepReprime) { reprime?.cancel(); reprime = null }
@@ -179,7 +180,7 @@ class MultitrackPlayer(
         val was = _isPlaying.value
         _isPlaying.value = false
         _playingArrangementId.value = null
-        if (was) onFocusRelease()
+        if (was) { StudioDiag.stop("multitrack", reason); onFocusRelease() }
     }
 
     /** Current timeline position while playing (cursor), else null. */

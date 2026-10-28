@@ -80,4 +80,34 @@ class AudioFocusPolicyTest {
         l.park("b"); l.park("a"); l.park("c")
         assertEquals(listOf("b", "a", "c"), l.drainForResume())
     }
+
+    @Test fun rawGateKeepsTheNonStudioOwner() {
+        AudioFocusPolicy.beginMicCapture()
+        assertFalse(AudioFocusPolicy.gateStartRaw("nowplaying"))
+        assertEquals("audio.play.skip owner=nowplaying reason=mic-capture-active", lines.single())
+    }
+
+    @Test fun coordinatorParksAudibleOnTransientLossAndResumesOnlyThose() {
+        val c = InterruptionCoordinator()
+        var aOn = true; var bOn = false
+        var aParked = 0; var aResumed = 0; var bResumed = 0
+        c.register("a", { aOn }, { aParked++; aOn = false }, { aResumed++ })
+        c.register("b", { bOn }, { }, { bResumed++ })
+        c.onTransientLoss()
+        assertEquals(1, aParked); assertTrue(c.isParked("a")); assertFalse(c.isParked("b"))
+        c.onTransientLoss()                                   // repeat loss: not parked twice
+        assertEquals(1, aParked)
+        c.onGain()
+        assertEquals(1, aResumed); assertEquals(0, bResumed)
+        c.onGain()
+        assertEquals(1, aResumed)                             // ledger drained
+    }
+
+    @Test fun coordinatorForgetCancelsAPendingResume() {
+        val c = InterruptionCoordinator()
+        var resumed = 0
+        c.register("a", { true }, { }, { resumed++ })
+        c.onTransientLoss(); c.forget("a"); c.onGain()
+        assertEquals(0, resumed)
+    }
 }

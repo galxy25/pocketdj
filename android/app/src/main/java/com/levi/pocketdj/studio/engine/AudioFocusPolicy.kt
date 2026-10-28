@@ -39,6 +39,13 @@ object AudioFocusPolicy {
         return false
     }
 
+    /** Same gate for non-Studio owners (Now Playing, Jukebox): [owner] is logged verbatim, NOT "studio."-prefixed. */
+    fun gateStartRaw(owner: String): Boolean {
+        val r = refusalReason() ?: return true
+        com.levi.pocketdj.audio.core.AudioDiag.play(owner, r, started = false)
+        return false
+    }
+
     const val REASON_MIC_CAPTURE = "mic-capture-active"
 
     /** Focus transitions that must park a Studio engine (iOS interruption park). */
@@ -119,4 +126,33 @@ class InterruptionLedger {
     @Synchronized fun drainForResume(): List<String> = parked.toList().also { parked.clear() }
 
     @Synchronized fun isParked(id: String): Boolean = id in parked
+}
+
+/**
+ * Park/resume pairing across engines for a TRANSIENT focus loss (iOS interruptionParked): [onTransientLoss] parks
+ * every registered engine that is audible, [onGain] resumes exactly those, [forget] drops a pending resume when the
+ * user explicitly stops/plays that engine. Engines log their own stop reason inside [park]; they register lambdas, so this is testable without a device.
+ */
+class InterruptionCoordinator(private val ledger: InterruptionLedger = InterruptionLedger()) {
+    private class Entry(val isAudible: () -> Boolean, val park: () -> Unit, val resume: () -> Unit)
+    private val entries = LinkedHashMap<String, Entry>()
+
+    @Synchronized fun register(id: String, isAudible: () -> Boolean, park: () -> Unit, resume: () -> Unit) {
+        entries[id] = Entry(isAudible, park, resume)
+    }
+
+    fun onTransientLoss() {
+        val es = synchronized(this) { entries.toList() }
+        for ((id, e) in es) if (e.isAudible() && ledger.park(id)) { e.park() }
+    }
+
+    fun onGain() {
+        for (id in ledger.drainForResume()) {
+            val e = synchronized(this) { entries[id] } ?: continue
+            e.resume()
+        }
+    }
+
+    fun forget(id: String) = ledger.forget(id)
+    fun isParked(id: String) = ledger.isParked(id)
 }

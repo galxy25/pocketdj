@@ -383,4 +383,16 @@ class PatternEngineTest {
         e.setPatternStartStep(500)
         assertEquals(63, e.clock.startStep)
     }
+
+    @Test fun engineLogsStartParkAndStopReasons() = captureAudioDiag { lines ->
+        val e = PatternEngine({ FakeSink() }, focus = { true }, focusRelease = {})
+        e.loadPattern(pattern(row("a", 0)), mapOf(0 to const(100, 0.5f)))
+        assertTrue(e.startPattern())
+        assertTrue(lines.contains("audio.play owner=studio.pattern reason=user-play"))
+        e.parkForInterruption()
+        assertTrue(lines.contains("audio.stop owner=studio.pattern reason=focus-transient"))
+        assertTrue(e.resumeFromInterruption())
+        e.stopPattern("focus-loss")
+        assertTrue(lines.contains("audio.stop owner=studio.pattern reason=focus-loss"))
+    }
 }

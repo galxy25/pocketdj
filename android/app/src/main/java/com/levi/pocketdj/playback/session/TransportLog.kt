@@ -18,6 +18,7 @@ object TransportLog {
     object Verdict {
         const val HANDLED = "handled"
         const val REFUSED_IDLE = "refused-idle"
+        const val REFUSED_MIC = "refused-mic-capture"
         const val NOT_RUNNING = "not-running"
         const val NOT_OWNER = "not-owner"
         const val REPLAY_IDLE = "replay-idle"

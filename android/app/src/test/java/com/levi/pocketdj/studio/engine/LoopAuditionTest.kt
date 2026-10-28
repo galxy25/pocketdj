@@ -300,4 +300,14 @@ class LoopAuditionTest {
     }
 
     private suspend fun LoopFactory.preview(s: StudioSample) = renderPreview(s, 0, LoopBeats.FOUR)
+
+    @Test fun engineLogsStartAndStopReasons() = runBlocking {
+        captureAudioDiag { lines ->
+            val a = LoopAudition({ FakeSink() }, { PcmBuffer(44_100, 2, FloatArray(200)) })
+            assertTrue(a.play("lp_x", File("loop.wav"), 100))
+            assertTrue(lines.any { it.startsWith("audio.play owner=studio.loop reason=user-play") })
+            a.stop("focus-loss")
+            assertTrue(lines.any { it == "audio.stop owner=studio.loop reason=focus-loss" })
+        }
+    }
 }

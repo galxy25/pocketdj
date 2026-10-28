@@ -42,7 +42,7 @@ class SingleAudioLayerGuardTest {
         for (f in sources()) {
             if (isCore(f)) continue
             val c = code(f.readText())
-            val usesAndroidTrack = imports(f.readText(), "android.media.AudioTrack") || c.contains("android.media.AudioTrack")
+            val usesAndroidTrack = imports(f.readText(), "android.media.AudioTrack") || f.readText().contains("import android.media.*") || c.contains("android.media.AudioTrack")
             for ((name, re) in forbidden) {
                 if (name.startsWith("AudioTrack") && !usesAndroidTrack) continue // e.g. the catalog's own AudioTrack data class
                 if (name == "MediaCodec decoder" && !c.contains("MediaCodec")) continue
@@ -50,6 +50,21 @@ class SingleAudioLayerGuardTest {
             }
         }
         assertEquals("audio-layer creation outside audio/core: $offenders", emptyList<String>(), offenders)
+    }
+
+    /** Existing non-core MediaPlayer sites (Studio/Demux/Mix playback chrome); a NEW one must be reviewed + added here. */
+    private val mediaPlayerAllowlist = setOf(
+        "studio/demux/StemPlayer.kt", "mix/recording/RecordingPlayer.kt", "screens/producer/tracks/ArtifactsSection.kt",
+    )
+
+    @Test fun mediaPlayerOnlyAtAllowlistedSitesAndEachIsGated() {
+        val sites = sources().filter { !isCore(it) && Regex("""(?<![\w.])(android\.media\.)?MediaPlayer\s*\(""").containsMatchIn(code(it.readText())) }
+            .map { it.relativeTo(root).invariantSeparatorsPath }.toSet()
+        assertEquals("new MediaPlayer() site outside the allowlist: ${sites - mediaPlayerAllowlist}", emptySet<String>(), sites - mediaPlayerAllowlist)
+        // The Studio sites must consult the mic gate (RecordingPlayer is the Mix recording review, not a Studio engine).
+        for (rel in listOf("studio/demux/StemPlayer.kt", "screens/producer/tracks/ArtifactsSection.kt")) {
+            assertTrue("$rel must call AudioFocusPolicy.gateStart", File(root, rel).readText().contains("gateStart(\"demux\")") || File(root, rel).readText().contains("gateStart(\"artifact\")"))
+        }
     }
 
     @Test fun guardActuallyDetectsEachForbiddenForm() {

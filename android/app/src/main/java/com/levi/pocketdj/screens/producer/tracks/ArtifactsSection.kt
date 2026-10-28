@@ -57,7 +57,9 @@ class ArtifactAuditionPlayer(private val beforePlay: () -> Unit = {}) {
         if (playingId == id) { stop(); return }
         stop()
         if (file == null) return
+        if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStart("artifact")) return
         beforePlay()
+        com.levi.pocketdj.studio.engine.StudioDiag.play("artifact", "user-play", started = true, detail = "id=$id")
         val p = MediaPlayer()
         try {
             p.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
@@ -74,6 +76,7 @@ class ArtifactAuditionPlayer(private val beforePlay: () -> Unit = {}) {
     }
 
     fun stop() {
+        if (player != null) com.levi.pocketdj.studio.engine.StudioDiag.stop("artifact", "user-stop")
         player?.let { runCatching { it.stop() }; runCatching { it.release() } }
         player = null; playingId = null
     }
