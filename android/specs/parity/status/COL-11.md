@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # COL-11 Favorites two-way Apple Music sync (opt-in) + owner-seed opt-in
 
@@ -7,7 +7,7 @@ state: in-progress
 - [x] CollectionsGraph wiring: launch + foreground run, onChanged chained to pushNow
 - [x] Settings "Favorites" section (toggle, Sync now, seed opt-in)
 - [x] Tests: FavoritesSyncServiceTest, OwnerSeedOptInTest
-- [ ] Full build/test green
+- [x] Full build/test green: 4889 tests, 0 failures (+16 new: FavoritesSyncServiceTest 12, OwnerSeedOptInTest 4); assembleDebug OK
 
 ## Notes / deviations
 - Request construction (idsSongs, chunking, lovedIds parse, love body) already lives in AppleMusicApi (SVC-15) with tests in AppleMusicApiTest; not duplicated. The service tests assert the real URLs through MockWebServer.

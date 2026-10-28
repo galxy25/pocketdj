@@ -70,7 +70,8 @@ class FavoritesSyncServiceTest {
         )
     }
 
-    private fun requests(): List<RecordedRequest> = (0 until server.requestCount).map { server.takeRequest() }
+    private var taken = 0
+    private fun requests(): List<RecordedRequest> = (taken until server.requestCount).map { server.takeRequest() }.also { taken = server.requestCount }
 
     @Test fun optOutNoCalls() = runTest {
         val s = store()
@@ -106,7 +107,7 @@ class FavoritesSyncServiceTest {
         val s = store()
         s.set("a", true, "am1")
         service(s).run()
-        server.takeAll()
+        requests()
         s.set("a", false, null)
         service(s).run()
         val reqs = requests()
@@ -124,7 +125,7 @@ class FavoritesSyncServiceTest {
         assertEquals(1, s.pendingPushes.size)
         assertNotNull(svc.state.value.lastError)
         ratingPutStatus = 200
-        server.takeAll()
+        requests()
         svc.run()
         assertTrue(s.pendingPushes.isEmpty())
         assertNull(svc.state.value.lastError)
@@ -220,6 +221,4 @@ class FavoritesSyncServiceTest {
         assertEquals(4, seed.version)
     }
 
-    private fun MockWebServer.takeAll() { repeat(requestCount - takenSoFar) { takeRequest() }; takenSoFar = requestCount }
-    private var takenSoFar = 0
 }
