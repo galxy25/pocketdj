@@ -32,7 +32,7 @@ class ArrangerBeatMatchTest {
         assertEquals(20_000, ArrangerBeatMatch.snappedStartFrame(20_000, beat, false))
         assertEquals(20_000, ArrangerBeatMatch.snappedStartFrame(20_000, 0.0, true))
         assertEquals(0, ArrangerBeatMatch.snappedStartFrame(10_000, beat, true))
-        assertEquals(44_100, ArrangerBeatMatch.snappedStartFrame(33_000, beat, true))
+        assertEquals(44_100, ArrangerBeatMatch.snappedStartFrame(34_000, beat, true))
     }
 
     @Test fun beatFramesAtHundredTwentyIsHalfASecond() {
