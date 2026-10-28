@@ -804,7 +804,8 @@ class PlaybackController(
             sequencer.abandonRun() // the player teardown below is the stop
         }
         if (activeBackend == ActiveBackend.APPLE_MUSIC) {
-            disarmAppleMusic()
+            // Final review: release() resigns the switchboard -> MediaSession.setPlayer, which asserts the application looper.
+            withContext(Dispatchers.Main) { disarmAppleMusic() }
             appleMusicBackend?.stop()
         } else {
             withController {
@@ -818,7 +819,8 @@ class PlaybackController(
      *  play so the two never sound at once (single-owner switching, §6.1). */
     private suspend fun stopAppleMusic() {
         if (activeBackend == ActiveBackend.APPLE_MUSIC) {
-            disarmAppleMusic()
+            // Final review: release() resigns the switchboard -> MediaSession.setPlayer, which asserts the application looper.
+            withContext(Dispatchers.Main) { disarmAppleMusic() }
             appleMusicBackend?.stop()
         }
     }
