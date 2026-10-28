@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # MIX-9 Auto-DJ machine + readiness rules + glide + remote freeze + jukebox queue seams
 

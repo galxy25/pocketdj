@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # BRW-6 History screen parity
 

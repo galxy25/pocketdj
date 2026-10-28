@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 COL-5: Multi-select (RowSelection + SelectableRow + SelectionBar), Android port.
 

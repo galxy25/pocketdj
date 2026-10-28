@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # GM-3 Gem Collector engine + GameRunPlayer over the sequencer
 
