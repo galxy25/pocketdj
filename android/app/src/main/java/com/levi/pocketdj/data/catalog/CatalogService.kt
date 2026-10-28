@@ -43,7 +43,12 @@ class CatalogService(
     )
 
     /** Decoded catalog + whether it came from the network or the disk cache. */
-    data class Loaded(val index: IndexJson, val fromCache: Boolean)
+    data class Loaded(
+        val index: IndexJson,
+        val fromCache: Boolean,
+        /** False when [index] is the caller's [load] seed (304 / failure) — nothing new to merge. */
+        val changed: Boolean = true,
+    )
 
     init {
         cacheDir.mkdirs()
@@ -64,7 +69,7 @@ class CatalogService(
      * Load one source URL per the iOS algorithm (catalog.md §6): conditional GET
      * → 304 serves cache → 2xx decode-then-cache → failure serves last-good.
      */
-    suspend fun load(url: String): Loaded = withContext(Dispatchers.IO) {
+    suspend fun load(url: String, seed: IndexJson? = null): Loaded = withContext(Dispatchers.IO) {
         val validators = readValidators(url)
         val request = Request.Builder()
             .url(url)
@@ -78,10 +83,13 @@ class CatalogService(
         try {
             http.newCall(request).execute().use { response ->
                 when {
+                    response.code == 304 && seed != null ->
+                        Loaded(seed, fromCache = true, changed = false)
+
                     response.code == 304 -> {
                         val cached = cachedIndexOrNull(url)
                             ?: throw IOException("304 with no usable cache for $url")
-                        Loaded(cached, fromCache = true)
+                        Loaded(cached, fromCache = true, changed = false)
                     }
 
                     response.isSuccessful -> {
@@ -116,15 +124,17 @@ class CatalogService(
                     }
 
                     else -> {
+                        if (seed != null) return@use Loaded(seed, fromCache = true, changed = false)
                         val cached = cachedIndexOrNull(url)
                             ?: throw IOException("HTTP ${response.code} for $url and no cache")
-                        Loaded(cached, fromCache = true)
+                        Loaded(cached, fromCache = true, changed = false)
                     }
                 }
             }
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error
-            cachedIndexOrNull(url)?.let { Loaded(it, fromCache = true) } ?: throw error
+            if (seed != null) return@withContext Loaded(seed, fromCache = true, changed = false)
+            cachedIndexOrNull(url)?.let { Loaded(it, fromCache = true, changed = false) } ?: throw error
         }
     }
 

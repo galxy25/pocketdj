@@ -3,9 +3,12 @@ package com.levi.pocketdj.data.catalog
 import com.levi.pocketdj.data.settings.AppSettingsStore
 import com.levi.pocketdj.data.settings.SourceConfig
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -43,6 +46,21 @@ class CatalogRepository(
     val state: StateFlow<CatalogState> = _state.asStateFlow()
 
     /**
+     * Catalog-only view: emits only when the [MergedCatalog] instance changes, so
+     * collectors don't recompose on isRefreshing flips of an unchanged (304) refresh.
+     */
+    val catalogFlow: kotlinx.coroutines.flow.Flow<MergedCatalog?> =
+        _state.map { it.catalog }.distinctUntilChanged { a, b -> a === b }
+
+    /** Test seam: number of refreshInternal passes that have fully finished. */
+    private val _refreshCompletions = AtomicInteger(0)
+    val refreshCompletions: Int get() = _refreshCompletions.get()
+
+    private fun timing(msg: String) {
+        runCatching { android.util.Log.i("CatalogTiming", msg) }
+    }
+
+    /**
      * Merge-order seam for later phases: synthetic local sources (iOS
      * "Discover"/"Imported") are appended AFTER all real sources so a real
      * source always shadows a provisional twin. Empty on Android P1.
@@ -64,6 +82,17 @@ class CatalogRepository(
      * from the single-flight load coroutine.
      */
     private val lastGoodBySource = HashMap<String, IndexJson>()
+
+    /** Exact documents (by identity) behind the currently-published catalog. */
+    private var lastMergedInputs: List<IndexJson>? = null
+
+    /** Test seam: number of [MergedCatalog.merge] calls made. */
+    @Volatile
+    var mergeCount = 0
+        private set
+
+    private fun sameInputs(a: List<IndexJson>?, b: List<IndexJson>): Boolean =
+        a != null && a.size == b.size && a.indices.all { a[it] === b[it] }
 
     /** Seed from cache (once) then refresh — call at app launch. */
     fun loadIfNeeded() {
@@ -109,6 +138,7 @@ class CatalogRepository(
 
     private suspend fun seedFromCache() {
         val sources = enabledSources()
+        val t0 = System.nanoTime()
         val cached = withContext(Dispatchers.IO) {
             sources.mapNotNull { source ->
                 service.cachedIndexOrNull(source.url)?.also { lastGoodBySource[source.url] = it }
@@ -118,20 +148,26 @@ class CatalogRepository(
             _state.update { it.copy(phase = Phase.Loading) }
             return
         }
+        val inputs = cached + syntheticDocuments()
         val merged = withContext(Dispatchers.Default) {
-            MergedCatalog.merge(cached + syntheticDocuments())
+            mergeCount++
+            MergedCatalog.merge(inputs)
         }
+        lastMergedInputs = inputs
         _state.update { it.copy(catalog = merged, phase = Phase.Ready, error = null) }
+        timing("seed ready in ${(System.nanoTime() - t0) / 1_000_000} ms (${cached.size} sources)")
     }
 
     private suspend fun refreshInternal() {
         val sources = enabledSources()
+        val t0 = System.nanoTime()
+        var merged = false
         _state.update { it.copy(isRefreshing = true) }
         try {
             val loaded = ArrayList<IndexJson>(sources.size)
             var lastError: String? = null
             for (source in sources) {
-                runCatching { service.load(source.url) }
+                runCatching { service.load(source.url, lastGoodBySource[source.url]) }
                     .onSuccess {
                         lastGoodBySource[source.url] = it.index
                         loaded.add(it.index)
@@ -157,14 +193,25 @@ class CatalogRepository(
                 }
                 return
             }
-            val merged = withContext(Dispatchers.Default) {
-                MergedCatalog.merge(loaded + syntheticDocuments())
+            val inputs = loaded + syntheticDocuments()
+            if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs)) {
+                // Every source unchanged (304 / failure on seed): skip the derived rebuild.
+                _state.update { it.copy(phase = Phase.Ready, error = lastError) }
+                return
             }
+            val mergedCatalog = withContext(Dispatchers.Default) {
+                mergeCount++
+                MergedCatalog.merge(inputs)
+            }
+            merged = true
+            lastMergedInputs = inputs
             _state.update {
-                it.copy(catalog = merged, phase = Phase.Ready, error = lastError)
+                it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError)
             }
         } finally {
             _state.update { it.copy(isRefreshing = false) }
+            timing("refresh complete in ${(System.nanoTime() - t0) / 1_000_000} ms (merged=$merged)")
+            _refreshCompletions.incrementAndGet()
         }
     }
 }
