@@ -9,7 +9,7 @@ export const meta = {
   ],
 }
 
-// args: { wave: n, packages: [roadmap package entries] }
+// args: { wave: n, ids: [package ids] } — agents read their own entry from roadmap.json
 // RESUMABILITY: every agent is idempotent — progress lives in git (branch parity/<ID>, WIP commits)
 // and in android/specs/parity/status/<ID>.md, so a run killed by a session limit can be re-launched
 // (same or new session) and each agent picks up from what is already committed.
@@ -21,7 +21,9 @@ const ENV = 'export JAVA_HOME=/opt/homebrew/opt/openjdk@21 ANDROID_HOME=$HOME/Li
 const TRAILER = 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01Uu1uQACmegGg8FWrQT7vxC'
 
 const wave = args.wave
-const pkgs = args.packages
+const pkgs = args.ids.map(id => ({ id, title: id }))
+const RM = `${WT}/android/specs/parity/roadmap.json`
+const entry = (id) => `ROADMAP ENTRY: read it with \`jq '.packages[] | select(.id=="${id}")' ${RM}\` (title, goal, files you OWN, shared_touchpoints, depends_on, acceptance, unit_tests, emulator_steps, device_only).`
 
 const DOCS = `Design sources: the roadmap entry below; the area audit ${WT}/android/specs/parity/audits/<area>.json (inventory + architecture markdown for the area — read the parts relevant to you); ${WT}/docs/architecture/android-parity.md (cross-cutting decisions — follow them); ${WT}/android/specs/parity/roadmap.json (decisions + other packages, for context only). iOS reference code: ${REPO}/apple/PocketDJ (port BEHAVIOR faithfully, including hard-won invariants the audit names).`
 
@@ -47,8 +49,7 @@ const FIX_SCHEMA = { type: 'object', properties: {
 
 const implement = (p) => agent(`You are implementing Android parity work package ${p.id} (wave ${wave}) for PocketDJ.
 
-ROADMAP ENTRY:
-${JSON.stringify(p, null, 1)}
+${entry(p.id)}
 
 ${DOCS}
 
@@ -56,10 +57,10 @@ WORKSPACE + RESUME PROTOCOL (follow exactly — a previous attempt may have been
 1. W=${PW}/${p.id}. If ${WT}/${st(p.id)} exists on feat/android-parity and says "state: merged" → return status already-done.
 2. If W exists, cd there and continue: read W/${st(p.id)} (your progress checklist) and \`git log feat/android-parity..HEAD\`; do not redo committed steps. Else if branch parity/${p.id} exists: \`git -C ${REPO} worktree add ${W_(p)} parity/${p.id}\`. Else: \`git -C ${REPO} worktree add -b parity/${p.id} ${W_(p)} feat/android-parity\`.
 3. Work ONLY in W. Write/maintain W/${st(p.id)}: header \`state: in-progress\`, then a checklist of sub-steps with [x]/[ ], plus notes on deviations and any file you had to touch outside your owned files. COMMIT EARLY AND OFTEN (after each sub-step that compiles: \`git add -A && git commit -m "WIP ${p.id}: <step>"\`) so nothing is lost if you are killed. Never commit build outputs. Do not push.
-4. Stay inside your owned files + shared_touchpoints; other packages in this wave run in parallel on other files. If you must touch another file, keep the edit minimal and additive and note it in the status file.
+4. Do NOT edit docs/ARCHITECTURE-ANDROID.md (the integrator updates its status ledger for every package — ignore that acceptance line). Stay inside your owned files + shared_touchpoints; other packages in this wave run in parallel on other files. If you must touch another file, keep the edit minimal and additive and note it in the status file.
 5. Write real JVM unit tests for the logic (pure functions/state machines/serialization/iOS-shape JSON compat); no tests that assert nothing.
 6. ${BUILD}
-7. Finish: status file \`state: implemented\` + summary + test count; final commit "${p.id}: ${p.title.replace(/"/g, "'")}" with trailer lines:
+7. Finish: status file \`state: implemented\` + summary + test count; final commit "${p.id}: <roadmap title>" with trailer lines:
 ${TRAILER}
 Return the result object (head_sha = git rev-parse HEAD).`, { label: `impl:${p.id}`, phase: 'Implement', schema: IMPL_SCHEMA, model: 'sonnet' })
 
@@ -69,8 +70,7 @@ const review = (p, impl) => agent(`You are an ADVERSARIAL senior reviewer (Andro
 Worktree ${W_(p)} (branch parity/${p.id}); review \`git -C ${W_(p)} diff feat/android-parity...HEAD\`. READ ONLY — do not edit or commit.
 If ${W_(p)}/${st(p.id)} already contains a "## Review" section with "fixes applied", return skipped=true and findings=[].
 Implementer's report: ${JSON.stringify(impl)}
-ROADMAP ENTRY:
-${JSON.stringify(p, null, 1)}
+${entry(p.id)}
 ${DOCS}
 Hunt for REAL defects, and verify each by reading the code (and the iOS original it claims to port) before reporting:
 - behavior divergence from iOS that the user would notice; dropped invariants the audit calls out (dead-air/stall discipline, generation counters, sync-clobber guards, iOS JSON shape compatibility)
@@ -111,7 +111,7 @@ const mergeable = done.filter(d => d.impl && d.impl.status === 'implemented').ma
 const integ = await agent(`You are the INTEGRATOR for PocketDJ Android parity wave ${wave}. Integration worktree: ${WT} (branch feat/android-parity).
 Packages to merge (each on local branch parity/<ID>, worktree ${PW}/<ID>): ${JSON.stringify(mergeable)}.
 Per-package reports: ${JSON.stringify(done.map(d => ({ id: d.id, impl: d.impl && d.impl.summary, actionable_findings: d.actionable, fix: d.fx })))}
-Roadmap entries (for emulator_steps): ${JSON.stringify(pkgs.filter(p => mergeable.includes(p.id)).map(p => ({ id: p.id, title: p.title, emulator_steps: p.emulator_steps, device_only: p.device_only })))}
+Roadmap entries (emulator_steps, device_only, acceptance): read from ${RM} by id.
 
 RESUME-SAFE PROTOCOL:
 1. cd ${WT}. Ensure a clean tree (\`git status\`); if a merge is in progress from a killed run, finish or abort it sensibly. For each ID: skip if \`git merge-base --is-ancestor parity/<ID> HEAD\` (already merged). Else if the branch has uncommitted work in ${PW}/<ID>, commit it there first ("WIP <ID>: integrator rescue"). Then \`git merge --no-ff parity/<ID> -m "Merge parity/<ID>"\`; resolve conflicts preserving BOTH sides' intent (hot files: nav graph, DI container, settings registry, gradle files, manifest).
