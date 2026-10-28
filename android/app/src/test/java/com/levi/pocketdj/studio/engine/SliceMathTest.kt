@@ -62,6 +62,14 @@ class SliceMathTest {
         assertEquals(1000, SliceMath.msAt(0.25f, 4000))
     }
 
+    @Test fun touchGrabsTheNearestMarkerWithinSlop() {
+        val s = listOf(sl(0, 0), sl(1, 1000), sl(2, 1100))     // 1 s and 1.1 s of 4 s on a 400 px strip: 100 px, 110 px
+        assertEquals(1, SliceMath.nearestSlot(s, 4000, 400f, 103f, 28f))
+        assertEquals(2, SliceMath.nearestSlot(s, 4000, 400f, 109f, 28f))
+        assertNull(SliceMath.nearestSlot(s, 4000, 400f, 250f, 28f))
+        assertNull(SliceMath.nearestSlot(s, 0, 400f, 0f, 28f))
+    }
+
     @Test fun addedPadLandsProportionallyToItsSlot() {
         assertEquals(0, SliceMath.defaultAddStart(8000, 0))
         assertEquals(3000, SliceMath.defaultAddStart(8000, 3))

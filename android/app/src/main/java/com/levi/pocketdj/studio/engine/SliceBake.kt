@@ -46,6 +46,13 @@ object SliceMath {
     /** A marker dragged to fraction [frac] of the waveform -> ms, clamped to [0, durationMs]. */
     fun msAt(frac: Float, durationMs: Int): Int = (frac.coerceIn(0f, 1f).toDouble() * durationMs).toInt()
 
+    /** The pad whose marker is nearest a touch at [x] px (within [slop] px) on a [widthPx]-wide waveform; null when none. */
+    fun nearestSlot(slices: List<StudioSlice>, durationMs: Int, widthPx: Float, x: Float, slop: Float): Int? {
+        if (durationMs <= 0 || widthPx <= 0f) return null
+        return slices.map { it.slot to kotlin.math.abs(it.startMs.coerceIn(0, durationMs).toFloat() / durationMs * widthPx - x) }
+            .filter { it.second <= slop }.minByOrNull { it.second }?.first
+    }
+
     /** Where a freshly-added pad lands: proportional to its slot so there is something to nudge/drag. */
     fun defaultAddStart(durationMs: Int, slot: Int): Int = maxOf(0, durationMs) * slot / StudioSlice.MAX_SLOTS
 
