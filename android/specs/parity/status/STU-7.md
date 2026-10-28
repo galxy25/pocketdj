@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-7 Collections integration
 

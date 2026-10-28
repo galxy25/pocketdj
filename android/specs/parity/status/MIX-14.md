@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # MIX-14 Mix screen shell: session header, Auto bars, crate menus, download bar, loader sheet, Settings > Mix, route
 

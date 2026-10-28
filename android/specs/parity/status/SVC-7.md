@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-7 Document sync engine + ProfileStore + in-memory CloudDocDatabase + SyncRegistry
 

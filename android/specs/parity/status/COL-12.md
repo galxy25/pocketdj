@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-12 Recently added virtual playlist
 - [x] IndexSong.dateAdded + Settings count/clamp already existed (earlier packages); added IndexModelsDecodeTest.dateAddedOptional
