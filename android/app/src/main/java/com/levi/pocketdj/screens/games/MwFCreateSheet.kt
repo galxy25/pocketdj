@@ -26,6 +26,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,19 +46,19 @@ fun MwFCreateSheet(graph: AppGraph, onDismiss: () -> Unit) {
     val serverUrl = settings?.jukeboxServerUrl.orEmpty()
     val scope = rememberCoroutineScope()
 
-    var sessionName by remember { mutableStateOf("") }
-    var theme by remember { mutableStateOf("") }
-    var displayName by remember { mutableStateOf("") }
-    var turnSeconds by remember { mutableIntStateOf(120) }
-    var outside by remember { mutableStateOf(false) }
-    var firstEnds by remember { mutableStateOf(true) }
+    var sessionName by rememberSaveable { mutableStateOf("") }
+    var theme by rememberSaveable { mutableStateOf("") }
+    var displayName by rememberSaveable { mutableStateOf("") }
+    var turnSeconds by rememberSaveable { mutableIntStateOf(120) }
+    var outside by rememberSaveable { mutableStateOf(false) }
+    var firstEnds by rememberSaveable { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) {
         val name = runCatching { graph.servicesGraph.profile.name }.getOrDefault("")
         val (dn, sn) = MwFScreenLogic.defaultNames(name)
-        displayName = dn
-        sessionName = sn
+        if (displayName.isEmpty()) displayName = dn
+        if (sessionName.isEmpty()) sessionName = sn
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {

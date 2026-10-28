@@ -48,7 +48,8 @@ object MwFScreenLogic {
     /** Whose turn + whether I can suggest right now (the server enforces regardless). */
     fun canSuggestNow(state: MwFState?, youId: String?): Boolean {
         if (state == null) return true
-        if (state.turn?.memberId != null && state.turn.memberId == youId) return true
+        // Mirrors iOS `st.turn?.memberId == youId` (nil == nil is true).
+        if (state.turn?.memberId == youId) return true
         return state.settings?.acceptOutsideTurn ?: false
     }
 

@@ -225,7 +225,7 @@ fun MwFSessionScreen(graph: AppGraph, sessionId: String, onClose: () -> Unit, mo
                             val a = suggestArtist.trim()
                             if (t.isEmpty()) return@Button
                             suggestError = null
-                            scope.launch {
+                            graph.appScope.launch {
                                 try {
                                     friends.suggest(sessionId, t, a)
                                     suggestTitle = ""; suggestArtist = ""
@@ -260,7 +260,7 @@ fun MwFSessionScreen(graph: AppGraph, sessionId: String, onClose: () -> Unit, mo
                     if (sg.status == "accepted" && sgId != null) {
                         OutlinedButton(
                             enabled = MwFScreenLogic.plusOneEnabled(sg, youId, ended),
-                            onClick = { scope.launch { friends.plusOne(sessionId, sgId) } },
+                            onClick = { graph.appScope.launch { friends.plusOne(sessionId, sgId) } },
                             modifier = Modifier.testTag("mwf-plusone-$sgId"),
                         ) { Text("+1 (${sg.plusOnes?.size ?: 0})") }
                     }
@@ -277,9 +277,9 @@ fun MwFSessionScreen(graph: AppGraph, sessionId: String, onClose: () -> Unit, mo
                         onAccept = { sg ->
                             val sgId = sg.id ?: return@InboxRow
                             approving.add(sgId)
-                            scope.launch { try { friends.approve(sessionId, sg) } finally { approving.remove(sgId) } }
+                            graph.appScope.launch { try { friends.approve(sessionId, sg) } finally { approving.remove(sgId) } }
                         },
-                        onReject = { sg -> scope.launch { friends.reject(sessionId, sg) } },
+                        onReject = { sg -> graph.appScope.launch { friends.reject(sessionId, sg) } },
                     )
                 }
                 item {
@@ -290,13 +290,13 @@ fun MwFSessionScreen(graph: AppGraph, sessionId: String, onClose: () -> Unit, mo
                             for ((secs, label) in MwFScreenLogic.TURN_CHOICES) {
                                 FilterChip(
                                     selected = (s?.turnSeconds ?: 120) == secs,
-                                    onClick = { scope.launch { friends.updateSettings(sessionId, MwFSettings(turnSeconds = secs)) } },
+                                    onClick = { graph.appScope.launch { friends.updateSettings(sessionId, MwFSettings(turnSeconds = secs)) } },
                                     label = { Text(label) },
                                 )
                             }
                         }
-                        SwitchRow("Accept suggestions outside turns", s?.acceptOutsideTurn ?: false, { on -> scope.launch { friends.updateSettings(sessionId, MwFSettings(acceptOutsideTurn = on)) } }, "mwf-config-outside")
-                        SwitchRow("Turn ends on first suggestion", s?.turnEndsOnFirstSuggestion ?: true, { on -> scope.launch { friends.updateSettings(sessionId, MwFSettings(turnEndsOnFirstSuggestion = on)) } }, "mwf-config-first")
+                        SwitchRow("Accept suggestions outside turns", s?.acceptOutsideTurn ?: false, { on -> graph.appScope.launch { friends.updateSettings(sessionId, MwFSettings(acceptOutsideTurn = on)) } }, "mwf-config-outside")
+                        SwitchRow("Turn ends on first suggestion", s?.turnEndsOnFirstSuggestion ?: true, { on -> graph.appScope.launch { friends.updateSettings(sessionId, MwFSettings(turnEndsOnFirstSuggestion = on)) } }, "mwf-config-first")
                         SwitchRow("Queue accepted songs", queueAccepted, { friends.setQueueAccepted(it) }, "mwf-queue-accepted")
                     }
                 }
@@ -343,7 +343,7 @@ fun MwFSessionScreen(graph: AppGraph, sessionId: String, onClose: () -> Unit, mo
             onDismissRequest = { showEndConfirm = false },
             title = { Text("End this session for everyone?") },
             confirmButton = {
-                TextButton(onClick = { showEndConfirm = false; scope.launch { friends.endSession(sessionId) } }, modifier = Modifier.testTag("mwf-end-confirm")) {
+                TextButton(onClick = { showEndConfirm = false; graph.appScope.launch { friends.endSession(sessionId) } }, modifier = Modifier.testTag("mwf-end-confirm")) {
                     Text("End Session", color = MaterialTheme.colorScheme.error)
                 }
             },

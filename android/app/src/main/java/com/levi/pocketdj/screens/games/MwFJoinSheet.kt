@@ -22,6 +22,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -43,8 +44,8 @@ fun MwFJoinSheet(graph: AppGraph, link: MwFLink?, onDismiss: () -> Unit) {
     val friends = graph.gamesGraph.friends
     val joining by friends.joining.collectAsState()
     val scope = rememberCoroutineScope()
-    var pasted by remember { mutableStateOf("") }
-    var displayName by remember { mutableStateOf("") }
+    var pasted by rememberSaveable { mutableStateOf("") }
+    var displayName by rememberSaveable { mutableStateOf("") }
     var themePreview by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -52,7 +53,7 @@ fun MwFJoinSheet(graph: AppGraph, link: MwFLink?, onDismiss: () -> Unit) {
 
     LaunchedEffect(Unit) {
         val name = runCatching { graph.servicesGraph.profile.name }.getOrDefault("")
-        displayName = MwFScreenLogic.defaultNames(name).first
+        if (displayName.isEmpty()) displayName = MwFScreenLogic.defaultNames(name).first
     }
 
     // Keyed on the pasted text: every edit cancels the in-flight fetch and clears the old theme first.

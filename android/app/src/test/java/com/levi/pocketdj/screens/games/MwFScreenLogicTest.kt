@@ -8,6 +8,7 @@ import com.levi.pocketdj.data.games.friends.MwFTurn
 import org.junit.Test
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 
 class MwFScreenLogicTest {
@@ -37,8 +38,14 @@ class MwFScreenLogicTest {
         assertTrue(L.canSuggestNow(st("me", true), "me"))
         // no turn at all and no outside-turn allowance: not allowed
         assertFalse(L.canSuggestNow(MwFState(), "me"))
-        // null identity never matches a turn
-        assertFalse(L.canSuggestNow(st(null, false), null))
+        // iOS parity: nil turn member == nil youId enables the composer
+        assertTrue(L.canSuggestNow(st(null, false), null))
+        assertFalse(L.canSuggestNow(st(null, false), "me"))
+    }
+
+    @Test fun openedSessionRoutesKnownToScreenUnknownToJoin() {
+        assertEquals("a", routeOpenedSession("a") { it == "a" })
+        assertNull(routeOpenedSession("zzz") { it == "a" })
     }
 
     @Test fun leaderboardSortsDescendingAndStable() {
