@@ -347,4 +347,21 @@ class AppSettingsStore(
         }
         return minted
     }
+
+    /** Account deletion (SVC-13): forget the per-install id so the next call mints a fresh one. */
+    suspend fun resetInstallId() {
+        dataStore.edit { it.remove(Keys.INSTALL_ID.key) }
+    }
+
+    /**
+     * Device reset (SVC-13): every preference back to its default in ONE edit, the per-install id
+     * preserved (a reset device is the same install; only account deletion re-mints it).
+     */
+    suspend fun resetToDefaultsKeepingInstallId() {
+        dataStore.edit { prefs ->
+            val keep = prefs[Keys.INSTALL_ID.key]
+            prefs.clear()
+            if (!keep.isNullOrEmpty()) prefs[Keys.INSTALL_ID.key] = keep
+        }
+    }
 }

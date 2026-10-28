@@ -52,6 +52,9 @@ class PlaybackSessionStore(
         }
     }
 
+    /** Block until every queued disk write/delete has executed (reset drain). */
+    fun awaitWrites() = writer.awaitIdle()
+
     /** End of the session (stop / natural end-of-set): forget it and delete the file. */
     fun clear() = synchronized(lock) {
         current = null
