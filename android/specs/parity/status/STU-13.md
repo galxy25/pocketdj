@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-13 — Bounce (artifact), record-to-master (Clean/Quantized), scissor trim (multi-select), Beat Match + grid analyzer, channel-strip bake
 
