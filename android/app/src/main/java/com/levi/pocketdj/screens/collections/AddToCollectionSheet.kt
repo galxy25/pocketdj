@@ -392,8 +392,8 @@ private fun SheetContent(
                 }
                 item(key = "sources-footer") {
                     SectionFooter(
-                        "Tapping a source playlist adds to your local copy. Source playlists " +
-                            "can't be edited from this device, so the add stays on this device.",
+                        "Tapping a source playlist adds to your local copy. Apple Music playlists " +
+                            "also receive the add once you're signed in to Apple Music.",
                     )
                 }
             }
@@ -403,16 +403,24 @@ private fun SheetContent(
     }
 }
 
-/** The result-alert copy — Android-honest (no write-back, no follow line). */
+/** The result-alert copy; the write-back line follows iOS `addToSource`. */
 private fun sourceAddMessage(
     outcome: CollectionsStore.IndexPlaylistAdd,
     source: SourcePlaylist,
-): String = when {
+): String {
+    val name = source.playlist.name
     // A freshly-created duplicate is seeded WITH the source's songs, so it reports
     // both createdDuplicate AND alreadyPresent — the "made a copy" case must win.
-    outcome.createdDuplicate -> "Made a local copy of “${source.playlist.name}” and added the song."
-    outcome.alreadyPresent -> "Already in your copy of “${source.playlist.name}”."
-    else -> "Added to your copy of “${source.playlist.name}”."
+    val head = when {
+        outcome.createdDuplicate -> "Made a local copy of \u201c$name\u201d and added the song."
+        outcome.alreadyPresent -> "Already in your copy of \u201c$name\u201d."
+        else -> "Added to your copy of \u201c$name\u201d."
+    }
+    return when {
+        outcome.alreadyUpstream -> "$head\n\nYour Apple Music library playlist already has it."
+        outcome.writeBackQueued -> "$head\n\nIt\u2019s also being added to \u201c$name\u201d in your Apple Music library."
+        else -> head
+    }
 }
 
 private fun AddTarget.Kind.icon(): ImageVector = when (this) {
