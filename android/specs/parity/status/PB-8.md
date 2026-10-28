@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # PB-8 - Apple Music rows in a run
 
@@ -37,4 +37,4 @@ fixes applied
 - MINOR AppleMusicRowResolver:726 token fetch on resolve path -> fixed. Resolver uses AppleMusicBackend.canPlayFullTrackCached (no network); a cold token is warmed off-path (scope.launch) so the next row sees it. Trade-off: the first AM row after a cold token falls through to the rip rungs.
 - NIT AppleMusicEndMonitor:641 -> documented (neverStarted covered by the 10 s confirm timeout in production).
 
-Tests: 2508 run, 0 failures (was 2497-class baseline; new AppleMusicSessionCoreTest + 4 added cases). assembleDebug green.
+Tests: 2508 run, 0 failures (was 2498; +10 new: AppleMusicSessionCoreTest 7, monitor 2, row 1). assembleDebug green.
