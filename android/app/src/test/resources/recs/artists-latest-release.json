@@ -1,0 +1,66 @@
+{
+  "data": [
+    {
+      "id": "1234567",
+      "type": "artists",
+      "href": "/v1/catalog/us/artists/1234567",
+      "attributes": { "name": "Larry June", "url": "https://music.apple.com/us/artist/larry-june/1234567" },
+      "views": {
+        "latest-release": {
+          "href": "/v1/catalog/us/artists/1234567/view/latest-release",
+          "attributes": { "title": "Latest Release" },
+          "data": [
+            {
+              "id": "6786105209",
+              "type": "albums",
+              "attributes": {
+                "name": "Who Coppin",
+                "releaseDate": "2026-10-02",
+                "artwork": { "url": "https://is1-ssl.mzstatic.com/image/{w}x{h}bb.jpg", "width": 3000, "height": 3000 },
+                "trackCount": 12,
+                "contentRating": "explicit",
+                "isSingle": false,
+                "isCompilation": false
+              }
+            }
+          ]
+        },
+        "similar-artists": {
+          "data": [
+            { "id": "222", "type": "artists", "attributes": { "name": "Curren$y" } },
+            { "id": "333", "type": "artists", "attributes": { "name": "Boldy James" } },
+            { "id": "not-a-number", "type": "artists" }
+          ]
+        }
+      }
+    },
+    {
+      "id": "7654321",
+      "type": "artists",
+      "attributes": { "name": "Northbound" },
+      "views": {
+        "latest-release": {
+          "data": [
+            {
+              "id": "9000000003",
+              "type": "albums",
+              "attributes": { "name": "Preorder", "releaseDate": "2026-12-01", "trackCount": 1, "isSingle": true }
+            }
+          ]
+        },
+        "similar-artists": { "data": [] }
+      }
+    },
+    {
+      "id": "555",
+      "type": "artists",
+      "attributes": { "name": "Year Only" },
+      "views": {
+        "latest-release": {
+          "data": [ { "id": "1", "type": "albums", "attributes": { "name": "Old Comp", "releaseDate": "2026", "isCompilation": true } } ]
+        }
+      }
+    },
+    { "id": "999", "type": "artists", "attributes": { "name": "No Views" } }
+  ]
+}

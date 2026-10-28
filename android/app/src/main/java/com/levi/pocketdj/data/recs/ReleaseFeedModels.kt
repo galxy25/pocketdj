@@ -269,7 +269,7 @@ object ArtistsCatalogResponse {
 
 /** Pure glue the launch wiring uses (kept out of the graph so it is unit-tested). */
 object ReleaseFeedWiring {
-    private val creditSplit = Regex("""\s*(?:,|&|;|/|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\bx\b)\s*""", RegexOption.IGNORE_CASE)
+    private val creditSplit = Regex("""\s*[,&;/]\s*|\s+(?:feat\.?|ft\.?|featuring|with|x)\s+""", RegexOption.IGNORE_CASE)
 
     private fun norm(raw: String): String = raw.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
 
