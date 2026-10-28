@@ -49,22 +49,32 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name "profile-sync-access" 
 ROLE_ARN="arn:aws:iam::${ACCT}:role/${ROLE}"
 
 # 3) enrollment secret + cap (preserve-then-default).
+FN_EXISTS=0
+aws lambda get-function --function-name "$FN" --region "$REGION" >/dev/null 2>&1 && FN_EXISTS=1
+# Errors are NOT swallowed for an existing function: an unreadable secret must abort, never be re-minted.
 getenvvar(){ aws lambda get-function-configuration --function-name "$FN" --region "$REGION" \
-  --query "Environment.Variables.$1" --output text 2>/dev/null || true; }
+  --query "Environment.Variables.$1" --output text; }
 ENROLL="${PROFILE_SYNC_ENROLL_SECRET:-}"
-[ -z "$ENROLL" ] && { ENROLL="$(getenvvar ENROLL_SECRET)"; [ "$ENROLL" = "None" ] && ENROLL=""; }
+if [ -z "$ENROLL" ] && [ "$FN_EXISTS" = 1 ]; then
+  ENROLL="$(getenvvar ENROLL_SECRET)" || { say "ERROR: function exists but ENROLL_SECRET is unreadable; refusing to mint a new one (set PROFILE_SYNC_ENROLL_SECRET to rotate deliberately)"; exit 1; }
+  [ "$ENROLL" = "None" ] && ENROLL=""
+  [ -z "$ENROLL" ] && { say "ERROR: function exists without ENROLL_SECRET; set PROFILE_SYNC_ENROLL_SECRET explicitly"; exit 1; }
+fi
 MINTED=0
 if [ -z "$ENROLL" ]; then ENROLL="$(openssl rand -hex 24)"; MINTED=1; fi
 FP="$(printf %s "$ENROLL" | shasum -a 256 | cut -c1-16)"
 if [ "$MINTED" = 1 ]; then say "MINTED enrollment secret (sha256 ${FP}…): $ENROLL"
 else say "enrollment secret unchanged (sha256 ${FP}…)"; [ "${SHOW_SECRET:-0}" = 1 ] && say "    $ENROLL"; fi
 MAXP="${MAX_PROFILES:-}"
-[ -z "$MAXP" ] && { MAXP="$(getenvvar MAX_PROFILES)"; { [ "$MAXP" = "None" ] || [ -z "$MAXP" ]; } && MAXP=50; }
+if [ -z "$MAXP" ]; then
+  [ "$FN_EXISTS" = 1 ] && MAXP="$(getenvvar MAX_PROFILES 2>/dev/null || true)"
+  { [ "${MAXP:-None}" = "None" ] || [ -z "$MAXP" ]; } && MAXP=50
+fi
 
 # 4) package + create/update the function (index.mjs only; @aws-sdk v3 is in the runtime).
 ZIP="$(mktemp -d)/fn.zip"; ( cd "$SELF" && zip -q -r "$ZIP" index.mjs )
 ENVVARS="Variables={PROFILE_BUCKET=$BUCKET,ENROLL_SECRET=$ENROLL,MAX_PROFILES=$MAXP}"
-if aws lambda get-function --function-name "$FN" --region "$REGION" >/dev/null 2>&1; then
+if [ "$FN_EXISTS" = 1 ]; then
   say "updating function"
   aws lambda update-function-code --function-name "$FN" --zip-file "fileb://$ZIP" --region "$REGION" >/dev/null
   aws lambda wait function-updated --function-name "$FN" --region "$REGION"
@@ -97,7 +107,7 @@ if [ -f "$CFG" ]; then
     const fs=require("fs");const p=process.env.CFG;const d=JSON.parse(fs.readFileSync(p,"utf8"));
     d.endpoints.profileSyncBase=process.env.URL;fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n");'
   say "wrote profileSyncBase into $CFG"
-  ( cd "$ROOT" && npx --no-install tsx scripts/validate-endpoints.ts "$CFG" ) || say "WARN: validate-endpoints failed — check the doc before deploying it"
+  ( cd "$ROOT" && npx --no-install tsx scripts/validate-endpoints.ts "$CFG" ) || { say "ERROR: validate-endpoints failed — fix the doc before deploying it"; exit 1; }
 fi
 say "done. Endpoint: $API_URL   verify: curl -s $API_URL/health"
 say "then: run deploy.sh for the PWA so the endpoint doc (config/endpoints.json on S3 (scripts/deploy.sh)) carries profileSyncBase."

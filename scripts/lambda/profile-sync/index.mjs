@@ -7,8 +7,9 @@
 //   GET    /health                       -> { ok:true }                          (no auth)
 //   POST   /enroll                       -> 200 { ok, created } | 401 | 409      (X-PocketDJ-Enroll)
 //   GET    /meta[?keys=a,b]              -> { key: modifiedAtMs } (existing keys only)
-//   GET    /doc/{key}                    -> raw body + X-PocketDJ-Modified-At | 404
-//   PUT    /doc/{key}                    -> 200 { ok, key, modifiedAtMs }
+//   GET    /doc/{key}                    -> raw body + X-PocketDJ-Modified-At/-Device | 404
+//                                           (Accept-Encoding: gzip => stored gzip bytes passed through)
+//   PUT    /doc/{key}                    -> 200 { ok, key, modifiedAtMs }  (Content-Encoding: gzip accepted)
 //   DELETE /doc/{key}                    -> 200 { ok:true }  (idempotent)
 //   DELETE /profile                      -> 200 { ok:true, deleted:n }  (wipes the whole prefix)
 // Every route except /health and /enroll needs `X-PocketDJ-Profile: <profileId>` and
@@ -20,11 +21,17 @@
 //      MAX_PROFILES (optional enroll cap, read per request; 0/unset = unlimited).
 
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 
 const KEY_RE = /^[a-z0-9-]{1,40}$/;
 const PROFILE_RE = /^[a-z0-9-]{1,64}$/;
 const HASH_RE = /^[a-f0-9]{64}$/;
-const MAX_BODY_BYTES = 5 * 1024 * 1024; // API Gateway/Lambda payload cap is 6 MB
+// Cap on the bytes that cross API Gateway/Lambda (6 MB hard limit; base64 inflates binary by 4/3, so a
+// gzip body is capped on its WIRE size = 4 MB). Plain JSON bodies are capped at 5 MB. Clients with a
+// bigger doc (iOS collections is ~4 MB and growing) MUST send `Content-Encoding: gzip` (JSON ~10:1).
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
+const MAX_GZIP_WIRE_BYTES = 4 * 1024 * 1024;
+const MAX_INFLATED_BYTES = 128 * 1024 * 1024; // decompression-bomb guard
 const AUTH_KEY = '_auth';
 
 // ── Store abstraction (S3 in prod, in-memory in tests) ──────────────────────────────────────────
@@ -41,7 +48,9 @@ async function s3Store() {
     async get(k) {
       try {
         const r = await client.send(new GetObjectCommand({ Bucket: Bucket(), Key: k }));
-        return { body: await r.Body.transformToString(), meta: r.Metadata || {} };
+        const meta = r.Metadata || {};
+        const bytes = await r.Body.transformToByteArray();
+        return { body: meta.encoding === 'gzip' ? Buffer.from(bytes) : Buffer.from(bytes).toString('utf8'), meta };
       } catch (e) { if (missing(e)) return null; throw e; }
     },
     async head(k) {
@@ -54,6 +63,15 @@ async function s3Store() {
       await client.send(new PutObjectCommand({
         Bucket: Bucket(), Key: k, Body: body, ContentType: 'application/json', Metadata: meta,
       }));
+    },
+    /** Create-only put; resolves false when the key already exists (412). */
+    async putIfAbsent(k, body, meta) {
+      try {
+        await client.send(new PutObjectCommand({
+          Bucket: Bucket(), Key: k, Body: body, ContentType: 'application/json', Metadata: meta, IfNoneMatch: '*',
+        }));
+        return true;
+      } catch (e) { if (e.$metadata?.httpStatusCode === 412 || e.name === 'PreconditionFailed') return false; throw e; }
     },
     async del(k) { await client.send(new DeleteObjectCommand({ Bucket: Bucket(), Key: k })); },
     async list(prefix) {
@@ -108,6 +126,13 @@ async function authenticate(event) {
   return safeEq(sha256hex(m[1].trim()), stored) ? profileId : null;
 }
 
+const isGzip = (event) => hdr(event, 'content-encoding').toLowerCase() === 'gzip';
+/** Raw request bytes (base64-decoded when API Gateway encoded them). */
+function rawBytes(event) {
+  const raw = event.body ?? '';
+  return Buffer.from(raw, event.isBase64Encoded ? 'base64' : 'utf8');
+}
+
 function bodyOf(event) {
   const raw = event.body ?? '';
   return event.isBase64Encoded ? Buffer.from(raw, 'base64').toString('utf8') : raw;
@@ -122,18 +147,25 @@ async function enroll(event) {
   const secretHash = typeof b.secretHash === 'string' ? b.secretHash.toLowerCase() : '';
   if (!PROFILE_RE.test(profileId) || !HASH_RE.test(secretHash)) return json(400, { error: 'bad profileId/secretHash' });
   const s = await store();
-  const existing = await s.get(objKey(profileId, AUTH_KEY));
-  if (existing) {
+  const sameOrConflict = (rec) => {
     let prev = '';
-    try { prev = JSON.parse(existing.body).secretHash; } catch { /* corrupt => treated as mismatch */ }
+    try { prev = JSON.parse(rec.body).secretHash; } catch { /* corrupt => treated as mismatch */ }
     return safeEq(prev, secretHash) ? json(200, { ok: true, created: false }) : json(409, { error: 'profile already enrolled' });
-  }
+  };
+  const existing = await s.get(objKey(profileId, AUTH_KEY));
+  if (existing) return sameOrConflict(existing);
   const cap = parseInt(process.env.MAX_PROFILES || '0', 10);
   if (cap > 0) {
     const n = (await s.list('profiles/')).filter((k) => k.endsWith(`/${AUTH_KEY}.json`)).length;
-    if (n >= cap) return json(429, { error: 'enrollment cap reached' });
+    if (n >= cap) { console.warn(`profile-sync: enrollment cap reached (${n}/${cap})`); return json(429, { error: 'enrollment cap reached' }); }
+    if (n >= cap * 0.8) console.warn(`profile-sync: enrollment cap nearly reached (${n}/${cap})`);
   }
-  await s.put(objKey(profileId, AUTH_KEY), JSON.stringify({ secretHash, createdAtMs: Date.now() }), {});
+  // Atomic create: a racing enroll of the same new profileId cannot overwrite the first writer.
+  const created = await s.putIfAbsent(objKey(profileId, AUTH_KEY), JSON.stringify({ secretHash, createdAtMs: Date.now() }), {});
+  if (!created) {
+    const winner = await s.get(objKey(profileId, AUTH_KEY));
+    return winner ? sameOrConflict(winner) : json(409, { error: 'profile already enrolled' });
+  }
   return json(200, { ok: true, created: true });
 }
 
@@ -162,29 +194,54 @@ async function meta(event, profileId) {
   return json(200, out);
 }
 
-async function getDoc(profileId, key) {
+async function getDoc(event, profileId, key) {
   const r = await (await store()).get(objKey(profileId, key));
   if (!r) return json(404, { error: 'not found' });
-  return {
-    statusCode: 200,
-    headers: {
-      'content-type': 'application/json', 'cache-control': 'no-store',
-      'x-pocketdj-modified-at': String(Number(r.meta['modified-at-ms']) || 0),
-    },
-    body: r.body,
+  const headers = {
+    'content-type': 'application/json', 'cache-control': 'no-store',
+    'x-pocketdj-modified-at': String(Number(r.meta['modified-at-ms']) || 0),
+    'x-pocketdj-device': r.meta.device || '',
   };
+  if (r.meta.encoding === 'gzip') {
+    const buf = Buffer.isBuffer(r.body) ? r.body : Buffer.from(r.body, 'binary');
+    // Hand the gzip bytes straight through when the client accepts them (keeps big docs under the 6 MB
+    // response cap); otherwise inflate.
+    if (/\bgzip\b/i.test(hdr(event, 'accept-encoding'))) {
+      return { statusCode: 200, headers: { ...headers, 'content-encoding': 'gzip' }, body: buf.toString('base64'), isBase64Encoded: true };
+    }
+    return { statusCode: 200, headers, body: gunzipSync(buf).toString('utf8') };
+  }
+  return { statusCode: 200, headers, body: r.body };
 }
 
 async function putDoc(event, profileId, key) {
-  const body = bodyOf(event);
-  if (!body) return json(400, { error: 'empty body' });
-  if (Buffer.byteLength(body) > MAX_BODY_BYTES) return json(413, { error: 'too large' });
+  let body, stored, meta = {};
+  if (isGzip(event)) {
+    const bytes = rawBytes(event);
+    if (!bytes.length) return json(400, { error: 'empty body' });
+    if (bytes.length > MAX_GZIP_WIRE_BYTES) return json(413, { error: 'too large' });
+    try { body = gunzipSync(bytes, { maxOutputLength: MAX_INFLATED_BYTES }).toString('utf8'); }
+    catch (e) { return json(e?.code === 'ERR_BUFFER_TOO_LARGE' ? 413 : 400, { error: 'bad gzip body' }); }
+    stored = bytes; meta.encoding = 'gzip';
+  } else {
+    body = bodyOf(event);
+    if (!body) return json(400, { error: 'empty body' });
+    if (Buffer.byteLength(body) > MAX_BODY_BYTES) return json(413, { error: 'too large' });
+    stored = body;
+  }
   try { JSON.parse(body); } catch { return json(400, { error: 'body must be json' }); }
-  const raw = hdr(event, 'x-pocketdj-modified-at');
-  const parsed = /^\d{1,15}$/.test(raw) ? Number(raw) : NaN;
-  const modifiedAtMs = Number.isFinite(parsed) ? parsed : Date.now();
+  // Present-but-malformed => 400 (never silently substitute server time into the LWW clock).
+  // Accepts any finite non-negative decimal incl. fractional / exponent forms (Double.toString), rounded.
+  const raw = hdr(event, 'x-pocketdj-modified-at').trim();
+  let modifiedAtMs;
+  if (raw === '') modifiedAtMs = Date.now();
+  else {
+    const n = /^[0-9.eE+]+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isFinite(n) || n < 0 || n > 1e15) return json(400, { error: 'bad X-PocketDJ-Modified-At' });
+    modifiedAtMs = Math.round(n);
+  }
   const device = hdr(event, 'x-pocketdj-device').replace(/[^\x20-\x7e]/g, '').slice(0, 100);
-  await (await store()).put(objKey(profileId, key), body, { 'modified-at-ms': String(modifiedAtMs), device });
+  await (await store()).put(objKey(profileId, key), stored, { 'modified-at-ms': String(modifiedAtMs), device, ...meta });
   return json(200, { ok: true, key, modifiedAtMs });
 }
 
@@ -214,9 +271,10 @@ export async function handler(event) {
     if (path === '/meta' && method === 'GET') return await meta(event, profileId);
     if (path === '/profile' && method === 'DELETE') return await wipe(profileId);
     if (doc) {
-      const key = decodeURIComponent(doc[1]);
+      let key;
+      try { key = decodeURIComponent(doc[1]); } catch { return json(400, { error: 'bad key' }); }
       if (!KEY_RE.test(key)) return json(400, { error: 'bad key' });
-      if (method === 'GET') return await getDoc(profileId, key);
+      if (method === 'GET') return await getDoc(event, profileId, key);
       if (method === 'PUT') return await putDoc(event, profileId, key);
       if (method === 'DELETE') { await (await store()).del(objKey(profileId, key)); return json(200, { ok: true }); }
     }

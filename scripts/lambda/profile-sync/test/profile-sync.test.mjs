@@ -2,6 +2,7 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { handler, setStore } from '../index.mjs';
 
 class MemStore {
@@ -9,6 +10,7 @@ class MemStore {
   async get(k) { const v = this.m.get(k); return v ? { body: v.body, meta: { ...v.meta } } : null; }
   async head(k) { const v = this.m.get(k); return v ? { meta: { ...v.meta } } : null; }
   async put(k, body, meta) { this.m.set(k, { body, meta: { ...meta } }); }
+  async putIfAbsent(k, body, meta) { if (this.m.has(k)) return false; await this.put(k, body, meta); return true; }
   async del(k) { this.m.delete(k); }
   async list(p) { return [...this.m.keys()].filter((k) => k.startsWith(p)); }
 }
@@ -178,4 +180,60 @@ test('unknown route 404, wrong method 405', async () => {
   await enroll();
   assert.equal((await call('GET', '/nope')).statusCode, 404);
   assert.equal((await call('POST', '/doc/one', { headers: auth(), body: '{}' })).statusCode, 405);
+});
+
+const gz = (obj) => gzipSync(Buffer.from(JSON.stringify(obj)));
+const putGz = (key, buf, extra = {}) => handler({
+  rawPath: `/doc/${key}`, requestContext: { http: { method: 'PUT' } },
+  headers: auth(P, SECRET, { 'content-encoding': 'gzip', ...extra }), isBase64Encoded: true, body: buf.toString('base64'),
+});
+
+test('MAJOR: a doc far over the plain 5 MB cap syncs via Content-Encoding: gzip (compressed bytes capped)', async () => {
+  await enroll();
+  const big = { rows: Array.from({ length: 200000 }, (_, i) => ({ id: i, title: `track number ${i}`, artist: 'same artist' })) };
+  const plain = JSON.stringify(big);
+  assert.ok(plain.length > 5 * 1024 * 1024, `fixture ${plain.length}`);
+  assert.equal((await call('PUT', '/doc/collections', { headers: auth(), body: plain })).statusCode, 413);
+  const buf = gzipSync(Buffer.from(plain));
+  assert.ok(buf.length < 4 * 1024 * 1024);
+  const r = await putGz('collections', buf, { 'x-pocketdj-modified-at': '5' });
+  assert.equal(r.statusCode, 200);
+  // GET with Accept-Encoding: gzip passes the gzip bytes through (response stays under 6 MB)
+  let g = await call('GET', '/doc/collections', { headers: auth(P, SECRET, { 'accept-encoding': 'gzip' }) });
+  assert.equal(g.headers['content-encoding'], 'gzip'); assert.equal(g.isBase64Encoded, true);
+  assert.equal(gunzipSync(Buffer.from(g.body, 'base64')).toString(), plain);
+  assert.ok(Buffer.byteLength(g.body) < 6 * 1024 * 1024);
+  // without it the server inflates
+  g = await call('GET', '/doc/collections', { headers: auth() });
+  assert.equal(g.body, plain); assert.equal(g.headers['content-encoding'], undefined);
+  assert.equal(g.headers['x-pocketdj-modified-at'], '5');
+});
+
+test('gzip: wire cap enforced on compressed bytes; garbage and non-json rejected', async () => {
+  await enroll();
+  const noisy = Buffer.alloc(4 * 1024 * 1024 + 1, 7);
+  assert.equal((await putGz('a', noisy)).statusCode, 413);
+  assert.equal((await putGz('a', Buffer.from('not gzip'))).statusCode, 400);
+  assert.equal((await putGz('a', gzipSync(Buffer.from('nope')))).statusCode, 400);
+});
+
+test('MINOR: X-PocketDJ-Modified-At accepts fractional / exponent forms, rejects malformed with 400', async () => {
+  await enroll();
+  const put = (v) => call('PUT', '/doc/m', { headers: auth(P, SECRET, { 'x-pocketdj-modified-at': v }), body: '{}' });
+  let r = await put('1.700000000123E12'); assert.equal(r.statusCode, 200); assert.equal(JSON.parse(r.body).modifiedAtMs, 1700000000123);
+  r = await put('1700000000123.456'); assert.equal(JSON.parse(r.body).modifiedAtMs, 1700000000123);
+  for (const bad of ['abc', '-5', 'Infinity', '1e999', '0x10']) assert.equal((await put(bad)).statusCode, 400, bad);
+});
+
+test('NIT: GET returns device header; malformed percent-escape is 400 not 500', async () => {
+  await enroll();
+  await call('PUT', '/doc/d', { headers: auth(P, SECRET, { 'x-pocketdj-device': 'Pixel 9' }), body: '{}' });
+  assert.equal((await call('GET', '/doc/d', { headers: auth() })).headers['x-pocketdj-device'], 'Pixel 9');
+  assert.equal((await call('GET', '/doc/%E0', { headers: auth() })).statusCode, 400);
+  assert.equal((await call('GET', '/doc/%zz', { headers: auth() })).statusCode, 400);
+});
+
+test('MINOR: enroll create is atomic (racing different secrets: exactly one wins)', async () => {
+  const rs = await Promise.all([enroll(P, 'sec-a'), enroll(P, 'sec-b')]);
+  assert.deepEqual(rs.map((r) => r.statusCode).sort(), [200, 409]);
 });

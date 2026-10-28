@@ -32,8 +32,8 @@ re-validates with `scripts/validate-endpoints.ts`.
 | `GET /health` | `{ok:true}`, no auth |
 | `POST /enroll` | see above |
 | `GET /meta[?keys=a,b]` | `{key: modifiedAtMs}` for keys that exist (HEAD fan-out). No `keys` = every doc. Bad key = 400 |
-| `GET /doc/{key}` | stored body verbatim, header `X-PocketDJ-Modified-At`; 404 if absent |
-| `PUT /doc/{key}` | body must be JSON, 5 MB max (413); headers `X-PocketDJ-Modified-At` (ms, defaults to server now) and `X-PocketDJ-Device` (free text, 100 chars). 200 `{ok,key,modifiedAtMs}` |
+| `GET /doc/{key}` | stored body verbatim, headers `X-PocketDJ-Modified-At` and `X-PocketDJ-Device`; 404 if absent. Send `Accept-Encoding: gzip` to receive gzip-stored docs as gzip (client must inflate); otherwise the server inflates |
+| `PUT /doc/{key}` | body must be JSON. Plain: 5 MB max (413). **`Content-Encoding: gzip`: cap is on the compressed wire bytes, 4 MB (413)**, inflated max 128 MB. Headers `X-PocketDJ-Modified-At` (ms; any finite non-negative decimal incl. `1.7E12`/fractional, rounded; absent = server now; present-but-malformed = 400) and `X-PocketDJ-Device` (free text, 100 chars). 200 `{ok,key,modifiedAtMs}` |
 | `DELETE /doc/{key}` | idempotent, always 200 |
 | `DELETE /profile` | deletes the whole `profiles/<profileId>/` prefix including `_auth.json` (the id can be re-enrolled afterwards) |
 
@@ -49,3 +49,23 @@ role can only touch `profiles/*`.
 `POCKETDJ_ENV=green AWS_PROFILE=llc scripts/lambda/profile-sync/deploy.sh` (re-runnable). It
 preserves the enrollment secret and cap across runs; a freshly minted secret is printed once.
 Tests: `node --test scripts/lambda/profile-sync/test/profile-sync.test.mjs` (in-memory store).
+
+## Size limit (read before SVC-9)
+API Gateway/Lambda cap request and response payloads at 6 MB, whereas iOS CKAssets have no ceiling.
+Today's collections doc is ~3.9 MB, so the client MUST gzip every PUT (`Content-Encoding: gzip`) and
+send `Accept-Encoding: gzip` on GET; JSON compresses ~10:1, so the 4 MB compressed cap is ~40 MB of
+JSON. A plain-JSON PUT over 5 MB gets 413. Test: `MAJOR: a doc far over the plain 5 MB cap...`.
+
+## Lost secret / restored device
+The secret lives in EncryptedSharedPreferences (Keystore-bound; does not survive Auto Backup or device
+migration) while `pocketdj-profile.json` (profileId) may. Re-enrolling that profileId with a new secret
+returns 409 forever. Expected client behaviour (SVC-9): on 409, treat as "relink required" (offer
+link-from-other-device) or mint a NEW profileId and re-push local docs. `pocketdj-profile.json` should
+be excluded from Auto Backup (backup_rules / data_extraction_rules) or backed up together with the secret.
+There is deliberately no server rotate route.
+
+## Enroll cap and races
+`_auth.json` is created with a conditional put (`If-None-Match: *`), so racing enrolls of one new
+profileId yield exactly one winner (the loser gets 200 same-hash / 409). The `MAX_PROFILES` cap logs a
+warning at 80% and at the cap (CloudWatch). The cap is a global count and the enroll token ships in the
+APK, so it is a blast-radius limit, not abuse protection; add an API Gateway throttle if abused.
