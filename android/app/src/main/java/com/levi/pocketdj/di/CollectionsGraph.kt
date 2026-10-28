@@ -47,6 +47,13 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         }
     }
 
+    /**
+     * Nullable rec seam for the Add-to sheet's Suggested row / the context submenu: songId ->
+     * collection suggestions. Unwired (null) ⇒ no Suggested section (a later rec package sets it).
+     */
+    @Volatile
+    var collectionSuggestions: ((String) -> List<com.levi.pocketdj.screens.collections.CollectionSuggestion>)? = null
+
     override val flushables: List<Flushable> = listOf(
         Flushable {
             app.collections.flushNow()
