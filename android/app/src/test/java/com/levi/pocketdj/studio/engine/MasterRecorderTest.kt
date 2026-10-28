@@ -227,4 +227,34 @@ class MasterRecorderTest {
         sinks[0].pull(64)
         assertFalse(p.isRecording); p.stop(); assertNull(p.consumeRecording())
     }
+
+    @Test fun plainSeekPlayWhileRecordingCarriesTheRecording() = runBlocking {
+        val rec = recorder(); val sinks = mutableListOf<FakeSink>()
+        val p = player(sinks, rec)
+        p.playOutcome(arr(), record = true, quantized = true); sinks[0].pull(256)
+        assertTrue(rec.active.value)
+        p.play(arr(), 50)                                   // the ruler-seek call: no record/quantized flags
+        assertTrue("seek must not drop the take", p.isRecording)
+        assertTrue(rec.active.value)
+        sinks[1].pull(100)
+        p.stop()
+        assertFalse(rec.active.value)
+        val cap = p.consumeRecording()!!
+        assertTrue(cap.quantized)                           // the mode captured at record start is carried
+        assertEquals(100, MasterWav.read(cap.file)!!.frames)
+        // After Stop a plain play must NOT record.
+        p.play(arr(), 0); sinks[2].pull(10)
+        assertFalse(p.isRecording); p.stop()
+    }
+
+    @Test fun quantizedBakeOfACanonicalCaptureIsAudiblyDifferentFromClean() {
+        val baker = MasterRecordingBaker()
+        fun cap(q: Boolean): MasterCapture {
+            val f = tmp.newFile()
+            WavWriter.write(f, PcmBuffer(44_100, 2, FloatArray(4410 * 2) { 0.2f }), WavWriter.Format.FLOAT32)
+            return MasterCapture(f, 44_100, q)
+        }
+        assertEquals(4410, baker.toCanonical(cap(false))!!.frames)
+        assertTrue(baker.toCanonical(cap(true))!!.frames > 4410)   // relabelled 48 kHz frames: longer + lower
+    }
 }

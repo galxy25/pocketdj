@@ -94,8 +94,9 @@ class MultitrackPlayer(
         playOutcome(arrangement, fromMs) == PlayOutcome.STARTED
 
     /** Like [play] but distinguishes "superseded by a newer play/stop" (silent) from "no playable clips" (toast). */
-    suspend fun playOutcome(arrangement: StudioArrangement, fromMs: Int = 0, record: Boolean = false, quantized: Boolean = false): PlayOutcome =
-        playInternal(arrangement, fromMs, fromReprime = false, record = record, quantized = quantized)
+    suspend fun playOutcome(arrangement: StudioArrangement, fromMs: Int = 0, record: Boolean? = null, quantized: Boolean? = null): PlayOutcome =
+        // null = carry the active recording (a seek/loop restart must never silently drop the take); an explicit value wins.
+        playInternal(arrangement, fromMs, fromReprime = false, record = record ?: recordWanted, quantized = quantized ?: recordQuantized)
 
     /** True while a master recording tap is active. */
     val isRecording: Boolean get() = recorder.isRecording
@@ -158,7 +159,7 @@ class MultitrackPlayer(
         return PlayOutcome.STARTED
     }
 
-    fun stop() = stopInternal(keepReprime = false)
+    fun stop() { stopInternal(keepReprime = false); recordWanted = false; recordQuantized = false }
 
     private fun stopInternal(keepReprime: Boolean, naturalEnd: Boolean = false) = synchronized(lock) {
         generation.incrementAndGet()
@@ -234,7 +235,7 @@ class MultitrackPlayer(
         synchronized(lock) { autoStop?.cancel() }
         val job = scope.launch {
             delay(lengthMs + 350L + 120L)
-            if (gen == generation.get()) stopInternal(keepReprime = false, naturalEnd = true)
+            if (gen == generation.get()) { stopInternal(keepReprime = false, naturalEnd = true); recordWanted = false; recordQuantized = false }
         }
         synchronized(lock) { autoStop = job }
     }
@@ -257,7 +258,7 @@ class MultitrackPlayer(
             tracks = a.tracks.map { t ->
                 val s = t.strip.clamped()
                 TrackBake(t.id, s.pitchSemitones, s.tempoRatio,
-                    t.clips.map { listOf(it.id, it.startMs, it.durationMs, it.fileStartMs, it.grid?.bpm) })
+                    t.clips.map { listOf(it.id, it.startMs, it.durationMs, it.fileStartMs, if (a.beatMatchEnabled) it.grid?.bpm else null) })
             },
             loop = a.loopEnabled.let { on ->
                 val usable = on && a.loopEndMs > a.loopStartMs

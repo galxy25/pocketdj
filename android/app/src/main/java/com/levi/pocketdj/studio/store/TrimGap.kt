@@ -112,7 +112,15 @@ class TrimSession private constructor(
      */
     fun save(store: StudioStore, arrangementId: String): Boolean {
         if (!canSave) { _closed = true; return false }
-        for (tid in trackOrder) if (tid in _selected) store.commitTrimmedTrack(arrangementId, tid, staged[tid].orEmpty())
+        for (tid in trackOrder) if (tid in _selected) {
+            // The grid analyzer may have written grids since begin(): keep the store's current grid for an unchanged clip (same id + file).
+            val current = store.arrangement(arrangementId)?.tracks?.firstOrNull { it.id == tid }?.clips.orEmpty().associateBy { it.id }
+            val merged = staged[tid].orEmpty().map { c ->
+                val cur = current[c.id]
+                if (c.grid == null && cur?.grid != null && cur.fileName == c.fileName) c.copy(grid = cur.grid) else c
+            }
+            store.commitTrimmedTrack(arrangementId, tid, merged)
+        }
         _closed = true
         return true
     }

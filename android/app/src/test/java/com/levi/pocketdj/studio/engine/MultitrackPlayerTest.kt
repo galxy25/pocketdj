@@ -329,6 +329,15 @@ class MultitrackPlayerTest {
         p.stop()
     }
 
+    @Test fun gridWriteBackDoesNotChangeTheBakeSignatureUnlessBeatMatchIsOn() {
+        val t = StudioTrack("t", "t", listOf(StudioClip("c", "c", "f", startMs = 0, durationMs = 100)))
+        fun withGrid(a: StudioArrangement) = a.copy(tracks = listOf(t.copy(clips = t.clips.map { it.copy(grid = com.levi.pocketdj.studio.model.StudioGrid(bpm = 120.0)) })))
+        val off = arr(t)
+        assertEquals(MultitrackPlayer.bakeSignature(off), MultitrackPlayer.bakeSignature(withGrid(off)))
+        val on = arr(t).copy(beatMatchEnabled = true)
+        assertTrue(MultitrackPlayer.bakeSignature(on) != MultitrackPlayer.bakeSignature(withGrid(on)))
+    }
+
     @Test fun bakeSignatureIgnoresMixButSeesBakeInputs() {
         val t = track("t1", "a")
         val base = MultitrackPlayer.bakeSignature(arr(t))

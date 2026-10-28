@@ -52,17 +52,24 @@ class MasterRecorder(
     private var leftover: MasterCapture? = null
 
     val isRecording: Boolean get() = synchronized(lock) { session != null }
+    private val _active = MutableStateFlow(false)
+    /** Observable "a capture is running" (survives a configuration change; the view derives its Record state from it). */
+    val active: StateFlow<Boolean> = _active
+
+    private class Block(val data: FloatArray, val n: Int)
 
     private class Session(val file: File, val rate: Int, val quantized: Boolean) {
-        val queue = LinkedBlockingQueue<FloatArray>()
+        val queue = LinkedBlockingQueue<Block>()
+        val pool = java.util.concurrent.ConcurrentLinkedQueue<FloatArray>()
         val writer = WavWriter.Streaming(file, rate, 2, WavWriter.Format.FLOAT32)
         @Volatile var dropped = 0L
         val thread = Thread({
             try {
                 while (true) {
                     val blk = queue.take()
-                    if (blk.isEmpty()) break
-                    writer.append(blk, 0, blk.size)
+                    if (blk.n == 0) break
+                    writer.append(blk.data, 0, blk.n)
+                    pool.offer(blk.data)
                 }
             } catch (_: InterruptedException) {
             } finally { runCatching { writer.close() } }
@@ -73,12 +80,14 @@ class MasterRecorder(
     fun begin(record: Boolean, captureRate: Int, quantized: Boolean): Boolean = synchronized(lock) {
         session?.let { finish(it); runCatching { it.file.delete() } }
         session = null
+        _active.value = false
         leftover?.let { runCatching { it.file.delete() } }
         leftover = null
         if (!record) return true
         return try {
             val dir = tempDir().also { it.mkdirs() }
             session = Session(File(dir, newName()), captureRate, quantized)
+            _active.value = true
             log("begin rate=$captureRate quantized=$quantized")
             true
         } catch (t: Throwable) { log("begin failed: $t"); false }
@@ -88,13 +97,17 @@ class MasterRecorder(
     fun tap(buf: FloatArray, frames: Int) {
         val s = session ?: return
         if (frames <= 0) return
-        s.queue.offer(buf.copyOf(frames * 2))
+        val n = frames * 2
+        val blk = s.pool.poll()?.takeIf { it.size >= n } ?: FloatArray(maxOf(n, 8192))
+        System.arraycopy(buf, 0, blk, 0, n)
+        s.queue.offer(Block(blk, n))
     }
 
     /** Finalize the capture. A [naturalEnd] stop bumps [finishedNonce] (only if a capture was active). */
     fun end(naturalEnd: Boolean) = synchronized(lock) {
         val s = session ?: return@synchronized
         session = null
+        _active.value = false
         finish(s)
         leftover = MasterCapture(s.file, s.rate, s.quantized)
         log("end natural=$naturalEnd bytes=${s.writer.dataBytes}")
@@ -108,12 +121,13 @@ class MasterRecorder(
     fun discard() = synchronized(lock) {
         session?.let { finish(it); runCatching { it.file.delete() } }
         session = null
+        _active.value = false
         leftover?.let { runCatching { it.file.delete() } }
         leftover = null
     }
 
     private fun finish(s: Session) {
-        s.queue.offer(FloatArray(0))
+        s.queue.offer(Block(FloatArray(0), 0))
         runCatching { s.thread.join(5_000) }
     }
 }
@@ -138,6 +152,8 @@ object MasterWav {
 }
 
 /** Bakes a [MasterCapture] into a dated `live-recording-<stamp>.m4a` Recording artifact. */
+const val LOFI_HARDWARE_RATE = 48_000
+
 class MasterRecordingBaker(
     private val writeM4a: (PcmBuffer, File) -> Unit = { pcm, f -> AndroidStudioCodec.writeM4a(pcm, f) },
 ) {
@@ -148,7 +164,11 @@ class MasterRecordingBaker(
     fun toCanonical(capture: MasterCapture): PcmBuffer? {
         val raw = MasterWav.read(capture.file) ?: return null
         if (raw.frames <= 0) return null
-        return if (capture.quantized) StudioAudio.relabeled(raw) else raw.toCanonical()
+        if (!capture.quantized) return raw.toCanonical()
+        // Android taps the canonical mix, so there is no hardware-rate capture to relabel: emulate iOS's 48 kHz
+        // hardware tap by resampling up to LOFI_HARDWARE_RATE first, then relabelling (the audible downpitch).
+        val hw = if (raw.sampleRate == StudioAudio.CANONICAL_RATE) raw.resampled(LOFI_HARDWARE_RATE) else raw
+        return StudioAudio.relabeled(hw)
     }
 
     /** Encode + file the artifact; the temp WAV is deleted either way. Null when nothing usable was captured. */

@@ -131,7 +131,10 @@ fun ArrangementScreen(
     val studio = graph.studioGraph
     val recordPrefs = remember { RecordModePrefs(ctx) }
     var quantized by remember { mutableStateOf(recordPrefs.quantized) }
-    var recording by remember { mutableStateOf(false) }
+    // Derived from the player's recorder (survives rotation); `recordStarting` covers the decode await before the tap opens.
+    var recordStarting by remember { mutableStateOf(false) }
+    val recorderActive by player.recorder.active.collectAsState()
+    val recording = recordStarting || recorderActive
     var bounceOpen by remember { mutableStateOf(false) }
     var busyMsg by remember { mutableStateOf<String?>(null) }
     var trim by remember(arrangementId) { mutableStateOf<TrimSession?>(null) }
@@ -183,51 +186,60 @@ fun ArrangementScreen(
     }
 
     // Beat Match needs a beat grid per clip: analyze any clip without one in the background (idempotent).
-    LaunchedEffect(clipSignature) { studio.arrangerGridAnalyzer.ensureGrids(arrangementId) }
+    LaunchedEffect(clipSignature, peaksNonce) { studio.arrangerGridAnalyzer.ensureGrids(arrangementId) }
 
     fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
 
-    /** Bake the finished master capture into a dated Recording artifact (survives leaving the screen). */
+    /** Bake the finished master capture into a dated Recording artifact (survives leaving the screen). Null-safe: no capture, no-op. */
     fun bakeRecording() {
         val capture = player.consumeRecording()
-        recording = false
+        recordStarting = false
         if (capture == null) return
         busyMsg = "Saving recording…"
-        graph.appScope.launch {
-            val art = withContext(NonCancellable + Dispatchers.IO) {
-                studio.masterRecordingBaker.bakeArtifact(arrangementId, capture, studio.studioRoots.arrangementsDir(), store, ArrangerMath.artifactStamp())
-            }
-            busyMsg = null
+        graph.appScope.launch(Dispatchers.Main) {
+            var art: com.levi.pocketdj.studio.model.StudioArrangementArtifact? = null
+            try {
+                art = withContext(NonCancellable + Dispatchers.IO) {
+                    studio.masterRecordingBaker.bakeArtifact(arrangementId, capture, studio.studioRoots.arrangementsDir(), store, ArrangerMath.artifactStamp())
+                }
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+            } finally { busyMsg = null }
             toast(if (art != null) "Recording saved" else "Nothing was recorded")
         }
     }
 
     // Playback reached its NATURAL end while recording -> bake. (A manual stop bakes explicitly; a seek/loop/re-prime
-    // restart never bumps the nonce, so there is no truncated bake.)
+    // restart never bumps the nonce, so there is no truncated bake.) Keyed on the nonce only: the recorder state is
+    // already false by the time it bumps, and a fresh composition after rotation finds no capture (no-op).
     val recNonce by player.recordingFinishedNonce.collectAsState()
-    LaunchedEffect(recNonce) { if (recNonce > 0 && recording) bakeRecording() }
+    LaunchedEffect(recNonce) { if (recNonce > 0) bakeRecording() }
 
     fun toggleRecord() {
         if (recording) { player.stop(); bakeRecording(); return }
-        recording = true
+        recordStarting = true
         scope.launch {
             val outcome = player.playOutcome(arrLatest, ArrangerMath.effectiveCursorMs(cursorMs, arrLatest.lengthMs), record = true, quantized = quantized)
             if (outcome == PlayOutcome.NOTHING_TO_PLAY) toast("Nothing to record")
-            if (outcome != PlayOutcome.STARTED && !player.isRecording) recording = false
+            recordStarting = false
         }
     }
 
     fun bounce(tracks: List<com.levi.pocketdj.studio.model.StudioTrack>) {
         bounceOpen = false
         if (tracks.isEmpty()) return
-        player.stop(); if (recording) bakeRecording()
+        player.stop(); bakeRecording()
         busyMsg = "Bouncing…"
         val snapshot = arrLatest
-        graph.appScope.launch {
-            val art = withContext(NonCancellable) {
-                studio.arrangerBouncer.bounceArtifact(snapshot, tracks, studio.studioRoots.arrangementsDir(), store, ArrangerMath.artifactStamp())
-            }
-            busyMsg = null
+        graph.appScope.launch(Dispatchers.Main) {
+            var art: com.levi.pocketdj.studio.model.StudioArrangementArtifact? = null
+            try {
+                art = withContext(NonCancellable + Dispatchers.Default) {
+                    studio.arrangerBouncer.bounceArtifact(snapshot, tracks, studio.studioRoots.arrangementsDir(), store, ArrangerMath.artifactStamp())
+                }
+            } catch (t: Throwable) {
+                if (t is kotlinx.coroutines.CancellationException) throw t
+            } finally { busyMsg = null }
             toast(if (art != null) "Bounced ${ArrangerMath.mmss(art.durationMs / 1000.0)}" else "Couldn’t bounce that")
         }
     }
@@ -275,7 +287,7 @@ fun ArrangementScreen(
             TransportBar(
                 playing = playing, loopEnabled = arr.loopEnabled, fxOpen = fxOpen, canPlay = arr.allClips.isNotEmpty() && !trimming,
                 onPlay = { scope.launch { if (player.playOutcome(arr, cursorMs) == PlayOutcome.NOTHING_TO_PLAY) Toast.makeText(ctx, "Nothing to play", Toast.LENGTH_SHORT).show() } },
-                onStop = { player.stop(); if (recording) bakeRecording() },
+                onStop = { player.stop(); bakeRecording() },
                 onToggleLoop = {
                     if (!arr.loopEnabled && !LoopRegionMath.isUsable(arr.loopStartMs, arr.loopEndMs)) {
                         val (a, b) = LoopRegionMath.defaultRegion(arr.lengthMs, arr.bpm)

@@ -25,7 +25,7 @@ object ArrangerBeatMatch {
     /** Snap a start frame to the nearest master beat when beat-matching (else unchanged). */
     fun snappedStartFrame(frame: Int, beatFrames: Double, beatMatch: Boolean): Int {
         if (!beatMatch || beatFrames <= 0) return frame
-        return (Math.rint(frame / beatFrames) * beatFrames).toInt()
+        return (Math.floor(frame / beatFrames + 0.5) * beatFrames).toInt()
     }
 
     /** Frames of one master beat at [bpm] (0 when bpm is unusable). */
