@@ -1,6 +1,9 @@
 package com.levi.pocketdj.screens.history
 
 import android.text.format.DateUtils
+import android.widget.Toast
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,16 +18,18 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Album
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.Timelapse
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.HeartBroken
@@ -32,27 +37,22 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.PlayCircle
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.DateRangePicker
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -61,6 +61,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -69,6 +70,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -76,47 +78,56 @@ import coil.compose.AsyncImage
 import com.levi.pocketdj.data.activity.ActivityKind
 import com.levi.pocketdj.data.activity.CollectionActivityStore
 import com.levi.pocketdj.data.catalog.MergedCatalog
-import com.levi.pocketdj.data.history.PlayEvent
-import com.levi.pocketdj.data.history.PlayHistoryStore
-import com.levi.pocketdj.data.history.PlayOutcome
 import com.levi.pocketdj.data.history.PlaySource
+import com.levi.pocketdj.data.share.ShareText
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.screens.browse.BrowseFilterSheet
+import com.levi.pocketdj.screens.browse.BrowseFilters
+import com.levi.pocketdj.screens.browse.BrowseKind
+import com.levi.pocketdj.screens.browse.BrowseSortSheet
+import com.levi.pocketdj.screens.browse.CollectionRef
+import com.levi.pocketdj.screens.browse.FieldOptions
+import com.levi.pocketdj.screens.browse.SongRow
+import com.levi.pocketdj.screens.collections.AddToCollectionSheet
+import com.levi.pocketdj.screens.collections.AddToItem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val PAGE_SIZE = 120
 
-/** One selected day covers the whole day — the range end is exclusive +24 h. */
-private const val DAY_MS = 24L * 60 * 60 * 1000
-
 /**
- * The three History views. Default is [UNIFIED]; the tab bar always offers the
- * two you're NOT currently in ([altTabs]) — iOS `HistoryView.HistoryTab` parity.
+ * The History tabs (iOS `HistoryView.HistoryTab`, 2026-08-10 shape). Declaration order IS the tab
+ * order. Unified is gone (Rewind moved to Playback rows). Pockets / For You are gated on their
+ * stores reporting enabled; every visible tab is shown, the current one selected.
  */
-private enum class HistoryTab(val label: String, val icon: ImageVector) {
-    UNIFIED("Unified", Icons.Filled.Layers),
-    PLAYBACK("Playback", Icons.Filled.PlayCircle),
-    COLLECTION("Collection", Icons.AutoMirrored.Filled.QueueMusic),
+internal enum class HistoryTab(val label: String) {
+    PLAYBACK("Playback"),
+    COLLECTION("Collection"),
+    POCKETS("Pockets"),
+    FOR_YOU("For You"),
 }
 
-/** The two destinations shown as tabs from the current view (never the current one). */
-private fun HistoryTab.altTabs(): List<HistoryTab> = when (this) {
-    HistoryTab.UNIFIED -> listOf(HistoryTab.PLAYBACK, HistoryTab.COLLECTION)
-    HistoryTab.PLAYBACK -> listOf(HistoryTab.COLLECTION, HistoryTab.UNIFIED)
-    HistoryTab.COLLECTION -> listOf(HistoryTab.PLAYBACK, HistoryTab.UNIFIED)
+/** Which gated tabs the stores currently report enabled. Their packages flip these. */
+internal object HistoryTabGate {
+    @Volatile var pocketsEnabled: Boolean = false
+    @Volatile var forYouEnabled: Boolean = false
 }
+
+/** Pure tab-visibility rule: Playback + Collection always; Pockets / For You only when enabled. */
+internal fun visibleHistoryTabs(pocketsEnabled: Boolean, forYouEnabled: Boolean): List<HistoryTab> =
+    buildList {
+        add(HistoryTab.PLAYBACK)
+        add(HistoryTab.COLLECTION)
+        if (pocketsEnabled) add(HistoryTab.POCKETS)
+        if (forYouEnabled) add(HistoryTab.FOR_YOU)
+    }
 
 /**
- * History tab — THREE views over two event streams (iOS `HistoryView` parity):
- *  • Unified (default) — song plays + collection activity interleaved newest-first.
- *  • Playback — the play timeline with search, sort (last-played asc/desc) and the
- *    played-between date-range filter (§6 P1 minimum).
- *  • Collection — the LIVE collection-activity log ([ActivityContent],
- *    specs/activity-favorites.md §5).
- *
- * The tab control is a custom TWO-button row of the views you're NOT in; tapping
- * one switches to it. The shared search query filters every view; sort + the
- * date-range filter stay Playback-only.
+ * History tab: Playback | Collection (+ Pockets / For You when enabled). The Playback timeline runs
+ * through [HistoryBrowseState] (the shared BrowseEngine over a base of one row per play event, its
+ * own persisted filter/sort, the three `refreshExternal` guards). The Collection tab is the live
+ * collection-activity log.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -126,431 +137,369 @@ fun HistoryScreen(
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
-    val store = remember { PlayHistoryStore.get(context) }
     LaunchedEffect(Unit) { graph.catalogRepository.loadIfNeeded() }
-
-    val historyState by store.state.collectAsState()
     val catalogState by graph.catalogRepository.state.collectAsState()
     val catalog = catalogState.catalog ?: MergedCatalog.EMPTY
 
-    // Default view is Unified; the two-button bar offers the other two (iOS parity).
-    var tab by rememberSaveable { mutableStateOf(HistoryTab.UNIFIED) }
+    var tab by rememberSaveable { mutableStateOf(HistoryTab.PLAYBACK) }
+    val tabs = visibleHistoryTabs(HistoryTabGate.pocketsEnabled, HistoryTabGate.forYouEnabled)
+    val current = if (tab in tabs) tab else HistoryTab.PLAYBACK
 
-    // History-only search/sort/filter state (never shared with Browse's, §6.4).
-    var query by rememberSaveable { mutableStateOf("") }
-    var newestFirst by rememberSaveable { mutableStateOf(true) }
-    var rangeStartMs by rememberSaveable { mutableStateOf<Long?>(null) }
-    var rangeEndMs by rememberSaveable { mutableStateOf<Long?>(null) }
-    var showSortMenu by remember { mutableStateOf(false) }
-    var showRangeDialog by remember { mutableStateOf(false) }
-
-    // Playback filter/sort compute over up to 20k rows runs off the main thread,
-    // keyed on (history revision, catalog identity, filter/sort signature) — never
-    // on events.size, which pins at the cap (specs/history.md §5).
-    val rows by produceState(
-        initialValue = emptyList<HistoryRow>(),
-        historyState.revision,
-        catalog,
-        query,
-        newestFirst,
-        rangeStartMs,
-        rangeEndMs,
-    ) {
-        val events = historyState.events
-        value = withContext(Dispatchers.Default) {
-            buildRows(events, catalog, store::playCount, query, newestFirst, rangeStartMs, rangeEndMs)
-        }
-    }
+    val state = graph.browseGraph.historyBrowse
+    val inputs by state.inputs.collectAsState()
+    var showFilter by remember { mutableStateOf(false) }
+    var showSort by remember { mutableStateOf(false) }
 
     Column(modifier = modifier.fillMaxSize()) {
-        HistoryTabBar(current = tab, onSelect = { tab = it })
+        HistoryTabBar(tabs = tabs, current = current, onSelect = { tab = it })
 
-        // Search filters every view; sort + date-range controls are Playback-only.
+        // Search is shared by Playback + Collection; sort/filter are Playback-only.
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
         ) {
             OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
+                value = inputs.query,
+                onValueChange = { state.setQuery(it) },
                 singleLine = true,
                 placeholder = { Text("Search title or artist") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 trailingIcon = {
-                    if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) {
+                    if (inputs.query.isNotEmpty()) {
+                        IconButton(onClick = { state.setQuery("") }) {
                             Icon(Icons.Filled.Close, contentDescription = "Clear search")
                         }
                     }
                 },
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("history-search"),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = {
+                    // Explicit submit: drop both memos so this is a REAL search, even when the
+                    // signature did not move (unstructured on purpose, like iOS).
+                    state.submit()
+                }),
+                modifier = Modifier.weight(1f).testTag("history-search"),
             )
-            if (tab == HistoryTab.PLAYBACK) {
-                Box {
-                    IconButton(
-                        onClick = { showSortMenu = true },
-                        modifier = Modifier.testTag("history-sort"),
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
-                    }
-                    DropdownMenu(
-                        expanded = showSortMenu,
-                        onDismissRequest = { showSortMenu = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text(if (newestFirst) "✓ Newest first" else "Newest first") },
-                            onClick = {
-                                newestFirst = true
-                                showSortMenu = false
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(if (!newestFirst) "✓ Oldest first" else "Oldest first") },
-                            onClick = {
-                                newestFirst = false
-                                showSortMenu = false
-                            },
-                        )
-                    }
+            if (current == HistoryTab.PLAYBACK) {
+                IconButton(onClick = { showSort = true }, modifier = Modifier.testTag("history-sort")) {
+                    Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort")
                 }
-                val rangeActive = rangeStartMs != null || rangeEndMs != null
-                IconButton(
-                    onClick = { showRangeDialog = true },
-                    modifier = Modifier.testTag("history-filter"),
-                ) {
+                IconButton(onClick = { showFilter = true }, modifier = Modifier.testTag("history-filter")) {
                     Icon(
                         Icons.Filled.FilterList,
-                        contentDescription = "Filter by date",
-                        tint = if (rangeActive) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        },
+                        contentDescription = "Filters",
+                        tint = if (inputs.activeCount > 0) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface,
                     )
                 }
             }
         }
 
-        when (tab) {
-            HistoryTab.UNIFIED -> UnifiedTimeline(
-                playEvents = historyState.events,
-                historyRevision = historyState.revision,
-                playStore = store,
+        when (current) {
+            HistoryTab.PLAYBACK -> PlaybackContent(
+                graph = graph,
+                state = state,
                 catalog = catalog,
-                query = query,
-                onSongClick = onSongClick,
-            )
-            HistoryTab.PLAYBACK -> PlaysTimeline(
-                rows = rows,
-                hasAnyEvents = historyState.events.isNotEmpty(),
                 onSongClick = onSongClick,
             )
             HistoryTab.COLLECTION -> ActivityContent(
                 catalog = catalog,
-                query = query,
+                query = inputs.query,
                 onSongClick = onSongClick,
             )
-        }
-    }
-
-    if (showRangeDialog) {
-        val rangeState = rememberDateRangePickerState(
-            initialSelectedStartDateMillis = rangeStartMs,
-            initialSelectedEndDateMillis = rangeEndMs?.let { it - DAY_MS },
-        )
-        DatePickerDialog(
-            onDismissRequest = { showRangeDialog = false },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        rangeStartMs = rangeState.selectedStartDateMillis
-                        // Selected end DAY is inclusive → exclusive bound +24 h.
-                        rangeEndMs = (rangeState.selectedEndDateMillis
-                            ?: rangeState.selectedStartDateMillis)?.plus(DAY_MS)
-                        showRangeDialog = false
-                    },
-                ) { Text("Apply") }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        rangeStartMs = null
-                        rangeEndMs = null
-                        showRangeDialog = false
-                    },
-                ) { Text("Clear") }
-            },
-        ) {
-            DateRangePicker(
-                state = rangeState,
-                title = {
-                    Text(
-                        "Played between",
-                        modifier = Modifier.padding(start = 24.dp, top = 16.dp),
-                    )
-                },
-                modifier = Modifier.weight(1f),
+            HistoryTab.POCKETS -> EmptyState(
+                icon = Icons.Filled.Layers,
+                title = "Listening pockets",
+                caption = "Pockets learned from your listening show up here.",
+                testTag = "history-pockets",
+            )
+            HistoryTab.FOR_YOU -> EmptyState(
+                icon = Icons.Filled.History,
+                title = "For You",
+                caption = "Recommendations from your history show up here.",
+                testTag = "history-foryou",
             )
         }
     }
+
+    if (showSort) {
+        BrowseSortSheet(
+            kind = BrowseKind.SONGS,
+            sortKeys = inputs.sortKeys,
+            onSortKeys = { state.setSortKeys(it) },
+            onDismiss = { showSort = false },
+            historyMode = true,
+        )
+    }
+    if (showFilter) {
+        val results by state.results.collectAsState()
+        BrowseFilterSheet(
+            kind = BrowseKind.SONGS,
+            filters = BrowseFilters(clauses = inputs.clauses, hideSkips = inputs.hideSkips),
+            optionsFor = { fieldId ->
+                FieldOptions.of(fieldId, results.allRows, catalog.availableSources)
+            },
+            historyMode = true,
+            playlists = emptyList<CollectionRef>(),
+            pockets = emptyList<CollectionRef>(),
+            onFilters = { f -> state.update { it.copy(clauses = f.clauses, hideSkips = f.hideSkips) } },
+            onDismiss = { showFilter = false },
+        )
+    }
 }
 
-/**
- * Custom two-button tab control (not a fixed 3-segment picker): each button is a
- * DESTINATION — one of the two views you can switch TO — so the current view is
- * never shown. Tapping switches and the pair re-renders (iOS parity).
- */
+/** Segmented tab control: every visible tab shown, the current one selected. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun HistoryTabBar(current: HistoryTab, onSelect: (HistoryTab) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+private fun HistoryTabBar(tabs: List<HistoryTab>, current: HistoryTab, onSelect: (HistoryTab) -> Unit) {
+    SingleChoiceSegmentedButtonRow(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        current.altTabs().forEach { destination ->
-            OutlinedButton(
-                onClick = { onSelect(destination) },
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("history-tab-${destination.label.lowercase()}"),
-            ) {
-                Icon(
-                    imageVector = destination.icon,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(destination.label)
-            }
+        tabs.forEachIndexed { i, t ->
+            SegmentedButton(
+                selected = t == current,
+                onClick = { onSelect(t) },
+                shape = SegmentedButtonDefaults.itemShape(index = i, count = tabs.size),
+                modifier = Modifier.testTag("history-tab-${t.label.lowercase().replace(' ', '-')}"),
+            ) { Text(t.label, maxLines = 1) }
         }
     }
 }
 
-/**
- * Unified timeline (iOS parity): song plays + collection activity interleaved
- * newest-first, filtered by the shared [query]. Loads the activity store lazily
- * (its first read decodes the whole log — kept off-main, like [ActivityContent]);
- * merges off the main thread; renders a growing page prefix.
- */
+/** The Playback timeline: recompute pipeline + paged rows + row chrome + rewind confirm. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun UnifiedTimeline(
-    playEvents: List<PlayEvent>,
-    historyRevision: Int,
-    playStore: PlayHistoryStore,
+private fun PlaybackContent(
+    graph: AppGraph,
+    state: HistoryBrowseState,
     catalog: MergedCatalog,
-    query: String,
     onSongClick: (String) -> Unit,
 ) {
     val context = LocalContext.current
-    val graph = remember { AppGraph.get(context) }
+    val store = remember { com.levi.pocketdj.data.history.PlayHistoryStore.get(context) }
+    val historyState by store.state.collectAsState()
+    val inputs by state.inputs.collectAsState()
+    val results by state.results.collectAsState()
+    val scope = rememberCoroutineScope()
 
-    val activityStore by produceState<CollectionActivityStore?>(initialValue = null) {
-        value = withContext(Dispatchers.IO) { graph.collectionActivity }
-    }
-    val store = activityStore ?: return
-    val activityState by store.state.collectAsState()
-
-    // Seed NULL so the first frame renders nothing rather than flashing the empty
-    // state before the merge finishes on Dispatchers.Default. Keyed on both stream
-    // revisions + catalog identity + query (never events.size — pins at the cap).
-    val entriesOrNull by produceState<List<HistoryEntry>?>(
-        initialValue = null,
-        historyRevision,
-        activityState.revision,
-        catalog,
-        query,
-    ) {
-        val plays = playEvents
-        val acts = activityState.events
-        value = withContext(Dispatchers.Default) {
-            buildUnified(plays, acts, catalog, playStore::playCount, query)
-        }
-    }
-    val entries = entriesOrNull ?: return
-
-    if (entries.isEmpty()) {
-        val hasAny = playEvents.isNotEmpty() || activityState.events.isNotEmpty()
-        EmptyState(
-            icon = Icons.Filled.History,
-            title = if (hasAny) "Nothing matches your search" else "No history yet",
-            caption = "Songs you play — and changes you make to your collections " +
-                "(adds, hearts, removals) — show up here together.",
-            testTag = if (hasAny) "history-unified-no-matches" else "history-unified-empty",
-        )
-        return
-    }
-
-    // Render a growing prefix (History can hold 20k+ combined events); a catalog
-    // refresh must not reset a scrolled-in budget.
-    var pageBudget by rememberSaveable { mutableIntStateOf(PAGE_SIZE) }
-    val visible = if (entries.size > pageBudget) entries.subList(0, pageBudget) else entries
-
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
-        items(visible, key = { it.id }) { entry ->
-            when (entry) {
-                is HistoryEntry.Play -> PlayRow(
-                    row = entry.row,
-                    onClick = { onSongClick(entry.row.songId) },
-                )
-                is HistoryEntry.Activity -> ActivityRow(
-                    row = entry.row,
-                    onSongClick = onSongClick,
-                )
-            }
-        }
-        if (entries.size > visible.size) {
-            item(key = "unified-load-more") {
-                // Composing the sentinel = the last page scrolled in; grow.
-                LaunchedEffect(pageBudget) { pageBudget += PAGE_SIZE }
-                Spacer(Modifier.height(48.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun PlaysTimeline(
-    rows: List<HistoryRow>,
-    hasAnyEvents: Boolean,
-    onSongClick: (String) -> Unit,
-) {
-    if (rows.isEmpty()) {
-        if (hasAnyEvents) {
-            EmptyState(
-                icon = Icons.Filled.History,
-                title = "No matches",
-                caption = "No plays match the search or date range.",
-                testTag = "history-no-matches",
+    // Recompute: signature = catalog identity + event-log revision + inputs. The base binds BEFORE
+    // the recompute (guard 3); the effect restarts (cancelling the prior run) when it moves.
+    val catalogId = System.identityHashCode(catalog)
+    val signature = "$catalogId-${historyState.revision}-${inputs.signature()}"
+    val baseKey = "$catalogId-${historyState.revision}-${inputs.hideSkips}"
+    LaunchedEffect(signature, inputs.submitNonce) {
+        val events = historyState.events
+        state.externalBase = {
+            buildItems(
+                events = events,
+                catalog = catalog,
+                hideSkips = state.inputs.value.hideSkips,
+                playCountOf = store::playCount,
+                isFromAnotherDevice = store::isFromAnotherDevice,
             )
-        } else {
+        }
+        state.playCounts = if (inputs.usesPlayCounts) {
+            withContext(Dispatchers.Default) {
+                events.asSequence().map { it.songId }.distinct().associateWith(store::playCount)
+            }
+        } else emptyMap()
+        state.refreshExternal(signature, baseKey)
+    }
+
+    val liveEventId by remember { graph.playbackGraph.skipTracker.currentEventIdState }.collectAsState()
+    val nowPlaying by graph.playbackController.nowPlaying.collectAsState()
+    val playing = nowPlaying?.isPlaying == true
+
+    var menuEventId by remember { mutableStateOf<String?>(null) }
+    var rewindEventId by remember { mutableStateOf<String?>(null) }
+    var addToSongId by remember { mutableStateOf<String?>(null) }
+
+    val rows = results.rows
+    if (rows.isEmpty()) {
+        // Distinguish "nothing recorded" from "everything filtered out".
+        if (historyState.events.isEmpty()) {
             EmptyState(
                 icon = Icons.Filled.History,
                 title = "No plays yet",
                 caption = "Songs you play in a Mix, Playlist, Pocket, Set list, or the Browser show up here.",
                 testTag = "history-empty",
             )
+        } else {
+            EmptyState(
+                icon = Icons.Filled.History,
+                title = "No matches",
+                caption = "No plays match the search or filters.",
+                testTag = "history-no-matches",
+            )
         }
-        return
-    }
-
-    // Render a growing prefix of the row list (History can hold 20k events);
-    // a catalog refresh must not reset a scrolled-in budget.
-    var pageBudget by rememberSaveable { mutableIntStateOf(PAGE_SIZE) }
-    val visible = if (rows.size > pageBudget) rows.subList(0, pageBudget) else rows
-
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
-        items(visible, key = { it.eventId }) { row ->
-            PlayRow(row = row, onClick = { onSongClick(row.songId) })
-        }
-        if (rows.size > visible.size) {
-            item(key = "history-load-more") {
-                // Composing the sentinel = the last page scrolled in; grow.
-                LaunchedEffect(pageBudget) { pageBudget += PAGE_SIZE }
-                Spacer(Modifier.height(48.dp))
+    } else {
+        // Paging budget survives a catalog refresh: the key excludes catalog identity.
+        val pagingKey = state.pagingKey(historyState.revision, rows.size)
+        var pageBudget by rememberSaveable(pagingKey) { mutableIntStateOf(PAGE_SIZE) }
+        val visible = if (rows.size > pageBudget) rows.subList(0, pageBudget) else rows
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            items(visible, key = { results.refOf(it)?.eventId ?: it.song.id + it.playedAt }) { row ->
+                val ref = results.refOf(row) ?: return@items
+                val live = isLiveRow(ref, liveEventId, playing)
+                Box {
+                    PlayRow(
+                        row = row,
+                        ref = ref,
+                        live = live,
+                        onClick = { onSongClick(ref.songId) },
+                        onLongClick = { menuEventId = ref.eventId },
+                    )
+                    HistoryRowMenu(
+                        expanded = menuEventId == ref.eventId,
+                        ref = ref,
+                        onDismiss = { menuEventId = null },
+                        onAction = { action ->
+                            when (action) {
+                                HistoryRowAction.REWIND -> rewindEventId = ref.eventId
+                                HistoryRowAction.ADD_TO -> addToSongId = ref.songId
+                                HistoryRowAction.SHARE -> {
+                                    val song = catalog.songsById[ref.songId]
+                                    val text = song?.let { ShareText.forSong(it) }
+                                        ?: ShareText.forTitleArtist(row.song.name, row.song.artist)
+                                    ShareText.send(context, text, "${row.song.name} — ${row.song.artist}")
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+            if (rows.size > visible.size) {
+                item(key = "history-load-more") {
+                    LaunchedEffect(pageBudget) { pageBudget += PAGE_SIZE }
+                    Spacer(Modifier.height(48.dp))
+                }
             }
         }
     }
+
+    rewindEventId?.let { id ->
+        val replacesLive = graph.playbackGraph.sequencer.state.value.isRunning
+        AlertDialog(
+            onDismissRequest = { rewindEventId = null },
+            title = { Text("Rewind playback?") },
+            text = {
+                Text(
+                    if (replacesLive) "This replaces what's playing and restarts from here."
+                    else "Playback restarts from here.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        rewindEventId = null
+                        scope.launch {
+                            // Re-read the log at EXECUTE time: a merge can change it under the dialog.
+                            val result = performRewind(graph, id, store.state.value.events)
+                            if (result is RewindResult.Failed) {
+                                Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.testTag("history-rewind-confirm"),
+                ) { Text("Rewind to here") }
+            },
+            dismissButton = { TextButton(onClick = { rewindEventId = null }) { Text("Cancel") } },
+        )
+    }
+    addToSongId?.let { id ->
+        AddToCollectionSheet(item = AddToItem.Song(id), onDismiss = { addToSongId = null })
+    }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun PlayRow(row: HistoryRow, onClick: () -> Unit) {
-    val appContext = LocalContext.current
-    val liveId by remember { AppGraph.get(appContext).playbackGraph.skipTracker.currentEventIdState }
-        .collectAsState()
-    val isLive = liveId == row.eventId
+private fun PlayRow(
+    row: SongRow,
+    ref: PlayRef,
+    live: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     Surface(
-        onClick = onClick,
-        color = if (isLive) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+        color = if (live) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
         else MaterialTheme.colorScheme.background,
-        modifier = Modifier.fillMaxWidth().testTag("history-row-${row.eventId}" + if (isLive) "-live" else ""),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .testTag("history-row-${ref.eventId}" + if (live) "-live" else ""),
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ArtThumb(row.artUrl)
+            ArtThumb(ref.artUrl)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = row.title,
+                    text = row.song.name,
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onBackground,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = row.artist,
+                    text = row.song.artist,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(2.dp))
-                ContextLine(row)
+                ContextLine(ref)
             }
-            OutcomeGlyph(row)
-            if (row.playCount > 1) {
+            if (live) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = "playing",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 8.dp).size(20.dp).testTag("history-live-${ref.eventId}"),
+                )
+            }
+            if (ref.wasSkipped) {
                 Spacer(Modifier.width(8.dp))
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(50),
-                    modifier = Modifier.testTag("history-count-${row.songId}"),
-                ) {
-                    Text(
-                        text = "${row.playCount} plays",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                    )
-                }
+                Chip("skipped", "history-skipped-${ref.eventId}")
+            }
+            if (ref.count > 1) {
+                Spacer(Modifier.width(8.dp))
+                Chip("${ref.count} plays", "history-count-${ref.songId}")
             }
         }
     }
 }
 
-/** Outcome glyph: skipped / completed / partial; UNKNOWN draws nothing (iOS parity). */
 @Composable
-private fun OutcomeGlyph(row: HistoryRow) {
-    val (icon, desc) = when (row.outcome) {
-        PlayOutcome.SKIPPED -> Icons.Filled.SkipNext to "skipped"
-        PlayOutcome.COMPLETED -> Icons.Filled.CheckCircle to "completed"
-        PlayOutcome.PARTIAL -> Icons.Filled.Timelapse to "partial"
-        PlayOutcome.UNKNOWN -> return
+private fun Chip(text: String, tag: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(50),
+        modifier = Modifier.testTag(tag),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+        )
     }
-    Icon(
-        imageVector = icon,
-        contentDescription = desc,
-        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 8.dp).size(18.dp).testTag("history-outcome-${row.eventId}-$desc"),
-    )
 }
 
-/** `[source-icon] {SourceLabel} · {contextName} · {relative time}` (§6 row). */
+/** `[source-icon] {Source} · {contextName} · on another device · {relative time}`. */
 @Composable
-private fun ContextLine(row: HistoryRow) {
+private fun ContextLine(ref: PlayRef) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
-            imageVector = row.source.icon(),
+            imageVector = ref.source.icon(),
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.size(13.dp),
         )
         Spacer(Modifier.width(4.dp))
-        val contextLabel = row.contextName
-            ?.takeIf { it.isNotBlank() }
-            ?.let { "${row.source.label} · $it" }
-            ?: row.source.label
         Text(
-            text = "$contextLabel · ${relativeTime(row.playedAtMs)}",
+            text = "${contextLabel(ref)} · ${relativeTime(ref.playedAtMs)}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,

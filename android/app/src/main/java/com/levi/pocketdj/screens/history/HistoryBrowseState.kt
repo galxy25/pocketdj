@@ -30,7 +30,14 @@ internal data class HistoryInputs(
     val hideSkips: Boolean = false,
     /** Bumped by the play-count store when a clause/sort reads plays. */
     val playCountsRevision: Int = 0,
+    /** Bumped by an explicit submit so the recompute effect re-fires with an unchanged signature. */
+    val submitNonce: Int = 0,
 ) {
+    /** Does a clause or sort key read play counts (memo-key / count-snapshot gate)? */
+    val usesPlayCounts: Boolean
+        get() = sortKeys.any { it.field == SortField.PLAY_COUNT } ||
+            clauses.any { !it.isIncomplete && it.field == "playCount" }
+
     /** Deterministic signature of the inputs (clause VALUES, never ids; see BrowseEngine.resultsKey). */
     fun signature(): String =
         BrowseEngine.resultsKey(0L, BrowseKind.SONGS, query, clauses, sortKeys, playCountsRevision) +
@@ -48,6 +55,9 @@ internal data class HistoryInputs(
 /** One published result set: the engine output plus the base that can resolve each row's PlayRef. */
 internal class HistoryResults(val rows: List<SongRow>, private val base: HistoryBase) {
     fun refOf(row: SongRow): PlayRef? = base.refOf(row)
+
+    /** The unfiltered base rows (drives the filter sheet's option lists). */
+    val allRows: List<SongRow> get() = base.rows
 
     companion object {
         val EMPTY = HistoryResults(emptyList(), HistoryBase.EMPTY)
@@ -127,7 +137,7 @@ internal class HistoryBrowseState(
             base = cached.base
         } else {
             val build = externalBase ?: return // guard 3: nothing bound -> publish/stamp nothing
-            base = build()
+            base = withContext(filterDispatcher) { build() }
             // Guard 3: never memoize an EMPTY base (an empty answer costs nothing to rebuild).
             if (base.rows.isNotEmpty()) baseCache = BaseCache(baseKey, base)
         }
@@ -156,6 +166,12 @@ internal class HistoryBrowseState(
     fun invalidateDisplayKey() {
         displayKey = null
         baseCache = null
+    }
+
+    /** Explicit submit (IME Search): invalidate both memos AND re-fire the recompute effect. */
+    fun submit() {
+        invalidateDisplayKey()
+        update { it.copy(submitNonce = it.submitNonce + 1) }
     }
 
     // ---- paging ---------------------------------------------------------------------------------
