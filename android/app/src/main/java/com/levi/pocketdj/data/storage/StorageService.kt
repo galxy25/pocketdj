@@ -58,7 +58,24 @@ class StorageService(
     private val clearLyrics: (() -> Unit)? = null,
     /** SVC-6: targeted burn/stem deletes + per-artist usage (wired to BurnStore). */
     private val burnOps: BurnStorageOps? = null,
+    /** STU-7: per-family Studio usage + delete-all (wired to StudioStore). */
+    private val studioOps: StudioStorageOps? = null,
 ) {
+    /**
+     * The slice of StudioStore the Storage screen uses (a port for JVM tests). [deleteAll] is STRICT: it
+     * keeps records whose root is unreachable and skips the recorder's in-flight take.
+     */
+    interface StudioStorageOps {
+        fun usageBytes(family: com.levi.pocketdj.studio.store.StudioFamily): Long
+        fun deleteAll(family: com.levi.pocketdj.studio.store.StudioFamily)
+        /** Records of the family (iOS enables delete when count > 0 OR bytes > 0: a record with zero bytes is removable). */
+        fun recordCount(family: com.levi.pocketdj.studio.store.StudioFamily): Int = 0
+    }
+
+    /** Studio record count for a STUDIO_* category (0 for others / unwired). Off-main callers only. */
+    fun studioRecordCount(category: Category): Int =
+        runCatching { category.studioFamily?.let { studioOps?.recordCount(it) } }.getOrNull() ?: 0
+
     /** The slice of BurnStore the Storage screen's targeted deletes use (a port for JVM tests). */
     interface BurnStorageOps {
         fun usageByArtist(): List<ArtistUsage>
@@ -79,6 +96,23 @@ class StorageService(
         ACTIVITY(clearable = true),
         LYRICS(clearable = true), // re-fetchable text cache (BRW-4)
         FAVORITES(clearable = false), // per-profile ♥ + tombstones — display-only, user content
+        STUDIO_SAMPLES(clearable = true), // the user's own recordings/cuts: delete-all is explicit + confirmed
+        STUDIO_LOOPS(clearable = true),
+        STUDIO_SEQUENCES(clearable = true),
+        STUDIO_TAKES(clearable = true),
+        STUDIO_INSTRUMENTS(clearable = true), // downloaded SoundFonts: re-downloadable
+        ;
+
+        /** The Studio family a STUDIO_* category maps to, else null. */
+        val studioFamily: com.levi.pocketdj.studio.store.StudioFamily?
+            get() = when (this) {
+                STUDIO_SAMPLES -> com.levi.pocketdj.studio.store.StudioFamily.SAMPLES
+                STUDIO_LOOPS -> com.levi.pocketdj.studio.store.StudioFamily.LOOPS
+                STUDIO_SEQUENCES -> com.levi.pocketdj.studio.store.StudioFamily.SEQUENCES
+                STUDIO_TAKES -> com.levi.pocketdj.studio.store.StudioFamily.TAKES
+                STUDIO_INSTRUMENTS -> com.levi.pocketdj.studio.store.StudioFamily.INSTRUMENTS
+                else -> null
+            }
     }
 
     /** Categories that expose a Clear action (everything but Collections). */
@@ -96,6 +130,9 @@ class StorageService(
             Category.ACTIVITY -> fileSize(activityFile)
             Category.FAVORITES -> favoritesFile?.let(::fileSize) ?: 0L
             Category.LYRICS -> lyricsCacheDir?.let(::dirSize) ?: 0L
+            Category.STUDIO_SAMPLES, Category.STUDIO_LOOPS, Category.STUDIO_SEQUENCES,
+            Category.STUDIO_TAKES, Category.STUDIO_INSTRUMENTS ->
+                runCatching { category.studioFamily?.let { studioOps?.usageBytes(it) } }.getOrNull() ?: 0L
         }
     }
 
@@ -123,6 +160,9 @@ class StorageService(
             Category.LYRICS -> runCatching {
                 clearLyrics?.invoke() ?: lyricsCacheDir?.listFiles()?.forEach { it.delete() }
             }
+            Category.STUDIO_SAMPLES, Category.STUDIO_LOOPS, Category.STUDIO_SEQUENCES,
+            Category.STUDIO_TAKES, Category.STUDIO_INSTRUMENTS ->
+                runCatching { category.studioFamily?.let { studioOps?.deleteAll(it) } }
             Category.COLLECTIONS, Category.FAVORITES -> Unit // unreachable — guarded above
         }
         measure(category)

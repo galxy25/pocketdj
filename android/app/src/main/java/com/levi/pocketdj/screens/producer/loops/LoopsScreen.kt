@@ -1,5 +1,7 @@
 package com.levi.pocketdj.screens.producer.loops
 
+import com.levi.pocketdj.screens.collections.AddToCollectionSheet
+import com.levi.pocketdj.screens.collections.AddToItem
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -219,6 +221,7 @@ private fun LoopRow(
     onToggle: () -> Unit, onRename: () -> Unit, onMove: (String?) -> Unit, onNewFolderForMove: () -> Unit, onDelete: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
+    var addTo by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp, bottom = 8.dp).testTag("loop-${l.id}"), verticalAlignment = Alignment.CenterVertically) {
         FilledTonalIconButton(
             onClick = onToggle,
@@ -239,7 +242,9 @@ private fun LoopRow(
         }
         Box {
             IconButton(onClick = { menu = true }, modifier = Modifier.testTag("loop-menu-${l.id}")) { Icon(Icons.Filled.MoreVert, "Loop actions") }
+            if (addTo) AddToCollectionSheet(item = AddToItem.Song(l.id), onDismiss = { addTo = false })
             DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem(text = { Text("Add to…") }, onClick = { menu = false; addTo = true }, modifier = Modifier.testTag("loop-add-to-${l.id}"))
                 DropdownMenuItem(text = { Text("Rename…") }, onClick = { menu = false; onRename() })
                 MoveToItems(folders, l.folderId, onMove = { menu = false; onMove(it) }, onNewFolder = { menu = false; onNewFolderForMove() })
                 DropdownMenuItem(text = { Text("Delete loop") }, onClick = { menu = false; onDelete() })

@@ -1,5 +1,7 @@
 package com.levi.pocketdj.screens.producer.sequencer
 
+import com.levi.pocketdj.screens.collections.AddToCollectionSheet
+import com.levi.pocketdj.screens.collections.AddToItem
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -204,6 +206,7 @@ private fun PatternListRow(
     onMove: (String?) -> Unit, onNewFolderForMove: () -> Unit, onDelete: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
+    var addTo by remember { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(start = 16.dp, top = 6.dp, bottom = 6.dp).testTag("seq-pattern-${p.id}"),
         verticalAlignment = Alignment.CenterVertically,
@@ -215,7 +218,9 @@ private fun PatternListRow(
         }
         Box {
             IconButton(onClick = { menu = true }, Modifier.testTag("seq-menu-${p.id}")) { Icon(Icons.Filled.MoreVert, "Pattern actions") }
+            if (addTo) AddToCollectionSheet(item = AddToItem.Song(p.id), onDismiss = { addTo = false })
             DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem(text = { Text("Add to…") }, onClick = { menu = false; addTo = true }, modifier = Modifier.testTag("seq-add-to-${p.id}"))
                 DropdownMenuItem(text = { Text("Rename…") }, onClick = { menu = false; onRename() }, modifier = Modifier.testTag("seq-rename-${p.id}"))
                 DropdownMenuItem(text = { Text("Duplicate") }, onClick = { menu = false; onDuplicate() }, modifier = Modifier.testTag("seq-duplicate-${p.id}"))
                 MoveToItems(folders, p.folderId, onMove = { menu = false; onMove(it) }, onNewFolder = { menu = false; onNewFolderForMove() })

@@ -34,7 +34,13 @@ data class RealizeCtx(
     val pocketsById: Map<String, Pocket>,
     /** Autofill pool: every catalog song with BOTH bpm AND camelot. */
     val candidates: List<IndexSong>,
+    /** Studio seam: studio ids realize as synthetic pseudo-songs with their REAL length. Never feeds [candidates]. */
+    val studioLookup: StudioLookup? = null,
+    val studioArtist: String = STUDIO_ARTIST,
 ) {
+    /** Catalog song, else a synthesized studio pseudo-song (mandatory lengthMs, bpm/camelot when known). */
+    fun songFor(id: String): IndexSong? = resolveSongOrStudio(songsById, id, studioLookup, studioArtist)
+
     /** A song's genre — lives on its ALBUM in the native catalog. */
     fun genreOf(song: IndexSong): String? = song.albumId?.let { albumsById[it]?.genre }
 }
@@ -92,7 +98,7 @@ object RealizeEngine {
         if (!seen.add(pocketId)) return // cycle / revisit guard
         val pocket = ctx.pocketsById[pocketId] ?: return
 
-        for (songId in pocket.songIds) pushSong(ctx.songsById[songId], out, added)
+        for (songId in pocket.songIds) pushSong(ctx.songFor(songId), out, added)
         for (albumId in pocket.albumIds) {
             val album = ctx.albumsById[albumId] ?: continue
             for (trackId in album.trackList) pushSong(ctx.songsById[trackId], out, added)
@@ -131,7 +137,7 @@ object RealizeEngine {
     ) {
         when (node.kind) {
             PlaylistNode.Kind.SONG -> {
-                val song = node.songId?.let { ctx.songsById[it] } ?: return
+                val song = node.songId?.let { ctx.songFor(it) } ?: return
                 addPlaced(
                     placed,
                     used,
