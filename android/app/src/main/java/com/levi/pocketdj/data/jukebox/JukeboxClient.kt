@@ -127,6 +127,26 @@ class JukeboxClient(
         execute(longClient, request) { }
     }
 
+    /** `GET /sessions` — server-token bearer; rows carry the guest URL, never a hostKey. */
+    suspend fun listSessions(): List<JukeboxSessionRow> {
+        val config = requireConfig()
+        val url = JukeboxUrls.sessions(config.normalizedBase) ?: throw invalidUrl()
+        val request = builder(config.installId, bearer = config.token).url(url).get().build()
+        return execute(shortClient, request) { text ->
+            json.decodeFromString<JukeboxSessionsPage>(text).sessions
+        }
+    }
+
+    /** `GET /sessions/{id}` — full info INCLUDING hostKey (the adoption lookup). */
+    suspend fun sessionInfo(jukeboxId: String): JukeboxSessionInfo {
+        val config = requireConfig()
+        val url = JukeboxUrls.sessionInfo(config.normalizedBase, jukeboxId) ?: throw invalidUrl()
+        val request = builder(config.installId, bearer = config.token).url(url).get().build()
+        return execute(shortClient, request) { text ->
+            json.decodeFromString<JukeboxSessionInfo>(text)
+        }
+    }
+
     private suspend fun requireConfig(): Config {
         val config = configProvider()
         if (!config.configured) {

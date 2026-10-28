@@ -51,6 +51,9 @@ class JukeboxGraph private constructor(context: Context) {
         rips = app.ripsRepository,
         playback = app.playbackController,
         scope = app.appScope,
+        pocketDjName = {
+            app.settings.get(com.levi.pocketdj.onboarding.OnboardingPrefs.PROFILE_NAME)
+        },
     )
 
     companion object {

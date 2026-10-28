@@ -24,7 +24,8 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
     /** The pre-existing Settings blocks (Data sources … About), in shipped order. */
     override val periodicWork = com.levi.pocketdj.work.ShellWork.specs
 
-    override val settingsSections: List<SettingsSection> = SettingsSections.builtin()
+    override val settingsSections: List<SettingsSection> =
+        SettingsSections.builtin() + com.levi.pocketdj.screens.settings.sections.jukeboxSection()
 
     /** Stage-1 "Link a device" probe; SVC-9 swaps in the S3 cloud-doc implementation. */
     @Volatile var linkDeviceProbe: LinkDeviceProbe = StubLinkDeviceProbe

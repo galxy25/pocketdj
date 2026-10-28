@@ -63,6 +63,12 @@ class JukeboxRepository(
     private val rips: RipsRepository,
     private val playback: PlaybackController,
     private val scope: CoroutineScope,
+    /** The PocketDJ name (Settings ▸ Profile); "" when unset. */
+    private val pocketDjName: suspend () -> String = { "" },
+    /** Seam: broadcast-into-Mix placement (Mix area wires it; default no-op). */
+    var placementSink: JukeboxPlacementSink = JukeboxPlacementSink.None,
+    /** Seam: Apple-Music catalog match stage (device-only; default null). */
+    var externalMatch: JukeboxExternalMatch = JukeboxExternalMatch.None,
 ) {
     private val appContext = context.applicationContext
 
@@ -86,9 +92,6 @@ class JukeboxRepository(
         val match: Match = Match.Searching,
     )
 
-    /** One locally-derived played-history row (newest first). */
-    data class PlayedEntry(val title: String, val artist: String, val atMs: Long)
-
     data class UiState(
         val session: JukeboxSessionInfo? = null,
         val starting: Boolean = false,
@@ -97,7 +100,7 @@ class JukeboxRepository(
         /** Pending guest requests, oldest first. */
         val requests: List<RequestRow> = emptyList(),
         /** Locally-derived played history, newest first (mirror of §1). */
-        val played: List<PlayedEntry> = emptyList(),
+        val played: List<JukeboxPlayedEntry> = emptyList(),
         /** Queue items after the current one, from the last loop tick. */
         val upNextCount: Int = 0,
         /** Transient broker trouble — shown as a subtle hint; loop keeps going. */
@@ -144,7 +147,7 @@ class JukeboxRepository(
         scope.launch {
             try {
                 val created = client.createSession(
-                    name = name.trim().ifEmpty { DEFAULT_SESSION_NAME },
+                    name = name.trim().ifEmpty { JukeboxSettings.defaultSessionName(pocketDjName()) },
                     requiresToken = requiresToken,
                 )
                 // Stamp the intent locally — the server doesn't echo it (§3.1).
@@ -162,6 +165,39 @@ class JukeboxRepository(
                         starting = false,
                         notice = error.message ?: "Couldn't start the jukebox",
                     )
+                }
+            }
+        }
+    }
+
+    /** Every live session on the broker (picker surfaces). */
+    suspend fun listSessions(): List<JukeboxSessionRow> = client.listSessions()
+
+    /**
+     * Become the publisher of an existing session (iOS `adopt`): no-op for the
+     * current one, refused while a different one is active or a start is in
+     * flight; otherwise adopt, reset loop bookkeeping, persist, start the loop.
+     */
+    fun adopt(jukeboxId: String) {
+        val current = _state.value
+        when (JukeboxAdoptGuard.decide(current.session?.jukeboxId, current.starting, jukeboxId)) {
+            JukeboxAdoptDecision.NO_OP, JukeboxAdoptDecision.REFUSE -> return
+            JukeboxAdoptDecision.PROCEED -> Unit
+        }
+        _state.update { it.copy(starting = true, notice = null) }
+        scope.launch {
+            try {
+                val info = client.sessionInfo(jukeboxId)
+                sessionStore.save(info)
+                sessionStore.setHear(false)
+                resetLoopBookkeeping()
+                _state.value = UiState(session = info, hear = false)
+                startLoop()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _state.update {
+                    it.copy(starting = false, notice = error.message ?: "Couldn't adopt the jukebox")
                 }
             }
         }
@@ -216,7 +252,9 @@ class JukeboxRepository(
         if (action.isPlacement) {
             val found = row.match as? Match.Found
             if (found?.playable == true) {
-                scope.launch { applyPlacement(found.song, action) }
+                scope.launch {
+                    if (!placementSink.place(found.song, action)) applyPlacement(found.song, action)
+                }
             }
         }
     }
@@ -316,9 +354,10 @@ class JukeboxRepository(
         }
     }
 
-    private fun computeMatch(request: JukeboxRequest) {
+    private suspend fun computeMatch(request: JukeboxRequest) {
         val songs = catalog.state.value.catalog?.songs.orEmpty()
         val song = JukeboxMatcher.match(request.title, request.artist, songs)
+            ?: runCatching { externalMatch.match(request.title, request.artist) }.getOrNull()
         val match = song?.let { Match.Found(it, rips.isPlayable(it.id)) } ?: Match.None
         _state.update { current ->
             current.copy(
@@ -367,16 +406,24 @@ class JukeboxRepository(
     /**
      * Local mirror of the broker's played-history derivation (§1): a snapshot
      * replacing one track with a different one (or nothing) logs the outgoing
-     * track. Same title+artist is a position tick, not a transition.
+     * track, one row per track (see [JukeboxPlayedDedup]).
      */
     private fun derivePlayed(snapshot: PlayerSnapshot?) {
         val current = snapshot?.songId?.let {
             snapshot.title.orEmpty() to snapshot.artist.orEmpty()
         }
         val previous = lastOnAir
-        if (previous != null && previous != current) {
-            val entry = PlayedEntry(previous.first, previous.second, System.currentTimeMillis())
-            _state.update { it.copy(played = (listOf(entry) + it.played).take(PLAYED_CAP)) }
+        val now = System.currentTimeMillis()
+        _state.update {
+            it.copy(
+                played = JukeboxPlayedDedup.apply(
+                    it.played,
+                    previous?.let { p -> JukeboxOnAir(p.first, p.second) },
+                    current?.let { c -> JukeboxOnAir(c.first, c.second) },
+                    now,
+                    PLAYED_CAP,
+                ),
+            )
         }
         lastOnAir = current
     }
