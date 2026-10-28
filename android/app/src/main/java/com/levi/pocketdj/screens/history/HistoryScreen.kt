@@ -423,7 +423,7 @@ private fun PlaybackContent(
         }
     } else {
         // Paging budget survives a catalog refresh: the key excludes catalog identity.
-        val pagingKey = state.pagingKey(historyState.revision, rows.size)
+        val pagingKey = state.inputsKey()
         var pageBudget by rememberSaveable(pagingKey) { mutableIntStateOf(PAGE_SIZE) }
         val visible = if (rows.size > pageBudget) rows.subList(0, pageBudget) else rows
         LazyColumn(modifier = Modifier.fillMaxSize()) {

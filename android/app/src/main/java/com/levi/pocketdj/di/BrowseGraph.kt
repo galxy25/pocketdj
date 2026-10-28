@@ -161,6 +161,13 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
      */
     fun startRecs() {
         startReleaseFeed()
+        // Final review: the Add-to sheet / context submenu "Suggested" rows read this seam (it was never assigned).
+        // Non-blocking cache read; a miss starts one fetch and the revision bump re-renders.
+        app.collectionsGraph.collectionSuggestions = { songId ->
+            recService.cachedCollectionSuggestions(songId).mapNotNull {
+                if (it.kind == "pocket" || it.kind == "playlist") com.levi.pocketdj.screens.collections.CollectionSuggestion(it.kind!!, it.id) else null
+            }
+        }
         app.appScope.launch(Dispatchers.IO) {
             deviceIdMirror = runCatching { app.settings.ensureInstallId() }.getOrDefault("")
             launch { app.settings.flow(com.levi.pocketdj.data.recs.RecsSettings.SHARE_LIFETIME_PLAY_COUNTS).collect { shareCountsMirror.set(it) } }

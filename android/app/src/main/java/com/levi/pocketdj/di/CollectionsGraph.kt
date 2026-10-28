@@ -348,6 +348,23 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /**
+     * Final review: Delete account / Reset must also drop the Imported-songs source and the AM playlist-sync audit,
+     * run and catalog-id lookup docs (they hold the previous user's playlist names and songs).
+     */
+    override val resetHooks: List<com.levi.pocketdj.shell.ResetHook> = listOf(
+        com.levi.pocketdj.shell.ResetHook {
+            importedSongs.clear()
+            val files = app.appContext.filesDir
+            for (n in listOf(
+                com.levi.pocketdj.data.applemusic.PlaylistAppleMusicSync.AUDIT_FILE,
+                com.levi.pocketdj.data.applemusic.PlaylistAppleMusicSync.RUN_FILE,
+                com.levi.pocketdj.data.applemusic.PlaylistAppleMusicSync.LOOKUPS_FILE,
+            )) runCatching { File(files, n).delete() }
+            runCatching { app.appContext.getSharedPreferences("pdj-amsync", android.content.Context.MODE_PRIVATE).edit().clear().apply() }
+        },
+    )
+
     override val flushables: List<Flushable> = listOf(
         Flushable {
             app.collections.flushNow()
@@ -483,7 +500,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 roundsUploader = { creds, wires, id -> app.gamesGraph.roundsClient.flush(creds, wires, id) },
             )
             app.gamesGraph.servicesBridge = bridge
-            app.gamesGraph.pocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
+            app.gamesGraph.servicesOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
                 override val recommendationsEnabled get() = app.browseGraph.recEnabled
                 override fun choose(on: Boolean) {
                     app.appScope.launch(Dispatchers.IO) {

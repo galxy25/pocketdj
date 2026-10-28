@@ -433,11 +433,21 @@ private fun ShellNavHost(
                 },
             )
             detailSongId?.let { songId ->
+                // Off-catalog plays (amrec_ / removed / another device's library) still know their title + artist.
+                val histCtx = LocalContext.current
+                val offCatalog = remember(songId) {
+                    runCatching {
+                        com.levi.pocketdj.data.history.PlayHistoryStore.get(histCtx).events
+                            .lastOrNull { it.songId == songId && !it.title.isNullOrBlank() }
+                            ?.let { com.levi.pocketdj.screens.browse.MinimalSong(it.title.orEmpty(), it.artist.orEmpty(), null) }
+                    }.getOrNull()
+                }
                 SongDetailSheet(
                     songId = songId,
                     onDismiss = { detailSongId = null },
                     snackbar = appSnackbar,
                     onOpenAlbum = { albumId -> nav.navigate(albumRoute(albumId)) },
+                    fallback = offCatalog,
                 )
             }
         }

@@ -180,7 +180,19 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
      */
     internal val debugRecsEnabled = kotlinx.coroutines.flow.MutableStateFlow(true)
 
-    @Volatile var pocketsOptIn: com.levi.pocketdj.screens.games.PocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
+    /** The real Settings-backed handler, assigned asynchronously by CollectionsGraph.startListeningPockets(). */
+    @Volatile var servicesOptIn: com.levi.pocketdj.screens.games.PocketsOptIn? = null
+
+    /**
+     * Final review: a stable proxy. Screens capture THIS object once; it forwards to the real handler as soon as it
+     * exists, so an early "Turn on" can never hit the inert stub captured before the async wiring finished.
+     */
+    val pocketsOptIn: com.levi.pocketdj.screens.games.PocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
+        override val recommendationsEnabled: kotlinx.coroutines.flow.StateFlow<Boolean> get() = (servicesOptIn ?: stubOptIn).recommendationsEnabled
+        override fun choose(on: Boolean) = (servicesOptIn ?: stubOptIn).choose(on)
+    }
+
+    private val stubOptIn: com.levi.pocketdj.screens.games.PocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
         // Debug builds: `pdj.pocketsRecsOff` extra turns the switch off so the "needs Recommendations"
         // note is reachable; release builds without a services bridge never reach this view.
         override val recommendationsEnabled: kotlinx.coroutines.flow.StateFlow<Boolean> get() = debugRecsEnabled

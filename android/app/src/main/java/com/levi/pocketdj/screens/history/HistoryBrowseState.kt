@@ -186,6 +186,12 @@ internal class HistoryBrowseState(
      * strand a scrolled-in budget back at page one. The count catches a catalog load that
      * changes which rows pass a catalog-derived filter.
      */
+    /**
+     * Final review: the screen's budget is keyed by the INPUTS only. Keying on the event-log revision / count reset a
+     * scrolled-in budget to page one at every track boundary while music plays (each play bumps both).
+     */
+    fun inputsKey(): String = _inputs.value.signature()
+
     fun pagingKey(historyRevision: Int, resultCount: Int): String =
         "$historyRevision|${_inputs.value.signature()}|$resultCount"
 

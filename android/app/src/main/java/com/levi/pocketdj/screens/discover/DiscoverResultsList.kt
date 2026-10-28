@@ -133,7 +133,12 @@ private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: s
     var busy by remember(hit.id) { mutableStateOf(false) }
     // Ripped is NOT "added": show a distinct "Ripped" state (play from Discover is PARTIAL, see status).
     val ripped = hit.ripped == true
-    var added by rememberSaveable(hit.id) { mutableStateOf(false) }
+    var addedLocal by rememberSaveable(hit.id) { mutableStateOf(false) }
+    // Derived from the store like iOS (BrowseDiscover.swift:283): an already-added song never offers ＋ again.
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val addsState = remember(ctx) { com.levi.pocketdj.di.AppGraph.get(ctx).browseGraph.discoverAdds.state }
+    val adds by addsState.collectAsState()
+    val added = addedLocal || adds.entries.any { it.songId == hit.id }
     var failed by remember(hit.id) { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -181,8 +186,8 @@ private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: s
                     busy = true
                     failed = false
                     scope.launch {
-                        added = try { onAdd(hit) } finally { busy = false }
-                        failed = !added
+                        addedLocal = try { onAdd(hit) } finally { busy = false }
+                        failed = !addedLocal
                     }
                 },
                 modifier = Modifier.semantics { contentDescription = help },
