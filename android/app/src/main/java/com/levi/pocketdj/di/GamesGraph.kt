@@ -23,15 +23,26 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
         GameScoreboardStore(File(app.appContext.filesDir, GamesPrefs.SCOREBOARD_FILE))
     }
 
+    init {
+        // Warm the store off the main thread so the first Games-tab composition never does disk IO.
+        app.appScope.launch(Dispatchers.IO) { runCatching { scoreboard } }
+    }
+
     override val resetHooks: List<ResetHook> = listOf(ResetHook { scoreboard.clear() })
 
     override val syncEntries: List<SyncEntry> =
-        listOf(SyncEntry(GamesPrefs.SCOREBOARD_SYNC_KEY, GamesPrefs.SCOREBOARD_FILE))
+        listOf(
+            SyncEntry(
+                GamesPrefs.SCOREBOARD_SYNC_KEY,
+                GamesPrefs.SCOREBOARD_FILE,
+                onPulled = { scoreboard.reloadFromDisk() },
+            ),
+        )
 
     override val deepLinkHandlers: List<DeepLinkHandler> = listOf(
         DeepLinkHandler { intent ->
             if (isDebuggable() && wantsSeed(intent)) {
-                app.appScope.launch(Dispatchers.IO) { runCatching { scoreboard.seedFixture(replaceExisting = true) } }
+                app.appScope.launch(Dispatchers.IO) { runCatching { scoreboard.seedFixture(replaceExisting = wantsFixture(intent)) } }
             }
             false // never consumes the intent
         },
@@ -40,6 +51,10 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
     private fun wantsSeed(intent: Intent): Boolean =
         intent.getBooleanExtra(GamesPrefs.SEED_EXTRA, false) ||
             intent.getStringExtra(GamesPrefs.SEED_EXTRA) == "true"
+
+    private fun wantsFixture(intent: Intent): Boolean =
+        intent.getBooleanExtra(GamesPrefs.USE_FIXTURE_EXTRA, false) ||
+            intent.getStringExtra(GamesPrefs.USE_FIXTURE_EXTRA) == "true"
 
     private fun isDebuggable(): Boolean =
         (app.appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0

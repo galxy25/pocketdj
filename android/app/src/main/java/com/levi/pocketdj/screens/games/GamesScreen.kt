@@ -35,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.CoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -91,6 +92,7 @@ fun GamesScreen(
     modifier: Modifier = Modifier,
     onOpenPuzzle: (() -> Unit)? = null,
     onOpenInThePocket: (() -> Unit)? = null,
+    deleteScope: CoroutineScope? = null,
 ) {
     val state by store.state.collectAsState()
     val scope = rememberCoroutineScope()
@@ -180,7 +182,8 @@ fun GamesScreen(
                 TextButton(
                     onClick = {
                         pendingKey = null
-                        scope.launch {
+                        // App-scoped when provided so a confirmed delete survives UI teardown.
+                        (deleteScope ?: scope).launch {
                             withContext(Dispatchers.IO) {
                                 when (target) {
                                     is ScoreboardDeletion.Game -> store.delete(target.game)

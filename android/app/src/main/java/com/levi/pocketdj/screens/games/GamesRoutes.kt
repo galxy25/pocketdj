@@ -18,6 +18,7 @@ fun GamesRoute(
     GamesScreen(
         store = graph.gamesGraph.scoreboard,
         modifier = modifier,
+        deleteScope = graph.appScope,
         onOpenPuzzle = onOpenPuzzle,
         onOpenInThePocket = onOpenInThePocket,
     )

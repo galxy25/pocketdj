@@ -81,7 +81,12 @@ fun interface ResetHook {
 }
 
 /** A document the profile-sync engine unions across devices (file name = iOS name). */
-data class SyncEntry(val key: String, val fileName: String)
+data class SyncEntry(
+    val key: String,
+    val fileName: String,
+    /** Called after a pull rewrote [fileName] on disk (iOS `register(..) { reloadFromDisk() }` clobber guard). */
+    val onPulled: (() -> Unit)? = null,
+)
 
 /** Resolves an item id with a given prefix (e.g. `amrec_`, `perf:`) to a displayable row. */
 class RowResolver(val prefix: String, val resolve: (String) -> Any?)

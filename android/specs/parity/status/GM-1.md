@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # GM-1 Games tab + Scoreboard store + GamesGraph
 
@@ -19,3 +19,13 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+fixes applied
+- Games store IO on main (MINOR) -> fixed: GamesGraph init warms `scoreboard` on appScope/IO.
+- No reload callback on sync entry (MINOR) -> fixed: `SyncEntry.onPulled` added (shell/FeatureModule.kt, default null); GamesGraph passes `scoreboard.reloadFromDisk()`. The sync engine package must invoke it after a pull. Test: SyncEntryHookTest.
+- Seed wipes real history (MINOR) -> fixed: replacing seed only with `-e pdj.useFixture true`; otherwise polite no-op.
+- Delete cancelled by UI lifecycle (NIT) -> fixed: GamesRoute passes `graph.appScope` as deleteScope.
+- ShellNavigation.kt shared touchpoint (NIT) -> acknowledged: Games placeholder removal in the listOf block; Mix package will conflict there, merge order to be planned by integrator.
+- Ledger row + emulator steps (NIT) -> deferred to orchestrator/integrator (emulator not used here).
+- Tests: 2210 run, 0 failures (was 2208); assembleDebug OK.
