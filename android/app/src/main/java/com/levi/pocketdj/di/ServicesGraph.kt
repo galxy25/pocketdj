@@ -89,6 +89,20 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     }
     val burnStore: BurnStore get() = burnStoreLazy.value
 
+    /** SVC-4 collection Rip / Stop (user-requested rips are protected from the rip window). */
+    val ripCoordinator: com.levi.pocketdj.data.rips.RipCollectionCoordinator by lazy {
+        com.levi.pocketdj.data.rips.RipCollectionCoordinator(app.ripServerClient, app.ripJobTracker)
+    }
+
+    /** SVC-4 burned-first resolver: one instance feeds the LOCAL_FILE rung and every direct play path. */
+    val burnedFirst: com.levi.pocketdj.playback.sequencer.BurnedRowResolver by lazy {
+        com.levi.pocketdj.playback.sequencer.BurnedRowResolver.from(
+            preferringCut = { burnStore.localUrlPreferringCut(it) },
+            startMs = { burnStore.startMs(it) },
+            durationMs = { burnStore.items.value[it]?.durationMs },
+        )
+    }
+
     override val settingsSections: List<SettingsSection> by lazy {
         if (diag.channel) listOf(debugSection()) else emptyList()
     }

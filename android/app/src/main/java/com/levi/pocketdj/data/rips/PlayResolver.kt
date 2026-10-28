@@ -69,6 +69,26 @@ object PlayResolver {
         }
     }
 
+    /**
+     * Burned-first (iOS: the local file wins on EVERY song-start path). A READY burn plays from its
+     * `file://` URL with the analog `[startMs, startMs + duration)` window even when a manifest
+     * entry and a rip server exist; the burn is the song's own copy and works offline. Studio ids
+     * stay fenced. [local] null => the ordinary [resolve] ladder.
+     */
+    fun resolveBurnedFirst(
+        songId: String,
+        entry: RipManifestEntry?,
+        ripServerConfigured: Boolean,
+        local: com.levi.pocketdj.playback.sequencer.LocalFile?,
+    ): PlayAction {
+        if (isStudioId(songId)) return resolve(songId, entry, ripServerConfigured)
+        if (local != null) return PlayAction.Stream(local.url, local.startMs, local.endMs)
+        return resolve(songId, entry, ripServerConfigured)
+    }
+
+    /** True when a [PlayAction.Stream] points at an on-device file (never presign / re-route it). */
+    fun isLocalUrl(url: String): Boolean = url.startsWith("file:")
+
     /** Result of an edition-aware resolution. [playId] is the storage id actually used. */
     data class EditionResolution(
         val playId: String,

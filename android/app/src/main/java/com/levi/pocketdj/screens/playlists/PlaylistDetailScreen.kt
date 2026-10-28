@@ -114,7 +114,14 @@ fun PlaylistDetailScreen(
             onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
         }
 
+        val burnController = rememberCollectionBurnController()
+        val burnItems by graph.servicesGraph.burnStore.items.collectAsState()
+        val ripJobs by graph.ripJobTracker.jobs.collectAsState()
+
         LazyColumn(modifier = Modifier.fillMaxSize()) {
+            item(key = "burn-bar") {
+                CollectionBurnBar(burnController, songIds = { store.songIdsForPlaylist(playlistId) }, noun = "playlist")
+            }
             item(key = "actions") {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -211,6 +218,7 @@ fun PlaylistDetailScreen(
                             catalog = catalog,
                             pocketName = { store.pocket(it)?.name },
                             manifestHit = node.songId?.let { manifest.containsKey(it) } ?: false,
+                            rowNote = node.songId?.let { CollectionBurnReducer.rowNote(burnItems[it], ripJobs[it]) },
                             onTapSong = { detailSongId = it },
                             onOpenAlbum = onOpenAlbum,
                             onOpenPocket = onOpenPocket,
@@ -373,6 +381,7 @@ private fun NodeRow(
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
     pocketName: (String) -> String?,
     manifestHit: Boolean,
+    rowNote: String? = null,
     onTapSong: (String) -> Unit,
     onOpenAlbum: (String) -> Unit,
     onOpenPocket: (String) -> Unit,
@@ -391,7 +400,7 @@ private fun NodeRow(
             } else {
                 CollectionTrackRow(
                     title = song.name,
-                    subtitle = song.artist,
+                    subtitle = if (rowNote != null) "${song.artist} · $rowNote" else song.artist,
                     album = song.albumId?.let { catalog?.albumsById?.get(it) },
                     bpm = song.bpm,
                     camelot = song.camelot,

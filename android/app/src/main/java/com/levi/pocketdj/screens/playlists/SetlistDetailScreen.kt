@@ -164,7 +164,12 @@ fun SetlistDetailScreen(
             .distinct()
             .joinToString(" · ")
 
+        val burnController = rememberCollectionBurnController()
+
         LazyColumn(modifier = Modifier.fillMaxSize()) {
+            item(key = "burn-bar") {
+                CollectionBurnBar(burnController, songIds = { store.songIdsForSetlist(setlistId) }, noun = "set list")
+            }
             item(key = "header") {
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {

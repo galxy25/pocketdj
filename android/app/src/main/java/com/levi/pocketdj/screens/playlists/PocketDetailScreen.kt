@@ -98,7 +98,12 @@ fun PocketDetailScreen(
             onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
         }
 
+        val burnController = rememberCollectionBurnController()
+
         LazyColumn(modifier = Modifier.fillMaxSize()) {
+            item(key = "burn-bar") {
+                CollectionBurnBar(burnController, songIds = { store.songIdsForPocket(pocketId) }, noun = "pocket")
+            }
             item(key = "actions") {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
