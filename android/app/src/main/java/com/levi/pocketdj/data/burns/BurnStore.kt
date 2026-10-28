@@ -146,6 +146,11 @@ class BurnStore(
     /** Idempotent; the loop honours it at the top of the next iteration. */
     fun requestStop() {
         stopRequested = true
+        // iOS parity: Stop also cancels in-flight background transfers and drops their rows.
+        if (transfers != null) {
+            val pending = _items.value.values.filter { it.state == BurnState.DOWNLOADING }.map { it.songId }
+            if (pending.isNotEmpty()) cancelTransfers(pending)
+        }
     }
 
     // ---- local resolution ---------------------------------------------------------------------
@@ -288,6 +293,8 @@ class BurnStore(
         if (!folder.probeWrite(root)) return BurnResult(total = unique.size, folderUnavailable = true)
 
         var done = 0
+        // Once per run, never per song; a still-live earlier run keeps its counters.
+        if (transfers != null && transfers.records.isEmpty()) transfers.beginRun()
         try {
             for (song in unique) {
                 if (stopRequested || !currentCoroutineContext().isActive) { stopped = true; break }
@@ -331,7 +338,6 @@ class BurnStore(
                             continue
                         }
                         if (transfers != null) {
-                            if (transfers.records.isEmpty()) transfers.beginRun()
                             val sidecarText = BurnSidecar.build(song.id, song, s, a, entry)
                             setItem(
                                 BurnItem(

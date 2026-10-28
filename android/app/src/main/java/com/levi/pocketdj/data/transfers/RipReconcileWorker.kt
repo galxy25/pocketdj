@@ -13,7 +13,7 @@ import com.levi.pocketdj.work.runWorkBody
  * (id `pdj.rip-reconcile`); the body is the [WorkSeams.ripReconcile] seam (onboarding-gated).
  * IOException => retry, anything else is final (next period picks it up).
  */
-class RipReconcileWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+open class RipReconcileWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result =
         when (runWorkBody { WorkSeams.ripReconcile(applicationContext) }) {
             WorkOutcome.SUCCESS -> Result.success()

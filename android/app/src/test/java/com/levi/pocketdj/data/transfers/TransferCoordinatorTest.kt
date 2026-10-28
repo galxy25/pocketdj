@@ -105,8 +105,9 @@ class TransferCoordinatorTest {
     @Test fun reconcileDropsAbsentAndFinishedKeepsLive() = runTest {
         val work = FakeTransferWork()
         val f = file()
-        val c = coordinator(f, work)
-        listOf("run", "enq", "blk", "done", "failed", "gone").forEach { c.enqueue("u", rec(it)) }
+        val c0 = coordinator(f, work)
+        listOf("run", "enq", "blk", "done", "failed", "gone").forEach { c0.enqueue("u", rec(it)) }
+        val c = coordinator(f, work) // relaunch: a new process
         work.states = mapOf(
             "burn:run" to WorkStateKind.RUNNING, "burn:enq" to WorkStateKind.ENQUEUED, "burn:blk" to WorkStateKind.BLOCKED,
             "burn:done" to WorkStateKind.SUCCEEDED, "burn:failed" to WorkStateKind.FAILED,
@@ -162,5 +163,14 @@ class TransferCoordinatorTest {
         val c = coordinator(f)
         assertTrue(c.records.isEmpty())
         assertTrue(f.parentFile.list()!!.any { it.startsWith("pocketdj-transfers.json.corrupt-") })
+    }
+
+    @Test fun reconcileKeepsRecordsEnqueuedByThisProcess() = kotlinx.coroutines.test.runTest {
+        val w = FakeTransferWork()
+        val c = TransferCoordinator(java.io.File(tmpTransferDir(), "t.json"), w)
+        c.enqueue("https://x/a", rec("s1"))
+        w.states = emptyMap() // WorkManager insert not visible yet
+        assertEquals(emptyList<String>(), c.reconcileOnLaunch())
+        assertEquals(1, c.records.size)
     }
 }

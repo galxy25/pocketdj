@@ -2,6 +2,7 @@ package com.levi.pocketdj.data.transfers
 
 import java.io.File
 import java.io.IOException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -36,7 +37,7 @@ class BurnDownloadWorkerTest {
     @Test fun http400WithXmlBodyFailsAndLeavesNoAudio() {
         assertTrue(xmlError.length in 400..600)
         val o = outcome(rec("s1"), MockResponse().setResponseCode(400).setBody(xmlError))
-        assertEquals(DownloadOutcome.Failed("download failed (HTTP 400)"), o)
+        assertEquals(DownloadOutcome.Failed("download failed (HTTP 400)", 400), o)
         assertFalse(File(dir, "s1.mp3").exists())
         assertFalse(File(dir, "s1.mp3.part").exists())
         assertFalse(File(dir, "s1.txt").exists())
@@ -166,5 +167,40 @@ class BurnDownloadWorkerTest {
         c.cancel(listOf("s1"))
         assertEquals(BurnDownloadRunner.Result.SUCCESS, runner(c).run("s1", url(), false, 0))
         assertFalse(finalized)
+    }
+
+    @Test fun siblingAnalogRecordsDownloadAlbumOnceAndNeverCorrupt() = runTest {
+        val dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) =
+                MockResponse().setBody(Buffer().write(ByteArray(20_000) { 5 })).throttleBody(10_000, 50, java.util.concurrent.TimeUnit.MILLISECONDS)
+        }
+        server.dispatcher = dispatcher
+        val c = TransferCoordinator(java.io.File(tmpTransferDir(), "t.json"), FakeTransferWork())
+        val recs = listOf("a", "b", "c").map { rec(it, audio = "album.mp3", sidecar = "$it.txt", source = "analog") }
+        for (r in recs) c.enqueue(url(), r)
+        val runner = BurnDownloadRunner(c, http, { dir })
+        val results = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            kotlinx.coroutines.coroutineScope {
+                recs.map { r -> async { runner.run(r.songId, url(), false, 0) } }.map { it.await() }
+            }
+        }
+        assertTrue(results.all { it == BurnDownloadRunner.Result.SUCCESS })
+        assertEquals(1, server.requestCount)
+        assertTrue(File(dir, "album.mp3").readBytes().let { it.size == 20_000 && it.all { b -> b == 5.toByte() } })
+        assertTrue(listOf("a", "b", "c").all { File(dir, "$it.txt").isFile })
+        assertTrue(dir.list()!!.none { it.endsWith(".part") })
+        assertTrue(c.records.isEmpty())
+    }
+
+    @Test fun expiredPresignRetriesOnceWithFreshUrl() = runTest {
+        server.enqueue(MockResponse().setResponseCode(403).setBody("expired"))
+        server.enqueue(MockResponse().setBody(Buffer().write(ByteArray(6_000) { 1 })))
+        val c = TransferCoordinator(java.io.File(tmpTransferDir(), "t.json"), FakeTransferWork())
+        c.enqueue(url("/old"), rec("s1"))
+        val runner = BurnDownloadRunner(c, http, { dir }, refreshUrl = { url("/fresh") })
+        assertEquals(BurnDownloadRunner.Result.SUCCESS, runner.run("s1", url("/old"), false, 0))
+        assertEquals(6_000L, File(dir, "s1.mp3").length())
+        server.takeRequest()
+        assertEquals("/fresh", server.takeRequest().path)
     }
 }

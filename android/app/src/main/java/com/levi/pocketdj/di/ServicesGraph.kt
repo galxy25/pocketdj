@@ -59,7 +59,11 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     fun transferRuntime(): TransferRuntime {
         burnStore
         val burnsDir = File(app.appContext.filesDir, "burns")
-        return TransferRuntime(transfers, app.httpClient) { _ -> burnsDir.also { it.mkdirs() } }
+        return TransferRuntime(
+            transfers, app.httpClient,
+            destDir = { _ -> burnsDir.also { it.mkdirs() } },
+            refreshUrl = { rec -> app.ripServerClient.presign(rec.songId, 21_600) },
+        )
     }
 
     private val burnStoreLazy: Lazy<BurnStore> = lazy {

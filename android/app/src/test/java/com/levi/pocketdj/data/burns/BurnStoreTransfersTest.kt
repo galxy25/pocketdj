@@ -98,4 +98,21 @@ class BurnStoreTransfersTest {
         store.burn(listOf(bs("s2")))
         assertEquals(2, c.progress.value.enqueued)
     }
+
+    @Test fun requestStopCancelsBackgroundWorkAndDropsRows() = runTest {
+        val e = Env(); val c = e.coordinator(); val store = e.store(c)
+        store.burn(listOf(bs("s1"), bs("s2")))
+        store.requestStop()
+        assertEquals(listOf("burn:s1", "burn:s2"), e.work.cancelled)
+        assertTrue(store.items.value.isEmpty())
+        assertTrue(c.records.isEmpty())
+        assertEquals(0, c.progress.value.enqueued)
+    }
+
+    @Test fun countersResetOncePerRunNotPerSong() = runTest {
+        val e = Env(); val c = e.coordinator(); val store = e.store(c)
+        e.r.rips.entries["s3"] = digital("s3")
+        store.burn(listOf(bs("s1"), bs("s2"), bs("s3")))
+        assertEquals(3, c.progress.value.enqueued)
+    }
 }

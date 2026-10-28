@@ -73,6 +73,8 @@ class TransferCoordinator(
     private var enqueuedTotal = 0
     private var finishedTotal = 0
     private val throttle = BytesThrottle()
+    /** Songs enqueued by THIS process: their WorkManager insert may still be in flight at launch reconcile. */
+    private val enqueuedHere = HashSet<String>()
 
     private val _progress = MutableStateFlow(TransferProgress())
     /** UI binds ONLY to this mirror, never to worker internals. */
@@ -135,6 +137,7 @@ class TransferCoordinator(
         synchronized(lock) {
             tasks = tasks.filter { it.songId != rec.songId } + rec
             enqueuedTotal += 1
+            enqueuedHere += rec.songId
             persistLocked()
         }
         publish()
@@ -173,7 +176,7 @@ class TransferCoordinator(
      * resolves the item); live work is kept and keeps running. Idempotent. Returns dropped songIds.
      */
     suspend fun reconcileOnLaunch(): List<String> {
-        val snapshot = records
+        val snapshot = synchronized(lock) { tasks.filter { it.songId !in enqueuedHere } }
         if (snapshot.isEmpty()) return emptyList()
         val states = work.states(snapshot.map { burnUniqueName(it.songId) })
         val dead = snapshot.filter { states[burnUniqueName(it.songId)]?.live != true }.map { it.songId }.toSet()

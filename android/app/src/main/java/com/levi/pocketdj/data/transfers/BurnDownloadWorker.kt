@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.job
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -41,11 +42,32 @@ import okhttp3.Response
 sealed interface DownloadOutcome {
     data class Done(val bytes: Long) : DownloadOutcome
     /** Terminal: the record fails and the row shows [message]. NEVER leaves an audio file behind. */
-    data class Failed(val message: String) : DownloadOutcome
+    data class Failed(val message: String, val httpCode: Int? = null) : DownloadOutcome
     /** Transient transport failure: WorkManager backoff retries. */
     data class Retry(val message: String) : DownloadOutcome
 
     companion object {
+        /** Shared analog album already on disk: no download, just the per-song sidecar. */
+        fun finishShared(record: TransferRecord, dir: File): DownloadOutcome = try {
+            val audio = File(dir, record.audioFileName)
+            writeSidecar(record, dir)
+            Done(audio.length())
+        } catch (e: IOException) {
+            if (isOutOfSpace(e)) Failed("out of space") else Retry(e.message ?: "I/O error")
+        }
+
+        private fun writeSidecar(record: TransferRecord, dir: File) {
+            if (record.sidecarFileName.isEmpty()) return
+            val dest = File(dir, record.sidecarFileName)
+            val sp = File(dir, record.sidecarFileName + ".part")
+            try {
+                sp.writeBytes(record.sidecarText.toByteArray())
+                Files.move(sp.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            } finally {
+                if (sp.exists()) sp.delete()
+            }
+        }
+
         /**
          * Pure-ish core (the iOS `didFinishDownloadingTo`): turn an HTTP [response] into files in
          * [dir]. A non-2xx response is NEVER finalized as audio (S3's 400 XML was 536 bytes);
@@ -60,7 +82,7 @@ sealed interface DownloadOutcome {
             onBytes: (Long) -> Unit = {},
             isCancelled: () -> Boolean = { false },
         ): DownloadOutcome = response.use { resp ->
-            if (!resp.isSuccessful) return Failed("download failed (HTTP ${resp.code})")
+            if (!resp.isSuccessful) return Failed("download failed (HTTP ${resp.code})", resp.code)
             try {
                 dir.mkdirs()
                 val audio = File(dir, record.audioFileName)
@@ -70,7 +92,8 @@ sealed interface DownloadOutcome {
                     bytes = audio.length()
                 } else {
                     val body = resp.body ?: return Failed("empty response body")
-                    val part = File(dir, record.audioFileName + ".part")
+                    // Unique per worker: siblings sharing one analog album file must not truncate each other.
+                    val part = File(dir, record.audioFileName + "." + (record.workId ?: UUID.randomUUID().toString()) + ".part")
                     try {
                         part.outputStream().use { out ->
                             val buf = ByteArray(64 * 1024)
@@ -85,22 +108,15 @@ sealed interface DownloadOutcome {
                             }
                         }
                         if (BurnReconciler.isPoisoned(part)) return Failed("server returned an error document")
-                        Files.move(part.toPath(), audio.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                        // A sibling may have landed the shared analog album meanwhile: first move wins.
+                        if (record.source == "analog" && audio.isFile && audio.length() > 0) part.delete()
+                        else Files.move(part.toPath(), audio.toPath(), StandardCopyOption.REPLACE_EXISTING)
                     } finally {
                         if (part.exists()) part.delete()
                     }
                     bytes = audio.length()
                 }
-                if (record.sidecarFileName.isNotEmpty()) {
-                    val dest = File(dir, record.sidecarFileName)
-                    val sp = File(dir, record.sidecarFileName + ".part")
-                    try {
-                        sp.writeBytes(record.sidecarText.toByteArray())
-                        Files.move(sp.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                    } finally {
-                        if (sp.exists()) sp.delete()
-                    }
-                }
+                writeSidecar(record, dir)
                 Done(bytes)
             } catch (e: IOException) {
                 if (isOutOfSpace(e)) Failed("out of space") else Retry(e.message ?: "I/O error")
@@ -115,8 +131,15 @@ class BurnDownloadRunner(
     private val http: OkHttpClient,
     private val destDir: (TransferRecord) -> File?,
     private val maxAttempts: Int = 5,
+    /** Fresh presigned URL for a record (the stored one may have expired while work was deferred). */
+    private val refreshUrl: (suspend (TransferRecord) -> String?)? = null,
 ) {
     enum class Result { SUCCESS, RETRY }
+
+    private companion object {
+        /** Serializes workers that share one analog album file (per dest path). */
+        val albumLocks = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
+    }
 
     suspend fun run(songId: String, url: String, attachBearer: Boolean, runAttemptCount: Int): Result {
         // No record => cancelled (Stop) or already settled: nothing safe to do.
@@ -126,6 +149,44 @@ class BurnDownloadRunner(
             coordinator.onFailed(record, "no writable burn folder")
             return Result.SUCCESS
         }
+        val isAnalog = record.source == "analog"
+        val lock = if (isAnalog) albumLocks.getOrPut(File(dir, record.audioFileName).path) { kotlinx.coroutines.sync.Mutex() } else null
+        val outcome = if (lock != null) lock.withLock { fetch(record, dir, url, attachBearer) } else fetch(record, dir, url, attachBearer)
+        // The record may have been cancelled mid-flight; don't resurrect the item.
+        if (coordinator.record(songId) == null) {
+            // Cancelled after the body finished: don't leak files with no ledger row.
+            if (outcome is DownloadOutcome.Done) {
+                if (record.source != "analog") File(dir, record.audioFileName).delete()
+                if (record.sidecarFileName.isNotEmpty()) File(dir, record.sidecarFileName).delete()
+            }
+            return Result.SUCCESS
+        }
+        return when (outcome) {
+            is DownloadOutcome.Done -> { coordinator.onFinished(record, outcome.bytes); Result.SUCCESS }
+            is DownloadOutcome.Failed -> { coordinator.onFailed(record, outcome.message); Result.SUCCESS }
+            is DownloadOutcome.Retry ->
+                if (runAttemptCount + 1 >= maxAttempts) {
+                    coordinator.onFailed(record, outcome.message); Result.SUCCESS
+                } else Result.RETRY
+        }
+    }
+
+    private suspend fun fetch(record: TransferRecord, dir: File, url: String, attachBearer: Boolean): DownloadOutcome {
+        val songId = record.songId
+        if (record.source == "analog") {
+            val audio = File(dir, record.audioFileName)
+            if (audio.isFile && audio.length() > 0) return withContext(Dispatchers.IO) { DownloadOutcome.finishShared(record, dir) }
+        }
+        val first = attempt(record, dir, url, attachBearer)
+        if (first is DownloadOutcome.Failed && first.httpCode == 403 && refreshUrl != null) {
+            val fresh = runCatching { refreshUrl?.invoke(record) }.getOrNull()
+            if (fresh != null && fresh != url) return attempt(record, dir, fresh, false)
+        }
+        return first
+    }
+
+    private suspend fun attempt(record: TransferRecord, dir: File, url: String, attachBearer: Boolean): DownloadOutcome {
+        val songId = record.songId
         val req = Request.Builder().url(url).apply {
             if (attachBearer) {
                 val token = coordinator.tokenProvider()
@@ -133,7 +194,7 @@ class BurnDownloadRunner(
             }
         }.build()
         val job = currentCoroutineContext().job
-        val outcome = coroutineScope {
+        return coroutineScope {
             val call = http.newCall(req)
             // Cancelling the worker (Stop) must abort the blocking socket read.
             val watcher = launch(start = CoroutineStart.UNDISPATCHED) {
@@ -152,16 +213,6 @@ class BurnDownloadRunner(
             } finally {
                 watcher.cancel()
             }
-        }
-        // The record may have been cancelled mid-flight; don't resurrect the item.
-        if (coordinator.record(songId) == null) return Result.SUCCESS
-        return when (outcome) {
-            is DownloadOutcome.Done -> { coordinator.onFinished(record, outcome.bytes); Result.SUCCESS }
-            is DownloadOutcome.Failed -> { coordinator.onFailed(record, outcome.message); Result.SUCCESS }
-            is DownloadOutcome.Retry ->
-                if (runAttemptCount + 1 >= maxAttempts) {
-                    coordinator.onFailed(record, outcome.message); Result.SUCCESS
-                } else Result.RETRY
         }
     }
 }
@@ -183,7 +234,7 @@ class BurnDownloadWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
         val rt = AppGraph.get(applicationContext).servicesGraph.transferRuntime()
         // A start from the background can be refused on API 31+; the download still proceeds.
         runCatching { setForeground(getForegroundInfo()) }
-        val r = BurnDownloadRunner(rt.coordinator, rt.http, rt.destDir).run(songId, url, attach, runAttemptCount)
+        val r = BurnDownloadRunner(rt.coordinator, rt.http, rt.destDir, refreshUrl = rt.refreshUrl).run(songId, url, attach, runAttemptCount)
         return if (r == BurnDownloadRunner.Result.RETRY) Result.retry() else Result.success()
     }
 
@@ -203,6 +254,7 @@ class TransferRuntime(
     val coordinator: TransferCoordinator,
     val http: OkHttpClient,
     val destDir: (TransferRecord) -> File?,
+    val refreshUrl: (suspend (TransferRecord) -> String?)? = null,
 )
 
 /** Real WorkManager-backed [TransferWork]. */

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SVC-3 TransferCoordinator over WorkManager
 
@@ -29,3 +29,15 @@ All sub-steps done. 46 new JVM tests (BearerPolicy 7, Coordinator 13, Codec 4, W
 
 ## Questions for Levi
 - None blocking. POST_NOTIFICATIONS runtime prompt is not requested anywhere yet; without it the foreground notification is hidden (download still runs).
+
+## Review
+fixes applied. Suite 1417 tests (+5), 0 failures; assembleDebug green.
+- MAJOR Stop no-op in transfer mode -> fixed: BurnStore.requestStop cancels DOWNLOADING transfers and drops rows (test requestStopCancelsBackgroundWorkAndDropsRows).
+- MAJOR analog sibling .part race -> fixed: per-worker part name, per-album mutex in the runner (siblings skip the download and finalize from the shared file), re-check before move (test siblingAnalogRecordsDownloadAlbumOnceAndNeverCorrupt).
+- MAJOR RipReconcileWorker FQN -> fixed: real subclass kept at com.levi.pocketdj.work.RipReconcileWorker (base class now open); typealias removed.
+- MINOR beginRun per song -> fixed: once at run start, only when no live records (test countersResetOncePerRunNotPerSong; existing in-flight test still green).
+- MINOR stale presign -> fixed: on HTTP 403 the runner re-presigns once (ServicesGraph refreshUrl) and retries (test expiredPresignRetriesOnceWithFreshUrl).
+- MINOR reconcile drops just-enqueued record -> fixed: records enqueued by this process are skipped (test reconcileKeepsRecordsEnqueuedByThisProcess).
+- MINOR orphan files after late cancel -> fixed: runner deletes produced sidecar and non-analog audio when the record is gone (shared analog album left in place).
+- MINOR ledger row -> fixed: PARTIAL with device-only list.
+- NIT destDir via folder.dirFor -> not done (v1 is app-private only; revisit with SAF).
