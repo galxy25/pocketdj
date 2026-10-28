@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-0 Mix models, FX rack types, pure math
 
@@ -15,3 +15,11 @@ state: implemented
 - PRNG uses ULong (SplitMix64 holder); verified against the published seed-0 splitmix64 vectors and FNV-1a("a").
 - Reverb preset / filter type are Android-neutral enums (no AVAudioUnit); the DSP packages map them.
 - No files touched outside owned set (Camelot.kt and FxParamsTest/CamelotTest per roadmap files list; FxRackTest per audit unit_tests).
+
+## Review
+- MINOR ARCHITECTURE-ANDROID.md ledger row -> fixed (set to "In progress (parity/MIX-0)"; flip to Merged/DONE at merge time).
+- MINOR SlotMod unvalidated via FXSlot constructor -> fixed (FXSlot normalises `mod` in every construction path; test primaryConstructorNormalisesMod added).
+- NIT Camelot trim -> fixed (trims only space/tab like iOS .whitespaces).
+- NIT ThroughputWindow thread-safety -> fixed (KDoc: single-thread confined, owner serializes).
+
+fixes applied. Tests 392 -> 393, 0 failures; assembleDebug green.

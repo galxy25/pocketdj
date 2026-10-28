@@ -202,7 +202,10 @@ object MixMath {
     }
 }
 
-/** 30-second rolling window of observed download throughput (pure; scripted clock in tests). */
+/**
+ * 30-second rolling window of observed download throughput (pure; scripted clock in tests).
+ * NOT thread-safe: single-thread confined; the owning downloader must serialize access.
+ */
 class ThroughputWindow {
     private data class Sample(val t: Double, val bytes: Long)
     private val samples = ArrayList<Sample>()

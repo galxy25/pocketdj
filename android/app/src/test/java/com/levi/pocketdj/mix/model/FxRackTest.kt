@@ -142,4 +142,11 @@ class FxRackTest {
         assertEquals(4.0, LoadedTrack("s", "t", "a", bpm = 100.0, gridBpm = 4.0).matchBpm!!, 0.0)
         assertEquals(100.0, LoadedTrack("s", "t", "a", bpm = 100.0).matchBpm!!, 0.0)
     }
+
+    @Test
+    fun primaryConstructorNormalisesMod() {
+        val s = FXSlot(Effect.FILTER, mod = SlotMod(source = ModSource.LFO, depth = 1.8, phase = 2.25))
+        assertEquals(1.0, s.mod.depth, 1e-9)
+        assertEquals(0.25, s.mod.phase, 1e-9)
+    }
 }

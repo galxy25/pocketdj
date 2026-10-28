@@ -13,7 +13,7 @@ object Camelot {
     /** Parse "<num><A|B>" (trimmed, case-insensitive); null if unparseable. */
     fun parse(code: String?): CamelotKey? {
         if (code == null) return null
-        val t = code.trim().uppercase()
+        val t = code.trim { it == ' ' || it == '\t' }.uppercase()
         val last = t.lastOrNull() ?: return null
         if (last != 'A' && last != 'B') return null
         val n = t.dropLast(1).toIntOrNull() ?: return null

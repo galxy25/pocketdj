@@ -441,7 +441,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
-| MIX-0 — Mix models, FX rack types, pure math (BeatMath, MixMath, Camelot, FxParams) | 1 | Planned | — |
+| MIX-0 — Mix models, FX rack types, pure math (BeatMath, MixMath, Camelot, FxParams) | 1 | In progress (parity/MIX-0) | — |
 | MIX-3 — Shared DSP nodes (`audio/dsp`): Biquad/Eq3/Trim, TimePitch (Sonic), Compressor, Reverb, M… | 2 | Planned | Subjective quality of Sonic at large stretch ratios |
 | MIX-1 — Durable Mix stores over the shared VersionedJsonWriter: MixDeckSessionStore (decks v1) + … | 3 | Planned | — |
 | MIX-2 — Shared audio core (`audio/`): AudioSink + AudioTrackSink, RenderClock, FloatRing, PcmSour… | 3 | Planned | Audible output and AudioTrack low-latency behaviour on real hardware. |

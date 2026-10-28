@@ -99,9 +99,11 @@ class FXSlot(
     variant: EffectVariant? = null,
     val enabled: Boolean = false,
     strength: Double = 0.5,
-    val mod: SlotMod = SlotMod(),
+    mod: SlotMod = SlotMod(),
 ) {
     val effect: Effect = effect
+    /** Always normalised (depth -1..1, phase 0..<1), whatever construction path built it. */
+    val mod: SlotMod = mod.normalized()
     val variant: EffectVariant = (variant ?: EffectVariant.default(effect)).let {
         if (it.effect == effect) it else EffectVariant.default(effect)
     }
