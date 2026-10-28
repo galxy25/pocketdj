@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-20 Android location source (Fused + dwell) + Settings rows + wiring
 
