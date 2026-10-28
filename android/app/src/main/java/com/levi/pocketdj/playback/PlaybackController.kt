@@ -27,8 +27,6 @@ import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.rips.RipsRepository
 import com.levi.pocketdj.data.settings.AppSettingsStore
 import com.levi.pocketdj.diag.NPLog
-<<<<<<< HEAD
-=======
 import com.levi.pocketdj.playback.health.EngineProbe
 import com.levi.pocketdj.playback.sequencer.CloudRowResolver
 import com.levi.pocketdj.playback.sequencer.RipOnDemandSource
@@ -36,7 +34,6 @@ import com.levi.pocketdj.playback.session.RipOnDemandBridge
 import com.levi.pocketdj.playback.session.RipOnDemandResolver
 import com.levi.pocketdj.playback.session.RipOnDemandSession
 import com.levi.pocketdj.playback.session.RipResolution
->>>>>>> parity/PB-3
 import com.levi.pocketdj.playback.sequencer.LocalFileResolver
 import com.levi.pocketdj.playback.sequencer.LocalFileRowResolver
 import com.levi.pocketdj.playback.sequencer.LocalFileSource
