@@ -61,13 +61,18 @@ class RenderGraph(
     class Track internal constructor(val id: String, val fx: TrackFx) {
         @Volatile var source: PullSource? = null
         @Volatile var gain: Float = 1f
-        /** -1 (left) ... +1 (right); equal-power. */
+        /** -1 (left) ... +1 (right); centre-unity linear balance (iOS). */
         @Volatile var pan: Float = 0f
         @Volatile var mute = false
         @Volatile var solo = false
     }
 
     @Volatile private var tracks: List<Track> = emptyList()
+    private val retired = java.util.concurrent.ConcurrentLinkedQueue<TrackFx>()
+    private val renderLock = java.util.concurrent.locks.ReentrantLock()
+    private var limiterGain = 1f
+    /** Offline bounce renders unlimited, then peak-normalizes like iOS ArrangerBouncer. */
+    private var limitLive = true
     private val frameCursor = AtomicLong(0)
     private var trackBuf = FloatArray(maxBlock * 2)
     private val planar = arrayOf(FloatArray(maxBlock), FloatArray(maxBlock))
@@ -86,7 +91,18 @@ class RenderGraph(
     @Synchronized fun removeTrack(id: String) {
         val gone = tracks.filter { it.id == id }
         tracks = tracks.filterNot { it.id == id }
-        gone.forEach { it.fx.close() }
+        gone.forEach { retired.add(it.fx) }
+        drainRetiredIfIdle()
+    }
+
+    /** Free retired FX only when no render is in flight (the render thread may hold a snapshot of the old list). */
+    private fun drainRetiredIfIdle() {
+        if (!renderLock.tryLock()) return // render drains at its next block boundary
+        try { drainRetired() } finally { renderLock.unlock() }
+    }
+
+    private fun drainRetired() {
+        while (true) { (retired.poll() ?: break).close() }
     }
 
     fun track(id: String): Track? = tracks.firstOrNull { it.id == id }
@@ -98,17 +114,21 @@ class RenderGraph(
     /** Seek the beat phase (loop/seek). Track sources are repositioned by their owners. */
     fun seek(frame: Long) { frameCursor.set(max(0, frame)) }
 
-    /** Equal-power pan gain for [pan] in -1...1; unity on both channels at centre. No allocation. */
-    fun panGainL(pan: Float): Float = kotlin.math.cos((pan.coerceIn(-1f, 1f) + 1f) * (Math.PI.toFloat() / 4f)) * ROOT2
-    fun panGainR(pan: Float): Float = kotlin.math.sin((pan.coerceIn(-1f, 1f) + 1f) * (Math.PI.toFloat() / 4f)) * ROOT2
+    /** iOS centre-unity linear balance (MultitrackPlayer.setTrackMix): the near side stays at unity. No allocation. */
+    fun panGainL(pan: Float): Float { val p = pan.coerceIn(-1f, 1f); return if (p <= 0f) 1f else 1f - p }
+    fun panGainR(pan: Float): Float { val p = pan.coerceIn(-1f, 1f); return if (p >= 0f) 1f else 1f + p }
 
     override fun render(out: FloatArray, frames: Int) {
-        var done = 0
-        while (done < frames) {
-            val n = min(maxBlock, frames - done)
-            renderChunk(out, done, n)
-            done += n
-        }
+        renderLock.lock()
+        try {
+            drainRetired()
+            var done = 0
+            while (done < frames) {
+                val n = min(maxBlock, frames - done)
+                renderChunk(out, done, n)
+                done += n
+            }
+        } finally { renderLock.unlock() }
     }
 
     private fun renderChunk(out: FloatArray, offFrames: Int, frames: Int) {
@@ -137,7 +157,18 @@ class RenderGraph(
             master.process(planar, frames, frameCursor.get().toDouble())
             for (i in 0 until frames) { out[o + 2 * i] = planar[0][i]; out[o + 2 * i + 1] = planar[1][i] }
         }
-        for (i in o until o + frames * 2) out[i] = out[i].coerceIn(-1f, 1f)
+        if (limitLive) {
+            // Peak limiter (iOS live path is an AUPeakLimiter): instant attack, ~50 ms release; clamp is only a safety net.
+            var g = limiterGain
+            val rel = 1f / (0.05f * StudioAudio.CANONICAL_RATE)
+            for (i in 0 until frames) {
+                val l = out[o + 2 * i]; val r = out[o + 2 * i + 1]
+                val pk = max(kotlin.math.abs(l), kotlin.math.abs(r))
+                if (pk * g > 1f) g = 1f / pk else if (g < 1f) g = min(1f, g + rel)
+                out[o + 2 * i] = (l * g).coerceIn(-1f, 1f); out[o + 2 * i + 1] = (r * g).coerceIn(-1f, 1f)
+            }
+            limiterGain = g
+        }
         frameCursor.addAndGet(frames.toLong())
     }
 
@@ -146,16 +177,25 @@ class RenderGraph(
         val out = FloatArray(frames * 2)
         val tmp = FloatArray(block * 2)
         var done = 0
-        while (done < frames) {
-            val n = min(block, frames - done)
-            render(tmp, n)
-            System.arraycopy(tmp, 0, out, done * 2, n * 2)
-            done += n
-        }
+        limitLive = false
+        try {
+            while (done < frames) {
+                val n = min(block, frames - done)
+                render(tmp, n)
+                System.arraycopy(tmp, 0, out, done * 2, n * 2)
+                done += n
+            }
+        } finally { limitLive = true }
+        // iOS ArrangerBouncer: peak > 1 -> scale the whole bounce by 1/peak (clean, slightly quieter), never clip.
+        var peak = 0f
+        for (v in out) { val a = kotlin.math.abs(v); if (a > peak) peak = a }
+        if (peak > 1f) { val inv = 1f / peak; for (i in out.indices) out[i] *= inv }
         return PcmBuffer(StudioAudio.CANONICAL_RATE, 2, out)
     }
 
-    fun release() { tracks.forEach { it.fx.close() }; tracks = emptyList(); master.close() }
-
-    private companion object { const val ROOT2 = 1.4142135f }
+    fun release() {
+        tracks.forEach { retired.add(it.fx) }; tracks = emptyList()
+        drainRetiredIfIdle()
+        master.close()
+    }
 }

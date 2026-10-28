@@ -34,7 +34,8 @@ class OboeSinkTest {
         }
         override fun freeFrames() = budget
         override fun bufferedFrames() = 64
-        override fun underruns() = 3L
+        @Volatile var underrunCount = 3L
+        override fun underruns() = underrunCount
         override fun disconnected() = disconnectedFlag
         override fun streamLatencyFrames() = 192
     }
@@ -91,9 +92,9 @@ class OboeSinkTest {
         val opensBefore = b.opens.get()
         val t0 = System.nanoTime()
         b.disconnectedFlag = true
-        assertTrue(waitFor { routed.isNotEmpty() })
+        assertTrue(waitFor { routed.size >= 2 })
         val ms = (System.nanoTime() - t0) / 1_000_000
-        assertEquals(listOf(true), routed.toList())
+        assertEquals(listOf(false, true), routed.toList()) // down once, then up
         assertEquals(opensBefore + 3, b.opens.get())
         assertTrue("rebuild took ${ms}ms", ms < 300 + 250) // scripted 20+40 ms backoff + slack for a loaded CI box
         val before = s.clock.now()
@@ -153,5 +154,42 @@ class OboeSinkTest {
         val s = OboeSink(44_100, 256) { creates.incrementAndGet(); b }.also { sink = it }
         s.start(RampRenderer()); s.start(RampRenderer())
         assertEquals(1, creates.get())
+    }
+
+    @Test fun underrunsAreNotDoubleCountedAcrossFailedAndSuccessfulRebuilds() {
+        val b = FakeBackend(budget = 0)
+        b.underrunCount = 5
+        val s = OboeSink(44_100, 256) { b }.also { sink = it }
+        s.attachForTest(b, RampRenderer())
+        b.disconnectedFlag = true
+        b.openResults.add(false); b.openResults.add(false); b.openResults.add(false); b.openResults.add(true)
+        var t = 0L
+        repeat(10) { s.pumpOnce(t); t += 200 }
+        assertEquals(5L, s.underruns) // backend counter is cumulative; the sink must not re-add it per attempt
+    }
+
+    @Test fun rebuildLandsWithin300msOnTheInjectedClock() {
+        val b = FakeBackend(budget = 0)
+        val s = OboeSink(44_100, 256) { b }.also { sink = it }
+        s.attachForTest(b, RampRenderer())
+        b.disconnectedFlag = true
+        b.openResults.add(false); b.openResults.add(false); b.openResults.add(true)
+        var t = 0L
+        var upAt = -1L
+        while (t <= 400 && upAt < 0) { s.pumpOnce(t); if (s.isRendering) upAt = t; t += 1 }
+        assertTrue("rebuilt at ${upAt}ms", upAt in 0..300)
+    }
+
+    @Test fun routingFalseFiresOnceOnDisconnect() {
+        val b = FakeBackend(budget = 0)
+        val s = OboeSink(44_100, 256) { b }.also { sink = it }
+        val routed = CopyOnWriteArrayList<Boolean>()
+        s.onRoutingChanged = { routed += it }
+        s.attachForTest(b, RampRenderer())
+        b.disconnectedFlag = true
+        repeat(5) { b.openResults.add(false) }
+        var t = 0L
+        repeat(5) { s.pumpOnce(t); t += 500 }
+        assertEquals(listOf(false), routed.toList())
     }
 }

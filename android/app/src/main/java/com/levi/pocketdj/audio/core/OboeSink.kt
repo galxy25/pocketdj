@@ -41,14 +41,15 @@ class OboeSink(
     @Volatile private var thread: Thread? = null
     @Volatile private var running = false
     @Volatile private var rendering = false
-    @Volatile private var underrunBase = 0L
     @Volatile private var renderer: BlockRenderer? = null
     private val buf = FloatArray(blockFrames * 2)
     private var rebuildAttempt = 0
+    private var renderFailed = false
+    private var wasDisconnected = false
     private var nextRebuildAt = 0L
 
     override val isRendering: Boolean get() = rendering
-    override val underruns: Long get() = underrunBase + (backend?.underruns() ?: 0)
+    override val underruns: Long get() = backend?.underruns() ?: 0 // the native counter is cumulative across reopens
 
     @Synchronized override fun start(renderer: BlockRenderer) {
         if (running) return
@@ -62,15 +63,21 @@ class OboeSink(
         thread = Thread({ loop() }, "pdj-oboe-feed").also { it.priority = Thread.MAX_PRIORITY; it.start() }
     }
 
+    /** Test seam: wire a backend + renderer WITHOUT spawning the feeder thread (drive [pumpOnce] by hand). */
+    internal fun attachForTest(b: OboeBackend, r: BlockRenderer) { backend = b; renderer = r; rendering = true }
+
     private fun loop() {
         runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
         while (running) {
             val worked = try { pumpOnce(System.nanoTime() / 1_000_000) } catch (e: Throwable) {
                 rendering = false
                 AudioDiag.stop("OboeSink", "render-exception", e.toString())
+                renderFailed = true
                 false
             }
-            if (!worked) try { Thread.sleep(2) } catch (_: InterruptedException) { }
+            val pause = if (renderFailed) 50L else 2L
+            renderFailed = false
+            if (!worked) try { Thread.sleep(pause) } catch (_: InterruptedException) { }
         }
     }
 
@@ -83,10 +90,11 @@ class OboeSink(
         val b = backend ?: return false
         if (b.disconnected()) {
             rendering = false
+            if (!wasDisconnected) { wasDisconnected = true; onRoutingChanged?.invoke(false) }
             if (nowMs < nextRebuildAt) return false
-            underrunBase += b.underruns()
             val ok = b.open()
             if (ok) {
+                wasDisconnected = false
                 rebuildAttempt = 0
                 rendering = true
                 AudioDiag.play("OboeSink", "stream-rebuilt", started = true)
@@ -109,7 +117,8 @@ class OboeSink(
 
     @Synchronized override fun stop() {
         running = false
-        thread?.let { runCatching { it.join(500) } }
+        // Join fully before freeing the native handle (the feeder may be inside write()); the loop exits on `running`.
+        thread?.let { t -> if (t !== Thread.currentThread()) { while (t.isAlive()) runCatching { t.join(200) } } }
         thread = null
         backend?.let { runCatching { it.close() }; runCatching { it.release() } }
         backend = null

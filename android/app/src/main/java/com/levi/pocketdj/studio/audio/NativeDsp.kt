@@ -78,17 +78,17 @@ internal fun deinterleave(interleaved: FloatArray, frames: Int, planar: Array<Fl
 
 /** Stereo native track kernel behind the planar [TrackFx] contract. */
 class NativeTrackFx(sampleRate: Double) : TrackFx {
-    private var h = NativeDsp.nativeTrackFxNew(sampleRate, 2)
+    @Volatile private var h = NativeDsp.nativeTrackFxNew(sampleRate, 2)
     private var scratch = FloatArray(0)
     private var p = TrackFxParams()
     override val active: Boolean get() = p.active
     override fun update(p: TrackFxParams) {
         this.p = p
-        NativeDsp.nativeTrackFxUpdate(h, p.eqLowDb, p.eqMidDb, p.eqHighDb, p.reverb, p.delay, p.chorus, p.bpm)
+        if (h != 0L) NativeDsp.nativeTrackFxUpdate(h, p.eqLowDb, p.eqMidDb, p.eqHighDb, p.reverb, p.delay, p.chorus, p.bpm)
     }
-    override fun reset() = NativeDsp.nativeTrackFxReset(h)
+    override fun reset() { if (h != 0L) NativeDsp.nativeTrackFxReset(h) }
     override fun process(data: Array<FloatArray>, frames: Int) {
-        if (!p.active || frames <= 0) return
+        if (h == 0L || !p.active || frames <= 0) return
         if (scratch.size < frames * 2) scratch = FloatArray(frames * 2)
         interleave(data, frames, scratch)
         NativeDsp.nativeTrackFxProcess(h, scratch, frames)
@@ -98,11 +98,11 @@ class NativeTrackFx(sampleRate: Double) : TrackFx {
 }
 
 class NativeMasterFx(sampleRate: Double) : MasterFx {
-    private var h = NativeDsp.nativeMasterFxNew(sampleRate, 2)
+    @Volatile private var h = NativeDsp.nativeMasterFxNew(sampleRate, 2)
     private var scratch = FloatArray(0)
-    override fun update(p: MasterFxParams) = NativeDsp.nativeMasterFxUpdate(h, p.toNativeArray())
+    override fun update(p: MasterFxParams) { if (h != 0L) NativeDsp.nativeMasterFxUpdate(h, p.toNativeArray()) }
     override fun process(data: Array<FloatArray>, frames: Int, framePos: Double) {
-        if (frames <= 0) return
+        if (h == 0L || frames <= 0) return
         if (scratch.size < frames * 2) scratch = FloatArray(frames * 2)
         interleave(data, frames, scratch)
         NativeDsp.nativeMasterFxProcess(h, scratch, frames, framePos)

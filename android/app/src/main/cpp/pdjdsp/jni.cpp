@@ -15,11 +15,7 @@
 namespace {
 template <class T> T* H(jlong h) { return reinterpret_cast<T*>(h); }
 
-// Deinterleave stereo into two planes, run, interleave back (offline FX use).
-struct Planes {
-    std::vector<float> l, r;
-    explicit Planes(int n) : l((size_t)n), r((size_t)n) {}
-};
+constexpr int kChunk = 512;  // stack scratch block for the FX shims
 }  // namespace
 
 // ---- TrackFx -------------------------------------------------------------------------------
@@ -34,13 +30,18 @@ JF(void, nativeTrackFxUpdate)(JNIEnv*, jobject, jlong h, jdouble lo, jdouble mid
 JF(void, nativeTrackFxReset)(JNIEnv*, jobject, jlong h) { H<pdj::TrackFx>(h)->reset(); }
 // interleaved stereo float[] in place
 JF(void, nativeTrackFxProcess)(JNIEnv* env, jobject, jlong h, jfloatArray buf, jint frames) {
-    jfloat* d = env->GetFloatArrayElements(buf, nullptr);
-    Planes pl(frames);
-    for (int i = 0; i < frames; i++) { pl.l[i] = d[2 * i]; pl.r[i] = d[2 * i + 1]; }
-    float* ch[2] = {pl.l.data(), pl.r.data()};
-    H<pdj::TrackFx>(h)->process(ch, 2, frames);
-    for (int i = 0; i < frames; i++) { d[2 * i] = pl.l[i]; d[2 * i + 1] = pl.r[i]; }
-    env->ReleaseFloatArrayElements(buf, d, 0);
+    if (h == 0 || frames <= 0) return;
+    auto* d = static_cast<jfloat*>(env->GetPrimitiveArrayCritical(buf, nullptr));
+    if (!d) return;
+    float l[kChunk], r[kChunk];  // stack scratch: no malloc on the feeder thread
+    for (int off = 0; off < frames; off += kChunk) {
+        int n = frames - off < kChunk ? frames - off : kChunk;
+        for (int i = 0; i < n; i++) { l[i] = d[2 * (off + i)]; r[i] = d[2 * (off + i) + 1]; }
+        float* ch[2] = {l, r};
+        H<pdj::TrackFx>(h)->process(ch, 2, n);
+        for (int i = 0; i < n; i++) { d[2 * (off + i)] = l[i]; d[2 * (off + i) + 1] = r[i]; }
+    }
+    env->ReleasePrimitiveArrayCritical(buf, d, 0);
 }
 
 // ---- MasterFx ------------------------------------------------------------------------------
@@ -60,13 +61,18 @@ JF(void, nativeMasterFxUpdate)(JNIEnv* env, jobject, jlong h, jdoubleArray a) {
     H<pdj::MasterFx>(h)->update(p);
 }
 JF(void, nativeMasterFxProcess)(JNIEnv* env, jobject, jlong h, jfloatArray buf, jint frames, jdouble framePos) {
-    jfloat* d = env->GetFloatArrayElements(buf, nullptr);
-    Planes pl(frames);
-    for (int i = 0; i < frames; i++) { pl.l[i] = d[2 * i]; pl.r[i] = d[2 * i + 1]; }
-    float* ch[2] = {pl.l.data(), pl.r.data()};
-    H<pdj::MasterFx>(h)->process(ch, 2, frames, framePos);
-    for (int i = 0; i < frames; i++) { d[2 * i] = pl.l[i]; d[2 * i + 1] = pl.r[i]; }
-    env->ReleaseFloatArrayElements(buf, d, 0);
+    if (h == 0 || frames <= 0) return;
+    auto* d = static_cast<jfloat*>(env->GetPrimitiveArrayCritical(buf, nullptr));
+    if (!d) return;
+    float l[kChunk], r[kChunk];
+    for (int off = 0; off < frames; off += kChunk) {
+        int n = frames - off < kChunk ? frames - off : kChunk;
+        for (int i = 0; i < n; i++) { l[i] = d[2 * (off + i)]; r[i] = d[2 * (off + i) + 1]; }
+        float* ch[2] = {l, r};
+        H<pdj::MasterFx>(h)->process(ch, 2, n, framePos + off);
+        for (int i = 0; i < n; i++) { d[2 * (off + i)] = l[i]; d[2 * (off + i) + 1] = r[i]; }
+    }
+    env->ReleasePrimitiveArrayCritical(buf, d, 0);
 }
 
 // ---- Mixer ---------------------------------------------------------------------------------
@@ -88,6 +94,7 @@ JF(jlong, nativeSf2New)(JNIEnv*, jobject) { return reinterpret_cast<jlong>(new p
 JF(void, nativeSf2Free)(JNIEnv*, jobject, jlong h) { delete H<pdj::Sf2Synth>(h); }
 JF(jboolean, nativeSf2Load)(JNIEnv* env, jobject, jlong h, jstring path, jint sr) {
     const char* p = env->GetStringUTFChars(path, nullptr);
+    if (!p) return JNI_FALSE;
     bool ok = H<pdj::Sf2Synth>(h)->loadFile(p, sr);
     env->ReleaseStringUTFChars(path, p);
     return ok;

@@ -74,6 +74,11 @@ class StudioAudioInstrumentedTest {
         assertTrue(StudioAudio.isCanonical(decoded))
         assertTrue("decoded 2 s tone within 60 ms (AAC priming/padding): ${decoded.seconds}", abs(decoded.seconds - 2.0) < 0.06)
 
+        // AAC encoder priming: the musical start must not be pushed late (iOS primingHeadFrames; ~1 ms budget)
+        var onset = 0
+        while (onset < decoded.frames && abs(decoded.samples[2 * onset]) < 0.05f) onset++
+        assertTrue("m4a round trip head: onset at frame $onset (>44 means unhandled encoder priming)", onset <= 44)
+
         val render = StudioRender()
         val loopFile = File(dir, "loop.wav")
         val loop = render.renderLoop(StudioSampleEdit.NEUTRAL, m4a.path, 0, LoopBeats.TWO, StudioGrid(bpm = 120.0), loopFile)

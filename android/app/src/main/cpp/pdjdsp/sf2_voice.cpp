@@ -6,22 +6,26 @@ namespace pdj {
 
 Sf2Synth::~Sf2Synth() { if (t_) tsf_close(t_); }
 
-void Sf2Synth::finish(int sampleRate) {
-    tsf_set_output(t_, TSF_STEREO_INTERLEAVED, sampleRate, 0.0f);
-    tsf_set_max_voices(t_, 64);  // allocate the voice pool NOW so note_on never allocates on the audio thread
+void Sf2Synth::finish(tsf* t, int sampleRate) {
+    tsf_set_output(t, TSF_STEREO_INTERLEAVED, sampleRate, 0.0f);
+    tsf_set_max_voices(t, 64);  // allocate the voice pool NOW so note_on never allocates on the audio thread
 }
 
 bool Sf2Synth::loadFile(const char* path, int sampleRate) {
     tsf* t = tsf_load_filename(path);
     if (!t) return false;
-    lock(); if (t_) tsf_close(t_); t_ = t; finish(sampleRate); unlock();
+    finish(t, sampleRate);  // configure fully OUTSIDE the lock; swap the pointer under it; free the old one after
+    lock(); tsf* old = t_; t_ = t; unlock();
+    if (old) tsf_close(old);
     return true;
 }
 
 bool Sf2Synth::loadMemory(const void* data, int size, int sampleRate) {
     tsf* t = tsf_load_memory(data, size);
     if (!t) return false;
-    lock(); if (t_) tsf_close(t_); t_ = t; finish(sampleRate); unlock();
+    finish(t, sampleRate);  // configure fully OUTSIDE the lock; swap the pointer under it; free the old one after
+    lock(); tsf* old = t_; t_ = t; unlock();
+    if (old) tsf_close(old);
     return true;
 }
 

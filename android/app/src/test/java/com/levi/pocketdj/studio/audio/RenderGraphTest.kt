@@ -37,13 +37,87 @@ class RenderGraphTest {
         assertEquals(1f, g.panGainR(0f), 1e-6f)
     }
 
-    @Test fun hardPanSilencesTheFarSide() {
+    @Test fun hardPanSilencesTheFarSideAndKeepsTheNearSideAtUnity() {
         val g = RenderGraph()
         g.addTrack("a", PcmClipSource(const(100, 0.3f), true)).pan = -1f
         val out = FloatArray(16 * 2)
         g.render(out, 16)
-        assertTrue(out[0] > 0.3f)           // left boosted (equal-power +3 dB at the edge)
+        assertEquals(0.3f, out[0], 1e-6f)   // iOS centre-unity balance: no boost on the near side
         assertEquals(0f, out[1], 1e-6f)
+    }
+
+    @Test fun halfPanMatchesTheIosBalanceLaw() {
+        val g = RenderGraph()
+        assertEquals(0.5f, g.panGainL(0.5f), 1e-6f)
+        assertEquals(1f, g.panGainR(0.5f), 1e-6f)
+        assertEquals(1f, g.panGainL(-0.5f), 1e-6f)
+        assertEquals(0.5f, g.panGainR(-0.5f), 1e-6f)
+        g.addTrack("a", PcmClipSource(const(100, 0.4f), true)).pan = 0.5f
+        val out = FloatArray(8 * 2)
+        g.render(out, 8)
+        assertEquals(0.2f, out[0], 1e-6f)
+        assertEquals(0.4f, out[1], 1e-6f)
+    }
+
+    @Test fun removedTrackFxIsNotFreedWhileARenderIsInFlight() {
+        class Fx : com.levi.pocketdj.studio.dsp.TrackFx {
+            @Volatile var closed = false
+            override val active = false
+            override fun update(p: TrackFxParams) {}
+            override fun reset() {}
+            override fun process(data: Array<FloatArray>, frames: Int) {}
+            override fun close() { closed = true }
+        }
+        val fx = Fx()
+        val g = RenderGraph(newTrackFx = { fx })
+        val inPull = java.util.concurrent.CountDownLatch(1)
+        val removed = java.util.concurrent.CountDownLatch(1)
+        var closedMidRender = true
+        g.addTrack("a", PullSource { out, frames ->
+            inPull.countDown(); removed.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            closedMidRender = fx.closed
+            for (i in 0 until frames * 2) out[i] = 0.1f; frames
+        })
+        val t = Thread { g.render(FloatArray(16), 8) }
+        t.start()
+        inPull.await(2, java.util.concurrent.TimeUnit.SECONDS)
+        g.removeTrack("a") // control thread, render in flight
+        removed.countDown(); t.join()
+        assertTrue("fx must outlive the in-flight render", !closedMidRender)
+        assertTrue("still queued until the next block boundary", !fx.closed)
+        g.render(FloatArray(16), 8)
+        assertTrue("freed at the next block boundary", fx.closed)
+    }
+
+    @Test fun removeWhileIdleFreesImmediately() {
+        var closed = 0
+        val g = RenderGraph(newTrackFx = { object : com.levi.pocketdj.studio.dsp.TrackFx {
+            override val active = false
+            override fun update(p: TrackFxParams) {}
+            override fun reset() {}
+            override fun process(data: Array<FloatArray>, frames: Int) {}
+            override fun close() { closed++ }
+        } })
+        g.addTrack("a"); g.removeTrack("a")
+        assertEquals(1, closed)
+    }
+
+    @Test fun offlineBounceNormalizesPeaksInsteadOfClipping() {
+        val g = RenderGraph()
+        g.addTrack("a", PcmClipSource(const(64, 0.9f), true))
+        g.addTrack("b", PcmClipSource(const(64, 0.9f), true))
+        val o = g.renderOffline(32)
+        assertEquals(1f, o.samples.maxOf { abs(it) }, 1e-6f)   // 1.8 -> scaled by 1/1.8
+        assertEquals(1f, o.samples[0], 1e-6f)
+    }
+
+    @Test fun liveOutputNeverExceedsFullScale() {
+        val g = RenderGraph()
+        g.addTrack("a", PcmClipSource(const(2048, 0.9f), true))
+        g.addTrack("b", PcmClipSource(const(2048, 0.9f), true))
+        val out = FloatArray(1024 * 2)
+        g.render(out, 1024)
+        assertTrue(out.all { abs(it) <= 1f })
     }
 
     @Test fun muteAndSoloGateTracks() {

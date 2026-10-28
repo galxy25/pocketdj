@@ -25,7 +25,7 @@ public:
 private:
     void lock() { while (flag_.test_and_set(std::memory_order_acquire)) {} }
     void unlock() { flag_.clear(std::memory_order_release); }
-    void finish(int sampleRate);
+    static void finish(struct tsf* t, int sampleRate);
     tsf* t_ = nullptr;
     std::atomic_flag flag_ = ATOMIC_FLAG_INIT;
 };

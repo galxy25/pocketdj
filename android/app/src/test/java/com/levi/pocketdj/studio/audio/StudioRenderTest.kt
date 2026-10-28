@@ -194,6 +194,19 @@ class StudioRenderTest {
         assertEquals(rms(loop.frames - 441), rms(loop.frames), 0.01)
     }
 
+    @Test fun loopWindowStartsExactlyAtTheAnchorFrame() = runBlocking {
+        // unique-valued source: any off-by-one in the window start/end shows up as a shifted value
+        val src = PcmBuffer(44_100, 2, FloatArray(5 * 44_100 * 2) { (it / 2) / 300_000f })
+        val codec = codecWith("s" to src)
+        render(codec).renderLoop(StudioSampleEdit.NEUTRAL, "s", 13, LoopBeats.TWO, grid120, dest("l6.wav"))
+        val loop = codec.lastWritten!!
+        assertEquals(44_100, loop.frames)
+        val start = Math.round(loop.samples[0] * 300_000f)
+        assertTrue("window lies inside the source (start=$start)", start in 0..(5 * 44_100 - 44_100))
+        // contiguous, unstretched, exact: first AND last frame of the window are the source frames start / start+43999+1-1
+        for (k in 0 until 44_100) assertEquals("frame $k", (start + k) / 300_000f, loop.samples[2 * k], 2e-6f)
+    }
+
     @Test fun loopSourceShortOfTheWindowIsZeroPaddedToExactFrames() = runBlocking {
         val codec = codecWith("s" to tone(60_000))
         val r = render(codec).renderLoop(StudioSampleEdit.NEUTRAL, "s", 0, LoopBeats.FOUR, grid120, dest("l5.wav"))

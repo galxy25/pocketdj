@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-2 — Studio native DSP lib (cpp/pdjdsp) + OboeSink + StudioRender/RenderGraph + NDK Gradle wiring
 
@@ -46,3 +46,20 @@ failures. `compileDebugAndroidTestKotlin` green (instrumented smoke compile-veri
 
 ## Questions for Levi
 - GeneralUser GS (or another SF2) licensing/packaging for the instrument packs is still undecided; `Sf2Synth` loads any `.sf2` path. (Default: instrument pack downloads, nothing bundled.)
+
+## Review
+Tests after fixes: 1447 run, 0 failed (new: pan near-unity + half-pan, retire-queue in-flight/idle, bounce normalize, live limiter, underrun no-double-count, 300 ms deterministic rebuild, routing-false once, loop window exactness).
+
+1. MAJOR pan law -> fixed. RenderGraph now uses the iOS centre-unity linear balance (L=1 / 1-p, R=1 / 1+p); tests assert near side unity and pan 0.5 => L 0.5, R 1.0.
+2. MAJOR FX use-after-free -> fixed. removeTrack/release queue the FX on a retire queue; freed only when no render is in flight (tryLock) or at the next render() block boundary. NativeTrackFx/NativeMasterFx handles are @Volatile and every call is a no-op at h==0. Test: removal during an in-flight render does not close until the next block.
+3. MINOR abiFilters / libc++_shared -> documented, not changed. abiFilters arm64-v8a+x86_64 intentionally drops armeabi-v7a (minSdk 35 devices are 64-bit; 32-bit-only Apple Music native libs are lost). c++_shared swaps in NDK libc++ over the one in mediaplayback-1.1.1.aar. NEEDS DEVICE CHECK by the integrator: Apple Music full-track playback after this change. Fallback if it regresses: link pdjdsp with c++_static.
+4. MINOR underrun double count -> fixed. Native counter is cumulative across reopen; sink no longer accumulates a base. Test across failed+successful rebuilds.
+5. MINOR OboeSink error handling -> fixed. (a) 50 ms backoff after render exception; (b) onRoutingChanged(false) fires once on the transition into disconnected (the later true reports recovery; per-failed-retry reports omitted to avoid spam); (c) stop() joins until the feeder is dead before freeing the native handle.
+6. MINOR AAC priming on m4a bakes -> deferred, not fixable without a device measurement (emulator off-limits). The instrumented smoke now asserts the decoded onset is within ~1 ms (44 frames) instead of tolerating 60 ms, so the integrator's emulator run will show whether a head exists; if so trim/edts in AudioDecoder/AacEncoder (MIX-2 coordination). Loops are WAV and unaffected.
+7. MINOR JNI allocation -> fixed. Track/master FX shims use stack scratch in 512-frame chunks and GetPrimitiveArrayCritical (no malloc, no array copy); h==0 guarded.
+8. MINOR hard clamp -> fixed. Live path: peak limiter (instant attack, ~50 ms release) with clamp as safety net; offline bounce renders unlimited then scales by 1/peak when peak>1 (iOS ArrangerBouncer).
+9. MINOR PcmBuffer floor->ceil -> rejected. Ceil is the iOS convertToCanonical contract ("never one frame short") and the Studio frame-exact guarantees depend on it; flagged to the integrator/MIX owners as a shared touchpoint: PcmBuffer.resampled() frame count can grow by <=1 frame for every Mix resample.
+10. MINOR nominal acceptance -> partly fixed. 300 ms criterion now asserted at <=300 ms on the injected clock via pumpOnce; seam test supplemented with a unique-valued source + anchor offset asserting exact contiguous window; instrumented smoke / StrictMode run / ARCHITECTURE-ANDROID.md ledger row remain for the integrator (emulator not used, docs file absent in this worktree).
+11. NIT sf2 lock -> fixed. New tsf is configured outside the lock, pointer swapped under it, old freed after unlock; GetStringUTFChars null-checked.
+
+fixes applied
