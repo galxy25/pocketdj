@@ -120,11 +120,12 @@ fun PocketDetailScreen(
         val stats = store.statsForPocket(pocketId)
         val sortInputs = sortState.inputs
         val defaultOrder = sortInputs.isDefaultOrder
+        val readTime = rememberCollectionReadTime(sortInputs)
         val resolved by produceState<List<String>?>(
-            initialValue = null, pocket.songIds, sortInputs, catalog, state.revision,
+            initialValue = null, pocket.songIds, sortInputs, catalog, state.revision, readTime,
         ) {
             value = if (defaultOrder || catalog == null) null else withContext(Dispatchers.Default) {
-                CollectionSortFilter.resolvePocketSongs(pocket.songIds, catalog, sortInputs, playCountOf)
+                CollectionSortFilter.resolvePocketSongs(pocket.songIds, catalog, sortInputs, playCountOf, readTime = readTime)
             }
         }
 
@@ -137,11 +138,12 @@ fun PocketDetailScreen(
 
         val rowSelection = remember { graph.collectionsGraph.rowSelection }
         val selScope = "pocket:$pocketId"
-        fun selectableIds() = pocket.songIds.filter { catalog?.songsById?.containsKey(it) == true && !PlayResolver.isStudioId(it) }
+        // Selection acts on what is DISPLAYED: the resolved order while a sort/filter is active.
+        fun selectableIds() = CollectionSortFilter.selectableSongIds(pocket.songIds, resolved, defaultOrder, catalog)
         SelectionScope(
             selection = rowSelection,
             scope = selScope,
-            pruneKey = pocket.songIds,
+            pruneKey = listOf(pocket.songIds, resolved),
             allIds = { selectableIds() },
             payload = {
                 SongTransfer.make(rowSelection.orderedSelection(selectableIds()), catalog?.songsById.orEmpty())

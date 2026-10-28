@@ -122,13 +122,14 @@ fun PlaylistDetailScreen(
         val sortInputs = sortState.inputs
         val defaultOrder = sortInputs.isDefaultOrder
         // chapter nodeId -> display children (song nodes sorted, non-song nodes last), off-main.
+        val readTime = rememberCollectionReadTime(sortInputs)
         val resolvedChapters by produceState<Map<String, List<PlaylistNode>>?>(
-            initialValue = null, playlist.sequences, sortInputs, catalog, state.revision,
+            initialValue = null, playlist.sequences, sortInputs, catalog, state.revision, readTime,
         ) {
             value = if (defaultOrder || catalog == null) null else withContext(Dispatchers.Default) {
                 playlist.sequences.associate {
                     it.nodeId to CollectionSortFilter.resolveChapterChildren(
-                        it.children.orEmpty(), catalog, sortInputs, playCountOf,
+                        it.children.orEmpty(), catalog, sortInputs, playCountOf, readTime = readTime,
                     )
                 }
             }
@@ -153,21 +154,15 @@ fun PlaylistDetailScreen(
         val selScope = "playlist:$playlistId"
         // Chapters are keyed by NODE id (the same song may appear in several chapters); the
         // payload translates node ids -> song ids in display order.
-        fun songNodes() = playlist.sequences.flatMap { it.children.orEmpty() }.filter {
-            it.kind == PlaylistNode.Kind.SONG && it.songId?.let { id ->
-                catalog?.songsById?.containsKey(id) == true && !PlayResolver.isStudioId(id)
-            } == true
-        }
+        fun songNodes() = CollectionSortFilter.selectableSongNodes(playlist.sequences, resolvedChapters, defaultOrder, catalog)
         SelectionScope(
             selection = rowSelection,
             scope = selScope,
-            pruneKey = playlist.sequences,
+            pruneKey = listOf(playlist.sequences, resolvedChapters),
             allIds = { songNodes().map { it.nodeId } },
             payload = {
                 com.levi.pocketdj.ui.selection.playlistSelectionPayload(
-                    nodes = playlist.sequences.flatMap { it.children.orEmpty() }
-                        .filter { it.kind == PlaylistNode.Kind.SONG }
-                        .map { it.nodeId to it.songId },
+                    nodes = songNodes().map { it.nodeId to it.songId },
                     selection = rowSelection,
                     songsById = catalog?.songsById.orEmpty(),
                     isStudioId = PlayResolver::isStudioId,

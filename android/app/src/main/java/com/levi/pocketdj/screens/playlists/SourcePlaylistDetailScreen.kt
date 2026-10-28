@@ -145,26 +145,30 @@ fun SourcePlaylistDetailScreen(
         // Sorted/filtered display order, resolved OFF-main; keyed on the stored ids + inputs + catalog.
         // Null = not resolved yet (skeleton-free: show the stored rows' count honestly as loading).
         val inputs = sortState.inputs
+        val readTime = rememberCollectionReadTime(inputs)
         val displayed by produceState<List<String>?>(
-            initialValue = null, songIds, inputs, catalog,
+            initialValue = null, songIds, inputs, catalog, readTime,
         ) {
             value = if (inputs.isDefaultOrder) null else withContext(Dispatchers.Default) {
-                CollectionSortFilter.resolveSongIds(songIds, catalog, inputs, playCountOf)
+                CollectionSortFilter.resolveSongIds(songIds, catalog, inputs, playCountOf, readTime)
             }
         }
         val displayedIds: List<String>? = if (inputs.isDefaultOrder) null else displayed
-        fun selectableIds() = songIds.indices.filter {
-            catalog.songsById.containsKey(songIds[it]) && !PlayResolver.isStudioId(songIds[it])
-        }.map { rowKeys[it] }
+        // Selection acts on what is DISPLAYED (resolved order while sorted/filtered); keys follow the rows.
+        val selIds: List<String> = displayedIds ?: if (inputs.isDefaultOrder) songIds else emptyList()
+        val selKeys = if (displayedIds != null) com.levi.pocketdj.ui.selection.stableKeys(selIds) else rowKeys
+        fun selectableIds() = selIds.indices.filter {
+            catalog.songsById.containsKey(selIds[it]) && !PlayResolver.isStudioId(selIds[it])
+        }.map { selKeys[it] }
         SelectionScope(
             selection = rowSelection,
             scope = selScope,
-            pruneKey = songIds,
+            pruneKey = listOf(songIds, displayedIds),
             allIds = { selectableIds() },
             payload = {
                 SongTransfer.make(
                     rowSelection.orderedSelection(selectableIds()).mapNotNull { k ->
-                        rowKeys.indexOf(k).takeIf { it >= 0 }?.let { songIds[it] }
+                        selKeys.indexOf(k).takeIf { it >= 0 }?.let { selIds[it] }
                     },
                     catalog.songsById,
                 )

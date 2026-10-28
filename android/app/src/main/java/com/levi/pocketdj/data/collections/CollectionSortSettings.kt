@@ -44,6 +44,9 @@ object CollectionSortSettings {
     fun encode(map: Map<String, CollectionSortDoc>): String =
         PdjJson.lenient.encodeToString(mapSerializer, map)
 
+    private fun decodeOrNull(raw: String): Map<String, CollectionSortDoc>? =
+        runCatching { PdjJson.lenient.decodeFromString(mapSerializer, raw) }.getOrNull()
+
     fun decode(raw: String?): Map<String, CollectionSortDoc> {
         if (raw.isNullOrBlank()) return emptyMap()
         return runCatching { PdjJson.lenient.decodeFromString(mapSerializer, raw) }
@@ -59,6 +62,8 @@ object CollectionSortSettings {
      * other collection's entry is untouched.
      */
     fun withEntry(raw: String?, collectionId: String, doc: CollectionSortDoc): String {
+        // A corrupt blob is left alone: rewriting it would silently drop every other collection's state.
+        if (!raw.isNullOrBlank() && decodeOrNull(raw) == null) return raw
         val map = decode(raw).toMutableMap()
         if (doc.isEmpty) map.remove(key(collectionId)) else map[key(collectionId)] = doc
         return encode(map)

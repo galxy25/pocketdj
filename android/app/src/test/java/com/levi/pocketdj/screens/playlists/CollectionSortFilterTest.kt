@@ -68,7 +68,9 @@ class CollectionSortFilterTest {
             listOf("a", "d", "b", "c"),
             CollectionSortFilter.resolveSongIds(stored, cat, sortBy(SortField.DATE_ADDED, asc = false)),
         )
-        assertTrue(SortField.DATE_ADDED in SortField.forKind(com.levi.pocketdj.screens.browse.BrowseKind.SONGS))
+        assertTrue(SortField.DATE_ADDED in SortField.forKind(com.levi.pocketdj.screens.browse.BrowseKind.SONGS, includeDateAdded = true))
+        // Browse/History sort sheets keep it hidden.
+        assertFalse(SortField.DATE_ADDED in SortField.forKind(com.levi.pocketdj.screens.browse.BrowseKind.SONGS))
     }
 
     private fun songNode(nodeId: String, songId: String) =
@@ -150,5 +152,72 @@ class CollectionSortFilterTest {
         val inputs = CollectionBrowseInputs.fromDoc(CollectionSortSettings.docFor(raw, "x"))
         assertEquals(listOf(SortKey(SortField.BPM, false)), inputs.sortKeys)
         assertTrue(inputs.clauses.isEmpty())
+    }
+
+    private val bpmFilter = CollectionBrowseInputs(
+        clauses = listOf(Clause("bpm", FilterOp.BETWEEN, min = 100.0, max = 130.0)),
+    )
+
+    @Test
+    fun selectionActsOnDisplayedRowsNotStored() {
+        // Stored a,b,c,d; filter keeps a,d only.
+        val resolved = CollectionSortFilter.resolveSongIds(stored, cat, bpmFilter)
+        assertEquals(listOf("a", "d"), resolved)
+        // Active filter: select-all universe is the 2 visible rows, in resolved order.
+        assertEquals(listOf("a", "d"), CollectionSortFilter.selectableSongIds(stored, resolved, false, cat))
+        // Sorted by BPM: display order drives the payload order.
+        val sorted = CollectionSortFilter.resolveSongIds(stored, cat, sortBy(SortField.BPM))
+        assertEquals(sorted, CollectionSortFilter.selectableSongIds(stored, sorted, false, cat))
+        // Resolve not landed yet: nothing selectable (never the hidden stored list).
+        assertEquals(emptyList<String>(), CollectionSortFilter.selectableSongIds(stored, null, false, cat))
+        // Default order: stored.
+        assertEquals(stored, CollectionSortFilter.selectableSongIds(stored, null, true, cat))
+    }
+
+    @Test
+    fun playlistSelectionActsOnResolvedChapterNodes() {
+        val ch = PlaylistNode(
+            nodeId = "ch", kind = PlaylistNode.Kind.SEQUENCE,
+            children = listOf(songNode("n-a", "a"), songNode("n-b", "b"), songNode("n-d", "d")),
+        )
+        val resolved = mapOf("ch" to CollectionSortFilter.resolveChapterChildren(ch.children!!, cat, bpmFilter))
+        assertEquals(
+            listOf("n-a", "n-d"),
+            CollectionSortFilter.selectableSongNodes(listOf(ch), resolved, false, cat).map { it.nodeId },
+        )
+        assertEquals(
+            listOf("n-a", "n-b", "n-d"),
+            CollectionSortFilter.selectableSongNodes(listOf(ch), null, true, cat).map { it.nodeId },
+        )
+    }
+
+    @Test
+    fun favoriteAndMembershipFiltersApply() {
+        val fav = CollectionBrowseInputs(favorite = com.levi.pocketdj.data.favorites.FavoriteFilter.FAVORITE)
+        val rt = CollectionReadTime(favoriteIds = setOf("b", "c"))
+        assertFalse(fav.isDefaultOrder)
+        assertEquals(listOf("b", "c"), CollectionSortFilter.resolveSongIds(stored, cat, fav, readTime = rt))
+        val mem = CollectionBrowseInputs(
+            membership = com.levi.pocketdj.screens.browse.MembershipFilter(excludeIds = setOf("pkt_1")),
+        )
+        val rt2 = CollectionReadTime(members = mapOf("pkt_1" to setOf("a")))
+        assertEquals(listOf("b", "c", "d"), CollectionSortFilter.resolveSongIds(stored, cat, mem, readTime = rt2))
+        // Transient: never persisted.
+        assertTrue(fav.toDoc().isEmpty)
+    }
+
+    @Test
+    fun hydrateDoesNotOverwriteEarlyEditAndCorruptBlobIsKept() {
+        val st = CollectionSortState("p1")
+        st.setSortKeys(listOf(SortKey(SortField.NAME)))
+        st.restore(CollectionBrowseInputs(sortKeys = listOf(SortKey(SortField.BPM))).toDoc())
+        assertEquals(listOf(SortKey(SortField.NAME)), st.inputs.sortKeys)
+        assertTrue(st.loaded)
+        val fresh = CollectionSortState("p2")
+        fresh.restore(CollectionBrowseInputs(sortKeys = listOf(SortKey(SortField.BPM))).toDoc())
+        assertEquals(listOf(SortKey(SortField.BPM)), fresh.inputs.sortKeys)
+
+        val corrupt = "{not json"
+        assertEquals(corrupt, CollectionSortSettings.withEntry(corrupt, "p1", CollectionBrowseInputs(sortKeys = listOf(SortKey(SortField.BPM))).toDoc()))
     }
 }

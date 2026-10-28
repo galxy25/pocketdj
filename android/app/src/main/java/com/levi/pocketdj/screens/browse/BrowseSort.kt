@@ -61,12 +61,17 @@ enum class SortField(val id: String, val label: String) {
         val byId: Map<String, SortField> = entries.associateBy { it.id }
 
         /** Sortable fields for a kind, in registry order (drives the sort sheet). */
-        fun forKind(kind: BrowseKind, includeHistory: Boolean = false): List<SortField> =
+        fun forKind(
+            kind: BrowseKind,
+            includeHistory: Boolean = false,
+            /** COL-13: per-collection sort offers Date added; Browse/History keep it hidden (BRW-3). */
+            includeDateAdded: Boolean = false,
+        ): List<SortField> =
             entries.filter {
-                kind in it.kinds && (includeHistory || !it.historyOnly)
+                kind in it.kinds && (includeHistory || !it.historyOnly) && (includeDateAdded || it != DATE_ADDED)
             }
-        // DATE_ADDED is offered (COL-13): BrowseRows / collection rows carry IndexSong.dateAdded;
-        // songs without one sort last in either direction.
+        // DATE_ADDED stays hidden from the sort sheet until BRW-3 wires
+        // IndexSong.dateAdded into SongRow (BrowseRows); re-enable then.
     }
 }
 
