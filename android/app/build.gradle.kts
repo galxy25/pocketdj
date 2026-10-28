@@ -49,6 +49,9 @@ android {
         jvmTarget = "17"
     }
 
+    // MIX-2: instrumented audio tests share the JVM mp3 fixtures
+    sourceSets.getByName("androidTest").resources.srcDir("src/test/resources")
+
     buildFeatures {
         compose = true
         buildConfig = true
@@ -56,6 +59,8 @@ android {
 }
 
 dependencies {
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
