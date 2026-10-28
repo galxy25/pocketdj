@@ -128,16 +128,40 @@ class ZoneParityTest {
     }
 
     @Test fun emptyTimbreIsPreV2AcrossEveryCrateInTheFixture() {
-        val sparse = fx.timbre.entries.take(2).associate { it.key to it.value } // < 3 vectors anywhere
         val shut = Tuning(timbreGain = 0.0, soundAdmitMaxShare = 0.0)
         for (a in 0 until 18 step 3) {
             val members = artistIds(a)
             val plain = ZoneEngine.rank(members, catalog.tracks, noPlays)
-            assertEquals("crate $a (sparse)", plain, ZoneEngine.rank(members, catalog.tracks, noPlays, timbre = sparse))
+            // fewer than TIMBRE_MIN_VECTORS vectors that ARE crate members ⇒ no profile ⇒ pre-v2
+            val two = members.take(2).filter { fx.timbre.containsKey(it) }.associateWith { fx.timbre.getValue(it) }
+            assertEquals("crate $a (sub-minimum members)", plain, ZoneEngine.rank(members, catalog.tracks, noPlays, timbre = two))
             val gated = ZoneEngine.rank(members, catalog.tracks, noPlays, tuning = shut, timbre = fx.timbre)
             assertEquals("crate $a (gain 0, door shut)", plain.ids, gated.ids)
         }
     }
+
+    @Test fun timbreMinVectorsGateIsExercisedOnCrateMembers() {
+        // artist 1 has timbre on its analysed rows; take exactly 2 vs 3 of them as profile members
+        val analysed = artistIds(1).filter { fx.timbre.containsKey(it) }
+        assertTrue("fixture needs >=3 analysed rows", analysed.size >= 3)
+        fun profile(n: Int) = SimilarityFamilies.timbreProfile(
+            analysed.take(n).map { SimilarityFamilies.TimbreMember(fx.timbre.getValue(it), 1.0) },
+        )
+        assertNull(profile(2))
+        assertNotNull(profile(3))
+    }
+
+    @Test fun noTimbreRankingMatchesPinnedGoldenIds() {
+        for ((a, golden) in GOLDEN) {
+            val r = ZoneEngine.rank(artistIds(a), catalog.tracks, noPlays)
+        assertEquals("crate $a", golden, r.ids)
+        }
+    }
+
+    private val GOLDEN: Map<Int, List<String>> = mapOf(
+        0 to "sng_000c0006005a,sng_000c0007005b,sng_000600060030,sng_000600070031,sng_000c00000054,sng_00060000002a".split(","),
+        6 to "sng_000000000000,sng_000000010001,sng_000c0006005a,sng_000c00000054,sng_000000060006,sng_000c00040058".split(","),
+    )
 
     @Test fun timbreOnlyReordersAndTheDoorAdmitsOnlyFromOutsideTheGate() {
         val byId = catalog.tracks.associateBy { it.songId }
@@ -163,14 +187,6 @@ class ZoneParityTest {
         assertEquals(r.ids, ex.rows.map { it.songId })
         assertEquals(r.soundAdmitted, ex.soundAdmitted)
         assertTrue(ex.rows.all { it.why.isNotBlank() })
-    }
-
-    @Test fun eraWindowCaptionNamesTheCratesOwnYears() {
-        val members = artistIds(0)
-        val ex = ZoneEngine.suggestionsExplained(members, catalog.tracks, noPlays)
-        val era = SimilarityFamilies.eraWindow(members.mapNotNull { id -> catalog.tracks.first { it.songId == id }.year?.toDouble() })!!
-        val caption = ex.firstOrNull { it.why.startsWith("From this collection's") }
-        if (caption != null) assertEquals("From this collection's ${era.lo.toInt()}–${era.hi.toInt()} era", caption.why)
     }
 
     // ── zone over the catalog ───────────────────────────────────────────────────────────

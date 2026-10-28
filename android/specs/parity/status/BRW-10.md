@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-10 ZoneEngine: In Da Zone + collection suggestions + cloud shaping
 
@@ -17,3 +17,14 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR ledger row (docs/ARCHITECTURE-ANDROID.md) -> fixed: row set to PARTIAL, device-only none (pure), emulator step deferred
+- MINOR emulator "rank now" not wired -> fixed by marking PARTIAL honestly (ledger + here): no debug-screen owner in scope; deferred to REC-5 / debug-screen owner. Entry point: `ZoneEngine.inDaZone(...)` over `ZoneCatalog.from(MergedCatalog)`
+- MINOR vacuous pre-v2 test -> fixed: sub-minimum case now uses 2 crate-MEMBER vectors (profile gate exercised), new test asserts timbreProfile null at 2 / non-null at 3, and pinned golden id lists for crates 0 and 6 (captured from this port's no-timbre output; no Swift runner exists, so they guard regressions, not Swift equivalence)
+- NIT era caption conditional -> fixed: ZoneEngineTest.eraCaptionIsEmittedForAnEraOnlyCandidate (👍'd-genre candidate, unconditional assert). Note the caption is reachable only via accepted-feedback genres since memberGenres is members-only (same as iOS)
+- NIT no-op map / name -> fixed: renamed fallbackPoolFillsANarrowProfileToMinSongs, map removed
+- NIT Tuning var -> fixed: all val (callers use copy)
+- NIT data/recs imports screens.browse.Genre -> rejected for now: matches iOS behaviour, moving Genre is out of the owned file set
+
+fixes applied

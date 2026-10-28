@@ -121,9 +121,9 @@ class ZoneEngineTest {
         assertEquals(0, q.count(Pool.FAMILIAR))
     }
 
-    @Test fun musicalFallbackPoolFillsANarrowProfileToMinSongs() {
+    @Test fun fallbackPoolFillsANarrowProfileToMinSongs() {
         // one artist on repeat in a genre nothing else shares ⇒ the gate admits ~nothing
-        val odd = songs.map { if (it.artist == "Artist 0") it else it }
+        val odd = songs
         val genres = odd.associate { it.id to (if (it.artist == "Artist 0") "solo" else "other") }
         val q = ZoneEngine.inDaZone(
             songs = odd, genreBySongId = genres,
@@ -544,5 +544,23 @@ class ZoneEngineTest {
             ZoneEngine.suggestions(listOf("m1"), tracks, noPlays),
             ZoneEngine.suggestions(listOf("m1"), tracks, noPlays, versions = ZoneEngine.versionKeys(tracks)),
         )
+    }
+
+    @Test fun eraCaptionIsEmittedForAnEraOnlyCandidate() {
+        fun t(id: String, artist: String, genre: String?, year: Int) =
+            Track(songId = id, artistKey = artist.lowercase(), artistName = artist, genre = genre, year = year)
+        val members = (0 until 4).map { t("m$it", "Member", "rock", 2000 + it) }
+        // the era caption is only reachable for a candidate admitted through a 👍'd genre that the
+        // crate's own members do not carry (memberGenres is members-only; the profile includes accepted)
+        val liked = t("liked", "Liked Artist", "jazz", 2001)
+        val cands = (0 until 6).map { t("c$it", "Other $it", "jazz", 2001) }
+        val tracks = members + liked + cands
+        val ex = ZoneEngine.suggestionsExplained(
+            members.map { it.songId }, tracks, noPlays, feedback = Feedback(accepted = mapOf("liked" to 1.0)),
+        )
+        val era = ex.firstOrNull { it.why.startsWith("From this collection's") }
+        assertTrue("expected an era caption, got ${ex.map { it.why }}", era != null)
+        val w = SimilarityFamilies.eraWindow((members + liked).map { it.year!!.toDouble() })!!
+        assertEquals("From this collection's ${w.lo.toInt()}–${w.hi.toInt()} era", era!!.why)
     }
 }
