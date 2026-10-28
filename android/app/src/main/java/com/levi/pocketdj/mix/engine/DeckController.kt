@@ -67,7 +67,7 @@ class DeckController(
     /** True playhead in source seconds from the voice's own frame counter; null unless it is rendering. */
     fun trueSeconds(): Double? {
         val v = voice ?: return null
-        if (v.status != Voice.Status.PLAYING) return null
+        if (!v.isPlaying || v.status != Voice.Status.PLAYING) return null
         return ((v.playerFrame - startFrame).toDouble() / sampleRate).coerceAtLeast(0.0)
     }
 

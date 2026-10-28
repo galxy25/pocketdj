@@ -47,10 +47,19 @@ class FakeAutoDj : AutoDjHooks {
     var seeks = mutableListOf<Deck>()
     override fun endAutoLoop() { ended++; isMixing = false }
     override fun onSeek(deck: Deck) { seeks += deck }
+    var snap: com.levi.pocketdj.mix.store.AutoSnapshot? = null
+    var restored: com.levi.pocketdj.mix.store.AutoSnapshot? = null
+    override fun snapshot() = snap
+    override fun restoreSuspended(auto: com.levi.pocketdj.mix.store.AutoSnapshot) { restored = auto }
 }
 
 /** A MixEngine on an OfflineRenderer sink with synthetic songs and manual clock / tick / decoder pumping. */
-class EngineHarness(store: MixDeckSessionStore? = null, val block: Int = 512) {
+class EngineHarness(
+    store: MixDeckSessionStore? = null,
+    val block: Int = 512,
+    val songs: HashMap<String, ResolvedTrack> = HashMap(),
+    val sources: HashMap<String, () -> PcmSource> = HashMap(),
+) {
     val sr = 44_100
     val renderer = OfflineRenderer(sr, block)
     var nowMs = 1_800_000_000_000L
@@ -58,8 +67,6 @@ class EngineHarness(store: MixDeckSessionStore? = null, val block: Int = 512) {
     val driver = ManualTickDriver()
     val voices = mutableListOf<Voice>()
     val diags = mutableListOf<String>()
-    private val songs = HashMap<String, ResolvedTrack>()
-    private val sources = HashMap<String, () -> PcmSource>()
     val recorder = FakeRecorder()
     val engine: MixEngine = MixEngine(
         graph = MixGraph(sr, 2048),

@@ -110,15 +110,15 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
         if (now - lastHeartbeatAt < 1000) return
         lastHeartbeatAt = now
         e.diag(
-            "hb render=${if (rendering) 1 else 0} tapAge=${"%.2f".format(e.tapAgeSeconds(false))} " +
-                "sigAge=${"%.2f".format(e.tapAgeSeconds(true))} A=${deckBeat(Deck.A)} B=${deckBeat(Deck.B)} " +
+            "hb render=${if (rendering) 1 else 0} tapAge=${String.format(java.util.Locale.US, "%.2f", e.tapAgeSeconds(false))} " +
+                "sigAge=${String.format(java.util.Locale.US, "%.2f", e.tapAgeSeconds(true))} A=${deckBeat(Deck.A)} B=${deckBeat(Deck.B)} " +
                 "auto=${if (e.autoMixing) 1 else 0}/${if (e.autoDj?.isPaused == true) 1 else 0}",
         )
     }
 
     private fun deckBeat(d: Deck): String =
         "(${if (e.deckState(d).isPlaying) 1 else 0},${if (e.controller(d).isVoicePlaying) 1 else 0}," +
-            "${"%.1f".format(e.position(d))})"
+            String.format(java.util.Locale.US, "%.1f", e.position(d)) + ")"
 
     companion object {
         const val INTERVAL_MS = 100L
