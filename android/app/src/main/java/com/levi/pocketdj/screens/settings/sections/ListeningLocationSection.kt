@@ -1,0 +1,208 @@
+package com.levi.pocketdj.screens.settings.sections
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.levi.pocketdj.data.location.ListeningLocationAuthorization
+import com.levi.pocketdj.data.location.ListeningLocationStore
+import com.levi.pocketdj.data.location.LocationSettings
+import com.levi.pocketdj.data.pockets.PocketsSettings
+import com.levi.pocketdj.screens.settings.SettingsCaption
+import com.levi.pocketdj.shell.SettingsSection
+import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** Pure copy for the places & trips rows (iOS `ListeningLocationSettingsSection`). */
+object ListeningLocationCopy {
+    const val ID = "listeningLocation"
+    /** Right under Recommendations (660), where the pockets toggle lives. */
+    const val ORDER = 665
+    const val TOGGLE = "Use places & trips in pockets"
+    const val NO_PLACES = "No places yet. They appear after you've spent some time somewhere."
+    const val ALWAYS_HINT = "Always lets PocketDJ notice trips between your places while music plays in the background."
+    const val ERASE = "Erase places & trips"
+    const val ERASE_TITLE = "Erase your places and trips from this device?"
+    const val ERASE_MESSAGE =
+        "PocketDJ starts learning your places again from now. Pockets you already have keep their labels as \"Earlier place\"."
+    const val FOOTER =
+        "Your location never leaves this device. PocketDJ only learns which of your places, A, B, C…, you were at, " +
+            "or that you were travelling between them. Those anonymous labels can be included with your listening " +
+            "pockets. Turning pockets off also turns this off and erases your places."
+
+    fun share(shareOfTime: Double): String = "${(shareOfTime * 100).roundToInt()} % of time"
+
+    /** Which action the authorization row offers. */
+    enum class AuthAction { NONE, OPEN_SETTINGS, ALLOW_ALWAYS, ALLOW_ALWAYS_IN_SETTINGS, REQUEST_FOREGROUND }
+
+    fun authAction(a: ListeningLocationAuthorization, didRequestAlways: Boolean): AuthAction = when (a) {
+        ListeningLocationAuthorization.DENIED, ListeningLocationAuthorization.RESTRICTED -> AuthAction.OPEN_SETTINGS
+        ListeningLocationAuthorization.WHEN_IN_USE ->
+            if (didRequestAlways) AuthAction.ALLOW_ALWAYS_IN_SETTINGS else AuthAction.ALLOW_ALWAYS
+        ListeningLocationAuthorization.NOT_DETERMINED -> AuthAction.REQUEST_FOREGROUND
+        else -> AuthAction.NONE
+    }
+}
+
+internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.ID, ListeningLocationCopy.ORDER) { host ->
+    val graph = host.graph
+    val ctx = LocalContext.current
+    val pocketsOn by graph.settings.flow(PocketsSettings.LISTENING_POCKETS_ENABLED).collectAsState(initial = false)
+    val store by produceState<ListeningLocationStore?>(null) {
+        value = withContext(Dispatchers.IO) { graph.collectionsGraph.locationStore }
+    }
+    val s = store ?: return@SettingsSection
+    if (!s.isSupported) return@SettingsSection
+    val rev by s.revisionFlow.collectAsState()
+    var showErase by remember { mutableStateOf(false) }
+
+    fun resync() { host.scope.launch(Dispatchers.IO) { graph.collectionsGraph.locationPermissionChanged() } }
+    fun openSettings() = runCatching { ctx.startActivity(LocationSettings.appSettingsIntent(ctx)) }
+
+    val foreground = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        LocationSettings.markAsked(ctx); resync()
+    }
+    val background = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { resync() }
+
+    // Returning from system Settings (denied / Always hand-off) may have changed the grant.
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val obs = LifecycleEventObserver { _, e -> if (e == Lifecycle.Event.ON_RESUME && s.isEnabled) resync() }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+
+    @Suppress("UNUSED_EXPRESSION") rev // recompose on engine changes
+    val on = s.isEnabled
+    if (!pocketsOn && !on) return@SettingsSection // the toggle only exists under an enabled pockets toggle
+
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(ListeningLocationCopy.TOGGLE, modifier = Modifier.weight(1f))
+        Switch(
+            checked = on,
+            enabled = LocationSettings.toggleEnabled(on, pocketsOn),
+            onCheckedChange = { want ->
+                if (!LocationSettings.canSetEnabled(want, pocketsOn)) return@Switch
+                host.scope.launch(Dispatchers.IO) {
+                    s.setEnabled(want)
+                    runCatching { graph.settings.set(PocketsSettings.LISTENING_LOCATION_ENABLED, want) }
+                    if (want && !LocationSettings.current(ctx).isGranted) {
+                        withContext(Dispatchers.Main) { foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS) }
+                    } else if (want) resync()
+                }
+            },
+            modifier = Modifier.testTag("pockets-location-toggle"),
+        )
+    }
+
+    if (on) {
+        val auth = s.authorization
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Location access")
+            Text(
+                LocationSettings.statusText(auth),
+                color = if (auth.isGranted) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                modifier = Modifier.testTag("pockets-location-status"),
+            )
+        }
+        when (ListeningLocationCopy.authAction(auth, s.didRequestAlways)) {
+            ListeningLocationCopy.AuthAction.OPEN_SETTINGS ->
+                TextButton(onClick = { openSettings() }, modifier = Modifier.testTag("pockets-location-open-settings")) { Text("Open Settings") }
+            ListeningLocationCopy.AuthAction.REQUEST_FOREGROUND ->
+                TextButton(onClick = { foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS) }, modifier = Modifier.testTag("pockets-location-allow")) { Text("Allow location") }
+            ListeningLocationCopy.AuthAction.ALLOW_ALWAYS -> {
+                TextButton(
+                    onClick = {
+                        s.requestAlwaysUpgrade()
+                        background.launch(LocationSettings.BACKGROUND_PERMISSION)
+                    },
+                    modifier = Modifier.testTag("pockets-location-allow-always"),
+                ) { Text("Allow Always") }
+                SettingsCaption(ListeningLocationCopy.ALWAYS_HINT)
+            }
+            ListeningLocationCopy.AuthAction.ALLOW_ALWAYS_IN_SETTINGS -> {
+                TextButton(onClick = { openSettings() }, modifier = Modifier.testTag("pockets-location-open-settings")) { Text("Allow Always in Settings") }
+                SettingsCaption(ListeningLocationCopy.ALWAYS_HINT)
+            }
+            ListeningLocationCopy.AuthAction.NONE -> Unit
+        }
+
+        val places = s.placeLabels()
+        if (places.isEmpty()) {
+            Text(
+                ListeningLocationCopy.NO_PLACES, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("pockets-location-no-places"),
+            )
+        } else {
+            places.forEach { p ->
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("pockets-location-place-${p.rank}"),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(p.label)
+                    Text(ListeningLocationCopy.share(p.shareOfTime), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        s.tripLabels().forEach { t ->
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("pockets-location-trip"),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(t.label)
+                Text("${t.occurrences}×", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        TextButton(onClick = { showErase = true }, modifier = Modifier.testTag("pockets-location-erase")) {
+            Text(ListeningLocationCopy.ERASE, color = MaterialTheme.colorScheme.error)
+        }
+    }
+    SettingsCaption(ListeningLocationCopy.FOOTER)
+
+    if (showErase) {
+        AlertDialog(
+            onDismissRequest = { showErase = false },
+            title = { Text(ListeningLocationCopy.ERASE_TITLE) },
+            text = { Text(ListeningLocationCopy.ERASE_MESSAGE) },
+            confirmButton = {
+                TextButton(
+                    onClick = { showErase = false; host.scope.launch(Dispatchers.IO) { s.eraseAll() } },
+                    modifier = Modifier.testTag("pockets-location-erase-confirm"),
+                ) { Text(ListeningLocationCopy.ERASE, color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { showErase = false }) { Text("Cancel") } },
+        )
+    }
+}
