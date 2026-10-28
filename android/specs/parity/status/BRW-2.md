@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-2 Filter/sort sheets + membership + favorite + hide-skips read-time layers
 
