@@ -203,10 +203,17 @@ fun HistoryScreen(
                 catalog = catalog,
                 onSongClick = onSongClick,
             )
-            HistoryTab.COLLECTION -> ActivityContent(
+            HistoryTab.COLLECTION -> CollectionTab(
                 catalog = catalog,
                 query = inputs.query,
                 onSongClick = onSongClick,
+                activityContent = {
+                    ActivityContent(
+                        catalog = catalog,
+                        query = inputs.query,
+                        onSongClick = onSongClick,
+                    )
+                },
             )
             HistoryTab.POCKETS -> EmptyState(
                 icon = Icons.Filled.Layers,
