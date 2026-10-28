@@ -21,6 +21,10 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q10 [BRW-5]** Sync OpenSearch credentials across devices (iOS uses SettingsCredentialsSync) or keep Keystore-local on Android? -- *Default: Keystore-local, not synced.* -- Belongs with profile-sync (SVC-7..9).
 - **Q11 [PB-1]** Add a Settings control for cloud/device playback mode now, or wait for the burn store UI? Should an Apple-Music-only row inside a run take over from the sequencer once AM end detection exists? -- *Default: cloud mode, no control; AM-only rows skipped in runs.*
 - **Q12 [SURF-4]** Jukebox/play/collection-file deep links are route-only until JBX-2 (join panel), SURF-5 (play) and the import package assign their seams. -- *Default: link opens Jukebox tab / item screen; import shows "coming soon".* -- No decision needed, tracking only.
+- **Q13 [STU-2]** Decoded m4a keeps AAC priming (about 2050 frames, 46 ms) and ~20 ms padding on the emulator codec; the acceptance wants the priming head trimmed (iOS primingHeadFrames). Trim by the m4a edit-list/iTunSMPB value (exact, container-aware) or a measured constant? -- *Default: untrimmed; instrumented smoke tolerances relaxed (100 ms duration, onset <= 2200 frames) with a KNOWN GAP comment.* -- Loop seams and beat-grid alignment for imported m4a.
+- **Q14 [SVC-3]** Request POST_NOTIFICATIONS at runtime (Android 13+) so the "Downloading... n of m" foreground notification is visible, and wire the Burn Stop button to BurnStore.cancelTransfers (UI files owned by a later package)? -- *Default: no prompt, download still runs; Stop not wired.*
+- **Q15 [PB-2]** ResumptionSnapshot / onPlaybackResumption (resume last queue from notification/Bluetooth after process death) waits on PB-4's HeldQueue. OK to leave PARTIAL until PB-4? -- *Default: PARTIAL; latch + onHeldRestored hook in place.*
+- **Q16 [BRW-4]** Multi-select Share (ShareText.forSongs) has no consumer; add to History/Browse multi-select bars in a later UI package. -- *Default: song/album Share only.*
 
 ## ANSWERED
 

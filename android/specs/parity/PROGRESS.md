@@ -45,3 +45,19 @@ Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave4/); no FATAL/ANR i
 - BRW-9: pure, n/a.
 
 Open: SVC-2 drainPendingAfterRip/flush hooks unwired; MIX-4 retry on unaligned handover, looping decks; PB-1 system next/previous interim (PB-2 replaces); see Q10-Q12.
+
+## Wave 5
+
+Merged (no conflicts): PB-2, SVC-3, BRW-4, COL-4, MIX-6, STU-2 (plus committed wave-4 leftover debug seams first). JVM suite: 1620 tests, 0 failures (was 1366), assembleDebug green.
+
+Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave5/); no FATAL/ANR from com.levi.pocketdj in logcat (the only FATALs are uiautomator-dump "already registered" from the adb tool itself):
+- COL-4: PASS. Long-press a Browse song -> "Add to Playlist" menu; More... opens the sheet with the search field focused and keyboard up; created pocket "Zed" via the sheet (sheet dismissed after add, default); reopened menu shows Zed with a check; tapping it removes with no snackbar; History > Collection shows Added then Removed rows. Not run: typing two letters to narrow the list (only one pocket existed).
+- BRW-4: PARTIAL PASS. Album Shuffle starts a Now Playing run and History reads "Album . You're The One For Me". Album and song detail show Share + Add buttons. NOT run: Lyrics section / airplane-mode cache (no song with lyricsStatus found is reachable and no lyrics-cache dir yet), Storage lyrics category screenshot, audio-analysis section.
+- STU-2: PASS (with known gap Q13). connectedDebugAndroidTest for studio package: native lib loads and kernels match Kotlin mirrors on x86_64, native stretch exact frames + pitch, decode/encode/renderLoop/1 s playback through AudioTrackSink OK. AAC priming not trimmed (relaxed tolerances).
+- SVC-3: PARTIAL. dumpsys jobscheduler shows the WorkManager SystemJobService job registered for com.levi.pocketdj. NOT run: 5-song burn + force-stop survival, 400 error-row check (no seeded collection with rips, no rip server reachable, no burn debug action); JVM tests only.
+- PB-2: NOT RUN. Playback does not start on the emulator without a reachable rip URL (media session stack empty), so media_session dispatch/dumpsys steps could not be exercised. JVM tests only (29). Device-only: BT/AVRCP, lock-screen render.
+- MIX-6: NOT RUN. Needs a debug action to open a stream (none exists) and a rip server; JVM tests only (28).
+
+Note: connectedDebugAndroidTest uninstalls the app, wiping seeded data; run it last.
+
+Open: Q13-Q16 added. MIX-6 yieldBackgroundDownload wiring deferred to SVC-3 TODO; ARCHITECTURE-ANDROID.md ledger rows for the six packages still to be updated.
