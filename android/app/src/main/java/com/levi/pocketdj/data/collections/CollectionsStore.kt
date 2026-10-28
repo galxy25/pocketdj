@@ -1,6 +1,9 @@
 package com.levi.pocketdj.data.collections
 
 import com.levi.pocketdj.data.PdjJson
+import com.levi.pocketdj.data.activity.ActivityEvent
+import com.levi.pocketdj.data.activity.ActivityKind
+import com.levi.pocketdj.data.applemusic.PlaylistWriteBack
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.catalog.SourcePlaylist
 import com.levi.pocketdj.data.rips.PlayResolver
@@ -11,6 +14,7 @@ import kotlin.random.Random
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.serialization.json.Json
 
 /**
@@ -79,9 +83,16 @@ class CollectionsStore(
         val createdDuplicate: Boolean,
         /** The song was already a member — nothing was appended. */
         val alreadyPresent: Boolean,
-        /** ALWAYS false on Android (no MusicKit write-back — locked decision). */
+        /**
+         * The source is a real Apple Music playlist AND the song can be written back (a store id OR
+         * title+artist to resolve one at delivery). False = local-only by nature.
+         */
         val writeBackEligible: Boolean = false,
         val appleMusicId: String? = null,
+        /** A NEW upstream job was queued by this call (the write-back seam took it). */
+        val writeBackQueued: Boolean = false,
+        /** The song is already in Apple Music's own membership (the source snapshot) — nothing owed. */
+        val alreadyUpstream: Boolean = false,
     )
 
     /** How many recent add-targets we retain (UI shows the top 3 that resolve). */
@@ -128,8 +139,26 @@ class CollectionsStore(
         if (PlayResolver.isStudioId(id)) studioLookup?.info(id) else null
 
     /**
-     * Re-link seam (COL-7): cancel still-undelivered write-backs owed to the OLD source
-     * playlist id for the given songs. Unwired on Android until a write-back queue exists.
+     * APPLE-MUSIC WRITE-BACK SEAM (COL-8, iOS `enqueueSourceWriteBack`): wired by CollectionsGraph to
+     * `PlaylistWriteBack.enqueue` + `runSoon` (behind its own `canWriteBack` gate). Called from the
+     * user-facing add choke points whenever a song lands in a collection CONVERTED/DUPLICATED from an
+     * Apple Music source playlist. A SEAM, not a direct reference, so the store stays unit-testable
+     * with no account. Returns TRUE when a NEW job was queued. nil = nothing can be written.
+     */
+    @Volatile var enqueueSourceWriteBack: ((PlaylistWriteBack.EnqueueItem) -> Boolean)? = null
+
+    /** Batch twin (wired to `enqueueMany` + ONE `runSoon`); falls back to N single enqueues when unwired. */
+    @Volatile var enqueueSourceWriteBackBatch: ((List<PlaylistWriteBack.EnqueueItem>) -> Int)? = null
+
+    /**
+     * Whether THIS session can deliver upstream writes at all (signed in + transport). Consulted
+     * before parking a large batch for confirmation. Unwired (tests) = treated as capable.
+     */
+    @Volatile var canWriteBackUpstream: (() -> Boolean)? = null
+
+    /**
+     * Cancel still-undelivered write-backs owed to the OLD source playlist id for the given songs
+     * (wired to `PlaylistWriteBack.cancelPending`). Fired when a pocket is re-linked away from a source.
      */
     var cancelPendingWriteBacks: ((indexPlaylistId: String, songIds: Set<String>) -> Unit)? = null
 
@@ -681,12 +710,38 @@ class CollectionsStore(
         if (!present) {
             addSongToPlaylist(songId, pl.id, sequenceId = pl.sequences.firstOrNull()?.nodeId)
         }
+        val song = catalogProvider?.invoke()?.songsById?.get(songId)
+        val amId = song?.appleMusicId.orEmpty().trim()
+        val title = song?.name.orEmpty().trim()
+        val artist = song?.artist.orEmpty().trim()
+        // Eligible when the target is a real Apple Music playlist AND we have SOMETHING to write with.
+        val eligible = PlaylistWriteBack.isAppleMusicSource(source.sourceName) &&
+            (amId.isNotEmpty() || (title.isNotEmpty() && artist.isNotEmpty()))
+        // The source snapshot IS Apple Music's membership: a song already in it is already upstream,
+        // and re-adding would DUPLICATE the track.
+        val upstream = songId in source.playlist.songIds
+        var queued = false
+        if (eligible && !present && !upstream) {
+            val enqueue = enqueueSourceWriteBack
+            if (enqueue != null) {
+                queued = enqueue(
+                    PlaylistWriteBack.EnqueueItem(
+                        indexPlaylistId = source.playlist.id, playlistName = source.playlist.name,
+                        songId = songId, appleMusicId = amId.ifEmpty { null }, title = title, artist = artist,
+                        album = song?.albumId?.let { catalogProvider?.invoke()?.albumsById?.get(it)?.name },
+                        durationMs = song?.length?.toInt(),
+                    ),
+                )
+            }
+        }
         IndexPlaylistAdd(
             playlist = playlist(pl.id) ?: pl,
             createdDuplicate = created,
             alreadyPresent = present,
-            writeBackEligible = false,
-            appleMusicId = null,
+            writeBackEligible = eligible,
+            appleMusicId = amId.ifEmpty { null },
+            writeBackQueued = queued,
+            alreadyUpstream = eligible && upstream,
         )
     }
 
@@ -1150,6 +1205,8 @@ class CollectionsStore(
         save()
         emitAddActivity(itemId = songId, target = target)
         notifyStudioAdded(listOf(songId))
+        writeBackSong(songId, target.kind, target.id)
+        Unit
     }
 
     fun addAlbum(albumId: String, target: AddTarget) = synchronized(lock) {
@@ -1230,7 +1287,236 @@ class CollectionsStore(
         save()
         emitBatch(added.map { addHook(it, target) })
         notifyStudioAdded(added)
+        writeBackBatch(added, target)
         added.size
+    }
+
+    // MARK: Two-way source sync - push a converted/duplicated collection's add upstream (COL-8)
+
+    /**
+     * The outcome of a single write-back decision - rich enough to drive the force-sync feedback.
+     * The per-add path + backfill only care about [QUEUED] (a NEW job was enqueued).
+     */
+    enum class WriteBackAttempt {
+        /** The queue accepted a NEW upstream job. */
+        QUEUED,
+
+        /** The seam took nothing: an equivalent job is queued/delivered, UNRESOLVABLE, or this session can't write. */
+        DEDUPED,
+
+        /** No Apple Music source playlist to write to (a plain pocket, or a vinyl / digital source). */
+        NOT_LINKED,
+
+        /** The collection's sync direction is "Get only"/"Off": upstream writes are disabled. */
+        PUSH_DISABLED,
+
+        /** A Studio/performance/profile item - not an Apple Music catalog song. */
+        NOT_CATALOG_SONG,
+
+        /** A catalog song with NEITHER a store id NOR a title+artist to resolve one. */
+        NO_IDENTITY,
+
+        /** Already in the source SNAPSHOT (already upstream). Only the non-force path returns it. */
+        ALREADY_UPSTREAM,
+    }
+
+    /**
+     * A large batch's upstream leg awaiting the user's OK. Transient (never persisted); the LOCAL add
+     * has already been committed when this appears - only the Apple Music push waits.
+     */
+    data class PendingWriteBackBatch(
+        val items: List<PlaylistWriteBack.EnqueueItem>,
+        val playlistName: String,
+    ) {
+        val count: Int get() = items.size
+    }
+
+    private val _pendingWriteBackBatch = MutableStateFlow<PendingWriteBackBatch?>(null)
+    val pendingWriteBackBatch: StateFlow<PendingWriteBackBatch?> = _pendingWriteBackBatch.asStateFlow()
+
+    /** The user confirmed the parked batch - push it upstream (one queue write + one drain). */
+    fun confirmPendingWriteBackBatch() {
+        val pending = _pendingWriteBackBatch.getAndUpdate { null } ?: return
+        enqueueWriteBackItems(pending.items)
+    }
+
+    /** The user declined - the local add stands; Apple Music is left untouched. */
+    fun discardPendingWriteBackBatch() { _pendingWriteBackBatch.value = null }
+
+    private sealed interface WriteBackResolution {
+        data class Eligible(val item: PlaylistWriteBack.EnqueueItem) : WriteBackResolution
+        data class Ineligible(val verdict: WriteBackAttempt) : WriteBackResolution
+    }
+
+    /**
+     * One song's write-back eligibility: AM provenance (source is "Apple Music (Local)"/"Apple Music"),
+     * a CATALOG song (profile "pdj_" ids and studio ids fenced out), a store id OR title+artist, and
+     * not in the source SNAPSHOT unless [force]. The SINGLE implementation both the per-add path and
+     * the batch path run, so their eligibility can never drift.
+     */
+    private fun writeBackPayload(
+        songId: String,
+        sourcePlaylistId: String?,
+        sourceName: String?,
+        sourceSnapshot: Set<String>,
+        collectionName: String,
+        force: Boolean,
+    ): WriteBackResolution {
+        val plId = sourcePlaylistId
+        if (plId == null || !PlaylistWriteBack.isAppleMusicSource(sourceName)) {
+            return WriteBackResolution.Ineligible(WriteBackAttempt.NOT_LINKED)
+        }
+        // Device-local custom audio ("Pocket DJ" profile source) has NO Apple Music counterpart.
+        if (songId.startsWith(PROFILE_SONG_PREFIX) || PlayResolver.isStudioId(songId)) {
+            return WriteBackResolution.Ineligible(WriteBackAttempt.NOT_CATALOG_SONG)
+        }
+        val merged = catalogProvider?.invoke()
+        val song = merged?.songsById?.get(songId)
+            ?: return WriteBackResolution.Ineligible(WriteBackAttempt.NOT_CATALOG_SONG)
+        val amId = song.appleMusicId.orEmpty().trim()
+        val title = song.name.trim()
+        val artist = song.artist.trim()
+        if (amId.isEmpty() && (title.isEmpty() || artist.isEmpty())) {
+            return WriteBackResolution.Ineligible(WriteBackAttempt.NO_IDENTITY)
+        }
+        // A FORCE sync overrides the snapshot guard (stale / over-broad snapshot); the transport's own
+        // "already in the playlist?" pre-check is the backstop against a true duplicate.
+        if (!force && songId in sourceSnapshot) {
+            return WriteBackResolution.Ineligible(WriteBackAttempt.ALREADY_UPSTREAM)
+        }
+        val album = song.albumId?.let { merged.albumsById[it]?.name }
+        // Prefer the live source playlist's current name (drift-proof), else the collection's own name.
+        val name = liveSourcePlaylist(plId, sourceName)?.playlist?.name?.takeIf { it.isNotEmpty() } ?: collectionName
+        return WriteBackResolution.Eligible(
+            PlaylistWriteBack.EnqueueItem(
+                indexPlaylistId = plId, playlistName = name, songId = songId,
+                appleMusicId = amId.ifEmpty { null }, title = title, artist = artist,
+                album = album, durationMs = song.length?.toInt(),
+            ),
+        )
+    }
+
+    /** Resolve a collection's provenance from its id + kind, then decide whether to write [songId] back. */
+    private fun writeBackSong(
+        songId: String,
+        kind: AddTarget.Kind,
+        collectionId: String,
+        force: Boolean = false,
+    ): WriteBackAttempt {
+        val (plId, sourceName, snapshot, name, allowsPush) = when (kind) {
+            AddTarget.Kind.POCKET -> {
+                val p = pocket(collectionId) ?: return WriteBackAttempt.NOT_LINKED
+                WbTarget(p.sourcePlaylistId, p.sourceName, p.sourceSongIds, p.name, p.amSyncDir.allowsPush)
+            }
+            AddTarget.Kind.PLAYLIST -> {
+                val pl = playlist(collectionId) ?: return WriteBackAttempt.NOT_LINKED
+                WbTarget(pl.sourcePlaylistId, pl.sourceName, pl.sourceSongIds, pl.name, pl.amSyncDir.allowsPush)
+            }
+        }
+        // Direction gate: a "Get only"/"Off" collection never writes upstream.
+        if (!allowsPush) return WriteBackAttempt.PUSH_DISABLED
+        val enqueue = enqueueSourceWriteBack ?: return WriteBackAttempt.NOT_LINKED
+        return when (
+            val r = writeBackPayload(songId, plId, sourceName, snapshot.orEmpty().toSet(), name, force)
+        ) {
+            is WriteBackResolution.Ineligible -> r.verdict
+            is WriteBackResolution.Eligible -> if (enqueue(r.item)) WriteBackAttempt.QUEUED else WriteBackAttempt.DEDUPED
+        }
+    }
+
+    private data class WbTarget(
+        val plId: String?,
+        val sourceName: String?,
+        val snapshot: List<String>?,
+        val name: String,
+        val allowsPush: Boolean,
+    )
+
+    /**
+     * FORCE a write-back attempt for one song, bypassing the "already in the source snapshot" guard -
+     * the manual escape hatch behind "Force Apple Music sync". It only ever ENQUEUES, never removes.
+     */
+    fun forceWriteBackSong(songId: String, kind: AddTarget.Kind, collectionId: String): WriteBackAttempt =
+        writeBackSong(songId, kind, collectionId, force = true)
+
+    /**
+     * Batch twin of the per-add write-back: resolves provenance ONCE, builds every eligible item, then
+     * either enqueues the whole batch as ONE queue write (<= threshold) or parks it behind the
+     * confirmation gate (> threshold) - upstream adds are append-only and not retractable.
+     */
+    private fun writeBackBatch(songIds: List<String>, target: AddTarget) {
+        if (songIds.isEmpty() || (enqueueSourceWriteBack == null && enqueueSourceWriteBackBatch == null)) return
+        val t = when (target.kind) {
+            AddTarget.Kind.POCKET -> pocket(target.id)?.let {
+                WbTarget(it.sourcePlaylistId, it.sourceName, it.sourceSongIds, it.name, it.amSyncDir.allowsPush)
+            }
+            AddTarget.Kind.PLAYLIST -> playlist(target.id)?.let {
+                WbTarget(it.sourcePlaylistId, it.sourceName, it.sourceSongIds, it.name, it.amSyncDir.allowsPush)
+            }
+        } ?: return
+        if (!t.allowsPush || t.plId == null || !PlaylistWriteBack.isAppleMusicSource(t.sourceName)) return
+        val snap = t.snapshot.orEmpty().toSet() // scanned per song - Set it once
+        val items = songIds.mapNotNull {
+            (writeBackPayload(it, t.plId, t.sourceName, snap, t.name, force = false) as? WriteBackResolution.Eligible)?.item
+        }
+        if (items.isEmpty()) return
+        if (items.size > WRITE_BACK_CONFIRM_THRESHOLD) {
+            // A session that can't deliver must never show a confirm dialog for nothing.
+            if (canWriteBackUpstream?.invoke() == false) return
+            _pendingWriteBackBatch.value = PendingWriteBackBatch(items, items[0].playlistName)
+        } else {
+            enqueueWriteBackItems(items)
+        }
+    }
+
+    private fun enqueueWriteBackItems(items: List<PlaylistWriteBack.EnqueueItem>) {
+        val batch = enqueueSourceWriteBackBatch
+        val single = enqueueSourceWriteBack
+        if (batch != null) {
+            batch(items)
+        } else if (single != null) {
+            items.forEach { single(it) }
+        }
+    }
+
+    /**
+     * BACKFILL the outbound write-back from the collection ACTIVITY history: for every ADD in the last
+     * [days] days (clamped 1..90) to a converted/duplicated Apple Music collection, re-drive the same
+     * decision the per-add path makes. Recovers adds made before write-back existed or while offline.
+     *
+     * IDEMPOTENT: each (collection, song) is considered once (newest add first), a song still in the
+     * source snapshot is skipped, a song since REMOVED from the collection is skipped, and the queue
+     * dedups against queued/delivered jobs. LOCAL-ORIGIN ONLY: the activity log is cloud-synced but the
+     * queue is device-local, so a PEER's add (originInstallId != [localInstallId]) is skipped; a legacy
+     * event with no origin counts as local. Returns the number of songs NEWLY queued.
+     */
+    fun backfillSourceWriteBacks(
+        events: List<ActivityEvent>,
+        days: Int,
+        localInstallId: String?,
+        nowMs: Double = now(),
+    ): Int {
+        if (enqueueSourceWriteBack == null) return 0
+        val clamped = days.coerceIn(1, WRITE_BACK_BACKFILL_MAX_DAYS)
+        val sinceMs = nowMs - clamped * 86_400_000.0
+        val seen = HashSet<String>()
+        var queued = 0
+        // Newest-first so a re-add after a remove is judged on the LATEST add's timestamp.
+        for (e in events.asReversed()) {
+            if (e.kind != ActivityKind.ADD || e.at < sinceMs) continue
+            if (e.originInstallId != null && e.originInstallId != localInstallId) continue
+            val cid = e.collectionId ?: continue
+            if (e.itemId.isEmpty()) continue
+            val kind = AddTarget.Kind.entries.firstOrNull { it.token == e.collectionKind } ?: continue
+            if (!seen.add(cid + "\u0001" + e.itemId)) continue
+            val stillMember = when (kind) {
+                AddTarget.Kind.POCKET -> pocket(cid)?.songIds?.contains(e.itemId) ?: false
+                AddTarget.Kind.PLAYLIST -> playlistContains(cid, e.itemId)
+            }
+            if (!stillMember) continue
+            if (writeBackSong(e.itemId, kind, cid) == WriteBackAttempt.QUEUED) queued++
+        }
+        return queued
     }
 
     /** Remove many songs from a pocket in ONE mutate/write/activity batch. */
@@ -2022,6 +2308,14 @@ class CollectionsStore(
 
         /** MRU retention (UI shows the top 3 that still resolve). */
         const val MAX_RECENT_TARGETS = 10
+
+        /** Above this many upstream-owed songs a batch add PARKS its write-back behind a confirmation. */
+        const val WRITE_BACK_CONFIRM_THRESHOLD = 50
+        const val WRITE_BACK_BACKFILL_DEFAULT_DAYS = 2
+        const val WRITE_BACK_BACKFILL_MAX_DAYS = 90
+
+        /** Ids of the per-profile "Pocket DJ" custom-audio source (device-local, no Apple Music twin). */
+        const val PROFILE_SONG_PREFIX = "pdj_"
     }
 }
 
