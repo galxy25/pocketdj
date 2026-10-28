@@ -11,6 +11,8 @@ interface SequencerControl {
     val isRunning: Boolean
     val isHeldForResume: Boolean
     val isStartPending: Boolean
+    /** The cascade breaker halted the run (iOS `pausedByCascade`): ▶ must retry the row. */
+    val isPausedByCascade: Boolean
     val currentNeverSounded: Boolean
     /** A run exists in the sequencer (raw; [isRunning] additionally requires it to own the player). */
     val hasRun: Boolean
@@ -26,6 +28,7 @@ class SetlistSequencerControl(private val seq: SetlistSequencer) : SequencerCont
     override val isRunning get() = seq.isRunning
     override val isHeldForResume get() = seq.isHeldForResume
     override val isStartPending get() = seq.isStartPending
+    override val isPausedByCascade get() = seq.isPausedByCascade
     override val currentNeverSounded get() = seq.currentNeverSounded
     override val hasRun get() = seq.isRunning
     override var repeatMode: RepeatMode
@@ -187,6 +190,14 @@ class SequencerForwardingPlayer(
 
     override fun play() {
         if (!permitted(TransportLog.Cmd.PLAY)) return
+        // iOS onIdlePlay: a cascade halt keeps its item loaded (paused); ▶ retries the row, never resumes in place.
+        if (control.isRunning && control.isPausedByCascade) {
+            latch.clear()
+            pausedByListener = false
+            control.startCurrent()
+            emit(TransportLog.Cmd.PLAY, TransportLog.Verdict.idlePlay(IdlePlayVerdict.START_CURRENT))
+            return
+        }
         if (isIdle()) {
             val runActive = control.isRunning || (control.hasRun && mediaItemCount == 0)
             if (!runActive) {

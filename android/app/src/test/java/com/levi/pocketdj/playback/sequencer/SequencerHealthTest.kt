@@ -109,6 +109,20 @@ class SequencerHealthTest {
     // ---- runway + start window + first audio ----------------------------------------------------------
 
     @Test
+    fun ripWait_keepsStartPendingPastTheRunwayCap() = runTest {
+        val h = H(this, setOf("a"))
+        var resolving = true
+        h.engine.loaded = false // the stall watchdog is not the subject here
+        h.start("a")
+        advanceTimeBy(25_100); runCurrent()
+        assertFalse("runway cap alone ends the pending start", h.seq.isStartPending)
+        h.seq.ripWaitProbe = { resolving }
+        assertTrue("a rip-on-demand row still resolving is a pending start", h.seq.isStartPending)
+        resolving = false
+        assertFalse(h.seq.isStartPending)
+    }
+
+    @Test
     fun startWindow_holdsTheRunwayUntilFirstAudio_andClosesTheDeadAirGap() = runTest {
         val h = H(this, setOf("a", "b"))
         h.start("a", "b")

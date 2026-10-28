@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # PB-3 - Zero dead air: rip-on-demand in runs, runway, watchdogs, stall hop, cascade breaker, rip window, live backstop, supervisor, DeadAirMeter, pause discriminator
 
@@ -30,3 +30,17 @@ Tests: 1742 total, 0 failed, 0 skipped (`./gradlew :app:testDebugUnitTest :app:a
 
 ## Questions for Levi
 - None blocking. Defaulted: a rip-on-demand wait is capped at 10 minutes before the row is failed (then the cascade/advance rules apply).
+
+## Review
+
+fixes applied
+
+- MAJOR cascade-halt ▶ -> fixed: `SequencerControl.isPausedByCascade`; `SequencerForwardingPlayer.play()` routes a halted run to `startCurrent()` before the idle check (test: playOnCascadeHaltedDeckWithLoadedItemRetriesTheRow).
+- MAJOR live-swap for resolveId != id -> fixed: `watchRipOnDemand` compares the placeholder's mediaId (`item.id`) while the session stays keyed by resolveId; `noteLive`/`noteSourceResolved` already use `matches`. No controller-level unit test (Media3Port is not fakeable here); covered by review of the one-line compare.
+- MINOR loader-thread begin/cancel -> fixed: `RipOnDemandSession.join()` only joins an existing resolution (IOException if absent); `begin`/cancel-others stay on the Main-thread port (test: session_loaderThreadOnlyJoins_neverStartsOrCancelsOthers). A failed resolve now leaves nothing to re-POST on ExoPlayer load retries. Custom LoadErrorHandlingPolicy not added (retries are now cheap and do not hit the server).
+- MINOR supervisor vs 10-min wait -> fixed: `SetlistSequencer.ripWaitProbe` (wired to `RipOnDemandSession.isResolving()`) keeps `isStartPending` true while the placeholder is still resolving (test: ripWait_keepsStartPendingPastTheRunwayCap).
+- MINOR wake lock -> fixed: `ExoPlayer.Builder.setWakeMode(C.WAKE_MODE_NETWORK)` (WAKE_LOCK permission already declared).
+- MINOR PlaybackController touchpoint -> PARTIAL: not extracted (risk/size); flagged here as a shared touchpoint for PB-4..PB-8 (`Media3Port.load`, `watchRipOnDemand`, `onPlayerError` `pdj-resolve` branch must survive merges). Ledger-row acceptance remains open by instruction.
+- NIT retry re-resolve -> fixed: each rip-on-demand load cancels the song's cached resolution first, so retry-in-place re-POSTs fresh. presigned-url preference, `playbackRipAllowed` wiring and start-stall log fields -> not done (optional; `playbackRipAllowed` kept, it is test-covered).
+
+Tests: 1742 -> 1745, 0 failures; assembleDebug OK.

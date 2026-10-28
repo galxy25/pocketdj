@@ -78,6 +78,12 @@ class RipOnDemandSession(
         }
     }
 
+    /** Join an EXISTING resolution (loader thread): never starts one, never cancels another song's. */
+    fun join(songId: String): Deferred<RipResolution>? = inflight[songId]
+
+    /** True while any resolution is still pending (the supervisor reads this as "a rip-wait is in flight"). */
+    fun isResolving(): Boolean = inflight.values.any { it.isActive }
+
     /** Skip / stop: abandon [songId]'s resolution (null = all). The rip itself is the rip window's concern. */
     fun cancel(songId: String? = null) {
         if (songId == null) {
@@ -98,7 +104,8 @@ class RipOnDemandSession(
      */
     fun blockingDurable(songId: String, liveWaitMs: Long = LIVE_WAIT_MS): String {
         val r = try {
-            runBlocking { begin(songId).await() }
+            val d = join(songId) ?: throw IOException("rip resolve not in flight for $songId")
+            runBlocking { d.await() }
         } catch (e: CancellationException) {
             throw IOException("rip resolve cancelled", e)
         }

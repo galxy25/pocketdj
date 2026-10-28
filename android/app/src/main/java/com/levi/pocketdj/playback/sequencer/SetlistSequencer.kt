@@ -158,7 +158,12 @@ class SetlistSequencer(
     val isRunning: Boolean get() = running
 
     /** A row's resolve/load is in flight (a remote idle ▶ must not double-start it). */
-    val isStartPending: Boolean get() = playJob?.isActive == true || startWindow != null
+    /** True while the current row is a rip-on-demand placeholder still resolving (set by the controller). */
+    @Volatile var ripWaitProbe: (() -> Boolean)? = null
+
+    val isStartPending: Boolean
+        get() = playJob?.isActive == true || startWindow != null ||
+            (firstAudioPending && ripWaitProbe?.invoke() == true)
 
     /** The cascade breaker halted the run: the deck holds the current row paused until the listener acts. */
     val isPausedByCascade: Boolean get() = pausedByCascade

@@ -175,6 +175,24 @@ class CloudRowResolverTest {
     }
 
     @Test
+    fun session_loaderThreadOnlyJoins_neverStartsOrCancelsOthers() = runTest {
+        var posts = 0
+        val gate = CompletableDeferred<RipJob>()
+        val session = RipOnDemandSession(
+            backgroundScope,
+            RipOnDemandResolver(requestRip = { posts++; gate.await() }, awaitDurable = { "u" }, liveUrl = { it }),
+        )
+        val b = session.begin("sng_b")
+        runCurrent()
+        assertNull("a stale loader for a skipped row finds nothing to join", session.join("sng_a"))
+        try { session.blockingDurable("sng_a"); fail() } catch (_: IOException) {}
+        assertEquals(1, posts)
+        assertTrue("the current row's resolution survives", b.isActive)
+        assertTrue(session.join("sng_b") === b)
+        assertTrue(session.isResolving())
+    }
+
+    @Test
     fun session_beginningAnotherSong_cancelsTheSkippedOne() = runTest {
         val gate = CompletableDeferred<RipJob>()
         val session = RipOnDemandSession(

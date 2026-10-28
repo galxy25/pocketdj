@@ -283,6 +283,7 @@ class PlaybackController(
         modeProvider = { cachedMode },
     ).also { seq ->
         seq.progressProvider = { progressFraction() }
+        seq.ripWaitProbe = { ripSession.isResolving() }
         seq.engine = engineProbe
         seq.appleMusicActive = { activeBackend == ActiveBackend.APPLE_MUSIC }
         seq.rowOnDevice = { item -> localFiles.localUrlForPlayback(item) != null }
@@ -1023,13 +1024,13 @@ class PlaybackController(
                 sequencerOwnsPlayer = true
                 val resume = request.resumeAtMs
                 val rip = request.source as? RipOnDemandSource
-                if (rip != null) ripSession.begin(rip.songId) // BEFORE the load: the data source joins this one
+                if (rip != null) { ripSession.cancel(rip.songId); ripSession.begin(rip.songId) } // fresh resolve each load (retry-in-place re-POSTs); BEFORE the load: the data source joins this one
                 withController {
                     it.setMediaItems(listOf(mi), 0, resume ?: androidx.media3.common.C.TIME_UNSET)
                     it.prepare()
                     it.play()
                 }
-                if (rip != null) watchRipOnDemand(rip.songId, entryGeneration, mi)
+                if (rip != null) watchRipOnDemand(rip.songId, item.id, entryGeneration, mi)
             } catch (e: Throwable) {
                 // A failed/superseded load must not leave this row's title over whatever is still loaded.
                 RunTransportBus.clearInstantMetadata?.invoke(instantMd)
@@ -1114,7 +1115,7 @@ class PlaybackController(
      * scrubber off, backstop armed); a DURABLE result lets the start watchdog take over while the data source
      * reads the mp3. A failed resolve is left to the data source (it throws -> onPlayerError -> dead source).
      */
-    private fun watchRipOnDemand(songId: String, entryGeneration: Long, placeholder: MediaItem) {
+    private fun watchRipOnDemand(songId: String, mediaId: String, entryGeneration: Long, placeholder: MediaItem) {
         ripWatchJob?.cancel()
         ripWatchJob = sequencerScope.launch {
             val result = try {
@@ -1139,7 +1140,7 @@ class PlaybackController(
                     ).build()
                     var swapped = false
                     withController { c ->
-                        if (c.currentMediaItem?.mediaId == songId) {
+                        if (c.currentMediaItem?.mediaId == mediaId) {
                             c.setMediaItems(listOf(liveItem), 0, androidx.media3.common.C.TIME_UNSET)
                             c.prepare()
                             c.play()

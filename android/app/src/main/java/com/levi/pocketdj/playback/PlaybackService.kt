@@ -57,6 +57,7 @@ class PlaybackService : MediaSessionService() {
                 /* handleAudioFocus = */ true,
             )
             .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK) // holds CPU+wifi while buffering a long rip-on-demand wait
             .build()
 
         player.addListener(object : Player.Listener {
@@ -172,6 +173,7 @@ class PlaybackService : MediaSessionService() {
         override val isRunning get() = c?.isRunning == true
         override val isHeldForResume get() = c?.isHeldForResume == true
         override val isStartPending get() = c?.isStartPending == true
+        override val isPausedByCascade get() = c?.isPausedByCascade == true
         override val currentNeverSounded get() = c?.currentNeverSounded == true
         override val hasRun get() = c?.hasRun == true
         override var repeatMode: RepeatMode
