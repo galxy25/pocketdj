@@ -98,7 +98,7 @@ class AccountDeletionService(
         val cloudDocKeys: List<String> = listOf(
             "profile", "collections", "play-history", "collection-activity", "play-stats",
             "timeline-cues", "settings-credentials", "diag-key",
-            "rec-feedback", "foryou-feed", "studio-cues", "game-scores", "puzzle-decisions",
+            "rec-feedback", "foryou-feed", "rec-key", "studio-cues", "game-scores", "puzzle-decisions",
         )
     }
 }

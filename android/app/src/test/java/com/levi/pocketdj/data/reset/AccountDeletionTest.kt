@@ -163,7 +163,7 @@ class AccountDeletionTest {
             SyncRegistry.KEY_PROFILE, SyncRegistry.KEY_COLLECTIONS, SyncRegistry.KEY_PLAY_HISTORY,
             SyncRegistry.KEY_COLLECTION_ACTIVITY, SyncRegistry.KEY_PLAY_STATS, SyncRegistry.KEY_TIMELINE_CUES,
             SettingsCredentialsDocument.KEY, DiagKeySync.KEY,
-            BrowseGraph.REC_FEEDBACK_SYNC_KEY, BrowseGraph.FORYOU_FEED_SYNC_KEY,
+            BrowseGraph.REC_FEEDBACK_SYNC_KEY, BrowseGraph.FORYOU_FEED_SYNC_KEY, BrowseGraph.REC_KEY_SYNC_KEY,
             "studio-cues", GamesPrefs.SCOREBOARD_SYNC_KEY, GamesGraph.PUZZLE_DECISIONS_SYNC_KEY,
         )
         assertEquals(registry, AccountDeletionService.cloudDocKeys.toSet())
