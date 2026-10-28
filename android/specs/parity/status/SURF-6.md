@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SURF-6 — Settings shell rows
 
