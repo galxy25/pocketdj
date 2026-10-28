@@ -127,7 +127,7 @@ fun DemuxScreen(graph: AppGraph, modifier: Modifier = Modifier) {
                 onPick = { session.select(it) },
             )
         } else {
-            LoadedView(session, store, source!!)
+            LoadedView(graph, session, store, source!!)
         }
     }
 }
@@ -138,7 +138,7 @@ private fun displayName(ctx: Context, uri: Uri): String =
     } ?: uri.lastPathSegment ?: "Imported audio"
 
 @Composable
-private fun LoadedView(session: DemuxSession, store: com.levi.pocketdj.studio.demux.DemuxStore, source: DemuxSource) {
+private fun LoadedView(graph: AppGraph, session: DemuxSession, store: com.levi.pocketdj.studio.demux.DemuxStore, source: DemuxSource) {
     val phase by session.phase.collectAsState()
     val stemState by session.stemState.collectAsState()
     val revision by store.revision.collectAsState()
@@ -173,14 +173,14 @@ private fun LoadedView(session: DemuxSession, store: com.levi.pocketdj.studio.de
                 Text(p.message, Modifier.weight(1f).testTag("demux-failed"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 TextButton(onClick = { session.select(source) }, modifier = Modifier.testTag("demux-retry")) { Text("Retry") }
             }
-            DemuxPhase.Ready -> ReadyBody(session, store, source, revision) { chordDetail = it }
+            DemuxPhase.Ready -> ReadyBody(graph, session, store, source, revision) { chordDetail = it }
         }
     }
     chordDetail?.let { ChordDetailSheet(it) { chordDetail = null } }
 }
 
 @Composable
-private fun ReadyBody(session: DemuxSession, store: com.levi.pocketdj.studio.demux.DemuxStore, source: DemuxSource, revision: Long, onChord: (DemuxChordSegment) -> Unit) {
+private fun ReadyBody(graph: AppGraph, session: DemuxSession, store: com.levi.pocketdj.studio.demux.DemuxStore, source: DemuxSource, revision: Long, onChord: (DemuxChordSegment) -> Unit) {
     val duration by session.durationMs.collectAsState()
     val peaks by session.peaks.collectAsState()
     val player = session.player
@@ -215,6 +215,7 @@ private fun ReadyBody(session: DemuxSession, store: com.levi.pocketdj.studio.dem
             Text("${doc.chords.size} chord segments", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("demux-chords-done"))
     }
     StemsSection(session, isSong = source.songId != null)
+    DemuxPanels(graph, session, source, follow, onFollowChange = { follow = it })
 }
 
 @Composable

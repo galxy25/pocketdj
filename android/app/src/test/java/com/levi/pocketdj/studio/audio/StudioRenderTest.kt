@@ -244,6 +244,23 @@ class StudioRenderTest {
         try { render(codec).carveTrackRegion("s", 600, 100, dest("cv3.m4a")); fail() } catch (e: StudioRenderException.EmptyWindow) { }
     }
 
+    @Test fun stemMixDecodesOnlyTheWindowNeverTheWholeStem() = runBlocking {
+        val calls = ArrayList<Triple<String, Int, Int>>()
+        val codec = object : StudioCodec {
+            override fun decode(path: String): PcmBuffer? = throw AssertionError("whole-file decode")
+            override fun decodeNativeRate(path: String): PcmBuffer? = null
+            override fun decodeRange(path: String, startMs: Int, lenMs: Int): PcmBuffer? {
+                calls.add(Triple(path, startMs, lenMs)); return PcmBuffer(44_100, 2, FloatArray(4_410 * 2) { 0.25f })
+            }
+            override fun isProtected(path: String) = false
+            override fun writeM4a(pcm: PcmBuffer, file: File) { file.writeText("x") }
+            override fun writeWav(pcm: PcmBuffer, file: File) { file.writeText("x") }
+        }
+        val r = StudioRender(codec, ResampleStretcher, Dispatchers.Unconfined, { }).carveStemMix(listOf("a", "b"), 3_000, 3_100, dest("win.m4a"))
+        assertEquals(listOf(Triple("a", 3_000, 100), Triple("b", 3_000, 100)), calls)
+        assertEquals(4_410L, r.frames)
+    }
+
     @Test fun stemMixSumsWindowsWithoutAttenuationAndAShortStemJustGoesQuiet() = runBlocking {
         val a = PcmBuffer(44_100, 2, FloatArray(44_100 * 2) { 0.25f })
         val b = PcmBuffer(44_100, 2, FloatArray(22_050 * 2) { 0.5f }) // half a second only

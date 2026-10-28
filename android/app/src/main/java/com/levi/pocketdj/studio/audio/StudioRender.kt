@@ -401,7 +401,10 @@ class StudioRender(
     /** Stems are SONG-relative (0:00 = song start): sum their windows, all-or-nothing on unreadable stems. */
     suspend fun carveStemMix(stemPaths: List<String>, startMs: Int, endMs: Int, dest: File): RenderResult = serial {
         if (stemPaths.isEmpty()) throw StudioRenderException.EmptyWindow()
-        val out = StudioRenderCore.stemMix(stemPaths.map { decodeOrThrow(it) }, startMs, endMs)
+        if (startMs < 0 || endMs <= startMs) throw StudioRenderException.EmptyWindow()
+        // Window-only decode per stem (never the whole file: four full stems can exceed the heap); mixed at offset 0.
+        val windows = stemPaths.map { codec.decodeRange(it, startMs, endMs - startMs) ?: throw StudioRenderException.UnreadableSource(it) }
+        val out = StudioRenderCore.stemMix(windows, 0, endMs - startMs)
         writeAtomically(dest) { codec.writeM4a(out, it) }
         result(out.frames).also { log("stem-carve ${stemPaths.size} stems -> ${it.frames}f") }
     }
