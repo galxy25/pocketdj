@@ -17,10 +17,48 @@ import kotlinx.coroutines.launch
 
 /** Production wiring of the Auto ports onto the app graph (device-verified through the DHU, not JVM-tested). */
 class AppAutoData(private val app: AppGraph) : AutoLibraryData {
-    @Volatile private var amSignedIn = false
+    /** Set by the service: the open lists must be re-read (sign-in flipped, held row changed, collections changed). */
+    @Volatile var onLibraryChanged: () -> Unit = {}
+
+    // Seeded synchronously (off the main thread) so the first Collection listing already knows the AM state.
+    @Volatile private var amSignedIn = runCatching {
+        kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO) {
+            kotlinx.coroutines.withTimeoutOrNull(1500) { app.settings.settings.first().musicUserToken.isNotBlank() }
+        }
+    }.getOrNull() ?: false
+
+    // Continue row: decoded off the main thread, throttled, then served from memory.
+    @Volatile private var cachedHeld: AutoHeld? = null
+    @Volatile private var heldRefreshedAt = 0L
+    private val heldRefreshing = java.util.concurrent.atomic.AtomicBoolean(false)
 
     init {
-        app.appScope.launch { app.settings.settings.collect { amSignedIn = it.musicUserToken.isNotBlank() } }
+        app.appScope.launch {
+            app.settings.settings.collect {
+                val now = it.musicUserToken.isNotBlank()
+                if (now != amSignedIn) { amSignedIn = now; onLibraryChanged() }
+            }
+        }
+        refreshHeld()
+    }
+
+    private fun refreshHeld() {
+        heldRefreshedAt = System.currentTimeMillis()
+        if (!heldRefreshing.compareAndSet(false, true)) return
+        app.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val snap = runCatching { app.playbackGraph.sessionStore.load() }.getOrNull()
+                val row = snap?.queue?.getOrNull(snap.index.coerceIn(0, (snap.queue.size - 1).coerceAtLeast(0)))
+                val next = row?.let { AutoHeld(it.title, it.artist) }
+                if (next != cachedHeld) { cachedHeld = next; onLibraryChanged() }
+            } finally { heldRefreshing.set(false) }
+        }
+    }
+
+    /** Playable rows only: ids that resolve in the catalog, same as the drill-in list (iOS resolvedCount). */
+    private fun resolvedCount(ids: List<String>): Int {
+        val c = catalog ?: return 0
+        return ids.count { it in c.songsById }
     }
 
     private val catalog: MergedCatalog? get() = app.catalogRepository.state.value.catalog
@@ -30,7 +68,7 @@ class AppAutoData(private val app: AppGraph) : AutoLibraryData {
 
     override fun playlists(): List<AutoCollectionInfo> =
         store.playlists.filter { it.id != NOW_PLAYING_PLAYLIST_ID }.map {
-            AutoCollectionInfo(AutoCollectionRef(AutoCollectionKind.PLAYLIST, it.id), it.name, store.playableIdsForPlaylist(it.id).size)
+            AutoCollectionInfo(AutoCollectionRef(AutoCollectionKind.PLAYLIST, it.id), it.name, resolvedCount(store.playableIdsForPlaylist(it.id)))
         }
 
     override fun sourcePlaylists(): List<AutoCollectionInfo> {
@@ -47,15 +85,19 @@ class AppAutoData(private val app: AppGraph) : AutoLibraryData {
 
     override fun pockets(): List<AutoCollectionInfo> =
         store.pockets.map {
-            AutoCollectionInfo(AutoCollectionRef(AutoCollectionKind.POCKET, it.id), it.name, store.playableIdsForPocket(it.id).size)
+            AutoCollectionInfo(AutoCollectionRef(AutoCollectionKind.POCKET, it.id), it.name, resolvedCount(store.playableIdsForPocket(it.id)))
         }
 
     override fun collection(ref: AutoCollectionRef): AutoCollectionInfo? = when (ref.kind) {
         AutoCollectionKind.PLAYLIST -> store.playlist(ref.id)?.takeIf { it.id != NOW_PLAYING_PLAYLIST_ID }
-            ?.let { AutoCollectionInfo(ref, it.name, store.playableIdsForPlaylist(it.id).size) }
+            ?.let { AutoCollectionInfo(ref, it.name, resolvedCount(store.playableIdsForPlaylist(it.id))) }
         AutoCollectionKind.POCKET -> store.pocket(ref.id)
-            ?.let { AutoCollectionInfo(ref, it.name, store.playableIdsForPocket(it.id).size) }
-        AutoCollectionKind.SOURCE -> sourcePlaylists().firstOrNull { it.ref == ref }
+            ?.let { AutoCollectionInfo(ref, it.name, resolvedCount(store.playableIdsForPocket(it.id))) }
+        AutoCollectionKind.SOURCE -> catalog?.let { c ->
+            c.playlists.firstOrNull { it.sourceName == ref.sourceName && it.playlist.id == ref.id }?.let { sp ->
+                AutoCollectionInfo(ref, sp.playlist.name, sp.playlist.songIds.count { it in c.songsById }, badge = sp.sourceName)
+            }
+        }
     }
 
     override fun songIds(ref: AutoCollectionRef): List<String> = when (ref.kind) {
@@ -85,9 +127,11 @@ class AppAutoData(private val app: AppGraph) : AutoLibraryData {
     }
 
     override fun held(): AutoHeld? {
-        val snap = runCatching { app.playbackGraph.sessionStore.load() }.getOrNull() ?: return null
-        val row = snap.queue.getOrNull(snap.index.coerceIn(0, (snap.queue.size - 1).coerceAtLeast(0))) ?: return null
-        return AutoHeld(row.title, row.artist)
+        if (System.currentTimeMillis() - heldRefreshedAt > 5_000) refreshHeld()
+        val seq = app.playbackController.sequencer
+        // iOS resumableSession(): a live or paused (not held) set hides Continue; idle + snapshot shows it.
+        if (seq.isRunning && !seq.isHeldForResume) return null
+        return cachedHeld
     }
 }
 

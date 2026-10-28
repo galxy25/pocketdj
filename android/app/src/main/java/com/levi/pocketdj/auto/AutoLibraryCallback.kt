@@ -34,8 +34,10 @@ class AutoLibraryCallback(
     private val player: AutoPlayer,
     private val scope: CoroutineScope,
     private val toast: (String) -> Unit,
-    /** Media3 `notifyChildrenChanged(parentId)`. */
-    private val notifyChildrenChanged: (String) -> Unit,
+    /** Media3 `notifyChildrenChanged(parentId, itemCount)` (a real count: 0 reads as "empty" to browsers). */
+    private val notifyChildrenChanged: (String, Int) -> Unit,
+    /** Car-visible failure (session error shown on the head unit); [toast] stays the phone-side signal. */
+    private val carError: (String) -> Unit = {},
     /** The add-target MRU as (kind, id), newest first. */
     private val recentTargets: () -> List<Pair<AutoTargetKind, String>> = { emptyList() },
     private val warmUp: () -> Unit = {},
@@ -76,8 +78,14 @@ class AutoLibraryCallback(
     fun onCatalogReady() {
         if (notifiedReady) return
         notifiedReady = true
-        notifyChildrenChanged(AutoId.Root.encoded)
-        AutoId.Tab.Which.entries.forEach { notifyChildrenChanged(AutoId.Tab(it).encoded) }
+        notifyLibraryChanged()
+    }
+
+    /** Collections / sign-in / held row changed: re-notify the root and tabs (and [extra] parents) with real counts. */
+    fun notifyLibraryChanged(vararg extra: String) {
+        if (!notifiedReady) return
+        val parents = listOf(AutoId.Root.encoded) + AutoId.Tab.Which.entries.map { AutoId.Tab(it).encoded } + extra
+        parents.forEach { notifyChildrenChanged(it, tree.children(it, 0, Int.MAX_VALUE)?.size ?: 0) }
     }
 
     fun isOurs(mediaId: String): Boolean = AutoId.decode(mediaId) != null
@@ -96,7 +104,12 @@ class AutoLibraryCallback(
             is AutoId.Solo -> guardPlayable(mediaId) { player.playSolo(id.songId) }
             is AutoId.AddTarget -> run {
                 val name = addTargets.add(id.songId, id.targetKind, id.targetId)
-                toast(if (name != null) "Added to $name" else "Couldn't add that")
+                if (name != null) {
+                    toast("Added to $name")
+                    notifyLibraryChanged(AutoId.Collection(AutoCollectionRef(
+                        if (id.targetKind == AutoTargetKind.POCKET) AutoCollectionKind.POCKET else AutoCollectionKind.PLAYLIST,
+                        id.targetId)).encoded)
+                } else fail("Couldn't add that")
             }
             else -> done()
         }
@@ -104,7 +117,7 @@ class AutoLibraryCallback(
 
     private fun guardPlayable(mediaId: String, body: suspend () -> Unit): Job {
         if (tree.item(mediaId)?.playable != true) {
-            toast(AutoBrowseTree.UNAVAILABLE)
+            fail(AutoBrowseTree.UNAVAILABLE)
             return done()
         }
         return run(body)
@@ -118,33 +131,29 @@ class AutoLibraryCallback(
         } catch (e: CancellationException) {
             throw e
         } catch (e: AutoPlayException) {
-            e.message?.let(toast)
+            e.message?.let(::fail)
         } catch (_: Exception) {
-            toast("Couldn't do that")
+            fail("Couldn't do that")
         }
     }
 
+    private fun fail(msg: String) { toast(msg); carError(msg) }
+
     /**
-     * The custom "Add to…" browser action on a song row: adds to the most recently used pocket/playlist (else the
-     * first) and confirms. Returns the confirmation text, or null when nothing could be added.
+     * The custom "Add to…" browser action on a song row: returns the chooser node id the host should open
+     * (pockets then playlists; a tap on a target is the add), or null for a row that is not a song.
      */
-    fun addToAction(mediaId: String): String? {
-        val songId = when (val id = AutoId.decode(mediaId)) {
-            is AutoId.Song -> id.songId
-            is AutoId.Solo -> id.songId
-            else -> return null
-        }
-        val target = addTargets.defaultTarget(recentTargets())
-        val msg = target?.let { t ->
-            addTargets.add(songId, t.kind, t.id)?.let { "Added to $it" }
-        } ?: "No pocket or playlist to add to"
-        toast(msg)
-        return msg.takeIf { target != null && it.startsWith("Added") }
+    fun addToChooserNode(mediaId: String): String? = when (val id = AutoId.decode(mediaId)) {
+        is AutoId.Song -> AutoId.AddTo(id.songId).encoded
+        is AutoId.Solo -> AutoId.AddTo(id.songId).encoded
+        else -> null
     }
 
     companion object {
         const val ACTION_ADD_TO = "pdj.addTo"
         const val ADD_TO_LABEL = "Add to…"
+        /** Android Auto honours this extra on a custom-action result to open a browse node. */
+        const val KEY_RESULT_BROWSE_NODE = "androidx.media.utils.extras.KEY_CUSTOM_BROWSER_ACTION_RESULT_BROWSE_NODE"
 
         /** Maps a platform-free node to a Media3 item (browse metadata only: no uri, the sequencer plays). */
         fun toMediaItem(n: AutoNode): MediaItem {

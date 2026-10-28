@@ -34,6 +34,8 @@ class AutoLibraryCallbackTest {
         val sink = AddSink()
         val toasts = mutableListOf<String>()
         val notified = mutableListOf<String>()
+        val notifiedCounts = mutableListOf<Int>()
+        val carErrors = mutableListOf<String>()
         var warmUps = 0
         var recents: List<Pair<AutoTargetKind, String>> = emptyList()
         val cb = AutoLibraryCallback(
@@ -42,7 +44,8 @@ class AutoLibraryCallbackTest {
             player = player,
             scope = CoroutineScope(Dispatchers.Unconfined),
             toast = { toasts += it },
-            notifyChildrenChanged = { notified += it },
+            notifyChildrenChanged = { p, n -> notified += p; notifiedCounts += n },
+            carError = { carErrors += it },
             recentTargets = { recents },
             warmUp = { warmUps++ },
             catalogReady = { data.catalogReady },
@@ -138,13 +141,40 @@ class AutoLibraryCallbackTest {
         assertEquals(listOf("Added to Gym"), r.toasts)
     }
 
-    @Test fun addToAction_usesMostRecentTarget_elseFirst_andRejectsNonSongs() {
+    @Test fun addToAction_opensTheChooser_withoutAddingBlind_andRejectsNonSongs() {
         val r = rig()
-        assertEquals("Added to Warmup", r.cb.addToAction(AutoId.Song(pkRef("k1"), "a").encoded))
-        r.recents = listOf(AutoTargetKind.PLAYLIST to "p1")
-        assertEquals("Added to Gym", r.cb.addToAction(AutoId.Solo("a").encoded))
-        assertEquals(listOf("a->POCKET:k1", "a->PLAYLIST:p1"), r.sink.added)
-        assertNull(r.cb.addToAction(AutoId.Root.encoded))
+        val node = r.cb.addToChooserNode(AutoId.Song(pkRef("k1"), "a").encoded)
+        assertEquals(AutoId.AddTo("a").encoded, node)
+        assertEquals(AutoId.AddTo("a").encoded, r.cb.addToChooserNode(AutoId.Solo("a").encoded))
+        assertTrue(r.sink.added.isEmpty()) // nothing added until a target row is tapped
+        // The returned node is reachable and lists targets (pockets then playlists); the tap is the add.
+        val kids = r.cb.getChildren(node!!, 0, Int.MAX_VALUE)!!
+        assertEquals(listOf("Warmup", "Gym"), kids.map { it.title })
+        r.cb.select(kids[1].id)
+        assertEquals(listOf("a->PLAYLIST:p1"), r.sink.added)
+        assertNull(r.cb.addToChooserNode(AutoId.Root.encoded))
+    }
+
+    @Test fun carVisibleFailures_reachTheSessionNotJustThePhoneToast() {
+        val r = rig()
+        r.cb.select(AutoId.Solo("am").encoded)
+        assertEquals(listOf(AutoBrowseTree.UNAVAILABLE), r.carErrors)
+        r.player.failWith = AutoPlayException("Pocket has no playable songs yet.")
+        r.cb.select(AutoId.PlayAll(pkRef("k1")).encoded)
+        assertEquals(AutoBrowseTree.UNAVAILABLE, r.carErrors[0])
+        assertEquals("Pocket has no playable songs yet.", r.carErrors[1])
+        assertEquals(r.carErrors, r.toasts.takeLast(2)) // phone toast kept as the secondary signal
+    }
+
+    @Test fun libraryChanged_notifiesWithRealItemCounts_andOnlyAfterReady() {
+        val r = rig()
+        r.cb.notifyLibraryChanged()
+        assertTrue(r.notified.isEmpty()) // nothing to refresh before the tree was ever served
+        r.cb.onCatalogReady()
+        r.notified.clear(); r.notifiedCounts.clear()
+        r.cb.notifyLibraryChanged(AutoId.Collection(pkRef("k1")).encoded)
+        assertEquals(listOf("root", "tab:playlists", "tab:pockets", AutoId.Collection(pkRef("k1")).encoded), r.notified)
+        assertTrue(r.notifiedCounts.all { it > 0 })
     }
 
     @Test fun search_returnsCollectionsThenSongs() {

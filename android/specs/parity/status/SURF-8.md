@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SURF-8 - Android Auto: MediaLibraryService browse tree
 
@@ -23,3 +23,17 @@ state: implemented
 
 ## Questions for Levi
 - Is a cold-start `loadIfNeeded()` (cache then conditional refresh) acceptable when Auto connects before the app was opened, or should connect be cache-only?
+
+## Review
+- MAJOR Add-to chooser unreachable -> fixed: custom action returns SessionResult extras KEY_CUSTOM_BROWSER_ACTION_RESULT_BROWSE_NODE = `addto:<song>`; blind MRU add dropped; tap on a target row is the add. Test: addToAction_opensTheChooser_withoutAddingBlind.
+- MINOR phone-only toasts -> fixed: failures also go out via MediaSession.sendError (carError); phone toast kept as secondary. Test: carVisibleFailures_reachTheSession.
+- MINOR Continue row gating/main-thread decode -> fixed: hidden while a set is live and not held (iOS resumableSession); snapshot decoded on IO, cached, throttled refresh, root re-notified on change. Rejected sub-point: restoreIfIdle on connect (connect must not mutate; spec).
+- MINOR counts include Studio ids -> fixed: resolved against catalog.songsById; SOURCE collection() looks up one playlist directly.
+- MINOR amSignedIn race -> fixed: seeded synchronously (IO, 1.5 s cap) at construction; flips notify the lists.
+- MINOR isRecent bind -> fixed: returns NOT_SUPPORTED before onConnect()/graph build.
+- MINOR unbounded search cache -> fixed: latest-only, cleared in onDestroy, scan on Dispatchers.Default.
+- MINOR no change notifications -> fixed: collections + catalog state observed, notifyLibraryChanged with real counts (also the touched collection after an add). Test: libraryChanged_notifiesWithRealItemCounts.
+- NIT childCount/isOurs/Continue label -> left (optional).
+Suite 4035 tests, 0 failures; assembleDebug green.
+
+fixes applied
