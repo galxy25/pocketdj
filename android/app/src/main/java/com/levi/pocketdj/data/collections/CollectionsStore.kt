@@ -998,7 +998,8 @@ class CollectionsStore(
                 // Self-heal: a playlist with no chapters gets a Default one.
                 val healed = pl.sequences.isEmpty()
                 if (healed) pl = pl.copy(sequences = listOf(CollectionsFactory.makeSequence("Default")))
-                val seqIdx = target.sequenceId?.let { sid -> pl.sequences.indexOfFirst { it.nodeId == sid } } ?: 0
+                val seqIdx = target.sequenceId
+                    ?.let { sid -> pl.sequences.indexOfFirst { it.nodeId == sid }.takeIf { it >= 0 } } ?: 0
                 val seq = pl.sequences.getOrNull(seqIdx)
                 val seen = HashSet<String>()
                 if (seq != null) {
@@ -1057,7 +1058,7 @@ class CollectionsStore(
             }
         }
         mutatePlaylistLocked(playlistId) { it.copy(sequences = prune(it.sequences)) }
-        emitBatch(present.sorted().map { removeHook(it, playlistId, AddTarget.Kind.PLAYLIST, pl.name) })
+        emitBatch(songIds.filter { it in present }.distinct().map { removeHook(it, playlistId, AddTarget.Kind.PLAYLIST, pl.name) })
         present.size
     }
 
@@ -1492,7 +1493,8 @@ class CollectionsStore(
                 recentAddTargets = emptyList(),
             )
         }
-        runCatching { file.delete() }
+        dirty = false
+        writer.delete(++saveVersion)
         onChange?.invoke()
     }
 
@@ -1644,8 +1646,12 @@ class CollectionsStore(
      * Snapshot (immutable data classes) + hand to the version-ordered writer;
      * encode and disk IO happen on the writer's executor. Call under [lock].
      */
+    /** True when a mutation was handed to the writer and no inline flush has superseded it. */
+    private var dirty = false
+
     private fun save() {
         salvageIfPending()
+        dirty = true
         val doc = snapshotDocument()
         val version = ++saveVersion
         writer.write(version) { CollectionsCodec.encode(json, doc) }
@@ -1657,7 +1663,10 @@ class CollectionsStore(
      * latest state inline so a process kill right after cannot lose it.
      */
     fun flushNow() = synchronized(lock) {
+        // Nothing mutated since the last write/flush: never rewrite an untouched document.
+        if (!dirty) return@synchronized
         salvageIfPending()
+        dirty = false
         val doc = snapshotDocument()
         val version = ++saveVersion
         writer.flushNow(version) { CollectionsCodec.encode(json, doc) }

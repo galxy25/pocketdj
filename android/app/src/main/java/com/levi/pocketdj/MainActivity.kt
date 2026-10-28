@@ -5,6 +5,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.lifecycle.ProcessLifecycleOwner
+import com.levi.pocketdj.shell.FlushOnStop
 import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.shell.IntentSink
@@ -27,6 +29,13 @@ class MainActivity : ComponentActivity() {
         // at the 20k cap), so construction happens OFF-MAIN per its own contract.
         val graph = AppGraph.get(this)
         val appContext = applicationContext
+        // Process-level ON_STOP: flush every module's pending writes (idempotent re-register guard).
+        ProcessLifecycleOwner.get().lifecycle.let { lc ->
+            if (!flushObserverAdded) {
+                flushObserverAdded = true
+                lc.addObserver(FlushOnStop(graph.features))
+            }
+        }
         graph.appScope.launch { PlayHistoryStore.get(appContext) }
         setContent {
             PocketDjTheme {
@@ -48,5 +57,9 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         // Foreground re-check of the remote endpoint config (throttled inside to 15 min).
         AppGraph.get(this).refreshEndpoints()
+    }
+
+    private companion object {
+        @Volatile var flushObserverAdded = false
     }
 }

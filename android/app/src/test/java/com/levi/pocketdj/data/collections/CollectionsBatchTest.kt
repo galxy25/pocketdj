@@ -157,4 +157,73 @@ class CollectionsBatchTest {
         pending.forEach { it.run() } // stragglers all dropped
         assertEquals(3, CollectionsStore(f).pocket(p.id)!!.songIds.size)
     }
+
+    @Test
+    fun removeSongsPrunesNestedSequenceAndEmitsInCallerOrderOneWrite() {
+        val f = File(tmp.root, CollectionsStore.FILE_NAME)
+        fun song(id: String, sid: String) = PlaylistNode(nodeId = id, kind = PlaylistNode.Kind.SONG, songId = sid)
+        val nested = PlaylistNode(
+            nodeId = "nd_n", kind = PlaylistNode.Kind.SEQUENCE, name = "Nested",
+            children = listOf(song("nd_3", "sng_z"), song("nd_4", "sng_keep")),
+        )
+        val chapter = PlaylistNode(
+            nodeId = "nd_c", kind = PlaylistNode.Kind.SEQUENCE, name = "Top",
+            children = listOf(song("nd_1", "sng_a"), nested),
+        )
+        val doc = CollectionsDocument(playlists = listOf(Playlist(id = "pls_1", name = "PL", sequences = listOf(chapter))))
+        f.writeText(CollectionsCodec.encode(com.levi.pocketdj.data.PdjJson.lenient, doc))
+        val w = VersionedJsonWriter(f)
+        val s = CollectionsStore(f, writer = w)
+        val hooks = mutableListOf<CollectionsStore.ActivityHook>()
+        s.onActivityBatch = { hooks += it }
+        val before = w.writeCount
+        assertEquals(2, s.removeSongsFromPlaylist(listOf("sng_z", "sng_a"), "pls_1"))
+        assertEquals(before + 1, w.writeCount)
+        val top = s.playlist("pls_1")!!.sequences.single().children!!
+        assertEquals(listOf("nd_n"), top.map { it.nodeId })
+        assertEquals(listOf("sng_keep"), top.single().children!!.mapNotNull { it.songId })
+        assertEquals(listOf("sng_z", "sng_a"), hooks.map { it.itemId }) // caller order
+    }
+
+    @Test
+    fun staleSequenceIdFallsBackToFirstChapter() {
+        val s = store()
+        val pl = s.createPlaylist("PL")
+        s.addSequence("Two", pl.id)
+        val first = s.playlist(pl.id)!!.sequences[0].nodeId
+        assertEquals(2, s.addSongs(ids(1, 2), AddTarget(AddTarget.Kind.PLAYLIST, pl.id, "nd_gone")))
+        assertEquals(2, s.playlist(pl.id)!!.sequences.first { it.nodeId == first }.children!!.size)
+    }
+
+    @Test
+    fun selfHealWithSequenceIdStillAdds() {
+        val f = File(tmp.root, CollectionsStore.FILE_NAME)
+        val doc = CollectionsDocument(playlists = listOf(Playlist(id = "pls_1", name = "PL", sequences = emptyList())))
+        f.writeText(CollectionsCodec.encode(com.levi.pocketdj.data.PdjJson.lenient, doc))
+        val s = CollectionsStore(f)
+        assertEquals(3, s.addSongs(ids(1, 2, 3), AddTarget(AddTarget.Kind.PLAYLIST, "pls_1", "nd_old")))
+        assertEquals(3, s.playlist("pls_1")!!.sequences.single().children!!.size)
+    }
+
+    @Test
+    fun clearAfterQueuedWriteDoesNotResurrectDocument() {
+        val f = File(tmp.root, CollectionsStore.FILE_NAME)
+        val pending = ArrayDeque<Runnable>()
+        val s = CollectionsStore(f, writer = VersionedJsonWriter(f) { pending.addLast(it) })
+        val p = s.createPocket("P")
+        s.addSongs(ids(1), AddTarget(AddTarget.Kind.POCKET, p.id))
+        s.clear()
+        while (pending.isNotEmpty()) pending.removeFirst().run()
+        assertTrue(!f.exists())
+    }
+
+    @Test
+    fun flushNowIsNoOpWhenUntouched() {
+        val f = File(tmp.root, CollectionsStore.FILE_NAME)
+        val w = VersionedJsonWriter(f)
+        val s = CollectionsStore(f, writer = w)
+        s.flushNow()
+        assertEquals(0, w.writeCount)
+        assertTrue(!f.exists())
+    }
 }

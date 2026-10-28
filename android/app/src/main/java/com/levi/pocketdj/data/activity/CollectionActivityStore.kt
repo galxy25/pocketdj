@@ -178,6 +178,7 @@ class CollectionActivityStore(
         synchronized(lock) {
             salvagePending = false
             publish(emptyList())
+            dirty = false
             writer.delete(++saveVersion)
         }
     }
@@ -228,8 +229,12 @@ class CollectionActivityStore(
     }
 
     /** Atomic write: temp file + rename, ordered after every mutation. */
+    /** True when a mutation was handed to the writer and no inline flush has superseded it. */
+    private var dirty = false
+
     private fun save() {
         salvageIfPending()
+        dirty = true
         val snapshot = _state.value
         val doc = ActivityDocument(
             schemaVersion = COLLECTION_ACTIVITY_SCHEMA_VERSION,
@@ -242,6 +247,10 @@ class CollectionActivityStore(
 
     /** ON_STOP barrier: supersede queued writes, write the latest log inline. */
     fun flushNow() = synchronized(lock) {
+        // Untouched since the last write: never rewrite (an Unreadable launch must not clobber disk).
+        if (!dirty) return@synchronized
+        salvageIfPending()
+        dirty = false
         val snapshot = _state.value
         val doc = ActivityDocument(
             schemaVersion = COLLECTION_ACTIVITY_SCHEMA_VERSION,
