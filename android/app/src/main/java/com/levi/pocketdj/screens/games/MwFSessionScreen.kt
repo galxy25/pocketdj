@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.games
 
+import androidx.lifecycle.repeatOnLifecycle
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -98,16 +99,22 @@ fun MwFSessionScreen(graph: AppGraph, sessionId: String, onClose: () -> Unit, mo
     var showDownloadDone by remember { mutableStateOf(false) }
 
     // The 4 s poll: auto-cancelled when the screen leaves composition.
+    // Final review: both loops run only while the app is in the foreground (the process lives on under the media service).
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     LaunchedEffect(sessionId) {
-        while (isActive) {
-            friends.refresh(sessionId)
-            if (!MwFScreenLogic.shouldKeepPolling(friends.lastState.value[sessionId])) break
-            delay(MwFScreenLogic.POLL_INTERVAL_MS)
+        lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (isActive) {
+                friends.refresh(sessionId)
+                if (!MwFScreenLogic.shouldKeepPolling(friends.lastState.value[sessionId])) break
+                delay(MwFScreenLogic.POLL_INTERVAL_MS)
+            }
         }
     }
     // 1 s clock for the turn countdown / relative labels.
     LaunchedEffect(sessionId) {
-        while (isActive) { now = System.currentTimeMillis(); delay(1_000) }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
+            while (isActive) { now = System.currentTimeMillis(); delay(1_000) }
+        }
     }
 
     Column(modifier.fillMaxSize().testTag("mwf-session-screen")) {

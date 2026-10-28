@@ -313,12 +313,19 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
         // Warm the store off the main thread so the first Games-tab composition never does disk IO.
         app.appScope.launch(Dispatchers.IO) { runCatching { scoreboard } }
         app.appScope.launch(Dispatchers.IO) { runCatching { friends } }
+        // The decision log decodes up to 20k rows on construction: never on the first Gem Collector composition.
+        app.appScope.launch(Dispatchers.IO) { runCatching { puzzleDecisions } }
         // A round that was playing when the process went away keeps being tracked.
         app.appScope.launch(Dispatchers.IO) { runCatching { inThePocket.resumeTrackingIfNeeded() } }
     }
 
     override val resetHooks: List<ResetHook> = listOf(
         ResetHook { scoreboard.clear() },
+        // Final review: the per-song decision log (and last-used target collections) must not survive Delete account.
+        ResetHook {
+            puzzleDecisions.clear()
+            runCatching { app.appContext.getSharedPreferences("pdj-puzzle", android.content.Context.MODE_PRIVATE).edit().clear().apply() }
+        },
         ResetHook { inThePocket.clearLocal() },
         ResetHook { friends.eraseAll(); mwfJoinSecret.reset() },
     )

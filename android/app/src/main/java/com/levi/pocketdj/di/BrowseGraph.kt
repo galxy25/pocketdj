@@ -141,6 +141,12 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
                 com.levi.pocketdj.data.recs.RecFeedbackWire(it.id, it.at, it.songId, it.verdict, it.surface, it.scope)
             }
         }
+        // Final review: Gem Collector filings train the rec engine (iOS recEngine.puzzleEventsProvider).
+        svc.puzzleEventsProvider = { since ->
+            com.levi.pocketdj.data.games.puzzle.PuzzleRecEventBridge.events(app.gamesGraph.puzzleDecisions.decisions, since).map {
+                com.levi.pocketdj.data.recs.RecPuzzleEventWire(it.id, it.atMs, it.gameId, it.songId, it.collectionId, it.action, it.points)
+            }
+        }
         svc.playCountsProvider = { app.servicesGraph.playStats.playCountsSnapshot() }
         svc.lastPlayedProvider = { app.servicesGraph.playStats.lastPlayedSnapshot() }
         svc
