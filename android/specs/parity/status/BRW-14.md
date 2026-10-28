@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # BRW-14 New releases feed + screen + release streaming
 

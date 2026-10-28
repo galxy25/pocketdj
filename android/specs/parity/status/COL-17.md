@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-17 - ListeningPocketsService + PocketsPlayListener + real PocketsBridge
 
