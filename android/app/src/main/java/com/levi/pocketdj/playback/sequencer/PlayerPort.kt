@@ -43,6 +43,13 @@ interface PlayerPort {
      * case the sequencer falls back to a normal load.
      */
     suspend fun replay(songId: String): Boolean
+
+    /**
+     * PB-10: keep exactly the given row in engine window slot 1 behind the current one (replacing
+     * whatever was there), or empty the slot when [request] is null. Returns true when the engine
+     * now matches the ask. Default: engines without a preload window do nothing.
+     */
+    suspend fun preloadNext(request: PlayRequest?): Boolean = false
     suspend fun pause()
     suspend fun resume()
     suspend fun seekTo(positionMs: Long)

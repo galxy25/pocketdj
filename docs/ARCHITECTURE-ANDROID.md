@@ -388,7 +388,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | PB-4 — Durable playback session: real-time snapshot, held restore, resume at position, materiali… | 8 | Merged (`ab68b736`) | Emulator-verified wave 8: held restore after force-stop (strip + deck, no audio, file mtime untouched), iOS-shape JSON, first play resumes. Fixed: MiniPlayerBar never showed the held deck. Device-only: Bluetooth resumption. |
 | PB-7 — Up Next, previously played, add-search, open set list, queue reorder; jukebox routed thro… | 8 | Merged (`9488b905`) | Emulator-verified wave 8: live reorder, remove, album+song Add next from search. Jukebox accept placement JVM-only (needs a guest request). |
 | PB-8 — Apple Music rows in a run: AppleMusicPlayerAdapter (SimpleBasePlayer TransportOwner) + en… | 9 | Merged (wave 9) | Full-track DRM playback requires a real device with a subscription (v… |
-| PB-10 — Gapless preload window (next resolved row pre-added to ExoPlayer) | 17 | Planned | — |
+| PB-10 — Gapless preload window (next resolved row pre-added to ExoPlayer) | 17 | PARTIAL | Preload window + review fixes landed; emulator check (rip->rip gap, mid-track reorder) NOT yet run |
 
 **Collections**
 
