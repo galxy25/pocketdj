@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-16 Discover add: provisional catalog entries, album fan-out, supersede, Remove from Library
 - [x] data/discover/DiscoverAddsStore.kt (entries + optional albums doc, iOS-shape lenient JSON `pocketdj-discover-adds.json`, idempotent adds, one batched album add, userRemove vs silent supersede remove, reloadFromDisk, split/splitAlbums, indexSong/indexAlbum/syntheticIndex)
