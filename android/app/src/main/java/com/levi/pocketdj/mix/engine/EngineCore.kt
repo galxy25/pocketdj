@@ -67,6 +67,10 @@ interface AutoDjHooks {
     fun resumeAuto() {}
     /** A deck is stream-held this tick: its auto end clock must not burn (held seconds aren't played). */
     fun onDeckHeld(deck: Deck, dtSeconds: Double) {}
+    /** The sink died under a live mix: freeze the machine's wall clocks (iOS `engineStallAt`). */
+    fun parkEngineStall() {}
+    /** The sink is rendering again: shift every armed clock past the stall. */
+    fun unparkEngineStall() {}
     /** Called from the 10 Hz tick while [isMixing] and the sink renders. */
     fun fire(nowMs: Long) {}
     /** Snapshot for persistence; null when no auto queue. */
@@ -94,6 +98,8 @@ data class ResolvedTrack(
 /** Resolves a song id to a local file (BurnStore in production, a stub under test). */
 fun interface MixTrackResolver {
     fun resolve(songId: String): ResolvedTrack?
+    /** Cheap existence check (no sidecar reads); main-thread safe. */
+    fun exists(songId: String): Boolean = resolve(songId) != null
 }
 
 /** Opens a file as a [PcmSource] (MediaCodec mp3 decoder in production). null = unreadable. */
