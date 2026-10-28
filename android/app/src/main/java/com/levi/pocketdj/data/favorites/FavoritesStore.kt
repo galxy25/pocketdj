@@ -85,7 +85,7 @@ class FavoritesStore(
     }
 
     /** Idempotent: a no-op write refreshes nothing and fires nothing. */
-    fun set(songId: String, favorited: Boolean, appleMusicId: String?) {
+    override fun set(songId: String, favorited: Boolean, appleMusicId: String?) {
         val entry = synchronized(lock) { setLocked(songId, favorited, appleMusicId) }
         entry?.let { fire(it) }
     }

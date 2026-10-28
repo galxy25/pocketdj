@@ -51,6 +51,10 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 songId,
                 appleMusicId ?: app.catalogRepository.state.value.catalog?.songsById?.get(songId)?.appleMusicId,
             )
+            override fun set(songId: String, favorited: Boolean, appleMusicId: String?) = favorites.set(
+                songId, favorited,
+                appleMusicId ?: app.catalogRepository.state.value.catalog?.songsById?.get(songId)?.appleMusicId,
+            )
         }
     }
 

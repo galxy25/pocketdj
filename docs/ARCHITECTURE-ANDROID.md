@@ -352,7 +352,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | SURF-5 — ShellActions façade (IntentServices analogue) + MixFacade seam + Assistant media search +… | 7 | PARTIAL (ShellActions, media search, shortcuts done + unit-tested; MixFacade seam only - nothing implements it until the Mix package; SURF-8 must keep the PlaybackService SearchPlayBridge hook) | Real Google Assistant voice ('play my warmup pocket on PocketDJ') — t… |
 | SURF-6 — Settings shell rows: Profile name, Collections default recently-added count, Import serve… | 11 | PARTIAL (implemented + reviewed; count default/clamp follow iOS 3650 / 1…100000, not roadmap 50 / 1…500; emulator relaunch step not run, covered by JVM DataStore round-trip test) | Emulator relaunch-persistence check |
 | SURF-11 — Jukebox guest: JukeboxLink, joined-sessions list, join panel with request line + Tune In … | 12 | DONE (unit-tested; emulator steps not run) | — |
-| SURF-7 — Glance Now Playing widget (small/medium/large + idle) with snapshot sync and offline comm… | 14 | Planned | — |
+| SURF-7 — Glance Now Playing widget (small/medium/large + idle) with snapshot sync and offline comm… | 14 | PARTIAL | Code + JVM tests done, review fixes applied; device-only: widget rendering, media-button cold start, ⏭ after force-stop |
 | SURF-8 — Android Auto: MediaLibraryService browse tree (Playlists · Pockets · Continue), play/add-… | 15 | Planned | Real head unit / DHU rendering, voice; emulator uses the Desktop Head… |
 | SURF-9 — Android Auto Mix tab + Jukebox session rows (two-crate Auto DJ remote) | 18 | Planned | Real head unit; real Mix audio (depends on the Mix area's engine). |
 
