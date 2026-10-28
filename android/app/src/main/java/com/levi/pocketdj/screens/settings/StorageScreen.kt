@@ -432,7 +432,8 @@ private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: S
     Spacer(Modifier.height(16.dp))
     SectionHeader("Delete downloads")
     Caption("Removes downloaded files only. Songs stay in your library and collections.")
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         for (k in DeleteKind.entries) {
             OutlinedButton(onClick = {
                 scope.launch {

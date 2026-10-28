@@ -234,6 +234,14 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             }
         }) { Text("Burn first 3") }
     }
+    Row { OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = seedIds.ifEmpty { pickSeed().also { seedIds = it } }
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val r = host.graph.servicesGraph.burnStore.burn(ids.take(10).map { com.levi.pocketdj.data.burns.BurnSong(it, songs[it]?.name ?: it, songs[it]?.artist ?: "") })
+                ripStatus = "Rip seed: burn10 -> $r"
+            }
+        }) { Text("Burn 10") } }
     // SVC-3 verify seeds: the 5 LONGEST ripped digital songs (bigger files so a force-stop can land mid-download).
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         fun burn5(bad: Boolean) {
