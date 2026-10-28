@@ -447,7 +447,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | MIX-2 — Shared audio core (`audio/`): AudioSink + AudioTrackSink, RenderClock, FloatRing, PcmSour… | 3 | DONE (JVM + emulator decode; audible output device-only) | Audible output and AudioTrack low-latency behaviour on real hardware. |
 | MIX-4 — MixGraph: deck chains, house/cue/limiter, taps, render-thread handover + parameter snapsh… | 4 | Planned | Hearing cue on the chosen channel of a real stereo interface |
 | MIX-6 — MixStreamLoader: growing-file song streams (public rips object + Range) + stem sets, adop… | 5 | Planned | — |
-| MIX-5 — MixEngine core: decks, load/seek/transport, EQ, FX rack, Vol/crossfader, cue, lead/sync, … | 6 | Planned | Audible verification of tempo/pitch quality and cue routing |
+| MIX-5 — MixEngine core: decks, load/seek/transport, EQ, FX rack, Vol/crossfader, cue, lead/sync, … | 6 | PARTIAL | Device-only: audible tempo/pitch quality and cue routing, force-stop/relaunch restore. Deferred hooks: loop/stems (MIX-8), Auto-DJ (MIX-9), stream (MIX-10), silent-playing detector (MIX-11); launch-time `restorePersistedMixIfIdle` not auto-called (Mix tab parks via `materializePendingRestoreIfNeeded`) |
 | MIX-7 — MixResolver + CollectionMixDownloader (collection pull with progress/ETA + progressive el… | 7 | Planned | — |
 | MIX-8 — Loop (∞) + stem decks + zero-dead-air handover + beat-grid hydrate | 8 | Planned | Hearing the handover seam and loop click-freeness |
 | MIX-10 — Streaming decks in the engine (growing-file playback, hold/resume, truncation, stem strea… | 9 | Planned | Cellular dead-zone behaviour |

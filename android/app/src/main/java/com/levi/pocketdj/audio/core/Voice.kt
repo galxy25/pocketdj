@@ -257,11 +257,23 @@ class VoicePump(private val voice: Voice, name: String = "pdj-decode") {
     private val thread = Thread({
         while (running) {
             var any = false
-            while (running && voice.pump()) any = true
+            try {
+                while (running && voice.pump()) any = true
+            } catch (_: InterruptedException) {
+            } catch (_: Exception) {
+                // A decoder fault (e.g. codec released under us) must never kill the process.
+                running = false
+            }
             if (!any) try { Thread.sleep(4) } catch (_: InterruptedException) { }
         }
     }, name).apply { isDaemon = true }
 
     fun start(): VoicePump { thread.start(); return this }
     fun stop() { running = false; thread.interrupt() }
+
+    /** Stop and wait for the decoder thread to leave [Voice.pump], so the source can be closed safely. */
+    fun stopAndJoin(timeoutMs: Long = 500) {
+        stop()
+        if (Thread.currentThread() !== thread) try { thread.join(timeoutMs) } catch (_: InterruptedException) { }
+    }
 }
