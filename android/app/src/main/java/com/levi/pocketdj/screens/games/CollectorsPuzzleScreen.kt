@@ -125,7 +125,11 @@ private fun SetupForm(graph: AppGraph, engine: CollectorsPuzzleEngine, state: Pu
 
     // Debounced, single-flight (LaunchedEffect restarts on every change): year keystrokes
     // must not pile samples up.
-    LaunchedEffect(s) {
+    // The pool is the catalog: a cold start straight onto Games has none loaded yet, so kick the
+    // load and re-count when it lands (else "0 songs match" sticks until Browse is visited).
+    LaunchedEffect(Unit) { graph.catalogRepository.loadIfNeeded() }
+    val catalogLoaded = graph.catalogRepository.state.collectAsState().value.catalog != null
+    LaunchedEffect(s, catalogLoaded) {
         delay(300)
         stats = withContext(Dispatchers.Default) { engine.poolStats() }
     }
