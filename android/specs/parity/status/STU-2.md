@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-2 — Studio native DSP lib (cpp/pdjdsp) + OboeSink + StudioRender/RenderGraph + NDK Gradle wiring
 

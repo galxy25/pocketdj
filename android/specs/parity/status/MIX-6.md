@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # MIX-6 MixStreamLoader
 - [x] StreamSink (OkHttp; ordered response->bytes->finished; Range append / 200 restart; 4 Hz / 256 KB throttle)

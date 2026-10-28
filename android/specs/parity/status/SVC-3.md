@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-3 TransferCoordinator over WorkManager
 

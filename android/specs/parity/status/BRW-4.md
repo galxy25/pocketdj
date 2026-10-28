@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 BRW-4 Song/Album detail parity.
 - [x] LyricsStore (memory -> filesDir/lyrics-cache -> CDN; gated on lyricsStatus==found; non-2xx/blank not cached; ids sanitized), wired in BrowseGraph.lyricsStore

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # PB-2 - Session transport + one-owner arbiter
 
