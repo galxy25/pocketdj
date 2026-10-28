@@ -3,6 +3,16 @@ package com.levi.pocketdj.di
 import com.levi.pocketdj.data.store.VersionedJsonWriter
 import com.levi.pocketdj.mix.store.MixDeckSessionStore
 import com.levi.pocketdj.mix.store.MixSessionStore
+import com.levi.pocketdj.mix.stream.BurnStoreAdopter
+import com.levi.pocketdj.mix.stream.ConnectivityNetworkMonitor
+import com.levi.pocketdj.mix.stream.MixStreamLoader
+import com.levi.pocketdj.mix.stream.MixStreamRips
+import com.levi.pocketdj.data.config.Endpoints
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.ResetHook
@@ -32,6 +42,40 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         MixSessionStore(f, writer = VersionedJsonWriter(f, writerExecutor))
     }
     val mixSessions: MixSessionStore get() = sessionsLazy.value
+
+    /**
+     * MIX-6: growing-file song/stem streams. Built on first use; construction sweeps
+     * `cacheDir/mixstream` (partials are never resumed across launches). Hooks fire on the main
+     * thread. Adoption goes through the shared [com.levi.pocketdj.data.burns.BurnStore].
+     */
+    private val streamLoaderLazy = lazy {
+        val ripsRepo = app.ripsRepository
+        val client = app.ripServerClient
+        val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        // hasServer is read synchronously on every canStream; the real check is a suspend settings
+        // read, so keep the last answer and refresh it in the background (false until first answer).
+        val serverConfigured = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun refreshServer() { ioScope.launch { serverConfigured.set(runCatching { client.isConfigured() }.getOrDefault(false)) } }
+        refreshServer()
+        val rips = object : MixStreamRips {
+            override fun hasServer(): Boolean { refreshServer(); return serverConfigured.get() }
+            override fun entry(songId: String) = ripsRepo.entry(songId)
+            override suspend fun presignedUrl(songId: String, ttlSeconds: Int): String? =
+                if (client.isConfigured()) client.presign(songId, ttlSeconds) else null
+            override fun urlForKey(key: String) = Endpoints.ripAudioUrl(key)
+            override fun stemUrls(songId: String) = ripsRepo.entry(songId)?.stemUrls(Endpoints.RIPS_BASE)
+        }
+        MixStreamLoader(
+            rips = rips,
+            adopter = BurnStoreAdopter(app.servicesGraph.burnStore),
+            directory = File(app.appContext.cacheDir, "mixstream"),
+            network = ConnectivityNetworkMonitor(app.appContext),
+            http = app.httpClient, // plain client: never attaches the rip bearer to S3
+            scope = ioScope,
+            callbackExecutor = ContextCompat.getMainExecutor(app.appContext),
+        )
+    }
+    val mixStreamLoader: MixStreamLoader get() = streamLoaderLazy.value
 
     // ON_STOP: both documents are written inline so a process kill right after backgrounding
     // cannot lose the latest positions / events.
