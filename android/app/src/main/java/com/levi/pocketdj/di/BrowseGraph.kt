@@ -51,8 +51,27 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     internal val historyBrowse: HistoryBrowseState by historyBrowseLazy
 
+    /** Durable For You feed (BRW-11). Reads its file on first touch: touch off Main. */
+    private val forYouFeedLazy: Lazy<com.levi.pocketdj.data.recs.ForYouFeedStore> = lazy {
+        com.levi.pocketdj.data.recs.ForYouFeedStore(
+            java.io.File(app.appContext.filesDir, com.levi.pocketdj.data.recs.ForYouFeedStore.FILE_NAME),
+        )
+    }
+    val forYouFeedStore: com.levi.pocketdj.data.recs.ForYouFeedStore by forYouFeedLazy
+
+    /** 👍/👎 decisions (BRW-11). Reads its file on first touch: touch off Main. */
+    private val recFeedbackLazy: Lazy<com.levi.pocketdj.data.recs.RecFeedbackStore> = lazy {
+        com.levi.pocketdj.data.recs.RecFeedbackStore(
+            file = java.io.File(app.appContext.filesDir, REC_FEEDBACK_FILE),
+            scope = app.appScope,
+            identityFile = java.io.File(app.appContext.filesDir, "pocketdj-rec-feedback-install-id"),
+        )
+    }
+    val recFeedbackStore: com.levi.pocketdj.data.recs.RecFeedbackStore by recFeedbackLazy
+
     override val flushables: List<Flushable> = listOf(
         BrowseSessionFlushable { app.settings.setBrowseSnapshot(it) },
+        recsFlushable(recFeedbackLazy),
         object : Flushable {
             override suspend fun flush() {
                 if (!historyBrowseLazy.isInitialized()) return
@@ -84,27 +103,48 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
-    /** Durable For You feed (BRW-11). Reads its file on first touch: touch off Main. */
-    val forYouFeedStore: com.levi.pocketdj.data.recs.ForYouFeedStore by lazy {
-        com.levi.pocketdj.data.recs.ForYouFeedStore(
-            java.io.File(app.appContext.filesDir, com.levi.pocketdj.data.recs.ForYouFeedStore.FILE_NAME),
-        )
-    }
+    override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = recsSyncEntries(recFeedbackLazy, forYouFeedLazy)
 
-    /** 👍/👎 decisions (BRW-11). Reads its file on first touch: touch off Main. */
-    val recFeedbackStore: com.levi.pocketdj.data.recs.RecFeedbackStore by lazy {
-        com.levi.pocketdj.data.recs.RecFeedbackStore(
-            file = java.io.File(app.appContext.filesDir, "pocketdj-rec-feedback.json"),
-            scope = app.appScope,
-            identityFile = java.io.File(app.appContext.filesDir, "pocketdj-rec-feedback-install-id"),
-        )
-    }
+    /** Account deletion / "Erase everything" (iOS AccountDeletionService clears both). */
+    override val resetHooks: List<com.levi.pocketdj.shell.ResetHook> = recsResetHooks(recFeedbackLazy, forYouFeedLazy)
 
     override val settingsSections: List<SettingsSection> by lazy {
         listOf(editionSection(), onlineSearchSection())
     }
 
-    private companion object {
+    internal companion object {
+        const val REC_FEEDBACK_SYNC_KEY = "rec-feedback"
+        const val REC_FEEDBACK_FILE = "pocketdj-rec-feedback.json"
+        const val FORYOU_FEED_SYNC_KEY = "foryou-feed"
+
+        /** iOS cloudSync "rec-feedback" + "foryou-feed". The sync engine runs off-main, so touching the lazies is safe. */
+        fun recsSyncEntries(
+            fb: Lazy<com.levi.pocketdj.data.recs.RecFeedbackStore>,
+            feed: Lazy<com.levi.pocketdj.data.recs.ForYouFeedStore>,
+        ) = listOf(
+            com.levi.pocketdj.shell.SyncEntry(
+                REC_FEEDBACK_SYNC_KEY, REC_FEEDBACK_FILE,
+                onPulled = { fb.value.reloadFromDisk() },
+                applyPayload = { fb.value.applyPulledPayload(it) },
+            ),
+            com.levi.pocketdj.shell.SyncEntry(
+                FORYOU_FEED_SYNC_KEY, com.levi.pocketdj.data.recs.ForYouFeedStore.FILE_NAME,
+                onPulled = { feed.value.reloadFromDisk() },
+                applyPayload = { feed.value.applyPulledPayload(it) },
+            ),
+        )
+
+        fun recsResetHooks(
+            fb: Lazy<com.levi.pocketdj.data.recs.RecFeedbackStore>,
+            feed: Lazy<com.levi.pocketdj.data.recs.ForYouFeedStore>,
+        ) = listOf(
+            com.levi.pocketdj.shell.ResetHook { fb.value.clear() },
+            com.levi.pocketdj.shell.ResetHook { feed.value.clear() },
+        )
+
+        /** ON_STOP flush for the debounced decisions write; no-op until first touched. */
+        fun recsFlushable(fb: Lazy<com.levi.pocketdj.data.recs.RecFeedbackStore>) =
+            Flushable { if (fb.isInitialized()) fb.value.flush() }
         const val HISTORY_WRITE_DEBOUNCE_MS = 400L
     }
 }

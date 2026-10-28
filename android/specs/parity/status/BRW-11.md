@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-11 For You feed store, feedback store, refresh schedule, tiles/grid, collection recs
 
@@ -25,3 +25,12 @@ None.
 
 ## Result
 79 new JVM tests (ForYouFeed 23, ForYouGrid 10, ForYouRefreshSchedule 12, ForYouTiles 6, RecFeedbackStore 21, CollectionsRecs 7). Full suite 3760 tests, 0 failures; assembleDebug green. Emulator: n/a (REC-5 renders).
+
+## Review
+fixes applied
+- MAJOR BrowseGraph sync/reset missing -> fixed: syncEntries "rec-feedback" + "foryou-feed" (onPulled + applyPayload) and resetHooks clearing both; BrowseGraphRecsWiringTest (4 tests: keys/files, pulled payload adopted, reset clears memory+disk, flush) would have caught it.
+- MINOR RecFeedbackStore not flushed on ON_STOP -> fixed: held as Lazy, Flushable added (no-op until first touched).
+- MINOR status ledger row -> deferred, tracked: docs/ARCHITECTURE-ANDROID.md ledger is owned by the merge gate/integrator; BRW-11 should read DONE (JVM-complete, no device-only items; REC-5 renders the UI and wires the Lambda cloud zone).
+- NIT ForYouFeedStore IO on caller thread -> not changed (iOS parity); contract: touch the lazy and call commit/clear off-main (REC-5 must use Dispatchers.IO).
+
+Tests: 3764 total, 0 failures (was 3760); assembleDebug green.
