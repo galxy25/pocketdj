@@ -466,6 +466,19 @@ class StemController(
         releaseHoldIfRunway(deck)
     }
 
+    /**
+     * The full mix's stream DIED while the stems carry the deck (MIX-10; the caller already marked the main
+     * truncated): "back to the full mix" can no longer carry the rest of the song, so the deck stays on
+     * stems; and if neither voice can grow any more the song ends where its audio does.
+     */
+    fun mainStreamDied(deck: Deck) {
+        if (s(deck).handover == StemHandover.TO_FULL_MIX) {
+            log("deck ${deck.label} full mix truncated - stems stay")
+            setHandover(deck, null)
+        }
+        settleDeadSources(deck)
+    }
+
     private fun frontierOf(srcs: List<PcmSource>): Double =
         srcs.minOf { it.availableFrames.coerceAtLeast(0) }.toDouble() / srcs[0].sampleRate
 

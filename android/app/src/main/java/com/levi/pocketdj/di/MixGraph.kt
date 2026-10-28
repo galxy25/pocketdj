@@ -13,6 +13,9 @@ import com.levi.pocketdj.mix.engine.BurnStemProvider
 import com.levi.pocketdj.mix.engine.MixDeckExtras
 import com.levi.pocketdj.mix.engine.MixEngine
 import com.levi.pocketdj.mix.engine.MixSourceOpener
+import com.levi.pocketdj.mix.engine.MixStreamLoaderPort
+import com.levi.pocketdj.mix.engine.Mp3StreamSourceFactory
+import com.levi.pocketdj.mix.engine.StreamDecks
 import com.levi.pocketdj.mix.engine.MixTrackResolver
 import com.levi.pocketdj.mix.engine.ResolvedTrack
 import com.levi.pocketdj.mix.engine.VoiceRunner
@@ -122,6 +125,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     /** MIX-8: the stem / loop / beat-grid controllers (built with, and hooked into, [mixEngine]). */
     val mixDeckExtras: MixDeckExtras get() { mixEngine; return checkNotNull(deckExtras) }
 
+    @Volatile private var streamDecksRef: StreamDecks? = null
+
+    /** MIX-10: growing-file decks + stem-stream feed, hooked into [mixEngine] and the stream loader. */
+    val mixStreamDecks: StreamDecks get() { mixEngine; return checkNotNull(streamDecksRef) }
+
     val mixEngine: MixEngine by lazy {
         val audio = app.appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         MixEngine(
@@ -155,6 +163,18 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             )
             deckExtras = extras
             mixStreamLoader.addStemListener { id -> extras.stems.streamProgressed(id) }
+            // MIX-10: streaming decks. Progress events (main thread) pump every deck streaming the song;
+            // the loader never evicts a stream a deck is playing.
+            val loader = mixStreamLoader
+            val decks = StreamDecks(
+                engine = it, loader = MixStreamLoaderPort(loader), sources = Mp3StreamSourceFactory(),
+                stems = extras.stems, hasLocalFile = { id -> burns.hasLocalFile(id) },
+            )
+            decks.upcomingProvider = { autoMixHost.autoUpcomingSongIds }
+            decks.install()
+            streamDecksRef = decks
+            loader.onProgress = { id -> decks.streamProgressed(id) }
+            loader.pinnedIds = { decks.streamingSongIds }
             it.loadOffload = { work, commit ->
                 main.launch {
                     val p = withContext(Dispatchers.IO) { work() }
