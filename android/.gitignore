@@ -11,3 +11,4 @@ captures/
 
 # OS
 .DS_Store
+.cxx/

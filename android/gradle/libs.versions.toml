@@ -22,6 +22,7 @@ lifecycleProcess = "2.8.7"
 securityCrypto = "1.1.0-alpha06"
 glance = "1.1.1"
 playServicesLocation = "21.3.0"
+oboe = "1.9.3"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -55,6 +56,7 @@ androidx-material3-adaptive-navigation-suite = { group = "androidx.compose.mater
 androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
 androidx-media3-common = { group = "androidx.media3", name = "media3-common", version.ref = "media3" }
 play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
+oboe = { group = "com.google.oboe", name = "oboe", version.ref = "oboe" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
