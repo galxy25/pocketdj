@@ -54,6 +54,7 @@ class MixSessionStore(
 
     private var saveVersion = 0L
     private var pendingSave: Cancellable? = null
+    private var saveGen = 0L
 
     /** The on-disk document (cloud-sync registration reads the same file). */
     val syncFile: File get() = file
@@ -282,7 +283,7 @@ class MixSessionStore(
         _playedRevision.value += 1
         startNewSession(save = false)
         saveVersion += 1
-        writer.delete(saveVersion)
+        writer.deleteNow(saveVersion)   // synchronous, like iOS: no flush can race a queued delete
     }
 
     /**
@@ -359,6 +360,7 @@ class MixSessionStore(
         )
 
     private fun cancelPending() {
+        saveGen += 1   // a debounce task already blocked on the lock must become a no-op
         pendingSave?.cancel()
         pendingSave = null
     }
@@ -366,8 +368,10 @@ class MixSessionStore(
     /** Debounced save for the continuous stream (~0.6 s of quiescence). */
     private fun scheduleSave() {
         cancelPending()
+        val gen = saveGen
         pendingSave = scheduler.schedule(SAVE_DEBOUNCE_MS) {
             synchronized(lock) {
+                if (gen != saveGen) return@synchronized
                 pendingSave = null
                 saveNow()
             }

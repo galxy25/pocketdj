@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 MIX-1 Durable Mix stores (MixDeckSessionStore decks v1 + MixSessionStore sessions v2) over VersionedJsonWriter.
 - [x] mix/store/MixDeckSessionStore.kt (TrackRef/FXSlotSnapshot/DeckSnapshot/AutoRow/AutoSnapshot/MixDeckSnapshot, resolvedSlots, isEmpty/isExhausted, save/saveDebounced/updatePosition/clear/load/flush)
@@ -18,3 +18,15 @@ Deviations / notes
 
 ## Questions for Levi
 None.
+
+## Review
+
+fixes applied
+
+- MINOR scheduleSave orphan race: fixed (saveGen counter bumped in cancelPending; debounce task no-ops on mismatch). Test: staleDebounceTaskAfterCancelIsNoOp.
+- MINOR clear() queued delete vs flush: fixed (new VersionedJsonWriter.deleteNow, clear() deletes synchronously). Test: clearThenFlushDoesNotMaterializeFile.
+- MINOR MixGraph eager construction on ON_STOP/reset: fixed (Lazy handles + isInitialized; reset deletes the file directly for uninitialized stores). Dirty-flag skip not added.
+- NIT ledger row: deferred to integrator (add MIX-1 as DONE, no device-only work).
+- NIT ArrayList copy per save: not changed (optional).
+
+Tests: 854 -> 856, 0 failures; assembleDebug green.

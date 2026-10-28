@@ -59,6 +59,12 @@ class VersionedJsonWriter(
         applyWrite(version, render)
     }
 
+    /** Inline delete on the caller's thread; supersedes every queued op with a lower version. */
+    fun deleteNow(version: Long) {
+        invalidateBelow(version)
+        applyDelete(version)
+    }
+
     /** Block until everything queued before this call has executed. */
     fun awaitIdle() {
         val latch = CountDownLatch(1)

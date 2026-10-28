@@ -343,6 +343,34 @@ class MixSessionStoreTest {
         assertTrue(s.events(s.currentId).isEmpty())
     }
 
+    @Test fun staleDebounceTaskAfterCancelIsNoOp() {
+        // A task that already started (blocked on the lock) cannot be cancelled by future.cancel.
+        val tasks = ArrayList<Runnable>()
+        val uncancellable = object : StoreScheduler {
+            override fun schedule(delayMs: Long, task: Runnable): Cancellable { tasks.add(task); return Cancellable { } }
+        }
+        val f = tempFile("sessions.json")
+        val s = MixSessionStore(f, VersionedJsonWriter(f), clock::read, uncancellable) { "idx".padEnd(12, '0') }
+        s.log(MixEventKind.Volume, param = "vol", value = 0.1)   // F1
+        s.log(MixEventKind.Volume, param = "vol", value = 0.2, slot = 1)   // F2 supersedes F1
+        s.clear()
+        tasks.forEach { it.run() }                              // stragglers fire after the wipe
+        assertFalse("orphaned debounce resurrected the wiped file", f.exists())
+    }
+
+    @Test fun clearThenFlushDoesNotMaterializeFile() {
+        val f = tempFile("sessions.json")
+        val q = QueueExecutor()
+        val s = store(f, VersionedJsonWriter(f, q))
+        s.log(MixEventKind.Play)
+        q.drain()
+        assertTrue(f.exists())
+        s.clear()                                               // delete must be synchronous
+        s.flush()                                               // ON_STOP right after reset
+        q.drain()
+        assertFalse(f.exists())
+    }
+
     @Test fun reloadFromDiskAdoptsPulledDocUnlessMidTake() {
         val f = tempFile("sessions.json")
         val s = store(f)

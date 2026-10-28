@@ -20,30 +20,36 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     private val writerExecutor by lazy { VersionedJsonWriter.backgroundExecutor("pdj-mix-writer") }
 
     /** The live-mix snapshot (decks + crossfader + Auto-DJ). No disk I/O until load()/save(). */
-    val mixDeckSession: MixDeckSessionStore by lazy {
+    private val deckLazy = lazy {
         val f = File(app.appContext.filesDir, MixDeckSessionStore.FILE_NAME)
         MixDeckSessionStore(f, writer = VersionedJsonWriter(f, writerExecutor))
     }
+    val mixDeckSession: MixDeckSessionStore get() = deckLazy.value
 
     /** The mix session action log (also the engine's recorder). */
-    val mixSessions: MixSessionStore by lazy {
+    private val sessionsLazy = lazy {
         val f = File(app.appContext.filesDir, MixSessionStore.FILE_NAME)
         MixSessionStore(f, writer = VersionedJsonWriter(f, writerExecutor))
     }
+    val mixSessions: MixSessionStore get() = sessionsLazy.value
 
     // ON_STOP: both documents are written inline so a process kill right after backgrounding
     // cannot lose the latest positions / events.
     override val flushables: List<Flushable> = listOf(
         Flushable {
-            mixDeckSession.flush()
-            mixSessions.flush()
+            // Only stores that were actually built this process: constructing one just to
+            // flush it would decode + rewrite an unchanged (possibly multi-MB) document on main.
+            if (deckLazy.isInitialized()) deckLazy.value.flush()
+            if (sessionsLazy.isInitialized()) sessionsLazy.value.flush()
         },
     )
 
     override val resetHooks: List<ResetHook> = listOf(
         ResetHook {
-            mixDeckSession.clear()
-            mixSessions.clear()
+            if (deckLazy.isInitialized()) deckLazy.value.clear()
+            else File(app.appContext.filesDir, MixDeckSessionStore.FILE_NAME).delete()
+            if (sessionsLazy.isInitialized()) sessionsLazy.value.clear()
+            else File(app.appContext.filesDir, MixSessionStore.FILE_NAME).delete()
         },
     )
 }
