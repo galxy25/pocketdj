@@ -64,7 +64,8 @@ class ShortcutsPublisherTest {
 
     private class Sink : ShortcutSink {
         val published = mutableListOf<List<ShortcutSpec>>()
-        override suspend fun publish(shortcuts: List<ShortcutSpec>) { published += shortcuts }
+        var accept = true
+        override suspend fun publish(shortcuts: List<ShortcutSpec>): Boolean { published += shortcuts; return accept }
     }
 
     @Test
@@ -104,6 +105,25 @@ class ShortcutsPublisherTest {
         advanceTimeBy(1_001); runCurrent()
         assertEquals(2, sink.published.size)
         assertFalse(sink.published.last().any { it.id.endsWith("_z") })
+        job.cancel()
+    }
+
+    @Test
+    fun refusedPublish_isRetriedOnTheNextEmission() = runTest {
+        val src = MutableStateFlow(listOf(c(PlayKind.Pocket, "a", "A", 1.0)))
+        val sink = Sink().apply { accept = false }
+        val job = ShortcutsPublisher(TestScope(testScheduler), src, sink, cap = { 4 }, debounceMs = 1_000L).start()
+        advanceTimeBy(1_001); runCurrent()
+        assertEquals(1, sink.published.size)
+        // Same selection, but the launcher refused it: the next emission offers it again.
+        sink.accept = true
+        src.value = src.value + c(PlayKind.Pocket, "z", "Z", null)
+        advanceTimeBy(1_001); runCurrent()
+        assertEquals(2, sink.published.size)
+        // Accepted now: an unchanged selection is not re-sent.
+        src.value = src.value + c(PlayKind.Pocket, "y", "Y", null)
+        advanceTimeBy(1_001); runCurrent()
+        assertEquals(2, sink.published.size)
         job.cancel()
     }
 }

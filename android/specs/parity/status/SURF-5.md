@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SURF-5 - ShellActions facade + MixFacade seam + Assistant media search + shortcuts
 
@@ -25,3 +25,16 @@ state: implemented
 
 ## Questions for Levi
 - None blocking.
+
+## Review
+fixes applied
+
+- MAJOR deepLinkHandlers main-thread cost -> fixed: lazy now only assigns cheap seams; MediaSearchIntentHandler takes a `() -> MediaSearchHandler` provider; `shortcuts` (PlayHistoryStore decode) is built and started in `appScope.launch(Dispatchers.IO)`.
+- MAJOR onSetMediaItems echoing the queue -> fixed: the search request (with extras) goes to SearchPlayBridge and the controller's set is refused (failed future), so the player is untouched and no re-prepare/duplicate History row/premature resume. Device-only path (no JVM harness for MediaSession); documented that SURF-8 must keep or absorb the single SearchPlayBridge seam.
+- MINOR structured extras dropped -> fixed: artist agreement is a tiebreak (after tier) for Song/Album; kind hint and shuffle read from both raw query and structured string; bridge forwards extras. Tests: songFocus_artistExtraBreaksTitleTies, structuredPlaylist_stillHonoursShuffleAndPocketHintFromRawQuery.
+- MINOR shortcut publish never retried -> fixed: sink returns Boolean, publisher remembers only the last SUCCESSFUL selection (no distinctUntilChanged), CancellationException rethrown. Test: refusedPublish_isRetriedOnTheNextEmission.
+- MINOR ledger row -> fixed: SURF-5 PARTIAL, SURF-3 veto note updated.
+- MINOR SURF-8 overlap -> fixed by documenting the single seam in PlaybackService KDoc, status, and ledger. AndroidManifest/shortcut_strings are additive and already listed above.
+- NIT playItem catch -> fixed: catches Exception (not Cancellation) and posts a generic message.
+
+Tests: 1934 -> 1937, 0 failures; assembleDebug green.

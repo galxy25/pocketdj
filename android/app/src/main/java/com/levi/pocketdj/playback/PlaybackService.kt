@@ -279,9 +279,12 @@ class PlaybackService : MediaSessionService() {
 
         /**
          * Voice search through a MediaController (Assistant / Android Auto): the item carries only
-         * `requestMetadata.searchQuery`. The query is handed to the shell (which resolves it to a
-         * playlist/pocket and starts the sequencer); the controller's own set is answered with the
-         * player's CURRENT queue so nothing is cleared underneath the sequencer. Device-only path.
+         * `requestMetadata.searchQuery` (+ structured extras). The request is handed to
+         * [com.levi.pocketdj.assistant.SearchPlayBridge] (the single search seam; SURF-8's
+         * MediaLibraryService conversion MUST keep or absorb this hook, not add a second one).
+         * The shell's sequencer owns the start, so the controller's set is REFUSED: echoing the
+         * current queue would re-prepare the playing item, double-log History and resume the old
+         * track before the query resolves. Device-only path.
          */
         override fun onSetMediaItems(
             mediaSession: MediaSession,
@@ -290,20 +293,16 @@ class PlaybackService : MediaSessionService() {
             startIndex: Int,
             startPositionMs: Long,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            val query = mediaItems.singleOrNull()
+            val item = mediaItems.singleOrNull()
                 ?.takeIf { it.mediaId.isEmpty() || it.localConfiguration == null }
-                ?.requestMetadata?.searchQuery
+            val query = item?.requestMetadata?.searchQuery
             val handler = com.levi.pocketdj.assistant.SearchPlayBridge.handler
-            if (!query.isNullOrBlank() && handler != null) {
-                handler(query)
-                val p = mediaSession.player
-                val current = List(p.mediaItemCount) { p.getMediaItemAt(it) }.toMutableList()
-                return Futures.immediateFuture(
-                    MediaSession.MediaItemsWithStartPosition(
-                        current,
-                        if (current.isEmpty()) androidx.media3.common.C.INDEX_UNSET else p.currentMediaItemIndex,
-                        if (current.isEmpty()) androidx.media3.common.C.TIME_UNSET else p.currentPosition,
-                    ),
+            if (item != null && !query.isNullOrBlank() && handler != null) {
+                val extras = item.requestMetadata.extras
+                val base = com.levi.pocketdj.assistant.MediaSearchRequest.from { extras?.getString(it) }
+                handler(base.copy(query = query))
+                return Futures.immediateFailedFuture(
+                    UnsupportedOperationException("search handled by the shell; player untouched"),
                 )
             }
             return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)

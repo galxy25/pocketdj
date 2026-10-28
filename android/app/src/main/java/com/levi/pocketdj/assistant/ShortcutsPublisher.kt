@@ -15,7 +15,7 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.debounce
-import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -70,7 +70,8 @@ object ShortcutRanking {
 
 /** Where the selected shortcuts go (production: [ShortcutManagerSink]). */
 fun interface ShortcutSink {
-    suspend fun publish(shortcuts: List<ShortcutSpec>)
+    /** @return true when the launcher accepted the set (false = refused/rate-limited: retry later). */
+    suspend fun publish(shortcuts: List<ShortcutSpec>): Boolean
 }
 
 /**
@@ -86,19 +87,31 @@ class ShortcutsPublisher(
     private val cap: () -> Int,
     private val debounceMs: Long = 1_000L,
 ) {
+    @Volatile private var lastPublished: List<ShortcutSpec>? = null
+
     @OptIn(FlowPreview::class)
     fun start(): Job = scope.launch {
         source
             .debounce(debounceMs)
             .map { ShortcutRanking.select(it, cap()) }
-            .distinctUntilChanged()
-            .collect { runCatching { sink.publish(it) } }
+            .collect { selection ->
+                // Only a SUCCESSFUL publish is remembered, so a refused one retries on the next emission.
+                if (selection == lastPublished) return@collect
+                val ok = try {
+                    sink.publish(selection)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    false
+                }
+                if (ok) lastPublished = selection
+            }
     }
 }
 
 /** The ShortcutManagerCompat sink. Static shortcuts (res/xml/shortcuts.xml) take [STATIC_COUNT] slots. */
 class ShortcutManagerSink(private val context: Context) : ShortcutSink {
-    override suspend fun publish(shortcuts: List<ShortcutSpec>) = withContext(Dispatchers.IO) {
+    override suspend fun publish(shortcuts: List<ShortcutSpec>): Boolean = withContext(Dispatchers.IO) {
         val infos = shortcuts.map { s ->
             ShortcutInfoCompat.Builder(context, s.id)
                 .setShortLabel(s.label)
@@ -111,7 +124,6 @@ class ShortcutManagerSink(private val context: Context) : ShortcutSink {
                 .build()
         }
         ShortcutManagerCompat.setDynamicShortcuts(context, infos)
-        Unit
     }
 
     companion object {

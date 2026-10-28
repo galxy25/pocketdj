@@ -25,6 +25,8 @@ import com.levi.pocketdj.shell.ShellRoute
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import com.levi.pocketdj.onboarding.DataStoreOnboardingMarkerStorage
@@ -140,10 +142,10 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
         }
         val catalog = app.catalogRepository.state.value.catalog
         if (MediaCandidate.Kind.Album in kinds) {
-            catalog?.albumsById?.values?.mapTo(out) { MediaCandidate(MediaCandidate.Kind.Album, it.id, it.name) }
+            catalog?.albumsById?.values?.mapTo(out) { MediaCandidate(MediaCandidate.Kind.Album, it.id, it.name, artist = it.artist) }
         }
         if (MediaCandidate.Kind.Song in kinds) {
-            catalog?.songsById?.values?.mapTo(out) { MediaCandidate(MediaCandidate.Kind.Song, it.id, it.name) }
+            catalog?.songsById?.values?.mapTo(out) { MediaCandidate(MediaCandidate.Kind.Song, it.id, it.name, artist = it.artist) }
         }
         return out
     }
@@ -173,7 +175,8 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
     }
 
     override val deepLinkHandlers: List<DeepLinkHandler> by lazy {
-        // Wire the SURF-5 seams once the handlers are first read (AppGraph.init -> IntentSink.install).
+        // Cheap and side-effect-light: runs on the main thread during cold start. Nothing heavy
+        // (history decode, catalog/collections graphs) is forced here.
         deepLinkSeams.playItem = { kind, id, shuffle ->
             if (kind == PlayKind.Setlist) {
                 NavRequestBus.post(ShellRoute.Setlist(id, autoplay = true))
@@ -185,18 +188,23 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                             PlayKind.Pocket -> shellActions.playPocket(id, shuffle)
                             else -> shellActions.playAlbum(id, shuffle)
                         }
-                    } catch (e: ShellActionException) {
-                        NavRequestBus.postMessage(e.message.orEmpty())
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        NavRequestBus.postMessage(
+                            (e as? ShellActionException)?.message ?: "Couldn't play that.",
+                        )
                     }
                 }
             }
             null
         }
-        SearchPlayBridge.handler = { query ->
-            app.appScope.launch { mediaSearch.handle(MediaSearchRequest(query = query)) }
+        SearchPlayBridge.handler = { request ->
+            app.appScope.launch { mediaSearch.handle(request) }
         }
-        shortcuts.start()
-        listOf(deepLinks.intentHandler, MediaSearchIntentHandler(app.appScope, mediaSearch, NavRequestBus::post))
+        // Publisher construction reads the play-history log: build + start it off main.
+        app.appScope.launch(Dispatchers.IO) { shortcuts.start() }
+        listOf(deepLinks.intentHandler, MediaSearchIntentHandler(app.appScope, { mediaSearch }, NavRequestBus::post))
     }
 
     private companion object {

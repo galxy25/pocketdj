@@ -92,6 +92,8 @@ data class MediaCandidate(
     val id: String,
     val name: String,
     val lastPlayedAt: Double? = null,
+    /** Song/album artist, for agreement with a structured `EXTRA_ARTIST`. */
+    val artist: String? = null,
 ) {
     enum class Kind { Playlist, Pocket, Album, Song }
 }
@@ -131,7 +133,7 @@ object MediaSearchResolver {
         return if (nq.split(' ').all { it in nameTokens }) 1 else 0
     }
 
-    private data class Scored(val candidate: MediaCandidate, val tier: Int, val hinted: Boolean)
+    private data class Scored(val candidate: MediaCandidate, val tier: Int, val hinted: Boolean, val artistMatch: Boolean)
 
     fun resolve(
         request: MediaSearchRequest,
@@ -143,7 +145,10 @@ object MediaSearchResolver {
         val kinds = kindsFor(request.focus)
         if (kinds.isEmpty()) return browse
 
-        val words = JukeboxMatcher.normalize(raw).split(' ').filter { it.isNotEmpty() }
+        // Hint + shuffle come from BOTH the raw spoken query and the structured match string.
+        val words = (JukeboxMatcher.normalize(raw) + " " + JukeboxMatcher.normalize(request.query))
+            .split(' ').filter { it.isNotEmpty() }
+        val wantedArtist = request.artist?.let { JukeboxMatcher.normalize(it) }?.takeIf { it.isNotEmpty() }
         val shuffle = "shuffle" in words || "shuffled" in words
         val stripped = words.filterNot { it in NOISE }.joinToString(" ")
         val hint = when {
@@ -155,10 +160,18 @@ object MediaSearchResolver {
         val queries = listOfNotNull(raw, stripped.takeIf { it.isNotEmpty() && it != raw }).distinct()
 
         val best = pool.map { c ->
-            Scored(c, queries.maxOf { tier(it, c.name) }, hint != null && c.kind == hint)
+            Scored(
+                c,
+                queries.maxOf { tier(it, c.name) },
+                hint != null && c.kind == hint,
+                wantedArtist != null && c.artist != null && JukeboxMatcher.normalize(c.artist).let { a ->
+                    a == wantedArtist || a.contains(wantedArtist) || wantedArtist.contains(a)
+                },
+            )
         }.filter { it.tier > 0 }
             .sortedWith(
                 compareByDescending<Scored> { it.tier }
+                    .thenByDescending { it.artistMatch }
                     .thenByDescending { it.hinted }
                     .thenByDescending { it.candidate.lastPlayedAt ?: Double.NEGATIVE_INFINITY }
                     .thenBy { it.candidate.name.length }
@@ -207,7 +220,7 @@ class MediaSearchHandler(
  * (Assistant / Android Auto voice) lands here. Assigned by `ShellGraph`.
  */
 object SearchPlayBridge {
-    @Volatile var handler: ((query: String) -> Unit)? = null
+    @Volatile var handler: ((request: MediaSearchRequest) -> Unit)? = null
 }
 
 /**
@@ -217,14 +230,14 @@ object SearchPlayBridge {
  */
 class MediaSearchIntentHandler(
     private val scope: CoroutineScope,
-    private val handler: MediaSearchHandler,
+    private val handler: () -> MediaSearchHandler,
     private val openRoute: (ShellRoute) -> Unit,
 ) : DeepLinkHandler {
     override fun handle(intent: Intent): Boolean {
         when (intent.action) {
             MediaSearchRequest.ACTION -> {
                 val request = MediaSearchRequest.from { intent.getStringExtra(it) }
-                scope.launch { handler.handle(request) }
+                scope.launch { handler().handle(request) }
                 return true
             }
             ACTION_OPEN_TAB -> {

@@ -117,6 +117,26 @@ class MediaSearchHandlerTest {
         assertEquals("s1", (r as MediaSearchResult.Play).candidate.id)
     }
 
+    @Test
+    fun songFocus_artistExtraBreaksTitleTies() {
+        val other = MediaCandidate(MediaCandidate.Kind.Song, "s-other", "Hello", artist = "Lionel Richie")
+        val adele = MediaCandidate(MediaCandidate.Kind.Song, "s-adele", "Hello (Remastered Deluxe)", artist = "Adele")
+        val exactAdele = MediaCandidate(MediaCandidate.Kind.Song, "s-adele2", "Hello", artist = "Adele")
+        val req = MediaSearchRequest("hello by adele", MediaFocus.Song, title = "Hello", artist = "Adele")
+        val r = MediaSearchResolver.resolve(req) { listOf(other, adele, exactAdele) }
+        assertEquals("s-adele2", (r as MediaSearchResult.Play).candidate.id)
+    }
+
+    @Test
+    fun structuredPlaylist_stillHonoursShuffleAndPocketHintFromRawQuery() {
+        val list = pl("l", "Warmup", 5.0)
+        val pocket = pk("p", "Warmup", 1.0)
+        val req = MediaSearchRequest("shuffle my warmup pocket", MediaFocus.Playlist, playlist = "warmup")
+        val r = MediaSearchResolver.resolve(req) { listOf(list, pocket) } as MediaSearchResult.Play
+        assertEquals("p", r.candidate.id)
+        assertTrue(r.shuffle)
+    }
+
     private class Recorder : MediaPlayActions {
         val calls = mutableListOf<String>()
         var fail: ShellActionException? = null
