@@ -145,10 +145,10 @@ object KeyDetector {
 class StudioAnalyzer(
     private val store: StudioStore,
     private val playback: StudioPlayback,
-    /** Decode a local file for the chromagram (off the main thread); null when unreadable. */
-    private val decode: suspend (path: String) -> PcmBuffer?,
     /** Leases SAF-stored media as a local file; null = app-private files only. */
     private val materializer: com.levi.pocketdj.studio.store.StudioMaterializer? = null,
+    /** Decode a local file for the chromagram (off the main thread); null when unreadable. */
+    private val decode: suspend (path: String) -> PcmBuffer?,
 ) {
     /** Fire-and-forget from an "Add to..." action. Never throws except cancellation. */
     suspend fun prepare(studioId: String) {

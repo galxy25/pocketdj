@@ -414,7 +414,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     /** Key detection when an item enters a collection (idempotent). */
     val studioAnalyzer: StudioAnalyzer by lazy {
-        StudioAnalyzer(studioStore, studioPlayback, { path -> runCatching { studioRender.decodeBuffer(path) }.getOrNull() }, studioMaterializer)
+        StudioAnalyzer(studioStore, studioPlayback, studioMaterializer) { path -> runCatching { studioRender.decodeBuffer(path) }.getOrNull() }
     }
 
     /** Wired into AppGraph's collections init: lazy, so a user who never has a studio id never builds the store. */

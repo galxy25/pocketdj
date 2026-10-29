@@ -15,3 +15,7 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Verification
+- Fixed constructor param order (trailing-lambda binding) in StudioAnalyzer/TakeFiler; StudioGraph + TakeFilerTest call sites updated.
+- `./gradlew :app:testDebugUnitTest :app:assembleDebug` green: 5139 tests, 0 failures.

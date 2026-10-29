@@ -207,9 +207,9 @@ class TakeFiler(
     private val store: StudioStore,
     private val renderer: TakeRenderer,
     private val studioRender: com.levi.pocketdj.studio.audio.StudioRender,
-    private val now: () -> Double = { System.currentTimeMillis().toDouble() },
     /** Makes a SAF-stored (content://) take usable wherever a File is needed; default = files only. */
     private val materializer: com.levi.pocketdj.studio.store.StudioMaterializer? = null,
+    private val now: () -> Double = { System.currentTimeMillis().toDouble() },
 ) {
     /** Render + file [result]. Throws [TakeFileException]. */
     suspend fun file(result: TakeResult, name: String, bank: File?): StudioTake {

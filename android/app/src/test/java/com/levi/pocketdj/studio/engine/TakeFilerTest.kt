@@ -138,7 +138,7 @@ class TakeFilerTest {
             }
         }
         val mat = com.levi.pocketdj.studio.store.StudioMaterializer(tmp.newFolder("cache"), { com.levi.pocketdj.studio.store.SafStat(3, 1) }, { java.io.ByteArrayInputStream("900".toByteArray()) })
-        val filer = TakeFiler(safRoots, store, renderer, sr, { 42.0 }, mat)
+        val filer = TakeFiler(safRoots, store, renderer, sr, materializer = mat, now = { 42.0 })
         val take = com.levi.pocketdj.studio.model.StudioTake(
             id = "tk_saf", name = "Saf riff", instrument = InstrumentKey.PIANO, fileName = "take-tk_saf.m4a", wasUserFolder = true,
             bpm = 100.0, events = listOf(ev(0, 500)), durationMs = 500, createdAt = 1.0,
