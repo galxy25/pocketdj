@@ -279,7 +279,8 @@ fun BrowseScreen(
             val songId = (item as? AddToItem.Song)?.id
             val ctx = LocalContext.current
             val sel = remember { graph.collectionsGraph.rowSelection }
-            val ctxScope = rememberCoroutineScope()
+            // App scope: the menu leaves composition on tap (dismiss), which would cancel a screen scope mid-add.
+            val ctxScope = graph.appScope
             val favs = remember { graph.collectionsGraph.favorites }
             val favState by favs.state.collectAsState()
             val song = songId?.let { catalogState.catalog?.songsById?.get(it) }
@@ -564,11 +565,8 @@ private fun BrowseContent(
                 singleLine = true,
                 placeholder = {
                     Text(
-                        if (discover) "Search Apple Music" else when (kind) {
-                            BrowseKind.ALBUMS -> "Search albums"
-                            BrowseKind.SONGS -> "Search songs"
-                            BrowseKind.ARTISTS -> "Search artists"
-                        },
+                        // Short enough for the narrowest field (Albums shows 4 tool icons beside it).
+                        if (discover) "Search Apple Music" else "Search",
                         maxLines = 1,
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
@@ -658,12 +656,12 @@ private fun BrowseContent(
                 BrowseKind.ARTISTS -> results.artists.size
             }
             val noun = when (kind) {
-                BrowseKind.ALBUMS -> "albums"
-                BrowseKind.SONGS -> "songs"
-                BrowseKind.ARTISTS -> "artists"
+                BrowseKind.ALBUMS -> "album"
+                BrowseKind.SONGS -> "song"
+                BrowseKind.ARTISTS -> "artist"
             }
             Text(
-                text = if (online) onlineCountLabel(onlineUi, kind) else "$count $noun",
+                text = if (online) onlineCountLabel(onlineUi, kind) else Fmt.count(count, noun),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

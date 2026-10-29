@@ -109,7 +109,7 @@ private fun SettingsGroupBlock(
     }
     if (isAdvanced && !advanced) return
     androidx.compose.material3.Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        color = MaterialTheme.colorScheme.surfaceContainer,
         shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {

@@ -32,4 +32,10 @@ class SettingsGroupsTest {
         assertEquals(SyncUi.NO_ACCOUNT, SyncUi.caption(false, null, "Account unavailable"))
         assertEquals("Sync failed: boom", SyncUi.caption(true, "boom", null))
     }
+
+    @Test fun amSyncHttpErrorsReadAsPlainLanguage() {
+        val raw = "Apple Music sync failed: AM GET /v1/me/library/playlists?limit=100 -> 403"
+        assertTrue(AmSyncCopy.friendly(raw).startsWith("Apple Music didn"))
+        assertEquals("Preparing playlists", AmSyncCopy.friendly("Preparing playlists"))
+    }
 }

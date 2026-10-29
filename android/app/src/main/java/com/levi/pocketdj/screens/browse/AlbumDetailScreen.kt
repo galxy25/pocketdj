@@ -317,19 +317,25 @@ private fun AlbumTrackRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.width(30.dp),
         )
-        KeyChip(song.key?.takeIf { song.camelot == null }, song.camelot)
-        Spacer(Modifier.width(6.dp))
+        // Same fixed columns as the Browse song row (unplayable rows keep the time aligned).
+        androidx.compose.foundation.layout.Box(Modifier.width(SongRowColumns.KEY), contentAlignment = Alignment.Center) {
+            KeyChip(song.key?.takeIf { song.camelot == null }, song.camelot)
+        }
+        Spacer(Modifier.width(4.dp))
         Text(
             Fmt.duration(song.length),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            maxLines = 1,
+            modifier = Modifier.width(SongRowColumns.TIME),
         )
         FavoriteToggle(songId = song.id, appleMusicId = song.appleMusicId, iconSize = 18.dp)
         when {
             isPreparing -> {
-                Spacer(Modifier.width(10.dp))
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(10.dp))
+                androidx.compose.foundation.layout.Box(Modifier.size(SongRowColumns.PLAY), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
             }
 
             playable != Playability.NONE -> {
@@ -346,7 +352,7 @@ private fun AlbumTrackRow(
                 }
             }
 
-            else -> Spacer(Modifier.width(12.dp))
+            else -> Spacer(Modifier.width(SongRowColumns.PLAY))
         }
     }
 }

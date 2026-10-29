@@ -10,7 +10,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.levi.pocketdj.data.games.GameKind
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -108,20 +109,23 @@ internal fun GameSubScreen(
     androidx.compose.foundation.layout.Column(modifier) {
         androidx.compose.foundation.layout.Row(
             verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-            modifier = Modifier.padding(start = 4.dp, end = 16.dp).testTag("game-subscreen-header"),
+            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp).testTag("game-subscreen-header"),
         ) {
-            androidx.compose.material3.IconButton(onClick = onBack, modifier = Modifier.testTag("game-subscreen-back")) {
-                androidx.compose.material3.Icon(
-                    androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back to Games",
-                )
-            }
+            // Title + a close (x) on the right: the shell bar above already carries a back arrow
+            // (Games is pushed from More), and two stacked arrows read as the same action.
             androidx.compose.material3.Text(
                 title,
                 style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
+            androidx.compose.material3.IconButton(onClick = onBack, modifier = Modifier.testTag("game-subscreen-back")) {
+                androidx.compose.material3.Icon(
+                    androidx.compose.material.icons.Icons.Filled.Close,
+                    contentDescription = "Close $title, back to Games",
+                )
+            }
         }
         content(Modifier.weight(1f))
     }

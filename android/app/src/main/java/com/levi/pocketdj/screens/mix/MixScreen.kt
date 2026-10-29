@@ -1,5 +1,13 @@
 package com.levi.pocketdj.screens.mix
 
+import androidx.compose.ui.unit.sp
+
+import androidx.compose.foundation.layout.size
+
+import androidx.compose.material.icons.filled.PlayArrow
+
+import androidx.compose.material.icons.filled.Pause
+
 import android.app.Activity
 import android.content.res.Configuration
 import androidx.compose.foundation.background
@@ -201,17 +209,7 @@ fun MixScreen(
         }
         // Crossfader + master transport pinned under the scrolling decks: on a phone the stacked
         // decks are ~3 screens tall, so a crossfader at the end of the scroll was out of reach.
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainer)
-                .padding(horizontal = 16.dp, vertical = 6.dp)
-                .testTag("mix-pinned-xfader"),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            CrossfaderView(engine)
-            MasterTransport(engine)
-        }
+        PinnedMixBar(engine)
         // Bottom-pinned; the ONLY collector of the downloader's progress.
         DownloadBar(state = mix.collectionMixDownloader.state, onCancel = { mix.collectionMixDownloader.cancel() })
     }
@@ -246,4 +244,45 @@ fun MixScreen(
         onConfirm = { sessions.reset(); confirmingReset = false },
         onDismiss = { confirmingReset = false },
     )
+}
+
+/**
+ * One compact row pinned under the decks: ▶/⏸ both decks + the A–B crossfader. (The full-size
+ * crossfader card + wide "Play both decks" button took ~190 dp, half a phone's deck viewport.)
+ */
+@Composable
+private fun PinnedMixBar(engine: com.levi.pocketdj.mix.engine.MixEngine) {
+    val ui by engine.ui.collectAsState()
+    val enabled = DeckLayoutRules.masterEnabled(ui.a.loaded != null, ui.b.loaded != null)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainer)
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .testTag("mix-pinned-xfader"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        androidx.compose.material3.FilledIconButton(
+            onClick = { engine.toggleAll() },
+            enabled = enabled,
+            colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
+                containerColor = DeckColors.accent, contentColor = androidx.compose.ui.graphics.Color(0xFF07101F),
+            ),
+            modifier = Modifier.size(48.dp).testTag("mix-play")
+                .semantics { contentDescription = DeckLayoutRules.masterLabel(ui.isRunning) },
+        ) {
+            Icon(if (ui.isRunning) Icons.Filled.Pause else Icons.Filled.PlayArrow, null)
+        }
+        Text("A", fontSize = 12.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = DeckColors.accent)
+        androidx.compose.material3.Slider(
+            value = ui.crossfader.toFloat().coerceIn(0f, 1f),
+            onValueChange = { engine.setCrossfader(it.toDouble()) },
+            modifier = Modifier.weight(1f).testTag("crossfader").semantics { contentDescription = "Crossfader" },
+            colors = androidx.compose.material3.SliderDefaults.colors(
+                thumbColor = DeckColors.gold, activeTrackColor = DeckColors.gold, inactiveTrackColor = DeckColors.border,
+            ),
+        )
+        Text("B", fontSize = 12.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = DeckColors.accent)
+    }
 }
