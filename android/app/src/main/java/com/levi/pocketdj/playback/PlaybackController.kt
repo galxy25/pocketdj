@@ -827,7 +827,7 @@ class PlaybackController(
 
     // ---- PB-8: Apple Music rows inside a run ----------------------------------------------------------
 
-    private val amMonitor = AppleMusicEndMonitor()
+    private val amMonitor = AppleMusicEndMonitor().also { m -> m.trace = { NPLog.trace(it) } }
     private var amPollJob: kotlinx.coroutines.Job? = null
     private var amController: BackendAppleMusicController? = null
     private var amAdapter: AppleMusicPlayerAdapter? = null
@@ -915,6 +915,20 @@ class PlaybackController(
         }
     }
 
+    /**
+     * iOS `onNearEnd`: the AM track is in its last 8 s - run the NEXT row's resolve ladder now (manifest / presign /
+     * burn lookups, AM->AM pre-resolve) so the hand-off finds a warm path instead of paying the resolve after the end.
+     * Best-effort: a failure here is the same failure the real start would meet, and is handled there.
+     */
+    private fun warmNextAfterAppleMusic(songId: String) {
+        val next = sequencer.state.value.upcoming.firstOrNull() ?: return
+        sequencerScope.launch {
+            val mode = runCatching { PlaybackSettings(settings).mode() }.getOrDefault(PlaybackMode.CLOUD)
+            val src = runCatching { rowResolvers.resolve(next, mode) }.getOrNull()
+            NPLog.lane(NPLog.PLAYBACK, "[playback] am near-end song=$songId warmed next=${next.id} backend=${src?.backend ?: "none"}")
+        }
+    }
+
     private fun dispatchAm(songId: String, ev: AmEvent) {
         when (ev) {
             AmEvent.FirstAudio -> Unit // play() already confirmed PLAYING and closed the start window
@@ -922,6 +936,7 @@ class PlaybackController(
             AmEvent.Restarted -> sequencer.handleAppleMusicRestarted(songId)
             is AmEvent.Interrupted -> sequencer.noteAppleMusicInterrupted(songId)
             AmEvent.Resumed -> sequencer.noteAppleMusicResumed(songId)
+            AmEvent.NearEnd -> warmNextAfterAppleMusic(songId)
         }
     }
 

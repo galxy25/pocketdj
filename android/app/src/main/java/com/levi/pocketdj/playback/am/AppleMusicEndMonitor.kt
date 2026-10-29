@@ -78,6 +78,39 @@ object EndVerdicts {
         stopped && expectedDuration > 0 && playedSeconds < expectedDuration - INTERRUPTION_GRACE_SECONDS
 }
 
+/**
+ * iOS `AppleMusicPlaybackProvider.reconcilePoll` / `advancedDespiteReportedPause` / `nearEnd`, pure.
+ * The SDK's status can freeze at "paused" while the position keeps moving (the frozen-false field bug);
+ * the monitor self-heals from the position, which cannot lie.
+ */
+object PollReconcile {
+    /** Position must advance this many seconds between two polls to override a reported pause. */
+    const val ADVANCE_EPSILON_SECONDS = 0.25
+
+    /** Seconds before the end `NearEnd` fires (iOS `nearEndLeadSeconds`). */
+    const val NEAR_END_LEAD_SECONDS = 8.0
+
+    enum class Transition { RESUMED, SELF_HEALED, PAUSED }
+
+    /** [isPlaying] = what the monitor should believe after this poll; [transition] only on a flip. */
+    data class Verdict(val isPlaying: Boolean, val transition: Transition?)
+
+    fun advancedDespiteReportedPause(playbackTime: Double, lastPollPlaybackTime: Double): Boolean =
+        playbackTime - lastPollPlaybackTime > ADVANCE_EPSILON_SECONDS
+
+    fun reconcile(reportedPlaying: Boolean, currentlyPlaying: Boolean, playbackTime: Double, lastPollPlaybackTime: Double): Verdict {
+        // The self-heal PREEMPTS the paused-status read: a status that says paused while position moves is wrong.
+        val really = reportedPlaying || advancedDespiteReportedPause(playbackTime, lastPollPlaybackTime)
+        if (really == currentlyPlaying) return Verdict(currentlyPlaying, null)
+        return if (really) Verdict(true, if (reportedPlaying) Transition.RESUMED else Transition.SELF_HEALED)
+        else Verdict(false, Transition.PAUSED)
+    }
+
+    /** Inside the last [NEAR_END_LEAD_SECONDS] of a known length (too-short tracks never fire). */
+    fun nearEnd(playbackTime: Double, expectedDuration: Double): Boolean =
+        expectedDuration > NEAR_END_LEAD_SECONDS + 1 && playbackTime >= expectedDuration - NEAR_END_LEAD_SECONDS
+}
+
 /** One poll of the SDK. */
 data class AmObservation(val status: AmStatus, val positionMs: Long)
 
@@ -95,6 +128,9 @@ sealed interface AmEvent {
 
     /** Back on air after an [Interrupted] hold. */
     data object Resumed : AmEvent
+
+    /** ONCE per arm, inside the last 8 s while PLAYING: the sequencer may warm the next row (iOS `onNearEnd`). */
+    data object NearEnd : AmEvent
 }
 
 /**
@@ -114,6 +150,17 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
     private var maxObserved = 0.0
     private var wallPlayed = 0.0
     private var interruptedAt: Double? = null
+    private var believedPlaying = false
+    private var lastReported = AmStatus.STOPPED
+    private var lastPollSeconds = 0.0
+    private var nearEndFired = false
+
+    /** Diagnostic hook for the self-heal / external pause lines (NPLog in production). */
+    var trace: ((String) -> Unit)? = null
+
+    /** Self-heals so far this arm (status said not-playing while position advanced). */
+    var selfHealCount: Int = 0
+        private set
 
     /** Sticky: OUR pause (button / adapter), cleared on resume. Distinguishes it from a parked skip. */
     @Volatile var intentionalPause: Boolean = false
@@ -137,6 +184,11 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
         wallPlayed = 0.0
         interruptedAt = null
         intentionalPause = false
+        believedPlaying = false
+        lastReported = AmStatus.STOPPED
+        lastPollSeconds = 0.0
+        nearEndFired = false
+        selfHealCount = 0
     }
 
     fun disarm() {
@@ -164,7 +216,7 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
         val now = nowMs()
         val dtSec = ((now - lastTickMs).coerceAtLeast(0L)) / 1000.0
         val t = obs.positionMs / 1000.0
-        val status = obs.status
+        var status = obs.status
 
         if (!everPlayed) {
             if (status == AmStatus.PLAYING) {
@@ -172,6 +224,9 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
                 lastTickMs = now
                 lastStatus = status
                 maxObserved = t
+                believedPlaying = true
+                lastReported = status
+                lastPollSeconds = t
                 return AmEvent.FirstAudio
             }
             lastTickMs = now
@@ -182,6 +237,28 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
             }
             return null
         }
+
+        // iOS reconcilePoll: once we have genuinely played, a "paused" status over an advancing position is the
+        // frozen-false bug - heal to PLAYING (the position cannot lie) so a parked-skip verdict never misfires.
+        // A STOPPED/BUFFERING read is left alone (those carry their own verdicts).
+        if (interruptedAt == null) {
+            val reported = status == AmStatus.PLAYING
+            val v = PollReconcile.reconcile(reported, believedPlaying, t, lastPollSeconds)
+            when (v.transition) {
+                PollReconcile.Transition.SELF_HEALED -> if (status == AmStatus.PAUSED && lastReported != AmStatus.PLAYING) {
+                    selfHealCount++
+                    trace?.invoke("AM monitor: self-heal - playbackTime advanced %.1fs while reported paused, correcting".format(t - lastPollSeconds))
+                    status = AmStatus.PLAYING
+                    intentionalPause = false
+                    believedPlaying = true
+                } else believedPlaying = true
+                PollReconcile.Transition.RESUMED -> { believedPlaying = true; intentionalPause = false; trace?.invoke("AM monitor: external RESUME at ${t.toInt()}s") }
+                PollReconcile.Transition.PAUSED -> { believedPlaying = false; trace?.invoke("AM monitor: external PAUSE at ${t.toInt()}s") }
+                null -> Unit
+            }
+        }
+        lastPollSeconds = t
+        lastReported = obs.status
 
         // Wall-clock play time (frozen across pauses): our clock, since the SDK resets position on stop.
         if (lastStatus == AmStatus.PLAYING) wallPlayed += dtSec
@@ -220,6 +297,12 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
         if (reason != null) {
             finished = true
             return AmEvent.Ended(reason)
+        }
+        if (!nearEndFired && status == AmStatus.PLAYING &&
+            PollReconcile.nearEnd(maxOf(t, wallPlayed), expectedSeconds)
+        ) {
+            nearEndFired = true
+            return AmEvent.NearEnd
         }
         return null
     }

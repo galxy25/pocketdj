@@ -29,7 +29,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
-import com.levi.pocketdj.data.burns.ArtistUsage
+import com.levi.pocketdj.screens.settings.storage.StorageLists
+import com.levi.pocketdj.screens.settings.storage.StorageRoutes
 import com.levi.pocketdj.data.burns.BurnSettings
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -65,7 +66,7 @@ import kotlinx.coroutines.launch
  * reported to the integrator (a `settings/storage` route + title case).
  */
 @Composable
-fun StorageScreen(modifier: Modifier = Modifier) {
+fun StorageScreen(modifier: Modifier = Modifier, onNavigate: (String) -> Unit = {}) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val storage = remember { graph.storageService }
@@ -175,6 +176,7 @@ fun StorageScreen(modifier: Modifier = Modifier) {
                 graph = graph,
                 onChanged = { scope.launch { sizes.putAll(storage.measureAll()) } },
                 snackbar = snackbar,
+                onNavigate = onNavigate,
             )
 
             Spacer(Modifier.height(8.dp))
@@ -404,21 +406,12 @@ private fun studioMeta(title: String, description: String, noun: String) = Stora
 )
 
 
-/** What the by-artist / by-collection delete dialog is currently offering. */
-private enum class DeleteKind(val label: String, val stems: Boolean) {
-    BURN_ARTIST("Delete songs by artist", false),
-    BURN_COLLECTION("Delete songs by collection", false),
-    STEM_ARTIST("Delete stems by artist", true),
-}
-
-private data class DeleteChoice(val label: String, val detail: String, val songIds: List<String>)
-
 /**
  * SVC-6: Settings ▸ Storage cap + prune controls and targeted deletes. Media only — the
  * library, collections, catalog and settings are never touched.
  */
 @Composable
-private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: SnackbarHostState) {
+private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: SnackbarHostState, onNavigate: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val services = graph.servicesGraph
@@ -427,9 +420,7 @@ private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: S
     var capSongs by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var pruning by remember { mutableStateOf(false) }
-    var kind by remember { mutableStateOf<DeleteKind?>(null) }
-    var choices by remember { mutableStateOf<List<DeleteChoice>>(emptyList()) }
-    var confirm by remember { mutableStateOf<Pair<DeleteKind, DeleteChoice>?>(null) }
+    var confirmAll by remember { mutableStateOf<List<String>?>(null) }
 
     LaunchedEffect(Unit) {
         val gb = services.storageSettings.capGB()
@@ -504,76 +495,44 @@ private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: S
     Spacer(Modifier.height(16.dp))
     SectionHeader("Delete downloads")
     Caption("Removes downloaded files only. Songs stay in your library and collections.")
-    @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        for (k in DeleteKind.entries) {
-            OutlinedButton(onClick = {
-                scope.launch {
-                    choices = loadChoices(graph, k)
-                    kind = k
-                }
-            }) { Text(k.label, style = MaterialTheme.typography.labelSmall) }
-        }
-    }
+    StorageNavRow("Burned music by artist") { onNavigate(StorageRoutes.BURNED_ARTISTS) }
+    StorageNavRow("Burned music by collection") { onNavigate(StorageRoutes.BURNED_COLLECTIONS) }
+    StorageNavRow("Stems by artist") { onNavigate(StorageRoutes.BURNED_STEMS) }
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(onClick = {
+        scope.launch { confirmAll = StorageLists.allSongIds(StorageLists.fromArtists(storage.burnUsageByArtist())) }
+    }) { Text(StorageLists.DELETE_ALL_LABEL) }
 
-    kind?.let { k ->
+    confirmAll?.let { ids ->
         AlertDialog(
-            onDismissRequest = { kind = null },
-            title = { Text(k.label) },
-            text = {
-                if (choices.isEmpty()) Text("Nothing downloaded.")
-                else Column(Modifier.verticalScroll(rememberScrollState())) {
-                    choices.forEach { c ->
-                        Column(
-                            Modifier.fillMaxWidth().clickable { confirm = k to c; kind = null }.padding(vertical = 8.dp),
-                        ) {
-                            Text(c.label, style = MaterialTheme.typography.bodyMedium)
-                            Text(c.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { kind = null }) { Text("Close") } },
-        )
-    }
-    confirm?.let { (k, c) ->
-        AlertDialog(
-            onDismissRequest = { confirm = null },
-            title = { Text("Delete ${c.label}?") },
-            text = { Text("Removes ${c.detail} from this device. Your library and collections are kept.") },
+            onDismissRequest = { confirmAll = null },
+            title = { Text("${StorageLists.DELETE_ALL_LABEL}?") },
+            text = { Text(if (ids.isEmpty()) "Nothing downloaded." else StorageLists.deleteAllBody(ids.size)) },
             confirmButton = {
-                TextButton(onClick = {
-                    confirm = null
+                TextButton(enabled = ids.isNotEmpty(), onClick = {
+                    confirmAll = null
                     scope.launch {
-                        if (k.stems) storage.deleteStems(c.songIds) else storage.deleteBurns(c.songIds)
-                        snackbar.showSnackbar("Deleted ${c.label}")
+                        storage.deleteBurns(ids)
+                        snackbar.showSnackbar("Deleted all burnt music")
                         onChanged()
                     }
-                }) { Text("Delete") }
+                }) { Text("Delete all") }
             },
-            dismissButton = { TextButton(onClick = { confirm = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirmAll = null }) { Text("Cancel") } },
         )
     }
 }
 
-private suspend fun loadChoices(graph: AppGraph, k: DeleteKind): List<DeleteChoice> {
-    val storage = graph.storageService
-    fun fmt(a: ArtistUsage) = DeleteChoice(a.artist, "${a.songIds.size} songs, ${a.bytes / 1_000_000} MB", a.songIds)
-    return when (k) {
-        DeleteKind.BURN_ARTIST -> storage.burnUsageByArtist().map(::fmt)
-        DeleteKind.STEM_ARTIST -> storage.stemUsageByArtist().map(::fmt)
-        DeleteKind.BURN_COLLECTION -> {
-            val col = graph.collections
-            val st = col.state.value
-            val raw = st.pockets.map { it.name to col.songIdsForPocket(it.id) } +
-                st.playlists.map { it.name to col.songIdsForPlaylist(it.id) }
-            raw.sortedBy { it.first.lowercase() }.mapNotNull { (name, ids) ->
-                val ready = graph.servicesGraph.burnStore.readyBurnedIds(ids)
-                if (ready.isEmpty()) null
-                else DeleteChoice(name, "${ready.size} downloaded songs, ${storage.approximateBurnBytes(ready) / 1_000_000} MB", ready)
-            }
-        }
+@Composable
+private fun StorageNavRow(label: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+        Text("›", style = MaterialTheme.typography.titleMedium)
     }
+    HorizontalDivider()
 }
 
 private fun describe(context: android.content.Context, r: com.levi.pocketdj.data.storage.StorageManager.PruneResult): String =

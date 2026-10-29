@@ -564,7 +564,7 @@ private fun ShellNavHost(
             SettingsScreen(onOpenStorage = { nav.navigate(SETTINGS_STORAGE_ROUTE) })
         }
         composable(SETTINGS_STORAGE_ROUTE) {
-            StorageScreen()
+            StorageScreen(onNavigate = { nav.navigate(it) })
         }
         // Area-contributed pushed routes (decision D3): no edit here per package.
         graph.features.navEntries.forEach { entry -> entry.register(this, actions) }
