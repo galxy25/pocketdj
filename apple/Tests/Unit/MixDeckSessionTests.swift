@@ -372,7 +372,7 @@ final class MixEngineSessionTests: XCTestCase {
         func item(_ id: String) -> MixEngine.AutoMixItem {
             .init(loadable: MixLoadable(songId: id, title: "T \(id)", artist: "A", bpm: 120,
                                         camelot: "8A", key: nil, albumId: nil, lengthMs: 30_000),
-                  durationMs: 30_000)
+                  durationMs: 30_000, originCollectionId: "pkt_warmup")
         }
 
         e.startAutoMix([item("smp_a1"), item("smp_a2"), item("smp_a3")],
@@ -381,6 +381,10 @@ final class MixEngineSessionTests: XCTestCase {
             $0.auto?.queue.map(\.track.songId) == ["smp_a1", "smp_a2", "smp_a3"]
         }
         var snap = store.load()!
+        // Pocket Wheel provenance: each row remembers its crate, and the on-air lookup finds it.
+        XCTAssertEqual(snap.auto?.queue.map(\.originCollectionId), ["pkt_warmup", "pkt_warmup", "pkt_warmup"])
+        XCTAssertEqual(e.autoOriginCollectionId(forSongId: "smp_a1"), "pkt_warmup")
+        XCTAssertNil(e.autoOriginCollectionId(forSongId: "smp_nope"))
         XCTAssertEqual(snap.auto?.sourceLabel, "Warmup")
         XCTAssertEqual(snap.auto?.liveDeck, "A")
         XCTAssertEqual(snap.auto?.livePos, 0)

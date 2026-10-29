@@ -968,7 +968,11 @@ struct PocketDJApp: App {
             playCounts?.notePlayed(songId, backend: .ripServer)
             guard let playHistory else { return }
             let name = (mix?.autoMixing == true ? mix?.autoSourceLabel : nil) ?? mixSessions?.currentName
-            let context = PlayHistoryStore.PlayContext(source: .mix, contextId: mixSessions?.currentId, contextName: name)
+            // The Auto-DJ crate the track came from rides as `originCollectionId` (the session id
+            // in `contextId` names a Mix session, not a collection) — the Pocket Wheel's colour.
+            let origin = mix?.autoMixing == true ? mix?.autoOriginCollectionId(forSongId: songId) : nil
+            let context = PlayHistoryStore.PlayContext(source: .mix, contextId: mixSessions?.currentId,
+                                                       contextName: name, originCollectionId: origin)
             let event = playHistory.record(songId: songId, title: app?.songsById[songId]?.name,
                                            artist: app?.songsById[songId]?.artist, context: context)
             mixOutcome.notePlayed(deck: deck, songId: songId, event: event)

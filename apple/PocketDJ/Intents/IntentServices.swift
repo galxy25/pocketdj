@@ -238,12 +238,18 @@ final class IntentServices {
     /// ▶/🔀 an arbitrary list of song ids into the reserved Now Playing setlist — for collections
     /// that have NO stored setlist (e.g. an Apple Music / source playlist from the catalog). A
     /// fresh snapshot is built each call, so replaying picks up the source's current songs.
+    ///
+    /// `originId` names the collection the list CAME FROM (a catalog source playlist `pl_…`, a
+    /// pocket, …) — forwarded to `playNow` so Play History stamps it as `originCollectionId`.
+    /// Without it every CarPlay / menu play of a source playlist recorded no origin at all, and
+    /// the Pocket Wheel could not colour the very collections it exists to show.
     @discardableResult
     func playSongIds(_ ids: [String], name: String, shuffle: Bool = false,
-                     source: PlayHistoryStore.PlaySource) async throws -> String {
+                     source: PlayHistoryStore.PlaySource, originId: String? = nil) async throws -> String {
         try vetoDuringOnboarding()
         await ensureReady()
-        guard let set = collections.playNow(songIds: ids, name: name, shuffle: shuffle, source: source),
+        guard let set = collections.playNow(songIds: ids, name: name, shuffle: shuffle, source: source,
+                                            originId: originId),
               !set.tracks.isEmpty else { throw PocketDJIntentError.emptyCollection(name) }
         startNowPlaying(set)
         return name
@@ -309,7 +315,8 @@ final class IntentServices {
             throw PocketDJIntentError.noBurnedSongs(name)
         }
         let items = loadables.map {
-            MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000, sourceLabel: name)
+            MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000, sourceLabel: name,
+                                  originCollectionId: source.collectionId)
         }
         mix.startAutoMix(items, shuffled: shuffle,
                          lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
@@ -379,15 +386,15 @@ final class IntentServices {
         if deckA == deckB { nameB = nameA } else { nameB = try displayName(deckB) }
         // Interleave with per-item PROVENANCE: each row remembers which crate fed it, so the
         // TV queue surfaces can show "— deck · crate" per row.
-        var queue: [(loadable: MixLoadable, label: String)] = []
+        var queue: [(loadable: MixLoadable, label: String, origin: String)] = []
         queue.reserveCapacity(a.count + b.count)
         for i in 0..<max(a.count, b.count) {
-            if i < a.count { queue.append((a[i], nameA)) }
-            if i < b.count { queue.append((b[i], nameB)) }
+            if i < a.count { queue.append((a[i], nameA, deckA.collectionId)) }
+            if i < b.count { queue.append((b[i], nameB, deckB.collectionId)) }
         }
         let items = queue.map {
             MixEngine.AutoMixItem(loadable: $0.loadable, durationMs: $0.loadable.lengthMs ?? 180_000,
-                                  sourceLabel: $0.label)
+                                  sourceLabel: $0.label, originCollectionId: $0.origin)
         }
         mix.startAutoMix(items, shuffled: false,
                          lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,

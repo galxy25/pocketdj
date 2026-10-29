@@ -550,12 +550,17 @@ Each phase is its own feature branch off `feat/pocket-wheel`: drive → merge �
 
 ---
 
-## 9. Open product questions (only the real ones)
+## 9. Product questions — DECIDED (Levi, 2026-10-29)
 
-1. **Where does the wheel live?** I assumed History ▸ Pockets (Wheel | List), because cells come from listening history. Did you mean the Pockets *collection* tab instead, or both?
-2. **What counts toward the 100?** I assumed tracks *started*, skips included, with replacements substituting rather than extending. The alternative is 100 *played-through* songs, which makes heavy skipping lengthen the run. And at 100: stop, or offer "keep the pocket going" (a fresh run)?
-3. **Collection colours.** Automatic stable palette only, or can you pick a colour per playlist/pocket (for example Potential always green)?
-4. **Should running/walking leave the device?** v1 keeps motion device-only, so there is no App Privacy label change. Uploading it to the cloud pockets would need "Fitness" on the label.
-5. **How hard is the artist ban, within a run and across runs?** I assumed 1 fast skip (under about 15%) or 2 normal skips bans an artist for the rest of *that* run, including songs they feature on, and in future runs that artist is only rarer (×0.33, relaxing over about 30 days). Is that right, or should a ban stick across runs of the same pocket until you un-ban it?
-6. **Mode set and labels.** Should cycling be its own mode (I fold it into Trip)? Is "Home" the right name for plays from a playlist/pocket when not driving or moving, or does that mode not deserve a ring sliver at all?
-7. **A Mix-mode pocket.** When the best match is a Mix cell, should ▶ load the run into the Mix tab's Auto-DJ (crossfades, decks), or always play through the regular player (my v1 assumption)?
+These were open in the 2026-10-28 draft; Levi answered them on 2026-10-29 (QUESTIONS.md W1–W7). Where he gave no answer, the stated default was adopted. The sections above that described the old assumption are superseded by this table.
+
+| # | Question | Decision | Effect on the build |
+|---|---|---|---|
+| W1 | Where does the wheel live? | **Default: History ▸ Pockets with a Wheel / List toggle.** | §2.1 as written. The Pockets *collection* tab is untouched. |
+| W2 | What counts toward the 100? At 100, stop or keep going? | **Songs PLAYED THROUGH count (skips don't); at 100, STOP.** No "keep going". | Supersedes §4.1's "tracks started". A run ends after its 100th played-through song (a skipped row is replaced and the run tops up from the bench so 100 play-throughs stay reachable; it ends early only when the bench is empty). The finished card offers "▶ another pocket", never an automatic continuation. |
+| W3 | Collection colours | **Default: automatic colours, a stable 12-colour palette synced across devices.** | §2.4 as written; no per-collection colour picker (no `wheelColor` field). |
+| W4 | May running/walking leave the device? | **YES.** Phase 6 includes motion in the cloud upload. | Phase 6 adds the derived `mode` (incl. running/walking) to the pockets upload. **Levi follow-up:** add **"Fitness"** to the App Store privacy label (App Store Connect) before shipping Phase 6 — not done by the build. The Settings copy says motion is shared with the pockets cloud when pockets are on. |
+| W5 | How hard is the artist ban? | **Default: run-only ban + decaying penalty in later runs.** | §4.3/§4.6 as written: banned for the rest of the run; later runs see the multiplier (≈ 0.33) relax back to 1 over the 30-day half-life. |
+| W6 | Cycling a mode? "Home" label? | **Default: cycling folds into Trip; "Home" is the collection-playback mode name.** | §1.3 as written; the chip/caption for `collection` reads "Home". |
+| W7 | Best match is a Mix cell — where does ▶ play? | **Load the run into Mix Auto-DJ** (crossfades, decks), not the regular player. | §4.7: a Mix-mode best match (or a Mix cell's ▶) starts the run's songs as an Auto-DJ queue (`MixEngine.startAutoMix`), with the run tag recorded on each play. Only songs the decks can load (local / burned / streamable) are queued; when too few are, it falls back to the regular player with a caption saying so. The live re-plan (§4.4) applies to the sequencer path; the Mix path replans by inserting into the Auto-DJ queue's upcoming tail. |
+
