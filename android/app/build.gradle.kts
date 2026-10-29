@@ -82,11 +82,12 @@ android {
             manifestPlaceholders["diagKeyImport"] = "true"
         }
         release {
-            // Play/sideload ship ARM only: the Apple Music SDK (mediaplayback AAR) has arm64-v8a +
-            // armeabi-v7a only, so an x86_64 copy would have no Apple Music. -PincludeX86=true adds
-            // x86_64 back for the emulator smoke test of a minified build (never for upload).
+            // Play/sideload ship arm64-v8a only. The Apple Music SDK has no x86_64 (an x86_64 copy
+            // would have no Apple Music), and its armeabi-v7a libappleMusicSDK.so + libc++_shared.so
+            // are 4 KB-aligned (0x1000), so v7a stays out too (minSdk 35 devices are ~all arm64).
+            // -PincludeX86=true adds x86_64 for the emulator smoke test of a minified build only.
             ndk {
-                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+                abiFilters += "arm64-v8a"
                 if (project.findProperty("includeX86") == "true") abiFilters += "x86_64"
             }
             if (releaseInput("ANDROID_UPLOAD_STORE_FILE") != null) {
