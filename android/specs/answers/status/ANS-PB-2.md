@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # ANS-PB-2: Game rows prefer full-track Apple Music, fall back to previews (Q36)
 - [x] Removed runTag guard from AppleMusicRowResolver (canPlayFullTrackCached / ripStartsNow unchanged)

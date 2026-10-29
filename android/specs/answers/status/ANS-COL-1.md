@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-COL-1 — Persist amPlaylistId on Pockets AND Playlists
 

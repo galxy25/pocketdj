@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-PB-3 status
 

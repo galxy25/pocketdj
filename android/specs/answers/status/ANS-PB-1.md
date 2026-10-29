@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-PB-1 - Editions on restore + clean-only skip
 

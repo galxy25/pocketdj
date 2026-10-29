@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-MIX-1 Auto-DJ stream failure cooldown (Q38)
 - [x] MixStreamLoader.canStream(songId, forAuto): 2s, 2s, 3s after consecutive failures, then 120s default; reset when a stream completes
