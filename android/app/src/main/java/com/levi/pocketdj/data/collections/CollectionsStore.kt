@@ -1777,11 +1777,35 @@ class CollectionsStore(
             val ctx = makeCtx() ?: return null
             val theSeed = seed ?: CollectionsFactory.uid()
             val theName = name ?: nextSetlistName(playlistId)
-            val setlist = RealizeEngine.buildSetlist(pl, ctx, seed = theSeed, name = theName, now = now())
+            val setlist = freezeCleanOnly(
+                RealizeEngine.buildSetlist(pl, ctx, seed = theSeed, name = theName, now = now()),
+                pl.cleanOnly == true,
+                ctx.songsById,
+            )
             publish { it.copy(setlists = it.setlists + setlist) }
             save()
             setlist
         }
+
+    /**
+     * Clean-versions-only playlist: FREEZE the decision into the setlist (iOS CollectionsStore.swift:2200) -
+     * skipped songs (explicit, no clean cut) drop, substituted ones carry `variant = "clean"` - so the
+     * frozen set plays the same editions forever, even if the toggle later flips.
+     */
+    internal fun freezeCleanOnly(
+        setlist: Setlist,
+        cleanOnly: Boolean,
+        songsById: Map<String, com.levi.pocketdj.data.catalog.IndexSong>,
+    ): Setlist {
+        if (!cleanOnly) return setlist
+        val tracks = setlist.tracks.mapNotNull { t ->
+            if (t.isText == true) return@mapNotNull t
+            val s = songsById[t.songId] ?: return@mapNotNull t
+            if (com.levi.pocketdj.data.edition.EditionPolicy.isSkipped(s)) return@mapNotNull null
+            if (s.explicit != true) t else t.copy(variant = com.levi.pocketdj.data.edition.SongVariant.CLEAN.raw)
+        }
+        return setlist.copy(tracks = tracks, totalMs = tracks.sumOf { it.shownMs })
+    }
 
     /**
      * Realize an explicit ordered id list into a fresh Setlist (the read-only

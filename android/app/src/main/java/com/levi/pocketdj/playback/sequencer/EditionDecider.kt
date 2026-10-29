@@ -12,6 +12,9 @@ fun interface EditionDecider {
     /** O(1) probe: could [decide] substitute anything right now? Lets play() skip the full map. */
     fun isActive(): Boolean = true
 
+    /** False while the data [decide] needs (the catalog) has not loaded: a re-decide would be wrong, not just late. */
+    fun isReady(): Boolean = true
+
     companion object {
         val Unchanged = object : EditionDecider {
             override fun decide(item: QueueItem, cleanOnly: Boolean): QueueItem = item

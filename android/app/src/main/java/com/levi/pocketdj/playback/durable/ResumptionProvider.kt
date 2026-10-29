@@ -31,7 +31,15 @@ class SessionRestorer(
 
     fun restore(snap: SessionSnapshot) {
         if (sequencer.isRunning || snap.queue.isEmpty()) return
-        val items = snap.toQueueItems()
+        val decider = sequencer.editionDecider
+        val cleanOnly = decider.isActive() && sequencer.cleanOnlyProvider(snap.source.id)
+        // Catalog not loaded yet (cold start): a re-decide would see no song and pick the wrong edition. Keep the
+        // legacy variant id and leave the row unstamped instead.
+        val items = snap.toQueueItems(redecide = when {
+            !decider.isActive() -> { q -> q }          // no policy at all: the plain song id
+            decider.isReady() -> { q -> decider.decide(q, cleanOnly) }
+            else -> null                               // active but blind: legacy variant id, unstamped
+        })
         sequencer.restoreHeld(
             items = items,
             index = snap.index.coerceIn(0, items.lastIndex),
@@ -43,6 +51,12 @@ class SessionRestorer(
             resumeAtMs = snap.positionMs.takeIf { it > 0 },
             sessionId = snap.sessionId,
         )
+        // Blind restore: remember the unlocked rows with no persisted edition; the first resume re-decides them.
+        val blind = decider.isActive() && !decider.isReady()
+        if (blind) {
+            sequencer.setPendingRedecide(items.indices.filter { i -> snap.queue[i].resolveId == null && !items[i].editionLocked }
+                .map { items[it].uid }.toSet())
+        }
     }
 
     companion object {

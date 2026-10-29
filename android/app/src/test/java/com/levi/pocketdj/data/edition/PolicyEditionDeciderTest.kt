@@ -28,6 +28,27 @@ class PolicyEditionDeciderTest {
         assertEquals(item, decider().decide(item, false))
     }
 
+    @Test fun skipFlagMatrix() {
+        val noClean = IndexSong(id = base, artist = "A", name = "N", explicit = true, appleMusicId = "100")
+        val clean = IndexSong(id = base, artist = "A", name = "N", explicit = false, appleMusicId = "100")
+        val unknownExplicit = explicitSong
+        val d = { s: IndexSong? -> decider(songs = if (s == null) emptyMap() else mapOf(base to s)) }
+        // explicit + no clean cut: skipped only under clean-only
+        assertEquals(true, d(noClean).decide(QueueItem(base), true).cleanOnlySkip)
+        assertEquals(false, d(noClean).decide(QueueItem(base), false).cleanOnlySkip)
+        // explicit with a clean cut: substituted, never skipped
+        assertEquals(false, d(unknownExplicit).decide(QueueItem(base), true).cleanOnlySkip)
+        // non-explicit and unknown songs never skipped
+        assertEquals(false, d(clean).decide(QueueItem(base), true).cleanOnlySkip)
+        assertEquals(false, d(null).decide(QueueItem(base), true).cleanOnlySkip)
+        // a skipped row keeps its identity (no variant, resolveId == id)
+        val out = d(noClean).decide(QueueItem(base), true)
+        assertNull(out.variant); assertEquals(base, out.resolveId)
+        // the variant-id form of a row resolves to its base song
+        assertEquals(true, d(noClean).decide(QueueItem("${base}_explicit"), true).cleanOnlySkip)
+        assertEquals(true, EditionPolicy.isSkipped(noClean)); assertEquals(false, EditionPolicy.isSkipped(null))
+    }
+
     @Test fun globalPreferenceDegradesOntoStoredPrimary() {
         val d = decider(pref = false, stored = setOf(base))
         val out = d.decide(QueueItem(base), false)

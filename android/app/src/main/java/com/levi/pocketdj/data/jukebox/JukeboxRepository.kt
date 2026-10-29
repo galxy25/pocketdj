@@ -566,7 +566,7 @@ class JukeboxRepository(
             artist = current?.artist ?: np?.artist,
             durationMs = np?.durationMs ?: current?.lengthMs,
             positionMs = position,
-            upNext = seq?.upcoming.orEmpty().map {
+            upNext = seq?.upcomingPlayable.orEmpty().map {
                 JukeboxStatePayload.Track(title = it.title, artist = it.artist.orEmpty())
             },
         )

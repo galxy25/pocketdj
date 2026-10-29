@@ -48,6 +48,9 @@ object EditionPolicy {
         return Decision(edition, reason, id)
     }
 
+    /** Clean-only skip predicate (explicit with no clean edition); iOS `CleanOnly.isSkipped`. */
+    fun isSkipped(song: IndexSong?): Boolean = CleanOnly.isSkipped(song)
+
     /** Ordered storage ids: [wanted, base, other] with fallback; [wanted] only without. */
     fun storageIds(base: String, edition: SongVariant?, allowFallback: Boolean): List<String> {
         if (edition == null) return listOf(base)

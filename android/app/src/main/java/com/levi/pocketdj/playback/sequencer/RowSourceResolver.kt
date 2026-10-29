@@ -23,7 +23,7 @@ data class StreamSource(val action: PlayAction.Stream) : RowSource {
 
 /** Nothing can play this row here; the sequencer advances ([AdvanceCause.UNPLAYABLE_HERE]). */
 data class UnplayableSource(val reason: Reason) : RowSource {
-    enum class Reason { STUDIO_LOCAL, METADATA_ONLY, NOT_ON_DEVICE }
+    enum class Reason { STUDIO_LOCAL, METADATA_ONLY, NOT_ON_DEVICE, CLEAN_ONLY_EXPLICIT }
     override val backend: String get() = "none"
 }
 

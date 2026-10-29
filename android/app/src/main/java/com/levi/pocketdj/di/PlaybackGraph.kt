@@ -164,6 +164,7 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
 
     /** Non-suspending mirror of EditionSettings (the decider is read on Main). */
     @Volatile private var preferExplicitMirror: Boolean? = null
+    @Volatile private var preferExplicitLoaded = false
 
     /** Idempotent: connect the sequencer's capture seams. Called once from AppGraph init. */
     fun wire() {
@@ -179,9 +180,11 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
             preferExplicit = { preferExplicitMirror },
             song = { id -> app.catalogRepository.state.value.catalog?.songsById?.get(id) },
             isStored = { id -> app.servicesGraph.burnStore.hasLocalFile(id) },
+            // Collections load synchronously in their store init; the catalog and the edition setting arrive async.
+            ready = { app.catalogRepository.state.value.catalog != null && preferExplicitLoaded },
         )
         app.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            com.levi.pocketdj.data.edition.EditionSettings.flow(app.settings).collect { preferExplicitMirror = it }
+            com.levi.pocketdj.data.edition.EditionSettings.flow(app.settings).collect { preferExplicitMirror = it; preferExplicitLoaded = true }
         }
         seq.outcomes = outcomes
         // PB-5: the History choke point arms the tracker; the sequencer feeds samples + advance-aways.
