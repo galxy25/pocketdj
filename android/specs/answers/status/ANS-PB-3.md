@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # ANS-PB-3 status
 
@@ -6,7 +6,7 @@ state: in-progress
 - [x] Storage lists: BurnedArtists/BurnedCollections/BurnedStems pushed screens (StorageLists pure logic), Delete all burnt music with confirm
 - [x] DeadAirReport + DeadAirSource.current assigned in PlaybackGraph.wire(); Debug panel refreshes every 1 s
 - [x] AppleMusicEndMonitor: PollReconcile self-heal + NearEnd event; PlaybackController warms next row on NearEnd
-- [ ] build + tests green
+- [x] build + tests green (full suite 5150 tests, 0 failures after reconcile fix; assembleDebug OK; new tests: PlaybackSectionTest, StorageListsTest, DeadAirReportTest, AppleMusicReconcileTest)
 
 ## Files touched outside owned list
 - shell/ShellNavigation.kt: StorageScreen(onNavigate = { nav.navigate(it) }) (one line)

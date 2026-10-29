@@ -243,18 +243,21 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
         // A STOPPED/BUFFERING read is left alone (those carry their own verdicts).
         if (interruptedAt == null) {
             val reported = status == AmStatus.PLAYING
-            val v = PollReconcile.reconcile(reported, believedPlaying, t, lastPollSeconds)
-            when (v.transition) {
-                PollReconcile.Transition.SELF_HEALED -> if (status == AmStatus.PAUSED && lastReported != AmStatus.PLAYING) {
-                    selfHealCount++
-                    trace?.invoke("AM monitor: self-heal - playbackTime advanced %.1fs while reported paused, correcting".format(t - lastPollSeconds))
-                    status = AmStatus.PLAYING
-                    intentionalPause = false
-                    believedPlaying = true
-                } else believedPlaying = true
-                PollReconcile.Transition.RESUMED -> { believedPlaying = true; intentionalPause = false; trace?.invoke("AM monitor: external RESUME at ${t.toInt()}s") }
-                PollReconcile.Transition.PAUSED -> { believedPlaying = false; trace?.invoke("AM monitor: external PAUSE at ${t.toInt()}s") }
-                null -> Unit
+            val advanced = PollReconcile.advancedDespiteReportedPause(t, lastPollSeconds)
+            if (status == AmStatus.PAUSED && advanced && lastReported != AmStatus.PLAYING) {
+                // Two consecutive non-playing reads over an advancing position: frozen status, not a fresh pause.
+                selfHealCount++
+                trace?.invoke("AM monitor: self-heal - playbackTime advanced %.1fs while reported paused, correcting".format(t - lastPollSeconds))
+                status = AmStatus.PLAYING
+                intentionalPause = false
+                believedPlaying = true
+            } else {
+                val v = PollReconcile.reconcile(reported, believedPlaying, t, lastPollSeconds)
+                when (v.transition) {
+                    PollReconcile.Transition.RESUMED, PollReconcile.Transition.SELF_HEALED -> { believedPlaying = true; intentionalPause = false; trace?.invoke("AM monitor: external RESUME at ${t.toInt()}s") }
+                    PollReconcile.Transition.PAUSED -> { believedPlaying = false; trace?.invoke("AM monitor: external PAUSE at ${t.toInt()}s") }
+                    null -> Unit
+                }
             }
         }
         lastPollSeconds = t
