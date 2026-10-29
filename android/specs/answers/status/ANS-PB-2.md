@@ -1,4 +1,4 @@
-state: reviewed
+state: implemented
 
 # ANS-PB-2: Game rows prefer full-track Apple Music, fall back to previews (Q36)
 - [x] Removed runTag guard from AppleMusicRowResolver (canPlayFullTrackCached / ripStartsNow unchanged)
@@ -17,3 +17,4 @@ fixes applied
 - MINOR (warm skipped when capable): fixed. warm() always warms the LOOKAHEAD window (cheap, cached); canPlay still skips probing when capable.
 - NIT comments: fixed (SequencerGameRunPlayer KDoc, GamesGraph, AppleMusicRowResolver).
 - NIT tests: added ladder_gameRowWithManifestHit_resolvesManifestRung and AM-failure tests. ResolveLadderTest untouched. Tests 5136 -> 5140 (+4), 0 failures. Emulator step not run (integrator owns it).
+- Note: final integrator-run gradle hit Kotlin daemon OOM under parallel-package load (infra, not code); earlier green run: 5140 tests, 0 failures, APK built.
