@@ -8,12 +8,16 @@ struct PocketsTabView: View {
     /// Per-viewer convenience (which segment you were on) — the wheel itself never depends on it.
     @AppStorage("pdj.history.pockets.segment") private var segment = Segment.wheel.rawValue
     @Environment(PocketWheelController.self) private var controller: PocketWheelController?
+    @Environment(SettingsStore.self) private var settings: SettingsStore?
     @Environment(PocketRunStore.self) private var runs: PocketRunStore?
 
     enum Segment: String, CaseIterable { case wheel = "Wheel", list = "List" }
 
     var body: some View {
         VStack(spacing: 0) {
+            // A listener who DECLINED cloud pockets sees the (local) wheel only — the List segment
+            // would just re-offer the opt-in they already turned down.
+            if showsList {
             Picker("Pockets view", selection: $segment) {
                 ForEach(Segment.allCases, id: \.rawValue) { Text($0.rawValue).tag($0.rawValue) }
             }
@@ -21,7 +25,8 @@ struct PocketsTabView: View {
             .padding(.horizontal, 16)
             .padding(.top, 8)
             .accessibilityIdentifier("pockets-segment")
-            if segment == Segment.list.rawValue {
+            }
+            if showsList && segment == Segment.list.rawValue {
                 ListeningPocketsView(path: $path)
             } else {
                 #if os(tvOS)
@@ -39,6 +44,8 @@ struct PocketsTabView: View {
             }
         }
     }
+
+    private var showsList: Bool { settings?.listeningPocketsChoice != false }
 
     /// The wheel's buttons, bound to the app-scoped best match + run store.
     private var actions: PocketWheelActions {

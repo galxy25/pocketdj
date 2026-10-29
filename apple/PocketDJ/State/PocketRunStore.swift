@@ -103,6 +103,10 @@ final class PocketRunStore {
     @ObservationIgnored var onRunEnded: ((RunSummary) -> Void)?
 
     @ObservationIgnored private var tickerTask: Task<Void, Never>?
+    @ObservationIgnored private var topUpTask: Task<Void, Never>?
+    /// After a top-up found nothing, don't rescore the pool again before this (epoch ms).
+    @ObservationIgnored private var topUpBackoffUntilMs: Double = 0
+    static let topUpBackoffMs: Double = 30_000
     @ObservationIgnored private var replanTask: Task<Void, Never>?
     @ObservationIgnored private var ownershipLostAtMs: Double?
     @ObservationIgnored private var cachedCandidates: [String: PocketRunPlanner.Candidate] = [:]
@@ -161,8 +165,9 @@ final class PocketRunStore {
     // MARK: Start
 
     /// Build and start a run for `profile`. A running run is replaced (its summary is kept).
-    func start(profile: PocketProfile, seed: UInt64? = nil) async {
-        guard buildState != .building else { return }
+    @discardableResult
+    func start(profile: PocketProfile, seed: UInt64? = nil) async -> Bool {
+        guard buildState != .building else { return false }
         buildState = .building
         if active != nil { endRun(finished: false) }
         let runId = UUID()
@@ -190,7 +195,7 @@ final class PocketRunStore {
         let (plan, prior) = planOut
         guard !plan.rows.isEmpty else {
             buildState = .failed("Not enough playable songs fit this pocket yet. Download some, or connect Apple Music.")
-            return
+            return false
         }
         priorEvidence = prior
         runTuning = PocketTuning.multipliers(prior, allowBans: false)
@@ -223,6 +228,7 @@ final class PocketRunStore {
         }
         DiagLog.shared.log("pocketrun", "start run=\(runId.uuidString.prefix(8)) moment=\(moment?.token ?? profile.tier.rawValue) rows=\(plan.rows.count) bench=\(plan.bench.count) mix=\(state.viaMix)")
         startTicker()
+        return true
     }
 
     private func item(for row: PocketRunPlanner.Row, runId: UUID) -> SetlistPlayer.Item? {
@@ -230,6 +236,14 @@ final class PocketRunStore {
         return SetlistPlayer.Item(id: c.id, title: c.title, artist: c.artist, lengthMs: c.lengthMs,
                                   plan: .init(runId: runId, slot: row.slot, collectionId: row.collectionId,
                                               score: row.score, pinned: false))
+    }
+
+    /// Is the shared sequencer still playing THIS run? Every queue edit (trim, top-up, re-plan,
+    /// re-target) is gated on it: once the listener starts anything else (a CarPlay playlist, a
+    /// Browse song), that queue is theirs and a run must never append to or edit it.
+    func ownsSequencer(_ a: RunState) -> Bool {
+        guard !a.viaMix, let player else { return false }
+        return player.isRunning && player.sourceSetlistId == a.tag
     }
 
     /// The History tag for a play the sequencer is making now (nil when it isn't a run row).
@@ -248,6 +262,10 @@ final class PocketRunStore {
 
     func resumeTrackingIfNeeded() {
         guard let a = active, !a.finished else { return }
+        if !a.viaMix, adaptToActivity(), let start = startActivityUpdates {
+            activity = ActivityTracker()
+            start { [weak self] seg in self?.noteActivity(seg) }
+        }
         if cachedCandidates.isEmpty {
             Task { [weak self] in
                 guard let self else { return }
@@ -279,15 +297,23 @@ final class PocketRunStore {
         let owns = a.viaMix ? mixOwnsRun(a.label) : (player.map { $0.isRunning && $0.sourceSetlistId == a.tag } ?? false)
         if owns { ownershipLostAtMs = nil } else if ownershipLostAtMs == nil { ownershipLostAtMs = t }
 
+        // A restored-but-held run is not sounding: nothing to learn or edit until ▶.
+        if !a.viaMix, player?.isHeldForResume == true { return }
         let current = currentEventId()
         let processed = Set(a.processed)
         var newSkip = false
         var changed = false
         let mine = history.installId
+        // ONE bounded tail walk (back to the run's start) — never a full-history scan on main.
+        var runVerdicts: [PocketTuning.Verdict] = []
         for e in history.events.reversed() {
             if e.playedAt < a.startedAtMs - 60_000 { break }
-            guard let tag = e.pocketRun, tag.runId == a.runId, e.id != current, !processed.contains(e.id),
+            guard let tag = e.pocketRun, tag.runId == a.runId, e.id != current,
                   e.originInstallId == nil || e.originInstallId == mine else { continue }
+            runVerdicts.append(.init(songId: SongVariant.baseId(e.songId), skipped: e.wasSkipped == true,
+                                     fraction: e.listenedFraction, atMs: e.playedAt, momentKey: tag.momentKey,
+                                     rowCollectionId: tag.rowCollectionId))
+            guard !processed.contains(e.id) else { continue }
             a.processed.append(e.id)
             changed = true
             if e.wasSkipped == true {
@@ -299,8 +325,7 @@ final class PocketRunStore {
             }
         }
         if changed {
-            let verdicts = PocketTuning.verdicts(from: history.events).filter { $0.runId == a.runId && $0.verdict.songId.isEmpty == false }
-                .map(\.verdict)
+            let verdicts = runVerdicts
             let features: (String) -> PocketTuning.Features? = { [cachedCandidates] in cachedCandidates[$0]?.features }
             var evidence = priorEvidence
             evidence.merge(PocketTuning.runEvidence(verdicts, features: features), scale: 1)
@@ -314,8 +339,9 @@ final class PocketRunStore {
         active = a
         if changed { revision &+= 1; persist() }
 
+        let ownsQueue = ownsSequencer(a) || a.viaMix
         if a.playedThrough >= Self.target {
-            trimToInvariant()
+            if ownsQueue { trimToInvariant() }
             // The 100th play-through is in: the run is over once the queue has run out.
             if !owns || (player?.upcoming.contains { $0.plan?.runId == a.runId } ?? false) == false {
                 endRun(finished: true)
@@ -326,6 +352,8 @@ final class PocketRunStore {
             endRun(finished: a.playedThrough >= Self.target)
             return
         }
+        // Lost the sequencer (inside the grace window): learn, but never touch its queue.
+        guard ownsQueue else { return }
         if newSkip {
             scheduleReplan()
         } else if a.completedSinceRescore >= Self.rescoreEvery {
@@ -343,16 +371,18 @@ final class PocketRunStore {
     /// play-through instead of starting a 101st. While it is still short of that, one SPARE row
     /// stays queued in case it gets skipped (the skip verdict lands only as the next row starts).
     func trimToInvariant() {
-        guard let a = active, !a.finished, !a.viaMix, let player else { return }
+        guard let a = active, !a.finished, !a.viaMix, let player, ownsSequencer(a) else { return }
         let needed = Self.rowsNeeded(target: Self.target, playedThrough: a.playedThrough,
                                      currentIsRun: player.isRunning && player.index < player.queue.count
                                         && player.queue[player.index].plan?.runId == a.runId,
                                      currentFraction: currentEventId().flatMap { id in
                                          history.events.last { $0.id == id }?.listenedFraction })
-        let upcomingRun = player.upcoming.filter { $0.plan?.runId == a.runId && $0.plan?.pinned != true }
+        // Pinned (listener-moved) run rows still COUNT toward the 100; only unpinned ones leave.
+        let upcomingRun = player.upcoming.filter { $0.plan?.runId == a.runId }
+        let removable = upcomingRun.filter { $0.plan?.pinned != true }
         if upcomingRun.count > needed {
-            let excess = upcomingRun.suffix(upcomingRun.count - needed).map(\.uid)
-            _ = player.replaceUpcoming([:], removing: Set(excess))
+            let excess = removable.suffix(min(removable.count, upcomingRun.count - needed)).map(\.uid)
+            if !excess.isEmpty { _ = player.replaceUpcoming([:], removing: Set(excess)) }
         } else if upcomingRun.count < needed, player.isRunning, !player.isHeldForResume {
             topUp(needed - upcomingRun.count)
         }
@@ -368,27 +398,41 @@ final class PocketRunStore {
         return base
     }
 
+    /// Score the pool OFF the main actor (it is the whole playable catalog), append on main if the
+    /// run still owns the sequencer, and back off for 30 s when nothing qualifies.
     private func topUp(_ count: Int) {
-        guard var a = active, let player else { return }
+        guard let a = active, let player, topUpTask == nil, nowMs >= topUpBackoffUntilMs else { return }
         let inRun = Set(player.queue.map(\.id))
         let tail = player.queue.suffix(3).map(\.id)
-        let picks = PocketRunPlanner.topUp(count: count, profile: a.profile, candidates: cachedCandidates, tuning: runTuning,
-                                           familiarity: [:], inRun: inRun, tail: tail,
-                                           excluded: thumbsDown())
-        guard !picks.isEmpty else { return }
-        var items: [SetlistPlayer.Item] = []
-        for p in picks {
-            let row = PocketRunPlanner.Row(songId: p.songId, slot: a.nextSlot, collectionId: cachedCandidates[p.songId]
-                .map { PocketRunPlanner.bucket($0, profile: a.profile) } ?? nil, score: p.score)
-            a.nextSlot += 1
-            if let it = item(for: row, runId: a.runId) { items.append(it) }
+        let pool = cachedCandidates, tuning = runTuning, profile = a.profile, thumbs = thumbsDown()
+        topUpTask = Task { [weak self] in
+            let picks = await Task.detached(priority: .userInitiated) {
+                PocketRunPlanner.topUp(count: count, profile: profile, candidates: pool, tuning: tuning,
+                                       familiarity: [:], inRun: inRun, tail: tail, excluded: thumbs)
+            }.value
+            guard let self else { return }
+            defer { self.topUpTask = nil }
+            guard var cur = self.active, cur.runId == a.runId, !cur.finished, self.ownsSequencer(cur),
+                  let player = self.player else { return }
+            guard !picks.isEmpty else { self.topUpBackoffUntilMs = self.nowMs + Self.topUpBackoffMs; return }
+            var items: [SetlistPlayer.Item] = []
+            let fresh = picks.filter { p in !player.queue.contains { $0.id == p.songId } }
+            for p in fresh {
+                let row = PocketRunPlanner.Row(songId: p.songId, slot: cur.nextSlot, collectionId: pool[p.songId]
+                    .map { PocketRunPlanner.bucket($0, profile: profile) } ?? nil, score: p.score)
+                cur.nextSlot += 1
+                if let it = self.item(for: row, runId: cur.runId) { items.append(it) }
+            }
+            cur.bench.removeAll { b in fresh.contains { $0.songId == b.songId } }
+            self.active = cur
+            player.appendRunRows(items)
+            self.persist()
+            DiagLog.shared.log("pocketrun", "topup run=\(cur.runId.uuidString.prefix(8)) n=\(items.count) playedThrough=\(cur.playedThrough) skips=\(cur.skips)")
         }
-        a.bench.removeAll { b in picks.contains { $0.songId == b.songId } }
-        active = a
-        player.appendToQueue(items)
-        persist()
-        DiagLog.shared.log("pocketrun", "topup run=\(a.runId.uuidString.prefix(8)) n=\(items.count) playedThrough=\(a.playedThrough) skips=\(a.skips)")
     }
+
+    /// Test seam: wait for an in-flight top-up.
+    func awaitTopUp() async { await topUpTask?.value }
 
     // MARK: Re-plan
 
@@ -403,7 +447,7 @@ final class PocketRunStore {
 
     /// Compute (off-main) and apply (main, protection re-checked at apply time) a re-plan.
     func replanNow() async {
-        guard let a = active, !a.finished, !a.viaMix, let player else { return }
+        guard let a = active, !a.finished, !a.viaMix, let player, ownsSequencer(a) else { return }
         let started = Date()
         let rows = player.replaceableUpcomingRows(runId: a.runId)
         guard !rows.isEmpty else { return }
@@ -417,7 +461,7 @@ final class PocketRunStore {
             PocketRunPlanner.replan(profile: profile, candidates: pool, tuning: tuning, familiarity: [:], live: live,
                                     inRun: inRun, neighbours: neighbours, excluded: thumbs)
         }.value
-        guard active?.runId == a.runId else { return }
+        guard let cur = active, cur.runId == a.runId, ownsSequencer(cur) else { return }
         var items: [UUID: SetlistPlayer.Item] = [:]
         for r in result.replacements {
             if let it = item(for: .init(songId: r.songId, slot: r.slot, collectionId: r.collectionId, score: r.score), runId: a.runId) {
@@ -455,7 +499,7 @@ final class PocketRunStore {
 
     /// Re-plan every replaceable upcoming row from `profile` (slot order kept).
     func retarget(to profile: PocketProfile, mode: PocketMode) async {
-        guard var a = active, !a.finished, let player else { return }
+        guard var a = active, !a.finished, let player, ownsSequencer(a) else { return }
         let rows = player.replaceableUpcomingRows(runId: a.runId)
         guard !rows.isEmpty else { return }
         let inRun = Set(player.queue.prefix(player.index + 1).map(\.id))
@@ -464,7 +508,8 @@ final class PocketRunStore {
             PocketRunPlanner.plan(.init(profile: profile, candidates: pool, excluded: inRun.union(thumbs), tuning: tuning,
                                         seed: seed &+ 1, slots: rows.count))
         }.value
-        guard active?.runId == a.runId else { return }
+        guard let cur = active, cur.runId == a.runId, ownsSequencer(cur) else { return }
+        a = cur
         var items: [UUID: SetlistPlayer.Item] = [:]
         for (row, planned) in zip(rows.sorted { $0.slot < $1.slot }, plan.rows) {
             if let it = item(for: .init(songId: planned.songId, slot: row.slot, collectionId: planned.collectionId,
@@ -495,6 +540,7 @@ final class PocketRunStore {
         retargetTask?.cancel(); retargetTask = nil
         tickerTask?.cancel(); tickerTask = nil
         replanTask?.cancel(); replanTask = nil
+        topUpTask?.cancel(); topUpTask = nil
         a.finished = true
         a.endedAtMs = nowMs
         let summary = RunSummary(id: a.runId, momentKey: a.momentKey, label: a.label, startedAtMs: a.startedAtMs,

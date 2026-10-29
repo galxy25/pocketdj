@@ -596,7 +596,7 @@ test('POST then GET returns computed results; /events and /pockets/events both r
   const first = wireSeq('PPPSPSP', start, { ctx: ctxAB });
   const r1 = await call('POST', '/pockets/events', { profile: p, body: batch(first, LABELS) });
   assert.equal(r1.status, 200);
-  assert.deepEqual(r1.json, { ok: true, accepted: 7, updated: 0, unchanged: 0, rejected: 0, total: 7, dirty: true });
+  assert.deepEqual(r1.json, { ok: true, accepted: 7, updated: 0, unchanged: 0, rejected: 0, total: 7, dirty: true, caps: ['wheel'] });
   const got = await call('GET', '/pockets/results', { profile: p });
   assert.equal(got.status, 200);
   assert.equal(got.json.stale, false);

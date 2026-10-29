@@ -50,7 +50,7 @@ Lambda (`scripts/lambda/listening-pockets`):
 - Tests: node 68/68 (4 new wheel tests); goldens unchanged (no regeneration needed).
 
 **To deploy (Levi's OK required; green account, profile llc):** code-only update of the existing function — no new AWS resources:
-`POCKETDJ_ENV=green AWS_PROFILE=llc scripts/lambda/listening-pockets/deploy.sh` (idempotent; updates `pocketdj-listening-pockets` code, re-asserts its routes/rule). Deploy the Lambda BEFORE shipping an app build that sends `mode`/`run` (the old Lambda ignores unknown keys, so the order is safe either way, but data only lands once both are live).
+`POCKETDJ_ENV=green AWS_PROFILE=llc scripts/lambda/listening-pockets/deploy.sh` (idempotent; updates `pocketdj-listening-pockets` code, re-asserts its routes/rule). **Order is safe because of a capability gate, not because old servers ignore unknown keys:** an old Lambda would 2xx a batch while DROPPING `mode`/`run`, and the app would then record the new fingerprint and never re-send — lost forever. So the new Lambda echoes `caps: ["wheel"]` on every POST /events, the app stores it (`SyncDoc.serverCaps`), and only THEN puts `mode`/`run` on the wire. Plays uploaded before the deploy carry neither field and are fingerprinted without them; once the cap is seen their wire rows (and fingerprints) change and they re-send once with the fields. Deploy whenever; nothing is lost either way.
 
 **Levi follow-up (App Store Connect, not touched):** add **"Health & Fitness ▸ Fitness"** (linked to the user, app functionality + product personalization, not tracking) to the App Privacy label before shipping a build with Phase 6.
 
@@ -65,6 +65,17 @@ Lambda (`scripts/lambda/listening-pockets`):
 - **Dead air (Phase 5):** run transitions vs the 10-24 baseline (`scripts/deadair-report.py` after a drive); the replan's "next row only with ≥ 30 s runway + immediate re-prefetch" rule under real AM / rip timing; an in-flight rip is never swapped for another capture.
 - **A real 100-song run:** the stop at the 100th played-through song (no 101st), skips topping the queue up, Drake-style bans (`pocketrun replan … banned=[…]`), and the past-runs strip on the cell card.
 - **W7 Mix runs:** a Mix-mode best match loading into Mix Auto-DJ with ≥ 10 deck-loadable songs.
+
+## Adversarial review fixes (8acb9467 → review-fix commit; 3719 executed, only the TransferCoordinator load flake; node 68/68; mac ✓ tv-sim ✓ vision-sim ✓)
+
+1. **HIGH — run edits only while the run owns the sequencer.** `PocketRunStore.ownsSequencer` (`isRunning && sourceSetlistId == pwr_<id>`) gates trim, top-up, re-plan (start AND apply) and re-target; a lost sequencer only learns, then the run ends after the 10 s grace. Test: `testLosingTheSequencerFreezesTheRunAndEndsIt`.
+2. **MED-HIGH — no `pwr_` context ids.** The upload's context is the run row's collection (`pocketRun.rowCollectionId`), never the queue tag; `ListeningPocketsCollections.context` refuses `pwr_` and `fav_songs` and maps `pl_` to `source`. Test: `testProductionHookTagsRunPlaysAndUploadUsesTheRowCollection` (real hook context → record → `wireEvent`).
+3. **Data-loss on deploy order** — capability-gated (see Phase 6 deploy note). Lambda echoes `caps`; node test pins it.
+4. **MED — repeat:** `SetlistPlayer.effectiveRepeatMode` is `.off` while a `pwr_` run owns the sequencer; the sticky `repeatMode` is never written. Test updated (`testRunTreatsRepeatAsOffWithoutClobberingTheSticky`).
+5. **MED — main-thread work:** top-up scores the pool on a detached task, appends on main only if the run still owns the sequencer, and backs off 30 s when nothing qualifies; verdicts come from the one bounded tail walk back to the run's start (no full-history scan). Test: `testTopUpRestoresTheHundredRowInvariant`.
+6. **MED — failures surface:** `PocketRunStore.start` / `PocketWheelController.play*` return whether a run started; `IntentServices.playPocketForNow` / new `playPocketMoment` throw `noPocketFits` (spoken: "Not enough playable songs fit your pocket right now…"); CarPlay goes through those doors (onboarding veto + readiness) and toasts instead of opening an empty Now Playing. Tests in `CarPlayPocketWheelTests`.
+- Low, fixed: top-up and replacement rows are edition-stamped like `play()` rows; pinned run rows count toward the 100 (only unpinned rows are trimmed); a held (restored, not yet ▶) run does no per-tick work; live activity updates restart on relaunch mid-run (and stop at run end); motion-derived `mode` uploads only while "Notice walking & running" is on; users who declined cloud pockets see the wheel without the List segment (no re-offer).
+- Production play tagging now lives in `PocketDJApp.historyPlayContext` (the rips/coordinator hook calls it), so tests exercise the real path.
 
 ## Remaining / follow-ups
 

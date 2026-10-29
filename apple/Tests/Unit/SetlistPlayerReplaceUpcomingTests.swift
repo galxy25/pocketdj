@@ -153,11 +153,14 @@ final class SetlistPlayerReplaceUpcomingTests: XCTestCase {
         XCTAssertEqual(p.queue[0].plan?.slot, 1)
     }
 
-    func testRunForcesRepeatOff() {
+    func testRunTreatsRepeatAsOffWithoutClobberingTheSticky() {
         let p = makePlayer()
         p.setRepeatMode(.all)
         p.play([replacement("a"), replacement("b")], sourceSetlistId: PocketWheelIds.runTag(run))
-        XCTAssertEqual(p.repeatMode, .off, "W2: a run is exactly 100 played-through songs")
+        XCTAssertEqual(p.effectiveRepeatMode, .off, "W2: a run is exactly 100 played-through songs")
+        XCTAssertEqual(p.repeatMode, .all, "…but the listener's sticky repeat setting is untouched")
+        p.play([replacement("c")], sourceSetlistId: "set_ordinary")
+        XCTAssertEqual(p.effectiveRepeatMode, .all, "the next ordinary set repeats again")
         p.stop()
     }
 }

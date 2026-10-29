@@ -174,6 +174,8 @@ struct ListeningPocketsUploadResponse: Decodable, Equatable {
     var rejected: Int?
     var total: Int?
     var dirty: Bool?
+    /// Capabilities the server understands beyond upload.v1 (`["wheel"]` = Pocket Wheel fields).
+    var caps: [String]?
 }
 
 // MARK: - Results v1

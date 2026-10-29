@@ -281,6 +281,12 @@ final class SetlistPlayer {
     /// advances). Observed by the Now Playing deck + widget; mirrored to the lock-screen /
     /// CarPlay `changeRepeatModeCommand`.
     private(set) var repeatMode: RepeatMode = .off
+    /// The repeat mode the PLAYBACK obeys: a Pocket Wheel run is exactly 100 played-through songs
+    /// (W2), so repeat never applies while one owns the sequencer — WITHOUT touching the user's
+    /// sticky `repeatMode`, which the next ordinary set picks straight back up.
+    var effectiveRepeatMode: RepeatMode {
+        sourceSetlistId?.hasPrefix(PocketWheelIds.runTagPrefix) == true ? .off : repeatMode
+    }
     /// Whether the running queue's UPCOMING tail is live-shuffled. Reset per `play()` (the new
     /// queue is presented in its given order — the one-shot `playNow(shuffle:)` handles initial
     /// randomization). Toggling ON permutes `queue[(index+1)...]`; OFF restores the tail's
@@ -606,8 +612,6 @@ final class SetlistPlayer {
         noteUserTransport()
         _ = player.consumePendingRemotePlay(maxAge: 0)   // a fresh play answers any latched ▶
         self.sourceSetlistId = sourceSetlistId
-        // A Pocket Wheel run is EXACTLY 100 played-through songs (W2): repeat never applies.
-        if sourceSetlistId?.hasPrefix(PocketWheelIds.runTagPrefix) == true, repeatMode != .off { setRepeatMode(.off) }
         // Snapshot THIS run's history origin now (before any later playNow can mutate the shared
         // now-playing source), so every play in this run is attributed to the right set.
         capturedHistoryContext = historyContextProvider?(sourceSetlistId)
@@ -887,7 +891,7 @@ final class SetlistPlayer {
         if index == 0 {
             // Repeat-ALL wraps ⏮ from the top back to the last track; otherwise stay at 0
             // (⏮ on the first track restarts it — today's `max(0, index-1)` behaviour).
-            if repeatMode == .all, queue.count > 1 { index = queue.count - 1 }
+            if effectiveRepeatMode == .all, queue.count > 1 { index = queue.count - 1 }
         } else {
             index -= 1
         }
@@ -1088,8 +1092,10 @@ final class SetlistPlayer {
         var dropped: [Int] = []
         for i in (index + 1)..<next.count {
             let row = next[i]
-            if let rep = replacements[row.uid] {
+            if let raw = replacements[row.uid] {
                 guard isReplaceablePosition(i) else { continue }
+                // The same edition policy every queued row gets at play() (clean-only / prefer-explicit).
+                let rep = stampEditions([raw], sourceSetlistId: sourceSetlistId).first ?? raw
                 if ripInFlight(row), !(rowOnDevice(rep) || rowStartsInstantly(rep)) { continue }
                 next[i] = rep
                 if let c = canonicalOrder, let k = c.firstIndex(of: row.uid) { canonicalOrder![k] = rep.uid }
@@ -1108,6 +1114,13 @@ final class SetlistPlayer {
         if touchedPrefetch { prefetchUpcoming() }
         persistSession()
         return changed
+    }
+
+    /// Append a Pocket Wheel run's top-up rows: edition-stamped exactly like the rows `play()`
+    /// stamped, then appended (the run already checked it still owns the sequencer).
+    func appendRunRows(_ items: [Item]) {
+        guard isRunning, !items.isEmpty else { return }
+        appendToQueue(stampEditions(items, sourceSetlistId: sourceSetlistId))
     }
 
     /// Append tracks to the end of the running queue (the panel's add-search).
@@ -1327,7 +1340,7 @@ final class SetlistPlayer {
         endMixEngagement()
         // Repeat-ONE: replay the current track from the top (through the AVPlayer) instead of
         // advancing. Only on a NATURAL end — an explicit ⏭ goes through `advanceToNext`.
-        if repeatMode == .one {
+        if effectiveRepeatMode == .one {
             startPlayCurrent(fresh: true)
             return
         }
@@ -1712,7 +1725,7 @@ final class SetlistPlayer {
               let npId = rips.nowPlaying?.songId, queue[index].matches(npId) else { return }
         // Repeat-ONE (whole-session mode) takes precedence: replay the current track from the top.
         // Only on a NATURAL end — an explicit ⏭ / dead source goes through `advanceToNext`.
-        if repeatMode == .one {
+        if effectiveRepeatMode == .one {
             startPlayCurrent(fresh: true)
             return
         }
@@ -1767,7 +1780,7 @@ final class SetlistPlayer {
             return
         }
         // Repeat-ONE (whole-session mode): replay the current AM track from the top.
-        if repeatMode == .one {
+        if effectiveRepeatMode == .one {
             startPlayCurrent(fresh: true)
             return
         }
@@ -1825,7 +1838,7 @@ final class SetlistPlayer {
             // Repeat-ALL: wrap to the top and keep going instead of stopping. (Repeat-ONE is
             // handled on natural end in the `handle*Ended` paths, so it never reaches here; an
             // explicit ⏭ past the end with repeat-one/off still stops.)
-            if repeatMode == .all, !queue.isEmpty {
+            if effectiveRepeatMode == .all, !queue.isEmpty {
                 index = 0
                 // Reshuffle the whole queue on a shuffle wrap so the next pass differs (standard
                 // player behaviour); `canonicalOrder` is untouched so shuffle-OFF still restores.

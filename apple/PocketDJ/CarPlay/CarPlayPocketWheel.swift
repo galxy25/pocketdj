@@ -35,18 +35,17 @@ extension CarPlayModel {
     /// Refresh the answer (the scene calls this on connect, before building For You).
     func refreshPocketForNow() async { await services.pocketWheel?.refresh() }
 
+    /// Through the intent door (onboarding veto + readiness). False ⇒ nothing started — the
+    /// scene toasts instead of opening an empty Now Playing.
     @discardableResult
     func playPocketForNow() async -> Bool {
-        guard let wheel = services.pocketWheel else { return false }
-        await wheel.playBest()
-        return true
+        (try? await services.playPocketForNow()) != nil
     }
 
     @discardableResult
     func playPocketMoment(rowId: String) async -> Bool {
-        guard rowId.hasPrefix(Self.pocketMomentRowPrefix), let wheel = services.pocketWheel,
+        guard rowId.hasPrefix(Self.pocketMomentRowPrefix),
               let key = PocketMomentKey(token: String(rowId.dropFirst(Self.pocketMomentRowPrefix.count))) else { return false }
-        await wheel.playMoment(key)
-        return true
+        return (try? await services.playPocketMoment(key)) != nil
     }
 }

@@ -27,7 +27,8 @@ final class PocketWheelController {
         $0.originCollectionId.map { [$0: 1] } ?? [:]
     }
     /// Start a pocket (Phase 5: `PocketRunStore.start`).
-    @ObservationIgnored var play: (PocketProfile) async -> Void = { _ in }
+    /// Returns whether a run actually started (false ⇒ nothing playable fit — surface it).
+    @ObservationIgnored var play: (PocketProfile) async -> Bool = { _ in false }
 
     init(cache: PocketMomentCache, history: PlayHistoryStore) {
         self.cache = cache
@@ -79,19 +80,22 @@ final class PocketWheelController {
         if now().timeIntervalSince1970 * 1000 - computedAtMs > 60_000 { await refresh() }
     }
 
-    func playBest() async {
+    @discardableResult
+    func playBest() async -> Bool {
         let r = await refresh()
-        await play(r.profile)
+        return await play(r.profile)
     }
 
-    func playMoment(_ key: PocketMomentKey) async {
-        guard let m = cache.snapshot.index()[key] else { return }
-        await play(.from(moment: m, names: cache.snapshot.collectionNames))
+    @discardableResult
+    func playMoment(_ key: PocketMomentKey) async -> Bool {
+        guard let m = cache.snapshot.index()[key] else { return false }
+        return await play(.from(moment: m, names: cache.snapshot.collectionNames))
     }
 
-    func play(alternative: PocketWheelBestMatchSummary) async {
-        guard let key = alternative.key else { return }
-        await playMoment(key)
+    @discardableResult
+    func play(alternative: PocketWheelBestMatchSummary) async -> Bool {
+        guard let key = alternative.key else { return false }
+        return await playMoment(key)
     }
 
     /// The top `count` moments within ±1 h of now across modes (CarPlay's "Pockets right now").

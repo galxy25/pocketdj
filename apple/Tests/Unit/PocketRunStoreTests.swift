@@ -107,6 +107,82 @@ final class PocketRunStoreTests: XCTestCase {
         player.stop()
     }
 
+    /// HIGH (review): starting anything else mid-run makes that queue the LISTENER's — the run
+    /// must never append to, trim, or re-plan it, and it ends after the grace window.
+    func testLosingTheSequencerFreezesTheRunAndEndsIt() async throws {
+        let (store, player, history) = makeStore()
+        var clock = Date()
+        store.now = { clock }
+        await store.start(profile: PocketRunPlannerTests.profile(), seed: 2)
+        let other = (0..<3).map { SetlistPlayer.Item(id: "misc_\($0)", title: "M\($0)", artist: "A") }
+        player.play(other, sourceSetlistId: "set_carplay_playlist")
+        // A verdict lands for the run (the old row's skip) — the store still learns…
+        let t0 = clock.timeIntervalSince1970 * 1000
+        _ = history.record(songId: "misc_0", context: .browser, at: t0)
+        store.evaluate()
+        await store.awaitTopUp()
+        await store.replanNow()
+        XCTAssertEqual(player.queue.map(\.id), other.map(\.id), "the other queue is untouched — no run rows appended")
+        XCTAssertFalse(player.queue.contains { $0.plan != nil })
+        XCTAssertTrue(store.isRunning, "inside the grace window the run is only suspended")
+        clock = clock.addingTimeInterval(PocketRunStore.ownershipGraceMs / 1000 + 1)
+        store.evaluate()
+        XCTAssertFalse(store.isRunning)
+        XCTAssertEqual(store.past.last?.finished, false, "abandoned, not finished")
+        player.stop()
+    }
+
+    /// The run tops itself back up to 100 OFF the main actor, with edition-stamped run rows.
+    func testTopUpRestoresTheHundredRowInvariant() async throws {
+        let (store, player, _) = makeStore()
+        await store.start(profile: PocketRunPlannerTests.profile(), seed: 4)
+        let drop = Set(player.upcoming.suffix(5).map(\.uid))
+        player.removeUpcoming(uids: drop)
+        XCTAssertEqual(player.queue.count, 95)
+        store.evaluate()
+        await store.awaitTopUp()
+        XCTAssertEqual(player.queue.count, 100, "99 upcoming + the sounding row")
+        XCTAssertTrue(player.queue.allSatisfy { $0.plan?.runId == store.active?.runId })
+        XCTAssertEqual(Set(player.queue.map(\.id)).count, 100, "no duplicates")
+        player.stop()
+    }
+
+    /// The REAL production path: the app's history hook context (not `stampPocketRun`) tags a run
+    /// play, and its upload row never carries the `pwr_` queue tag as a collection context.
+    func testProductionHookTagsRunPlaysAndUploadUsesTheRowCollection() async throws {
+        let (store, player, history) = makeStore()
+        // The app's production wiring of the run's History origin.
+        player.historyContextProvider = { PocketDJApp.historyContext(forSourceSetlistId: $0, collections: nil) }
+        await store.start(profile: PocketRunPlannerTests.profile(), seed: 6)
+        let row = player.queue[0]
+        let ctx = PocketDJApp.historyPlayContext(songId: row.id, sequencer: player, runs: store)
+        XCTAssertEqual(ctx.source, .pocket)
+        let e = try XCTUnwrap(history.record(songId: row.id, context: ctx))
+        XCTAssertEqual(e.pocketRun?.runId, store.active?.runId)
+        XCTAssertEqual(e.pocketRun?.slot, 1)
+        XCTAssertEqual(e.contextId, PocketWheelIds.runTag(try XCTUnwrap(store.active?.runId)))
+        // Not the sounding row ⇒ no tag (a stale hook can't mis-tag).
+        XCTAssertNil(PocketDJApp.historyPlayContext(songId: player.queue[3].id, sequencer: player, runs: store).pocketRun)
+
+        let service = ListeningPocketsService(
+            history: history, settings: SettingsStore(defaults: UserDefaults(suiteName: "t.\(UUID())")!),
+            credentials: { nil }, provider: NoopListeningContextProvider(),
+            syncFileURL: tmp("sync"), cacheFileURL: tmp("cache"))
+        var wire = service.wireEvent(e, locationOn: false)
+        XCTAssertNotEqual(wire.contextId, e.contextId, "the pwr_ queue tag is never a context id")
+        XCTAssertFalse(wire.contextId?.hasPrefix("pwr_") ?? false)
+        if let c = e.pocketRun?.rowCollectionId {
+            XCTAssertEqual(wire.contextId, c)
+        }
+        XCTAssertNil(wire.run, "an old server (no `wheel` cap) never acknowledges the run fields")
+        let fpOld = ListeningPocketsService.fingerprint(wire)
+        service.noteServerCaps(["wheel"])
+        wire = service.wireEvent(e, locationOn: false)
+        XCTAssertEqual(wire.run?.slot, 1)
+        XCTAssertNotEqual(ListeningPocketsService.fingerprint(wire), fpOld, "once supported, the play re-sends with the run tag")
+        player.stop()
+    }
+
     func testHistoryTagAndContextName() async throws {
         let (store, player, _) = makeStore()
         await store.start(profile: PocketRunPlannerTests.profile(), seed: 9)

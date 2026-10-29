@@ -245,9 +245,17 @@ final class IntentServices {
         await ensureReady()
         guard let wheel = pocketWheel else { throw PocketDJIntentError.emptyCollection("your pocket") }
         let r = await wheel.refresh()
-        await wheel.play(r.profile)
+        guard await wheel.play(r.profile) else { throw PocketDJIntentError.noPocketFits }
         let name = r.profile.dominantCollectionId.flatMap { wheel.collectionName($0) }
         return [name, r.profile.caption].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    /// One wheel moment (CarPlay "Pockets right now"): same veto + readiness as every play door.
+    func playPocketMoment(_ key: PocketMomentKey) async throws {
+        try vetoDuringOnboarding()
+        await ensureReady()
+        guard let wheel = pocketWheel else { throw PocketDJIntentError.emptyCollection("your pocket") }
+        guard await wheel.playMoment(key) else { throw PocketDJIntentError.noPocketFits }
     }
 
     /// ▶/🔀 an arbitrary list of song ids into the reserved Now Playing setlist — for collections
@@ -546,6 +554,8 @@ enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
     case autoMixNotPaused
     case intelligenceUnavailable(String)
     case setupIncomplete
+    /// The Pocket Wheel found nothing playable that fits right now.
+    case noPocketFits
 
     var localizedStringResource: LocalizedStringResource {
         switch self {
@@ -563,6 +573,8 @@ enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
             return "\(name) has no playable songs yet."
         case .setupIncomplete:
             return "Finish setting up PocketDJ in the app first."
+        case .noPocketFits:
+            return "Not enough playable songs fit your pocket right now. Download some, or connect Apple Music."
         case .noBurnedSongs(let name):
             return "\(name) has no burned songs on this device — auto-mix plays local files only. Burn it first."
         case .noAutoMixRunning:

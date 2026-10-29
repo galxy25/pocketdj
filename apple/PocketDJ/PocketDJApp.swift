@@ -165,6 +165,29 @@ struct PocketDJApp: App {
         }
     }
 
+    /// The Play-History context of a non-Mix play (the rips / coordinator hook). A member of the
+    /// RUNNING queue is attributed to that set (tapping a member row to jump ahead adopts it into
+    /// the set), reading the run's CAPTURED origin so a newer playNow mid-navigation can't retag
+    /// it; anything else is a standalone Browser play. A Pocket Wheel run row additionally carries
+    /// its run tag — this is the ONLY place production plays get `PlayEvent.pocketRun`.
+    @MainActor
+    static func historyPlayContext(songId: String, sequencer sp: SetlistPlayer?,
+                                   runs: PocketRunStore?) -> PlayHistoryStore.PlayContext {
+        guard let sp, sp.inRunningQueue(songId) else { return .browser }
+        let origin = sp.capturedHistoryContext
+        // The collection the run started from (a pocket played via Now Playing has contextId
+        // `set_now_playing`) — rides the pockets upload as `contextId`.
+        let originCollection = sp.capturedOrigin.flatMap { o -> String? in
+            [.pocket, .playlist, .setlist].contains(o.kind) ? o.id : nil
+        }
+        let current = sp.index < sp.queue.count && sp.queue[sp.index].matches(songId) ? sp.queue[sp.index] : nil
+        return PlayHistoryStore.PlayContext(source: origin?.source ?? .setlist,
+                                            contextId: sp.sourceSetlistId,
+                                            contextName: origin?.name,
+                                            originCollectionId: originCollection,
+                                            pocketRun: runs?.tag(forPlan: current?.plan))
+    }
+
     /// Wire the sync's settings-backed seams. Done HERE rather than in `init` because
     /// `playlistSync` is `@State` — touching it during init is "used before being initialized".
     /// Idempotent, so every entry point can call it.
@@ -946,26 +969,7 @@ struct PocketDJApp: App {
             guard let playHistory else { return }
             let title = app?.songsById[songId]?.name
             let artist = app?.songsById[songId]?.artist
-            let context: PlayHistoryStore.PlayContext
-            // A member of the RUNNING queue is attributed to that set (tapping a member row to
-            // jump ahead adopts it into the set); read the run's CAPTURED origin so a newer
-            // playNow mid-navigation can't retag it. Anything else is a standalone Browser play.
-            if let sp = setlistPlayer, sp.inRunningQueue(songId) {
-                let origin = sp.capturedHistoryContext
-                // The collection the run started from (a pocket played via Now Playing has
-                // contextId `set_now_playing`) — rides the pockets upload as `contextId`.
-                let originCollection = sp.capturedOrigin.flatMap { o -> String? in
-                    [.pocket, .playlist, .setlist].contains(o.kind) ? o.id : nil
-                }
-                context = PlayHistoryStore.PlayContext(source: origin?.source ?? .setlist,
-                                                       contextId: sp.sourceSetlistId,
-                                                       contextName: origin?.name,
-                                                       originCollectionId: originCollection,
-                                                       pocketRun: sp.index < sp.queue.count && sp.queue[sp.index].matches(songId)
-                                                           ? PocketRunStore.shared?.tag(forPlan: sp.queue[sp.index].plan) : nil)
-            } else {
-                context = .browser
-            }
+            let context = Self.historyPlayContext(songId: songId, sequencer: setlistPlayer, runs: PocketRunStore.shared)
             playHistory.record(songId: songId, title: title, artist: artist, context: context)
         }
         // NORMALIZE to the base song id: a variant play via the rip path fires this hook with
@@ -1602,6 +1606,8 @@ struct PocketDJApp: App {
         // `ctx` rides only while the places & trips TOGGLE is on — not merely while permission
         // happens to be granted (a revoked permission must not strip already-settled contexts).
         listeningPockets.locationOptedIn = { [weak listeningLocation] in listeningLocation?.isEnabled ?? false }
+        // Motion-derived modes ride only while "Notice walking & running" is on (W4).
+        listeningPockets.motionOptedIn = { [weak listeningMotion] in listeningMotion?.isEnabled ?? false }
         // Pockets × collections: the flattened membership snapshot + add history (ids only),
         // under the same opt-in as everything else this service sends.
         listeningPockets.collectionsProvider = collectionsInput
@@ -1739,7 +1745,7 @@ struct PocketDJApp: App {
         }
         pocketRuns.mixOwnsRun = { [weak mix] label in mix?.autoMixing == true && mix?.autoSourceLabel == label }
         pocketRuns.currentEventId = { [weak skipTracker] in skipTracker?.currentEventId }
-        pocketWheelController.play = { [weak pocketRuns] profile in await pocketRuns?.start(profile: profile) }
+        pocketWheelController.play = { [weak pocketRuns] profile in await pocketRuns?.start(profile: profile) ?? false }
         PocketRunStore.shared = pocketRuns
         // Phase 5b (opt-in): a sustained walk / run / drive re-targets the rest of the run.
         pocketRuns.adaptToActivity = { UserDefaults.standard.bool(forKey: ListeningMotionStore.adaptToActivityKey) }

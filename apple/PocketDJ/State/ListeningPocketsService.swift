@@ -125,6 +125,10 @@ final class ListeningPocketsService {
         /// changed-content gate).
         var collectionsHash: String?
         var collectionsSentAtMs: Double?
+        /// Capabilities the server echoed on POST /events (`ListeningPocketsUploadResponse.caps`).
+        /// The Pocket Wheel fields ride only once `wheel` is here: a server that would DROP them
+        /// must never acknowledge (fingerprint) a play that carries them, or they are lost forever.
+        var serverCaps: [String] = []
 
         init() {}
         init(from decoder: Decoder) throws {
@@ -137,6 +141,7 @@ final class ListeningPocketsService {
             sentRounds = (try? c.decode([String: String].self, forKey: .sentRounds)) ?? [:]
             collectionsHash = (try? c.decodeIfPresent(String.self, forKey: .collectionsHash)) ?? nil
             collectionsSentAtMs = (try? c.decodeIfPresent(Double.self, forKey: .collectionsSentAtMs)) ?? nil
+            serverCaps = (try? c.decode([String].self, forKey: .serverCaps)) ?? []
         }
     }
 
@@ -355,8 +360,9 @@ final class ListeningPocketsService {
                 deviceId: deviceIdProvider(), installId: history.installId,
                 sentAtMs: Int64(nowMs), events: slice.map(\.event),
                 places: places, trips: trips)
+            let response: ListeningPocketsUploadResponse
             do {
-                _ = try await client.postEvents(batch, key: creds.key, profileId: creds.profileId)
+                response = try await client.postEvents(batch, key: creds.key, profileId: creds.profileId)
             } catch is CancellationError {
                 return sentAny
             } catch let e as URLError where e.code == .cancelled {
@@ -376,6 +382,10 @@ final class ListeningPocketsService {
             }
             guard epoch == flushEpoch else { return sentAny }   // deleted / toggled mid-flight
             for item in slice { sync.sent[item.event.id] = item.fingerprint }
+            // A server that now advertises the wheel fields: the NEXT flush's wire rows carry them,
+            // their fingerprints move, and those plays re-send once — nothing was acknowledged
+            // without them by a server that understood them.
+            if let caps = response.caps { noteServerCaps(caps) }
             persistSync()
             pending.removeFirst(slice.count)
             sentAny = true
@@ -486,6 +496,18 @@ final class ListeningPocketsService {
 
     private var nowMs: Double { now().timeIntervalSince1970 * 1000 }
 
+    /// "Notice walking & running" is on (motion may ride the upload only while it is — W4).
+    @ObservationIgnored var motionOptedIn: () -> Bool = { false }
+    /// Record what the server echoed it understands (also the test seam).
+    func noteServerCaps(_ caps: [String]) {
+        guard Set(caps) != Set(sync.serverCaps) else { return }
+        sync.serverCaps = caps.sorted()
+        persistSync()
+    }
+
+    /// The server understands the Pocket Wheel fields (see `SyncDoc.serverCaps`).
+    var serverSupportsWheel: Bool { sync.serverCaps.contains("wheel") }
+
     /// One history event → its upload row (`ord` is filled in from `ordinals`).
     func wireEvent(_ e: PlayHistoryStore.PlayEvent, locationOn: Bool) -> ListeningPocketsUploadEvent {
         let tz = e.tzOffsetMin
@@ -494,17 +516,21 @@ final class ListeningPocketsService {
         let ctx = (locationOn && !history.isFromAnotherDevice(e)) ? e.listeningContext : nil
         // The collection the play started from — ids only; the reserved Now Playing queue id
         // is replaced by the run's captured origin when it has one.
-        let collection = ListeningPocketsCollections.context(contextId: e.originCollectionId ?? e.contextId,
-                                                             source: e.source)
+        // A Pocket Wheel run's sequencer tag (`pwr_<uuid>`) is a QUEUE, not a collection — it must
+        // never ride as a context id (the server keeps the first one forever). A run play's
+        // context is the collection its row was placed for.
+        let rawContext = [e.pocketRun?.rowCollectionId, e.originCollectionId, e.contextId]
+            .compactMap { $0 }.first { !$0.hasPrefix(PocketWheelIds.runTagPrefix) }
+        let collection = ListeningPocketsCollections.context(contextId: rawContext, source: e.source)
         return ListeningPocketsUploadEvent(
             id: e.id.uuidString, songId: e.songId, atMs: Self.flooredMinute(e.playedAt), ord: 0,
             tzOffsetMin: tz, source: e.source.rawValue, outcome: e.outcome.rawValue,
             fraction: e.listenedFraction.map { ($0 * 1000).rounded() / 1000 },
             originInstallId: e.originInstallId, artist: e.artist, carPlay: e.carPlay, ctx: ctx,
             contextId: collection?.id, contextKind: collection?.kind,
-            mode: Self.sensorMode(e, ctx: ctx),
-            run: e.pocketRun.map { .init(id: $0.runId.uuidString, moment: $0.momentKey, slot: $0.slot,
-                                         collectionId: $0.rowCollectionId) })
+            mode: serverSupportsWheel && motionOptedIn() ? Self.sensorMode(e, ctx: ctx) : nil,
+            run: serverSupportsWheel ? e.pocketRun.map { .init(id: $0.runId.uuidString, moment: $0.momentKey, slot: $0.slot,
+                                                               collectionId: $0.rowCollectionId) } : nil)
     }
 
     /// The Pocket Wheel mode worth sending (W4): only what the SENSORS decided — running / walking

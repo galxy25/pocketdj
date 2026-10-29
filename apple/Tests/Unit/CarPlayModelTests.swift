@@ -506,7 +506,7 @@ final class CarPlayPocketWheelTests: XCTestCase {
         XCTAssertFalse(rows.isEmpty)
         XCTAssertTrue(rows.allSatisfy { $0.id.hasPrefix(CarPlayModel.pocketMomentRowPrefix) })
         var played: PocketProfile?
-        wheel.play = { played = $0 }
+        wheel.play = { played = $0; return true }
         let ok1 = await model.playPocketForNow()
         XCTAssertTrue(ok1)
         XCTAssertEqual(played?.dominantCollectionId, "pl_potential")
@@ -514,5 +514,14 @@ final class CarPlayPocketWheelTests: XCTestCase {
         let bad = await model.playPocketMoment(rowId: "nope")
         XCTAssertTrue(ok2)
         XCTAssertFalse(bad)
+        // Nothing fit ⇒ the car says so instead of opening an empty Now Playing.
+        wheel.play = { _ in false }
+        let failed = await model.playPocketForNow()
+        XCTAssertFalse(failed)
+        // …and the onboarding veto applies to the car door too.
+        wheel.play = { _ in true }
+        services.onboardingIncomplete = { true }
+        let vetoed = await model.playPocketForNow()
+        XCTAssertFalse(vetoed)
     }
 }
