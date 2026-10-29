@@ -437,7 +437,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val cur = st.current?.takeIf { npDspEngine.isEngaged && npDspEngine.engagedSongId == it.id }?.let(::track)
         pf.apply(
             com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.plan(
-                cur, st.upcoming.take(STEM_LOCK_WINDOW).map(::track), carry, npNetwork(), STEM_LOCK_WINDOW,
+                cur, st.upcomingPlayable.take(STEM_LOCK_WINDOW).map(::track), carry, npNetwork(), STEM_LOCK_WINDOW,
             ),
         )
     }

@@ -77,7 +77,7 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
                     artist = np?.artist,
                     albumId = np?.albumId,
                     isPlaying = np?.isPlaying == true,
-                    upNext = if (np != null && seq.isRunning) seq.upcoming.take(WidgetSync.UP_NEXT_MAX)
+                    upNext = if (np != null && seq.isRunning) seq.upcomingPlayable.take(WidgetSync.UP_NEXT_MAX)
                         .map { NowPlayingSnapshot.Track(it.uid, it.id, it.title, it.artist.orEmpty()) } else emptyList(),
                     isFavorite = FavoriteCommand.filled(seam, songId),
                     favoriteAvailable = FavoriteCommand.visible(seam, songId),

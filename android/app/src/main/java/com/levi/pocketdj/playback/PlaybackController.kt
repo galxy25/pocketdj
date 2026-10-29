@@ -452,7 +452,7 @@ class PlaybackController(
                     val cur = c.currentMediaItemIndex
                     if (cur > 0 && c.currentMediaItem?.mediaId == mediaItem.mediaId) c.removeMediaItems(0, cur)
                 }
-                val ahead = sequencer.state.value.upcoming.take(PlaybackUrlResolver.AHEAD).map { it.resolveId }
+                val ahead = sequencer.state.value.upcomingPlayable.take(PlaybackUrlResolver.AHEAD).map { it.resolveId }
                 urls.prefetch(ahead, settings.current().hasRipServer)
             }
         }
@@ -1377,7 +1377,7 @@ class PlaybackController(
                 RunTransportBus.clearInstantMetadata?.invoke(instantMd)
                 throw e
             }
-            val ahead = sequencer.state.value.upcoming.take(PlaybackUrlResolver.AHEAD).map { it.resolveId }
+            val ahead = sequencer.state.value.upcomingPlayable.take(PlaybackUrlResolver.AHEAD).map { it.resolveId }
             urls.prefetch(ahead, ripConfigured)
         }
 

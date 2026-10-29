@@ -51,6 +51,12 @@ class SessionRestorer(
             resumeAtMs = snap.positionMs.takeIf { it > 0 },
             sessionId = snap.sessionId,
         )
+        // Blind restore: remember the unlocked rows with no persisted edition; the first resume re-decides them.
+        val blind = decider.isActive() && !decider.isReady()
+        if (blind) {
+            sequencer.setPendingRedecide(items.indices.filter { i -> snap.queue[i].resolveId == null && !items[i].editionLocked }
+                .map { items[it].uid }.toSet())
+        }
     }
 
     companion object {

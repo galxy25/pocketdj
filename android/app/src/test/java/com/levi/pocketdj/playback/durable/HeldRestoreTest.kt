@@ -130,6 +130,25 @@ class HeldRestoreTest {
     }
 
     @Test
+    fun restore_catalogNotLoaded_redecidesAtResume_oncePublished() = runTest {
+        val d = dh("a", "b")
+        var ready = false
+        d.seq.cleanOnlyProvider = { true }
+        d.seq.editionDecider = object : EditionDecider {
+            override fun decide(item: com.levi.pocketdj.playback.sequencer.QueueItem, cleanOnly: Boolean) =
+                if (item.id == "b") item.copy(cleanOnlySkip = true) else item.copy(variant = "clean", resolveId = item.id + "_clean")
+            override fun isReady() = ready
+        }
+        seed(d, snapshot().copy(queue = listOf(SessionRow("a", "A", "x"), SessionRow("b", "B", "y")), index = 0))
+        assertTrue(restorer(d).restoreIfIdle())
+        assertEquals(listOf(false, false), d.seq.state.value.queue.map { it.cleanOnlySkip })
+        ready = true
+        d.seq.resumeFromHold(); d.h.settle()
+        assertEquals(listOf(false, true), d.seq.state.value.queue.map { it.cleanOnlySkip })
+        assertEquals("a_clean", d.seq.state.value.queue[0].resolveId)
+    }
+
+    @Test
     fun restore_keepsTheCleanOnlySkipStamp() = runTest {
         val d = dh("a", "b")
         seed(d, snapshot().copy(queue = listOf(SessionRow("a", "A", "x"), SessionRow("b", "B", "y", cleanOnlySkip = true)), index = 0))

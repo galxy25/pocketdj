@@ -102,4 +102,39 @@ class CleanOnlySkipTest {
         h2.seq.play(rows("a", "x"), sourceSetlistId = "pls"); h2.settle()
         assertEquals(listOf(false, false), h2.seq.state.value.queue.map { it.cleanOnlySkip })
     }
+
+    @Test
+    fun liveInserts_areNotStampedOutsideACleanOnlyRun() = runTest {
+        val h = SequencerHarness(this, backgroundScope, setOf("a", "x"))
+        var calls = 0
+        h.seq.editionDecider = EditionDecider { item, _ -> calls++; item.copy(variant = "explicit") }
+        h.seq.cleanOnlyProvider = { false }
+        h.seq.play(listOf(QueueItem("a", "a")), preStamped = true); h.settle()
+        h.seq.insertNextInQueue(rows("x")); h.seq.appendToQueue(rows("x2"))
+        assertEquals(0, calls)
+        assertTrue(h.seq.state.value.queue.all { it.variant == null })
+    }
+
+    @Test
+    fun playNow_ofASkippedRow_isRefusedWithANotice() = runTest {
+        val h = SequencerHarness(this, backgroundScope, setOf("a", "x"))
+        h.seq.editionDecider = EditionDecider { item, cleanOnly ->
+            if (cleanOnly && item.id == "x") item.copy(cleanOnlySkip = true) else item
+        }
+        h.seq.cleanOnlyProvider = { true }
+        h.seq.play(listOf(QueueItem("a", "a")), preStamped = true); h.settle()
+        h.seq.playNow(QueueItem("x", "x")); h.settle()
+        assertEquals(listOf("a"), h.ids)
+        assertEquals(0, h.index)
+        assertEquals("Explicit - skipped in this clean-only set", h.seq.state.value.playbackNotice)
+    }
+
+    @Test
+    fun upcomingPlayable_dropsSkippedRows() = runTest {
+        val h = SequencerHarness(this, backgroundScope, setOf("a", "x", "c"))
+        h.seq.play(listOf(QueueItem("a", "a"), skip("x"), QueueItem("c", "c")), preStamped = true); h.settle()
+        val st = h.seq.state.value
+        assertEquals(listOf("x", "c"), st.upcoming.map { it.id })
+        assertEquals(listOf("c"), st.upcomingPlayable.map { it.id })
+    }
 }
