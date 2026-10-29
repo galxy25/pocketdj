@@ -787,6 +787,11 @@ final class RipsStore {
         let url = try await ensureURL(song.id, allowLive: true,
                                       maxWaitSeconds: Self.interactivePlayWaitSeconds,
                                       playback: playback)
+        // A CANCELLED play (a superseding skip / the set's stall hop) must not stamp
+        // `nowPlaying`: the set ADOPTS a nowPlaying change as a jump onto that row, so a late
+        // resolve of a row the set already hopped past would yank playback back to it. A URL
+        // served from the presign prefetch passes no await that would throw the cancel for us.
+        try Task.checkCancellation()
         let live = url.absoluteString.contains("/hls/")
         let entry = manifest[song.id]
         let resolvedStart = live ? nil : (startMs ?? entry?.startMs)

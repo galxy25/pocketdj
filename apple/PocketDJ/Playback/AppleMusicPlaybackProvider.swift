@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Observation
 
@@ -226,6 +227,22 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// one still parked at a network await (see the guard comment in `tryPlay`).
     @ObservationIgnored private var tryPlayGeneration = 0
 
+    /// The MusicKit player (seam; production = `ApplicationMusicPlayer.shared`).
+    @ObservationIgnored var musicKitPlayer: any MusicKitPlayerControl = SystemMusicKitPlayer()
+    /// True from the moment a `tryPlay` hands MusicKit a queue until we RELEASE it
+    /// (`releaseMusicKit`). While false, MusicKit playing anything is a stray play.
+    @ObservationIgnored private(set) var ownsMusicKit = false
+    /// When we last released MusicKit (nil = never this launch).
+    @ObservationIgnored private var releasedAt: Date?
+    @ObservationIgnored private var strayWatch: AnyCancellable?
+    @ObservationIgnored private var strayRecheckPending = false
+    /// MusicKit started playing while not ours, and was silenced. The set resumes its OWN
+    /// current row. Wired by `SetlistPlayer` in its init (live while held).
+    @ObservationIgnored var onStrayPlay: (() -> Void)?
+    /// MusicKit was released (playback left the Apple Music backend). The set drops the
+    /// engine's Apple Music impersonation so the card + remote commands are its own again.
+    @ObservationIgnored var onReleased: (() -> Void)?
+
     /// Wall-clock position smoothing. MusicKit's `playbackTime` is laggy/stale DURING playback
     /// (it advances mainly on state changes), which froze the CarPlay/lock-screen progress bar
     /// and the in-app deck — each ~1 Hz card update re-wrote elapsed with the same stale value,
@@ -396,6 +413,126 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
             ? PollVerdict(isPlaying: true, transition: .resumed(selfHealed: !reportedPlaying), anchorTime: playbackTime)
             : PollVerdict(isPlaying: false, transition: .paused, anchorTime: playbackTime)
     }
+
+    // MARK: Release on leave + stray-play guard (stale MusicKit card, drive 2026-10-28)
+
+    /// FIELD BUG (session ios-3712BFDE, 2026-10-28 22:15:59): a streamed track ended, the set
+    /// moved on to a downloaded song, but CarPlay kept showing the streamed song's artwork,
+    /// paused. Pressing ▶ there played the OLD streamed song over ours (our session logged
+    /// `interruption began … external=0`). The old `stop()` only called
+    /// `ApplicationMusicPlayer.shared.stop()`. That left MusicKit's one-song QUEUE in place, so
+    /// the system still had a MusicKit item to show and to resume. Leaving the Apple Music
+    /// backend now RELEASES MusicKit: stop AND empty its queue (`releaseMusicKit`). An AM→AM
+    /// advance never goes through here: `tryPlay` just swaps the queue.
+    func releaseMusicKit(reason: String) {
+        let wasOwned = ownsMusicKit
+        ownsMusicKit = false
+        releasedAt = Date()
+        musicKitPlayer.release()
+        armStrayPlayWatch()
+        DiagLog.shared.log("playback", "am release reason=\(reason) owned=\(wasOwned ? 1 : 0)")
+        onReleased?()
+    }
+
+    /// What one stray-play check should do.
+    enum StrayPlayVerdict: Equatable {
+        /// MusicKit is ours (an AM row is current), or it is not playing.
+        case ignore
+        /// MusicKit is playing audio we never asked for: silence it and give the set back.
+        case reclaim
+        /// Too close to our own release (MusicKit's reported status may still say `.playing`
+        /// for the track we just stopped). Look again after `after` seconds.
+        case recheck(after: Double)
+    }
+    /// Seconds after our own release during which a `.playing` read is MusicKit's lagging
+    /// status for the track we just stopped, not a fresh stray play.
+    nonisolated(unsafe) static var strayGraceSeconds: Double = 1.5
+
+    /// Pure verdict. `secondsSinceRelease` is nil when MusicKit was never released this launch.
+    nonisolated static func strayPlayVerdict(ownsMusicKit: Bool, musicKitPlaying: Bool,
+                                             secondsSinceRelease: Double?) -> StrayPlayVerdict {
+        guard !ownsMusicKit, musicKitPlaying else { return .ignore }
+        if let s = secondsSinceRelease, s < strayGraceSeconds { return .recheck(after: strayGraceSeconds - s) }
+        return .reclaim
+    }
+
+    /// Check NOW whether MusicKit is playing without us. On `.reclaim` it silences + releases
+    /// MusicKit and fires `onStrayPlay` (the set resumes its own current row: the listener
+    /// pressed ▶, so ▶ plays OUR song). Triggered by MusicKit state changes (`armStrayPlayWatch`)
+    /// and by a session interruption of our own engine (`scheduleStrayPlayCheck`).
+    @discardableResult
+    func checkForStrayPlay(source: String, now: Date = Date()) -> StrayPlayVerdict {
+        let verdict = Self.strayPlayVerdict(ownsMusicKit: ownsMusicKit,
+                                            musicKitPlaying: musicKitPlayer.isPlaying,
+                                            secondsSinceRelease: releasedAt.map { now.timeIntervalSince($0) })
+        switch verdict {
+        case .ignore:
+            break
+        case .recheck(let after):
+            guard !strayRecheckPending else { break }
+            strayRecheckPending = true
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(max(0.05, after) * 1_000_000_000))
+                guard let self else { return }
+                self.strayRecheckPending = false
+                self.checkForStrayPlay(source: source + "+recheck")
+            }
+        case .reclaim:
+            DiagLog.shared.log("playback", "stray musickit play source=\(source) → reclaimed")
+            NPLog.trace("AM stray play (source=\(source)): MusicKit playing while not the active backend → release + reclaim")
+            ownsMusicKit = false
+            releasedAt = now
+            musicKitPlayer.release()
+            onStrayPlay?()
+        }
+        return verdict
+    }
+
+    /// Our engine's audio session was interrupted while MusicKit is not ours. A stray MusicKit
+    /// resume shows up exactly like this (its session interrupts ours), so look at MusicKit a
+    /// moment later (twice: its status can lag the start). Backstop for `armStrayPlayWatch`.
+    /// A no-op until MusicKit has been used and released this launch.
+    func scheduleStrayPlayCheck(source: String) {
+        guard !ownsMusicKit, releasedAt != nil else { return }
+        Task { [weak self] in
+            for delay in [0.5, 1.5] {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard let self, !self.ownsMusicKit else { return }
+                if self.checkForStrayPlay(source: source) == .reclaim { return }
+            }
+        }
+    }
+
+    /// Subscribe ONCE to MusicKit's state changes (no polling). Armed on the first release, so a
+    /// launch that never streams never touches MusicKit for this.
+    private func armStrayPlayWatch() {
+        guard strayWatch == nil else { return }
+        strayWatch = musicKitPlayer.stateChanges.sink { [weak self] in
+            // `objectWillChange` fires BEFORE the new state lands: read it on a later main turn.
+            Task { @MainActor [weak self] in
+                guard let self, !self.ownsMusicKit else { return }
+                self.checkForStrayPlay(source: "state")
+            }
+        }
+    }
+
+    #if DEBUG
+    /// Tests: MusicKit's player can't run headless; stamp "an AM row owns MusicKit".
+    func setOwnsMusicKitForTests(_ on: Bool) { ownsMusicKit = on }
+    #endif
+}
+
+/// The slice of MusicKit's `ApplicationMusicPlayer` the release-on-leave + stray-play guard
+/// drives. A seam so unit tests can count releases and fake a stray resume.
+@MainActor
+protocol MusicKitPlayerControl: AnyObject {
+    /// MusicKit reports `.playing`.
+    var isPlaying: Bool { get }
+    /// Fires on every MusicKit player state change (before the new value lands).
+    var stateChanges: AnyPublisher<Void, Never> { get }
+    /// Stop AND empty the queue: nothing left for a remote ▶ to resume, no item for the system
+    /// Now Playing card to show.
+    func release()
 }
 
 // ============================================================================
@@ -403,6 +540,23 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
 // ============================================================================
 #if canImport(MusicKit)
 import MusicKit
+
+/// Production `MusicKitPlayerControl`: `ApplicationMusicPlayer.shared`.
+@MainActor
+final class SystemMusicKitPlayer: MusicKitPlayerControl {
+    var isPlaying: Bool { ApplicationMusicPlayer.shared.state.playbackStatus == .playing }
+    var stateChanges: AnyPublisher<Void, Never> {
+        ApplicationMusicPlayer.shared.state.objectWillChange
+            .map { _ in () }
+            .receive(on: DispatchQueue.main)
+            .eraseToAnyPublisher()
+    }
+    func release() {
+        let player = ApplicationMusicPlayer.shared
+        player.stop()
+        player.queue = []
+    }
+}
 
 @available(iOS 16.0, macOS 14.0, *)
 extension AppleMusicPlaybackProvider {
@@ -462,6 +616,7 @@ extension AppleMusicPlaybackProvider {
         resumeRequestedAt = nil
         audioConfirmed = false
         interruptedResume.resetForTrack()
+        var queued = false
         do {
             let player = ApplicationMusicPlayer.shared
             let catalogSong: MusicKit.Song
@@ -477,6 +632,8 @@ extension AppleMusicPlaybackProvider {
                 catalogSong = fetched
             }
             guard ticket == tryPlayGeneration else { return false }   // superseded mid-fetch
+            ownsMusicKit = true       // MusicKit's queue is ours from here until releaseMusicKit
+            queued = true
             do {
                 player.queue = [catalogSong]
                 try await player.play()
@@ -495,7 +652,20 @@ extension AppleMusicPlaybackProvider {
             // A stale tryPlay must not claim the win AFTER play() either: its play() can
             // succeed just before a newer call's queue-swap, and claiming nowPlaying/monitor
             // here resurrected the OLDER skip target over the newer one (Go Gina, 2026-08-20).
-            guard ticket == tryPlayGeneration else { return false }
+            guard ticket == tryPlayGeneration else {
+                // Superseded by a RELEASE (playback left Apple Music while play() was in flight),
+                // not by a newer tryPlay that owns the queue now: this stream must not sound.
+                if !ownsMusicKit { releaseMusicKit(reason: "tryPlay-after-release") }
+                return false
+            }
+            // CANCELLED after play() was accepted (the set hopped to an on-device row while this
+            // resolve was in flight): no newer AM intent owns the queue (the ticket is still
+            // ours), so this stream would sound over the row the set actually moved to. Stop it.
+            if Task.isCancelled {
+                DiagLog.shared.log("playback", "am tryPlay cancelled after play — stopping song=\(song.id)")
+                stop()
+                return false
+            }
             // 3) Cue: `play()` has returned (playback started), so the position write
             //    sticks — a write before the queue item is ready would be ignored.
             if let atMs, atMs > 0 { seek(to: Double(atMs) / 1000) }
@@ -521,6 +691,9 @@ extension AppleMusicPlaybackProvider {
             // (the fallback will), matching "first attempt is Apple Music; else rip".
             NPLog.trace("AM tryPlay FAILED title=\(song.name): \(error.localizedDescription)")
             prefetchCache.remove(Self.prefetchKey(song))   // never replay a bad pre-resolve
+            // Our queue swap landed but play() failed: MusicKit holds a song nobody plays. Release
+            // it (unless a newer tryPlay owns the queue now) so a remote ▶ can't resume it.
+            if queued, ticket == tryPlayGeneration { releaseMusicKit(reason: "tryPlay-failed") }
             return false
         }
     }
@@ -563,6 +736,12 @@ extension AppleMusicPlaybackProvider {
 
     func togglePlayPause() {
         let player = ApplicationMusicPlayer.shared
+        // Released (playback left Apple Music, e.g. a stale impersonated card's ▶ in the gap
+        // before the next row loads): there is nothing of ours to resume.
+        guard ownsMusicKit else {
+            DiagLog.shared.log("playback", "am toggle refused (released)")
+            return
+        }
         if player.state.playbackStatus == .playing {
             pauseWasIntentional = true
             player.pause()
@@ -601,6 +780,10 @@ extension AppleMusicPlaybackProvider {
     /// Explicit resume/pause — used by the lock-screen / CarPlay remote play/pause commands,
     /// which must land in a KNOWN state (not toggle blindly off a possibly-stale status).
     func resume() {
+        guard ownsMusicKit else {
+            DiagLog.shared.log("playback", "am resume refused (released)")
+            return
+        }
         pauseWasIntentional = false
         if resumeAfterInterruption() { return }
         isPlaying = true
@@ -628,7 +811,11 @@ extension AppleMusicPlaybackProvider {
         lastPollPlaybackTime = max(0, seconds)
     }
 
+    /// Leave the Apple Music backend: stop the stream and RELEASE MusicKit (stop + empty
+    /// queue, see `releaseMusicKit`). Also invalidates any `tryPlay` still parked at a network
+    /// await, so a resolve that lands after we left can't queue + play its song.
     func stop() {
+        tryPlayGeneration &+= 1
         stateMonitor?.cancel(); stateMonitor = nil
         pauseWasIntentional = false
         interruptedAtSeconds = nil
@@ -636,10 +823,10 @@ extension AppleMusicPlaybackProvider {
         audioConfirmed = false
         interruptedResume.resetForTrack()
         currentQueueItem = nil
-        ApplicationMusicPlayer.shared.stop()
         isPlaying = false
         positionBase = 0; positionStartWall = nil
         nowPlaying = nil
+        releaseMusicKit(reason: "stop")
     }
 
     /// Poll `ApplicationMusicPlayer` — the SINGLE reconciliation loop for the streaming track.
@@ -850,6 +1037,17 @@ extension AppleMusicPlaybackProvider {
     func resume() {}
     func pausePlayback() {}
     func seek(to seconds: Double) {}
-    func stop() { stateMonitor?.cancel(); stateMonitor = nil; nowPlaying = nil }
+    func stop() {
+        stateMonitor?.cancel(); stateMonitor = nil; nowPlaying = nil
+        releaseMusicKit(reason: "stop")
+    }
+}
+
+/// No MusicKit in this toolchain: nothing to release, never playing.
+@MainActor
+final class SystemMusicKitPlayer: MusicKitPlayerControl {
+    var isPlaying: Bool { false }
+    var stateChanges: AnyPublisher<Void, Never> { Empty().eraseToAnyPublisher() }
+    func release() {}
 }
 #endif

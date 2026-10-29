@@ -63,8 +63,9 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
         do {
             let now = try await rips.play((id: song.id, title: song.name, artist: song.artist),
                                           startMs: nil, atMs: atMs, playback: true)
-            guard ticket == tryPlayGeneration else {
-                DiagLog.shared.telemetry("ripreq", "tryPlay superseded song=\(song.id)")
+            // …and a CANCELLED one (the set hopped off this row) must not load it either.
+            guard ticket == tryPlayGeneration, !Task.isCancelled else {
+                DiagLog.shared.telemetry("ripreq", "tryPlay superseded song=\(song.id) cancelled=\(Task.isCancelled ? 1 : 0)")
                 return false
             }
             if atMs != nil, now.live { lastCueDropped = true }

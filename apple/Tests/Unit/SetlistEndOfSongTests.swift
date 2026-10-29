@@ -70,6 +70,13 @@ final class SetlistEndOfSongTests: XCTestCase {
         .init(id: id, title: id, artist: "A", lengthMs: lengthMs)
     }
 
+    /// Let a just-loaded row's nowPlaying-change observer (the jump-adopt, one main-actor turn
+    /// later) run BEFORE the test ends that row — a real track ends minutes after it loads,
+    /// never in the same turn. Yields only: a stub burned file fails in AVFoundation ~100 ms in.
+    private func settleLoad() async {
+        for _ in 0..<5 { await Task.yield() }
+    }
+
     /// Wait (bounded) for the asserted condition.
     private func waitUntil(_ message: String, timeout: TimeInterval = 3, _ predicate: () -> Bool) async {
         let deadline = Date().addingTimeInterval(timeout)
@@ -128,6 +135,179 @@ final class SetlistEndOfSongTests: XCTestCase {
         await waitUntil("hopped onto the durable-rip row") { r.rips.nowPlaying?.songId == "c2" }
         XCTAssertEqual(r.seq.queue.map(\.id), ["c2", "hang"], "the stalled row is deferred, not dropped")
         r.seq.stop()
+    }
+
+    /// "If we skip ahead because the next song can't download, play it AFTER the song we skipped
+    /// to — don't skip back to it" (Levi, drive 2026-10-28 03:01). The stalled row is placed
+    /// IMMEDIATELY after the hop target (even when the hop target sat further down), its late
+    /// resolve never interrupts the hop target, and it plays next when the hop target ends —
+    /// instantly, from the URL resolved while the hop target played.
+    func testDeferredRowsLateResolveNeverInterruptsTheHopTargetAndPlaysNextAtItsEnd() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["slow", "x", "b1", "c4"])
+        await burn(r, "b1")
+        EOSStub.delayedPresign = ["slow": 0.6]      // lands AFTER the hop
+        EOSStub.hangPresign = ["x"]                 // x can't start either — the hop skips it
+        r.seq.play([item("slow"), item("x"), item("b1"), item("c4")])
+        await waitUntil("hopped onto the burned row") { r.rips.nowPlaying?.songId == "b1" }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "slow", "x", "c4"],
+                       "the stalled row sits IMMEDIATELY after the hop target — deferred, not dropped")
+
+        // Well past the stalled row's late resolve (0.6 s) + the presign prefetched for it
+        // while b1 plays: nothing may take b1's place.
+        await waitUntil("the deferred row's URL resolved while b1 plays") { r.rips.prefetchedURL("slow") != nil }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(r.rips.nowPlaying?.songId, "b1", "the late resolve did not interrupt the hop target")
+        XCTAssertEqual(r.seq.index, 0)
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "slow", "x", "c4"])
+
+        let before = EOSStub.presignCount["slow", default: 0]
+        r.player.onTrackEnded?()                    // b1 ends
+        await waitUntil("the deferred row plays next") { r.rips.nowPlaying?.songId == "slow" }
+        XCTAssertEqual(r.seq.index, 1)
+        XCTAssertEqual(EOSStub.presignCount["slow", default: 0], before, "started instantly — no new round trip")
+        r.seq.stop()
+    }
+
+    // MARK: 2b — stall EPISODES: never hop back to a row this episode abandoned
+
+    /// THE ping-pong (drive log 2026-10-27 07:12, ios-3712BFDE): two Apple Music rows whose
+    /// catalog Song is prefetched count as "instant", but their audio still streams — on weak
+    /// signal BOTH stall, and the hop went b229 → 1393 → b229 → … every 6 s, each hop cancelling
+    /// the other's partial buffer. Now the row abandoned in this episode is never a target again:
+    /// the current row is left resolving (not cancelled, not restarted) and plays when it lands.
+    func testStallHopNeverPingPongsBackToTheAbandonedRowAndTheCurrentRowKeepsBuffering() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["amA", "amB"])
+        r.seq.startsInstantlyOverrideForTesting = { ["amA", "amB"].contains($0) ? true : nil }
+        EOSStub.hangPresign = ["amA"]
+        EOSStub.delayedPresign = ["amB": 1.2]       // stalls past its own 0.3 s, then lands
+        r.seq.play([item("amA"), item("amB")])
+        await waitUntil("hopped off the stalled row") { r.seq.stallHopCount == 1 }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["amB", "amA"], "deferred, not dropped")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let presigns = EOSStub.presignCount["amB", default: 0]
+
+        // amB stalls too (0.3 s) — the only other row is amA, abandoned this episode: no hop back.
+        await waitUntil("amB's buffered resolve lands and plays", timeout: 4) { r.rips.nowPlaying?.songId == "amB" }
+        XCTAssertEqual(r.seq.stallHopCount, 1, "no return hop to the abandoned row")
+        XCTAssertEqual(r.seq.queue.map(\.id), ["amB", "amA"])
+        XCTAssertEqual(r.seq.index, 0)
+        XCTAssertEqual(EOSStub.presignCount["amB", default: 0], presigns,
+                       "the stalled current row was never cancelled + restarted from zero")
+        r.seq.stop()
+    }
+
+    /// An on-device row anywhere in the hop range beats an earlier "instant" (streaming) row.
+    func testStallHopPrefersAnOnDeviceRowOverAnEarlierInstantRow() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["hang", "inst", "b1"])
+        await burn(r, "b1")
+        r.seq.startsInstantlyOverrideForTesting = { $0 == "inst" ? true : nil }
+        EOSStub.hangPresign = ["hang", "inst"]
+        r.seq.play([item("hang"), item("inst"), item("b1")])
+        await waitUntil("hopped onto the burned row") { r.rips.nowPlaying?.songId == "b1" }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "hang", "inst"])
+        XCTAssertEqual(r.seq.stallHopCount, 1)
+        r.seq.stop()
+    }
+
+    /// Several streaming hops in one episode are fine — each to a row not yet abandoned.
+    func testMultipleDistinctStreamingHopsInOneEpisode() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["s1", "s2", "s3"])
+        r.seq.startsInstantlyOverrideForTesting = { ["s1", "s2", "s3"].contains($0) ? true : nil }
+        EOSStub.hangPresign = ["s1", "s2"]
+        r.seq.play([item("s1"), item("s2"), item("s3")])
+        await waitUntil("hopped twice onto s3", timeout: 4) { r.rips.nowPlaying?.songId == "s3" }
+        XCTAssertEqual(r.seq.stallHopCount, 2, "s1 → s2 → s3: two distinct hops")
+        XCTAssertEqual(r.seq.queue.map(\.id), ["s3", "s2", "s1"], "each stalled row deferred behind its hop target")
+        r.seq.stop()
+    }
+
+    /// First audio ends the episode: a LATER stall may hop to a row abandoned in an earlier one.
+    func testEpisodeResetsAfterFirstAudioSoALaterStallCanHopToAPreviouslyAbandonedRow() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["amA", "b1", "late"])
+        await burn(r, "b1")
+        r.seq.startsInstantlyOverrideForTesting = { $0 == "amA" ? true : nil }
+        EOSStub.hangPresign = ["amA", "late"]
+        r.seq.play([item("amA"), item("b1")])
+        await waitUntil("episode 1: hopped onto the burned row") { r.rips.nowPlaying?.songId == "b1" }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "amA"])
+        r.player.onFirstAudio?()                     // b1 renders → the episode is over (the stub bytes never render, and can fail first: drive the wired hook)
+        r.seq.insertNextInQueue([item("late")])      // a stalling row now sits BEFORE amA
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "late", "amA"])
+        await settleLoad()
+        r.player.onTrackEnded?()                     // b1 ends → "late" starts and stalls
+        await waitUntil("episode 2 may hop to amA again") { r.seq.stallHopCount == 2 }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "amA", "late"])
+        r.seq.stop()
+    }
+
+    /// Control for the above: WITHOUT first audio the episode persists, so the same stall finds
+    /// only the abandoned row and leaves the current one buffering.
+    func testWithoutFirstAudioTheEpisodePersistsAndTheAbandonedRowIsNotATarget() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["amA", "b1", "late"])
+        await burn(r, "b1")
+        r.seq.startsInstantlyOverrideForTesting = { $0 == "amA" ? true : nil }
+        EOSStub.hangPresign = ["amA", "late"]
+        r.seq.play([item("amA"), item("b1")])
+        await waitUntil("episode 1: hopped onto the burned row") { r.rips.nowPlaying?.songId == "b1" }
+        r.seq.insertNextInQueue([item("late")])
+        await settleLoad()
+        r.player.onTrackEnded?()                     // b1 never rendered (no first audio)
+        await waitUntil("late is the current row") { r.seq.index == 1 }
+        try? await Task.sleep(nanoseconds: 700_000_000)   // well past late's 0.3 s stall
+        XCTAssertEqual(r.seq.stallHopCount, 1, "amA was abandoned this episode — no hop")
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "late", "amA"])
+        XCTAssertEqual(r.seq.index, 1, "the stalled row is left buffering, not advanced past")
+        r.seq.stop()
+    }
+
+    /// THE field mechanism (drive log 2026-10-28 03:01:34): the hop CANCELS the stalled row's
+    /// start; Apple Music (first provider) fails with that CancellationError, and the coordinator
+    /// fell through to the rip provider — whose presign was PREFETCHED, so no await threw the
+    /// cancel — and it loaded the stalled song over the on-device row, which the set then adopted
+    /// as a jump back. A cancelled play must stand down: no load, no nowPlaying, no error.
+    func testCancelledPlayDoesNotFallThroughToAnInstantRip() async {
+        let r = makeRig()
+        manifest(r.rips, ["honey"])
+        r.coord.sourceOfSong = { _ in Config.appleMusicSourceName }   // AM first, rip behind it
+        r.coord.appleMusicReadyOverrideForTests = true
+        XCTAssertTrue(r.coord.streamsAppleMusicFirst(id: "honey", title: "honey", artist: "A", variant: nil),
+                      "precondition: Apple Music is tried first")
+        r.rips.prefetchPresigned(["honey"])
+        await waitUntil("honey's presign prefetched") { r.rips.prefetchedURL("honey") != nil }
+
+        let t = Task { await r.coord.play(id: "honey", title: "honey", artist: "A") }
+        t.cancel()                                   // the set hopped off this row
+        await t.value
+        XCTAssertNil(r.rips.nowPlaying, "a cancelled play never stamps nowPlaying (the set would adopt it)")
+        XCTAssertFalse(r.player.hasLoadedItem, "a cancelled play never loads the engine")
+        XCTAssertNil(r.coord.activeBackend)
+        XCTAssertNil(r.coord.lastErrorMessage, "a cancel is not a dead source")
+    }
+
+    /// The same guard one layer down: a cancelled rip resolve served from the prefetch throws
+    /// instead of handing back a NowPlaying.
+    func testCancelledRipResolveFromThePrefetchThrows() async {
+        let r = makeRig()
+        manifest(r.rips, ["c1"])
+        r.rips.prefetchPresigned(["c1"])
+        await waitUntil("c1's presign prefetched") { r.rips.prefetchedURL("c1") != nil }
+        let t = Task { try await r.rips.play((id: "c1", title: "c1", artist: "A"), playback: true) }
+        t.cancel()
+        let result = await t.result
+        XCTAssertThrowsError(try result.get())
+        XCTAssertNil(r.rips.nowPlaying)
     }
 
     /// ▶ in the app while the row's start is still in flight must NOT restart it — that cancelled
@@ -269,6 +449,7 @@ private final class EOSStub: URLProtocol {
     nonisolated(unsafe) static var offline = false
     nonisolated(unsafe) static var hangPresign: Set<String> = []
     nonisolated(unsafe) static var delayedFailPresign: [String: Double] = [:]
+    nonisolated(unsafe) static var delayedPresign: [String: Double] = [:]
     nonisolated(unsafe) static var presignCount: [String: Int] = [:]
     nonisolated(unsafe) static var ripPostBody = Data("{}".utf8)
     nonisolated(unsafe) static var hangJobs = false
@@ -277,7 +458,7 @@ private final class EOSStub: URLProtocol {
 
     static func reset() {
         lock.lock(); defer { lock.unlock() }
-        offline = false; hangPresign = []; delayedFailPresign = [:]; presignCount = [:]
+        offline = false; hangPresign = []; delayedFailPresign = [:]; delayedPresign = [:]; presignCount = [:]
         ripPostBody = Data("{}".utf8); hangJobs = false; jobPolls = 0
     }
 
@@ -306,8 +487,15 @@ private final class EOSStub: URLProtocol {
             Self.presignCount[song, default: 0] += 1
             let hang = Self.hangPresign.contains(song)
             let delayFail = Self.delayedFailPresign[song]
+            let delay = Self.delayedPresign[song]
             Self.lock.unlock()
             if hang { return }                                   // never answers
+            if let delay {                                       // answers OK, late
+                DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [self] in
+                    respond(200, Data(#"{"url":"https://s3.test/rips/\#(song).mp3?X-Amz-Signature=x"}"#.utf8), json: true)
+                }
+                return
+            }
             if let delayFail {
                 DispatchQueue.global().asyncAfter(deadline: .now() + delayFail) { [self] in
                     respond(500, Data())
