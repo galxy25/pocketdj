@@ -18,6 +18,8 @@ class PolicyEditionDecider(
 
     override fun decide(item: QueueItem, cleanOnly: Boolean): QueueItem {
         val base = SongVariant.baseId(item.id)
+        // Q94: a clean-only run never plays an explicit row that has no clean cut. Stamp, never remove.
+        if (cleanOnly && EditionPolicy.isSkipped(song(base))) return item.copy(cleanOnlySkip = true)
         val d = EditionPolicy.decide(song(base), cleanOnly, preferExplicit())
         val edition = d.edition ?: return item
         val stored = EditionPolicy.resolveStored(base, d, isStored)

@@ -51,6 +51,7 @@ class NextRowPreloader(var enabled: Boolean = true) {
             if (repeat == RepeatMode.ALL && !shuffle && queue.size > 1) n = 0 else return null
         }
         val next = queue[n]
+        if (next.cleanOnlySkip) return null // never loaded, never preloaded
         if (next.uid == cur.uid || next.id == cur.id) return null // replay path: seek to start, no duplicate item
         return Target(n, next)
     }

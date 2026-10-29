@@ -51,6 +51,33 @@ class PlaybackSessionStoreTest {
     }
 
     @Test
+    fun resolveId_roundTripsAndIosFixtureStillDecodesWithout() {
+        val s = snap().copy(
+            queue = listOf(
+                SessionRow("a", "A", "x", resolveId = "a_clean", variant = "clean"),
+                SessionRow("b", "B", "y", resolveId = "b", cleanOnlySkip = true),
+            ),
+        )
+        val back = SessionSnapshot.decode(SessionSnapshot.encode(s))!!
+        assertEquals("a_clean", back.queue[0].resolveId)
+        assertEquals(true, back.queue[1].cleanOnlySkip)
+        val items = back.toQueueItems()
+        assertEquals("a_clean", items[0].resolveId)
+        assertTrue(items[1].cleanOnlySkip)
+        // QueueItem -> row -> QueueItem keeps the resolved edition + skip stamp
+        val q = items[0].copy(cleanOnlySkip = true)
+        assertEquals(q.resolveId, SessionSnapshot.row(q).resolveId)
+        assertEquals(true, SessionSnapshot.row(q).cleanOnlySkip)
+        // the iOS fixture (no resolveId key) decodes; the locked row keeps the iOS id convention
+        val ios = SessionSnapshot.decode(fixture())!!
+        assertNull(ios.queue[0].resolveId)
+        assertEquals("sng_2_clean", ios.toQueueItems()[1].resolveId)
+        // iOS Codable ignores extra keys: the extra Android keys never appear for plain rows
+        val enc = Json.parseToJsonElement(SessionSnapshot.encode(ios)).jsonObject
+        assertFalse((enc["queue"] as kotlinx.serialization.json.JsonArray)[0].jsonObject.containsKey("resolveId"))
+    }
+
+    @Test
     fun fixture_roundTripKeepsTheFieldSet_andOmitsNulls() {
         val s = SessionSnapshot.decode(fixture())!!
         val out = Json.parseToJsonElement(SessionSnapshot.encode(s)).jsonObject

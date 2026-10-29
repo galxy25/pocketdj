@@ -334,6 +334,8 @@ data class SetlistTrack(
     val mixSuggestions: List<MixSuggestion>? = null,
     /** Frozen loop count; null ⇒ once. */
     val repeatCount: Int? = null,
+    /** Frozen EDITION override (a clean-only realize substituting the clean cut); raw `SongVariant` token. */
+    val variant: String? = null,
 ) {
     /**
      * Length of ONE play (the player's per-track end boundary): 0 for text rows,

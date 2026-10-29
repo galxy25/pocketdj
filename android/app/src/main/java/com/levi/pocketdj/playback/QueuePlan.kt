@@ -1,6 +1,7 @@
 package com.levi.pocketdj.playback
 
 import com.levi.pocketdj.data.collections.Setlist
+import com.levi.pocketdj.data.edition.SongVariant
 import com.levi.pocketdj.playback.sequencer.QueueItem
 
 /**
@@ -20,6 +21,8 @@ object QueuePlan {
         val title: String? = null,
         val artist: String? = null,
         val lengthMs: Long? = null,
+        /** Frozen edition token (clean-only realize); null = primary cut. */
+        val variant: String? = null,
     )
 
     /** Entries -> queue rows. [meta] fills title/artist/length from the catalog when the entry has none. */
@@ -35,6 +38,11 @@ object QueuePlan {
                 artist = e.artist?.takeIf { it.isNotEmpty() } ?: a,
                 lengthMs = e.lengthMs ?: l,
                 repeatCount = e.repeatCount,
+                // A frozen edition is final: locked so the live decider never re-substitutes it.
+                variant = e.variant,
+                editionLocked = e.variant != null,
+                resolveId = SongVariant.entries.firstOrNull { it.raw == e.variant }
+                    ?.let { SongVariant.variantId(e.songId, it) } ?: e.songId,
             )
         }
 
@@ -57,6 +65,7 @@ object QueuePlan {
                     title = it.name,
                     artist = it.artist,
                     lengthMs = it.lengthMs,
+                    variant = it.variant,
                 )
             }
 }

@@ -32,6 +32,13 @@ data class SessionRow(
     val repeatCount: Int? = null,
     val variant: String? = null,
     val editionLocked: Boolean? = null,
+    /**
+     * Android-only (Q29): the storage id the row was actually playing (an edition id). iOS Codable ignores
+     * the key; absent in old / iOS files -> the restorer re-runs the edition decider.
+     */
+    val resolveId: String? = null,
+    /** Android-only (Q94): clean-only explicit row with no clean cut; iOS ignores it. */
+    val cleanOnlySkip: Boolean? = null,
 )
 
 /** iOS `StemLockState` (`stemLock` omitted when the lock is off). */
@@ -61,17 +68,27 @@ data class SessionSnapshot(
     val updatedAt: Double = 0.0,
 ) {
     /** The restorable queue with FRESH uids (a uid is per-instance identity, never durable). */
-    fun toQueueItems(): List<QueueItem> = queue.map {
-        QueueItem(
+    fun toQueueItems(redecide: ((QueueItem) -> QueueItem)? = null): List<QueueItem> = queue.map {
+        val locked = it.editionLocked ?: false
+        val item = QueueItem(
             id = it.songId,
             title = it.title,
             artist = it.artist.ifEmpty { null },
             lengthMs = it.lengthMs,
             repeatCount = it.repeatCount,
             variant = it.variant,
-            editionLocked = it.editionLocked ?: false,
-            resolveId = if (it.variant != null) variantStorageId(it.songId, it.variant) else it.songId,
+            editionLocked = locked,
+            // The persisted id wins (the exact edition that was playing). Absent: a locked row (the decider
+            // never touches it) keeps the iOS id convention; any other row is re-decided below.
+            resolveId = it.resolveId ?: if (locked && it.variant != null) variantStorageId(it.songId, it.variant) else it.songId,
+            cleanOnlySkip = it.cleanOnlySkip ?: false,
         )
+        if (it.resolveId == null && !locked && redecide != null) {
+            // Old / iOS file: forget the (unreliable) variant and let the decider say what plays now.
+            redecide(item.copy(variant = null))
+        } else {
+            item
+        }
     }
 
     fun toContext(): PlayContext =
@@ -99,6 +116,8 @@ data class SessionSnapshot(
             repeatCount = q.repeatCount,
             variant = q.variant,
             editionLocked = if (q.editionLocked) true else null,
+            resolveId = q.resolveId,
+            cleanOnlySkip = if (q.cleanOnlySkip) true else null,
         )
 
         fun encode(s: SessionSnapshot): String = PdjJson.lenient.encodeToString(serializer(), s)

@@ -1,6 +1,7 @@
 package com.levi.pocketdj.playback.durable
 
 import com.levi.pocketdj.playback.PlayContext
+import com.levi.pocketdj.playback.sequencer.EditionDecider
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import com.levi.pocketdj.playback.sequencer.rows
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -73,6 +74,50 @@ class HeldRestoreTest {
         // a held deck ticking does not write either
         d.clockMs += 60_000; d.playing = true; d.writer.tick()
         assertEquals(0, d.diskWriter.writeCount)
+    }
+
+    @Test
+    fun restore_persistedResolveIdWins_overTheDecider() = runTest {
+        val d = dh("a", "b")
+        // a decider that would pick something else must NOT be consulted for a row that carries its id
+        d.seq.editionDecider = EditionDecider { item, _ -> item.copy(variant = "explicit", resolveId = "WRONG") }
+        val s = snapshot().copy(queue = listOf(
+            SessionRow("a", "A", "x", resolveId = "a_clean", variant = "clean"),
+            SessionRow("b", "B", "y", resolveId = "b"),
+        ), index = 0)
+        seed(d, s)
+        assertTrue(restorer(d).restoreIfIdle())
+        assertEquals(listOf("a_clean", "b"), d.seq.state.value.queue.map { it.resolveId })
+        assertEquals("clean", d.seq.state.value.queue[0].variant)
+    }
+
+    @Test
+    fun restore_withoutResolveId_redecidesUnderTheOriginsCleanOnlyFlag() = runTest {
+        val d = dh("a", "b")
+        var asked: String? = "unset"
+        d.seq.cleanOnlyProvider = { id -> asked = id; true }
+        d.seq.editionDecider = EditionDecider { item, cleanOnly ->
+            if (cleanOnly) item.copy(variant = "clean", resolveId = item.id + "_clean") else item
+        }
+        // an iOS-shaped file: no resolveId; a stale variant on row b must not be turned into a guessed id
+        val s = snapshot().copy(queue = listOf(SessionRow("a", "A", "x"), SessionRow("b", "B", "y", variant = "explicit")), index = 0)
+        seed(d, s)
+        assertTrue(restorer(d).restoreIfIdle())
+        assertEquals("set_now_playing", asked)
+        assertEquals(listOf("a_clean", "b_clean"), d.seq.state.value.queue.map { it.resolveId })
+        // no decider at all: the id simply stays the song id (never a built string)
+        val d2 = dh("a", "b")
+        seed(d2, s)
+        assertTrue(restorer(d2).restoreIfIdle())
+        assertEquals(listOf("a", "b"), d2.seq.state.value.queue.map { it.resolveId })
+    }
+
+    @Test
+    fun restore_keepsTheCleanOnlySkipStamp() = runTest {
+        val d = dh("a", "b")
+        seed(d, snapshot().copy(queue = listOf(SessionRow("a", "A", "x"), SessionRow("b", "B", "y", cleanOnlySkip = true)), index = 0))
+        assertTrue(restorer(d).restoreIfIdle())
+        assertEquals(listOf(false, true), d.seq.state.value.queue.map { it.cleanOnlySkip })
     }
 
     @Test

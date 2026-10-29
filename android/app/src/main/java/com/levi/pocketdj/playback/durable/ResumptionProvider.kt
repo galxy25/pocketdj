@@ -31,7 +31,9 @@ class SessionRestorer(
 
     fun restore(snap: SessionSnapshot) {
         if (sequencer.isRunning || snap.queue.isEmpty()) return
-        val items = snap.toQueueItems()
+        val decider = sequencer.editionDecider
+        val cleanOnly = decider.isActive() && sequencer.cleanOnlyProvider(snap.source.id)
+        val items = snap.toQueueItems(redecide = if (decider.isActive()) { q -> decider.decide(q, cleanOnly) } else null)
         sequencer.restoreHeld(
             items = items,
             index = snap.index.coerceIn(0, items.lastIndex),

@@ -435,6 +435,13 @@ class SetlistSequencer(
         val at = index
         // A new generation retires the previous start's timers; the start window + resolve stall guard this one.
         cancelHealthTimers()
+        if (item.cleanOnlySkip) {
+            // Q94: BEFORE any resolve / load / start window. The row keeps its queue slot (no index shift).
+            log("[playback] advance: unplayable song=${item.id} index=$at/${queue.size} reason=${UnplayableSource.Reason.CLEAN_ONLY_EXPLICIT}")
+            if (failureLapComplete()) return
+            advanceToNext(AdvanceCause.UNPLAYABLE_HERE)
+            return
+        }
         waitingForLive = false
         firstAudioPending = true
         meter?.transitionBegan("start") // no-op inside an open advance/skip: a hop stays ONE transition
