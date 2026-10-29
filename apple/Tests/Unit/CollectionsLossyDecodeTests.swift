@@ -225,4 +225,19 @@ final class CollectionsLossyDecodeTests: XCTestCase {
         XCTAssertFalse(String(decoding: envP, as: UTF8.self).contains("amPlaylistId"))
         XCTAssertFalse(String(decoding: envL, as: UTF8.self).contains("amPlaylistId"))
     }
+
+    /// Same file the Android CollectionsCodecParityTest decodes
+    /// (android/app/src/test/resources/collections/am-playlist-id-shared.json).
+    func testSharedAmPlaylistIdFixtureDecodesAndReencodesAsString() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("android/app/src/test/resources/collections/am-playlist-id-shared.json")
+        let doc = try CollectionsCodec.decode(try Data(contentsOf: url))
+        XCTAssertEqual(doc.pockets.first?.amPlaylistId, "p.SHARED1")
+        XCTAssertEqual(doc.playlists.first?.amPlaylistId, "p.SHARED2")
+        let obj = try XCTUnwrap(JSONSerialization.jsonObject(with: try CollectionsCodec.encode(doc)) as? [String: Any])
+        let pk = try XCTUnwrap((obj["pockets"] as? [[String: Any]])?.first)
+        XCTAssertEqual(pk["amPlaylistId"] as? String, "p.SHARED1")
+    }
 }

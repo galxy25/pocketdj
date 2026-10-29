@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -229,5 +230,18 @@ class CollectionsCodecParityTest {
         // hand-made playlist stays unlinked
         val plain = s2.createPlaylist("Plain")
         assertNull(s2.convertPlaylistToPocket(plain.id)!!.sourcePlaylistId)
+    }
+
+    /** Shared fixture: the iOS CollectionsLossyDecodeTests decodes this SAME file, and both
+     *  sides re-encode to the same key shape (string at "amPlaylistId"). */
+    @Test
+    fun sharedAmPlaylistIdFixtureDecodesAndReencodesAsString() {
+        val text = javaClass.classLoader!!.getResource("collections/am-playlist-id-shared.json")!!.readText()
+        val doc = CollectionsCodec.decode(json, text)
+        assertEquals("p.SHARED1", doc.pockets.single().amPlaylistId)
+        assertEquals("p.SHARED2", doc.playlists.single().amPlaylistId)
+        val again = Json.parseToJsonElement(CollectionsCodec.encode(json, doc)).jsonObject
+        assertEquals("p.SHARED1", again["pockets"]!!.jsonArray[0].jsonObject["amPlaylistId"]!!.jsonPrimitive.content)
+        assertTrue(again["playlists"]!!.jsonArray[0].jsonObject["amPlaylistId"]!!.jsonPrimitive.isString)
     }
 }

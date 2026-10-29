@@ -7,6 +7,14 @@ import ZIPFoundation
 /// schemaVersion 1|2 tolerance, and that a backup omitting items/art still imports.
 final class BackupZipTests: XCTestCase {
 
+    func testBackupExportNeverCarriesAmPlaylistId() throws {
+        var pk = CollectionsFactory.makePocket("P", now: 1_000); pk.amPlaylistId = "p.AM1"
+        var pl = CollectionsFactory.makePlaylist("L", now: 1_000); pl.amPlaylistId = "p.AM2"
+        let zip = try BackupZip.export(sources: [], pockets: [pk], playlists: [pl], setlists: [], editsData: Data("{}".utf8))
+        XCTAssertFalse(String(decoding: try XCTUnwrap(entry("pockets.json", in: zip)), as: UTF8.self).contains("amPlaylistId"))
+        XCTAssertFalse(String(decoding: try XCTUnwrap(entry("playlists.json", in: zip)), as: UTF8.self).contains("amPlaylistId"))
+    }
+
     // MARK: Export → import round-trip (collections + edits survive, ids reminted)
 
     @MainActor
