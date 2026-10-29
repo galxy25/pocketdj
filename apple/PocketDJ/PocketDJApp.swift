@@ -392,6 +392,10 @@ struct PocketDJApp: App {
     #endif
 
     init() {
+        #if DEBUG
+        // Q25 test seam: DEBUG-only AND inert unless PDJ_DUMP_AM_TOKENS=1 (see AMTokenDump).
+        AMTokenDump.startIfRequested()
+        #endif
         // FIXTURE MEDIA SEAM: the JSON stores are per-launch ephemeral (every store's
         // launchURL), but the app-managed MEDIA folders were not — a leftover
         // sample-smp_fixture.m4a in the durable studio root gets re-adopted by
