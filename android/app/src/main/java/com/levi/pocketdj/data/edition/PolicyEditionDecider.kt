@@ -13,8 +13,10 @@ class PolicyEditionDecider(
     private val preferExplicit: () -> Boolean?,
     private val song: (String) -> IndexSong?,
     private val isStored: (String) -> Boolean,
+    private val ready: () -> Boolean = { true },
 ) : EditionDecider {
     override fun isActive(): Boolean = true
+    override fun isReady(): Boolean = ready()
 
     override fun decide(item: QueueItem, cleanOnly: Boolean): QueueItem {
         val base = SongVariant.baseId(item.id)

@@ -27,6 +27,35 @@ class CleanOnlySkipTest {
     }
 
     @Test
+    fun skipPrevious_stepsBackPastSkippedRows() = runTest {
+        val h = SequencerHarness(this, backgroundScope, setOf("a", "x", "b"))
+        h.seq.play(listOf(QueueItem("a", "a"), skip("x"), QueueItem("b", "b")), preStamped = true, startIndex = 2); h.settle()
+        assertEquals(2, h.index)
+        h.seq.skipPrevious(); h.settle()
+        assertEquals(0, h.index) // a, not a bounce back onto b
+        assertEquals("a", h.port.loads.last().item.id)
+        // nothing playable before: restart the current row
+        h.seq.skipNext(); h.settle()
+        assertEquals(2, h.index)
+        val h2 = SequencerHarness(this, backgroundScope, setOf("x", "b"))
+        h2.seq.play(listOf(skip("x"), QueueItem("b", "b")), preStamped = true); h2.settle()
+        h2.seq.skipPrevious(); h2.settle()
+        assertEquals(1, h2.index)
+    }
+
+    @Test
+    fun rowsAddedToARunningCleanOnlyRun_areStamped() = runTest {
+        val h = SequencerHarness(this, backgroundScope, setOf("a", "x", "y"))
+        h.seq.editionDecider = EditionDecider { item, cleanOnly ->
+            if (cleanOnly && item.id.startsWith("x")) item.copy(cleanOnlySkip = true) else item
+        }
+        h.seq.cleanOnlyProvider = { it == "pls" }
+        h.seq.play(rows("a"), sourceSetlistId = "pls"); h.settle()
+        h.seq.insertNextInQueue(rows("x1")); h.seq.appendToQueue(rows("x2", "y"))
+        assertEquals(listOf(false, true, true, false), h.seq.state.value.queue.map { it.cleanOnlySkip })
+    }
+
+    @Test
     fun skippedFirstRow_isHoppedOnPlay() = runTest {
         val h = SequencerHarness(this, backgroundScope, setOf("x", "b"))
         h.seq.play(listOf(skip("x"), QueueItem("b", "b")), preStamped = true); h.settle()
@@ -35,10 +64,12 @@ class CleanOnlySkipTest {
     }
 
     @Test
-    fun skippedRow_isNeverAPreloadTarget() {
+    fun skippedRow_isNeverAPreloadTarget_theNextPlayableRowIs() {
         val q = listOf(QueueItem("a"), skip("x"), QueueItem("c"))
         val p = NextRowPreloader()
-        assertNull(p.target(q, 0, RepeatMode.OFF, false, 1, true))
+        assertEquals(2, p.target(q, 0, RepeatMode.OFF, false, 1, true)!!.index)
+        assertNull(p.target(listOf(QueueItem("a"), skip("x")), 0, RepeatMode.OFF, false, 1, true))
+        assertEquals(0, p.target(listOf(QueueItem("a"), skip("x")).let { listOf(it[0], it[1], QueueItem("z")) }, 2, RepeatMode.ALL, false, 1, true)!!.index)
         assertEquals(1, p.target(listOf(QueueItem("a"), QueueItem("c")), 0, RepeatMode.OFF, false, 1, true)!!.index)
     }
 

@@ -33,7 +33,13 @@ class SessionRestorer(
         if (sequencer.isRunning || snap.queue.isEmpty()) return
         val decider = sequencer.editionDecider
         val cleanOnly = decider.isActive() && sequencer.cleanOnlyProvider(snap.source.id)
-        val items = snap.toQueueItems(redecide = if (decider.isActive()) { q -> decider.decide(q, cleanOnly) } else null)
+        // Catalog not loaded yet (cold start): a re-decide would see no song and pick the wrong edition. Keep the
+        // legacy variant id and leave the row unstamped instead.
+        val items = snap.toQueueItems(redecide = when {
+            !decider.isActive() -> { q -> q }          // no policy at all: the plain song id
+            decider.isReady() -> { q -> decider.decide(q, cleanOnly) }
+            else -> null                               // active but blind: legacy variant id, unstamped
+        })
         sequencer.restoreHeld(
             items = items,
             index = snap.index.coerceIn(0, items.lastIndex),

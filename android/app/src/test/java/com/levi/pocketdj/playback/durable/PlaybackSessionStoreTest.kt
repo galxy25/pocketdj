@@ -72,7 +72,8 @@ class PlaybackSessionStoreTest {
         val ios = SessionSnapshot.decode(fixture())!!
         assertNull(ios.queue[0].resolveId)
         assertEquals("sng_2_clean", ios.toQueueItems()[1].resolveId)
-        // iOS Codable ignores extra keys: the extra Android keys never appear for plain rows
+        // A decoded iOS snapshot re-encodes without Android-only keys (resolveId is null by construction here;
+        // rows written by SessionSnapshot.row() DO carry resolveId, which iOS Codable ignores).
         val enc = Json.parseToJsonElement(SessionSnapshot.encode(ios)).jsonObject
         assertFalse((enc["queue"] as kotlinx.serialization.json.JsonArray)[0].jsonObject.containsKey("resolveId"))
     }

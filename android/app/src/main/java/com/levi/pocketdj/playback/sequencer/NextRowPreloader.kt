@@ -46,12 +46,20 @@ class NextRowPreloader(var enabled: Boolean = true) {
         if (!enabled || !active) return null
         val cur = queue.getOrNull(index) ?: return null
         if (repeat == RepeatMode.ONE || playsRemaining > 1) return null
-        var n = index + 1
-        if (n >= queue.size) {
-            if (repeat == RepeatMode.ALL && !shuffle && queue.size > 1) n = 0 else return null
+        // Scan forward PAST clean-only skip rows (never loaded, never preloaded) to the first playable one,
+        // so a natural transition across a skipped row is still a gapless hand-off.
+        var n = index
+        var next: QueueItem? = null
+        for (step in 0 until queue.size) {
+            n++
+            if (n >= queue.size) {
+                if (repeat == RepeatMode.ALL && !shuffle && queue.size > 1) n = 0 else return null
+            }
+            if (n == index) return null
+            val c = queue[n]
+            if (!c.cleanOnlySkip) { next = c; break }
         }
-        val next = queue[n]
-        if (next.cleanOnlySkip) return null // never loaded, never preloaded
+        if (next == null) return null
         if (next.uid == cur.uid || next.id == cur.id) return null // replay path: seek to start, no duplicate item
         return Target(n, next)
     }

@@ -80,7 +80,7 @@ data class SessionSnapshot(
             editionLocked = locked,
             // The persisted id wins (the exact edition that was playing). Absent: a locked row (the decider
             // never touches it) keeps the iOS id convention; any other row is re-decided below.
-            resolveId = it.resolveId ?: if (locked && it.variant != null) variantStorageId(it.songId, it.variant) else it.songId,
+            resolveId = it.resolveId ?: if (it.variant != null && (locked || redecide == null)) variantStorageId(it.songId, it.variant) else it.songId,
             cleanOnlySkip = it.cleanOnlySkip ?: false,
         )
         if (it.resolveId == null && !locked && redecide != null) {

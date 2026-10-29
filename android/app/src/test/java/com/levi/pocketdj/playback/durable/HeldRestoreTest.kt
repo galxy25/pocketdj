@@ -113,6 +113,23 @@ class HeldRestoreTest {
     }
 
     @Test
+    fun restore_catalogNotLoaded_keepsTheLegacyVariantId_andDoesNotRedecide() = runTest {
+        val d = dh("a", "b")
+        var decided = 0
+        d.seq.cleanOnlyProvider = { true }
+        d.seq.editionDecider = object : EditionDecider {
+            override fun decide(item: com.levi.pocketdj.playback.sequencer.QueueItem, cleanOnly: Boolean) =
+                item.also { decided++ }.copy(variant = null, resolveId = item.id)
+            override fun isReady() = false // cold start: the catalog has not published yet
+        }
+        seed(d, snapshot().copy(queue = listOf(SessionRow("a", "A", "x", variant = "clean"), SessionRow("b", "B", "y")), index = 0))
+        assertTrue(restorer(d).restoreIfIdle())
+        assertEquals(0, decided)
+        assertEquals(listOf("a_clean", "b"), d.seq.state.value.queue.map { it.resolveId })
+        assertEquals("clean", d.seq.state.value.queue[0].variant)
+    }
+
+    @Test
     fun restore_keepsTheCleanOnlySkipStamp() = runTest {
         val d = dh("a", "b")
         seed(d, snapshot().copy(queue = listOf(SessionRow("a", "A", "x"), SessionRow("b", "B", "y", cleanOnlySkip = true)), index = 0))

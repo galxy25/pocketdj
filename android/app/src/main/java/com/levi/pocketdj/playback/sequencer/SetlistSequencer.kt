@@ -690,11 +690,20 @@ class SetlistSequencer(
         if (!running) return
         noteUserTransport()
         exitHoldIfNeeded()
-        if (index == 0) {
-            if (repeatMode == RepeatMode.ALL && queue.size > 1) index = queue.size - 1
-        } else {
-            index -= 1
+        // Clean-only skip rows are never played: step back PAST them (iOS drops them from the queue, so
+        // previous always reaches the real previous song). All earlier rows skipped = restart the current one.
+        var i = index
+        var found = false
+        for (step in 0 until queue.size) {
+            i = if (i == 0) {
+                if (repeatMode == RepeatMode.ALL && queue.size > 1) queue.size - 1 else break
+            } else {
+                i - 1
+            }
+            if (i == index) break
+            if (!queue[i].cleanOnlySkip) { found = true; break }
         }
+        if (found) index = i
         publish()
         startPlayCurrent()
     }
@@ -968,7 +977,7 @@ class SetlistSequencer(
     /** Append to the end of the running queue. No-op when idle (resurrecting is a fresh [play]). */
     fun appendToQueue(items: List<QueueItem>) {
         if (!running || items.isEmpty()) return
-        queue.addAll(items)
+        queue.addAll(stamp(items, sourceSetlistId))
         queueEdited()
     }
 
@@ -982,7 +991,7 @@ class SetlistSequencer(
     /** "Add next": right AFTER the current one. */
     fun insertNextInQueue(items: List<QueueItem>) {
         if (!running || items.isEmpty()) return
-        queue.addAll(minOf(index + 1, queue.size), items)
+        queue.addAll(minOf(index + 1, queue.size), stamp(items, sourceSetlistId))
         queueEdited()
     }
 
@@ -994,7 +1003,7 @@ class SetlistSequencer(
             appendToQueue(items)
             return
         }
-        queue.addAll(pos, items)
+        queue.addAll(pos, stamp(items, sourceSetlistId))
         queueEdited()
     }
 
@@ -1006,7 +1015,7 @@ class SetlistSequencer(
         if (!running || items.isEmpty()) return
         val lo = minOf(index + 1, queue.size)
         val at = slot(lo..queue.size).coerceIn(lo, queue.size)
-        queue.addAll(at, items)
+        queue.addAll(at, stamp(items, sourceSetlistId))
         queueEdited()
     }
 
@@ -1052,7 +1061,7 @@ class SetlistSequencer(
         exitHoldIfNeeded()
         val fresh = if (queue.any { it.uid == item.uid }) item.freshInstance() else item
         val at = minOf(index + 1, queue.size)
-        queue.add(at, fresh)
+        queue.add(at, stamp(listOf(fresh), sourceSetlistId).single())
         index = at
         queueEdited()
         startPlayCurrent()

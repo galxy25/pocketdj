@@ -179,6 +179,7 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
             preferExplicit = { preferExplicitMirror },
             song = { id -> app.catalogRepository.state.value.catalog?.songsById?.get(id) },
             isStored = { id -> app.servicesGraph.burnStore.hasLocalFile(id) },
+            ready = { app.catalogRepository.state.value.catalog != null },
         )
         app.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             com.levi.pocketdj.data.edition.EditionSettings.flow(app.settings).collect { preferExplicitMirror = it }
