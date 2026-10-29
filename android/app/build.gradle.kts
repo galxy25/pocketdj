@@ -5,6 +5,13 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// Release signing inputs (release plan A1/A3): environment first, then Gradle properties
+// (-P or ~/.gradle/gradle.properties). Nothing secret lives in git; without
+// ANDROID_UPLOAD_STORE_FILE the release build is left unsigned (CI / other agents still build).
+fun releaseInput(name: String): String? =
+    System.getenv(name)?.takeIf { it.isNotBlank() }
+        ?: project.findProperty(name)?.toString()?.takeIf { it.isNotBlank() }
+
 android {
     namespace = "com.levi.pocketdj"
     compileSdk = 36
@@ -13,8 +20,11 @@ android {
         applicationId = "com.levi.pocketdj"
         minSdk = 35
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // Play + sideload share one monotonic sequence: a Unix timestamp passed as
+        // -PversionCode=$(date +%s) (same scheme as BUILD_NUMBER in apple/scripts/testflight.sh).
+        // Dev builds keep 1.
+        versionCode = (project.findProperty("versionCode") ?: "1").toString().toInt()
+        versionName = (project.findProperty("versionName") ?: "1.0.0").toString()
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -29,10 +39,31 @@ android {
         }.getOrNull()?.takeIf { it.matches(Regex("[0-9a-f]{4,40}")) } ?: "unknown"
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
 
-        // STU-2: Studio native DSP lib (cpp/pdjdsp). Real devices are arm64; x86_64 serves the emulator.
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        // STU-2: Studio native DSP lib (cpp/pdjdsp). ABI filters live on the build types below:
+        // build-type filters MERGE with defaultConfig's, so one here could never be narrowed.
         externalNativeBuild {
-            cmake { cppFlags += "-std=c++17"; arguments += listOf("-DANDROID_STL=c++_shared") }
+            cmake {
+                cppFlags += "-std=c++17"
+                // Play's 16 KB page-size rule: NDK r27 links 4 KB-aligned unless asked
+                // (CMakeLists.txt also passes -z max-page-size=16384).
+                arguments += listOf("-DANDROID_STL=c++_shared", "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
+            }
+        }
+        // Q99: the diag-key import VIEW filters (incl. content:// */*) live on an activity-alias
+        // that is enabled only in builds with the diag channel (debug, or -PdiagChannel=true).
+        manifestPlaceholders["diagKeyImport"] = "false"
+    }
+
+    signingConfigs {
+        create("release") {
+            val store = releaseInput("ANDROID_UPLOAD_STORE_FILE")
+            if (store != null) {
+                storeFile = file(store)
+                storePassword = releaseInput("ANDROID_UPLOAD_STORE_PASS")
+                keyAlias = releaseInput("ANDROID_UPLOAD_KEY_ALIAS") ?: "upload"
+                keyPassword = releaseInput("ANDROID_UPLOAD_KEY_PASS") ?: storePassword
+                if (store.endsWith(".p12") || store.endsWith(".pfx")) storeType = "pkcs12"
+            }
         }
     }
 
@@ -45,8 +76,29 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Real devices are arm64; x86_64 serves the emulator.
+            ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+            manifestPlaceholders["diagKeyImport"] = "true"
+        }
         release {
-            isMinifyEnabled = false
+            // Play/sideload ship ARM only: the Apple Music SDK (mediaplayback AAR) has arm64-v8a +
+            // armeabi-v7a only, so an x86_64 copy would have no Apple Music. -PincludeX86=true adds
+            // x86_64 back for the emulator smoke test of a minified build (never for upload).
+            ndk {
+                abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+                if (project.findProperty("includeX86") == "true") abiFilters += "x86_64"
+            }
+            if (releaseInput("ANDROID_UPLOAD_STORE_FILE") != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            // -PdiagChannel=true: internal diag-channel build (D8 / Q99).
+            if (project.findProperty("diagChannel") == "true") {
+                buildConfigField("boolean", "DIAG_CHANNEL", "true")
+                manifestPlaceholders["diagKeyImport"] = "true"
+            }
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

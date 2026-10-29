@@ -48,6 +48,26 @@ object ListeningLocationCopy {
     const val TOGGLE = "Use places & trips in pockets"
     const val NO_PLACES = "No places yet. They appear after you've spent some time somewhere."
     const val ALWAYS_HINT = "Always lets PocketDJ notice trips between your places while music plays in the background."
+
+    /**
+     * Play User Data policy "prominent disclosure" (background location): shown in-app BEFORE every
+     * system location prompt, names the data, the purpose, and that it is used when the app is
+     * closed or not in use. Background ("Allow all the time") is a separate, later step.
+     */
+    const val DISCLOSURE_TITLE = "Use your location for places & trips?"
+    const val DISCLOSURE_FOREGROUND =
+        "PocketDJ collects location data to learn the places where you listen (home, gym, A, B, C…) and the trips " +
+            "between them, so your listening pockets can match music to where you are. This includes when the app " +
+            "is closed or not in use while music plays in the background, once you also choose \"Allow all the time\" " +
+            "in the next step. Your location stays on this device; only anonymous place labels are used in pockets. " +
+            "You can turn this off and erase your places at any time."
+    const val DISCLOSURE_BACKGROUND =
+        "To notice trips between your places while music plays in the background, PocketDJ collects location data " +
+            "even when the app is closed or not in use. On the next screen choose \"Allow all the time\". Your location " +
+            "stays on this device and is never used for ads. You can switch back to \"Only while using the app\" or " +
+            "turn places & trips off at any time."
+    const val DISCLOSURE_CONTINUE = "Continue"
+    const val DISCLOSURE_DECLINE = "Not now"
     const val PRECISE_HINT =
         "Approximate location is too coarse to learn places. Allow precise location so PocketDJ can recognise where you listen."
     const val ERASE = "Erase places & trips"
@@ -99,6 +119,17 @@ internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.
         resync()
     }
     val background = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { resync() }
+    // Prominent disclosure gate: (message, action) shown before any system location prompt.
+    var disclosure by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
+    fun requestForeground() {
+        disclosure = ListeningLocationCopy.DISCLOSURE_FOREGROUND to { foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS) }
+    }
+    fun requestBackground() {
+        disclosure = ListeningLocationCopy.DISCLOSURE_BACKGROUND to {
+            s.requestAlwaysUpgrade()
+            background.launch(LocationSettings.BACKGROUND_PERMISSION)
+        }
+    }
 
     // Returning from system Settings (denied / Always hand-off) may have changed the grant.
     val owner = LocalLifecycleOwner.current
@@ -136,7 +167,7 @@ internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.
                     }
                     if (v && latestToggle) {
                         if (!LocationSettings.current(ctx).isGranted) {
-                            withContext(Dispatchers.Main) { if (latestToggle) foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS) }
+                            withContext(Dispatchers.Main) { if (latestToggle) requestForeground() }
                         } else resync()
                     }
                 }
@@ -167,20 +198,17 @@ internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.
             )
         }
         if (auth.isGranted && LocationSettings.isApproximateOnly(ctx)) {
-            TextButton(onClick = { foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS) }, modifier = Modifier.testTag("pockets-location-allow-precise")) { Text("Allow precise location") }
+            TextButton(onClick = { requestForeground() }, modifier = Modifier.testTag("pockets-location-allow-precise")) { Text("Allow precise location") }
             SettingsCaption(ListeningLocationCopy.PRECISE_HINT)
         }
         when (ListeningLocationCopy.authAction(auth, s.didRequestAlways, canRetry)) {
             ListeningLocationCopy.AuthAction.OPEN_SETTINGS ->
                 TextButton(onClick = { openSettings() }, modifier = Modifier.testTag("pockets-location-open-settings")) { Text("Open Settings") }
             ListeningLocationCopy.AuthAction.REQUEST_FOREGROUND ->
-                TextButton(onClick = { foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS) }, modifier = Modifier.testTag("pockets-location-allow")) { Text("Allow location") }
+                TextButton(onClick = { requestForeground() }, modifier = Modifier.testTag("pockets-location-allow")) { Text("Allow location") }
             ListeningLocationCopy.AuthAction.ALLOW_ALWAYS -> {
                 TextButton(
-                    onClick = {
-                        s.requestAlwaysUpgrade()
-                        background.launch(LocationSettings.BACKGROUND_PERMISSION)
-                    },
+                    onClick = { requestBackground() },
                     modifier = Modifier.testTag("pockets-location-allow-always"),
                 ) { Text("Allow Always") }
                 SettingsCaption(ListeningLocationCopy.ALWAYS_HINT)
@@ -223,6 +251,25 @@ internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.
         }
     }
     SettingsCaption(ListeningLocationCopy.FOOTER)
+
+    disclosure?.let { (message, proceed) ->
+        AlertDialog(
+            onDismissRequest = { disclosure = null },
+            title = { Text(ListeningLocationCopy.DISCLOSURE_TITLE) },
+            text = { Text(message, modifier = Modifier.testTag("pockets-location-disclosure")) },
+            confirmButton = {
+                TextButton(
+                    onClick = { disclosure = null; proceed() },
+                    modifier = Modifier.testTag("pockets-location-disclosure-continue"),
+                ) { Text(ListeningLocationCopy.DISCLOSURE_CONTINUE) }
+            },
+            dismissButton = {
+                TextButton(onClick = { disclosure = null }, modifier = Modifier.testTag("pockets-location-disclosure-decline")) {
+                    Text(ListeningLocationCopy.DISCLOSURE_DECLINE)
+                }
+            },
+        )
+    }
 
     if (showErase) {
         AlertDialog(

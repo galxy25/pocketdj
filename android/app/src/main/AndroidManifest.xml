@@ -10,7 +10,8 @@
     <!-- Decision D4: declared once in wave 1. None is requested at launch. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- COL-20: opt-in places & trips. Coarse+fine are requested together (user may pick approximate); background is the "Always" upgrade. -->
+    <!-- COL-20: opt-in places & trips. Coarse+fine are requested together (user may pick approximate); background is the "Always" upgrade
+         (Levi 2026-10-29: Play v1 DOES request it; separate step behind an in-app prominent disclosure). -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
@@ -40,26 +41,6 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-            <!-- SVC-5: open a .pdjdiagkey file from Files (diag-writer key import). -->
-            <!-- Files/Downloads hand out opaque content:// URIs (no filename in the path), so
-                 match on scheme + MIME only; DiagServices.deepLink checks DISPLAY_NAME. -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="content" />
-                <data android:mimeType="application/octet-stream" />
-                <data android:mimeType="application/json" />
-                <data android:mimeType="*/*" />
-            </intent-filter>
-            <!-- file:// URIs do carry the name. -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:scheme="file" />
-                <data android:mimeType="*/*" />
-                <data android:host="*" />
-                <data android:pathPattern=".*\\.pdjdiagkey" />
             </intent-filter>
             <!-- SURF-4: pocketdj:// custom scheme. Scheme-only so both pocketdj://jukebox/<id> and the
                  host-less pocketdj:///jukebox/<id> match; DeepLinkParser validates verbs
@@ -121,6 +102,36 @@
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- SVC-5 / Q99: open a .pdjdiagkey file from Files (diag-writer key import). These filters
+             would list PocketDJ under "Open with" for EVERY file type, so they sit on an alias that
+             is enabled only where the diag channel exists (debug, or -PdiagChannel=true release).
+             MainActivity's IntentSink handles the intent regardless of which component matched. -->
+        <activity-alias
+            android:name=".DiagKeyImportAlias"
+            android:targetActivity=".MainActivity"
+            android:enabled="${diagKeyImport}"
+            android:exported="true">
+            <!-- Files/Downloads hand out opaque content:// URIs (no filename in the path), so
+                 match on scheme + MIME only; DiagServices.deepLink checks DISPLAY_NAME. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- file:// URIs do carry the name. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" />
+                <data android:mimeType="*/*" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.pdjdiagkey" />
+            </intent-filter>
+        </activity-alias>
 
         <provider
             android:name="androidx.core.content.FileProvider"
