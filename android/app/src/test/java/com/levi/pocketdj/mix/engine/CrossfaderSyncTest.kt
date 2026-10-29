@@ -212,4 +212,43 @@ class CrossfaderSyncTest {
         h.engine.load(item, A)
         assertEquals(20_000, h.engine.mixDeckSnapshot()!!.deckA!!.track.lengthMs)
     }
+
+    // ---------------------------------------------------------------- latency compensation (ANS-MIX-2)
+
+    @Test fun audiblePhaseSubtractsTheStretcherLag() {
+        // 120 bpm: a 0.5 s beat. A position exactly on a downbeat but 100 ms ahead of what is heard sounds 0.8 beat in.
+        assertEquals(0.0, PhaseAlignMath.audiblePhase(10.0, 0.0, 0.0, 0.5), 1e-9)
+        assertEquals(0.8, PhaseAlignMath.audiblePhase(10.0, 0.1, 0.0, 0.5), 1e-9)
+        assertEquals(0.5, PhaseAlignMath.audiblePhase(10.0, 0.0, 0.25, 0.5), 1e-9)
+    }
+
+    @Test fun targetCorrectsOnlyTheAudibleOffsetWhenDecksLagDifferently() {
+        // Both on the grid in raw positions, but the follower runs at +30 % tempo so its lag (source s) is larger.
+        val t = PhaseAlignMath.target(
+            leadPos = 10.0, leadLag = 0.120, leadDb = 0.0, leadBeat = 0.5,
+            folPos = 20.0, folLag = 0.156, folDb = 0.0, folBeat = 0.6,
+        )
+        // lead heard at phase 1-0.24 = 0.76; follower heard at phase 1-0.26=0.74 -> follower is 0.02 beats behind
+        assertEquals(0.02 * 0.6, t.seekSec - 20.0, 1e-9)
+        assertEquals(12.0, t.errorMs, 1e-6)
+        // with no compensation the same raw positions would have asked for no move at all
+        val raw = PhaseAlignMath.target(10.0, 0.0, 0.0, 0.5, 20.0, 0.0, 0.0, 0.6)
+        assertEquals(20.0, raw.seekSec, 1e-9)
+    }
+
+    @Test fun syncToLeadAlignsAudibleBeatsNotRawPositions() {
+        val h = twoDecks(bpmA = 120.0, bpmB = 100.0, dbB = 100)
+        val lag = mapOf(A to 0.150, B to 0.210)             // follower is slower to emerge (e.g. tempo +30 %)
+        h.engine.lagSecondsOverride = { lag.getValue(it) }
+        h.engine.play(A); h.engine.play(B)
+        h.engine.seek(A, 10.0)
+        h.engine.seek(B, 20.35)
+        h.engine.setLead(A)
+        h.engine.syncToLead(B)
+
+        val lp = PhaseAlignMath.audiblePhase(h.engine.position(A), 0.150, 0.0, 0.5)
+        val fp = PhaseAlignMath.audiblePhase(h.engine.position(B), 0.210, 0.1, 0.6)
+        val d = ((lp - fp) % 1.0 + 1.5) % 1.0 - 0.5
+        assertEquals("audible downbeats coincide (< 5 ms)", 0.0, d * 0.6 * 1000, 5.0)
+    }
 }

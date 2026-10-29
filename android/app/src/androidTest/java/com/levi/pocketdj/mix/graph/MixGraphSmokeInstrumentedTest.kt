@@ -37,4 +37,26 @@ class MixGraphSmokeInstrumentedTest {
             sink.stop(); sink.release(); pump.stop()
         }
     }
+
+    @Test fun nativeStretcherKeepsTheDeckRenderingAtPlus30PercentWithAPublishedLatency() {
+        val am = InstrumentationRegistry.getInstrumentation().targetContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val sink = AudioTrackSink(am)
+        val graph = MixGraph(sink.sampleRate)
+        val total = 44_100L * 10
+        val v = Voice(SyntheticPcmSource.tone(441.0, total, 44_100, 0.5f), 44_100).also { it.setLoop(0, total) }
+        val pump = VoicePump(v).start()
+        graph.setMain(Deck.A, v)
+        val composer = ParamsComposer(graph)
+        composer.setCrossfader(0f)
+        v.schedule(0); v.play()
+        graph.attach(sink)
+        try {
+            Thread.sleep(800)
+            val lag = graph.audibleLagSeconds(Deck.A)
+            assertTrue("stretcher delay is published ($lag s)", lag > 0.0 && lag < 1.0)
+            assertTrue("audible clock trails the input clock", graph.deck(Deck.A).audibleInputClock < graph.deck(Deck.A).inputClock)
+        } finally {
+            sink.stop(); sink.release(); pump.stop()
+        }
+    }
 }

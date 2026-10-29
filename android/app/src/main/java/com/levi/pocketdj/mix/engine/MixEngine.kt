@@ -791,11 +791,12 @@ class MixEngine(
         // Phase relative to each song's measured first downbeat (0 when the grid is absent).
         val leadDb = (st(l).loaded?.firstDownbeatMs ?: 0) / 1000.0
         val folDb = (st(f).loaded?.firstDownbeatMs ?: 0) / 1000.0
-        val leadPhase = ((position(l) - leadDb) / leadBeat) % 1.0
-        val folPhase = ((position(f) - folDb) / folBeat) % 1.0
-        var delta = leadPhase - folPhase
-        if (delta > 0.5) delta -= 1 else if (delta < -0.5) delta += 1
-        seek(f, maxOf(0.0, position(f) + delta * folBeat))
+        val t = PhaseAlignMath.target(
+            position(l), audibleLagSeconds(l), leadDb, leadBeat,
+            position(f), audibleLagSeconds(f), folDb, folBeat,
+        )
+        diag("phase-align ${f.label}->${l.label} err=${"%.1f".format(Locale.US, t.errorMs)}ms lag=${"%.0f".format(Locale.US, audibleLagSeconds(f) * 1000)}/${"%.0f".format(Locale.US, audibleLagSeconds(l) * 1000)}ms")
+        seek(f, t.seekSec)
     }
 
     // ---- FX rack
@@ -882,6 +883,10 @@ class MixEngine(
      * pulse reads this at 60 fps). It honors seek and loop folding. null while the voice is not
      * rendering (just loaded / paused / ended): callers fall back to [position].
      */
+    /** Stretcher delay behind the voices' counters, source seconds (test seam: [lagSecondsOverride]). */
+    fun audibleLagSeconds(deck: Deck): Double = lagSecondsOverride?.invoke(deck) ?: graph.audibleLagSeconds(deck)
+    internal var lagSecondsOverride: ((Deck) -> Double)? = null
+
     fun truePlayhead(deck: Deck): Double? = controller(deck).trueSeconds()
 
     // ------------------------------------------------------------------------------ outcomes

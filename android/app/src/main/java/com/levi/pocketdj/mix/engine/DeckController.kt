@@ -124,11 +124,14 @@ class DeckController(
     fun frameFor(sec: Double): Long =
         (startFrame + Math.round(sec * sampleRate)).coerceIn(startFrame, endFrame)
 
-    /** True playhead in source seconds from the voice's own frame counter; null unless it is rendering. */
+    /**
+     * True playhead in source seconds from the voice's own frame counter MINUS the stretcher's delay (what
+     * is audible now; the FX/EQ run after the stretcher); null unless it is rendering.
+     */
     fun trueSeconds(): Double? {
         val v = (if (onStems) stems?.voices?.get(0) else voice) ?: return null
         if (!v.isPlaying || v.status != Voice.Status.PLAYING) return null
-        return ((v.playerFrame - startFrame).toDouble() / sampleRate).coerceAtLeast(0.0)
+        return ((v.playerFrame - startFrame).toDouble() / sampleRate - graph.audibleLagSeconds(deck)).coerceAtLeast(0.0)
     }
 
     val voiceStatus: Voice.Status? get() = voice?.status

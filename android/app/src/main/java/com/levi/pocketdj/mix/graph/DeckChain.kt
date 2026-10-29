@@ -7,7 +7,8 @@ import com.levi.pocketdj.audio.dsp.EnvelopeFollower
 import com.levi.pocketdj.audio.dsp.FxSlotNodes
 import com.levi.pocketdj.audio.dsp.Meter
 import com.levi.pocketdj.audio.dsp.MixDeckLevels
-import com.levi.pocketdj.audio.dsp.TimePitch
+import com.levi.pocketdj.audio.dsp.TimeStretcher
+import com.levi.pocketdj.audio.dsp.TimeStretchers
 import com.levi.pocketdj.audio.dsp.TrimGain
 import com.levi.pocketdj.mix.model.Deck
 import com.levi.pocketdj.mix.model.FxRack
@@ -40,7 +41,23 @@ class DeckChain(val deck: Deck, val sampleRate: Int = 44_100, val maxBlock: Int 
     val envelope = EnvelopeFollower(sampleRate.toFloat())
     private val preMeter = Meter(levels, post = false)
     private val postMeter = Meter(levels, post = true)
-    val timePitch = TimePitch(sampleRate, maxPushFrames = maxBlock)
+    /** Always-on stretcher: native Signalsmith, Sonic when libpdjdsp is absent. */
+    val timePitch: TimeStretcher = TimeStretchers.create(sampleRate, maxBlock)
+
+    /**
+     * Stretcher delay in OUTPUT frames as of the end of the last [render] (algorithm + queued), published
+     * with [stamp]. The audible signal lags the input clock by this much (x speed in source frames).
+     */
+    @Volatile var latencyFrames = 0; private set
+    @Volatile private var latencySpeed = 1f
+
+    /** How far behind the voices' frame counters the listener is, in SOURCE seconds. 0 until rendering. */
+    val audibleLagSeconds: Double get() = latencyFrames * latencySpeed.toDouble() / sampleRate
+
+    /** The input clock corresponding to what is being heard now (inputClock minus the stretcher delay). */
+    val audibleInputClock: Long get() = inputClock - Math.round(latencyFrames * latencySpeed.toDouble())
+
+    fun release() { timePitch.close() }
     val slotNodes = Array(FxRack.SLOT_COUNT) { FxSlotNodes(sampleRate.toFloat()) }
     val eq = Eq3(sampleRate.toFloat())
     val trim = TrimGain(sampleRate.toFloat())
@@ -115,6 +132,8 @@ class DeckChain(val deck: Deck, val sampleRate: Int = 44_100, val maxBlock: Int 
         prevMain = p.mainGain
         postMeter.process(out, frames)
 
+        latencySpeed = timePitch.speed
+        latencyFrames = timePitch.latencyFrames()
         stamp.write(inputClock, main?.playerFrame ?: 0L, stems?.voices?.get(0)?.playerFrame ?: 0L)
     }
 

@@ -13,6 +13,7 @@ add_library(pdjdsp SHARED
     mixer.cpp
     sf2_voice.cpp
     stretch.cpp
+    stretch_rt.cpp
     oboe_sink.cpp)
 
 target_include_directories(pdjdsp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
