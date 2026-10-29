@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-GM-1 — In the Pocket golden cross-platform test (Q31)
 
@@ -21,3 +21,10 @@ Only owned files (fixtures x3, InThePocketGoldenTests.swift, InThePocketGoldenTe
 
 ## Questions for Levi
 - Want the Swift (and Kotlin) scorer tie-break made order-independent (finding above)? It would change which of several equal-scored songs get picked, so existing seeds would replay differently; the golden would be regenerated.
+
+## Review
+Fixes applied.
+- MINOR tie-break golden gap -> deferred (not fixable inside owned files): making the Swift/Kotlin tie-break order-independent changes seeded replay, so it stays as the open question for Levi above. When he approves, sum over sorted keys in MembershipIndex/applyMembership, add a tied-collection case to the fixture, regenerate with the writer command.
+- MINOR pbxproj churn -> integrator note: on any merge conflict in apple/PocketDJ.xcodeproj/project.pbxproj, take either side and run `xcodegen generate` rather than hand-merging.
+- NIT #filePath input -> fixed (documented in the test; host-only by design, bundled resource copy unused).
+- NIT in-process determinism test -> fixed (comment states in-process only; cross-process covered by writer and assert runs).

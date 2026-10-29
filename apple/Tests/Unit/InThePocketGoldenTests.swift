@@ -25,6 +25,8 @@ final class InThePocketGoldenTests: XCTestCase {
         URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
     }
+    /// Read via the host source path (My Mac / simulator only, not a physical device); the
+    /// bundled Resources copy is not used by the test.
     private static var inputURL: URL {
         repoRoot.appendingPathComponent("apple/Tests/Fixtures/inthepocket-golden-input.json")
     }
@@ -172,6 +174,8 @@ final class InThePocketGoldenTests: XCTestCase {
     /// Same input + seed ⇒ the same output (the property the whole golden rests on). Compared with
     /// the golden's own tolerance: Swift `Dictionary` iteration order is per-instance random, so
     /// sums over dictionaries may differ in the last ulp between two builds — picks must not.
+    /// IN-PROCESS stability only: both builds share one Hasher seed. Cross-process stability is
+    /// covered by the separate writer and assert runs (distinct processes, distinct seeds).
     func testBuildIsDeterministicAcrossRuns() throws {
         let a = try buildAll().rows, b = try buildAll().rows
         XCTAssertEqual(a.count, b.count)
