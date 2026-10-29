@@ -79,6 +79,27 @@
 		</dict>
 
 		<!-- ============================================================== -->
+		<!-- Identifiers ▸ Device ID                                        -->
+		<!-- Support/DeviceIdentity.swift mint() seeds the per-install id    -->
+		<!-- from UIDevice.identifierForVendor (iOS/visionOS/tvOS; random    -->
+		<!-- UUID on macOS) and sends it to PocketDJ cloud services as       -->
+		<!-- X-PocketDJ-Device / deviceId / installId. Not IDFA; not used    -->
+		<!-- for tracking. Added 2026-10-29 per code audit.                  -->
+		<!-- ============================================================== -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeDeviceID</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+			</array>
+		</dict>
+
+		<!-- ============================================================== -->
 		<!-- Contact Info ▸ Name                                            -->
 		<!-- The DJ display name shown to guests of a hosted session.        -->
 		<!-- ============================================================== -->
@@ -98,8 +119,11 @@
 		<!-- ============================================================== -->
 		<!-- Usage Data ▸ Product Interaction                               -->
 		<!-- Now-playing / up-next / played transitions posted to a hosted   -->
-		<!-- session so the guest page can display them. NOTE: on-device     -->
-		<!-- play history and play stats are NOT counted here — see §5.2.    -->
+		<!-- session so the guest page can display them (App Functionality). -->
+		<!-- Also: plays / skips / outcomes uploaded to the rec engine and   -->
+		<!-- listening pockets, plus In the Pocket game rounds, used to tune -->
+		<!-- picks (Product Personalization) and to evaluate the algorithm   -->
+		<!-- (Analytics). Updated 2026-10-29 per code audit.                 -->
 		<!-- ============================================================== -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
@@ -111,6 +135,8 @@
 			<key>NSPrivacyCollectedDataTypePurposes</key>
 			<array>
 				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+				<string>NSPrivacyCollectedDataTypePurposeProductPersonalization</string>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
 			</array>
 		</dict>
 
