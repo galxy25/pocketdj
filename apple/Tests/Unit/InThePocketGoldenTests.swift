@@ -168,10 +168,14 @@ final class InThePocketGoldenTests: XCTestCase {
         }
     }
 
-    /// Same input + seed ⇒ identical output (the property the whole golden rests on).
+
+    /// Same input + seed ⇒ the same output (the property the whole golden rests on). Compared with
+    /// the golden's own tolerance: Swift `Dictionary` iteration order is per-instance random, so
+    /// sums over dictionaries may differ in the last ulp between two builds — picks must not.
     func testBuildIsDeterministicAcrossRuns() throws {
         let a = try buildAll().rows, b = try buildAll().rows
-        XCTAssertEqual(NSArray(array: a), NSArray(array: b))
+        XCTAssertEqual(a.count, b.count)
+        for (x, y) in zip(a, b) { assertEqualJSON(x, y, path: x["name"] as! String) }
     }
 
     private func assertEqualJSON(_ a: Any, _ b: Any, path: String, file: StaticString = #filePath, line: UInt = #line) {
