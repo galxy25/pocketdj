@@ -74,6 +74,7 @@ fun JukeboxScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit = 
     val settings by appGraph.settings.settings.collectAsState(initial = null)
     val joined by graph.joined.sessions.collectAsState()
     var joinDialog by remember { mutableStateOf(false) }
+    var pickerOpen by remember { mutableStateOf(false) }
     val loadedSettings = settings ?: return
     val pocketDjName by appGraph.settings.flow(com.levi.pocketdj.onboarding.OnboardingPrefs.PROFILE_NAME)
         .collectAsState(initial = "")
@@ -93,6 +94,7 @@ fun JukeboxScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit = 
                 state.session != null -> LiveView(
                     state = state,
                     repository = graph.repository,
+                    onPickSession = { pickerOpen = true },
                 )
                 loadedSettings.jukeboxServerUrl.isBlank() -> NotConfiguredView(
                     onJoinByLink = if (joined.isEmpty()) ({ joinDialog = true }) else null,
@@ -102,10 +104,18 @@ fun JukeboxScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit = 
                     defaultRequireToken = loadedSettings.jukeboxTokensRequiredByDefault,
                     defaultName = JukeboxSettings.defaultSessionName(pocketDjName),
                     onStart = graph.repository::start,
+                    onPickSession = { pickerOpen = true },
                     onJoinByLink = if (joined.isEmpty()) ({ joinDialog = true }) else null,
                 )
             }
         }
+    }
+    if (pickerOpen) {
+        JukeboxSessionsPickerSheet(
+            repository = graph.repository,
+            activeId = state.session?.jukeboxId,
+            onDismiss = { pickerOpen = false },
+        )
     }
     if (joinDialog) {
         JoinByLinkDialog(
@@ -189,6 +199,7 @@ private fun CreateView(
     onStart: (name: String, requiresToken: Boolean) -> Unit,
     modifier: Modifier = Modifier,
     onJoinByLink: (() -> Unit)? = null,
+    onPickSession: () -> Unit = {},
 ) {
     var name by remember { mutableStateOf("") }
     // Seeded from the Settings default each time the create view appears (§6).
@@ -249,6 +260,7 @@ private fun CreateView(
             }
             Text(if (state.starting) "Starting…" else "Start Jukebox")
         }
+        TextButton(onClick = onPickSession) { Text("Host an existing session\u2026") }
         onJoinByLink?.let { TextButton(onClick = it) { Text("Join a jukebox by link\u2026") } }
     }
 }
@@ -260,6 +272,7 @@ private fun LiveView(
     state: JukeboxRepository.UiState,
     repository: JukeboxRepository,
     modifier: Modifier = Modifier,
+    onPickSession: () -> Unit = {},
 ) {
     val session = state.session ?: return
     val context = LocalContext.current
@@ -389,6 +402,7 @@ private fun LiveView(
         }
 
         // 5. End section.
+        TextButton(onClick = onPickSession) { Text("Switch session\u2026") }
         Button(
             onClick = { confirmEnd = true },
             colors = ButtonDefaults.buttonColors(
