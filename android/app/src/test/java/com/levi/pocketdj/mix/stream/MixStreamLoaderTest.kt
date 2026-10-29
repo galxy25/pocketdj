@@ -127,40 +127,40 @@ class MixStreamLoaderTest {
 
     @Test fun autoCooldownScheduleBacksOffThenFallsToDefaultAndResetsOnSuccess() {
         digital("a")
+        // The injected clock ticks on every read, so assert with a margin either side of each bound.
         fun failOnce() {
-            val s = loader.open("a", "A", "x")
+            val s = loader.open("a", "A", "x", forAuto = true)
             assertNotNull(s)
             loader.failStreamForTesting("a")
         }
-        // 1st failure: 2 s for Auto, manual still 120 s.
+        fun blockedAt(ms: Long) { clockMs.addAndGet(ms); assertFalse(loader.canStream("a", forAuto = true)) }
+        fun openAfter(ms: Long) { clockMs.addAndGet(ms); assertTrue(loader.canStream("a", forAuto = true)) }
+        // 1st failure: 2 s for Auto, manual still 120 s (and manual open refuses).
         failOnce()
-        clockMs.addAndGet(1_999)
-        assertFalse(loader.canStream("a", forAuto = true))
-        clockMs.addAndGet(1)
-        assertTrue("2 s elapsed", loader.canStream("a", forAuto = true))
+        blockedAt(1_500)
+        openAfter(1_000)
         assertFalse("manual keeps 120 s", loader.canStream("a"))
+        assertNull(loader.open("a", "A", "x"))
         // 2nd failure: 2 s.
         failOnce()
-        clockMs.addAndGet(2_000)
-        assertTrue(loader.canStream("a", forAuto = true))
+        blockedAt(1_500)
+        openAfter(1_000)
         // 3rd failure: 3 s.
         failOnce()
-        clockMs.addAndGet(2_999)
-        assertFalse(loader.canStream("a", forAuto = true))
-        clockMs.addAndGet(1)
-        assertTrue(loader.canStream("a", forAuto = true))
+        blockedAt(2_500)
+        openAfter(1_000)
         // 4th consecutive failure: back to the 120 s default, even for Auto.
         failOnce()
-        clockMs.addAndGet(60_000)
-        assertFalse(loader.canStream("a", forAuto = true))
-        clockMs.addAndGet(60_000)
-        assertTrue(loader.canStream("a", forAuto = true))
+        blockedAt(60_000)
+        openAfter(61_000)
         // A completed stream resets the schedule: next failure is 2 s again.
-        val f = java.io.File.createTempFile("ok", ".mp3")
-        loader.injectStreamForTesting("a", f, 10, 10, finished = true)
+        val f = java.io.File.createTempFile("okok", ".mp3")
+        assertNotNull(loader.open("a", "A", "x", forAuto = true))
+        loader.injectStreamForTesting("a", f, 10, 10)
+        loader.completeStreamForTesting("a")
         failOnce()
-        clockMs.addAndGet(2_000)
-        assertTrue(loader.canStream("a", forAuto = true))
+        blockedAt(1_500)
+        openAfter(1_000)
     }
 
     @Test fun autoCooldownScheduleValues() {

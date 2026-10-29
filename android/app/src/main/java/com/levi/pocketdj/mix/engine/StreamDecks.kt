@@ -36,7 +36,7 @@ interface StreamHandle {
 interface StreamLoaderPort {
     fun canStream(songId: String, forAuto: Boolean = false): Boolean
     fun isRipped(songId: String): Boolean
-    fun open(songId: String, title: String, artist: String): StreamHandle?
+    fun open(songId: String, title: String, artist: String, forAuto: Boolean = false): StreamHandle?
     fun stream(songId: String): StreamHandle?
 }
 
@@ -284,7 +284,7 @@ class StreamDecks(
     fun loadStreaming(item: MixLoadable, deck: Deck): Boolean {
         val l = loader ?: return false
         if (!l.canStream(item.songId, forAuto = engine.autoMixing)) return false
-        val handle = l.open(item.songId, item.title, item.artist) ?: return false
+        val handle = l.open(item.songId, item.title, item.artist, forAuto = engine.autoMixing) ?: return false
         engine.beginStreamLoad(deck)     // forgets the prior voice / stem intent (-> clearStream)
         val d = DeckStream(handle)
         d.windowMs = item.lengthMs
@@ -540,8 +540,8 @@ class LoaderStreamHandle(private val s: MixStreamLoader.Stream) : StreamHandle {
 class MixStreamLoaderPort(private val loader: MixStreamLoader) : StreamLoaderPort {
     override fun canStream(songId: String, forAuto: Boolean) = loader.canStream(songId, forAuto)
     override fun isRipped(songId: String) = loader.isRipped(songId)
-    override fun open(songId: String, title: String, artist: String) =
-        loader.open(songId, title, artist)?.let(::LoaderStreamHandle)
+    override fun open(songId: String, title: String, artist: String, forAuto: Boolean) =
+        loader.open(songId, title, artist, forAuto)?.let(::LoaderStreamHandle)
     override fun stream(songId: String) = loader.stream(songId)?.let(::LoaderStreamHandle)
 }
 

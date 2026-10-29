@@ -43,7 +43,7 @@ class StreamDecksTest {
             return (if (forAuto) autoGateOpen ?: gateOpen else gateOpen) && songId in handles
         }
         override fun isRipped(songId: String) = songId in handles
-        override fun open(songId: String, title: String, artist: String): StreamHandle? =
+        override fun open(songId: String, title: String, artist: String, forAuto: Boolean): StreamHandle? =
             handles[songId]?.also { opens++ }
         override fun stream(songId: String): StreamHandle? = handles[songId]
     }

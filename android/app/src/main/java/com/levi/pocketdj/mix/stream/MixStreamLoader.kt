@@ -240,14 +240,14 @@ class MixStreamLoader(
      * Begin (or join) the stream for [songId]. Null when it can't stream. A finished stream whose
      * file still exists is returned as-is (the deck plays it like a burn).
      */
-    fun open(songId: String, title: String, artist: String): Stream? = lock.withLock {
+    fun open(songId: String, title: String, artist: String, forAuto: Boolean = false): Stream? = lock.withLock {
         streamMap[songId]?.let { s ->
             if (!s.failed) {
                 val f = s.finalFile ?: s.file
                 if (!s.isComplete || f.exists()) return s
             }
         }
-        if (!canStream(songId)) return null
+        if (!canStream(songId, forAuto)) return null
         val entry = rips.entry(songId) ?: return null
         makeRoom()
         val file = File(directory, "${safe(songId)}-${UUID.randomUUID().toString().take(8)}.mp3")
@@ -600,6 +600,8 @@ class MixStreamLoader(
     }
 
     internal fun tripServerDownForTesting() = lock.withLock { tripServerDown("test") }
+
+    internal fun completeStreamForTesting(songId: String) = lock.withLock { streamMap[songId]?.let { finishComplete(it, null) } }
 
     internal fun failStreamForTesting(songId: String) = lock.withLock { streamMap[songId]?.let { fail(it, "test") } }
 
