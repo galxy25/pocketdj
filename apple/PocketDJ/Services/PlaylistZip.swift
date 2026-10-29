@@ -132,8 +132,8 @@ enum PlaylistZip {
 
         var files: [String: Data] = [
             "manifest.json": try encoder.encode(manifest),
-            "playlist.json": try encoder.encode(playlist),
-            "pockets.json": try encoder.encode(pockets),
+            "playlist.json": try encoder.encode(playlist.strippedForExport),
+            "pockets.json": try encoder.encode(pockets.map(\.strippedForExport)),
         ]
         if let itemsData { files["items.json"] = itemsData }
 

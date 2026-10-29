@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -69,16 +70,49 @@ class CollectionsCodecParityTest {
     }
 
     @Test
-    fun pocketDoesNotPersistAmPlaylistId() {
+    fun amPlaylistIdPersistsOnPocketAndPlaylist() {
         val store = newStore()
         val p = store.createPocket("P")
         val pl = store.createPlaylist("L")
         store.linkPocketToAppleMusic(p.id, "p.AM1")
         store.linkToAppleMusic(pl.id, "p.AM2")
-        assertEquals("p.AM1", store.pocket(p.id)!!.amPlaylistId)
+        val text = File(tmp.root, CollectionsStore.FILE_NAME).readText()
+        assertTrue(text.contains("\"amPlaylistId\":\"p.AM1\"") || text.contains("\"amPlaylistId\": \"p.AM1\""))
+        assertTrue(text.contains("p.AM2"))
+        val back = CollectionsCodec.decode(json, text)
+        assertEquals("p.AM1", back.pockets.single().amPlaylistId)
+        assertEquals("p.AM2", back.playlists.single().amPlaylistId)
+    }
+
+    @Test
+    fun unlinkedCollectionsNeverWriteTheKey() {
+        val store = newStore()
+        store.createPocket("P"); store.createPlaylist("L")
         val text = File(tmp.root, CollectionsStore.FILE_NAME).readText()
         assertFalse(text.contains("amPlaylistId"))
-        assertFalse(text.contains("p.AM1"))
+    }
+
+    @Test
+    fun iosWrittenAmPlaylistIdDecodesAndGarbledIsNull() {
+        val ios = """{"schemaVersion":7,"pockets":[{"id":"pkt_a","name":"P","amPlaylistId":"p.IOS1"},{"id":"pkt_b","name":"Q","amPlaylistId":42}],
+            "playlists":[{"id":"pls_a","name":"L","sequences":[],"amPlaylistId":"p.IOS2","createdAt":0,"updatedAt":0},
+            {"id":"pls_b","name":"M","sequences":[],"amPlaylistId":{"x":1},"createdAt":0,"updatedAt":0}]}"""
+        val doc = CollectionsCodec.decode(json, ios)
+        assertEquals(listOf("p.IOS1", null), doc.pockets.map { it.amPlaylistId })
+        assertEquals(listOf("p.IOS2", null), doc.playlists.map { it.amPlaylistId })
+        val again = Json.parseToJsonElement(CollectionsCodec.encode(json, doc)).jsonObject
+        assertEquals("p.IOS1", again["pockets"]!!.jsonArray[0].jsonObject["amPlaylistId"].toString().trim('"'))
+        assertEquals("p.IOS2", again["playlists"]!!.jsonArray[0].jsonObject["amPlaylistId"].toString().trim('"'))
+    }
+
+    @Test
+    fun envelopeExportStripsAmPlaylistId() {
+        val pk = Pocket(id = "pkt_a", name = "P", amPlaylistId = "p.X", createdAt = 1.0, updatedAt = 1.0)
+        val pl = Playlist(id = "pls_a", name = "L", sequences = emptyList(), amPlaylistId = "p.Y", createdAt = 1.0, updatedAt = 1.0)
+        val a = String(com.levi.pocketdj.data.collections.io.CollectionFile.pocketEnvelope(pk, json))
+        val b = String(com.levi.pocketdj.data.collections.io.CollectionFile.playlistEnvelope(pl, json))
+        assertFalse(a.contains("amPlaylistId")); assertFalse(a.contains("p.X"))
+        assertFalse(b.contains("amPlaylistId")); assertFalse(b.contains("p.Y"))
     }
 
     @Test
@@ -196,5 +230,18 @@ class CollectionsCodecParityTest {
         // hand-made playlist stays unlinked
         val plain = s2.createPlaylist("Plain")
         assertNull(s2.convertPlaylistToPocket(plain.id)!!.sourcePlaylistId)
+    }
+
+    /** Shared fixture: the iOS CollectionsLossyDecodeTests decodes this SAME file, and both
+     *  sides re-encode to the same key shape (string at "amPlaylistId"). */
+    @Test
+    fun sharedAmPlaylistIdFixtureDecodesAndReencodesAsString() {
+        val text = javaClass.classLoader!!.getResource("collections/am-playlist-id-shared.json")!!.readText()
+        val doc = CollectionsCodec.decode(json, text)
+        assertEquals("p.SHARED1", doc.pockets.single().amPlaylistId)
+        assertEquals("p.SHARED2", doc.playlists.single().amPlaylistId)
+        val again = Json.parseToJsonElement(CollectionsCodec.encode(json, doc)).jsonObject
+        assertEquals("p.SHARED1", again["pockets"]!!.jsonArray[0].jsonObject["amPlaylistId"]!!.jsonPrimitive.content)
+        assertTrue(again["playlists"]!!.jsonArray[0].jsonObject["amPlaylistId"]!!.jsonPrimitive.isString)
     }
 }

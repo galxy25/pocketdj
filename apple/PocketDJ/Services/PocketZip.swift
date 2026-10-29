@@ -116,8 +116,8 @@ enum PocketZip {
 
         var files: [String: Data] = [
             "manifest.json": try encoder.encode(manifest),
-            "pocket.json": try encoder.encode(pocket),
-            "pockets.json": try encoder.encode(children),
+            "pocket.json": try encoder.encode(pocket.strippedForExport),
+            "pockets.json": try encoder.encode(children.map(\.strippedForExport)),
         ]
         if let itemsData { files["items.json"] = itemsData }
 

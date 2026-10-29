@@ -197,6 +197,7 @@ object PlaylistSerializer : KSerializer<Playlist> {
             // Lenient on purpose (iOS `try?`): a garbled value must not cost the playlist.
             cleanOnly = runCatching { obj.optBoolean("cleanOnly") }.getOrNull(),
             recsEnabled = runCatching { obj.optBoolean("recsEnabled") }.getOrNull(),
+            amPlaylistId = runCatching { obj.optString("amPlaylistId") }.getOrNull(),
             lastPlayedAt = obj.optDouble("lastPlayedAt"),
             createdAt = obj.doubleOrThrow("createdAt"),
             updatedAt = obj.doubleOrThrow("updatedAt"),
@@ -226,6 +227,7 @@ object PlaylistSerializer : KSerializer<Playlist> {
             value.amSyncDirection?.let { put("amSyncDirection", it) }
             value.cleanOnly?.let { put("cleanOnly", it) }
             value.recsEnabled?.let { put("recsEnabled", it) }
+            value.amPlaylistId?.let { put("amPlaylistId", it) }
             value.lastPlayedAt?.let { put("lastPlayedAt", epochMsPrimitive(it)) }
             put("createdAt", epochMsPrimitive(value.createdAt))
             put("updatedAt", epochMsPrimitive(value.updatedAt))
@@ -252,6 +254,7 @@ internal fun sanitizePocketFlags(el: kotlinx.serialization.json.JsonElement): ko
     val drop = buildSet {
         if (bad("amSyncDirection") { it.isString }) add("amSyncDirection")
         if (bad("cleanOnly") { !it.isString && (it.content == "true" || it.content == "false") }) add("cleanOnly")
+        if (bad("amPlaylistId") { it.isString }) add("amPlaylistId")
         if (bad("recsEnabled") { !it.isString && (it.content == "true" || it.content == "false") }) add("recsEnabled")
     }
     return if (drop.isEmpty()) el else JsonObject(obj.filterKeys { it !in drop })

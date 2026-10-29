@@ -2742,12 +2742,12 @@ final class CollectionsStore {
     /// for persistence, carrying just that pocket). Returns nil if it's gone.
     func exportPocket(_ id: String) throws -> Data? {
         guard let p = pocket(id) else { return nil }
-        return try CollectionsCodec.encode(CollectionsDocument(pockets: [p]))
+        return try CollectionsCodec.encode(CollectionsDocument(pockets: [p.strippedForExport]))
     }
     /// Export one playlist as a `CollectionsDocument` carrying just that playlist.
     func exportPlaylist(_ id: String) throws -> Data? {
         guard let pl = playlist(id) else { return nil }
-        return try CollectionsCodec.encode(CollectionsDocument(playlists: [pl]))
+        return try CollectionsCodec.encode(CollectionsDocument(playlists: [pl.strippedForExport]))
     }
 
     /// Import a `CollectionsDocument` export, MINTING FRESH ids for every imported
