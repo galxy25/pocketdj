@@ -263,7 +263,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     @Volatile var cloudDocDatabase: CloudDocDatabase = s3Database
 
     /** Mirror of [SyncSettings.CLOUD_SYNC_ENABLED] (the engine's `enabled` closure is non-suspend). */
-    @Volatile private var userSyncEnabled: Boolean = true
+    @Volatile private var userSyncEnabled: Boolean = SyncSettings.CLOUD_SYNC_ENABLED.default
 
     private val cloudSyncLazy = lazy {
         CloudSyncService(
