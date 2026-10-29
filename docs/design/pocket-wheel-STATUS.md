@@ -11,8 +11,8 @@ Gates per phase: iOS unit suite on sim `3FE7AC66…` with the executed count mov
 |---|---|---|---|---|
 | 0 — attribution fixes + event fields | DONE | phase-0 commit | 3622 (+14) | mac ✓ tv-sim ✓ vision-sim ✓ |
 | 1 — motion (CoreMotion settle, opt-in) | DONE | phase-1 commit | 3632 (+10) | mac ✓ tv-sim ✓ vision-sim ✓ |
-| 2 — moment engine + palette | todo | | | |
-| 3 — wheel UI | todo | | | |
+| 2 — moment engine + palette | DONE | phase-2 commit | 3658 (+26) — verified in the Phase 3 tip run | mac ✓ tv-sim ✓ vision-sim ✓ |
+| 3 — wheel UI | DONE | phase-3 commit | 3666 (+8) + XCUITest PocketWheelUITests ✓ | mac ✓ tv-sim ✓ vision-sim ✓ |
 | 4 — best match + cold start + CarPlay row + intent | todo | | | |
 | 5a — adaptive run (plan, play, learn, persist) | todo | | | |
 | 5b — adapt to activity mid-run | todo | | | |
@@ -26,7 +26,12 @@ Gates per phase: iOS unit suite on sim `3FE7AC66…` with the executed count mov
 
 ## Test-run notes
 
+- Every full run here also shows the same load-dependent flakes as the untouched Phase 1 control run: `TransferCoordinatorTests` (two background-QoS 5 s waits) and `SetlistPlayerTests.testCloudStreamAnalogArmsLengthBoundaryAndAdvances` (a timing wait). A Phase 2 run once saw the test host killed repeatedly ("Termination requested by simulator host" / "Restarting after … test timeout") with load average ~400; the identical tree re-ran clean (3666, no restarts) and a Phase 1 control run also ran clean, so it is environmental.
+
 - Phase 1 full run: 3632 executed, 6 failures — all in `TransferCoordinatorTests` (two tests that wait 5 s on a `DispatchQueue.global(qos: .background)` hop). Reproduced alone while the machine's load average was 450–650 (other agents' Gradle + Swift builds); background QoS starves under that load. Not wheel code (the tests touch no wheel type). Re-verify when the machine is quiet.
+
+- Phase 3 screenshots: `wheel-shots/p3-wheel-iphone.png` (seeded wheel, Thursday focused) and `p3-wheel-card.png` (Tuesday 8 AM · CarPlay card after a tap, from the XCUITest).
+- Wheel UI deviations: the weekday fisheye is chosen with a Mon…Sun row under the wheel (plus letters drawn on each ring) rather than tapping the tiny letter at 12 o'clock — the letter targets collide with the midnight cells; the "Recurring pockets" VoiceOver rotor is spoken custom content (each ring is ONE adjustable element, so there is nothing for a rotor to jump to). Pinch-to-day-donut (Phase 3b, iPad nice-to-have) not built. tvOS never builds the wheel UI (fenced); History ▸ Pockets there stays the cloud list.
 
 ## Remaining / follow-ups
 
