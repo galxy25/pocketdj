@@ -83,7 +83,8 @@ grep -q "Verified using v2 scheme (APK Signature Scheme v2): true" "$WORK/apksig
 grep -qi "SHA-256 digest: $APPSIGN_SHA256" "$WORK/apksig.txt" || die "APK cert != pinned app-signing cert"
 
 echo "==> jarsigner (AAB must carry the upload cert)"
-"$JAVA_HOME/bin/jarsigner" -verify "$AAB" | grep -q "jar verified" || die "AAB signature does not verify"
+"$JAVA_HOME/bin/jarsigner" -verify "$AAB" > "$WORK/jarsigner.txt" 2>&1 || true
+grep -q "jar verified" "$WORK/jarsigner.txt" || die "AAB signature does not verify"
 unzip -p "$AAB" 'META-INF/*.RSA' 'META-INF/*.EC' 'META-INF/*.DSA' 2>/dev/null > "$WORK/aab-sig.p7b" || true
 AAB_CERT_SHA="$(openssl pkcs7 -inform DER -in "$WORK/aab-sig.p7b" -print_certs 2>/dev/null \
   | openssl x509 -outform DER 2>/dev/null | shasum -a 256 | cut -d' ' -f1)"
@@ -91,7 +92,7 @@ echo "AAB signer certificate SHA-256: $AAB_CERT_SHA"
 [[ "$AAB_CERT_SHA" == "$UPLOAD_SHA256" ]] || die "AAB cert != pinned upload cert"
 
 echo "==> badging"
-BADGING="$("$BT/aapt2" dump badging "$APK" | head -1)"
+BADGING="$("$BT/aapt2" dump badging "$APK" > "$WORK/badging.txt"; sed -n 1p "$WORK/badging.txt")"
 echo "$BADGING"
 [[ "$BADGING" == *"name='com.levi.pocketdj'"* && "$BADGING" == *"versionCode='$VERSION_CODE'"* ]] \
   || die "APK package/versionCode mismatch"
