@@ -32,8 +32,14 @@ class AppleMusicRowTest {
         assertNull(r.resolve(QueueItem("a"), ResolveContext(com.levi.pocketdj.playback.PlaybackMode.CLOUD, true, false)))
     }
 
-    @Test fun resolver_skipsRunTaggedGameRows() = runTest {
+    @Test fun resolver_gameRowGetsAppleMusicWhenCapable() = runTest {
         val r = AppleMusicRowResolver({ "123" }, { true })
+        val ctx = ResolveContext(com.levi.pocketdj.playback.PlaybackMode.CLOUD, true, false)
+        assertEquals(AppleMusicSource("123", "a"), r.resolve(QueueItem("a", runTag = "puzzle_X"), ctx))
+    }
+
+    @Test fun resolver_gameRowNullWhenNotCapable() = runTest {
+        val r = AppleMusicRowResolver({ "123" }, { false })
         assertNull(r.resolve(QueueItem("a", runTag = "puzzle_X"), ResolveContext(com.levi.pocketdj.playback.PlaybackMode.CLOUD, true, false)))
     }
 

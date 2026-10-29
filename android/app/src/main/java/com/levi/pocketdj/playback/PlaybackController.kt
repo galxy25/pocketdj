@@ -221,11 +221,7 @@ class PlaybackController(
                     appleMusicIdFor = { item -> catalog.state.value.catalog?.songsById?.get(item.id)?.appleMusicId },
                     // Cached facts only on the resolve path (a token fetch here is dead air on every row);
                     // a cold token is warmed off-path so the next row sees it.
-                    canPlayFullTrack = {
-                        val ok = backend.canPlayFullTrackCached()
-                        if (!ok) scope.launch { runCatching { backend.canPlayFullTrack() } }
-                        ok
-                    },
+                    canPlayFullTrack = { canPlayFullTrackWarming() },
                 )
             },
         ),
@@ -331,7 +327,7 @@ class PlaybackController(
 
     val sequencer: SetlistSequencer = SetlistSequencer(
         scope = sequencerScope,
-        port = Media3Port(),
+        port = com.levi.pocketdj.playback.sequencer.GamePreviewFallbackPort(Media3Port()) { id -> gamePreviewUrl?.invoke(id) },
         registry = rowResolvers,
         modeProvider = { cachedMode },
     ).also { seq ->
@@ -646,6 +642,20 @@ class PlaybackController(
     }
 
     /** STU-6: would an Apple Music start offset be honoured (full-track engine ready)? Cached facts only. */
+    /** Game-row preview fallback (set by GamesGraph): cached 30 s preview URL for a song id, or null. */
+    @Volatile var gamePreviewUrl: (suspend (String) -> String?)? = null
+
+    /**
+     * THE single full-track capability check for ladder + game resolvers (cannot drift): cached facts
+     * only; a cold token is warmed off-path so the next row sees it.
+     */
+    suspend fun canPlayFullTrackWarming(): Boolean {
+        val backend = appleMusicBackend ?: return false
+        val ok = runCatching { backend.canPlayFullTrackCached() }.getOrDefault(false)
+        if (!ok) scope.launch { runCatching { backend.canPlayFullTrack() } }
+        return ok
+    }
+
     suspend fun canSeekAppleMusic(): Boolean = runCatching { appleMusicBackend?.canPlayFullTrackCached() == true }.getOrDefault(false)
 
     /** STU-6: did the most recent [play] apply its requested start offset (false = started from the top)? */

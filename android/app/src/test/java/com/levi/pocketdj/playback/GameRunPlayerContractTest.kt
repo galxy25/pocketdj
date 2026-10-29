@@ -204,6 +204,52 @@ class GameRunPlayerContractTest {
         assertTrue(registry.resolve(plain, PlaybackMode.CLOUD) is com.levi.pocketdj.playback.sequencer.RipOnDemandSource)
     }
 
+    @Test fun ladder_gameRowCapable_resolvesAppleMusicRung_notPreview() = runTest {
+        val previews = GamePreviewResolver({ false }, { "9" }, { "https://p/9.m4a" })
+        val registry = com.levi.pocketdj.playback.sequencer.RowResolverRegistry(
+            initial = listOf(
+                com.levi.pocketdj.playback.sequencer.CloudRowResolver(),
+                GamePreviewRowResolver(previews),
+                com.levi.pocketdj.playback.sequencer.AppleMusicRowResolver({ "9" }, { true }),
+            ),
+            manifestHit = { false },
+            ripServerConfigured = { true },
+        )
+        val tagged = com.levi.pocketdj.playback.sequencer.QueueItem("g", runTag = "puzzle_R1")
+        assertTrue(registry.resolve(tagged, PlaybackMode.CLOUD) is com.levi.pocketdj.playback.sequencer.AppleMusicSource)
+    }
+
+    @Test fun ladder_gameRowNotCapable_fallsToPreview_neverRips() = runTest {
+        val previews = GamePreviewResolver({ false }, { "9" }, { "https://p/9.m4a" })
+        val registry = com.levi.pocketdj.playback.sequencer.RowResolverRegistry(
+            initial = listOf(
+                com.levi.pocketdj.playback.sequencer.CloudRowResolver(),
+                GamePreviewRowResolver(previews),
+                com.levi.pocketdj.playback.sequencer.AppleMusicRowResolver({ "9" }, { false }),
+            ),
+            manifestHit = { false },
+            ripServerConfigured = { true },
+        )
+        val tagged = com.levi.pocketdj.playback.sequencer.QueueItem("g", runTag = "puzzle_R1")
+        assertTrue(registry.resolve(tagged, PlaybackMode.CLOUD) is com.levi.pocketdj.playback.sequencer.StreamSource)
+    }
+
+    @Test fun fullTrackCapable_skipsProbe_butStillWarmsPreviewsAsFallback() = runTest {
+        var calls = 0
+        val r = GamePreviewResolver({ false }, { "x$it" }, { calls++; null }, canPlayFullTrack = { true })
+        assertTrue(r.playsFullTrack("s1"))
+        assertEquals(true, r.canPlay(listOf("s1"))["s1"], "no preview needed: playable even with no preview")
+        assertEquals(0, calls, "no probe when capable")
+        r.warm(listOf("s1", "s2"))
+        assertEquals(2, calls, "previews stay warm as the AM-failure fallback")
+    }
+
+    @Test fun fullTrackCapable_butNoAppleMusicId_stillUnplayable() = runTest {
+        val r = GamePreviewResolver({ false }, { null }, { null }, canPlayFullTrack = { true })
+        assertEquals(false, r.playsFullTrack("s1"))
+        assertEquals(false, r.canPlay(listOf("s1"))["s1"])
+    }
+
     @Test fun probeTimeout_leavesUnansweredSongsOptimisticAndConsistent() = runTest {
         val ids = (1..14).map { "am$it" }
         val r = GamePreviewResolver(
@@ -258,5 +304,62 @@ class GameRunPlayerContractTest {
         val restored = TestHarnessPlayer(h, backgroundScope, setOf("a", "b", "c"))
         assertTrue(restored.ownsRun("puzzle_R1"))
         assertFalse(restored.ownsRun("puzzle_OTHER"))
+    }
+
+    // ---- AM failure -> preview fallback (review MAJOR) ---------------------------------------
+    private class RecPort(val failAm: Boolean) : com.levi.pocketdj.playback.sequencer.PlayerPort {
+        val loaded = mutableListOf<com.levi.pocketdj.playback.sequencer.RowSource>()
+        override suspend fun load(request: com.levi.pocketdj.playback.sequencer.PlayRequest) {
+            if (request.source is com.levi.pocketdj.playback.sequencer.AppleMusicSource && failAm) throw IllegalStateException("am")
+            loaded += request.source
+        }
+        override suspend fun loadUrl(request: com.levi.pocketdj.playback.sequencer.UrlRequest) {}
+        override suspend fun replay(songId: String) = false
+        override suspend fun pause() {}
+        override suspend fun resume() {}
+        override suspend fun seekTo(positionMs: Long) {}
+        override suspend fun stop() {}
+    }
+
+    private fun amReq(tag: String?) = com.levi.pocketdj.playback.sequencer.PlayRequest(
+        com.levi.pocketdj.playback.sequencer.QueueItem("g", runTag = tag),
+        com.levi.pocketdj.playback.sequencer.AppleMusicSource("9", "g"),
+        PlayContext.game("t", "L"), null, null, 0, 1,
+    )
+
+    @Test fun amFailure_gameRow_fallsBackToPreviewStream() = runTest {
+        val port = RecPort(failAm = true)
+        com.levi.pocketdj.playback.sequencer.GamePreviewFallbackPort(port) { "https://p/$it" }.load(amReq("puzzle_R1"))
+        val src = port.loaded.single()
+        assertTrue(src is com.levi.pocketdj.playback.sequencer.StreamSource)
+    }
+
+    @Test fun amFailure_gameRow_noPreview_rethrows() = runTest {
+        val port = RecPort(failAm = true)
+        val r = runCatching { com.levi.pocketdj.playback.sequencer.GamePreviewFallbackPort(port) { null }.load(amReq("puzzle_R1")) }
+        assertTrue(r.isFailure)
+    }
+
+    @Test fun amFailure_ordinaryRow_stillThrows() = runTest {
+        val port = RecPort(failAm = true)
+        val r = runCatching { com.levi.pocketdj.playback.sequencer.GamePreviewFallbackPort(port) { "u" }.load(amReq(null)) }
+        assertTrue(r.isFailure)
+        assertTrue(port.loaded.isEmpty())
+    }
+
+    @Test fun ladder_gameRowWithManifestHit_resolvesManifestRung() = runTest {
+        val registry = com.levi.pocketdj.playback.sequencer.RowResolverRegistry(
+            initial = listOf(
+                com.levi.pocketdj.playback.sequencer.ManifestRowResolver { id: String -> if (id == "g") com.levi.pocketdj.data.rips.RipManifestEntry(key = "rips/g.mp3") else null },
+                com.levi.pocketdj.playback.sequencer.CloudRowResolver(),
+                GamePreviewRowResolver(GamePreviewResolver({ false }, { "x$it" }, { "https://p/$it" })),
+            ),
+            manifestHit = { id: String -> id == "g" },
+            ripServerConfigured = { true },
+        )
+        val tagged = com.levi.pocketdj.playback.sequencer.QueueItem("g", runTag = "puzzle_R1")
+        val src = registry.resolve(tagged, PlaybackMode.CLOUD)
+        val url = ((src as com.levi.pocketdj.playback.sequencer.StreamSource).action as com.levi.pocketdj.data.rips.PlayAction.Stream).url
+        assertTrue(!url.startsWith("https://p/"), "manifest rip beats preview: $url")
     }
 }
