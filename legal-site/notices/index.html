@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="description" content="Third-party software, asset, model, and data attributions and licences for PocketDJ.">
+<title>Third-Party Notices — PocketDJ</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#1d1d1f; --muted:#6a6a6e; --border:#e5e5e8; --border-strong:#d7d7db;
+    --accent:#0a7d78; --accent-fg:#ffffff; --code-bg:#f4f4f6; --card:#fafafb;
+    --header:rgba(255,255,255,.85); --shadow:rgba(0,0,0,.06); --th-bg:#f4f4f6;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0f1113; --fg:#e7e8ea; --muted:#9b9ca1; --border:#2a2d31; --border-strong:#3a3d42;
+      --accent:#63cec7; --accent-fg:#04201e; --code-bg:#17191c; --card:#15171a;
+      --header:rgba(15,17,19,.85); --shadow:rgba(0,0,0,.4); --th-bg:#191c1f;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0f1113; --fg:#e7e8ea; --muted:#9b9ca1; --border:#2a2d31; --border-strong:#3a3d42;
+    --accent:#63cec7; --accent-fg:#04201e; --code-bg:#17191c; --card:#15171a;
+    --header:rgba(15,17,19,.85); --shadow:rgba(0,0,0,.4); --th-bg:#191c1f;
+  }
+  :root[data-theme="light"]{
+    --bg:#ffffff; --fg:#1d1d1f; --muted:#6a6a6e; --border:#e5e5e8; --border-strong:#d7d7db;
+    --accent:#0a7d78; --accent-fg:#ffffff; --code-bg:#f4f4f6; --card:#fafafb;
+    --header:rgba(255,255,255,.85); --shadow:rgba(0,0,0,.06); --th-bg:#f4f4f6;
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  html,body{max-width:100%;overflow-x:hidden}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji",sans-serif;
+    font-size:17px; line-height:1.65;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
+  }
+  @media (prefers-reduced-motion:no-preference){ html{scroll-behavior:smooth} }
+
+  /* Header */
+  header.site{
+    position:sticky; top:0; z-index:20;
+    display:flex; align-items:center; gap:1rem;
+    padding:.6rem clamp(1rem,4vw,2rem);
+    background:var(--header); backdrop-filter:saturate(150%) blur(12px); -webkit-backdrop-filter:saturate(150%) blur(12px);
+    border-bottom:1px solid var(--border);
+  }
+  .wordmark{font-weight:700; letter-spacing:-.01em; color:var(--fg); text-decoration:none; font-size:1.05rem; white-space:nowrap}
+  .wordmark:hover{color:var(--accent)}
+  .doc-title{color:var(--muted); font-size:.95rem; font-weight:500; border-left:1px solid var(--border-strong); padding-left:1rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .header-spacer{flex:1}
+  button.theme{
+    display:inline-flex; align-items:center; justify-content:center;
+    width:2.2rem; height:2.2rem; padding:0; border-radius:50%;
+    background:transparent; color:var(--fg); border:1px solid var(--border-strong); cursor:pointer;
+  }
+  button.theme:hover{border-color:var(--accent); color:var(--accent)}
+  button.theme svg{width:1.15rem; height:1.15rem; display:block}
+
+  /* Layout */
+  main{max-width:46rem; margin:0 auto; padding:clamp(1.25rem,4vw,2.75rem) clamp(1rem,4vw,2rem) 4rem}
+  h1{font-size:clamp(1.7rem,4.5vw,2.3rem); line-height:1.2; letter-spacing:-.02em; margin:.2rem 0 1rem}
+  h2{font-size:1.42rem; line-height:1.25; letter-spacing:-.01em; margin:2.8rem 0 .9rem; padding-top:.4rem; scroll-margin-top:5rem}
+  h3{font-size:1.12rem; line-height:1.3; margin:2rem 0 .6rem; scroll-margin-top:5rem}
+  h2:first-of-type{margin-top:1.4rem}
+  p{margin:0 0 1rem}
+  a{color:var(--accent); text-decoration:underline; text-underline-offset:2px; text-decoration-thickness:.06em}
+  a:hover{text-decoration-thickness:.12em}
+  strong{font-weight:650}
+  ul,ol{margin:0 0 1rem; padding-left:1.4rem}
+  li{margin:.3rem 0}
+  li>ul,li>ol{margin:.3rem 0}
+  hr{border:0; border-top:1px solid var(--border); margin:2.5rem 0}
+  small{font-size:.85em}
+
+  /* Heading anchors */
+  .anchor{opacity:0; margin-left:.4rem; color:var(--muted); text-decoration:none; font-weight:400}
+  h2:hover .anchor,h3:hover .anchor,.anchor:focus{opacity:.7}
+  .anchor:hover{color:var(--accent)}
+
+  /* Metadata */
+  dl.meta{display:grid; grid-template-columns:auto 1fr; gap:.25rem 1.1rem; margin:0 0 1.4rem; font-size:.97rem}
+  dl.meta dt{color:var(--muted); font-weight:500}
+  dl.meta dd{margin:0}
+  .ph{color:var(--muted); font-style:italic}
+
+  /* Finalizing notice */
+  .finalizing{
+    color:var(--muted); font-size:.92rem; line-height:1.55;
+    border-left:2px solid var(--border-strong); padding:.1rem 0 .1rem .9rem; margin:0 0 2rem;
+  }
+
+  /* TOC */
+  details.toc{border:1px solid var(--border); border-radius:10px; background:var(--card); margin:0 0 2.5rem; padding:0 1rem}
+  details.toc>summary{cursor:pointer; font-weight:600; padding:.85rem .2rem; list-style:none; font-size:1rem}
+  details.toc>summary::-webkit-details-marker{display:none}
+  details.toc>summary::after{content:"▸"; float:right; color:var(--muted); transition:transform .15s ease}
+  details.toc[open]>summary::after{transform:rotate(90deg)}
+  ul.toc-list{list-style:none; margin:0; padding:0 0 .9rem; columns:2; column-gap:1.6rem; font-size:.9rem}
+  @media (max-width:640px){ ul.toc-list{columns:1} }
+  ul.toc-list li{margin:.18rem 0; break-inside:avoid}
+  ul.toc-list a{color:var(--fg); text-decoration:none}
+  ul.toc-list a:hover{color:var(--accent); text-decoration:underline}
+  ul.toc-list li.toc-h2{font-weight:600; margin-top:.5rem}
+  ul.toc-list li.toc-h3{padding-left:1rem; font-weight:400}
+  ul.toc-list li.toc-h2:first-child{margin-top:0}
+
+  /* Tables */
+  .tw{overflow-x:auto; -webkit-overflow-scrolling:touch; margin:0 0 1.4rem; border:1px solid var(--border); border-radius:10px}
+  table{border-collapse:collapse; width:100%; font-size:.9rem; line-height:1.5}
+  th,td{text-align:left; padding:.55rem .7rem; border-bottom:1px solid var(--border); vertical-align:top}
+  thead th{background:var(--th-bg); font-weight:600; white-space:nowrap; position:sticky; top:0}
+  tbody tr:last-child td{border-bottom:0}
+  /* Two-column spec tables (component fact sheets) */
+  table.kv td:first-child{color:var(--muted); font-weight:500; white-space:nowrap; width:1%}
+
+  /* Code + license blocks */
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.85em; background:var(--code-bg); padding:.1em .35em; border-radius:4px; overflow-wrap:anywhere}
+  pre{background:var(--code-bg); border:1px solid var(--border); border-radius:10px; padding:1rem 1.1rem; overflow-x:auto; margin:0 0 1.4rem}
+  pre code{background:none; padding:0; font-size:.82rem; line-height:1.55; white-space:pre}
+
+  blockquote{margin:0 0 1.4rem; padding:.4rem 0 .4rem 1.1rem; border-left:3px solid var(--accent); color:var(--fg)}
+  blockquote p{margin:0}
+  blockquote p+p{margin-top:.7rem}
+
+  .none-tag{color:var(--muted)}
+
+  /* Footer */
+  footer.site{border-top:1px solid var(--border); margin-top:3rem; padding:2rem clamp(1rem,4vw,2rem) 3rem}
+  footer.site .inner{max-width:46rem; margin:0 auto; color:var(--muted); font-size:.9rem}
+  footer.site nav{display:flex; flex-wrap:wrap; gap:.4rem 1.2rem; margin-bottom:1rem}
+  footer.site nav a{color:var(--fg); text-decoration:none}
+  footer.site nav a:hover{color:var(--accent); text-decoration:underline}
+  footer.site .fine{line-height:1.6}
+  footer.site a{color:var(--accent)}
+
+  @media (max-width:560px){ .doc-title{display:none} }
+</style>
+</head>
+<body>
+
+<header class="site">
+  <a class="wordmark" href="/">PocketDJ</a>
+  <span class="doc-title">Third-Party Notices</span>
+  <span class="header-spacer"></span>
+  <button class="theme" id="theme-toggle" type="button" aria-label="Toggle colour theme" title="Toggle theme">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20V2Z"/><circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+  </button>
+</header>
+
+<main>
+  <h1>Third-Party Notices and Attributions</h1>
+
+  <dl class="meta">
+    <dt>Application</dt><dd>PocketDJ (iOS, iPadOS, macOS, visionOS)</dd>
+    <dt>Publisher</dt><dd>African Intellect Enterprises LLC (PocketDJ)</dd>
+    <dt>Effective date</dt><dd>October 29, 2026</dd>
+    <dt>Contact</dt><dd><a href="mailto:contact@pocket-dj.com">contact@pocket-dj.com</a></dd>
+  </dl>
+
+  <p class="finalizing">These notices are being finalised. A few details — the publisher name and effective date above, and items noted in place below — will be completed before release.</p>
+
+  <details class="toc" id="toc">
+    <summary>Contents</summary>
+    <ul class="toc-list" id="toc-list"></ul>
+  </details>
+
+  <h2 id="about">About these notices</h2>
+  <p>This document is the inventory of third-party software, assets, models, and data that PocketDJ uses, ships, or redistributes — with the licence for each and the specific obligation that licence places on us. It is the source for the in-app <strong>Settings ▸ Legal ▸ Third-Party Licences</strong> screen.</p>
+  <p><strong>Scope.</strong> Each entry states how the component reaches users, because the obligation changes with it:</p>
+  <ul>
+    <li><strong>Ships</strong> — the component is included in the App Store binary.</li>
+    <li><strong>Redistributes</strong> — PocketDJ serves the bytes from its cloud services to a user's device. This is legally a distribution, not merely a use.</li>
+    <li><strong>Server-side</strong> — the component runs in PocketDJ's cloud services and only its output reaches a device.</li>
+  </ul>
+
+  <h2 id="s1">1. Summary</h2>
+  <div class="tw">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Component</th><th>Version</th><th>Licence</th><th>How it reaches users</th><th>Obligation on PocketDJ</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>2.1</td><td>ZIPFoundation</td><td>0.9.20</td><td>MIT</td><td>Ships in the binary</td><td>Reproduce licence + copyright</td></tr>
+        <tr><td>3.1</td><td>MusicKit / Apple Music</td><td>platform</td><td>Apple DPLA + Apple Music Identity Guidelines</td><td>Framework</td><td>Badge + link to Apple Music; no artwork alteration; playback only</td></tr>
+        <tr><td>3.2</td><td>ShazamKit</td><td>platform</td><td>Apple DPLA + ShazamKit terms</td><td>Framework</td><td>Link recognised tracks to Apple Music</td></tr>
+        <tr><td>3.3</td><td>SF Symbols</td><td>149 symbols</td><td>Apple SF Symbols licence</td><td>Ships in the binary</td><td>No modification; Apple-platform use only</td></tr>
+        <tr><td>3.4</td><td>Apple sample code (CosmoTunes)</td><td>WWDC26</td><td>Apple Sample Code Licence</td><td>Derived shapes in the binary</td><td>Retain Apple notice</td></tr>
+        <tr><td>4.1</td><td>GeneralUser GS SoundFont</td><td>2.0.3 (Licence v2.0)</td><td>GeneralUser GS Licence v2.0</td><td>Redistributed</td><td>Attribution shown in-app; serve our own copy</td></tr>
+        <tr><td>5.1</td><td>Demucs — model weights (htdemucs)</td><td>v4</td><td>Not MIT — scientific use only</td><td>Server-side</td><td>See §5.1</td></tr>
+        <tr><td>5.2</td><td>Demucs — source code</td><td>v4</td><td>MIT</td><td>Server-side</td><td>Reproduce licence</td></tr>
+        <tr><td>5.3</td><td>faster-whisper</td><td>current</td><td>MIT</td><td>Server-side</td><td>Reproduce licence</td></tr>
+        <tr><td>5.4</td><td>CTranslate2</td><td>current</td><td>MIT</td><td>Server-side</td><td>Reproduce licence</td></tr>
+        <tr><td>5.5</td><td>OpenAI Whisper model weights</td><td>small</td><td>MIT</td><td>Server-side</td><td>Reproduce licence</td></tr>
+        <tr><td>5.6</td><td>librosa</td><td>current</td><td>ISC</td><td>Server-side</td><td>Reproduce licence</td></tr>
+        <tr><td>5.7</td><td>PyTorch</td><td>current</td><td>BSD-3-Clause</td><td>Server-side</td><td>Reproduce licence</td></tr>
+        <tr><td>5.8</td><td>FFmpeg</td><td>system binary</td><td>LGPL-2.1+ or GPL-2.0+ (build-dependent)</td><td>Server-side, invoked as a subprocess</td><td>See §5.8</td></tr>
+        <tr><td>6</td><td>Web app dependencies</td><td>see §6</td><td>MIT / Apache-2.0 / ISC</td><td>Served with the web client</td><td>Reproduce licences (§6)</td></tr>
+        <tr><td>7.1</td><td>iTunes Search API</td><td>—</td><td>Apple Media Services / affiliate terms</td><td>Catalog metadata + artwork</td><td>Badge, adjacency, no caching of artwork</td></tr>
+        <tr><td>7.2</td><td>Discogs API</td><td>—</td><td>CC0 (open data) + restricted-data terms</td><td>Catalog metadata + artwork</td><td>Descriptive User-Agent; images are not CC0</td></tr>
+        <tr><td>7.3</td><td>MusicBrainz</td><td>—</td><td>CC0 (core) / CC BY-NC-SA 3.0 (rest)</td><td>Artist country field</td><td>Credit; non-core data is non-commercial</td></tr>
+        <tr><td>7.4</td><td>Wikipedia (English)</td><td>—</td><td>CC BY-SA 4.0</td><td>Album metadata</td><td>Attribution + share-alike</td></tr>
+        <tr><td>7.5</td><td>Lyrics</td><td>—</td><td>No third-party licence</td><td>In-app lyrics</td><td>See §7.5</td></tr>
+        <tr><td>7.6</td><td>Web-search backfill</td><td>—</td><td>Facts only</td><td>Catalog metadata</td><td>None (factual data)</td></tr>
+        <tr><td>7.7</td><td>Apple Music (Local) library index</td><td>—</td><td>Apple Media Services terms</td><td>Catalog metadata</td><td>Same terms as §7.1</td></tr>
+        <tr><td>7.8</td><td>single-synth metadata</td><td>—</td><td>First-party</td><td>Catalog metadata</td><td>None</td></tr>
+        <tr><td>8.1</td><td>XcodeGen</td><td>—</td><td>MIT</td><td>Build tooling only</td><td>None (not distributed)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2 id="s2">2. Swift package dependencies (ship in the app binary)</h2>
+  <p>PocketDJ has exactly <strong>one</strong> third-party Swift package. Everything else in the app is first-party — the Mix tab's DJ engine is a first-party AVAudioEngine graph.</p>
+
+  <h3 id="s2-1">2.1 ZIPFoundation</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Version</td><td>0.9.20 (revision <code>22787ffb59de99e5dc1fbfe80b19c97a904ad48d</code>)</td></tr>
+        <tr><td>Source</td><td><a href="https://github.com/weichsel/ZIPFoundation">https://github.com/weichsel/ZIPFoundation</a></td></tr>
+        <tr><td>Licence</td><td>MIT</td></tr>
+        <tr><td>Author</td><td>Thomas Zoechling</td></tr>
+        <tr><td>How it reaches users</td><td>Statically linked into the App Store binary, all four platforms</td></tr>
+        <tr><td>What we use it for</td><td>Reading and writing <code>.pdjcollection</code> archives (playlist / pocket export and import)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligation:</strong> MIT requires that the copyright notice and permission notice appear in all copies or substantial portions of the software. Because we distribute a binary containing it, we reproduce the notice in the in-app Third-Party Licences screen. There is no attribution-in-marketing obligation, no share-alike, and no patent clause.</p>
+  <p><strong>Full licence text:</strong></p>
+  <pre><code>MIT License
+
+Copyright (c) 2017-2025 Thomas Zoechling (https://www.peakstep.com)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.</code></pre>
+
+  <h2 id="s3">3. Apple frameworks with attribution or badge requirements</h2>
+  <p>Apple's frameworks are licensed to PocketDJ through the Apple Developer Program Licence Agreement (DPLA), not through an open-source licence, so there is no licence text to reproduce. What they carry are branding and attribution conditions, summarised below.</p>
+
+  <h3 id="s3-1">3.1 MusicKit / Apple Music</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Component</td><td>MusicKit (<code>MusicKit</code>, <code>MediaPlayer</code>), Apple Music catalog and playback</td></tr>
+        <tr><td>Terms</td><td>Apple Developer Program Licence Agreement; Apple Music Identity Guidelines</td></tr>
+        <tr><td>Reference</td><td><a href="https://developer.apple.com/musickit/">https://developer.apple.com/musickit/</a> · Apple Music Identity Guidelines</td></tr>
+        <tr><td>Our use</td><td>Apple Music library read, catalog search, and playback only</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Posture.</strong> Apple Music integration in PocketDJ is playback only. PocketDJ plays Apple Music content through MusicKit, rendered by the MusicKit APIs, using the user's own subscription. PocketDJ does not download, capture, record, store, or modify Apple Music content, and does not synchronise it with other content.</p>
+  <p><strong>Obligations this imposes:</strong></p>
+  <ol>
+    <li><strong>Badge and link.</strong> Where PocketDJ surfaces Apple Music content — an album, song, artist, or playlist — it uses an Apple-supplied "Listen on Apple Music" badge or lockup, linked to that item on Apple Music. We may not draw our own badge. Only one badge per context.</li>
+    <li><strong>Artwork must not be altered.</strong> Artwork returned by MusicKit may not be cropped, recoloured, overlaid, or composited.</li>
+    <li><strong>Naming.</strong> "Apple Music" is used per the Identity Guidelines in the App Store description and in-app copy; PocketDJ is not presented as an Apple product or as affiliated with Apple.</li>
+    <li><strong>No pre-add badge</strong> in conjunction with MusicKit — that is an affiliate-terms violation.</li>
+  </ol>
+
+  <h3 id="s3-2">3.2 ShazamKit</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Component</td><td>ShazamKit (<code>SHSession</code>, Shazam catalog matching)</td></tr>
+        <tr><td>Terms</td><td>Apple Developer Program Licence Agreement; ShazamKit service terms</td></tr>
+        <tr><td>Reference</td><td><a href="https://developer.apple.com/shazamkit/">https://developer.apple.com/shazamkit/</a></td></tr>
+        <tr><td>Our use</td><td>The in-app recogniser — identify a playing track, then offer to add the album</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligation:</strong> matching against the Shazam catalog and displaying the returned song metadata requires that we <strong>provide a link to that content in Apple Music</strong>, in accordance with the Apple Music Identity Guidelines. That link is mandatory.</p>
+  <p>The "Powered by Shazam" lockup or Shazam icon is <strong>optional</strong> — it may be used to promote the recognition service but is not required. If it is ever used in marketing material it goes through Apple's approval requirements. We do not currently use it and have no plan to.</p>
+
+  <h3 id="s3-3">3.3 SF Symbols</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Component</td><td>SF Symbols — 149 distinct symbols used across the app</td></tr>
+        <tr><td>Terms</td><td>Apple's SF Symbols licence (in the Xcode / SF Symbols licence agreement)</td></tr>
+        <tr><td>How it reaches users</td><td>Glyphs render from the system; symbol names ship in the binary</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligations:</strong> SF Symbols may be used in apps running on Apple platforms. They may <strong>not</strong> be modified, may not be used to create a derivative or lookalike icon set, may not be used in app icons or marketing, and may not be reproduced outside Apple platforms. PocketDJ uses them unmodified as UI glyphs only, which is inside the grant. The PocketDJ app icon is first-party artwork and contains no SF Symbol.</p>
+
+  <h3 id="s3-4">3.4 Apple sample code</h3>
+  <p>PocketDJ adopts the assistant-schema entity and intent <em>shapes</em> from Apple's WWDC26 sample <strong>"Integrating your music app with Apple Intelligence" (CosmoTunes)</strong> — the audio song / album / artist / playlist entities, the play-audio and add-to-playlist intents, and two enums. Apple sample code is distributed under the <strong>Apple Sample Code Licence</strong>, which permits use and redistribution in compiled form and requires that Apple's copyright notice be retained. PocketDJ retains that notice.</p>
+
+  <h2 id="s4">4. Bundled and redistributed assets</h2>
+
+  <h3 id="s4-1">4.1 GeneralUser GS SoundFont — the virtual-instrument packs</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Asset</td><td><code>GeneralUser-GS.sf2</code> (~32 MB), served as <code>generaluser-gs-2.0.3.sf2</code></td></tr>
+        <tr><td>Version</td><td>2.0.3 (released 2026-02-22), under GeneralUser GS Licence v2.0</td></tr>
+        <tr><td>Author</td><td>S. Christian Collins (<a href="https://www.schristiancollins.com">https://www.schristiancollins.com</a>)</td></tr>
+        <tr><td>Source</td><td><a href="https://github.com/mrbumpy409/GeneralUser-GS">https://github.com/mrbumpy409/GeneralUser-GS</a></td></tr>
+        <tr><td>How it reaches users</td><td>Not bundled in the binary. Redistributed from PocketDJ cloud services and downloaded on demand by the Instruments tab, then cached on device. One shared 32 MB bank backs all seven melodic instrument packs.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>This is a redistribution, not a use.</strong> We serve the file to other people's devices, and the licence has to be read against that posture.</p>
+  <p><strong>Obligations, and how we meet them:</strong></p>
+  <ol>
+    <li><strong>Commercial use of the bank is expressly permitted.</strong> "You may use GeneralUser GS without restriction for your own music creation, private or commercial… Please feel free to use it in your software projects."</li>
+    <li><strong>The licence imposes no formal attribution requirement.</strong> Read strictly, v2.0 contains no "you must credit" clause. We credit anyway — the manifest carries an attribution string that the Instruments screen renders.</li>
+    <li><strong>Do not hot-link the author's downloads.</strong> The licence asks that redistributors either link to the author's website or provide their own local copy. We host our own copy, which is the sanctioned path.</li>
+    <li><strong>The bundled licence text travels with the redistribution.</strong> Not strictly required by the text, but it is the norm for redistributing a permissively licensed asset and it costs one file.</li>
+  </ol>
+  <p><strong>Full licence text — GeneralUser GS Licence v2.0:</strong></p>
+  <pre><code>*** GeneralUser GS v2.0.3 ***
+***      License v2.0     ***
+
+** License of the complete work **
+You may use GeneralUser GS without restriction for your own music creation,
+private or commercial. This SoundFont bank is provided to the community free of
+charge. Please feel free to use it in your software projects, and to modify the
+SoundFont bank or its packaging to suit your needs.
+
+** License of contained samples **
+GeneralUser GS inherits the usage rights of the samples contained within, all of
+which allow full use in music production, including the ability to make profit
+from musical recordings created with GeneralUser GS.
+
+Many of the samples are original, but some were taken from other banks freely
+(and legally) available on the Internet from various SoundFont websites. Because
+GeneralUser GS originated as a personal project with no intention for
+publication, I cannot be 100% sure where all of the samples originated, although
+I do know that none of them came from commercially published SoundFont packages
+or sample CDs. Regardless, many "free" SoundFonts available on the web may
+indeed contain samples of questionable origin. My understanding of the
+copyrights of all samples is only as good as the information provided by the
+original sources. If you become aware of any restricted samples being used in
+GeneralUser GS, please let me know so I can replace them.
+
+This uncertainty may concern you if you intend to use GeneralUser GS in a
+commercial software product. That being said, I have never received any
+complaint regarding sample ownership since I published the original GeneralUser
+GS back in 2000, and as far as I am aware, neither have any of the companies
+creating commercial software products using GeneralUser GS.
+
+** More info **
+If you plan to feature GeneralUser GS on your own website, please do not link
+directly to my download files. Either link to my website, or provide your own
+local copy instead.
+
+I hope you enjoy GeneralUser GS! This SoundFont bank is the product of many
+years of hard work.
+
+You can find updates to GeneralUser GS and more of my virtual instruments at:
+http://www.schristiancollins.com
+
+I can be reached via the contact page on my website here:
+https://www.schristiancollins.com/contact
+
+Thank you!
+-~Chris</code></pre>
+
+  <h3 id="s4-2">4.2 Sample packs, loop packs, drum kits</h3>
+  <p><strong>None.</strong> PocketDJ ships no sample library, no loop pack, and no drum kit. The Performance tab's samples, loops, slices, and cue points are all created by the user from their own audio. The only instrument content we distribute is the GeneralUser GS bank in §4.1.</p>
+
+  <h3 id="s4-3">4.3 Fonts</h3>
+  <p><strong>None.</strong> The app uses system fonts only, which carry no attribution obligation on Apple platforms.</p>
+
+  <h3 id="s4-4">4.4 Icons and app artwork</h3>
+  <p>The app's icon and accent assets are first-party. UI glyphs are SF Symbols (§3.3). No third-party icon set — no Font Awesome, Feather, Material, Noun Project, or similar — is present.</p>
+
+  <h3 id="s4-5">4.5 Bundled audio</h3>
+  <p>The one bundled audio file is a <strong>test fixture</strong> used by the Studio unit tests, not user-facing content.</p>
+
+  <h3 id="s4-6">4.6 Demo or bundled catalog content</h3>
+  <p>A small metadata fixture is used for tests — metadata only, no audio. If a first-run demo experience with playable audio is added, every demo track will carry a licence entry with a source before it ships.</p>
+
+  <h2 id="s5">5. Server-side software and ML models</h2>
+  <p>These components run in PocketDJ's cloud services, and only their <em>output</em> — stems, BPM / key / beat-grid analysis, transcripts — reaches a device. Running a model as a service is a different exposure from shipping its weights in an app.</p>
+
+  <h3 id="s5-1">5.1 Demucs — pretrained model weights (htdemucs)</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Component</td><td><code>htdemucs</code> Hybrid Transformer Demucs v4 pretrained weights</td></tr>
+        <tr><td>Origin</td><td>Meta AI / Meta Platforms, Inc.</td></tr>
+        <tr><td>Licence</td><td>Not MIT — provided for scientific purposes only (see below)</td></tr>
+        <tr><td>How we use it</td><td>Server-side stem separation (vocals / drums / bass / other) for the Stemify, Mix stem-deck, Performance, and Demuxer features</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>The Demucs source code is MIT-licensed (§5.2); the pretrained model weights are licensed separately. The project's author states directly that:</p>
+  <blockquote><p>"The model weights are not covered by the MIT license, and are provided only for scientific purposes."</p></blockquote>
+  <p>This restriction traces to <strong>MUSDB18</strong>, the training corpus: it is provided for educational and academic purposes only, and a substantial portion of it (the MedleyDB tracks) is licensed <strong>CC BY-NC-SA 4.0</strong> — non-commercial, share-alike. The non-commercial restriction on the training data is what confines the resulting weights. The Demucs LICENSE file is the MIT text for the <em>software</em>; it is not a grant for the weights. The weights are used server-side and are not distributed to devices; only separated-audio output is returned.</p>
+  <p><strong>Full licence text (Demucs code — MIT):</strong> see §5.2.</p>
+
+  <h3 id="s5-2">5.2 Demucs — source code</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Version</td><td>v4 (Hybrid Transformer Demucs)</td></tr>
+        <tr><td>Source</td><td><a href="https://github.com/facebookresearch/demucs">https://github.com/facebookresearch/demucs</a></td></tr>
+        <tr><td>Licence</td><td>MIT</td></tr>
+        <tr><td>Copyright</td><td>Meta Platforms, Inc. and affiliates</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligation:</strong> reproduce the copyright and permission notice. There is no obligation on the <em>output</em> of the software and no share-alike on separated audio — the constraint on our use comes entirely from the weights (§5.1), not from the code.</p>
+  <pre><code>MIT License
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.</code></pre>
+
+  <h3 id="s5-3">5.3 faster-whisper</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Source</td><td><a href="https://github.com/SYSTRAN/faster-whisper">https://github.com/SYSTRAN/faster-whisper</a></td></tr>
+        <tr><td>Maintainer</td><td>SYSTRAN</td></tr>
+        <tr><td>Licence</td><td>MIT</td></tr>
+        <tr><td>How we use it</td><td>Server-side timed-lyrics transcription over the vocals stem, model size <code>small</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligation:</strong> reproduce the notice. MIT imposes nothing on transcripts the model produces, and no attribution is required on generated text. The transcript being unencumbered <em>by the model licence</em> says nothing about the underlying song lyrics, which are a separate copyright owned by publishers (§7.5).</p>
+
+  <h3 id="s5-4">5.4 CTranslate2</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Source</td><td><a href="https://github.com/OpenNMT/CTranslate2">https://github.com/OpenNMT/CTranslate2</a></td></tr>
+        <tr><td>Licence</td><td>MIT</td></tr>
+        <tr><td>How we use it</td><td>The inference engine faster-whisper runs on; pulled in as a dependency</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligation:</strong> reproduce the notice.</p>
+
+  <h3 id="s5-5">5.5 OpenAI Whisper — model weights</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Model</td><td>Whisper <code>small</code>, in CTranslate2 form (<code>Systran/faster-whisper-small</code> on Hugging Face)</td></tr>
+        <tr><td>Origin</td><td>OpenAI</td></tr>
+        <tr><td>Licence</td><td>MIT — including the weights</td></tr>
+        <tr><td>How it reaches us</td><td>Downloaded from Hugging Face by the worker on its first lyrics job</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligation:</strong> reproduce the notice. OpenAI released Whisper's model weights under MIT — commercial use included, with no output restriction.</p>
+
+  <h3 id="s5-6">5.6 librosa</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Source</td><td><a href="https://github.com/librosa/librosa">https://github.com/librosa/librosa</a></td></tr>
+        <tr><td>Licence</td><td>ISC</td></tr>
+        <tr><td>Copyright</td><td>2013–2023, librosa development team</td></tr>
+        <tr><td>How we use it</td><td>Server-side audio analysis — BPM, key, beat-grid, waveform</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligation:</strong> reproduce the copyright and permission notice.</p>
+  <pre><code>ISC License
+
+Copyright (c) 2013--2023, librosa development team.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.</code></pre>
+
+  <h3 id="s5-7">5.7 PyTorch and the scientific-Python stack</h3>
+  <p>Demucs pulls in <strong>PyTorch</strong> (BSD-3-Clause, © the PyTorch contributors / Meta), and librosa pulls in <strong>NumPy</strong> (BSD-3-Clause), <strong>SciPy</strong> (BSD-3-Clause), <strong>soundfile</strong> (BSD-3-Clause), <strong>audioread</strong> (MIT), and <strong>numba</strong> (BSD-2-Clause). All are permissive, all require notice reproduction, none imposes anything on output.</p>
+
+  <h3 id="s5-8">5.8 FFmpeg</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>How we use it</td><td>Invoked as a separate system binary by server-side tooling, where it gives the analysis stack its audio loader</td></tr>
+        <tr><td>Licence</td><td>LGPL-2.1-or-later for a default build; GPL-2.0-or-later if built with <code>--enable-gpl</code> (which pulls in x264, libxvid, and similar)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Why the distinction matters:</strong> the copyleft obligations of both LGPL and GPL attach on <strong>distribution</strong>. We do not distribute FFmpeg — it is installed independently on the worker machines and invoked as a subprocess, and the output files it produces are not derivative works of FFmpeg. On that posture there is no source-provision obligation and no obligation on the app.</p>
+  <p>Two things would change that: bundling an FFmpeg binary or library into the app, or shipping a worker image that contains it to a third party. Neither is planned.</p>
+
+  <h2 id="s6">6. Web application dependencies</h2>
+  <p>PocketDJ began as a progressive web app, and the web client is served alongside the native apps. Its runtime dependencies, versions, and licences, resolved from the installed tree:</p>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Package</th><th>Version</th><th>Licence</th></tr></thead>
+      <tbody>
+        <tr><td><code>react</code></td><td>18.3.1</td><td>MIT</td></tr>
+        <tr><td><code>react-dom</code></td><td>18.3.1</td><td>MIT</td></tr>
+        <tr><td><code>react-router-dom</code></td><td>6.30.4</td><td>MIT</td></tr>
+        <tr><td><code>zustand</code></td><td>5.0.14</td><td>MIT</td></tr>
+        <tr><td><code>@tanstack/react-virtual</code></td><td>3.14.2</td><td>MIT</td></tr>
+        <tr><td><code>fflate</code></td><td>0.8.3</td><td>MIT</td></tr>
+        <tr><td><code>idb</code></td><td>8.0.3</td><td>ISC</td></tr>
+        <tr><td><code>hls.js</code></td><td>1.6.16</td><td>Apache-2.0</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong><code>hls.js</code> is the one that is different.</strong> Apache-2.0 requires more than MIT does: retain copyright, patent, trademark, and attribution notices; include a copy of the licence; state any changes made to the files; and preserve any <code>NOTICE</code> file content in distributions. We make no changes to it, so the practical obligation is licence text plus notice preservation.</p>
+  <p>Build-time-only dependencies (Vite, TypeScript, Vitest, Playwright, and their trees) are not distributed and carry no notice obligation.</p>
+
+  <h2 id="s7">7. Data sources requiring attribution</h2>
+  <p>PocketDJ's catalog is metadata — album and track names, artist, genre, release year, tempo, and key. It draws on several third-party services, each with its own attribution terms. Audio that a catalog entry may reference is separate infrastructure.</p>
+
+  <h3 id="s7-1">7.1 Apple — iTunes Search API</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Service</td><td>iTunes Search API (<code>itunes.apple.com/search</code>, <code>/lookup</code>)</td></tr>
+        <tr><td>Terms</td><td>Apple Media Services terms / Apple Services Performance Partners terms</td></tr>
+        <tr><td>What we take</td><td>Album and track names, artist, genre, release year, track duration, explicit flag, and artwork URLs</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligations, stated as Apple states them:</strong></p>
+  <ol>
+    <li><strong>Attribution.</strong> Content from the API must be attributed — for promotional content such as song previews, Apple's language is that it be identified as "provided courtesy of iTunes."</li>
+    <li><strong>Badge adjacency.</strong> API-derived content must sit near an approved badge that links directly into Apple's store or Apple Music. This is the same badge obligation as §3.1.</li>
+    <li><strong>No caching of artwork.</strong> Apple's terms permit artwork that is "streamed only, and not downloaded, saved, cached, or synchronized."</li>
+    <li><strong>No independent entertainment value.</strong> The content must serve a promotional purpose, not stand on its own as the product.</li>
+    <li><strong>Rate limit.</strong> Roughly 20 requests per minute, per calling identity.</li>
+  </ol>
+
+  <h3 id="s7-2">7.2 Discogs</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Service</td><td>Discogs public API (<code>api.discogs.com</code>)</td></tr>
+        <tr><td>Terms</td><td>Discogs API Terms of Use</td></tr>
+        <tr><td>What we take</td><td>Release metadata, tracklists with vinyl side / position, and artwork URLs</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligations:</strong></p>
+  <ol>
+    <li><strong>Descriptive User-Agent.</strong> Discogs requires a descriptive User-Agent identifying the client; PocketDJ sends one.</li>
+    <li><strong>Rate limit.</strong> Unauthenticated access is roughly 25 requests per minute; our indexer throttles to a single shared lane well inside it.</li>
+    <li><strong>Data vs. images — the distinction that matters.</strong> Much of the Discogs <em>database</em> is released <strong>CC0</strong>, which permits commercial use with no attribution required. <strong>Images are not CC0.</strong> Discogs hosts user-contributed images and does not own most of them; its terms restrict transferring "restricted data" to third parties and using it commercially.</li>
+  </ol>
+  <p>We credit Discogs voluntarily even though CC0 does not require it.</p>
+
+  <h3 id="s7-3">7.3 MusicBrainz</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Service</td><td>MusicBrainz web service (<code>musicbrainz.org/ws/2</code>)</td></tr>
+        <tr><td>What we take</td><td>Artist country / area only — one field, best-effort</td></tr>
+        <tr><td>Licence</td><td>Core data: CC0 (public domain). Everything else: CC BY-NC-SA 3.0.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>Obligation:</strong> the artist–area relationship is core data and therefore CC0 — no attribution required, commercial use permitted. We credit MusicBrainz and the MetaBrainz Foundation anyway.</p>
+  <p><strong>The trap to avoid:</strong> the non-core portion of the database is <strong>CC BY-NC-SA 3.0</strong> — <em>non-commercial</em>. If the indexer is ever extended to pull tags, ratings, annotations, or other non-core fields, that data cannot ship in a commercial app without a MetaBrainz commercial licence. We keep the MusicBrainz surface at core data only.</p>
+  <p><strong>Attribution text:</strong> "Includes data from MusicBrainz, licensed under CC0."</p>
+
+  <h3 id="s7-4">7.4 Wikipedia (English) — CC BY-SA 4.0</h3>
+  <div class="tw">
+    <table class="kv">
+      <tbody>
+        <tr><td>Source</td><td>English Wikipedia, via REST search + article read</td></tr>
+        <tr><td>Licence</td><td>Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)</td></tr>
+        <tr><td>What we take</td><td>Infobox release date and genre, album artist, and track listings</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p><strong>CC BY-SA has two mandatory conditions:</strong></p>
+  <ol>
+    <li><strong>BY — attribution.</strong> Credit the source, link the licence, and indicate whether changes were made.</li>
+    <li><strong>SA — share-alike.</strong> Adaptations of the licensed material must be released under CC BY-SA 4.0 or a compatible licence.</li>
+  </ol>
+  <p><strong>The honest nuance, because it cuts both ways.</strong> Much of what we extract — a release year, a genre, a track title, a duration — is <strong>fact</strong>, and facts are not copyrightable in the United States, so a pure-facts extraction arguably never triggers CC BY-SA at all. Two reasons not to rely on that alone: a <strong>track listing</strong> is a compilation whose selection and arrangement may attract thin copyright, and in the EU the <strong>sui generis database right</strong> protects substantial extraction regardless of originality; and attribution costs one line of UI while losing a CC BY-SA argument costs the licence entirely.</p>
+  <p><strong>What discharges it:</strong> an acknowledgements entry naming Wikipedia, linking <a href="https://creativecommons.org/licenses/by-sa/4.0/">https://creativecommons.org/licenses/by-sa/4.0/</a>, and stating that content was adapted — better still, rendering each album's source list on the album card so the credit sits next to the data it describes. PocketDJ's data extraction is confined to factual fields so that no Wikipedia prose reaches a shipped field.</p>
+
+  <h3 id="s7-5">7.5 Lyrics</h3>
+  <p>Lyrics shown in PocketDJ are machine-transcribed on our servers from audio (see faster-whisper, §5.3). The underlying <strong>musical composition</strong> is a separate copyright owned by its publisher, unrelated to any recording right, and neither scraping a lyrics site nor machine-transcribing a vocal creates a licence in it. No third-party lyrics licence is claimed, and there is nothing to attribute here — this row exists so that the absence of a lyrics credit is not mistaken for an oversight.</p>
+
+  <h3 id="s7-6">7.6 Web search</h3>
+  <p>A general-purpose web-search backfill supplied factual fields — artist, album, year — for albums the structured sources could not match. These are facts rather than copied text, and carry no attribution obligation.</p>
+
+  <h3 id="s7-7">7.7 Apple — the "Apple Music (Local)" library index</h3>
+  <p>PocketDJ can index the user's local Apple Music / iTunes library into a catalog of metadata describing Apple Music items. This is Apple Media Services-derived metadata and is governed by the <strong>same terms as §7.1</strong> — attribution, badge adjacency, and use as promotional content adjacent to a purchase path rather than as a standalone catalog. The catalog identifiers it records are the join key used in-app to start playback through MusicKit.</p>
+
+  <h3 id="s7-8">7.8 <code>single-synth</code> — first-party synthesised metadata</h3>
+  <p>Some single-track album records are synthesised by PocketDJ's own indexer rather than fetched from any third party. <strong>Obligation: none.</strong> The records are first-party; this subsection exists so the provenance list is complete.</p>
+
+  <h2 id="s8">8. Build tooling (not distributed — no obligation)</h2>
+  <p>Listed for completeness. None of these is distributed, so none carries an obligation.</p>
+  <div class="tw">
+    <table>
+      <thead><tr><th>Tool</th><th>Licence</th><th>Why no obligation</th></tr></thead>
+      <tbody>
+        <tr><td>XcodeGen</td><td>MIT</td><td>Generates the Xcode project at build time; no code ships</td></tr>
+        <tr><td>Vite, TypeScript, Vitest, Playwright</td><td>MIT / Apache-2.0</td><td>Build and test only</td></tr>
+        <tr><td>AWS CLI</td><td>Apache-2.0</td><td>Operator tooling</td></tr>
+        <tr><td>Docker</td><td>Apache-2.0</td><td>Operator tooling</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr>
+  <p><small class="none-tag">This document is provided for informational purposes and does not constitute legal advice.</small></p>
+</main>
+
+<footer class="site">
+  <div class="inner">
+    <nav aria-label="Legal documents">
+      <a href="/terms/">Terms of Service</a>
+      <a href="/privacy/">Privacy Policy</a>
+      <a href="/dmca/">DMCA / Copyright</a>
+      <a href="/notices/">Third-Party Notices</a>
+    </nav>
+    <p class="fine">Questions about attribution or licensing: <a href="mailto:contact@pocket-dj.com">contact@pocket-dj.com</a><br>
+    © 2026 African Intellect Enterprises LLC · PocketDJ</p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var root = document.documentElement;
+  var KEY = 'pdj-theme';
+  try { var saved = localStorage.getItem(KEY); if (saved === 'dark' || saved === 'light') root.setAttribute('data-theme', saved); } catch (e) {}
+  function currentTheme(){
+    var attr = root.getAttribute('data-theme');
+    if (attr) return attr;
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+  }
+  var btn = document.getElementById('theme-toggle');
+  function syncLabel(){ if (btn) btn.setAttribute('aria-label', 'Switch to ' + (currentTheme() === 'dark' ? 'light' : 'dark') + ' theme'); }
+  if (btn){
+    btn.addEventListener('click', function(){
+      var next = currentTheme() === 'dark' ? 'light' : 'dark';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem(KEY, next); } catch (e) {}
+      syncLabel();
+    });
+  }
+  syncLabel();
+
+  var toc = document.getElementById('toc-list');
+  var heads = document.querySelectorAll('main h2, main h3');
+  heads.forEach(function(h){
+    if (!h.id) return;
+    var text = h.textContent.trim();
+    if (toc){
+      var li = document.createElement('li');
+      li.className = 'toc-' + h.tagName.toLowerCase();
+      var link = document.createElement('a');
+      link.href = '#' + h.id;
+      link.textContent = text;
+      li.appendChild(link);
+      toc.appendChild(li);
+    }
+    var a = document.createElement('a');
+    a.href = '#' + h.id;
+    a.className = 'anchor';
+    a.setAttribute('aria-hidden', 'true');
+    a.textContent = '#';
+    h.appendChild(a);
+  });
+
+  var tocWrap = document.getElementById('toc');
+  function setToc(){
+    if (!tocWrap) return;
+    if (window.matchMedia('(max-width: 640px)').matches) tocWrap.removeAttribute('open');
+    else tocWrap.setAttribute('open', '');
+  }
+  setToc();
+})();
+</script>
+
+</body>
+</html>

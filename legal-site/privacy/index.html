@@ -1,0 +1,726 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Privacy Policy — PocketDJ</title>
+<script>try{var t=localStorage.getItem('pdj-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#ffffff; --fg:#1c1d20; --muted:#6b7078; --border:#e4e6ea;
+  --link:#0f7d72; --accent:#0d9488; --table-head:#f6f7f9; --soft:#f7f8fa;
+  --header-bg:rgba(255,255,255,0.82);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#111316; --fg:#e5e7ea; --muted:#9aa0a8; --border:#2a2d33;
+    --link:#4fd3c3; --accent:#2dd4bf; --table-head:#181a1e; --soft:#16181c;
+    --header-bg:rgba(17,19,22,0.82);
+  }
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#ffffff; --fg:#1c1d20; --muted:#6b7078; --border:#e4e6ea;
+  --link:#0f7d72; --accent:#0d9488; --table-head:#f6f7f9; --soft:#f7f8fa;
+  --header-bg:rgba(255,255,255,0.82);
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#111316; --fg:#e5e7ea; --muted:#9aa0a8; --border:#2a2d33;
+  --link:#4fd3c3; --accent:#2dd4bf; --table-head:#181a1e; --soft:#16181c;
+  --header-bg:rgba(17,19,22,0.82);
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
+  font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+a{color:var(--link);overflow-wrap:break-word}
+a:hover{text-decoration:underline}
+
+.site-header{position:sticky;top:0;z-index:20;background:var(--header-bg);
+  backdrop-filter:saturate(180%) blur(10px);-webkit-backdrop-filter:saturate(180%) blur(10px);
+  border-bottom:1px solid var(--border)}
+.hwrap{max-width:72ch;margin:0 auto;padding:0.6rem 1.25rem;display:flex;align-items:center;gap:0.9rem}
+.wordmark{font-weight:700;letter-spacing:-0.01em;color:var(--fg);text-decoration:none;font-size:1.06rem}
+.wordmark:hover{color:var(--accent);text-decoration:none}
+.doctitle{color:var(--muted);font-size:0.95rem;border-left:1px solid var(--border);padding-left:0.9rem}
+.theme-toggle{margin-left:auto;border:1px solid var(--border);background:transparent;color:var(--fg);
+  border-radius:7px;width:2.1rem;height:2.1rem;font-size:1rem;line-height:1;cursor:pointer;
+  display:flex;align-items:center;justify-content:center}
+.theme-toggle:hover{border-color:var(--accent);color:var(--accent)}
+@media (max-width:430px){.doctitle{display:none}}
+
+.page{max-width:72ch;margin:0 auto;padding:2rem 1.25rem 3rem}
+h1{font-size:2rem;line-height:1.2;margin:0.25rem 0 0.4rem;letter-spacing:-0.015em}
+h2{font-size:1.4rem;line-height:1.28;margin:2.6rem 0 0.8rem;padding-top:1.4rem;
+  border-top:1px solid var(--border);scroll-margin-top:4.8rem;letter-spacing:-0.01em}
+h3{font-size:1.12rem;line-height:1.3;margin:1.9rem 0 0.5rem;scroll-margin-top:4.8rem}
+p{margin:0.9rem 0}
+ul,ol{margin:0.9rem 0;padding-left:1.4rem}
+li{margin:0.35rem 0}
+strong{font-weight:650}
+hr{border:none;border-top:1px solid var(--border);margin:2rem 0}
+
+.effective{color:var(--muted);font-size:0.95em;margin:0.2rem 0 0}
+.notice{color:var(--muted);font-size:0.95em;border-left:3px solid var(--accent);
+  background:var(--soft);border-radius:0 6px 6px 0;padding:0.7rem 1rem;margin:1.4rem 0 0}
+.ph{color:var(--muted);font-style:italic;white-space:nowrap}
+.dotrow{background:var(--soft);border:1px solid var(--border);border-radius:8px;
+  padding:0.8rem 1rem;font-size:0.97em;line-height:1.9}
+
+.anchor{margin-left:0.45rem;color:var(--muted);text-decoration:none;font-weight:400;
+  opacity:0;transition:opacity .12s}
+h2:hover .anchor,h3:hover .anchor,.anchor:focus{opacity:1;text-decoration:none}
+@media (hover:none){.anchor{opacity:.35}}
+
+.toc{border:1px solid var(--border);border-radius:9px;background:var(--soft);
+  padding:0.4rem 1.1rem;margin:1.8rem 0 0.5rem}
+.toc>summary{cursor:pointer;font-weight:650;padding:0.55rem 0;list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▸ ";color:var(--muted)}
+.toc[open]>summary::before{content:"▾ "}
+.toc-list{list-style:none;padding-left:0;margin:0.3rem 0 0.8rem}
+.toc-list ul{list-style:none;padding-left:1.1rem;margin:0.15rem 0}
+.toc-list li{margin:0.18rem 0}
+.toc a{color:var(--fg);text-decoration:none}
+.toc a:hover{color:var(--link);text-decoration:underline}
+
+.table-wrap{overflow-x:auto;margin:1.3rem 0;border:1px solid var(--border);border-radius:9px;
+  -webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;min-width:32rem;font-size:0.95em}
+table.four{min-width:46rem}
+th,td{text-align:left;padding:0.6rem 0.85rem;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{background:var(--table-head);font-weight:650;white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+
+.closing{color:var(--muted);font-size:0.96em;border-top:1px solid var(--border);
+  margin-top:2.8rem;padding-top:1.6rem}
+
+.site-footer{border-top:1px solid var(--border);background:var(--soft)}
+.fwrap{max-width:72ch;margin:0 auto;padding:2rem 1.25rem;font-size:0.95em;color:var(--muted)}
+.fnav{display:flex;flex-wrap:wrap;gap:0.5rem 1.4rem;margin:0 0 1rem}
+.fnav a{color:var(--fg);text-decoration:none}
+.fnav a:hover{color:var(--link);text-decoration:underline}
+.fwrap .mail{color:var(--link)}
+</style>
+</head>
+<body>
+<header class="site-header">
+  <div class="hwrap">
+    <a class="wordmark" href="/">PocketDJ</a>
+    <span class="doctitle">Privacy Policy</span>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle color theme"></button>
+  </div>
+</header>
+
+<main class="page">
+<h1>Privacy Policy</h1>
+<p class="effective">Effective date: October 29, 2026</p>
+
+<details class="toc" open>
+  <summary>Contents</summary>
+  <nav aria-label="Table of contents">
+  <ul class="toc-list">
+    <li><a href="#1-who-this-is-and-what-it-covers">1. Who this is and what it covers</a></li>
+    <li><a href="#2-the-short-version">2. The short version</a></li>
+    <li><a href="#3-what-stays-on-your-device">3. What stays on your device</a></li>
+    <li><a href="#4-what-goes-to-pocketdj-cloud-services">4. What goes to PocketDJ cloud services</a>
+      <ul>
+        <li><a href="#41-audio-you-ask-us-to-process">4.1 Audio you ask us to process</a></li>
+        <li><a href="#42-where-your-audio-is-stored-and-who-can-reach-it">4.2 Where your audio is stored, and who can reach it</a></li>
+        <li><a href="#43-the-public-catalog">4.3 The public catalog</a></li>
+        <li><a href="#44-search">4.4 Search</a></li>
+        <li><a href="#45-identifiers-sent-with-cloud-requests">4.5 Identifiers sent with cloud requests</a></li>
+        <li><a href="#46-listening-history-recommendations-and-listening-pockets">4.6 Listening history, recommendations and listening pockets</a></li>
+        <li><a href="#47-profile-sync-on-android-optional">4.7 Profile sync on Android (optional)</a></li>
+        <li><a href="#48-diagnostics-in-test-builds">4.8 Diagnostics in test builds</a></li>
+        <li><a href="#49-server-logs">4.9 Server logs</a></li>
+      </ul>
+    </li>
+    <li><a href="#5-what-goes-to-apple">5. What goes to Apple</a>
+      <ul>
+        <li><a href="#51-icloud-sync-cloudkit">5.1 iCloud sync (CloudKit)</a></li>
+        <li><a href="#52-apple-music">5.2 Apple Music</a></li>
+        <li><a href="#53-song-recognition-shazamkit">5.3 Song recognition (ShazamKit)</a></li>
+      </ul>
+    </li>
+    <li><a href="#6-google-and-android">6. Google and Android</a></li>
+    <li><a href="#7-microphone">7. Microphone</a></li>
+    <li><a href="#8-two-transcription-engines-and-why-the-difference-matters">8. Two transcription engines, and why the difference matters</a></li>
+    <li><a href="#9-jukebox-hosting-and-the-guest-request-line">9. Jukebox hosting and the guest request line</a>
+      <ul>
+        <li><a href="#91-if-you-are-the-host">9.1 If you are the host</a></li>
+        <li><a href="#92-if-you-are-a-guest-what-we-collect-from-you">9.2 If you are a guest: what we collect from you</a></li>
+        <li><a href="#93-listen-along">9.3 Listen-along</a></li>
+      </ul>
+    </li>
+    <li><a href="#10-what-we-do-not-do">10. What we do not do</a></li>
+    <li><a href="#11-how-long-we-keep-things">11. How long we keep things</a></li>
+    <li><a href="#12-your-rights-and-your-controls">12. Your rights and your controls</a>
+      <ul>
+        <li><a href="#121-the-categories-of-personal-data-we-process">12.1 The categories of personal data we process</a></li>
+        <li><a href="#122-our-lawful-bases-euuk">12.2 Our lawful bases (EU/UK)</a></li>
+        <li><a href="#123-california-and-other-us-state-privacy-rights">12.3 California and other US state privacy rights</a></li>
+        <li><a href="#124-if-there-is-a-data-breach">12.4 If there is a data breach</a></li>
+        <li><a href="#125-the-other-documents">12.5 The other documents</a></li>
+      </ul>
+    </li>
+    <li><a href="#13-deleting-your-data-and-your-account">13. Deleting your data and your account</a></li>
+    <li><a href="#14-children">14. Children</a></li>
+    <li><a href="#15-where-your-data-goes-internationally">15. Where your data goes, internationally</a></li>
+    <li><a href="#16-security">16. Security</a></li>
+    <li><a href="#17-changes-to-this-policy">17. Changes to this policy</a></li>
+    <li><a href="#18-contact">18. Contact</a></li>
+    <li><a href="#appendix-a--data-flow-summary">Appendix A — Data flow summary</a></li>
+  </ul>
+  </nav>
+</details>
+
+<h2 id="1-who-this-is-and-what-it-covers">1. Who this is and what it covers <a class="anchor" href="#1-who-this-is-and-what-it-covers" aria-label="Permalink">#</a></h2>
+<p>PocketDJ is a music library and DJ app for iPhone, iPad, Mac, Apple TV, Apple Vision Pro, and Android. The Android app is distributed through Google Play and as a direct download (an APK file) from <a href="https://pocket-dj.com">pocket-dj.com</a>. Both Android builds collect the same data.</p>
+<p>PocketDJ is built and operated by <strong>African Intellect Enterprises LLC</strong>, doing business as PocketDJ ("we", "us"), 4406 NE 23rd Ave, Portland, OR 97211, United States. It is a solo development effort. This policy covers the PocketDJ apps and the backend we call <strong>PocketDJ cloud services</strong>: the servers and storage we run on Amazon Web Services that serve the public catalog and power the optional cloud features described below.</p>
+<p>It also covers the <strong>jukebox guest page</strong>: a web page your guests open when you host a request line. If you arrived here from that page, skip to <a href="#9-jukebox-hosting-and-the-guest-request-line">§9</a>. It is the only section about you.</p>
+<p>We are the data controller for what this policy describes. Contact: <a href="mailto:support@pocket-dj.com"><span>support@pocket-dj.com</span></a>.</p>
+<h2 id="2-the-short-version">2. The short version <a class="anchor" href="#2-the-short-version" aria-label="Permalink">#</a></h2>
+<ul>
+<li><strong>Your music library lives on your device.</strong> On Apple devices it can also sync through your own private iCloud database. We do not upload your library wholesale.</li>
+<li><strong>Every cloud feature that sends us information about you is off until you turn it on</strong>, except two that run because you asked for the feature they belong to: keeping your Apple Music playlists in step once you connect Apple Music (<a href="#52-apple-music">§5.2</a>), and the jukebox when you host or join one (<a href="#9-jukebox-hosting-and-the-guest-request-line">§9</a>).</li>
+<li><strong>We have no advertising, no analytics, no crash-reporting, and no attribution SDKs</strong>, on any platform. There is no advertising identifier anywhere in the app.</li>
+<li><strong>We do not sell your data, share it with data brokers, or use it for tracking.</strong></li>
+<li><strong>Your raw location never leaves your device.</strong> If you turn on places &amp; trips, only anonymous labels such as "Location A" are uploaded with your listening pockets (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>).</li>
+<li><strong>Speech transcription runs on your device.</strong> Audio you dictate or transcribe never reaches Apple's, Google's, or our servers.</li>
+<li><strong>Apple Music is for playback and library management.</strong> No audio is copied out of Apple Music by the PocketDJ app.</li>
+<li><strong>You can delete your account and the data we hold from inside the app</strong>, or from the web at <a href="https://legal.pocket-dj.com/delete-account/">legal.pocket-dj.com/delete-account</a> (<a href="#13-deleting-your-data-and-your-account">§13</a>).</li>
+</ul>
+<h2 id="3-what-stays-on-your-device">3. What stays on your device <a class="anchor" href="#3-what-stays-on-your-device" aria-label="Permalink">#</a></h2>
+<p>These never leave your device unless you personally export or share them.</p>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>What</th>
+<th>Where it lives</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Microphone recordings you make in Studio</strong> (samples, takes)</td>
+<td>A local samples folder: the app container, or a folder you pick</td>
+</tr>
+<tr>
+<td><strong>Recorded mix sessions and rendered instrumentals</strong></td>
+<td>A local recordings folder: the app container, or a folder you pick</td>
+</tr>
+<tr>
+<td><strong>Speech transcripts</strong> (the karaoke panel, and feedback you dictate)</td>
+<td>On the device (<a href="#8-two-transcription-engines-and-why-the-difference-matters">§8</a>)</td>
+</tr>
+<tr>
+<td><strong>The Now Playing widget snapshot</strong> (title, artist, artwork, up next)</td>
+<td>A shared container readable only by PocketDJ and its own widget</td>
+</tr>
+<tr>
+<td><strong>Places and trips</strong> (only if you turn on "Use places &amp; trips in pockets", on iPhone and Android): the places you spend time and the trips between them</td>
+<td>On the device only, in a file that is excluded from backups and never synced. Raw location samples are deleted after 30 days; each place keeps only a rounded centre point. Turning the setting off erases all of it. Only anonymous labels ever leave the device (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>).</td>
+</tr>
+<tr>
+<td><strong>Walking and running detection</strong> (only if you turn on "Notice walking &amp; running", iPhone only)</td>
+<td>The raw motion readings stay on the device. Only the resulting "walking" or "running" label can be uploaded, with listening pockets (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>).</td>
+</tr>
+<tr>
+<td><strong>The owner identity check</strong>: a salted hash of your iCloud user id, used to decide whether two-way Apple Music favorites sync is permitted</td>
+<td>Computed and compared in memory on the device. Never transmitted anywhere.</td>
+</tr>
+<tr>
+<td><strong>Diagnostic capture</strong> (Settings ▸ Debug) in App Store and Google Play builds</td>
+<td>An in-memory buffer while you have the toggle on. Nothing auto-uploads from these builds. If you export it and send it to us, that is your action, and it may contain song titles and audio device names. (Test builds differ; see <a href="#48-diagnostics-in-test-builds">§4.8</a>.)</td>
+</tr>
+<tr>
+<td><strong>Cached catalog, artwork, and lyrics text</strong></td>
+<td>On-device cache</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><strong>One exception.</strong> Microphone recordings and recorded mixes stay on your device <em>unless you send one to an import server for stem separation</em> (<a href="#41-audio-you-ask-us-to-process">§4.1</a>).</p>
+<h2 id="4-what-goes-to-pocketdj-cloud-services">4. What goes to PocketDJ cloud services <a class="anchor" href="#4-what-goes-to-pocketdj-cloud-services" aria-label="Permalink">#</a></h2>
+<h3 id="41-audio-you-ask-us-to-process">4.1 Audio you ask us to process <a class="anchor" href="#41-audio-you-ask-us-to-process" aria-label="Permalink">#</a></h3>
+<p>Some features (importing audio, digitizing your own analog sources, separating a track into stems, cloud lyrics) need an <strong>import server</strong>, set in Settings ▸ Import server. <strong>The app does not connect to one unless one is configured</strong>, and the app is fully usable without it. If you run your own import server, audio you send goes to your server, not to us, and this policy does not govern what your server does with it.</p>
+<p>If your app is connected to an import server that we operate, audio you send it is used to:</p>
+<ul>
+<li>convert it to a streamable format and store it so you can play it offline and load it into the Mix decks;</li>
+<li>separate it into stems (vocals, drums, bass, other) when you ask;</li>
+<li>analyze it for tempo, musical key, Camelot key, beat grid, and waveform, so beat-matching and key-matching work;</li>
+<li>transcribe lyrics when you ask (<a href="#8-two-transcription-engines-and-why-the-difference-matters">§8</a>).</li>
+</ul>
+<p>That processing runs on machines we operate and on our AWS account in the United States. <strong>We do not send your audio to any outside company for AI processing.</strong></p>
+<p><strong>You must hold the rights to any audio you upload, import, or digitize from your own sources.</strong> That is a condition of using the service, not a privacy matter, but it is worth saying here too: we process what you send us on the basis that you are entitled to send it.</p>
+<h3 id="42-where-your-audio-is-stored-and-who-can-reach-it">4.2 Where your audio is stored, and who can reach it <a class="anchor" href="#42-where-your-audio-is-stored-and-who-can-reach-it" aria-label="Permalink">#</a></h3>
+<p>Audio processed by an import server we operate, and the stems, analysis, and lyrics made from it, are stored in our AWS storage in the United States. Files are filed by song rather than by person, and the app fetches them over HTTPS. PocketDJ has no feature for sending your files to other people.</p>
+<h3 id="43-the-public-catalog">4.3 The public catalog <a class="anchor" href="#43-the-public-catalog" aria-label="Permalink">#</a></h3>
+<p>PocketDJ publishes a browsable catalog so people can see collections, tracklists, and setlists for inspiration. The catalog documents contain metadata: titles, artists, albums, genres, tempo, key, beat grids, waveform images, cover art, and lyric text. The app downloads the catalog from our content delivery network; no information about you is sent with those downloads beyond what any web request carries (<a href="#49-server-logs">§4.9</a>).</p>
+<h3 id="44-search">4.4 Search <a class="anchor" href="#44-search" aria-label="Permalink">#</a></h3>
+<ul>
+<li><strong>Discover search</strong> sends the words you type to Apple: to the Apple Music catalog if you have connected Apple Music, or, if your app is connected to an import server, through that server to Apple's public iTunes Search API. Search through an import server carries no user identifier.</li>
+<li><strong>Online catalog search</strong> is off by default and needs credentials you enter in Settings. When on, your query goes to our managed search service. We do not associate queries with your profile.</li>
+</ul>
+<h3 id="45-identifiers-sent-with-cloud-requests">4.5 Identifiers sent with cloud requests <a class="anchor" href="#45-identifiers-sent-with-cloud-requests" aria-label="Permalink">#</a></h3>
+<p>When a cloud feature is on, PocketDJ attaches two identifiers to its requests so the servers can keep your data apart from everyone else's:</p>
+<ul>
+<li>your <strong>profile identifier</strong>, a random value created on first run (the recommendation and pockets services receive a value derived from it rather than the identifier itself); and</li>
+<li>a <strong>device identifier</strong> for this installation. On Apple devices it is seeded from Apple's identifier for this app vendor on this device; on Android it is a random value created by the app. PocketDJ never reads an advertising identifier or Android's device ID.</li>
+</ul>
+<p>Deleting your account resets both (<a href="#13-deleting-your-data-and-your-account">§13</a>).</p>
+<h3 id="46-listening-history-recommendations-and-listening-pockets">4.6 Listening history, recommendations and listening pockets <a class="anchor" href="#46-listening-history-recommendations-and-listening-pockets" aria-label="Permalink">#</a></h3>
+<p><strong>Off by default.</strong> Nothing in this section leaves your device unless you turn on <strong>Settings ▸ Recommendations ▸ Use PocketDJ Recommendation Engine</strong>. This works the same way on Apple devices and on Android.</p>
+<p><strong>The Recommendation Engine.</strong> When it is on, PocketDJ sends your listening history (which songs you played and when), your favorites, your 👍/👎 feedback, your collections and their names, your Gem Collector results, and (unless you turn off "Include lifetime play counts") your lifetime play counts to PocketDJ cloud services, which use them to compute your For You and suggested-collection lists. Your data is stored under a random key that only your devices hold.</p>
+<p><strong>Listening pockets.</strong> A listening pocket is a stretch where you played three or more songs in a row without skipping. Finding them is a separate switch, <strong>Find my listening pockets</strong>, which is off until you turn it on. When you turn it on, it sends, for each play in the previous 90 days and from then on:</p>
+<ul>
+<li>the song id, and when it started, rounded down to the minute;</li>
+<li>your time-zone offset at the time, so the analysis can use your local time of day;</li>
+<li>whether you finished it or skipped it, and how much of it played;</li>
+<li>where in the app you played it (for example Mix or a playlist, by id) and whether CarPlay was connected;</li>
+<li>the artist name shown for it;</li>
+<li>which of your collections the song belongs to (ids only).</li>
+</ul>
+<p>Each upload also carries a random identifier for this installation and the device identifier described in <a href="#45-identifiers-sent-with-cloud-requests">§4.5</a>. Our servers use this to find your pockets and describe what they have in common, such as the genre, the tempo range, the time of day, the place or trip, and whether you were walking or running.</p>
+<p><strong>Places and trips, if you turn them on (iPhone and Android).</strong> A separate setting, <strong>Use places &amp; trips in pockets</strong>, is off by default and needs pockets to be on. It learns, on your device, which of your places you were at during a play, or that you were travelling between two of them.</p>
+<ul>
+<li><strong>On iPhone</strong> it uses iOS visit reports.</li>
+<li><strong>On Android</strong> it uses Google Play services' location provider in a low-power mode: a location reading when you have moved a few hundred metres, plus a check about every 15 minutes so the app can tell that you have stayed somewhere. Android asks you first for location access while the app is in use, and then, separately, for access <strong>all the time</strong> ("Allow all the time"). Background access lets PocketDJ notice trips between your places while music plays with the screen off. You can keep foreground-only access, or turn the feature off, at any time.</li>
+</ul>
+<p>On both platforms, your places are numbered by how much time you spend at each (Location A, Location B, …) and are never identified as home, work, or an address. What is uploaded is the anonymous label for each play (a random place id, or a random trip id with its starting and ending place ids) and a summary of your places and trips: each place's "Location A"-style name and the share of your time spent there, and each trip's name (such as "A → B") and how many times you have made it. <strong>Your raw location never leaves your device</strong>, and PocketDJ does not send it to us or to anyone else.</p>
+<p><strong>Walking and running, if you turn it on (iPhone only).</strong> <strong>Settings ▸ Pocket Wheel ▸ Notice walking &amp; running</strong> is off by default. With your permission, it reads Apple's Motion &amp; Fitness activity on the device to tell whether you were walking or running while a song played. Only that label ("walking", "running", or "on a trip") travels with the play in your listening-pockets upload, and only while both this setting and listening pockets are on. The Android app does not read physical activity.</p>
+<p><strong>The "In the Pocket" game.</strong> The game needs listening pockets on (it offers the same switch, and never turns it on for you). Each round, PocketDJ picks three or four songs it predicts you will play straight through, using the time of day, weekday or weekend, and, only if places &amp; trips is on, the anonymous label of the place or trip you are probably at. When a round ends, PocketDJ uploads it with your pockets data, as an example the analysis learns from: when it started (rounded down to the minute) and your time-zone offset, that context, the songs, what the prediction was based on, whether each song was played through or skipped, and, only if you give them, your 1–5 rating and the feedback you write (up to 2,000 characters). <strong>If you dictate feedback with the microphone button, the speech is turned into text on your device; the audio is never uploaded or kept, and only the text in the field is sent.</strong> We use rounds to improve how well pockets are predicted.</p>
+<p><strong>Turning things off.</strong> Turning the engine or pockets off stops all uploads, and also turns places &amp; trips off and erases your places from the device. Data already uploaded stays on our servers until you choose <strong>Delete cloud data</strong> (in Settings ▸ Recommendations) or delete your account (<a href="#13-deleting-your-data-and-your-account">§13</a>), so that turning a switch off and on again doesn't erase your history.</p>
+<h3 id="47-profile-sync-on-android-optional">4.7 Profile sync on Android (optional) <a class="anchor" href="#47-profile-sync-on-android-optional" aria-label="Permalink">#</a></h3>
+<p>Apple devices sync through your own iCloud (<a href="#51-icloud-sync-cloudkit">§5.1</a>). Android has no iCloud, so PocketDJ for Android has its own optional sync, <strong>Settings ▸ Profile ▸ Sync across devices</strong>, which stores your profile, collections, play history, favorites, and settings in PocketDJ cloud services so another device you link can use them. <strong>Profile sync is not switched on yet for any Android user; when it becomes available, it will be off until you turn it on.</strong> Synced data is stored under your profile in our AWS storage until you turn sync off and delete it, or delete your account.</p>
+<h3 id="48-diagnostics-in-test-builds">4.8 Diagnostics in test builds <a class="anchor" href="#48-diagnostics-in-test-builds" aria-label="Permalink">#</a></h3>
+<p>The App Store, Google Play, and direct-download builds <strong>do not upload diagnostics</strong>. Beta builds distributed through TestFlight, and internal development builds, upload diagnostic logs (playback events, errors, song ids, and a short device identifier) to our storage so we can fix problems testers hit. Those logs are deleted after 14 days.</p>
+<h3 id="49-server-logs">4.9 Server logs <a class="anchor" href="#49-server-logs" aria-label="Permalink">#</a></h3>
+<p>Like any website, our content delivery network records each request it serves: the time, the address requested, your IP address, and your browser or app's user agent. Our servers and cloud functions also keep operational logs: request timing, errors, song ids, and, for the jukebox, the text of guest requests. IP addresses reaching the jukebox are used for rate limiting. See <a href="#11-how-long-we-keep-things">§11</a> for retention.</p>
+<h2 id="5-what-goes-to-apple">5. What goes to Apple <a class="anchor" href="#5-what-goes-to-apple" aria-label="Permalink">#</a></h2>
+<h3 id="51-icloud-sync-cloudkit">5.1 iCloud sync (CloudKit) <a class="anchor" href="#51-icloud-sync-cloudkit" aria-label="Permalink">#</a></h3>
+<p>On Apple devices, if you are signed in to iCloud and sync is on, PocketDJ syncs these documents to <strong>your own private iCloud database</strong>:</p>
+<p>your profile · collections (pockets, playlists, setlists) · your edits · favorites · play stats · play history · mix sessions · your current playback session · mix deck state · Discover adds · imported songs · game scores · settings</p>
+<p>Each synced record also carries <strong>the name of the device that pushed it</strong>, so the app can show you which device synced last. Your device name may identify you; many are of the form "<em>&lt;your first name&gt;</em>'s iPhone".</p>
+<p>This data sits in your Apple Account's private database, governed by <a href="https://www.apple.com/legal/privacy/">Apple's privacy policy</a>. <strong>We cannot read it.</strong> PocketDJ uses only CloudKit's private database. Turn sync off in Settings ▸ Profile.</p>
+<p class="closing"><em>How we classify this:</em> because a CloudKit private database is not readable by us, we take the position that it is <strong>not "collected" by us</strong> for App Store privacy-label purposes. We are stating that position openly so you can disagree with it if you want to.</p>
+<h3 id="52-apple-music">5.2 Apple Music <a class="anchor" href="#52-apple-music" aria-label="Permalink">#</a></h3>
+<p>If you connect an Apple Music subscription (on Apple devices through MusicKit; on Android through Apple's MusicKit for Android, which signs you in through the Apple Music app), PocketDJ:</p>
+<ul>
+<li><strong>plays</strong> full-length tracks through Apple's player;</li>
+<li><strong>reads</strong> your library's playlists, so collections you converted from an Apple Music playlist stay in step with their source;</li>
+<li><strong>writes to your library only when you ask it to</strong>: adding a song or album you chose to add, or adding a song to one of your playlists.</li>
+</ul>
+<p><strong>Keeping playlists in step.</strong> Once Apple Music is connected, PocketDJ keeps your linked playlists in step automatically, about once a day; you can turn automatic syncing off in Settings ▸ Apple Music, or sync by hand. To do this, PocketDJ sends our playlist-sync service your Apple Music user token (the credential Apple issues so an app can act on your library), the names of the playlists involved, and the Apple Music catalog ids of their songs. Our service passes the request on to Apple Music. <strong>The token is used for that request only and is never stored</strong>; the job record is deleted after one day.</p>
+<p><strong>No audio is copied, captured, recorded, or downloaded out of Apple Music by the PocketDJ app.</strong> What Apple receives when you use Apple Music is governed by Apple's privacy policy.</p>
+<p><strong>Favorites.</strong> Your ♥ in PocketDJ is local, and on Apple devices syncs to your private iCloud database. Two-way sync with your Apple Music account is currently restricted to the developer's own account and is off for everyone else. If that ever opens up, you should know before you turn it on: <strong>adding a song to Apple Music's Favorite Songs cannot be undone by any app</strong>, because Apple provides no removal API for it. We will not enable this for anyone without an explicit, informed opt-in.</p>
+<h3 id="53-song-recognition-shazamkit">5.3 Song recognition (ShazamKit) <a class="anchor" href="#53-song-recognition-shazamkit" aria-label="Permalink">#</a></h3>
+<p>On Apple devices, when you use song recognition, your device listens through the microphone and computes an <strong>acoustic signature</strong>, a compact mathematical fingerprint. <strong>The signature is what gets sent to Apple's Shazam service. Your raw microphone audio is not transmitted</strong>, and no PocketDJ server is involved in the recognition itself. Governed by Apple's privacy policy. We keep the match result (title, artist, catalog id) locally. Song recognition is not available in the Android app.</p>
+<p><strong>Acting on a match is a separate step.</strong> If you choose to add a recognized song and have an import server process it, the title, artist, and Apple Music catalog id are sent to that server (<a href="#41-audio-you-ask-us-to-process">§4.1</a>).</p>
+<h2 id="6-google-and-android">6. Google and Android <a class="anchor" href="#6-google-and-android" aria-label="Permalink">#</a></h2>
+<p>These apply only to the Android app.</p>
+<ul>
+<li><strong>Google Play.</strong> If you install PocketDJ from Google Play, Google handles the download, updates, and any reviews you leave, under <a href="https://policies.google.com/privacy">Google's privacy policy</a>. We receive the aggregate statistics Google Play provides to developers. The direct-download APK from pocket-dj.com does not involve Google Play.</li>
+<li><strong>Location.</strong> Places &amp; trips (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>) gets location readings from Google Play services' location provider on your device. How Google handles location on your device is governed by your Android location settings and Google's privacy policy. PocketDJ does not send your location to Google or to us.</li>
+<li><strong>Backup.</strong> If Android backup is on, Android may back up some PocketDJ files (your collections and history) to <strong>your own</strong> Google account, under Google's terms. PocketDJ excludes your credentials, secrets, settings, places and trips, and game rounds from that backup. We cannot read your backups.</li>
+<li><strong>On-device speech.</strong> Dictating feedback uses Android's on-device speech recognizer with offline recognition only. The audio is not sent anywhere.</li>
+<li><strong>Permissions.</strong> PocketDJ asks for: location (only for places &amp; trips), microphone (only for Studio recording and dictation), notifications (playback controls and download progress), and nearby Bluetooth devices (only to connect MIDI controllers; PocketDJ does not use Bluetooth to find your location). It also uses Android's standard permissions for network access and for playing and downloading in the background. You can revoke any of them in Android Settings.</li>
+</ul>
+<h2 id="7-microphone">7. Microphone <a class="anchor" href="#7-microphone" aria-label="Permalink">#</a></h2>
+<p>PocketDJ asks for microphone access for these things, and only when you start them:</p>
+<ol type="1">
+<li><strong>Recording samples and takes in Studio.</strong> These stay on your device (<a href="#3-what-stays-on-your-device">§3</a>) unless you send one to an import server for stem separation.</li>
+<li><strong>Song recognition</strong> (Apple devices only). ShazamKit takes over the microphone, derives a signature, and sends only the signature (<a href="#53-song-recognition-shazamkit">§5.3</a>).</li>
+<li><strong>Dictating feedback in "In the Pocket".</strong> Only from the moment you tap the feedback field's microphone button until you tap it again. The speech is turned into text <strong>on your device</strong> (Apple Speech or Android's on-device recognizer; PocketDJ requires on-device recognition), and the audio is neither stored nor sent anywhere. The resulting text is uploaded only as the round's feedback (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>).</li>
+</ol>
+<p>PocketDJ does not listen in the background, does not record without an explicit action from you, and has no ambient-listening feature.</p>
+<h2 id="8-two-transcription-engines-and-why-the-difference-matters">8. Two transcription engines, and why the difference matters <a class="anchor" href="#8-two-transcription-engines-and-why-the-difference-matters" aria-label="Permalink">#</a></h2>
+<p><strong>On-device transcription.</strong> When PocketDJ transcribes audio for the synced word-by-word karaoke overlay, it forces on-device recognition and <strong>refuses to run if the device cannot do it locally</strong>. There is no server fallback. The audio never leaves your device.</p>
+<p><strong>Cloud lyrics transcription.</strong> Separately, an import server can generate timed lyrics from a track's isolated vocal stem. That <strong>uploads the audio</strong> to the import server (<a href="#41-audio-you-ask-us-to-process">§4.1</a>), where a transcription model we run produces the lyrics. No outside AI company receives your audio. If you want lyrics without uploading anything, use the on-device transcription instead.</p>
+<h2 id="9-jukebox-hosting-and-the-guest-request-line">9. Jukebox hosting and the guest request line <a class="anchor" href="#9-jukebox-hosting-and-the-guest-request-line" aria-label="Permalink">#</a></h2>
+<p>Jukebox lets you run a request line at an event you are hosting. Guests scan a code, see what is playing, and send requests. <strong>It is built for private events you host.</strong> If you play music for an audience, any performance licensing your venue or event requires is your responsibility. The app does not provide it.</p>
+<h3 id="91-if-you-are-the-host">9.1 If you are the host <a class="anchor" href="#91-if-you-are-the-host" aria-label="Permalink">#</a></h3>
+<p>While a session is live, PocketDJ publishes to the guest page: <strong>your DJ display name</strong>, the current track, your upcoming queue, recently played tracks, and the request list with your accept/deny decisions. Anyone with the session's link can open that page.</p>
+<p>Session links are random and are not listed or search-indexable. A normal session ends automatically after 24 hours, and its data is deleted 7 days after it is created. If you make a session <strong>timeless</strong>, it does not end on its own: it stays until you end it.</p>
+<p>The <strong>Music with Friends</strong> game uses the same service: joining a game sends your DJ display name and your moves, and on Apple devices a push-notification token so the game can tell you when it is your turn. That token is withdrawn when you leave or delete your account.</p>
+<h3 id="92-if-you-are-a-guest-what-we-collect-from-you">9.2 If you are a guest: what we collect from you <a class="anchor" href="#92-if-you-are-a-guest-what-we-collect-from-you" aria-label="Permalink">#</a></h3>
+<p>You do not need an account, and we do not ask for your name, email, or phone number.</p>
+<p><strong>What we receive when you send a request:</strong></p>
+<ul>
+<li>the song title and artist you type;</li>
+<li>a random identifier your browser generates and stores locally, so we can pace requests fairly;</li>
+<li>your IP address, as with any web request, used to operate the service and to stop abuse.</li>
+</ul>
+<p><strong>What the host sees:</strong> the text of your request. Not your IP address.</p>
+<p><strong>What other guests see:</strong> the request text on the queue. Nothing that identifies you.</p>
+<p><strong>How long:</strong> see <a href="#11-how-long-we-keep-things">§11</a>.</p>
+<p><strong>Lawful basis (EU/UK):</strong> legitimate interests: running a request line you chose to use, and keeping it secure and abuse-free. You can object; see <a href="#12-your-rights-and-your-controls">§12</a>.</p>
+<h3 id="93-listen-along">9.3 Listen-along <a class="anchor" href="#93-listen-along" aria-label="Permalink">#</a></h3>
+<p>A host can optionally let guests hear the current track on their own phones. It is <strong>off by default</strong> and only the host can turn it on. When it is on, guests stream the host's own copy of the track for the duration of the session. <strong>This is for people physically present at the event you are hosting.</strong> The Terms of Service prohibit using PocketDJ to broadcast or otherwise transmit music to people who are not present at your event.</p>
+<h2 id="10-what-we-do-not-do">10. What we do not do <a class="anchor" href="#10-what-we-do-not-do" aria-label="Permalink">#</a></h2>
+<ul>
+<li>We do not sell your personal data.</li>
+<li>We do not share it with data brokers or advertisers.</li>
+<li>We do not track you across other companies' apps and websites. The app declares no tracking, requests no tracking permission, and reads no advertising identifier.</li>
+<li>We do not run ads.</li>
+<li>We do not collect your precise location, contacts, photos, health records, financial, or browsing data. Your raw location never leaves your device. If you turn on places &amp; trips, we receive only anonymous place and trip labels such as "Location A" or "A → B" (<a href="#46-listening-history-recommendations-and-listening-pockets">§4.6</a>).</li>
+<li>We do not upload diagnostics or crash reports from App Store, Google Play, or direct-download builds.</li>
+<li>We do not read your iCloud private database or your Google backups.</li>
+<li>We do not sell or share your personal information as those terms are defined by California law. See <a href="#123-california-and-other-us-state-privacy-rights">§12.3</a>.</li>
+</ul>
+<h2 id="11-how-long-we-keep-things">11. How long we keep things <a class="anchor" href="#11-how-long-we-keep-things" aria-label="Permalink">#</a></h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Retention</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Recommendation Engine data (listening history, favorites, feedback, collections, play counts)</td>
+<td>Until you choose <strong>Delete cloud data</strong> or delete your account. The stored state has a size cap, and the oldest history is dropped first when it fills.</td>
+</tr>
+<tr>
+<td>Listening-pocket play events (including place/trip and walking/running labels)</td>
+<td>180 days from the play, then removed automatically (at most 20,000 events). Deleted at once by <strong>Delete cloud data</strong>.</td>
+</tr>
+<tr>
+<td>Collection-membership history for pockets</td>
+<td>365 days, then removed automatically. Deleted at once by <strong>Delete cloud data</strong>.</td>
+</tr>
+<tr>
+<td>"In the Pocket" rounds and feedback</td>
+<td>180 days (at most 500 rounds). Deleted at once by <strong>Delete cloud data</strong>.</td>
+</tr>
+<tr>
+<td>Listening-pocket results (your pockets and recurring patterns)</td>
+<td>Replaced each time they are recomputed. Deleted at once by <strong>Delete cloud data</strong>.</td>
+</tr>
+<tr>
+<td>Places and trips (on the device only)</td>
+<td>Raw location samples for 30 days; places you haven't visited for 180 days are forgotten; everything is erased when you turn the setting off</td>
+</tr>
+<tr>
+<td>Apple Music playlist-sync jobs</td>
+<td>1 day. Your Apple Music user token is never stored.</td>
+</tr>
+<tr>
+<td>Android profile sync (once available, if you turn it on)</td>
+<td>Until you delete it or delete your account</td>
+</tr>
+<tr>
+<td>Audio and derived files on an import server we operate</td>
+<td>Until you ask us to delete them (<a href="#13-deleting-your-data-and-your-account">§13</a>)</td>
+</tr>
+<tr>
+<td>Jukebox and Music with Friends sessions, guest requests, guest identifiers, and IP addresses</td>
+<td>A normal session ends after 24 hours and is deleted 7 days after creation. A timeless session is kept until the host ends it.</td>
+</tr>
+<tr>
+<td>Diagnostic logs from TestFlight and development builds</td>
+<td>14 days</td>
+</tr>
+<tr>
+<td>Content delivery network request logs</td>
+<td>365 days</td>
+</tr>
+<tr>
+<td>Operational logs of our cloud functions</td>
+<td>Kept without a fixed expiry today; they contain request metadata, not your library</td>
+</tr>
+<tr>
+<td>Email you send us</td>
+<td>Raw messages are deleted from our mail intake after 30 days; replies stay in our mailbox</td>
+</tr>
+<tr>
+<td>Data in your private iCloud database</td>
+<td>Controlled by you, in your Apple Account</td>
+</tr>
+<tr>
+<td>Everything on your device</td>
+<td>Until you delete it, or until the storage manager's least-recently-played cleanup removes it if you set a storage cap</td>
+</tr>
+</tbody>
+</table>
+</div>
+<h2 id="12-your-rights-and-your-controls">12. Your rights and your controls <a class="anchor" href="#12-your-rights-and-your-controls" aria-label="Permalink">#</a></h2>
+<p><strong>Controls built into the app</strong>, wherever you live:</p>
+<ul>
+<li><strong>Settings ▸ Profile</strong>: on Apple devices, turn iCloud sync off; on Android, profile sync (once available).</li>
+<li><strong>Settings ▸ Recommendations</strong>: the Recommendation Engine, listening pockets, and places &amp; trips each have their own switch. <strong>Delete cloud data</strong> erases what they uploaded, and <strong>Erase places &amp; trips</strong> erases your places on the device.</li>
+<li><strong>Settings ▸ Pocket Wheel ▸ Notice walking &amp; running</strong> (iPhone): on or off at any time.</li>
+<li><strong>Settings ▸ Apple Music</strong>: turn automatic playlist syncing off, or disconnect Apple Music.</li>
+<li><strong>Settings ▸ Storage</strong>: delete downloaded audio and recordings by artist, by collection, or all of it; set a storage cap.</li>
+<li><strong>Export</strong>: take your collections, playlists, and library out as a file at any time. That is your data-portability route, and it does not require asking us.</li>
+<li><strong>Permissions</strong> (microphone, location, motion, notifications, Bluetooth, Apple Music): revocable at any time in your device's Settings.</li>
+<li><strong>Delete account</strong>: see <a href="#13-deleting-your-data-and-your-account">§13</a>.</li>
+</ul>
+<p><strong>Legal rights.</strong> Depending on where you live, including under the EU GDPR, the UK GDPR, and US state privacy laws, you may have the right to access, correct, delete, export, or restrict our processing of your personal data, to object to processing based on legitimate interests, to withdraw consent, and to lodge a complaint with your data protection authority. Most of your data is on your device or in your own iCloud account, so you already control it directly. For anything we hold, write to <a href="mailto:support@pocket-dj.com"><span>support@pocket-dj.com</span></a> and we will respond within one month.</p>
+<h3 id="121-the-categories-of-personal-data-we-process">12.1 The categories of personal data we process <a class="anchor" href="#121-the-categories-of-personal-data-we-process" aria-label="Permalink">#</a></h3>
+<ul>
+<li><strong>Identifiers</strong>: your profile identifier and installation identifier (random values; on Apple devices the installation identifier is seeded from Apple's identifier for this app vendor), your DJ display name, on Apple devices a push-notification token if you join Music with Friends, and for jukebox guests an IP address and a random browser identifier.</li>
+<li><strong>User content</strong>: your collections and their names, favorites, and feedback, if you turn on the Recommendation Engine or profile sync; "In the Pocket" feedback; jukebox request text; audio you send to an import server we operate, and what is derived from it.</li>
+<li><strong>Usage data</strong>: if you turn on the Recommendation Engine, play history, play counts, and, for listening pockets, whether each play was finished or skipped and its local time of day; the now-playing and queue state published while a jukebox session is live.</li>
+<li><strong>Approximate location labels</strong>: only if you turn on places &amp; trips: random place and trip ids, "Location A"-style names, each place's share of your time, and how often each trip was made. Never coordinates.</li>
+<li><strong>Fitness label</strong>: only if you turn on walking &amp; running (iPhone): whether you were walking or running during a play.</li>
+<li><strong>Credentials in transit</strong>: your Apple Music user token, used for playlist sync and never stored.</li>
+<li><strong>Search data</strong>: Discover search terms, and online catalog queries if you turn that on.</li>
+<li><strong>Device and network data</strong>: the device name attached to each iCloud-synced record, and request metadata in server logs.</li>
+</ul>
+<p>We process no special-category data (GDPR Art. 9), no raw location, no contacts, no health or financial data, and no browsing history.</p>
+<p><strong>Whether you have to provide it.</strong> None of this is a statutory requirement. Each feature needs its data to work; if you leave a feature off, it simply does not run, and the rest of the app works.</p>
+<p><strong>Automated decision-making.</strong> If you turn on the Recommendation Engine or listening pockets, PocketDJ uses your listening to suggest music. It makes no automated decision that has legal or similarly significant effects on you.</p>
+<h3 id="122-our-lawful-bases-euuk">12.2 Our lawful bases (EU/UK) <a class="anchor" href="#122-our-lawful-bases-euuk" aria-label="Permalink">#</a></h3>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>Processing</th>
+<th>Basis</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Running the app, playlist sync after you connect Apple Music, jukebox sessions you host or join, processing audio you send to an import server</td>
+<td>Performance of a contract: you asked for the feature</td>
+</tr>
+<tr>
+<td>Recommendation Engine, listening pockets, places &amp; trips, walking &amp; running, "In the Pocket" feedback, Android profile sync, two-way favorites sync</td>
+<td>Consent: each is off until you turn it on, and you can turn it off at any time</td>
+</tr>
+<tr>
+<td>Jukebox guest requests, rate limiting, abuse prevention, security logging</td>
+<td>Legitimate interests</td>
+</tr>
+<tr>
+<td>Meeting legal obligations, including responding to valid copyright notices</td>
+<td>Legal obligation</td>
+</tr>
+</tbody>
+</table>
+</div>
+<h3 id="123-california-and-other-us-state-privacy-rights">12.3 California and other US state privacy rights <a class="anchor" href="#123-california-and-other-us-state-privacy-rights" aria-label="Permalink">#</a></h3>
+<p>If you are a California resident, you have rights to know, delete, correct, and opt out of the sale or sharing of your personal information, and to limit the use of sensitive personal information. <strong>We do not sell or share personal information as those terms are defined by the CCPA/CPRA, and we do not use sensitive personal information for purposes that require a right to limit.</strong> We will not discriminate against you for exercising any of these rights. The categories we collect are listed in <a href="#121-the-categories-of-personal-data-we-process">§12.1</a>, and we disclose them only to our service providers (Amazon Web Services) to run the service. To make a request, write to <a href="mailto:support@pocket-dj.com"><span>support@pocket-dj.com</span></a>.</p>
+<h3 id="124-if-there-is-a-data-breach">12.4 If there is a data breach <a class="anchor" href="#124-if-there-is-a-data-breach" aria-label="Permalink">#</a></h3>
+<p>If personal data we hold is breached in a way that is likely to result in a risk to your rights and freedoms, we will notify the relevant authorities as the law requires and, where the risk is high, notify you directly.</p>
+<h3 id="125-the-other-documents">12.5 The other documents <a class="anchor" href="#125-the-other-documents" aria-label="Permalink">#</a></h3>
+<p>This policy is one of three. See also the <a href="https://legal.pocket-dj.com/terms/">Terms of Service</a> and the <a href="https://legal.pocket-dj.com/dmca/">Copyright / DMCA Policy</a>.</p>
+<h2 id="13-deleting-your-data-and-your-account">13. Deleting your data and your account <a class="anchor" href="#13-deleting-your-data-and-your-account" aria-label="Permalink">#</a></h2>
+<p>PocketDJ has no username or password. It creates a <strong>profile</strong>, a random identifier plus a display name you choose, so your library can sync, your cloud features can find your data, and guests know whose jukebox they are in. For deletion, your profile is your account.</p>
+<p><strong>Delete your account in the app:</strong></p>
+<ul>
+<li><strong>iPhone, iPad, Mac, Apple TV, Apple Vision Pro:</strong> Settings ▸ Profile ▸ <strong>Delete Account</strong>.</li>
+<li><strong>Android:</strong> Settings ▸ Reset ▸ <strong>Delete account</strong>.</li>
+</ul>
+<p>In one action this ends any jukebox session you are hosting; deletes your Recommendation Engine and listening-pockets data (including "In the Pocket" rounds) from our servers; deletes your Android profile-sync data; deletes your iCloud-synced PocketDJ records (Apple devices); withdraws your Music with Friends registration; erases PocketDJ's data, downloads, and credentials on the device; and resets your profile and installation identifiers. If a server can't be reached, the app retries the deletion the next time it can. It cannot be undone.</p>
+<p><strong>Only want to remove what the cloud features uploaded?</strong> Settings ▸ Recommendations ▸ <strong>Delete cloud data</strong> deletes your Recommendation Engine and listening-pockets data and leaves the app and your device history as they are.</p>
+<p><strong>No longer have the app, or can't open it?</strong> Go to <a href="https://legal.pocket-dj.com/delete-account/">legal.pocket-dj.com/delete-account</a> or email <a href="mailto:support@pocket-dj.com"><span>support@pocket-dj.com</span></a> with the subject "Delete my PocketDJ data". We will delete what we hold that we can find for you and confirm by reply within one month.</p>
+<p><strong>What deletion does not reach immediately:</strong> content delivery network logs (deleted after 365 days), test-build diagnostic logs (14 days), jukebox session copies (7 days after creation, or when you end a timeless session), and our cloud functions' operational logs. These hold request metadata, not your library. Your private iCloud data, if you delete the app without deleting your account, stays in your Apple Account until you remove it (Apple Settings ▸ your name ▸ iCloud ▸ Manage Storage), and any Android backup stays in your Google account until you remove it.</p>
+<h2 id="14-children">14. Children <a class="anchor" href="#14-children" aria-label="Permalink">#</a></h2>
+<p><strong>PocketDJ is not directed to children under 13</strong>, and we do not knowingly collect personal information from them. The app is not in the App Store Kids category or Google Play's Families program. The store age ratings reflect that recorded music and album artwork can contain mature themes and profanity, not anything in the app itself.</p>
+<p>If you believe a child under 13 has provided us personal information, email <a href="mailto:support@pocket-dj.com"><span>support@pocket-dj.com</span></a> and we will delete it.</p>
+<h2 id="15-where-your-data-goes-internationally">15. Where your data goes, internationally <a class="anchor" href="#15-where-your-data-goes-internationally" aria-label="Permalink">#</a></h2>
+<p><strong>Our servers and storage are in the United States.</strong> If you use PocketDJ from outside the US, including from the EU or UK, the data described in <a href="#4-what-goes-to-pocketdj-cloud-services">§4</a> and <a href="#9-jukebox-hosting-and-the-guest-request-line">§9</a> is transferred to and processed in the United States, because that is where the service you asked for runs. Data you sync through iCloud is handled by Apple under Apple's own arrangements, and Android backups by Google under Google's.</p>
+<p>We have not appointed a representative in the EU or UK or a Data Protection Officer. Write to us directly at <a href="mailto:support@pocket-dj.com"><span>support@pocket-dj.com</span></a>.</p>
+<h2 id="16-security">16. Security <a class="anchor" href="#16-security" aria-label="Permalink">#</a></h2>
+<p>All traffic between the app and our services uses HTTPS. Credentials the app holds for you are stored in the system keychain or Android's encrypted storage, and our storage is encrypted at rest.</p>
+<p>No system is perfectly secure. If you find a vulnerability, please report it to <a href="mailto:security@pocket-dj.com"><span>security@pocket-dj.com</span></a>.</p>
+<h2 id="17-changes-to-this-policy">17. Changes to this policy <a class="anchor" href="#17-changes-to-this-policy" aria-label="Permalink">#</a></h2>
+<p>We will post any change here and update the effective date at the top.</p>
+<p><strong>If a change materially expands what we collect, how we use it, or who receives it, we will tell you in the app before the change takes effect</strong> and, where the law requires consent, ask for it rather than assume it.</p>
+<p>Past versions are kept in the project's public repository history, so you can see exactly what changed and when.</p>
+<h2 id="18-contact">18. Contact <a class="anchor" href="#18-contact" aria-label="Permalink">#</a></h2>
+<p><strong>Privacy questions, access requests, deletion requests:</strong> <a href="mailto:support@pocket-dj.com"><span>support@pocket-dj.com</span></a></p>
+<p><strong>Security reports:</strong> <a href="mailto:security@pocket-dj.com"><span>security@pocket-dj.com</span></a></p>
+<p><strong>Postal:</strong> African Intellect Enterprises LLC (PocketDJ), 4406 NE 23rd Ave, Portland, OR 97211, United States</p>
+<p>We aim to respond within one month.</p>
+<p>If you are in the EU or UK and are not satisfied with our response, you may complain to your national data protection authority.</p>
+<h2 id="appendix-a--data-flow-summary">Appendix A — Data flow summary <a class="anchor" href="#appendix-a--data-flow-summary" aria-label="Permalink">#</a></h2>
+<p>Read this as the one-page version of §3 through §9.</p>
+<div class="table-wrap">
+<table class="four">
+<thead>
+<tr>
+<th>Data</th>
+<th>Leaves device?</th>
+<th>Where to</th>
+<th>Linked to you?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Microphone recordings and recorded mixes</td>
+<td><strong>No</strong>, unless you send one to an import server</td>
+<td>Device only</td>
+<td>—</td>
+</tr>
+<tr>
+<td>On-device speech transcripts and dictation</td>
+<td><strong>No</strong></td>
+<td>Device only</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Song recognition (Apple devices)</td>
+<td>Signature only</td>
+<td>Apple's Shazam service. Raw audio never sent.</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Raw location and motion readings</td>
+<td><strong>No</strong></td>
+<td>Device only</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Profile, collections, favorites, play history (Apple devices)</td>
+<td><strong>Yes</strong>, if iCloud sync is on</td>
+<td>Your private iCloud database (we cannot read it)</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Profile, collections, favorites, play history (Android)</td>
+<td>Only if you turn on profile sync, once available</td>
+<td>PocketDJ cloud services (AWS, US)</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Listening history, favorites, feedback, collection names, play counts</td>
+<td><strong>Yes</strong>, only while the Recommendation Engine is on</td>
+<td>PocketDJ cloud services (AWS, US)</td>
+<td>Yes, under a random key</td>
+</tr>
+<tr>
+<td>Listening-pocket play events and "In the Pocket" rounds</td>
+<td><strong>Yes</strong>, only while the engine and pockets are both on</td>
+<td>Same</td>
+<td>Same</td>
+</tr>
+<tr>
+<td>Anonymous place and trip labels</td>
+<td><strong>Yes</strong>, only while places &amp; trips is also on (iPhone, Android)</td>
+<td>Same</td>
+<td>Same</td>
+</tr>
+<tr>
+<td>Walking / running label</td>
+<td><strong>Yes</strong>, only while walking &amp; running is also on (iPhone)</td>
+<td>Same</td>
+<td>Same</td>
+</tr>
+<tr>
+<td>Profile and installation identifiers</td>
+<td><strong>Yes</strong>, with cloud requests</td>
+<td>PocketDJ cloud services</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Apple Music user token, playlist names, catalog ids</td>
+<td><strong>Yes</strong>, once Apple Music is connected and playlist sync runs</td>
+<td>PocketDJ playlist-sync service → Apple Music. Token not stored.</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Apple Music playback and library reads and writes</td>
+<td><strong>Yes</strong></td>
+<td>Apple (your own account)</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Jukebox: host display name, now playing, queue, requests</td>
+<td><strong>Yes</strong>, while a session is live</td>
+<td>PocketDJ cloud services; public to anyone with the link</td>
+<td>Display name</td>
+</tr>
+<tr>
+<td>Jukebox guest request text, guest identifier, guest IP</td>
+<td><strong>Yes</strong> (from the guest's browser)</td>
+<td>PocketDJ cloud services</td>
+<td>No account; IP and identifier are personal data</td>
+</tr>
+<tr>
+<td>Audio sent to an import server</td>
+<td>Only if one is configured</td>
+<td>That server (ours, or yours)</td>
+<td>Yes, if ours</td>
+</tr>
+<tr>
+<td>Discover search terms</td>
+<td><strong>Yes</strong></td>
+<td>Apple (Apple Music catalog, or iTunes Search through an import server)</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Online catalog search queries (opt-in)</td>
+<td><strong>Yes</strong></td>
+<td>Our managed search service</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Catalog, artwork, lyrics text downloads</td>
+<td>Requests only</td>
+<td>Our CDN (request logs)</td>
+<td>No</td>
+</tr>
+<tr>
+<td>Diagnostics</td>
+<td>Test builds only</td>
+<td>PocketDJ cloud services, 14 days</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Android backup</td>
+<td>If Android backup is on</td>
+<td>Your own Google account</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Exports (.pdjcollection, backups)</td>
+<td>Wherever you send them</td>
+<td>Your choice</td>
+<td>Yes, they contain your library</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p><em>PocketDJ is built by one person. This policy is written to be read. If something in it is unclear or looks wrong, write to <a href="mailto:support@pocket-dj.com"><span>support@pocket-dj.com</span></a> and it will get fixed.</em></p>
+</main>
+
+<footer class="site-footer">
+  <div class="fwrap">
+    <nav class="fnav" aria-label="PocketDJ policies">
+      <a href="/">PocketDJ</a>
+      <a href="/privacy/">Privacy Policy</a>
+      <a href="/terms/">Terms of Service</a>
+      <a href="/dmca/">Copyright / DMCA Policy</a>
+      <a href="/delete-account/">Delete your account</a>
+    </nav>
+    <p>Questions or requests: <a class="mail" href="mailto:support@pocket-dj.com">support@pocket-dj.com</a></p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var root=document.documentElement, btn=document.getElementById('theme-toggle');
+  function cur(){var a=root.getAttribute('data-theme');if(a)return a;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
+  function upd(){var t=cur();if(!btn)return;
+    btn.textContent=(t==='dark')?'☀︎':'☽';
+    btn.setAttribute('aria-label',(t==='dark')?'Switch to light theme':'Switch to dark theme');}
+  upd();
+  if(btn)btn.addEventListener('click',function(){
+    var t=(cur()==='dark')?'light':'dark';
+    root.setAttribute('data-theme',t);
+    try{localStorage.setItem('pdj-theme',t);}catch(e){}
+    upd();});
+})();
+</script>
+</body>
+</html>
