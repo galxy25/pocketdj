@@ -1,5 +1,17 @@
 package com.levi.pocketdj.screens.browse
 
+import androidx.compose.material.icons.filled.FavoriteBorder
+
+import androidx.compose.material.icons.filled.Favorite
+
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+
+import androidx.compose.material.icons.filled.ContentCopy
+
+import androidx.compose.material.icons.filled.CheckCircleOutline
+
 import com.levi.pocketdj.data.collections.SongTransfer
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -267,9 +279,16 @@ fun BrowseScreen(
             val songId = (item as? AddToItem.Song)?.id
             val ctx = LocalContext.current
             val sel = remember { graph.collectionsGraph.rowSelection }
-            val extras = if (songId == null) emptyList() else listOf<Pair<String, () -> Unit>>(
-                "Select" to { sel.enterSelectMode(BROWSE_SELECTION_SCOPE, songId) },
-                "Copy" to {
+            // App scope: the menu leaves composition on tap (dismiss), which would cancel a screen scope mid-add.
+            val ctxScope = graph.appScope
+            val favs = remember { graph.collectionsGraph.favorites }
+            val favState by favs.state.collectAsState()
+            val song = songId?.let { catalogState.catalog?.songsById?.get(it) }
+            val extras = if (songId == null) emptyList() else listOf(
+                com.levi.pocketdj.screens.collections.ContextAction("Select", Icons.Filled.CheckCircleOutline, "ctx-select") {
+                    sel.enterSelectMode(BROWSE_SELECTION_SCOPE, songId)
+                },
+                com.levi.pocketdj.screens.collections.ContextAction("Copy", Icons.Filled.ContentCopy, "ctx-copy") {
                     val st = sel.state.value
                     val picked = if (st.scopeId == BROWSE_SELECTION_SCOPE) sel.currentPayload()?.songIds else null
                     val ids = SelectionBarSemantics.rowOrSelectionIds(picked, songId)
@@ -277,11 +296,35 @@ fun BrowseScreen(
                     writeSongTransfer(ctx, SongTransfer.make(ids, songs))
                 },
             )
+            // iOS song context menu: Play Next / Add to Queue / Favorite above Add to Playlist.
+            val leading = if (song == null) emptyList() else {
+                val qi = com.levi.pocketdj.playback.sequencer.QueueItem(song.id, song.name, song.artist, song.length)
+                val fav = song.id in favState.favoriteIds
+                listOf(
+                    com.levi.pocketdj.screens.collections.ContextAction("Play next", Icons.AutoMirrored.Filled.QueueMusic, "ctx-play-next") {
+                        ctxScope.launch { com.levi.pocketdj.screens.nowplaying.QueueAdd.add(graph, listOf(qi), next = true) }
+                    },
+                    com.levi.pocketdj.screens.collections.ContextAction("Add to queue", Icons.AutoMirrored.Filled.PlaylistPlay, "ctx-add-queue") {
+                        ctxScope.launch { com.levi.pocketdj.screens.nowplaying.QueueAdd.add(graph, listOf(qi), next = false) }
+                    },
+                    com.levi.pocketdj.screens.collections.ContextAction(
+                        if (fav) "Unfavorite" else "Favorite",
+                        if (fav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, "ctx-favorite",
+                    ) { favs.toggle(song.id, song.appleMusicId) },
+                )
+            }
             AddToPlaylistMenu(
                 item = item,
                 onDismiss = { addItem = null },
                 onMore = { addSheetOpen = true },
                 extraActions = extras,
+                header = song?.let {
+                    com.levi.pocketdj.screens.collections.ContextHeader(
+                        it.name, it.artist,
+                        it.albumId?.let { a -> catalogState.catalog?.albumsById?.get(a) },
+                    )
+                },
+                leadingActions = leading,
             )
         }
     }
@@ -473,38 +516,73 @@ private fun BrowseContent(
             onSelect = { selection -> onFilters(filters.withSources(selection)) },
         )
 
+        // Mode picker on its own full-width row: constant width in every mode (the tool icons
+        // used to share this row and squeezed the labels into mid-word wraps, "Albu/ms").
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+        ) {
+            BrowseKind.entries.forEachIndexed { index, entry ->
+                SegmentedButton(
+                    selected = kind == entry && !discover,
+                    onClick = {
+                        // Leaving Discover returns to device mode (Discover is a search mode, not a kind).
+                        if (discover) onSearchMode(SearchMode.DEVICE)
+                        onKind(entry)
+                    },
+                    shape = SegmentedButtonDefaults.itemShape(index, BrowseKind.entries.size + 1),
+                    icon = {},
+                ) {
+                    Text(
+                        maxLines = 1,
+                        softWrap = false,
+                        text = when (entry) {
+                            BrowseKind.ALBUMS -> "Albums"
+                            BrowseKind.SONGS -> "Songs"
+                            BrowseKind.ARTISTS -> "Artists"
+                        },
+                    )
+                }
+            }
+            SegmentedButton(
+                selected = discover,
+                onClick = { onSearchMode(SearchMode.DISCOVER) },
+                shape = SegmentedButtonDefaults.itemShape(BrowseKind.entries.size, BrowseKind.entries.size + 1),
+                icon = {},
+            ) { Text("Discover", maxLines = 1, softWrap = false) }
+        }
+
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp),
+                .padding(start = 12.dp, end = 4.dp),
         ) {
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
-                BrowseKind.entries.forEachIndexed { index, entry ->
-                    SegmentedButton(
-                        selected = kind == entry && !discover,
-                        onClick = {
-                            // Leaving Discover returns to device mode (Discover is a search mode, not a kind).
-                            if (discover) onSearchMode(SearchMode.DEVICE)
-                            onKind(entry)
-                        },
-                        shape = SegmentedButtonDefaults.itemShape(index, BrowseKind.entries.size + 1),
-                    ) {
-                        Text(
-                            when (entry) {
-                                BrowseKind.ALBUMS -> "Albums"
-                                BrowseKind.SONGS -> "Songs"
-                                BrowseKind.ARTISTS -> "Artists"
-                            },
-                        )
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQuery,
+                singleLine = true,
+                placeholder = {
+                    Text(
+                        // Short enough for the narrowest field (Albums shows 4 tool icons beside it).
+                        if (discover) "Search Apple Music" else "Search",
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { onQuery("") }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                        }
                     }
-                }
-                SegmentedButton(
-                    selected = discover,
-                    onClick = { onSearchMode(SearchMode.DISCOVER) },
-                    shape = SegmentedButtonDefaults.itemShape(BrowseKind.entries.size, BrowseKind.entries.size + 1),
-                ) { Text("Discover") }
-            }
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 4.dp),
+            )
             if (!discover && kind == BrowseKind.ALBUMS) {
                 IconButton(
                     onClick = {
@@ -564,31 +642,6 @@ private fun BrowseContent(
             }
         }
 
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQuery,
-            singleLine = true,
-            placeholder = {
-                Text(
-                    if (discover) "Search Apple Music" else when (kind) {
-                        BrowseKind.ALBUMS -> "Search albums"
-                        BrowseKind.SONGS -> "Search songs"
-                        BrowseKind.ARTISTS -> "Search artists"
-                    },
-                )
-            },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            trailingIcon = {
-                if (query.isNotEmpty()) {
-                    IconButton(onClick = { onQuery("") }) {
-                        Icon(Icons.Filled.Close, contentDescription = "Clear search")
-                    }
-                }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-        )
 
         // Results header: "<count> albums|songs" (+ refresh spinner in place).
         if (!discover) Row(
@@ -603,12 +656,12 @@ private fun BrowseContent(
                 BrowseKind.ARTISTS -> results.artists.size
             }
             val noun = when (kind) {
-                BrowseKind.ALBUMS -> "albums"
-                BrowseKind.SONGS -> "songs"
-                BrowseKind.ARTISTS -> "artists"
+                BrowseKind.ALBUMS -> "album"
+                BrowseKind.SONGS -> "song"
+                BrowseKind.ARTISTS -> "artist"
             }
             Text(
-                text = if (online) onlineCountLabel(onlineUi, kind) else "$count $noun",
+                text = if (online) onlineCountLabel(onlineUi, kind) else Fmt.count(count, noun),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1013,19 +1066,26 @@ fun BrowseSongRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.width(30.dp),
         )
-        KeyChip(row.song.key?.takeIf { row.song.camelot == null }, row.song.camelot)
-        Spacer(Modifier.width(6.dp))
+        // Fixed-width columns (BPM | key | time | ♥ | ▶) so a dimmed unplayable row, a row with no
+        // key, or a long key label can never push the duration out of line with its neighbours.
+        Box(Modifier.width(SongRowColumns.KEY), contentAlignment = Alignment.Center) {
+            KeyChip(row.song.key?.takeIf { row.song.camelot == null }, row.song.camelot)
+        }
+        Spacer(Modifier.width(4.dp))
         Text(
             Fmt.duration(row.song.length),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            maxLines = 1,
+            modifier = Modifier.width(SongRowColumns.TIME),
         )
         FavoriteToggle(songId = row.song.id, appleMusicId = row.song.appleMusicId, iconSize = 18.dp)
         when {
             preparingId == row.song.id -> {
-                Spacer(Modifier.width(10.dp))
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(10.dp))
+                Box(Modifier.size(SongRowColumns.PLAY), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
             }
 
             playable != Playability.NONE -> {
@@ -1043,9 +1103,16 @@ fun BrowseSongRow(
                 }
             }
 
-            else -> Spacer(Modifier.width(12.dp))
+            else -> Spacer(Modifier.width(SongRowColumns.PLAY))
         }
     }
+}
+
+/** Shared trailing-column widths for song rows. */
+internal object SongRowColumns {
+    val KEY = 40.dp
+    val TIME = 36.dp
+    val PLAY = 48.dp
 }
 
 @Composable

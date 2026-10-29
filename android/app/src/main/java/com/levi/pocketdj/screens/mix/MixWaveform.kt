@@ -92,9 +92,12 @@ object MixWaveform {
     }
 }
 
-/** Center-mirrored bars; an EMPTY array renders a flat baseline placeholder. */
+/**
+ * Center-mirrored bars; an EMPTY array renders a flat baseline placeholder. [progress] (0..1) draws
+ * the playhead and dims the bars already played, so the waveform shows where the deck is.
+ */
 @Composable
-fun MixWaveformView(peaks: FloatArray, modifier: Modifier = Modifier) {
+fun MixWaveformView(peaks: FloatArray, modifier: Modifier = Modifier, progress: Float? = null) {
     val bar = DeckColors.accent
     Canvas(
         modifier
@@ -108,9 +111,14 @@ fun MixWaveformView(peaks: FloatArray, modifier: Modifier = Modifier) {
         } else {
             val bw = size.width / peaks.size
             val mid = size.height / 2
+            val headX = progress?.coerceIn(0f, 1f)?.times(size.width)
             peaks.forEachIndexed { i, p ->
                 val h = max(1f, p.coerceIn(0f, 1f) * size.height)
-                drawRect(bar, Offset(i * bw, mid - h / 2), Size(max(0.5f, bw - 0.5f), h))
+                val played = headX != null && i * bw + bw / 2 < headX
+                drawRect(if (played) bar.copy(alpha = 0.45f) else bar, Offset(i * bw, mid - h / 2), Size(max(0.5f, bw - 0.5f), h))
+            }
+            if (headX != null) {
+                drawLine(DeckColors.fg, Offset(headX, 0f), Offset(headX, size.height), strokeWidth = 2.dp.toPx())
             }
         }
     }

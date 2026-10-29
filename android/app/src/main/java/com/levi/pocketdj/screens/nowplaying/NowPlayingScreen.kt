@@ -118,6 +118,22 @@ fun NowPlayingScreen(modifier: Modifier = Modifier) {
         }
         if (next) sequencer.insertNextInQueue(items) else sequencer.appendToQueue(items)
     }
+    /**
+     * Shuffle/repeat on a Browse single: fold what is sounding into a one-row run first (the same
+     * adoption Up Next adds use), then apply the mode, so the single behaves like any set.
+     */
+    fun withRun(action: () -> Unit) {
+        val playing = np
+        if (sequencer.isRunning || playing == null || playing.songId.isEmpty()) { action(); return }
+        scope.launch {
+            val pos = runCatching { graph.playbackController.currentPositionMs() }.getOrDefault(0L)
+            sequencer.adoptForeign(
+                QueueItem(playing.songId, playing.title ?: playing.songId, playing.artist, playing.durationMs),
+                pos, null,
+            )
+            action()
+        }
+    }
     fun openSetlist() {
         val sid = seq.sourceSetlistId
         if (!QueueReorder.needsMaterialize(sid) { collections.setlist(it) != null }) {
@@ -135,6 +151,8 @@ fun NowPlayingScreen(modifier: Modifier = Modifier) {
 
     val deck: @Composable () -> Unit = {
         NowPlayingTitleBlock(state)
+        val song = state.songId?.let { catalogState.catalog?.songsById?.get(it) }
+        NowPlayingFactsLine(bpm = state.bpm, key = song?.key, camelot = song?.camelot)
         if (!landscapePhone) {
             Spacer(Modifier.height(12.dp))
             NowPlayingRecord(
@@ -144,15 +162,15 @@ fun NowPlayingScreen(modifier: Modifier = Modifier) {
                 modifier = Modifier.padding(horizontal = 24.dp),
             )
         }
-        NowPlayingProgress(progress, Modifier.padding(vertical = 8.dp))
+        NowPlayingProgress(progress, Modifier.padding(vertical = 8.dp), elapsedMs = position, lengthMs = state.lengthMs)
         NowPlayingTransportRow(
             state = state,
             showPlayedActive = showPlayed,
             onPrevious = vm::previous,
             onPlayPause = { vm.togglePlayPause(vm.currentInputs()) },
             onNext = vm::next,
-            onShuffle = vm::toggleShuffle,
-            onRepeat = vm::cycleRepeat,
+            onShuffle = { withRun { vm.toggleShuffle() } },
+            onRepeat = { withRun { vm.cycleRepeat() } },
             onTogglePlayed = vm::togglePlayed,
         )
         NowPlayingNotice(state.notice, Modifier.padding(top = 8.dp))
@@ -171,6 +189,9 @@ fun NowPlayingScreen(modifier: Modifier = Modifier) {
                 onAddNextAlbum = { a -> merged?.let { addRows(NowPlayingSearch.queueItems(a, it), true) } },
                 onAddEndAlbum = { a -> merged?.let { addRows(NowPlayingSearch.queueItems(a, it), false) } },
             )
+        } else if (!seq.isRunning && state.hasTrack) {
+            // A Browse single: same Up Next section, empty until something is added above.
+            UpNextEmptyHint()
         } else if (seq.isRunning) {
             UpNextList(
                 upcoming = seq.upcoming,

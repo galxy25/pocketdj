@@ -153,7 +153,7 @@ fun DeckView(
                 TransportRow(host, deck, ds.loaded != null, stemmed, handover != null, DeckControlMath.stemChipOn(handover, ds.stemMode), compactControls, a11y)
                 DeckSlider(
                     title = "Tempo", display = DeckControlMath.tempoLabel(ds.rate), value = ds.rate,
-                    range = MixRanges.rate, step = 0.01, tag = "$a11y-tempo",
+                    range = MixRanges.rate, step = 0.01, tag = "$a11y-tempo", mapping = TempoSliderMapping,
                 ) { engine.setRate(it, deck) }
                 DeckSlider(
                     title = "Pitch", display = DeckControlMath.pitchLabel(ds.pitch), value = ds.pitch,
@@ -192,7 +192,15 @@ private fun DeckHeader(host: DeckHost, deck: Deck, loaded: LoadedTrack?, peaks: 
                 .testTag("$a11y-load"),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            MixWaveformView(peaks)
+            // Playhead: 4 Hz poll of the app-scoped engine (positions are not observable flows).
+            val progress by androidx.compose.runtime.produceState<Float?>(null, deck, loaded) {
+                while (true) {
+                    val d = host.engine.duration(deck)
+                    value = if (loaded != null && d > 0) (host.engine.position(deck) / d).toFloat() else null
+                    kotlinx.coroutines.delay(250)
+                }
+            }
+            MixWaveformView(peaks, progress = progress)
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 host.art(loaded?.albumId, Modifier.size(46.dp).clip(RoundedCornerShape(6.dp)))
                 if (loaded != null) {

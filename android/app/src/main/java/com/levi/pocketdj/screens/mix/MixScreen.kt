@@ -1,5 +1,13 @@
 package com.levi.pocketdj.screens.mix
 
+import androidx.compose.ui.unit.sp
+
+import androidx.compose.foundation.layout.size
+
+import androidx.compose.material.icons.filled.PlayArrow
+
+import androidx.compose.material.icons.filled.Pause
+
 import android.app.Activity
 import android.content.res.Configuration
 import androidx.compose.foundation.background
@@ -7,6 +15,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -69,6 +78,8 @@ fun MixScreen(
     val engine = mix.mixEngine
     val sessions = mix.mixSessions
     val st by vm.state.collectAsState()
+    val engineUi by mix.mixEngine.ui.collectAsState()
+    val askNotifications = com.levi.pocketdj.ui.rememberNotificationPermissionRequester()
     val settings by vm.settings.collectAsState()
     val auto by vm.autoUi.collectAsState()
     val sessionName by sessions.currentNameFlow.collectAsState()
@@ -129,9 +140,8 @@ fun MixScreen(
             IconButton(onClick = { confirmingReset = true }, modifier = Modifier.testTag("mix-reset")) {
                 Icon(Icons.Filled.Close, "Start a new session", tint = DeckColors.fg)
             }
-            Box(Modifier.weight(1f)) {
-                Text("Mix", color = DeckColors.fg, style = androidx.compose.material3.MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 6.dp))
-            }
+            // The shell top bar already titles this tab "Mix" (a second "Mix" here duplicated it).
+            Spacer(Modifier.weight(1f))
             FilterChip(
                 selected = st.autoEnabled, onClick = { vm.setAutoEnabled(!st.autoEnabled) },
                 label = { Text(if (st.autoEnabled) "Auto" else "Manual") },
@@ -183,18 +193,23 @@ fun MixScreen(
                         val src = if (d == Deck.A) st.sourceA else st.sourceB
                         MixCrateMenu(
                             entries = entries,
-                            labelText = vm.crateName(src) ?: "Pick a source",
+                            // A deck loaded directly (restore / debug / Up Next) has a track but no crate:
+                            // "Pick a source" read as if the deck were empty.
+                            labelText = vm.crateName(src)
+                                ?: if ((if (d == Deck.A) engineUi.a else engineUi.b).loaded != null) "Load next from…" else "Pick a source",
                             icon = Icons.Filled.Layers,
-                            onPick = { s -> if (s != null) vm.setSource(d, s) },
+                            // Q14: a crate source starts the collection download (progress notification).
+                            onPick = { s -> if (s != null) { askNotifications(); vm.setSource(d, s) } },
                             tag = "mix-deck-source-${d.label}",
                         )
                     },
                 )
-                CrossfaderView(engine)
-                MasterTransport(engine)
                 if (auto.mixing) SkipButton(onSkip = vm::skip)
             }
         }
+        // Crossfader + master transport pinned under the scrolling decks: on a phone the stacked
+        // decks are ~3 screens tall, so a crossfader at the end of the scroll was out of reach.
+        PinnedMixBar(engine)
         // Bottom-pinned; the ONLY collector of the downloader's progress.
         DownloadBar(state = mix.collectionMixDownloader.state, onCancel = { mix.collectionMixDownloader.cancel() })
     }
@@ -229,4 +244,45 @@ fun MixScreen(
         onConfirm = { sessions.reset(); confirmingReset = false },
         onDismiss = { confirmingReset = false },
     )
+}
+
+/**
+ * One compact row pinned under the decks: ▶/⏸ both decks + the A–B crossfader. (The full-size
+ * crossfader card + wide "Play both decks" button took ~190 dp, half a phone's deck viewport.)
+ */
+@Composable
+private fun PinnedMixBar(engine: com.levi.pocketdj.mix.engine.MixEngine) {
+    val ui by engine.ui.collectAsState()
+    val enabled = DeckLayoutRules.masterEnabled(ui.a.loaded != null, ui.b.loaded != null)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainer)
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .testTag("mix-pinned-xfader"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        androidx.compose.material3.FilledIconButton(
+            onClick = { engine.toggleAll() },
+            enabled = enabled,
+            colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
+                containerColor = DeckColors.accent, contentColor = androidx.compose.ui.graphics.Color(0xFF07101F),
+            ),
+            modifier = Modifier.size(48.dp).testTag("mix-play")
+                .semantics { contentDescription = DeckLayoutRules.masterLabel(ui.isRunning) },
+        ) {
+            Icon(if (ui.isRunning) Icons.Filled.Pause else Icons.Filled.PlayArrow, null)
+        }
+        Text("A", fontSize = 12.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = DeckColors.accent)
+        androidx.compose.material3.Slider(
+            value = ui.crossfader.toFloat().coerceIn(0f, 1f),
+            onValueChange = { engine.setCrossfader(it.toDouble()) },
+            modifier = Modifier.weight(1f).testTag("crossfader").semantics { contentDescription = "Crossfader" },
+            colors = androidx.compose.material3.SliderDefaults.colors(
+                thumbColor = DeckColors.gold, activeTrackColor = DeckColors.gold, inactiveTrackColor = DeckColors.border,
+            ),
+        )
+        Text("B", fontSize = 12.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, color = DeckColors.accent)
+    }
 }

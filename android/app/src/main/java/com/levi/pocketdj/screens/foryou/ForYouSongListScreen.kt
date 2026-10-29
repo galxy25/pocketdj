@@ -87,7 +87,8 @@ object ForYouSongListState {
     fun blendSummary(kind: ForYouTileKind, partition: RecFeedbackStore.Partition, buriedIds: Set<String>): String {
         val n = partition.live.size
         val buried = if (kind == ForYouTileKind.ZONE) partition.live.count { it in buriedIds } else 0
-        return if (kind == ForYouTileKind.ZONE && buried > 0) "$n songs · $buried buried" else "$n songs"
+        val songs = com.levi.pocketdj.screens.browse.Fmt.count(n, "song")
+        return if (kind == ForYouTileKind.ZONE && buried > 0) "$songs · $buried buried" else songs
     }
 
     /** A collection tile with a resolvable target adds straight to it; the zone (and a dead id) opens the sheet. */

@@ -495,7 +495,8 @@ private fun ForYouTileCard(tile: ForYouTile, modifier: Modifier = Modifier) {
         border = BorderStroke(1.dp, if (tile.isPinned) tint.copy(alpha = 0.55f) else MaterialTheme.colorScheme.outlineVariant),
         modifier = modifier.fillMaxWidth().height(ForYouTileLayout.CARD_HEIGHT_DP.dp),
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // Tighter rhythm so the 2-line subtitle fits the fixed card height (it truncated to 1 line).
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(forYouTileIcon(tile.symbol), contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
                 Spacer(Modifier.weight(1f))

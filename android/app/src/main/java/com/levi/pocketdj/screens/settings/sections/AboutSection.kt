@@ -10,7 +10,7 @@ import com.levi.pocketdj.screens.settings.SettingsHeader
 import com.levi.pocketdj.screens.settings.SettingsSections
 import com.levi.pocketdj.shell.SettingsSection
 
-internal fun aboutSection() = SettingsSection(SettingsSections.ABOUT, 800) { _ ->
+internal fun aboutSection() = SettingsSection(SettingsSections.ABOUT, 800) { host ->
     val context = LocalContext.current
     SettingsHeader("About")
     val versionName = remember {
@@ -20,8 +20,11 @@ internal fun aboutSection() = SettingsSection(SettingsSections.ABOUT, 800) { _ -
     }
     AboutRow("App", "PocketDJ $versionName (Android)")
     AboutRow("Android", "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-    AboutRow("Catalog", Endpoints.CATALOG_BASE)
-    AboutRow("Rips", Endpoints.RIPS_BASE)
-    // Which backend (blue/green AWS account) + where it came from — remote endpoints.
-    AboutRow("Backend", RemoteEndpoints.summary)
+    // Endpoint URLs are an advanced detail (Settings ▸ Show advanced).
+    if (host.showAdvanced) {
+        AboutRow("Catalog", Endpoints.CATALOG_BASE)
+        AboutRow("Rips", Endpoints.RIPS_BASE)
+        // Which backend (blue/green AWS account) + where it came from — remote endpoints.
+        AboutRow("Backend", RemoteEndpoints.summary)
+    }
 }

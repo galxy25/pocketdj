@@ -1,5 +1,13 @@
 package com.levi.pocketdj.screens.browse
 
+import androidx.compose.runtime.LaunchedEffect
+
+import androidx.compose.runtime.collectAsState
+
+import androidx.compose.ui.platform.LocalContext
+
+import androidx.compose.ui.platform.LocalInspectionMode
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
@@ -72,7 +80,7 @@ suspend fun playAndReport(
         is PlayOutcome.Preparing ->
             snackbar.showSnackbar("Preparing — playback starts automatically when the rip is ready")
         is PlayOutcome.NotPlayable ->
-            snackbar.showSnackbar("No import server configured (Settings)")
+            snackbar.showSnackbar(Fmt.NO_IMPORT_SERVER)
         is PlayOutcome.Failed ->
             snackbar.showSnackbar(outcome.message)
     }
@@ -88,8 +96,17 @@ fun AlbumArt(
     modifier: Modifier = Modifier,
     cornerRadius: Int = 6,
 ) {
-    val candidates = remember(album?.id) { album?.artCandidates().orEmpty() }
-    var candidateIndex by remember(album?.id) { mutableIntStateOf(0) }
+    val bundled = remember(album?.id) { album?.artCandidates().orEmpty() }
+    // No bundled art (the whole AM-Local catalog): the iOS CoverImage streaming fallback,
+    // resolved on demand through AlbumArtworkStore (tokenless iTunes lookup, batched).
+    val artStore = if (bundled.isEmpty() && album != null && !LocalInspectionMode.current) {
+        com.levi.pocketdj.di.AppGraph.get(LocalContext.current).albumArtworkStore
+    } else null
+    val resolvedMap = artStore?.resolved?.collectAsState()
+    if (artStore != null) LaunchedEffect(album?.id) { album?.let(artStore::request) }
+    val fallback = album?.id?.let { resolvedMap?.value?.get(it) }
+    val candidates = if (bundled.isNotEmpty()) bundled else listOfNotNull(fallback)
+    var candidateIndex by remember(album?.id, candidates.size) { mutableIntStateOf(0) }
     val url = candidates.getOrNull(candidateIndex)
     val shaped = modifier.clip(RoundedCornerShape(cornerRadius.dp))
     if (url == null) {

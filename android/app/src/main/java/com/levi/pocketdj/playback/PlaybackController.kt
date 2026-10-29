@@ -136,6 +136,12 @@ class PlaybackController(
     /** Watches a rip past the 20 s interactive wait and fires onRipReady. Null in tests. */
     private val ripTracker: RipJobTracker? = null,
 ) {
+    /**
+     * Cover fallback for albums with no bundled art (AM-Local): the resolved
+     * AlbumArtworkStore URL (memoized; asks for it when missing). Default: none.
+     */
+    var artFallback: (IndexAlbum) -> String? = { null }
+
     /** One immutable now-playing snapshot; null when nothing is loaded. */
     data class NowPlayingInfo(
         val songId: String,
@@ -851,7 +857,7 @@ class PlaybackController(
         val ctl = BackendAppleMusicController(backend, amMonitor) { songId, title, artist, albumId ->
             val merged = catalog.state.value.catalog
             val album = albumId?.let { merged?.albumsById?.get(it) }
-            AmTrack(songId, title, artist, album?.name, album?.artCandidates()?.firstOrNull())
+            AmTrack(songId, title, artist, album?.name, album?.artCandidates()?.firstOrNull() ?: album?.let { artFallback(it) })
         }
         ctl.onPlayIntent = { playing ->
             sequencer.discriminator.onPlayWhenReadyChanged(
@@ -1235,7 +1241,7 @@ class PlaybackController(
         titleFallback: String? = null,
         artistFallback: String? = null,
     ): MediaItem {
-        val artUri = album?.artCandidates()?.firstOrNull()
+        val artUri = album?.artCandidates()?.firstOrNull() ?: album?.let { artFallback(it) }
         val isLive = action.url.contains("/hls/")
         val extras: Bundle = bundleOf(
             PlaybackContract.EXTRA_URL to action.url,
@@ -1329,7 +1335,7 @@ class PlaybackController(
                     .setTitle(song?.name ?: item.title ?: item.id)
                     .setArtist(song?.artist ?: item.artist)
                     .setAlbumTitle(album?.name)
-                    .apply { album?.artCandidates()?.firstOrNull()?.let { setArtworkUri(Uri.parse(it)) } }
+                    .apply { (album?.artCandidates()?.firstOrNull() ?: album?.let { artFallback(it) })?.let { setArtworkUri(Uri.parse(it)) } }
                     .build()
             RunTransportBus.instantMetadata?.invoke(instantMd)
             val ripConfigured = settings.current().hasRipServer

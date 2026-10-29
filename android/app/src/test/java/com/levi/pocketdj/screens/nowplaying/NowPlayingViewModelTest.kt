@@ -65,6 +65,8 @@ class NowPlayingViewModelTest {
 
     @Test fun modeRowOnlyWhileASetRunsAndHelpTextFollowsRepeat() {
         assertFalse(build(SequencerState(), null).showModeRow)
+        // A Browse single (no run) gets the same mode row.
+        assertTrue(build(SequencerState(), audible("a")).showModeRow)
         val st = build(seq(repeat = RepeatMode.ALL, shuffle = true), audible("a"))
         assertTrue(st.showModeRow)
         assertTrue(st.shuffleEnabled)

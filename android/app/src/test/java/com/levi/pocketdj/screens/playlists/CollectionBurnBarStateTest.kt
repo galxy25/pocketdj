@@ -99,13 +99,31 @@ class CollectionBurnBarStateTest {
         ripped: MutableSet<String> = mutableSetOf(),
         stopFlag: AtomicBoolean = AtomicBoolean(false),
         canceled: MutableList<String> = mutableListOf(),
+        transfersCancelled: MutableList<String> = mutableListOf(),
     ) = CollectionBurnController(
         scope = this, burn = burn, requestStopBurn = { stopFlag.set(true) },
         ripCollection = rip, cancelRips = { canceled.addAll(it) },
         isRipped = { it in ripped }, refreshManifest = {}, hasServer = { true },
         tuples = { ids -> ids.map { BurnSong(it, it, "x") } },
         pollIntervalMs = 10, maxTicks = 5,
+        cancelTransfers = { transfersCancelled.addAll(it) },
     )
+
+    @Test fun stopDuringBurnAlsoCancelsItsBackgroundTransfers() = runTest(StandardTestDispatcher()) {
+        // Q14: Burn Stop -> BurnStore.cancelTransfers for the burn's songs (not only the loop break).
+        val gate = CompletableDeferred<Unit>()
+        val stopFlag = AtomicBoolean(false)
+        val cancelled = mutableListOf<String>()
+        val c = controller(burn = { gate.await(); BurnResult(burned = 1, total = 2) }, stopFlag = stopFlag, transfersCancelled = cancelled)
+        c.burn(listOf("a", "b")); advanceUntilIdle()
+        c.stop()
+        assertTrue(stopFlag.get())
+        assertEquals(listOf("a", "b"), cancelled)
+        // A second Stop does not re-cancel (ids are consumed).
+        c.stop()
+        assertEquals(listOf("a", "b"), cancelled)
+        gate.complete(Unit); advanceUntilIdle()
+    }
 
     @Test fun burnLifecycleProducesSummary() = runTest(StandardTestDispatcher()) {
         val gate = CompletableDeferred<Unit>()

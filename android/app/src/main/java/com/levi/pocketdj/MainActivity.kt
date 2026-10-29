@@ -23,7 +23,12 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // PocketDJ is dark-only (iOS pins .preferredColorScheme(.dark) at the app root), so the
+        // system bars always draw LIGHT icons, whatever the system light/dark setting is.
+        enableEdgeToEdge(
+            statusBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         // Eagerly build the graph + history store so every play is recorded
         // (the store subscribes to PlayEventBus) even before any screen opens.
         // The store constructor reads + decodes the whole log from disk (multi-MB

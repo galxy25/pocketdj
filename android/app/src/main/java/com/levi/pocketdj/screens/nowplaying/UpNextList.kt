@@ -70,6 +70,8 @@ fun UpNextList(
     var dragUid by remember { mutableStateOf<String?>(null) }
     var dragDy by remember { mutableFloatStateOf(0f) }
     fun liveUids() = sequencer.state.value.upcoming.map { it.uid }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val catalog = remember { com.levi.pocketdj.di.AppGraph.get(ctx).catalogRepository }.state.value.catalog
 
     Column(modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -131,15 +133,16 @@ fun UpNextList(
                                 )
                             },
                         )
+                        val album = catalog?.songsById?.get(item.id)?.albumId?.let { catalog.albumsById[it] }
+                        com.levi.pocketdj.screens.browse.AlbumArt(album, Modifier.size(40.dp))
+                        androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
                         Column(Modifier.weight(1f)) {
                             Text(item.title, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             item.artist?.let {
                                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
-                        IconButton(onClick = { sequencer.removeUpcoming(setOf(item.uid)) }, modifier = Modifier.testTag("np-remove-$offset")) {
-                            Icon(Icons.Filled.Close, contentDescription = "Remove")
-                        }
+                        // Remove = swipe left or the ⋮ menu (a separate ✕ beside ⋮ doubled the row chrome).
                         Box {
                             IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Row actions") }
                             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
@@ -163,5 +166,24 @@ fun UpNextList(
             )
         }
         }
+    }
+}
+
+/** Up Next for a Browse single: the section exists (parity with a set), empty until rows are added. */
+@Composable
+fun UpNextEmptyHint(modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth().padding(top = 8.dp)) {
+        Text(
+            QueueReorder.countHeader(0),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.testTag("np-upnext-header"),
+        )
+        Text(
+            "Nothing queued. Search above to add songs or albums after this one.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(vertical = 8.dp).testTag("np-upnext-empty"),
+        )
     }
 }

@@ -176,6 +176,8 @@ class CollectionBurnController(
     private val cancelStemCollection: suspend (List<String>) -> Unit = {},
     private val stemPollIntervalMs: Long = BurnSettings.STEM_POLL_INTERVAL_MS,
     private val stemMaxTicks: Int = BurnSettings.STEM_POLL_MAX_TICKS,
+    /** Q14: Stop also cancels the burn's queued background downloads (BurnStore.cancelTransfers). */
+    private val cancelTransfers: (List<String>) -> Unit = {},
 ) {
     private val _state = MutableStateFlow(CollectionBurnBarState())
     val state: StateFlow<CollectionBurnBarState> = _state.asStateFlow()
@@ -183,6 +185,7 @@ class CollectionBurnController(
     private var burnJob: Job? = null
     private var pollJob: Job? = null
     private var lastRipIds: List<String> = emptyList()
+    private var lastBurnIds: List<String> = emptyList()
     private var stemPollJob: Job? = null
     private var lastStemIds: List<String> = emptyList()
     private var pendingStemIds: List<String> = emptyList()
@@ -321,6 +324,7 @@ class CollectionBurnController(
     fun burn(ids: List<String>): Job? {
         if (_state.value.working) return null
         _state.update { it.copy(working = true, inFlightOp = CollectionOp.BURN) }
+        lastBurnIds = ids
         val job = scope.launch {
             var finished = false
             try {
@@ -353,6 +357,13 @@ class CollectionBurnController(
     fun stop(): Job? {
         val s = _state.value
         requestStopBurn() // idempotent; also covers a background burn whose job already returned
+        // Q14 (Levi 2026-10-29): Stop also tears down the background transfers the burn queued, so
+        // "Downloading n of m" really stops (the loop break alone left queued downloads running).
+        if (lastBurnIds.isNotEmpty()) {
+            val ids = lastBurnIds
+            lastBurnIds = emptyList()
+            runCatching { cancelTransfers(ids) }
+        }
         if (s.inFlightOp == CollectionOp.BURN) {
             return null
         }
@@ -397,6 +408,7 @@ fun rememberCollectionBurnController(key: Any? = null): CollectionBurnController
             scope = graph.appScope, // a burn outlives the screen (iOS stores the Task on the controller)
             burn = { store.burn(it) },
             requestStopBurn = store::requestStop,
+            cancelTransfers = { store.cancelTransfers(it) },
             ripCollection = { ids -> coordinator.ripCollection(ids) { graph.ripsRepository.entry(it) != null } },
             cancelRips = { coordinator.cancelRips(it) },
             isRipped = { graph.ripsRepository.entry(it) != null },
@@ -474,8 +486,10 @@ fun CollectionBurnBar(
                 Icon(Icons.Filled.ArrowCircleDown, contentDescription = null)
                 Text("Rip")
             }
+            val askNotifications = com.levi.pocketdj.ui.rememberNotificationPermissionRequester()
             OutlinedButton(
-                onClick = { controller.burn(songIds()) },
+                // Q14: the burn's "Downloading n of m" notification needs POST_NOTIFICATIONS (13+).
+                onClick = { askNotifications(); controller.burn(songIds()) },
                 enabled = hasSongs && !state.working,
             ) {
                 Icon(Icons.Filled.LocalFireDepartment, contentDescription = null)
