@@ -53,10 +53,17 @@ class ContentResolverBurnTree(private val context: Context, private val treeUri:
         false
     }
 
+    override fun delete(name: String): Boolean = try {
+        val doc = childUri(name)
+        doc != null && DocumentsContract.deleteDocument(cr, doc)
+    } catch (e: Exception) {
+        throw IOException(e.message ?: "burn folder delete failed", e)
+    }
+
     override fun copyIn(name: String, src: File) {
         try {
             childUri(name)?.let { DocumentsContract.deleteDocument(cr, it) }
-            val mime = if (name.endsWith(".mp3")) "audio/mpeg" else "text/plain"
+            val mime = mimeFor(name)
             val doc = DocumentsContract.createDocument(cr, rootDocUri, mime, name)
                 ?: throw IOException("could not create $name in the burn folder")
             val out = cr.openOutputStream(doc, "wt") ?: throw IOException("could not open $name")
@@ -67,6 +74,13 @@ class ContentResolverBurnTree(private val context: Context, private val treeUri:
             throw IOException(e.message ?: "burn folder write failed", e)
         }
     }
+}
+
+/** Folder-copy MIME: audio, the beat-grid/analysis JSON, and the txt sidecar. */
+internal fun mimeFor(name: String): String = when {
+    name.endsWith(".mp3") -> "audio/mpeg"
+    name.endsWith(".json") -> "application/json"
+    else -> "text/plain"
 }
 
 /** SharedPreferences-backed chosen tree (read at enqueue / UI time only). */

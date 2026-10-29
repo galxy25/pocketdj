@@ -35,7 +35,8 @@ class BurnStorePruneAdapter(private val store: BurnStore) : PruneBurns {
     override fun items(): Collection<BurnItem> = store.items.value.values
     override fun plan(order: List<String>, capBytes: Long, capSongs: Int) =
         store.planEvictionSweepingOrphans(order, capBytes, capSongs)
-    override fun removeBurns(songIds: List<String>) = store.removeBurns(songIds)
+    // Storage-pressure eviction stays local-only: the user's browsable folder copy is kept.
+    override fun removeBurns(songIds: List<String>) = store.removeBurns(songIds, mirrored = false)
 }
 
 /**
