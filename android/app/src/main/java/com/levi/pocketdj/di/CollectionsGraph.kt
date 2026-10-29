@@ -283,7 +283,18 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
 
     /** Idempotent: the "Imported" synthetic source joins every catalog merge (also at cold-start seed). */
     private fun wireCatalogSource() {
-        app.catalogRepository.syntheticDocuments = { listOfNotNull(importedSongs.syntheticDocument()) }
+        app.catalogRepository.importedSource = { real -> importedSongs.resolve(real) }
+        // iOS applySupersede order: drop the imported rows, THEN remap collections + favorites onto the indexed twin.
+        app.catalogRepository.onImportedSupersede = { pairs ->
+            app.appScope.launch(Dispatchers.IO) {
+                com.levi.pocketdj.data.catalog.ImportedSongsStore.landSupersede(
+                    pairs,
+                    removeImported = { importedSongs.remove(it) },
+                    remapCollections = { app.collections.remapSongIds(it) },
+                    remapFavorites = { favorites.remapSongIds(it) },
+                )
+            }
+        }
     }
 
     /** Tapped `.pdjcollection` → importAny → snackbar counts (claims DeepLinkSeams.importCollection). */

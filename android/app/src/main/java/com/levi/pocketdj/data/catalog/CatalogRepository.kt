@@ -84,19 +84,41 @@ class CatalogRepository(
     @Volatile
     var onSupersede: ((List<Pair<String, String>>) -> Unit)? = null
 
-    /** Real docs + provisional + synthetic, in merge order; reports supersedes through [onSupersede]. */
-    private fun withProvisional(real: List<IndexJson>): Pair<List<IndexJson>, com.levi.pocketdj.data.discover.ProvisionalSource.Result?> {
+    /**
+     * "Imported" source (COL-15): resolved against the REAL documents of this merge; an `amrec_` row whose Apple
+     * Music id an indexed song now claims is dropped from the synthetic document and returned as a
+     * (imported -> indexed) pair. Appended after Discover. Null = none (then [syntheticDocuments] applies).
+     */
+    @Volatile
+    var importedSource: ((real: List<IndexJson>) -> ImportedSongsStore.Resolution)? = null
+
+    /** Fired after publish with the (imported amrec_ -> indexed) pairs: prune the store, THEN remap collections + favorites. */
+    @Volatile
+    var onImportedSupersede: ((List<Pair<String, String>>) -> Unit)? = null
+
+    private class Applied(
+        val prov: com.levi.pocketdj.data.discover.ProvisionalSource.Result?,
+        val importedPairs: List<Pair<String, String>>,
+    )
+
+    /** Real docs + provisional + imported + synthetic, in merge order; reports supersedes through the callbacks. */
+    private fun withProvisional(real: List<IndexJson>): Pair<List<IndexJson>, Applied> {
         val prov = provisionalSources?.let { runCatching { it(real) }.getOrNull() }
-        return (real + prov?.documents.orEmpty() + syntheticDocuments()) to prov
+        val imp = importedSource?.let { runCatching { it(real) }.getOrNull() }
+        val docs = real + prov?.documents.orEmpty() + imp?.documents.orEmpty() + syntheticDocuments()
+        return docs to Applied(prov, imp?.pairs.orEmpty())
     }
 
-    private fun notifySupersede(prov: com.levi.pocketdj.data.discover.ProvisionalSource.Result?) {
+    private fun notifySupersede(applied: Applied?) {
+        val prov = applied?.prov
         val pairs = prov?.supersededSongs.orEmpty()
         val albums = prov?.supersededAlbums.orEmpty()
-        if (pairs.isEmpty() && albums.isEmpty()) return
-        runCatching { onSupersede?.invoke(pairs) }
-        // Albums have nothing to remap (collections reference SONG ids): prune only.
-        runCatching { onAlbumsSuperseded?.invoke(albums) }
+        if (pairs.isNotEmpty() || albums.isNotEmpty()) {
+            runCatching { onSupersede?.invoke(pairs) }
+            // Albums have nothing to remap (collections reference SONG ids): prune only.
+            runCatching { onAlbumsSuperseded?.invoke(albums) }
+        }
+        applied?.importedPairs?.takeIf { it.isNotEmpty() }?.let { runCatching { onImportedSupersede?.invoke(it) } }
     }
 
     /** Provisional ALBUM supersedes (provisional album id -> indexed album id); prune-only. */

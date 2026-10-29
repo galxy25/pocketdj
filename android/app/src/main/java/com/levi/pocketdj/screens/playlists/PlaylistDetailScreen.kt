@@ -67,7 +67,7 @@ import com.levi.pocketdj.screens.browse.SongDetailSheet
  * delete-chapter actions) → "Set lists" section (frozen takes) → action row
  * with ▶ Play / Shuffle (→ the reserved Now Playing setlist, autostarting) and
  * the ⋯ overflow (Make set list, Add chapter, Rename, Convert to pocket,
- * Delete). Export / rip-burn / source-sync are P2-deferred (§13).
+ * Delete). Export (zip + CSV) landed in ANS-COL-3; rip-burn / source-sync are P2-deferred (§13).
  */
 @Composable
 fun PlaylistDetailScreen(
@@ -81,6 +81,7 @@ fun PlaylistDetailScreen(
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val store = remember { graph.collections }
+    val exporter = com.levi.pocketdj.screens.collections.rememberCollectionExporter()
     val snackbar = remember { SnackbarHostState() }
     val forceScope = androidx.compose.runtime.rememberCoroutineScope()
 
@@ -266,6 +267,14 @@ fun PlaylistDetailScreen(
                                 linkedName = store.sourcePlaylistForPlaylist(playlistId)?.playlist?.name,
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text("Export…") },
+                            onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.playlistZip(store, playlistId, playlist?.name ?: "Playlist")) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export CSV") },
+                            onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.playlistCsv(store, playlistId, playlist?.name ?: "Playlist")) },
+                        )
                         DropdownMenuItem(
                             text = { Text("Delete playlist") },
                             onClick = { dismiss(); deleteOpen = true },

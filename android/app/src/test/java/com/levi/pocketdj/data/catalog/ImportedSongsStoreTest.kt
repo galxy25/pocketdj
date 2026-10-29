@@ -87,4 +87,31 @@ class ImportedSongsStoreTest {
         )
         assertEquals(listOf("amrec_1" to "sng_real"), pairs)
     }
+
+    @Test fun resolveDropsRemappedRowsAndReportsPairs() {
+        val entries = listOf(song("amrec_1", "Ad hoc", am = "9"), song("sng_x", "Keep", am = "9"), song("amrec_2", "Unclaimed", am = "5"))
+        val real = IndexJson(
+            manifest = IndexManifest(sourceName = "AM"),
+            songs = listOf(
+                IndexSong(id = "sng_real", artist = "A", name = "Real", appleMusicId = "9"),
+                IndexSong(id = "sng_late", artist = "A", name = "Later twin", appleMusicId = "9"),
+            ),
+        )
+        val r = ImportedSongsStore.resolveEntries(entries, emptyList(), listOf(real))
+        assertEquals("first-seen claimant wins", listOf("amrec_1" to "sng_real"), r.pairs)
+        assertEquals(listOf("sng_x", "amrec_2"), r.documents.single().songs.map { it.id })
+        // nothing claimed -> no pairs, document unchanged
+        val none = ImportedSongsStore.resolveEntries(entries, emptyList(), emptyList())
+        assertTrue(none.pairs.isEmpty()); assertEquals(3, none.documents.single().songs.size)
+        // all remapped and no albums -> no document at all
+        val allGone = ImportedSongsStore.resolveEntries(listOf(song("amrec_1", am = "9")), emptyList(), listOf(real))
+        assertTrue(allGone.documents.isEmpty()); assertEquals(1, allGone.pairs.size)
+        // the store method delegates and is empty-safe
+        assertTrue(ImportedSongsStore(tmp()).resolve(listOf(real)).documents.isEmpty())
+    }
+
+    @Test fun supersedeIgnoresBlankIdsAndSelfPairs() {
+        assertTrue(ImportedSongsStore.supersedePairs(listOf(song("amrec_1", am = null)), mapOf("9" to "x")).isEmpty())
+        assertTrue(ImportedSongsStore.supersedePairs(listOf(song("amrec_1", am = "9")), mapOf("9" to "amrec_1")).isEmpty())
+    }
 }

@@ -61,7 +61,7 @@ import com.levi.pocketdj.screens.browse.SongDetailSheet
  * Pocket detail (specs/playlists-ui.md §6): stats + resolution footer → Nested
  * pockets / Albums / Songs / Notes sections (move up/down + remove per row,
  * tap-to-edit notes) → ▶ Play / Shuffle over the DAG-resolved song order via
- * the reserved Now Playing setlist. Export / source-sync / rip-burn deferred.
+ * the reserved Now Playing setlist. Export (zip + CSV) landed in ANS-COL-3; source-sync / rip-burn deferred.
  */
 @Composable
 fun PocketDetailScreen(
@@ -75,6 +75,7 @@ fun PocketDetailScreen(
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val store = remember { graph.collections }
+    val exporter = com.levi.pocketdj.screens.collections.rememberCollectionExporter()
     val snackbar = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -201,6 +202,14 @@ fun PocketDetailScreen(
                         DropdownMenuItem(
                             text = { Text("Add note") },
                             onClick = { dismiss(); addNoteOpen = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export…") },
+                            onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.pocketZip(store, pocketId, pocket.name)) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export CSV") },
+                            onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.pocketCsv(store, pocketId, pocket.name)) },
                         )
                         DropdownMenuItem(
                             text = { Text("Rename…") },

@@ -470,6 +470,7 @@ private fun ShellNavHost(
                 onOpenSourcePlaylist = { id, sourceName ->
                     nav.navigate(sourcePlaylistRoute(id, sourceName))
                 },
+                onOpenSetlist = { id -> openSetlist(id, false) },
             )
         }
         composable(PocketDjDestination.Producer.route) {

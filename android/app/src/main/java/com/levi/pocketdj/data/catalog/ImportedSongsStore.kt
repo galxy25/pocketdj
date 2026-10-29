@@ -123,6 +123,29 @@ class ImportedSongsStore(private val file: File) {
         onChanged?.invoke()
     }
 
+    /**
+     * Resolve against this merge's REAL documents (first-seen claimant per Apple Music id wins, as iOS
+     * `withProvisionalSources`): remapped `amrec_` rows leave the document and come back as pairs.
+     */
+    fun resolve(realDocs: List<IndexJson>): Resolution {
+        val (s, a) = synchronized(lock) { songs to albums }
+        if (s.isEmpty() && a.isEmpty()) return Resolution.EMPTY
+        // Memoized on the identity of the entries + real docs so CatalogRepository's identity-based
+        // sameInputs no-op check still short-circuits unchanged refreshes.
+        synchronized(lock) {
+            val m = memo
+            if (m != null && m.songs === s && m.albums === a && m.real.size == realDocs.size &&
+                m.real.indices.all { m.real[it] === realDocs[it] }
+            ) return m.result
+        }
+        val r = resolveEntries(s, a, realDocs)
+        synchronized(lock) { memo = Memo(s, a, realDocs.toList(), r) }
+        return r
+    }
+
+    private class Memo(val songs: List<SongEntry>, val albums: List<AlbumEntry>, val real: List<IndexJson>, val result: Resolution)
+    private var memo: Memo? = null
+
     /** The synthetic source for the catalog merge; null when empty. Stable instance between changes. */
     fun syntheticDocument(): IndexJson? = synchronized(lock) {
         if (songs.isEmpty() && albums.isEmpty()) return null
@@ -138,7 +161,40 @@ class ImportedSongsStore(private val file: File) {
         }
     }
 
+    class Resolution(val documents: List<IndexJson>, val pairs: List<Pair<String, String>>) {
+        companion object { val EMPTY = Resolution(emptyList(), emptyList()) }
+    }
+
     companion object {
+        /**
+         * Land a supersede. Durability deviation from iOS order (documented): remap collections + favorites
+         * FIRST (idempotent), then prune the imported rows, because the pair is only derivable while the
+         * amrec_ row exists on disk; a kill mid-sequence re-derives the pair on the next merge.
+         * A throwing step never blocks the following ones.
+         */
+        fun landSupersede(
+            pairs: List<Pair<String, String>>,
+            removeImported: (List<String>) -> Unit,
+            remapCollections: (List<Pair<String, String>>) -> Unit,
+            remapFavorites: (List<Pair<String, String>>) -> Unit,
+        ) {
+            if (pairs.isEmpty()) return
+            runCatching { remapCollections(pairs) }
+            runCatching { remapFavorites(pairs) }
+            runCatching { removeImported(pairs.map { it.first }) }
+        }
+
+        /** Pure core of [resolve]. */
+        fun resolveEntries(songs: List<SongEntry>, albums: List<AlbumEntry>, realDocs: List<IndexJson>): Resolution {
+            val byAm = HashMap<String, String>()
+            for (d in realDocs) for (x in d.songs) x.appleMusicId?.takeIf { it.isNotEmpty() }?.let { byAm.putIfAbsent(it, x.id) }
+            val pairs = supersedePairs(songs, byAm)
+            val gone = pairs.mapTo(HashSet()) { it.first }
+            val kept = songs.filterNot { it.songId in gone }
+            val doc = if (kept.isEmpty() && albums.isEmpty()) emptyList() else listOf(syntheticIndex(kept, albums))
+            return Resolution(doc, pairs)
+        }
+
         const val FILE_NAME = "pocketdj-imported-songs.json"
         const val SOURCE_NAME = "Imported"
 
