@@ -34,9 +34,9 @@ interface StreamHandle {
 
 /** The loader as the stream machine sees it (the real [MixStreamLoader], or a fake under test). */
 interface StreamLoaderPort {
-    fun canStream(songId: String): Boolean
+    fun canStream(songId: String, forAuto: Boolean = false): Boolean
     fun isRipped(songId: String): Boolean
-    fun open(songId: String, title: String, artist: String): StreamHandle?
+    fun open(songId: String, title: String, artist: String, forAuto: Boolean = false): StreamHandle?
     fun stream(songId: String): StreamHandle?
 }
 
@@ -214,7 +214,7 @@ class StreamDecks(
     /** A load of [songId] failed only because the stream gate is closed RIGHT NOW: defer it, don't drop it. */
     fun transientlyUnloadable(songId: String): Boolean {
         val l = loader ?: return false
-        return l.isRipped(songId) && !hasLocalFile(songId) && !l.canStream(songId)
+        return l.isRipped(songId) && !hasLocalFile(songId) && !l.canStream(songId, forAuto = true)
     }
 
     // ------------------------------------------------------------------ wiring
@@ -283,8 +283,9 @@ class StreamDecks(
      */
     fun loadStreaming(item: MixLoadable, deck: Deck): Boolean {
         val l = loader ?: return false
-        if (!l.canStream(item.songId)) return false
-        val handle = l.open(item.songId, item.title, item.artist) ?: return false
+        val forAuto = engine.streamingForAuto
+        if (!l.canStream(item.songId, forAuto = forAuto)) return false
+        val handle = l.open(item.songId, item.title, item.artist, forAuto = forAuto) ?: return false
         engine.beginStreamLoad(deck)     // forgets the prior voice / stem intent (-> clearStream)
         val d = DeckStream(handle)
         d.windowMs = item.lengthMs
@@ -538,10 +539,10 @@ class LoaderStreamHandle(private val s: MixStreamLoader.Stream) : StreamHandle {
 
 /** [StreamLoaderPort] over the real loader. */
 class MixStreamLoaderPort(private val loader: MixStreamLoader) : StreamLoaderPort {
-    override fun canStream(songId: String) = loader.canStream(songId)
+    override fun canStream(songId: String, forAuto: Boolean) = loader.canStream(songId, forAuto)
     override fun isRipped(songId: String) = loader.isRipped(songId)
-    override fun open(songId: String, title: String, artist: String) =
-        loader.open(songId, title, artist)?.let(::LoaderStreamHandle)
+    override fun open(songId: String, title: String, artist: String, forAuto: Boolean) =
+        loader.open(songId, title, artist, forAuto)?.let(::LoaderStreamHandle)
     override fun stream(songId: String) = loader.stream(songId)?.let(::LoaderStreamHandle)
 }
 

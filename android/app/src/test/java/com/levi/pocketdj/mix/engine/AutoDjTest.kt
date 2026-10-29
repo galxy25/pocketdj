@@ -632,4 +632,14 @@ class AutoDjTest {
         assertTrue("finished stream is on device", s.songOnDevice("r2"))
         assertTrue(s.songOnDevice("b1"))
     }
+
+    @Test fun startAutoMixLoadsAreStreamedWithTheAutoGateBeforeIsMixingFlips() {
+        val r = AutoRig(n = 1)
+        val seen = ArrayList<Boolean>()
+        r.e.streamLoad = { _, _ -> seen += r.e.streamingForAuto; false }
+        val ghost = AutoMixItem(com.levi.pocketdj.mix.model.MixLoadable("ghost", "G", "x"), 30_000, "crate")
+        r.dj.startAutoMix(listOf(ghost), false, 10.0, 4.0)
+        assertEquals("the first load runs before isMixing, yet must use the Auto-DJ gate", listOf(true), seen)
+        assertFalse("flag is scoped to the load", r.e.streamingForAuto)
+    }
 }

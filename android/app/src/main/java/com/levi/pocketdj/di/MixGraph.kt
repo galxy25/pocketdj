@@ -218,7 +218,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                     burned = { id -> b.hasLocalFile(id) },
                     finishedStream = { id -> mixStreamLoader.stream(id)?.let { st -> st.isComplete && !st.failed } == true },
                     ripped = { id -> mixStreamLoader.isRipped(id) },
-                    canStream = { id -> mixStreamLoader.canStream(id) },
+                    canStream = { id -> mixStreamLoader.canStream(id, forAuto = true) },
                 )
             }
             val main = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -642,7 +642,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
      * song is loadable (STREAMING MODE).
      */
     val mixResolver: MixResolver by lazy {
-        MixResolver(CatalogResolverSources(app), streamable = { mixStreamLoader.canStream(it) })
+        MixResolver(CatalogResolverSources(app), streamable = { mixStreamLoader.streamableInPrinciple(it) })
     }
 
     /** The Auto-DJ seam over the engine; the Auto-DJ package fills [EngineAutoMixHost]'s hooks. */
