@@ -18,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.testTag
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -658,7 +659,21 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
 
     SettingsDivider()
     SettingsHeader("Dead air")
-    SettingsCaption(DeadAirSource.current?.summary() ?: "Dead-air meter not available yet (ships with the playback area).")
+    // iOS DebugView parity: Today, the last 7 days and the worst transition pairs, refreshed every second.
+    var deadAir by remember { mutableStateOf(DeadAirSource.current?.summary()) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        while (true) {
+            deadAir = DeadAirSource.current?.summary()
+            kotlinx.coroutines.delay(1_000)
+        }
+    }
+    Text(
+        deadAir ?: "Dead-air meter not available yet.",
+        style = MaterialTheme.typography.bodySmall,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+        modifier = Modifier.testTag("debug-deadair"),
+    )
+    SettingsCaption("Silent seconds while a set was meant to be playing. Transition = between tracks; mid-song = a stall inside a song.")
 }
 
 @Composable

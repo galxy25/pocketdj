@@ -24,6 +24,18 @@ class PlaybackUrlResolver(private val presigns: PresignCache?) {
         if (serverConfigured) presigns?.prefetch(songIds)
     }
 
+    /**
+     * AM near-end warm (iOS `onNearEnd`): presign the NEXT row's manifest URL into the same cache the start path
+     * reads, so the hand-off finds a fresh URL. Only a network manifest hit has anything to warm (burned files are
+     * local, rip-on-demand has no URL yet, AM rows are resolved by the SDK). Returns true when a prefetch was issued.
+     */
+    fun prefetchNextRow(resolveId: String, source: com.levi.pocketdj.playback.sequencer.RowSource?, serverConfigured: Boolean): Boolean {
+        val stream = (source as? com.levi.pocketdj.playback.sequencer.StreamSource)?.action ?: return false
+        if (PlayResolver.isLocalUrl(stream.url) || !serverConfigured) return false
+        prefetch(listOf(resolveId), true)
+        return true
+    }
+
     companion object {
         /** True when a queue item is a burned local file (must never be swapped to a network URL). */
         fun isLocalItemUrl(extraUrl: String?, uri: String?): Boolean =

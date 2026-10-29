@@ -196,6 +196,12 @@ class StorageService(
         measure(Category.BURNS)
     }
 
+    /**
+     * iOS `removeAllBurns()`: every downloaded file (audio, cuts, stems, grids, sidecars), the whole ledger
+     * (QUEUED/FAILED/stuck entries included), in-flight burns stopped, orphan stems swept. Returns the re-measured size.
+     */
+    suspend fun deleteAllBurns(): Long = clear(Category.BURNS)
+
     /** Delete only the stem files of [songIds]; burned audio and beat grids stay. */
     suspend fun deleteStems(songIds: List<String>): Long = withContext(Dispatchers.Default) {
         runCatching { burnOps?.removeStems(songIds) }

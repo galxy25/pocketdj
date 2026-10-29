@@ -16,6 +16,9 @@ import com.levi.pocketdj.playback.outcome.SkipTracker
 import com.levi.pocketdj.playback.sequencer.RowResolverRegistry
 import com.levi.pocketdj.playback.sequencer.SetlistSequencer
 import com.levi.pocketdj.screens.nowplaying.NowPlayingRoutes
+import androidx.navigation.compose.composable
+import com.levi.pocketdj.playback.health.DeadAirReport
+import com.levi.pocketdj.screens.settings.DeadAirSource
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.NavEntry
@@ -34,6 +37,10 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
     override val area: String = "playback"
 
     override val navEntries: List<NavEntry> get() = NowPlayingRoutes.entries
+
+    /** Settings > Playback mode row (order 460; see sections/PlaybackSection). */
+    override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> =
+        listOf(com.levi.pocketdj.screens.settings.sections.playbackSection())
 
     /** The app-scoped sequencer (the Android SetlistPlayer). */
     val sequencer: SetlistSequencer get() = app.playbackController.sequencer
@@ -199,6 +206,7 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         }
         // PB-3 zero-dead-air: the KPI, the start runway, and the supervisor that ticks only while a run exists.
         seq.meter = deadAirMeter
+        DeadAirSource.current = DeadAirSource { DeadAirReport.summary(deadAirMeter) }
         seq.runwayLock = PowerRunwayLock(app.appContext)
         app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) {
             seq.state.map { it.isRunning }.distinctUntilChanged().collect { running ->
