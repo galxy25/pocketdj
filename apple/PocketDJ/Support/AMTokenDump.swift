@@ -80,12 +80,46 @@ enum AMTokenDump {
                 }
             }
         }
+        // Optional READ-ONLY end-to-end probe of the real playlist-sync path (GETs only — a PULL
+        // job lists library playlists; nothing is written). `PDJ_AM_SYNC_PULL_PROBE=stale` seeds the
+        // FIRST mint with MusicKit's cached token, so the 403 → .ignoreCache refresh → retry path
+        // runs against the real Apple API.
+        if status == .authorized, let mode = env["PDJ_AM_SYNC_PULL_PROBE"] {
+            let minter = ProbeMinter(staleFirst: mode == "stale")
+            let tokens = MusicUserTokenService(base: base, minter: minter)
+            let client = AMPlaylistSyncClient(base: base, tokens: tokens,
+                                              defaults: UserDefaults(suiteName: "pdj.amTokenDumpProbe") ?? .standard)
+            do {
+                let lists = try await client.pull()
+                out["syncPullPlaylistCount"] = lists.count
+            } catch { out["syncPullError"] = "\(error)" }
+            out["syncPullMints"] = minter.log
+        }
         #else
         out["error"] = "MusicKit unavailable"
         #endif
         write(out)
         if env["PDJ_DUMP_AM_TOKENS_EXIT"] == "1" { exit(0) }
     }
+
+    #if canImport(MusicKit)
+    /// Probe minter: optionally forces the first mint to MusicKit's CACHED token; records each
+    /// mint's mode + whether the token changed (never the token itself).
+    private final class ProbeMinter: MusicUserTokenMinting, @unchecked Sendable {
+        let staleFirst: Bool
+        private(set) var log: [String] = []
+        private var last: String?
+        init(staleFirst: Bool) { self.staleFirst = staleFirst }
+        func userToken(developerToken: String, ignoreCache: Bool) async throws -> String {
+            let useCache = staleFirst && log.isEmpty
+            let t = try await MusicKitUserTokenMinter().userToken(developerToken: developerToken,
+                                                                  ignoreCache: ignoreCache && !useCache)
+            log.append("\(useCache ? "cached" : "ignoreCache")\(last.map { $0 == t ? ":same" : ":changed" } ?? "")")
+            last = t
+            return t
+        }
+    }
+    #endif
 
     private static func write(_ obj: [String: Any]) {
         let url = outputURL

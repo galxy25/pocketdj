@@ -6,7 +6,9 @@ import Foundation
 /// tracks — re-running a partial sync tops a playlist up, never duplicates it. Removals/reorders of
 /// an existing AM playlist are an ON-DEVICE MusicKit concern (see `PlaylistWriteBack.reconcile`).
 /// The per-user Music-User-Token is minted on-device by `MusicUserTokenService` and sent per call;
-/// the server never stores it.
+/// the server never stores it. If Apple rejects it (the worker reports `AM … -> 401/403`), the job
+/// is re-submitted ONCE with a token re-minted via `.ignoreCache` — MusicKit's cached token can be
+/// one the REST API refuses (see `MusicUserTokenService`).
 ///
 /// ── Async job + poll + resume (why) ─────────────────────────────────────────────────────────────
 /// A real library sync is hundreds of sequential Apple Music calls — far beyond API Gateway's hard
@@ -109,6 +111,7 @@ final class AMPlaylistSyncClient {
     private let baseOverride: URL?
     private var base: URL { baseOverride ?? Config.amPlaylistSyncBase }
     private let tokens: MusicUserTokenService
+    private let session: URLSession
     /// Give up when the server publishes NO new progress for this long (a healthy large sync
     /// advances every few seconds; three quiet minutes means the backend truly died).
     private let stallTimeout: TimeInterval
@@ -117,11 +120,15 @@ final class AMPlaylistSyncClient {
 
     init(base: URL? = nil,
          tokens: MusicUserTokenService? = nil,
+         session: URLSession = .shared,
          stallTimeout: TimeInterval = 180,
          pollInterval: TimeInterval = 2,
          defaults: UserDefaults = .standard) {
         self.baseOverride = base
-        self.tokens = tokens ?? MusicUserTokenService(base: base)
+        // The live (nil-base) client shares the app-wide service so its fresh-token memo spans
+        // the launch; an injected base gets its own (tests).
+        self.tokens = tokens ?? (base == nil ? .shared : MusicUserTokenService(base: base, session: session))
+        self.session = session
         self.stallTimeout = stallTimeout
         self.pollInterval = pollInterval
         self.defaults = defaults
@@ -193,8 +200,27 @@ final class AMPlaylistSyncClient {
                 clearJob(op)                       // dead for sure — fall through to a fresh submit
             }
         }
-        var payload = body ?? [:]
-        payload["musicUserToken"] = try await tokens.musicUserToken()
+        var token = try await tokens.musicUserToken()
+        var refreshed = false
+        while true {
+            var payload = body ?? [:]
+            payload["musicUserToken"] = token
+            do {
+                return try await submitAndPoll(op, payload, onProgress: onProgress)
+            } catch {
+                // Apple refused the token: re-mint ONCE with .ignoreCache and re-submit (the new
+                // token reaches the server with the job — it stores none). Safe for push: the
+                // 401/403 is terminal for the job, and push is idempotent server-side anyway.
+                guard !refreshed, Self.isAppleAuthRejection(error),
+                      let fresh = try await tokens.refreshAfterRejection(of: token) else { throw error }
+                refreshed = true
+                token = fresh
+            }
+        }
+    }
+
+    private func submitAndPoll<T: Decodable>(_ op: String, _ payload: [String: Any],
+                                             onProgress: ((JobProgress) -> Void)?) async throws -> T {
         let jobId = try await submit(op, payload)
         storeJob(op, jobId)
         do {
@@ -207,6 +233,19 @@ final class AMPlaylistSyncClient {
         }
     }
 
+    /// Did Apple Music reject the Music-User-Token? The Lambda surfaces Apple's errors verbatim as
+    /// `AM <METHOD> <path> -> <status>` (job `error`, or a submit-time error body). Our OWN
+    /// gateway's 401 (`{"error":"unauthorized"}`) deliberately does NOT match — a new MUT can't fix it.
+    nonisolated static func isAppleAuthRejection(_ error: Error) -> Bool {
+        let message: String
+        switch error as? ClientError {
+        case .worker(let m): message = m
+        case .http(_, let m): message = m
+        default: return false
+        }
+        return message.range(of: #"AM [A-Z]+ \S+ -> 40[13]\b"#, options: .regularExpression) != nil
+    }
+
     /// POST the op and return the server-assigned jobId (the fast 202 path).
     private func submit(_ op: String, _ body: [String: Any]) async throws -> String {
         var req = URLRequest(url: base.appendingPathComponent(op))
@@ -214,7 +253,7 @@ final class AMPlaylistSyncClient {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         req.timeoutInterval = 30
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await session.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 || code == 202 else {
             throw ClientError.http(code, String(data: data, encoding: .utf8) ?? "")
@@ -240,7 +279,7 @@ final class AMPlaylistSyncClient {
             do {
                 var req = URLRequest(url: jobURL)
                 req.timeoutInterval = 20
-                let (data, resp) = try await URLSession.shared.data(for: req)
+                let (data, resp) = try await session.data(for: req)
                 let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 if code == 404 { throw ClientError.jobGone }
                 if code != 200, (400...499).contains(code) {
