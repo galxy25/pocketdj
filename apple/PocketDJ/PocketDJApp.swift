@@ -150,6 +150,16 @@ struct PocketDJApp: App {
         return collections?.historyContext(forSourceSetlistId: id) ?? (.setlist, nil)
     }
 
+    /// The Pocket Wheel's retroactive motion settle (§1.4). Fire-and-forget; the store is
+    /// single-flighted and inert unless the user opted in and granted Motion & Fitness.
+    @MainActor private func settleMotionSoon() {
+        guard listeningMotion.isActive else { return }
+        let history = playHistory, app = app
+        Task { @MainActor in
+            await listeningMotion.settle(history: history, lengthOf: { app.songsById[$0]?.length })
+        }
+    }
+
     /// Wire the sync's settings-backed seams. Done HERE rather than in `init` because
     /// `playlistSync` is `@State` — touching it during init is "used before being initialized".
     /// Idempotent, so every entry point can call it.
@@ -364,6 +374,9 @@ struct PocketDJApp: App {
     /// On-device place/trip engine (opt-in, iOS; inert elsewhere) — raw location never leaves
     /// it, only opaque ids via `ListeningContextProviding`.
     @State private var listeningLocation: ListeningLocationStore
+    /// Pocket Wheel ▸ "Notice walking & running" (opt-in, iOS; inert elsewhere): settles a raw
+    /// CoreMotion activity token onto each play after the fact.
+    @State private var listeningMotion: ListeningMotionStore
     /// Listening pockets: outcome upload + results for History ▸ Pockets (rides the rec consent).
     @State private var listeningPockets: ListeningPocketsService
     /// iCloud (CloudKit private DB) sync of profile + session-data documents. RootView's
@@ -661,6 +674,9 @@ struct PocketDJApp: App {
         let listeningLocation = ListeningLocationStore(fileURL: ListeningLocationStore.launchURL())
         listeningLocation.startIfEnabled()
         _listeningLocation = State(initialValue: listeningLocation)
+        // Running/walking for the Pocket Wheel (opt-in; Noop provider off iOS).
+        let listeningMotion = ListeningMotionStore(fileURL: ListeningMotionStore.launchURL())
+        _listeningMotion = State(initialValue: listeningMotion)
         // Peer plays count toward the storage prune (Levi's call): the merged history answers
         // "when was this last played ANYWHERE", so a track played constantly on the Mac isn't first
         // out of the phone's download cache. Read at query time rather than folded into the
@@ -1789,6 +1805,11 @@ struct PocketDJApp: App {
             listeningLocation?.setEnabled(false)
             recEngine?.clearLocal(cloudDeleted: cloudDeleted)
         }
+        // Pocket Wheel device-local state (motion opt-in; the wheel cache + palette join in
+        // Phase 2) goes with the account.
+        accountDeletion.wheelClearLocal = { [weak listeningMotion] in
+            listeningMotion?.clearLocal()
+        }
         _accountDeletion = State(initialValue: accountDeletion)
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
@@ -1905,6 +1926,7 @@ struct PocketDJApp: App {
                 .environment(accountDeletion)
                 .environment(recEngine)
                 .environment(listeningLocation)
+                .environment(listeningMotion)
                 .environment(listeningPockets)
                 .environment(inThePocket)
                 .preferredColorScheme(.dark)
@@ -2025,6 +2047,9 @@ struct PocketDJApp: App {
                     switch phase {
                     case .active:
                         streaming.onScenePhaseActive()
+                        // Pocket Wheel motion settle — one CoreMotion history query per
+                        // foreground, write-once stamps (inert unless opted in + permitted).
+                        settleMotionSoon()
                         // Foreground re-check of the remote endpoint config (throttled to 15 min).
                         EndpointResolver.refreshAndLog()
                         // PLAY-COUNT CAPTURE — first run, and auto-resume.
