@@ -1,19 +1,37 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-platform="apple" data-play="review">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>PocketDJ — Rip, Burn, Mix Your Music</title>
-<meta name="description" content="PocketDJ turns the music you already own into a real DJ rig: two decks, Auto-DJ, stems, a producer studio, and a party request line. On the App Store for iPhone, iPad, Mac, Apple TV and Apple Vision Pro.">
+<meta name="description" content="PocketDJ turns the music you already own into a real DJ rig: two decks, Auto-DJ, stems, a producer studio, and a party request line. On the App Store for iPhone, iPad, Mac, Apple TV and Apple Vision Pro, and free for Android.">
 <meta name="theme-color" content="#000000">
 <meta name="color-scheme" content="dark">
 <meta name="apple-itunes-app" content="app-id=6784031333">
 <link rel="icon" href="/icon.png">
 <link rel="apple-touch-icon" href="/icon.png">
 <meta property="og:title" content="PocketDJ — Rip, Burn, Mix Your Music">
-<meta property="og:description" content="Your music. Two decks. One tap. Now on the App Store for iPhone, iPad, Mac, Apple TV and Apple Vision Pro.">
+<meta property="og:description" content="Your music. Two decks. One tap. On the App Store for iPhone, iPad, Mac, Apple TV and Apple Vision Pro, and free for Android phones.">
 <meta property="og:image" content="/icon.png">
 <meta property="og:type" content="website">
+<!--
+  GOOGLE PLAY FLAG: data-play on <html> above is the one switch for the Play listing.
+    data-play="review"  badge shows unlinked, captioned "Coming soon · in review"
+    data-play="live"    badge links to the Play listing
+  Screenshot platform: data-platform ("apple" default, or "android"), set before first paint below.
+-->
+<script>
+(function (d) {
+  d.classList.add('js');
+  var p = 'apple';
+  try { if (localStorage.getItem('pdj.www.platform') === 'android') p = 'android'; } catch (e) {}
+  try {
+    var q = new URLSearchParams(location.search).get('platform');
+    if (q === 'android' || q === 'apple') p = q;
+  } catch (e) {}
+  d.setAttribute('data-platform', p);
+})(document.documentElement);
+</script>
 <style>
   :root{
     --bg:#000;
@@ -173,7 +191,8 @@
     font-size:.82rem;color:var(--dim);letter-spacing:.02em;
   }
   .platforms b{color:var(--body);font-weight:600}
-  .platforms .dot{opacity:.45;margin:0 .4rem}
+  .platforms .dot{opacity:.45;margin:0 .15rem}
+  .platforms b{white-space:nowrap}
 
   .scroll-cue{
     display:inline-block;margin-top:clamp(2rem,5vw,3rem);
@@ -322,6 +341,92 @@
   footer .sep{opacity:.4;margin:0 .55rem}
   footer .legal{display:block;margin-top:1rem;font-size:.72rem;opacity:.75}
 
+  /* ── Live store buttons (Android) ─────────────────────────────────────────
+     Google's badge, unaltered. Its PNG carries transparent padding, so it is
+     drawn taller than the App Store badge and pulled in by the padding: the
+     visible badge matches the 56 px App Store badge (Google asks for equal size). */
+  .gplay{position:relative;display:inline-flex;flex-direction:column;align-items:center;line-height:0;border-radius:11px;text-decoration:none}
+  .gplay img{height:84px;width:auto;margin:-14px -11px;display:block}
+  a.gplay{transition:transform .25s cubic-bezier(.16,1,.3,1)}
+  a.gplay:hover{transform:translateY(-2px)}
+  a.gplay:focus-visible{outline:2px solid var(--teal-lit);outline-offset:4px}
+  .gplay .soon{display:block;margin-top:18px;line-height:1.2;font-size:.66rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  html[data-play="review"] .play-live,html[data-play="live"] .play-review{display:none!important}
+  .btn.live{color:var(--ink);cursor:pointer;background:var(--panel);border-color:var(--rim);box-shadow:0 0 0 1px rgba(46,230,214,.18);transition:box-shadow .2s,transform .25s cubic-bezier(.16,1,.3,1)}
+  .btn.live:hover{box-shadow:0 0 0 1px var(--teal-lit);transform:translateY(-2px)}
+  .btn.live:focus-visible{outline:2px solid var(--teal-lit);outline-offset:4px}
+  .btn.live small{color:var(--teal-lit);opacity:1}
+  .btn.live svg{color:#3ddc84;opacity:1}
+  .buttons{flex-wrap:wrap}
+
+  /* ── Apple / Android screenshot tabs ──────────────────────────────────────
+     One platform for the whole page (html[data-platform]); every group's tab
+     bar drives it. Phone groups stack both screenshots in one grid cell and
+     hide the inactive one, so switching never changes the height. Groups whose
+     devices differ in shape (Mix, Every screen) swap with display instead.    */
+  .pgroup{display:flex;flex-direction:column;align-items:center;gap:1.1rem;width:100%;min-width:0}
+  .ptabs{display:inline-flex;gap:2px;padding:3px;border-radius:999px;background:var(--panel);box-shadow:0 0 0 1px var(--rim);visibility:hidden}
+  .js .ptabs{visibility:visible}
+  .ptab{
+    all:unset;box-sizing:border-box;cursor:pointer;
+    min-width:5.6rem;padding:.42rem 1rem;border-radius:999px;text-align:center;
+    font-size:.8rem;font-weight:600;letter-spacing:.03em;color:var(--dim);
+    transition:background .2s,color .2s,box-shadow .2s;
+  }
+  .ptab:hover{color:var(--ink)}
+  .ptab[aria-selected="true"]{background:rgba(46,230,214,.13);color:var(--ink);box-shadow:inset 0 0 0 1px rgba(46,230,214,.5)}
+  .ptab:focus-visible{outline:2px solid var(--teal-lit);outline-offset:2px}
+  .ppanel{width:100%;min-width:0}
+  .pshot{display:grid;justify-items:center;align-items:start}
+  .pshot>.ps{grid-area:1/1;width:100%;display:flex;justify-content:center}
+  html[data-platform="apple"] .ps-android,
+  html[data-platform="android"] .ps-apple{visibility:hidden}
+  html[data-platform="apple"] .pswap-android,
+  html[data-platform="android"] .pswap-apple,
+  html[data-platform="apple"] .pt-android,
+  html[data-platform="android"] .pt-apple{display:none!important}
+  .ps-android img,.pswap-android img{aspect-ratio:600/1333}
+  .row.flip .shot,.row .shot{flex-direction:column;align-items:center}
+  .car-slide .pshot{width:100%}
+  .car-slide .pshot .phone{width:100%}
+
+  /* Android Mix: two phones side by side in place of the iPad board */
+  .phone-pair{display:flex;justify-content:center;gap:clamp(.8rem,3vw,2rem);width:100%}
+  .phone-pair .phone{width:min(300px,42vw);padding:clamp(5px,1.4vw,9px);border-radius:clamp(22px,6vw,38px)}
+  .phone-pair .phone img{border-radius:clamp(17px,4.6vw,30px)}
+  .phone-pair figure{margin:0;display:flex;flex-direction:column;align-items:center}
+  .phone-pair figcaption,.pnote{margin-top:.8rem;font-size:.82rem;color:var(--dim);text-align:center;letter-spacing:.02em}
+
+  /* Every screen, Android: three phones in a row at every width */
+  .gallery.phones{grid-template-columns:repeat(3,minmax(0,1fr));max-width:46rem;margin:0 auto;gap:clamp(.6rem,2.4vw,1.4rem)}
+  .gallery.phones img{border-radius:clamp(10px,2.4vw,20px)}
+
+  /* ── Android download ─────────────────────────────────────────────────── */
+  .get-android{
+    display:grid;gap:clamp(1.6rem,4vw,2.6rem);grid-template-columns:1fr;
+    padding:clamp(1.4rem,4vw,2.4rem);border-radius:26px;background:var(--panel);box-shadow:0 0 0 1px var(--rim);
+    margin:clamp(4rem,10vw,7rem) 0 0;scroll-margin-top:24px;
+  }
+  @media (min-width:820px){.get-android{grid-template-columns:minmax(0,1fr) 180px}}
+  .get-android h3{margin:0 0 .5rem;font-size:clamp(1.5rem,4.2vw,2.1rem);line-height:1.15;letter-spacing:-.015em}
+  .get-android > div > p{margin:0 0 1.2rem;color:var(--body)}
+  .get-android .buttons{justify-content:flex-start;align-items:flex-start;margin-bottom:1.4rem}
+  @media (max-width:619px){.get-android .buttons{align-items:center}}
+  .apk-facts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:.35rem 1rem;margin:0 0 1.4rem;font-size:.88rem}
+  .apk-facts dt{color:var(--dim)}
+  .apk-facts dd{margin:0;color:var(--body);min-width:0}
+  .apk-facts code{font:500 .78rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink);word-break:break-all}
+  .get-android h4{margin:1.4rem 0 .5rem;font-size:1rem}
+  .get-android ol{margin:0;padding-left:1.3rem;color:var(--body);font-size:.92rem;display:grid;gap:.35rem}
+  .get-android .fine{font-size:.84rem;color:var(--dim);margin:.9rem 0 0}
+  .get-android .fine code{font:500 .78rem ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--body)}
+  .get-android .fine a{color:var(--teal-lit);text-decoration:none;border-bottom:1px solid rgba(46,230,214,.35)}
+  .get-android .fine a:hover{border-bottom-color:var(--teal-lit)}
+  .qr{display:none;text-align:center;align-self:start}
+  @media (min-width:820px){.qr{display:block}}
+  .qr img{width:148px;height:148px;border-radius:12px;padding:8px;background:#fff;display:block;margin:0 auto}
+  .qr p{margin:.6rem 0 0;font-size:.78rem;color:var(--dim)}
+
   @media (prefers-reduced-motion:reduce){
     *,*::before,*::after{animation:none!important;transition:none!important}
     html,.car-track{scroll-behavior:auto}
@@ -352,14 +457,21 @@
         <a class="appstore" href="https://apps.apple.com/app/id6784031333">
           <img src="/img/app-store-badge.svg" width="168" height="56" alt="Download on the App Store">
         </a>
-        <span class="btn" role="text" aria-disabled="true" aria-label="Android app: coming soon">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.6 9.48l1.84-3.18a.38.38 0 00-.66-.38l-1.86 3.22A11.4 11.4 0 0012 8.2c-1.77 0-3.43.38-4.92.94L5.22 5.92a.38.38 0 00-.66.38L6.4 9.48A10.8 10.8 0 001 18h22a10.8 10.8 0 00-5.4-8.52zM7 15.25a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5zm10 0a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5z"/></svg>
-          <span class="stack"><small>Coming soon</small>Android</span>
+        <a class="gplay play-live" href="https://play.google.com/store/apps/details?id=com.levi.pocketdj">
+          <img src="/img/google-play-badge.png" width="217" height="84" alt="Get it on Google Play">
+        </a>
+        <span class="gplay play-review" role="group" aria-label="Google Play: coming soon, the listing is in review">
+          <img src="/img/google-play-badge.png" width="217" height="84" alt="Get it on Google Play">
+          <span class="soon" aria-hidden="true">Coming soon · in review</span>
         </span>
+        <a class="btn live" href="#android" data-set-platform="android">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.6 9.48l1.84-3.18a.38.38 0 00-.66-.38l-1.86 3.22A11.4 11.4 0 0012 8.2c-1.77 0-3.43.38-4.92.94L5.22 5.92a.38.38 0 00-.66.38L6.4 9.48A10.8 10.8 0 001 18h22a10.8 10.8 0 00-5.4-8.52zM7 15.25a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5zm10 0a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5z"/></svg>
+          <span class="stack"><small>Free · direct download</small>Android APK</span>
+        </a>
       </div>
 
       <p class="platforms">
-        One purchase: <b>iPhone</b><span class="dot">·</span><b>iPad</b><span class="dot">·</span><b>Mac</b><span class="dot">·</span><b>Apple&nbsp;TV</b><span class="dot">·</span><b>Apple&nbsp;Vision&nbsp;Pro</b>
+        <b>iPhone</b> <span class="dot">·</span> <b>iPad</b> <span class="dot">·</span> <b>Mac</b> <span class="dot">·</span> <b>Apple&nbsp;TV</b> <span class="dot">·</span> <b>Apple&nbsp;Vision&nbsp;Pro</b> <span class="dot">·</span> <b>Android</b>
       </p>
 
       <a class="scroll-cue" href="#tour">See what it does</a>
@@ -393,47 +505,95 @@
           <li><b>Crate A/B</b> auto-mixes between two collections</li>
         </ul>
       </div>
-      <div class="tablet">
-        <img src="/img/ipad-mix.webp" width="1200" height="900" loading="lazy" decoding="async"
-             alt="Mix on iPad: Deck A and Deck B side by side, each with waveform, cue, loop, tempo, pitch, three EQ knobs, an effects rack, VU meter and volume, above the crossfader">
+      <div class="pgroup" data-pgroup>
+        <div class="ptabs" role="tablist" aria-label="Mix screenshots">
+          <button class="ptab" type="button" role="tab" id="mix-tab-apple" data-platform-tab="apple" aria-controls="mix-panel" aria-selected="true" tabindex="0">Apple</button>
+          <button class="ptab" type="button" role="tab" id="mix-tab-android" data-platform-tab="android" aria-controls="mix-panel" aria-selected="false" tabindex="-1">Android</button>
+        </div>
+        <div class="ppanel" role="tabpanel" id="mix-panel" aria-labelledby="mix-tab-apple">
+          <div class="tablet pswap-apple">
+            <img src="/img/ipad-mix.webp" width="1200" height="900" loading="lazy" decoding="async"
+                 alt="Mix on iPad: Deck A and Deck B side by side, each with waveform, cue, loop, tempo, pitch, three EQ knobs, an effects rack, VU meter and volume, above the crossfader">
+          </div>
+          <div class="phone-pair pswap-android">
+            <figure>
+              <div class="phone"><img data-src="/img/android/mix.webp" width="600" height="1333" loading="lazy" decoding="async"
+                   alt="Mix on an Android phone: Deck A loaded with its waveform, cue, loop and tempo controls, the crossfader and play button pinned below"></div>
+              <figcaption>Deck A</figcaption>
+            </figure>
+            <figure>
+              <div class="phone"><img data-src="/img/android/mix-deckb.webp" width="600" height="1333" loading="lazy" decoding="async"
+                   alt="Mix on an Android phone scrolled to Deck B, with its waveform above the crossfader"></div>
+              <figcaption>Deck B and the crossfader</figcaption>
+            </figure>
+          </div>
+        </div>
       </div>
     </section>
 
     <!-- PRODUCER -->
     <section class="row flip">
       <div class="shot">
+        <div class="pgroup" data-pgroup>
+          <div class="ptabs" role="tablist" aria-label="Producer screenshots">
+            <button class="ptab" type="button" role="tab" id="producer-tab-apple" data-platform-tab="apple" aria-controls="producer-panel" aria-selected="true" tabindex="0">Apple</button>
+            <button class="ptab" type="button" role="tab" id="producer-tab-android" data-platform-tab="android" aria-controls="producer-panel" aria-selected="false" tabindex="-1">Android</button>
+          </div>
+          <div class="ppanel" role="tabpanel" id="producer-panel" aria-labelledby="producer-tab-apple">
         <div class="carousel" data-carousel id="producer-carousel" role="region" aria-roledescription="carousel" aria-label="Producer screens">
           <div class="car-track" tabindex="0" aria-label="Producer screenshots — use the arrow keys to move between slides">
             <figure class="car-slide" id="producer-1" role="group" aria-roledescription="slide" aria-label="1 of 5: Samples and loops">
-              <div class="phone"><img src="/img/producer-samples.webp" width="600" height="1304" loading="lazy" decoding="async"
-                   alt="Producer Samples list: Vocal Chop, Kick, Clap, Hat, Bass and Chord Stab, each with its length, source and BPM"></div>
-              <figcaption>Samples, each with its length, source and BPM</figcaption>
+              <div class="pshot">
+                <div class="ps ps-apple"><div class="phone"><img src="/img/producer-samples.webp" width="600" height="1304" loading="lazy" decoding="async"
+                   alt="Producer Samples list: Vocal Chop, Kick, Clap, Hat, Bass and Chord Stab, each with its length, source and BPM"></div></div>
+                <div class="ps ps-android"><div class="phone"><img data-src="/img/android/producer-samples.webp" width="600" height="1333" loading="lazy" decoding="async"
+                     alt="Producer Loops on Android: a loop with its length in beats and its BPM, with buttons to record or import a new one"></div></div>
+              </div>
+              <figcaption><span class="pt-apple">Samples, each with its length, source and BPM</span><span class="pt-android">Loops, each with its length and BPM</span></figcaption>
             </figure>
             <figure class="car-slide" id="producer-2" role="group" aria-roledescription="slide" aria-label="2 of 5: 16-step sequencer">
-              <div class="phone"><img src="/img/iphone-studio.webp" width="600" height="1304" loading="lazy" decoding="async"
-                   alt="Producer Sequencer: a 16-step grid with kick, clap and hat rows at 124 BPM"></div>
-              <figcaption>The 16-step sequencer running a five-lane groove</figcaption>
+              <div class="pshot">
+                <div class="ps ps-apple"><div class="phone"><img src="/img/iphone-studio.webp" width="600" height="1304" loading="lazy" decoding="async"
+                   alt="Producer Sequencer: a 16-step grid with kick, clap and hat rows at 124 BPM"></div></div>
+                <div class="ps ps-android"><div class="phone"><img data-src="/img/android/producer-sequencer.webp" width="600" height="1333" loading="lazy" decoding="async"
+                     alt="Producer Sequencer on Android: a pattern at 120 BPM with its step grid and a mixer deck for each row"></div></div>
+              </div>
+              <figcaption><span class="pt-apple">The 16-step sequencer running a five-lane groove</span><span class="pt-android">The step sequencer, with a mixer deck on every row</span></figcaption>
             </figure>
             <figure class="car-slide" id="producer-3" role="group" aria-roledescription="slide" aria-label="3 of 5: Software instruments">
-              <div class="phone"><img src="/img/producer-instruments.webp" width="600" height="1304" loading="lazy" decoding="async"
-                   alt="Producer Instruments: piano, violin, bass, guitar, trumpet, clarinet and harp, a recorder with click and count-in, an arpeggiator and an on-screen keyboard"></div>
+              <div class="pshot">
+                <div class="ps ps-apple"><div class="phone"><img src="/img/producer-instruments.webp" width="600" height="1304" loading="lazy" decoding="async"
+                   alt="Producer Instruments: piano, violin, bass, guitar, trumpet, clarinet and harp, a recorder with click and count-in, an arpeggiator and an on-screen keyboard"></div></div>
+                <div class="ps ps-android"><div class="phone"><img data-src="/img/android/producer-instruments.webp" width="600" height="1333" loading="lazy" decoding="async"
+                     alt="Producer Instruments on Android: piano, violin, bass guitar and acoustic guitar, a playable keyboard, tempo, click and count-in"></div></div>
+              </div>
               <figcaption>Seven instruments, a recorder and a playable keyboard</figcaption>
             </figure>
             <figure class="car-slide" id="producer-4" role="group" aria-roledescription="slide" aria-label="4 of 5: Demuxer">
-              <div class="phone"><img src="/img/producer-demuxer.webp" width="600" height="1304" loading="lazy" decoding="async"
-                   alt="Producer Demuxer: a song's waveform over its chord timeline, with stems, drum pattern and a chord-comping score"></div>
-              <figcaption>The Demuxer maps a song's chords and writes out the score</figcaption>
+              <div class="pshot">
+                <div class="ps ps-apple"><div class="phone"><img src="/img/producer-demuxer.webp" width="600" height="1304" loading="lazy" decoding="async"
+                   alt="Producer Demuxer: a song's waveform over its chord timeline, with stems, drum pattern and a chord-comping score"></div></div>
+                <div class="ps ps-android"><div class="phone"><img data-src="/img/android/producer-demuxer.webp" width="600" height="1333" loading="lazy" decoding="async"
+                     alt="Producer Demuxer on Android: imported audio, performance media and tracks ready to split into stems and chords"></div></div>
+              </div>
+              <figcaption><span class="pt-apple">The Demuxer maps a song's chords and writes out the score</span><span class="pt-android">The Demuxer: pick a song to split into stems and chords</span></figcaption>
             </figure>
             <figure class="car-slide" id="producer-5" role="group" aria-roledescription="slide" aria-label="5 of 5: Tracks">
-              <div class="phone"><img src="/img/producer-tracks.webp" width="600" height="1304" loading="lazy" decoding="async"
-                   alt="Producer Tracks: a multitrack arrangement with drums, bass, chord stab and vocal chop lanes"></div>
-              <figcaption>Tracks: lay it all out as a multitrack arrangement</figcaption>
+              <div class="pshot">
+                <div class="ps ps-apple"><div class="phone"><img src="/img/producer-tracks.webp" width="600" height="1304" loading="lazy" decoding="async"
+                   alt="Producer Tracks: a multitrack arrangement with drums, bass, chord stab and vocal chop lanes"></div></div>
+                <div class="ps ps-android"><div class="phone"><img data-src="/img/android/producer-tracks.webp" width="600" height="1333" loading="lazy" decoding="async"
+                     alt="Producer Tracks on Android: start a multitrack arrangement from samples, instruments and stems"></div></div>
+              </div>
+              <figcaption><span class="pt-apple">Tracks: lay it all out as a multitrack arrangement</span><span class="pt-android">Tracks: start a multitrack arrangement</span></figcaption>
             </figure>
           </div>
           <div class="car-nav">
             <button class="car-btn" type="button" data-car-prev aria-label="Previous screen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
             <div class="car-dots" data-car-dots></div>
             <button class="car-btn" type="button" data-car-next aria-label="Next screen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></button>
+          </div>
+        </div>
           </div>
         </div>
       </div>
@@ -454,9 +614,19 @@
     <!-- NOW PLAYING -->
     <section class="row">
       <div class="shot">
-        <div class="phone">
-          <img src="/img/iphone-nowplaying.webp" width="600" height="1304" loading="lazy" decoding="async"
-               alt="Now Playing: a spinning gold record with transport controls and an Up Next queue">
+        <div class="pgroup" data-pgroup>
+          <div class="ptabs" role="tablist" aria-label="Now Playing screenshots">
+            <button class="ptab" type="button" role="tab" id="nowplaying-tab-apple" data-platform-tab="apple" aria-controls="nowplaying-panel" aria-selected="true" tabindex="0">Apple</button>
+            <button class="ptab" type="button" role="tab" id="nowplaying-tab-android" data-platform-tab="android" aria-controls="nowplaying-panel" aria-selected="false" tabindex="-1">Android</button>
+          </div>
+          <div class="ppanel" role="tabpanel" id="nowplaying-panel" aria-labelledby="nowplaying-tab-apple">
+        <div class="pshot">
+          <div class="ps ps-apple"><div class="phone"><img src="/img/iphone-nowplaying.webp" width="600" height="1304" loading="lazy" decoding="async"
+               alt="Now Playing: a spinning gold record with transport controls and an Up Next queue"></div></div>
+          <div class="ps ps-android"><div class="phone"><img data-src="/img/android/nowplaying.webp" width="600" height="1333" loading="lazy" decoding="async"
+               alt="Now Playing on Android: a gold record with tempo, key, transport, shuffle, repeat and favorite controls"></div></div>
+        </div>
+          </div>
         </div>
       </div>
       <div class="copy">
@@ -465,9 +635,12 @@
         <p>A gold record that spins at the song's tempo, with your queue, transport and
            up-next exactly where you left them, on whichever screen you pick up next.</p>
         <ul>
-          <li><b>CarPlay</b> and Lock Screen controls</li>
-          <li><b>Home Screen widgets</b> for what's playing</li>
-          <li><b>Siri and Shortcuts</b> to start a playlist hands-free</li>
+          <li class="pt-apple"><b>CarPlay</b> and Lock Screen controls</li>
+          <li class="pt-apple"><b>Home Screen widgets</b> for what's playing</li>
+          <li class="pt-apple"><b>Siri and Shortcuts</b> to start a playlist hands-free</li>
+          <li class="pt-android"><b>Android Auto</b>, lock screen and notification controls</li>
+          <li class="pt-android"><b>A home-screen widget</b> for what's playing</li>
+          <li class="pt-android"><b>Voice search and app shortcuts</b> to start playing hands-free</li>
           <li><b>Stems in Now Playing</b></li>
         </ul>
       </div>
@@ -476,9 +649,19 @@
     <!-- BROWSE -->
     <section class="row flip">
       <div class="shot">
-        <div class="phone">
-          <img src="/img/iphone-browse.webp" width="600" height="1304" loading="lazy" decoding="async"
-               alt="Browser: songs listed with BPM, Camelot key, musical key and length">
+        <div class="pgroup" data-pgroup>
+          <div class="ptabs" role="tablist" aria-label="Browse screenshots">
+            <button class="ptab" type="button" role="tab" id="browse-tab-apple" data-platform-tab="apple" aria-controls="browse-panel" aria-selected="true" tabindex="0">Apple</button>
+            <button class="ptab" type="button" role="tab" id="browse-tab-android" data-platform-tab="android" aria-controls="browse-panel" aria-selected="false" tabindex="-1">Android</button>
+          </div>
+          <div class="ppanel" role="tabpanel" id="browse-panel" aria-labelledby="browse-tab-apple">
+        <div class="pshot">
+          <div class="ps ps-apple"><div class="phone"><img src="/img/iphone-browse.webp" width="600" height="1304" loading="lazy" decoding="async"
+               alt="Browser: songs listed with BPM, Camelot key, musical key and length"></div></div>
+          <div class="ps ps-android"><div class="phone"><img data-src="/img/android/browse.webp" width="600" height="1333" loading="lazy" decoding="async"
+               alt="Browse on Android: songs listed with BPM, Camelot key and length, with source and mode pickers"></div></div>
+        </div>
+          </div>
         </div>
       </div>
       <div class="copy">
@@ -496,9 +679,19 @@
     <!-- ORGANIZE -->
     <section class="row">
       <div class="shot">
-        <div class="phone">
-          <img src="/img/iphone-playlists.webp" width="600" height="1304" loading="lazy" decoding="async"
-               alt="Playlists screen listing playlists and reusable Pockets">
+        <div class="pgroup" data-pgroup>
+          <div class="ptabs" role="tablist" aria-label="Organize screenshots">
+            <button class="ptab" type="button" role="tab" id="organize-tab-apple" data-platform-tab="apple" aria-controls="organize-panel" aria-selected="true" tabindex="0">Apple</button>
+            <button class="ptab" type="button" role="tab" id="organize-tab-android" data-platform-tab="android" aria-controls="organize-panel" aria-selected="false" tabindex="-1">Android</button>
+          </div>
+          <div class="ppanel" role="tabpanel" id="organize-panel" aria-labelledby="organize-tab-apple">
+        <div class="pshot">
+          <div class="ps ps-apple"><div class="phone"><img src="/img/iphone-playlists.webp" width="600" height="1304" loading="lazy" decoding="async"
+               alt="Playlists screen listing playlists and reusable Pockets"></div></div>
+          <div class="ps ps-android"><div class="phone"><img data-src="/img/android/playlists.webp" width="600" height="1333" loading="lazy" decoding="async"
+               alt="A playlist on Android: Burn and Play buttons above its songs, each with BPM, key and length"></div></div>
+        </div>
+          </div>
         </div>
       </div>
       <div class="copy">
@@ -512,21 +705,39 @@
     <!-- GAMES -->
     <section class="row flip">
       <div class="shot">
+        <div class="pgroup" data-pgroup>
+          <div class="ptabs" role="tablist" aria-label="Games screenshots">
+            <button class="ptab" type="button" role="tab" id="games-tab-apple" data-platform-tab="apple" aria-controls="games-panel" aria-selected="true" tabindex="0">Apple</button>
+            <button class="ptab" type="button" role="tab" id="games-tab-android" data-platform-tab="android" aria-controls="games-panel" aria-selected="false" tabindex="-1">Android</button>
+          </div>
+          <div class="ppanel" role="tabpanel" id="games-panel" aria-labelledby="games-tab-apple">
         <div class="carousel" data-carousel id="games-carousel" role="region" aria-roledescription="carousel" aria-label="Games screens">
           <div class="car-track" tabindex="0" aria-label="Games screenshots — use the arrow keys to move between slides">
             <figure class="car-slide" id="games-1" role="group" aria-roledescription="slide" aria-label="1 of 3: In the Pocket">
-              <div class="phone"><img src="/img/games-inthepocket.webp" width="600" height="1304" loading="lazy" decoding="async"
-                   alt="In the Pocket: a round of predicted songs for right now, with the reasons it picked them"></div>
-              <figcaption>In the Pocket: today's predicted run, and why</figcaption>
+              <div class="pshot">
+                <div class="ps ps-apple"><div class="phone"><img src="/img/games-inthepocket.webp" width="600" height="1304" loading="lazy" decoding="async"
+                   alt="In the Pocket: a round of predicted songs for right now, with the reasons it picked them"></div></div>
+                <div class="ps ps-android"><div class="phone"><img data-src="/img/android/games-inthepocket.webp" width="600" height="1333" loading="lazy" decoding="async"
+                     alt="In the Pocket on Android: rounds, pocket and best-streak counters with a button to build a round"></div></div>
+              </div>
+              <figcaption><span class="pt-apple">In the Pocket: today's predicted run, and why</span><span class="pt-android">In the Pocket: build a round of predicted songs</span></figcaption>
             </figure>
             <figure class="car-slide" id="games-2" role="group" aria-roledescription="slide" aria-label="2 of 3: Gem Collector">
-              <div class="phone"><img src="/img/games-gemcollector.webp" width="600" height="1304" loading="lazy" decoding="async"
-                   alt="Gem Collector mid-round: a timer, the score, the current song and buttons to file it into a collection"></div>
-              <figcaption>Gem Collector: beat the clock filing songs</figcaption>
+              <div class="pshot">
+                <div class="ps ps-apple"><div class="phone"><img src="/img/games-gemcollector.webp" width="600" height="1304" loading="lazy" decoding="async"
+                   alt="Gem Collector mid-round: a timer, the score, the current song and buttons to file it into a collection"></div></div>
+                <div class="ps ps-android"><div class="phone"><img data-src="/img/android/games-gemcollector.webp" width="600" height="1333" loading="lazy" decoding="async"
+                     alt="Gem Collector on Android: round length, weighting and filter options above the Start Round button"></div></div>
+              </div>
+              <figcaption><span class="pt-apple">Gem Collector: beat the clock filing songs</span><span class="pt-android">Gem Collector: set the clock, then file songs</span></figcaption>
             </figure>
             <figure class="car-slide" id="games-3" role="group" aria-roledescription="slide" aria-label="3 of 3: Music with Friends">
-              <div class="phone"><img src="/img/games-home.webp" width="600" height="1304" loading="lazy" decoding="async"
-                   alt="The Games tab: Gem Collector, In the Pocket and Music with Friends cards above a scoreboard of recent runs"></div>
+              <div class="pshot">
+                <div class="ps ps-apple"><div class="phone"><img src="/img/games-home.webp" width="600" height="1304" loading="lazy" decoding="async"
+                   alt="The Games tab: Gem Collector, In the Pocket and Music with Friends cards above a scoreboard of recent runs"></div></div>
+                <div class="ps ps-android"><div class="phone"><img data-src="/img/android/games-home.webp" width="600" height="1333" loading="lazy" decoding="async"
+                     alt="The Games tab on Android: Gem Collector, In the Pocket and Music with Friends cards above a scoreboard"></div></div>
+              </div>
               <figcaption>Music with Friends, plus a scoreboard for every game</figcaption>
             </figure>
           </div>
@@ -534,6 +745,8 @@
             <button class="car-btn" type="button" data-car-prev aria-label="Previous screen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg></button>
             <div class="car-dots" data-car-dots></div>
             <button class="car-btn" type="button" data-car-next aria-label="Next screen"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18l6-6-6-6"/></svg></button>
+          </div>
+        </div>
           </div>
         </div>
       </div>
@@ -566,17 +779,42 @@
       <div class="card">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a4.5 4.5 0 01-.6-8.96A6 6 0 0118 8.5a4 4 0 01-1 7.9"/><path d="M12 12v8M9 17l3 3 3-3"/></svg>
         <h4>Offline and private</h4>
-        <p>Downloaded songs mix offline. Settings and sessions sync through your own private iCloud.</p>
+        <p>Downloaded songs mix offline. <span class="pt-apple">Settings and sessions sync through your own private iCloud.</span><span class="pt-android">Your library, settings and sessions stay on your phone.</span></p>
       </div>
     </section>
 
     <!-- EVERY SCREEN -->
     <section class="screens">
-      <span class="kicker" style="display:block;text-align:center">One purchase</span>
+      <span class="kicker" style="display:block;text-align:center">Wherever you listen</span>
       <h3>Every screen you own.</h3>
-      <p>iPhone and iPad, Mac and Apple Vision Pro get the full rig. Apple TV gets a lean-back
-         version: Now Playing, Auto-DJ, Browse, For You and Jukebox. Buy once, use it everywhere.</p>
-      <div class="gallery">
+      <p class="pt-apple">iPhone and iPad, Mac and Apple Vision Pro get the full rig. Apple TV gets a lean-back
+         version: Now Playing, Auto-DJ, Browse, For You and Jukebox. One App Store purchase covers them all.</p>
+      <p class="pt-android">Android phones get the full rig, free: Mix, Producer, Games, Jukebox, plus your history
+         and For You picks. It runs on Android 15 or later, with Android Auto in the car.</p>
+      <div class="pgroup" data-pgroup>
+        <div class="ptabs" role="tablist" aria-label="Device screenshots">
+          <button class="ptab" type="button" role="tab" id="screens-tab-apple" data-platform-tab="apple" aria-controls="screens-panel" aria-selected="true" tabindex="0">Apple</button>
+          <button class="ptab" type="button" role="tab" id="screens-tab-android" data-platform-tab="android" aria-controls="screens-panel" aria-selected="false" tabindex="-1">Android</button>
+        </div>
+        <div class="ppanel" role="tabpanel" id="screens-panel" aria-labelledby="screens-tab-apple">
+      <div class="gallery phones pswap-android">
+        <figure>
+          <img data-src="/img/android/album.webp" width="600" height="1333" loading="lazy" decoding="async"
+               alt="An album on Android: cover art, Play and Shuffle, and its tracks with BPM, key and length">
+          <figcaption>Albums</figcaption>
+        </figure>
+        <figure>
+          <img data-src="/img/android/history.webp" width="600" height="1333" loading="lazy" decoding="async"
+               alt="History on Android: recent plays with where each one came from and how many times it played">
+          <figcaption>History</figcaption>
+        </figure>
+        <figure>
+          <img data-src="/img/android/foryou.webp" width="600" height="1333" loading="lazy" decoding="async"
+               alt="For You on Android: recommendation crates built from your own listening">
+          <figcaption>For You</figcaption>
+        </figure>
+      </div>
+      <div class="gallery pswap-apple">
         <figure>
           <img src="/img/mac-mix.webp" width="1200" height="750" loading="lazy" decoding="async"
                alt="PocketDJ on Mac: two decks side by side with colored cue pads and a crossfader">
@@ -593,13 +831,73 @@
           <figcaption>Apple TV</figcaption>
         </figure>
       </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ANDROID DOWNLOAD -->
+    <section class="get-android" id="android" aria-labelledby="android-title">
+      <div>
+        <span class="kicker">Android</span>
+        <h3 id="android-title">PocketDJ for Android. Free.</h3>
+        <p>Get it from Google Play, or download the APK straight from us. Both are the same app,
+           signed with the same key, so you can switch from one to the other later and keep your data.</p>
+        <div class="buttons">
+          <a class="gplay play-live" href="https://play.google.com/store/apps/details?id=com.levi.pocketdj">
+            <img src="/img/google-play-badge.png" width="217" height="84" alt="Get it on Google Play">
+          </a>
+          <span class="gplay play-review" role="group" aria-label="Google Play: coming soon, the listing is in review">
+            <img src="/img/google-play-badge.png" width="217" height="84" alt="Get it on Google Play">
+            <span class="soon" aria-hidden="true">Coming soon · in review</span>
+          </span>
+          <a class="btn live" data-apk-href href="https://pocket-dj.com/android/PocketDJ.apk" download>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0l-5-5m5 5l5-5M4 19h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="stack"><small data-apk-summary>v1.0.0 · 23.2 MB</small>Download APK</span>
+          </a>
+        </div>
+        <dl class="apk-facts">
+          <dt>Version</dt><dd><span data-apk-version>1.0.0 (1793311586)</span></dd>
+          <dt>Size</dt><dd><span data-apk-size>23.2 MB</span></dd>
+          <dt>Requires</dt><dd>Android 15 or later, 64-bit (arm64) phone</dd>
+          <dt>SHA-256</dt><dd><code data-apk-sha>2abe35df5e53f6370f1e0ec4202c7ca4a631ac19353f6964453e0bacd7edc4dc</code></dd>
+        </dl>
+        <h4>Install the APK</h4>
+        <ol>
+          <li>Tap <b>Download APK</b> on your phone. If Chrome warns the file might be harmful, tap <b>Download anyway</b>.</li>
+          <li>Open the file. When asked, allow <b>Install unknown apps</b> for Chrome (or your Files app), then go back.</li>
+          <li>Tap <b>Install</b>.</li>
+          <li>If Play Protect says it doesn't recognise the app, tap <b>More details ▸ Install anyway</b>. On Samsung phones, turn off <b>Auto Blocker</b> first.</li>
+        </ol>
+        <p class="fine">To update, install the newer APK over the old one; your library and settings are kept.
+           Signing certificate SHA-256 (check with <code>apksigner verify --print-certs</code>):
+           <code style="word-break:break-all">26:C3:CD:8F:7F:56:A2:8B:F0:F6:E9:47:9A:05:A9:7A:72:16:BD:5D:76:81:09:E6:80:5E:06:50:DC:4C:D6:74</code></p>
+        <p class="fine"><a href="https://legal.pocket-dj.com/privacy/">Privacy Policy</a> ·
+           <a href="/support.html">Support</a></p>
+      </div>
+      <div class="qr">
+        <img src="/img/android-qr.svg" width="148" height="148" alt="QR code linking to this page's Android download section">
+        <p>On a computer? Scan to open this on your phone.</p>
+      </div>
     </section>
 
     <section class="cta">
       <p>Bring your music. We'll bring the decks.</p>
-      <a class="appstore" href="https://apps.apple.com/app/id6784031333">
-        <img src="/img/app-store-badge.svg" width="168" height="56" alt="Download on the App Store">
-      </a>
+      <div class="buttons">
+        <a class="appstore" href="https://apps.apple.com/app/id6784031333">
+          <img src="/img/app-store-badge.svg" width="168" height="56" alt="Download on the App Store">
+        </a>
+        <a class="gplay play-live" href="https://play.google.com/store/apps/details?id=com.levi.pocketdj">
+          <img src="/img/google-play-badge.png" width="217" height="84" alt="Get it on Google Play">
+        </a>
+        <span class="gplay play-review" role="group" aria-label="Google Play: coming soon, the listing is in review">
+          <img src="/img/google-play-badge.png" width="217" height="84" alt="Get it on Google Play">
+          <span class="soon" aria-hidden="true">Coming soon · in review</span>
+        </span>
+        <a class="btn live" href="#android" data-set-platform="android">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.6 9.48l1.84-3.18a.38.38 0 00-.66-.38l-1.86 3.22A11.4 11.4 0 0012 8.2c-1.77 0-3.43.38-4.92.94L5.22 5.92a.38.38 0 00-.66.38L6.4 9.48A10.8 10.8 0 001 18h22a10.8 10.8 0 00-5.4-8.52zM7 15.25a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5zm10 0a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5z"/></svg>
+          <span class="stack"><small>Free · direct download</small>Android APK</span>
+        </a>
+      </div>
     </section>
   </main>
 
@@ -613,7 +911,7 @@
     <a href="mailto:contact@pocket-dj.com">contact@pocket-dj.com</a>
     <span class="sep">·</span>
     <span>&copy; 2026 PocketDJ</span>
-    <span class="legal">Apple, the Apple logo, iPhone, iPad, Mac, Apple TV, Apple Vision Pro and CarPlay are trademarks of Apple Inc., registered in the U.S. and other countries. App Store is a service mark of Apple Inc.</span>
+    <span class="legal">Apple, the Apple logo, iPhone, iPad, Mac, Apple TV, Apple Vision Pro and CarPlay are trademarks of Apple Inc., registered in the U.S. and other countries. App Store is a service mark of Apple Inc. Google Play and the Google Play logo are trademarks of Google LLC. Android and Android Auto are trademarks of Google LLC.</span>
   </footer>
 
 <script>
@@ -687,6 +985,94 @@
 
     mark(0);
   });
+})();
+
+/* Apple / Android screenshot tabs: one platform for the whole page. Every group's tab bar sets
+   html[data-platform]; CSS shows the matching set. Android images carry data-src until the
+   first switch, so Apple-only visitors never download them. The choice is remembered. */
+(function () {
+  var html = document.documentElement;
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('[data-platform-tab]'));
+  var loaded = false;
+
+  function loadAndroid() {
+    if (loaded) return;
+    loaded = true;
+    document.querySelectorAll('img[data-src]').forEach(function (img) {
+      img.src = img.getAttribute('data-src');
+      img.removeAttribute('data-src');
+    });
+  }
+
+  function setPlatform(p, save) {
+    if (p !== 'android') p = 'apple';
+    if (p === 'android') loadAndroid();
+    html.setAttribute('data-platform', p);
+    tabs.forEach(function (t) {
+      var on = t.getAttribute('data-platform-tab') === p;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      if (on) {
+        var panel = document.getElementById(t.getAttribute('aria-controls'));
+        if (panel) panel.setAttribute('aria-labelledby', t.id);
+      }
+    });
+    if (save) { try { localStorage.setItem('pdj.www.platform', p); } catch (e) {} }
+  }
+
+  // Switch, keeping the given element where it is on screen (groups above it may change height).
+  function switchKeeping(p, anchor) {
+    var before = anchor ? anchor.getBoundingClientRect().top : 0;
+    setPlatform(p, true);
+    if (anchor) {
+      var delta = anchor.getBoundingClientRect().top - before;
+      if (Math.abs(delta) > 0.5) window.scrollBy({ top: delta, left: 0, behavior: 'instant' });
+    }
+  }
+
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest && e.target.closest('[data-platform-tab]');
+    if (t) { switchKeeping(t.getAttribute('data-platform-tab'), t.parentNode); return; }
+    var s = e.target.closest && e.target.closest('[data-set-platform]');
+    if (s) setPlatform(s.getAttribute('data-set-platform'), true);
+  });
+
+  document.querySelectorAll('[role="tablist"]').forEach(function (list) {
+    list.addEventListener('keydown', function (e) {
+      var own = Array.prototype.slice.call(list.querySelectorAll('[role="tab"]'));
+      var i = own.indexOf(document.activeElement);
+      if (i < 0) return;
+      var j = null;
+      if (e.key === 'ArrowRight') j = (i + 1) % own.length;
+      else if (e.key === 'ArrowLeft') j = (i - 1 + own.length) % own.length;
+      else if (e.key === 'Home') j = 0;
+      else if (e.key === 'End') j = own.length - 1;
+      if (j === null) return;
+      e.preventDefault();
+      switchKeeping(own[j].getAttribute('data-platform-tab'), list);
+      own[j].focus({ preventScroll: true });
+    });
+  });
+
+  setPlatform(html.getAttribute('data-platform'), false);
+})();
+
+/* Android download facts, refreshed from /android/latest.json (static fallback in the markup). */
+(function () {
+  if (!window.fetch) return;
+  fetch('/android/latest.json', { cache: 'no-cache' }).then(function (r) {
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }).then(function (j) {
+    if (!j || !j.versionName || !j.url) return;
+    var mb = j.size ? (j.size / 1e6).toFixed(1) + ' MB' : '';
+    var set = function (sel, v) { document.querySelectorAll(sel).forEach(function (el) { el.textContent = v; }); };
+    set('[data-apk-version]', j.versionName + ' (' + j.versionCode + ')');
+    if (mb) set('[data-apk-size]', mb);
+    set('[data-apk-summary]', 'v' + j.versionName + (mb ? ' · ' + mb : ''));
+    if (j.sha256) set('[data-apk-sha]', j.sha256);
+    document.querySelectorAll('[data-apk-href]').forEach(function (a) { a.href = j.url; });
+  }).catch(function () {});
 })();
 </script>
 

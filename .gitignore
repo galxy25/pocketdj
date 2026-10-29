@@ -91,3 +91,7 @@ scripts/lambda/rec-engine/.endpoint-url.txt
 # diag key must never be compiled in or tracked (lives in Keychain; see DiagCredentialStore)
 apple/PocketDJ/Support/DiagSecret*.swift
 scripts/gen-diag-secret.sh
+
+# sideload APKs go to S3 via android/scripts/publish-apk.sh; never in git
+www/android/
+*.apk
