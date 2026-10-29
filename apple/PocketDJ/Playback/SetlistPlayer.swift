@@ -363,6 +363,49 @@ final class SetlistPlayer {
         // stands down while our session has an open interruption (a call).
         player.appleMusicPauseWasIntentional = { [weak coordinator] in coordinator?.appleMusic.pauseIsIntentional ?? false }
         coordinator.appleMusic.sessionInterruptionOpen = { [weak player] in player?.interruptionOpen ?? false }
+        // STALE MUSICKIT CARD (drive 2026-10-28): leaving Apple Music releases MusicKit; the
+        // engine drops its AM impersonation at once, so the card + remote commands are ours.
+        coordinator.appleMusic.onReleased = { [weak player] in player?.leaveExternalPlayback(reason: "amReleased") }
+        // …and if MusicKit resumes anyway (a stale system card's ▶), it is silenced and ▶ plays
+        // OUR current row. Wired here (not armEngineHooks) so it is live while the deck is held.
+        coordinator.appleMusic.onStrayPlay = { [weak self] in self?.reclaimFromStrayMusicKit() }
+        player.onLocalInterruptionBegan = { [weak coordinator] in
+            coordinator?.appleMusic.scheduleStrayPlayCheck(source: "interruption")
+        }
+    }
+
+    /// What the set does after a stray MusicKit play was silenced.
+    enum StrayReclaimAction: String, Equatable {
+        case none, resumeHeld, resumeEngine, startCurrent
+    }
+
+    /// Pure verdict for `reclaimFromStrayMusicKit`. The listener pressed ▶ (on a stale MusicKit
+    /// card), so play what the deck shows: a held deck resumes, a loaded local row resumes, a
+    /// row with nothing loaded (and no start in flight) starts. An Apple Music row that is the
+    /// active backend is never "stray" (the provider owns MusicKit then) — defensive no-op.
+    nonisolated static func strayReclaimAction(isRunning: Bool, isHeld: Bool, appleMusicActive: Bool,
+                                               engineHasLocalItem: Bool, startPending: Bool) -> StrayReclaimAction {
+        guard isRunning, !appleMusicActive else { return .none }
+        if isHeld { return .resumeHeld }
+        if engineHasLocalItem { return .resumeEngine }
+        if startPending { return .none }   // the in-flight start will sound; don't restart it
+        return .startCurrent
+    }
+
+    /// MusicKit started playing while the set's current row is NOT an Apple Music stream, and
+    /// the provider silenced it (`AppleMusicPlaybackProvider.checkForStrayPlay`).
+    func reclaimFromStrayMusicKit() {
+        let action = Self.strayReclaimAction(isRunning: isRunning, isHeld: isHeldForResume,
+                                             appleMusicActive: coordinator.activeBackend == .appleMusic,
+                                             engineHasLocalItem: player.hasLocalItem,
+                                             startPending: isStartPending)
+        DiagLog.shared.log("playback", "stray musickit reclaim action=\(action.rawValue) song=\(index < queue.count ? queue[index].id : "-")")
+        switch action {
+        case .none: break
+        case .resumeHeld: resumeFromHold()
+        case .resumeEngine: player.reclaimAfterStrayExternalPlay()
+        case .startCurrent: startCurrent(by: "strayMusicKit")
+        }
     }
 
     // MARK: Start window — runway until first audio + the start watchdog (plan P1-7)
