@@ -9,6 +9,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import com.levi.pocketdj.data.games.GameKind
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.di.AppGraph
 
 /**
@@ -46,18 +51,28 @@ fun GamesRoute(
             if (engine.currentPhase == com.levi.pocketdj.data.games.puzzle.PuzzleRoundState.Phase.FINISHED) engine.reset()
             showPuzzle = false
         }
-        CollectorsPuzzleScreen(graph, onClose = { showPuzzle = false }, modifier = modifier)
+        GameSubScreen(GameKind.CollectorsPuzzle.label, onBack = {
+            val engine = graph.gamesGraph.puzzleEngine
+            if (engine.currentPhase == com.levi.pocketdj.data.games.puzzle.PuzzleRoundState.Phase.FINISHED) engine.reset()
+            showPuzzle = false
+        }, modifier = modifier) { m ->
+            CollectorsPuzzleScreen(graph, onClose = { showPuzzle = false }, modifier = m)
+        }
         return
     }
     // The store is app-scoped, so a round keeps tracking after back; the screen saves feedback on leave.
     if (showInThePocket) {
         BackHandler { showInThePocket = false }
-        InThePocketScreen(graph, modifier = modifier)
+        GameSubScreen(GameKind.InThePocket.label, onBack = { showInThePocket = false }, modifier = modifier) { m ->
+            InThePocketScreen(graph, modifier = m)
+        }
         return
     }
     sessionId?.let { id ->
         BackHandler { sessionId = null }
-        MwFSessionScreen(graph, id, onClose = { sessionId = null }, modifier = modifier)
+        GameSubScreen(GameKind.MusicWithFriends.label, onBack = { sessionId = null }, modifier = modifier) { m ->
+            MwFSessionScreen(graph, id, onClose = { sessionId = null }, modifier = m)
+        }
         return
     }
     if (showCreate) MwFCreateSheet(graph, onDismiss = { showCreate = false })
@@ -78,3 +93,36 @@ fun GamesRoute(
 
 /** Pure routing rule for an opened-session signal: known id -> push it; unknown -> null (Join sheet shows). */
 internal fun routeOpenedSession(id: String, isKnown: (String) -> Boolean): String? = if (isKnown(id)) id else null
+
+/**
+ * A game opened in-tab (overlay, Q43): its own back arrow + game title under the shell's "Games"
+ * bar, so the player can see which game they are in and get back to the hub without the system back.
+ */
+@Composable
+internal fun GameSubScreen(
+    title: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable (Modifier) -> Unit,
+) {
+    androidx.compose.foundation.layout.Column(modifier) {
+        androidx.compose.foundation.layout.Row(
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 4.dp, end = 16.dp).testTag("game-subscreen-header"),
+        ) {
+            androidx.compose.material3.IconButton(onClick = onBack, modifier = Modifier.testTag("game-subscreen-back")) {
+                androidx.compose.material3.Icon(
+                    androidx.compose.material.icons.Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back to Games",
+                )
+            }
+            androidx.compose.material3.Text(
+                title,
+                style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+        }
+        content(Modifier.weight(1f))
+    }
+}
