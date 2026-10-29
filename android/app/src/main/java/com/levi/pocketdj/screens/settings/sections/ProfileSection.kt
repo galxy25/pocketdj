@@ -84,12 +84,15 @@ internal fun profileSection() = SettingsSection(PROFILE_SECTION_ID, 50) { host -
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
     ) {
         Text("Sync across devices", modifier = Modifier.weight(1f))
+        // No sync account on this device: the switch cannot be ON (it read ON next to
+        // "Account unavailable"). The stored preference is kept for when an account appears.
         Switch(
-            checked = syncOn,
+            checked = SyncUi.switchOn(syncOn, syncStatus.accountAvailable),
+            enabled = SyncUi.switchEnabled(syncStatus.accountAvailable),
             onCheckedChange = { v -> host.scope.launch { graph.settings.set(SyncSettings.CLOUD_SYNC_ENABLED, v) } },
         )
     }
-    OutlinedButton(
+    if (SyncUi.switchEnabled(syncStatus.accountAvailable)) OutlinedButton(
         enabled = syncOn && !syncStatus.syncing,
         onClick = { host.scope.launch(Dispatchers.IO) { services.cloudSync.syncNow() } },
     ) { Text(if (syncStatus.syncing) "Syncing\u2026" else "Sync now") }
@@ -113,10 +116,18 @@ internal fun profileSection() = SettingsSection(PROFILE_SECTION_ID, 50) { host -
             )
         }
     }
-    SettingsCaption(
-        syncStatus.lastError?.let { "Sync failed: $it" }
-            ?: syncStatus.lastSummary
-            ?: if (syncStatus.accountAvailable == false) "Sync isn\u2019t set up on this device yet."
-            else "Your profile and play data follow you across your devices.",
-    )
+    SettingsCaption(SyncUi.caption(syncStatus.accountAvailable, syncStatus.lastError, syncStatus.lastSummary))
+}
+
+/** Pure copy/state rules for the sync row (JVM-tested). */
+internal object SyncUi {
+    fun switchEnabled(accountAvailable: Boolean?): Boolean = accountAvailable != false
+    fun switchOn(pref: Boolean, accountAvailable: Boolean?): Boolean = pref && accountAvailable != false
+    const val NO_ACCOUNT = "Sync isn\u2019t set up on this device yet, so your profile and play data stay on this device."
+    fun caption(accountAvailable: Boolean?, lastError: String?, lastSummary: String?): String = when {
+        accountAvailable == false -> NO_ACCOUNT
+        lastError != null -> "Sync failed: $lastError"
+        lastSummary != null -> lastSummary
+        else -> "Your profile and play data follow you across your devices."
+    }
 }

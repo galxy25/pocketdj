@@ -8,6 +8,11 @@ import kotlin.math.roundToInt
 
 /** Display formatting, ported from `apple/PocketDJ/Support/Format.swift`. */
 object Fmt {
+    /** "1 track" / "2 tracks" (also song, album, play...). */
+    fun count(n: Int, noun: String, plural: String = noun + "s"): String = "$n " + if (n == 1) noun else plural
+
+    /** The user-facing line for an import-server-less action (the raw config error read like a crash). */
+    const val NO_IMPORT_SERVER = "Set up an import server in Settings to do this"
     /** Milliseconds → "m:ss"; absent/zero shows "–" (specs/browse.md §2.1). */
     fun duration(ms: Long?): String {
         if (ms == null || ms <= 0) return "–"

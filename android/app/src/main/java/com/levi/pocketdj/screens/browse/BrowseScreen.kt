@@ -1,5 +1,17 @@
 package com.levi.pocketdj.screens.browse
 
+import androidx.compose.material.icons.filled.FavoriteBorder
+
+import androidx.compose.material.icons.filled.Favorite
+
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
+
+import androidx.compose.material.icons.filled.ContentCopy
+
+import androidx.compose.material.icons.filled.CheckCircleOutline
+
 import com.levi.pocketdj.data.collections.SongTransfer
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -267,9 +279,15 @@ fun BrowseScreen(
             val songId = (item as? AddToItem.Song)?.id
             val ctx = LocalContext.current
             val sel = remember { graph.collectionsGraph.rowSelection }
-            val extras = if (songId == null) emptyList() else listOf<Pair<String, () -> Unit>>(
-                "Select" to { sel.enterSelectMode(BROWSE_SELECTION_SCOPE, songId) },
-                "Copy" to {
+            val ctxScope = rememberCoroutineScope()
+            val favs = remember { graph.collectionsGraph.favorites }
+            val favState by favs.state.collectAsState()
+            val song = songId?.let { catalogState.catalog?.songsById?.get(it) }
+            val extras = if (songId == null) emptyList() else listOf(
+                com.levi.pocketdj.screens.collections.ContextAction("Select", Icons.Filled.CheckCircleOutline, "ctx-select") {
+                    sel.enterSelectMode(BROWSE_SELECTION_SCOPE, songId)
+                },
+                com.levi.pocketdj.screens.collections.ContextAction("Copy", Icons.Filled.ContentCopy, "ctx-copy") {
                     val st = sel.state.value
                     val picked = if (st.scopeId == BROWSE_SELECTION_SCOPE) sel.currentPayload()?.songIds else null
                     val ids = SelectionBarSemantics.rowOrSelectionIds(picked, songId)
@@ -277,11 +295,35 @@ fun BrowseScreen(
                     writeSongTransfer(ctx, SongTransfer.make(ids, songs))
                 },
             )
+            // iOS song context menu: Play Next / Add to Queue / Favorite above Add to Playlist.
+            val leading = if (song == null) emptyList() else {
+                val qi = com.levi.pocketdj.playback.sequencer.QueueItem(song.id, song.name, song.artist, song.length)
+                val fav = song.id in favState.favoriteIds
+                listOf(
+                    com.levi.pocketdj.screens.collections.ContextAction("Play next", Icons.AutoMirrored.Filled.QueueMusic, "ctx-play-next") {
+                        ctxScope.launch { com.levi.pocketdj.screens.nowplaying.QueueAdd.add(graph, listOf(qi), next = true) }
+                    },
+                    com.levi.pocketdj.screens.collections.ContextAction("Add to queue", Icons.AutoMirrored.Filled.PlaylistPlay, "ctx-add-queue") {
+                        ctxScope.launch { com.levi.pocketdj.screens.nowplaying.QueueAdd.add(graph, listOf(qi), next = false) }
+                    },
+                    com.levi.pocketdj.screens.collections.ContextAction(
+                        if (fav) "Unfavorite" else "Favorite",
+                        if (fav) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder, "ctx-favorite",
+                    ) { favs.toggle(song.id, song.appleMusicId) },
+                )
+            }
             AddToPlaylistMenu(
                 item = item,
                 onDismiss = { addItem = null },
                 onMore = { addSheetOpen = true },
                 extraActions = extras,
+                header = song?.let {
+                    com.levi.pocketdj.screens.collections.ContextHeader(
+                        it.name, it.artist,
+                        it.albumId?.let { a -> catalogState.catalog?.albumsById?.get(a) },
+                    )
+                },
+                leadingActions = leading,
             )
         }
     }
@@ -1026,19 +1068,26 @@ fun BrowseSongRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.width(30.dp),
         )
-        KeyChip(row.song.key?.takeIf { row.song.camelot == null }, row.song.camelot)
-        Spacer(Modifier.width(6.dp))
+        // Fixed-width columns (BPM | key | time | ♥ | ▶) so a dimmed unplayable row, a row with no
+        // key, or a long key label can never push the duration out of line with its neighbours.
+        Box(Modifier.width(SongRowColumns.KEY), contentAlignment = Alignment.Center) {
+            KeyChip(row.song.key?.takeIf { row.song.camelot == null }, row.song.camelot)
+        }
+        Spacer(Modifier.width(4.dp))
         Text(
             Fmt.duration(row.song.length),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            maxLines = 1,
+            modifier = Modifier.width(SongRowColumns.TIME),
         )
         FavoriteToggle(songId = row.song.id, appleMusicId = row.song.appleMusicId, iconSize = 18.dp)
         when {
             preparingId == row.song.id -> {
-                Spacer(Modifier.width(10.dp))
-                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                Spacer(Modifier.width(10.dp))
+                Box(Modifier.size(SongRowColumns.PLAY), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
             }
 
             playable != Playability.NONE -> {
@@ -1056,9 +1105,16 @@ fun BrowseSongRow(
                 }
             }
 
-            else -> Spacer(Modifier.width(12.dp))
+            else -> Spacer(Modifier.width(SongRowColumns.PLAY))
         }
     }
+}
+
+/** Shared trailing-column widths for song rows. */
+internal object SongRowColumns {
+    val KEY = 40.dp
+    val TIME = 36.dp
+    val PLAY = 48.dp
 }
 
 @Composable

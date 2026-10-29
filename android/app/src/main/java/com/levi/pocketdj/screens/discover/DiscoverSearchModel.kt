@@ -119,6 +119,13 @@ class DiscoverQueryRunner<T>(
         const val DEFAULT_LIMIT = 25
         const val UNAVAILABLE = "Discover unavailable"
 
+        /** User-facing copy for a failed Discover search (never the raw config/transport error). */
+        fun unavailableCopy(message: String?): String = when {
+            message != null && message.contains("No import server configured") ->
+                "Discover searches Apple Music through your import server. Add one in Settings \u25B8 Import server, or sign in to Apple Music."
+            else -> "$UNAVAILABLE right now. Check your connection and try again."
+        }
+
         /** Maps a failed catalog call: a missing developer token is configuration (null), the rest are transient. */
         fun restFailure(r: AmResult<*>): DiscoverRestResult<Nothing> = DiscoverRestResult(
             emptyList(), false,

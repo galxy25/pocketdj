@@ -80,7 +80,7 @@ suspend fun playAndReport(
         is PlayOutcome.Preparing ->
             snackbar.showSnackbar("Preparing — playback starts automatically when the rip is ready")
         is PlayOutcome.NotPlayable ->
-            snackbar.showSnackbar("No import server configured (Settings)")
+            snackbar.showSnackbar(Fmt.NO_IMPORT_SERVER)
         is PlayOutcome.Failed ->
             snackbar.showSnackbar(outcome.message)
     }

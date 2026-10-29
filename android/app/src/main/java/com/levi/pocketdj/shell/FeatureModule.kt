@@ -53,6 +53,9 @@ interface SettingsHost {
     val snackbar: SnackbarHostState
     val scope: CoroutineScope
     fun openStorage()
+
+    /** Settings ▸ "Show advanced" is on: raw endpoints/URLs and diagnostics may be shown. */
+    val showAdvanced: Boolean get() = false
 }
 
 /**

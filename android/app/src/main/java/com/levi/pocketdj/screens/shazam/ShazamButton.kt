@@ -43,6 +43,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.compose.ui.platform.testTag
 import com.levi.pocketdj.di.AppGraph
 import kotlinx.coroutines.CompletableDeferred
 
@@ -57,6 +58,16 @@ internal fun shazamAccessibilityValue(phase: ShazamPhase, recording: Boolean): S
     phase is ShazamPhase.Denied -> "Microphone access denied"
     phase is ShazamPhase.Failed -> phase.message
     else -> ""
+}
+
+/** The caption under the pill per phase; null when nothing needs saying (idle / matched). */
+internal fun shazamStatusLine(phase: ShazamPhase): String? = when (phase) {
+    is ShazamPhase.Listening -> "Listening\u2026 hold your phone near the music"
+    is ShazamPhase.Recognizing -> "Identifying\u2026"
+    is ShazamPhase.NoMatch -> "No match. Tap to try again."
+    is ShazamPhase.Denied -> "Microphone access is off. Tap to open Settings."
+    is ShazamPhase.Failed -> phase.message
+    else -> null
 }
 
 /** The glyph in the middle of "?♪?" per phase. */
@@ -152,6 +163,7 @@ fun ShazamButton(
     )
     val active = phase.isActive
 
+    androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
     Surface(
         modifier = modifier
             .graphicsLayer { translationX = shake.value.dp.toPx() }
@@ -186,6 +198,18 @@ fun ShazamButton(
             Text("?", color = tint, modifier = Modifier.alpha(markAlpha), style = MaterialTheme.typography.titleMedium)
             if (phase is ShazamPhase.Recognizing) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = tint)
         }
+    }
+    // Visible outcome under the pill: the listening state used to be only a tiny spinner and a
+    // no-match / failure left no trace at all.
+    shazamStatusLine(phase)?.let { line ->
+        Text(
+            line,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (phase is ShazamPhase.Failed || phase is ShazamPhase.Denied) MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp).testTag("shazam-status"),
+        )
+    }
     }
 
     (phase as? ShazamPhase.Matched)?.let { matched ->

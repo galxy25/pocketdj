@@ -71,6 +71,7 @@ fun MixScreen(
     val sessions = mix.mixSessions
     val st by vm.state.collectAsState()
     val engineUi by mix.mixEngine.ui.collectAsState()
+    val askNotifications = com.levi.pocketdj.ui.rememberNotificationPermissionRequester()
     val settings by vm.settings.collectAsState()
     val auto by vm.autoUi.collectAsState()
     val sessionName by sessions.currentNameFlow.collectAsState()
@@ -189,7 +190,8 @@ fun MixScreen(
                             labelText = vm.crateName(src)
                                 ?: if ((if (d == Deck.A) engineUi.a else engineUi.b).loaded != null) "Load next from…" else "Pick a source",
                             icon = Icons.Filled.Layers,
-                            onPick = { s -> if (s != null) vm.setSource(d, s) },
+                            // Q14: a crate source starts the collection download (progress notification).
+                            onPick = { s -> if (s != null) { askNotifications(); vm.setSource(d, s) } },
                             tag = "mix-deck-source-${d.label}",
                         )
                     },

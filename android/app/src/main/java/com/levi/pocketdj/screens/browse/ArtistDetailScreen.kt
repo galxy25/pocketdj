@@ -203,7 +203,7 @@ private fun ArtistAlbumRow(album: IndexAlbum, onClick: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
             MetaTag(
-                "${album.trackList.size} tracks" + (album.year?.let { " · $it" } ?: ""),
+                Fmt.count(album.trackList.size, "track") + (album.year?.let { " · $it" } ?: ""),
             )
         }
         Spacer(Modifier.width(8.dp))

@@ -139,7 +139,7 @@ fun AlbumDetailScreen(
                                     album.year?.toString(),
                                     album.country,
                                     catalog.sourceOfAlbum[album.id],
-                                    "${tracks.size} tracks",
+                                    Fmt.count(tracks.size, "track"),
                                 ).joinToString(" · "),
                             )
                             Spacer(Modifier.height(12.dp))
@@ -152,7 +152,7 @@ fun AlbumDetailScreen(
                                                     is PlayOutcome.Failed ->
                                                         snackbar.showSnackbar(outcome.message)
                                                     is PlayOutcome.NotPlayable ->
-                                                        snackbar.showSnackbar("No import server configured (Settings)")
+                                                        snackbar.showSnackbar(Fmt.NO_IMPORT_SERVER)
                                                     else -> Unit
                                                 }
                                             }

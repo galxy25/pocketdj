@@ -47,6 +47,7 @@ internal fun dataSourcesSection() = SettingsSection(SettingsSections.DATA_SOURCE
         current.sources.forEach { source ->
             SourceRow(
                 source = source,
+                showUrl = host.showAdvanced,
                 onToggle = { enabled ->
                     host.scope.launch {
                         // Transform inside the DataStore edit — a stale composition
@@ -221,7 +222,7 @@ internal fun jukeboxBrokerSection() = SettingsSection(SettingsSections.JUKEBOX_B
 }
 
 @Composable
-private fun SourceRow(source: SourceConfig, onToggle: (Boolean) -> Unit) {
+private fun SourceRow(source: SourceConfig, showUrl: Boolean, onToggle: (Boolean) -> Unit) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -231,7 +232,8 @@ private fun SourceRow(source: SourceConfig, onToggle: (Boolean) -> Unit) {
     ) {
         Column(Modifier.weight(1f)) {
             Text(source.name, style = MaterialTheme.typography.bodyMedium)
-            Text(
+            // The raw index URL is an endpoint detail: shown only with Settings ▸ Show advanced.
+            if (showUrl) Text(
                 source.url,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
