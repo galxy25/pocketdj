@@ -339,6 +339,8 @@ struct PocketDJApp: App {
     /// Pocket Wheel: the memoised, off-main moment build (device-local cache) + the synced palette.
     @State private var pocketWheel: PocketMomentCache
     @State private var pocketPalette: PocketPaletteStore
+    /// Pocket Wheel best match (centre ▶, CarPlay "Pocket for now", "Play my pocket").
+    @State private var pocketWheelController: PocketWheelController
     /// The App Intents bridge (Siri/Shortcuts/Spotlight → live stores). Constructed +
     /// registered with `AppDependencyManager` in `init()` so an intent that background-
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
@@ -1655,6 +1657,34 @@ struct PocketDJApp: App {
         }
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { pocketWheel.autoRebuild = false }
         pocketWheel.seedDemoIfRequested()
+        // The centre ▶'s "now": time + day + CarPlay + motion (opt-in) + place guess (opt-in) +
+        // the last 45 minutes of plays, against the wheel (§3).
+        let pocketWheelController = PocketWheelController(cache: pocketWheel, history: playHistory)
+        #if os(iOS)
+        pocketWheelController.carPlayConnected = { CarPlayController.current != nil }
+        #endif
+        pocketWheelController.motionNow = { [weak listeningMotion] in await listeningMotion?.currentActivity() }
+        pocketWheelController.contextGuess = { [weak listeningLocation] in
+            guard let loc = listeningLocation, loc.isEnabled else { return nil }
+            return loc.currentContextGuess()
+        }
+        pocketWheelController.cloudResults = { [weak listeningPockets] in
+            listeningPockets?.isEnabled == true ? listeningPockets?.results : nil
+        }
+        pocketWheelController.emptyFallback = { [weak playHistory, weak favorites, weak pocketWheel] in
+            // T4: the most recently played collection, else Favorites.
+            if let e = playHistory?.events.last(where: { $0.originCollectionId != nil && $0.source != .game }),
+               let id = e.originCollectionId {
+                let name = pocketWheel?.snapshot.collectionNames[id] ?? e.contextName ?? "Your last collection"
+                return PocketProfile(tier: .empty, caption: "Getting to know you", detail: name, collections: [id: 1])
+            }
+            if let favorites, !favorites.favoriteIds.isEmpty {
+                return PocketProfile(tier: .empty, caption: "Getting to know you", detail: PocketWheelIds.favoritesName,
+                                     collections: [PocketWheelIds.favorites: 1])
+            }
+            return nil
+        }
+        _pocketWheelController = State(initialValue: pocketWheelController)
         _pocketPalette = State(initialValue: pocketPalette)
         _pocketWheel = State(initialValue: pocketWheel)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
@@ -1853,6 +1883,21 @@ struct PocketDJApp: App {
         let intents = IntentServices(app: app, settings: settings, collections: collections,
                                      setlistPlayer: setlistPlayer, mix: mix, burns: burns,
                                      studio: studio, rips: rips, favorites: favorites)
+        intents.pocketWheel = pocketWheelController
+        pocketWheelController.play = { [weak intents, weak collections, weak app] profile in
+            guard let intents else { return }
+            var ids = profile.seeds.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.map(\.key)
+            if let d = profile.dominantCollectionId {
+                if let sp = app?.indexPlaylists.first(where: { $0.id == d }) { ids += sp.songIds.shuffled() }
+                else if collections?.pocket(d) != nil { ids += (collections?.playableIds(forPocket: d) ?? []).shuffled() }
+                else if collections?.playlist(d) != nil { ids += (collections?.playableIds(forPlaylist: d) ?? []).shuffled() }
+                else if d == PocketWheelIds.favorites { ids += Array(intents.favorites.favoriteIds).shuffled() }
+            }
+            var seen = Set<String>()
+            ids = ids.filter { seen.insert($0).inserted }
+            _ = try? await intents.playSongIds(Array(ids.prefix(100)), name: "Pocket · \(profile.caption)",
+                                               source: .pocket, originId: profile.dominantCollectionId)
+        }
         // CarPlay + App Intents reach the ONE feedback store through the bridge, exactly like the
         // ♥ does — never a second instance.
         intents.recFeedback = recFeedback
@@ -1967,6 +2012,7 @@ struct PocketDJApp: App {
                 .environment(inThePocket)
                 .environment(pocketWheel)
                 .environment(pocketPalette)
+                .environment(pocketWheelController)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through

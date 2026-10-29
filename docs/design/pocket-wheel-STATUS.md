@@ -13,7 +13,7 @@ Gates per phase: iOS unit suite on sim `3FE7AC66…` with the executed count mov
 | 1 — motion (CoreMotion settle, opt-in) | DONE | phase-1 commit | 3632 (+10) | mac ✓ tv-sim ✓ vision-sim ✓ |
 | 2 — moment engine + palette | DONE | phase-2 commit | 3658 (+26) — verified in the Phase 3 tip run | mac ✓ tv-sim ✓ vision-sim ✓ |
 | 3 — wheel UI | DONE | phase-3 commit | 3666 (+8) + XCUITest PocketWheelUITests ✓ | mac ✓ tv-sim ✓ vision-sim ✓ |
-| 4 — best match + cold start + CarPlay row + intent | todo | | | |
+| 4 — best match + cold start + CarPlay row + intent | DONE | phase-4 commit | 3678 (+12) | mac ✓ tv-sim ✓ vision-sim ✓ |
 | 5a — adaptive run (plan, play, learn, persist) | todo | | | |
 | 5b — adapt to activity mid-run | todo | | | |
 | 6 — cloud (code + infra only, NOT deployed) | todo | | | |
@@ -32,6 +32,8 @@ Gates per phase: iOS unit suite on sim `3FE7AC66…` with the executed count mov
 
 - Phase 3 screenshots: `wheel-shots/p3-wheel-iphone.png` (seeded wheel, Thursday focused) and `p3-wheel-card.png` (Tuesday 8 AM · CarPlay card after a tap, from the XCUITest).
 - Wheel UI deviations: the weekday fisheye is chosen with a Mon…Sun row under the wheel (plus letters drawn on each ring) rather than tapping the tiny letter at 12 o'clock — the letter targets collide with the midnight cells; the "Recurring pockets" VoiceOver rotor is spoken custom content (each ring is ONE adjustable element, so there is nothing for a rotor to jump to). Pinch-to-day-donut (Phase 3b, iPad nice-to-have) not built. tvOS never builds the wheel UI (fenced); History ▸ Pockets there stays the cloud list.
+
+- Phase 4: tier T2 reuses `InThePocketScorer.cloudProfile` directly (it was already `static`, so no refactor was needed). The ×1.15 cloud boost uses the results' overall round-learning `pocketRate ≥ 0.5` (per-pattern rates don't exist in the results contract). Phase 4 shipped an interim ▶ (seed songs + the dominant collection via `playSongIds`); Phase 5 replaces it with the adaptive run.
 
 ## Remaining / follow-ups
 

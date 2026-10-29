@@ -2,11 +2,12 @@ import SwiftUI
 
 /// History ▸ Pockets: **Wheel | List** (W1, decided 2026-10-29). Wheel is the default and needs
 /// only local history; List is the cloud listening-pockets view, unchanged (it keeps the opt-in
-/// offer). tvOS has no History tab and never builds this.
+/// offer). tvOS has no History tab and never builds the wheel.
 struct PocketsTabView: View {
     @Binding var path: NavigationPath
     /// Per-viewer convenience (which segment you were on) — the wheel itself never depends on it.
     @AppStorage("pdj.history.pockets.segment") private var segment = Segment.wheel.rawValue
+    @Environment(PocketWheelController.self) private var controller: PocketWheelController?
 
     enum Segment: String, CaseIterable { case wheel = "Wheel", list = "List" }
 
@@ -26,6 +27,8 @@ struct PocketsTabView: View {
                 ListeningPocketsView(path: $path)
                 #else
                 PocketWheelScreen()
+                    .environment(\.pocketWheelActions, actions)
+                    .task { await controller?.refreshIfStale() }
                 #endif
             }
         }
@@ -34,5 +37,17 @@ struct PocketsTabView: View {
                 segment = raw
             }
         }
+    }
+
+    /// The wheel's buttons, bound to the app-scoped best match + run store.
+    private var actions: PocketWheelActions {
+        guard let controller else { return .none }
+        var a = PocketWheelActions()
+        a.bestMatch = controller.bestSummary
+        a.playBest = { Task { await controller.playBest() } }
+        a.alternatives = controller.alternativeSummaries
+        a.playAlternative = { alt in Task { await controller.play(alternative: alt) } }
+        a.playMoment = { key in Task { await controller.playMoment(key) } }
+        return a
     }
 }

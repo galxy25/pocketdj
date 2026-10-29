@@ -59,6 +59,9 @@ final class IntentServices {
     /// the refresh (its tab task + the 4:20 schedule); the car reads the result.
     /// Optional so a test host can build the bridge without the recommendation graph.
     var forYouFeed: ForYouFeedStore?
+    /// The Pocket Wheel's best-match glue (CarPlay "Pocket for now", "Play my pocket"). Weak: the
+    /// app owns it; nil on hosts without the wheel graph.
+    weak var pocketWheel: PocketWheelController?
     /// The New tile's content. Read-only from CarPlay for the same reason as `forYouFeed`: its
     /// fetches ride PLAY events and the one-shot seed, never a render — least of all a render in a
     /// moving car.
@@ -233,6 +236,18 @@ final class IntentServices {
               !set.tracks.isEmpty else { throw PocketDJIntentError.emptyCollection(album.name) }
         startNowPlaying(set)
         return album.name
+    }
+
+    /// The intent / CarPlay door into the Pocket Wheel's best match. Returns the spoken caption.
+    @discardableResult
+    func playPocketForNow() async throws -> String {
+        try vetoDuringOnboarding()
+        await ensureReady()
+        guard let wheel = pocketWheel else { throw PocketDJIntentError.emptyCollection("your pocket") }
+        let r = await wheel.refresh()
+        await wheel.play(r.profile)
+        let name = r.profile.dominantCollectionId.flatMap { wheel.collectionName($0) }
+        return [name, r.profile.caption].compactMap { $0 }.joined(separator: ", ")
     }
 
     /// ▶/🔀 an arbitrary list of song ids into the reserved Now Playing setlist — for collections

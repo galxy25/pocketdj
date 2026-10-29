@@ -93,6 +93,7 @@ final class CarPlayController {
         let model = CarPlayModel(services: services)
         self.model = model
         await model.ensureReady()
+        await model.refreshPocketForNow()
 
         let playlists = listTemplate(title: "Playlists", tabImageName: "music.note.list",
                                      rows: model.playlists()) { [weak self] row in
@@ -748,10 +749,44 @@ final class CarPlayController {
         }
         let section = CPListSection(items: items.isEmpty
             ? [CPListItem(text: "Nothing yet", detailText: CarPlayModel.coldFeedNote)] : items)
-        let template = CPListTemplate(title: "For You", sections: [section])
+        // Pocket Wheel (§2.6): "▶ Pocket for now" on top, then "Pockets right now".
+        var sections = [section]
+        if let now = model.pocketForNowRow() {
+            let play = listItem(now, showsDisclosure: false) { [weak self] in
+                Task { [weak self] in
+                    if await model.playPocketForNow() { self?.showNowPlaying() } else { self?.toast(CarPlayController.couldNotPlay) }
+                }
+            }
+            var pocketItems = [play]
+            let moments = model.pocketsRightNow()
+            if !moments.isEmpty {
+                let more = CPListItem(text: "Pockets right now", detailText: "\(moments.count) around this hour")
+                more.accessoryType = .disclosureIndicator
+                more.handler = { [weak self] _, completion in
+                    self?.pushPocketsRightNow(model); completion()
+                }
+                pocketItems.append(more)
+            }
+            sections.insert(CPListSection(items: pocketItems, header: "Pocket", sectionIndexTitle: nil), at: 0)
+        }
+        let template = CPListTemplate(title: "For You", sections: sections)
         template.tabImage = UIImage(systemName: "sparkles")
         template.tabTitle = "For You"
         return template
+    }
+
+    /// "Pockets right now": the top moments around this hour, each playable.
+    private func pushPocketsRightNow(_ model: CarPlayModel) {
+        let items = model.pocketsRightNow().map { row in
+            listItem(row, showsDisclosure: false) { [weak self] in
+                Task { [weak self] in
+                    if await model.playPocketMoment(rowId: row.id) { self?.showNowPlaying() }
+                    else { self?.toast(CarPlayController.couldNotPlay) }
+                }
+            }
+        }
+        let template = CPListTemplate(title: "Pockets right now", sections: [CPListSection(items: items)])
+        interfaceController.pushTemplate(template, animated: true, completion: nil)
     }
 
     /// Drill into one tile (depth 2 = tab root → this list, within CarPlay's audio-app template
