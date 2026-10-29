@@ -34,6 +34,9 @@ class StudioMaterializer(
 
     private val entries = LinkedHashMap<String, Entry>()
     private var tick = 0L
+    private var seeded = false
+    private var nonce = 0L
+    private val keyLocks = HashMap<String, Any>()
     private val dir get() = File(cacheRoot, DIR_NAME)
 
     suspend fun lease(ref: StudioFileRef): StudioLease? {
@@ -44,28 +47,46 @@ class StudioMaterializer(
 
     private fun leaseUri(uri: String): StudioLease? {
         val st = try { stat(uri) } catch (_: Exception) { null } ?: return null
-        val key = cacheKey(uri, st)
-        synchronized(this) {
-            val hit = entries[key]
-            if (hit != null && hit.file.isFile && hit.file.length() == hit.size) return pin(key, hit)
-            entries.remove(key)
+        // A provider that reports no last-modified can't prove freshness: never reuse a cached copy for it.
+        val key = if (st.mtime == 0L) cacheKey(uri, st) + "-" + synchronized(this) { ++nonce } else cacheKey(uri, st)
+        val lock = synchronized(this) { keyLocks.getOrPut(key) { Any() } }
+        // Per-key lock: a concurrent lease of the same document waits for the first copy, then pins its result.
+        synchronized(lock) {
+            synchronized(this) {
+                seed()
+                val hit = entries[key]
+                if (hit != null && hit.file.isFile && hit.file.length() == hit.size) return pin(key, hit)
+                entries.remove(key)
+            }
+            dir.mkdirs()
+            val dest = File(dir, key)
+            val part = File.createTempFile("copy", ".part", dir)
+            val copied = try {
+                val input = open(uri) ?: return null
+                input.use { i -> part.outputStream().use { o -> i.copyTo(o) } }
+                part.renameTo(dest)
+            } catch (_: Exception) { false } finally { if (part.exists()) part.delete() }
+            if (!copied) return null
+            synchronized(this) {
+                val e = Entry(dest, dest.length(), 0, 0)
+                entries[key] = e
+                val lease = pin(key, e)
+                evict()
+                return lease
+            }
         }
-        dir.mkdirs()
-        val dest = File(dir, key)
-        val part = File(dir, "$key.part")
-        val copied = try {
-            val input = open(uri) ?: return null
-            input.use { i -> part.outputStream().use { o -> i.copyTo(o) } }
-            part.renameTo(dest)
-        } catch (_: Exception) { false }
-        if (!copied) { part.delete(); return null }
-        synchronized(this) {
-            val e = Entry(dest, dest.length(), 0, 0)
-            entries[key] = e
-            val lease = pin(key, e)
-            evict()
-            return lease
-        }
+    }
+
+    /** Adopt copies left by earlier processes (recency = mtime), drop stray partials, then trim to the cap. Caller holds the lock. */
+    private fun seed() {
+        if (seeded) return
+        seeded = true
+        val files = dir.listFiles() ?: return
+        files.filter { it.name.endsWith(".part") }.forEach { it.delete() }
+        files.filter { it.isFile && it.name.endsWith(".audio") && it.name !in entries.keys }
+            .sortedBy { it.lastModified() }
+            .forEach { entries[it.name] = Entry(it, it.length(), ++tick, 0) }
+        evict()
     }
 
     private fun pin(key: String, e: Entry): StudioLease {
@@ -94,7 +115,8 @@ class StudioMaterializer(
         const val DEFAULT_MAX_BYTES = 256L * 1024 * 1024
 
         internal fun cacheKey(uri: String, st: SafStat): String {
-            val h = Integer.toHexString(uri.hashCode()) + java.lang.Long.toHexString(uri.length.toLong())
+            val h = java.security.MessageDigest.getInstance("SHA-256").digest(uri.toByteArray())
+                .joinToString("") { "%02x".format(it) }.take(32)
             return "$h-${st.size}-${st.mtime}.audio"
         }
 
@@ -114,4 +136,31 @@ class StudioMaterializer(
             )
         }
     }
+}
+
+/**
+ * Demuxer-style "one selection at a time" file source: holds the lease for the NEWEST requested id and releases the
+ * previous one. A slower, older request that completes after a newer one releases its own lease and yields null, so
+ * the active selection's file is never unpinned by out-of-order completion.
+ */
+class SingleLeaseFiles(
+    private val refFor: (String) -> StudioFileRef?,
+    private val materializer: StudioMaterializer,
+) {
+    private var current: StudioLease? = null
+    private var generation = 0L
+
+    suspend fun file(id: String): File? {
+        val gen = synchronized(this) { ++generation }
+        val ref = refFor(id) ?: return null
+        val lease = materializer.lease(ref) ?: return null
+        synchronized(this) {
+            if (gen != generation) { lease.release(); return null }
+            current?.release(); current = lease
+        }
+        return lease.file
+    }
+
+    /** Drop the held lease (leaving the Demuxer / session clear). */
+    fun clear() = synchronized(this) { generation++; current?.release(); current = null }
 }

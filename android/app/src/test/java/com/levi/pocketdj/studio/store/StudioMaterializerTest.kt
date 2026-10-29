@@ -1,5 +1,6 @@
 package com.levi.pocketdj.studio.store
 
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Rule
@@ -69,5 +70,60 @@ class StudioMaterializerTest {
         assertNull(m.lease(StudioFileRef(null, "content://noopen")))        // open fails
         assertNull(m.lease(StudioFileRef(null, "file:///nope")))            // not a content uri, no file
         assertEquals(0, m.cachedCount())
+    }
+}
+
+class StudioMaterializerRobustnessTest {
+    @get:Rule val tmp = TemporaryFolder()
+
+    @Test fun concurrentLeasesOfSameUriCopyOnceAndBothGetIntactFile() = runBlocking {
+        val bytes = ByteArray(5000) { 3 }
+        val opens = java.util.concurrent.atomic.AtomicInteger()
+        val m = StudioMaterializer(tmp.newFolder(), { SafStat(5000, 1) }, { opens.incrementAndGet(); Thread.sleep(50); java.io.ByteArrayInputStream(bytes) }, 1_000_000)
+        val ref = StudioFileRef(null, "content://same")
+        val ls = (1..4).map { async(kotlinx.coroutines.Dispatchers.Default) { m.lease(ref) } }.map { it.await() }
+        assertTrue(ls.all { it != null && it.file.readBytes().contentEquals(bytes) })
+        assertEquals(1, opens.get())
+    }
+
+    @Test fun existingDiskCopiesAreSeededAndEvictedAndPartialsDeleted() = runBlocking {
+        val root = tmp.newFolder()
+        val d = File(root, StudioMaterializer.DIR_NAME).also { it.mkdirs() }
+        File(d, "old1.audio").writeBytes(ByteArray(600)); File(d, "stray.part").writeBytes(ByteArray(10))
+        val m = StudioMaterializer(root, { SafStat(600, 1) }, { java.io.ByteArrayInputStream(ByteArray(600)) }, 1_000)
+        val l = m.lease(StudioFileRef(null, "content://new"))!!
+        assertFalse("orphan evicted", File(d, "old1.audio").exists()); assertFalse(File(d, "stray.part").exists())
+        assertTrue(l.file.exists())
+    }
+
+    @Test fun nullMtimeAlwaysRecopies() = runBlocking {
+        var opens = 0
+        val m = StudioMaterializer(tmp.newFolder(), { SafStat(4, 0) }, { opens++; java.io.ByteArrayInputStream(ByteArray(4)) }, 1_000)
+        val ref = StudioFileRef(null, "content://z")
+        m.lease(ref)!!.release(); m.lease(ref)!!.release()
+        assertEquals(2, opens)
+    }
+
+    @Test fun hashCollidingUrisGetDistinctKeys() {
+        assertEquals("Aa".hashCode(), "BB".hashCode())
+        val st = SafStat(1, 1)
+        assertNotEquals(StudioMaterializer.cacheKey("content://x/Aa", st), StudioMaterializer.cacheKey("content://x/BB", st))
+    }
+
+    @Test fun olderSlowSelectionDoesNotUnpinNewerOne() = runBlocking {
+        val gate = java.util.concurrent.CountDownLatch(1)
+        val m = StudioMaterializer(tmp.newFolder(), { SafStat(100, 1) }, { u ->
+            if (u.endsWith("A")) gate.await()
+            java.io.ByteArrayInputStream(ByteArray(100))
+        }, 150)
+        val s = SingleLeaseFiles({ StudioFileRef(null, "content://$it") }, m)
+        val a = async(kotlinx.coroutines.Dispatchers.Default) { s.file("A") }
+        Thread.sleep(100)
+        val b = s.file("B")!!
+        gate.countDown()
+        assertNull("stale selection yields null", a.await())
+        m.lease(StudioFileRef(null, "content://C"))!!.release()
+        assertTrue("active selection stays pinned", b.exists())
+        s.clear()
     }
 }

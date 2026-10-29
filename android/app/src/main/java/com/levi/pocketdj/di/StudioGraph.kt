@@ -545,15 +545,11 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         override suspend fun carve(src: File, startMs: Int, endMs: Int, dest: File): Boolean =
             runCatching { studioRender.carveTrackRegion(src.path, startMs, endMs, dest); dest.isFile }.getOrDefault(false)
 
-        private var studioLease: com.levi.pocketdj.studio.store.StudioLease? = null
+        private val studioFiles = com.levi.pocketdj.studio.store.SingleLeaseFiles(
+            { id -> studioStore.localUrlForPlayback(id)?.ref }, studioMaterializer,
+        )
 
-        override suspend fun studioFile(id: String): File? {
-            val ref = studioStore.localUrlForPlayback(id)?.ref ?: return null
-            val lease = studioMaterializer.lease(ref) ?: return null
-            // One Demuxer selection at a time: hold the lease for the current item, drop the previous one.
-            synchronized(this) { studioLease?.release(); studioLease = lease }
-            return lease.file
-        }
+        override suspend fun studioFile(id: String): File? = studioFiles.file(id)
 
         override suspend fun hasServer() = app.ripServerClient.isConfigured()
         override fun songStemsBurned(songId: String) = burns.stemsBurned(songId)

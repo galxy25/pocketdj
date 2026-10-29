@@ -30,7 +30,7 @@ object MidiImportCopy {
 
 /**
  * "Import MIDI" -> `.mid` becomes a take on the current instrument (piano when none is loaded). Shared by the
- * Takes list, the main Instruments Play section and the Score view (iOS StudioInstrumentsView parity).
+ * Takes list and the main Instruments Play section (Score view placement skipped; iOS StudioInstrumentsView parity).
  * [onMessage] receives the success / failure line; [onNeedPacks] fires when the failing instrument has no bank.
  */
 @Composable
