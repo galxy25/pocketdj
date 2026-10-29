@@ -493,6 +493,7 @@
 		C2A275354F47D633670F0919 /* ForYouRefreshScheduleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FB168EC10F28CE539275F5C /* ForYouRefreshScheduleTests.swift */; };
 		C2A8ECC6743A39A2DDCE9D5E /* AppleMusicPlayCountCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = E38A147E32A0E45B7C7B9647 /* AppleMusicPlayCountCapture.swift */; };
 		C2ED9BFABA86D3F6F44BBA35 /* DemuxCloudLyricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 965C2BB9FBBCAB3DF71E888F /* DemuxCloudLyricsTests.swift */; };
+		C364F314CD9F381AEE6C1413 /* AMTokenDump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 211BCE23E1E0E32E4217958B /* AMTokenDump.swift */; };
 		C42BF2ACF2315D21DE669067 /* MacScreenshotRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06D48E99D59CBE32224C8B61 /* MacScreenshotRenderTests.swift */; };
 		C4B2E5685D8D8E489A8AA918 /* SearchQueryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EACEA867F1B6AD8B5461CCC /* SearchQueryTests.swift */; };
 		C551980B55691B322E918045 /* StudioEngineMathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A492DFF20D12B0B40DDC34A /* StudioEngineMathTests.swift */; };
@@ -782,6 +783,7 @@
 		209AED6EB365480DFEC7AEE8 /* CloudSyncServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSyncServiceTests.swift; sourceTree = "<group>"; };
 		20A6DD0F82FC04FD7C861D3C /* BeatMath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeatMath.swift; sourceTree = "<group>"; };
 		2100545B470C52A2DC5DCA2F /* AlbumDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumDetailView.swift; sourceTree = "<group>"; };
+		211BCE23E1E0E32E4217958B /* AMTokenDump.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMTokenDump.swift; sourceTree = "<group>"; };
 		2188F4AB4249E3486A6C5AC3 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		21B364FC3816A5B0C10876C7 /* MultitrackPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultitrackPlayer.swift; sourceTree = "<group>"; };
 		22A16829C44B131DF2180318 /* PuzzleRecEventBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzleRecEventBridge.swift; sourceTree = "<group>"; };
@@ -2296,6 +2298,7 @@
 		F5F80541895BD0AE739F0078 /* Support */ = {
 			isa = PBXGroup;
 			children = (
+				211BCE23E1E0E32E4217958B /* AMTokenDump.swift */,
 				0DE2815FA8B5F6C9FF6963D7 /* BeatDetect.swift */,
 				20A6DD0F82FC04FD7C861D3C /* BeatMath.swift */,
 				7C814FEF25275F5A6AE683C1 /* Config.swift */,
@@ -2827,6 +2830,7 @@
 			files = (
 				B572AC420F4649F6A74B653F /* AMPlayBaselineStore.swift in Sources */,
 				11EEBDEF28AFD25F638733BB /* AMPlaylistSyncClient.swift in Sources */,
+				C364F314CD9F381AEE6C1413 /* AMTokenDump.swift in Sources */,
 				F4F304247E7613640B28C4C8 /* AccountDeletionService.swift in Sources */,
 				8472EAE440A5F32F5115A321 /* AddToCollectionView.swift in Sources */,
 				8FFC66074DFC3C0A255F8583 /* AddToPlaylistMenu.swift in Sources */,
