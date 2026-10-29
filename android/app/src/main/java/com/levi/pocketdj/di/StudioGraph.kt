@@ -280,8 +280,13 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         com.levi.pocketdj.studio.engine.TakeRenderer(studioRoots, studioStore)
     }
 
+    /** Copies SAF-stored (content://) studio media to a cache file for File-only consumers (LRU-capped). */
+    val studioMaterializer: com.levi.pocketdj.studio.store.StudioMaterializer by lazy {
+        com.levi.pocketdj.studio.store.StudioMaterializer.forContext(app.appContext)
+    }
+
     val takeFiler: com.levi.pocketdj.studio.engine.TakeFiler by lazy {
-        com.levi.pocketdj.studio.engine.TakeFiler(studioRoots, studioStore, takeRenderer, studioRender)
+        com.levi.pocketdj.studio.engine.TakeFiler(studioRoots, studioStore, takeRenderer, studioRender, materializer = studioMaterializer)
     }
 
     private val instrumentLazy: Lazy<com.levi.pocketdj.studio.engine.InstrumentEngine> = lazy {
@@ -409,7 +414,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     /** Key detection when an item enters a collection (idempotent). */
     val studioAnalyzer: StudioAnalyzer by lazy {
-        StudioAnalyzer(studioStore, studioPlayback) { path -> runCatching { studioRender.decodeBuffer(path) }.getOrNull() }
+        StudioAnalyzer(studioStore, studioPlayback, studioMaterializer) { path -> runCatching { studioRender.decodeBuffer(path) }.getOrNull() }
     }
 
     /** Wired into AppGraph's collections init: lazy, so a user who never has a studio id never builds the store. */
@@ -540,7 +545,11 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         override suspend fun carve(src: File, startMs: Int, endMs: Int, dest: File): Boolean =
             runCatching { studioRender.carveTrackRegion(src.path, startMs, endMs, dest); dest.isFile }.getOrDefault(false)
 
-        override fun studioFile(id: String): File? = studioStore.localUrlForPlayback(id)?.ref?.file?.takeIf { it.isFile }
+        private val studioFiles = com.levi.pocketdj.studio.store.SingleLeaseFiles(
+            { id -> studioStore.localUrlForPlayback(id)?.ref }, studioMaterializer,
+        )
+
+        override suspend fun studioFile(id: String): File? = studioFiles.file(id)
 
         override suspend fun hasServer() = app.ripServerClient.isConfigured()
         override fun songStemsBurned(songId: String) = burns.stemsBurned(songId)

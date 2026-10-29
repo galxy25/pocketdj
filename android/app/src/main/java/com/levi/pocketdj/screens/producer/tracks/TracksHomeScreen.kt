@@ -94,17 +94,13 @@ class TracksActions(
         ArrangerClipBaker(
             studio.studioRoots, studio.studioRender,
             prepare = { id -> studio.studioPlayback.prepare(id) },
-            materialize = { ref -> ref.file ?: withContext(Dispatchers.IO) { copyUriToCache(ref.uri) } },
-            release = { ref, f -> if (ref.file == null) f.delete() },
+            materialize = { ref -> studio.studioMaterializer.lease(ref)?.also { synchronized(leases) { leases.add(it.file to it) } }?.file },
+            release = { _, f -> synchronized(leases) { leases.indexOfFirst { it.first == f }.takeIf { it >= 0 }?.let { leases.removeAt(it) } }?.second?.release() },
         )
     }
     private val converter by lazy { ArtifactSampleConverter(studio.studioRoots, store, studio.studioRender) }
 
-    private fun copyUriToCache(uri: String): File? = runCatching {
-        val tmp = File.createTempFile("clip-src-", ".audio", ctx.cacheDir)
-        ctx.contentResolver.openInputStream(Uri.parse(uri))?.use { i -> tmp.outputStream().use { i.copyTo(it) } } ?: return null
-        tmp
-    }.getOrNull()
+    private val leases = ArrayList<Pair<File, com.levi.pocketdj.studio.store.StudioLease>>()
 
     /** Park Now Playing before an artifact audition (one audible owner). */
     fun parkNowPlaying() { scope.launch { runCatching { graph.playbackController.pause() } } }
