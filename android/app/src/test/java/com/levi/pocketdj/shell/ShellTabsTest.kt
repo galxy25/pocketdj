@@ -20,4 +20,18 @@ class ShellTabsTest {
         assertNull(ShellTabs.owningTab(emptyList()))
         assertNull(ShellTabs.owningTab(listOf(null, "settings")))
     }
+
+    @Test fun moreFoldedSectionsLightTheMoreSlot() {
+        // Q7: Jukebox, Games, Mix, Producer live under More (deep link straight to Mix included).
+        assertEquals(BarItem.More, ShellTabs.owningBarItem(listOf("history", "mix")))
+        assertEquals(BarItem.More, ShellTabs.owningBarItem(listOf("history", MORE_ROUTE, "producer")))
+        assertEquals(BarItem.More, ShellTabs.owningBarItem(listOf("history", MORE_ROUTE)))
+        assertEquals(BarItem.More, ShellTabs.owningBarItem(listOf("browse", "jukebox", "jukebox/join/{jukeboxId}")))
+        assertEquals(BarItem.Collections, ShellTabs.owningBarItem(listOf("browse", "playlists", "nowplaying")))
+        assertEquals(BarItem.Browse, ShellTabs.owningBarItem(listOf("browse", "settings")))
+        assertNull(ShellTabs.owningBarItem(emptyList()))
+        assertEquals(MORE_ROUTE, ShellTabs.routeFor(BarItem.More))
+        assertEquals("history", ShellTabs.routeFor(BarItem.History))
+        assertEquals(listOf("Browse", "History", "Collections", "More"), BarItem.entries.map { it.label })
+    }
 }
