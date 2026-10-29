@@ -240,6 +240,7 @@ class GamePreviewRowResolver(private val previews: GamePreviewResolver) : RowSou
     override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? {
         if (item.runTag == null) return null
         val url = previews.urlFor(item.id) ?: return null
+        com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.PLAYBACK, "[playback] game row rung=preview song=${item.id}")
         return StreamSource(PlayAction.Stream(url))
     }
 }

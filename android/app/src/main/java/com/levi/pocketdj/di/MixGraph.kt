@@ -152,7 +152,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             adopter = BurnStoreAdopter(app.servicesGraph.burnStore),
             directory = File(app.appContext.cacheDir, "mixstream"),
             network = ConnectivityNetworkMonitor(app.appContext),
-            http = app.httpClient, // plain client: never attaches the rip bearer to S3
+            http = app.httpClient.newBuilder().addInterceptor(MixDebug.failOnceInterceptor).build(), // plain client: never attaches the rip bearer to S3; interceptor is inert unless Debug arms it
             scope = ioScope,
             callbackExecutor = ContextCompat.getMainExecutor(app.appContext),
         )
@@ -1036,4 +1036,19 @@ class EngineAutoMixHost(
 
 
 /** Debug-only (Settings > Debug): stream from the public rips object URL when no reachable rip server exists (emulator). */
-object MixDebug { @Volatile var publicRips: Boolean = false }
+object MixDebug {
+    @Volatile var publicRips: Boolean = false
+
+    /** ANS-MIX-1 probe: when armed, the first request per URL gets a synthetic HTTP 500. */
+    @Volatile var failFirstPerUrl: Boolean = false
+    private val failed = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    val failOnceInterceptor = okhttp3.Interceptor { chain ->
+        val req = chain.request()
+        if (failFirstPerUrl && failed.add(req.url.toString())) {
+            Thread.sleep(300) // a real 5xx round trip, not an instantaneous local failure
+            com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.MIX, "[mix] debug: injected HTTP 500 for ${req.url.encodedPath}")
+            okhttp3.Response.Builder().request(req).protocol(okhttp3.Protocol.HTTP_1_1).code(500).message("injected")
+                .body(okhttp3.ResponseBody.create(null, ByteArray(0))).build()
+        } else chain.proceed(req)
+    }
+}

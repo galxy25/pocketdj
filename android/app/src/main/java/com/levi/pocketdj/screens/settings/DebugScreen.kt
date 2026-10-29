@@ -297,6 +297,34 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             }
         }) { Text("Burn first 3") }
     }
+    // ANS-COL-1 emulator seed: a pocket + playlist linked to Apple Music (amPlaylistId persists across relaunch).
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val store = host.graph.collections
+            val pk = store.pockets.firstOrNull { it.name == "SeedAMPocket" } ?: store.createPocket("SeedAMPocket")
+            store.linkPocketToAppleMusic(pk.id, "p.SEEDPOCKETLINK")
+            val pl = store.playlists.firstOrNull { it.name == "SeedAMList" } ?: store.createPlaylist("SeedAMList")
+            store.linkToAppleMusic(pl.id, "p.SEEDLISTLINK")
+            android.util.Log.d("PdjVerify", "AM link seeded pocket=${pk.id} playlist=${pl.id}")
+        }
+    }) { Text("Seed AM-linked collections") }
+    // ANS-PB-1 emulator seed: clean-only playlist "SeedClean" = rip, explicit song with no clean edition, rip.
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val ids = seedIds.ifEmpty { pickSeed().also { seedIds = it } }
+            val songs = host.graph.catalogRepository.catalogFlow.first()?.songs ?: emptyList()
+            val explicit = songs.firstOrNull { com.levi.pocketdj.data.edition.CleanOnly.isSkipped(it) }
+            val playable = ids.filter { id -> songs.firstOrNull { it.id == id }?.explicit != true }.take(3)
+            if (explicit == null || playable.size < 2) { ripStatus = "Clean seed: no explicit/no rips"; return@launch }
+            val store = host.graph.collections
+            val pl = store.playlists.firstOrNull { it.name == "SeedClean" } ?: store.createPlaylist("SeedClean")
+            val target = com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id)
+            store.setCleanOnlyForPlaylist(true, pl.id)
+            store.addSongs(listOf(playable[0], explicit.id) + playable.drop(1), target)
+            ripStatus = "Clean seed: ${playable[0]} / explicit ${explicit.id} / ${playable.drop(1)}"
+            android.util.Log.d("PdjVerify", ripStatus)
+        }
+    }) { Text("Seed clean-only playlist") }
     Row { OutlinedButton(onClick = {
             host.scope.launch {
                 val ids = seedIds.ifEmpty { pickSeed().also { seedIds = it } }
@@ -455,6 +483,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         OutlinedButton(onClick = { host.graph.mixGraph.autoDj.resumeAuto(); autoStatus = autoLine() }) { Text("AutoDJ: resume") }
         OutlinedButton(onClick = { autoStatus = autoLine() }) { Text("AutoDJ: status") }
     }
+    Row { OutlinedButton(onClick = { com.levi.pocketdj.di.MixDebug.failFirstPerUrl = !com.levi.pocketdj.di.MixDebug.failFirstPerUrl; autoStatus = "fail-once armed=${com.levi.pocketdj.di.MixDebug.failFirstPerUrl}" }) { Text("Mix: 500 once") } }
     Text(autoStatus, style = MaterialTheme.typography.bodySmall)
 
     // GM-7 verify probes (debug only): the In the Pocket game screen (GAMES-8) has no UI yet.
@@ -504,7 +533,21 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.startRoundDetached(); gemStatus = "Gem: starting" }) { Text("Gem: start") }
         OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.skip(); gemStatus = gemLine() }) { Text("Gem: skip") }
         OutlinedButton(onClick = { gemStatus = gemLine() }) { Text("Gem: status") }
+
         OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.endRound(); gemStatus = gemLine() }) { Text("Gem: end") }
+    }
+    Row {
+        OutlinedButton(onClick = {
+            // ANS-PB-2 probe: one game-tagged row for an un-ripped song that has an Apple Music id -> preview rung.
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs ?: emptyList()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val s = songs.firstOrNull { it.appleMusicId != null && manifest[it.id] == null && it.explicit != true }
+                if (s == null) { gemStatus = "Gem: no un-ripped AM song"; return@launch }
+                host.graph.gamesGraph.gameRunPlayer.playRun(listOf(com.levi.pocketdj.playback.RunItem(s.id, s.name, s.artist)), "dbgpreview", "Preview probe")
+                gemStatus = "Gem: preview probe ${s.id}"
+            }
+        }) { Text("Gem: preview row") }
     }
     Text(gemStatus, style = MaterialTheme.typography.bodySmall)
 

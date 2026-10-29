@@ -353,3 +353,17 @@ Emulator smoke (pocketdj AVD, emulator-5554, debug APK):
 - Visited all 7 bottom tabs: Browse, History, Jukebox, Collections, Mix, Producer, Games.
 - Settings > Debug: Seed rip playlist, then Play seed queue. The media session went to PLAYING ("Hot [Skit]", Jadakiss) and the position advanced from 3.0 s to 12.1 s; `switchboard owner=exo`.
 - logcat: 0 FATAL EXCEPTION, 0 ANR, crash buffer empty.
+
+## Answers wave 1
+Merged (feat/android-answers): ANS-COL-1, ANS-PB-1, ANS-PB-2, ANS-PB-3, ANS-MIX-1, ANS-STU-1 (all six merged cleanly, no conflicts). JVM suite: 5211 tests, 0 failures (the merge adds the packages' tests on top of the prior 5131); assembleDebug green.
+
+Emulator (emulator-5556, pocketdj-ans AVD, debug APK; screenshots in pocketdj-answers-pkgs/_shots/wave1/; 0 FATAL EXCEPTION / 0 ANR for com.levi.pocketdj across the session):
+- ANS-COL-1 PASS: Debug "Seed AM-linked collections" (store.linkPocketToAppleMusic / linkToAppleMusic), force-stop, relaunch: `pocketdj-collections.json` still carries `amPlaylistId` on the pocket and the playlist. The iOS simulator suite step was run by the implementer (59 targeted tests, 0 failures); not re-run here.
+- ANS-PB-1 PASS: clean-only playlist (Debug "Seed clean-only playlist": rip, explicit song with no clean edition, rip): logcat shows `advance: unplayable ... reason=CLEAN_ONLY_EXPLICIT` then `UNPLAYABLE_HERE`, and the explicit row never logs `track start`. Process-kill (kill -9) + relaunch: session JSON carries `resolveId` on every row (and `cleanOnlySkip` on the explicit one) and restores the same deck.
+- ANS-PB-2 PASS: Gem round rows play from rips (ripped songs win the ladder); new Debug "Gem: preview row" plays a game-tagged un-ripped AM song: logcat `game row rung=preview`, media session PLAYING with a 30 s buffered preview. Added the `rung=preview` log line to GamePreviewRowResolver.
+- ANS-PB-3 PASS: Settings > Playback Device/Cloud flipped to Cloud, force-stop, relaunch: `playbackMode=cloud` persisted. Burn first 3 then Storage > Delete downloads: by-artist and by-collection lists show the burns; "Delete all burnt music" confirm empties `files/burns`. Seed queue across 14 transitions: Debug Dead air readout shows Today 0.7% with per-kind transition counts.
+- ANS-MIX-1 PASS: new Debug "Mix: 500 once" arms a debug-only OkHttp interceptor (inert unless armed) that injects HTTP 500 once per URL (with a 300 ms round trip). `AutoDJ: start streamed`: both decks drop, and the failed song re-opens 2.07 s later, then completes. Finding: with a zero-latency failure on the very first stream, Auto never starts (Q103).
+- ANS-STU-1 PASS: picked Documents/Instrumentals through DocumentsUI as the Takes folder; Import MIDI (needs the 32 MB SoundFont pack, downloaded in the Packs tab; without it the button routes to Packs by design) created a take; the new take's m4a landed in the SAF folder; Take actions > Use as sample made a sample via cache/studio-saf and the sample plays (AudioTrack started).
+Device-only, not verifiable here: real AM link on a subscribed account (COL-1), full-track AM inside a game round (PB-2) and AM takeover inside a run (PB-3, DRM), real network flaps (MIX-1), SD-card SAF trees (STU-1).
+
+Debug additions (debug screen only): Seed clean-only playlist, Seed AM-linked collections, Gem: preview row, Mix: 500 once. Open: Q103, Q104.

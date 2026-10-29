@@ -9,7 +9,10 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 
 ## OPEN
 
-(none — all Q1–Q102 and W1–W7 resolved 2026-10-29)
+- **Q103 [Answers wave 1, ANS-MIX-1]** When the FIRST stream of a fresh Auto-DJ start fails with an instantaneous HTTP 5xx, the server-down gate refuses the other queued songs and `startAutoMix` clears the queue (Auto never starts). With realistic latency (stream failing after the deck is live) it recovers in ~2 s. Should a first-slot failure keep the queue and retry the start after the short cooldown? — *Default: leave (only reproducible with a synthetic zero-latency failure).* — Decides Auto-DJ start robustness on a flapping server.
+- **Q104 [Answers wave 1, ANS-PB-3]** Settings > Storage > Burned music by artist shows "0 MB" for artists whose downloads total under 0.5 MB. Show kB below 1 MB? — *Default: leave.* — Cosmetic.
+
+(Q1–Q102 and W1–W7 resolved 2026-10-29)
 
 ## ANSWERED
 
