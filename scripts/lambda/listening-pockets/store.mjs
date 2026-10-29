@@ -220,7 +220,32 @@ export function cleanEvent(e, uploaderInstallId, nowMs = Date.now()) {
     // Collections (pockets-collections.md): the collection the play started from. Only written
     // when the client sent one, so an old client's rows keep their exact stored shape.
     ...contextOf(e),
+    // Pocket Wheel (docs/design/pocket-wheel.md §5, Phase 6): the play's derived listening MODE
+    // (incl. running / walking — W4, Levi 2026-10-29) and, for plays a wheel run started, the run
+    // tag. Both additive: absent unless the client sent them (old rows keep their stored shape).
+    ...modeOf(e),
+    ...runOf(e),
   };
+}
+
+/// Modes that only the device's sensors can know (they beat the surface modes on merge).
+const BODY_MODES = new Set(['running', 'walking', 'trip', 'carPlay']);
+/// The Pocket Wheel modes (`PocketMode` raw values). An unknown token is dropped, never stored.
+export const WHEEL_MODES = new Set(['carPlay', 'running', 'walking', 'trip', 'mix', 'browse', 'collection']);
+function modeOf(e) {
+  return typeof e.mode === 'string' && WHEEL_MODES.has(e.mode) ? { mode: e.mode } : {};
+}
+
+/// `{ run: { id, moment, slot, collectionId } }` for a wheel-run play, else `{}`.
+function runOf(e) {
+  const r = e.run;
+  if (!r || typeof r !== 'object' || typeof r.id !== 'string' || !UUID_RE.test(r.id)) return {};
+  const moment = typeof r.moment === 'string' && /^h\d{2}\|d[1-7]\|[A-Za-z]{2,16}$/.test(r.moment) ? r.moment : null;
+  return { run: {
+    id: r.id.toUpperCase(), moment,
+    slot: Number.isInteger(r.slot) && r.slot > 0 ? Math.min(r.slot, 10_000) : null,
+    collectionId: opaqueId(r.collectionId),
+  } };
 }
 
 // ── Collections: play context, membership snapshot, add history ─────────────────────────────────
@@ -396,6 +421,10 @@ export function mergeEvents(doc, rows, nowMs = Date.now()) {
     if (r.fraction != null && (cur.fraction == null || r.fraction > cur.fraction)) set('fraction', r.fraction);
     if (cur.ctx == null && r.ctx != null) { cur.ctx = r.ctx; changed = true; }
     for (const k of ['tzOffsetMin', 'artist', 'carPlay', 'source', 'contextId', 'contextKind']) if (cur[k] == null && r[k] != null) set(k, r[k]);
+    // Pocket Wheel: a body/vehicle mode (settled later from CoreMotion / the trip engine) upgrades
+    // a surface mode; never the reverse. The run tag is write-once.
+    if (r.mode != null && (cur.mode == null || (BODY_MODES.has(r.mode) && !BODY_MODES.has(cur.mode)))) set('mode', r.mode);
+    if (cur.run == null && r.run != null) { cur.run = r.run; changed = true; }
     if (changed) updated += 1; else unchanged += 1;
   }
   const evicted = applyRetention(doc, nowMs);

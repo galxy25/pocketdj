@@ -45,6 +45,11 @@ final class SetlistPlayer {
         /// stamped this row — the lazy rip's hard gate (no id ⇒ nothing is ever enqueued).
         /// Excluded from equality; a playback parameter, not row identity.
         var editionCatalogId: String? = nil
+        /// Pocket Wheel run provenance (§4.1): which run placed this row, at which slot, for which
+        /// collection, with what score — and whether the listener has since MOVED it (`pinned`).
+        /// nil for every row the user added by hand. Excluded from equality like `variant`.
+        /// Rows with `plan == nil` or `pinned` are NEVER replaced by a re-plan.
+        var plan: PlanTag? = nil
 
         /// This row's edition decision, reassembled for the storage + rip layers.
         var editionDecision: EditionPolicy.Decision {
@@ -78,6 +83,15 @@ final class SetlistPlayer {
             lhs.id == rhs.id && lhs.title == rhs.title
                 && lhs.artist == rhs.artist && lhs.lengthMs == rhs.lengthMs
         }
+    }
+
+    /// A Pocket Wheel run row's provenance (see `Item.plan`).
+    struct PlanTag: Hashable, Codable, Sendable {
+        var runId: UUID
+        var slot: Int
+        var collectionId: String?
+        var score: Double
+        var pinned: Bool
     }
 
     private(set) var queue: [Item] = [] {
@@ -267,6 +281,12 @@ final class SetlistPlayer {
     /// advances). Observed by the Now Playing deck + widget; mirrored to the lock-screen /
     /// CarPlay `changeRepeatModeCommand`.
     private(set) var repeatMode: RepeatMode = .off
+    /// The repeat mode the PLAYBACK obeys: a Pocket Wheel run is exactly 100 played-through songs
+    /// (W2), so repeat never applies while one owns the sequencer — WITHOUT touching the user's
+    /// sticky `repeatMode`, which the next ordinary set picks straight back up.
+    var effectiveRepeatMode: RepeatMode {
+        sourceSetlistId?.hasPrefix(PocketWheelIds.runTagPrefix) == true ? .off : repeatMode
+    }
     /// Whether the running queue's UPCOMING tail is live-shuffled. Reset per `play()` (the new
     /// queue is presented in its given order — the one-shot `playNow(shuffle:)` handles initial
     /// randomization). Toggling ON permutes `queue[(index+1)...]`; OFF restores the tail's
@@ -871,7 +891,7 @@ final class SetlistPlayer {
         if index == 0 {
             // Repeat-ALL wraps ⏮ from the top back to the last track; otherwise stay at 0
             // (⏮ on the first track restarts it — today's `max(0, index-1)` behaviour).
-            if repeatMode == .all, queue.count > 1 { index = queue.count - 1 }
+            if effectiveRepeatMode == .all, queue.count > 1 { index = queue.count - 1 }
         } else {
             index -= 1
         }
@@ -992,6 +1012,7 @@ final class SetlistPlayer {
         var tail = Array(queue[(index + 1)...])
         let src = IndexSet(fromOffsets.filter(tail.indices.contains))
         guard !src.isEmpty else { return }
+        for i in src { tail[i].plan?.pinned = true }   // the listener placed it — a re-plan never moves it
         tail.move(fromOffsets: src, toOffset: max(0, min(toOffset, tail.count)))
         queue.replaceSubrange((index + 1)..., with: tail)
         persistSession()
@@ -1008,6 +1029,98 @@ final class SetlistPlayer {
         tail.removeAll { uids.contains($0.uid) }
         queue.replaceSubrange((index + 1)..., with: tail)
         persistSession()
+    }
+
+    // MARK: Pocket Wheel re-plan (§4.4)
+
+    /// A run row a re-plan may consider, with the facts the planner needs.
+    struct ReplaceableRow: Equatable {
+        var uid: UUID
+        var songId: String
+        var slot: Int
+        var collectionId: String?
+        /// A rip is in flight for it: only an instant/on-device replacement may take its place.
+        var requiresInstant: Bool
+        var prevSongId: String?
+        var nextSongId: String?
+    }
+
+    /// Seconds of the current track that must remain for `queue[index + 1]` to be replaceable.
+    static let replaceNextMinRunwaySeconds: Double = 30
+
+    /// May the row at absolute position `i` be replaced RIGHT NOW? (§4.4 protection table.)
+    private func isReplaceablePosition(_ i: Int) -> Bool {
+        guard isRunning, i > index, i < queue.count else { return false }      // never the playing / played rows
+        guard let plan = queue[i].plan, !plan.pinned else { return false }    // manual + moved rows are the listener's
+        if i == index + 1 {
+            guard let dur = currentDurationMs() else { return false }
+            let remaining = Double(dur - sessionPositionMs()) / 1000
+            if remaining < Self.replaceNextMinRunwaySeconds { return false }
+        }
+        return true
+    }
+
+    private func ripInFlight(_ it: Item) -> Bool {
+        ripWindow.requested.contains(it.id) || ripWindow.requested.contains(it.resolveId)
+    }
+
+    /// The upcoming rows of run `runId` a re-plan may touch NOW (re-checked again at apply time).
+    func replaceableUpcomingRows(runId: UUID) -> [ReplaceableRow] {
+        guard isRunning, index + 1 < queue.count else { return [] }
+        return (index + 1..<queue.count).compactMap { i in
+            guard isReplaceablePosition(i), let plan = queue[i].plan, plan.runId == runId else { return nil }
+            return ReplaceableRow(uid: queue[i].uid, songId: queue[i].id, slot: plan.slot, collectionId: plan.collectionId,
+                                  requiresInstant: ripInFlight(queue[i]),
+                                  prevSongId: queue[i - 1].id, nextSongId: i + 1 < queue.count ? queue[i + 1].id : nil)
+        }
+    }
+
+    /// Swap / drop upcoming rows by IDENTITY (`Item.uid`, the `removeUpcoming` discipline). The
+    /// protection rules are evaluated HERE, at apply time, because the queue may have advanced
+    /// since the re-plan was computed: the playing row is never touched, the next row only with
+    /// ≥ 30 s of runway, manual (`plan == nil`) and moved (`pinned`) rows never, and a row whose
+    /// rip is in flight only by a replacement that starts instantly (an in-flight capture is never
+    /// traded for another). A replacement takes the replaced row's place in `canonicalOrder`, so
+    /// shuffle-off ordering stays coherent. Touching the prefetch window re-runs the prefetch.
+    /// Returns how many rows changed. Stale uids are ignored.
+    @discardableResult
+    func replaceUpcoming(_ replacements: [UUID: Item], removing: Set<UUID>) -> Int {
+        guard isRunning, index + 1 < queue.count, !(replacements.isEmpty && removing.isEmpty) else { return 0 }
+        var next = queue
+        var changed = 0
+        var touchedPrefetch = false
+        var dropped: [Int] = []
+        for i in (index + 1)..<next.count {
+            let row = next[i]
+            if let raw = replacements[row.uid] {
+                guard isReplaceablePosition(i) else { continue }
+                // The same edition policy every queued row gets at play() (clean-only / prefer-explicit).
+                let rep = stampEditions([raw], sourceSetlistId: sourceSetlistId).first ?? raw
+                if ripInFlight(row), !(rowOnDevice(rep) || rowStartsInstantly(rep)) { continue }
+                next[i] = rep
+                if let c = canonicalOrder, let k = c.firstIndex(of: row.uid) { canonicalOrder![k] = rep.uid }
+                changed += 1
+                if i <= index + Self.prefetchAhead { touchedPrefetch = true }
+            } else if removing.contains(row.uid) {
+                guard isReplaceablePosition(i) else { continue }
+                dropped.append(i)
+                changed += 1
+                if i <= index + Self.prefetchAhead { touchedPrefetch = true }
+            }
+        }
+        guard changed > 0 else { return 0 }
+        for i in dropped.reversed() { next.remove(at: i) }
+        queue = next
+        if touchedPrefetch { prefetchUpcoming() }
+        persistSession()
+        return changed
+    }
+
+    /// Append a Pocket Wheel run's top-up rows: edition-stamped exactly like the rows `play()`
+    /// stamped, then appended (the run already checked it still owns the sequencer).
+    func appendRunRows(_ items: [Item]) {
+        guard isRunning, !items.isEmpty else { return }
+        appendToQueue(stampEditions(items, sourceSetlistId: sourceSetlistId))
     }
 
     /// Append tracks to the end of the running queue (the panel's add-search).
@@ -1059,7 +1172,8 @@ final class SetlistPlayer {
     func moveUpcomingNext(uid: UUID) {
         guard isRunning, index + 1 < queue.count,
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
-        let item = queue.remove(at: pos)
+        var item = queue.remove(at: pos)
+        item.plan?.pinned = true
         queue.insert(item, at: index + 1)
         persistSession()
     }
@@ -1068,7 +1182,8 @@ final class SetlistPlayer {
     func moveUpcomingToEnd(uid: UUID) {
         guard isRunning, index + 1 < queue.count,
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
-        let item = queue.remove(at: pos)
+        var item = queue.remove(at: pos)
+        item.plan?.pinned = true
         queue.append(item)
         persistSession()
     }
@@ -1225,7 +1340,7 @@ final class SetlistPlayer {
         endMixEngagement()
         // Repeat-ONE: replay the current track from the top (through the AVPlayer) instead of
         // advancing. Only on a NATURAL end — an explicit ⏭ goes through `advanceToNext`.
-        if repeatMode == .one {
+        if effectiveRepeatMode == .one {
             startPlayCurrent(fresh: true)
             return
         }
@@ -1610,7 +1725,7 @@ final class SetlistPlayer {
               let npId = rips.nowPlaying?.songId, queue[index].matches(npId) else { return }
         // Repeat-ONE (whole-session mode) takes precedence: replay the current track from the top.
         // Only on a NATURAL end — an explicit ⏭ / dead source goes through `advanceToNext`.
-        if repeatMode == .one {
+        if effectiveRepeatMode == .one {
             startPlayCurrent(fresh: true)
             return
         }
@@ -1665,7 +1780,7 @@ final class SetlistPlayer {
             return
         }
         // Repeat-ONE (whole-session mode): replay the current AM track from the top.
-        if repeatMode == .one {
+        if effectiveRepeatMode == .one {
             startPlayCurrent(fresh: true)
             return
         }
@@ -1723,7 +1838,7 @@ final class SetlistPlayer {
             // Repeat-ALL: wrap to the top and keep going instead of stopping. (Repeat-ONE is
             // handled on natural end in the `handle*Ended` paths, so it never reaches here; an
             // explicit ⏭ past the end with repeat-one/off still stops.)
-            if repeatMode == .all, !queue.isEmpty {
+            if effectiveRepeatMode == .all, !queue.isEmpty {
                 index = 0
                 // Reshuffle the whole queue on a shuffle wrap so the next pass differs (standard
                 // player behaviour); `canonicalOrder` is untouched so shuffle-OFF still restores.
@@ -2223,7 +2338,7 @@ final class SetlistPlayer {
             Item(id: $0.songId, title: $0.title, artist: $0.artist,
                  lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
                  variant: $0.variant.flatMap(SongVariant.init(rawValue:)),
-                 editionLocked: $0.editionLocked ?? false)
+                 editionLocked: $0.editionLocked ?? false, plan: $0.plan)
         }
         index = min(max(0, snap.index), queue.count - 1)
         // The snapshot's rows ARE the session projection — warm the memo with them (the queue
@@ -2426,7 +2541,8 @@ final class SetlistPlayer {
             PlaybackSessionStore.Row(songId: $0.id, title: $0.title, artist: $0.artist,
                                      lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
                                      variant: $0.variant?.rawValue,
-                                     editionLocked: $0.editionLocked ? true : nil)
+                                     editionLocked: $0.editionLocked ? true : nil,
+                                     plan: $0.plan)
         }
     }
 

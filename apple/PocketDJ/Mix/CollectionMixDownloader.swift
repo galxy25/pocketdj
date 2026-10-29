@@ -513,12 +513,12 @@ final class CollectionMixDownloader {
         // Per-source pass (not a flatMap) so each appended row carries ITS crate's name; the
         // cross-source dedup keeps the flatMap's first-source-wins order.
         var seen = Set<String>()
-        var fresh: [(loadable: MixLoadable, label: String?)] = []
+        var fresh: [(loadable: MixLoadable, label: String?, origin: String)] = []
         for source in sources {
             let label = resolveSourceName?(source)
             for l in resolve(source) where seen.insert(l.songId).inserted
                 && !initialAutoIds.contains(l.songId) && !appendedIds.contains(l.songId) {
-                fresh.append((l, label))
+                fresh.append((l, label, source.collectionId))
             }
         }
         guard !fresh.isEmpty else { return }
@@ -529,7 +529,7 @@ final class CollectionMixDownloader {
                 engine.autoQueueInsert(
                     MixEngine.AutoMixItem(loadable: f.loadable,
                                           durationMs: f.loadable.lengthMs ?? Self.fallbackDurationMs,
-                                          sourceLabel: f.label),
+                                          sourceLabel: f.label, originCollectionId: f.origin),
                     placement: autoShuffled ? .random : .end)
                 appendedIds.insert(f.loadable.songId)
             }
@@ -548,7 +548,7 @@ final class CollectionMixDownloader {
             engine.startAutoMix(
                 fresh.map { MixEngine.AutoMixItem(loadable: $0.loadable,
                                                   durationMs: $0.loadable.lengthMs ?? Self.fallbackDurationMs,
-                                                  sourceLabel: $0.label) },
+                                                  sourceLabel: $0.label, originCollectionId: $0.origin) },
                 shuffled: false, lead: autoLead, fade: autoFade, label: autoLabel)
         }
     }

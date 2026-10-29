@@ -173,6 +173,9 @@ final class MixDeckSessionStore {
         /// Provenance: the crate (pocket/set list) name this row came from — the TV queue
         /// surfaces show it. OPTIONAL (a schema bump discards sessions); nil for legacy rows.
         var sourceLabel: String? = nil
+        /// Provenance: the crate's collection id (Play History's Mix `originCollectionId`).
+        /// OPTIONAL for the same no-schema-bump reason as `sourceLabel`.
+        var originCollectionId: String? = nil
     }
 
     /// The Auto-DJ machine's restorable state. The queue is stored in its FINAL order (shuffle

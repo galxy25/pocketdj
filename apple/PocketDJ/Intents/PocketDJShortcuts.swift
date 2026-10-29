@@ -24,6 +24,14 @@ struct PocketDJShortcuts: AppShortcutsProvider {
                     ],
                     shortTitle: "Shuffle Playlist",
                     systemImageName: "shuffle.circle")
+        AppShortcut(intent: PlayPocketForNowIntent(),
+                    phrases: [
+                        "Play my pocket in \(.applicationName)",
+                        "Play the pocket for now in \(.applicationName)",
+                        "Play something that fits in \(.applicationName)",
+                    ],
+                    shortTitle: "Play My Pocket",
+                    systemImageName: "circle.circle")
         AppShortcut(intent: PlayPocketIntent(),
                     phrases: [
                         "Play the pocket \(\.$pocket) in \(.applicationName)",

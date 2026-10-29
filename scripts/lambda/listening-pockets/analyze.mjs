@@ -28,7 +28,7 @@ const round = (x, dp) => { const m = 10 ** dp; return Math.round(x * m) / m; };
 // collection the play started from) are pockets-collections.md's dims — empty for a profile that
 // never sent a collections snapshot / context ids, so its documents are unchanged by them.
 const MUSICAL_DIMS = ['artist', 'genre', 'mood', 'camelot', 'collection'];
-const CONTEXT_DIMS = ['timeBucket', 'dayType', 'dow', 'source', 'place', 'trip', 'carPlay', 'playContext'];
+const CONTEXT_DIMS = ['timeBucket', 'dayType', 'dow', 'source', 'place', 'trip', 'carPlay', 'playContext', 'mode'];
 const CONTEXT_SET = new Set(CONTEXT_DIMS);
 const CATEGORICAL_DIMS = [...MUSICAL_DIMS, ...CONTEXT_DIMS];
 const NUMERIC_DIMS = ['bpm', 'energy', 'year'];
@@ -40,6 +40,11 @@ const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frid
 const SOURCE_LABELS = {
   browser: 'Browser', playlist: 'Playlist', pocket: 'Pocket', album: 'Album',
   setlist: 'Set list', mix: 'Mix', artist: 'Artist', game: 'Game',
+};
+/// Pocket Wheel mode labels (`PocketMode.label` on the app; `collection` is "Home" — W6).
+const MODE_LABELS = {
+  carPlay: 'CarPlay', running: 'Running', walking: 'Walking', trip: 'Trip', mix: 'Mix',
+  browse: 'Browse', collection: 'Home',
 };
 /// Genre categories whose title-casing would be wrong ("R&b", "Edm").
 const GENRE_LABELS = { 'r&b': 'R&B', edm: 'EDM', 'hip-hop': 'Hip-Hop', 'k-pop': 'K-Pop', 'j-pop': 'J-Pop' };
@@ -147,8 +152,27 @@ export function attributesOf(e, features, { params = POCKET_PARAMS, tzFallbackMi
     trip: ctx?.kind === 'trip' && ctx.tripId ? ctx.tripId : null,
     ctx: ctx && ((ctx.kind === 'place' && ctx.placeId) || (ctx.kind === 'trip' && ctx.tripId)) ? ctx : null,
     collections: collectionsOf ? collectionsOf(e.songId) : [],
-    playContext: typeof e.contextId === 'string' && e.contextId ? e.contextId : null,
+    // A wheel run's row collection is its play context (`contextKind: "wheel"`, §5).
+    playContext: (e.run && typeof e.run.collectionId === 'string' && e.run.collectionId) ? e.run.collectionId
+      : typeof e.contextId === 'string' && e.contextId ? e.contextId : null,
+    // Pocket Wheel listening mode (CarPlay / running / walking / trip / mix / browse / collection).
+    // Only the SENSOR modes the app sends (running / walking / trip from motion) are a context
+    // dimension: the surface modes duplicate `source` / `carPlay` / `trip` and would only crowd
+    // musical features out of a pocket's defining set (measured on the fixtures). The full mode
+    // of any play is `surfaceModeOf` (the wheel's §1.3 rule) for consumers that want it.
+    mode: typeof e.mode === 'string' && e.mode ? e.mode : null,
   };
+}
+
+/// `PocketMode.derive` for a play with no sensor mode: CarPlay, a trip context, Mix, Browse
+/// (browser / album / artist), else Home ("collection"). Games have no mode.
+export function surfaceModeOf(e, ctx) {
+  if (e.source === 'game') return null;
+  if (e.carPlay === true) return 'carPlay';
+  if (ctx?.kind === 'trip' && ctx.tripId) return 'trip';
+  if (e.source === 'mix') return 'mix';
+  if (e.source === 'browser' || e.source === 'album' || e.source === 'artist') return 'browse';
+  return e.source ? 'collection' : null;
 }
 
 /// The categorical values one play contributes to a dimension (mood is multi-valued).
@@ -324,6 +348,7 @@ function labelFor(dim, v, labels) {
     case 'place': return labels.places.get(v) || 'Place';
     case 'trip': return labels.trips.get(v) || 'Trip';
     case 'carPlay': return v === 'yes' ? 'CarPlay' : 'Not in CarPlay';
+    case 'mode': return MODE_LABELS[v] || capFirst(v);
     default: return v;
   }
 }
@@ -457,6 +482,36 @@ export function roundContextKeys(r) {
   const ctxKey = ctxKeyOf(c.ctx);
   if (ctxKey !== '-') keys.push(`${c.dayType}|${c.timeBucket}|${ctxKey}`);
   return keys;
+}
+
+/// Wheel-run plays (events carrying `run`) → round-shaped WEAK labels for `learnFromRounds`: one
+/// per run, context = the run's first play's local time + place/trip, target = the run's most
+/// frequent row collection. Outcome `pocket` when ≥ `wheelPositiveMin` played through, else
+/// `abandoned` (label 0). Deterministic: runs sorted by id.
+export function wheelRunRounds(events, { params = POCKET_PARAMS, positiveMin = 80 } = {}) {
+  const runs = new Map();
+  for (const e of Array.isArray(events) ? events : []) {
+    if (!e?.run?.id) continue;
+    const g = runs.get(e.run.id) || { id: e.run.id, plays: [] };
+    g.plays.push(e);
+    runs.set(e.run.id, g);
+  }
+  return [...runs.values()].sort((a, b) => (a.id < b.id ? -1 : 1)).map((g) => {
+    const plays = g.plays.slice().sort((a, b) => a.atMs - b.atMs);
+    const first = plays[0];
+    const through = plays.filter((p) => p.outcome !== 'skipped').length;
+    const counts = new Map();
+    for (const p of plays) if (p.run.collectionId) counts.set(p.run.collectionId, (counts.get(p.run.collectionId) || 0) + 1);
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0]?.[0];
+    const local = localTimeOf(first.atMs, first.tzOffsetMin ?? 0, params);
+    return {
+      id: g.id, kind: 'wheel', startedAtMs: first.atMs,
+      outcome: through >= positiveMin ? 'pocket' : 'abandoned',
+      context: { dayType: local.dayType, timeBucket: local.timeBucket, ctx: first.ctx ?? null },
+      targets: top ? [{ dim: 'collection', value: top, label: top, weight: 1 }] : [],
+      playedThrough: through,
+    };
+  });
 }
 
 /// Laplace-smoothed positive rate, doubled so "no evidence" is exactly 1.0, clamped.
@@ -645,8 +700,13 @@ export function computeResults(eventsDoc, features, { nowMs = Date.now(), params
   };
   // "In the Pocket" labels — only when the profile has played the game, so a profile that never
   // has computes exactly the document it always did.
-  if (Array.isArray(eventsDoc?.rounds) && eventsDoc.rounds.length) {
-    doc.rounds = learnFromRounds(eventsDoc.rounds, { nowMs, params });
+  // Pocket Wheel runs ride the same learner as WEAK labels (§5): a run with ≥ 80 of 100 songs
+  // played through counts as a positive round for its moment's context; anything less teaches
+  // nothing (a run cut short is not a verdict). Absent ⇒ the exact document as before.
+  const wheelRounds = wheelRunRounds(eventsDoc?.events, { params });
+  const allRounds = [...(Array.isArray(eventsDoc?.rounds) ? eventsDoc.rounds : []), ...wheelRounds];
+  if (allRounds.length) {
+    doc.rounds = learnFromRounds(allRounds, { nowMs, params });
   }
   return doc;
 }

@@ -76,10 +76,23 @@ struct ListeningPocketsUploadEvent: Encodable, Equatable {
     /// pocket | playlist | setlist | source. Never a name.
     var contextId: String? = nil
     var contextKind: String? = nil
+    /// Pocket Wheel (Phase 6, W4): the play's SENSOR-derived listening mode — running / walking
+    /// (CoreMotion) or trip (driving / cycling without CarPlay). Absent otherwise: the surface
+    /// modes are derivable on the server from `source` + `carPlay`, so old rows need no re-send.
+    var mode: String? = nil
+    /// Pocket Wheel run tag for plays a wheel run started (absent otherwise).
+    var run: RunWire? = nil
+
+    struct RunWire: Encodable, Equatable {
+        var id: String
+        var moment: String
+        var slot: Int
+        var collectionId: String?
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, songId, atMs, ord, tzOffsetMin, source, outcome, fraction, originInstallId, artist, carPlay, ctx
-        case contextId, contextKind
+        case contextId, contextKind, mode, run
     }
 
     func encode(to encoder: Encoder) throws {
@@ -112,6 +125,9 @@ struct ListeningPocketsUploadEvent: Encodable, Equatable {
             try c.encode(contextId, forKey: .contextId)
             try c.encode(contextKind, forKey: .contextKind)
         }
+        // Additive (Pocket Wheel): absent rather than null, same byte-identity rule.
+        try c.encodeIfPresent(mode, forKey: .mode)
+        try c.encodeIfPresent(run, forKey: .run)
     }
 }
 
@@ -158,6 +174,8 @@ struct ListeningPocketsUploadResponse: Decodable, Equatable {
     var rejected: Int?
     var total: Int?
     var dirty: Bool?
+    /// Capabilities the server understands beyond upload.v1 (`["wheel"]` = Pocket Wheel fields).
+    var caps: [String]?
 }
 
 // MARK: - Results v1
