@@ -27,5 +27,6 @@ class JukeboxSessionsPickerLogicTest {
         assertEquals("x.io/j/a · ends in 2 min", L.detail(row, 0))
         assertEquals("x.io/j/a", L.detail(row.copy(expiresAt = null), 0))
         assertEquals("", L.detail(JukeboxSessionRow("a"), 0))
+        assertEquals("x.io/j/a · timeless", L.detail(row.copy(expiresAt = null, timeless = true), 0))
     }
 }

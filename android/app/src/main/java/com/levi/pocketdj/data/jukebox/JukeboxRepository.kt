@@ -248,10 +248,38 @@ class JukeboxRepository(
         loopJob?.cancel()
         loopJob = null
         val session = _state.value.session ?: runCatching { sessionStore.load()?.session }.getOrNull()
-        if (session != null) kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { runCatching { client.end(session) } }
+        if (session != null) {
+            kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+                try {
+                    client.end(session)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // best-effort: an unreachable broker must not trap the host
+                }
+            }
+        }
         sessionStore.clear()
         resetLoopBookkeeping()
         _state.value = UiState()
+    }
+
+    /**
+     * Switch hosting to [jukeboxId]: end the current party (awaited, so adopt's guard sees it gone), then adopt.
+     * Runs on the repository's own scope so a dismissed sheet can't cancel it halfway (iOS: unstructured Task).
+     * Failures surface as [UiState.notice].
+     */
+    fun switchTo(jukeboxId: String) {
+        scope.launch {
+            try {
+                endAndAwait()
+                adopt(jukeboxId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(notice = e.message ?: "Couldn't switch session") }
+            }
+        }
     }
 
     /** Flip View + Hear; an immediate tick shows guests the flip promptly. */

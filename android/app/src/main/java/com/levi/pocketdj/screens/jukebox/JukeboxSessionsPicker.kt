@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -18,6 +19,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +54,7 @@ object JukeboxSessionsPickerLogic {
     fun detail(row: JukeboxSessionRow, nowMs: Long): String {
         val url = row.url.removePrefix("https://").removePrefix("http://")
         val age = row.expiresAt?.let { ageText(it.toLong() - nowMs) }
+            ?: if (row.timeless == true) "timeless" else null
         return listOfNotNull(url.takeIf { it.isNotBlank() }, age).joinToString(" · ")
     }
 
@@ -78,6 +81,8 @@ fun JukeboxSessionsPickerSheet(repository: JukeboxRepository, activeId: String?,
     var loading by remember { mutableStateOf(false) }
     var adoptingId by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    val repoState by repository.state.collectAsState()
+    var pendingSwitch by remember { mutableStateOf<JukeboxSessionRow?>(null) }
 
     fun refresh() {
         scope.launch {
@@ -96,7 +101,8 @@ fun JukeboxSessionsPickerSheet(repository: JukeboxRepository, activeId: String?,
     }
     LaunchedEffect(Unit) { refresh() }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    val busy = adoptingId != null || repoState.starting
+    ModalBottomSheet(onDismissRequest = { if (adoptingId == null) onDismiss() }) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Jukebox sessions", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
@@ -117,25 +123,37 @@ fun JukeboxSessionsPickerSheet(repository: JukeboxRepository, activeId: String?,
                 Text("No live sessions.", style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 12.dp))
             }
+            pendingSwitch?.let { target ->
+                val currentName = list?.firstOrNull { it.jukeboxId == activeId }?.let { JukeboxSessionsPickerLogic.title(it) }
+                    ?: "the current jukebox"
+                AlertDialog(
+                    onDismissRequest = { pendingSwitch = null },
+                    title = { Text("End \"$currentName\" and host \"${JukeboxSessionsPickerLogic.title(target)}\"?") },
+                    text = { Text("Guests' pages will show the current party has ended.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            pendingSwitch = null
+                            repository.switchTo(target.jukeboxId)
+                            onDismiss()
+                        }) { Text("Switch", color = MaterialTheme.colorScheme.error) }
+                    },
+                    dismissButton = { TextButton(onClick = { pendingSwitch = null }) { Text("Cancel") } },
+                )
+            }
             list?.forEach { row ->
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                 val hosting = row.jukeboxId == activeId
                 Row(
                     Modifier.fillMaxWidth()
-                        .clickable(enabled = adoptingId == null) {
-                            when (JukeboxSessionsPickerLogic.decide(activeId, adoptingId != null, row.jukeboxId)) {
+                        .clickable(enabled = !busy) {
+                            when (JukeboxSessionsPickerLogic.decide(activeId, busy, row.jukeboxId)) {
                                 SessionPickAction.IGNORE -> Unit
                                 SessionPickAction.ALREADY_HOSTING -> onDismiss()
                                 SessionPickAction.ADOPT -> {
                                     repository.adopt(row.jukeboxId); onDismiss()
                                 }
                                 SessionPickAction.END_THEN_ADOPT -> {
-                                    adoptingId = row.jukeboxId
-                                    scope.launch {
-                                        repository.endAndAwait()
-                                        repository.adopt(row.jukeboxId)
-                                        onDismiss()
-                                    }
+                                    pendingSwitch = row
                                 }
                             }
                         }
