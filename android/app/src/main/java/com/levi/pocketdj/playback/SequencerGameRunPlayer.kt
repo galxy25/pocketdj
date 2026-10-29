@@ -24,14 +24,14 @@ import kotlinx.coroutines.withTimeoutOrNull
  * [GameRunPlayer] over the shared [SetlistSequencer] (the Android `SetlistPlayer`). Runs are queue
  * plays tagged `PlayContext.game(tag, label)`; the tag rides every row (`appendRows(runTag)`).
  *
- * Game runs are ExoPlayer-only: manifest rips and burned files resolve through the normal ladder,
+ * Manifest rips and burned files resolve through the normal ladder,
  * a non-manifest song with an `appleMusicId` plays the full Apple Music track when the device can
  * (Q36, [GamePreviewResolver.playsFullTrack]), otherwise its cached 30-second AM preview.
  *
- * Timing: the Apple Music rung starts slower than a cached preview URL (SDK queue prime). Game
- * timing budgets are wall-clock windows measured from the row's start event, and the Collector's
- * 2.5 s cloud budget only gates resolvable rows, so a slower AM start delays the round by that
- * latency but never skips a row; device-only to measure.
+ * Timing: the Apple Music rung starts slower than a cached preview URL (SDK queue prime). Collector
+ * cards run on a wall-clock deadline, so AM latency only delays first audio (the 2.5 s CLOUD_BUDGET_MS
+ * bounds the cloud-similar fetch, not row resolvability). If AM fails to start the row degrades to the
+ * preview (GamePreviewFallbackPort); device-only to measure.
  */
 class SequencerGameRunPlayer(
     private val sequencer: SetlistSequencer,
@@ -218,7 +218,8 @@ class GamePreviewResolver(
 
     /** Resolve (and cache) previews for the network-bound ids, a chunk at a time. */
     suspend fun warm(songIds: List<String>) {
-        if (canPlayFullTrack()) return // Q36: full-track ids need no preview warm-up
+        // Previews are always warmed (cheap, cached): they are the fallback if the AM rung fails or the
+        // capability flips between warm and resolve time.
         songIds.filter { !localPlayable(it) && appleMusicId(it) != null }
             .chunked(SequencerGameRunPlayer.LOOKAHEAD)
             .forEach { chunk -> coroutineScope { chunk.map { async { urlFor(it) } }.awaitAll() } }

@@ -75,14 +75,15 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
             localPlayable = { id -> env.ripManifest().containsKey(id) || id in env.burnedIds() },
             appleMusicId = { id -> app.catalogRepository.state.value.catalog?.songsById?.get(id)?.appleMusicId },
             previewUrl = { amId -> app.appleMusicPreviewResolver.previewUrl(amId) },
-            canPlayFullTrack = { app.playbackController.canSeekAppleMusic() },
+            canPlayFullTrack = { app.playbackController.canPlayFullTrackWarming() },
         )
     }
 
     /** The audio surface the timed games drive: the shared sequencer under a run tag. */
     val gameRunPlayer: GameRunPlayer by lazy {
-        // Game rows that no rip/burn rung claimed ride as cached 30 s AM previews (ExoPlayer only).
+        // Game rows that no rip/burn rung claimed ride the full-track Apple Music rung when capable, else cached 30 s AM previews (also the fallback if AM fails to start).
         runCatching { app.playbackGraph.rowSourceResolvers.register(GamePreviewRowResolver(previewResolver)) }
+        app.playbackController.gamePreviewUrl = { id -> previewResolver.urlFor(id) }
         SequencerGameRunPlayer(app.playbackGraph.sequencer, previewResolver, app.appScope)
     }
 
