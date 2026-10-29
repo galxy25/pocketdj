@@ -775,6 +775,37 @@ final class PlayerEngine {
         if NowPlayingArbiter.shared.isActive(self) { clearNowPlayingInfo() }
     }
 
+    /// The Apple Music stream this engine was impersonating was RELEASED (the set left the
+    /// Apple Music backend, e.g. for a cloud row still resolving). Drop external mode NOW so a
+    /// card / CarPlay ▶ in the gap reaches the idle engine (→ `onIdlePlay`), never the released
+    /// stream's play closure. The card's metadata is left as is (the sequencer's announce for
+    /// the next row already replaced it); the next `load` / hand-off publishes the real one.
+    func leaveExternalPlayback(reason: String) {
+        guard externalActive else { return }
+        NPLog.trace("engine → leaveExternalPlayback reason=\(reason)")
+        endExternalNowPlaying()
+        isPlaying = false
+        clock.currentTime = 0
+    }
+
+    /// A stray MusicKit resume (a stale system card's ▶) interrupted our session and was
+    /// silenced: the listener pressed ▶, so play OUR loaded row. Re-arms the session (MusicKit's
+    /// activation interrupted it), then `play()` re-claims the card + remote commands and
+    /// re-publishes the card for this row.
+    func reclaimAfterStrayExternalPlay() {
+        guard hasLocalItem else { return }
+        DiagLog.shared.log("session", "reclaim after stray external play song=\(nowPlayingSongId ?? "?")")
+        configureAudioSession(by: "player.strayReclaim")
+        play()
+    }
+
+    /// Holds a real local AVPlayer item (not an Apple Music impersonation).
+    var hasLocalItem: Bool { !externalActive && player.currentItem != nil }
+
+    /// Fired when OUR session is interrupted while NOT impersonating Apple Music. A stray
+    /// MusicKit resume lands exactly like this, so the set asks the provider to look.
+    @ObservationIgnored var onLocalInterruptionBegan: (() -> Void)?
+
     /// Leave external mode (a local track is loading, or playback stopped). Called by `load()`
     /// and `stop()`; safe to call when not external.
     private func endExternalNowPlaying() {
@@ -976,6 +1007,7 @@ final class PlayerEngine {
             interruptionOpen = true
             DiagLog.shared.log("session", "interruption began engine=player wasPlaying=\(wasPlayingAtInterruption ? 1 : 0) "
                                + "external=\(externalActive ? 1 : 0) owner=\(owner)")
+            if !externalActive { onLocalInterruptionBegan?() }
             return nil
         }
         interruptionOpen = false
