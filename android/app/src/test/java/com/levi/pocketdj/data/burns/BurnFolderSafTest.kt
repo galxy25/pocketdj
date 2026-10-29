@@ -24,6 +24,13 @@ class FakeTree(
     override fun probeWrite() = reachable && writable
     override fun exists(name: String) = name in files
     val deleted = ArrayList<String>()
+    val deleteAllCalls = ArrayList<List<String>>()
+    val copyCounts = HashMap<String, Int>()
+    val copyThreads = HashSet<Thread>()
+    override fun deleteAll(names: Collection<String>) {
+        deleteAllCalls += names.toList()
+        for (n in names) try { delete(n) } catch (_: Exception) {}
+    }
     override fun delete(name: String): Boolean {
         if (!reachable) throw IOException("tree delete failed")
         deleted += name
@@ -31,6 +38,8 @@ class FakeTree(
     }
     override fun copyIn(name: String, src: File) {
         if (failCopies || !reachable) throw IOException("tree write failed")
+        copyCounts[name] = (copyCounts[name] ?: 0) + 1
+        copyThreads += Thread.currentThread()
         files[name] = src.readBytes()
     }
 }
@@ -356,6 +365,64 @@ class BurnFolderSafTest {
         m.tree.reachable = true
         m.folder.deleteMirrored("content://tree/sd", listOf("a.mp3", "", "absent.mp3"))
         assertFalse("a.mp3" in m.tree.files)
+    }
+
+    @Test fun mirrorCopiesRunOffTheCallingThread() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        m.folder.activeWritable()
+        val caller = Thread.currentThread()
+        assertTrue(store.burnStemPart("s1", "bass"))
+        assertNotNull(store.burnBeatGrid("s1"))
+        assertNotNull(store.burnStems("s1"))
+        assertTrue(m.tree.copyThreads.isNotEmpty())
+        assertFalse("tree I/O ran on the caller thread", caller in m.tree.copyThreads)
+    }
+
+    @Test fun collectionBurnWritesEachStemToTheTreeOnce() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        store.burn(listOf(bs("s1")))
+        m.auxNames("s1").forEach { assertEquals("$it copied once", 1, m.tree.copyCounts[it]) }
+    }
+
+    @Test fun removeBurnsListsTheTreeOncePerBatchWithoutDuplicates() = runTest {
+        val m = mirror(); m.stemmed("s1"); m.stemmed("s2")
+        val store = m.store()
+        store.burn(listOf(bs("s1"), bs("s2")))
+        store.removeBurns(listOf("s1", "s2"))
+        assertEquals(1, m.tree.deleteAllCalls.size)
+        val names = m.tree.deleteAllCalls.single()
+        assertEquals(names.size, names.toSet().size)
+        assertTrue(m.tree.files.isEmpty())
+    }
+
+    @Test fun deleteGoesToTheTreeTheItemWasFinalizedInto() = runTest {
+        val rig = Rig()
+        val p = FakePrefs("content://tree/a")
+        val a = FakeTree(); val b = FakeTree()
+        val f = SafBurnFolder(rig.burns, File(rig.dir, "burns-user"), p) { if (it.endsWith("/a")) a else b }
+        val store = BurnStore(rig.ledger, f, rig.rips, lookup = { rig.catalog[it] ?: (null to null) }, clock = { rig.nowMs })
+        val m = Mirror(p, a, rig, f); m.stemmed("s1")
+        store.burn(listOf(bs("s1")))
+        assertTrue(a.files.isNotEmpty())
+        b.files["stem-s1-bass.mp3"] = ByteArray(1) // user's own same-named file in the new folder
+        p.uri = "content://tree/b"
+        store.removeBurns(listOf("s1"))
+        assertTrue("left in A: ${a.files.keys}", a.files.isEmpty())
+        assertTrue(b.deleteAllCalls.isEmpty())
+        assertTrue(b.files.containsKey("stem-s1-bass.mp3"))
+    }
+
+    @Test fun storageEvictionAdapterKeepsFolderCopies() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        store.burn(listOf(bs("s1")))
+        val before = m.tree.files.keys.toSet()
+        com.levi.pocketdj.data.storage.BurnStorePruneAdapter(store).removeBurns(listOf("s1"))
+        assertNull(store.items.value["s1"])
+        assertEquals(before, m.tree.files.keys)
+        assertTrue(m.tree.deleted.isEmpty())
     }
 
     @Test fun mimeIsJsonForAnalysisSidecars() {

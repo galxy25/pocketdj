@@ -490,7 +490,7 @@ class BurnStore(
             if (stopRequested || !currentCoroutineContext().isActive) break
             _progress.value = BurnProgress(done, pending.size, "Stems · ${s.artist} — ${s.title}")
             downloadStems(s.id, dir)
-            mirrorAux(dir, s.id)
+            mirrorIO(dir, stemNames(s.id))
             done += 1
         }
         return stemmed.count { stemFilesPresent(it.id, dir) }
@@ -500,8 +500,15 @@ class BurnStore(
     private fun auxNames(songId: String): List<String> =
         BurnFileNames.STEM_NAMES.map { BurnFileNames.stemFileName(songId, it) } + BurnFileNames.beatgridFileName(songId)
 
-    /** Mirror whichever aux files exist in [dir] into the user's tree (no-op off the staging root). */
-    private fun mirrorAux(dir: File, songId: String) = folder.mirrorFiles(dir, auxNames(songId))
+    private fun stemNames(songId: String): List<String> =
+        BurnFileNames.STEM_NAMES.map { BurnFileNames.stemFileName(songId, it) }
+
+    /**
+     * Mirror [names] into the user's tree OFF the caller's dispatcher: callers (Stem Lock prefetch,
+     * DSP engine, Demux panels) run on Main, and a SAF copy of a multi-MB stem must never block it.
+     */
+    private suspend fun mirrorIO(dir: File, names: List<String>) =
+        withContext(Dispatchers.IO) { folder.mirrorFiles(dir, names) }
 
     private suspend fun downloadStems(songId: String, dir: File) {
         val remote = rips.stemUrls(songId) ?: return
@@ -529,7 +536,7 @@ class BurnStore(
             if (stopRequested || !currentCoroutineContext().isActive) break
             _progress.value = BurnProgress(done, pending.size, "Beat grid · ${s.artist} — ${s.title}")
             downloadBeatgrid(s.id, dir)
-            mirrorAux(dir, s.id)
+            mirrorIO(dir, listOf(BurnFileNames.beatgridFileName(s.id)))
             done += 1
         }
         return analyzed.count { File(dir, BurnFileNames.beatgridFileName(it.id)).exists() }
@@ -601,7 +608,7 @@ class BurnStore(
             }
             local[n] = dest
         }
-        folder.mirrorFiles(dir, BurnFileNames.STEM_NAMES.map { BurnFileNames.stemFileName(songId, it) })
+        mirrorIO(dir, stemNames(songId))
         return local
     }
 
@@ -614,7 +621,7 @@ class BurnStore(
         if (dest.exists()) return true
         return try {
             rips.download(url, dest)
-            folder.mirrorFiles(dir, listOf(dest.name))
+            mirrorIO(dir, listOf(dest.name))
             true
         } catch (e: CancellationException) {
             throw e
@@ -645,7 +652,7 @@ class BurnStore(
             moved += src to dest
             out[name] = dest
         }
-        folder.mirrorFiles(dir, out.values.map { it.name })
+        folder.mirrorFiles(dir, moved.map { it.second.name })
         return out
     }
 
@@ -679,7 +686,7 @@ class BurnStore(
             val data = rips.downloadBytes(url)
             val parsed = BeatGridSidecar.parse(String(data, Charsets.UTF_8)) ?: return null
             writeAtomic(File(dir, BurnFileNames.beatgridFileName(songId)), data)
-            folder.mirrorFiles(dir, listOf(BurnFileNames.beatgridFileName(songId)))
+            mirrorIO(dir, listOf(BurnFileNames.beatgridFileName(songId)))
             parsed
         } catch (e: CancellationException) {
             throw e
@@ -788,8 +795,16 @@ class BurnStore(
             }
             resolveCutFileName(item, dir, listing = { listings.getOrPut(dir.path) { listNames(dir) } }, heal = false)
                 ?.let { File(dir, it).delete(); copies?.add(it) }
-            copies?.addAll(auxNames(id))
-            removeAuxFiles(id, mirrored)
+            if (copies != null) {
+                copies.addAll(auxNames(id))
+            } else if (mirrored) {
+                // App-storage item whose aux landed in a user staging root: delete from THAT root's tree.
+                for (rt in folder.roots()) if (rt.isUserFolder) {
+                    val present = auxNames(id).filter { File(rt.dir, it).exists() }
+                    if (present.isNotEmpty()) folderCopies.getOrPut(rt.treeUri) { LinkedHashSet() }.addAll(present)
+                }
+            }
+            removeAuxFiles(id)
         }
         for ((tree, names) in folderCopies) folder.deleteMirrored(tree, names)
         dropItems(goners.keys)
@@ -816,12 +831,9 @@ class BurnStore(
     /** Prune pre-pass: aux files for songs with NO ledger entry (auditioned-but-never-burned). */
     fun sweepOrphanAuxFiles() = sweepAuxFiles(mirrored = false) { _items.value[it] == null }
 
-    private fun removeAuxFiles(songId: String, mirrored: Boolean = true) {
-        for (r in folder.roots()) {
-            val present = if (mirrored && r.isUserFolder) auxNames(songId).filter { File(r.dir, it).exists() } else emptyList()
-            BurnStems.removeAux(r.dir, songId)
-            if (present.isNotEmpty()) folder.deleteMirrored(r.treeUri, present)
-        }
+    /** Local aux removal only; the folder copies are deleted once, in batch, by the caller. */
+    private fun removeAuxFiles(songId: String) {
+        for (r in folder.roots()) BurnStems.removeAux(r.dir, songId)
     }
 
     /** Total on-disk bytes of burned media (audio + sidecars + cuts + stems + grids), owned files only. */

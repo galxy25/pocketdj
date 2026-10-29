@@ -60,6 +60,23 @@ class ContentResolverBurnTree(private val context: Context, private val treeUri:
         throw IOException(e.message ?: "burn folder delete failed", e)
     }
 
+    override fun deleteAll(names: Collection<String>) {
+        val wanted = names.toHashSet()
+        if (wanted.isEmpty()) return
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+        val hits = ArrayList<Uri>()
+        cr.query(
+            children,
+            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null, null, null,
+        )?.use { c ->
+            while (c.moveToNext()) {
+                if (c.getString(1) in wanted) hits += DocumentsContract.buildDocumentUriUsingTree(treeUri, c.getString(0))
+            }
+        }
+        for (u in hits) try { DocumentsContract.deleteDocument(cr, u) } catch (_: Exception) { /* keep going */ }
+    }
+
     override fun copyIn(name: String, src: File) {
         try {
             childUri(name)?.let { DocumentsContract.deleteDocument(cr, it) }

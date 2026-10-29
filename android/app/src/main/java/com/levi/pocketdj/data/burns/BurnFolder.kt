@@ -83,6 +83,11 @@ interface BurnTree {
 
     /** Delete the child [name]; true when it was deleted, false when absent. Throws IOException on failure. */
     fun delete(name: String): Boolean
+
+    /** Delete every child in [names] (best effort, per-name failures skipped). Override to list the tree once. */
+    fun deleteAll(names: Collection<String>) {
+        for (n in names) try { delete(n) } catch (_: Exception) { /* keep going */ }
+    }
 }
 
 /** User's chosen folder (persisted tree URI string), read ONLY at enqueue / UI time, never by a worker. */
@@ -162,10 +167,7 @@ class SafBurnFolder(
         val uri = treeUri ?: prefs.treeUri() ?: return
         val tree = openTree(uri) ?: return
         if (!tree.isReachable()) return
-        for (n in names) {
-            if (n.isEmpty()) continue
-            try { tree.delete(n) } catch (_: Exception) { /* best effort; keep going */ }
-        }
+        try { tree.deleteAll(names.filter { it.isNotEmpty() }) } catch (_: Exception) { /* best effort */ }
     }
 
     override fun probeWrite(root: BurnRoot): Boolean {
