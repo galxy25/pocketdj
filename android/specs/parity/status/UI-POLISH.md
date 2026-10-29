@@ -75,6 +75,18 @@ system light/dark setting is.
 - **Mix Vol 100 % at mid-track**: the range is 0–200 % (iOS `MixEngine` parity: 0–1 attenuation, 1–2 boost
   to +6 dB). Unity is meant to be mid-track.
 
+## Remaining
+- About 22 % of AM-Local albums (2,872 of 12,726, including most 2026 releases) and every My Digital album
+  without `coverArt` have no Apple Music id, so there is nothing to look up. iOS has the same gap. A
+  term-search fallback was not added because it risks wrong covers (tight-matching rule).
+- The playlist song-row ⋮ menu (shot 45) still has no Play next / Add to queue / Add to playlist.
+- Discover still hides the source-chip row, so the layout shifts.
+- After a streamed (non-burned) run ends in device mode, NP shows "None of these tracks are playable on this
+  device yet". This is iOS CRITIC-D parity, but it reads oddly after a successful stream.
+- Typing quickly into Browse search with "All" sources (110k songs) ANR'd once on the emulator while 6 other
+  Gradle builds were running. Typing at a normal pace into one source was fine. This looks like the
+  pre-existing main-thread work tracked as Q96, not something this pass introduced.
+
 ## Skipped (with reason)
 - Separate album Play/Shuffle buttons in album detail, Jukebox "go to Settings" button, Collections
   toolbar labels, and the Rip/Stemify chip icons: these were outside the 14 groups this pass was asked to do.
