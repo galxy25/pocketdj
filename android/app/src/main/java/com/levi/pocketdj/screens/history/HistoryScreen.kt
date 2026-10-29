@@ -522,7 +522,14 @@ private fun PlayRow(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            ArtThumb(ref.artUrl)
+            if (ref.artUrl != null) ArtThumb(ref.artUrl) else {
+                // No bundled art: the shared AlbumArt (with the AM-Local streaming fallback).
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                val album = remember(row.song.albumId) {
+                    row.song.albumId?.let { com.levi.pocketdj.di.AppGraph.get(ctx).catalogRepository.state.value.catalog?.albumsById?.get(it) }
+                }
+                if (album != null) com.levi.pocketdj.screens.browse.AlbumArt(album, Modifier.size(48.dp)) else ArtThumb(null)
+            }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(

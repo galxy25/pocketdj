@@ -172,6 +172,24 @@ class AppGraph private constructor(context: Context) {
         scope = appScope,
     )
 
+    /** Cover-art fallback for albums with no bundled art (the whole AM-Local catalog): tokenless iTunes lookup, batched + memoized. */
+    val albumArtworkStore: com.levi.pocketdj.data.catalog.AlbumArtworkStore by lazy {
+        val artHttp = httpClient.newBuilder().callTimeout(15, TimeUnit.SECONDS).build()
+        com.levi.pocketdj.data.catalog.AlbumArtworkStore(
+            scope = appScope,
+            fetch = { url ->
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching {
+                        artHttp.newCall(okhttp3.Request.Builder().url(url).get().build()).execute()
+                            .use { if (it.isSuccessful) it.body?.string() else null }
+                    }.getOrNull()
+                }
+            },
+            songAppleMusicId = { id -> catalogRepository.state.value.catalog?.songsById?.get(id)?.appleMusicId },
+            cacheFile = File(appContext.cacheDir, "album-art-fallback.json"),
+        )
+    }
+
     val ripsRepository: RipsRepository = RipsRepository(
         cacheDir = File(appContext.filesDir, "rips-cache"),
         http = httpClient,
@@ -265,7 +283,10 @@ class AppGraph private constructor(context: Context) {
         previewResolver = appleMusicPreviewResolver,
         presigns = presignCache,
         ripTracker = ripJobTracker,
-    )
+    ).also { pc ->
+        // Notification/lock-screen art for AM-Local albums (no bundled art): the memoized fallback.
+        pc.artFallback = { album -> albumArtworkStore.cached(album.id) ?: run { albumArtworkStore.request(album); null } }
+    }
 
     // PB-1: connect the sequencer's history-context / origin / outcome seams (additive).
     init {

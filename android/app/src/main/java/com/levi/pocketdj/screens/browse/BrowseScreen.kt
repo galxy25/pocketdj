@@ -473,38 +473,76 @@ private fun BrowseContent(
             onSelect = { selection -> onFilters(filters.withSources(selection)) },
         )
 
+        // Mode picker on its own full-width row: constant width in every mode (the tool icons
+        // used to share this row and squeezed the labels into mid-word wraps, "Albu/ms").
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+        ) {
+            BrowseKind.entries.forEachIndexed { index, entry ->
+                SegmentedButton(
+                    selected = kind == entry && !discover,
+                    onClick = {
+                        // Leaving Discover returns to device mode (Discover is a search mode, not a kind).
+                        if (discover) onSearchMode(SearchMode.DEVICE)
+                        onKind(entry)
+                    },
+                    shape = SegmentedButtonDefaults.itemShape(index, BrowseKind.entries.size + 1),
+                    icon = {},
+                ) {
+                    Text(
+                        maxLines = 1,
+                        softWrap = false,
+                        text = when (entry) {
+                            BrowseKind.ALBUMS -> "Albums"
+                            BrowseKind.SONGS -> "Songs"
+                            BrowseKind.ARTISTS -> "Artists"
+                        },
+                    )
+                }
+            }
+            SegmentedButton(
+                selected = discover,
+                onClick = { onSearchMode(SearchMode.DISCOVER) },
+                shape = SegmentedButtonDefaults.itemShape(BrowseKind.entries.size, BrowseKind.entries.size + 1),
+                icon = {},
+            ) { Text("Discover", maxLines = 1, softWrap = false) }
+        }
+
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp),
+                .padding(start = 12.dp, end = 4.dp),
         ) {
-            SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
-                BrowseKind.entries.forEachIndexed { index, entry ->
-                    SegmentedButton(
-                        selected = kind == entry && !discover,
-                        onClick = {
-                            // Leaving Discover returns to device mode (Discover is a search mode, not a kind).
-                            if (discover) onSearchMode(SearchMode.DEVICE)
-                            onKind(entry)
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQuery,
+                singleLine = true,
+                placeholder = {
+                    Text(
+                        if (discover) "Search Apple Music" else when (kind) {
+                            BrowseKind.ALBUMS -> "Search albums"
+                            BrowseKind.SONGS -> "Search songs"
+                            BrowseKind.ARTISTS -> "Search artists"
                         },
-                        shape = SegmentedButtonDefaults.itemShape(index, BrowseKind.entries.size + 1),
-                    ) {
-                        Text(
-                            when (entry) {
-                                BrowseKind.ALBUMS -> "Albums"
-                                BrowseKind.SONGS -> "Songs"
-                                BrowseKind.ARTISTS -> "Artists"
-                            },
-                        )
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                },
+                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (query.isNotEmpty()) {
+                        IconButton(onClick = { onQuery("") }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                        }
                     }
-                }
-                SegmentedButton(
-                    selected = discover,
-                    onClick = { onSearchMode(SearchMode.DISCOVER) },
-                    shape = SegmentedButtonDefaults.itemShape(BrowseKind.entries.size, BrowseKind.entries.size + 1),
-                ) { Text("Discover") }
-            }
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 4.dp),
+            )
             if (!discover && kind == BrowseKind.ALBUMS) {
                 IconButton(
                     onClick = {
@@ -564,31 +602,6 @@ private fun BrowseContent(
             }
         }
 
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQuery,
-            singleLine = true,
-            placeholder = {
-                Text(
-                    if (discover) "Search Apple Music" else when (kind) {
-                        BrowseKind.ALBUMS -> "Search albums"
-                        BrowseKind.SONGS -> "Search songs"
-                        BrowseKind.ARTISTS -> "Search artists"
-                    },
-                )
-            },
-            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-            trailingIcon = {
-                if (query.isNotEmpty()) {
-                    IconButton(onClick = { onQuery("") }) {
-                        Icon(Icons.Filled.Close, contentDescription = "Clear search")
-                    }
-                }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 4.dp),
-        )
 
         // Results header: "<count> albums|songs" (+ refresh spinner in place).
         if (!discover) Row(
