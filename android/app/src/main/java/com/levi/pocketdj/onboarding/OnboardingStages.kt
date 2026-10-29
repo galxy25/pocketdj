@@ -138,7 +138,8 @@ fun OnboardingProfileStage(graph: AppGraph, store: OnboardingStore) {
                 )
                 Button(
                     enabled = linkCode.isNotBlank() && probe is CodeLinkProbe,
-                    onClick = { runProbe { (probe as CodeLinkProbe).link(linkCode) } },
+                    // Linking a device IS the opt-in to sync (default off, SyncSettings).
+                    onClick = { runProbe { (probe as CodeLinkProbe).link(linkCode).also { if (it !is LinkProbeResult.Unavailable) graph.settings.set(com.levi.pocketdj.data.sync.SyncSettings.CLOUD_SYNC_ENABLED, true) } } },
                     modifier = Modifier.testTag("onboarding-link-submit"),
                 ) { Text("Link") }
                 TextButton(onClick = { phase = ProfilePhase.Choosing }) { Text("Back") }

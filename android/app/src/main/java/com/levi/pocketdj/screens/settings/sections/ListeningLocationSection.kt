@@ -59,15 +59,16 @@ object ListeningLocationCopy {
         "PocketDJ collects location data to learn the places where you listen (home, gym, A, B, C…) and the trips " +
             "between them, so your listening pockets can match music to where you are. This includes when the app " +
             "is closed or not in use while music plays in the background, once you also choose \"Allow all the time\" " +
-            "in the next step. Your location stays on this device; only anonymous place labels are used in pockets. " +
-            "You can turn this off and erase your places at any time."
+            "in the next step. This is optional: pockets work without it. Your location stays on this device; only " +
+            "anonymous place labels are used in pockets. Turn it off any time with \"$TOGGLE\" in Settings, which " +
+            "also erases your places."
     const val DISCLOSURE_BACKGROUND =
         "To notice trips between your places while music plays in the background, PocketDJ collects location data " +
-            "even when the app is closed or not in use. On the next screen choose \"Allow all the time\". Your location " +
-            "stays on this device and is never used for ads. You can switch back to \"Only while using the app\" or " +
-            "turn places & trips off at any time."
+            "even when the app is closed or not in use. This is optional. On the next screen choose \"Allow all the " +
+            "time\". Your location stays on this device and is never used for ads. You can switch back to \"Allow only " +
+            "while using the app\" in Android settings, or turn off \"$TOGGLE\" in PocketDJ Settings, at any time."
     const val DISCLOSURE_CONTINUE = "Continue"
-    const val DISCLOSURE_DECLINE = "Not now"
+    const val DISCLOSURE_DECLINE = "No thanks"
     const val PRECISE_HINT =
         "Approximate location is too coarse to learn places. Allow precise location so PocketDJ can recognise where you listen."
     const val ERASE = "Erase places & trips"
@@ -122,10 +123,14 @@ internal fun listeningLocationSection() = SettingsSection(ListeningLocationCopy.
     // Prominent disclosure gate: (message, action) shown before any system location prompt.
     var disclosure by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
     fun requestForeground() {
-        disclosure = ListeningLocationCopy.DISCLOSURE_FOREGROUND to { foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS) }
+        disclosure = ListeningLocationCopy.DISCLOSURE_FOREGROUND to {
+            LocationSettings.recordDisclosureAccepted(ctx, background = false)
+            foreground.launch(LocationSettings.FOREGROUND_PERMISSIONS)
+        }
     }
     fun requestBackground() {
         disclosure = ListeningLocationCopy.DISCLOSURE_BACKGROUND to {
+            LocationSettings.recordDisclosureAccepted(ctx, background = true)
             s.requestAlwaysUpgrade()
             background.launch(LocationSettings.BACKGROUND_PERMISSION)
         }

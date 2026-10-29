@@ -57,7 +57,11 @@ class LocationSettingsTest {
             assertEquals(true, msg.contains("collects location data"))
             assertEquals(true, msg.contains("closed or not in use"))
             assertEquals(true, msg.contains("Allow all the time"))
+            assertEquals(true, msg.contains("background"))
+            assertEquals(true, msg.contains("optional"))
+            assertEquals(true, msg.contains(ListeningLocationCopy.TOGGLE)) // how to turn it off
         }
+        assertEquals("No thanks", ListeningLocationCopy.DISCLOSURE_DECLINE)
     }
 
     @Test fun deniedPermissionIngestsNothing() {

@@ -54,7 +54,7 @@ internal fun profileSection() = SettingsSection(PROFILE_SECTION_ID, 50) { host -
         if (inFlight.get() == 0 && live.isNotEmpty() && live != name) name = live
     }
     val syncStatus by services.cloudSync.status.collectAsState()
-    val syncOn by graph.settings.flow(SyncSettings.CLOUD_SYNC_ENABLED).collectAsState(initial = true)
+    val syncOn by graph.settings.flow(SyncSettings.CLOUD_SYNC_ENABLED).collectAsState(initial = SyncSettings.CLOUD_SYNC_ENABLED.default)
 
     SettingsHeader("Profile")
     OutlinedTextField(

@@ -24,6 +24,8 @@ object LocationSettings {
     private const val PREFS = "pdj.location"
     private const val KEY_ASKED = "askedForeground"
     private const val KEY_DENIALS = "foregroundDenials"
+    private const val KEY_DISCLOSURE_FG = "disclosureForegroundAcceptedAt"
+    private const val KEY_DISCLOSURE_BG = "disclosureBackgroundAcceptedAt"
 
     /** COARSE granted without FINE: the dwell detector cannot anchor places. */
     fun approximateOnly(coarse: Boolean, fine: Boolean): Boolean = coarse && !fine
@@ -41,6 +43,22 @@ object LocationSettings {
             coarse = ctx.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED,
             fine = ctx.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED,
         )
+
+    /**
+     * Records that the user accepted the in-app prominent disclosure (Play User Data policy) for the
+     * foreground or the background location step: wall-clock ms of the latest acceptance.
+     */
+    fun recordDisclosureAccepted(ctx: Context, background: Boolean, nowMs: Long = System.currentTimeMillis()) {
+        runCatching {
+            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+                .putLong(if (background) KEY_DISCLOSURE_BG else KEY_DISCLOSURE_FG, nowMs).apply()
+        }
+    }
+
+    /** When the disclosure was last accepted (0 = never). */
+    fun disclosureAcceptedAt(ctx: Context, background: Boolean): Long = runCatching {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getLong(if (background) KEY_DISCLOSURE_BG else KEY_DISCLOSURE_FG, 0L)
+    }.getOrDefault(0L)
 
     fun denials(ctx: Context): Int = runCatching { ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(KEY_DENIALS, 0) }.getOrDefault(0)
 
