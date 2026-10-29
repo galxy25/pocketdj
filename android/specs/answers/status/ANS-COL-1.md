@@ -9,3 +9,7 @@ state: in-progress
 - [ ] Gradle green / iOS unit run
 
 Touched outside owned files: apple/PocketDJ/State/CollectionsStore.swift (exportPocket/exportPlaylist use strippedForExport, 2 lines).
+
+Note: Gradle needs -Dorg.gradle.jvmargs=-Xmx5g -Pkotlin.daemon.jvmargs=-Xmx5g when many packages build in parallel (OOM otherwise).
+## Questions for Levi
+none
