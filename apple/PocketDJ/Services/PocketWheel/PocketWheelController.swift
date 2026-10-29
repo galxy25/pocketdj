@@ -65,6 +65,15 @@ final class PocketWheelController {
         return r
     }
 
+    /// Phase 5b: the best pocket for NOW with the mode forced (a run re-targeting mid-run).
+    func profile(forMode mode: PocketMode) async -> PocketProfile? {
+        await refresh()
+        guard var n = lastNow else { return nil }
+        n.mode = mode
+        let r = PocketBestMatch.best(snapshot: cache.snapshot, now: n)
+        return r.profile.tier == .empty ? nil : r.profile
+    }
+
     /// Recompute if the answer is older than a minute (cheap; called on appear + by CarPlay).
     func refreshIfStale() async {
         if now().timeIntervalSince1970 * 1000 - computedAtMs > 60_000 { await refresh() }

@@ -47,6 +47,9 @@ struct MixResolver {
 
     /// A pocket (or any ordered id list): resolve each id against the catalog (or the studio store
     /// for a performance item), keep loadables.
+    /// The deck-loadable subset of arbitrary song ids, in order (a Pocket Wheel Mix run, W7).
+    func loadables(forSongIds ids: [String]) -> [MixLoadable] { loadables(songIds: ids) }
+
     private func loadables(songIds: [String]) -> [MixLoadable] {
         var seen = Set<String>()
         return songIds.compactMap { id -> MixLoadable? in

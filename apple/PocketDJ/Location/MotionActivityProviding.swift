@@ -131,6 +131,8 @@ final class ListeningMotionStore {
     #endif
 
     private(set) var isEnabled = false
+    /// UserDefaults key of the Phase 5b "Adapt runs to walking & running" toggle (default off).
+    nonisolated static let adaptToActivityKey = "pdj.wheel.adaptToActivity"
     /// Bumped after every settle pass that stamped something (UI/debug only).
     private(set) var lastSettledCount = 0
     let isSupported: Bool

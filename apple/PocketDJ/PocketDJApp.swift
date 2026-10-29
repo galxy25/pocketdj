@@ -147,6 +147,11 @@ struct PocketDJApp: App {
         if let id, id.hasPrefix(InThePocketStore.runTagPrefix) {
             return (.game, GameKind.inThePocket.label)
         }
+        // A Pocket Wheel run reads "Pocket · Tue 8 AM CarPlay" (source stays `.pocket` on purpose:
+        // a new PlaySource case would make older builds drop the event).
+        if let id, id.hasPrefix(PocketWheelIds.runTagPrefix) {
+            return (.pocket, PocketRunStore.runNames[id] ?? "Pocket")
+        }
         return collections?.historyContext(forSourceSetlistId: id) ?? (.setlist, nil)
     }
 
@@ -341,6 +346,8 @@ struct PocketDJApp: App {
     @State private var pocketPalette: PocketPaletteStore
     /// Pocket Wheel best match (centre ▶, CarPlay "Pocket for now", "Play my pocket").
     @State private var pocketWheelController: PocketWheelController
+    /// The adaptive 100-song pocket run (§4).
+    @State private var pocketRuns: PocketRunStore
     /// The App Intents bridge (Siri/Shortcuts/Spotlight → live stores). Constructed +
     /// registered with `AppDependencyManager` in `init()` so an intent that background-
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
@@ -949,7 +956,9 @@ struct PocketDJApp: App {
                 context = PlayHistoryStore.PlayContext(source: origin?.source ?? .setlist,
                                                        contextId: sp.sourceSetlistId,
                                                        contextName: origin?.name,
-                                                       originCollectionId: originCollection)
+                                                       originCollectionId: originCollection,
+                                                       pocketRun: sp.index < sp.queue.count && sp.queue[sp.index].matches(songId)
+                                                           ? PocketRunStore.shared?.tag(forPlan: sp.queue[sp.index].plan) : nil)
             } else {
                 context = .browser
             }
@@ -993,7 +1002,9 @@ struct PocketDJApp: App {
             // in `contextId` names a Mix session, not a collection) — the Pocket Wheel's colour.
             let origin = mix?.autoMixing == true ? mix?.autoOriginCollectionId(forSongId: songId) : nil
             let context = PlayHistoryStore.PlayContext(source: .mix, contextId: mixSessions?.currentId,
-                                                       contextName: name, originCollectionId: origin)
+                                                       contextName: name, originCollectionId: origin,
+                                                       pocketRun: PocketRunStore.shared?.mixTag(forSongId: songId,
+                                                                                                label: mix?.autoSourceLabel))
             let event = playHistory.record(songId: songId, title: app?.songsById[songId]?.name,
                                            artist: app?.songsById[songId]?.artist, context: context)
             mixOutcome.notePlayed(deck: deck, songId: songId, event: event)
@@ -1684,6 +1695,54 @@ struct PocketDJApp: App {
             }
             return nil
         }
+        let pocketRuns = PocketRunStore(history: playHistory, player: setlistPlayer, fileURL: PocketRunStore.launchURL())
+        pocketRuns.candidates = { [weak app, weak rips, weak burns, weak coordinator, weak favorites] in
+            let songs = app?.songsById ?? [:], albums = app?.albumsById ?? [:]
+            let availability = CollectorsPuzzleEngine.AudioAvailability(
+                ripManifest: rips?.manifest ?? [:], burnedIds: burns?.readyBurnedIds ?? [],
+                canStreamAppleMusic: coordinator?.canStreamAppleMusic ?? false)
+            let colls = collectionsInput()
+            let favs = favorites?.favoriteIds ?? []
+            let timbre = wheelFixture ? [:] : await TimbreCatalog.shared.vectors()
+            let nowMs = Date().timeIntervalSince1970 * 1000
+            return await Task.detached(priority: .userInitiated) {
+                PocketRunCandidates.build(songs: songs, albums: albums, availability: availability, collections: colls,
+                                          favorites: favs, timbre: timbre, nowMs: nowMs)
+            }.value
+        }
+        pocketRuns.thumbsDown = { [weak recFeedback] in
+            guard let fb = recFeedback else { return [] }
+            return Set(fb.decisions.map(\.songId).filter { fb.anyVerdict(songId: $0) == .rejected })
+        }
+        pocketRuns.togglePause = { [weak setlistPlayer, weak coordinator, weak player] in
+            guard let setlistPlayer, let coordinator, let player else { return }
+            NowPlayingPanel.togglePlayPause(sequencer: setlistPlayer, coordinator: coordinator, player: player)
+        }
+        // W7: a Mix moment's run plays through Mix Auto-DJ (crossfades, decks).
+        pocketRuns.playThroughMix = { [weak mix, weak app, weak burns, weak studio, weak collections, weak settings] rows, label in
+            guard let mix, let app, let burns, let studio, let collections, let settings else { return 0 }
+            let resolver = MixResolver(app: app, collections: collections, burns: burns, studio: studio, streamable: mix.canStream)
+            let loadables = resolver.loadables(forSongIds: rows.map(\.songId))
+            let byId = Dictionary(rows.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
+            let items = loadables.map {
+                MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000, sourceLabel: label,
+                                      originCollectionId: byId[$0.songId]?.collectionId)
+            }
+            guard items.count >= 10 else { return items.count }
+            mix.startAutoMix(items, shuffled: false, lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
+                             label: label)
+            return items.count
+        }
+        pocketRuns.mixOwnsRun = { [weak mix] label in mix?.autoMixing == true && mix?.autoSourceLabel == label }
+        pocketRuns.currentEventId = { [weak skipTracker] in skipTracker?.currentEventId }
+        pocketWheelController.play = { [weak pocketRuns] profile in await pocketRuns?.start(profile: profile) }
+        PocketRunStore.shared = pocketRuns
+        // Phase 5b (opt-in): a sustained walk / run / drive re-targets the rest of the run.
+        pocketRuns.adaptToActivity = { UserDefaults.standard.bool(forKey: ListeningMotionStore.adaptToActivityKey) }
+        pocketRuns.startActivityUpdates = { [weak listeningMotion] handler in listeningMotion?.startLiveUpdates(handler) }
+        pocketRuns.stopActivityUpdates = { [weak listeningMotion] in listeningMotion?.stopLiveUpdates() }
+        pocketRuns.profileForMode = { [weak pocketWheelController] mode in await pocketWheelController?.profile(forMode: mode) }
+        _pocketRuns = State(initialValue: pocketRuns)
         _pocketWheelController = State(initialValue: pocketWheelController)
         _pocketPalette = State(initialValue: pocketPalette)
         _pocketWheel = State(initialValue: pocketWheel)
@@ -1871,7 +1930,8 @@ struct PocketDJApp: App {
         }
         // Pocket Wheel device-local state (motion opt-in; the wheel cache + palette join in
         // Phase 2) goes with the account.
-        accountDeletion.wheelClearLocal = { [weak listeningMotion, weak pocketWheel, weak pocketPalette] in
+        accountDeletion.wheelClearLocal = { [weak listeningMotion, weak pocketWheel, weak pocketPalette, weak pocketRuns] in
+            pocketRuns?.clearLocal()
             listeningMotion?.clearLocal()
             pocketWheel?.clearLocal()
             pocketPalette?.clear()
@@ -1884,20 +1944,6 @@ struct PocketDJApp: App {
                                      setlistPlayer: setlistPlayer, mix: mix, burns: burns,
                                      studio: studio, rips: rips, favorites: favorites)
         intents.pocketWheel = pocketWheelController
-        pocketWheelController.play = { [weak intents, weak collections, weak app] profile in
-            guard let intents else { return }
-            var ids = profile.seeds.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.map(\.key)
-            if let d = profile.dominantCollectionId {
-                if let sp = app?.indexPlaylists.first(where: { $0.id == d }) { ids += sp.songIds.shuffled() }
-                else if collections?.pocket(d) != nil { ids += (collections?.playableIds(forPocket: d) ?? []).shuffled() }
-                else if collections?.playlist(d) != nil { ids += (collections?.playableIds(forPlaylist: d) ?? []).shuffled() }
-                else if d == PocketWheelIds.favorites { ids += Array(intents.favorites.favoriteIds).shuffled() }
-            }
-            var seen = Set<String>()
-            ids = ids.filter { seen.insert($0).inserted }
-            _ = try? await intents.playSongIds(Array(ids.prefix(100)), name: "Pocket · \(profile.caption)",
-                                               source: .pocket, originId: profile.dominantCollectionId)
-        }
         // CarPlay + App Intents reach the ONE feedback store through the bridge, exactly like the
         // ♥ does — never a second instance.
         intents.recFeedback = recFeedback
@@ -2013,6 +2059,7 @@ struct PocketDJApp: App {
                 .environment(pocketWheel)
                 .environment(pocketPalette)
                 .environment(pocketWheelController)
+                .environment(pocketRuns)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
@@ -2084,6 +2131,8 @@ struct PocketDJApp: App {
                 .task { listeningPockets.startAutoFlush() }
                 // A round that was playing when the app went away keeps (or finishes) tracking.
                 .task { inThePocket.resumeTrackingIfNeeded() }
+                // A pocket run that was playing when the app went away keeps learning.
+                .task { pocketRuns.resumeTrackingIfNeeded() }
                 // Pocket Wheel: rebuild (debounced 5 s, off-main) whenever play history moves —
                 // a new play, a skip verdict, a settled context/motion, a peer's merged plays.
                 .onChange(of: playHistory.revision) { _, _ in pocketWheel.historyDidChange() }

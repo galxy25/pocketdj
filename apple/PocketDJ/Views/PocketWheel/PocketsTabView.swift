@@ -8,6 +8,7 @@ struct PocketsTabView: View {
     /// Per-viewer convenience (which segment you were on) — the wheel itself never depends on it.
     @AppStorage("pdj.history.pockets.segment") private var segment = Segment.wheel.rawValue
     @Environment(PocketWheelController.self) private var controller: PocketWheelController?
+    @Environment(PocketRunStore.self) private var runs: PocketRunStore?
 
     enum Segment: String, CaseIterable { case wheel = "Wheel", list = "List" }
 
@@ -48,6 +49,12 @@ struct PocketsTabView: View {
         a.alternatives = controller.alternativeSummaries
         a.playAlternative = { alt in Task { await controller.play(alternative: alt) } }
         a.playMoment = { key in Task { await controller.playMoment(key) } }
+        if let runs {
+            _ = runs.revision
+            a.runProgress = runs.progress
+            a.pauseRun = { runs.togglePause() }
+            a.runHistory = { runs.runHistory(for: $0) }
+        }
         return a
     }
 }

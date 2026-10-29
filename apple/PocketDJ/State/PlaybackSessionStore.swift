@@ -83,6 +83,9 @@ final class PlaybackSessionStore {
         /// it a restored clean-only run would be allowed to fall back to an explicit-edition
         /// file when its clean rip is missing (`EditionPolicy.Decision.allowsStoredFallback`).
         var editionLocked: Bool? = nil
+        /// Pocket Wheel run provenance (`SetlistPlayer.Item.plan`). Additive-optional — the
+        /// mix-deck-loop "optional fields, no schema bump" lesson.
+        var plan: SetlistPlayer.PlanTag? = nil
     }
 
     struct Snapshot: Codable, Equatable {

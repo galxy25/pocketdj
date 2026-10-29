@@ -256,6 +256,8 @@ final class PlayHistoryStore {
         var contextName: String?
         /// The collection the run started from (see `PlayEvent.originCollectionId`).
         var originCollectionId: String? = nil
+        /// Set for a Pocket Wheel run row (`PlayEvent.pocketRun`).
+        var pocketRun: PocketRunTag? = nil
 
         static let browser = PlayContext(source: .browser, contextId: nil, contextName: nil)
     }
@@ -284,13 +286,14 @@ final class PlayHistoryStore {
             return nil
         }
         let playedAtDate = Date(timeIntervalSince1970: nowMs / 1000)
-        let event = PlayEvent(id: UUID(), songId: songId, playedAt: nowMs,
+        var event = PlayEvent(id: UUID(), songId: songId, playedAt: nowMs,
                               source: context.source, contextId: context.contextId,
                               contextName: context.contextName, title: title, artist: artist,
                               originInstallId: installId,
                               tzOffsetMin: TimeZone.current.secondsFromGMT(for: playedAtDate) / 60,
                               carPlay: carPlayProbe?(),
                               originCollectionId: context.originCollectionId)
+        event.pocketRun = context.pocketRun
         events.append(event)
         lastPlayedIndex[songId] = max(lastPlayedIndex[songId] ?? 0, nowMs)
         countIndex[songId, default: 0] += 1

@@ -28,6 +28,7 @@ struct ListeningMotionSettingsSection: View {
 private struct ListeningMotionSettingsRows: View {
     let store: ListeningMotionStore
     let pocketsEnabled: Bool
+    @AppStorage(ListeningMotionStore.adaptToActivityKey) private var adaptRuns = false
 
     var body: some View {
         Toggle("Notice walking & running", isOn: Binding(
@@ -36,6 +37,8 @@ private struct ListeningMotionSettingsRows: View {
             .accessibilityIdentifier("wheel-motion-toggle")
 
         if store.isEnabled {
+            Toggle("Adapt pocket runs to walking & running", isOn: $adaptRuns)
+                .accessibilityIdentifier("wheel-motion-adapt-toggle")
             LabeledContent("Motion access") {
                 Text(statusText)
                     .foregroundStyle(store.authorization == .authorized ? Color.secondary : Theme.danger)
