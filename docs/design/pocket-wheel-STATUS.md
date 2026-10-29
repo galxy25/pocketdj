@@ -54,6 +54,10 @@ Lambda (`scripts/lambda/listening-pockets`):
 
 **Levi follow-up (App Store Connect, not touched):** add **"Health & Fitness ▸ Fitness"** (linked to the user, app functionality + product personalization, not tracking) to the App Privacy label before shipping a build with Phase 6.
 
+## Screenshots (iOS simulator, `PDJ_SEED_POCKET_WHEEL`, nothing playing)
+
+`wheel-shots/` in the session scratchpad: `p3-wheel-iphone.png` (seeded wheel), `p3-wheel-card.png` + `p6-wheel-card.png` (Tuesday 8 AM · CarPlay card after a tap, from the XCUITest), `p6-wheel-bestmatch.png` (Thursday 1:30 PM: centre caption "Weekday middays · Chill Lunch · 8 plays", ring in Chill Lunch's colour). Final XCUITest + screenshots ran on a throwaway simulator (since deleted): the shared `3FE7AC66` had another agent's install on it (the seeded launch landed on an empty History), the coordinator-flagged contamination.
+
 ## Needs a device / a drive to verify
 
 - **Motion (Phase 1/5b):** the Motion & Fitness prompt on enabling "Notice walking & running"; that a settle pass stamps `motion` on real plays after a walk / run / drive (check History export or a DiagLog `pocketwheel motion settle stamped=` line); "Adapt pocket runs to walking & running" re-targeting after ≥ 3 min of a sustained change (DiagLog `pocketrun retarget`). The simulator has no motion coprocessor.
