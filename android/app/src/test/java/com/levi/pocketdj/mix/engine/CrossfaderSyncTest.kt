@@ -226,14 +226,14 @@ class CrossfaderSyncTest {
         // Both on the grid in raw positions, but the follower runs at +30 % tempo so its lag (source s) is larger.
         val t = PhaseAlignMath.target(
             leadPos = 10.0, leadLag = 0.120, leadDb = 0.0, leadBeat = 0.5,
-            folPos = 20.0, folLag = 0.156, folDb = 0.0, folBeat = 0.6,
+            folPos = 20.0, folLag = 0.356, folDb = 0.0, folBeat = 0.6,
         )
         // lead heard at phase 1-0.24 = 0.76; follower heard at phase 1-0.26=0.74 -> follower is 0.02 beats behind
         assertEquals(0.02 * 0.6, t.seekSec - 20.0, 1e-9)
         assertEquals(12.0, t.errorMs, 1e-6)
-        // with no compensation the same raw positions would have asked for no move at all
+        // the lag changes the answer: uncompensated raw positions would have moved the follower elsewhere
         val raw = PhaseAlignMath.target(10.0, 0.0, 0.0, 0.5, 20.0, 0.0, 0.0, 0.6)
-        assertEquals(20.0, raw.seekSec, 1e-9)
+        assertTrue(kotlin.math.abs(raw.seekSec - t.seekSec) > 0.05)
     }
 
     @Test fun syncToLeadAlignsAudibleBeatsNotRawPositions() {

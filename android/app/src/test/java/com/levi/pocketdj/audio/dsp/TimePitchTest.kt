@@ -150,7 +150,7 @@ class TimePitchTest {
 
     @Test fun nativeStretcherEmitsInputOverSpeedFramesPerBlockWithoutReconfiguring() {
         val be = FakeBackend()
-        val t = NativeTimePitch(sr, 2048, backend = be)
+        val t = NativeTimePitch(sr, 2048, ringFrames = 131_072, backend = be)
         t.setSpeed(1.3f)
         val blk = sine(440f, 1024, 0.5f)
         repeat(100) { t.push(blk, 1024) }
