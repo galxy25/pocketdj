@@ -218,7 +218,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                     burned = { id -> b.hasLocalFile(id) },
                     finishedStream = { id -> mixStreamLoader.stream(id)?.let { st -> st.isComplete && !st.failed } == true },
                     ripped = { id -> mixStreamLoader.isRipped(id) },
-                    canStream = { id -> mixStreamLoader.canStream(id) },
+                    canStream = { id -> mixStreamLoader.canStream(id, forAuto = true) },
                 )
             }
             val main = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)

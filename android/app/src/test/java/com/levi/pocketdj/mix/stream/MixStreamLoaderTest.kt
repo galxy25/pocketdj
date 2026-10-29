@@ -125,6 +125,52 @@ class MixStreamLoaderTest {
         assertTrue(loader.canStream("a"))
     }
 
+    @Test fun autoCooldownScheduleBacksOffThenFallsToDefaultAndResetsOnSuccess() {
+        digital("a")
+        fun failOnce() {
+            val s = loader.open("a", "A", "x")
+            assertNotNull(s)
+            loader.failStreamForTesting("a")
+        }
+        // 1st failure: 2 s for Auto, manual still 120 s.
+        failOnce()
+        clockMs.addAndGet(1_999)
+        assertFalse(loader.canStream("a", forAuto = true))
+        clockMs.addAndGet(1)
+        assertTrue("2 s elapsed", loader.canStream("a", forAuto = true))
+        assertFalse("manual keeps 120 s", loader.canStream("a"))
+        // 2nd failure: 2 s.
+        failOnce()
+        clockMs.addAndGet(2_000)
+        assertTrue(loader.canStream("a", forAuto = true))
+        // 3rd failure: 3 s.
+        failOnce()
+        clockMs.addAndGet(2_999)
+        assertFalse(loader.canStream("a", forAuto = true))
+        clockMs.addAndGet(1)
+        assertTrue(loader.canStream("a", forAuto = true))
+        // 4th consecutive failure: back to the 120 s default, even for Auto.
+        failOnce()
+        clockMs.addAndGet(60_000)
+        assertFalse(loader.canStream("a", forAuto = true))
+        clockMs.addAndGet(60_000)
+        assertTrue(loader.canStream("a", forAuto = true))
+        // A completed stream resets the schedule: next failure is 2 s again.
+        val f = java.io.File.createTempFile("ok", ".mp3")
+        loader.injectStreamForTesting("a", f, 10, 10, finished = true)
+        failOnce()
+        clockMs.addAndGet(2_000)
+        assertTrue(loader.canStream("a", forAuto = true))
+    }
+
+    @Test fun autoCooldownScheduleValues() {
+        assertEquals(2_000L, loader.autoFailureCooldownMs(1))
+        assertEquals(2_000L, loader.autoFailureCooldownMs(2))
+        assertEquals(3_000L, loader.autoFailureCooldownMs(3))
+        assertEquals(loader.failureCooldownMs, loader.autoFailureCooldownMs(4))
+        assertEquals(loader.failureCooldownMs, loader.autoFailureCooldownMs(0))
+    }
+
     @Test fun liveStreamCanStreamEvenWhileOffline() {
         digital("a"); origin.throttle["/side/a.mp3"] = 500
         val s = loader.open("a", "A", "x")!!
