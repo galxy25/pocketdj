@@ -156,6 +156,27 @@
 
 
 		<!-- ============================================================== -->
+		<!-- Health & Fitness ▸ Fitness                                     -->
+		<!-- Pocket Wheel "Notice walking & running" (iOS, opt-in): the     -->
+		<!-- CoreMotion activity of a play (running / walking / driving) is -->
+		<!-- sent with listening pockets when pockets are on (W4). The App  -->
+		<!-- Store privacy label must add "Fitness" before this ships.      -->
+		<!-- ============================================================== -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeFitness</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+				<string>NSPrivacyCollectedDataTypePurposeProductPersonalization</string>
+			</array>
+		</dict>
+
+		<!-- ============================================================== -->
 		<!-- Location ▸ Coarse Location                                     -->
 		<!-- Listening pockets "places & trips" (iOS, opt-in): opaque place -->
 		<!-- / trip ids derived on device from CLVisit; raw coordinates     -->

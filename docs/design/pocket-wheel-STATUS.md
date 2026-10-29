@@ -16,7 +16,7 @@ Gates per phase: iOS unit suite on sim `3FE7AC66…` with the executed count mov
 | 4 — best match + cold start + CarPlay row + intent | DONE | phase-4 commit | 3678 (+12) | mac ✓ tv-sim ✓ vision-sim ✓ |
 | 5a — adaptive run (plan, play, learn, persist) | DONE | phase-5 commit | 3706 (+28, 0 failures) | mac ✓ tv-sim ✓ vision-sim ✓ |
 | 5b — adapt to activity mid-run | DONE (same commit) | phase-5 commit | (incl. above) | ✓ |
-| 6 — cloud (code + infra only, NOT deployed) | todo | | | |
+| 6 — cloud (code + infra only, NOT deployed) | DONE (not deployed) | phase-6 commit | 3716 + node 68/68 | mac ✓ tv-sim ✓ vision-sim ✓ |
 
 ## Decisions made while building (beyond §9)
 
@@ -38,7 +38,34 @@ Gates per phase: iOS unit suite on sim `3FE7AC66…` with the executed count mov
 - Phase 5 decisions: **W2 invariant** — queued run rows = 100 − played-through − (1 if the sounding run row's verdict is pending); the sounding row counts as done at ≥ 90 % of its live fraction (so no 101st song starts), and one spare row stays queued while the 100th can still be skipped; a skip tops the queue up from the planner (`PocketRunStore.rowsNeeded`). **Artist multiplier** — the §4.3 formula as printed gives 0.5 for one fast skip, contradicting its own example (0.33) and ban rule; negative evidence counts double for artist/album so 1 fast skip = 0.333 (banned), 2 ordinary skips = 0.294 (banned), 1 ordinary = 0.455. **Bans** come from the run's own verdicts only; the cross-run fold shifts multipliers but never bans (W5). **W7** — a Mix-mode profile starts the run as a Mix Auto-DJ queue (deck-loadable songs only; ≥ 10 needed, else the sequencer); live re-plan/top-up apply to the sequencer path (the Mix path keeps its initial 100 — noted as a follow-up). The centre ⏸ toggles playback (it does not end the run). Up Next "Re-tuned ✦" badge: the store exposes `retunedUids` for 4 s but the Up Next row badge itself is not drawn yet (follow-up).
 - Phase 5b: opt-in toggle "Adapt pocket runs to walking & running" (Settings ▸ Pocket Wheel, under the motion toggle). Live CoreMotion updates only while a sequencer run plays; a change sustained ≥ 3 min into running / walking / driving re-targets the remaining replaceable rows toward the best moment for that mode (once per mode per run), through the same protected `replaceUpcoming`.
 
+## Phase 6 — cloud (code only; NOTHING deployed)
+
+App (upload contract, additive — the app↔cloud goldens are byte-identical):
+- `ListeningPocketsUploadEvent` gains `mode` (only SENSOR modes: running / walking from CoreMotion, trip from automotive/cycling motion — W4) and `run` `{id, moment, slot, collectionId}` for wheel-run plays; both absent otherwise. The upload fingerprint appends them only when present, so old plays never mass re-send; a settled motion / run tag re-sends that play once.
+- `PrivacyInfo.xcprivacy`: `NSPrivacyCollectedDataTypeFitness` (linked, not tracking, app functionality + personalization).
+
+Lambda (`scripts/lambda/listening-pockets`):
+- `store.mjs cleanEvent`: keeps a known `mode` and a well-formed `run` tag (dropped otherwise); merge upgrades a surface mode to a body mode, never back; run tag write-once.
+- `analyze.mjs`: `mode` is a CONTEXT dim (sensor modes only — surface modes would duplicate `source`/`carPlay`/`trip`; measured: deriving them pushed 14 source + 6 mood features out of the fixture pockets, so they are not a dim); a run row's collection is its `playContext` (contextKind "wheel"); `wheelRunRounds` turns runs into WEAK round labels (≥ 80 of 100 played through ⇒ positive for its moment's dayType|timeBucket[|place/trip] and its dominant collection; less teaches nothing) merged into `learnFromRounds` — absent runs ⇒ identical documents. `surfaceModeOf` exported for consumers wanting the full §1.3 mode.
+- Tests: node 68/68 (4 new wheel tests); goldens unchanged (no regeneration needed).
+
+**To deploy (Levi's OK required; green account, profile llc):** code-only update of the existing function — no new AWS resources:
+`POCKETDJ_ENV=green AWS_PROFILE=llc scripts/lambda/listening-pockets/deploy.sh` (idempotent; updates `pocketdj-listening-pockets` code, re-asserts its routes/rule). Deploy the Lambda BEFORE shipping an app build that sends `mode`/`run` (the old Lambda ignores unknown keys, so the order is safe either way, but data only lands once both are live).
+
+**Levi follow-up (App Store Connect, not touched):** add **"Health & Fitness ▸ Fitness"** (linked to the user, app functionality + product personalization, not tracking) to the App Privacy label before shipping a build with Phase 6.
+
+## Needs a device / a drive to verify
+
+- **Motion (Phase 1/5b):** the Motion & Fitness prompt on enabling "Notice walking & running"; that a settle pass stamps `motion` on real plays after a walk / run / drive (check History export or a DiagLog `pocketwheel motion settle stamped=` line); "Adapt pocket runs to walking & running" re-targeting after ≥ 3 min of a sustained change (DiagLog `pocketrun retarget`). The simulator has no motion coprocessor.
+- **CarPlay (Phase 4):** the "▶ Pocket for now — <collection> · <day hour>" row and "Pockets right now" list on the For You tab; tap starts a run and shows Now Playing. Template plumbing is not headless-testable (the model rows are unit-tested).
+- **Dead air (Phase 5):** run transitions vs the 10-24 baseline (`scripts/deadair-report.py` after a drive); the replan's "next row only with ≥ 30 s runway + immediate re-prefetch" rule under real AM / rip timing; an in-flight rip is never swapped for another capture.
+- **A real 100-song run:** the stop at the 100th played-through song (no 101st), skips topping the queue up, Drake-style bans (`pocketrun replan … banned=[…]`), and the past-runs strip on the cell card.
+- **W7 Mix runs:** a Mix-mode best match loading into Mix Auto-DJ with ≥ 10 deck-loadable songs.
+
 ## Remaining / follow-ups
 
 - Levi: add **"Fitness"** to the App Store privacy label before shipping Phase 6 (W4). Not touched by this build.
-- Device/drive-only verification list: see the final report section at the bottom (filled as phases land).
+- Mix-path (W7) runs don't replan/top-up live (sequencer path only).
+- Up Next "Re-tuned ✦" row badge (store exposes `retunedUids`; the row view doesn't draw it yet).
+- Pinch-to-day-donut (Phase 3b iPad nice-to-have) not built.
+- Android port (§7) not started; the shared fixture `apple/Tests/Fixtures/pocket-wheel-history.json` is ready for it.

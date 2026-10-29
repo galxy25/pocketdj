@@ -52,7 +52,7 @@ process.env.MAX_PROFILES = '1000';
 
 const { POCKET_PARAMS } = await import('./params.mjs');
 const { normalizeEvents, sessionize, detectPockets, detect, pocketIdFor } = await import('./detect.mjs');
-const { computeResults, foldBpm, localTimeOf, titleFor, camelotNeighbors, emptyResults, learnFromRounds, roundLabel, roundMultiplier } = await import('./analyze.mjs');
+const { computeResults, foldBpm, localTimeOf, titleFor, camelotNeighbors, emptyResults, learnFromRounds, roundLabel, roundMultiplier, attributesOf, wheelRunRounds } = await import('./analyze.mjs');
 const { ROUND_PARAMS, POCKET_LIMITS } = await import('./params.mjs');
 const { indexFeatures, resolveSong, identityKeys } = await import('./features.mjs');
 const { cleanEvent, mergeEvents, freshEventsDoc, cleanCtx, cleanRound, mergeRounds, capText,
@@ -1497,4 +1497,68 @@ test('collections: rounds learn a collection target', () => {
   const out = learnFromRounds([mk('pocket', null), mk('pocket', null), mk('broke', 1)], { nowMs: NOW });
   const w = out.contexts.find((c) => c.key === `weekday|evening|place:${PLACE_A}`).weights.find((x) => x.dim === 'collection');
   assert.deepEqual([w.value, w.pos, w.neg, w.multiplier], ['pls_house', 2, 1, roundMultiplier(2, 1)]);
+});
+
+// ── Pocket Wheel Phase 6 (docs/design/pocket-wheel.md §5) ──────────────────────────────────────
+test('wheel: cleanEvent keeps a known mode + a well-formed run tag, drops the rest', () => {
+  const base = { id: '6F1C3C8E-6F0B-4A0E-9E0A-7B9C2D1E0F11', songId: 's1', atMs: Date.now() - 3_600_000, outcome: 'completed' };
+  const ok = cleanEvent({ ...base, mode: 'running',
+    run: { id: '6f1c3c8e-6f0b-4a0e-9e0a-7b9c2d1e0f99', moment: 'h08|d2|carPlay', slot: 3, collectionId: 'pl_potential' } },
+  'INSTALL-0001', Date.now());
+  assert.equal(ok.mode, 'running');
+  assert.deepEqual(ok.run, { id: '6F1C3C8E-6F0B-4A0E-9E0A-7B9C2D1E0F99', moment: 'h08|d2|carPlay', slot: 3, collectionId: 'pl_potential' });
+  const bad = cleanEvent({ ...base, mode: 'teleporting', run: { id: 'nope' } }, 'INSTALL-0001', Date.now());
+  assert.equal('mode' in bad, false, 'unknown mode dropped');
+  assert.equal('run' in bad, false, 'malformed run dropped');
+  const old = cleanEvent(base, 'INSTALL-0001', Date.now());
+  assert.equal('mode' in old || 'run' in old, false, 'an old client row keeps its exact shape');
+});
+
+test('wheel: mode is a context attribute and a run row\'s collection is its play context', () => {
+  const a = attributesOf({ id: 'x', songId: 's1', atMs: 0, mode: 'walking', contextId: 'set_now_playing',
+    run: { id: 'r', collectionId: 'pkt_late' } }, null);
+  assert.equal(a.mode, 'walking');
+  assert.equal(a.playContext, 'pkt_late');
+  assert.equal(attributesOf({ id: 'y', songId: 's1', atMs: 0 }, null).mode, null);
+});
+
+test('wheel: runs become weak round labels (≥ 80 played through = positive)', () => {
+  const mk = (run, i, skipped) => ({ id: `e${run}${i}`, songId: `s${i}`, atMs: 1_793_115_000_000 + i * 200_000, tzOffsetMin: -420,
+    outcome: skipped ? 'skipped' : 'completed', run: { id: run, collectionId: i % 3 ? 'pl_potential' : 'pkt_late' } });
+  const good = Array.from({ length: 100 }, (_, i) => mk('A', i, i < 10));      // 90 played through
+  const short = Array.from({ length: 30 }, (_, i) => mk('B', i, false));       // 30 — not a verdict
+  const rounds = wheelRunRounds([...good, ...short]);
+  assert.equal(rounds.length, 2);
+  const a = rounds.find((r) => r.id === 'A');
+  assert.equal(a.outcome, 'pocket');
+  assert.equal(a.playedThrough, 90);
+  assert.deepEqual(a.context, { dayType: 'weekday', timeBucket: 'morning', ctx: null });
+  assert.equal(a.targets[0].value, 'pl_potential');
+  assert.equal(rounds.find((r) => r.id === 'B').outcome, 'abandoned');
+  const learned = learnFromRounds(rounds, { nowMs: 1_793_115_000_000 + 86_400_000 });
+  const w = learned.contexts[0].weights.find((x) => x.dim === 'collection' && x.value === 'pl_potential');
+  assert.ok(w && w.multiplier > 1, 'a completed run lifts its collection for that context');
+  assert.deepEqual(wheelRunRounds([{ id: 'z', songId: 's', atMs: 1, outcome: 'completed' }]), [], 'no run tag ⇒ nothing');
+});
+
+test('wheel: merge upgrades a surface mode to a body mode, never back; run tag write-once', () => {
+  const now = Date.now();
+  const base = { id: '6F1C3C8E-6F0B-4A0E-9E0A-7B9C2D1E0F12', songId: 's1', atMs: now - 3_600_000, outcome: 'completed' };
+  const doc = freshEventsDoc();
+  mergeEvents(doc, [cleanEvent({ ...base, mode: 'collection' }, 'INSTALL-0001', now)], now);
+  mergeEvents(doc, [cleanEvent({ ...base, mode: 'running', run: { id: '6F1C3C8E-6F0B-4A0E-9E0A-7B9C2D1E0F13', collectionId: 'c' } }, 'INSTALL-0001', now)], now);
+  assert.equal(doc.events[0].mode, 'running');
+  assert.equal(doc.events[0].run.collectionId, 'c');
+  mergeEvents(doc, [cleanEvent({ ...base, mode: 'browse' }, 'INSTALL-0001', now)], now);
+  assert.equal(doc.events[0].mode, 'running', 'a surface mode never downgrades a body mode');
+});
+
+test('wheel: surfaceModeOf mirrors PocketMode.derive for plays without a sensor mode', async () => {
+  const { surfaceModeOf } = await import('./analyze.mjs');
+  assert.equal(surfaceModeOf({ source: 'mix', carPlay: true }, null), 'carPlay');
+  assert.equal(surfaceModeOf({ source: 'playlist' }, { kind: 'trip', tripId: 't' }), 'trip');
+  assert.equal(surfaceModeOf({ source: 'mix' }, null), 'mix');
+  assert.equal(surfaceModeOf({ source: 'album' }, null), 'browse');
+  assert.equal(surfaceModeOf({ source: 'pocket' }, null), 'collection');
+  assert.equal(surfaceModeOf({ source: 'game', carPlay: true }, null), null);
 });

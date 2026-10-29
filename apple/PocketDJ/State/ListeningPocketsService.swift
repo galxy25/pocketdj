@@ -501,7 +501,23 @@ final class ListeningPocketsService {
             tzOffsetMin: tz, source: e.source.rawValue, outcome: e.outcome.rawValue,
             fraction: e.listenedFraction.map { ($0 * 1000).rounded() / 1000 },
             originInstallId: e.originInstallId, artist: e.artist, carPlay: e.carPlay, ctx: ctx,
-            contextId: collection?.id, contextKind: collection?.kind)
+            contextId: collection?.id, contextKind: collection?.kind,
+            mode: Self.sensorMode(e, ctx: ctx),
+            run: e.pocketRun.map { .init(id: $0.runId.uuidString, moment: $0.momentKey, slot: $0.slot,
+                                         collectionId: $0.rowCollectionId) })
+    }
+
+    /// The Pocket Wheel mode worth sending (W4): only what the SENSORS decided — running / walking
+    /// from CoreMotion, or trip from automotive / cycling motion. Surface modes (and a trip the
+    /// `ctx` already carries) are derivable server-side and are never sent.
+    static func sensorMode(_ e: PlayHistoryStore.PlayEvent, ctx: ListeningContextTag?) -> String? {
+        guard let m = PocketMode.derive(source: e.source, carPlay: e.carPlay, motion: e.motion, context: ctx) else { return nil }
+        switch m {
+        case .running, .walking: return m.rawValue
+        // Trip only when MOTION decided it (a trip context already rides as `ctx`).
+        case .trip: return e.motion == MotionToken.automotive || e.motion == MotionToken.cycling ? m.rawValue : nil
+        default: return nil
+        }
     }
 
     /// Coarse time on the wire: play start floored to the minute.
@@ -539,8 +555,12 @@ final class ListeningPocketsService {
         let base = "\(e.outcome)|\(pct)|\(ctx)|\(e.tzOffsetMin ?? 0)"
         // Appended only when present, so every pre-collections fingerprint stays identical (no
         // mass re-send of 90 days on update); a play that carries a context re-sends once.
-        guard let cid = e.contextId else { return base }
-        return base + "|\(e.contextKind ?? "")/\(cid)"
+        var fp = base
+        if let cid = e.contextId { fp += "|\(e.contextKind ?? "")/\(cid)" }
+        // Pocket Wheel fields, appended only when present (a settled motion / run tag re-sends once).
+        if let m = e.mode { fp += "|m:\(m)" }
+        if let r = e.run { fp += "|r:\(r.id)/\(r.slot)" }
+        return fp
     }
 
     private static func message(for e: ListeningPocketsClient.ClientError) -> String {
