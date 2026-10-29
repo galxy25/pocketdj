@@ -75,6 +75,7 @@ fun PocketDetailScreen(
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val store = remember { graph.collections }
+    val exporter = com.levi.pocketdj.screens.collections.rememberCollectionExporter()
     val snackbar = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -201,6 +202,14 @@ fun PocketDetailScreen(
                         DropdownMenuItem(
                             text = { Text("Add note") },
                             onClick = { dismiss(); addNoteOpen = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export…") },
+                            onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.pocketZip(store, pocketId, pocket.name)) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export CSV") },
+                            onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.pocketCsv(store, pocketId, pocket.name)) },
                         )
                         DropdownMenuItem(
                             text = { Text("Rename…") },

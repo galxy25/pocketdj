@@ -81,6 +81,7 @@ fun PlaylistDetailScreen(
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val store = remember { graph.collections }
+    val exporter = com.levi.pocketdj.screens.collections.rememberCollectionExporter()
     val snackbar = remember { SnackbarHostState() }
     val forceScope = androidx.compose.runtime.rememberCoroutineScope()
 
@@ -266,6 +267,14 @@ fun PlaylistDetailScreen(
                                 linkedName = store.sourcePlaylistForPlaylist(playlistId)?.playlist?.name,
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text("Export…") },
+                            onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.playlistZip(store, playlistId, playlist?.name ?: "Playlist")) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export CSV") },
+                            onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.playlistCsv(store, playlistId, playlist?.name ?: "Playlist")) },
+                        )
                         DropdownMenuItem(
                             text = { Text("Delete playlist") },
                             onClick = { dismiss(); deleteOpen = true },

@@ -123,6 +123,16 @@ class ImportedSongsStore(private val file: File) {
         onChanged?.invoke()
     }
 
+    /**
+     * Resolve against this merge's REAL documents (first-seen claimant per Apple Music id wins, as iOS
+     * `withProvisionalSources`): remapped `amrec_` rows leave the document and come back as pairs.
+     */
+    fun resolve(realDocs: List<IndexJson>): Resolution {
+        val (s, a) = synchronized(lock) { songs to albums }
+        if (s.isEmpty() && a.isEmpty()) return Resolution.EMPTY
+        return resolveEntries(s, a, realDocs)
+    }
+
     /** The synthetic source for the catalog merge; null when empty. Stable instance between changes. */
     fun syntheticDocument(): IndexJson? = synchronized(lock) {
         if (songs.isEmpty() && albums.isEmpty()) return null
@@ -138,7 +148,38 @@ class ImportedSongsStore(private val file: File) {
         }
     }
 
+    class Resolution(val documents: List<IndexJson>, val pairs: List<Pair<String, String>>) {
+        companion object { val EMPTY = Resolution(emptyList(), emptyList()) }
+    }
+
     companion object {
+        /**
+         * Land a supersede (iOS `AppModel.applySupersede` order): drop the imported rows FIRST, then remap
+         * collection references, then favorites. A throwing step never blocks the following ones.
+         */
+        fun landSupersede(
+            pairs: List<Pair<String, String>>,
+            removeImported: (List<String>) -> Unit,
+            remapCollections: (List<Pair<String, String>>) -> Unit,
+            remapFavorites: (List<Pair<String, String>>) -> Unit,
+        ) {
+            if (pairs.isEmpty()) return
+            runCatching { removeImported(pairs.map { it.first }) }
+            runCatching { remapCollections(pairs) }
+            runCatching { remapFavorites(pairs) }
+        }
+
+        /** Pure core of [resolve]. */
+        fun resolveEntries(songs: List<SongEntry>, albums: List<AlbumEntry>, realDocs: List<IndexJson>): Resolution {
+            val byAm = HashMap<String, String>()
+            for (d in realDocs) for (x in d.songs) x.appleMusicId?.takeIf { it.isNotEmpty() }?.let { byAm.putIfAbsent(it, x.id) }
+            val pairs = supersedePairs(songs, byAm)
+            val gone = pairs.mapTo(HashSet()) { it.first }
+            val kept = songs.filterNot { it.songId in gone }
+            val doc = if (kept.isEmpty() && albums.isEmpty()) emptyList() else listOf(syntheticIndex(kept, albums))
+            return Resolution(doc, pairs)
+        }
+
         const val FILE_NAME = "pocketdj-imported-songs.json"
         const val SOURCE_NAME = "Imported"
 
