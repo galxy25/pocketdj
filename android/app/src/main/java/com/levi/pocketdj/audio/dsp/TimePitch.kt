@@ -10,7 +10,8 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
- * Independent tempo + pitch (iOS `AVAudioUnitTimePitch`) on Media3's [SonicAudioProcessor].
+ * Independent tempo + pitch (iOS `AVAudioUnitTimePitch`) on Media3's [SonicAudioProcessor]: the FALLBACK
+ * [TimeStretcher] when libpdjdsp is absent (JVM tests); the device default is [NativeTimePitch].
  *
  * Push/pull rather than in-place, because the output frame count differs from the input's:
  * [push] float input, [pull] float output. Sonic works in s16, so floats are quantised on the
@@ -24,11 +25,9 @@ class TimePitch(
     private val sampleRate: Int = 44_100,
     private val maxPushFrames: Int = 4096,
     ringFrames: Int = 32_768,
-) {
-    /** Tempo multiplier 0.5..2.0 (pitch preserved). */
-    var speed: Float = 1f; private set
-    /** Pitch in semitones (tempo preserved). */
-    var pitchSemitones: Float = 0f; private set
+) : TimeStretcher {
+    override var speed: Float = 1f; private set
+    override var pitchSemitones: Float = 0f; private set
 
     private val sonic = SonicAudioProcessor()
     private val inBuf: ByteBuffer = ByteBuffer.allocateDirect(maxPushFrames * CHANNELS * 2).order(ByteOrder.nativeOrder())
@@ -46,18 +45,18 @@ class TimePitch(
     var reconfigureCount = 0; private set
 
     /** Frames dropped because the consumer fell behind (diagnostic). */
-    var overflowFrames: Long = 0; private set
+    override var overflowFrames: Long = 0; private set
 
     init {
         sonic.configure(fmt)
     }
 
-    fun setSpeed(s: Float) {
+    override fun setSpeed(s: Float) {
         val v = s.coerceIn(MIN_SPEED, MAX_SPEED)
         if (v != speed) { speed = v; dirty = true }
     }
 
-    fun setPitchSemitones(st: Float) {
+    override fun setPitchSemitones(st: Float) {
         if (st != pitchSemitones) { pitchSemitones = st; dirty = true }
     }
 
@@ -84,7 +83,7 @@ class TimePitch(
     }
 
     /** Feed [frames] interleaved stereo frames. */
-    fun push(input: FloatArray, frames: Int) {
+    override fun push(input: FloatArray, frames: Int) {
         applyIfDirty()
         var done = 0
         while (done < frames) {
@@ -109,7 +108,7 @@ class TimePitch(
     }
 
     /** Signal the end of the stream so the last windows are emitted. */
-    fun endOfStream() {
+    override fun endOfStream() {
         applyIfDirty()
         if (active) { sonic.queueEndOfStream(); drainSonic() }
     }
@@ -164,10 +163,10 @@ class TimePitch(
     }
 
     /** Frames ready to [pull]. */
-    val availableFrames: Int get() = ringCount
+    override val availableFrames: Int get() = ringCount
 
     /** Copy up to [maxFrames] processed frames to [out]; returns how many. */
-    fun pull(out: FloatArray, maxFrames: Int): Int {
+    override fun pull(out: FloatArray, maxFrames: Int): Int {
         val n = minOf(maxFrames, ringCount)
         var r = ringRead
         for (f in 0 until n) {
@@ -185,11 +184,11 @@ class TimePitch(
      * pitch-period max, two windows deep), plus what is queued. Used by the engine to line the
      * playhead up; exact enough for a UI clock.
      */
-    fun latencyFrames(): Int =
+    override fun latencyFrames(): Int =
         if (!active) ringCount else (2 * sampleRate / 65 / speed).toInt() + ringCount
 
     /** Drop everything (seek / load): clears Sonic and the output ring. */
-    fun flush() {
+    override fun flush() {
         ringRead = 0; ringCount = 0
         dirty = false
         appliedSpeed = speed; appliedPitch = pitchSemitones
@@ -203,7 +202,7 @@ class TimePitch(
     companion object {
         const val MIN_REL_STEP = 0.0025f
         const val MIN_PITCH_STEP = 0.04f
-        const val MIN_SPEED = 0.5f
-        const val MAX_SPEED = 2.0f
+        const val MIN_SPEED = TimeStretcher.MIN_SPEED
+        const val MAX_SPEED = TimeStretcher.MAX_SPEED
     }
 }

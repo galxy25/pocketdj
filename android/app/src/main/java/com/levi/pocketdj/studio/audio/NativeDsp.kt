@@ -44,6 +44,14 @@ object NativeDsp {
     external fun nativeSf2PresetCount(h: Long): Int
     // Stretch (offline)
     external fun nativeStretchExact(input: FloatArray, inFrames: Int, out: FloatArray, outFrames: Int, sr: Int, semitones: Double): Boolean
+    // Real-time stretch (decks; render thread)
+    external fun nativeRtNew(sr: Int, maxIn: Int, maxOut: Int): Long
+    external fun nativeRtFree(h: Long)
+    external fun nativeRtInputLatency(h: Long): Int
+    external fun nativeRtOutputLatency(h: Long): Int
+    external fun nativeRtSetPitch(h: Long, semitones: Double)
+    external fun nativeRtReset(h: Long)
+    external fun nativeRtProcess(h: Long, input: FloatArray, inFrames: Int, out: FloatArray, outFrames: Int)
     // Oboe
     external fun nativeOboeNew(sr: Int, ringFrames: Int): Long
     external fun nativeOboeFree(h: Long)

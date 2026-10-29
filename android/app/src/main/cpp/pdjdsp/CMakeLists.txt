@@ -13,8 +13,10 @@ add_library(pdjdsp SHARED
     mixer.cpp
     sf2_voice.cpp
     stretch.cpp
+    stretch_rt.cpp
     oboe_sink.cpp)
 
 target_include_directories(pdjdsp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(pdjdsp PRIVATE -O3 -Wall)
+target_link_options(pdjdsp PRIVATE "-Wl,-z,max-page-size=16384" "-Wl,-z,common-page-size=16384")
 target_link_libraries(pdjdsp PRIVATE oboe::oboe log android)

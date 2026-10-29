@@ -17,12 +17,34 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Test
+import com.levi.pocketdj.audio.dsp.NativeTimePitch
+import com.levi.pocketdj.audio.dsp.RtStretchBackend
+import com.levi.pocketdj.audio.dsp.TimeStretchers
 import java.io.File
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class NowPlayingDspEngineTest {
     private val sr = 44_100
+
+    /** Passthrough kernel with a Signalsmith-like fixed delay, so chains publish a real latency on the JVM. */
+    private class LagBackend : RtStretchBackend {
+        override val inputLatency = 2646
+        override val outputLatency = 3969
+        override fun setPitchSemitones(semitones: Double) {}
+        override fun process(input: FloatArray, inFrames: Int, out: FloatArray, outFrames: Int) {
+            for (i in 0 until outFrames) {
+                val src = minOf(inFrames - 1, (i.toLong() * inFrames / outFrames).toInt())
+                out[2 * i] = input[2 * src]; out[2 * i + 1] = input[2 * src + 1]
+            }
+        }
+        override fun reset() {}
+        override fun close() {}
+    }
+
+    @After fun clearFactory() { TimeStretchers.factoryOverride = null }
+    private fun lagging() { TimeStretchers.factoryOverride = { sr, mp -> NativeTimePitch(sr, mp, backend = LagBackend()) } }
 
     /** Offline harness: the sink renders on demand, decoder pumping is interleaved per block, ticks every block. */
     private class Rig(val songSeconds: Int = 10) {
@@ -161,6 +183,35 @@ class NowPlayingDspEngineTest {
         r.render(sr / 2)
         assertEquals("fires once per engage", 1, ended)
         assertFalse(r.engine.isPlaying)
+    }
+
+    @Test fun reportedPositionIsLagCompensatedNotTheRawVoiceCounter() {
+        lagging()
+        val r = Rig()
+        r.engine.engage(file, 0, 0, atSeconds = 2.0, play = true); r.engine.bindSong("s")
+        r.render(sr)
+        val lag = r.engine.graphLagSecondsForTest()
+        assertTrue("stretcher reports a delay", lag > 0.0)
+        val voiceSec = r.voices[0].playerFrame.toDouble() / sr
+        assertEquals(voiceSec - lag, r.engine.currentTimeSec, 1e-6)
+        // disengage hands ExoPlayer the heard position, not the voice position
+        assertEquals(voiceSec - lag, r.engine.disengage()!!, 1e-3)
+    }
+
+    @Test fun endIsReportedOnlyAfterTheStretcherTailDrains() {
+        lagging()
+        val r = Rig()
+        var ended = 0
+        r.engine.onReachedEnd = { ended++ }
+        r.engine.engage(file, startMs = 0, lengthMs = 300, atSeconds = 0.0, play = true); r.engine.bindSong("s")
+        var frames = 0
+        val lagFrames = { r.engine.graphLatencyFramesForTest() }
+        // render until the voice has finished; end must not fire before the lag has elapsed past that point
+        while (ended == 0 && frames < sr * 3) { r.render(512); frames += 512 }
+        assertEquals(1, ended)
+        val latency = lagFrames()
+        assertTrue("fires no earlier than window + stretcher delay (frames=$frames lat=$latency)",
+            frames >= (0.3 * sr).toInt() + latency - 512)
     }
 
     @Test fun windowedTracksReportTimeRelativeToTheirStart() {

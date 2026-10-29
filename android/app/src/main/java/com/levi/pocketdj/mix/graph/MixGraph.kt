@@ -52,6 +52,12 @@ class MixGraph(val sampleRate: Int = 44_100, val maxBlock: Int = 2048) : BlockRe
 
     fun levelsOf(d: Deck) = deck(d).levels
 
+    /** Audible lag behind the voices' frame counters (stretcher delay), source seconds. 0 when not rendering. */
+    fun audibleLagSeconds(d: Deck): Double = deck(d).audibleLagSeconds
+
+    /** Free native stretchers. Call once when the graph is retired. */
+    fun release() { a.release(); b.release() }
+
     val limiterLatencyFrames: Int get() = limiter.latencyFrames
 
     // ------------------------------------------------------------------ render thread

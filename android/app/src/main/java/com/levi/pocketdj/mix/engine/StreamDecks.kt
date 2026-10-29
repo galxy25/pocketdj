@@ -349,7 +349,7 @@ class StreamDecks(
             engine.refreshTransport()
         } else if (frontier > c.endFrame) {
             // Small appends while the runway is short, big ones once it is comfortable.
-            val playFrame = start + ((engine.truePlayhead(deck) ?: engine.position(deck)) * sr).toLong()
+            val playFrame = start + ((engine.voicePlayhead(deck) ?: engine.position(deck)) * sr).toLong()
             val runway = (c.endFrame - playFrame).toDouble() / sr
             val chunk = StreamRules.appendChunk(runway)
             if (!(complete || (frontier - c.endFrame).toDouble() / sr >= chunk)) return
