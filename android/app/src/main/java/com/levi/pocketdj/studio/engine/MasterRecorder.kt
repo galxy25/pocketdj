@@ -1,9 +1,13 @@
 package com.levi.pocketdj.studio.engine
 
 import com.levi.pocketdj.audio.core.AudioDiag
+import com.levi.pocketdj.audio.core.AacEncoder
 import com.levi.pocketdj.audio.core.PcmBuffer
+import com.levi.pocketdj.audio.core.PcmChunkWriter
+import com.levi.pocketdj.audio.core.StreamingResampler
 import com.levi.pocketdj.audio.core.WavWriter
 import com.levi.pocketdj.studio.audio.AndroidStudioCodec
+import com.levi.pocketdj.studio.audio.BufferedM4aWriter
 import com.levi.pocketdj.studio.audio.StudioAudio
 import com.levi.pocketdj.studio.model.StudioArrangementArtifact
 import com.levi.pocketdj.studio.model.StudioFactory
@@ -134,7 +138,13 @@ class MasterRecorder(
 
 /** Reads back the float32 WAVs [MasterRecorder] writes (the capture never goes through a platform decoder). */
 object MasterWav {
-    fun read(file: File): PcmBuffer? = runCatching {
+    /** Frames per chunk when reading a capture back: the largest array a bake holds (about 0.1 s at 44.1 kHz). */
+    const val CHUNK_FRAMES = 4096
+
+    class Header(val sampleRate: Int, val frames: Long, val dataOffset: Long = 44)
+
+    /** Validated header of a capture (null when not a stereo float32 WAV). A crash-truncated file trusts its length. */
+    fun header(file: File): Header? = runCatching {
         RandomAccessFile(file, "r").use { raf ->
             if (raf.length() < 44) return null
             val head = ByteArray(44); raf.readFully(head)
@@ -142,12 +152,39 @@ object MasterWav {
             if (info.format != WavWriter.Format.FLOAT32.tag || info.bits != 32 || info.channels != 2) return null
             val avail = raf.length() - 44
             // The header is patched on close; a crash leaves dataBytes 0 — trust the file length then.
-            val bytes = (if (info.dataBytes in 1..avail) info.dataBytes else avail).toInt() / 8 * 8
-            val data = ByteArray(bytes); raf.readFully(data)
-            val fb = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
-            val out = FloatArray(bytes / 4); fb.get(out)
-            PcmBuffer(info.sampleRate, 2, out)
+            val bytes = (if (info.dataBytes in 1..avail) info.dataBytes else avail) / 8 * 8
+            Header(info.sampleRate, bytes / 8)
         }
+    }.getOrNull()
+
+    /**
+     * Streams the capture to [sink] in blocks of at most [chunkFrames] interleaved stereo frames (the array is
+     * REUSED between calls). Returns the header, or null for an unreadable capture (sink never called).
+     */
+    fun readChunks(file: File, chunkFrames: Int = CHUNK_FRAMES, sink: (FloatArray, Int) -> Unit): Header? {
+        val h = header(file) ?: return null
+        RandomAccessFile(file, "r").use { raf ->
+            raf.seek(h.dataOffset)
+            val bytes = ByteArray(chunkFrames * 8)
+            val out = FloatArray(chunkFrames * 2)
+            var left = h.frames
+            while (left > 0) {
+                val n = minOf(left, chunkFrames.toLong()).toInt()
+                raf.readFully(bytes, 0, n * 8)
+                ByteBuffer.wrap(bytes, 0, n * 8).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(out, 0, n * 2)
+                sink(out, n)
+                left -= n
+            }
+        }
+        return h
+    }
+
+    /** Whole capture in memory (tests / short captures; the bake streams via [readChunks]). */
+    fun read(file: File): PcmBuffer? = runCatching {
+        val h = header(file) ?: return null
+        val out = FloatArray((h.frames * 2).toInt()); var at = 0
+        readChunks(file) { b, n -> System.arraycopy(b, 0, out, at, n * 2); at += n * 2 }
+        PcmBuffer(h.sampleRate, 2, out)
     }.getOrNull()
 }
 
@@ -155,20 +192,43 @@ object MasterWav {
 const val LOFI_HARDWARE_RATE = 48_000
 
 class MasterRecordingBaker(
-    private val writeM4a: (PcmBuffer, File) -> Unit = { pcm, f -> AndroidStudioCodec.writeM4a(pcm, f) },
+    /** Legacy whole-buffer encoder seam (tests / fakes); null = stream through [openM4a]. */
+    private val writeM4a: ((PcmBuffer, File) -> Unit)? = null,
+    private val openM4a: (File, Int) -> PcmChunkWriter = { f, rate -> AndroidStudioCodec.openM4a(f, rate) },
 ) {
+    private fun open(file: File): PcmChunkWriter =
+        writeM4a?.let { w -> BufferedM4aWriter(StudioAudio.CANONICAL_RATE, 2) { w(it, file) } } ?: openM4a(file, StudioAudio.CANONICAL_RATE)
+
     /**
-     * The PCM that gets encoded: Quantized relabels the capture as canonical WITHOUT resampling; Clean
-     * resamples to canonical (a no-op when the capture already is). Null for an empty/unreadable capture.
+     * Streams [capture] as canonical frames into [sink]: Quantized relabels the capture as canonical WITHOUT
+     * resampling; Clean resamples to canonical (passthrough when the capture already is). Returns the canonical
+     * frame count, or null for an empty/unreadable capture (sink untouched).
      */
+    fun streamCanonical(capture: MasterCapture, sink: (FloatArray, Int) -> Unit): Long? {
+        val h = MasterWav.header(capture.file) ?: return null
+        if (h.frames <= 0) return null
+        var total = 0L
+        val count = { b: FloatArray, n: Int -> total += n; sink(b, n) }
+        val resampler: StreamingResampler? = when {
+            !capture.quantized -> StreamingResampler(h.sampleRate, StudioAudio.CANONICAL_RATE).takeIf { h.sampleRate != StudioAudio.CANONICAL_RATE }
+            // Android taps the canonical mix, so there is no hardware-rate capture to relabel: emulate iOS's 48 kHz
+            // hardware tap by resampling up to LOFI_HARDWARE_RATE first, then relabelling (the audible downpitch).
+            h.sampleRate == StudioAudio.CANONICAL_RATE -> StreamingResampler(h.sampleRate, LOFI_HARDWARE_RATE)
+            else -> null
+        }
+        MasterWav.readChunks(capture.file) { b, n -> if (resampler != null) resampler.process(b, n, count) else count(b, n) } ?: return null
+        resampler?.finish(count)
+        return total
+    }
+
+    /** Whole canonical PCM (tests / small captures). Null for an empty/unreadable capture. */
     fun toCanonical(capture: MasterCapture): PcmBuffer? {
-        val raw = MasterWav.read(capture.file) ?: return null
-        if (raw.frames <= 0) return null
-        if (!capture.quantized) return raw.toCanonical()
-        // Android taps the canonical mix, so there is no hardware-rate capture to relabel: emulate iOS's 48 kHz
-        // hardware tap by resampling up to LOFI_HARDWARE_RATE first, then relabelling (the audible downpitch).
-        val hw = if (raw.sampleRate == StudioAudio.CANONICAL_RATE) raw.resampled(LOFI_HARDWARE_RATE) else raw
-        return StudioAudio.relabeled(hw)
+        var acc = FloatArray(0); var len = 0
+        streamCanonical(capture) { b, n ->
+            if (acc.size < len + n * 2) acc = acc.copyOf(maxOf(acc.size * 2, len + n * 2))
+            System.arraycopy(b, 0, acc, len, n * 2); len += n * 2
+        } ?: return null
+        return PcmBuffer(StudioAudio.CANONICAL_RATE, 2, acc.copyOf(len))
     }
 
     /** Encode + file the artifact; the temp WAV is deleted either way. Null when nothing usable was captured. */
@@ -178,21 +238,34 @@ class MasterRecordingBaker(
     ): StudioArrangementArtifact? {
         var keepCapture = false
         try {
-            // An unreadable (e.g. out-of-memory) non-empty capture is KEPT on disk, never silently deleted as "nothing recorded".
-            val pcm = toCanonical(capture) ?: run { keepCapture = runCatching { capture.file.length() > 44 }.getOrDefault(false); null } ?: return null
+            // An unreadable non-empty capture is KEPT on disk, never silently deleted as "nothing recorded".
+            if (MasterWav.header(capture.file)?.frames?.let { it > 0 } != true) {
+                keepCapture = runCatching { capture.file.length() > 44 }.getOrDefault(false)
+                return null
+            }
             val fileName = "live-recording-$stamp.m4a"
             dir.mkdirs()
             val dest = File(dir, fileName)
             val tmp = File(dir, ".rec-${UUID.randomUUID()}-$fileName")
+            var frames = 0L
+            var writer: PcmChunkWriter? = null
+            var encoderFailed = false
             try {
-                writeM4a(pcm, tmp)
+                val w = open(tmp)
+                writer = w
+                frames = streamCanonical(capture) { b, n -> try { w.write(b, n) } catch (e: Throwable) { encoderFailed = true; throw e } } ?: throw java.io.IOException("capture unreadable mid-bake")
+                try { writer.close() } catch (e: Throwable) { encoderFailed = true; throw e }
+                writer = null
                 dest.delete()
-                if (!tmp.renameTo(dest)) return null
+                if (!tmp.renameTo(dest)) { encoderFailed = true; throw java.io.IOException("rename failed") }
             } catch (t: Throwable) {
+                writer?.let { w -> runCatching { (w as? AacEncoder.Stream)?.abort() ?: w.close() } }
+                // A READ failure keeps the raw capture (the user's only copy) for a re-bake; encoder faults don't.
+                if (!encoderFailed) keepCapture = runCatching { capture.file.length() > 44 }.getOrDefault(false)
                 if (t is kotlinx.coroutines.CancellationException) throw t
                 return null
             } finally { tmp.delete() }
-            val ms = Math.round(pcm.frames.toDouble() / StudioAudio.CANONICAL_RATE * 1000).toInt()
+            val ms = Math.round(frames.toDouble() / StudioAudio.CANONICAL_RATE * 1000).toInt()
             if (ms <= 0) { dest.delete(); return null }
             return store.addArrangementArtifact(
                 StudioArrangementArtifact(StudioFactory.newArtifactId(), arrangementId, StudioArrangementArtifact.Kind.RECORDING, "live-recording-$stamp", fileName, ms, now),

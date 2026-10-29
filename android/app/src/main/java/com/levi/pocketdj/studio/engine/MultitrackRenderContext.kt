@@ -198,6 +198,13 @@ class MultitrackRenderContext(
     /** Offline pull of [frames] (no live limiter; callers peak-normalize like the bouncer). */
     fun renderOffline(frames: Int, block: Int = 512): FloatArray {
         val out = FloatArray(frames * 2)
+        var done = 0
+        renderOfflineBlocks(frames, block) { b, n -> System.arraycopy(b, 0, out, done * 2, n * 2); done += n }
+        return out
+    }
+
+    /** Block-wise offline pull: [sink] gets each rendered block (REUSED array, interleaved) so callers never hold the whole mix. */
+    fun renderOfflineBlocks(frames: Int, block: Int = 512, sink: (FloatArray, Int) -> Unit) {
         val tmp = FloatArray(block * 2)
         limitLive = false
         try {
@@ -205,11 +212,10 @@ class MultitrackRenderContext(
             while (done < frames) {
                 val n = min(block, frames - done)
                 render(tmp, n)
-                System.arraycopy(tmp, 0, out, done * 2, n * 2)
+                sink(tmp, n)
                 done += n
             }
         } finally { limitLive = true }
-        return out
     }
 
     fun release() { trackFx.forEach { it.close() }; trackFx = emptyList(); master.close() }
