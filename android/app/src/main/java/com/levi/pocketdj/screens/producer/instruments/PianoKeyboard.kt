@@ -10,6 +10,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
@@ -90,11 +91,13 @@ fun PianoKeyboard(
 ) {
     val on = rememberUpdatedState(onNoteOn)
     val off = rememberUpdatedState(onNoteOff)
-    val white = MaterialTheme.colorScheme.surface
-    val whiteDown = MaterialTheme.colorScheme.primaryContainer
-    val black = MaterialTheme.colorScheme.onSurface
+    // Real piano colours (iOS PianoKeyboardView: white keys .white, black keys .black), NOT
+    // theme surface/onSurface, which inverted them on the dark scheme.
+    val white = Color(0xFFF4F5F8)
+    val whiteDown = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f).compositeOver(white)
+    val black = Color(0xFF111318)
     val blackDown = MaterialTheme.colorScheme.primary
-    val edge = MaterialTheme.colorScheme.outline
+    val edge = Color(0xFF8A90A0)
     Canvas(
         modifier.fillMaxWidth().height(height).testTag("piano-keyboard")
             .pointerInput(first, last) {
