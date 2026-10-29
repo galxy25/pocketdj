@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-STU-2 Tracks paging part A: streaming master bake + bounce
 

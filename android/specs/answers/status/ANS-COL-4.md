@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-COL-4 Burn folder mirrors stems + beat grids; delete removes folder copy
 - [x] BurnTree.delete(name); BurnFolder.deleteMirrored(treeUri, names) (no-op unreachable/unconfigured); BurnItem.treeUri stamped at finalize (burn, adoptStreamedFile, finalizeTransfer)

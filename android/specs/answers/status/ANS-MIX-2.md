@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-MIX-2 Mix tempo/pitch on C++ Signalsmith (Q6a)
 

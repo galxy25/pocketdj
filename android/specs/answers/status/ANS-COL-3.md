@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-COL-3 - COL-15 complete
 

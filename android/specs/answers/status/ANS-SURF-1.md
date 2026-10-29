@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-SURF-1 Jukebox sessions picker
 - [x] JukeboxSessionsPicker.kt: ModalBottomSheet, listSessions rows (name, url, time-left), Refresh, error, empty, "Hosting here"

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-GM-1 — In the Pocket golden cross-platform test (Q31)
 
