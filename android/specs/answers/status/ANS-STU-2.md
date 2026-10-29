@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # ANS-STU-2 Tracks paging part A: streaming master bake + bounce
 
@@ -7,7 +7,7 @@ state: in-progress
 - [x] StudioCodec.openM4a (+BufferedM4aWriter fallback); AndroidStudioCodec streams
 - [x] MasterWav.readChunks/header; MasterRecordingBaker streams (resample -> encoder)
 - [x] ArrangerBouncer: block-wise render, 2-pass peak scan, streams to encoder
-- [ ] Full test run + count
+- [x] Full test run: 5224 tests, 0 failures (13 new); assembleDebug green. Unrelated flaky ReleaseFeedServiceTest failed once, passed on rerun.
 
 ## Notes / deviations
 - Touched outside owned files (minimal, additive): studio/engine/MultitrackRenderContext.kt gained `renderOfflineBlocks`; `renderOffline` now delegates to it.
