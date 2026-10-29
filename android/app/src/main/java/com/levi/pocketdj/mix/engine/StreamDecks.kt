@@ -283,8 +283,9 @@ class StreamDecks(
      */
     fun loadStreaming(item: MixLoadable, deck: Deck): Boolean {
         val l = loader ?: return false
-        if (!l.canStream(item.songId, forAuto = engine.autoMixing)) return false
-        val handle = l.open(item.songId, item.title, item.artist, forAuto = engine.autoMixing) ?: return false
+        val forAuto = engine.streamingForAuto
+        if (!l.canStream(item.songId, forAuto = forAuto)) return false
+        val handle = l.open(item.songId, item.title, item.artist, forAuto = forAuto) ?: return false
         engine.beginStreamLoad(deck)     // forgets the prior voice / stem intent (-> clearStream)
         val d = DeckStream(handle)
         d.windowMs = item.lengthMs

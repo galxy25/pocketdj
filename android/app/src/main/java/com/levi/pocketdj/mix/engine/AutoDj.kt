@@ -863,7 +863,8 @@ class AutoDj(
      * failed: a failed load must not arm a transition clock against a track that isn't there.
      */
     internal fun loadAuto(item: AutoMixItem, deck: Deck): Boolean {
-        engine.loadNow(item.loadable, deck)
+        engine.autoLoading = true
+        try { engine.loadNow(item.loadable, deck) } finally { engine.autoLoading = false }
         if (engine.loaded(deck)?.songId != item.loadable.songId) return false
         deckDurationMs[deck] = item.durationMs
         return true

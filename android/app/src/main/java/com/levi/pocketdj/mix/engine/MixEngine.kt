@@ -178,6 +178,10 @@ class MixEngine(
 
     override val isRendering: Boolean get() = sink?.isRendering == true
     override val autoMixing: Boolean get() = autoDj?.isMixing == true
+    /** True while the Auto-DJ is inside one of its own loads (incl. startAutoMix, before isMixing flips). */
+    @Volatile internal var autoLoading = false
+    /** Stream loads use the short Auto-DJ failure gate whenever the Auto-DJ drives them. */
+    internal val streamingForAuto: Boolean get() = autoMixing || autoLoading
     private val autoPaused: Boolean get() = autoDj?.isPaused == true
     override val mixWantsAudio: Boolean
         get() = st(Deck.A).isPlaying || st(Deck.B).isPlaying || (autoMixing && !autoPaused)

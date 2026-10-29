@@ -163,6 +163,45 @@ class MixStreamLoaderTest {
         openAfter(1_000)
     }
 
+    @Test fun realHttp500ThenAutoProbeRetriesAfterTwoSecondsDespiteServerDown() {
+        digital("a"); digital("b")
+        origin.status["/side/a.mp3"] = 500
+        assertNotNull(loader.open("a", "A", "x", forAuto = true))
+        waitUntil(what = "a failed") { failedIds.contains("a") }
+        // The 500 tripped server-down (60 s): a song that never failed stays refused ...
+        assertFalse(loader.canStream("b", forAuto = true))
+        assertFalse("inside the 2 s cooldown", loader.canStream("a", forAuto = true))
+        clockMs.addAndGet(2_500)
+        // ... but the failed song may PROBE once its short Auto-DJ cooldown elapsed.
+        assertTrue("Auto-DJ re-opens within ~3 s", loader.canStream("a", forAuto = true))
+        assertFalse("manual gate unchanged", loader.canStream("a"))
+        origin.status.remove("/side/a.mp3")
+        val s = loader.open("a", "A", "x", forAuto = true)!!
+        waitUntil(what = "complete") { s.isComplete }
+        assertTrue("a good response clears server-down", loader.canStream("b"))
+    }
+
+    @Test fun staleFailureCountResetsAfterTheWindow() {
+        digital("a")
+        fun failOnce() { assertNotNull(loader.open("a", "A", "x", forAuto = true)); loader.failStreamForTesting("a") }
+        repeat(4) { failOnce(); clockMs.addAndGet(200_000) }   // 4th would be 120 s ...
+        clockMs.addAndGet(MixStreamLoader.FAILURE_COUNT_WINDOW_MS)
+        failOnce()                                               // ... but the count is stale: back to 1
+        clockMs.addAndGet(2_500)
+        assertTrue(loader.canStream("a", forAuto = true))
+    }
+
+    @Test fun streamableInPrincipleIgnoresTransientGates() {
+        digital("a")
+        loader.open("a", "A", "x"); loader.failStreamForTesting("a")
+        assertFalse(loader.canStream("a"))
+        loader.tripServerDownForTesting()
+        assertTrue(loader.streamableInPrinciple("a"))
+        assertFalse(loader.streamableInPrinciple("ghost"))
+        net.available = false
+        assertFalse(loader.streamableInPrinciple("a"))
+    }
+
     @Test fun autoCooldownScheduleValues() {
         assertEquals(2_000L, loader.autoFailureCooldownMs(1))
         assertEquals(2_000L, loader.autoFailureCooldownMs(2))

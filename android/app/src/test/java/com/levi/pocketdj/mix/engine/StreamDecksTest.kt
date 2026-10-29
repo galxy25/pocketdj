@@ -43,8 +43,9 @@ class StreamDecksTest {
             return (if (forAuto) autoGateOpen ?: gateOpen else gateOpen) && songId in handles
         }
         override fun isRipped(songId: String) = songId in handles
+        val openedForAuto = ArrayList<Boolean>()
         override fun open(songId: String, title: String, artist: String, forAuto: Boolean): StreamHandle? =
-            handles[songId]?.also { opens++ }
+            handles[songId]?.also { opens++; openedForAuto += forAuto }
         override fun stream(songId: String): StreamHandle? = handles[songId]
     }
 
@@ -581,6 +582,16 @@ class StreamDecksTest {
         assertFalse("a manual load (engine not auto-mixing) keeps the long gate", r.decks.loadStreaming(
             MixLoadable("s", "S", "x"), A))
         assertEquals(listOf(false), r.loader.asked)
+    }
+
+    @Test fun loadStreamingWhileAutoLoadingUsesTheAutoGateForCanStreamAndOpen() {
+        val r = Rig()
+        r.loader.gateOpen = false           // manual 120 s gate shut
+        r.loader.autoGateOpen = true        // Auto-DJ gate open
+        r.engine.autoLoading = true         // what AutoDj.loadAuto sets (also true during startAutoMix)
+        assertTrue(r.decks.loadStreaming(MixLoadable("s", "S", "x"), A))
+        assertEquals(listOf(true), r.loader.asked)
+        assertEquals("open() got the auto flavour too", listOf(true), r.loader.openedForAuto)
     }
 
     @Test fun theStallClockStartsWhenAHeldDeckStartsPLAYINGNotWhenItWasHeld() {

@@ -642,7 +642,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
      * song is loadable (STREAMING MODE).
      */
     val mixResolver: MixResolver by lazy {
-        MixResolver(CatalogResolverSources(app), streamable = { mixStreamLoader.canStream(it) })
+        MixResolver(CatalogResolverSources(app), streamable = { mixStreamLoader.streamableInPrinciple(it) })
     }
 
     /** The Auto-DJ seam over the engine; the Auto-DJ package fills [EngineAutoMixHost]'s hooks. */
