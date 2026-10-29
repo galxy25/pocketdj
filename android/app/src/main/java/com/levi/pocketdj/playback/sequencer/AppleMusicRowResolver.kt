@@ -23,8 +23,9 @@ class AppleMusicRowResolver(
     override val rung: Rung = Rung.APPLE_MUSIC
 
     override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? {
-        // Game runs never use the full-track Apple Music engine (they ride 30 s previews instead).
-        if (item.runTag != null) return null
+        // Q36: game-run rows (runTag != null) are eligible like any other row. When the engine cannot run
+        // (emulator / signed out) this returns null and the row falls to GamePreviewRowResolver (Rung.FALLBACK).
+        // Game rows never reach the rip-on-demand rung (CloudRowResolver refuses runTag rows).
         val amId = appleMusicIdFor(item)?.takeIf { it.isNotBlank() } ?: return null
         if (ctx.ripStartsNow && !isAppleMusicSourced(item)) return null
         if (!canPlayFullTrack()) return null

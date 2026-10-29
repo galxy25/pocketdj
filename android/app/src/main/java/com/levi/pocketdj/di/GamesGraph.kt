@@ -75,6 +75,7 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
             localPlayable = { id -> env.ripManifest().containsKey(id) || id in env.burnedIds() },
             appleMusicId = { id -> app.catalogRepository.state.value.catalog?.songsById?.get(id)?.appleMusicId },
             previewUrl = { amId -> app.appleMusicPreviewResolver.previewUrl(amId) },
+            canPlayFullTrack = { app.playbackController.canSeekAppleMusic() },
         )
     }
 

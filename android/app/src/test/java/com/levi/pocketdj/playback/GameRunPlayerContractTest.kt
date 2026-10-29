@@ -204,6 +204,51 @@ class GameRunPlayerContractTest {
         assertTrue(registry.resolve(plain, PlaybackMode.CLOUD) is com.levi.pocketdj.playback.sequencer.RipOnDemandSource)
     }
 
+    @Test fun ladder_gameRowCapable_resolvesAppleMusicRung_notPreview() = runTest {
+        val previews = GamePreviewResolver({ false }, { "9" }, { "https://p/9.m4a" })
+        val registry = com.levi.pocketdj.playback.sequencer.RowResolverRegistry(
+            initial = listOf(
+                com.levi.pocketdj.playback.sequencer.CloudRowResolver(),
+                GamePreviewRowResolver(previews),
+                com.levi.pocketdj.playback.sequencer.AppleMusicRowResolver({ "9" }, { true }),
+            ),
+            manifestHit = { false },
+            ripServerConfigured = { true },
+        )
+        val tagged = com.levi.pocketdj.playback.sequencer.QueueItem("g", runTag = "puzzle_R1")
+        assertTrue(registry.resolve(tagged, PlaybackMode.CLOUD) is com.levi.pocketdj.playback.sequencer.AppleMusicSource)
+    }
+
+    @Test fun ladder_gameRowNotCapable_fallsToPreview_neverRips() = runTest {
+        val previews = GamePreviewResolver({ false }, { "9" }, { "https://p/9.m4a" })
+        val registry = com.levi.pocketdj.playback.sequencer.RowResolverRegistry(
+            initial = listOf(
+                com.levi.pocketdj.playback.sequencer.CloudRowResolver(),
+                GamePreviewRowResolver(previews),
+                com.levi.pocketdj.playback.sequencer.AppleMusicRowResolver({ "9" }, { false }),
+            ),
+            manifestHit = { false },
+            ripServerConfigured = { true },
+        )
+        val tagged = com.levi.pocketdj.playback.sequencer.QueueItem("g", runTag = "puzzle_R1")
+        assertTrue(registry.resolve(tagged, PlaybackMode.CLOUD) is com.levi.pocketdj.playback.sequencer.StreamSource)
+    }
+
+    @Test fun fullTrackCapable_skipsPreviewWarmAndProbe() = runTest {
+        var calls = 0
+        val r = GamePreviewResolver({ false }, { "x$it" }, { calls++; null }, canPlayFullTrack = { true })
+        assertTrue(r.playsFullTrack("s1"))
+        assertEquals(true, r.canPlay(listOf("s1"))["s1"], "no preview needed: playable even with no preview")
+        r.warm(listOf("s1", "s2"))
+        assertEquals(0, calls)
+    }
+
+    @Test fun fullTrackCapable_butNoAppleMusicId_stillUnplayable() = runTest {
+        val r = GamePreviewResolver({ false }, { null }, { null }, canPlayFullTrack = { true })
+        assertEquals(false, r.playsFullTrack("s1"))
+        assertEquals(false, r.canPlay(listOf("s1"))["s1"])
+    }
+
     @Test fun probeTimeout_leavesUnansweredSongsOptimisticAndConsistent() = runTest {
         val ids = (1..14).map { "am$it" }
         val r = GamePreviewResolver(

@@ -25,8 +25,13 @@ import kotlinx.coroutines.withTimeoutOrNull
  * plays tagged `PlayContext.game(tag, label)`; the tag rides every row (`appendRows(runTag)`).
  *
  * Game runs are ExoPlayer-only: manifest rips and burned files resolve through the normal ladder,
- * a non-manifest song with an `appleMusicId` rides as its cached 30-second AM preview via
- * [GamePreviewResolver]. Full-track Apple Music is never used inside a game queue.
+ * a non-manifest song with an `appleMusicId` plays the full Apple Music track when the device can
+ * (Q36, [GamePreviewResolver.playsFullTrack]), otherwise its cached 30-second AM preview.
+ *
+ * Timing: the Apple Music rung starts slower than a cached preview URL (SDK queue prime). Game
+ * timing budgets are wall-clock windows measured from the row's start event, and the Collector's
+ * 2.5 s cloud budget only gates resolvable rows, so a slower AM start delays the round by that
+ * latency but never skips a row; device-only to measure.
  */
 class SequencerGameRunPlayer(
     private val sequencer: SetlistSequencer,
@@ -159,7 +164,13 @@ class GamePreviewResolver(
     private val appleMusicId: (String) -> String?,
     private val previewUrl: suspend (String) -> String?,
     private val probeTimeoutMs: Long = 4_000,
+    /** Q36: cached capability check, true when the Apple Music engine can play full tracks here. */
+    private val canPlayFullTrack: suspend () -> Boolean = { false },
 ) {
+    /** True when this song will ride the full-track Apple Music rung (so no preview is needed). */
+    suspend fun playsFullTrack(songId: String): Boolean =
+        appleMusicId(songId) != null && canPlayFullTrack()
+
     /** AM ids whose lookup came back empty this session: never re-fetched (iTunes lookup is rate limited). */
     private val misses = ConcurrentHashMap.newKeySet<String>()
 
@@ -183,11 +194,13 @@ class GamePreviewResolver(
      */
     suspend fun canPlay(songIds: List<String>): Map<String, Boolean> {
         val out = HashMap<String, Boolean>()
+        val full = canPlayFullTrack()
         val network = ArrayList<String>()
         for (id in songIds) {
             when {
                 localPlayable(id) -> out[id] = true
                 appleMusicId(id) == null -> out[id] = false
+                full -> out[id] = true
                 else -> network += id
             }
         }
@@ -205,6 +218,7 @@ class GamePreviewResolver(
 
     /** Resolve (and cache) previews for the network-bound ids, a chunk at a time. */
     suspend fun warm(songIds: List<String>) {
+        if (canPlayFullTrack()) return // Q36: full-track ids need no preview warm-up
         songIds.filter { !localPlayable(it) && appleMusicId(it) != null }
             .chunked(SequencerGameRunPlayer.LOOKAHEAD)
             .forEach { chunk -> coroutineScope { chunk.map { async { urlFor(it) } }.awaitAll() } }
