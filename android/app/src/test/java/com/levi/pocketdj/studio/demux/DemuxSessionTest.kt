@@ -69,7 +69,16 @@ private class FakeEnv(val dir: File) : DemuxEnv {
         }
         dest.parentFile?.mkdirs(); dest.writeText("carved $startMs-$endMs"); return true
     }
-    override fun studioFile(id: String) = studio[id]
+    /** SAF-stored Performance media: id -> bytes behind a content:// uri, materialized like the app graph does. */
+    val safStudio = HashMap<String, ByteArray>()
+    private val materializer by lazy {
+        com.levi.pocketdj.studio.store.StudioMaterializer(File(dir, "mat"), { u -> safStudio[u.substringAfterLast('/')]?.let { com.levi.pocketdj.studio.store.SafStat(it.size.toLong(), 1) } }, { u -> safStudio[u.substringAfterLast('/')]?.inputStream() })
+    }
+    override suspend fun studioFile(id: String): File? {
+        studio[id]?.let { return it }
+        if (id !in safStudio) return null
+        return materializer.lease(com.levi.pocketdj.studio.store.StudioFileRef(null, "content://tree/$id"))?.file
+    }
     override suspend fun hasServer() = server
     override fun songStemsBurned(songId: String) = songId in burnedStems
     override fun songIsStemmed(songId: String) = songId in stemmed
@@ -175,6 +184,12 @@ class DemuxSessionTest {
         assertEquals(DemuxPhase.Ready, session.phase.value)
         session.select(DemuxSource.ImportedFile("dmx_gone", "x")).join()
         assertTrue((session.phase.value as DemuxPhase.Failed).message.contains("gone"))
+    }
+
+    @Test fun safStoredStudioMediaAppearsViaTheMaterializer() = runBlocking {
+        env.safStudio["tk_saf"] = ByteArray(64) { 3 }
+        session.select(DemuxSource.Studio("tk_saf", "t")).join()
+        assertEquals(DemuxPhase.Ready, session.phase.value)
     }
 
     @Test fun readyKicksOffChordsAndPeaksAndLoadsTheMixPlayer() = runBlocking {

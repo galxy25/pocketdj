@@ -147,6 +147,8 @@ class StudioAnalyzer(
     private val playback: StudioPlayback,
     /** Decode a local file for the chromagram (off the main thread); null when unreadable. */
     private val decode: suspend (path: String) -> PcmBuffer?,
+    /** Leases SAF-stored media as a local file; null = app-private files only. */
+    private val materializer: com.levi.pocketdj.studio.store.StudioMaterializer? = null,
 ) {
     /** Fire-and-forget from an "Add to..." action. Never throws except cancellation. */
     suspend fun prepare(studioId: String) {
@@ -167,10 +169,11 @@ class StudioAnalyzer(
             KeyDetector.detect(take.scoreEvents)?.let { store.setCamelot(it.camelot, id) }
             return
         }
-        val path = store.localUrlForPlayback(id)?.ref?.file?.path ?: return
-        val camelot = withContext(Dispatchers.Default) {
-            decode(path)?.let { KeyDetector.detect(it)?.camelot }
-        }
+        val ref = store.localUrlForPlayback(id)?.ref ?: return
+        val lease = (materializer ?: com.levi.pocketdj.studio.store.StudioMaterializer.FILES_ONLY).lease(ref) ?: return
+        val camelot = try {
+            withContext(Dispatchers.Default) { decode(lease.file.path)?.let { KeyDetector.detect(it)?.camelot } }
+        } finally { lease.release() }
         if (camelot != null) store.setCamelot(camelot, id)
     }
 }

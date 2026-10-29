@@ -90,31 +90,6 @@ fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = M
 
     DisposableEffect(Unit) { onDispose { engine.stopReplay() } }
 
-    // Import a .mid onto the current instrument (piano when none is loaded); failures surface MidiImportException.message.
-    val ctx = androidx.compose.ui.platform.LocalContext.current
-    var importing by remember { mutableStateOf(false) }
-    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            importing = true
-            scope.launch {
-                try {
-                    val key = engine.state.value.currentInstrument ?: InstrumentKey.PIANO
-                    val (bytes, fileName) = withContext(Dispatchers.IO) {
-                        val b = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw com.levi.pocketdj.studio.midi.MidiImportException(com.levi.pocketdj.studio.midi.MidiImport.CANNOT_OPEN)
-                        val n = ctx.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
-                        b to n
-                    }
-                    val t = com.levi.pocketdj.studio.midi.MidiImport.importTake(bytes, fileName, key, "Imported MIDI", studio.takeFiler, packs.localBankFile(key))
-                    message = "Imported “${t.name}”."
-                } catch (e: com.levi.pocketdj.studio.midi.MidiImportException) {
-                    message = e.message
-                    if (packs.localBankFile(engine.state.value.currentInstrument ?: InstrumentKey.PIANO) == null) onNeedPacks()
-                } catch (e: kotlinx.coroutines.CancellationException) { throw e
-                } catch (e: Throwable) { message = "Couldn't import that MIDI file." } finally { importing = false }
-            }
-        }
-    }
-
     val folders = store.foldersOrdered(StudioFolderKind.TAKE)
     val inFolder = remember(doc, folderId) { store.takes(folderId) }
     val current = folders.firstOrNull { it.id == folderId }
@@ -150,7 +125,7 @@ fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = M
                 IconButton(onClick = { folderId = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to all takes") }
                 Text(current.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             } else Box(Modifier.weight(1f))
-            TextButton(onClick = { importLauncher.launch(arrayOf("audio/midi", "audio/x-midi", "audio/mid", "application/octet-stream")) }, enabled = !importing, modifier = Modifier.testTag("take-import-midi")) { Text(if (importing) "Importing…" else "Import MIDI") }
+            MidiImportButton(graph, onMessage = { message = it }, onNeedPacks = onNeedPacks)
             IconButton(onClick = { newFolder = true }, modifier = Modifier.testTag("take-new-folder")) { Icon(Icons.Filled.CreateNewFolder, "New folder") }
         }
         HorizontalDivider()

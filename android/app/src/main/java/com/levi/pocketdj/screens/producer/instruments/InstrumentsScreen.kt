@@ -205,6 +205,7 @@ private fun PlaySection(graph: AppGraph, onNeedPacks: () -> Unit) {
         }
         ArpPanel(graph, engine, bpm, onMessage = { message = it })
         MidiDevicesSection(graph)
+        MidiImportButton(graph, onMessage = { message = it }, onNeedPacks = onNeedPacks, tag = "instruments-import-midi")
         LiveStaff(graph, onMessage = { message = it })
         OverdubControls(graph, engine, bpm, onMessage = { message = it })
         message?.let { Text(it, Modifier.testTag("instruments-message"), color = MaterialTheme.colorScheme.onSurfaceVariant) }

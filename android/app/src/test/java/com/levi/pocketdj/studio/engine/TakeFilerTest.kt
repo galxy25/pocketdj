@@ -118,4 +118,34 @@ class TakeFilerTest {
         }
         assertTrue(store.samples(null).isEmpty())
     }
+
+    @Test fun safStoredTakeIsUsableAsSampleViaTheMaterializer() = runBlocking {
+        val (env, store, _) = rig()
+        val codec = TextCodec()
+        val renderer = TakeRenderer(env.roots, store, { FakeSynth() }, codec, Dispatchers.Unconfined)
+        val sr = StudioRender(codec, ResampleStretcher, Dispatchers.Unconfined, log = {})
+        // The take's audio lives behind a user folder whose ref has no File (SAF): roots resolve to a content:// ref.
+        val safRoots = object : com.levi.pocketdj.studio.store.StudioRoots by env.roots {
+            override fun userDir(family: StudioFamily): com.levi.pocketdj.studio.store.StudioDir? = object : com.levi.pocketdj.studio.store.StudioDir {
+                override val key = "content://tree"
+                override fun exists(name: String) = true
+                override fun list() = listOf("take-tk_saf.m4a")
+                override fun length(name: String) = 3L
+                override fun delete(name: String) = false
+                override fun isWritable() = true
+                override fun resolve(name: String) = com.levi.pocketdj.studio.store.StudioFileRef(null, "content://tree/$name")
+                override fun openOutput(name: String) = null
+            }
+        }
+        val mat = com.levi.pocketdj.studio.store.StudioMaterializer(tmp.newFolder("cache"), { com.levi.pocketdj.studio.store.SafStat(3, 1) }, { java.io.ByteArrayInputStream("900".toByteArray()) })
+        val filer = TakeFiler(safRoots, store, renderer, sr, { 42.0 }, mat)
+        val take = com.levi.pocketdj.studio.model.StudioTake(
+            id = "tk_saf", name = "Saf riff", instrument = InstrumentKey.PIANO, fileName = "take-tk_saf.m4a", wasUserFolder = true,
+            bpm = 100.0, events = listOf(ev(0, 500)), durationMs = 500, createdAt = 1.0,
+        )
+        assertNull("no File for a SAF ref", filer.currentAudioFile(take))
+        val s = filer.useAsSample(take, { bank })
+        assertEquals("Saf riff", s.name)
+        assertTrue(File(env.base, "app/samples/${s.fileName}").isFile)
+    }
 }
