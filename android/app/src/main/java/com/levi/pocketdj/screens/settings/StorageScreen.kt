@@ -29,6 +29,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.draw.alpha
+import com.levi.pocketdj.screens.settings.storage.BurnedArtistsScreen
+import com.levi.pocketdj.screens.settings.storage.BurnedCollectionsScreen
+import com.levi.pocketdj.screens.settings.storage.BurnedStemsScreen
 import com.levi.pocketdj.screens.settings.storage.StorageLists
 import com.levi.pocketdj.screens.settings.storage.StorageRoutes
 import com.levi.pocketdj.data.burns.BurnSettings
@@ -66,7 +70,20 @@ import kotlinx.coroutines.launch
  * reported to the integrator (a `settings/storage` route + title case).
  */
 @Composable
-fun StorageScreen(modifier: Modifier = Modifier, onNavigate: (String) -> Unit = {}) {
+fun StorageScreen(modifier: Modifier = Modifier) {
+    // The three burned-music lists are in-screen pages (not nav routes): the shell's polish-gated nav host stays untouched.
+    var page by remember { mutableStateOf<String?>(null) }
+    androidx.activity.compose.BackHandler(enabled = page != null) { page = null }
+    when (page) {
+        StorageRoutes.BURNED_ARTISTS -> BurnedArtistsScreen()
+        StorageRoutes.BURNED_COLLECTIONS -> BurnedCollectionsScreen()
+        StorageRoutes.BURNED_STEMS -> BurnedStemsScreen()
+        else -> StorageMain(modifier, onNavigate = { page = it })
+    }
+}
+
+@Composable
+private fun StorageMain(modifier: Modifier, onNavigate: (String) -> Unit) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val storage = remember { graph.storageService }
@@ -420,7 +437,17 @@ private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: S
     var capSongs by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
     var pruning by remember { mutableStateOf(false) }
-    var confirmAll by remember { mutableStateOf<List<String>?>(null) }
+    var confirmAll by remember { mutableStateOf(false) }
+    // iOS StorageView: enabled while any ledger entry (even stuck / not READY), burned bytes or stem bytes remain.
+    var deleteAllEnabled by remember { mutableStateOf(true) }
+    var navEnabled by remember { mutableStateOf(true) }
+    LaunchedEffect(confirmAll) {
+        val ledger = services.burnStore.items.value.size
+        val burnBytes = storage.measure(Category.BURNS)
+        val stemBytes = storage.measure(Category.STEMS)
+        deleteAllEnabled = StorageLists.deleteAllEnabled(ledger, burnBytes, stemBytes)
+        navEnabled = StorageLists.navEnabled(ledger, burnBytes, stemBytes)
+    }
 
     LaunchedEffect(Unit) {
         val gb = services.storageSettings.capGB()
@@ -495,38 +522,37 @@ private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: S
     Spacer(Modifier.height(16.dp))
     SectionHeader("Delete downloads")
     Caption("Removes downloaded files only. Songs stay in your library and collections.")
-    StorageNavRow("Burned music by artist") { onNavigate(StorageRoutes.BURNED_ARTISTS) }
-    StorageNavRow("Burned music by collection") { onNavigate(StorageRoutes.BURNED_COLLECTIONS) }
-    StorageNavRow("Stems by artist") { onNavigate(StorageRoutes.BURNED_STEMS) }
+    StorageNavRow("Burned music by artist", navEnabled) { onNavigate(StorageRoutes.BURNED_ARTISTS) }
+    StorageNavRow("Burned music by collection", navEnabled) { onNavigate(StorageRoutes.BURNED_COLLECTIONS) }
+    StorageNavRow("Stems by artist", navEnabled) { onNavigate(StorageRoutes.BURNED_STEMS) }
     Spacer(Modifier.height(8.dp))
-    OutlinedButton(onClick = {
-        scope.launch { confirmAll = StorageLists.allSongIds(StorageLists.fromArtists(storage.burnUsageByArtist())) }
-    }) { Text(StorageLists.DELETE_ALL_LABEL) }
+    OutlinedButton(enabled = deleteAllEnabled, onClick = { confirmAll = true }) { Text(StorageLists.DELETE_ALL_LABEL) }
 
-    confirmAll?.let { ids ->
+    if (confirmAll) {
         AlertDialog(
-            onDismissRequest = { confirmAll = null },
+            onDismissRequest = { confirmAll = false },
             title = { Text("${StorageLists.DELETE_ALL_LABEL}?") },
-            text = { Text(if (ids.isEmpty()) "Nothing downloaded." else StorageLists.deleteAllBody(ids.size)) },
+            text = { Text(StorageLists.DELETE_ALL_BODY) },
             confirmButton = {
-                TextButton(enabled = ids.isNotEmpty(), onClick = {
-                    confirmAll = null
+                TextButton(onClick = {
+                    confirmAll = false
                     scope.launch {
-                        storage.deleteBurns(ids)
+                        storage.deleteAllBurns()
                         snackbar.showSnackbar("Deleted all burnt music")
                         onChanged()
                     }
                 }) { Text("Delete all") }
             },
-            dismissButton = { TextButton(onClick = { confirmAll = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirmAll = false }) { Text("Cancel") } },
         )
     }
 }
 
 @Composable
-private fun StorageNavRow(label: String, onClick: () -> Unit) {
+private fun StorageNavRow(label: String, enabled: Boolean, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 12.dp),
+        Modifier.fillMaxWidth().clickable(enabled = enabled, onClick = onClick).padding(vertical = 12.dp)
+            .alpha(if (enabled) 1f else 0.4f),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))

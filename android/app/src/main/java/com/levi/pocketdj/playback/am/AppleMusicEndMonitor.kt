@@ -158,6 +158,23 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
     /** Diagnostic hook for the self-heal / external pause lines (NPLog in production). */
     var trace: ((String) -> Unit)? = null
 
+    /** The SDK status is frozen on PAUSED while the position advances: the card must read PLAYING. */
+    @Volatile var statusHealed: Boolean = false
+        private set
+
+    /** Fired (Main) when [statusHealed] flips, so the session card re-reads the reconciled state. */
+    var onReportedStateChanged: (() -> Unit)? = null
+
+    /** The SDK snapshot with the self-heal applied (iOS sets `isPlaying` from the healed verdict). */
+    fun reconcileSnapshot(snap: AmSnapshot): AmSnapshot =
+        if (statusHealed && snap.status == AmStatus.PAUSED) snap.copy(status = AmStatus.PLAYING) else snap
+
+    private fun setHealed(v: Boolean) {
+        if (statusHealed == v) return
+        statusHealed = v
+        onReportedStateChanged?.invoke()
+    }
+
     /** Self-heals so far this arm (status said not-playing while position advanced). */
     var selfHealCount: Int = 0
         private set
@@ -189,10 +206,12 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
         lastPollSeconds = 0.0
         nearEndFired = false
         selfHealCount = 0
+        setHealed(false)
     }
 
     fun disarm() {
         finished = true
+        setHealed(false)
     }
 
     fun noteIntentionalPause(paused: Boolean) {
@@ -202,6 +221,8 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
     /** A seek we performed: re-base the progress high-water so a deliberate backward seek is not a system restart. */
     fun noteSeek(positionMs: Long) {
         maxObserved = positionMs / 1000.0
+        // iOS resets lastPollPlaybackTime on our own seek: a scrub can never read as spurious advancement.
+        lastPollSeconds = positionMs / 1000.0
     }
 
     /** The SDK reported the item ended: a NATURAL end (once per arm). */
@@ -251,6 +272,7 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
                 status = AmStatus.PLAYING
                 intentionalPause = false
                 believedPlaying = true
+                setHealed(true)
             } else {
                 val v = PollReconcile.reconcile(reported, believedPlaying, t, lastPollSeconds)
                 when (v.transition) {
@@ -260,6 +282,7 @@ class AppleMusicEndMonitor(private val nowMs: () -> Long = System::currentTimeMi
                 }
             }
         }
+        if (status != AmStatus.PLAYING || obs.status == AmStatus.PLAYING || !believedPlaying) setHealed(false)
         lastPollSeconds = t
         lastReported = obs.status
 

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-PB-3 status
 
@@ -19,3 +19,16 @@ state: implemented
 
 ## Questions for Levi
 - none
+
+## Review
+
+fixes applied
+
+- MAJOR AM self-heal not reaching the card -> fixed: monitor exposes `statusHealed` / `reconcileSnapshot()`; `BackendAppleMusicController.snapshot()` maps PAUSED->PLAYING while healed and pings the change listener on flip, so the adapter/MediaSession reads playWhenReady=true. Test: healedStatus_reachesTheAdapterModel_asPlayWhenReady.
+- MAJOR noteSeek dropped lastPollSeconds reset -> fixed (noteSeek re-bases lastPollSeconds; resume-seek path goes through noteSeek). Test: scrubForwardWhilePaused_isNotHealed_andIntentionalPauseSurvives.
+- MAJOR Delete-all semantics -> fixed: `StorageService.deleteAllBurns()` -> BurnStore.removeAllBurns() (stops in-flight, whole ledger, orphan stems); button/links enabled on ledger>0 || burn bytes || stem bytes; iOS-style copy. Tests: deleteAllEnabled_*, deleteAllBurns_routesToTheWholeStoreClear (BurnStore orphan-stem sweep already covered by removeAllBurnsSweepsOrphanStemsToo).
+- MAJOR near-end prefetch no-op -> fixed: `PlaybackUrlResolver.prefetchNextRow` presigns the next network manifest row into the PresignCache the start path reads (burned/rip-on-demand/AM rows have nothing to warm on Android). Test: nearEndPrefetch_presignsOnlyANetworkManifestHit.
+- MINOR polish-gated ShellNavigation edit -> fixed: reverted; Storage lists are now in-screen pages with BackHandler, nav-route entries removed from PlaybackGraph. PlaybackController edit (trace hook + NearEnd dispatch + warm body) remains: no hook exists without touching it; FLAG to integrator as a small additive polish-gate overlap.
+- MINOR stale rows / titles / disabled links -> fixed: list reloads after each delete; pages render their own titles (no generic bar title since not routes); nav rows disabled when nothing downloaded.
+
+Tests: 5150 -> 5155, 0 failures; assembleDebug OK.

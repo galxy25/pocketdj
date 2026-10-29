@@ -66,8 +66,17 @@ object StorageLists {
     fun allSongIds(rows: List<UsageRow>): List<String> = rows.flatMap { it.songIds }.distinct()
 
     const val DELETE_ALL_LABEL = "Delete all burnt music"
-    fun deleteAllBody(count: Int): String =
-        "Removes all $count downloaded songs from this device. Your library, collections and catalog are kept."
+    const val DELETE_ALL_BODY =
+        "Removes every downloaded file (audio, cuts, stems, beat grids) from this device. " +
+            "Your library, collections and catalog are kept."
+
+    /** iOS StorageView: Delete-all stays enabled while ANY ledger entry (incl. stuck) or burned/stem bytes remain. */
+    fun deleteAllEnabled(ledgerEntries: Int, burnBytes: Long, stemBytes: Long): Boolean =
+        ledgerEntries > 0 || burnBytes > 0L || stemBytes > 0L
+
+    /** The by-artist / by-collection / stems links are dead ends when nothing is downloaded. */
+    fun navEnabled(ledgerEntries: Int, burnBytes: Long, stemBytes: Long): Boolean =
+        deleteAllEnabled(ledgerEntries, burnBytes, stemBytes)
 }
 
 /** Shared scaffold of the three pushed lists: rows, tap -> confirm -> delete, empty state. */
@@ -123,7 +132,8 @@ internal fun BurnedListScreen(
                     confirm = null
                     scope.launch {
                         delete(row)
-                        rows = rows?.filterNot { it === row }
+                        // A song sits in many collections: reload so every other row's count/MB is fresh.
+                        rows = runCatching { load() }.getOrDefault(emptyList())
                         snackbar.showSnackbar("Deleted ${row.label}")
                     }
                 }) { Text("Delete") }

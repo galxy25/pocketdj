@@ -39,8 +39,16 @@ class StorageListsTest {
         assertTrue(StorageLists.allSongIds(emptyList()).isEmpty())
     }
 
-    @Test fun deleteAllCopy_namesCount() {
+    @Test fun deleteAllCopy() {
         assertEquals("Delete all burnt music", StorageLists.DELETE_ALL_LABEL)
-        assertTrue(StorageLists.deleteAllBody(7).contains("7 downloaded songs"))
+        assertTrue(StorageLists.DELETE_ALL_BODY.contains("every downloaded file"))
+    }
+
+    @Test fun deleteAllEnabled_staysOnForStuckLedgerOrOrphanBytes() {
+        assertTrue(StorageLists.deleteAllEnabled(ledgerEntries = 2, burnBytes = 0, stemBytes = 0)) // QUEUED/FAILED only
+        assertTrue(StorageLists.deleteAllEnabled(0, 0, 5_000)) // orphan stems
+        assertTrue(StorageLists.deleteAllEnabled(0, 7, 0))
+        assertEquals(false, StorageLists.deleteAllEnabled(0, 0, 0))
+        assertEquals(false, StorageLists.navEnabled(0, 0, 0))
     }
 }

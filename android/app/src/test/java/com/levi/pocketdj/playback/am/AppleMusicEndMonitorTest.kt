@@ -212,4 +212,45 @@ class AppleMusicReconcileTest {
         assertNull(tick(AmStatus.PAUSED, 5.2, 400))
         assertEquals(0, m.selfHealCount)
     }
+
+    @Test fun healedStatus_reachesTheAdapterModel_asPlayWhenReady() {
+        var changes = 0
+        m.onReportedStateChanged = { changes++ }
+        m.arm(200_000)
+        tick(AmStatus.PLAYING, 0.1)
+        for (s in 1..5) tick(AmStatus.PLAYING, s.toDouble(), 1000)
+        val frozen = AmSnapshot(AmStatus.PAUSED, 8_000, 200_000)
+        val track = AmTrack("s", "T", "A", null, null)
+        fun wtr(snap: AmSnapshot) =
+            com.levi.pocketdj.playback.session.AppleMusicAdapterStateMap.model(track, m.reconcileSnapshot(snap), true).playWhenReady
+        assertFalse(wtr(frozen)) // not yet healed
+        tick(AmStatus.PAUSED, 6.0, 1000)
+        tick(AmStatus.PAUSED, 7.0, 1000)
+        assertTrue(m.statusHealed)
+        assertEquals(1, changes)
+        assertTrue(wtr(frozen))
+        // a real pause (position stops) un-heals and the card reads paused again
+        tick(AmStatus.PAUSED, 7.0, 400)
+        assertFalse(m.statusHealed)
+        assertEquals(2, changes)
+        assertFalse(wtr(frozen))
+    }
+
+    @Test fun scrubForwardWhilePaused_isNotHealed_andIntentionalPauseSurvives() {
+        m.arm(200_000)
+        tick(AmStatus.PLAYING, 0.1)
+        for (s in 1..30) tick(AmStatus.PLAYING, s.toDouble(), 1000)
+        m.noteIntentionalPause(true)
+        assertNull(tick(AmStatus.PAUSED, 30.0))
+        m.noteSeek(60_000)
+        assertNull(tick(AmStatus.PAUSED, 60.0))
+        assertNull(tick(AmStatus.PAUSED, 60.0))
+        assertEquals(0, m.selfHealCount)
+        assertTrue(m.intentionalPause)
+        // drag back to the top while still paused: must not read as a parked system skip
+        m.noteSeek(0)
+        assertNull(tick(AmStatus.PAUSED, 0.0))
+        assertNull(tick(AmStatus.PAUSED, 0.0))
+        assertFalse(m.isFinished)
+    }
 }

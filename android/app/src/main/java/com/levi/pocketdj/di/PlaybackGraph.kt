@@ -19,10 +19,6 @@ import com.levi.pocketdj.screens.nowplaying.NowPlayingRoutes
 import androidx.navigation.compose.composable
 import com.levi.pocketdj.playback.health.DeadAirReport
 import com.levi.pocketdj.screens.settings.DeadAirSource
-import com.levi.pocketdj.screens.settings.storage.BurnedArtistsScreen
-import com.levi.pocketdj.screens.settings.storage.BurnedCollectionsScreen
-import com.levi.pocketdj.screens.settings.storage.BurnedStemsScreen
-import com.levi.pocketdj.screens.settings.storage.StorageRoutes
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.NavEntry
@@ -40,18 +36,11 @@ import kotlinx.coroutines.launch
 class PlaybackGraph(private val app: AppGraph) : FeatureModule {
     override val area: String = "playback"
 
-    override val navEntries: List<NavEntry> get() = NowPlayingRoutes.entries + storageListEntries
+    override val navEntries: List<NavEntry> get() = NowPlayingRoutes.entries
 
     /** Settings > Playback mode row (order 460; see sections/PlaybackSection). */
     override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> =
         listOf(com.levi.pocketdj.screens.settings.sections.playbackSection())
-
-    /** The three pushed Storage lists (burned by artist / collection, stems by artist). */
-    private val storageListEntries: List<NavEntry> = listOf(
-        NavEntry(StorageRoutes.BURNED_ARTISTS) { _ -> composable(StorageRoutes.BURNED_ARTISTS) { BurnedArtistsScreen() } },
-        NavEntry(StorageRoutes.BURNED_COLLECTIONS) { _ -> composable(StorageRoutes.BURNED_COLLECTIONS) { BurnedCollectionsScreen() } },
-        NavEntry(StorageRoutes.BURNED_STEMS) { _ -> composable(StorageRoutes.BURNED_STEMS) { BurnedStemsScreen() } },
-    )
 
     /** The app-scoped sequencer (the Android SetlistPlayer). */
     val sequencer: SetlistSequencer get() = app.playbackController.sequencer
