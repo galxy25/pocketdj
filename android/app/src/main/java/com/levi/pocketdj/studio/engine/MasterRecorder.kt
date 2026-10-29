@@ -249,15 +249,19 @@ class MasterRecordingBaker(
             val tmp = File(dir, ".rec-${UUID.randomUUID()}-$fileName")
             var frames = 0L
             var writer: PcmChunkWriter? = null
+            var encoderFailed = false
             try {
                 val w = open(tmp)
                 writer = w
-                frames = streamCanonical(capture) { b, n -> w.write(b, n) } ?: return null
-                writer.close(); writer = null
+                frames = streamCanonical(capture) { b, n -> try { w.write(b, n) } catch (e: Throwable) { encoderFailed = true; throw e } } ?: throw java.io.IOException("capture unreadable mid-bake")
+                try { writer.close() } catch (e: Throwable) { encoderFailed = true; throw e }
+                writer = null
                 dest.delete()
-                if (!tmp.renameTo(dest)) return null
+                if (!tmp.renameTo(dest)) { encoderFailed = true; throw java.io.IOException("rename failed") }
             } catch (t: Throwable) {
                 writer?.let { w -> runCatching { (w as? AacEncoder.Stream)?.abort() ?: w.close() } }
+                // A READ failure keeps the raw capture (the user's only copy) for a re-bake; encoder faults don't.
+                if (!encoderFailed) keepCapture = runCatching { capture.file.length() > 44 }.getOrDefault(false)
                 if (t is kotlinx.coroutines.CancellationException) throw t
                 return null
             } finally { tmp.delete() }

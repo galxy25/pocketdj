@@ -306,11 +306,11 @@ class MasterRecorderTest {
         val frames = 10L * 60 * 48_000
         writeSparseCapture(f, 48_000, frames)
         val w = CountingWriter()
-        val baker = MasterRecordingBaker(openM4a = { _, rate -> assertEquals(StudioAudio.CANONICAL_RATE, rate); w })
+        val baker = MasterRecordingBaker(openM4a = { out, rate -> assertEquals(StudioAudio.CANONICAL_RATE, rate); out.writeText("m4a"); w })
         val env = TestEnv(tmp.newFolder("studio"))
         val store = env.store(); val a = store.createArrangement("A")
-        // writer.close() leaves no file behind for the rename, so the artifact is null; what matters is the streamed shape.
-        baker.bakeArtifact(a.id, MasterCapture(f, 48_000, false), env.roots.arrangementsDir(), store, "long")
+        val art = baker.bakeArtifact(a.id, MasterCapture(f, 48_000, false), env.roots.arrangementsDir(), store, "long")
+        assertNotNull("success path files the artifact", art)
         assertTrue(w.closed)
         assertEquals(Math.ceil(frames * 44_100 / 48_000.0).toLong(), w.frames)
         // No array handed to the encoder is larger than a few tenths of a second, never the 10-minute capture.
@@ -331,5 +331,22 @@ class MasterRecorderTest {
         assertNull(baker.bakeArtifact(a.id, MasterCapture(f, 44_100, false), env.roots.arrangementsDir(), store, "x"))
         assertEquals(0, env.roots.arrangementsDir().listFiles().orEmpty().size)
         assertFalse(f.exists())
+    }
+
+    @Test fun midReadFailureKeepsTheCaptureAndClosesTheOpenWriter() {
+        val env = TestEnv(tmp.newFolder("studio3"))
+        val store = env.store(); val a = store.createArrangement("A")
+        val f = tmp.newFile()
+        // The file is cut after the first chunk was already encoded: readFully throws mid-stream (header() saw it whole).
+        WavWriter.write(f, PcmBuffer(44_100, 2, FloatArray(20_000 * 2) { 0.1f }), WavWriter.Format.FLOAT32)
+        var closed = false
+        val baker = MasterRecordingBaker(openM4a = { _, _ -> object : com.levi.pocketdj.audio.core.PcmChunkWriter {
+            override fun write(samples: FloatArray, frames: Int) { java.io.RandomAccessFile(f, "rw").use { it.setLength(44 + 4096L * 8) } }
+            override fun close() { closed = true }
+        } })
+        assertNull(baker.bakeArtifact(a.id, MasterCapture(f, 44_100, false), env.roots.arrangementsDir(), store, "trunc"))
+        assertTrue("writer released", closed)
+        assertTrue("capture kept for a re-bake", f.exists())
+        assertEquals(0, env.roots.arrangementsDir().listFiles().orEmpty().size)
     }
 }
