@@ -46,6 +46,8 @@ data class BurnItem(
     val cutFileName: String? = null,
     /** S3 Last-Modified epoch-ms of the cut at download (drives the auto-repull). */
     val cutDownloadedAt: Double? = null,
+    /** SAF tree the user-folder copy was mirrored into at finalize (null => app storage / unknown). */
+    val treeUri: String? = null,
 ) {
     val isReady: Boolean get() = state == BurnState.READY
 }

@@ -33,6 +33,13 @@ interface BurnFolder {
      */
     fun mirrorFiles(dir: File, names: List<String>) {}
 
+    /**
+     * Best-effort delete of [names] from the user's tree (ANS-COL-4: deleting a burn deletes its
+     * folder copy). [treeUri] is the tree the item was finalized into (null => the current choice).
+     * No-op when no tree is configured or it is unreachable (revoked/ejected): never throws.
+     */
+    fun deleteMirrored(treeUri: String?, names: Collection<String>) {}
+
     /** True when the last [activeWritable] had to ignore a chosen user folder (surface a notice). */
     fun fellBack(): Boolean = false
 
@@ -73,6 +80,14 @@ interface BurnTree {
 
     /** Copy [src] into the tree as [name], replacing any existing child. Throws IOException. */
     fun copyIn(name: String, src: File)
+
+    /** Delete the child [name]; true when it was deleted, false when absent. Throws IOException on failure. */
+    fun delete(name: String): Boolean
+
+    /** Delete every child in [names] (best effort, per-name failures skipped). Override to list the tree once. */
+    fun deleteAll(names: Collection<String>) {
+        for (n in names) try { delete(n) } catch (_: Exception) { /* keep going */ }
+    }
 }
 
 /** User's chosen folder (persisted tree URI string), read ONLY at enqueue / UI time, never by a worker. */
@@ -145,6 +160,14 @@ class SafBurnFolder(
             if (!f.isFile) continue
             try { tree.copyIn(n, f) } catch (_: Exception) { return }
         }
+    }
+
+    override fun deleteMirrored(treeUri: String?, names: Collection<String>) {
+        if (names.isEmpty()) return
+        val uri = treeUri ?: prefs.treeUri() ?: return
+        val tree = openTree(uri) ?: return
+        if (!tree.isReachable()) return
+        try { tree.deleteAll(names.filter { it.isNotEmpty() }) } catch (_: Exception) { /* best effort */ }
     }
 
     override fun probeWrite(root: BurnRoot): Boolean {
