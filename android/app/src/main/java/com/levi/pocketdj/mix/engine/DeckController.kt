@@ -134,6 +134,13 @@ class DeckController(
         return ((v.playerFrame - startFrame).toDouble() / sampleRate - graph.audibleLagSeconds(deck)).coerceAtLeast(0.0)
     }
 
+    /** Voice read position in source seconds, NOT lag-compensated (stream runway math: the voice really is here). */
+    fun voiceSeconds(): Double? {
+        val v = (if (onStems) stems?.voices?.get(0) else voice) ?: return null
+        if (!v.isPlaying || v.status != Voice.Status.PLAYING) return null
+        return ((v.playerFrame - startFrame).toDouble() / sampleRate).coerceAtLeast(0.0)
+    }
+
     val voiceStatus: Voice.Status? get() = voice?.status
     val isVoicePlaying: Boolean get() = (if (onStems) stems?.voices?.get(0) else voice)?.isPlaying == true
 

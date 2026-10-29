@@ -889,6 +889,9 @@ class MixEngine(
 
     fun truePlayhead(deck: Deck): Double? = controller(deck).trueSeconds()
 
+    /** Uncompensated voice position (runway math). */
+    fun voicePlayhead(deck: Deck): Double? = controller(deck).voiceSeconds()
+
     // ------------------------------------------------------------------------------ outcomes
 
     internal fun reportDeckEnded(deck: Deck, reason: MixTrackEndReason) {

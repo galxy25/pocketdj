@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-MIX-2 Mix tempo/pitch on C++ Signalsmith (Q6a)
 
@@ -20,3 +20,14 @@ Device-only: audible quality, CPU on mid phone (presetDefault with splitComputat
 
 ## Questions for Levi
 - none
+
+## Review
+- MAJOR NP DSP not latency-compensated -> fixed: `currentTimeSec` (and so `disengage()`'s hand-back position) subtracts the stretcher lag while playing; `onAudioStarted` is delayed by the stretcher latency on the render clock; end detection waits for the tail to drain (render-clock, deterministic). Tests: NowPlayingDspEngineTest `reportedPositionIsLagCompensatedNotTheRawVoiceCounter`, `endIsReportedOnlyAfterTheStretcherTailDrains` (via new `TimeStretchers.factoryOverride` seam with a lagging fake kernel).
+- MINOR 16 KB alignment -> fixed: main's `-Wl,-z,max-page-size=16384` link options added to pdjdsp CMakeLists (LOAD align verified 0x4000 on built arm64 .so, see below).
+- MINOR always-on stretcher on idle chains -> fixed: DeckChain skips the STFT once it has no voices/handover and the tail has drained; latency stays constant; test `idleChainDrainsTheTailThenSkipsTheStretcherWithConstantLatency`.
+- MINOR StreamDecks runway used lag-compensated playhead -> fixed: new `DeckController.voiceSeconds` / `MixEngine.voicePlayhead` (uncompensated) used for runway math.
+- MINOR vacuous latency instrumented test -> fixed: rewritten to assert the inLat/outLat model at 0.7/1.0/1.3x (KDoc says continuous, not fixed). Compiles (compileDebugAndroidTestKotlin); NOT run on the AVD (emulator owned by the integrator).
+- NIT release()/reset race -> not done (graphs are app-scoped; optional).
+- Unit tests 5222 -> 5225 (+3), 0 failures; assembleDebug OK.
+
+fixes applied

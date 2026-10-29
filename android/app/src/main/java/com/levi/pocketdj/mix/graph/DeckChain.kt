@@ -81,6 +81,7 @@ class DeckChain(val deck: Deck, val sampleRate: Int = 44_100, val maxBlock: Int 
     private val sum = FloatArray(maxBlock * 2)
 
     private var applied: DeckParams? = null
+    private var idleFrames = 0L
     private var prevMain = 0f
     private var prevCue = 0f
     private val prevBal = floatArrayOf(1f, 1f, 1f, 1f)
@@ -100,15 +101,23 @@ class DeckChain(val deck: Deck, val sampleRate: Int = 44_100, val maxBlock: Int 
         require(frames <= maxBlock)
         if (p !== applied) applyParams(p)
 
-        var iter = 0
-        var first = true
-        while (timePitch.availableFrames < frames && iter < MAX_ITER) {
-            readChunk(frames, p, first)
-            first = false
-            iter++
+        val hasSource = main != null || stems != null || handover.inFlight
+        if (hasSource) idleFrames = 0L else if (idleFrames < Long.MAX_VALUE / 2) idleFrames += frames
+        if (idleFrames > latencyFrames.toLong() + 2L * maxBlock && timePitch.availableFrames == 0) {
+            // Idle chain (no voices, stretcher tail fully drained): skip the STFT, keep the clock moving.
+            java.util.Arrays.fill(sum, 0, frames * 2, 0f)
+            inputClock += frames
+        } else {
+            var iter = 0
+            var first = true
+            while (timePitch.availableFrames < frames && iter < MAX_ITER) {
+                readChunk(frames, p, first)
+                first = false
+                iter++
+            }
+            val got = timePitch.pull(sum, frames)
+            if (got < frames) java.util.Arrays.fill(sum, got * 2, frames * 2, 0f)
         }
-        val got = timePitch.pull(sum, frames)
-        if (got < frames) java.util.Arrays.fill(sum, got * 2, frames * 2, 0f)
 
         // sum is the time-stretched mix; the FX/EQ/trim run in place on it
         for (i in 0 until FxRack.SLOT_COUNT) slotNodes[i].process(sum, frames)
@@ -132,8 +141,10 @@ class DeckChain(val deck: Deck, val sampleRate: Int = 44_100, val maxBlock: Int 
         prevMain = p.mainGain
         postMeter.process(out, frames)
 
-        latencySpeed = timePitch.speed
-        latencyFrames = timePitch.latencyFrames()
+        if (hasSource || idleFrames <= latencyFrames.toLong() + 2L * maxBlock) {
+            latencySpeed = timePitch.speed
+            latencyFrames = timePitch.latencyFrames()
+        }
         stamp.write(inputClock, main?.playerFrame ?: 0L, stems?.voices?.get(0)?.playerFrame ?: 0L)
     }
 

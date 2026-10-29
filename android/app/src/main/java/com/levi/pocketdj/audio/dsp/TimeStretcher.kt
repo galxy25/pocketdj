@@ -47,6 +47,9 @@ interface TimeStretcher {
 }
 
 object TimeStretchers {
+    /** Test seam: build every chain's stretcher with a controllable kernel (JVM has no libpdjdsp). */
+    @Volatile internal var factoryOverride: ((sampleRate: Int, maxPush: Int) -> TimeStretcher)? = null
+
     /**
      * Native Signalsmith when [nativeAvailable] (libpdjdsp loaded), else the Sonic fallback.
      * [nativeAvailable] is a seam for tests.
@@ -56,7 +59,7 @@ object TimeStretchers {
         maxPushFrames: Int,
         nativeAvailable: Boolean = NativeDsp.available,
     ): TimeStretcher =
-        if (nativeAvailable) {
+        factoryOverride?.invoke(sampleRate, maxPushFrames) ?: if (nativeAvailable) {
             try { NativeTimePitch(sampleRate, maxPushFrames) }
             catch (_: Throwable) { TimePitch(sampleRate, maxPushFrames) }
         } else {

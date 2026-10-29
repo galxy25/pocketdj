@@ -55,13 +55,19 @@ class NativeTimePitchInstrumentedTest {
         assertEquals(880.0, hz(p, 30_000, p.size / 2 - 5_000), 880 * 0.03)
     }
 
-    @Test fun latencyIsFixedAcrossTempo() {
+    @Test fun latencyIsContinuousAcrossTempoAndMatchesTheStretcherModel() {
         assumeTrue(NativeDsp.available)
         val t = NativeTimePitch(sr, 1024)
-        val a = t.algorithmicLatencyFrames()
-        t.setSpeed(1f)
-        assertEquals(a, t.algorithmicLatencyFrames())
-        assertTrue(a > 0)
+        val probe = JniRtBackend(sr, 1024, 2050)
+        val inLat = probe.inputLatency; val outLat = probe.outputLatency; probe.close()
+        assertTrue(inLat > 0 && outLat > 0)
+        for (s in listOf(0.7f, 1.0f, 1.3f)) {
+            t.setSpeed(s)
+            val expected = Math.round(inLat / s.toDouble()).toInt() + outLat
+            assertEquals("speed $s", expected, t.algorithmicLatencyFrames())
+            // source-domain lag (frames * speed) tracks inLat + outLat * speed
+            assertEquals(inLat + outLat * s.toDouble(), t.algorithmicLatencyFrames() * s.toDouble(), 2.0)
+        }
         t.close()
     }
 }
