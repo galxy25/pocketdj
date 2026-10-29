@@ -336,6 +336,9 @@ struct PocketDJApp: App {
     @State private var friends: MusicWithFriendsStore
     /// "In the Pocket" — app-scoped like the puzzle engine (a round keeps tracking off-screen).
     @State private var inThePocket: InThePocketStore
+    /// Pocket Wheel: the memoised, off-main moment build (device-local cache) + the synced palette.
+    @State private var pocketWheel: PocketMomentCache
+    @State private var pocketPalette: PocketPaletteStore
     /// The App Intents bridge (Siri/Shortcuts/Spotlight → live stores). Constructed +
     /// registered with `AppDependencyManager` in `init()` so an intent that background-
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
@@ -1627,6 +1630,33 @@ struct PocketDJApp: App {
             inThePocket?.uploadWires(installId: installId) ?? []
         }
         _inThePocket = State(initialValue: inThePocket)
+        // ── Pocket Wheel ────────────────────────────────────────────────────────
+        // History ▸ Pockets ▸ Wheel: cells keyed (hour, weekday, mode), coloured by the SOURCE
+        // collection. Built off-main from local play history (works with the cloud opt-in off),
+        // memoised + cached on disk so it paints instantly; the palette syncs across devices.
+        let pocketPalette = PocketPaletteStore(fileURL: PocketPaletteStore.launchURL())
+        let pocketWheel = PocketMomentCache(history: playHistory, palette: pocketPalette,
+                                            fileURL: PocketMomentCache.launchURL())
+        pocketWheel.catalogSnapshot = { [weak app] in (app?.songsById ?? [:], app?.albumsById ?? [:]) }
+        pocketWheel.collectionsInput = collectionsInput
+        pocketWheel.favoriteIds = { [weak favorites] in favorites?.favoriteIds ?? [] }
+        pocketWheel.setlistToPlaylist = { [weak collections] in
+            Dictionary((collections?.setlists ?? []).map { ($0.id, $0.playlistId) }, uniquingKeysWith: { a, _ in a })
+        }
+        // Timbre vectors (the same CDN corpus the recs read); never fetched under the fixture seam.
+        let wheelFixture = ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil
+        pocketWheel.timbreVectors = { wheelFixture ? [:] : await TimbreCatalog.shared.vectors() }
+        pocketWheel.cloudPatterns = { [weak listeningPockets] in
+            (listeningPockets?.results?.patterns ?? []).map { .init(id: $0.id, timeBucket: $0.timeBucket, dayType: $0.dayType) }
+        }
+        pocketWheel.liveCollectionIds = { [weak collections, weak app] in
+            guard let collections, let app, app.state == .loaded else { return nil }
+            return Set(collections.pockets.map(\.id) + collections.playlists.map(\.id) + app.indexPlaylists.map(\.id))
+        }
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { pocketWheel.autoRebuild = false }
+        pocketWheel.seedDemoIfRequested()
+        _pocketPalette = State(initialValue: pocketPalette)
+        _pocketWheel = State(initialValue: pocketWheel)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
         // globally and the sync engine itself must stay drivable by tests.
@@ -1682,6 +1712,10 @@ struct PocketDJApp: App {
         }
         cloudSync.register("studio-cues", fileURL: studio.cueSyncFileURL) { [weak studio] in
             studio?.reloadCuesFromDisk()     // cue points follow the Apple ID (media-free; NOT the full studio doc)
+        }
+        // Pocket Wheel colours: per-collection slot, earlier assignment wins (convergent merge).
+        cloudSync.register("pocket-palette", fileURL: pocketPalette.syncFileURL) { [weak pocketPalette] in
+            _ = pocketPalette?.reloadFromDisk()
         }
         cloudSync.register("game-scores", fileURL: gameScores.syncFileURL) { [weak gameScores] in
             _ = gameScores?.reloadFromDisk() // union-by-run-id — a pull never clobbers local runs
@@ -1807,8 +1841,10 @@ struct PocketDJApp: App {
         }
         // Pocket Wheel device-local state (motion opt-in; the wheel cache + palette join in
         // Phase 2) goes with the account.
-        accountDeletion.wheelClearLocal = { [weak listeningMotion] in
+        accountDeletion.wheelClearLocal = { [weak listeningMotion, weak pocketWheel, weak pocketPalette] in
             listeningMotion?.clearLocal()
+            pocketWheel?.clearLocal()
+            pocketPalette?.clear()
         }
         _accountDeletion = State(initialValue: accountDeletion)
 
@@ -1929,6 +1965,8 @@ struct PocketDJApp: App {
                 .environment(listeningMotion)
                 .environment(listeningPockets)
                 .environment(inThePocket)
+                .environment(pocketWheel)
+                .environment(pocketPalette)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
@@ -1989,6 +2027,9 @@ struct PocketDJApp: App {
                     // catalog artist IDs, so an empty catalog would resolve nothing and burn the
                     // one shot. Self-guarded and one-shot-per-install.
                     seedReleaseFeedIfReady()
+                    // The wheel's features (artist/genre/BPM) need the catalog; a launch whose
+                    // cache predates the current history rebuilds now.
+                    if app.state == .loaded { pocketWheel.historyDidChange() }
                 }
                 // Recommendation-engine auto-flush: idempotent, and internally a no-op while
                 // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
@@ -1997,6 +2038,9 @@ struct PocketDJApp: App {
                 .task { listeningPockets.startAutoFlush() }
                 // A round that was playing when the app went away keeps (or finishes) tracking.
                 .task { inThePocket.resumeTrackingIfNeeded() }
+                // Pocket Wheel: rebuild (debounced 5 s, off-main) whenever play history moves —
+                // a new play, a skip verdict, a settled context/motion, a peer's merged plays.
+                .onChange(of: playHistory.revision) { _, _ in pocketWheel.historyDidChange() }
                 // …and the same gate, observed: any path that closes it (not only the Settings
                 // toggles, which also call `enabledDidChange`) turns places & trips off.
                 .onChange(of: listeningPockets.isEnabled) { _, on in

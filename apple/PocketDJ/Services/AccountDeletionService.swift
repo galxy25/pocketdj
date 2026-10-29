@@ -50,6 +50,8 @@ final class AccountDeletionService {
         // The synced connection/credential subset of SettingsStore (rip server, jukebox,
         // online-search) — see SettingsCredentialsSync.swift.
         "settings-credentials",
+        // Pocket Wheel colours (PocketPaletteStore).
+        "pocket-palette",
     ]
 
     /// Recommendation-engine wipe seams (WS-E), wired in PocketDJApp. Optional so tests that

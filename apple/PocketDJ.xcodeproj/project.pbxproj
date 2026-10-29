@@ -163,6 +163,7 @@
 		324066B5360D1D6B09A094AE /* ListeningPocketsServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0D441FA5DF24DC8B940601 /* ListeningPocketsServiceTests.swift */; };
 		32E480CB8084F6E99EB1FDFC /* ForYouRecsOptOutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E3F04618F31392F949C4BC6 /* ForYouRecsOptOutTests.swift */; };
 		32F043584B9B88D3DD9C0F04 /* PendingBurnTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DB3C34CABB16F7A2270A664 /* PendingBurnTests.swift */; };
+		3389937B02A0403E448E1B79 /* PocketMomentCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DC54A5D90ADC8DF61CD6DAB /* PocketMomentCache.swift */; };
 		338A580E3A3ED4E268EC2ED0 /* GaplessHandoffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35570F902B723F99731AB5A1 /* GaplessHandoffTests.swift */; };
 		33D1E3D451C696C3BCD7503B /* ProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42CBB5530D61B41C0DA9FA74 /* ProfileStore.swift */; };
 		3427D78C81D4586764ED8C28 /* ProfileAudioStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 977C2FDDAAD91A8564115D46 /* ProfileAudioStore.swift */; };
@@ -355,6 +356,7 @@
 		80CEB6C45E701C07AC2633B2 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 247D8BE584DBA6EE7009B4FD /* SettingsView.swift */; };
 		81074F34EABC70FA63F987A5 /* PDJQRCodeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B182BC63837D28BE3AD528BA /* PDJQRCodeView.swift */; };
 		81C8ADEC300F48F3DC8B38E7 /* FXModulationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C774E097179D496B8D3A9727 /* FXModulationTests.swift */; };
+		8245E427F1ADD456E5534483 /* PocketPaletteStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79D266858F9ACCEF8F529A23 /* PocketPaletteStoreTests.swift */; };
 		8380F9CA301A261A2CA3C541 /* ArrangerBouncer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F86BBA511B279776A06AEC30 /* ArrangerBouncer.swift */; };
 		8437C9D5F9F9244EF77B853A /* ScoreLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7E1363E8CB857CD978D9BAD /* ScoreLayoutTests.swift */; };
 		8472EAE440A5F32F5115A321 /* AddToCollectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B49EA6D5C5DB8ACED8309E9 /* AddToCollectionView.swift */; };
@@ -395,6 +397,7 @@
 		932BFB3E2F789C39750B8052 /* MushroomCloud.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3EAF9917E426DEDE1C3173 /* MushroomCloud.swift */; };
 		93B23AD26FF0A480D89CD0F9 /* ArrangerBeatMatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C23C8448DC969418612AC3A /* ArrangerBeatMatch.swift */; };
 		942075200006D53A5AE60840 /* FeedbackDictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8EE1CE6FA0258A825A8AA357 /* FeedbackDictation.swift */; };
+		944BC0B3F8F9556DFB88447E /* PocketWheelDemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 177E5C874E38CAFFC9D9156E /* PocketWheelDemo.swift */; };
 		97AA9807DA89998D23B41C7D /* MelodyTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83B4211AD0DCFC4A2D6D893F /* MelodyTracker.swift */; };
 		97C2966BC8AAD0CBA67A0FD8 /* SongRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9196723C9E4ADE86ECB6058D /* SongRecognizer.swift */; };
 		97E7E432AE84EC27E9AE3EEF /* DiagCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5480988BB263B5C0573F93D4 /* DiagCredentialStore.swift */; };
@@ -441,6 +444,7 @@
 		A68306EE2C7E18F6780DB8D0 /* ArtistBrowseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BAB42DFE8927E5854E1AAD47 /* ArtistBrowseTests.swift */; };
 		A703D3E04C9D02B82799B0A3 /* ShazamCatalogMatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C0A1CAE3F24CDA07C4E9662 /* ShazamCatalogMatch.swift */; };
 		A7530A3AC46764BA5FD7E31F /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 147488908635840179E64F97 /* PrivacyInfo.xcprivacy */; };
+		A7A15BCA6E4B81B14E41B5BA /* PocketMomentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E11D8099D531DBA1C62BB9 /* PocketMomentEngine.swift */; };
 		A83A8F41B0B1AB43C1324DC0 /* DemuxTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32C3C0307C77EA43758DFABF /* DemuxTranscriber.swift */; };
 		A8EAAE4747BA7DDCA3ABD514 /* RecommendationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A7A6DDDAA6C63BA1DD2B22 /* RecommendationServiceTests.swift */; };
 		A92E960F40771FB2C0441288 /* MusicWithFriendsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A6C1064089A6C3FC7C53BD7 /* MusicWithFriendsStore.swift */; };
@@ -540,6 +544,7 @@
 		D4E9DE166DEF432FE1E24CCA /* PlaybackRipWindowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B56D9FE1DA64989CE78819DB /* PlaybackRipWindowTests.swift */; };
 		D508FFF0E597E97501A62A00 /* SelectionUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = AADE52CDA254BA2D9BBC8D00 /* SelectionUI.swift */; };
 		D5141434BD835ED5F2F6C659 /* SettingsCredentialsSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00849A624435A085FDBBA205 /* SettingsCredentialsSync.swift */; };
+		D51917D86F93156EDCA7092F /* pocket-wheel-history.json in Resources */ = {isa = PBXBuildFile; fileRef = 68B8CF7044901CE7160584DA /* pocket-wheel-history.json */; };
 		D52F67872E667314A7732F2D /* DiagUploadPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCFCF98D27D59771095839CD /* DiagUploadPipelineTests.swift */; };
 		D5463DDEE3D8C4DE6D737542 /* InThePocketModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FA3E2A59690156DF72E16AF /* InThePocketModels.swift */; };
 		D59726F4D75F50D8109F35F8 /* PlaylistAppleMusicSync.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E5079BC585AA56BDD676848 /* PlaylistAppleMusicSync.swift */; };
@@ -606,6 +611,7 @@
 		EE06928305629CACEADEFB8E /* MixDeckLayoutUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C443AFD6A7310B3D2F70B7F /* MixDeckLayoutUITests.swift */; };
 		EE5BB9C04BDC4A67643C59A1 /* CoreMotionActivitySource.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAF31FFD80ABD7ED7B1CA4FC /* CoreMotionActivitySource.swift */; };
 		EF2E11AD7BD3AC9D939A5EEF /* CollectionCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0213D7D5A7F30B0B4443528 /* CollectionCatalog.swift */; };
+		EF46138F085E84681D7DD5DF /* PocketPaletteStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F39D643303340FB5596727D3 /* PocketPaletteStore.swift */; };
 		EF63453D1A2D2B67E4402315 /* PocketBuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC3B20D9DF4EBBA30146F064 /* PocketBuilderTests.swift */; };
 		EFA57B5D3B5F7931E6EA1DD6 /* AppleMusicMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DAC7F1334FC87BC1B2CB1FB /* AppleMusicMonitorTests.swift */; };
 		F007723EDC9375802A5B66C8 /* MixPlayOutcomeBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C98D2D58B737C1B0E1D433BF /* MixPlayOutcomeBridge.swift */; };
@@ -645,6 +651,7 @@
 		FB72A5D2314453C415C94E83 /* FavoritesUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C92D6DE42A88532A8A9C69B /* FavoritesUITests.swift */; };
 		FBCA7DD6FFF1750287718809 /* TVRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FB11D272713C95786246DB9 /* TVRootView.swift */; };
 		FBE235BBAE93EFCAD4E67CFF /* JukeboxGuest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4200963C08D1FEDC7CB0E0FB /* JukeboxGuest.swift */; };
+		FBF7986740F5853E8C3FFA39 /* PocketMomentEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1B68C3549CC0733618A535A /* PocketMomentEngineTests.swift */; };
 		FC5D735E2FD2A1BBB46D1131 /* TracksIcon.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7312A04C461CAEE52F8280DA /* TracksIcon.swift */; };
 		FCB1ABFCDC5E1DC9E47B03BF /* MasterFX.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E8A4CA246E714141860B6B /* MasterFX.swift */; };
 		FCD57F69C11ADA24BEC89F69 /* JukeboxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82374372AFCCB6A0FCA69855 /* JukeboxTests.swift */; };
@@ -733,6 +740,7 @@
 		0BF27083D56884C8A1D9BA60 /* MixWaveform.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixWaveform.swift; sourceTree = "<group>"; };
 		0D49AA4F89F97CE3BC8357D3 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		0D8E4F4B1E4ABF2E71295DA1 /* stream-tone-12s.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; path = "stream-tone-12s.mp3"; sourceTree = "<group>"; };
+		0DC54A5D90ADC8DF61CD6DAB /* PocketMomentCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketMomentCache.swift; sourceTree = "<group>"; };
 		0DE2815FA8B5F6C9FF6963D7 /* BeatDetect.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeatDetect.swift; sourceTree = "<group>"; };
 		0DF3613939B34898A64B5899 /* DiscoverAddsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverAddsStore.swift; sourceTree = "<group>"; };
 		0DF90EDBE036D5F9F11C894E /* CoverImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverImage.swift; sourceTree = "<group>"; };
@@ -762,6 +770,7 @@
 		16117E8105B62DFDB7DB7D93 /* StudioSamplesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioSamplesView.swift; sourceTree = "<group>"; };
 		16589E7B36812CDA72B0C5B3 /* GameScoreboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameScoreboardStore.swift; sourceTree = "<group>"; };
 		16B6FE9E1D33BD016D9B4C90 /* ForceSyncMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForceSyncMenu.swift; sourceTree = "<group>"; };
+		177E5C874E38CAFFC9D9156E /* PocketWheelDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketWheelDemo.swift; sourceTree = "<group>"; };
 		17EAB46312512972964EF9C2 /* ListeningContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListeningContext.swift; sourceTree = "<group>"; };
 		19A262975190BC47ADA4E675 /* AppleMusicRecognitionSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicRecognitionSection.swift; sourceTree = "<group>"; };
 		19A543B9F396712167603010 /* AppleMusicInlinePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicInlinePanel.swift; sourceTree = "<group>"; };
@@ -978,6 +987,7 @@
 		67CD6F8A5FB99680041F23F5 /* MixCrateMenuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixCrateMenuTests.swift; sourceTree = "<group>"; };
 		6847266CA8BB84DE6F265BE0 /* PuzzlePlayabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzlePlayabilityTests.swift; sourceTree = "<group>"; };
 		6860EB414894C76BE5230D4C /* DemuxInstrumentalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxInstrumentalUITests.swift; sourceTree = "<group>"; };
+		68B8CF7044901CE7160584DA /* pocket-wheel-history.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "pocket-wheel-history.json"; sourceTree = "<group>"; };
 		6A3B38B92DD6CE2B3FD2DE88 /* ShazamResultSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShazamResultSheet.swift; sourceTree = "<group>"; };
 		6B6590AFA2752855DAC057C2 /* JukeboxFoundationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JukeboxFoundationModel.swift; sourceTree = "<group>"; };
 		6B7E46850E10B47EF361FA4C /* OnlineSearchModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnlineSearchModel.swift; sourceTree = "<group>"; };
@@ -1033,6 +1043,7 @@
 		7873D77D88C3B4E6B11B3125 /* InThePocketView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InThePocketView.swift; sourceTree = "<group>"; };
 		788BF0925F7DABD2D88A4981 /* AMPlayBaselineStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AMPlayBaselineStore.swift; sourceTree = "<group>"; };
 		79C5857685C327C3B6D91F0D /* ScoreQuantizerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoreQuantizerTests.swift; sourceTree = "<group>"; };
+		79D266858F9ACCEF8F529A23 /* PocketPaletteStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketPaletteStoreTests.swift; sourceTree = "<group>"; };
 		7A4256CA2590420D9DE26E58 /* SettingsCredentialsSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsCredentialsSyncTests.swift; sourceTree = "<group>"; };
 		7A6C1064089A6C3FC7C53BD7 /* MusicWithFriendsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicWithFriendsStore.swift; sourceTree = "<group>"; };
 		7A7BC020145B106B4AB7DCF8 /* ReleaseStreaming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseStreaming.swift; sourceTree = "<group>"; };
@@ -1242,10 +1253,12 @@
 		D0C8A3B9AC9D85D51A04BE77 /* MixResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixResolver.swift; sourceTree = "<group>"; };
 		D10283D9EB4435F2952A72C7 /* DiagKeySync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagKeySync.swift; sourceTree = "<group>"; };
 		D1997B5567E77A4DA7AAD246 /* CollectionsCleanOnlyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionsCleanOnlyTests.swift; sourceTree = "<group>"; };
+		D1B68C3549CC0733618A535A /* PocketMomentEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketMomentEngineTests.swift; sourceTree = "<group>"; };
 		D2029A228A8A050D0687E5F1 /* PocketDJWidgets.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = PocketDJWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		D2792CB4F9A27A1DD41CCA9C /* KeyDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyDetectorTests.swift; sourceTree = "<group>"; };
 		D2E03FA39CA13DD4EF52F719 /* DemuxChordDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxChordDetailView.swift; sourceTree = "<group>"; };
 		D3DD5E074598B689C0ADD443 /* FoundationModelPocketBrief.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoundationModelPocketBrief.swift; sourceTree = "<group>"; };
+		D3E11D8099D531DBA1C62BB9 /* PocketMomentEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketMomentEngine.swift; sourceTree = "<group>"; };
 		D3F00EE6539DFCCBBD0E5773 /* OnboardingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingStore.swift; sourceTree = "<group>"; };
 		D40CC1845961FA5A883E7948 /* NPLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NPLog.swift; sourceTree = "<group>"; };
 		D4314E97CB2E9520443C1C7E /* ListeningPlaceEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListeningPlaceEngineTests.swift; sourceTree = "<group>"; };
@@ -1313,6 +1326,7 @@
 		F2CA722511B3E8014C480557 /* PocketDJ-tvOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "PocketDJ-tvOS.entitlements"; sourceTree = "<group>"; };
 		F31BCC47CA829DD99D66AF25 /* StemLockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemLockTests.swift; sourceTree = "<group>"; };
 		F32714B86CC842CD2E02EF7B /* PerformanceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceView.swift; sourceTree = "<group>"; };
+		F39D643303340FB5596727D3 /* PocketPaletteStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketPaletteStore.swift; sourceTree = "<group>"; };
 		F39FE614D68C453A7A6B427F /* PlaybackIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackIntents.swift; sourceTree = "<group>"; };
 		F421B48C4110B00AEDF1DF6C /* PuzzleDecisionStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzleDecisionStoreTests.swift; sourceTree = "<group>"; };
 		F45F411D6AD06EDCFA2A4400 /* EditsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditsStore.swift; sourceTree = "<group>"; };
@@ -1402,6 +1416,10 @@
 		0B77B74334CC923A3F24AACB /* PocketWheel */ = {
 			isa = PBXGroup;
 			children = (
+				0DC54A5D90ADC8DF61CD6DAB /* PocketMomentCache.swift */,
+				D3E11D8099D531DBA1C62BB9 /* PocketMomentEngine.swift */,
+				F39D643303340FB5596727D3 /* PocketPaletteStore.swift */,
+				177E5C874E38CAFFC9D9156E /* PocketWheelDemo.swift */,
 				0050E0A81F60E9FCD3E46698 /* PocketWheelModels.swift */,
 			);
 			path = PocketWheel;
@@ -1595,6 +1613,8 @@
 				7D5980E93946D7C929149EE0 /* PlayStatsStoreTests.swift */,
 				CC3B20D9DF4EBBA30146F064 /* PocketBuilderTests.swift */,
 				26B94BF9288FCF4BDDDE83BC /* PocketDJUTTypeTests.swift */,
+				D1B68C3549CC0733618A535A /* PocketMomentEngineTests.swift */,
+				79D266858F9ACCEF8F529A23 /* PocketPaletteStoreTests.swift */,
 				D9D8E2C636B9D7CA96F8599D /* PocketsCollectionsTests.swift */,
 				142DCFC413FBB0A93CC595D1 /* PocketZipTests.swift */,
 				AEFF189C07F35D94924D0295 /* PortableItemsTests.swift */,
@@ -2186,6 +2206,7 @@
 				B4D293B08407660D97C322B8 /* listening-pockets-results.json */,
 				C2C659752C32856A6D3A1238 /* listening-pockets-upload.app.json */,
 				9EA75B4F750172C4EEABD9EE /* newcomer-parity.json */,
+				68B8CF7044901CE7160584DA /* pocket-wheel-history.json */,
 				1590113F1DA666E18D90E3C0 /* sample-playlist.playlist.pocketdj.zip */,
 				5F319611FCAEE51A232E8CBE /* stem-noise-12s.mp3 */,
 				8B257B408D67EEAE24087A22 /* stream-noise-12s.mp3 */,
@@ -2518,6 +2539,7 @@
 				FB1701F5A9AD2B51F37FA08C /* listening-pockets-results.json in Resources */,
 				4FE2BD3943C85D7F8AD84081 /* listening-pockets-upload.app.json in Resources */,
 				9DA950F50A85A55C828A9446 /* newcomer-parity.json in Resources */,
+				D51917D86F93156EDCA7092F /* pocket-wheel-history.json in Resources */,
 				3E47B83209E06245EDE717D6 /* sample-playlist.playlist.pocketdj.zip in Resources */,
 				48015FBD76F5A3951B5D9AD9 /* stem-noise-12s.mp3 in Resources */,
 				506FFA93E51CE0EF9AEA7572 /* stream-noise-12s.mp3 in Resources */,
@@ -2754,6 +2776,8 @@
 				B892BF15B830C217D4BB40CF /* PlaylistZipTests.swift in Sources */,
 				EF63453D1A2D2B67E4402315 /* PocketBuilderTests.swift in Sources */,
 				0353926388012E0E78546B1D /* PocketDJUTTypeTests.swift in Sources */,
+				FBF7986740F5853E8C3FFA39 /* PocketMomentEngineTests.swift in Sources */,
+				8245E427F1ADD456E5534483 /* PocketPaletteStoreTests.swift in Sources */,
 				0CBFF3993EB761E6945C6217 /* PocketZipTests.swift in Sources */,
 				147107230DDD20095F9E85D1 /* PocketsCollectionsTests.swift in Sources */,
 				359D4D1951614DF2EB527C9C /* PortableItemsTests.swift in Sources */,
@@ -3070,6 +3094,10 @@
 				43BB757610F0F5EBEACEECDA /* PocketDJApp.swift in Sources */,
 				E07921F50A55392F0AAD1A01 /* PocketDJShortcuts.swift in Sources */,
 				78EF1A8ECCC69029C9189883 /* PocketDJUTType.swift in Sources */,
+				3389937B02A0403E448E1B79 /* PocketMomentCache.swift in Sources */,
+				A7A15BCA6E4B81B14E41B5BA /* PocketMomentEngine.swift in Sources */,
+				EF46138F085E84681D7DD5DF /* PocketPaletteStore.swift in Sources */,
+				944BC0B3F8F9556DFB88447E /* PocketWheelDemo.swift in Sources */,
 				F6A22BFDE5BFC5C48D188C8F /* PocketWheelModels.swift in Sources */,
 				1B5BA1AD4F47799BD71BD90F /* PocketZip.swift in Sources */,
 				655B13E4B89D5FDC7340CD54 /* PocketsView.swift in Sources */,
