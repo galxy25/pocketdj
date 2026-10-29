@@ -178,4 +178,51 @@ final class CollectionsLossyDecodeTests: XCTestCase {
         XCTAssertEqual(doc.schemaVersion, collectionsSchemaVersion)              // bumped to 5
         XCTAssertEqual(doc.playlists.first?.name, "A")                           // nothing transformed
     }
+
+    // MARK: amPlaylistId persistence (ANS-COL-1)
+
+    func testAmPlaylistIdRoundTripsOnPocketAndPlaylist() throws {
+        var pk = CollectionsFactory.makePocket("P", now: 1_000)
+        pk.amPlaylistId = "p.AM1"
+        var pl = CollectionsFactory.makePlaylist("L", now: 1_000)
+        pl.amPlaylistId = "p.AM2"
+        let back = try CollectionsCodec.decode(CollectionsCodec.encode(CollectionsDocument(pockets: [pk], playlists: [pl])))
+        XCTAssertEqual(back.pockets.first?.amPlaylistId, "p.AM1")
+        XCTAssertEqual(back.playlists.first?.amPlaylistId, "p.AM2")
+    }
+
+    func testUnlinkedCollectionsNeverWriteTheKey() throws {
+        let pk = CollectionsFactory.makePocket("P", now: 1_000)
+        let pl = CollectionsFactory.makePlaylist("L", now: 1_000)
+        let text = String(decoding: try CollectionsCodec.encode(CollectionsDocument(pockets: [pk], playlists: [pl])), as: UTF8.self)
+        XCTAssertFalse(text.contains("amPlaylistId"))
+    }
+
+    func testGarbledAmPlaylistIdDecodesToNilWithoutDroppingTheRow() throws {
+        let json = """
+        { "schemaVersion": 7, "pockets": [ { "id": "pkt_a", "name": "P", "amPlaylistId": 42 } ],
+          "playlists": [ { "id": "pls_a", "name": "L", "sequences": [], "amPlaylistId": {"x":1},
+                           "createdAt": 0, "updatedAt": 0 } ] }
+        """
+        let doc = try CollectionsCodec.decode(Data(json.utf8))
+        XCTAssertEqual(doc.pockets.count, 1)
+        XCTAssertNil(doc.pockets.first?.amPlaylistId)
+        XCTAssertEqual(doc.playlists.count, 1)
+        XCTAssertNil(doc.playlists.first?.amPlaylistId)
+    }
+
+    func testExportStripsAmPlaylistId() throws {
+        var pk = CollectionsFactory.makePocket("P", now: 1_000)
+        pk.amPlaylistId = "p.AM1"
+        var pl = CollectionsFactory.makePlaylist("L", now: 1_000)
+        pl.amPlaylistId = "p.AM2"
+        let zipP = try PocketZip.export(pocket: pk, pocketsById: [pk.id: pk])
+        let zipL = try PlaylistZip.export(playlist: pl, pocketsById: [pk.id: pk])
+        let envP = try CollectionsCodec.encode(CollectionsDocument(pockets: [pk.strippedForExport]))
+        let envL = try CollectionsCodec.encode(CollectionsDocument(playlists: [pl.strippedForExport]))
+        XCTAssertNil(try PocketZip.import(data: zipP).pocket.amPlaylistId)
+        XCTAssertNil(try PlaylistZip.import(data: zipL).playlist.amPlaylistId)
+        XCTAssertFalse(String(decoding: envP, as: UTF8.self).contains("amPlaylistId"))
+        XCTAssertFalse(String(decoding: envL, as: UTF8.self).contains("amPlaylistId"))
+    }
 }

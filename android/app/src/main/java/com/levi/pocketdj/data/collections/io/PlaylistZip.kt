@@ -74,8 +74,8 @@ object PlaylistZip {
         }
         val files = linkedMapOf(
             "manifest.json" to ZipIo.bytes(manifest, json),
-            "playlist.json" to ZipIo.bytes(json.encodeToJsonElement(PlaylistSerializer, playlist), json),
-            "pockets.json" to ZipIo.bytes(json.encodeToJsonElement(ListSerializer(Pocket.serializer()), pockets), json),
+            "playlist.json" to ZipIo.bytes(json.encodeToJsonElement(PlaylistSerializer, playlist.copy(amPlaylistId = null)), json),
+            "pockets.json" to ZipIo.bytes(json.encodeToJsonElement(ListSerializer(Pocket.serializer()), pockets.map { it.copy(amPlaylistId = null) }), json),
         )
         if (itemsData != null) files["items.json"] = itemsData
         return ZipIo.write(files)

@@ -159,4 +159,23 @@ class PlaylistZipTest {
     private fun assertReason(reason: CollectionZipException.Reason, body: () -> Unit) {
         try { body(); fail("expected $reason") } catch (e: CollectionZipException) { assertEquals(reason, e.reason) }
     }
+
+    @Test
+    fun exportStripsAmPlaylistId() {
+        val linkedRoot = root.copy(amPlaylistId = "p.R")
+        val linkedKid = kid.copy(amPlaylistId = "p.K")
+        val bytes = PlaylistZip.export(
+            playlist.copy(amPlaylistId = "p.PL"),
+            mapOf("pkt_root" to linkedRoot, "pkt_kid" to linkedKid),
+            catalog.songsById, catalog.albumsById, nowMs = 1_790_000_000_000,
+        )
+        val entries = ZipIo.read(bytes)!!
+        for ((name, data) in entries) {
+            val text = String(data)
+            assertFalse("$name leaks the link", text.contains("amPlaylistId"))
+            assertFalse("$name leaks the id", text.contains("p.PL") || text.contains("p.R\"") || text.contains("p.K\""))
+        }
+        val pb = PocketZip.export(linkedRoot, mapOf("pkt_root" to linkedRoot, "pkt_kid" to linkedKid), nowMs = 1_790_000_000_000)
+        for ((name, data) in ZipIo.read(pb)!!) assertFalse("$name leaks", String(data).contains("amPlaylistId"))
+    }
 }

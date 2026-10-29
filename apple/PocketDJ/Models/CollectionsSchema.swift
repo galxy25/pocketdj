@@ -163,6 +163,8 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     /// PRIVACY: this is a handle into the user's own Apple Music library, so every import path
     /// STRIPS it. A shared collection must never carry a link to the sharer's library.
     var amPlaylistId: String?
+    /// Copy for EXPORT (zip / .pdjcollection): the Apple Music link never leaves the device.
+    var strippedForExport: Pocket { var c = self; c.amPlaylistId = nil; return c }
     /// Epoch ms of the last sync that CHANGED the pocket (or refreshed the snapshot). nil = never.
     var sourceSyncedAt: Double?
     /// v7: epoch ms of the last time the user hit ▶ Play on this pocket — the "Recently played"
@@ -189,7 +191,7 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, kind, description, songIds, albumIds, childPocketIds, notes, folderId, songRepeats,
              sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt, lastPlayedAt,
-             amSyncDirection, cleanOnly, recsEnabled, createdAt, updatedAt
+             amSyncDirection, cleanOnly, recsEnabled, amPlaylistId, createdAt, updatedAt
     }
     init(id: String, name: String, kind: PocketKind = .harmonic, description: String? = nil,
          songIds: [String] = [], albumIds: [String] = [], childPocketIds: [String] = [],
@@ -197,7 +199,9 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
          sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
          sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil, lastPlayedAt: Double? = nil,
          amSyncDirection: String? = nil, cleanOnly: Bool? = nil, recsEnabled: Bool? = nil,
+         amPlaylistId: String? = nil,
          createdAt: Double = 0, updatedAt: Double = 0) {
+        self.amPlaylistId = amPlaylistId
         self.id = id; self.name = name; self.kind = kind; self.description = description
         self.songIds = songIds; self.albumIds = albumIds; self.childPocketIds = childPocketIds
         self.notes = notes; self.folderId = folderId; self.songRepeats = songRepeats
@@ -229,6 +233,8 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
         amSyncDirection = try? c.decode(String.self, forKey: .amSyncDirection)
         cleanOnly = try? c.decode(Bool.self, forKey: .cleanOnly)
         recsEnabled = try? c.decode(Bool.self, forKey: .recsEnabled)
+        // Lenient (`try?`): a garbled link decodes to nil ⇒ unlinked, never a dropped pocket.
+        amPlaylistId = try? c.decode(String.self, forKey: .amPlaylistId)
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
     }
@@ -424,6 +430,8 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     /// PRIVACY: this is a handle into the user's own Apple Music library, so every import path
     /// STRIPS it. A shared collection must never carry a link to the sharer's library.
     var amPlaylistId: String?
+    /// Copy for EXPORT (zip / .pdjcollection): the Apple Music link never leaves the device.
+    var strippedForExport: Playlist { var c = self; c.amPlaylistId = nil; return c }
     /// v7: epoch ms of the last time the user hit ▶ Play on this playlist — the "Recently played"
     /// sort key. Stamped by `CollectionsStore.markPlayed(playlistId:)` (NOT via `mutatePlaylist`,
     /// so `updatedAt` stays a pure membership/rename signal). nil ⇒ never played ⇒ sorts last.
@@ -446,7 +454,7 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, description, sequences, targetMs, folderId,
              sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt,
-             amSyncDirection, cleanOnly, recsEnabled, lastPlayedAt,
+             amSyncDirection, cleanOnly, recsEnabled, amPlaylistId, lastPlayedAt,
              createdAt, updatedAt
     }
 
@@ -457,8 +465,9 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
          sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
          sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil,
          amSyncDirection: String? = nil, cleanOnly: Bool? = nil, recsEnabled: Bool? = nil,
-         lastPlayedAt: Double? = nil,
+         lastPlayedAt: Double? = nil, amPlaylistId: String? = nil,
          createdAt: Double = 0, updatedAt: Double = 0) {
+        self.amPlaylistId = amPlaylistId
         self.id = id; self.name = name; self.description = description
         self.sequences = sequences; self.targetMs = targetMs; self.folderId = folderId
         self.sourcePlaylistId = sourcePlaylistId; self.sourceName = sourceName
@@ -495,6 +504,8 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
         // to nil ⇒ recommendations ON. Losing the opt-out costs a tile reappearing; throwing
         // would cost the whole playlist.
         recsEnabled = try? c.decode(Bool.self, forKey: .recsEnabled)
+        // Lenient (`try?`): a garbled link decodes to nil ⇒ unlinked, never a dropped playlist.
+        amPlaylistId = try? c.decode(String.self, forKey: .amPlaylistId)
         lastPlayedAt = try c.decodeIfPresent(Double.self, forKey: .lastPlayedAt)
         createdAt = try c.decode(Double.self, forKey: .createdAt)
         updatedAt = try c.decode(Double.self, forKey: .updatedAt)
