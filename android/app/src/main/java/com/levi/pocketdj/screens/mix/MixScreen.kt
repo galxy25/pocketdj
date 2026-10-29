@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -129,9 +130,8 @@ fun MixScreen(
             IconButton(onClick = { confirmingReset = true }, modifier = Modifier.testTag("mix-reset")) {
                 Icon(Icons.Filled.Close, "Start a new session", tint = DeckColors.fg)
             }
-            Box(Modifier.weight(1f)) {
-                Text("Mix", color = DeckColors.fg, style = androidx.compose.material3.MaterialTheme.typography.titleMedium, modifier = Modifier.padding(start = 6.dp))
-            }
+            // The shell top bar already titles this tab "Mix" (a second "Mix" here duplicated it).
+            Spacer(Modifier.weight(1f))
             FilterChip(
                 selected = st.autoEnabled, onClick = { vm.setAutoEnabled(!st.autoEnabled) },
                 label = { Text(if (st.autoEnabled) "Auto" else "Manual") },
@@ -190,10 +190,21 @@ fun MixScreen(
                         )
                     },
                 )
-                CrossfaderView(engine)
-                MasterTransport(engine)
                 if (auto.mixing) SkipButton(onSkip = vm::skip)
             }
+        }
+        // Crossfader + master transport pinned under the scrolling decks: on a phone the stacked
+        // decks are ~3 screens tall, so a crossfader at the end of the scroll was out of reach.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceContainer)
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+                .testTag("mix-pinned-xfader"),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            CrossfaderView(engine)
+            MasterTransport(engine)
         }
         // Bottom-pinned; the ONLY collector of the downloader's progress.
         DownloadBar(state = mix.collectionMixDownloader.state, onCancel = { mix.collectionMixDownloader.cancel() })

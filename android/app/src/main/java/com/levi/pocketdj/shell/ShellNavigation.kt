@@ -12,6 +12,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -240,6 +241,10 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
 
     // Persist the last-visited tab (token = iOS Section.rawValue).
     val currentTab = PocketDjDestination.bottomNav.firstOrNull { it.route == currentRoute }
+    // The tab that OWNS the visible screen: the top-most tab entry on the back stack, so a pushed
+    // screen (album, playlist, Now Playing) keeps its parent tab highlighted in the nav bar.
+    val backStack by navController.currentBackStack.collectAsState()
+    val owningTab = ShellTabs.owningTab(backStack.map { it.destination.route })
     LaunchedEffect(currentTab) { currentTab?.let { graph.lastSection.save(it) } }
 
     // NavRequestBus consumer: atomic take (clear first), tab switches NOW on a fresh stack,
@@ -294,10 +299,18 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
 
     // Composable context (the items lambda is not): one spring-load modifier per tab.
     val springMods = PocketDjDestination.bottomNav.associateWith { dest ->
-        val sel = currentDestination?.hierarchy?.any { it.route == dest.route } == true
+        val sel = dest == owningTab
         Modifier.springLoadTarget(sel) { navController.switchTab(dest, fresh = false) }
     }
 
+    val accentTint = MaterialTheme.colorScheme.primary
+    val navItemColors = androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteDefaults.itemColors(
+        navigationBarItemColors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+            indicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+            selectedIconColor = accentTint,
+            selectedTextColor = accentTint,
+        ),
+    )
     NavigationSuiteScaffold(
         layoutType = if (layout == ShellNavLayout.Rail) {
             NavigationSuiteType.NavigationRail
@@ -306,10 +319,14 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
         },
         navigationSuiteItems = {
             PocketDjDestination.bottomNav.forEach { dest ->
-                val selected = currentDestination?.hierarchy?.any { it.route == dest.route } == true
+                val selected = dest == owningTab
                 item(
                     selected = selected,
-                    onClick = { navController.switchTab(dest, fresh = false) },
+                    onClick = {
+                        // Re-tapping the owning tab from a pushed screen pops back to its root.
+                        if (selected && currentTab == null) navController.popBackStack(dest.route, inclusive = false)
+                        else navController.switchTab(dest, fresh = false)
+                    },
                     // COL-6: a song drag hovering a tab switches to it, so a Browse selection can
                     // be dropped onto a Collections row.
                     modifier = springMods.getValue(dest),
@@ -322,6 +339,10 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
                         Text(dest.label, maxLines = 1, softWrap = false, fontSize = 10.sp, overflow = TextOverflow.Visible)
                     },
                     alwaysShowLabel = layout == ShellNavLayout.Rail,
+                    // 7 slots on a phone are ~58 dp, narrower than M3's 64 dp selection pill, so the
+                    // pill clipped at the screen edges (Browse/Games). iOS tab bars mark the
+                    // selection with the accent tint, not a pill: same here (bar layout only).
+                    colors = navItemColors,
                 )
             }
         },
@@ -569,4 +590,11 @@ private fun ShellNavHost(
         // Area-contributed pushed routes (decision D3): no edit here per package.
         graph.features.navEntries.forEach { entry -> entry.register(this, actions) }
     }
+}
+
+/** Pure nav-bar helpers (JVM-tested). */
+object ShellTabs {
+    /** The top-most bottom-nav tab in [routes] (back stack, bottom to top); null when none. */
+    fun owningTab(routes: List<String?>): PocketDjDestination? =
+        routes.asReversed().firstNotNullOfOrNull { r -> PocketDjDestination.bottomNav.firstOrNull { it.route == r } }
 }

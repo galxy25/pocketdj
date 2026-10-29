@@ -3,6 +3,7 @@ package com.levi.pocketdj.screens.nowplaying
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -44,7 +45,7 @@ fun NowPlayingTitleBlock(state: NowPlayingUiState, modifier: Modifier = Modifier
             state.title,
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.SemiBold,
-            maxLines = 2,
+            maxLines = 1,
             textAlign = TextAlign.Center,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.testTag("np-title"),
@@ -74,18 +75,81 @@ fun NowPlayingRecord(
         color = Color.Transparent,
         modifier = modifier.combinedClickable(onClick = {}, onLongClick = onLongPress),
     ) {
-        RecordPlayer(spinning = state.spinning, bpm = state.bpm, progress = progress)
+        val ctx = androidx.compose.ui.platform.LocalContext.current
+        val album = androidx.compose.runtime.remember(state.albumId) {
+            state.albumId?.let { com.levi.pocketdj.di.AppGraph.get(ctx).catalogRepository.state.value.catalog?.albumsById?.get(it) }
+        }
+        RecordPlayer(
+            spinning = state.spinning, bpm = state.bpm, progress = progress,
+            album = album, hasTrack = state.hasTrack,
+        )
     }
 }
 
-/** Seekless elapsed/length bar (1 Hz). Hidden when the length is unknown. */
+/** Seekless elapsed/length bar (1 Hz) with elapsed / -remaining labels. Hidden when the length is unknown. */
 @Composable
-fun NowPlayingProgress(progress: Double?, modifier: Modifier = Modifier) {
+fun NowPlayingProgress(
+    progress: Double?,
+    modifier: Modifier = Modifier,
+    elapsedMs: Long? = null,
+    lengthMs: Long? = null,
+) {
     if (progress == null) return
-    LinearProgressIndicator(
-        progress = { progress.toFloat() },
-        modifier = modifier.fillMaxWidth().testTag("np-progress"),
-    )
+    Column(modifier.fillMaxWidth()) {
+        LinearProgressIndicator(
+            progress = { progress.toFloat() },
+            gapSize = 0.dp,
+            drawStopIndicator = {},
+            modifier = Modifier.fillMaxWidth().testTag("np-progress"),
+        )
+        if (elapsedMs != null && lengthMs != null && lengthMs > 0) {
+            val el = elapsedMs.coerceIn(0L, lengthMs)
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(
+                    NowPlayingTime.format(el),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("np-elapsed"),
+                )
+                Text(
+                    "-" + NowPlayingTime.format(lengthMs - el),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("np-remaining"),
+                )
+            }
+        }
+    }
+}
+
+/** BPM · key line under the title (iOS NP shows tempo + key chips). Renders nothing without data. */
+@Composable
+fun NowPlayingFactsLine(bpm: Double?, key: String?, camelot: String?, modifier: Modifier = Modifier) {
+    if ((bpm == null || bpm <= 0) && key.isNullOrBlank() && camelot.isNullOrBlank()) return
+    Row(
+        modifier.fillMaxWidth().padding(top = 4.dp).testTag("np-facts"),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (bpm != null && bpm > 0) {
+            Text(
+                "${Math.round(bpm)} BPM",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.size(8.dp))
+        }
+        com.levi.pocketdj.screens.browse.KeyChip(key, camelot)
+    }
+}
+
+/** m:ss (h:mm:ss past an hour). */
+object NowPlayingTime {
+    fun format(ms: Long): String {
+        val total = (ms.coerceAtLeast(0L) + 500) / 1000
+        val h = total / 3600; val m = (total % 3600) / 60; val s = total % 60
+        return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+    }
 }
 
 /** ⏮ ⏯ ⏭ + (while a set runs) shuffle / repeat / ⟲ and the ♥ / rating seams. */
@@ -109,6 +173,15 @@ fun NowPlayingTransportRow(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // iOS: ⟲ on the leading edge, ♥ on the trailing edge, ⏮⏯⏭ centred between them,
+            // for ANY current track (a Browse single included), not only while a set runs.
+            IconButton(onClick = onTogglePlayed, modifier = Modifier.testTag("np-played")) {
+                Icon(
+                    Icons.Filled.History,
+                    "Previously played",
+                    tint = if (showPlayedActive) accent else dim,
+                )
+            }
             IconButton(onClick = onPrevious, modifier = Modifier.testTag("np-previous")) {
                 Icon(Icons.Filled.SkipPrevious, "Previous", Modifier.size(32.dp))
             }
@@ -122,6 +195,14 @@ fun NowPlayingTransportRow(
             }
             IconButton(onClick = onNext, modifier = Modifier.testTag("np-next")) {
                 Icon(Icons.Filled.SkipNext, "Next", Modifier.size(32.dp))
+            }
+            val id = state.songId
+            if (id != null && NowPlayingSeams.heart != null) {
+                Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                    NowPlayingSeams.heart?.invoke(id, state.appleMusicId)
+                }
+            } else {
+                androidx.compose.foundation.layout.Spacer(Modifier.size(48.dp))
             }
         }
         if (state.showModeRow) {
@@ -145,17 +226,7 @@ fun NowPlayingTransportRow(
                         tint = if (state.repeatMode == RepeatMode.OFF) dim else accent,
                     )
                 }
-                IconButton(onClick = onTogglePlayed, modifier = Modifier.testTag("np-played")) {
-                    Icon(
-                        Icons.Filled.History,
-                        "Played",
-                        tint = if (showPlayedActive) accent else dim,
-                    )
-                }
-                state.songId?.let { id ->
-                    NowPlayingSeams.heart?.invoke(id, state.appleMusicId)
-                    NowPlayingSeams.rating?.invoke(id)
-                }
+                state.songId?.let { id -> NowPlayingSeams.rating?.invoke(id) }
             }
         }
     }
