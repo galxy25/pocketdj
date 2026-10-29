@@ -130,8 +130,21 @@ class ImportedSongsStore(private val file: File) {
     fun resolve(realDocs: List<IndexJson>): Resolution {
         val (s, a) = synchronized(lock) { songs to albums }
         if (s.isEmpty() && a.isEmpty()) return Resolution.EMPTY
-        return resolveEntries(s, a, realDocs)
+        // Memoized on the identity of the entries + real docs so CatalogRepository's identity-based
+        // sameInputs no-op check still short-circuits unchanged refreshes.
+        synchronized(lock) {
+            val m = memo
+            if (m != null && m.songs === s && m.albums === a && m.real.size == realDocs.size &&
+                m.real.indices.all { m.real[it] === realDocs[it] }
+            ) return m.result
+        }
+        val r = resolveEntries(s, a, realDocs)
+        synchronized(lock) { memo = Memo(s, a, realDocs.toList(), r) }
+        return r
     }
+
+    private class Memo(val songs: List<SongEntry>, val albums: List<AlbumEntry>, val real: List<IndexJson>, val result: Resolution)
+    private var memo: Memo? = null
 
     /** The synthetic source for the catalog merge; null when empty. Stable instance between changes. */
     fun syntheticDocument(): IndexJson? = synchronized(lock) {
@@ -154,8 +167,10 @@ class ImportedSongsStore(private val file: File) {
 
     companion object {
         /**
-         * Land a supersede (iOS `AppModel.applySupersede` order): drop the imported rows FIRST, then remap
-         * collection references, then favorites. A throwing step never blocks the following ones.
+         * Land a supersede. Durability deviation from iOS order (documented): remap collections + favorites
+         * FIRST (idempotent), then prune the imported rows, because the pair is only derivable while the
+         * amrec_ row exists on disk; a kill mid-sequence re-derives the pair on the next merge.
+         * A throwing step never blocks the following ones.
          */
         fun landSupersede(
             pairs: List<Pair<String, String>>,
@@ -164,9 +179,9 @@ class ImportedSongsStore(private val file: File) {
             remapFavorites: (List<Pair<String, String>>) -> Unit,
         ) {
             if (pairs.isEmpty()) return
-            runCatching { removeImported(pairs.map { it.first }) }
             runCatching { remapCollections(pairs) }
             runCatching { remapFavorites(pairs) }
+            runCatching { removeImported(pairs.map { it.first }) }
         }
 
         /** Pure core of [resolve]. */

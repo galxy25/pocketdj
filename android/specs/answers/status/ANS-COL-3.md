@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-COL-3 - COL-15 complete
 
@@ -15,3 +15,13 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+- MINOR PlaylistsScreen global Setlists section: fixed (kept per Q75 "no partial"; rows now have Rename/Delete(confirm) overflow like iOS setlistRow; setlists whose playlistId is the reserved Now Playing playlist hidden). Per-playlist section already existed; global list flagged for Levi/integrator to confirm.
+- MINOR "No results" above setlist results: fixed (caption only when playlists, pockets and setlists all empty).
+- MINOR resolve() rebuilt IndexJson each merge: fixed (memoized on entries/realDocs identity; test resolveIsMemoizedOnUnchangedInputs).
+- MINOR landSupersede order: fixed (remap collections, remap favorites, THEN prune imported; documented deviation from iOS; tests updated).
+- NIT KDoc stale "deferred": fixed. Label/format alignment with iOS: not done (optional).
+- NIT wiring test never drives CollectionsGraph: not fixed (graph needs the app container); order is covered at landSupersede. Tests re-run at tip: 5220 run (was 5218, +2), 0 failures, assembleDebug OK.
+
+fixes applied

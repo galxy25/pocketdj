@@ -130,4 +130,10 @@ class CollectionExportImportTest {
         assertEquals(listOf("b"), com.levi.pocketdj.screens.playlists.listableSetlists(all, " FRI ").map { it.id })
         assertEquals("Set list", com.levi.pocketdj.screens.playlists.setlistTitle(rows[1]))
     }
+
+    @Test fun collectionsTabSetlistsHideReservedNowPlayingPlaylistTakes() {
+        val reserved = com.levi.pocketdj.data.collections.Setlist(
+            id = "x", name = "Take", generatedAt = 1.0, playlistId = com.levi.pocketdj.data.collections.NOW_PLAYING_PLAYLIST_ID)
+        assertTrue(com.levi.pocketdj.screens.playlists.listableSetlists(listOf(reserved), "").isEmpty())
+    }
 }

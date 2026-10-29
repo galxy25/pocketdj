@@ -73,7 +73,7 @@ class ImportedSupersedeWiringTest {
         assertEquals("only amrec_ entries are removed, and only by the callback", 2, imported.songs().size)
     }
 
-    @Test fun landingRemovesImportedThenRemapsCollectionsAndFavorites() {
+    @Test fun landingRemapsCollectionsAndFavoritesThenRemovesImported() {
         val col = CollectionsStore(file = File(tmp.root, CollectionsStore.FILE_NAME), now = { 1_750_000_000_000.0 })
         val fav = File(tmp.root, "fav.json").let { f -> FavoritesStore(f, writer = VersionedJsonWriter(f)) }
         val imported = ImportedSongsStore(File(tmp.root, "i.json"))
@@ -91,7 +91,7 @@ class ImportedSupersedeWiringTest {
             remapCollections = { order += "collections"; col.remapSongIds(it) },
             remapFavorites = { order += "favorites"; fav.remapSongIds(it) },
         )
-        assertEquals(listOf("remove", "collections", "favorites"), order)
+        assertEquals(listOf("collections", "favorites", "remove"), order)
         assertTrue(imported.songs().isEmpty())
         assertEquals(listOf("sng_real"), col.pocket(pocket.id)!!.songIds)
         assertTrue(fav.isFavorite("sng_real")); assertFalse(fav.isFavorite("amrec_1"))
@@ -105,8 +105,18 @@ class ImportedSupersedeWiringTest {
             remapCollections = { order += "collections" },
             remapFavorites = { order += "favorites" },
         )
-        assertEquals(listOf("remove", "collections", "favorites"), order)
+        assertEquals(listOf("collections", "favorites", "remove"), order)
         ImportedSongsStore.landSupersede(emptyList(), { order += "x" }, { order += "x" }, { order += "x" })
         assertEquals(3, order.size)
+    }
+
+    @Test fun resolveIsMemoizedOnUnchangedInputs() {
+        val imported = ImportedSongsStore(File(tmp.root, "memo.json"))
+        imported.add(listOf(song("amrec_1", "9"), song("sng_keep", "5")))
+        val real = listOf(IndexJson(manifest = IndexManifest(sourceName = "AM"), songs = listOf(IndexSong(id = "sng_real", artist = "A", name = "x", appleMusicId = "9"))))
+        val a = imported.resolve(real)
+        assertTrue("same inputs return the same Resolution/doc instances", a === imported.resolve(real))
+        imported.add(listOf(song("sng_other", "7")))
+        assertFalse(a === imported.resolve(real))
     }
 }

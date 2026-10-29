@@ -67,7 +67,7 @@ import com.levi.pocketdj.screens.browse.SongDetailSheet
  * delete-chapter actions) → "Set lists" section (frozen takes) → action row
  * with ▶ Play / Shuffle (→ the reserved Now Playing setlist, autostarting) and
  * the ⋯ overflow (Make set list, Add chapter, Rename, Convert to pocket,
- * Delete). Export / rip-burn / source-sync are P2-deferred (§13).
+ * Delete). Export (zip + CSV) landed in ANS-COL-3; rip-burn / source-sync are P2-deferred (§13).
  */
 @Composable
 fun PlaylistDetailScreen(
