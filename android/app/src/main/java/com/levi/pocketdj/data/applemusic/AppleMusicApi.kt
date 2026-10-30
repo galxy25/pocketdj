@@ -176,6 +176,14 @@ class AppleMusicApi(
             AppleMusicApiModels.parseLibraryPlaylists(it)
         }
 
+    /** One library playlist's STRICT `canEdit` (absent = false). Null when the playlist can't be read. */
+    suspend fun libraryPlaylistCanEdit(playlistId: String): AmResult<Boolean?> =
+        call(get(url("v1", "me", "library", "playlists", playlistId)), userScoped = true) {
+            AppleMusicApiModels.parseLibraryPlaylistCanEdit(it)?.let { v -> BoolBox(v) } ?: BoolBox(null)
+        }.map { it.v }
+
+    private data class BoolBox(val v: Boolean?)
+
     /** Walks every page (bounded by [maxPages]); first non-Ok result aborts. */
     suspend fun allLibraryPlaylists(pageSize: Int = 100, maxPages: Int = 100): AmResult<List<AmLibraryPlaylist>> {
         val out = ArrayList<AmLibraryPlaylist>()

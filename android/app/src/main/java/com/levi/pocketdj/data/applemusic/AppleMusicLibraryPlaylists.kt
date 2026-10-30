@@ -158,6 +158,14 @@ class WebApiPlaylistWriteBackTransport(
             is PlaylistReconcilePlanner.Plan.AlreadyInSync -> return PlaylistReconcileResult.AlreadyInSync
             is PlaylistReconcilePlanner.Plan.Unsafe -> return PlaylistReconcileResult.NotEditable
             is PlaylistReconcilePlanner.Plan.Edit -> {
+                // iOS: MusicKit `edit` throws on foreign playlists. Here nothing throws for us, so check
+                // canEdit STRICTLY (absent = not editable) before any destructive call.
+                when (val ce = api.libraryPlaylistCanEdit(playlistId)) {
+                    is AmResult.Ok -> if (ce.value != true) return PlaylistReconcileResult.NotEditable
+                    is AmResult.Failure ->
+                        if (PlaylistReconcilePlanner.isRefusal(ce.status)) return PlaylistReconcileResult.NotEditable else throw failure(ce)
+                    else -> unwrap(ce)
+                }
                 var first = true
                 for (batch in AppleMusicApi.batches(plan.deleteLibraryIds)) {
                     when (val r = api.removeTracksFromPlaylist(playlistId, batch)) {

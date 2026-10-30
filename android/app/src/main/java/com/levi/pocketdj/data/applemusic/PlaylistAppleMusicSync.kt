@@ -654,26 +654,52 @@ object PlaylistReconcilePlanner {
 
     fun plan(live: List<AmTrackRow>, target: List<String>): Plan {
         if (live.any { it.libraryId == null || it.catalogId == null }) return Plan.Unsafe
-        val liveCat = live.map { it.catalogId!! }
-        if (liveCat == target) return Plan.AlreadyInSync
         val targetSet = target.toSet()
+        // Judge each live row by its WHOLE id set (iOS catalogIds(of:)): an equivalent id of a target
+        // song counts as that song, so a regional/reissue mapping is not a perpetual remove + re-add.
+        val liveCat = live.map { r ->
+            if (r.catalogId!! in targetSet) r.catalogId
+            else r.equivalentIds.firstOrNull { it in targetSet } ?: r.catalogId
+        }
+        if (liveCat == target) return Plan.AlreadyInSync
         val liveSet = liveCat.toSet()
         val added = target.count { it !in liveSet }
         val removed = liveCat.count { it !in targetSet }
-        val kept = live.filter { it.catalogId in targetSet }
-        val keptCat = kept.map { it.catalogId!! }
-        val keepFrom: Int
-        val deletes: List<AmTrackRow>
-        if (keptCat.size <= target.size && target.subList(0, keptCat.size) == keptCat) {
-            // Removals only (plus a possible tail append): live order is already the target's prefix.
-            deletes = live.filter { it.catalogId !in targetSet }
+        val kept = live.indices.filter { liveCat[it] in targetSet }
+        val keptCat = kept.map { liveCat[it] }
+        var keepFrom: Int
+        var deletes: List<AmTrackRow>
+        // DELETE addresses the SONG (library id), not the entry: a deleted id that also sits in the kept
+        // prefix would remove that copy too, so such a plan is not allowed.
+        fun clashes(del: List<AmTrackRow>, keptRows: List<AmTrackRow>) =
+            del.map { it.libraryId }.toSet().let { d -> keptRows.any { it.libraryId in d } }
+        val removalOnly = keptCat.size <= target.size && target.subList(0, keptCat.size) == keptCat &&
+            !clashes(live.filterIndexed { i, _ -> liveCat[i] !in targetSet }, kept.map { live[it] })
+        if (removalOnly) {
+            deletes = live.filterIndexed { i, _ -> liveCat[i] !in targetSet }
             keepFrom = keptCat.size
         } else {
             var p = 0
             while (p < liveCat.size && p < target.size && liveCat[p] == target[p]) p++
+            while (true) {
+                val d = live.drop(p).map { it.libraryId }.toSet()
+                val firstClash = live.take(p).indexOfFirst { it.libraryId in d }
+                if (firstClash < 0) break
+                p = firstClash
+            }
             deletes = live.drop(p)
             keepFrom = p
         }
-        return Plan.Edit(deletes.map { it.libraryId!! }, target.drop(keepFrom), added, removed)
+        // Only re-add what THIS pass deleted. Anything else missing is the push's job: a just-pushed track
+        // may not be visible in the (eventually consistent) read yet, and appending it here would duplicate it.
+        val budget = HashMap<String, Int>()
+        val delIdx = if (removalOnly) live.indices.filter { liveCat[it] !in targetSet } else (keepFrom until live.size).toList()
+        if (!removalOnly) for (i in delIdx) budget.merge(liveCat[i], 1, Int::plus)
+        val append = if (removalOnly) emptyList() else target.drop(keepFrom).filter { id ->
+            val n = budget[id] ?: 0
+            if (n > 0) { budget[id] = n - 1; true } else false
+        }
+        if (deletes.isEmpty() && append.isEmpty()) return Plan.AlreadyInSync
+        return Plan.Edit(deletes.map { it.libraryId!! }.distinct(), append, added, removed)
     }
 }

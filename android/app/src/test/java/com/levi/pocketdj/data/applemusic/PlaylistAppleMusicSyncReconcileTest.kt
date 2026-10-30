@@ -48,7 +48,7 @@ class PlaylistAppleMusicSyncReconcileTest {
     @Test fun removalPlusTailAppend() {
         val p = edit(PlaylistReconcilePlanner.plan(rows("a", "x"), listOf("a", "b")))
         assertEquals(listOf("i.x"), p.deleteLibraryIds)
-        assertEquals(listOf("b"), p.appendCatalogIds)
+        assertTrue("the missing tail is the push's job, never reconcile's", p.appendCatalogIds.isEmpty())
         assertEquals(1, p.added); assertEquals(1, p.removed)
     }
 
@@ -62,7 +62,7 @@ class PlaylistAppleMusicSyncReconcileTest {
     @Test fun liveDuplicateFallsBackToPrefixRewrite() {
         val p = edit(PlaylistReconcilePlanner.plan(rows("a", "a", "b"), listOf("a", "b")))
         assertEquals(listOf("i.a", "i.b"), p.deleteLibraryIds)
-        assertEquals(listOf("b"), p.appendCatalogIds)
+        assertEquals(listOf("a", "b"), p.appendCatalogIds)
     }
 
     @Test fun rowWithoutIdsFailsClosed() {
@@ -98,13 +98,16 @@ class PlaylistAppleMusicSyncReconcileTest {
         """{"id":"i.$it","attributes":{"playParams":{"catalogId":"$it"}}}"""
     }
 
-    private fun serve(trackBody: String, deleteCode: Int = 204, postCode: Int = 204): MutableList<RecordedRequest> {
+    private fun serve(
+        trackBody: String, deleteCode: Int = 204, postCode: Int = 204,
+        playlistBody: String = """{"data":[{"id":"p.1","attributes":{"canEdit":true}}]}""",
+    ): MutableList<RecordedRequest> {
         val seen = mutableListOf<RecordedRequest>()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 seen += request
                 return when (request.method) {
-                    "GET" -> MockResponse().setBody(trackBody)
+                    "GET" -> MockResponse().setBody(if (request.path!!.contains("/tracks")) trackBody else playlistBody)
                     "DELETE" -> MockResponse().setResponseCode(deleteCode)
                     else -> MockResponse().setResponseCode(postCode)
                 }
@@ -146,6 +149,48 @@ class PlaylistAppleMusicSyncReconcileTest {
         val seen = serve(body)
         assertEquals(PlaylistReconcileResult.NotEditable, transport().reconcile("p.1", listOf("a")))
         assertTrue(seen.none { it.method != "GET" })
+    }
+
+    @Test fun transportRealUploadShapeNeverDeleted() = runBlocking {
+        val body = """{"data":[{"id":"i.1","attributes":{"playParams":{"catalogId":"a"}}},""" +
+            """{"id":"i.up","attributes":{"playParams":{"id":"i.up","kind":"song","isLibrary":true}}}]}"""
+        val seen = serve(body)
+        assertEquals(PlaylistReconcileResult.NotEditable, transport().reconcile("p.1", listOf("a")))
+        assertTrue(seen.none { it.method != "GET" })
+    }
+
+    @Test fun transportCanEditFalseOrAbsentWritesNothing() = runBlocking {
+        for (pb in listOf("""{"data":[{"id":"p.1","attributes":{"canEdit":false}}]}""", """{"data":[{"id":"p.1","attributes":{}}]}""")) {
+            val seen = serve(live("a", "x"), playlistBody = pb)
+            assertEquals(PlaylistReconcileResult.NotEditable, transport().reconcile("p.1", listOf("a")))
+            assertTrue(seen.none { it.method != "GET" })
+        }
+    }
+
+    @Test fun transportStaleReadNeverAppendsTheJustPushedTail() = runBlocking {
+        // push appended c, but the read still shows [a,b]: reconcile must not append c a second time
+        val seen = serve(live("a", "b"))
+        assertEquals(PlaylistReconcileResult.AlreadyInSync, transport().reconcile("p.1", listOf("a", "b", "c")))
+        assertTrue(seen.none { it.method != "GET" })
+    }
+
+    @Test fun equivalentCatalogIdIsTheSameSong() {
+        val live = listOf(AmTrackRow("i.a", "222", setOf("111")), AmTrackRow("i.b", "b"))
+        assertEquals(PlaylistReconcilePlanner.Plan.AlreadyInSync, PlaylistReconcilePlanner.plan(live, listOf("111", "b")))
+    }
+
+    @Test fun parserReadsEquivalentIdsAndIgnoresLibraryIds() {
+        val body = """{"data":[{"id":"i.1","attributes":{"purchasedId":"p9","playParams":{"catalogId":"c1","id":"c1x"}}}]}"""
+        val row = AppleMusicApiModels.parseTrackPage(body)!!.rows.single()
+        assertEquals("c1", row.catalogId); assertEquals(setOf("c1x", "p9"), row.equivalentIds)
+    }
+
+    @Test fun prefixCopyIsNotDeletedWithItsLaterDuplicate() {
+        // live [a,b,a,c] -> target [a,c,b]: deleting "i.a" would also remove the kept first a
+        val live = listOf(AmTrackRow("i.a", "a"), AmTrackRow("i.b", "b"), AmTrackRow("i.a", "a"), AmTrackRow("i.c", "c"))
+        val p = edit(PlaylistReconcilePlanner.plan(live, listOf("a", "c", "b")))
+        assertEquals(listOf("i.a", "i.b", "i.c"), p.deleteLibraryIds)
+        assertEquals(listOf("a", "c", "b"), p.appendCatalogIds)
     }
 
     @Test fun transportReadFailureThrowsInsteadOfBlindReplace() {
