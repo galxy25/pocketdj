@@ -44,4 +44,38 @@ class GamesGraphBridgeTest {
         h.setOptIn(RecordingOptIn())
         assertEquals(listOf(false), real.choices)
     }
+
+    @Test fun recommendationsEnabledObservesLateWiredTarget() {
+        val h = PocketsServiceHolder()
+        val flow = h.optIn.recommendationsEnabled // captured BEFORE wiring, as a screen does
+        assertFalse(flow.value)
+        val real = RecordingOptIn()
+        h.setOptIn(real)
+        assertTrue("captured flow must follow the target wired later", flow.value)
+        (real.recommendationsEnabled as MutableStateFlow).value = false
+        assertFalse(flow.value)
+        h.setOptIn(null)
+        assertFalse(flow.value)
+    }
+
+    @Test fun parsePocketsEnableAcceptsBooleanAndStrings() {
+        assertTrue(GamesGraph.parsePocketsEnable(true))
+        assertTrue(GamesGraph.parsePocketsEnable("true"))
+        assertTrue(GamesGraph.parsePocketsEnable("1"))
+        assertFalse(GamesGraph.parsePocketsEnable("0"))
+        assertFalse(GamesGraph.parsePocketsEnable(null))
+        assertFalse(GamesGraph.parsePocketsEnable(false))
+    }
+
+    @Test fun unwiredBridgeIsInertAssignedBridgeIsObservable() {
+        val h = PocketsServiceHolder()
+        assertNull(h.bridge.value)
+        assertFalse(NoPocketsBridge.isEnabled.value)
+        h.bridge.value = NoPocketsBridge
+        assertSame(NoPocketsBridge, h.bridge.value)
+    }
+
+    @Test fun loadingTimeoutIsBounded() {
+        assertTrue(com.levi.pocketdj.screens.games.InThePocketScreenLogic.LOADING_TIMEOUT_MS in 1_000L..30_000L)
+    }
 }

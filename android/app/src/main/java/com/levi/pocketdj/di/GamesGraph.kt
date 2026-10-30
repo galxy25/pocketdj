@@ -356,8 +356,7 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
         DeepLinkHandler { intent ->
             // Debug alias of CollectionsGraph's `pdj.pocketsEnable`: real Settings writes, no stub.
             if (isDebuggable() && intent.hasExtra(POCKETS_STUB_EXTRA)) {
-                val on = intent.getBooleanExtra(POCKETS_STUB_EXTRA, false) ||
-                    intent.getStringExtra(POCKETS_STUB_EXTRA).let { it == "true" || it == "1" }
+                val on = parsePocketsEnable(intent.extras?.get(POCKETS_STUB_EXTRA))
                 app.appScope.launch(Dispatchers.IO) {
                     runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ANSWERED, true) }
                     runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, on) }
@@ -394,6 +393,13 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
             return out
         }
 
+        /** Shared parse for the debug pockets-enable extras: Boolean true, or the strings "true"/"1". */
+        internal fun parsePocketsEnable(v: Any?): Boolean = when (v) {
+            is Boolean -> v
+            is String -> v == "true" || v == "1"
+            else -> false
+        }
+
         const val ROUNDS_SYNC_FILE = "pocketdj-in-the-pocket-sync.json"
         const val POCKETS_STUB_EXTRA = "pdj.pocketsStub"
         const val PUZZLE_DECISIONS_FILE = "pocketdj-puzzle-decisions.json"
@@ -424,10 +430,13 @@ class PocketsServiceHolder {
         private set
     private var pendingChoice: Boolean? = null
     private val lock = Any()
-    private val offFlow = MutableStateFlow(false).asStateFlow()
+    /** Observable mirror of the target's flag (false until wired): a collector sees a later-wired target. */
+    private val recsMirror = MutableStateFlow(false)
+    private val recsScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+    private var recsJob: kotlinx.coroutines.Job? = null
 
     val optIn: com.levi.pocketdj.screens.games.PocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
-        override val recommendationsEnabled: StateFlow<Boolean> get() = optInTarget?.recommendationsEnabled ?: offFlow
+        override val recommendationsEnabled: StateFlow<Boolean> get() = recsMirror.asStateFlow()
         override fun choose(on: Boolean) {
             val target = synchronized(lock) {
                 optInTarget ?: run { pendingChoice = on; null }
@@ -440,6 +449,10 @@ class PocketsServiceHolder {
         val replay = synchronized(lock) {
             optInTarget = value
             if (value != null) pendingChoice.also { pendingChoice = null } else null
+        }
+        recsJob?.cancel()
+        recsJob = if (value == null) null.also { recsMirror.value = false } else recsScope.launch {
+            value.recommendationsEnabled.collect { recsMirror.value = it }
         }
         if (replay != null) value?.choose(replay)
     }

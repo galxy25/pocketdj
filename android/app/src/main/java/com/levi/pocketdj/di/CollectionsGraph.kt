@@ -329,7 +329,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 intent.getStringExtra("pdj.pocketsEnable")?.let { v ->
                     app.appScope.launch(Dispatchers.IO) {
                         runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ANSWERED, true) }
-                        runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, v == "1") }
+                        runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, GamesGraph.parsePocketsEnable(v)) }
                     }
                 }
                 intent.getStringExtra("pdj.amApiBase")?.let { com.levi.pocketdj.data.applemusic.AppleMusicApi.debugBase = it }

@@ -68,9 +68,15 @@ fun InThePocketScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     val games = graph.gamesGraph
     // The real bridge is assigned asynchronously after launch: observe it so an early open recomposes onto it.
     val servicesBridge by games.servicesBridgeFlow.collectAsState()
-    val bridge = servicesBridge
+    // A null bridge is "still wiring"; if it never arrives (wiring threw) fall back to the inert bridge so
+    // the user gets iOS's "isn't available" branch instead of an endless spinner. A late bridge still wins.
+    var gaveUp by remember { mutableStateOf(false) }
+    LaunchedEffect(servicesBridge == null) {
+        if (servicesBridge == null) { kotlinx.coroutines.delay(InThePocketScreenLogic.LOADING_TIMEOUT_MS); gaveUp = true }
+        else gaveUp = false
+    }
+    val bridge = servicesBridge ?: if (gaveUp) com.levi.pocketdj.data.pockets.NoPocketsBridge else null
     if (bridge == null) {
-        // The real bridge is still being wired (async after launch): never flash "isn't available".
         Box(modifier.fillMaxSize().testTag("itp-loading"), contentAlignment = Alignment.Center) {
             CircularProgressIndicator()
         }
@@ -78,7 +84,11 @@ fun InThePocketScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     }
     val enabled by bridge.isEnabled.collectAsState()
     if (!enabled) {
-        PocketsOptInView(games.pocketsOptIn, modifier)
+        if (bridge === com.levi.pocketdj.data.pockets.NoPocketsBridge) {
+            Box(modifier.fillMaxSize().testTag("itp-unavailable"), contentAlignment = Alignment.Center) {
+                Text(InThePocketScreenLogic.UNAVAILABLE_TEXT)
+            }
+        } else PocketsOptInView(games.pocketsOptIn, modifier)
         return
     }
     InThePocketContent(games.inThePocket, games.scoreboard, bridge, modifier)
