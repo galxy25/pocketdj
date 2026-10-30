@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 Tests: 5661 total, 0 failed (+6 new: 2 dispatcher, 4 AutoAsync). Debug + release assemble green.
 
