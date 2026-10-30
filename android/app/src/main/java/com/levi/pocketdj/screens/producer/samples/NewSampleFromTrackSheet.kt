@@ -56,6 +56,7 @@ import com.levi.pocketdj.studio.audio.SourcePhase
 import com.levi.pocketdj.studio.audio.StudioAudio
 import com.levi.pocketdj.studio.demux.BeatMath
 import com.levi.pocketdj.studio.engine.SampleFileException
+import com.levi.pocketdj.studio.engine.StemCarve
 import com.levi.pocketdj.studio.model.StudioGrid
 import com.levi.pocketdj.studio.model.StudioSample
 import kotlinx.coroutines.Dispatchers
@@ -124,6 +125,11 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
     var carving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var playhead by remember { mutableStateOf(0.0) }
+    var stemsDownloaded by remember { mutableStateOf(false) }
+    var stemsAvailable by remember { mutableStateOf(false) }
+    var stemMode by remember { mutableStateOf(false) }
+    var enabledStems by remember { mutableStateOf(StemCarve.allEnabled()) }
+    var stemBusy by remember { mutableStateOf(false) }
     val playing by engine.isPlayingSample.collectAsState()
 
     DisposableEffect(Unit) { onDispose { engine.unloadSample() } }
@@ -163,6 +169,9 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
         selection++
         val token = selection
         song = s; error = null; window = null; peaks = FloatArray(0)
+        stemsDownloaded = burns.stemsBurned(s.id)
+        stemsAvailable = StemCarve.available(stemsDownloaded, burns.stemsRemote(s.id))
+        stemMode = false; stemBusy = false; enabledStems = StemCarve.allEnabled()
         val p = cache.phaseFor(s.id)
         phase = p
         if (p is SourcePhase.Ready) scope.launch { enterReady(s, p.source, token) }
@@ -179,10 +188,29 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
         }
     }
 
+    /** Flip stem mode; switching it on fetches missing stems right away (iOS setStemMode) with a busy state. */
+    fun setStemMode(on: Boolean) {
+        stemMode = on
+        val s = song ?: return
+        if (!on || stemsDownloaded || stemBusy) return
+        val token = selection
+        stemBusy = true; error = null
+        scope.launch {
+            val r = StemCarve.resolve({ burns.localStemFiles(s.id) }, { burns.burnStems(s.id) })
+            if (token != selection) return@launch
+            stemBusy = false
+            when (r) {
+                is StemCarve.Resolved.Files -> stemsDownloaded = true
+                is StemCarve.Resolved.Failed -> { stemMode = false; error = StemCarve.DOWNLOAD_FAILED }
+            }
+        }
+    }
+
     fun carve() {
         val s = song ?: return
         val src = (phase as? SourcePhase.Ready)?.source ?: run { error = "This track isn’t on the device anymore. Burn it again, then carve."; return }
         carving = true; error = null
+        val chosenStems = enabledStems
         scope.launch {
             val sidecar = burns.localBeatGrid(s.id)
             val bg = BeatMath.inheritedGrid(
@@ -192,7 +220,16 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
             )
             val grid = bg?.let { StudioGrid(it.bpm, it.firstDownbeatMs, it.beatsMs) }
             try {
-                val made = studio.sampleFactory.carveTrack(s.id, s.name, src, startMs, endMs, grid)
+                val made = if (stemMode) {
+                    // Stems are song-relative: the window is used as marked (no album offset). Fetch them on demand.
+                    when (val r = StemCarve.resolve({ burns.localStemFiles(s.id) }, { burns.burnStems(s.id) })) {
+                        is StemCarve.Resolved.Failed -> { error = r.message; return@launch }
+                        is StemCarve.Resolved.Files -> {
+                            stemsDownloaded = true
+                            studio.sampleFactory.carveStems(s.id, s.name, r.files, chosenStems, startMs, endMs, grid)
+                        }
+                    }
+                } else studio.sampleFactory.carveTrack(s.id, s.name, src, startMs, endMs, grid)
                 engine.unloadSample()
                 onFiled(made.id)
                 onDismiss()
@@ -236,6 +273,10 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
                         onSeek = { f -> engine.seekSample(f * lenMs / 1000.0) },
                         onPlay = { if (playing) engine.pauseSample() else engine.playSample() },
                         onCarve = ::carve,
+                        stemSection = {
+                            StemSourceSection(stemsAvailable, stemsDownloaded, stemMode, enabledStems, busy = carving || stemBusy,
+                                onStemMode = ::setStemMode, onToggle = { enabledStems = StemCarve.toggle(enabledStems, it) })
+                        },
                     )
                     SourcePhase.NeedsBurn -> {
                         Text("This track isn’t on the device yet. Burn it to carve a sample offline.", Modifier.padding(vertical = 12.dp))
@@ -265,6 +306,7 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
 private fun ReadyBody(
     peaks: FloatArray, lenMs: Int, startMs: Int, endMs: Int, playheadMs: Int, playing: Boolean, gridBpm: Double?,
     carving: Boolean, error: String?, onRegion: (Int, Int) -> Unit, onSeek: (Float) -> Unit, onPlay: () -> Unit, onCarve: () -> Unit,
+    stemSection: @Composable () -> Unit = {},
 ) {
     val beat = NewSampleLogic.beatMs(gridBpm)
     val f = { ms: Int -> (ms.toFloat() / lenMs).coerceIn(0f, 1f) }
@@ -286,6 +328,7 @@ private fun ReadyBody(
             "Region ${StudioFmt.mmssTenths(endMs - startMs)}" + (gridBpm?.let { " · grid ${StudioFmt.trim(it)} BPM (inherited)" } ?: " · no grid — set one in the editor"),
             style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        stemSection()
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("carve-error")) }
         Button(onClick = onCarve, enabled = !carving && NewSampleLogic.canCarve(startMs, endMs), modifier = Modifier.fillMaxWidth().testTag("carve")) {
             if (carving) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
