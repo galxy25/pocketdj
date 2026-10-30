@@ -3,6 +3,7 @@ package com.levi.pocketdj.playback.sequencer
 import com.levi.pocketdj.data.rips.RipManifestEntry
 import com.levi.pocketdj.playback.PlaybackMode
 import java.io.File
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -53,5 +54,16 @@ class BurnedRowResolverTest {
         val src = registry().resolve(QueueItem("m"), PlaybackMode.DEVICE)
         assertEquals(UnplayableSource(UnplayableSource.Reason.NOT_ON_DEVICE), src)
         assertTrue(registry().resolve(QueueItem("a"), PlaybackMode.DEVICE) is LocalFileSource)
+    }
+
+    @Test fun ladderRungResolvesOnTheInjectedDispatcher() = runBlocking {
+        val seen = mutableListOf<String>()
+        val ex = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "fake-io") }
+        try {
+            val r = BurnedRowResolver(ex.asCoroutineDispatcher()) { seen += Thread.currentThread().name; burned[it] }
+            val src = r.resolve(QueueItem("a"), ResolveContext(PlaybackMode.CLOUD, false, false))
+            assertTrue(src is LocalFileSource)
+            assertEquals(1, seen.size); assertTrue(seen[0].startsWith("fake-io"))
+        } finally { ex.shutdown() }
     }
 }

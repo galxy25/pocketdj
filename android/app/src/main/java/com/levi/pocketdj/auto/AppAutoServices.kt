@@ -15,6 +15,35 @@ import com.levi.pocketdj.screens.collections.AddToItem
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+/**
+ * Q96: Android Auto binder callbacks (`onGetLibraryRoot` / `onGetChildren` / `onGetItem` / `onGetSearchResult`)
+ * arrive on the service's Main looper. The root is therefore a constant (no graph, no disk), and everything
+ * that needs the lazily built auto graph is computed off Main and delivered through a future.
+ */
+object AutoAsync {
+    /** Same node as [AutoBrowseTree.root]; constant so the root answer never waits on the graph. */
+    val STATIC_ROOT: AutoNode = AutoNode(
+        id = AutoId.Root.encoded,
+        title = "PocketDJ",
+        browsable = true,
+        childBrowsableStyle = AutoStyle.CATEGORY_LIST,
+    )
+
+    /** Run [block] on [dispatcher] (never inline); the future fails with the thrown exception. */
+    fun <T> compute(
+        scope: kotlinx.coroutines.CoroutineScope,
+        dispatcher: kotlinx.coroutines.CoroutineDispatcher,
+        block: () -> T,
+    ): com.google.common.util.concurrent.ListenableFuture<T> {
+        val out = com.google.common.util.concurrent.SettableFuture.create<T>()
+        scope.launch(dispatcher) {
+            try { out.set(block()) } catch (e: kotlinx.coroutines.CancellationException) { out.cancel(false); throw e }
+            catch (t: Throwable) { out.setException(t) }
+        }
+        return out
+    }
+}
+
 /** Production wiring of the Auto ports onto the app graph (device-verified through the DHU, not JVM-tested). */
 class AppAutoData(private val app: AppGraph) : AutoLibraryData {
     /** Set by the service: the open lists must be re-read (sign-in flipped, held row changed, collections changed). */

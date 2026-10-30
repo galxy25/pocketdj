@@ -175,6 +175,12 @@ class BurnStore(
 
     fun hasLocalFile(songId: String): Boolean = localUrl(songId) != null
 
+    /**
+     * Ledger-only "is this song burned and ready" (in-memory map, NO disk): safe on Main. Used by the
+     * stall-hop `rowOnDevice` probe, where an exists()/SAF stat per queue row would block the main thread.
+     */
+    fun isReadyInLedger(songId: String): Boolean = _items.value[songId]?.state == BurnState.READY
+
     /** Playback resolution (uncached; the moment of use re-checks the disk). */
     fun localUrlForPlayback(songId: String): File? {
         val item = _items.value[songId]?.takeIf { it.state == BurnState.READY } ?: return null
