@@ -468,6 +468,9 @@ class AppGraph private constructor(context: Context) {
         @Volatile
         private var instance: AppGraph? = null
 
+        /** The graph if this process already built it (never builds one). */
+        fun peek(): AppGraph? = instance
+
         fun get(context: Context): AppGraph =
             instance ?: synchronized(this) {
                 instance ?: AppGraph(context).also { instance = it }

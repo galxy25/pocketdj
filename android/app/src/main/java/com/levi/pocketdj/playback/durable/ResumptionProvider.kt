@@ -95,8 +95,14 @@ class ResumptionProvider(private val restorer: SessionRestorer, private val stor
      * Null when there is nothing to resume. Never plays and never writes the file.
      */
     fun onPlaybackResumption(): ResumptionSnapshot? {
-        restorer.restoreIfIdle()
-        val snap = store.load() ?: return null
+        val snap = store.load() ?: return null   // ONE decode, shared with the restore
+        restorer.restoreIfIdle(snap)
         return ResumptionSnapshot.from(snap)
     }
+
+    /** Decode the held run off Main (blocking file read). Null = nothing to resume. */
+    fun loadHeld(): HeldQueue? = store.load()?.let { HeldQueue.from(it) }
+
+    /** Install [held] as the held deck (idempotent: a running deck stays untouched). Main thread. */
+    fun restore(held: HeldQueue) { restorer.restoreIfIdle(held.snapshot) }
 }

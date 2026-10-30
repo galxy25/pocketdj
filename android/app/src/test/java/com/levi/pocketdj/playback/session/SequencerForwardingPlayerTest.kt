@@ -185,4 +185,115 @@ class SequencerForwardingPlayerTest {
         assertTrue(ctl.calls.isEmpty())
         assertEquals("rc cmd=play engine=exo verdict=refused-mic-capture", logs.single())
     }
+
+    private fun held(vararg ids: String) = com.levi.pocketdj.playback.durable.HeldQueue.from(
+        com.levi.pocketdj.playback.durable.SessionSnapshot(
+            sessionId = "s", source = com.levi.pocketdj.playback.durable.SessionSourceRef("playlist", "x", "X"),
+            queue = ids.map { com.levi.pocketdj.playback.durable.SessionRow(it, it.uppercase()) },
+            index = 0, positionMs = 9_000,
+        ),
+    )!!
+
+    @Test fun resumptionSetRestoresThenResumesFromHold_neverReachesTheBasePlayer() {
+        val restored = mutableListOf<String>()
+        val rp = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { _, _, _ -> }, restoreForResumption = { restored += it.snapshot.sessionId })
+        val h = held("a", "b")
+        rp.armResumption(h)
+        ctl.isHeldForResume = true
+        rp.setMediaItems(h.toMediaItems().toMutableList(), h.index, h.positionMs)
+        assertEquals(listOf("s"), restored)
+        assertEquals(listOf("resumeHeld"), ctl.calls)
+        assertFalse(ps.calls.any { it.startsWith("setMediaItems") })
+    }
+
+    @Test fun resumptionNeverClearsAnAlreadyLiveRun() {
+        val rp = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { _, _, _ -> }, restoreForResumption = { })
+        val h = held("a")
+        rp.armResumption(h)
+        ctl.isRunning = true // a run is live: restore is a no-op upstream, nothing is held
+        rp.setMediaItems(h.toMediaItems().toMutableList())
+        assertTrue(ctl.calls.isEmpty())
+        assertFalse(ps.calls.any { it.startsWith("setMediaItems") })
+    }
+
+    @Test fun aForeignSetIsPassedThroughAndClearsTheArm() {
+        val restored = mutableListOf<String>()
+        val rp = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { _, _, _ -> }, restoreForResumption = { restored += "x" })
+        val h = held("a")
+        rp.armResumption(h)
+        rp.setMediaItems(held("z").toMediaItems().toMutableList(), 0, 0L)
+        assertTrue(ps.calls.contains("setMediaItems"))
+        assertTrue(restored.isEmpty())
+        assertFalse(rp.resumptionPending())
+        // the arm is gone: a later set with the held ids is a normal load, not a resumption
+        ps.calls.clear()
+        ctl.isHeldForResume = true
+        rp.setMediaItems(h.toMediaItems().toMutableList(), true)
+        assertTrue(ps.calls.contains("setMediaItems"))
+        assertTrue(restored.isEmpty())
+        assertTrue(ctl.calls.isEmpty())
+    }
+
+    @Test fun aStaleArmNeverSwallowsALaterMatchingLoad() {
+        // System UI's boot-time recent query arms but never sets items; the user's own load of that
+        // same single song 10 s later must reach the base player.
+        var now = 1_000L
+        val restored = mutableListOf<String>()
+        val rp = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { _, _, _ -> }, restoreForResumption = { restored += "x" }, clockMs = { now })
+        val h = held("a")
+        rp.armResumption(h)
+        assertTrue(rp.resumptionPending())
+        now += SequencerForwardingPlayer.ARM_TTL_MS + 1
+        assertFalse(rp.resumptionPending())
+        rp.setMediaItems(h.toMediaItems().toMutableList())
+        assertTrue(ps.calls.contains("setMediaItems"))
+        assertTrue(restored.isEmpty())
+        assertTrue(ctl.calls.isEmpty())
+    }
+
+    @Test fun anInAppControllerSetNeverConsumesTheArm() {
+        val restored = mutableListOf<String>()
+        val rp = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { _, _, _ -> }, restoreForResumption = { restored += "x" })
+        val h = held("a")
+        rp.armResumption(h)
+        rp.callerInternal = true // PlaybackController's own MediaController load
+        rp.setMediaItems(h.toMediaItems().toMutableList(), 0, 0L)
+        assertTrue(ps.calls.contains("setMediaItems"))
+        assertTrue(restored.isEmpty())
+        assertFalse(rp.resumptionPending())
+    }
+
+    @Test fun resumptionHonoursTheMicCaptureGate() {
+        val restored = mutableListOf<String>()
+        val rp = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { c, e, v -> logs += TransportLog.format(c, e, v) }, restoreForResumption = { restored += "x" })
+        rp.micGate = { false }
+        val h = held("a", "b")
+        rp.armResumption(h)
+        ctl.isHeldForResume = true
+        rp.setMediaItems(h.toMediaItems().toMutableList(), h.index, h.positionMs)
+        assertTrue(restored.isEmpty())
+        assertTrue(ctl.calls.isEmpty())
+        assertFalse(ps.calls.any { it.startsWith("setMediaItems") }) // swallowed, not passed on
+        assertEquals(listOf("rc cmd=play engine=exo verdict=refused-mic-capture"), logs)
+        assertFalse(rp.resumptionPending())
+    }
+
+    @Test fun resumptionHonoursTheSwitchboardArbiter() {
+        val board = SessionSwitchboard(log = {})
+        val am = object : TransportOwner {
+            override val engine = "am"; override val sessionPlayer = fakePlayer(FakePlayerState())
+            override var hasSounded = true
+            override fun pauseForHandoff() {}
+        }
+        board.setOwner(am)
+        val restored = mutableListOf<String>()
+        val rp = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { _, _, _ -> }, board = board, restoreForResumption = { restored += "x" })
+        val h = held("a")
+        rp.armResumption(h)
+        ctl.isHeldForResume = true
+        rp.setMediaItems(h.toMediaItems().toMutableList())
+        assertTrue(restored.isEmpty())
+        assertTrue(ctl.calls.isEmpty())
+        assertFalse(ps.calls.any { it.startsWith("setMediaItems") })
+    }
 }

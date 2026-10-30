@@ -63,7 +63,12 @@ class PlaybackSessionStore(
     }
 
     /** The persisted snapshot or null; lenient (corrupt / old / empty -> null). */
+    /** Number of file decodes (test seam: the resumption path must decode exactly once). */
+    @Volatile var loadCount = 0
+        private set
+
     fun load(): SessionSnapshot? = try {
+        loadCount++
         if (!file.exists()) null else SessionSnapshot.decode(file.readText())
     } catch (_: Exception) {
         null
