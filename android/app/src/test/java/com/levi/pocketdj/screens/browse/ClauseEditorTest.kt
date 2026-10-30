@@ -36,6 +36,16 @@ class ClauseEditorTest {
         assertEquals("Rock", back.value)
     }
 
+    @Test fun listToEqSeedsValueFromFirstListValue() {
+        val c = Clause("genre", FilterOp.IN_LIST, "", values = setOf("Rock"))
+        val n = ClauseReducer.changeOp(c, FilterOp.EQ)
+        assertEquals("Rock", n.value)
+        assertEquals(setOf("Rock"), n.values)
+        assertEquals("Rock", ClauseReducer.changeOp(c.copy(op = FilterOp.NOT_IN_LIST), FilterOp.NEQ).value)
+        // an existing single value is never overwritten
+        assertEquals("Pop", ClauseReducer.changeOp(c.copy(value = "Pop"), FilterOp.EQ).value)
+    }
+
     @Test fun fieldChangeStillClearsValues() {
         val c = Clause("bpm", FilterOp.EQ, "120", values = setOf("a"))
         val n = ClauseReducer.changeField(c, "genre")

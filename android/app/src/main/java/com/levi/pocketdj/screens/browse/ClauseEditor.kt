@@ -64,7 +64,12 @@ object ClauseReducer {
     }
 
     /** iOS FilterSheet parity: changing the op keeps every value; only a field change clears them. */
-    fun changeOp(c: Clause, op: FilterOp): Clause = c.copy(op = op)
+    fun changeOp(c: Clause, op: FilterOp): Clause {
+        // Moving a list clause to is/is not with no single value: seed it from the first list value so the
+        // local engine (compares c.value) and online FilterQuery (value, else values.first()) agree.
+        val seed = if ((op == FilterOp.EQ || op == FilterOp.NEQ) && c.value.isEmpty()) c.values.firstOrNull().orEmpty() else c.value
+        return c.copy(op = op, value = seed)
+    }
 
     fun toggleValue(c: Clause, v: String): Clause =
         c.copy(values = if (v in c.values) c.values - v else c.values + v)
