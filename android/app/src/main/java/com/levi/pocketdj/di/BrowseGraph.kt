@@ -475,8 +475,12 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     /** Pre-release refresh (launch/foreground): recheck provisional Discover albums, at most daily until release day. */
     fun refreshProvisionalAlbums() {
-        app.appScope.launch(Dispatchers.IO) { runCatching { discoverController.refreshProvisionalAlbums() } }
+        if (!provisionalRefreshing.compareAndSet(false, true)) return // single-flight
+        app.appScope.launch(Dispatchers.IO) {
+            try { runCatching { discoverController.refreshProvisionalAlbums() } } finally { provisionalRefreshing.set(false) }
+        }
     }
+    private val provisionalRefreshing = java.util.concurrent.atomic.AtomicBoolean(false)
 
     /** "Remove from Library" for a user-added provisional song (Discover / Imported). */
     fun removeFromLibrary(songId: String, sourceName: String?, title: String, artist: String?): Boolean =

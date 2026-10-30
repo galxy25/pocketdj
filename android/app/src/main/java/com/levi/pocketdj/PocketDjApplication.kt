@@ -33,6 +33,8 @@ class PocketDjApplication : Application() {
                 // Launch fetch is forced once per process; later foregrounds are throttled.
                 { AppGraph.get(this).refreshEndpoints(force = firstForeground.getAndSet(false)) },
                 { AppLifecycleObserver.widgetDrain() },
+                // Pre-release albums: recheck on every foreground (self-gated to daily per album; iOS parity).
+                { AppGraph.get(this).browseGraph.refreshProvisionalAlbums() },
                 // Process death: re-park the persisted mix (file read off Main, park on Main) so the lock screen /
                 // Auto row / Mix tab see it without anyone opening Mix. Once per process.
                 { AppGraph.get(this).mixGraph.launchRestore() },

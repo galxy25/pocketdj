@@ -2,6 +2,7 @@ package com.levi.pocketdj.screens.discover
 
 import com.levi.pocketdj.data.discover.DiscoverAddsStore
 import java.io.File
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -150,5 +151,14 @@ class DiscoverRetryTest {
         assertEquals(1, c.refreshProvisionalAlbums(5e12))
         assertTrue(rips.requested.isEmpty())
         assertNotNull(s.entry("amrec_t3"))
+    }
+
+    @Test fun retryFlowReemitsWhenCanAddFlipsAfterFirstSnapshot() = runBlocking {
+        val s = store(); seedAlbum(s, write = "Apple Music write failed: 500")
+        val can = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val f = AlbumLibraryWriteRetry.retryTokensFlow(s.state, can)
+        assertTrue(f.first().isEmpty())
+        can.value = true
+        assertEquals(mapOf("amrec_album_77" to "Apple Music write failed: 500"), f.first())
     }
 }

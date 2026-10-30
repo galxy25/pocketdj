@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-GAP-3 status
 
@@ -15,3 +15,12 @@ state: implemented
 
 ## Questions for Levi
 - None blocking. Should the pre-release refresh also run at app launch independent of opening Discover?
+
+## Review
+- MAJOR retryAlbumIds stale canAdd -> fixed: AlbumLibraryWriteRetry.retryTokensFlow combines store snapshot + hasAppleMusic flows; test retryFlowReemitsWhenCanAddFlipsAfterFirstSnapshot
+- MAJOR refresh only from DiscoverPane -> fixed: added to PocketDjApplication onForeground hooks (DiscoverPane trigger kept)
+- MINOR no single-flight -> fixed: AtomicBoolean guard in BrowseGraph.refreshProvisionalAlbums
+- MINOR retry reason caption -> fixed: stored token shown above button; retry is reachable only from Discover album search results (no Android album detail screen)
+- NIT default selector test -> not done (optional)
+
+fixes applied

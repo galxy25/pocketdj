@@ -35,6 +35,20 @@ object AlbumLibraryWriteRetry {
     fun albumIdsNeedingRetry(albums: List<DiscoverAddsStore.AlbumEntry>, canAddToLibrary: Boolean): Set<String> =
         albums.filter { needsRetry(it.libraryWrite, canAddToLibrary) }.map { it.albumId }.toSet()
 
+    /** Album id -> stored write token (null = legacy) for every album owing a retry. */
+    fun retryTokens(albums: List<DiscoverAddsStore.AlbumEntry>, canAddToLibrary: Boolean): Map<String, String?> =
+        albums.filter { needsRetry(it.libraryWrite, canAddToLibrary) }.associate { it.albumId to it.libraryWrite }
+
+    /**
+     * Live retry map: re-emits when EITHER the store snapshot or the can-write flag changes (a one-shot read of
+     * canAdd inside a store map goes stale: DataStore delivers hasAppleMusic after the first snapshot).
+     */
+    fun retryTokensFlow(
+        snapshots: kotlinx.coroutines.flow.Flow<DiscoverAddsStore.Snapshot>,
+        canAdd: kotlinx.coroutines.flow.Flow<Boolean>,
+    ): kotlinx.coroutines.flow.Flow<Map<String, String?>> =
+        kotlinx.coroutines.flow.combine(snapshots, canAdd) { snap, can -> retryTokens(snap.albums, can) }
+
     /** User-facing message for a retry/add whose write didn't land (iOS `libraryWriteNotice`); null = it landed. */
     fun notice(token: String, noun: String = "album"): String? = when {
         DiscoverAddsStore.provenByToken(token) -> null
@@ -53,9 +67,14 @@ fun DiscoverRetryRow(
     retrying: Boolean,
     notice: String?,
     onRetry: () -> Unit,
+    /** Stored failure/skip reason shown above the button (iOS parity); null for legacy entries. */
+    reason: String? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxWidth().padding(start = 80.dp, end = 16.dp)) {
+        if (!reason.isNullOrBlank()) {
+            Text(reason, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             TextButton(
                 onClick = onRetry, enabled = !retrying,

@@ -51,7 +51,7 @@ fun DiscoverAlbumResultsList(
     /** Settle state of every recorded provisional album, keyed by album id (DISC-2); absent = not added yet. */
     addStates: Map<String, DiscoverAddState> = emptyMap(),
     /** Album ids whose Apple Music write isn't proven (show "Add to Apple Music again"); retry returns the token. */
-    retryAlbumIds: Set<String> = emptySet(),
+    retryAlbumTokens: Map<String, String?> = emptyMap(),
     onRetryLibraryWrite: suspend (DiscoverAlbumHit) -> String = { LibraryWrite.SKIPPED_NO_CONNECTION },
 ) {
     var expandedId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -62,7 +62,7 @@ fun DiscoverAlbumResultsList(
                     hit, canAddToLibrary, expanded = expandedId == hit.id,
                     onToggle = { expandedId = if (expandedId == hit.id) null else hit.id },
                     loadTracks = loadTracks, onAdd = onAdd, addState = addStates[hit.id],
-                    needsRetry = hit.id in retryAlbumIds, onRetry = onRetryLibraryWrite,
+                    needsRetry = hit.id in retryAlbumTokens, retryReason = retryAlbumTokens[hit.id], onRetry = onRetryLibraryWrite,
                 )
             }
         }
@@ -79,6 +79,7 @@ private fun DiscoverAlbumRow(
     onAdd: suspend (DiscoverAlbumHit) -> Boolean,
     addState: DiscoverAddState? = null,
     needsRetry: Boolean = false,
+    retryReason: String? = null,
     onRetry: suspend (DiscoverAlbumHit) -> String = { LibraryWrite.SKIPPED_NO_CONNECTION },
 ) {
     val scope = rememberCoroutineScope()
@@ -139,7 +140,7 @@ private fun DiscoverAlbumRow(
             )
         }
         if (needsRetry && addState != null) {
-            DiscoverRetryRow(retrying, retryNotice, onRetry = {
+            DiscoverRetryRow(retrying, retryNotice, reason = retryReason, onRetry = {
                 retrying = true; retryNotice = null
                 scope.launch {
                     try { retryNotice = AlbumLibraryWriteRetry.notice(onRetry(hit)) } finally { retrying = false }

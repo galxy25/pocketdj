@@ -293,11 +293,11 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
     val albumUi by albumModel.ui.collectAsState()
     val canAdd by remember { graph.settings.settings.map { it.hasAppleMusic } }.collectAsState(false)
     val albumStates by remember { graph.browseGraph.discoverAlbumStates }.collectAsState(emptyMap())
-    val retryAlbumIds by remember {
-        graph.browseGraph.discoverAdds.state.map { snap ->
-            AlbumLibraryWriteRetry.albumIdsNeedingRetry(snap.albums, canAdd)
-        }
-    }.collectAsState(emptySet())
+    val retryAlbumTokens by remember {
+        AlbumLibraryWriteRetry.retryTokensFlow(
+            graph.browseGraph.discoverAdds.state, graph.settings.settings.map { it.hasAppleMusic },
+        )
+    }.collectAsState(emptyMap())
     val preferExplicit by remember { EditionSettings.flow(graph.settings) }.collectAsState(null)
     val rankedSongUi = remember(songUi, preferExplicit) {
         songUi.copy(hits = DiscoverExplicitRanking.rank(songUi.hits, preferExplicit ?: false))
@@ -309,7 +309,7 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
             DiscoverScope.ALBUMS -> { songModel.cancel(); albumModel.searchDebounced(query, refine) }
         }
     }
-    // Pre-release albums are rechecked when Discover is shown (at most daily per album until release day).
+    // Also rechecked on every app foreground (PocketDjApplication); this is an extra trigger. Single-flight.
     LaunchedEffect(Unit) { graph.browseGraph.refreshProvisionalAlbums() }
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose { songModel.cancel(); albumModel.cancel() }
@@ -341,7 +341,7 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
                 loadTracks = { graph.ripServerClient.albumTracks(it) },
                 onAdd = { graph.browseGraph.discoverAddAlbum(it) },
                 addStates = albumStates,
-                retryAlbumIds = retryAlbumIds,
+                retryAlbumTokens = retryAlbumTokens,
                 onRetryLibraryWrite = { graph.browseGraph.retryAlbumLibraryWrite(it) },
             )
         }
