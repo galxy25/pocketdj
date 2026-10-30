@@ -70,13 +70,15 @@ class JukeboxGraph private constructor(context: Context) {
     ).also { repo ->
         repo.queue = SequencerJukeboxQueue(app.playbackGraph.sequencer)
         // SURF-10: Apple Music catalog match stage + rip-backed placement for AM-only rows.
-        var storefront: String? = null
+        val storefront = java.util.concurrent.atomic.AtomicReference<String?>(null)
         repo.externalMatch = JukeboxAppleMusicMatch(
             api = app.appleMusicApi,
             songs = { app.catalogRepository.state.value.catalog?.songs.orEmpty() },
             storefront = {
-                storefront ?: (app.appleMusicApi.userStorefront() as? com.levi.pocketdj.data.applemusic.AmResult.Ok)
-                    ?.value.also { storefront = it } ?: "us"
+                storefront.get()
+                    ?: (app.appleMusicApi.userStorefront() as? com.levi.pocketdj.data.applemusic.AmResult.Ok)
+                        ?.value?.also { storefront.set(it) }
+                    ?: "us"
             },
         )
         repo.placementSink = JukeboxAmPlacementSink(isPlayable = app.ripsRepository::isPlayable)
