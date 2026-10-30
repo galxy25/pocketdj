@@ -18,6 +18,37 @@ class MixSessionPlayerTest {
     private fun card(pos: Long = 30_000, rate: Float = 1.04f, dur: Long? = 240_000) =
         MixCard("s1", "Title", "Artist", null, dur, pos, rate)
 
+    private class FakeOwner(override val engine: String, override val hasSounded: Boolean = false) : TransportOwner {
+        override val sessionPlayer: Player = fakePlayer(FakePlayerState())
+        override fun pauseForHandoff() {}
+    }
+
+    @Test fun parkedMixBecomesTheRemoteTargetWhenNothingElseOwnsTheSession() {
+        val board = SessionSwitchboard { }
+        val mix = FakeOwner("mix"); board.register(mix)
+        var service = 0
+        assertNull("never sounded + not preferred = no remote target", board.remoteTarget())
+        assertTrue(ParkedMixSession.offer(board, mix, hasParked = true) { service++ })
+        assertSame(mix, board.remoteTarget())
+        assertTrue(board.isActive(mix))
+        assertFalse("the media service (lock-screen card) was started", service == 0)
+        ParkedMixSession.withdrawIfGone(board, mix, hasParked = false, hasLoadedDeck = false)
+        assertNull(board.remoteTarget())
+    }
+
+    @Test fun parkedMixDoesNotStealFromASoundingOwnerOrWithdrawWhileDecksAreLoaded() {
+        val board = SessionSwitchboard { }
+        val exo = FakeOwner("exo", hasSounded = true); board.setOwner(exo)
+        val mix = FakeOwner("mix")
+        assertFalse(ParkedMixSession.offer(board, mix, hasParked = true) { error("no service") })
+        assertSame(exo, board.remoteTarget())
+        val board2 = SessionSwitchboard { }
+        ParkedMixSession.offer(board2, mix, hasParked = true) {}
+        ParkedMixSession.withdrawIfGone(board2, mix, hasParked = false, hasLoadedDeck = true)   // materialized: stays preferred
+        assertSame(mix, board2.remoteTarget())
+        assertFalse(ParkedMixSession.offer(SessionSwitchboard { }, mix, hasParked = false) {})
+    }
+
     @Test fun stateMapsTrackRateAndPosition() {
         val m = MixPlayerStateMap.model(card(), running = true, canSkip = false)
         assertTrue(m.hasTrack)

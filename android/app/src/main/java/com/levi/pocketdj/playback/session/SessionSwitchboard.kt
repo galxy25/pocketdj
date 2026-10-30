@@ -53,6 +53,16 @@ class SessionSwitchboard(
         preferred = o
     }
 
+    /** Drop [o]'s preferred status only (it never owned): the session goes back to whoever else fronts it. */
+    fun resignIfPreferred(o: TransportOwner) {
+        val changed: Boolean
+        synchronized(lock) {
+            changed = preferred === o && owner !== o
+            if (changed) preferred = null
+        }
+        if (changed) { log("switchboard unprefer=${o.engine}"); onChange(null) }
+    }
+
     /** [o] is done (stopped / released): the next-most-recent registered engine may claim; ExoPlayer is the fallback. */
     fun resign(o: TransportOwner) {
         val changed: Boolean

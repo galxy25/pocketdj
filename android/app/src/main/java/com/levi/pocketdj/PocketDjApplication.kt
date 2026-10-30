@@ -27,6 +27,9 @@ class PocketDjApplication : Application() {
                 // Launch fetch is forced once per process; later foregrounds are throttled.
                 { AppGraph.get(this).refreshEndpoints(force = firstForeground.getAndSet(false)) },
                 { AppLifecycleObserver.widgetDrain() },
+                // Process death: re-park the persisted mix (file read off Main, park on Main) so the lock screen /
+                // Auto row / Mix tab see it without anyone opening Mix. Once per process.
+                { AppGraph.get(this).mixGraph.launchRestore() },
                 { scheduler.ensureScheduled(AppGraph.get(this).features.periodicWork) },
                 // WorkManager periodic work can slip for days under Doze/standby: also try the (self-gated,
                 // cheap) soft-cap prune on every foreground, deferred well past launch (iOS does the same).

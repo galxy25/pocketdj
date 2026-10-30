@@ -57,6 +57,37 @@ internal class AutoRig(
 }
 
 class AutoDjTest {
+    @Test fun preparedLoadsAreCachedOffMainAndUsedByTheNextLoad() {
+        val rig = AutoRig(n = 5)
+        // Off-main seam stand-in: runs the work, commits (as MixGraph's IO -> Main hop would).
+        rig.e.loadOffload = { work, commit -> commit(work()) }
+        rig.start()
+        assertEquals("start preloads A/B synchronously (a miss) and prefetches the next two", listOf("s2", "s3"), rig.e.preparedSongIds)
+        assertEquals(0, rig.e.preparedHits)
+        rig.run(35.0)                                    // first transition retires A and loads s2 onto it
+        assertEquals("s2", rig.id(Deck.A))
+        assertTrue("the transition's load came from the cache", rig.e.preparedHits >= 1)
+        assertFalse("a consumed entry leaves the cache", "s2" in rig.e.preparedSongIds)
+        assertTrue("the window moved: s3/s4 are prepared ahead", rig.e.preparedSongIds.all { it == "s3" || it == "s4" })
+    }
+
+    @Test fun withoutAnOffloadSeamLoadsFallBackToSyncPrepareAndNothingIsCached() {
+        val rig = AutoRig(n = 4)
+        rig.start()
+        assertTrue(rig.e.preparedSongIds.isEmpty())
+        assertEquals("s0", rig.id(Deck.A)); assertEquals("s1", rig.id(Deck.B))
+        assertEquals(0, rig.e.preparedHits)
+    }
+
+    @Test fun stopDropsThePreparedLoads() {
+        val rig = AutoRig(n = 5)
+        rig.e.loadOffload = { work, commit -> commit(work()) }
+        rig.start()
+        assertTrue(rig.e.preparedSongIds.isNotEmpty())
+        rig.dj.stopAutoMix()
+        assertTrue(rig.e.preparedSongIds.isEmpty())
+    }
+
     private val A = Deck.A
     private val B = Deck.B
 
