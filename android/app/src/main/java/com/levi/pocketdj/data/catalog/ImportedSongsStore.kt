@@ -115,6 +115,21 @@ class ImportedSongsStore(private val file: File) {
         onChanged?.invoke()
     }
 
+    /**
+     * A cloud pull rewrote [file] (iOS `reloadFromDisk`, key `imported-songs`): re-adopt it and refresh the
+     * catalog so pulled imports flow into the merge. Returns false (the pulled bytes stay as written).
+     */
+    fun reloadFromDisk(): Boolean {
+        val doc = decode(file)
+        synchronized(lock) {
+            songs = doc.songs.distinctBy { it.songId }
+            albums = doc.albums.distinctBy { it.albumId }
+            cachedDoc = null
+        }
+        onChanged?.invoke()
+        return false
+    }
+
     fun clear() {
         synchronized(lock) {
             songs = emptyList(); albums = emptyList(); cachedDoc = null
@@ -196,6 +211,8 @@ class ImportedSongsStore(private val file: File) {
         }
 
         const val FILE_NAME = "pocketdj-imported-songs.json"
+        /** Cloud-sync document key (iOS `imported-songs`). */
+        const val SYNC_KEY = "imported-songs"
         const val SOURCE_NAME = "Imported"
 
         internal fun decode(file: File): Document =

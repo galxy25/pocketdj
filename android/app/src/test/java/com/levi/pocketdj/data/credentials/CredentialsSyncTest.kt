@@ -126,20 +126,28 @@ class CredentialsSyncTest {
         assertTrue(r.keptJukebox)
     }
 
-    @Test fun searchPair_guardedTogether_onSameEndpoint() {
-        val local = SettingsCredentialsDocument(searchAccessKeyID = "a", searchSecretKey = "s", searchEndpoint = "e")
-        val keep = CredentialsSync.merge(local, SettingsCredentialsDocument(searchEndpoint = "e"))
-        assertTrue(keep.keptSearch)
-        assertEquals("a", keep.doc.searchAccessKeyID)
-        assertEquals("s", keep.doc.searchSecretKey)
-        // different endpoint => adopt (blank keys included)
-        val adopt = CredentialsSync.merge(local, SettingsCredentialsDocument(searchEndpoint = "other"))
-        assertFalse(adopt.keptSearch)
-        assertEquals("", adopt.doc.searchAccessKeyID)
-        // a half-empty pulled pair is not "accidental blank": adopted wholesale
-        val half = CredentialsSync.merge(local, SettingsCredentialsDocument(searchAccessKeyID = "b", searchEndpoint = "e"))
-        assertFalse(half.keptSearch)
-        assertEquals("b", half.doc.searchAccessKeyID)
+    @Test fun searchFields_areNeverAdoptedFromAPull_andNeverTouchLiveSettings() {
+        val port = FakePort(doc("https://rip", "t"))
+        val ios = """{"schemaVersion":1,"ripServerURL":"https://rip","ripToken":"t","jukeboxServerURL":"","jukeboxToken":"",
+            "jukeboxTokensRequiredByDefault":true,"searchAccessKeyID":"AKIA","searchSecretKey":"sek","searchEndpoint":"https://s"}"""
+        file().writeText(ios)
+        CredentialsSync(file(), port).applyPulled()
+        // the live (port) doc has no search members at all; nothing about them reaches applyDoc
+        assertFalse(port.live.toString().contains("AKIA"))
+        assertFalse(port.live.toString().contains("sek"))
+    }
+
+    @Test fun iosSearchKeys_surviveAnAndroidRewrite_soIosKeepsItsConfig() {
+        val port = FakePort(doc("https://rip", "t2")) // differs from the file: forces a re-materialize
+        val ios = """{"schemaVersion":1,"ripServerURL":"https://rip","ripToken":"t","jukeboxServerURL":"","jukeboxToken":"",
+            "jukeboxTokensRequiredByDefault":true,"searchAccessKeyID":"AKIA","searchSecretKey":"sek","searchEndpoint":"https://s"}"""
+        file().writeText(ios)
+        assertTrue(CredentialsSync(file(), port).syncIfChanged())
+        val out = file().readText()
+        assertTrue(out.contains("\"searchAccessKeyID\":\"AKIA\""))
+        assertTrue(out.contains("\"searchSecretKey\":\"sek\""))
+        assertTrue(out.contains("\"searchEndpoint\":\"https://s\""))
+        assertTrue(out.contains("\"ripToken\":\"t2\""))
     }
 
     @Test fun cleanPull_roundTripsByteIdentical_noPushBack() {

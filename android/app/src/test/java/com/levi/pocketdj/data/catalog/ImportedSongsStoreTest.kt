@@ -114,4 +114,20 @@ class ImportedSongsStoreTest {
         assertTrue(ImportedSongsStore.supersedePairs(listOf(song("amrec_1", am = null)), mapOf("9" to "x")).isEmpty())
         assertTrue(ImportedSongsStore.supersedePairs(listOf(song("amrec_1", am = "9")), mapOf("9" to "amrec_1")).isEmpty())
     }
+
+    @Test fun reloadFromDisk_adoptsAPulledDocument_andNotifies() {
+        val f = tmp()
+        val store = ImportedSongsStore(f)
+        store.add(listOf(song("amrec_local")))
+        var changed = 0
+        store.onChanged = { changed++ }
+        // a peer's pull overwrites the file (iOS key "imported-songs")
+        f.writeText("""{"schemaVersion":1,"songs":[{"songId":"amrec_peer","title":"P"},{"songId":"amrec_peer","title":"dup"}],"albums":[]}""")
+        assertEquals(false, store.reloadFromDisk())
+        assertEquals(listOf("amrec_peer"), store.songs().map { it.songId })
+        assertEquals(1, changed)
+        assertEquals("amrec_peer", store.syntheticDocument()!!.songs.single().id)
+    }
+
+    @Test fun syncKeyIsTheIosKey() { assertEquals("imported-songs", ImportedSongsStore.SYNC_KEY) }
 }

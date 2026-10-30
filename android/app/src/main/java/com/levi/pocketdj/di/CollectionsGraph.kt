@@ -435,6 +435,9 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = listOf(
         com.levi.pocketdj.shell.SyncEntry("favorites", com.levi.pocketdj.data.favorites.FavoritesStore.FILE_NAME,
             onPulled = { favorites.reloadFromDisk(); false }),
+        // Q75(b): imports follow the profile (iOS key "imported-songs"); a pull re-adopts the file + refreshes the catalog.
+        com.levi.pocketdj.shell.SyncEntry(com.levi.pocketdj.data.catalog.ImportedSongsStore.SYNC_KEY, com.levi.pocketdj.data.catalog.ImportedSongsStore.FILE_NAME,
+            onPulled = { importedSongs.reloadFromDisk() }),
     )
 
 

@@ -95,7 +95,12 @@ class Enrollment(
     companion object {
         const val ENROLL_HEADER = "X-PocketDJ-Enroll"
 
-        /** Token provider reading the provisioned capability token from the [SecretStore]. */
-        fun tokenFrom(store: SecretStore): () -> String = { store.get(ProfileSecretStore.ENROLL_TOKEN) }
+        /**
+         * Token provider: the endpoints-doc capability ([fromDoc], ANS-SYNC-1) wins; the [SecretStore] value is only a
+         * manual/debug provisioning fallback. Never hard-coded.
+         */
+        fun tokenFrom(store: SecretStore, fromDoc: () -> String = { "" }): () -> String = {
+            fromDoc().ifEmpty { store.get(ProfileSecretStore.ENROLL_TOKEN) }
+        }
     }
 }

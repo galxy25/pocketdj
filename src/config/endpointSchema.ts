@@ -36,7 +36,7 @@ export interface EndpointConfig {
   /** Optional capabilities (ANS-BRW-2). Present only when the doc carries a valid one; the PWA
    *  ignores it. `recEngineEnroll` = the rotatable rec-engine enrollment secret the native
    *  clients read at request time (Android adopts it; iOS ignores unknown keys). */
-  capabilities?: { recEngineEnroll?: string };
+  capabilities?: { recEngineEnroll?: string; profileSyncEnroll?: string };
 }
 
 /** Enroll-secret shape the native clients accept (mirrors Kotlin EndpointConfig.normalizeEnroll). */
@@ -129,7 +129,7 @@ export function validateEndpointDoc(raw: unknown, opts: { strictCapabilities?: b
   // dead compiled-in endpoints. The deploy-time gate (scripts/validate-endpoints.ts) passes
   // `strictCapabilities` so a typo is REJECTED before it ships.
   const strict = opts.strictCapabilities === true;
-  let capabilities: EndpointConfig['capabilities'];
+  let capabilities: NonNullable<EndpointConfig['capabilities']> | undefined;
   if (doc.capabilities !== undefined) {
     if (!doc.capabilities || typeof doc.capabilities !== 'object' || Array.isArray(doc.capabilities)) {
       if (strict) return { ok: false, reason: 'rejected capabilities' };
@@ -137,9 +137,17 @@ export function validateEndpointDoc(raw: unknown, opts: { strictCapabilities?: b
       const c = doc.capabilities as Record<string, unknown>;
       if (c.recEngineEnroll !== undefined) {
         if (typeof c.recEngineEnroll === 'string' && ENROLL_SECRET_RE.test(c.recEngineEnroll.trim())) {
-          capabilities = { recEngineEnroll: c.recEngineEnroll.trim() };
+          capabilities = { ...capabilities, recEngineEnroll: c.recEngineEnroll.trim() };
         } else if (strict) {
           return { ok: false, reason: 'rejected capabilities.recEngineEnroll' };
+        }
+      }
+      // ANS-SYNC-1: the profile-sync Lambda's enroll capability (X-PocketDJ-Enroll), same shape + same threat model.
+      if (c.profileSyncEnroll !== undefined) {
+        if (typeof c.profileSyncEnroll === 'string' && ENROLL_SECRET_RE.test(c.profileSyncEnroll.trim())) {
+          capabilities = { ...capabilities, profileSyncEnroll: c.profileSyncEnroll.trim() };
+        } else if (strict) {
+          return { ok: false, reason: 'rejected capabilities.profileSyncEnroll' };
         }
       }
     }
