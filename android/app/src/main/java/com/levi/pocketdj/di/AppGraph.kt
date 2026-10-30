@@ -394,7 +394,11 @@ class AppGraph private constructor(context: Context) {
     // the loops live in PLAYBACK (service/Auto/widget) and INTERACTIVE (first foreground).
     private val startup = StartupLedger(
         onError = { step, t -> android.util.Log.e("PocketDJ", "[startup] $step failed", t) },
-        run = ::runStartStep,
+        run = { step ->
+            // Tier evidence (SURF-2 emulator check): a worker/receiver wake must log CORE steps only.
+            android.util.Log.i("PocketDJ", "[startup] ${step.tier} $step")
+            runStartStep(step)
+        },
     )
 
     private fun runStartStep(step: StartStep) {

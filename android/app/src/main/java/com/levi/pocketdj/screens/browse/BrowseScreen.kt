@@ -203,6 +203,7 @@ fun BrowseScreen(
                     onOpenArtist = onOpenArtist,
                     onOpenSong = { detailSongId = it },
                     onAddSong = { addItem = AddToItem.Song(it) },
+                    onSongDragStart = { addItem = null },
                     onAddAlbum = { addItem = AddToItem.Album(it) },
                     onPlaySong = { songId ->
                         // Songs-list ▶ with no album in view = a Browser single
@@ -353,6 +354,7 @@ private fun BrowseContent(
     onAddSong: (String) -> Unit,
     onAddAlbum: (String) -> Unit,
     onPlaySong: (String) -> Unit,
+    onSongDragStart: () -> Unit = {},
 ) {
     // Debounced query (~180 ms, specs/browse.md §4.1).
     var debouncedQuery by remember { mutableStateOf(query) }
@@ -771,7 +773,7 @@ private fun BrowseContent(
                                 row = row,
                                 modifier = Modifier
                                     .selectionDecor(rowSelection, songId, BROWSE_SELECTION_SCOPE)
-                                    .songDragSource(enabled = true) {
+                                    .songDragSource(enabled = true, onDragStart = onSongDragStart) {
                                         if (rowSelected) rowSelection.currentPayload() else com.levi.pocketdj.data.collections.SongTransfer(listOf(songId), null)
                                     },
                                 // Select mode armed HERE eats the tap; otherwise it opens as before.
