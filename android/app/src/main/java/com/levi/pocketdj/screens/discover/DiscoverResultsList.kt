@@ -293,6 +293,11 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
     val albumUi by albumModel.ui.collectAsState()
     val canAdd by remember { graph.settings.settings.map { it.hasAppleMusic } }.collectAsState(false)
     val albumStates by remember { graph.browseGraph.discoverAlbumStates }.collectAsState(emptyMap())
+    val retryAlbumTokens by remember {
+        AlbumLibraryWriteRetry.retryTokensFlow(
+            graph.browseGraph.discoverAdds.state, graph.settings.settings.map { it.hasAppleMusic },
+        )
+    }.collectAsState(emptyMap())
     val preferExplicit by remember { EditionSettings.flow(graph.settings) }.collectAsState(null)
     val rankedSongUi = remember(songUi, preferExplicit) {
         songUi.copy(hits = DiscoverExplicitRanking.rank(songUi.hits, preferExplicit ?: false))
@@ -304,6 +309,8 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
             DiscoverScope.ALBUMS -> { songModel.cancel(); albumModel.searchDebounced(query, refine) }
         }
     }
+    // Also rechecked on every app foreground (PocketDjApplication); this is an extra trigger. Single-flight.
+    LaunchedEffect(Unit) { graph.browseGraph.refreshProvisionalAlbums() }
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose { songModel.cancel(); albumModel.cancel() }
     }
@@ -334,6 +341,8 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
                 loadTracks = { graph.ripServerClient.albumTracks(it) },
                 onAdd = { graph.browseGraph.discoverAddAlbum(it) },
                 addStates = albumStates,
+                retryAlbumTokens = retryAlbumTokens,
+                onRetryLibraryWrite = { graph.browseGraph.retryAlbumLibraryWrite(it) },
             )
         }
     }

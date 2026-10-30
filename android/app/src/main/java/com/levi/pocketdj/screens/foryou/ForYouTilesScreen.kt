@@ -226,6 +226,8 @@ internal object ForYouInputsFactory {
         val inputs = build(graph) ?: return
         withContext(Dispatchers.IO) {
             feed.refresh(inputs, cloudZone = cloudZoneProvider(graph.browseGraph.recService, force))
+            // Background errand for the NEXT ranking (iOS scheduleAudioAnalysis): ids only, gated on the engine.
+            runCatching { graph.browseGraph.recService.scheduleAudioAnalysis(feed.snapshot, inputs) }
         }
     }
 
