@@ -166,7 +166,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
      * [MixEngine.materializePendingRestoreIfNeeded]; they are not auto-run here.
      */
     private val restoreLaunched = java.util.concurrent.atomic.AtomicBoolean(false)
-    @Volatile private var restoreParkedHint = false
+    /** The launch snapshot, held CHEAPLY (no engine) so Auto/summary surfaces can describe the parked mix at once. */
+    @Volatile private var heldSnapshot: com.levi.pocketdj.mix.store.MixDeckSnapshot? = null
+    @Volatile private var launchReadPending = false
 
     /**
      * Process-death recovery: read the persisted deck snapshot OFF Main, then park it on Main so the lock
@@ -175,15 +177,47 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
      */
     fun launchRestore() {
         if (!restoreLaunched.compareAndSet(false, true)) return
+        launchReadPending = true   // a Mix tab that composes before the read lands waits for it (no disk on Main)
         app.appScope.launch(Dispatchers.IO) {
-            val snap = runCatching { mixDeckSession.load() }.getOrNull() ?: return@launch
-            restoreParkedHint = true
-            withContext(Dispatchers.Main.immediate) { mixEngine.parkRestore(snap) }
+            val snap = runCatching { mixDeckSession.load() }.getOrNull()
+            heldSnapshot = snap
+            withContext(Dispatchers.Main.immediate) {
+                launchReadPending = false
+                if (engineLazy.isInitialized()) {
+                    engineLazy.value.launchReadFinished(snap)
+                    offerParkedToSession()
+                } else if (snap != null) {
+                    // The lock screen / Auto need the session owner, which is built with the engine: build it when
+                    // Main is idle (not inside the launch frame), then hand it the snapshot.
+                    android.os.Looper.myQueue().addIdleHandler {
+                        mixEngine.launchReadFinished(snap); offerParkedToSession(); false
+                    }
+                }
+            }
         }
     }
 
-    /** A launch restore was parked and no Mix surface has materialized it yet (cheap, never builds the engine). */
-    fun hasLaunchRestore(): Boolean = restoreParkedHint.also { restoreParkedHint = false }
+    /** A launch restore is parked and no Mix surface has materialized it yet (cheap, never builds the engine). */
+    fun hasLaunchRestore(): Boolean =
+        if (engineLazy.isInitialized()) engineLazy.value.hasParkedRestore else heldSnapshot != null
+
+    /** What the parked mix shows on the Auto row, without building the engine. */
+    fun parkedSummary(): com.levi.pocketdj.mix.engine.MixPersistence.ParkedSummary? =
+        if (engineLazy.isInitialized()) engineLazy.value.parkedRestoreSummary
+        else heldSnapshot?.let(com.levi.pocketdj.mix.engine.MixPersistence::parkedSummary)
+
+    /**
+     * Parked mix -> system surfaces: when nothing else owns the session, the Mix player is the preferred remote
+     * target (the lock screen card + lock-screen play materialize it) and the media service publishes the card.
+     */
+    private fun offerParkedToSession() {
+        val e = engineLazy.value
+        val player = mixSessionPlayer
+        com.levi.pocketdj.mix.service.ParkedMixSession.offer(
+            com.levi.pocketdj.playback.session.SessionSwitchboard.shared, player, e.hasParkedRestore,
+        ) { ensureMediaService() }
+        player.refresh()
+    }
 
     @Volatile private var deckExtras: MixDeckExtras? = null
 
@@ -205,7 +239,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     /** MIX-10: growing-file decks + stem-stream feed, hooked into [mixEngine] and the stream loader. */
     val mixStreamDecks: StreamDecks get() { mixEngine; return checkNotNull(streamDecksRef) }
 
-    val mixEngine: MixEngine by lazy {
+    private val engineLazy: Lazy<MixEngine> = lazy {
         val audio = app.appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         MixEngine(
             sinkFactory = { AudioTrackSink(audio) },
@@ -289,9 +323,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                     commit(prep)
                 }
             }
+            it.launchReadInFlight = { launchReadPending }
             autoDjInst?.let { dj -> installTransportOwner(it, dj, audio) }
         }
     }
+    val mixEngine: MixEngine get() = engineLazy.value
 
     @Volatile private var sessionPlayerRef: com.levi.pocketdj.mix.service.MixSessionPlayer? = null
 
@@ -367,6 +403,10 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         )
         e.onAudioStarted = { parkHandler.removeCallbacks(parkRunnable); ensureMediaService(); player.onAudioStarted(); focus.onAudioStarted() }
         e.onNowPlayingChanged = {
+            // The parked mix was ejected / superseded before it ever sounded: stop being the preferred remote target.
+            com.levi.pocketdj.mix.service.ParkedMixSession.withdrawIfGone(
+                com.levi.pocketdj.playback.session.SessionSwitchboard.shared, player, e.hasParkedRestore, e.nowPlayingDeck != null,
+            )
             player.refresh(); focus.onTransportIdle()
             if (!e.mixWantsAudio) parkSinkSoon(15_000) else parkHandler.removeCallbacks(parkRunnable)
         }

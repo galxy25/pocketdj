@@ -19,16 +19,17 @@ class MixSessionStoreFlushTest {
         val gate = AtomicBoolean(false)          // arm only the flush's encode
         val encoding = CountDownLatch(1)
         val release = CountDownLatch(1)
+        val seedEncoded = CountDownLatch(1)
         val store = MixSessionStore(
             // Production writes on a background thread; DIRECT would encode queued saves inline under the lock.
             file, VersionedJsonWriter(file) { Thread(it).start() }, clock::read, ManualScheduler(clock),
             encoder = { doc ->
-                if (gate.get()) { encoding.countDown(); release.await(10, TimeUnit.SECONDS) }
+                if (gate.get()) { encoding.countDown(); release.await(10, TimeUnit.SECONDS) } else seedEncoded.countDown()
                 PdjJson.lenient.encodeToString(doc)
             },
         )
         store.notePlayed("seed")
-        Thread.sleep(300)                       // let the queued save of "seed" land before arming the gate
+        assertTrue("seed save encoded", seedEncoded.await(5, TimeUnit.SECONDS))   // before arming the gate (no timing sleep)
         gate.set(true)
         val flusher = Thread { store.flush() }.also { it.start() }
         assertTrue("flush reached its encode", encoding.await(5, TimeUnit.SECONDS))

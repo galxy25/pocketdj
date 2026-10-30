@@ -286,3 +286,23 @@ class EngineMixTransportPort(
     override fun remoteSkip(fadeSeconds: Double) = dj.remoteSkip(fadeSeconds)
     override fun pauseBoth() = engine.pauseBoth()
 }
+
+/**
+ * Process-death recovery -> system surfaces. A parked (never sounded) mix becomes the PREFERRED remote target
+ * when nothing else owns the session, so the lock screen / dumpsys media_session show it and lock-screen play
+ * reaches [MixTransportPort.remotePlay] (which materializes, then plays). JVM-testable.
+ */
+object ParkedMixSession {
+    /** True when [player] was made the preferred target (and [ensureService] ran). */
+    fun offer(board: SessionSwitchboard, player: TransportOwner, hasParked: Boolean, ensureService: () -> Unit): Boolean {
+        if (!hasParked || board.current != null) return false
+        board.prefer(player)
+        ensureService()
+        return true
+    }
+
+    /** The parked mix was ejected / superseded without ever sounding. */
+    fun withdrawIfGone(board: SessionSwitchboard, player: TransportOwner, hasParked: Boolean, hasLoadedDeck: Boolean) {
+        if (!hasParked && !hasLoadedDeck) board.resignIfPreferred(player)
+    }
+}

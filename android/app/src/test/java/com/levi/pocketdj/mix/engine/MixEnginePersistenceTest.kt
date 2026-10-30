@@ -378,6 +378,52 @@ class MixEnginePersistenceTest {
         assertNull("materialized: nothing parked any more", h2.engine.parkedCard())
     }
 
+    @Test fun mixTabBeforeTheLaunchReadLandsWaitsForItAndNeverReadsDiskOnMain() {
+        val r = Rig(); populated(r); r.store.flush()
+        val h2 = r.relaunch()
+        var inFlight = true
+        h2.engine.launchReadInFlight = { inFlight }
+        var after = 0
+        h2.engine.materializePendingRestoreIfNeeded("mixTab") { after++ }   // cold launch straight onto Mix
+        // the old path did a synchronous store.load() here and cued the decks on the caller (Main)
+        assertNull(h2.engine.loaded(A)); assertFalse(h2.engine.hasParkedRestore); assertEquals(0, after)
+        inFlight = false
+        h2.engine.launchReadFinished(r.store.load())                          // the IO read lands: the park completes the job
+        assertEquals("a", h2.engine.loaded(A)!!.songId)
+        assertEquals("b", h2.engine.loaded(B)!!.songId)
+        assertEquals(1, after)
+    }
+
+    @Test fun aLaunchReadThatFindsNothingStillFinishesAWaitingMixTabRequest() {
+        val h = EngineHarness()
+        h.engine.launchReadInFlight = { true }
+        var after = 0
+        h.engine.materializePendingRestoreIfNeeded("mixTab") { after++ }
+        assertEquals(0, after)
+        h.engine.launchReadFinished(null)
+        assertEquals(1, after)
+    }
+
+    @Test fun aLateLaunchSnapshotNeverDuplicatesOrResurrects() {
+        val r = Rig(); populated(r); r.store.flush()
+        val h2 = r.relaunch()
+        val snap = r.store.load()
+        var work: (() -> MixEngine.RestorePrep)? = null
+        var commit: ((MixEngine.RestorePrep) -> Unit)? = null
+        h2.engine.restoreOffload = { w, c -> work = w; commit = c }
+        h2.engine.parkRestore(snap)
+        h2.engine.materializePendingRestoreIfNeeded()          // prep in flight (materializing)
+        h2.engine.parkRestore(snap)                            // a second park must not re-park / re-prep
+        assertFalse(h2.engine.hasParkedRestore)
+        commit!!(work!!())
+        assertEquals("a", h2.engine.loaded(A)!!.songId)
+        // user ejects, then a stale snapshot arrives
+        val h3 = r.relaunch()
+        h3.engine.ejectAll()
+        h3.engine.parkRestore(snap)
+        assertFalse("eject before the read landed: the old snapshot must stay dead", h3.engine.hasParkedRestore)
+    }
+
     @Test fun parkRestoreIsIgnoredOnceTheEngineIsInUse() {
         val r = Rig(); populated(r); r.store.flush()
         val h2 = r.relaunch()

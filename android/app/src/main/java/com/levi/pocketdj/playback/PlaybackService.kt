@@ -116,6 +116,9 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        // Android Auto can bind this service in a process with NO activity (post-death car connect): re-park the
+        // persisted mix here too (once-per-process idempotent; file read off Main).
+        runCatching { com.levi.pocketdj.di.AppGraph.get(applicationContext).mixGraph.launchRestore() }
         // PB-3: `pdj-resolve://song/<id>` rows (rip-on-demand inside a run) load immediately and resolve their
         // real url on the loader thread; every other uri passes through the resolver untouched.
         val dataSources = com.levi.pocketdj.playback.session.ResolvingSongDataSource.wrap(

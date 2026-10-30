@@ -254,10 +254,21 @@ class AppAutoMixExtras(
         )
     }
 
+    /** Gesture-time only (never on browse): only when a restore is parked, so nothing parked never builds the engine. */
     override fun materializePendingRestoreIfNeeded(trigger: String) {
-        // Only when a restore is parked: a car connect with nothing parked must not build the engine.
         if (!app.mixGraph.hasLaunchRestore()) return
         main.launch { app.mixGraph.mixEngine.materializePendingRestoreIfNeeded(trigger) }
+    }
+
+    override fun parkedMix(): AutoParkedMix? =
+        app.mixGraph.parkedSummary()?.let { AutoParkedMix(it.title, it.artist, it.autoLabel) }
+
+    override fun resumeParkedMix() {
+        if (!app.mixGraph.hasLaunchRestore()) return
+        main.launch {
+            val g = app.mixGraph
+            g.mixEngine.materializePendingRestoreIfNeeded("autoRow") { g.autoDj.remotePlay() }
+        }
     }
 
     override val slowSkipSeconds: Double get() = if (facade.autoMixing) app.mixGraph.autoDj.skipFadeSeconds else 15.0

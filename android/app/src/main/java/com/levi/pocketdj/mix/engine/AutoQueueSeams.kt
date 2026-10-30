@@ -72,6 +72,7 @@ fun AutoDj.autoQueueShuffleUpcoming() {
     if (queue.size - lo <= 1) return
     val tail = queue.subList(lo, queue.size)
     tail.shuffle(shuffleRandom)
+    prefetchUpcoming()
     refreshStatus()
     engine.persist()
 }
@@ -82,6 +83,7 @@ fun AutoDj.autoQueueRemoveUpcoming(offset: Int) {
     val idx = livePos + 1 + offset
     if (idx < committedBound || idx >= queue.size) return
     queue.removeAt(idx)
+    prefetchUpcoming()
     refreshStatus()
     engine.persist()
 }
@@ -94,6 +96,7 @@ fun AutoDj.autoQueueMoveUpcoming(offset: Int, toEnd: Boolean) {
     if (idx < lo || idx >= queue.size) return
     val item = queue.removeAt(idx)
     queue.add(if (toEnd) queue.size else lo, item)
+    prefetchUpcoming()
     refreshStatus()
     engine.persist()
 }
@@ -117,6 +120,7 @@ fun AutoDj.autoQueueInsert(
         JukeboxDecisionAction.DENIED -> return
     }
     queue.add(at, item)
+    prefetchUpcoming()
     refreshStatus()   // the "x / count" readout grew by one
     engine.persist()  // a guest's accepted request must survive a force-quit
 }

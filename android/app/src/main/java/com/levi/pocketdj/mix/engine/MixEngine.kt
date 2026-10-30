@@ -304,13 +304,16 @@ class MixEngine(
         autoEndedExhausted = false
         loadSeq[deck.ordinal]++
         // A load the prefetch already prepared off Main commits at once; only a miss pays the sync prepare.
-        commitPrepared(item, deck, takePrepared(item.songId) ?: prepare(item, deck))
+        val cached = takePrepared(item.songId)
+        if (cached == null && item.songId in preparing) lateDiscard += item.songId
+        commitPrepared(item, deck, cached ?: prepare(item, deck))
     }
 
     // ---- prepared-load cache (ANS-MIX-3): the Auto-DJ's next 1-2 items, prepared OFF Main
 
     private val preparedLoads = LinkedHashMap<String, PreparedLoad>()   // main-thread only; keyed by songId (the voice name is cosmetic)
     private val preparing = HashSet<String>()
+    private val lateDiscard = HashSet<String>()   // ids whose in-flight prefetch a sync loadNow overtook
     /** Test/diagnostic: how many loads were served from the cache. */
     var preparedHits = 0; private set
 
@@ -321,6 +324,8 @@ class MixEngine(
         if (id in preparedLoads || !preparing.add(id)) return
         off({ prepare(item, deck) }) { p ->
             preparing.remove(id)
+            // A sync loadNow took this id while we were preparing: the late result would be a duplicate open decoder.
+            if (lateDiscard.remove(id)) { p?.discard(); return@off }
             if (p == null || p.notOnDisk) { p?.discard(); return@off }
             preparedLoads.put(id, p)?.discard()
             while (preparedLoads.size > PREPARED_CAP) {
@@ -334,6 +339,11 @@ class MixEngine(
         preparedLoads.remove(songId)?.also { preparedHits++ }
 
     /** Drop every prepared (not yet installed) load: a new/stopped mix or a file that may have changed. */
+    internal fun prunePrepared(keep: Set<String>) {
+        val it = preparedLoads.entries.iterator()
+        while (it.hasNext()) { val e = it.next(); if (e.key !in keep) { e.value.discard(); it.remove() } }
+    }
+
     internal fun clearPrepared() {
         preparedLoads.values.forEach { it.discard() }
         preparedLoads.clear()
@@ -648,7 +658,7 @@ class MixEngine(
 
     /** End the WHOLE mix: stop any Auto-DJ and eject both decks (Settings reset rides this). */
     fun ejectAll() {
-        pendingRestore = null; restoreGen++
+        pendingRestore = null; restoreGen++; restoreSettled = true
         clearPrepared()
         autoDj?.endAutoLoop()
         clearDeck(Deck.A)
@@ -1008,7 +1018,9 @@ class MixEngine(
      */
     fun parkRestore(snap: MixDeckSnapshot?) {
         if (isRunning || autoMixing || st(Deck.A).loaded != null || st(Deck.B).loaded != null) { restoreSettled = true; return }
-        if (restoreSettled && pendingRestore != null) return   // already parked
+        // A read, a real load / eject, an earlier park or an in-flight materialize already settled the restore:
+        // a late launch snapshot must never resurrect or duplicate it.
+        if (restoreSettled || materializing) return
         restoreSettled = true
         if (snap == null) return
         pendingRestore = snap
@@ -1017,6 +1029,15 @@ class MixEngine(
         if (!materializeWanted) return
         if (setlistIsLive?.invoke() == true) { diag("materialize skipped setlistLive=1"); return }
         materializeNow("launchTask")
+    }
+
+    /** True while MixGraph.launchRestore's off-Main snapshot read has not landed (a Mix-surface request just waits for it). */
+    var launchReadInFlight: () -> Boolean = { false }
+
+    /** The launch read landed (snap may be null): park it, then finish any Mix-surface request that arrived meanwhile. */
+    fun launchReadFinished(snap: MixDeckSnapshot?) {
+        parkRestore(snap)
+        if (pendingRestore == null && !materializing) drainAfterMaterialize()
     }
 
     /** Synchronous relaunch entry (debug / fallback): read the store on the CALLER and park. Production uses launchRestore. */
@@ -1040,9 +1061,11 @@ class MixEngine(
     fun materializePendingRestoreIfNeeded(trigger: String = "mixTab", then: (() -> Unit)? = null) {
         materializeWanted = true
         if (then != null) {
-            if (pendingRestore == null && !materializing) { then(); return }
+            if (pendingRestore == null && !materializing && !launchReadInFlight()) { then(); return }
             afterMaterialize += then
         }
+        // The launch read is still on IO: remember the request; launchReadFinished completes the job (no disk on Main).
+        if (pendingRestore == null && launchReadInFlight()) return
         // Nothing parks the launch restore for us: park from the store on first ask. That park is the launch
         // read, so IT applies the live-set-list guard (and materializes when no set list is live).
         if (pendingRestore == null && !restoreSettled) { restorePersistedMixIfIdle(); if (pendingRestore == null && !materializing) drainAfterMaterialize(); return }

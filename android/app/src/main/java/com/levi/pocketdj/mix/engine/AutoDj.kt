@@ -290,6 +290,7 @@ class AutoDj(
         checkpointEngineStall()      // fresh end stamps below must only be shifted by the stall that FOLLOWS
         paused = false
         resumeAutoOnRemotePlay = false
+        prefetchUpcoming()           // a restored / resumed run's first transition must not pay the sync prepare
         engine.rec(MixEventKind.AutoResume)
         // Mid-transition the (possibly just-unfrozen) fade owns both decks: lifting the gate is all
         // that is needed. A blend re-arm would fire a second, immediate handoff.
@@ -384,7 +385,7 @@ class AutoDj(
         val deferred = HashSet<String>()
         while (true) {
             val k = nextUnplayedQueueIndex(exclude, deferred) ?: return null
-            if (loadAuto(queue[k], deck)) return k
+            if (loadAuto(queue[k], deck)) { prefetchUpcoming(); return k }
             if (seams.transientlyUnloadable(queue[k].loadable.songId)) {
                 deferred.add(queue[k].loadable.songId)   // stream gate closed now - keep it
                 continue
@@ -877,6 +878,8 @@ class AutoDj(
     internal fun prefetchUpcoming() {
         var k = nextToLoad
         var n = 0
+        // Entries for removed / reordered items must not squat the cap.
+        engine.prunePrepared((nextToLoad until minOf(queue.size, nextToLoad + PREFETCH_AHEAD)).map { queue[it].loadable.songId }.toSet())
         while (k < queue.size && n < PREFETCH_AHEAD) {
             val item = queue[k]
             if (seams.songOnDevice(item.loadable.songId)) { engine.prefetchPrepared(item.loadable, Deck.A); n++ }
@@ -1075,6 +1078,7 @@ class AutoDj(
         resumeFromRestore = true           // first resume: the restored cursor wins over the play-log
         mixing = true
         refreshStatus()
+        prefetchUpcoming()
     }
 
     private fun secToMs(s: Double): Long = Math.round(s * 1000)

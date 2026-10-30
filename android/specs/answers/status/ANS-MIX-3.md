@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-MIX-3 Mix returns after process death (launch park + Auto Mix row) and Mix disk work off Main
 
@@ -16,3 +16,14 @@ Notes: gradle needed `-Pkotlin.compiler.execution.strategy=in-process -Dorg.grad
 
 ## Questions for Levi
 - none
+
+## Review
+fixes applied. JVM 5351 -> 5358 (+7: 3 MixEnginePersistenceTest, 2 MixSessionPlayerTest, 2 AutoMixTabTest), 0 failures; assembleDebug OK. Emulator steps still NOT run.
+- MAJOR lock screen/MediaSession: FIXED. ParkedMixSession.offer (MixSessionPlayer.kt) makes the Mix player the switchboard's preferred target + ensureMediaService when nothing else owns the session; withdrawIfGone/SessionSwitchboard.resignIfPreferred on eject. Tests assert remoteTarget()===mix after offer, no steal from a sounding owner, withdraw.
+- MAJOR Auto with no activity: FIXED. PlaybackService.onCreate calls mixGraph.launchRestore() (once-per-process); AutoMixTab renders a parked-mix row (Paused, label) from extras.parkedMix() (held snapshot, no engine). Tests: row shown, tap resumes.
+- MINOR Auto root() materialized on browse: FIXED. root() only describes; the PARKED row / TOGGLE gesture calls resumeParkedMix (materialize, then resume). START supersedes, so no materialize.
+- MINOR parkRestore races: FIXED. launchReadInFlight probe: Mix-surface requests (incl. `then` callbacks) wait for launchReadFinished (no sync store.load on Main); parkRestore refuses when restoreSettled or materializing; ejectAll marks settled. 3 tests.
+- MINOR engine built on Main at launch: PARTIAL. Snapshot is held in MixGraph (parkedSummary/hasLaunchRestore never build the engine) and the engine is built from a Main idle handler, not inline in the launch frame. Building it at all is required: the session owner (lock-screen card) is created with the engine; iOS parks with no card, Android roadmap wants the card.
+- MINOR prefetch coverage: FIXED. prefetchUpcoming also on resumeAuto, restoreSuspended, loadNextUnplayed and queue mutations (shuffle/remove/move/insert); stale entries pruned to the next-2 window.
+- NIT late duplicate prefetch: FIXED (lateDiscard). Invalidate on burn/rip-complete: NOT done (cache lifetime is the next-2 window only).
+- NIT tests: FIXED. Thread.sleep replaced by a seed-encoded latch; park-after-launchRestore wiring covered at the ParkedMixSession seam (MixGraph itself needs Android).

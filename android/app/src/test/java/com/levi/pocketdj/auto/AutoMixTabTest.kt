@@ -46,6 +46,10 @@ class AutoMixTabTest {
         )
         var live: AutoMixLive? = null
         var dl: Pair<Int, Int>? = null
+        var parked: AutoParkedMix? = null
+        override fun parkedMix() = parked
+        override fun resumeParkedMix() { calls += "resumeParked" }
+        override fun materializePendingRestoreIfNeeded(trigger: String) { calls += "materialize:$trigger" }
         override var slowSkipSeconds = 15.0
         val calls = mutableListOf<String>()
         var sessions: List<AutoJukeSession>? = emptyList()
@@ -81,6 +85,24 @@ class AutoMixTabTest {
         r.extras.dl = 1 to 7
         val row = r.kids().first { it.id.startsWith("mix:dl") }
         assertEquals("Downloading 1 of 7", row.title)
+    }
+
+    @Test fun root_describesTheParkedMixWithoutMaterializingIt() {
+        val r = Rig()
+        r.extras.parked = AutoParkedMix("Song", "Band", "Gym")
+        val row = r.kids().first { it.id == r.mixId(AutoMixKind.PARKED).encoded }
+        assertEquals("Song — Band", row.title)
+        assertTrue(row.subtitle!!.startsWith("Paused · Gym"))
+        assertTrue(row.playable)
+        assertTrue("browsing the Mix root (car connect) must never touch the decks", r.extras.calls.none { it.startsWith("materialize") || it == "resumeParked" })
+    }
+
+    @Test fun parkedRowTap_materializesAndResumes_andNothingParkedShowsNoRow() {
+        val r = Rig()
+        assertTrue(r.kids().none { it.id.startsWith("mix:parked") })
+        r.extras.parked = AutoParkedMix("Song", null, null)
+        r.sel(AutoMixKind.PARKED)
+        assertEquals(listOf("resumeParked"), r.extras.calls)
     }
 
     @Test fun crateSelect_renotifiesOldAndNewGroups() {
