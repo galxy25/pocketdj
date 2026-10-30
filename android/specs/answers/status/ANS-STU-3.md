@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # ANS-STU-3 — Studio session owner + park/resume on transient focus loss
 
@@ -10,7 +10,7 @@ state: in-progress
 - [x] StemPlayer (single + synced + routing) park/resume/dropInterruptionPark
 - [x] StudioGraph: shared parkingFocus handle, coordinator registrations (loop, multitrack, instrument, demux), MediaController bind, background observer no longer stops the loop
 - [x] Tests
-- [ ] Full gradle green, final commit
+- [x] Full gradle green (5301 tests, 0 failures; new tests added in this package)
 
 ## Notes / deviations
 - Parked engines KEEP their focus request (stop paths take holdFocus / skip release) - otherwise AUDIOFOCUS_GAIN is never delivered. Any explicit user play/stop or permanent loss clears the park and releases focus.
@@ -22,3 +22,6 @@ state: in-progress
 
 ## Questions for Levi
 None.
+
+## Summary
+Loop audition now owns the media session (engine "studio") and survives backgrounding; Loop, Multitrack, Instrument replay and Demux park on transient focus loss and resume on gain via one InterruptionCoordinator; permanent loss / user transport clears the park.
