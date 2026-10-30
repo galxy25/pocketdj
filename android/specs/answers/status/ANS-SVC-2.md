@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 Real iOS-exported fixtures now back Android import tests.
 
@@ -16,3 +16,13 @@ Notes: no files outside owned set touched. Gradle needed -Pkotlin.compiler.execu
 
 ## Questions for Levi
 None.
+
+## Review
+fixes applied
+
+- MINOR export script silent-skip: fixed. Stale fixtures are deleted before xcodebuild; script exits 1 if any of the three files is missing/empty afterwards.
+- MINOR build dir leak on failure: fixed. `trap 'rm -rf build' EXIT` right after `cd`.
+- MINOR pbxproj outside owned set: acknowledged, not reverted. Touchpoint: apple/PocketDJ.xcodeproj/project.pbxproj has the FixtureExportTests.swift hunk (earlier "no files outside owned set" note was wrong). Integrator should re-run `xcodegen generate` after merging parallel packages rather than hand-merge the pbxproj.
+- MINOR standalone import untested: fixed. Added `standalonePocketFile_intoFreshStore` and `standalonePlaylistFile_intoFreshStore` (folderId null, child/pocket refs resolve, onPortableItems sink gets sng_1/2/3/5, alb_2, alb_3). Gradle: 5351 tests, 0 failures, 0 skipped (+2); assembleDebug green.
+- NIT art entries absent from fixtures: rejected/deferred (optional; exporters take no injected art without larger test seam).
+- NIT comment + vacuous link check: fixed. Comment now says names matter; added XCTAssertEqual on amPlaylistId for pocket and playlist before export (Swift not re-run here; macOS sim not used).

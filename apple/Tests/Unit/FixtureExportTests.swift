@@ -6,7 +6,7 @@ import XCTest
 /// (BackupZip / PocketZip / PlaylistZip via the store) so the Android JVM tests can import bytes
 /// iOS actually wrote. Driven by `apple/scripts/export-android-fixtures.sh`.
 ///
-/// Fixed ids/names matter: `IosRealFixtureTest.kt` asserts them.
+/// Names matter: `IosRealFixtureTest.kt` keys on them (ids are random UUIDs).
 final class FixtureExportTests: XCTestCase {
 
     @MainActor
@@ -52,6 +52,8 @@ final class FixtureExportTests: XCTestCase {
         // amPlaylistId must NEVER travel (ANS-COL-1).
         s.linkToAppleMusic(pocketId: warm.id, amPlaylistId: "p.FIXTURE_AM_POCKET")
         s.linkToAppleMusic(playlistId: pl.id, amPlaylistId: "p.FIXTURE_AM_PLAYLIST")
+        XCTAssertEqual(s.pocket(warm.id)?.amPlaylistId, "p.FIXTURE_AM_POCKET")
+        XCTAssertEqual(s.playlist(pl.id)?.amPlaylistId, "p.FIXTURE_AM_PLAYLIST")
 
         // Favorites (+ tombstone) and edits.
         let fav = FavoritesStore(fileURL: tmp.appendingPathComponent("pdj-fx-fav-\(UUID().uuidString).json"))

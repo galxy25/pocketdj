@@ -143,4 +143,38 @@ class IosRealFixtureTest {
         for (n in listOf("backup.pocketdj.zip", "pocket.pdjcollection", "playlist.pdjcollection")) s.importAny(res(n))
         assertEquals(before, listOf(s.pockets, s.playlists, s.setlists, s.folders))
     }
+
+    @Test
+    fun standalonePocketFile_intoFreshStore() {
+        val s = store()
+        var sink: PortableItems.Payload? = null
+        s.onPortableItems = { sink = it }
+        s.importAny(res("pocket.pdjcollection"))
+        val warm = s.pockets.single { it.name == "Warmups" }
+        val chill = s.pockets.single { it.name == "Chill" }
+        assertNull(warm.folderId); assertNull(chill.folderId)
+        assertEquals(listOf(chill.id), warm.childPocketIds)
+        assertTrue(s.playlists.isEmpty())
+        val p = sink!!
+        assertTrue(p.songs.map { it.id }.containsAll(listOf("sng_1", "sng_2", "sng_3", "sng_5")))
+        assertTrue(p.albums.any { it.id == "alb_2" })
+    }
+
+    @Test
+    fun standalonePlaylistFile_intoFreshStore() {
+        val s = store()
+        var sink: PortableItems.Payload? = null
+        s.onPortableItems = { sink = it }
+        s.importAny(res("playlist.pdjcollection"))
+        val pl = s.playlists.single { it.name == "Night Set" }
+        assertNull(pl.folderId)
+        val warm = s.pockets.single { it.name == "Warmups" }
+        assertNotNull(s.pockets.firstOrNull { it.name == "Chill" })
+        assertNull(warm.folderId)
+        val refs = pl.sequences.flatMap { it.children.orEmpty() }.mapNotNull { it.pocketId }
+        assertTrue(warm.id in refs)
+        val p = sink!!
+        assertTrue(p.songs.map { it.id }.containsAll(listOf("sng_1", "sng_2", "sng_3", "sng_5")))
+        assertTrue(p.albums.map { it.id }.containsAll(listOf("alb_2", "alb_3")))
+    }
 }
