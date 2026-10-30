@@ -57,6 +57,8 @@ class JukeboxRepository(
     @Volatile var placementSink: JukeboxPlacementSink = JukeboxPlacementSink.None,
     /** Seam: Apple-Music catalog match stage (device-only; default null). */
     @Volatile var externalMatch: JukeboxExternalMatch = JukeboxExternalMatch.None,
+    /** Seam: kicks the rip for an Apple-Music-only match the host accepts (SURF-10). */
+    @Volatile var adHocRipStarter: JukeboxAdHocRipStarter? = null,
     /** Where accepted requests land: the sequencer (null in tests that never place). */
     @Volatile var queue: JukeboxQueue? = null,
     /** Seam: the live Mix (MIX-16). Consulted per call so a mix started after construction is picked up. */
@@ -316,6 +318,20 @@ class JukeboxRepository(
             // A live auto mix owns the setlist: even an un-ripped match joins ITS queue (parked behind a
             // burn-when-ripped intent); the sequencer path below still needs a playable match.
             scope.launch {
+                // Apple-Music-only match: no audio yet - kick the rip before either placement path.
+                if (JukeboxAppleMusicMatch.isAdHoc(found.song.id) && !rips.isPlayable(found.song.id)) {
+                    val started = try {
+                        adHocRipStarter?.start(found.song) ?: false
+                    } catch (c: CancellationException) {
+                        throw c
+                    } catch (e: Exception) {
+                        false
+                    }
+                    if (!started) {
+                        _state.update { it.copy(transientError = "Couldn't start the rip for “${found.song.name}”") }
+                        return@launch
+                    }
+                }
                 val mixOwns = runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false)
                 if (mixOwns) {
                     try {
@@ -459,7 +475,10 @@ class JukeboxRepository(
             } catch (e: Exception) {
                 null
             }
-        val match = song?.let { Match.Found(it, rips.isPlayable(it.id)) } ?: Match.None
+        val match = song?.let {
+            // An AM-only row is "playable" once accepted: the rip is requested then (SURF-10).
+            Match.Found(it, rips.isPlayable(it.id) || JukeboxAppleMusicMatch.isAdHoc(it.id))
+        } ?: Match.None
         _state.update { current ->
             current.copy(
                 requests = current.requests.map { row ->
