@@ -120,6 +120,10 @@ object StudioOutputs {
     fun chooseBackend(nativeAvailable: Boolean, isEmulator: Boolean): Backend =
         if (nativeAvailable && !isEmulator) Backend.OBOE else Backend.AUDIO_TRACK
 
+    /** The backend [create] picks on this device (for logs/diagnostics). */
+    fun currentBackend(): Backend =
+        chooseBackend(NativeDsp.available, looksLikeEmulator(android.os.Build.FINGERPRINT, android.os.Build.HARDWARE, android.os.Build.PRODUCT))
+
     fun create(audioManager: AudioManager, sampleRate: Int = CANONICAL_RATE_INT, blockFrames: Int = 512): AudioSink {
         val emu = looksLikeEmulator(android.os.Build.FINGERPRINT, android.os.Build.HARDWARE, android.os.Build.PRODUCT)
         return when (chooseBackend(NativeDsp.available, emu)) {

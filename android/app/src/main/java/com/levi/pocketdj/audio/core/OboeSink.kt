@@ -59,7 +59,11 @@ class OboeSink(
         this.renderer = renderer
         running = true
         rendering = true
+        // A park (stop) then restart is a fresh stream: clear any disconnect/backoff state left by the last life.
         rebuildAttempt = 0
+        wasDisconnected = false
+        nextRebuildAt = 0L
+        renderFailed = false
         thread = Thread({ loop() }, "pdj-oboe-feed").also { it.priority = Thread.MAX_PRIORITY; it.start() }
     }
 

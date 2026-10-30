@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import com.levi.pocketdj.audio.core.AudioTrackSink
 import com.levi.pocketdj.audio.core.Mp3Decoder
 import com.levi.pocketdj.audio.core.VoicePump
 import com.levi.pocketdj.data.burns.BurnStore
@@ -247,7 +246,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     private val engineLazy: Lazy<MixEngine> = lazy {
         val audio = app.appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         MixEngine(
-            sinkFactory = { AudioTrackSink(audio) },
+            sinkFactory = { com.levi.pocketdj.studio.audio.StudioOutputs.create(audio).also { NPLog.lane(NPLog.MIX, "sink backend=${com.levi.pocketdj.studio.audio.StudioOutputs.currentBackend().name.lowercase().replace("_", "")}") } },
             resolver = com.levi.pocketdj.data.profile.ProfileMixTrackResolver(app.studioGraph.profileAudio, BurnStoreTrackResolver(app.servicesGraph.burnStore)),
             opener = MixSourceOpener { f ->
                 // Mp3Decoder is the only PcmSource today; a burn it cannot open (e.g. adopted .wav) is refused visibly.
@@ -539,7 +538,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val audio = app.appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val burns = app.servicesGraph.burnStore
         com.levi.pocketdj.mix.nowplaying.NowPlayingDspEngine(
-            sinkFactory = { AudioTrackSink(audio) },
+            sinkFactory = { com.levi.pocketdj.studio.audio.StudioOutputs.create(audio).also { NPLog.lane(NPLog.MIX, "sink backend=${com.levi.pocketdj.studio.audio.StudioOutputs.currentBackend().name.lowercase().replace("_", "")}") } },
             opener = MixSourceOpener { f ->
                 val d = runCatching { Mp3Decoder(f) }.getOrNull()
                 if (d == null || d.totalFrames <= 0) { runCatching { d?.close() }; null } else d
