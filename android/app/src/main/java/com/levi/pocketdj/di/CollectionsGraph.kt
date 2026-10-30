@@ -286,6 +286,8 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     /** Idempotent: the "Imported" synthetic source joins every catalog merge (also at cold-start seed). */
     private fun wireCatalogSource() {
         app.catalogRepository.importedSource = { real -> importedSongs.resolve(real) }
+        // ANS-STU-7: the per-profile "Pocket DJ" source appends after every real source (always carries its two default albums).
+        app.catalogRepository.syntheticDocuments = { listOf(app.studioGraph.profileSource.syntheticDocument()) }
         // iOS applySupersede order: drop the imported rows, THEN remap collections + favorites onto the indexed twin.
         app.catalogRepository.onImportedSupersede = { pairs ->
             app.appScope.launch(Dispatchers.IO) {

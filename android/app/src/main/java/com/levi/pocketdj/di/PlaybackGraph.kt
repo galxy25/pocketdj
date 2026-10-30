@@ -227,6 +227,6 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         }
         // Burned-first rung: a READY burn plays from disk (offline-capable). Without this the
         // ladder fell straight through to the network manifest rung.
-        app.playbackController.localFiles = app.servicesGraph.burnedFirst
+        app.playbackController.localFiles = app.studioGraph.withProfileAudio(app.servicesGraph.burnedFirst)
     }
 }
