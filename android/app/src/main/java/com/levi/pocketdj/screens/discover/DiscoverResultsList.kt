@@ -18,6 +18,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -127,22 +132,35 @@ fun DiscoverResultsList(
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: suspend (DiscoverHit) -> Boolean) {
     val scope = rememberCoroutineScope()
     var busy by remember(hit.id) { mutableStateOf(false) }
-    // Ripped is NOT "added": show a distinct "Ripped" state (play from Discover is PARTIAL, see status).
-    val ripped = hit.ripped == true
     var addedLocal by rememberSaveable(hit.id) { mutableStateOf(false) }
     // Derived from the store like iOS (BrowseDiscover.swift:283): an already-added song never offers ＋ again.
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    val addsState = remember(ctx) { com.levi.pocketdj.di.AppGraph.get(ctx).browseGraph.discoverAdds.state }
+    val appGraph = remember(ctx) { com.levi.pocketdj.di.AppGraph.get(ctx) }
+    val addsState = remember(ctx) { appGraph.browseGraph.discoverAdds.state }
+    // Ripped = search-time flag OR the manifest has flipped since (add-completion refresh moves the row live).
+    val manifest by appGraph.ripsRepository.manifest.collectAsState()
+    val ripped = DiscoverRowState.ripped(hit, manifest.keys)
+    val nowPlaying by appGraph.playbackController.nowPlaying.collectAsState()
+    val jobs by appGraph.ripJobTracker.jobs.collectAsState()
+    val working = jobs[hit.id]?.let { it.phase != com.levi.pocketdj.data.rips.RipJob.PHASE_READY && it.phase != com.levi.pocketdj.data.rips.RipJob.PHASE_ERROR } == true
+    val playingThis = nowPlaying?.songId == hit.id
+    var menu by remember(hit.id) { mutableStateOf(false) }
+    appGraph.playbackGraph.sequencer.state.collectAsState().value
+    val queueRunning = appGraph.playbackGraph.sequencer.isRunning
     val adds by addsState.collectAsState()
     val added = addedLocal || adds.entries.any { it.songId == hit.id }
     var failed by remember(hit.id) { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        modifier = Modifier.fillMaxWidth()
+            // Long-press on a RIPPED row: Play Next / Play Last into the running queue (iOS rowMenu).
+            .combinedClickable(enabled = ripped, onClick = {}, onLongClick = { menu = true })
+            .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         DiscoverArt(hit.artworkUrl ?: hit.albumArtworkUrl, 48)
         Spacer(Modifier.width(12.dp))
@@ -171,27 +189,58 @@ private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: s
             )
         }
         val help = DiscoverAddWording.addHelp("song", canAddToLibrary, opensInMusic = false)
+        if (ripped && queueRunning) {
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                val item = com.levi.pocketdj.playback.sequencer.QueueItem(
+                    hit.id, hit.title, hit.artist.ifBlank { null }, hit.durationMs?.toLong(),
+                )
+                DropdownMenuItem(text = { Text("Play Next") }, onClick = {
+                    menu = false; appGraph.shellGraph.shellActions.enqueueSong(item, next = true)
+                })
+                DropdownMenuItem(text = { Text("Play Last") }, onClick = {
+                    menu = false; appGraph.shellGraph.shellActions.enqueueSong(item, next = false)
+                })
+            }
+        }
         when {
             busy -> CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
-            ripped -> Icon(
-                Icons.Filled.Check, "Ripped", tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(12.dp),
-            )
-            added -> Icon(
-                Icons.Filled.Check, "Added", tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(12.dp),
-            )
-            else -> IconButton(
-                onClick = {
-                    busy = true
-                    failed = false
-                    scope.launch {
-                        addedLocal = try { onAdd(hit) } finally { busy = false }
-                        failed = !addedLocal
+            else -> when (DiscoverRowState.trailing(ripped, playingThis && nowPlaying?.isPlaying == true, working, added)) {
+                DiscoverTrailing.PLAY, DiscoverTrailing.PAUSE -> {
+                    val pausing = playingThis && nowPlaying?.isPlaying == true
+                    IconButton(onClick = {
+                        scope.launch {
+                            val pc = appGraph.playbackController
+                            when {
+                                pausing -> pc.pause()
+                                playingThis -> pc.resume()
+                                else -> pc.play(hit.id, queueAlbumContext = false)
+                            }
+                        }
+                    }) {
+                        Icon(
+                            if (pausing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            if (pausing) "Pause" else "Play", tint = MaterialTheme.colorScheme.primary,
+                        )
                     }
-                },
-                modifier = Modifier.semantics { contentDescription = help },
-            ) { Icon(Icons.Filled.Add, contentDescription = help) }
+                }
+                DiscoverTrailing.WORKING -> CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
+                DiscoverTrailing.ADDED -> Icon(
+                    Icons.Filled.Check, "Added", tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(12.dp),
+                )
+                DiscoverTrailing.ADD -> IconButton(
+                    onClick = {
+                        busy = true
+                        failed = false
+                        scope.launch {
+                            addedLocal = try { onAdd(hit) } finally { busy = false }
+                            failed = !addedLocal
+                        }
+                    },
+                    modifier = Modifier.semantics { contentDescription = help },
+
+                ) { Icon(Icons.Filled.Add, contentDescription = help) }
+            }
         }
     }
     if (failed) {

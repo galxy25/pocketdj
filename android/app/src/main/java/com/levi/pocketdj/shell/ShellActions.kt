@@ -90,6 +90,16 @@ class ShellActions(
     /** Assigned by the Mix area; null ⇒ every Auto-Mix action says it isn't available. */
     @Volatile var mixFacade: MixFacade? = null
 
+    /**
+     * Assigned by the shell graph: insert rows into the RUNNING Now Playing queue (`next` = Play Next, else Play Last).
+     * Returns false when no session is running. Additive seam for Discover's ripped-row long-press menu.
+     */
+    @Volatile var queueSink: ((List<com.levi.pocketdj.playback.sequencer.QueueItem>, Boolean) -> Boolean)? = null
+
+    /** Play Next / Play Last for one song; false when nothing is running (the menu hides in that case). */
+    fun enqueueSong(item: com.levi.pocketdj.playback.sequencer.QueueItem, next: Boolean): Boolean =
+        queueSink?.invoke(listOf(item), next) ?: false
+
     private val kickedManifestRefresh = AtomicBoolean(false)
 
     private suspend fun veto() {

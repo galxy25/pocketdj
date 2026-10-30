@@ -102,9 +102,9 @@ private fun DiscoverAlbumRow(
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
-            // Album add only writes the library (no per-track rips yet): without a Music-User-Token it
-            // cannot do anything, so the button is disabled and says why instead of promising a copy.
-            val help = if (canAddToLibrary) DiscoverAddWording.addHelp("album", true) else DiscoverAddWording.ALBUM_NEEDS_SIGN_IN
+            // Enabled whenever results exist (a track source answered); without a Music-User-Token the library
+            // write is recorded as skipped (iOS RipsStore parity) and the tracks still add.
+            val help = DiscoverAddWording.addHelp("album", canAddToLibrary)
             when {
                 busy -> CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
                 // Recorded album: per-track rip progress n/m until every track settles (iOS capsule).
@@ -120,7 +120,7 @@ private fun DiscoverAlbumRow(
                             failed = !added
                         }
                     },
-                    enabled = canAddToLibrary,
+                    enabled = DiscoverRowState.albumAddEnabled(),
                     modifier = Modifier.semantics { contentDescription = help },
                 ) { Icon(Icons.Filled.Add, contentDescription = help) }
             }

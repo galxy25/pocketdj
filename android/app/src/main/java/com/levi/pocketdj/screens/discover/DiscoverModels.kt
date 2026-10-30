@@ -82,13 +82,37 @@ enum class DiscoverScope { SONGS, ALBUMS }
 object DiscoverAddWording {
     /** iOS `discoverError` for a rejected add. */
     const val ADD_FAILED = "Add failed — the import server didn’t accept the request."
-    const val ALBUM_NEEDS_SIGN_IN = "Sign in to Apple Music (Settings) to add albums"
 
     fun addHelp(noun: String, canAddToLibrary: Boolean, opensInMusic: Boolean = false): String = when {
         canAddToLibrary -> "Save this $noun to your Apple Music library and prepare your copy"
         opensInMusic -> "Open this $noun in Music and prepare your copy"
         else -> "Prepare your copy"
     }
+}
+
+/** The trailing control of a Discover song row (iOS `DiscoverRow.trailing`, in precedence order). */
+enum class DiscoverTrailing { PLAY, PAUSE, WORKING, ADDED, ADD }
+
+/** Pure row-state rules for Discover (iOS BrowseDiscover.swift `ripped` / `trailing`). */
+object DiscoverRowState {
+    /** Ripped = the server said so at search time OR the manifest has flipped since (add-completion refresh). */
+    fun ripped(hit: DiscoverHit, manifestIds: Set<String>): Boolean = hit.ripped == true || hit.id in manifestIds
+
+    /** Ripped wins over everything (play/pause); then an in-flight rip, then a recorded add, else the + control. */
+    fun trailing(ripped: Boolean, isPlayingThisSong: Boolean, working: Boolean, added: Boolean): DiscoverTrailing = when {
+        ripped && isPlayingThisSong -> DiscoverTrailing.PAUSE
+        ripped -> DiscoverTrailing.PLAY
+        working -> DiscoverTrailing.WORKING
+        added -> DiscoverTrailing.ADDED
+        else -> DiscoverTrailing.ADD
+    }
+
+    /**
+     * The album + needs only a TRACK source (catalog REST is developer-token only; `/album-tracks` is
+     * subscription-free). A row existing at all proves one answered, so it is enabled whenever results show;
+     * the Apple Music library write degrades to "skipped" without a Music-User-Token.
+     */
+    fun albumAddEnabled(hasAnyTrackSource: Boolean = true): Boolean = hasAnyTrackSource
 }
 
 /**

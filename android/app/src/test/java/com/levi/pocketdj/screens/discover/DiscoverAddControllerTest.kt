@@ -182,4 +182,16 @@ class DiscoverAddControllerTest {
         assertEquals(DiscoverRipOutcome.Failed, DiscoverAddController.outcomeOf(RipJob(phase = "error", error = "x")))
         assertEquals(DiscoverRipOutcome.Queued("j1"), DiscoverAddController.outcomeOf(RipJob(phase = "queued", jobId = "j1")))
     }
+
+    @Test fun noMusicUserTokenAlbumAddStillRecordsTracksAndTruthfulSkip() = runBlocking {
+        val s = store()
+        val rips = FakeRips().apply { serverTracks = tracks(3) }
+        val lib = FakeLibrary(token = LibraryWrite.SKIPPED_NO_CONNECTION) // REST tracks empty, no MUT
+        val out = DiscoverAddController(s, rips, lib).addAlbum(albumHit(), AlbumAddIntent.AND_PREPARE_COPIES)
+        assertTrue(out.accepted)
+        assertEquals(LibraryWrite.SKIPPED_NO_CONNECTION, out.libraryWrite)
+        assertEquals(listOf("77"), lib.albums)
+        assertEquals(3, s.entries.size)
+        assertEquals(listOf(LibraryWrite.SKIPPED_NO_CONNECTION), s.state.value.albums.map { it.libraryWrite })
+    }
 }
