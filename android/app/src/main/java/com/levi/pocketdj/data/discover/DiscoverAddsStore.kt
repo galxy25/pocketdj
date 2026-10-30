@@ -178,6 +178,86 @@ class DiscoverAddsStore(private val file: File) {
         log?.let { onUserCatalogAdd?.invoke(listOf(CatalogItem(it.albumId, it.title, it.artist)), it.libraryWrite) }
     }
 
+    /** Result of [applyAlbumRefresh]: rows the live catalog must replace / add, and the album when its row changed. */
+    data class AlbumRefreshResult(val updated: List<Entry>, val added: List<Entry>, val album: AlbumEntry?) {
+        val changed: Boolean get() = updated.isNotEmpty() || added.isNotEmpty() || album != null
+    }
+
+    /**
+     * Merge a fresh catalog read of a provisional album (iOS `applyAlbumRefresh`): retitle/renumber tracks matched by
+     * catalog id, append tracks that appeared since the add, stamp release date + check time. Fires [onChanged] when
+     * rows changed so the live catalog rebuilds. Empty result (album only re-stamped) when nothing changed.
+     */
+    fun applyAlbumRefresh(
+        albumId: String,
+        title: String?,
+        trackCount: Int?,
+        releaseDateMs: Double?,
+        tracks: List<RefreshTrack>,
+        nowMs: Double,
+    ): AlbumRefreshResult {
+        val result: AlbumRefreshResult
+        synchronized(lock) {
+            val snap = _state.value
+            val ai = snap.albums.indexOfFirst { it.albumId == albumId }
+            if (ai < 0) return AlbumRefreshResult(emptyList(), emptyList(), null)
+            var album = snap.albums[ai]
+            val titleChanged = !title.isNullOrEmpty() && title != album.title
+            if (titleChanged) album = album.copy(title = title!!)
+            if (trackCount != null) album = album.copy(trackCount = trackCount)
+            if (releaseDateMs != null) album = album.copy(releaseDateMs = releaseDateMs)
+            album = album.copy(lastRefreshAtMs = nowMs)
+
+            val entries = snap.entries.toMutableList()
+            val updated = ArrayList<Entry>()
+            val added = ArrayList<Entry>()
+            val known = entries.filter { it.albumId == albumId }.map { it.appleMusicId }.toHashSet()
+            for (t in tracks) {
+                if (t.id in known) {
+                    val i = entries.indexOfFirst { it.albumId == albumId && it.appleMusicId == t.id }
+                    if (i < 0) continue
+                    val before = entries[i]
+                    val e = before.copy(
+                        title = t.title.ifEmpty { before.title },
+                        artist = t.artist.ifEmpty { before.artist },
+                        trackNumber = t.trackNumber ?: before.trackNumber,
+                        discNumber = t.discNumber ?: before.discNumber,
+                        durationMs = t.durationMs ?: before.durationMs,
+                        album = album.title,
+                    )
+                    if (e != before) { entries[i] = e; updated += e }
+                } else {
+                    val template = entries.firstOrNull { it.albumId == albumId }
+                    val e = Entry(
+                        songId = "amrec_${t.id}", appleMusicId = t.id, title = t.title, artist = t.artist,
+                        album = album.title, artworkUrl = album.artworkUrl, durationMs = t.durationMs, addedAtMs = nowMs,
+                        albumId = albumId, albumAppleMusicId = album.appleMusicId,
+                        albumArtworkUrl = template?.albumArtworkUrl ?: album.artworkUrl,
+                        trackNumber = t.trackNumber, discNumber = t.discNumber, year = album.year,
+                    )
+                    entries += e; added += e; known += t.id
+                }
+            }
+            if (added.isNotEmpty()) {
+                album = album.copy(
+                    trackIds = entries.filter { it.albumId == albumId }
+                        .sortedWith(compareBy({ it.discNumber ?: 1 }, { it.trackNumber ?: 0 })).map { it.songId },
+                )
+            }
+            val albums = snap.albums.toMutableList().also { it[ai] = album }
+            publish(Snapshot(entries, albums))
+            save()
+            result = AlbumRefreshResult(updated, added, if (titleChanged || added.isNotEmpty()) album else null)
+        }
+        if (result.changed) onChanged?.invoke()
+        return result
+    }
+
+    data class RefreshTrack(
+        val id: String, val title: String, val artist: String,
+        val discNumber: Int? = null, val trackNumber: Int? = null, val durationMs: Int? = null,
+    )
+
     /** Drop SUPERSEDED entries (their indexed replacements own the ids now). Never fires [onChanged]. */
     fun remove(ids: Collection<String>) {
         if (ids.isEmpty()) return
@@ -326,6 +406,29 @@ class DiscoverAddsStore(private val file: File) {
         const val SOURCE_NAME = "Discover"
 
         private fun now() = System.currentTimeMillis().toDouble()
+
+        /** Apple's pre-release placeholder track title ("Track 16"). */
+        private val PLACEHOLDER_TITLE = Regex("^track\\s*\\d+$", RegexOption.IGNORE_CASE)
+        private val PLACEHOLDER_ALBUM = Regex("^sorry,?\\s+we\\s+don.?t\\s+have\\s+an\\s+album\\s+title\\s+yet", RegexOption.IGNORE_CASE)
+        fun isPlaceholderTitle(s: String) = PLACEHOLDER_TITLE.containsMatchIn(s.trim())
+        fun isPlaceholderAlbum(s: String) = PLACEHOLDER_ALBUM.containsMatchIn(s.trim())
+
+        const val REFRESH_INTERVAL_MS: Double = 24.0 * 3600 * 1000
+
+        /**
+         * Whether a provisional album should be rechecked NOW (iOS `needsRefresh`): provisional while it has
+         * placeholder titles, fewer tracks than promised, or hasn't been checked since its release date; rechecked
+         * daily - and immediately once the release date has passed unchecked.
+         */
+        fun needsRefresh(a: AlbumEntry, tracks: List<Entry>, nowMs: Double): Boolean {
+            val last = a.lastRefreshAtMs ?: 0.0
+            val checkedSinceRelease = a.releaseDateMs?.let { last >= it } ?: false
+            val provisional = isPlaceholderAlbum(a.title) || tracks.any { isPlaceholderTitle(it.title) } ||
+                (a.trackCount ?: 0) > tracks.size || !checkedSinceRelease
+            if (!provisional) return false
+            a.releaseDateMs?.let { if (it <= nowMs && last < it) return true }
+            return nowMs - last >= REFRESH_INTERVAL_MS
+        }
 
         /** Mirror of iOS `AppleMusicLibraryWriteOutcome.provenByToken`: only a probe-verified write is proof. */
         fun provenByToken(token: String?): Boolean = token != null && token.startsWith("confirmed")

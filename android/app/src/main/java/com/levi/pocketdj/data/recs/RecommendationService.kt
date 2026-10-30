@@ -584,6 +584,25 @@ class RecommendationService(
         flushSoon()
     }
 
+    /**
+     * The shortlist PRODUCER (iOS `ForYouView.scheduleAudioAnalysis`): after a ranking commits, select the night's
+     * ids on device ([select], default [ForYouFeedBuilder.audioShortlist]) minus what the server already holds, and
+     * hand ONLY the ids to [enqueueAudioAnalysis]. No-op (selector never runs) with the engine off or no ranking yet.
+     * Returns the ids selected (empty when gated).
+     */
+    fun scheduleAudioAnalysis(
+        snapshot: ForYouFeedSnapshot,
+        inputs: ForYouFeedInputs,
+        select: (ForYouFeedSnapshot, ForYouFeedInputs, Set<String>) -> List<String> = { s, i, pending ->
+            ForYouFeedBuilder.audioShortlist(s, i, pending = pending)
+        },
+    ): List<String> {
+        if (!isEnabled || !snapshot.hasResult) return emptyList()
+        val ids = select(snapshot, inputs, audioPendingIds)
+        enqueueAudioAnalysis(ids)
+        return ids
+    }
+
     // ---- collection suggestions (SongDetail + Add sheet) ----------------------------------
 
     suspend fun collectionSuggestions(songId: String): List<CollectionSuggestion> =

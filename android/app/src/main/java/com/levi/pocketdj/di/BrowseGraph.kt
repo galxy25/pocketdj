@@ -417,6 +417,7 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
                 com.levi.pocketdj.screens.discover.DiscoverAddController.outcomeOf(job)
             }
         override suspend fun serverAlbumTracks(collectionId: String) = app.ripServerClient.albumTracks(collectionId).tracks
+        override suspend fun albumExpansion(collectionId: String) = app.ripServerClient.albumTracks(collectionId)
         override fun watch(songId: String, jobId: String) { app.ripJobTracker.pollToReady(songId, jobId) }
         override suspend fun refreshManifest() { app.ripsRepository.refresh() }
     }
@@ -466,6 +467,15 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
                 jobs.filterValues { it.phase == com.levi.pocketdj.data.rips.RipJob.PHASE_ERROR }.keys
             },
         )
+    }
+
+    /** "Add to Apple Music again" for a recorded provisional album; returns the stored write token. */
+    suspend fun retryAlbumLibraryWrite(hit: com.levi.pocketdj.screens.discover.DiscoverAlbumHit): String =
+        withContext(Dispatchers.IO) { discoverController.retryAlbumLibraryWrite(hit.id, hit.appleMusicId) }
+
+    /** Pre-release refresh (launch/foreground): recheck provisional Discover albums, at most daily until release day. */
+    fun refreshProvisionalAlbums() {
+        app.appScope.launch(Dispatchers.IO) { runCatching { discoverController.refreshProvisionalAlbums() } }
     }
 
     /** "Remove from Library" for a user-added provisional song (Discover / Imported). */
