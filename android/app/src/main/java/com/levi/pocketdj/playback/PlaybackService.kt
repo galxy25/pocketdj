@@ -215,6 +215,7 @@ class PlaybackService : MediaLibraryService() {
                     exo.hasSounded = true
                     board.setOwner(exo)
                 }
+                syncLocationFgsType()
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = refreshCustomLayout()
@@ -240,6 +241,7 @@ class PlaybackService : MediaLibraryService() {
         // stateChanged events fired before this hook existed, so seed the gate now (else the first
         // row shows no next/prev/repeat/shuffle and media-session `next` is dropped).
         forwarding.syncGate()
+        watchPlacesToggle()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
@@ -289,6 +291,53 @@ class PlaybackService : MediaLibraryService() {
         return result
     }
 
+    // ---- ANS-LOC-1: location FGS type while audio plays with places & trips on --------------------
+
+    private var lastFgsTypes = -1
+    private val fgsHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var placesRevisionJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Media3 promotes with mediaPlayback only. When [LocationFgsPolicy] says so, re-issue startForeground on
+     * Media3's own notification with mediaPlayback|location; otherwise leave it (a pause lets Media3 drop the
+     * foreground state, which drops every type; the next play re-evaluates). Never throws.
+     */
+    private fun syncLocationFgsType() {
+        runCatching {
+            val playing = mediaSession?.player?.isPlaying == true
+            if (!playing) { lastFgsTypes = -1; return }
+            val placesOn = com.levi.pocketdj.di.AppGraph.get(applicationContext).collectionsGraph.locationStore.isEnabled
+            val types = com.levi.pocketdj.data.location.LocationFgsPolicy.types(
+                playing = true,
+                placesOn = placesOn,
+                whileInUseGranted = com.levi.pocketdj.data.location.LocationSettings.hasWhileInUse(this),
+                sdk = android.os.Build.VERSION.SDK_INT,
+            )
+            if (types == lastFgsTypes) return
+            val nm = getSystemService(android.app.NotificationManager::class.java)
+            val n = nm.activeNotifications.firstOrNull { it.id == BOOT_NOTIFICATION_ID }?.notification
+            if (n == null) {
+                // Media3 posts its notification a beat after isPlaying flips: retry once.
+                fgsHandler.removeCallbacks(fgsRetry)
+                fgsHandler.postDelayed(fgsRetry, 1_500L)
+                return
+            }
+            androidx.core.app.ServiceCompat.startForeground(this, BOOT_NOTIFICATION_ID, n, types)
+            lastFgsTypes = types
+        }
+    }
+
+    private val fgsRetry = Runnable { syncLocationFgsType() }
+
+    private fun watchPlacesToggle() {
+        placesRevisionJob?.cancel()
+        placesRevisionJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main).launch {
+            runCatching {
+                com.levi.pocketdj.di.AppGraph.get(applicationContext).collectionsGraph.locationStore.revisionFlow.collect { lastFgsTypes = -1; syncLocationFgsType() }
+            }
+        }
+    }
+
     companion object {
         private const val BOOT_CHANNEL = "pdj_playback_boot"
         private const val MAX_SETTLE_CHECKS = 12
@@ -304,6 +353,8 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        placesRevisionJob?.cancel()
+        fgsHandler.removeCallbacksAndMessages(null)
         runCatching { resumeExecutor.shutdown() }
         RunTransportBus.instantMetadata = null
         RunTransportBus.stateChanged = null

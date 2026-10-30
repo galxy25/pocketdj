@@ -38,6 +38,12 @@ object LocationSettings {
     fun canRequestAgain(denials: Int, shouldShowRationale: Boolean): Boolean =
         denials == 0 || (denials < 2 && shouldShowRationale)
 
+    /** True when coarse or fine is granted now (the while-in-use half; never implies the background grant). */
+    fun hasWhileInUse(ctx: Context): Boolean = LocationFgsPolicy.whileInUse(
+        coarse = ctx.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED,
+        fine = ctx.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED,
+    )
+
     fun isApproximateOnly(ctx: Context): Boolean =
         approximateOnly(
             coarse = ctx.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED,
