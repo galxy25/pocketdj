@@ -204,3 +204,37 @@ class DemuxStore(
         }
     }
 }
+
+/**
+ * "Save to Pocket DJ library" (iOS `StudioDemuxView.saveDemux`): persist the loaded demux's ORIGINAL full mix plus its
+ * stems (when present) as a first-class profile item via `ProfileAudioStore.ingest`. Pure decision helpers + a thin
+ * suspend wrapper so the whole path is JVM-testable.
+ */
+object DemuxSave {
+    /** Stems prefer the BURNED set (catalog song) else the demux cache (custom source); null when neither is a full set. */
+    fun chooseStems(burned: Map<String, File>?, cache: Map<String, File>?): Map<String, File>? =
+        listOfNotNull(burned, cache).firstOrNull { set -> DemuxStore.STEM_NAMES.all { set[it]?.isFile == true } }
+
+    /** iOS `dur > 0 ? dur : nil`. */
+    fun durationOrNull(durationMs: Int): Long? = durationMs.takeIf { it > 0 }?.toLong()
+
+    /** Returns the new item's `pdj_` id, or null when there is nothing to save / the copy failed (all-or-nothing). */
+    suspend fun save(
+        audio: File?,
+        title: String,
+        durationMs: Int,
+        burnedStems: Map<String, File>?,
+        cachedStems: Map<String, File>?,
+        bpm: Double?,
+        key: String?,
+        camelot: String?,
+        audioStore: com.levi.pocketdj.data.profile.ProfileAudioStore,
+    ): String? {
+        val original = audio?.takeIf { it.isFile } ?: return null
+        return audioStore.ingest(
+            kind = com.levi.pocketdj.data.profile.ProfileSourceStore.Kind.DEMUX, title = title, original = original,
+            durationMs = durationOrNull(durationMs), stems = chooseStems(burnedStems, cachedStems),
+            bpm = bpm, key = key, camelot = camelot,
+        )?.songId
+    }
+}

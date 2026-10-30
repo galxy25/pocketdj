@@ -41,6 +41,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.screens.collections.AddToCollectionSheet
+import com.levi.pocketdj.screens.collections.AddToItem
+import com.levi.pocketdj.studio.demux.DemuxSave
 import com.levi.pocketdj.studio.demux.DemuxArtifactStatus
 import com.levi.pocketdj.studio.demux.DemuxChordSegment
 import com.levi.pocketdj.studio.demux.DemuxPhase
@@ -188,6 +191,10 @@ private fun ReadyBody(graph: AppGraph, session: DemuxSession, store: com.levi.po
     val runs by store.chordRuns.collectAsState()
     var follow by remember { mutableStateOf(true) }
     var clockMs by remember { mutableIntStateOf(0) }
+    var saving by remember { mutableStateOf(false) }
+    var addToId by remember { mutableStateOf<String?>(null) }
+    val audioFile by session.audioFile.collectAsState()
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     LaunchedEffect(player) { while (true) { clockMs = (player.currentTimeSec * 1000).toInt(); delay(250) } }
     val doc = remember(revision, source.key) { store.document(source.key) }
 
@@ -202,7 +209,28 @@ private fun ReadyBody(graph: AppGraph, session: DemuxSession, store: com.levi.po
     DemuxTimeline(
         durationMs = duration, peaks = peaks, chords = doc?.chords.orEmpty(), player = player,
         follow = follow, onFollowChange = { follow = it }, onSeek = { session.seekMs(it) }, onChordTap = onChord,
+        saving = saving,
+        onSave = {
+            if (!saving) {
+                saving = true
+                val song = source.songId?.let { graph.catalogRepository.state.value.catalog?.songsById?.get(it) }
+                scope.launch {
+                    val id = withContext(Dispatchers.IO) {
+                        DemuxSave.save(
+                            audio = audioFile, title = source.displayName, durationMs = duration,
+                            burnedStems = source.songId?.let { graph.servicesGraph.burnStore.localStemFiles(it) },
+                            cachedStems = store.localStemFiles(source.key),
+                            bpm = song?.bpm, key = song?.key, camelot = song?.camelot,
+                            audioStore = graph.studioGraph.profileAudio,
+                        )
+                    }
+                    saving = false
+                    if (id != null) addToId = id
+                }
+            }
+        },
     )
+    addToId?.let { id -> AddToCollectionSheet(item = AddToItem.Song(id), onDismiss = { addToId = null }) }
     // Chord status row.
     val chordRunning = source.key in runs
     when {
