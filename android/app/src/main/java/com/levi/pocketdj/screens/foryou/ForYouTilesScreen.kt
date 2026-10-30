@@ -182,17 +182,12 @@ internal object ForYouInputsFactory {
         val collections = graph.collections
         val feedback = graph.browseGraph.recFeedbackStore
         val history = PlayHistoryStore.get(graph.appContext)
-        val events = history.events
-        val counts = HashMap<String, Int>()
-        val skips = HashMap<String, Int>()
-        val last = HashMap<String, Double>()
-        for (e in events) {
-            counts.merge(e.songId, 1, Int::plus)
-            if (e.wasSkipped == true) skips.merge(e.songId, 1, Int::plus)
-            if (e.playedAt > (last[e.songId] ?: 0.0)) last[e.songId] = e.playedAt
-        }
-        val penalty = ZoneEngine.Feedback.skipPenalties(counts, skips)
-        fun withSkips(fb: ZoneEngine.Feedback) = fb.copy(skipPenalty = penalty)
+        // Cumulative counts from PlayStatsStore (iOS ForYouView:301), snapshotted here on IO, never Main.
+        val snap = com.levi.pocketdj.data.stats.PlayCountService(graph.servicesGraph.playStats).snapshot()
+        val counts = snap.plays
+        val last = snap.lastPlayedMs
+        val penalty = snap.skipPenalty
+        fun withSkips(fb: ZoneEngine.Feedback) = com.levi.pocketdj.data.stats.PlayCountService.withSkips(fb, penalty)
 
         val members = collections.suggestibleCollections()
         val recsOff = collections.recommendationsOffIds()
