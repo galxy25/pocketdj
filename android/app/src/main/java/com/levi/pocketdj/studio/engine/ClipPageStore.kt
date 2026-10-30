@@ -16,12 +16,12 @@ import kotlin.math.roundToInt
  *
  * File layout: 16-byte header ("PDJP", version, frames, reserved) then little-endian interleaved stereo int16.
  */
-class ClipPageStore(private val dir: File, private val maxBytes: Long = DEFAULT_MAX_BYTES) {
+open class ClipPageStore(private val dir: File, private val maxBytes: Long = DEFAULT_MAX_BYTES) {
 
     /** Stable cache key for a clip window. [sourceStamp] must change when the source audio changes. */
     data class Key(val fileName: String, val sourceStamp: String, val fileStartMs: Int, val durationMs: Int,
                    val rate: Double, val pitchCents: Double, val baseRate: Int) {
-        val prefix: String get() = hex(fileName).take(12)
+        val prefix: String get() = prefixOf(fileName)
         val id: String get() = prefix + "-" + hex("$fileName|$sourceStamp|$fileStartMs|$durationMs|$rate|$pitchCents|$baseRate")
     }
 
@@ -45,7 +45,7 @@ class ClipPageStore(private val dir: File, private val maxBytes: Long = DEFAULT_
         writeStream(key, frames) { out, at, n -> System.arraycopy(samples, at * 2, out, 0, n * 2) }
 
     /** Streaming write: [fill] receives (block, startFrame, frames) and fills the interleaved block. Heap stays O(block). */
-    fun writeStream(key: Key, frames: Int, blockFrames: Int = 16_384, fill: (FloatArray, Int, Int) -> Unit): Int {
+    open fun writeStream(key: Key, frames: Int, blockFrames: Int = 16_384, fill: (FloatArray, Int, Int) -> Unit): Int {
         dir.mkdirs()
         val tmp = File(dir, ".tmp-${UUID.randomUUID()}")
         try {
@@ -73,7 +73,7 @@ class ClipPageStore(private val dir: File, private val maxBytes: Long = DEFAULT_
     }
 
     /** Map the cached page for [key], or null when absent/corrupt. */
-    fun open(key: Key): ClipReader? {
+    open fun open(key: Key): ClipReader? {
         val f = file(key)
         val n = if (f.isFile) frames(f) else -1
         if (n < 0) return null
@@ -87,6 +87,12 @@ class ClipPageStore(private val dir: File, private val maxBytes: Long = DEFAULT_
         dir.listFiles()?.filter { it.name.startsWith(p) }?.forEach { it.delete() }
     }
 
+    /** Delete every page whose source file is not in [live] (clip deleted / re-recorded / abandoned warp fallback). */
+    fun retainSources(live: Set<String>) {
+        val keepPrefixes = live.map { prefixOf(it) + "-" }
+        dir.listFiles()?.filter { f -> f.name.endsWith(EXT) && keepPrefixes.none { f.name.startsWith(it) } }?.forEach { it.delete() }
+    }
+
     fun invalidate(key: Key) { file(key).delete() }
 
     fun clear() { dir.listFiles()?.forEach { it.delete() } }
@@ -94,7 +100,7 @@ class ClipPageStore(private val dir: File, private val maxBytes: Long = DEFAULT_
     val sizeBytes: Long get() = dir.listFiles()?.sumOf { it.length() } ?: 0L
 
     /** LRU-evict pages (never those in [keep]) until the cache fits [maxBytes]. Returns the bytes freed. */
-    fun trim(keep: Set<Key> = emptySet()): Long {
+    open fun trim(keep: Set<Key> = emptySet()): Long {
         val protect = keep.map { it.id + EXT }.toSet()
         val files = dir.listFiles()?.toList() ?: return 0
         var total = files.sumOf { it.length() }
@@ -122,6 +128,8 @@ class ClipPageStore(private val dir: File, private val maxBytes: Long = DEFAULT_
 
         /** Float samples snapped to the PCM16 grid (what a paged clip reads back); the reference for bit-exact comparisons. */
         fun snap(samples: FloatArray): FloatArray = FloatArray(samples.size) { dequantize(quantize(samples[it])) }
+
+        fun prefixOf(fileName: String): String = hex(fileName).take(12)
 
         private fun hex(s: String): String =
             MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(32)

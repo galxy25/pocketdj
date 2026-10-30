@@ -8,6 +8,7 @@ import com.levi.pocketdj.studio.model.StudioClip
 import com.levi.pocketdj.studio.model.StudioTrack
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -173,5 +174,104 @@ class MultitrackPlayerPagingTest {
         p.stop()
         scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
         Unit
+    }
+
+    // ---- review fixes ----
+
+    /** Records which threads touched paging I/O and how many readers were opened vs closed. */
+    private inner class TrackingStore : ClipPageStore(dir) {
+        val writeThreads = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val trimThreads = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val opened = AtomicInteger(0); val closed = AtomicInteger(0)
+        override fun writeStream(key: Key, frames: Int, blockFrames: Int, fill: (FloatArray, Int, Int) -> Unit): Int {
+            writeThreads += Thread.currentThread().name; return super.writeStream(key, frames, blockFrames, fill)
+        }
+        override fun trim(keep: Set<Key>): Long { trimThreads += Thread.currentThread().name; return super.trim(keep) }
+        override fun open(key: Key): ClipReader? = super.open(key)?.let { r ->
+            opened.incrementAndGet()
+            object : ClipReader by r { override fun close() { closed.incrementAndGet(); r.close() } }
+        }
+    }
+
+    private class RangedLoader(val frames: Int, val stamp: String = "v1") : MultitrackClipLoader {
+        val wholeDecodes = AtomicInteger(0); val windowDecodes = AtomicInteger(0)
+        val stampThreads = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        override suspend fun decode(fileName: String): PcmBuffer? { wholeDecodes.incrementAndGet(); return PcmBuffer(RATE, 2, FloatArray(frames * 2) { 0.1f }) }
+        override suspend fun decodeWindow(fileName: String, startMs: Int, lenMs: Int): PcmBuffer? {
+            windowDecodes.incrementAndGet(); val n = (lenMs.toLong() * RATE / 1000).toInt()
+            return PcmBuffer(RATE, 2, FloatArray(n * 2) { 0.1f })
+        }
+        override suspend fun transform(source: PcmBuffer, from: Long, frames: Long, rate: Double, pitchCents: Double): PcmBuffer? = null
+        override fun sourceStamp(fileName: String): String { stampThreads += Thread.currentThread().name; return stamp }
+    }
+
+    @Test fun pagingIoRunsOnTheIoDispatcherNeverTheCallersThread() {
+        val ts = TrackingStore()
+        val loader = RangedLoader(RATE * 4)
+        val ex = java.util.concurrent.Executors.newSingleThreadExecutor { Thread(it, "pdj-test-io") }
+        val callerName = "pdj-test-caller"
+        try {
+            val t = Thread({
+                runBlocking {
+                    ArrangerClipPlan.build(listOf(track("l", "long")), 120.0, false, loader, pager = ts, shortClipFrames = RATE, io = ex.asCoroutineDispatcher())!!.forEach { it.reader?.close() }
+                }
+            }, callerName)
+            t.start(); t.join()
+        } finally { ex.shutdown() }
+        assertTrue("writes=${ts.writeThreads}", ts.writeThreads.isNotEmpty() && ts.writeThreads.all { it.startsWith("pdj-test-io") })
+        assertTrue(ts.trimThreads.all { it.startsWith("pdj-test-io") })
+        assertTrue(loader.stampThreads.all { it.startsWith("pdj-test-io") })
+    }
+
+    @Test fun longMissDecodesOnlyItsWindowAndStreamsIntoThePage() = runBlocking {
+        val ts = TrackingStore()
+        val loader = RangedLoader(RATE * 600) // whole-file decode would be a 10 min buffer
+        val clips = ArrangerClipPlan.build(listOf(track("l", "long", ms = 30_000, fileStartMs = 5_000)), 120.0, false, loader, pager = ts, shortClipFrames = RATE)!!
+        assertEquals(0, loader.wholeDecodes.get()); assertEquals(1, loader.windowDecodes.get())
+        assertTrue(clips[0].isPaged); assertNull(clips[0].samples); assertEquals(RATE * 30, clips[0].frameLength)
+        clips.forEach { it.reader?.close() }
+    }
+
+    @Test fun playerStartsALongArrangementViaWindowDecodeAndPagesIt() = runBlocking {
+        val ts = TrackingStore()
+        val loader = RangedLoader(RATE * 1800)
+        val scope = CoroutineScope(Dispatchers.Default)
+        val p = MultitrackPlayer(loader, { FakeSink() }, scope, newContext = { newCtx() }, reprimeDebounceMs = 20, pageStore = ts, shortClipFrames = RATE)
+        assertEquals(PlayOutcome.STARTED, p.playOutcome(StudioArrangement("A", "arr", listOf(track("l", "long", ms = 60_000)))))
+        assertEquals(0, loader.wholeDecodes.get()); assertTrue(ts.opened.get() > 0)
+        p.stop(); scope.coroutineContext[kotlinx.coroutines.Job]?.cancel(); Unit
+    }
+
+    @Test fun cancelledPlanClosesEveryReaderItOpened() = runBlocking {
+        val ts = TrackingStore()
+        val loader = RangedLoader(RATE * 4)
+        val t = listOf(track("a", "fa"), track("b", "fb"), track("c", "fc"))
+        ArrangerClipPlan.build(t, 120.0, false, loader, pager = ts, shortClipFrames = RATE).also { c -> c!!.forEach { it.reader?.close() } } // warm all hits
+        ts.opened.set(0); ts.closed.set(0)
+        var calls = 0
+        val r = ArrangerClipPlan.build(t, 120.0, false, loader, pager = ts, shortClipFrames = RATE, isCancelled = { ++calls > 4 })
+        assertNull(r)
+        assertEquals(ts.opened.get(), ts.closed.get())
+    }
+
+    @Test fun supersededAfterPlanningClosesPagedReaders() = runBlocking {
+        val ts = TrackingStore()
+        val loader = RangedLoader(RATE * 4)
+        val scope = CoroutineScope(Dispatchers.Default)
+        lateinit var p: MultitrackPlayer
+        val gate = object : MultitrackClipLoader by loader {
+            override fun sourceStamp(fileName: String): String { p.stop("race"); return "v1" } // generation bumps mid-plan
+        }
+        p = MultitrackPlayer(gate, { FakeSink() }, scope, newContext = { newCtx() }, reprimeDebounceMs = 20, pageStore = ts, shortClipFrames = RATE)
+        assertEquals(PlayOutcome.SUPERSEDED, p.playOutcome(StudioArrangement("A", "arr", listOf(track("l", "long")))))
+        assertEquals(ts.opened.get(), ts.closed.get())
+        scope.coroutineContext[kotlinx.coroutines.Job]?.cancel(); Unit
+    }
+
+    @Test fun retainSourcesDropsPagesOfFilesNoArrangementReferences() {
+        val k1 = ClipPageStore.Key("keep.m4a", "s", 0, 0, 1.0, 0.0, RATE); val k2 = ClipPageStore.Key("gone.m4a", "s", 0, 0, 1.0, 0.0, RATE)
+        store.write(k1, tone(1000, 0.01)); store.write(k2, tone(1000, 0.01))
+        store.retainSources(setOf("keep.m4a"))
+        assertTrue(store.has(k1)); assertTrue(!store.has(k2))
     }
 }

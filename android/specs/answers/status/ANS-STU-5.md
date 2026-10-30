@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-STU-5 Tracks paging part B: clip windows as PCM16 page files with read-ahead
 
@@ -21,3 +21,14 @@ state: implemented
 
 ## Questions for Levi
 - None (cache cap 2 GB and 20 s short-clip threshold are defaults).
+
+## Review
+- MAJOR main-thread page I/O -> fixed: ArrangerClipPlan.build takes `io` (default Dispatchers.IO); stat/has/open/writeStream/trim all run in withContext(io); MultitrackPlayer runs ctx.load (sync prefetch) on `ioDispatcher`. Test: pagingIoRunsOnTheIoDispatcherNeverTheCallersThread.
+- MAJOR OOM/TOO_LARGE reachable on miss -> fixed: miss path streams window -> page via writeStream (no copyOfRange, no toStereo copy); new MultitrackClipLoader.decodeWindow (StudioClipLoader uses decodeRangeBuffer) decodes only the clip window for bounded long clips. Tests: longMissDecodesOnlyItsWindowAndStreamsIntoThePage, playerStartsALongArrangementViaWindowDecodeAndPagesIt (30 min source, outcome STARTED, no whole-file decode). Residual: clips with durationMs<=0 (to end of file) still whole-decode.
+- MINOR reader leaks -> fixed: SUPERSEDED after build closes readers; cache-hit readers opened lazily one at a time. Tests: cancelledPlanClosesEveryReaderItOpened, supersededAfterPlanningClosesPagedReaders.
+- MINOR orphaned pages -> fixed: ClipPageStore.retainSources(live) swept after each plan (StudioGraph supplies clip files of all arrangements); abandoned-warp fallback key now protected in trim. Test: retainSourcesDropsPagesOfFilesNoArrangementReferences.
+- NIT test name overstates -> player test now backed by TrackingStore assertions (readers opened, window-decoded, no whole decode).
+- rejected: none.
+- Suite: 5363 tests, 0 failures (was 5357, +6); assembleDebug green.
+
+fixes applied

@@ -9,6 +9,8 @@ import com.levi.pocketdj.studio.model.StudioArrangement
 import com.levi.pocketdj.studio.model.StudioTrack
 import com.levi.pocketdj.studio.store.StudioStore
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +28,9 @@ interface MultitrackClipLoader {
 
     /** Changes whenever the source audio under [fileName] changes (page-cache invalidation on clip edit). */
     fun sourceStamp(fileName: String): String = ""
+
+    /** Canonical PCM for ONLY [startMs, startMs+lenMs) of a clip file (bounded heap for long clips); null = unsupported/unreadable, caller decodes the whole file. */
+    suspend fun decodeWindow(fileName: String, startMs: Int, lenMs: Int): PcmBuffer? = null
 }
 
 class StudioClipLoader(private val store: StudioStore, private val render: StudioRender) : MultitrackClipLoader {
@@ -37,6 +42,12 @@ class StudioClipLoader(private val store: StudioStore, private val render: Studi
 
     override suspend fun transform(source: PcmBuffer, from: Long, frames: Long, rate: Double, pitchCents: Double): PcmBuffer? =
         runCatching { render.transformBuffer(source, from, frames, rate, pitchCents) }.getOrNull()
+
+    override suspend fun decodeWindow(fileName: String, startMs: Int, lenMs: Int): PcmBuffer? {
+        val f = store.clipFile(fileName) ?: return null
+        val pcm = runCatching { render.decodeRangeBuffer(f.path, startMs, lenMs) }.getOrNull() ?: return null
+        return if (StudioAudio.isCanonical(pcm)) pcm else pcm.toCanonical()
+    }
 
     override fun sourceStamp(fileName: String): String =
         store.clipFile(fileName)?.let { "${it.length()}-${it.lastModified()}" } ?: ""
@@ -67,6 +78,10 @@ class MultitrackPlayer(
     /** ANS-STU-5: long clip windows are cached as PCM16 pages and mmap-read; null keeps everything in memory. */
     private val pageStore: ClipPageStore? = null,
     private val shortClipFrames: Int = ClipPageStore.SHORT_CLIP_FRAMES,
+    /** Dispatcher for page-cache file I/O and the paged context's first read-ahead (never Main). */
+    private val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
+    /** Clip file names any saved arrangement still references; page files of every other source are swept. null = no sweep. */
+    private val liveClipFiles: (() -> Set<String>)? = null,
 ) {
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -128,12 +143,15 @@ class MultitrackPlayer(
         // The ONE planning path shared with ArrangerBouncer (WYSIWYG): decode once, window, warp, beat-snap.
         // Whole clips are held as float PCM on the Java heap: an over-long arrangement must degrade to a message, never an OOM crash.
         val clips = try {
-            ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate, { gen != generation.get() }, pageStore, shortClipFrames)
+            ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate, { gen != generation.get() }, pageStore, shortClipFrames, ioDispatcher)
         } catch (_: OutOfMemoryError) {
             synchronized(lock) { stopInternal(keepReprime = false, reason = "oom") }
             return PlayOutcome.TOO_LARGE
         } ?: return PlayOutcome.SUPERSEDED // stop-during-decode wins
-        if (gen != generation.get()) return PlayOutcome.SUPERSEDED
+        if (gen != generation.get()) { clips.forEach { it.reader?.close() }; return PlayOutcome.SUPERSEDED }
+        if (pageStore != null && liveClipFiles != null) withContext(ioDispatcher) {
+            runCatching { pageStore.retainSources(liveClipFiles.invoke() + arrangement.tracks.flatMap { t -> t.clips.map { it.fileName } }) }
+        }
         if (clips.isEmpty()) return PlayOutcome.NOTHING_TO_PLAY
 
         val isLoop = arrangement.loopEnabled && arrangement.loopEndMs > arrangement.loopStartMs
@@ -142,8 +160,10 @@ class MultitrackPlayer(
         val loopStart = MultitrackRenderContext.msToFrames(arrangement.loopStartMs, rate)
         val loopEnd = MultitrackRenderContext.msToFrames(arrangement.loopEndMs, rate)
 
-        val ctx = newContext()
-        ctx.load(clips, arrangement.tracks.size, if (isLoop) loopStart else seekFrame, isLoop, loopStart, loopEnd)
+        // load() primes the paged read-ahead synchronously (mmap page-ins): keep that off the caller's (Main) thread.
+        val ctx = withContext(ioDispatcher) {
+            newContext().also { it.load(clips, arrangement.tracks.size, if (isLoop) loopStart else seekFrame, isLoop, loopStart, loopEnd) }
+        }
         synchronized(lock) {
             // Re-check under the same lock stop() takes: a Stop that landed since the last await must not be followed by a sink start.
             if (gen != generation.get()) { ctx.release(); return PlayOutcome.SUPERSEDED }
