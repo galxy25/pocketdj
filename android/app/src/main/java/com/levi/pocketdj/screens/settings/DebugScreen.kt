@@ -234,7 +234,12 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                     for (i in 0 until n) bb.putShort((Math.sin(2 * Math.PI * 440 * i / rate) * 12000).toInt().toShort())
                     val f = java.io.File(host.graph.appContext.cacheDir, "SeedTone.wav").also { it.writeBytes(bb.array()) }
                     val smp = host.graph.studioGraph.sampleFactory.importFile(f, "SeedTone.wav")
-                    "Sample seed: ${smp.name} ${smp.durationMs}ms"
+                    // ANS-STU-6 seed: a "SeedStudio" playlist = the studio take + 2 catalog songs.
+                    val cat = host.graph.catalogRepository.catalogFlow.first()?.songs?.take(2)?.map { it.id } ?: emptyList()
+                    val store = host.graph.collections
+                    val pl = store.playlists.firstOrNull { it.name == "SeedStudio" } ?: store.createPlaylist("SeedStudio")
+                    store.addSongs(listOf(smp.id) + cat, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id))
+                    "Sample seed: ${smp.name} ${smp.durationMs}ms (+SeedStudio playlist)"
                 }.getOrElse { "Sample seed failed: $it" }
             }
         }
