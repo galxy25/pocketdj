@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-GM-2 - Remove the In the Pocket debug stub path
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-STU-3 — Studio session owner + park/resume on transient focus loss
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-PB-4 Skip-count sink consumers
 - [x] PlayCountService facade (snapshot of plays/skips/lastPlayed from PlayStatsStore; skipPenalty; withSkips)

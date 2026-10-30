@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-COL-5 Favorites ratings pull paginated + Failed list paginated
 

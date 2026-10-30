@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-BRW-1 Discover: Play on ripped rows; serverless album adds
 

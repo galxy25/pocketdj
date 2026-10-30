@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # ANS-COL-2: Collection activity batch cap
 
