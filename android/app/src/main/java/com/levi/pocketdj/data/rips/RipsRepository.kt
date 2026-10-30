@@ -73,7 +73,7 @@ class RipsRepository(
      * "Manifest fetch failure → keep cached copy"): the previous in-memory or
      * on-disk manifest is kept and returned.
      */
-    suspend fun refresh(): RipsManifest =
+    suspend fun refresh(): RipsManifest = refreshes.run({ _manifest.value }) {
         try {
             launchGate()
             fetchManifest()
@@ -83,6 +83,10 @@ class RipsRepository(
             if (_manifest.value.isEmpty()) seedFromDisk()
             _manifest.value
         }
+    }
+
+    /** Concurrent [refresh] callers share passes (a burst of landed rip jobs must not decode the manifest N times). */
+    private val refreshes = RefreshCoalescer()
 
     /**
      * Like [refresh] but reports failure: any fetch/decode error surfaces as [java.io.IOException]
