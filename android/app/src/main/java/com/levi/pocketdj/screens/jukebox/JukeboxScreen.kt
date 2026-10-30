@@ -503,7 +503,8 @@ private fun RequestRowView(
             is JukeboxRepository.Match.Found -> Text(
                 text = buildString {
                     append("Match: ${match.song.name} — ${match.song.artist}")
-                    if (!match.playable) append(if (mixOwns) " (will burn into the mix)" else " (no audio yet)")
+                    if (match.isAdHoc) append(" (Apple Music — rips on accept)")
+                    else if (!match.playable) append(if (mixOwns) " (will burn into the mix)" else " (no audio yet)")
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (match.playable) {

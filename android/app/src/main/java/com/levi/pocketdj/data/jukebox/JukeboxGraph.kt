@@ -67,7 +67,27 @@ class JukeboxGraph private constructor(context: Context) {
         pocketDjName = {
             app.settings.get(OnboardingPrefs.PROFILE_NAME)
         },
-    ).also { it.queue = SequencerJukeboxQueue(app.playbackGraph.sequencer) }
+    ).also { repo ->
+        repo.queue = SequencerJukeboxQueue(app.playbackGraph.sequencer)
+        // SURF-10: Apple Music catalog match stage + rip-backed placement for AM-only rows.
+        val storefront = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        repo.externalMatch = JukeboxAppleMusicMatch(
+            api = app.appleMusicApi,
+            songs = { app.catalogRepository.state.value.catalog?.songs.orEmpty() },
+            storefront = {
+                storefront.get()
+                    ?: (app.appleMusicApi.userStorefront() as? com.levi.pocketdj.data.applemusic.AmResult.Ok)
+                        ?.value?.also { storefront.set(it) }
+                    ?: "us"
+            },
+        )
+        repo.placementSink = JukeboxAmPlacementSink(isPlayable = app.ripsRepository::isPlayable)
+        repo.adHocRipStarter = JukeboxAdHocRipStarter { song ->
+            app.browseGraph.appleMusicRecognition.startRipAndBurn(
+                song.id, song.name, song.artist, song.appleMusicId.orEmpty(),
+            ) == com.levi.pocketdj.screens.shazam.RipStart.REQUESTED
+        }
+    }
 
     companion object {
         @Volatile
