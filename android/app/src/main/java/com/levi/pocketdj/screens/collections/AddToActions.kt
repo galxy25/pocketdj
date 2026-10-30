@@ -5,6 +5,8 @@ import com.levi.pocketdj.data.collections.CollectionsStore
 import com.levi.pocketdj.data.collections.Playlist
 import com.levi.pocketdj.data.collections.PlaylistNode
 import com.levi.pocketdj.data.collections.Pocket
+import com.levi.pocketdj.data.recs.RecCollectionSuggestionWire
+import com.levi.pocketdj.data.recs.RecSuggestionFilter
 
 /** What the Add-to UI is adding: a catalog song, a multi-select batch of songs, or an album. */
 sealed interface AddToItem {
@@ -61,22 +63,13 @@ class AddToActions(
         limit: Int,
     ): List<AddTarget> {
         val st = store.state.value
-        val pocketIds = st.pockets.mapTo(HashSet()) { it.id }
-        val playlistIds = st.playlists.mapTo(HashSet()) { it.id }
-        val excluded = excluding.mapTo(HashSet()) { it.kind to it.id }
-        val out = ArrayList<AddTarget>()
-        for (s in wire) {
-            if (out.size >= limit) break
-            val kind = when (s.kind) {
-                "pocket" -> AddTarget.Kind.POCKET
-                "playlist" -> AddTarget.Kind.PLAYLIST
-                else -> continue
-            }
-            val resolves = if (kind == AddTarget.Kind.POCKET) s.id in pocketIds else s.id in playlistIds
-            if (!resolves || (kind to s.id) in excluded) continue
-            out += AddTarget(kind, s.id)
-        }
-        return out
+        return RecSuggestionFilter.resolveTargets(
+            suggestions = wire.map { RecCollectionSuggestionWire(id = it.id, kind = it.kind) },
+            pockets = st.pockets,
+            playlists = st.playlists,
+            excluding = excluding,
+            limit = limit,
+        )
     }
 
     /**

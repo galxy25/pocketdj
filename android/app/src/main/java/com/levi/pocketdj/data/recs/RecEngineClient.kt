@@ -2,7 +2,6 @@ package com.levi.pocketdj.data.recs
 
 import com.levi.pocketdj.data.PdjJson
 import com.levi.pocketdj.data.config.EndpointKey
-import com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET
 import com.levi.pocketdj.data.config.RemoteEndpoints
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.encodeToString
@@ -37,7 +36,7 @@ class RecEngineClient(
     private val http: OkHttpClient,
     /** Base URL, read LIVE per request (remote endpoints); a blank/invalid base fails as BadResponse. */
     private val base: () -> String = { RemoteEndpoints.url(EndpointKey.REC_ENGINE_BASE) },
-    private val enrollSecret: () -> String = { REC_ENGINE_ENROLL_SECRET },
+    private val enrollSecret: () -> String = { RemoteEndpoints.recEngineEnroll() },
     private val deviceId: () -> String,
     private val json: Json = PdjJson.lenient,
 ) {

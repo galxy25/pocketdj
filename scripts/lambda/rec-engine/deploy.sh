@@ -4,7 +4,7 @@
 # this endpoint holds no Apple credentials; auth is the per-profile TOFU bearer key the app
 # mints (see index.mjs header).
 #
-# ENROLLMENT SECRET (REC_ENROLL_SECRET): creating a NEW profile's state object requires this
+# ENROLLMENT SECRET (REC_ENROLL_SECRETS, comma-separated list; legacy REC_ENROLL_SECRET accepted): creating a NEW profile's state object requires this
 # shared secret in `x-pocketdj-enroll`; without it POST /events was an open write into a bucket
 # with no lifecycle expiry. The app ships the same value in `Config.recEngineEnrollSecret`, so
 # it is a capability token, not a per-user credential (see the index.mjs header for the
@@ -75,11 +75,20 @@ ROLE_ARN="arn:aws:iam::${ACCT}:role/${ROLE}"
 # 3) package + create/update the function (index.mjs only; @aws-sdk is bundled in the runtime).
 #    Resolve the enrollment secret FIRST: $REC_ENROLL_SECRET wins (deliberate rotation), else the
 #    value already deployed (so a plain code re-run never invalidates shipped builds), else mint.
-ENROLL="${REC_ENROLL_SECRET:-}"
+#    ROTATION (ANS-BRW-2): the deployed value is REC_ENROLL_SECRETS, a COMMA-SEPARATED list
+#    (old,new) — the Lambda accepts any member. Rotate with no outage:
+#      1. REC_ENROLL_SECRETS="<old>,<new>" ./deploy.sh      (both accepted)
+#      2. publish the endpoints doc with capabilities.recEngineEnroll=<new> (CONFIG_ONLY deploy)
+#      3. once clients have refreshed:  REC_ENROLL_SECRETS="<new>" ./deploy.sh
+#    $REC_ENROLL_SECRET (single) is still honoured as input for back-compat.
+ENROLL="${REC_ENROLL_SECRETS:-${REC_ENROLL_SECRET:-}}"
 if [ -z "$ENROLL" ]; then
-  ENROLL="$(aws lambda get-function-configuration --function-name "$FN" --region "$REGION" \
-    --query 'Environment.Variables.REC_ENROLL_SECRET' --output text 2>/dev/null || true)"
-  [ "$ENROLL" = "None" ] && ENROLL=""
+  for VAR in REC_ENROLL_SECRETS REC_ENROLL_SECRET; do
+    ENROLL="$(aws lambda get-function-configuration --function-name "$FN" --region "$REGION" \
+      --query "Environment.Variables.$VAR" --output text 2>/dev/null || true)"
+    [ "$ENROLL" = "None" ] && ENROLL=""
+    [ -n "$ENROLL" ] && break
+  done
 fi
 MINTED=0
 if [ -z "$ENROLL" ]; then
@@ -108,7 +117,9 @@ if [ -z "$MAXP" ]; then
 fi
 say "profile enrollment cap: $MAXP"
 ZIP="$(mktemp -d)/fn.zip"; ( cd "$SELF" && zip -q -r "$ZIP" index.mjs )
-ENVVARS="Variables={REC_BUCKET=$REC_BUCKET,FEATURES_URL=$FEATURES_URL,REC_ENROLL_SECRET=$ENROLL,MAX_PROFILES=$MAXP}"
+# JSON form: REC_ENROLL_SECRETS contains commas, which the CLI shorthand syntax can't carry.
+ENVVARS="$(printf '{"Variables":{"REC_BUCKET":"%s","FEATURES_URL":"%s","REC_ENROLL_SECRETS":"%s","MAX_PROFILES":"%s"}}' \
+  "$REC_BUCKET" "$FEATURES_URL" "$ENROLL" "$MAXP")"
 if aws lambda get-function --function-name "$FN" --region "$REGION" >/dev/null 2>&1; then
   say "updating function code"
   aws lambda update-function-code --function-name "$FN" --zip-file "fileb://$ZIP" --region "$REGION" >/dev/null

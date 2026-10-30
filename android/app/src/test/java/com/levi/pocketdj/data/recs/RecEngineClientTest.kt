@@ -214,4 +214,27 @@ class RecEngineClientTest {
         val out = RecSuggestionFilter.resolveTargets(sugg, pockets, playlists, recent, limit = 2)
         assertEquals(listOf("pkt_1" to AddTarget.Kind.POCKET, "pls_2" to AddTarget.Kind.PLAYLIST), out.map { it.id to it.kind })
     }
+
+    @Test fun defaultEnrollProvider_followsRotatedDocAtRequestTime() = runBlocking {
+        com.levi.pocketdj.data.config.RemoteEndpoints.resetForTests()
+        try {
+            val c = RecEngineClient(OkHttpClient(), base = { server.url("/").toString() }, deviceId = { "dev-1" })
+            server.enqueue(MockResponse().setBody("{}")); server.enqueue(MockResponse().setBody("{}"))
+            c.postEvents(batch(), "K", "p")
+            assertEquals(com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET, server.takeRequest().getHeader("X-PocketDJ-Enroll"))
+            val doc = """{"v":1,"env":"green","endpoints":{
+              "catalogBase":"https://dgreen123.cloudfront.net",
+              "ripsBase":"https://pocketdj-rips-623170744161.s3.us-west-2.amazonaws.com",
+              "amPlaylistSyncBase":"https://abc123.execute-api.us-west-2.amazonaws.com",
+              "recEngineBase":"https://def456.execute-api.us-west-2.amazonaws.com",
+              "diagLogsBase":"https://pocketdj-logs-623170744161.s3.us-west-2.amazonaws.com"},
+              "capabilities":{"recEngineEnroll":"rotated-secret-0123456789abcdef"}}"""
+            assertTrue(com.levi.pocketdj.data.config.RemoteEndpoints.apply(doc))
+            c.postEvents(batch(), "K", "p")
+            assertEquals("rotated-secret-0123456789abcdef", server.takeRequest().getHeader("X-PocketDJ-Enroll"))
+            assertEquals("rotated-secret-0123456789abcdef", RecCredentials("k", "p").enrollSecret)
+        } finally {
+            com.levi.pocketdj.data.config.RemoteEndpoints.resetForTests()
+        }
+    }
 }

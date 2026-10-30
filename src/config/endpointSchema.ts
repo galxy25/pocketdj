@@ -33,7 +33,14 @@ export interface EndpointConfig {
   endpoints: Record<Exclude<EndpointKey, 'profileSyncBase'>, string> & { profileSyncBase?: string };
   /** Extra catalog hosts whose persisted URLs rebase onto this doc's catalog bases. */
   aliases: { catalogBase: string[]; catalogBaseDev: string[] };
+  /** Optional capabilities (ANS-BRW-2). Present only when the doc carries a valid one; the PWA
+   *  ignores it. `recEngineEnroll` = the rotatable rec-engine enrollment secret the native
+   *  clients read at request time (Android adopts it; iOS ignores unknown keys). */
+  capabilities?: { recEngineEnroll?: string };
 }
+
+/** Enroll-secret shape the native clients accept (mirrors Kotlin EndpointConfig.normalizeEnroll). */
+export const ENROLL_SECRET_RE = /^[A-Za-z0-9._~+/=-]{16,256}$/;
 
 /** Today's values (the blue account, 011183829623) — the last-resort fallback. Must equal
  *  config/endpoints.blue.json (a vitest pins that). */
@@ -117,6 +124,21 @@ export function validateEndpointDoc(raw: unknown): ValidationResult {
   out.listeningPocketsBase ??= out.recEngineBase;
   out.searchConfigURL ??= `${out.catalogBase}/search-config.json`;
   const al = (doc.aliases && typeof doc.aliases === 'object' ? doc.aliases : {}) as Record<string, unknown>;
+  // Optional capabilities. Clients IGNORE a malformed one; the deploy-time validator REJECTS it
+  // so a typo never ships silently.
+  let capabilities: EndpointConfig['capabilities'];
+  if (doc.capabilities !== undefined) {
+    if (!doc.capabilities || typeof doc.capabilities !== 'object' || Array.isArray(doc.capabilities)) {
+      return { ok: false, reason: 'rejected capabilities' };
+    }
+    const c = doc.capabilities as Record<string, unknown>;
+    if (c.recEngineEnroll !== undefined) {
+      if (typeof c.recEngineEnroll !== 'string' || !ENROLL_SECRET_RE.test(c.recEngineEnroll.trim())) {
+        return { ok: false, reason: 'rejected capabilities.recEngineEnroll' };
+      }
+      capabilities = { recEngineEnroll: c.recEngineEnroll.trim() };
+    }
+  }
   return {
     ok: true,
     config: {
@@ -124,6 +146,7 @@ export function validateEndpointDoc(raw: unknown): ValidationResult {
       env,
       endpoints: out as EndpointConfig['endpoints'],
       aliases: { catalogBase: hostList(al.catalogBase), catalogBaseDev: hostList(al.catalogBaseDev) },
+      ...(capabilities ? { capabilities } : {}),
     },
   };
 }
