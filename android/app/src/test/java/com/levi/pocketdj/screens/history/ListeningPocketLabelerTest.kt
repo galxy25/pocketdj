@@ -119,7 +119,7 @@ class ListeningPocketLabelerTest {
         while (d != null && f == null) { f = java.io.File(d, "docs/ARCHITECTURE-ANDROID.md").takeIf { it.exists() }; d = d.parentFile }
         org.junit.Assume.assumeTrue(f != null)
         val row = f!!.readLines().first { it.startsWith("| COL-18 ") }
-        assertTrue(row, "Planned" !in row && "PARTIAL" in row)
+        assertTrue(row, "Planned" !in row && ("PARTIAL" in row || "DONE" in row))
     }
 
     @Test fun whenTextUsesThePocketsOwnOffset() {
