@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # ANS-BRW-1 Discover: Play on ripped rows; serverless album adds
 
