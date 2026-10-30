@@ -9,6 +9,10 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 
 ## OPEN
 
+- **Q112 [Answers wave 5, ANS-SURF-2]** assetlinks.json has only the debug fingerprint; need the direct-signing and Play App Signing SHA-256 values to publish (script refuses until placeholders replaced). Publish to jukebox.pocket-dj.com once provided? — *Default: not uploaded; verify-app-links reports unverified (1024).* — App Links verification.
+- **Q113 [Answers wave 5, ANS-GAP-1]** On accepting an ad-hoc Apple Music jukebox request, iOS captures on accept; Android requests a rip and waits up to 15 min. Match iOS? — *Default: rip-on-accept.* — Guest request latency.
+- **Q114 [Answers wave 5, ANS-GAP-2]** Does Apple accept the undocumented library-playlist track DELETE for Web-API-created playlists? Device-only check with a real account. — *Default: reconcile no-ops if refused.* — Playlist removals/reorders reaching Apple Music.
+- **Q115 [Answers wave 5, ANS-GAP-4]** Restored backup edits are stored but not applied (no catalog edits overlay on Android). Build the overlay? — *Default: stored only; COL-14 stays PARTIAL.* — Backup parity.
 - **Q103 [Answers wave 1, ANS-MIX-1]** When the FIRST stream of a fresh Auto-DJ start fails with an instantaneous HTTP 5xx, the server-down gate refuses the other queued songs and `startAutoMix` clears the queue (Auto never starts). With realistic latency (stream failing after the deck is live) it recovers in ~2 s. Should a first-slot failure keep the queue and retry the start after the short cooldown? — *Default: leave (only reproducible with a synthetic zero-latency failure).* — Decides Auto-DJ start robustness on a flapping server.
 - **Q104 [Answers wave 1, ANS-PB-3]** Settings > Storage > Burned music by artist shows "0 MB" for artists whose downloads total under 0.5 MB. Show kB below 1 MB? — *Default: leave.* — Cosmetic.
 

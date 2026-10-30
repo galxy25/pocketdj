@@ -405,3 +405,11 @@ Emulator (emulator-5556, debug build):
 Added debug seeds: Arr30 seed/play/seek/heap, Enroll: source (Settings > Debug). Emulator env note: saved rip server URL 10.0.2.2:8099 (stale mock) must be cleared in Settings > Import server or every burn fails the presign.
 Device-only (not verifiable here): STU-4 SD card; STU-5 low-RAM glitch check; MIX-3 jank profile.
 No FATAL EXCEPTION / ANR in logcat.
+
+## Wave 5 (answers: SURF-2, GAP-1, GAP-2, GAP-4, BRW-4, BRW-5)
+- Merged all six into feat/android-answers (no conflicts). Unit tests: 5486 run, 0 failures; assembleDebug green.
+- Emulator: SURF-2 deep links (jukebox/play pocket/play setlist) launch with no crash and show a graceful not-found toast for unknown ids; verify-app-links reports unverified (assetlinks not published; expected). No FATAL/ANR in logcat.
+- GAP-1, GAP-2, BRW-4: steps need mock-server base overrides (pdj.* bases) with no emulator hook; covered by MockWebServer/unit tests only, not driven on the emulator.
+- GAP-4 (iOS backup fixture restore) and BRW-5 (release build, no-match path) not driven on the emulator this wave.
+- Device-only: live Shazam recognition, real Apple Music catalog/account, release-cert link verification.
+- Open: Q-numbers added in QUESTIONS.md (SURF-2 fingerprints, GAP-1 capture-on-accept, GAP-2 delete endpoint, GAP-4 edits overlay).
