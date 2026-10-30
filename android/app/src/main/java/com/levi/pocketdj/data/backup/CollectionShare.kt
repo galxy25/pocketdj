@@ -64,7 +64,7 @@ object CollectionShare {
     const val NOT_POCKETDJ = "That isn't a PocketDJ file"
 
     /** Full-backup restore result (iOS `importBackup`): collection counts + sources + favorites. */
-    fun restoreMessage(s: ImportSummary, sourcesAdded: Int, favoritesAdded: Int, skippedItems: Int = 0): String {
+    fun restoreMessage(s: ImportSummary, sourcesAdded: Int, favoritesAdded: Int, skippedItems: Int = 0, editsAdded: Int = 0): String {
         val parts = ArrayList<String>()
         fun add(n: Int, one: String, many: String) { if (n > 0) parts += "$n ${if (n == 1) one else many}" }
         add(s.pockets, "pocket", "pockets")
@@ -73,8 +73,9 @@ object CollectionShare {
         add(s.folders, "folder", "folders")
         add(sourcesAdded, "source", "sources")
         add(favoritesAdded, "favorite", "favorites")
+        add(editsAdded, "edit", "edits")
         val base = when {
-            parts.isNotEmpty() && (s.added + s.merged > 0 || sourcesAdded > 0 || favoritesAdded > 0) ->
+            parts.isNotEmpty() && (s.added + s.merged > 0 || sourcesAdded > 0 || favoritesAdded > 0 || editsAdded > 0) ->
                 "Restored " + parts.joinToString(", ")
             s.added + s.merged > 0 -> "Restored ${s.added + s.merged} item(s)"
             else -> "Already up to date - nothing new to import"

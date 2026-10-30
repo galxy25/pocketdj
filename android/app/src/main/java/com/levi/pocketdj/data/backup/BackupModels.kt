@@ -96,3 +96,53 @@ object BackupSources {
         SourceConfig(id = id, name = name, url = url, enabled = (o["enabled"] as? JsonPrimitive)?.booleanOrNull ?: true)
     }
 }
+
+/**
+ * `edits.json` (iOS `EditsDocument`): `{schemaVersion, albums:{id:AlbumEdit}, songs:{id:SongEdit}, meta?}`.
+ * Kept at JSON level so unknown/future edit fields round-trip untouched. Merge = iOS `EditsStore.importData`:
+ * per id the IMPORTED edit wins; ids absent from the import are kept.
+ */
+object BackupEdits {
+    const val SCHEMA_VERSION = 2
+
+    private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+    private fun parse(data: ByteArray?): JsonObject? =
+        data?.let { runCatching { json.parseToJsonElement(String(it, Charsets.UTF_8)) }.getOrNull() } as? JsonObject
+
+    private fun map(o: JsonObject?, k: String): JsonObject = o?.get(k) as? JsonObject ?: JsonObject(emptyMap())
+
+    /** Number of per-item edits (albums + songs) in [data]; 0 for junk/empty. */
+    fun count(data: ByteArray?): Int = parse(data)?.let { map(it, "albums").size + map(it, "songs").size } ?: 0
+
+    /** Merged document bytes, or null when [incoming] is junk / carries no edits (nothing to change). */
+    fun merge(local: ByteArray?, incoming: ByteArray?): ByteArray? {
+        val inc = parse(incoming) ?: return null
+        if (count(incoming) == 0) return null
+        val loc = parse(local)
+        val albums = LinkedHashMap(map(loc, "albums")).apply { putAll(map(inc, "albums")) }
+        val songs = LinkedHashMap(map(loc, "songs")).apply { putAll(map(inc, "songs")) }
+        val out = buildJsonObject {
+            put("schemaVersion", SCHEMA_VERSION)
+            put("albums", JsonObject(albums))
+            put("songs", JsonObject(songs))
+            (loc?.get("meta") ?: inc["meta"])?.let { put("meta", it) }
+        }
+        return out.toString().toByteArray(Charsets.UTF_8)
+    }
+}
+
+/** File-backed `edits.json` (no catalog overlay consumes it on Android yet; it round-trips to iOS backups). */
+class BackupEditsStore(private val file: java.io.File) {
+    @Synchronized fun exportData(): ByteArray? = runCatching { file.takeIf { it.exists() }?.readBytes() }.getOrNull()
+
+    /** Merge a backup's edits; returns the number of edits in the import (0 = nothing applied). */
+    @Synchronized fun importMerging(incoming: ByteArray?): Int {
+        val merged = BackupEdits.merge(exportData(), incoming) ?: return 0
+        file.parentFile?.mkdirs()
+        val tmp = java.io.File(file.path + ".tmp")
+        tmp.writeBytes(merged)
+        if (!tmp.renameTo(file)) { file.writeBytes(merged); tmp.delete() }
+        return BackupEdits.count(incoming)
+    }
+}

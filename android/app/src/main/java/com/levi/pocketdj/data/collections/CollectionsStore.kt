@@ -2435,7 +2435,7 @@ class CollectionsStore(
         val sink = onPortableItems ?: return
         if (items.isEmpty) return
         val cat = catalogProvider?.invoke()
-        val songs = items.songs.filter { cat?.songsById?.containsKey(it.id) != true && !PlayResolver.isStudioId(it.id) }
+        val songs = items.songs.filter { cat?.songsById?.containsKey(it.id) != true && PortableItems.isPortable(it.id) }
         val albums = items.albums.filter { cat?.albumsById?.containsKey(it.id) != true }
         if (songs.isEmpty() && albums.isEmpty()) return
         sink(PortableItems.Payload(songs, albums))

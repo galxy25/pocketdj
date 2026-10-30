@@ -56,6 +56,13 @@ object PortableItems {
         val isEmpty: Boolean get() = songs.isEmpty() && albums.isEmpty()
     }
 
+    /** iOS `ProfileSourceStore.songIdPrefix`: on-device profile (sample/demux) songs never travel. */
+    const val PROFILE_SONG_PREFIX = "pdj_"
+    fun isProfileSongId(id: String): Boolean = id.startsWith(PROFILE_SONG_PREFIX)
+
+    /** Only catalog ids travel in items.json: never studio or profile ids. */
+    fun isPortable(id: String): Boolean = !PlayResolver.isStudioId(id) && !isProfileSongId(id)
+
     data class Ids(val songs: Set<String>, val albums: Set<String>)
 
     // MARK: Collect
@@ -66,8 +73,7 @@ object PortableItems {
         val albums = LinkedHashSet<String>()
         fun walk(nodes: List<PlaylistNode>) {
             for (n in nodes) when (n.kind) {
-                // TODO(profile-source package): also exclude profile song ids (iOS isProfileSongId).
-                PlaylistNode.Kind.SONG -> n.songId?.takeIf { !PlayResolver.isStudioId(it) }?.let(songs::add)
+                PlaylistNode.Kind.SONG -> n.songId?.takeIf { isPortable(it) }?.let(songs::add)
                 PlaylistNode.Kind.ALBUM -> n.albumId?.let(albums::add)
                 PlaylistNode.Kind.SEQUENCE -> walk(n.children.orEmpty())
                 else -> Unit
@@ -88,8 +94,7 @@ object PortableItems {
 
     private fun collect(pockets: List<Pocket>, songs: MutableSet<String>, albums: MutableSet<String>) {
         for (p in pockets) {
-            // TODO(profile-source package): also exclude profile song ids (iOS isProfileSongId).
-            p.songIds.filterNot(PlayResolver::isStudioId).forEach(songs::add)
+            p.songIds.filter(::isPortable).forEach(songs::add)
             albums.addAll(p.albumIds)
         }
     }
