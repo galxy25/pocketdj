@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-GAP-8 - COL-12/BRW-7 gaps (catalogAdd producers + timeline artwork)
 
@@ -13,3 +13,12 @@ Owner gate unchanged (Q56). No manifest/proguard changes, so assembleRelease not
 
 ## Questions for Levi
 None.
+
+## Review
+
+- MAJOR imported-album tracks missing from Recently added -> fixed: ImportedSongsStore.indexSong sets dateAdded from addedAtMs; new test importedAlbumTracks_appearInRecentlyAdded drives store.add + MergedCatalog + RecentlyAddedBuilder.songIds.
+- MINOR timeline artwork -> fixed: ActivityRowUi carries artAlbumId; ActivityRow renders shared AlbumArt (on-demand AM-Local art + candidate fallback), placeholder otherwise.
+- MINOR recognizer libraryWrite token -> fixed: uses LibraryWrite.CONFIRMED_WEB. Routing through DiscoverAddsStore not done (documented: amrec_ event is not a catalog citizen until a rip/index lands it).
+- NIT end-to-end test -> fixed (same test as MAJOR).
+
+fixes applied. Suite: 5573 tests, 0 failures; assembleDebug green.

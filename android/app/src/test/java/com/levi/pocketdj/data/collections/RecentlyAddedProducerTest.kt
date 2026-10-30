@@ -110,4 +110,15 @@ class RecentlyAddedProducerTest {
         assertNull(rows[0].artUrl)
         assertTrue(rows[1].artUrl!!.endsWith("y.jpg"))
     }
+
+    @Test fun importedAlbumTracks_appearInRecentlyAdded() {
+        val store = ImportedSongsStore(tmp())
+        store.add(
+            listOf(song("s1", "alb"), song("s2", "alb")).map { it.copy(addedAtMs = 5000.0) },
+            listOf(ImportedSongsStore.AlbumEntry(albumId = "alb", name = "Album", artist = "A", trackIds = listOf("s1", "s2"))),
+        )
+        val cat = MergedCatalog.merge(listOf(store.syntheticDocument()!!))
+        val ids = RecentlyAddedBuilder().songIds(cat, emptyList(), 50)
+        assertEquals(setOf("s1", "s2"), ids.toSet())
+    }
 }

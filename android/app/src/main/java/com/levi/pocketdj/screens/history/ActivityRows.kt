@@ -17,6 +17,8 @@ internal data class ActivityRowUi(
     val songId: String?,
     /** Leading thumbnail URL resolved from the live catalog (song -> its album's art; album -> own art); null = placeholder. */
     val artUrl: String? = null,
+    /** Album whose art to render via the shared AlbumArt (bundled candidates + on-demand AM-Local fallback). */
+    val artAlbumId: String? = null,
 )
 
 /**
@@ -62,6 +64,7 @@ internal fun buildActivityRows(
             atMs = event.at.toLong(),
             songId = liveSong?.id,
             artUrl = activityArtUrl(liveSong?.albumId, event.itemId, catalog),
+            artAlbumId = activityArtAlbumId(liveSong?.albumId, event.itemId, catalog),
         )
     }
 }
@@ -105,3 +108,7 @@ internal fun activityArtUrl(songAlbumId: String?, itemId: String, catalog: Merge
     val album = songAlbumId?.let { catalog.albumsById[it] } ?: catalog.albumsById[itemId]
     return album?.artCandidates()?.firstOrNull()
 }
+
+/** The album id whose art represents the row (song -> its album, album -> itself), or null. */
+internal fun activityArtAlbumId(songAlbumId: String?, itemId: String, catalog: MergedCatalog): String? =
+    songAlbumId?.takeIf { catalog.albumsById.containsKey(it) } ?: itemId.takeIf { catalog.albumsById.containsKey(it) }

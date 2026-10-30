@@ -563,7 +563,7 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
             c.onCatalogAdd = { id, title, artist ->
                 app.collectionActivity.record(
                     kind = com.levi.pocketdj.data.activity.ActivityKind.CATALOG_ADD,
-                    itemId = id, itemTitle = title, itemArtist = artist.ifEmpty { null }, libraryWrite = "confirmed",
+                    itemId = id, itemTitle = title, itemArtist = artist.ifEmpty { null }, libraryWrite = com.levi.pocketdj.screens.discover.LibraryWrite.CONFIRMED_WEB,
                 )
             }
         }

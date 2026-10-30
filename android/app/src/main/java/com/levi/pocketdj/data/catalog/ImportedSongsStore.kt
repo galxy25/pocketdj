@@ -237,6 +237,7 @@ class ImportedSongsStore(private val file: File) {
         fun indexSong(e: SongEntry) = IndexSong(
             id = e.songId, albumId = e.albumId, artist = e.artist, name = e.title, year = e.year,
             bpm = e.bpm, key = e.key, camelot = e.camelot, length = e.durationMs, appleMusicId = e.appleMusicId,
+            dateAdded = e.addedAtMs.takeIf { it > 0 },
         )
 
         fun indexAlbum(e: AlbumEntry) = IndexAlbum(
