@@ -191,6 +191,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             },
             onFocusRelease = { focus.abandon() },
             recorder = com.levi.pocketdj.studio.engine.MasterRecorder(tempDir = { File(app.appContext.cacheDir, "master-rec") }),
+            pageStore = com.levi.pocketdj.studio.engine.ClipPageStore(File(app.appContext.cacheDir, "clip-pages")),
         ).also { m ->
             m.onUserTransport = { interruptions.forget("multitrack") }
             interruptions.register(

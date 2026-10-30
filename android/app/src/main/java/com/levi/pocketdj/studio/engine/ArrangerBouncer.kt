@@ -8,6 +8,7 @@ import com.levi.pocketdj.studio.audio.BufferedM4aWriter
 import com.levi.pocketdj.studio.audio.StudioAudio
 import com.levi.pocketdj.studio.model.StudioArrangement
 import com.levi.pocketdj.studio.model.StudioArrangementArtifact
+import com.levi.pocketdj.studio.model.StudioClip
 import com.levi.pocketdj.studio.model.StudioFactory
 import com.levi.pocketdj.studio.model.StudioMasterFX
 import com.levi.pocketdj.studio.model.StudioTrack
@@ -35,43 +36,71 @@ object ArrangerClipPlan {
     suspend fun build(
         tracks: List<StudioTrack>, bpm: Double, beatMatch: Boolean, loader: MultitrackClipLoader,
         rate: Int = StudioAudio.CANONICAL_RATE, isCancelled: () -> Boolean = { false },
+        /** ANS-STU-5: when set, windows of [shortClipFrames]+ frames are cached as PCM16 pages and read through mmap (heap O(1)). */
+        pager: ClipPageStore? = null,
+        shortClipFrames: Int = ClipPageStore.SHORT_CLIP_FRAMES,
     ): List<MultitrackRenderContext.Clip>? {
-        // Each source file is decoded once per pass and released after its last clip; only the clip's
-        // window (not the whole file) is retained.
-        val uses = HashMap<String, Int>()
-        for (t in tracks) for (c in t.clips) uses.merge(c.fileName, 1, Int::plus)
-        val decoded = HashMap<String, PcmBuffer?>()
-        val clips = ArrayList<MultitrackRenderContext.Clip>()
         val beatFrames = ArrangerBeatMatch.beatFrames(bpm, rate)
+        // Per-clip warp parameters + cache lookup first: a file whose clips all hit the page cache is never decoded.
+        class Item(val ti: Int, val clip: StudioClip, val r: Double, val pitchCents: Double, val needsBake: Boolean,
+                   val startFrame: Int, val key: ClipPageStore.Key?, val cached: ClipReader?)
+        val items = ArrayList<Item>()
         for ((ti, track) in tracks.withIndex()) {
             val strip = track.strip.clamped()
             for (clip in track.clips) {
+                val r = ArrangerBeatMatch.rate(clip.grid?.bpm ?: 0.0, bpm, strip.tempoRatio, beatMatch)
+                val pitchCents = strip.pitchSemitones * 100
+                val key = pager?.let { ClipPageStore.Key(clip.fileName, loader.sourceStamp(clip.fileName), clip.fileStartMs, clip.durationMs, r, pitchCents, rate) }
+                val cached = if (pager != null && key != null && pager.has(key)) pager.open(key) else null
+                items += Item(ti, clip, r, pitchCents, ArrangerBeatMatch.needsBake(r, pitchCents),
+                    ArrangerBeatMatch.snappedStartFrame(MultitrackRenderContext.msToFrames(clip.startMs, rate), beatFrames, beatMatch), key, cached)
+            }
+        }
+        // Each source file is decoded once per pass and released after its last uncached clip; only the clip's
+        // window (not the whole file) is retained.
+        val uses = HashMap<String, Int>()
+        for (w in items) if (w.cached == null) uses.merge(w.clip.fileName, 1, Int::plus)
+        val decoded = HashMap<String, PcmBuffer?>()
+        val clips = ArrayList<MultitrackRenderContext.Clip>()
+        try {
+            for (w in items) {
+                val clip = w.clip
+                if (w.cached != null) {
+                    if (isCancelled()) { w.cached.close(); return null.also { closeAll(clips) } }
+                    clips += MultitrackRenderContext.Clip(w.ti, w.startFrame, w.cached.frameCount, 0, null, w.cached)
+                    continue
+                }
                 val left = (uses[clip.fileName] ?: 1) - 1
                 uses[clip.fileName] = left
                 val buf = if (decoded.containsKey(clip.fileName)) decoded[clip.fileName] else loader.decode(clip.fileName).also { decoded[clip.fileName] = it }
                 if (left <= 0) decoded.remove(clip.fileName)
-                if (isCancelled()) return null
+                if (isCancelled()) { closeAll(clips); return null }
                 if (buf == null || buf.frames <= 0) continue
-                val r = ArrangerBeatMatch.rate(clip.grid?.bpm ?: 0.0, bpm, strip.tempoRatio, beatMatch)
-                val pitchCents = strip.pitchSemitones * 100
-                val needsBake = ArrangerBeatMatch.needsBake(r, pitchCents)
-                val startFrame = ArrangerBeatMatch.snappedStartFrame(
-                    MultitrackRenderContext.msToFrames(clip.startMs, rate), beatFrames, beatMatch)
                 val window = MultitrackPlayer.clipWindow(buf.frames, clip.fileStartMs, clip.durationMs, rate)
                 if (window.frameLength <= 0) continue
-                val warped = if (needsBake) loader.transform(buf, window.srcStart.toLong(), window.frameLength.toLong(), r, pitchCents) else null
-                if (isCancelled()) return null
-                if (warped != null && warped.frames > 0) {
-                    clips += MultitrackRenderContext.Clip(ti, startFrame, warped.frames, 0, warped.toStereo().samples)
-                } else {
-                    val all = buf.toStereo().samples
-                    val win = all.copyOfRange(window.srcStart * 2, (window.srcStart + window.frameLength) * 2)
-                    clips += MultitrackRenderContext.Clip(ti, startFrame, window.frameLength, 0, win)
+                val warped = if (w.needsBake) loader.transform(buf, window.srcStart.toLong(), window.frameLength.toLong(), w.r, w.pitchCents) else null
+                if (isCancelled()) { closeAll(clips); return null }
+                val usable = warped != null && warped.frames > 0
+                val frames = if (usable) warped!!.frames else window.frameLength
+                // The unwarped fallback is the raw window, so it must not poison the warped key.
+                val key = if (usable || !w.needsBake) w.key else pager?.let { _ ->
+                    ClipPageStore.Key(clip.fileName, loader.sourceStamp(clip.fileName), clip.fileStartMs, clip.durationMs, 1.0, 0.0, rate)
                 }
+                val samples: FloatArray = if (usable) warped!!.toStereo().samples else {
+                    buf.toStereo().samples.copyOfRange(window.srcStart * 2, (window.srcStart + window.frameLength) * 2)
+                }
+                val paged = if (pager != null && key != null && frames >= shortClipFrames) {
+                    runCatching { pager.write(key, samples, frames); pager.open(key) }.getOrNull()
+                } else null
+                clips += if (paged != null) MultitrackRenderContext.Clip(w.ti, w.startFrame, frames, 0, null, paged)
+                else MultitrackRenderContext.Clip(w.ti, w.startFrame, frames, 0, samples)
             }
-        }
+        } catch (t: Throwable) { closeAll(clips); throw t }
+        pager?.trim(items.mapNotNull { it.key }.toSet())
         return clips
     }
+
+    private fun closeAll(clips: List<MultitrackRenderContext.Clip>) = clips.forEach { it.reader?.close() }
 }
 
 /**

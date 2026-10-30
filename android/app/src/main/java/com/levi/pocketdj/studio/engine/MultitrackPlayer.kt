@@ -23,6 +23,9 @@ interface MultitrackClipLoader {
 
     /** Warp/pitch the window [from, from+frames) offline (native stretch); null on failure (caller falls back to the raw window). */
     suspend fun transform(source: PcmBuffer, from: Long, frames: Long, rate: Double, pitchCents: Double): PcmBuffer?
+
+    /** Changes whenever the source audio under [fileName] changes (page-cache invalidation on clip edit). */
+    fun sourceStamp(fileName: String): String = ""
 }
 
 class StudioClipLoader(private val store: StudioStore, private val render: StudioRender) : MultitrackClipLoader {
@@ -34,6 +37,9 @@ class StudioClipLoader(private val store: StudioStore, private val render: Studi
 
     override suspend fun transform(source: PcmBuffer, from: Long, frames: Long, rate: Double, pitchCents: Double): PcmBuffer? =
         runCatching { render.transformBuffer(source, from, frames, rate, pitchCents) }.getOrNull()
+
+    override fun sourceStamp(fileName: String): String =
+        store.clipFile(fileName)?.let { "${it.length()}-${it.lastModified()}" } ?: ""
 }
 
 /**
@@ -58,6 +64,9 @@ class MultitrackPlayer(
     private val onFocusRelease: () -> Unit = {},
     /** Record-to-master tap (STU-13). The default writes its temp WAVs to the JVM temp dir; the app passes the cache dir. */
     val recorder: MasterRecorder = MasterRecorder(),
+    /** ANS-STU-5: long clip windows are cached as PCM16 pages and mmap-read; null keeps everything in memory. */
+    private val pageStore: ClipPageStore? = null,
+    private val shortClipFrames: Int = ClipPageStore.SHORT_CLIP_FRAMES,
 ) {
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -119,7 +128,7 @@ class MultitrackPlayer(
         // The ONE planning path shared with ArrangerBouncer (WYSIWYG): decode once, window, warp, beat-snap.
         // Whole clips are held as float PCM on the Java heap: an over-long arrangement must degrade to a message, never an OOM crash.
         val clips = try {
-            ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate) { gen != generation.get() }
+            ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate, { gen != generation.get() }, pageStore, shortClipFrames)
         } catch (_: OutOfMemoryError) {
             synchronized(lock) { stopInternal(keepReprime = false, reason = "oom") }
             return PlayOutcome.TOO_LARGE
