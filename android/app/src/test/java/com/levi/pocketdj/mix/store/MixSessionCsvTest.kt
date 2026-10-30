@@ -36,7 +36,7 @@ class MixSessionCsvTest {
     fun filenameStripsReservedAndFallsBack() {
         assertEquals("Session 3.csv", MixSessionCsv.filename("Session 3"))
         assertEquals("ABC.csv", MixSessionCsv.filename("A/B\\C"))
-        assertEquals("a b.csv", MixSessionCsv.filename("a:*?\"<>| b").replace("  ", " "))
+        assertEquals("a b.csv", MixSessionCsv.filename("a:*?\"<>| b"))
         assertEquals("session.csv", MixSessionCsv.filename("  ///  "))
         assertEquals("session.csv", MixSessionCsv.filename(null))
     }

@@ -58,7 +58,10 @@ import com.levi.pocketdj.mix.store.MixRecording
 import com.levi.pocketdj.mix.store.MixSession
 import com.levi.pocketdj.mix.store.MixSessionStore
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import com.levi.pocketdj.shell.NavRequestBus
+import com.levi.pocketdj.shell.ShellRoute
 import com.levi.pocketdj.mix.store.MixSessionCsv
 import com.levi.pocketdj.screens.browse.SongDetailSheet
 import com.levi.pocketdj.screens.collections.ExportRequest
@@ -108,12 +111,16 @@ fun MixSessionsRoute(onBack: () -> Unit) {
     var openId by rememberSaveable { mutableStateOf<String?>(null) }
     val id = openId
     BackHandler(enabled = id != null) { openId = null }
-    Column(Modifier.fillMaxSize().testTag("mix-sessions-screen")) {
-        if (id == null) {
-            SessionsList(store, onBack = onBack, onOpen = { openId = it })
-        } else {
-            SessionDetail(store, graph.recordingPlayer, File(SessionFolders.root(ctx.filesDir), id), id, onBack = { openId = null })
+    val snackbar = remember { SnackbarHostState() }
+    Box(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().testTag("mix-sessions-screen")) {
+            if (id == null) {
+                SessionsList(store, onBack = onBack, onOpen = { openId = it })
+            } else {
+                SessionDetail(store, graph.recordingPlayer, File(SessionFolders.root(ctx.filesDir), id), id, snackbar, onBack = { openId = null })
+            }
         }
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
     }
 }
 
@@ -207,7 +214,7 @@ private fun SessionRow(row: SessionRowData, isCurrent: Boolean, onClick: () -> U
 }
 
 @Composable
-private fun SessionDetail(store: MixSessionStore, player: RecordingPlayer, folder: File, id: String, onBack: () -> Unit) {
+private fun SessionDetail(store: MixSessionStore, player: RecordingPlayer, folder: File, id: String, sheetSnackbar: SnackbarHostState, onBack: () -> Unit) {
     val sessions by store.sessions.collectAsState()
     val session = sessions.firstOrNull { it.id == id }
     // Stable snapshot for the screen's lifetime (the current session keeps recording). Unknown
@@ -222,7 +229,6 @@ private fun SessionDetail(store: MixSessionStore, player: RecordingPlayer, folde
     val catalogRepo = remember { AppGraph.get(ctx).catalogRepository }
     val exporter = rememberCollectionExporter()
     var sheetSongId by rememberSaveable { mutableStateOf<String?>(null) }
-    val sheetSnackbar = remember { SnackbarHostState() }
     var overflow by remember { mutableStateOf(false) }
     Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
@@ -235,6 +241,7 @@ private fun SessionDetail(store: MixSessionStore, player: RecordingPlayer, folde
             DropdownMenu(overflow, { overflow = false }) {
                 DropdownMenuItem(
                     text = { Text("Export tracklist (CSV)") },
+                    enabled = trackCount > 0,
                     modifier = Modifier.testTag("mix-session-export-csv"),
                     onClick = {
                         overflow = false
@@ -254,7 +261,11 @@ private fun SessionDetail(store: MixSessionStore, player: RecordingPlayer, folde
         events, onOpenSong = { sheetSongId = it },
         songInCatalog = { catalogRepo.state.value.catalog?.songsById?.containsKey(it) == true },
     )
-    sheetSongId?.let { SongDetailSheet(songId = it, onDismiss = { sheetSongId = null }, snackbar = sheetSnackbar) }
+    sheetSongId?.let { SongDetailSheet(
+            songId = it, onDismiss = { sheetSongId = null }, snackbar = sheetSnackbar,
+            onOpenAlbum = { albumId -> sheetSongId = null; NavRequestBus.post(ShellRoute.Album(albumId)) },
+        )
+    }
     val err by player.lastError.collectAsState()
     err?.let {
         AlertDialog(

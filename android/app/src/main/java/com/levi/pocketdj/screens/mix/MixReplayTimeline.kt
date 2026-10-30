@@ -23,6 +23,8 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
+import androidx.compose.foundation.layout.Spacer
+import com.levi.pocketdj.mix.store.MixEventKind
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -189,6 +191,9 @@ fun TimelineCard(event: MixSessionEvent, active: Boolean, onTap: () -> Unit, mod
                 Text(d.text, style = MaterialTheme.typography.bodySmall, maxLines = 2)
                 Text(MixEventSentences.clock(event.tMs), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            if (event.kind == MixEventKind.Load) {
+                Icon(Icons.Filled.Info, "Opens song details", Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
@@ -305,7 +310,10 @@ fun MixReplayTimeline(
                                         if (i < row.size - 1) Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(12.dp).align(Alignment.CenterVertically), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     // Keep a short last row's cards the same width as full rows.
-                                    repeat(perRow - row.size) { Box(Modifier.weight(1f)) }
+                                    repeat(perRow - row.size) {
+                                        Spacer(Modifier.size(12.dp))
+                                        Box(Modifier.weight(1f))
+                                    }
                                 }
                                 if (rowIdx < rows.size - 1) Icon(Icons.AutoMirrored.Filled.Undo, null, Modifier.padding(start = 6.dp).size(14.dp), tint = MaterialTheme.colorScheme.tertiary)
                             }
