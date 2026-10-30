@@ -3,6 +3,7 @@ package com.levi.pocketdj.playback.session
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import com.levi.pocketdj.playback.durable.HeldQueue
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import com.levi.pocketdj.playback.sequencer.SetlistSequencer
 
@@ -56,7 +57,40 @@ class SequencerForwardingPlayer(
     private val engine: String = "exo",
     private val log: (cmd: String, engine: String, verdict: String) -> Unit = TransportLog::rc,
     private val board: SessionSwitchboard? = null,
+    /** SessionRestorer.restore for the armed resumption set (idempotent; a live run stays untouched). */
+    private val restoreForResumption: (HeldQueue) -> Unit = {},
 ) : SetGatedPlayer(player) {
+
+    @Volatile private var armedResumption: HeldQueue? = null
+
+    /** `onPlaybackResumption` answered with [held]: the next matching setMediaItems restores + resumes it. */
+    fun armResumption(held: HeldQueue) { armedResumption = held }
+
+    private fun consumeResumption(items: List<MediaItem>): Boolean {
+        val held = armedResumption ?: return false
+        if (!held.matches(items)) return false
+        armedResumption = null
+        // Restore the held deck (never clears a live run), then resume at the held offset. The session
+        // timeline stays empty: the sequencer, not the Media3 playlist, owns the queue.
+        restoreForResumption(held)
+        latch.clear()
+        pausedByListener = false
+        if (control.isHeldForResume) control.resumeFromHold() else if (control.hasRun && !control.isRunning) control.startCurrent()
+        emit(TransportLog.Cmd.PLAY, "resumption")
+        return true
+    }
+
+    override fun setMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long) {
+        if (!consumeResumption(mediaItems)) super.setMediaItems(mediaItems, startIndex, startPositionMs)
+    }
+
+    override fun setMediaItems(mediaItems: MutableList<MediaItem>, resetPosition: Boolean) {
+        if (!consumeResumption(mediaItems)) super.setMediaItems(mediaItems, resetPosition)
+    }
+
+    override fun setMediaItems(mediaItems: MutableList<MediaItem>) {
+        if (!consumeResumption(mediaItems)) super.setMediaItems(mediaItems)
+    }
 
     @Volatile private var instant: MediaMetadata? = null
     @Volatile private var pausedByListener = false

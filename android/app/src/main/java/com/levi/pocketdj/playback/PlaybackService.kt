@@ -16,6 +16,7 @@ import com.levi.pocketdj.auto.AutoLibraryCallback
 import com.levi.pocketdj.auto.AutoNode
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.levi.pocketdj.playback.durable.HeldQueue
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import com.levi.pocketdj.playback.session.FavoriteCommand
 import com.levi.pocketdj.playback.session.SequencerControl
@@ -49,6 +50,7 @@ const val INTERNAL_HINT = "pdj.internal"
 class PlaybackService : MediaLibraryService() {
 
     private var mediaSession: MediaLibrarySession? = null
+    private val resumeExecutor: java.util.concurrent.ExecutorService by lazy { java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "pdj-resumption") } }
     private var autoScope: kotlinx.coroutines.CoroutineScope? = null
     /** Latest search only (one entry): a keystroke-per-query session must not accumulate results. */
     @Volatile private var autoSearchLatest: Pair<String, List<AutoNode>>? = null
@@ -190,7 +192,12 @@ class PlaybackService : MediaLibraryService() {
             )
         }
 
-        val forwarding = SequencerForwardingPlayer(player, DeferredControl, board = SessionSwitchboard.shared)
+        val forwarding = SequencerForwardingPlayer(
+            player, DeferredControl, board = SessionSwitchboard.shared,
+            restoreForResumption = { held ->
+                runCatching { com.levi.pocketdj.di.AppGraph.get(applicationContext).playbackGraph.resumptionProvider.restore(held) }
+            },
+        )
         forwardingPlayer = forwarding
         val exo = ExoOwner(forwarding)
         exoOwner = exo
@@ -281,6 +288,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        runCatching { resumeExecutor.shutdown() }
         RunTransportBus.instantMetadata = null
         RunTransportBus.stateChanged = null
         RunTransportBus.heldRestored = null
@@ -409,10 +417,21 @@ class PlaybackService : MediaLibraryService() {
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            runCatching {
-                com.levi.pocketdj.di.AppGraph.get(applicationContext).playbackGraph.resumptionProvider.onPlaybackResumption()
+            val out = com.google.common.util.concurrent.SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+            resumeExecutor.execute {
+                // Off Main: graph + one file decode. The restore itself runs on Main when the forwarding
+                // player receives the matching setMediaItems.
+                val held = runCatching {
+                    com.levi.pocketdj.di.AppGraph.get(applicationContext).playbackGraph.resumptionProvider.loadHeld()
+                }.getOrNull()
+                if (held == null) {
+                    out.setException(IllegalStateException("nothing to resume"))
+                } else {
+                    forwardingPlayer?.armResumption(held)
+                    out.set(held.toMediaItemsWithStartPosition())
+                }
             }
-            return Futures.immediateFailedFuture(IllegalStateException("held restore: sequencer owns the queue"))
+            return out
         }
 
         override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
@@ -467,7 +486,12 @@ class PlaybackService : MediaLibraryService() {
             // System-UI media resumption (Android 11+) binds at boot with isRecent: don't build the graph or
             // warm the catalog for that; resumption is the onPlaybackResumption path.
             if (params?.isRecent == true) {
-                return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_NOT_SUPPORTED))
+                val root = MediaItem.Builder().setMediaId(HeldQueue.RECENT_ROOT_ID)
+                    .setMediaMetadata(
+                        androidx.media3.common.MediaMetadata.Builder().setTitle("PocketDJ")
+                            .setIsBrowsable(true).setIsPlayable(false).build(),
+                    ).build()
+                return Futures.immediateFuture(LibraryResult.ofItem(root, params))
             }
             return Futures.immediateFuture(LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(auto.onConnect()), params))
         }
@@ -492,6 +516,19 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            if (parentId == HeldQueue.RECENT_ROOT_ID) {
+                // Cheap recent child straight from the snapshot file: no AppGraph, no catalog warm-up.
+                val out = com.google.common.util.concurrent.SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
+                val file = java.io.File(filesDir, com.levi.pocketdj.playback.durable.PLAYBACK_SESSION_FILE)
+                resumeExecutor.execute {
+                    val held = HeldQueue.load(file)
+                    out.set(
+                        if (held == null) LibraryResult.ofItemList(ImmutableList.of(), params)
+                        else LibraryResult.ofItemList(ImmutableList.of(held.currentItem()), params),
+                    )
+                }
+                return out
+            }
             val nodes = auto.getChildren(parentId, page, pageSize)
             return Futures.immediateFuture(
                 if (nodes == null) LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)

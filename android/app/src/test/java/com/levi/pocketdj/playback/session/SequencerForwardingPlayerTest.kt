@@ -185,4 +185,49 @@ class SequencerForwardingPlayerTest {
         assertTrue(ctl.calls.isEmpty())
         assertEquals("rc cmd=play engine=exo verdict=refused-mic-capture", logs.single())
     }
+
+    private fun held(vararg ids: String) = com.levi.pocketdj.playback.durable.HeldQueue.from(
+        com.levi.pocketdj.playback.durable.SessionSnapshot(
+            sessionId = "s", source = com.levi.pocketdj.playback.durable.SessionSourceRef("playlist", "x", "X"),
+            queue = ids.map { com.levi.pocketdj.playback.durable.SessionRow(it, it.uppercase()) },
+            index = 0, positionMs = 9_000,
+        ),
+    )!!
+
+    @Test fun resumptionSetRestoresThenResumesFromHold_neverReachesTheBasePlayer() {
+        val restored = mutableListOf<String>()
+        val rp = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { _, _, _ -> }, restoreForResumption = { restored += it.snapshot.sessionId })
+        val h = held("a", "b")
+        rp.armResumption(h)
+        ctl.isHeldForResume = true
+        rp.setMediaItems(h.toMediaItems().toMutableList(), h.index, h.positionMs)
+        assertEquals(listOf("s"), restored)
+        assertEquals(listOf("resumeHeld"), ctl.calls)
+        assertFalse(ps.calls.any { it.startsWith("setMediaItems") })
+    }
+
+    @Test fun resumptionNeverClearsAnAlreadyLiveRun() {
+        val rp = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { _, _, _ -> }, restoreForResumption = { })
+        val h = held("a")
+        rp.armResumption(h)
+        ctl.isRunning = true // a run is live: restore is a no-op upstream, nothing is held
+        rp.setMediaItems(h.toMediaItems().toMutableList())
+        assertTrue(ctl.calls.isEmpty())
+        assertFalse(ps.calls.any { it.startsWith("setMediaItems") })
+    }
+
+    @Test fun aForeignSetIsPassedThroughAndLeavesTheResumptionArmed() {
+        val restored = mutableListOf<String>()
+        val rp = SequencerForwardingPlayer(fakePlayer(ps), ctl, log = { _, _, _ -> }, restoreForResumption = { restored += "x" })
+        val h = held("a")
+        rp.armResumption(h)
+        val other = held("z").toMediaItems().toMutableList()
+        rp.setMediaItems(other, 0, 0L)
+        assertTrue(ps.calls.contains("setMediaItems"))
+        assertTrue(restored.isEmpty())
+        ctl.isHeldForResume = true
+        rp.setMediaItems(h.toMediaItems().toMutableList(), true) // still armed -> consumed now
+        assertEquals(listOf("x"), restored)
+        assertEquals(listOf("resumeHeld"), ctl.calls)
+    }
 }

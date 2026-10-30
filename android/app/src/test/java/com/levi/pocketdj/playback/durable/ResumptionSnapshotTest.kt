@@ -113,4 +113,17 @@ class ResumptionSnapshotTest {
         assertEquals(1, store.setlists.count { it.id == NOW_PLAYING_SETLIST_ID })
         assertTrue(rows("z").isNotEmpty())
     }
+
+    @Test
+    fun onPlaybackResumption_decodesTheFileOnce() = runTest {
+        val d = DurableHarness(this, tmp.root, "a", "b", "c")
+        d.file.writeText(SessionSnapshot.encode(snap))
+        val provider = ResumptionProvider(SessionRestorer(d.store, d.seq, disabled = { false }), d.store)
+        val held = provider.loadHeld()!!
+        provider.restore(held)
+        assertEquals(1, held.index)
+        assertEquals(listOf("a", "b", "c"), d.seq.state.value.queue.map { it.id })
+        assertTrue(d.seq.isHeldForResume)
+        assertFalse(d.seq.isRunning && d.h.port.loads.isNotEmpty())
+    }
 }

@@ -157,6 +157,15 @@
             </intent-filter>
         </service>
 
+        <!-- ANS-PB-6: a MEDIA_BUTTON press (headset / Bluetooth) after process death restarts the session service. -->
+        <receiver
+            android:name="androidx.media3.session.MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
         <!-- SURF-8: declare a media app for Android Auto (res/xml/automotive_app_desc.xml). -->
         <meta-data
             android:name="com.google.android.gms.car.application"
