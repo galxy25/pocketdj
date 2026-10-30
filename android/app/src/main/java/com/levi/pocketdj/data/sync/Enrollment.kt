@@ -47,15 +47,15 @@ class Enrollment(
     }
 
     private val mutex = Mutex()
-    @Volatile private var refused: Outcome.Refused? = null
+    @Volatile private var refused: Pair<String, Outcome.Refused>? = null
 
     suspend fun ensureEnrolled(profileId: String): Outcome = mutex.withLock {
         val id = profileId.lowercase()
         val base = baseUrl()?.trimEnd('/')?.takeIf { it.isNotEmpty() } ?: return Outcome.Disabled
         if (secrets.enrolledProfileId() == id) return Outcome.AlreadyEnrolled
         if (secrets.relinkRequiredFor(id)) return Outcome.RelinkRequired
-        refused?.let { return it }
         val token = enrollToken()
+        refused?.let { (t, r) -> if (t == token) return r }
         if (token.isEmpty()) return Outcome.NotConfigured
 
         val secret = secrets.secretOrMint()
@@ -81,7 +81,7 @@ class Enrollment(
             when {
                 code in 200..299 -> { secrets.markEnrolled(id); return Outcome.Enrolled }
                 code == 409 -> { secrets.markRelinkRequired(id); return Outcome.RelinkRequired }
-                code == 401 || code == 403 || code == 429 -> return Outcome.Refused(code).also { refused = it }
+                code == 401 || code == 403 || code == 429 -> return Outcome.Refused(code).also { refused = token to it }
                 code >= 500 -> last = "HTTP $code"
                 else -> return Outcome.Failed("HTTP $code")
             }

@@ -30,12 +30,16 @@ data class SettingsCredentialsDocument(
     /**
      * Q10: the online-search key pair + endpoint are DEVICE-LOCAL on Android (Keystore / DataStore) and are never
      * read from or written to this document. iOS decodes `searchAccessKeyID` / `searchSecretKey` / `searchEndpoint`
-     * as REQUIRED strings, so whatever the last pull carried is re-emitted untouched ([passThroughSearch], decode
-     * only); with none on disk empty strings are emitted. NOT serialized by the plugin (see [encode]/[decode]).
+     * as REQUIRED strings, so empty strings are ALWAYS emitted; a carried value ([passThroughSearch], decode only) is
+     * scrubbed on the next sync. NOT serialized by the plugin (see [encode]/[decode]).
      */
     @kotlinx.serialization.Transient
     val passThroughSearch: JsonObject? = null,
 ) {
+    /** True when a decoded doc still carries a non-empty search value (legacy Android / iOS) that must be scrubbed. */
+    val carriesSearchValues: Boolean
+        get() = passThroughSearch?.values?.any { (it as? kotlinx.serialization.json.JsonPrimitive)?.content?.isNotEmpty() == true } == true
+
     /** Strings trimmed (the settings setters trim) and pass-through dropped: the CONTENT used for change detection. */
     fun normalized(): SettingsCredentialsDocument = copy(
         ripServerURL = ripServerURL.trim(), ripToken = ripToken.trim(),
@@ -79,8 +83,9 @@ data class SettingsCredentialsDocument(
         /** The iOS wire keys Android never interprets (see [passThroughSearch]). */
         val SEARCH_KEYS = listOf("searchAccessKeyID", "searchSecretKey", "searchEndpoint")
 
-        private fun searchWireKeys(kept: JsonObject?): Map<String, JsonElement> =
-            SEARCH_KEYS.associateWith { kept?.get(it) ?: kotlinx.serialization.json.JsonPrimitive("") }
+        /** Q10: ALWAYS blank strings (iOS requires the keys); a carried value is never re-emitted. */
+        private fun searchWireKeys(@Suppress("UNUSED_PARAMETER") kept: JsonObject?): Map<String, JsonElement> =
+            SEARCH_KEYS.associateWith { kotlinx.serialization.json.JsonPrimitive("") }
 
         internal fun canonical(e: JsonElement): JsonElement = when (e) {
             is JsonObject -> JsonObject(

@@ -66,9 +66,8 @@ class CredentialsSync(
         val live = port.read()
         val doc = live.copy(
             sources = existing?.sources, appleMusicPrivateSync = existing?.appleMusicPrivateSync,
-            passThroughSearch = existing?.passThroughSearch,
         )
-        if (existing != null && existing.normalized() == doc.normalized()) return false
+        if (existing != null && !existing.carriesSearchValues && existing.normalized() == doc.normalized()) return false
         if (existingBytes == null && doc.credentialsAreBlank) return false // adopt, don't race the cloud copy
         writeAtomic(SettingsCredentialsDocument.encode(doc))
         return true

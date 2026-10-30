@@ -25,14 +25,15 @@ class SettingsCredentialsDocumentTest {
         assertFalse(text.contains("passThroughSearch"))
     }
 
-    @Test fun iosDoc_searchValuesRoundTripVerbatim_butAreNotLiveFields() {
+    @Test fun iosDoc_searchValuesAreBlankedOnEncode_andDetectedForScrub() {
         val ios = """{"schemaVersion":1,"ripServerURL":"u","ripToken":"t","jukeboxServerURL":"","jukeboxToken":"",
             "jukeboxTokensRequiredByDefault":true,"searchAccessKeyID":"AKIAX","searchSecretKey":"shh","searchEndpoint":"https://os"}"""
         val d = SettingsCredentialsDocument.decode(ios.toByteArray())!!
         val out = Json.parseToJsonElement(SettingsCredentialsDocument.encode(d).toString(Charsets.UTF_8)).jsonObject
-        assertEquals("\"AKIAX\"", out.getValue("searchAccessKeyID").toString())
-        assertEquals("\"shh\"", out.getValue("searchSecretKey").toString())
-        assertEquals("\"https://os\"", out.getValue("searchEndpoint").toString())
+        assertTrue(d.carriesSearchValues)
+        assertEquals("\"\"", out.getValue("searchAccessKeyID").toString())
+        assertEquals("\"\"", out.getValue("searchSecretKey").toString())
+        assertEquals("\"\"", out.getValue("searchEndpoint").toString())
         // a doc with only search content still counts as blank credentials (nothing synced)
         assertTrue(SettingsCredentialsDocument(passThroughSearch = d.passThroughSearch).credentialsAreBlank)
     }

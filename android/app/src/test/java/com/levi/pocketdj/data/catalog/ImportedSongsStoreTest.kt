@@ -130,4 +130,24 @@ class ImportedSongsStoreTest {
     }
 
     @Test fun syncKeyIsTheIosKey() { assertEquals("imported-songs", ImportedSongsStore.SYNC_KEY) }
+
+    @Test fun writePulled_adoptsBytesUnderLock_andFiresOnlyOnRealChange() {
+        val remote = ImportedSongsStore(tmp()).also { it.add(listOf(song("r1"))) }
+        val bytes = remoteBytes(remote)
+        val file = tmp()
+        val local = ImportedSongsStore(file)
+        var fired = 0
+        local.onChanged = { fired++ }
+        local.writePulled(bytes)
+        assertEquals(listOf("r1"), local.songs().map { it.songId })
+        assertEquals(1, fired)
+        local.writePulled(bytes) // identical id sets: no remerge
+        assertEquals(1, fired)
+        local.add(listOf(song("l1"))) // a later local add saves on top of the pulled list, not a stale one
+        assertEquals(setOf("r1", "l1"), ImportedSongsStore(file).songs().map { it.songId }.toSet())
+    }
+
+    private fun remoteBytes(s: ImportedSongsStore): ByteArray {
+        val f = tmp(); val c = ImportedSongsStore(f); c.add(s.songs()); return f.readBytes()
+    }
 }

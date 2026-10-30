@@ -137,17 +137,18 @@ class CredentialsSyncTest {
         assertFalse(port.live.toString().contains("sek"))
     }
 
-    @Test fun iosSearchKeys_surviveAnAndroidRewrite_soIosKeepsItsConfig() {
-        val port = FakePort(doc("https://rip", "t2")) // differs from the file: forces a re-materialize
+    @Test fun legacySearchValuesOnDisk_areScrubbedOnNextSync_neverUploaded() {
+        val port = FakePort(doc("https://rip", "t")) // SAME content as the file: only the search values force the rewrite
         val ios = """{"schemaVersion":1,"ripServerURL":"https://rip","ripToken":"t","jukeboxServerURL":"","jukeboxToken":"",
             "jukeboxTokensRequiredByDefault":true,"searchAccessKeyID":"AKIA","searchSecretKey":"sek","searchEndpoint":"https://s"}"""
         file().writeText(ios)
         assertTrue(CredentialsSync(file(), port).syncIfChanged())
         val out = file().readText()
-        assertTrue(out.contains("\"searchAccessKeyID\":\"AKIA\""))
-        assertTrue(out.contains("\"searchSecretKey\":\"sek\""))
-        assertTrue(out.contains("\"searchEndpoint\":\"https://s\""))
-        assertTrue(out.contains("\"ripToken\":\"t2\""))
+        assertTrue(out.contains("\"searchAccessKeyID\":\"\""))
+        assertTrue(out.contains("\"searchSecretKey\":\"\""))
+        assertTrue(out.contains("\"searchEndpoint\":\"\""))
+        assertFalse(out.contains("AKIA")); assertFalse(out.contains("sek"))
+        assertFalse(CredentialsSync(file(), port).syncIfChanged()) // clean now: stable
     }
 
     @Test fun cleanPull_roundTripsByteIdentical_noPushBack() {

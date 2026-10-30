@@ -121,13 +121,33 @@ class ImportedSongsStore(private val file: File) {
      */
     fun reloadFromDisk(): Boolean {
         val doc = decode(file)
-        synchronized(lock) {
-            songs = doc.songs.distinctBy { it.songId }
-            albums = doc.albums.distinctBy { it.albumId }
-            cachedDoc = null
-        }
-        onChanged?.invoke()
+        val changed: Boolean
+        synchronized(lock) { changed = adopt(doc) }
+        if (changed) onChanged?.invoke()
         return false
+    }
+
+    /** SyncEntry.applyPayload seam: write the pulled bytes + re-adopt under [lock] so a concurrent add()/remove() cannot interleave. */
+    fun writePulled(bytes: ByteArray) {
+        val changed: Boolean
+        synchronized(lock) {
+            file.parentFile?.mkdirs()
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(file)) { file.writeBytes(bytes); tmp.delete() }
+            changed = adopt(decode(file))
+        }
+        if (changed) onChanged?.invoke()
+    }
+
+    /** Caller holds [lock]. True when the song/album id sets changed. */
+    private fun adopt(doc: Document): Boolean {
+        val s = doc.songs.distinctBy { it.songId }
+        val a = doc.albums.distinctBy { it.albumId }
+        val same = s.map { it.songId }.toSet() == songs.map { it.songId }.toSet() &&
+            a.map { it.albumId }.toSet() == albums.map { it.albumId }.toSet()
+        songs = s; albums = a; cachedDoc = null
+        return !same
     }
 
     fun clear() {

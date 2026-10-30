@@ -78,4 +78,22 @@ class EnrollmentTokenTest {
             assertEquals(token, server.takeRequest().getHeader("X-PocketDJ-Enroll"))
         } finally { server.shutdown() }
     }
+
+    @Test fun refusal_isStickyOnlyForTheSameToken_rotationRetries() = runTest {
+        val server = MockWebServer().also { it.start() }
+        try {
+            server.enqueue(MockResponse().setResponseCode(401))
+            server.enqueue(MockResponse().setBody("{}"))
+            var current = "old-enroll-token-0123456789abcdef"
+            val e = Enrollment(ProfileSecretStore(InMemorySecretStore()), { server.url("/").toString().trimEnd('/') },
+                { current }, OkHttpClient(), backoff = {})
+            val id = "3F2504E0-4F89-41D3-9A0C-0305E82C3301"
+            assertEquals(Enrollment.Outcome.Refused(401), e.ensureEnrolled(id))
+            assertEquals(Enrollment.Outcome.Refused(401), e.ensureEnrolled(id)) // same token: cached
+            assertEquals(1, server.requestCount)
+            current = token // rotated doc arrived
+            assertEquals(Enrollment.Outcome.Enrolled, e.ensureEnrolled(id))
+            assertEquals(2, server.requestCount)
+        } finally { server.shutdown() }
+    }
 }
