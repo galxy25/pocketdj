@@ -468,3 +468,11 @@ No FATAL EXCEPTION / ANR in logcat.
   - ANS-MIX-4 PASS: "Mix: load 2 + play" (two burned fixtures) logs `PocketDJ.mix: sink backend=audiotrack`, render nil->true, both deck positions advance. Burn fixtures were hand-written (no rip server): stem mp3 copied as audio + ledger rows.
   - ANS-LOC-1 PARTIAL: while-in-use granted, pockets + places on, Play seed queue: `dumpsys activity services` shows foregroundId=1001 types=0x0A (mediaPlayback|location); pause -> 0x02 (logcat "FGS type change 10 to 2"); resume -> 0x0A. Geo-fix step NOT drivable: `adb emu geo fix` OK but gps/fused providers stay OFF with last location=null and no pocketdj listener (same limit as COL-20); dwell/trip covered by DwellDetectorTest, real movement is device-only.
 - Open: Q123 (Play FGS-location declaration / background decision), Q124 (2->10->2->10 FGS type flap on start, device check).
+
+## Wave 12 (ANS-VERIFY-1)
+- Merged: ANS-VERIFY-1 (device checklist + ledger classification + AnswersProgressLedgerTest).
+- JVM suite: 5684 tests, 0 failures (was 5681, +3 from the ledger test); assembleDebug green.
+- Emulator (emulator-5556): smoke pass only. Installed debug APK, launched, library loaded (12555 songs), visited Browse/History/Collections/More and the Mix, Producer, Games and Jukebox screens; no FATAL EXCEPTION or ANR in logcat. Shots in pocketdj-answers-pkgs/_shots/wave12/.
+- NOT run: the per-row EMU drives listed in answers/PROGRESS.md (SURF-2/6, SVC-1/4/7-11, PB-5/10, COL-6/7/10/12/18/20, BRW-7/10/12/13, MIX-5/11-16, STU-3-14, GM-4/7). Those rows stay un-flipped to DONE; the ARCHITECTURE-ANDROID.md ledger was not changed.
+- Device-only: see answers/DEVICE-CHECKLIST.md (not verifiable on emulator).
+- Open: Q103-Q124 unchanged; no new questions.

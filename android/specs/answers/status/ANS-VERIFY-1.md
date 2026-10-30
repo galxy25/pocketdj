@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-VERIFY-1 "No PARTIAL anywhere" sweep
 
