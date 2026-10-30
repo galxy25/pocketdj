@@ -91,7 +91,7 @@ class CloudRowResolverTest {
         awaited: MutableList<RipJob> = mutableListOf(),
     ) = RipOnDemandResolver(
         requestRip = { job },
-        awaitDurable = { awaited += it; durable },
+        awaitDurable = { j, _ -> awaited += j; durable },
         liveUrl = { "http://srv$it?token=t" },
         onQueued = { queued += it },
         log = { log += it },
@@ -160,7 +160,7 @@ class CloudRowResolverTest {
             backgroundScope,
             RipOnDemandResolver(
                 requestRip = { posts++; gate.await() },
-                awaitDurable = { "u" },
+                awaitDurable = { _, _ -> "u" },
                 liveUrl = { it },
             ),
         )
@@ -180,7 +180,7 @@ class CloudRowResolverTest {
         val gate = CompletableDeferred<RipJob>()
         val session = RipOnDemandSession(
             backgroundScope,
-            RipOnDemandResolver(requestRip = { posts++; gate.await() }, awaitDurable = { "u" }, liveUrl = { it }),
+            RipOnDemandResolver(requestRip = { posts++; gate.await() }, awaitDurable = { _, _ -> "u" }, liveUrl = { it }),
         )
         val b = session.begin("sng_b")
         runCurrent()
@@ -196,7 +196,7 @@ class CloudRowResolverTest {
     fun session_failedResolution_retryReportsTheRealCause() = runTest {
         val session = RipOnDemandSession(
             kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)),
-            RipOnDemandResolver(requestRip = { throw IOException("connection refused") }, awaitDurable = { "u" }, liveUrl = { it }),
+            RipOnDemandResolver(requestRip = { throw IOException("connection refused") }, awaitDurable = { _, _ -> "u" }, liveUrl = { it }),
         )
         session.begin("sng_a")
         runCurrent()
@@ -211,7 +211,7 @@ class CloudRowResolverTest {
         val gate = CompletableDeferred<RipJob>()
         val session = RipOnDemandSession(
             backgroundScope,
-            RipOnDemandResolver(requestRip = { gate.await() }, awaitDurable = { "u" }, liveUrl = { it }),
+            RipOnDemandResolver(requestRip = { gate.await() }, awaitDurable = { _, _ -> "u" }, liveUrl = { it }),
         )
         val skipped = session.begin("sng_a")
         runCurrent()
@@ -230,7 +230,7 @@ class CloudRowResolverTest {
             ),
             RipOnDemandResolver(
                 requestRip = { if (fail) throw IOException("down") else RipJob(phase = "ready", url = "https://rips/a.mp3") },
-                awaitDurable = { "u" },
+                awaitDurable = { _, _ -> "u" },
                 liveUrl = { it },
             ),
         )
@@ -245,5 +245,109 @@ class CloudRowResolverTest {
         val third = session.begin("sng_a")
         runCurrent()
         assertFalse("cancel() dropped the finished entry", third === second)
+    }
+
+    // ---- ANS-PB-5: Q17 cap, Q21 one POST per row ---------------------------------------------------------
+
+    @Test
+    fun cap_fromItemLength_thenCatalog_thenTenMinutes_plusSlack() {
+        assertEquals(215_000L + 60_000L, com.levi.pocketdj.playback.session.RipWaitCap.capMs(215_000, 999_000))
+        assertEquals(180_000L + 60_000L, com.levi.pocketdj.playback.session.RipWaitCap.capMs(null, 180_000))
+        assertEquals(180_000L + 60_000L, com.levi.pocketdj.playback.session.RipWaitCap.capMs(0, 180_000))
+        assertEquals(600_000L + 60_000L, com.levi.pocketdj.playback.session.RipWaitCap.capMs(null, null))
+    }
+
+    @Test
+    fun cap_reachesAwaitDurable() = runTest {
+        var seen = -1L
+        val session = RipOnDemandSession(
+            backgroundScope,
+            RipOnDemandResolver(
+                requestRip = { RipJob(phase = "queued", jobId = "j") },
+                awaitDurable = { _, cap -> seen = cap; "https://rips/x.mp3" },
+                liveUrl = { it },
+            ),
+            log = { },
+        )
+        session.begin("sng_a", capMs = 275_000)
+        runCurrent()
+        assertEquals(275_000L, seen)
+    }
+
+    @Test
+    fun twoLoadsSameRow_onePost() = runTest {
+        var posts = 0
+        val gate = CompletableDeferred<RipJob>()
+        val trace = mutableListOf<String>()
+        val session = RipOnDemandSession(
+            backgroundScope,
+            RipOnDemandResolver(requestRip = { posts++; gate.await() }, awaitDurable = { _, _ -> "u" }, liveUrl = { it }),
+            log = { trace += it },
+        )
+        val load = session.begin("sng_a", via = "load", gen = 7)
+        val again = session.begin("sng_a", via = "load", gen = 7) // a second load of the same row while in flight
+        runCurrent()
+        assertTrue(load === again)
+        assertEquals(1, posts)
+        assertEquals(2, trace.size)
+        assertTrue(trace[0], trace[0].contains("via=load gen=7 joined=0"))
+        assertTrue(trace[1], trace[1].contains("joined=1"))
+    }
+
+    @Test
+    fun retryInPlace_rePosts() = runTest {
+        var posts = 0
+        val gate = CompletableDeferred<RipJob>()
+        val session = RipOnDemandSession(
+            backgroundScope,
+            RipOnDemandResolver(requestRip = { posts++; gate.await() }, awaitDurable = { _, _ -> "u" }, liveUrl = { it }),
+            log = { },
+        )
+        val first = session.begin("sng_a", via = "load", gen = 1)
+        runCurrent()
+        val retry = session.begin("sng_a", via = "retry", gen = 2, reResolve = true)
+        runCurrent()
+        assertEquals(2, posts)
+        assertTrue(first.isCancelled)
+        assertFalse(first === retry)
+    }
+
+    @Test
+    fun completedDurable_isJoinedByAFreshPlay_butReResolveRePosts() = runTest {
+        var posts = 0
+        val session = RipOnDemandSession(
+            backgroundScope,
+            RipOnDemandResolver(
+                requestRip = { posts++; RipJob(phase = "ready", url = "https://rips/a.mp3") },
+                awaitDurable = { _, _ -> "u" }, liveUrl = { it },
+            ),
+            log = { },
+        )
+        val first = session.begin("sng_a").also { runCurrent(); it.await() }
+        // ⏮ restart / cascade-halt restart of a row whose durable url is known: no second POST.
+        assertTrue(session.begin("sng_a") === first)
+        runCurrent()
+        assertEquals(1, posts)
+        // Retry-in-place wants a fresh url: re-POSTs.
+        session.begin("sng_a", reResolve = true)
+        runCurrent()
+        assertEquals(2, posts)
+    }
+
+    @Test
+    fun completedLive_isNotJoinedByAFreshPlay() = runTest {
+        var posts = 0
+        val session = RipOnDemandSession(
+            backgroundScope,
+            RipOnDemandResolver(
+                requestRip = { posts++; RipJob(phase = "ripping", jobId = "j", streamUrl = "/hls/a/index.m3u8") },
+                awaitDurable = { _, _ -> "u" }, liveUrl = { it },
+            ),
+            log = { },
+        )
+        session.begin("sng_a").also { runCurrent(); it.await() }
+        session.begin("sng_a")
+        runCurrent()
+        assertEquals(2, posts)
     }
 }

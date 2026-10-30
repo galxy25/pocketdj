@@ -183,4 +183,28 @@ class MixAudioFocusTest {
         m.onBecomingNoisy()
         assertEquals(listOf("remotePause"), tr.calls)
     }
+
+    @Test fun parkAfterLongTransientLossDoesNotResignSoTheRegainStillResumes() {
+        val board = com.levi.pocketdj.playback.session.SessionSwitchboard(log = {})
+        val exo = object : com.levi.pocketdj.playback.session.TransportOwner {
+            override val engine = "exo"; override val hasSounded = true
+            override val sessionPlayer = com.levi.pocketdj.playback.session.fakePlayer(com.levi.pocketdj.playback.session.FakePlayerState())
+            override fun pauseForHandoff() {}
+        }
+        val mix = object : com.levi.pocketdj.playback.session.TransportOwner {
+            override val engine = "mix"; override val hasSounded = true
+            override val sessionPlayer = com.levi.pocketdj.playback.session.fakePlayer(com.levi.pocketdj.playback.session.FakePlayerState())
+            override fun pauseForHandoff() {}
+        }
+        board.register(exo); board.setOwner(mix)
+        tr.isOwner = true
+        startPlaying()
+        m.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)   // phone call
+        // 15 s later the park runnable fires (what MixGraph.parkRunnable does):
+        val resigned = MixIdleResign.resignIfIdle(board, mix, tr.mixWantsAudio, false, interruptionParked = m.interruptionParked, exoHasItem = true)
+        assertFalse(resigned)
+        tr.isOwner = board.isActive(mix)
+        m.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(listOf("remotePause", "remotePlay"), tr.calls)
+    }
 }

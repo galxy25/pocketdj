@@ -171,6 +171,10 @@ class SetlistSequencer(
     private val ripWindow = PlaybackRipWindow()
     private var ripReconcileQueued = false
     private var firstAudioPending = false
+
+    /** Q21: uid of the row whose start (resolve + load + first audio) is in flight; guards a duplicate load. */
+    private var startingUid: String? = null
+
     private var currentBackend = "none"
     private var startWindow: StartWindow? = null
     private var startCapJob: Job? = null
@@ -437,7 +441,7 @@ class SetlistSequencer(
 
     // ---- the ONE start funnel -----------------------------------------------------------
 
-    private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false) {
+    private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false, reResolve: Boolean = false) {
         if (pausedByCascade) { pausedByCascade = false; publish() }
         if (inPlace) queue.getOrNull(index)?.let { skipTracker?.noteTrackRestarted(it.id) }
         resetTrackAudible()
@@ -447,12 +451,12 @@ class SetlistSequencer(
         // LAZY + assign + start: an inline-dispatching scope may run (and even recurse into) this
         // body before launch() returns; the handle must already be in place so a nested start
         // cancels THIS job, not a stale one.
-        val job = scope.launch(start = CoroutineStart.LAZY) { playCurrent(fresh, resumeAtMs, inPlace) }
+        val job = scope.launch(start = CoroutineStart.LAZY) { playCurrent(fresh, resumeAtMs, inPlace, reResolve) }
         playJob = job
         job.start()
     }
 
-    private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?, inPlace: Boolean) {
+    private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?, inPlace: Boolean, reResolve: Boolean) {
         if (!running || index >= queue.size) return
         // A job cancelled BEFORE it ran must do nothing - above all it must not claim a generation.
         if (!currentCoroutineContext().isActive) return
@@ -472,6 +476,7 @@ class SetlistSequencer(
         }
         waitingForLive = false
         firstAudioPending = true
+        startingUid = item.uid
         meter?.transitionBegan("start") // no-op inside an open advance/skip: a hop stays ONE transition
         beginStartWindow(item, gen)
         armResolveStall(gen)
@@ -520,6 +525,8 @@ class SetlistSequencer(
             resumeAtMs = resumeAtMs,
             index = at,
             count = queue.size,
+            reResolve = reResolve,
+            generation = gen,
         )
         log("[playback] track start song=${item.id} index=${at + 1}/${queue.size} backend=${source.backend}")
         currentBackend = source.backend
@@ -902,6 +909,14 @@ class SetlistSequencer(
     /** Start the current row from the top (cascade-halted deck, idle ▶). */
     fun startCurrent(): Boolean {
         if (!running || index >= queue.size) return false
+        // Q21 (BEFORE noteUserTransport, which clears the cascade halt): ▶ while this very row's start is still
+        // in flight must not load (and POST /rip) a second time.
+        if (!held && !pausedByCascade && firstAudioPending && startingUid == queue[index].uid) {
+            log("[playback] play during start - not reloading song=${queue[index].id}")
+            noteUserTransport()
+            discriminator.noteListenerIntent(true)
+            return true
+        }
         noteUserTransport()
         discriminator.noteListenerIntent(true)
         held = false
@@ -1335,6 +1350,7 @@ class SetlistSequencer(
         startedAnyRow = true
         lastLoadedId = item.id
         firstAudioPending = true
+        startingUid = item.uid
         currentBackend = slot.source.backend
         meter?.trackStarting(slot.source.backend)
         beginStartWindow(item, gen)
@@ -1459,7 +1475,7 @@ class SetlistSequencer(
         if (!running || index >= queue.size || held || pausedByCascade) return
         val at = engine?.positionMs ?: 0L
         NPLog.lane(NPLog.SUPERVISOR, "retry in place song=${queue[index].id} atMs=$at")
-        startPlayCurrent(fresh = false, resumeAtMs = if (at > 1000) at else null)
+        startPlayCurrent(fresh = false, resumeAtMs = if (at > 1000) at else null, reResolve = true)
     }
 
     /** L3: hop / advance through the cascade breaker. */
