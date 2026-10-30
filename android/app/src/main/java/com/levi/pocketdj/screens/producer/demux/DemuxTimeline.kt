@@ -19,7 +19,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MyLocation
-import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.IosShare
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Icon
@@ -119,6 +119,7 @@ fun DemuxTimeline(
     onSeek: (Int) -> Unit,
     onChordTap: (DemuxChordSegment) -> Unit,
     onSave: (() -> Unit)? = null,
+    saving: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val density = LocalDensity.current
@@ -189,7 +190,10 @@ fun DemuxTimeline(
                 modifier = Modifier.testTag("demux-zoom-in"),
             ) { Icon(Icons.Filled.ZoomIn, "Zoom in") }
             Box(Modifier.weight(1f))
-            if (onSave != null) IconButton(onClick = onSave, modifier = Modifier.testTag("demux-save")) { Icon(Icons.Filled.Save, "Save this demux") }
+            if (onSave != null) IconButton(onClick = onSave, enabled = !saving, modifier = Modifier.testTag("demux-save")) {
+                if (saving) androidx.compose.material3.CircularProgressIndicator(Modifier.width(18.dp).height(18.dp), strokeWidth = 2.dp)
+                else Icon(Icons.Filled.IosShare, "Save to Pocket DJ library")
+            }
             IconButton(
                 onClick = { onFollowChange(true); centerNonce++ },
                 modifier = Modifier.clip(RoundedCornerShape(50)).background(if (follow) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant).testTag("demux-follow"),

@@ -41,6 +41,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.screens.collections.AddToCollectionSheet
+import com.levi.pocketdj.screens.collections.AddToItem
+import com.levi.pocketdj.studio.demux.DemuxSave
 import com.levi.pocketdj.studio.demux.DemuxArtifactStatus
 import com.levi.pocketdj.studio.demux.DemuxChordSegment
 import com.levi.pocketdj.studio.demux.DemuxPhase
@@ -179,6 +182,8 @@ private fun LoadedView(graph: AppGraph, session: DemuxSession, store: com.levi.p
     chordDetail?.let { ChordDetailSheet(it) { chordDetail = null } }
 }
 
+private val demuxSaveScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
 @Composable
 private fun ReadyBody(graph: AppGraph, session: DemuxSession, store: com.levi.pocketdj.studio.demux.DemuxStore, source: DemuxSource, revision: Long, onChord: (DemuxChordSegment) -> Unit) {
     val duration by session.durationMs.collectAsState()
@@ -188,6 +193,12 @@ private fun ReadyBody(graph: AppGraph, session: DemuxSession, store: com.levi.po
     val runs by store.chordRuns.collectAsState()
     var follow by remember { mutableStateOf(true) }
     var clockMs by remember { mutableIntStateOf(0) }
+    var saving by remember { mutableStateOf(false) }
+    var addToId by remember { mutableStateOf<String?>(null) }
+    val audioFile by session.audioFile.collectAsState()
+    val ctx = LocalContext.current
+    var stillShown by remember { mutableStateOf(true) }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { stillShown = false } }
     LaunchedEffect(player) { while (true) { clockMs = (player.currentTimeSec * 1000).toInt(); delay(250) } }
     val doc = remember(revision, source.key) { store.document(source.key) }
 
@@ -202,7 +213,37 @@ private fun ReadyBody(graph: AppGraph, session: DemuxSession, store: com.levi.po
     DemuxTimeline(
         durationMs = duration, peaks = peaks, chords = doc?.chords.orEmpty(), player = player,
         follow = follow, onFollowChange = { follow = it }, onSeek = { session.seekMs(it) }, onChordTap = onChord,
+        saving = saving,
+        onSave = {
+            if (!saving) {
+                saving = true
+                val song = source.songId?.let { graph.catalogRepository.state.value.catalog?.songsById?.get(it) }
+                val appCtx = ctx.applicationContext
+                // Process-scoped so the save (and its feedback) survives leaving the screen / switching source.
+                demuxSaveScope.launch {
+                    val id = run {
+                        DemuxSave.save(
+                            audio = audioFile, title = source.displayName, durationMs = duration,
+                            burnedStems = source.songId?.let { graph.servicesGraph.burnStore.localStemFiles(it) },
+                            cachedStems = store.localStemFiles(source.key),
+                            bpm = song?.bpm, key = song?.key, camelot = song?.camelot,
+                            audioStore = graph.studioGraph.profileAudio,
+                        )
+                    }
+                    withContext(Dispatchers.Main) {
+                        saving = false
+                        if (id != null) {
+                            addToId = id
+                            if (!stillShown) android.widget.Toast.makeText(appCtx, "Saved to Pocket DJ library", android.widget.Toast.LENGTH_SHORT).show()
+                        } else if (audioFile != null) {
+                            android.widget.Toast.makeText(appCtx, "Couldn’t save this demux", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        },
     )
+    addToId?.let { id -> AddToCollectionSheet(item = AddToItem.Song(id), onDismiss = { addToId = null }) }
     // Chord status row.
     val chordRunning = source.key in runs
     when {
