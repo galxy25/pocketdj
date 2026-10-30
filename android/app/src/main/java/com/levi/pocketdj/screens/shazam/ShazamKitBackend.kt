@@ -37,6 +37,9 @@ interface ShazamStream {
     fun outcomes(): Flow<StreamOutcome>
 }
 
+/** Thrown by a [PcmSource] whose microphone could not be opened (held by a call, rejected params). */
+class MicUnavailableException : IllegalStateException("Microphone unavailable. Is another app or a call using it?")
+
 /** PCM16 mono source (AudioRecord in production). read returns bytes, <= 0 on failure/end. */
 interface PcmSource {
     val bufferSize: Int
@@ -67,7 +70,10 @@ object ShazamStreamDriver {
                         stream.outcomes().collect { results.trySend(it) }
                     }
                     val feeder = launch(ioDispatcher) {
-                        pcm.start()
+                        try { pcm.start() } catch (e: CancellationException) { throw e } catch (t: Throwable) {
+                            results.trySend(StreamOutcome.Error(t.message ?: "Microphone unavailable"))
+                            return@launch
+                        }
                         val buf = ByteArray(pcm.bufferSize.coerceAtLeast(1024))
                         var total = 0L
                         while (isActive) {
@@ -169,7 +175,14 @@ private class AudioRecordPcm : PcmSource {
         ShazamKitBackend.SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, size * 2,
     )
     override val bufferSize: Int get() = size
-    override fun start() { rec.startRecording() }
+    override fun start() {
+        if (rec.state != AudioRecord.STATE_INITIALIZED) {
+            rec.release()
+            throw MicUnavailableException()
+        }
+        rec.startRecording()
+        if (rec.recordingState != AudioRecord.RECORDSTATE_RECORDING) throw MicUnavailableException()
+    }
     override fun read(buffer: ByteArray): Int = rec.read(buffer, 0, buffer.size)
     override fun release() { runCatching { rec.stop() }; rec.release() }
 }
