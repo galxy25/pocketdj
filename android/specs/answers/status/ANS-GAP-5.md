@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-GAP-5 - Storage soft-cap prune + yieldBackgroundDownload
 

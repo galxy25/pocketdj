@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-GAP-6 — STU-3 stem carve
 

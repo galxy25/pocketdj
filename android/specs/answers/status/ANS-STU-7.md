@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-STU-7 Profile custom-audio source part A
 

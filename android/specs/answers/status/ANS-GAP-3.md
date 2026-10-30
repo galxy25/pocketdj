@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-GAP-3 status
 
