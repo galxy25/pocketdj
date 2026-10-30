@@ -305,6 +305,16 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         }
     }) { Text("Bake 5 min master") }
 
+    // ANS-BRW-2 emulator step: which source the rec-engine enroll secret provider resolves to right now (never the secret itself).
+    var enrollStatus by remember { mutableStateOf("Enroll: idle") }
+    OutlinedButton(onClick = {
+        val v = com.levi.pocketdj.data.config.RemoteEndpoints.recEngineEnroll()
+        val src = if (v == com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET) "compiled" else "doc"
+        enrollStatus = "Enroll: source=$src len=${v.length} head=${v.take(3)}"
+        android.util.Log.d("PdjVerify", enrollStatus)
+    }) { Text("Enroll: source") }
+    Text(enrollStatus, style = MaterialTheme.typography.bodySmall)
+
     // ANS-STU-5 emulator step: a 30-minute arrangement (2 tracks x 6 sequential 5-minute PCM16 clips), play + seek,
     // status line reports Java heap + native heap so the paged path can be compared across time/seek.
     var arr30Status by remember { mutableStateOf("Arr30: idle") }
