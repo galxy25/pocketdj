@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # ANS-PB-5 - PlaybackController pass (Q17 / Q21 / Q95 / Q89c)
 
@@ -6,7 +6,7 @@ state: in-progress
 - [x] Q21: begin(via, gen, reResolve) traced as `rip-begin song= via= gen= joined= reResolve=` (NPLog RIPREQ); joins an in-flight resolution unless PlayRequest.reResolve; watcher joins instead of beginning; sequencer startCurrent() (idle play) no-ops while the same uid's start is in flight; supervisorRetryInPlace sets reResolve
 - [x] Q95: MixIdleResign (park runnable resigns idle Mix owner); Mix eject with nothing parked resigns; PlaybackController.resume() calls yieldMixToExo() before play()
 - [x] Q89c: DirectPlaySampler feeds SkipTracker for non-sequencer plays (1 Hz tick in controller, noteReplacing before a foreign/run play, noteStopped on stop)
-- [ ] tests green, assembleDebug + assembleRelease
+- [x] tests green (5611 total, 0 failures; 15 new: CloudRowResolverTest +5, SequencerHealthTest +2, SessionSwitchboardTest +2, DirectPlaySamplerTest 6); assembleDebug + assembleRelease green
 
 ## Q21 trace / diagnosis
 Could not run the emulator (integrator owns it). Static analysis of the two `rip-post begin` lines ~20 ms apart:
@@ -17,8 +17,11 @@ Fix: one begin per load that joins an active entry; watcher uses join(); startCu
 
 ## Deviations / notes
 - Auto-DJ stop (stopAutoMix) is not hooked directly: it pauses both decks, which reaches onNowPlayingChanged -> 15 s park -> resign. Eject (nowPlayingDeck==null, nothing parked) resigns immediately.
-- Files touched outside the owned list: none besides PlayEvents-free changes; MixSessionPlayer.kt got the MixIdleResign object.
+- Files touched outside the owned list: none (MixSessionPlayer.kt got the MixIdleResign object). The startCurrent guard runs BEFORE noteUserTransport (which clears the cascade halt).
 - The "same uid+generation" duplicate-load guard is implemented at the entry point where duplicates actually occur (startCurrent), since every playCurrent bumps the generation.
 
 ## Questions for Levi
 None.
+
+## Summary
+Rip wait cap = item length + 60 s; exactly one POST /rip per row (join in-flight, retry-in-place re-resolves, duplicate idle-play suppressed, traced via=load|watch|retry); idle Mix resigns the session and resume() yields a held Mix to Exo; Browse singles/album queues now feed SkipTracker through DirectPlaySampler.

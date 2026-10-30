@@ -42,8 +42,13 @@ class DirectPlaySampler(private val tracker: SkipTracker) {
                 return@synchronized
             }
             if (cur == null || cur.songId != mediaId) {
-                followUp = if (cur != null) departed(cur) else null
-                active = Track(mediaId).also { it.positionMs = positionMs; it.durationMs = durationMs?.takeIf { d -> d > 0 } }
+                val leaving = if (cur != null) departed(cur) else null
+                val t = Track(mediaId).also { it.positionMs = positionMs; it.durationMs = durationMs?.takeIf { d -> d > 0 } }
+                active = t
+                followUp = {
+                    leaving?.invoke()
+                    tracker.samplePosition(t.songId, positionMs, t.durationMs)
+                }
                 return@synchronized
             }
             cur.positionMs = positionMs

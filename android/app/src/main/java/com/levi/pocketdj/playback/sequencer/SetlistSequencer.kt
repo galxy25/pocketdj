@@ -914,13 +914,16 @@ class SetlistSequencer(
     /** Start the current row from the top (cascade-halted deck, idle ▶). */
     fun startCurrent(): Boolean {
         if (!running || index >= queue.size) return false
-        noteUserTransport()
-        discriminator.noteListenerIntent(true)
-        // Q21: ▶ while this very row's start is still in flight must not load (and POST /rip) a second time.
-        if (!held && firstAudioPending && startingUid == queue[index].uid) {
+        // Q21 (BEFORE noteUserTransport, which clears the cascade halt): ▶ while this very row's start is still
+        // in flight must not load (and POST /rip) a second time.
+        if (!held && !pausedByCascade && firstAudioPending && startingUid == queue[index].uid) {
             log("[playback] play during start - not reloading song=${queue[index].id}")
+            noteUserTransport()
+            discriminator.noteListenerIntent(true)
             return true
         }
+        noteUserTransport()
+        discriminator.noteListenerIntent(true)
         held = false
         publish()
         startPlayCurrent()
