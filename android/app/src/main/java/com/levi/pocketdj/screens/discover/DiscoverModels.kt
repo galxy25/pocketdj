@@ -82,13 +82,31 @@ enum class DiscoverScope { SONGS, ALBUMS }
 object DiscoverAddWording {
     /** iOS `discoverError` for a rejected add. */
     const val ADD_FAILED = "Add failed — the import server didn’t accept the request."
-    const val ALBUM_NEEDS_SIGN_IN = "Sign in to Apple Music (Settings) to add albums"
 
     fun addHelp(noun: String, canAddToLibrary: Boolean, opensInMusic: Boolean = false): String = when {
         canAddToLibrary -> "Save this $noun to your Apple Music library and prepare your copy"
         opensInMusic -> "Open this $noun in Music and prepare your copy"
         else -> "Prepare your copy"
     }
+}
+
+/** The trailing control of a Discover song row (iOS `DiscoverRow.trailing`, in precedence order). */
+enum class DiscoverTrailing { PLAY, PAUSE, WORKING, ADDED, ADD }
+
+/** Pure row-state rules for Discover (iOS BrowseDiscover.swift `ripped` / `trailing`). */
+object DiscoverRowState {
+    /** Ripped = the server said so at search time OR the manifest has flipped since (add-completion refresh). */
+    fun ripped(hit: DiscoverHit, manifestIds: Set<String>): Boolean = hit.ripped == true || hit.id in manifestIds
+
+    /** Ripped wins over everything (play/pause); then an in-flight rip, then a recorded add, else the + control. */
+    fun trailing(ripped: Boolean, isPlayingThisSong: Boolean, working: Boolean, added: Boolean): DiscoverTrailing = when {
+        ripped && isPlayingThisSong -> DiscoverTrailing.PAUSE
+        ripped -> DiscoverTrailing.PLAY
+        working -> DiscoverTrailing.WORKING
+        added -> DiscoverTrailing.ADDED
+        else -> DiscoverTrailing.ADD
+    }
+
 }
 
 /**
@@ -177,4 +195,12 @@ object DiscoverMerge {
         year = album.releaseDate?.take(4)?.toIntOrNull(),
         releaseDate = album.releaseDate,
     )
+}
+
+/** Pure AmResult -> LibraryWrite mapping (no Music-User-Token degrades to a truthful "skipped"). */
+fun libraryWriteToken(r: com.levi.pocketdj.data.applemusic.AmResult<Unit>): String = when (r) {
+    is com.levi.pocketdj.data.applemusic.AmResult.Ok -> LibraryWrite.CONFIRMED_WEB
+    com.levi.pocketdj.data.applemusic.AmResult.NeedsUserToken -> LibraryWrite.SKIPPED_NO_CONNECTION
+    is com.levi.pocketdj.data.applemusic.AmResult.RateLimited -> LibraryWrite.failed("rate limited")
+    is com.levi.pocketdj.data.applemusic.AmResult.Failure -> LibraryWrite.failed(r.message)
 }
