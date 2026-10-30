@@ -21,9 +21,9 @@ class MixSessionStore(
     private val writer: VersionedJsonWriter = VersionedJsonWriter(file),
     private val clock: () -> Long = System::currentTimeMillis,
     private val scheduler: StoreScheduler = StoreScheduler.DEFAULT,
-    private val newId: () -> String = { UUID.randomUUID().toString().take(12) },
     /** Test seam: the document encoder (production = lenient JSON). */
     private val encoder: (MixSessionsDocument) -> String = { PdjJson.lenient.encodeToString(it) },
+    private val newId: () -> String = { UUID.randomUUID().toString().take(12) },
 ) : MixSessionRecorder {
 
     private val lock = Any()
