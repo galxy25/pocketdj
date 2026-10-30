@@ -23,4 +23,10 @@ class ManifestPermissionsTest {
         val svc = Regex("<service\\s[^>]*PlaybackService[^>]*>", RegexOption.DOT_MATCHES_ALL).find(xml)!!.value
         assertTrue(svc, Regex("foregroundServiceType=\"[^\"]*mediaPlayback[^\"]*\"").find(svc)!!.value.contains("location"))
     }
+
+    @Test fun applicationRequestsLargeHeap() {
+        // Answers verification: ~130-185 MB of live catalog state OOM'd the For You ranking on a 192 MB growth limit.
+        val app = Regex("<application\\s[^>]*>", RegexOption.DOT_MATCHES_ALL).find(xml)!!.value
+        assertTrue(app, "android:largeHeap=\"true\"" in app)
+    }
 }

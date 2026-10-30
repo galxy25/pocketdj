@@ -9,10 +9,13 @@ enum class SongVariant(val raw: String) {
 
     data class Parsed(val base: String, val variant: SongVariant)
 
+    private val suffix: String = "_$raw"
+
     companion object {
         fun parse(songId: String): Parsed? {
+            // Hot path (every catalog row in recs ranking / burn lookups): no per-call suffix allocation.
             for (v in entries) {
-                val suffix = "_" + v.raw
+                val suffix = v.suffix
                 if (!songId.endsWith(suffix)) continue
                 val base = songId.dropLast(suffix.length)
                 if (!base.startsWith("sng_")) return null
