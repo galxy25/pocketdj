@@ -111,6 +111,7 @@ object InThePocketScreenLogic {
     fun micEnabled(denied: Boolean, unavailable: Boolean, requesting: Boolean = false) =
         !(denied || unavailable || requesting)
 
+    const val LOADING_TIMEOUT_MS = 10_000L
     const val UNAVAILABLE_TEXT = "In the Pocket isn't available."
 }
 

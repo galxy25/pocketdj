@@ -23,7 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
-/** The seam to the listening-pockets settings (the services wave owns the real switch). */
+/** The seam to the listening-pockets settings (backed by the Settings-driven handler from CollectionsGraph). */
 interface PocketsOptIn {
     /** Pockets ride the rec engine's consent: without Recommendations the switch can't open the gate. */
     val recommendationsEnabled: StateFlow<Boolean>

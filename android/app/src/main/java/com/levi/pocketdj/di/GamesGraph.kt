@@ -148,65 +148,36 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
 
     // ---- In the Pocket (GM-7) ----
 
-    /** Debug stub gate (`-e pdj.pocketsStub true`): enabled + empty results, never networks. */
-    private val stubEnabled = MutableStateFlow(false)
-
-    private val debugBridge = object : PocketsBridge {
-        override val isEnabled: StateFlow<Boolean> = stubEnabled.asStateFlow()
-        override val results: StateFlow<ListeningPocketsResults?> = MutableStateFlow(ListeningPocketsResults.EMPTY)
-        override suspend fun refreshIfStale() = Unit
-        override fun flushSoon() = Unit
-        override var roundsProvider: ((String) -> List<com.levi.pocketdj.data.games.inthepocket.InThePocketRoundWire>)? = null
-        override suspend fun credentials(): PocketsCredentials? = null
-        override val installId: String get() = PlayHistoryStore.get(app.appContext).installId
-    }
+    /** Real-service seam state: bridge + opt-in arrive asynchronously from CollectionsGraph.startListeningPockets(). */
+    private val bridgeHolder = PocketsServiceHolder()
 
     /**
-     * The listening-pockets service seam. The services wave assigns a real bridge here BEFORE the
-     * first [inThePocket] access; until then it is [NoPocketsBridge] (debug builds: a stub that the
-     * `pdj.pocketsStub` extra turns on).
+     * The real listening-pockets bridge, assigned by CollectionsGraph.startListeningPockets() (debug and
+     * release alike; there is no stub path). Null until then: screens show a loading state.
      */
-    @Volatile var servicesBridge: PocketsBridge? = null
+    var servicesBridge: PocketsBridge?
+        get() = bridgeHolder.bridge.value
         set(value) {
-            field = value
-            servicesBridgeState.value = value
+            bridgeHolder.bridge.value = value
             // The store registered its rounds provider on whatever bridge existed at construction;
             // the real service needs it too.
             value?.roundsProvider = { installId -> inThePocket.uploadWires(installId) }
         }
-    /** Observable mirror of [servicesBridge] (Final review recheck): a screen opened before the async wiring recomposes onto it. */
-    private val servicesBridgeState = kotlinx.coroutines.flow.MutableStateFlow<PocketsBridge?>(null)
-    val servicesBridgeFlow: kotlinx.coroutines.flow.StateFlow<PocketsBridge?> get() = servicesBridgeState
 
+    /** Observable mirror of [servicesBridge]: a screen opened before the async wiring recomposes onto it. */
+    val servicesBridgeFlow: StateFlow<PocketsBridge?> get() = bridgeHolder.bridge
+
+    /** Never null: [NoPocketsBridge] (disabled, never networks) until the real bridge is wired. */
     val pocketsBridge: PocketsBridge
-        get() = servicesBridge ?: if (isDebuggable()) debugBridge else NoPocketsBridge
-
-    /**
-     * The opt-in seam (GM-8). The services wave assigns the real Settings-backed handler; until then
-     * debug builds flip the `pdj.pocketsStub` gate and release builds can only show the offer.
-     */
-    internal val debugRecsEnabled = kotlinx.coroutines.flow.MutableStateFlow(true)
+        get() = servicesBridge ?: NoPocketsBridge
 
     /** The real Settings-backed handler, assigned asynchronously by CollectionsGraph.startListeningPockets(). */
-    @Volatile var servicesOptIn: com.levi.pocketdj.screens.games.PocketsOptIn? = null
+    var servicesOptIn: com.levi.pocketdj.screens.games.PocketsOptIn?
+        get() = bridgeHolder.optInTarget
+        set(value) { bridgeHolder.setOptIn(value) }
 
-    /**
-     * Final review: a stable proxy. Screens capture THIS object once; it forwards to the real handler as soon as it
-     * exists, so an early "Turn on" can never hit the inert stub captured before the async wiring finished.
-     */
-    val pocketsOptIn: com.levi.pocketdj.screens.games.PocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
-        override val recommendationsEnabled: kotlinx.coroutines.flow.StateFlow<Boolean> get() = (servicesOptIn ?: stubOptIn).recommendationsEnabled
-        override fun choose(on: Boolean) = (servicesOptIn ?: stubOptIn).choose(on)
-    }
-
-    private val stubOptIn: com.levi.pocketdj.screens.games.PocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
-        // Debug builds: `pdj.pocketsRecsOff` extra turns the switch off so the "needs Recommendations"
-        // note is reachable; release builds without a services bridge never reach this view.
-        override val recommendationsEnabled: kotlinx.coroutines.flow.StateFlow<Boolean> get() = debugRecsEnabled
-        override fun choose(on: Boolean) {
-            if (isDebuggable()) stubEnabled.value = on
-        }
-    }
+    /** Stable proxy: screens capture THIS once; a choice made before the real handler exists is replayed onto it. */
+    val pocketsOptIn: com.levi.pocketdj.screens.games.PocketsOptIn get() = bridgeHolder.optIn
 
     /** Rounds upload half (acks in `pocketdj-in-the-pocket-sync.json`). */
     val roundsClient: InThePocketRoundsClient by lazy {
@@ -383,14 +354,13 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
         }
         return listOf(
         DeepLinkHandler { intent ->
-            if (isDebuggable() && (intent.getBooleanExtra(POCKETS_STUB_EXTRA, false) ||
-                    intent.getStringExtra(POCKETS_STUB_EXTRA) == "true")
-            ) {
-                stubEnabled.value = true
-            }
-            if (isDebuggable() && intent.hasExtra(POCKETS_RECS_OFF_EXTRA)) {
-                debugRecsEnabled.value = !(intent.getBooleanExtra(POCKETS_RECS_OFF_EXTRA, false) ||
-                    intent.getStringExtra(POCKETS_RECS_OFF_EXTRA) == "true")
+            // Debug alias of CollectionsGraph's `pdj.pocketsEnable`: real Settings writes, no stub.
+            if (isDebuggable() && intent.hasExtra(POCKETS_STUB_EXTRA)) {
+                val on = parsePocketsEnable(intent.extras?.get(POCKETS_STUB_EXTRA))
+                app.appScope.launch(Dispatchers.IO) {
+                    runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ANSWERED, true) }
+                    runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, on) }
+                }
             }
             if (isDebuggable() && wantsSeed(intent)) {
                 app.appScope.launch(Dispatchers.IO) { runCatching { scoreboard.seedFixture(replaceExisting = wantsFixture(intent)) } }
@@ -423,9 +393,15 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
             return out
         }
 
+        /** Shared parse for the debug pockets-enable extras: Boolean true, or the strings "true"/"1". */
+        internal fun parsePocketsEnable(v: Any?): Boolean = when (v) {
+            is Boolean -> v
+            is String -> v == "true" || v == "1"
+            else -> false
+        }
+
         const val ROUNDS_SYNC_FILE = "pocketdj-in-the-pocket-sync.json"
         const val POCKETS_STUB_EXTRA = "pdj.pocketsStub"
-        const val POCKETS_RECS_OFF_EXTRA = "pdj.pocketsRecsOff"
         const val PUZZLE_DECISIONS_FILE = "pocketdj-puzzle-decisions.json"
         const val PUZZLE_DECISIONS_SYNC_KEY = "puzzle-decisions"
         const val PUZZLE_SETTINGS_KEY = "pdj.puzzle.settings.v1"
@@ -441,4 +417,43 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
 
     private fun isDebuggable(): Boolean =
         (app.appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+}
+
+/**
+ * The async-wired pockets seam, pure so it is JVM-testable: an observable bridge (null = still loading)
+ * and a stable [PocketsOptIn] proxy that buffers a choice made before the real handler is assigned.
+ */
+class PocketsServiceHolder {
+    val bridge = MutableStateFlow<PocketsBridge?>(null)
+
+    @Volatile var optInTarget: com.levi.pocketdj.screens.games.PocketsOptIn? = null
+        private set
+    private var pendingChoice: Boolean? = null
+    private val lock = Any()
+    /** Observable mirror of the target's flag (false until wired): a collector sees a later-wired target. */
+    private val recsMirror = MutableStateFlow(false)
+    private val recsScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined)
+    private var recsJob: kotlinx.coroutines.Job? = null
+
+    val optIn: com.levi.pocketdj.screens.games.PocketsOptIn = object : com.levi.pocketdj.screens.games.PocketsOptIn {
+        override val recommendationsEnabled: StateFlow<Boolean> get() = recsMirror.asStateFlow()
+        override fun choose(on: Boolean) {
+            val target = synchronized(lock) {
+                optInTarget ?: run { pendingChoice = on; null }
+            }
+            target?.choose(on)
+        }
+    }
+
+    fun setOptIn(value: com.levi.pocketdj.screens.games.PocketsOptIn?) {
+        val replay = synchronized(lock) {
+            optInTarget = value
+            if (value != null) pendingChoice.also { pendingChoice = null } else null
+        }
+        recsJob?.cancel()
+        recsJob = if (value == null) null.also { recsMirror.value = false } else recsScope.launch {
+            value.recommendationsEnabled.collect { recsMirror.value = it }
+        }
+        if (replay != null) value?.choose(replay)
+    }
 }
