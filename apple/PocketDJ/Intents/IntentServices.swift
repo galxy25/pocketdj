@@ -300,7 +300,13 @@ final class IntentServices {
         let name = names.isEmpty ? "Mix crates" : names.joined(separator: " + ")
         guard let set = collections.playNow(songIds: ids, name: name, shuffle: shuffle, source: .mix),
               !set.tracks.isEmpty else { return 0 }
-        if mix.autoMixing { mix.stopAutoMix() }
+        // ONE audio owner after the hand-off (review MUST 1+2):
+        //  • the downloader's start-on-landing arm must die — otherwise the first song that
+        //    lands once the token heals starts Auto-DJ over Now Playing (`cancel` disarms the
+        //    continuation, stops the lanes and hides the bar);
+        //  • hand-played decks (running without Auto-DJ) pause too, not just an auto-mix.
+        mixDownloader?.cancel()
+        if mix.autoMixing { mix.stopAutoMix() } else if mix.isRunning { mix.pauseBoth() }
         DiagLog.shared.log("mixdl", "fallback → Now Playing: \(set.tracks.count) tracks from \(sources.count) crate(s)")
         startNowPlaying(set)
         return set.tracks.count

@@ -105,7 +105,10 @@ final class CollectionMixDownloader {
         switch issue {
         case .tokenRejected?:           return "· \(count) can’t rip — import server rejected this device’s token"
         case .noServer?:                return "· \(count) need an import server to rip"
-        case .ripServerRefused(let c)?: return "· \(count) waiting — import server error \(c), retrying"
+        case .ripServerRefused(let c)?:
+            return c == RipsStore.transportFailureStatus
+                ? "· \(count) waiting — can’t reach the import server, retrying"
+                : "· \(count) waiting — import server error \(c), retrying"
         case .ripsStalled?:             return "· \(count) ripping (stalled — re-requested)"
         case nil:                       return "· \(count) ripping"
         }
@@ -206,6 +209,9 @@ final class CollectionMixDownloader {
     @ObservationIgnored var catalogSongCount: (@MainActor () -> Int)?
     /// The device catalog is still loading (AppModel.state != .loaded) — picks the shortfall copy.
     @ObservationIgnored var catalogIsLoading: (@MainActor () -> Bool)?
+    /// Another audio owner (Now Playing's sequencer) is running. A BACKGROUND event — a landing,
+    /// a catalog re-resolve — must never start a mix over it (the one-audio-owner rule).
+    @ObservationIgnored var otherAudioActive: (@MainActor () -> Bool)?
     /// …a song's catalog length in seconds (ETA input; manifest `durationMs` is the fallback)…
     @ObservationIgnored var songLengthSeconds: (@MainActor (String) -> Double?)?
     /// …and a song's display title/artist for `BurnStore.burn`'s item tuple.
@@ -229,6 +235,14 @@ final class CollectionMixDownloader {
     /// appends ids as their manifest entries flip ready.
     @ObservationIgnored private var burnQueue: [String] = []
     @ObservationIgnored private var driveTask: Task<Void, Never>?
+    /// Bumped per drive/rip-lane task start: an exiting task only clears its OWN handle, so a
+    /// cancelled-then-restarted run can't have its new task's handle nilled by the old one
+    /// (which would let the next `driveTask == nil` check start a SECOND burn loop).
+    @ObservationIgnored private var driveGeneration = 0
+    @ObservationIgnored private var ripGeneration = 0
+    /// Max continuous time the burn lane parks on a rejected token before ending (it's cheap —
+    /// no network — but never unbounded). Test-dialable.
+    static var authParkMaxMs = 2 * 60 * 60 * 1000
     @ObservationIgnored private var ripPollTask: Task<Void, Never>?
     /// Ids the rip lane is still waiting on (instance state so a catalog re-resolution can feed
     /// newly-resolved rip-needing songs into a RUNNING lane).
@@ -331,7 +345,13 @@ final class CollectionMixDownloader {
         isActive = true
         installHooks()
         if !needsRip.isEmpty { startRipLane(needsRip) }
-        driveTask = Task { [weak self] in await self?.drive() }
+        startDrive()
+    }
+
+    private func startDrive() {
+        driveGeneration &+= 1
+        let gen = driveGeneration
+        driveTask = Task { [weak self] in await self?.drive(generation: gen) }
     }
 
     /// Resolve `sources` to their downloadable ids: per-source lists (studio/profile fenced) and
@@ -398,13 +418,18 @@ final class CollectionMixDownloader {
         }
         DiagLog.shared.log("mixdl", "catalog re-resolve: +\(fresh.count) member(s) now in the catalog (total \(totalCount) → \(totalCount + fresh.count))")
         if !isActive {
-            // The run had finished (everything resolvable was on disk) or never had work: re-seed
-            // through `begin`, which IS the resume path (the auto-mix arm survives — `begin`
-            // never touches it).
+            // The run had finished (everything resolvable was on disk) or never had work. Only
+            // re-seed when OUR auto-mix is still RUNNING (late members then feed it). A finished
+            // or exhausted mix is never revived by a catalog event — that could start Auto-DJ
+            // hours later over Now Playing; the next ▶ picks the late members up instead.
+            guard autoArmed, engine.autoMixing, engine.autoSourceLabel == autoLabel else {
+                updateShortfall(declared: declared)
+                return
+            }
             let srcs = sources
             sources = []
             begin(sources: srcs)
-            continueAutoMixIfArmed()
+            continueAutoMixIfArmed(allowRestart: false)
             return
         }
         orderedIds.append(contentsOf: fresh)
@@ -423,9 +448,9 @@ final class CollectionMixDownloader {
         downloadedCount = downloadedIds.count
         updateShortfall(declared: declared)
         if !newRips.isEmpty { startRipLane(newRips) }
-        if driveTask == nil { driveTask = Task { [weak self] in await self?.drive() } }
+        if driveTask == nil { startDrive() }
         recomputeETA()
-        continueAutoMixIfArmed()
+        continueAutoMixIfArmed(allowRestart: false)
     }
 
     /// Called when an auto-mix over this downloader's collection starts: seeds the append-dedupe
@@ -531,7 +556,7 @@ final class CollectionMixDownloader {
                   !self.downloadedIds.contains(songId), !self.burnQueue.contains(songId),
                   self.rips.cachedURL(songId) != nil else { return }
             self.burnQueue.append(songId)
-            if self.driveTask == nil { self.driveTask = Task { [weak self] in await self?.drive() } }
+            if self.driveTask == nil { self.startDrive() }
         }
     }
 
@@ -544,15 +569,22 @@ final class CollectionMixDownloader {
 
     // MARK: Drive (serial burn lane)
 
-    private func drive() async {
+    private func drive(generation: Int) async {
+        var parkedMs = 0
         while !Task.isCancelled {
             if !burnQueue.isEmpty, rips.authHoldoff {
                 // Rejected token: every presign is a guaranteed 401 — park the lane instead of
                 // burning 400 rejections in a row. `authHoldoff` lapses after the re-probe
                 // window (one burn then probes) and clears at once on a token change.
+                if parkedMs >= Self.authParkMaxMs {
+                    DiagLog.shared.log("warn", "mixdl burn lane: token still rejected after \(parkedMs / 60_000) min — lane ended (\(burnQueue.count) queued)")
+                    break
+                }
                 try? await RipsStore.sleep(ms: Self.idleWaitMs * 4)
+                parkedMs += Self.idleWaitMs * 4
                 continue
             }
+            parkedMs = 0
             if let id = nextBurnId() {
                 burnQueue.removeAll { $0 == id }
                 await burnOne(id)
@@ -577,7 +609,7 @@ final class CollectionMixDownloader {
                 break        // queue drained, no more rips coming, second sweep done
             }
         }
-        driveTask = nil
+        if generation == driveGeneration { driveTask = nil }
     }
 
     /// The next song to fetch: the first one the running mix will PLAY (live slot onward), else
@@ -600,7 +632,7 @@ final class CollectionMixDownloader {
             if Task.isCancelled { return }
         }
         let meta = songTitleArtist?(id) ?? (title: id, artist: "")
-        _ = await burns.burn([(id: id, title: meta.title, artist: meta.artist)])
+        _ = await burns.burn([(id: id, title: meta.title, artist: meta.artist)], automatic: true)
         if Task.isCancelled { return }
         if burns.localURL(forSong: id) != nil {
             // IN-PROCESS completion (macOS / already-fresh): the await WAS the download — sample
@@ -635,7 +667,9 @@ final class CollectionMixDownloader {
         ripPending.formUnion(ids)
         ripRequestDue = true
         if ripPollTask == nil {
-            ripPollTask = Task { [weak self] in await self?.ripAndPoll() }
+            ripGeneration &+= 1
+            let gen = ripGeneration
+            ripPollTask = Task { [weak self] in await self?.ripAndPoll(generation: gen) }
         }
     }
 
@@ -648,7 +682,7 @@ final class CollectionMixDownloader {
     ///     `ripStallTicks` ⇒ `.ripsStalled` + re-POST (server-side dedupe makes it safe);
     ///   • no server: `.noServer`, still poll the public manifest (another device may rip them).
     /// A flip moves the song to the burn lane and joins the running mix (it can stream now).
-    private func ripAndPoll() async {
+    private func ripAndPoll(generation: Int) async {
         let rips = self.rips
         if !rips.hasServer {
             DiagLog.shared.log("error", "mixdl rip lane: \(ripPending.count) tracks need rip but NO SERVER configured (settings.ripServerURL empty on this device)")
@@ -705,7 +739,7 @@ final class CollectionMixDownloader {
                 lastProgressTick = ticks
                 if observedLaneIssue == .ripsStalled { observedLaneIssue = nil }
                 if accepted { nextRequestTick = ticks + Self.ripStallTicks }
-                if driveTask == nil { driveTask = Task { [weak self] in await self?.drive() } }
+                if driveTask == nil { startDrive() }
             } else if accepted, !ripPending.isEmpty, ticks - lastProgressTick >= Self.ripStallTicks,
                       observedLaneIssue != .ripsStalled {
                 observedLaneIssue = .ripsStalled
@@ -720,7 +754,7 @@ final class CollectionMixDownloader {
         if !ripPending.isEmpty, ticks >= Self.ripPollMaxTicks {
             DiagLog.shared.log("warn", "mixdl rip lane gave up after \(ticks) ticks — \(ripPending.count) never ripped")
         }
-        ripPollTask = nil
+        if generation == ripGeneration { ripPollTask = nil }
     }
 
     // MARK: Landing → progress + progressive eligibility
@@ -744,7 +778,10 @@ final class CollectionMixDownloader {
     /// respects `autoNextToLoad`); if the mix already ended exhausted, re-arm it with the late
     /// arrivals so it continues instead of staying silent. Dedupe lives here (`appendedIds`) —
     /// the engine API is untouched.
-    private func continueAutoMixIfArmed() {
+    /// `allowRestart: false` (catalog events) only ever FEEDS a running mix — never revives an
+    /// exhausted one nor fires the zero-start. Landings keep the restart, but never over another
+    /// audio owner (`otherAudioActive`).
+    private func continueAutoMixIfArmed(allowRestart: Bool = true) {
         guard autoArmed, !sources.isEmpty, let resolve = resolveLoadables else { return }
         // Per-source pass (not a flatMap) so each appended row carries ITS crate's name; the
         // cross-source dedup keeps the flatMap's first-source-wins order.
@@ -769,7 +806,13 @@ final class CollectionMixDownloader {
                     placement: autoShuffled ? .random : .end)
                 appendedIds.insert(f.loadable.songId)
             }
-        } else if engine.autoEndedExhausted || autoStartPending {
+        } else if allowRestart, engine.autoEndedExhausted || autoStartPending {
+            // Now Playing owns the audio (e.g. the "Play in Now Playing" hand-off, or the user
+            // simply moved on): a background landing must not start Auto-DJ over it.
+            if otherAudioActive?() == true {
+                autoStartPending = false
+                return
+            }
             // A DJ hand-mixing owns the decks — a background landing must never seize them.
             // A playing deck (manual — `autoMixing` is false here) or any deck gesture since the
             // zero-start arm kills the pickup for good. (`autoEndedExhausted` needs no generation

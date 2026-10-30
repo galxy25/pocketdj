@@ -143,11 +143,22 @@ extension SettingsStore {
     /// Host-level identity of two server URLs (case-insensitive); falls back to exact string
     /// equality when either doesn't parse to a host.
     nonisolated static func sameServerHost(_ a: String, _ b: String) -> Bool {
-        let ta = a.trimmingCharacters(in: .whitespaces), tb = b.trimmingCharacters(in: .whitespaces)
+        let ta = a.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tb = b.trimmingCharacters(in: .whitespacesAndNewlines)
         if ta == tb { return true }
-        guard let ha = URL(string: ta)?.host?.lowercased(), let hb = URL(string: tb)?.host?.lowercased(),
-              !ha.isEmpty, !hb.isEmpty else { return false }
+        guard let ha = serverHost(ta), let hb = serverHost(tb) else { return false }
         return ha == hb
+    }
+
+    /// Lower-cased host of a typed server URL. Tolerates a missing scheme ("host:10000/rip" —
+    /// URL(string:) would read "host" as the scheme) and a trailing root dot ("a.ts.net.").
+    nonisolated static func serverHost(_ raw: String) -> String? {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        let withScheme = t.contains("://") ? t : "https://" + t
+        guard var h = URLComponents(string: withScheme)?.host?.lowercased(), !h.isEmpty else { return nil }
+        while h.hasSuffix(".") { h.removeLast() }
+        return h.isEmpty ? nil : h
     }
 
     /// Re-decode the on-disk doc after `CloudSyncService` pulled a newer cloud copy, apply it

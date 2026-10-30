@@ -871,6 +871,7 @@ struct PocketDJApp: App {
         }
         mixDownloader.catalogSongCount = { [weak app] in app?.songsById.count ?? 0 }
         mixDownloader.catalogIsLoading = { [weak app] in app.map { $0.state != .loaded } ?? false }
+        mixDownloader.otherAudioActive = { [weak setlistPlayer] in setlistPlayer?.isRunning == true }
         mixDownloader.songLengthSeconds = { [weak app] id in
             (app?.songsById[id]?.length).map { Double($0) / 1000 }   // catalog length is ms
         }
@@ -900,6 +901,9 @@ struct PocketDJApp: App {
             guard let app, let collections, settings?.syncConvertedPockets == true else { return }
             collections.syncConvertedCollections(with: app.indexPlaylists)
         }
+        // …and again once the pass reaches `.loaded` (the launch assign runs while still
+        // `.loading`; an unchanged refresh never assigns at all) so the shortfall copy flips.
+        app.onCatalogLoaded = { [weak mixDownloader] in mixDownloader?.catalogDidChange() }
         // Feed the app-scoped sequencer the live device/cloud mode (read fresh per track).
         setlistPlayer.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
         // Let the sequencer snapshot each run's Play-History origin (source-kind + set name) at

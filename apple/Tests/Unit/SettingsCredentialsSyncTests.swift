@@ -394,6 +394,13 @@ final class SettingsCredentialsSyncTests: XCTestCase {
         XCTAssertFalse(SettingsStore.sameServerHost("https://a.ts.net", "https://b.ts.net"))
         XCTAssertFalse(SettingsStore.sameServerHost("not a url", "also not"))
         XCTAssertTrue(SettingsStore.sameServerHost("same-junk", "same-junk"))
+        // Review LOW 7: newlines, scheme-less host:port, trailing root dot.
+        XCTAssertTrue(SettingsStore.sameServerHost("https://a.ts.net\n", "https://a.ts.net:10000"))
+        XCTAssertTrue(SettingsStore.sameServerHost("a.ts.net:10000", "https://a.ts.net"))
+        XCTAssertTrue(SettingsStore.sameServerHost("https://a.ts.net.", "https://A.TS.NET:10000/"))
+        XCTAssertFalse(SettingsStore.sameServerHost("a.ts.net:10000", "b.ts.net:10000"))
+        XCTAssertEqual(SettingsStore.serverHost("levis-imac.tail2e2bdf.ts.net:10000"), "levis-imac.tail2e2bdf.ts.net")
+        XCTAssertNil(SettingsStore.serverHost("  "))
     }
 
     /// Clearing a server PAIR (URL and token together) on another device is a legitimate

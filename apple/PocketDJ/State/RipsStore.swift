@@ -612,7 +612,11 @@ final class RipsStore {
         guard let requestUrl = comps.url else { throw RipError.noServer }
         var request = URLRequest(url: requestUrl)
         request.timeoutInterval = 12
-        applyAuth(&request, token: token)
+        // Capture the token the request is SENT with: the rejection must be charged to it, not
+        // to whatever the token is when the response returns (a re-typed / credsync-healed
+        // token mid-flight would otherwise be marked rejected by the old token's 401).
+        let tok = token
+        applyAuth(&request, token: tok)
         // SILENT-PARK INSTRUMENTATION (2026-09-13): plays occasionally hang with no error
         // and no advance despite the 12 s request timeout (Cameo 02:24Z / Weston 02:42Z —
         // both healed on retry once the phone's route to the server recovered). A start
@@ -628,7 +632,7 @@ final class RipsStore {
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
         DiagLog.shared.telemetry("ripreq", "presign end song=\(songId) status=\(status) elapsedMs=\(Int(-t0.timeIntervalSinceNow * 1000))")
-        noteAuthStatus(status, token: token)
+        noteAuthStatus(status, token: tok)
         if status == 401 || status == 403 { throw RipError.unauthorized }
         guard (200..<300).contains(status) else {
             throw RipError.serverError(nil)
@@ -1881,7 +1885,9 @@ final class RipsStore {
             let body: [String: Any] = ripFromCloud ? ["songIds": ids, "ripFromCloud": true] : ["songIds": ids]
             post.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, response) = try await session.data(for: post)
-            guard let http = response as? HTTPURLResponse else { return await ripCollectionFallback(ids) }
+            guard let http = response as? HTTPURLResponse else {
+                return BatchRipResult(total: ids.count, refusedStatus: Self.transportFailureStatus)
+            }
             // Older server without the batch endpoint → fall back to a per-song loop.
             if http.statusCode == 404 { return await ripCollectionFallback(ids) }
             noteAuthStatus(http.statusCode, token: tok)
@@ -1903,9 +1909,17 @@ final class RipsStore {
                 inflight: decoded.counts.inflight, unknown: decoded.counts.unknown,
                 total: decoded.counts.total)
         } catch {
-            return await ripCollectionFallback(ids)
+            // Transport / decode failure is NOT "older server": the per-song fallback would fire
+            // one POST /rip per id (~400 for a two-crate Mix) and report success, so the Mix rip
+            // lane would clear its issue and re-run that storm on every retry. Report a failed
+            // batch instead and let the caller back off. (Only a 404 means "no batch endpoint".)
+            DiagLog.shared.log("error", "ripCollection transport failure ids=\(ids.count) err=\((error as NSError).domain)#\((error as NSError).code)")
+            return BatchRipResult(total: ids.count, refusedStatus: Self.transportFailureStatus)
         }
     }
+
+    /// `BatchRipResult.refusedStatus` for a batch that never got an HTTP answer.
+    nonisolated static let transportFailureStatus = -1
 
     /// Per-song fallback when `/rip-collection` is unavailable: loop `requestRipIfNeeded`
     /// and synthesize counts from what we can observe. Classifies each song by the ACTUAL

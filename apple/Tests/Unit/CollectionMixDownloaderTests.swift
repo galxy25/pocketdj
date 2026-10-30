@@ -676,39 +676,42 @@ extension CollectionMixDownloaderTests {
         """.utf8)
         let burns = try MixBurnFixture.burnStore(ids: ["d1"], rips: rips)
         let engine = MixEngine(burns: burns)
-        var resolved = ["d1"]
+        var resolved = ["d1", "n0"]          // n0: resolvable but un-ripped → the run is active
         var loading = true
         let d = CollectionMixDownloader(engine: engine, burns: burns, rips: rips, transfers: nil)
         d.resolveRipIds = { _ in resolved }
         d.resolveLoadables = { _ in [] }
         d.songLengthSeconds = { _ in nil }
         d.songTitleArtist = { (title: $0, artist: "A") }
-        d.declaredMemberCount = { _ in 4 }
+        d.declaredMemberCount = { _ in 5 }
         d.catalogIsLoading = { loading }
 
         d.begin(source: .pocket("crate"))
-        XCTAssertFalse(d.isActive, "the one resolvable member is already on disk")
-        XCTAssertEqual(d.catalogShortfall?.total, 1)
+        XCTAssertTrue(d.isActive)
+        XCTAssertEqual(d.catalogShortfall?.total, 2)
         XCTAssertTrue(d.catalogStillLoading)
+        await wait { DownloaderStubURLProtocol.count(path: "/rip-collection") == 1 }
 
         // The catalog finishes loading: 2 more members resolve (one ripped, one not); 1 never does.
-        resolved = ["d1", "late-ripped", "late-unripped"]
+        resolved = ["d1", "n0", "late-ripped", "late-unripped"]
         loading = false
         d.catalogDidChange()
-        XCTAssertTrue(d.isActive, "late members re-armed the run")
-        XCTAssertEqual(d.totalCount, 3)
-        XCTAssertEqual(d.catalogShortfall?.declared, 4)
-        XCTAssertEqual(d.catalogShortfall?.total, 3)
+        XCTAssertTrue(d.isActive)
+        XCTAssertEqual(d.totalCount, 4)
+        XCTAssertEqual(d.catalogShortfall?.declared, 5)
+        XCTAssertEqual(d.catalogShortfall?.total, 4)
         XCTAssertFalse(d.catalogStillLoading, "catalog loaded ⇒ the honest 'not in this catalog' copy")
-        XCTAssertEqual(d.rippingCount, 1, "late-unripped went to the rip lane")
-        await wait { DownloaderStubURLProtocol.count(path: "/rip-collection") >= 1 }
+        XCTAssertEqual(d.rippingCount, 2, "late-unripped joined n0 in the rip lane")
+        await wait { DownloaderStubURLProtocol.count(path: "/rip-collection") == 2 }
+        XCTAssertEqual(DownloaderStubURLProtocol.count(path: "/rip-collection"), 2,
+                       "exactly one re-POST for the merged ids")
         let sent = DownloaderStubURLProtocol.lastBodyJSON(path: "/rip-collection")?["songIds"] as? [String]
-        XCTAssertEqual(sent, ["late-unripped"], "the rip lane requested exactly the late un-ripped member")
+        XCTAssertEqual(sent, ["n0", "late-unripped"], "the re-POST carries every still-pending id")
 
         // Last member lands in the catalog too → the shortfall clears on the next assign.
         resolved.append("late-3")
         d.catalogDidChange()
-        XCTAssertEqual(d.totalCount, 4)
+        XCTAssertEqual(d.totalCount, 5)
         XCTAssertNil(d.catalogShortfall)
         d.cancel()
     }
@@ -887,12 +890,170 @@ extension CollectionMixDownloaderTests {
     }
 }
 
+// MARK: - Adversarial-review follow-ups (fix/mix-automix-crate-stall)
+
+extension CollectionMixDownloaderTests {
+
+    /// Review SHOULD 5 (+ the one-audio-owner rule): an exhausted mix is never revived over Now
+    /// Playing — neither by a landing while another owner plays, nor by a catalog re-resolve.
+    func testExhaustedMixNeverRestartsOverNowPlayingOrFromCatalogEvents() async throws {
+        let rips = makeRips()
+        let engineBurns = try MixBurnFixture.burnStore(ids: ["e1", "e2", "e3"], rips: rips)
+        let engine = MixEngine(burns: engineBurns)
+        engine.ensureEngine()
+        try XCTSkipUnless(engine.isReady, "no audio device on this test host")
+        let dlBurns = try MixBurnFixture.burnStore(ids: ["e1"], rips: rips)
+        var eligible = [loadable("e1")]
+        var ripIds = ["e1", "e2"]
+        let d = CollectionMixDownloader(engine: engine, burns: dlBurns, rips: rips, transfers: nil)
+        d.resolveRipIds = { _ in ripIds }
+        d.resolveLoadables = { _ in eligible }
+        d.songLengthSeconds = { _ in nil }
+        d.songTitleArtist = { (title: $0, artist: "A") }
+        var nowPlaying = true
+        d.otherAudioActive = { nowPlaying }
+        d.begin(source: .pocket("pkt_test"))
+        engine.startAutoMix([item("e1")], shuffled: false, lead: 15, fade: 3, label: "L")
+        d.noteAutoStarted(initialIds: ["e1"], lead: 15, fade: 3, label: "L")
+        engine.skipToNext(fadeSeconds: 5)
+        XCTAssertTrue(engine.autoEndedExhausted)
+
+        // A landing while Now Playing owns the audio: no restart.
+        eligible.append(loadable("e2"))
+        d.simulateLandingForTesting("e2")
+        XCTAssertFalse(engine.autoMixing, "a landing must never start Auto-DJ over Now Playing")
+
+        // A catalog re-resolve (hours later) with Now Playing idle: still no revival.
+        nowPlaying = false
+        ripIds.append("e3")
+        eligible.append(loadable("e3"))
+        d.catalogDidChange()
+        XCTAssertFalse(engine.autoMixing, "a catalog event never revives an exhausted/finished mix")
+        engine.teardown()
+        d.cancel()
+    }
+
+    /// Review MUST 4: a transport failure on /rip-collection is a FAILED batch (the lane backs
+    /// off) — never the ~400-POST per-song fallback reported as success.
+    func testRipCollectionTransportFailureIsAFailedBatchNotAPerSongStorm() async {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FailingURLProtocol.self]
+        let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!, session: URLSession(configuration: config))
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        settings.ripServerURL = "https://imac.test"
+        settings.ripToken = "tok"
+        rips.settings = settings
+        FailingURLProtocol.reset()
+
+        let r = await rips.ripCollection(["n1", "n2", "n3"])
+        XCTAssertEqual(r.refusedStatus, RipsStore.transportFailureStatus)
+        XCTAssertFalse(r.unauthorized)
+        XCTAssertEqual(FailingURLProtocol.count(path: "/rip"), 0, "no per-song /rip fallback storm")
+        XCTAssertEqual(FailingURLProtocol.count(path: "/rip-collection"), 1)
+        XCTAssertFalse(rips.isAuthRejected, "a transport failure says nothing about the token")
+        XCTAssertEqual(CollectionMixDownloader.rippingLabel(count: 3, issue: .ripServerRefused(RipsStore.transportFailureStatus)),
+                       "· 3 waiting — can’t reach the import server, retrying")
+    }
+
+    /// The lane under a transport failure: issue set, backoff (bounded request count), no
+    /// "accepted" clear.
+    func testRipLaneBacksOffOnTransportFailure() async throws {
+        withRipLaneTunables(retryBase: 4, retryMax: 4)
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [FailingURLProtocol.self]
+        let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!, session: URLSession(configuration: config))
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        settings.ripServerURL = "https://imac.test"
+        rips.settings = settings
+        FailingURLProtocol.reset()
+        let burns = try MixBurnFixture.burnStore(ids: [], rips: rips)
+        let engine = MixEngine(burns: burns)
+        let d = makeDownloader(engine: engine, burns: burns, rips: rips, ripIds: ["n1", "n2"])
+        d.begin(source: .pocket("crate"))
+        await wait { d.laneIssue == .ripServerRefused(RipsStore.transportFailureStatus) }
+        XCTAssertEqual(d.laneIssue, .ripServerRefused(RipsStore.transportFailureStatus))
+        // 20 ticks at 10 ms with a 4-tick backoff ⇒ ~5 requests, never one per tick.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let n = FailingURLProtocol.count(path: "/rip-collection")
+        XCTAssertGreaterThanOrEqual(n, 2, "it keeps retrying")
+        XCTAssertLessThanOrEqual(n, 12, "…on a backoff, not every tick")
+        XCTAssertEqual(FailingURLProtocol.count(path: "/rip"), 0)
+        d.cancel()
+    }
+
+    /// Review MUST 3: a 401 that comes back for the OLD token after the token was changed
+    /// mid-flight must not mark the NEW token rejected.
+    func testInFlight401ForOldTokenDoesNotRejectTheNewToken() async throws {
+        let (rips, settings) = makeAuthedRips(token: "old-bad")
+        rips.setManifest(["p1": .init(key: "rips/p1.mp3", source: "digital", durationMs: 60_000)])
+        DownloaderStubURLProtocol.statusCodeByPath["/rips/presign"] = 401
+        DownloaderStubURLProtocol.onRequest = { path in
+            // The token is re-typed / credsync-healed while the presign is on the wire.
+            if path.hasSuffix("/rips/presign") { DispatchQueue.main.sync { MainActor.assumeIsolated { settings.ripToken = "new-good" } } }
+        }
+        addTeardownBlock { DownloaderStubURLProtocol.onRequest = nil }
+        _ = try? await rips.presignedURL(for: "p1")
+        XCTAssertEqual(settings.ripToken, "new-good")
+        XCTAssertFalse(rips.isAuthRejected, "the 401 is charged to the token it was SENT with")
+        settings.ripToken = "old-bad"
+        XCTAssertTrue(rips.isAuthRejected, "…which IS recorded as rejected")
+    }
+
+    /// Review SHOULD 6: the "still loading" copy flips once the catalog reaches `.loaded`, even
+    /// when no member moved (the unchanged-refresh path never re-assigns the catalog).
+    func testShortfallCopyFlipsWhenCatalogFinishesLoadingWithoutNewMembers() throws {
+        let rips = makeRips()
+        let burns = try MixBurnFixture.burnStore(ids: ["s1"], rips: rips)
+        let engine = MixEngine(burns: burns)
+        let d = CollectionMixDownloader(engine: engine, burns: burns, rips: rips, transfers: nil)
+        d.resolveRipIds = { _ in ["s1"] }
+        d.resolveLoadables = { _ in [] }
+        d.songLengthSeconds = { _ in nil }
+        d.songTitleArtist = { (title: $0, artist: "A") }
+        d.declaredMemberCount = { _ in 3 }
+        var loading = true
+        d.catalogIsLoading = { loading }
+        d.begin(source: .pocket("crate"))
+        XCTAssertTrue(d.catalogStillLoading)
+        loading = false
+        d.catalogDidChange()          // what AppModel.onCatalogLoaded triggers
+        XCTAssertEqual(d.catalogShortfall?.declared, 3)
+        XCTAssertFalse(d.catalogStillLoading, "loaded ⇒ honest 'not in this catalog' copy")
+        d.cancel()
+    }
+}
+
+/// Every request fails at the transport layer (no HTTP response) — counts paths.
+private final class FailingURLProtocol: URLProtocol {
+    private static var counts: [String: Int] = [:]
+    private static let lock = NSLock()
+    static func reset() { lock.lock(); counts = [:]; lock.unlock() }
+    static func count(path: String) -> Int { lock.lock(); defer { lock.unlock() }; return counts[path] ?? 0 }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        let path = request.url?.path ?? ""
+        Self.lock.lock(); Self.counts[path, default: 0] += 1; Self.lock.unlock()
+        if path.hasSuffix("manifest.json") {
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data("{}".utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
+    }
+}
+
 // MARK: - Stub (the ManifestStubURLProtocol idiom — manifest GET + rip server POSTs + audio GETs)
 
 private final class DownloaderStubURLProtocol: URLProtocol {
     static var manifestBody = Data("{}".utf8)
     static var bodyByPath: [String: Data] = [:]
     static var statusCodeByPath: [String: Int] = [:]
+    /// Fired (off-main, before the response) with the request path — mid-flight side effects.
+    static var onRequest: ((String) -> Void)?
     private static var counts: [String: Int] = [:]
     private static var lastBody: [String: Data] = [:]
     private static let lock = NSLock()
@@ -923,6 +1084,7 @@ private final class DownloaderStubURLProtocol: URLProtocol {
 
     override func startLoading() {
         let path = request.url?.path ?? ""
+        Self.onRequest?(path)
         Self.lock.lock()
         Self.counts[path, default: 0] += 1
         if let body = request.httpBodyStream.flatMap({ Self.readStream($0) }) ?? request.httpBody {
