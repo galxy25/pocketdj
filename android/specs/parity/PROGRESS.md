@@ -424,3 +424,13 @@ No FATAL EXCEPTION / ANR in logcat.
 - Note: pm clear wiped earlier burn fixtures; re-created via "W6 burn stemmed" (needs the rip server).
 - Device-only (not verifiable here): real stems for STU-7, real Apple Music write for GAP-3.
 - Open: Q116-Q118 in QUESTIONS.md.
+
+## Wave 7 (answers: SYNC-1, STU-8, GAP-8)
+- Merged all three into feat/android-answers (no conflicts). Status files set to merged.
+- Emulator (emulator-5556, debug APK, shots in pocketdj-answers-pkgs/_shots/wave7/; 0 FATAL EXCEPTION / 0 ANR; mock import server mock_rip.py via 10.0.2.2:8099; the second "device" for SYNC-1 is a secondary Android user on the same emulator, installed with `adb install --user 10`; the unpublished endpoints doc was injected into both apps' files/pocketdj-endpoints.json while offline so the launch refresh could not overwrite it):
+  - ANS-GAP-8 PASS: Discover album add (Wave7b Mock Album) -> POST /rip x2, Collections > Recently added lists both new tracks at the top, catalogAdd emitted (History > Collection > Activity "Added ... to PocketDJ"). Real-album artwork thumbnails are JVM-covered; mock rows have no art so the placeholder shows. Recognizer add is device-only (Shazam).
+  - ANS-STU-8 PASS: Producer > Demuxer > Hot [Skit] (burned, stemmed) > share-arrow saves original + 4 stems to the Pocket DJ source (files/profile-audio + stems/), Add-to sheet opens, new pocket W7Pocket created with the pdj_ id, pocket Play -> start-ok in 340 ms, Now Playing shows it.
+  - ANS-SYNC-1 PASS against the REAL green Lambda: toggle ON enrolls and pushes ("Pushed ... collections, play-history, settings-credentials"); device B links by code from first-run onboarding ("Welcome back, TestDJ" -> Restore) and the W7Pocket pocket appears; Delete account on the linked device ran the real cloud deletion (no "skipped" log) and the other device's next sync got 401 and stopped.
+  - FOUND+FIXED (integration): (1) first-run Link a device always said "Sync across devices is turned off" with sync default OFF; a valid link code now turns sync on (rolled back on failure/unlink), test added in LinkDeviceProbeTest. (2) `S3CloudDocDatabase.req` NPE (`base()!!`) when the endpoints doc loses profileSyncBase mid-pass; now an IOException. 
+  - Not verifiable here: real cross-device restore of profile-audio (pdj_ songs do not travel; pocket shows "0 songs" on B until the file exists), iOS adoption of capabilities.profileSyncEnroll, recognizer add.
+- Open: Q119 (publish endpoints doc), Q120 (no "profile not found" state after remote delete), Q121 (link code = sync opt-in). Q117 is satisfied by ANS-STU-8.

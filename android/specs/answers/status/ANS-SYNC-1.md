@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-SYNC-1 Profile sync go-live
 

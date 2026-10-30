@@ -255,6 +255,11 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             restoreCloud = { cloudSync.restoreForOnboarding() },
             holdPushes = { cloudSync.holdPushesForIdentityChange() },
             releasePushes = { cloudSync.releasePushHold() },
+            syncEnabled = { userSyncEnabled },
+            setSyncEnabled = { v ->
+                userSyncEnabled = v
+                app.appScope.launch(Dispatchers.IO) { app.settings.set(SyncSettings.CLOUD_SYNC_ENABLED, v) }
+            },
         )
     }
 

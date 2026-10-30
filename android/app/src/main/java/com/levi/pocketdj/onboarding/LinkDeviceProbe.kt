@@ -62,7 +62,15 @@ class S3LinkDeviceProbe(
     private val holdPushes: () -> Unit = {},
     /** Link rolled back / nothing to restore: pushes follow their normal gate again. */
     private val releasePushes: () -> Unit = {},
+    /**
+     * Wave 7: sync is opt-in (default OFF), so a fresh install's probe answered "turned off" and first-run
+     * linking could never work. Entering a link code IS the opt-in: [link] turns sync on (via
+     * [setSyncEnabled]) when it was off, and turns it back off if the link fails or is undone.
+     */
+    private val syncEnabled: () -> Boolean = { true },
+    private val setSyncEnabled: (Boolean) -> Unit = {},
 ) : CodeLinkProbe {
+    @Volatile private var enabledByLink = false
     private class PreLink(val secrets: com.levi.pocketdj.data.sync.ProfileSecretStore.Snapshot, val id: String)
 
     /** Identity to go back to if the user leaves the restore path after a successful link. */
@@ -103,6 +111,7 @@ class S3LinkDeviceProbe(
             val prev = PreLink(secrets.snapshot(), profileId())
             // Keep the ORIGINAL identity across a re-link: unlink() must go back to the device's own.
             val original = preLink ?: prev
+            if (!syncEnabled()) { setSyncEnabled(true); enabledByLink = true }
             holdPushes()
             secrets.adopt(ok.profileId, ok.secret)
             adoptProfileId(ok.profileId)
@@ -114,6 +123,7 @@ class S3LinkDeviceProbe(
                 clearUnauthorized()
                 // The rollback re-applies the previous identity; a previous link (if any) stays unlinkable.
                 if (preLink == null) releasePushes()
+                if (enabledByLink && preLink == null) { setSyncEnabled(false); enabledByLink = false }
             } else {
                 preLink = original
                 // Nothing in the cloud to pull first, so there is nothing a push could overwrite.
@@ -125,7 +135,7 @@ class S3LinkDeviceProbe(
 
     override suspend fun restore(): Boolean {
         val ok = restoreCloud() != null
-        if (ok) preLink = null // restored: this device now IS the linked profile; nothing to undo
+        if (ok) { preLink = null; enabledByLink = false } // restored: this device now IS the linked profile; nothing to undo
         return ok
     }
 
@@ -137,6 +147,7 @@ class S3LinkDeviceProbe(
             clearUnauthorized()
             releasePushes()
             preLink = null
+            if (enabledByLink) { setSyncEnabled(false); enabledByLink = false }
         }
     }
 
