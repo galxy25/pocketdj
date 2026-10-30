@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-SHELL-1 status (Q98 minimal background graph)
 - [x] di/StartupPlan.kt: StartTier/StartStep/StartupPlan/StartupLedger (pure, idempotent) + NpHeartbeatGate
