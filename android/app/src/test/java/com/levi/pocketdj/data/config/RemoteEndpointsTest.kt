@@ -232,7 +232,7 @@ class RemoteEndpointsTest {
         assertEquals(rotated, RemoteEndpoints.recEngineEnroll())
     }
 
-    @Test fun enrollCapabilityDoesNotAffectEndpointEquality() {
+    @Test fun enrollCapabilityChangesConfigEquality() {
         assertTrue(ok(green) != ok(greenWithEnroll("\"rotated-secret-0123456789abcdef\"")))
     }
 }

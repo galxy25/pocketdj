@@ -25,6 +25,10 @@
 // single `rec/state/` LIST. Someone who reverses the token can enroll up to the cap and no
 // further; already-enrolled profiles never touch that branch, so the cap can never lock the real
 // user out of their own data.
+// THREAT-MODEL NOTE (ANS-BRW-2): the secret is ALSO published in plaintext as
+// capabilities.recEngineEnroll in the public, unauthenticated /config/endpoints.json, so a curl is
+// now enough to read it (no binary extraction needed). Rotation therefore only invalidates LEAKED
+// OLD values; it does not limit who can enroll. MAX_PROFILES is the load-bearing flood guard.
 // SINGLE-USER TRADEOFF, deliberately noted for the multi-user revisit: the secret ships inside
 // the app binary (`Config.recEngineEnrollSecret`), so it is a CAPABILITY TOKEN, not a per-user
 // credential — anyone who extracts it can still enroll profiles. It raises the bar from "curl

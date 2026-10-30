@@ -18,7 +18,7 @@ try {
   console.error(`✗ ${file}: not valid JSON (${(e as Error).message})`);
   process.exit(1);
 }
-const v = validateEndpointDoc(raw);
+const v = validateEndpointDoc(raw, { strictCapabilities: true });
 if (!v.ok) {
   console.error(`✗ ${file}: REJECTED — ${v.reason}`);
   process.exit(1);

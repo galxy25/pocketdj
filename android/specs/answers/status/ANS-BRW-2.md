@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-BRW-2 Rec-engine enroll secret at runtime + Add-to uses RecSuggestionFilter
 
@@ -15,3 +15,13 @@ state: implemented
 ## Questions for Levi
 - Rotation recipe: deploy.sh with REC_ENROLL_SECRETS="old,new", publish endpoints doc with capabilities.recEngineEnroll=new (CONFIG_ONLY=1 scripts/deploy.sh prod), later drop old. Needs AWS deploy of both Lambdas to green (AWS_PROFILE=llc).
 - Deploy.sh now writes only REC_ENROLL_SECRETS (legacy var dropped from the env once redeployed).
+
+## Review
+
+fixes applied
+
+- MAJOR deploy.sh rotation recipe -> fixed. Recipe rewritten: the old secret (= the constant compiled into iOS Config.swift and pre-BRW-2 Android) must stay in REC_ENROLL_SECRETS until iOS reads capabilities.recEngineEnroll and old installs age out. deploy.sh now REFUSES a list that omits the Config.swift secret unless --force-drop-compiled. Regression test: scripts/lambda/rec-engine/test-deploy-guard.sh (3 cases).
+- MINOR endpointSchema runtime vs strict -> fixed. validateEndpointDoc(raw, {strictCapabilities}) drops a malformed capability at runtime (PWA now matches Android, doc kept); scripts/validate-endpoints.ts passes strict so deploy still rejects typos. Vitest cases added.
+- MINOR public plaintext secret threat model -> fixed (documented). index.mjs auth header records that the doc publishes the secret, rotation only invalidates leaked old values, MAX_PROFILES is the load-bearing guard. Levi should accept this knowingly.
+- NIT test name enrollCapabilityDoesNotAffectEndpointEquality -> fixed (renamed enrollCapabilityChangesConfigEquality). apply() still reports changed=true on rotation (left as is).
+- NIT suggestedTargetsDelegatesToRecSuggestionFilter -> rejected (optional; test guards equal output).
