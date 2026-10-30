@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-GAP-4 - COL-14 complete
 - [x] onPortableItems seam: already wired in CollectionsGraph.wireImported (importedSongs.addPortable); materializePortableItems now filters via PortableItems.isPortable.

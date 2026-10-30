@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-BRW-4
 - [x] "Find my listening pockets" SwitchRow (writes ANSWERED=true then ENABLED) shown when recs on, consent text when off, pockets sync error when on (polled 1s; syncError is a plain field)

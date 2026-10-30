@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 ANS-BRW-5: ShazamKit for Android 2.1.1 live recognition backend.
 - [x] AAR vendored at app/libs/shazamkit-android-release.aar; build.gradle.kts implementation(files) + gson + pickFirst libc++_shared.so (mediaplayback AAR also bundles it).

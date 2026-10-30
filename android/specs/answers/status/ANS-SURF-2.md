@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-SURF-2 status
 - [x] ShellActions.playSetlist(id, shuffle) (+ SetlistNotFound, SOURCE_SETLIST, frozen repeats kept, text cues dropped, onboarding veto)

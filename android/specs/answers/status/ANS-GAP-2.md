@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-GAP-2 - COL-9 complete: AM playlist sync reconcile (removals/reorders)
 
