@@ -84,4 +84,12 @@ class StudioSessionPlayerTest {
         assertFalse(board.yieldMixToExo())
         assertEquals(0, am.paused)
     }
+
+    @Test fun nowPlayingPauseIsSkippedWhileStudioOwnsTheSession() {
+        // Review fix: that pause is routed to StudioSessionPlayer, whose pause = remoteStop would kill the loop being started.
+        assertFalse(shouldPauseNowPlayingForStudio("studio"))
+        assertTrue(shouldPauseNowPlayingForStudio(null))
+        assertTrue(shouldPauseNowPlayingForStudio("exo"))
+        assertTrue(shouldPauseNowPlayingForStudio("mix"))
+    }
 }

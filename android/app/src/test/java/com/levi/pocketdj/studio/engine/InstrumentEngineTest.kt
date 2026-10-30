@@ -27,7 +27,9 @@ class InstrumentEngineTest {
             synthFactory = { FakeSynth(loadOk).also { voices.add(it) } },
             loadDispatcher = StandardTestDispatcher(t.testScheduler),
             nanoClock = { t.currentTime * 1_000_000L },
+            focus = { focusCalls++ },
         )
+        var focusCalls = 0
         suspend fun load(key: InstrumentKey = InstrumentKey.PIANO) = engine.loadInstrument(key, File("/bank.sf2"))
     }
 
@@ -289,6 +291,42 @@ class InstrumentEngineTest {
         r.engine.stopReplay("focus-loss")
         assertNull(r.engine.parkedReplay)
         assertFalse(r.engine.resumeReplayFromInterruption())
+    }
+
+    @Test fun multiStaffReplayEndsOnInterruptionInsteadOfResumingPartially() = runTest {
+        val r = Rig(this); r.load()
+        val score = listOf(StudioNoteEvent(0, 5_000, 60, 90))
+        r.engine.replay(score, extraStaffs = listOf(FakeSynth() to listOf(StudioNoteEvent(0, 5_000, 64, 90))))
+        advanceTimeBy(500)
+        assertFalse(r.engine.parkReplayForInterruption())
+        assertFalse("the arrangement must not silently shrink to the primary voice", r.engine.isReplayAudible)
+        assertNull(r.engine.parkedReplay)
+        assertFalse(r.engine.resumeReplayFromInterruption())
+    }
+
+    @Test fun transientLossSilencesLivePlayedNotesEvenWithoutAReplay() = runTest {
+        val r = Rig(this); r.load()
+        r.engine.noteOn(60)
+        advanceTimeBy(100)
+        assertTrue("held live notes count as audible for the interruption coordinator", r.engine.isAudibleForPark)
+        r.engine.parkForInterruption()
+        assertTrue(r.voices.single().hits.isNotEmpty())
+        assertFalse(r.engine.state.value.pressedNotes.isNotEmpty() && r.engine.isReplayAudible)
+        assertNull(r.engine.parkedReplay)
+    }
+
+    @Test fun liveNotesDuringAParkDropTheParkSoFocusIsNotHeldForever() = runTest {
+        val r = Rig(this); r.load()
+        var forgot = 0
+        r.engine.onUserTransport = { forgot++ }
+        r.engine.replay(listOf(StudioNoteEvent(0, 5_000, 60, 90)))
+        advanceTimeBy(500)
+        assertTrue(r.engine.parkReplayForInterruption())
+        advanceTimeBy(10_000)                                   // sink idle-stops (the park holds focus meanwhile)
+        forgot = 0
+        r.engine.noteOn(64)                                     // re-requests focus: no AUDIOFOCUS_GAIN will ever come
+        assertNull(r.engine.parkedReplay)
+        assertTrue(forgot >= 1)
     }
 
     @Test fun parkWithoutAReplayIsANoOp() = runTest {

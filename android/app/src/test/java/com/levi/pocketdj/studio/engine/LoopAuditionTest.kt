@@ -200,12 +200,75 @@ class LoopAuditionTest {
         assertFalse(sink.isRendering)
         assertEquals("lp_a", a.parked!!.id)
         assertFalse("focus must be HELD while parked, else AUDIOFOCUS_GAIN never arrives", "release" in ev)
-        assertTrue("session resigns while parked", "audible=false" in ev)
+        assertFalse("a park KEEPS session ownership (card + foreground service survive the call)", "audible=false" in ev)
         assertTrue(a.resumeFromInterruption())
         assertEquals("lp_a", a.playingId.value)
         assertTrue(sink.isRendering)
         assertNull(a.parked)
         assertEquals(200L, a.loopedFrames)
+    }
+
+    @Test fun userStopWhileParkedResignsTheSession() = runBlocking {
+        val ev = mutableListOf<String>()
+        val (a, _, _) = parkRig(ev)
+        a.play("lp_a", File("a.wav"), 200)
+        a.parkForInterruption(); ev.clear()
+        a.stop("focus-loss")
+        assertTrue("audible=false" in ev)
+    }
+
+    @Test fun secondTransientLossDuringResumeDecodeRepartsInsteadOfSounding() = runBlocking {
+        val ev = mutableListOf<String>()
+        val sink = FakeSink()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var slow = false
+        val decoded = PcmBuffer(44_100, 2, FloatArray(400) { 0.5f })
+        val a = LoopAudition({ sink }, { if (slow) gate.await(); decoded }, focus = { true }, focusRelease = { ev += "release" })
+        a.play("lp_a", File("a.wav"), 200)
+        a.parkForInterruption()
+        slow = true
+        val resume = async(Dispatchers.Default) { a.resumeFromInterruption() }
+        while (a.arming.value == null) kotlinx.coroutines.yield()
+        assertTrue("resume in flight counts as audible so the coordinator re-parks it", a.isAudible)
+        assertTrue(a.parkForInterruption())
+        assertEquals("lp_a", a.parked!!.id)
+        gate.complete(Unit); resume.await()
+        assertNull("the late decode must not start sounding mid-interruption", a.playingId.value)
+        assertFalse(sink.isRendering)
+        assertEquals("lp_a", a.parked!!.id)
+        assertFalse("focus stays held for the next gain", "release" in ev)
+    }
+
+    @Test fun loopBStartedWhileLoopAPlaysKeepsPlayingWhenTheGatedNowPlayingPauseIsSkipped() = runBlocking {
+        // Wired like StudioGraph: the NP pause (gated by shouldPauseNowPlayingForStudio) reaches the session owner = the studio port.
+        val sink = FakeSink()
+        lateinit var a: LoopAudition
+        val board = com.levi.pocketdj.playback.session.SessionSwitchboard(log = {})
+        val session = object : com.levi.pocketdj.playback.session.TransportOwner {
+            override val engine = "studio"
+            override val sessionPlayer: androidx.media3.common.Player get() = throw UnsupportedOperationException()
+            override val hasSounded = true
+            override fun pauseForHandoff() { a.stop("superseded") }
+        }
+        val decoded = PcmBuffer(44_100, 2, FloatArray(400) { 0.5f })
+        a = LoopAudition({ sink }, { decoded }, focus = {
+            if (shouldPauseNowPlayingForStudio(board.current?.engine)) session.pauseForHandoff()   // = port.remoteStop in prod
+            true
+        })
+        a.onAudible = { on -> if (on) board.setOwner(session) else board.resign(session) }
+        assertTrue(a.play("lp_a", File("a.wav"), 200))
+        assertEquals("studio", board.current?.engine)
+        assertTrue(a.play("lp_b", File("b.wav"), 200))
+        assertEquals("lp_b", a.playingId.value); assertTrue(sink.isRendering)
+        assertTrue(a.play("lp_b", File("b.wav"), 200))   // re-tap
+        assertEquals("lp_b", a.playingId.value); assertTrue(sink.isRendering)
+    }
+
+    @Test fun nowPlayingPauseIsSkippedOnlyWhileStudioOwnsTheSession() {
+        assertFalse(shouldPauseNowPlayingForStudio("studio"))
+        assertTrue(shouldPauseNowPlayingForStudio(null))
+        assertTrue(shouldPauseNowPlayingForStudio("exo"))
+        assertTrue(shouldPauseNowPlayingForStudio("am"))
     }
 
     @Test fun userStopWhileParkedClearsThePendingResumeAndReleasesFocus() = runBlocking {

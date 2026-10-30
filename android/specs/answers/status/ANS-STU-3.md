@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-STU-3 — Studio session owner + park/resume on transient focus loss
 
@@ -25,3 +25,15 @@ None.
 
 ## Summary
 Loop audition now owns the media session (engine "studio") and survives backgrounding; Loop, Multitrack, Instrument replay and Demux park on transient focus loss and resume on gain via one InterruptionCoordinator; permanent loss / user transport clears the park.
+
+## Review
+
+fixes applied
+
+- MAJOR loop focus lambda self-pause (StudioGraph) -> fixed: all Studio focus lambdas call `pauseNowPlayingForStudio()`, which skips the NP pause when `SwitchboardOwner.engine == "studio"` (check runs on Main, FIFO-ordered before the loop's setOwner launch, removing the first-start race). Tests: `loopBStartedWhileLoopAPlaysKeepsPlayingWhenTheGatedNowPlayingPauseIsSkipped`, `nowPlayingPauseIsSkippedOnlyWhileStudioOwnsTheSession`.
+- MAJOR park resigns session / card disappears -> fixed: a park no longer fires `onAudible(false)`; the card is reported for a parked loop (`StudioCard.parked`) as STATE_READY, playWhenReady kept, with `PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS` (ExoPlayer's own representation of transient loss; keeps the foreground service, unlike playWhenReady=false). Resign happens only on a real stop / clearParked / permanent loss / failed resume. New `onParkChanged` re-publishes the state. Tests: updated park test (no `audible=false` on park), `userStopWhileParkedResignsTheSession`.
+- MINOR live notes survive transient loss -> fixed: instrument coordinator entry uses `isAudibleForPark` (replay or held notes) and `parkForInterruption()` (parks replay, always `allNotesOff`). Test `transientLossSilencesLivePlayedNotesEvenWithoutAReplay`.
+- MINOR parkedReplay holds focus forever after live notes -> fixed: `ensureRunning` drops the park (and forgets "instrument" in the coordinator) when it makes a fresh focus request. Test `liveNotesDuringAParkDropTheParkSoFocusIsNotHeldForever`.
+- MINOR multi-staff partial resume -> fixed via the finding's second option: a multi-staff replay is stopped (not parked) on interruption. Test `multiStaffReplayEndsOnInterruptionInsteadOfResumingPartially`.
+- MINOR second transient loss during resume decode -> fixed: `isAudible` includes the in-flight resume; a re-park cancels the decode (generation bump) and stays parked. Test `secondTransientLossDuringResumeDecodeRepartsInsteadOfSounding`.
+- NIT test count -> recorded: 5301 at the reviewed tip, 5309 now (0 failures). Emulator steps (Home with loop playing + `dumpsys media_session`; transient-gain park/resume) still NOT run: emulator owned by the integrator; they remain the verification gate.

@@ -188,6 +188,9 @@ class InstrumentEngine(
         synchronized(lock) {
             if (!sinkRunning) {
                 val k = sink ?: sinkFactory().also { sink = it }
+                // Review fix: a fresh focus request (live notes played during a park) takes focus from the interrupter, so no
+                // AUDIOFOCUS_GAIN will ever resume the parked replay: drop the park instead of holding focus forever.
+                if (parkedReplay != null && !resumingFromPark) { parkedReplay = null; onUserTransport?.invoke() }
                 focus()
                 k.start(renderer)
                 // Final review: an Oboe stream that failed to open leaves isRendering=false; stay "not running" so the
@@ -536,6 +539,15 @@ class InstrumentEngine(
     /** Is a score replay audibly running (the InterruptionCoordinator's isAudible)? */
     val isReplayAudible: Boolean get() = _state.value.isReplaying
 
+    /** Anything sounding that a transient focus loss must silence: a replay OR live/held notes. */
+    val isAudibleForPark: Boolean get() = _state.value.isReplaying || _state.value.pressedNotes.isNotEmpty()
+
+    /** The coordinator's park: park a replay (if any) and ALWAYS silence live voices. */
+    fun parkForInterruption() {
+        parkReplayForInterruption()
+        allNotesOff()
+    }
+
     /**
      * Transient focus loss: remember the replay's events + score position, silence it and KEEP the focus request
      * (the idle sink-stop skips its release while parked) so AUDIOFOCUS_GAIN arrives.
@@ -543,6 +555,12 @@ class InstrumentEngine(
     fun parkReplayForInterruption(): Boolean {
         val args = lastReplay
         if (!_state.value.isReplaying || args == null) return false
+        if (args.hadExtraStaffs) {
+            // The overdub backing staffs are retired at stop and cannot be rebuilt: a partial resume would play a different
+            // arrangement, so a multi-staff replay ENDS on the interruption instead of resuming.
+            stopReplay(reason = "focus-transient-multistaff", userInitiated = false)
+            return false
+        }
         val pos = replayPositionMs() ?: 0
         parkedReplay = ParkedReplay(args, pos)
         stopReplay(reason = "focus-transient", userInitiated = false)
@@ -550,7 +568,7 @@ class InstrumentEngine(
         return true
     }
 
-    /** Focus regained: replay the parked score from where it stopped (a multi-staff backing resumes on the primary voice only). */
+    /** Focus regained: replay the parked score from where it stopped (a multi-staff replay is never parked: it ends). */
     fun resumeReplayFromInterruption(): Boolean {
         val p = parkedReplay ?: return false
         parkedReplay = null

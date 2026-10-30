@@ -12,7 +12,10 @@ import com.levi.pocketdj.playback.session.SessionSwitchboard
 import com.levi.pocketdj.playback.session.TransportOwner
 
 /** What the system card shows while a Studio voice (today: a Loop audition) sounds. */
-data class StudioCard(val id: String, val title: String, val subtitle: String)
+data class StudioCard(val id: String, val title: String, val subtitle: String, val parked: Boolean = false)
+
+/** Review fix: pause Now Playing for a Studio start unless the Studio already owns the session (that pause would stop the loop). */
+fun shouldPauseNowPlayingForStudio(ownerEngine: String?): Boolean = ownerEngine != "studio"
 
 /** What the session adapter needs from the Studio, so the mapping is JVM-testable with a fake. */
 interface StudioTransportPort {
@@ -81,6 +84,9 @@ class StudioSessionPlayer(
         invalidateState()
     }
 
+    /** Re-publish the card state (park / unpark) without touching ownership. */
+    fun refresh() = invalidateState()
+
     override fun pauseForHandoff() = port.handoff()
 
     override fun getState(): State {
@@ -90,6 +96,9 @@ class StudioSessionPlayer(
             .setPlaybackState(StudioPlayerStateMap.playbackState(c != null))
             .setPlayWhenReady(c != null, Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE)
         if (c == null) return b.build()
+        // A parked loop (transient focus loss) KEEPS its card and the foreground service, exactly as ExoPlayer represents it:
+        // still READY with playWhenReady, but suppressed.
+        if (c.parked) b.setPlaybackSuppressionReason(Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS)
         val item = MediaItemData.Builder("studio:${c.id}")
             .setMediaItem(StudioPlayerStateMap.toMediaItem(c))
             .setIsSeekable(false)
