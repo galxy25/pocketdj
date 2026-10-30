@@ -120,7 +120,6 @@ private fun DiscoverAlbumRow(
                             failed = !added
                         }
                     },
-                    enabled = DiscoverRowState.albumAddEnabled(),
                     modifier = Modifier.semantics { contentDescription = help },
                 ) { Icon(Icons.Filled.Add, contentDescription = help) }
             }

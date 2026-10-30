@@ -107,12 +107,6 @@ object DiscoverRowState {
         else -> DiscoverTrailing.ADD
     }
 
-    /**
-     * The album + needs only a TRACK source (catalog REST is developer-token only; `/album-tracks` is
-     * subscription-free). A row existing at all proves one answered, so it is enabled whenever results show;
-     * the Apple Music library write degrades to "skipped" without a Music-User-Token.
-     */
-    fun albumAddEnabled(hasAnyTrackSource: Boolean = true): Boolean = hasAnyTrackSource
 }
 
 /**
@@ -201,4 +195,12 @@ object DiscoverMerge {
         year = album.releaseDate?.take(4)?.toIntOrNull(),
         releaseDate = album.releaseDate,
     )
+}
+
+/** Pure AmResult -> LibraryWrite mapping (no Music-User-Token degrades to a truthful "skipped"). */
+fun libraryWriteToken(r: com.levi.pocketdj.data.applemusic.AmResult<Unit>): String = when (r) {
+    is com.levi.pocketdj.data.applemusic.AmResult.Ok -> LibraryWrite.CONFIRMED_WEB
+    com.levi.pocketdj.data.applemusic.AmResult.NeedsUserToken -> LibraryWrite.SKIPPED_NO_CONNECTION
+    is com.levi.pocketdj.data.applemusic.AmResult.RateLimited -> LibraryWrite.failed("rate limited")
+    is com.levi.pocketdj.data.applemusic.AmResult.Failure -> LibraryWrite.failed(r.message)
 }

@@ -155,11 +155,12 @@ private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: s
     val adds by addsState.collectAsState()
     val added = addedLocal || adds.entries.any { it.songId == hit.id }
     var failed by remember(hit.id) { mutableStateOf(false) }
+    var playError by remember(hit.id) { mutableStateOf<String?>(null) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth()
             // Long-press on a RIPPED row: Play Next / Play Last into the running queue (iOS rowMenu).
-            .combinedClickable(enabled = ripped, onClick = {}, onLongClick = { menu = true })
+            .combinedClickable(enabled = ripped && queueRunning, onClick = {}, onLongClick = { menu = true })
             .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         DiscoverArt(hit.artworkUrl ?: hit.albumArtworkUrl, 48)
@@ -195,10 +196,10 @@ private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: s
                     hit.id, hit.title, hit.artist.ifBlank { null }, hit.durationMs?.toLong(),
                 )
                 DropdownMenuItem(text = { Text("Play Next") }, onClick = {
-                    menu = false; appGraph.shellGraph.shellActions.enqueueSong(item, next = true)
+                    menu = false; appGraph.playbackGraph.sequencer.insertNextInQueue(listOf(item))
                 })
                 DropdownMenuItem(text = { Text("Play Last") }, onClick = {
-                    menu = false; appGraph.shellGraph.shellActions.enqueueSong(item, next = false)
+                    menu = false; appGraph.playbackGraph.sequencer.appendToQueue(listOf(item))
                 })
             }
         }
@@ -213,7 +214,23 @@ private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: s
                             when {
                                 pausing -> pc.pause()
                                 playingThis -> pc.resume()
-                                else -> pc.play(hit.id, queueAlbumContext = false)
+                                else -> {
+                                    playError = null
+                                    val inCatalog = appGraph.catalogRepository.state.value.catalog?.songsById?.containsKey(hit.id) == true
+                                    if (!inCatalog) {
+                                        // Not in the merged catalog: carry the hit's own title/artist (iOS rips.play(song)).
+                                        pc.playQueue(listOf(com.levi.pocketdj.playback.QueuePlan.QueueEntry(
+                                            hit.id, title = hit.title, artist = hit.artist.ifBlank { null },
+                                            lengthMs = hit.durationMs?.toLong(),
+                                        )))
+                                    } else {
+                                        playError = when (val o = pc.play(hit.id, queueAlbumContext = false)) {
+                                            is com.levi.pocketdj.playback.PlayOutcome.NotPlayable -> "Not playable right now (no import server or recording in progress)"
+                                            is com.levi.pocketdj.playback.PlayOutcome.Failed -> o.message
+                                            else -> null
+                                        }
+                                    }
+                                }
                             }
                         }
                     }) {
@@ -242,6 +259,12 @@ private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: s
                 ) { Icon(Icons.Filled.Add, contentDescription = help) }
             }
         }
+    }
+    playError?.let {
+        Text(
+            it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(start = 72.dp, end = 16.dp),
+        )
     }
     if (failed) {
         Text(

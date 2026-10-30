@@ -422,12 +422,8 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
     }
 
     private val discoverLibrary = object : com.levi.pocketdj.screens.discover.DiscoverLibraryPort {
-        private fun token(r: com.levi.pocketdj.data.applemusic.AmResult<Unit>) = when (r) {
-            is com.levi.pocketdj.data.applemusic.AmResult.Ok -> com.levi.pocketdj.screens.discover.LibraryWrite.CONFIRMED_WEB
-            com.levi.pocketdj.data.applemusic.AmResult.NeedsUserToken -> com.levi.pocketdj.screens.discover.LibraryWrite.SKIPPED_NO_CONNECTION
-            is com.levi.pocketdj.data.applemusic.AmResult.RateLimited -> com.levi.pocketdj.screens.discover.LibraryWrite.failed("rate limited")
-            is com.levi.pocketdj.data.applemusic.AmResult.Failure -> com.levi.pocketdj.screens.discover.LibraryWrite.failed(r.message)
-        }
+        private fun token(r: com.levi.pocketdj.data.applemusic.AmResult<Unit>) =
+            com.levi.pocketdj.screens.discover.libraryWriteToken(r)
         override suspend fun addSong(appleMusicId: String) =
             token(app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.SONGS, listOf(appleMusicId)))
         override suspend fun addAlbum(appleMusicId: String) =

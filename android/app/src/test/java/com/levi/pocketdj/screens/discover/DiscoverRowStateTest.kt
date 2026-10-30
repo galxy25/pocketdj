@@ -33,7 +33,14 @@ class DiscoverRowStateTest {
         assertEquals(DiscoverTrailing.ADD, DiscoverRowState.trailing(false, true, false, false))
 
     @Test fun albumAddEnabledWithoutSignIn() {
-        assertTrue(DiscoverRowState.albumAddEnabled())
+        assertEquals(LibraryWrite.SKIPPED_NO_CONNECTION,
+            libraryWriteToken(com.levi.pocketdj.data.applemusic.AmResult.NeedsUserToken))
         assertEquals("Prepare your copy", DiscoverAddWording.addHelp("album", canAddToLibrary = false))
+    }
+
+    @Test fun libraryWriteTokenMapsEveryResult() {
+        assertEquals(LibraryWrite.CONFIRMED_WEB, libraryWriteToken(com.levi.pocketdj.data.applemusic.AmResult.Ok(Unit)))
+        assertEquals(LibraryWrite.SKIPPED_NO_CONNECTION, libraryWriteToken(com.levi.pocketdj.data.applemusic.AmResult.NeedsUserToken))
+        assertEquals(LibraryWrite.failed("boom"), libraryWriteToken(com.levi.pocketdj.data.applemusic.AmResult.Failure(500, "boom")))
     }
 }

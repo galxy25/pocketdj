@@ -128,16 +128,7 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                     }
                 }
             },
-        ).also {
-            it.mixFacade = app.mixGraph.mixFacade
-            it.queueSink = { items, next ->
-                val seq = app.playbackGraph.sequencer
-                if (!seq.isRunning) false else {
-                    if (next) seq.insertNextInQueue(items) else seq.appendToQueue(items)
-                    true
-                }
-            }
-        } // MIX-16: the Mix drives Auto-Mix actions
+        ).also { it.mixFacade = app.mixGraph.mixFacade } // MIX-16: the Mix drives Auto-Mix actions
     }
 
     private fun mediaCandidates(kinds: Set<MediaCandidate.Kind>): List<MediaCandidate> {

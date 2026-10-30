@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-BRW-1 Discover: Play on ripped rows; serverless album adds
 
@@ -9,8 +9,7 @@ state: implemented
 - [x] Tests: DiscoverRowStateTest (6), DiscoverAddControllerTest +1
 
 ## Files outside owned set (minimal, additive)
-- shell/ShellActions.kt: `queueSink` + `enqueueSong(item, next)`
-- di/ShellGraph.kt: wires queueSink to the sequencer insertNext/append
+- (none after review: ShellActions/ShellGraph seam removed; row calls sequencer directly)
 
 ## Deviations
 - iOS "Add to Catalog" backfill menu item and AddToPlaylistMenu not ported (out of scope).
@@ -21,3 +20,11 @@ Ripped Discover rows play/pause via PlaybackController.play; long-press Play Nex
 
 ## Questions for Levi
 None.
+
+## Review
+fixes applied
+- MINOR ripped-row play metadata/feedback -> fixed: songs missing from the merged catalog play via playQueue with a QueueEntry carrying hit title/artist/length; catalog songs use play() and NotPlayable/Failed now show an inline error under the row. PlaybackController untouched.
+- MINOR ShellGraph/ShellActions hot-file seam -> fixed: reverted both; row calls sequencer.insertNextInQueue/appendToQueue directly (as PlayedList does).
+- MINOR weak tests -> fixed: BrowseGraph token map extracted to pure `libraryWriteToken`, tested for Ok/NeedsUserToken/Failure; dead `albumAddEnabled(hasAnyTrackSource)` removed. Not done: Compose UI wiring tests (no Compose test harness in unit suite); ShellActions.enqueueSong test moot (removed).
+- NIT long-press/ripple on non-actionable rows -> fixed: combinedClickable enabled only when ripped && queueRunning. Phase caption on spinner not added.
+Tests: 5281 passed, 0 failed (+1).
