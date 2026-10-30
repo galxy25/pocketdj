@@ -196,6 +196,8 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         seq.outcomes = outcomes
         // PB-5: the History choke point arms the tracker; the sequencer feeds samples + advance-aways.
         seq.skipTracker = skipTracker
+        // Q89c: Browse singles / album queues (not sequencer-owned) feed the same tracker.
+        app.playbackController.directSampler = com.levi.pocketdj.playback.outcome.DirectPlaySampler(skipTracker)
         // Off-main: the store reads the (up to 20k-row) log from disk on first touch.
         app.appScope.launch(kotlinx.coroutines.Dispatchers.Default) {
             PlayHistoryStore.get(

@@ -114,4 +114,36 @@ class SessionSwitchboardTest {
         board.setOwner(mix); assertFalse(board.exoFrontsSession())
         board.yieldMixToExo(); assertTrue(board.exoFrontsSession())
     }
+
+    @Test fun idleMixResignHandsRemotePlayToExo() {
+        val exo = Owner("exo"); val mix = Owner("mix")
+        board.register(exo)
+        board.setOwner(mix)
+        // Active Mix wants audio / is recording: the park runnable must not resign.
+        assertFalse(com.levi.pocketdj.mix.service.MixIdleResign.resignIfIdle(board, mix, mixWantsAudio = true, keepAlive = false))
+        assertFalse(com.levi.pocketdj.mix.service.MixIdleResign.resignIfIdle(board, mix, mixWantsAudio = false, keepAlive = true))
+        assertSame(mix, board.current)
+        // Idle: the Mix gives the session back; a paused single (Exo) answers the remote play.
+        assertTrue(com.levi.pocketdj.mix.service.MixIdleResign.resignIfIdle(board, mix, mixWantsAudio = false, keepAlive = false))
+        assertNull(board.current)
+        assertTrue(board.exoFrontsSession())
+        assertSame(exo.sessionPlayer, board.sessionPlayer(exo.sessionPlayer))
+        // Already resigned / someone else owns: no-op.
+        board.setOwner(exo)
+        assertFalse(com.levi.pocketdj.mix.service.MixIdleResign.resignIfIdle(board, mix, mixWantsAudio = false, keepAlive = false))
+        assertSame(exo, board.current)
+        // The Mix re-claims on its next audio start.
+        board.setOwner(mix)
+        assertSame(mix, board.current)
+    }
+
+    @Test fun resumeYieldsAMixThatStillHoldsTheSession() {
+        val exo = Owner("exo"); val mix = Owner("mix")
+        board.register(exo)
+        board.setOwner(mix)
+        assertTrue(board.yieldMixToExo()) // what PlaybackController.resume() now does before play()
+        assertEquals(1, mix.paused)
+        assertTrue(board.exoFrontsSession())
+        assertFalse(board.yieldMixToExo()) // idempotent once handed back
+    }
 }

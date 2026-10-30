@@ -171,6 +171,12 @@ class SetlistSequencer(
     private val ripWindow = PlaybackRipWindow()
     private var ripReconcileQueued = false
     private var firstAudioPending = false
+
+    /** Q21: uid of the row whose start (resolve + load + first audio) is in flight; guards a duplicate load. */
+    private var startingUid: String? = null
+
+    /** Q21: the next [startPlayCurrent] must re-resolve (retry-in-place re-POSTs instead of joining). */
+    private var reResolveNext = false
     private var currentBackend = "none"
     private var startWindow: StartWindow? = null
     private var startCapJob: Job? = null
@@ -437,7 +443,8 @@ class SetlistSequencer(
 
     // ---- the ONE start funnel -----------------------------------------------------------
 
-    private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false) {
+    private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false, reResolve: Boolean = false) {
+        reResolveNext = reResolve
         if (pausedByCascade) { pausedByCascade = false; publish() }
         if (inPlace) queue.getOrNull(index)?.let { skipTracker?.noteTrackRestarted(it.id) }
         resetTrackAudible()
@@ -472,6 +479,9 @@ class SetlistSequencer(
         }
         waitingForLive = false
         firstAudioPending = true
+        startingUid = item.uid
+        val reResolve = reResolveNext
+        reResolveNext = false
         meter?.transitionBegan("start") // no-op inside an open advance/skip: a hop stays ONE transition
         beginStartWindow(item, gen)
         armResolveStall(gen)
@@ -520,6 +530,8 @@ class SetlistSequencer(
             resumeAtMs = resumeAtMs,
             index = at,
             count = queue.size,
+            reResolve = reResolve,
+            generation = gen,
         )
         log("[playback] track start song=${item.id} index=${at + 1}/${queue.size} backend=${source.backend}")
         currentBackend = source.backend
@@ -904,6 +916,11 @@ class SetlistSequencer(
         if (!running || index >= queue.size) return false
         noteUserTransport()
         discriminator.noteListenerIntent(true)
+        // Q21: ▶ while this very row's start is still in flight must not load (and POST /rip) a second time.
+        if (!held && firstAudioPending && startingUid == queue[index].uid) {
+            log("[playback] play during start - not reloading song=${queue[index].id}")
+            return true
+        }
         held = false
         publish()
         startPlayCurrent()
@@ -1335,6 +1352,7 @@ class SetlistSequencer(
         startedAnyRow = true
         lastLoadedId = item.id
         firstAudioPending = true
+        startingUid = item.uid
         currentBackend = slot.source.backend
         meter?.trackStarting(slot.source.backend)
         beginStartWindow(item, gen)
@@ -1459,7 +1477,7 @@ class SetlistSequencer(
         if (!running || index >= queue.size || held || pausedByCascade) return
         val at = engine?.positionMs ?: 0L
         NPLog.lane(NPLog.SUPERVISOR, "retry in place song=${queue[index].id} atMs=$at")
-        startPlayCurrent(fresh = false, resumeAtMs = if (at > 1000) at else null)
+        startPlayCurrent(fresh = false, resumeAtMs = if (at > 1000) at else null, reResolve = true)
     }
 
     /** L3: hop / advance through the cascade breaker. */

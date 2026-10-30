@@ -237,6 +237,30 @@ class PlaybackController(
 
     private val sequencerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
+    /** Q89c: samples/classifies audio the sequencer does not own (Browse singles, album queues); wired by PlaybackGraph. */
+    @Volatile var directSampler: com.levi.pocketdj.playback.outcome.DirectPlaySampler? = null
+    private var directSamplerJob: kotlinx.coroutines.Job? = null
+
+    /** 1 Hz, Main: feed [directSampler] from the engine while a NON-sequencer row sounds on ExoPlayer. */
+    private fun ensureDirectSampler() {
+        val sampler = directSampler ?: return
+        if (directSamplerJob?.isActive == true) return
+        directSamplerJob = sequencerScope.launch {
+            while (true) {
+                val c = controller
+                val direct = c != null && activeBackend == ActiveBackend.EXO && !sequencerOwnsPlayer && exoFronts()
+                val id = if (direct) c?.currentMediaItem?.mediaId?.takeIf { !it.startsWith("url:") } else null
+                if (id == null || c == null) {
+                    sampler.noteStopped()
+                } else {
+                    val dur = c.duration.takeIf { it > 0 && it != androidx.media3.common.C.TIME_UNSET }
+                    sampler.tick(id, c.currentPosition, dur, ended = c.playbackState == Player.STATE_ENDED)
+                }
+                kotlinx.coroutines.delay(1_000)
+            }
+        }
+    }
+
     /** The sequencer's Main scope, shared with the supervisor ticker (PlaybackGraph). */
     val sequencerScopeForHealth: CoroutineScope get() = sequencerScope
 
@@ -262,16 +286,16 @@ class PlaybackController(
         scope = scope,
         resolver = RipOnDemandResolver(
             requestRip = { id -> ripServer.requestRip(id) },
-            awaitDurable = { job -> awaitDurableRip(job) },
+            awaitDurable = { job, capMs -> awaitDurableRip(job, capMs) },
             liveUrl = { path -> liveRipUrl(path) },
             onQueued = { id -> withContext(Dispatchers.Main) { sequencer.notePlaybackRipQueued(id) } },
         ),
     ).also { RipOnDemandBridge.session = it }
 
-    /** Poll a queued rip to its durable url, bounded at 10 minutes (cancelled by a skip). */
-    private suspend fun awaitDurableRip(job: com.levi.pocketdj.data.rips.RipJob): String {
+    /** Poll a queued rip to its durable url, bounded at [capMs] = the row's length + 60 s (Q17; cancelled by a skip). */
+    private suspend fun awaitDurableRip(job: com.levi.pocketdj.data.rips.RipJob, capMs: Long): String {
         val jobId = job.jobId ?: throw java.io.IOException(job.error ?: "Rip did not start")
-        val deadline = System.currentTimeMillis() + RIP_WAIT_CAP_MS
+        val deadline = System.currentTimeMillis() + capMs
         while (true) {
             when (val outcome = ripServer.awaitReadyInteractive(jobId)) {
                 is RipWaitOutcome.Ready -> {
@@ -784,7 +808,11 @@ class PlaybackController(
             withContext(Dispatchers.Main) { amController?.play() ?: run { amMonitor.noteIntentionalPause(false) } }
             if (amController == null) appleMusicBackend?.resume()
         } else {
-            withController { it.play() }
+            // Q95: a Mix that still holds the session (even idle/parked) must not swallow this play.
+            withController {
+                com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
+                it.play()
+            }
         }
     }
 
@@ -816,6 +844,7 @@ class PlaybackController(
     suspend fun stop() {
         withContext(Dispatchers.Main) {
             cancelRipOnDemand()
+            directSampler?.noteStopped() // Q89c: checkpoint, never a skip
             sequencerOwnsPlayer = false
             sequencer.abandonRun() // the player teardown below is the stop
         }
@@ -1316,6 +1345,7 @@ class PlaybackController(
     ) {
         // Single-owner: hand audio to ExoPlayer, stopping the AM engine first.
         cancelRipOnDemand() // a foreign play retires the run's rip-on-demand wait
+        directSampler?.noteReplacing() // Q89c: the direct row it replaces gets its verdict (<50 % = skipped)
         playGeneration.incrementAndGet()
         urlRetriedFor = null
         stopAppleMusic()
@@ -1343,6 +1373,7 @@ class PlaybackController(
             it.prepare()
             it.play()
         }
+        withContext(Dispatchers.Main) { ensureDirectSampler() }
     }
 
     /** The sequencer's engine: loads ONLY the current row into ExoPlayer. */
@@ -1350,6 +1381,7 @@ class PlaybackController(
         override suspend fun load(request: PlayRequest) {
             (request.source as? AppleMusicSource)?.let { loadAppleMusic(request, it); return }
             val item = request.item
+            if (!sequencerOwnsPlayer) directSampler?.noteReplacing() // Q89c: a run's row replaces a direct single
             // A foreign play retires the sequencer's pending start (generation bump, published); if
             // that happens while we await the presign we must stand down, not load over it.
             val entryGeneration = sequencer.state.value.playGeneration
@@ -1396,7 +1428,17 @@ class PlaybackController(
                 sequencerOwnsPlayer = true
                 val resume = request.resumeAtMs
                 val rip = request.source as? RipOnDemandSource
-                if (rip != null) { ripSession.cancel(rip.songId); ripSession.begin(rip.songId) } // fresh resolve each load (retry-in-place re-POSTs); BEFORE the load: the data source joins this one
+                // Q21: BEFORE the load (the data source joins this one). Joins an in-flight resolution of the same
+                // row (one POST per row); retry-in-place (request.reResolve) re-POSTs for a fresh url.
+                if (rip != null) {
+                    ripSession.begin(
+                        rip.songId,
+                        capMs = com.levi.pocketdj.playback.session.RipWaitCap.capMs(item.lengthMs, song?.length),
+                        via = if (request.reResolve) "retry" else "load",
+                        gen = request.generation,
+                        reResolve = request.reResolve,
+                    )
+                }
                 withController {
                     com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
                     it.setMediaItems(listOf(mi), 0, resume ?: androidx.media3.common.C.TIME_UNSET)
@@ -1536,7 +1578,8 @@ class PlaybackController(
         ripWatchJob?.cancel()
         ripWatchJob = sequencerScope.launch {
             val result = try {
-                ripSession.begin(songId).await()
+                // The load already began this row's resolution: join it, never start a second POST (Q21).
+                (ripSession.join(songId) ?: ripSession.begin(songId, via = "watch", gen = entryGeneration)).await()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1623,10 +1666,6 @@ class PlaybackController(
         }
     }
 
-    private companion object {
-        /** A rip-on-demand row waits at most this long for its durable mp3 (a skip cancels it sooner). */
-        const val RIP_WAIT_CAP_MS = 600_000L
-    }
 }
 
 private suspend fun <T> ListenableFuture<T>.await(): T =

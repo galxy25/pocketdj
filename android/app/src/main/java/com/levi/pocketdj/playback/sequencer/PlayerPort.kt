@@ -14,6 +14,10 @@ data class PlayRequest(
     val resumeAtMs: Long?,
     val index: Int,
     val count: Int,
+    /** Q21: a retry-in-place wants a FRESH rip resolution (re-POST) instead of joining one in flight. */
+    val reResolve: Boolean = false,
+    /** Sequencer play generation that issued this request (trace + duplicate-load guard). */
+    val generation: Long = -1,
 )
 
 /** An arbitrary stream (jukebox Tune-In). */

@@ -25,6 +25,18 @@ sealed interface RipResolution {
     data class Live(val url: String, val jobId: String?) : RipResolution
 }
 
+/** Q17: how long a rip-on-demand row may wait for its durable mp3 - the song's own length plus slack. */
+object RipWaitCap {
+    /** Used when neither the queue item nor the catalog knows the length. */
+    const val FALLBACK_MS = 600_000L
+    const val SLACK_MS = 60_000L
+
+    fun capMs(itemLengthMs: Long?, catalogLengthMs: Long?): Long {
+        val base = itemLengthMs?.takeIf { it > 0 } ?: catalogLengthMs?.takeIf { it > 0 } ?: FALLBACK_MS
+        return base + SLACK_MS
+    }
+}
+
 /**
  * Rip-on-demand for a row that has no rip yet (iOS `RipsStore.ensureURL`): `POST /rip`; already-ready ->
  * durable url; a live stream available -> [RipResolution.Live]; else poll until the durable mp3 lands.
@@ -32,15 +44,18 @@ sealed interface RipResolution {
  */
 class RipOnDemandResolver(
     private val requestRip: suspend (songId: String) -> RipJob,
-    /** Polls the job to its durable url (suspends for as long as the rip takes; throws on a rip error). */
-    private val awaitDurable: suspend (job: RipJob) -> String,
+    /**
+     * Polls the job to its durable url (suspends for as long as the rip takes; throws on a rip error). [capMs]
+     * is the per-row wait cap (Q17: item length + [RipWaitCap.SLACK_MS]).
+     */
+    private val awaitDurable: suspend (job: RipJob, capMs: Long) -> String,
     /** Relative `/hls/<id>/index.m3u8` -> absolute playable url (server base + token). */
     private val liveUrl: suspend (streamPath: String) -> String,
     /** The server queued a playback rip (the session tracks it for the rip window). */
     private val onQueued: suspend (songId: String) -> Unit = {},
     private val log: (String) -> Unit = { NPLog.lane(NPLog.RIPREQ, it) },
 ) {
-    suspend fun resolve(songId: String): RipResolution {
+    suspend fun resolve(songId: String, capMs: Long = RipWaitCap.FALLBACK_MS + RipWaitCap.SLACK_MS): RipResolution {
         log("rip-post begin song=$songId")
         val job = requestRip(songId)
         log("rip-post end song=$songId phase=${job.phase} live=${if (job.streamUrl != null) 1 else 0}")
@@ -50,7 +65,7 @@ class RipOnDemandResolver(
         if (job.jobId != null) onQueued(songId)
         job.streamUrl?.let { return RipResolution.Live(liveUrl(it), job.jobId) }
         if (job.jobId == null) throw IOException(job.error ?: "Rip did not start")
-        return RipResolution.Durable(awaitDurable(job))
+        return RipResolution.Durable(awaitDurable(job, capMs))
     }
 }
 
@@ -61,20 +76,36 @@ class RipOnDemandResolver(
 class RipOnDemandSession(
     private val scope: CoroutineScope,
     private val resolver: RipOnDemandResolver,
+    private val log: (String) -> Unit = { NPLog.lane(NPLog.RIPREQ, it) },
 ) {
     private val inflight = ConcurrentHashMap<String, Deferred<RipResolution>>()
     /** Why the last resolution of a song failed: Media3 retries the load, and the retry must report the real cause. */
     private val failures = ConcurrentHashMap<String, Throwable>()
 
-    /** Start (or join) the resolution for [songId]; every other song's entry is dropped and cancelled. */
-    fun begin(songId: String): Deferred<RipResolution> {
+    /**
+     * Start (or join) the resolution for [songId]; every other song's entry is dropped and cancelled.
+     * Q21: an IN-FLIGHT resolution of the same song is joined (exactly one `POST /rip` per row) unless
+     * [reResolve] (retry-in-place wants a fresh url, so it re-POSTs). [via] / [gen] are trace only.
+     */
+    fun begin(
+        songId: String,
+        capMs: Long = RipWaitCap.FALLBACK_MS + RipWaitCap.SLACK_MS,
+        via: String = "load",
+        gen: Long = -1,
+        reResolve: Boolean = false,
+    ): Deferred<RipResolution> {
         for ((id, d) in inflight) if (id != songId) {
             inflight.remove(id, d)
             d.cancel()
         }
+        val existing = inflight[songId]
+        val joined = existing != null && existing.isActive && !reResolve
+        log("rip-begin song=$songId via=$via gen=$gen joined=${if (joined) 1 else 0} reResolve=${if (reResolve) 1 else 0}")
+        if (joined) return existing!!
+        if (existing != null) { inflight.remove(songId, existing); existing.cancel() }
         failures.remove(songId)
         return inflight.computeIfAbsent(songId) {
-            val d = scope.async(start = CoroutineStart.LAZY) { resolver.resolve(songId) }
+            val d = scope.async(start = CoroutineStart.LAZY) { resolver.resolve(songId, capMs) }
             d.invokeOnCompletion { t ->
                 if (t != null) {
                     inflight.remove(songId, d)

@@ -306,3 +306,14 @@ object ParkedMixSession {
         if (!hasParked && !hasLoadedDeck) board.resignIfPreferred(player)
     }
 }
+
+/** Q95: an idle, parked Mix gives the session back (it re-claims on its next `onAudioStarted`). */
+object MixIdleResign {
+    /** Resigns [player] when nothing wants audio and no recording keeps the engine alive. Returns true if it resigned. */
+    fun resignIfIdle(board: SessionSwitchboard, player: TransportOwner, mixWantsAudio: Boolean, keepAlive: Boolean): Boolean {
+        if (mixWantsAudio || keepAlive) return false
+        if (board.current !== player) return false
+        board.resign(player)
+        return true
+    }
+}
