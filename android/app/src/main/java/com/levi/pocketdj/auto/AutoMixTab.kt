@@ -88,6 +88,8 @@ interface AutoMixExtras {
     fun downloadState(): Pair<Int, Int>? = null
     /** Emits whenever anything the Mix rows display may have changed (duplicates are filtered here). */
     val changes: Flow<String> get() = emptyFlow()
+    /** The Mix row was opened: bring a parked (post-process-death) mix back onto the decks (CarPlay parity). Never builds the engine when nothing is parked. */
+    fun materializePendingRestoreIfNeeded(trigger: String) {}
     /** Live broker sessions; null = unreachable / not configured. */
     suspend fun jukeboxSessions(): List<AutoJukeSession>?
 }
@@ -156,6 +158,7 @@ class AutoMixTab(
     private fun mix(kind: AutoMixKind, a: String = "", b: String = "") = AutoId.Mix(kind, a, b).encoded
 
     private fun root(): List<AutoNode> {
+        extras.materializePendingRestoreIfNeeded("autoRow")
         val out = ArrayList<AutoNode>()
         if (facade.autoMixing) out += liveRows() else out += setupRows()
         out += AutoNode(

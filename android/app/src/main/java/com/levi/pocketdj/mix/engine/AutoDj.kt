@@ -210,6 +210,7 @@ class AutoDj(
         }
         loadAutoSlot(1, Deck.B)
         nextToLoad = minOf(2, queue.size)
+        prefetchUpcoming()
 
         deckEndsAt[Deck.A] = now() + (deckDurationMs[Deck.A] ?: FALLBACK_DURATION_MS).toLong()
         mixing = true
@@ -226,6 +227,7 @@ class AutoDj(
         // eject/load would read as a few-percent `.replaced` (a skip).
         if (mixing) for (d in listOf(liveDeck, liveDeck.other)) engine.reportTrackEnded(d, MixTrackEndReason.STOPPED)
         endAutoLoop()
+        engine.clearPrepared()
         engine.pauseBoth()
     }
 
@@ -791,6 +793,7 @@ class AutoDj(
                 if (ok) break
             }
         }
+        prefetchUpcoming()
         engine.onNowPlayingChanged?.invoke()   // the now-playing deck just switched: refresh the card
         glide.beginPostroll()
         engine.persist()                       // the cursor advanced: persist the new live pos
@@ -868,6 +871,17 @@ class AutoDj(
         if (engine.loaded(deck)?.songId != item.loadable.songId) return false
         deckDurationMs[deck] = item.durationMs
         return true
+    }
+
+    /** Prepare the next 1-2 unloaded queue items OFF Main so their [loadAuto] skips disk (sync prepare only on a miss). */
+    internal fun prefetchUpcoming() {
+        var k = nextToLoad
+        var n = 0
+        while (k < queue.size && n < PREFETCH_AHEAD) {
+            val item = queue[k]
+            if (seams.songOnDevice(item.loadable.songId)) { engine.prefetchPrepared(item.loadable, Deck.A); n++ }
+            k++
+        }
     }
 
     /** Move queue item [j] to [p] (p <= j); the items between shift back one. */
@@ -1066,6 +1080,7 @@ class AutoDj(
     private fun secToMs(s: Double): Long = Math.round(s * 1000)
 
     companion object {
+        const val PREFETCH_AHEAD = 2
         const val FALLBACK_DURATION_MS = 180_000
     }
 }

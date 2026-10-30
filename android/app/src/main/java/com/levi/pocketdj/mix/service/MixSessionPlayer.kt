@@ -254,7 +254,15 @@ class EngineMixTransportPort(
     private val art: (albumId: String?) -> String?,
 ) : MixTransportPort {
     override fun card(): MixCard? {
-        val d = engine.nowPlayingDeck ?: return null
+        val d = engine.nowPlayingDeck
+        if (d == null || engine.loaded(d) == null) {
+            // Process death: the parked (not yet materialized) mix is visible on the lock screen.
+            val p = engine.parkedCard() ?: return null
+            return MixCard(
+                songId = p.songId, title = p.title, artist = p.artist, artworkUri = art(p.albumId),
+                durationMs = p.lengthMs?.toLong(), positionMs = p.positionMs.toLong(), rate = 1f,
+            )
+        }
         val t = engine.loaded(d) ?: return null
         val dur = engine.duration(d)
         return MixCard(
@@ -270,7 +278,10 @@ class EngineMixTransportPort(
     override val canSkip get() = dj.isMixing
     override val skipFadeSeconds get() = dj.skipFadeSeconds
     override val hasSounded get() = engine.hasSoundedThisProcess
-    override fun remotePlay() = dj.remotePlay()
+    override fun remotePlay() {
+        // Lock-screen play on a parked mix: cue the decks first, THEN resume.
+        if (engine.hasParkedRestore) engine.materializePendingRestoreIfNeeded("lockScreen") { dj.remotePlay() } else dj.remotePlay()
+    }
     override fun remotePause() = dj.remotePause()
     override fun remoteSkip(fadeSeconds: Double) = dj.remoteSkip(fadeSeconds)
     override fun pauseBoth() = engine.pauseBoth()

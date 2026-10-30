@@ -22,6 +22,8 @@ class MixSessionStore(
     private val clock: () -> Long = System::currentTimeMillis,
     private val scheduler: StoreScheduler = StoreScheduler.DEFAULT,
     private val newId: () -> String = { UUID.randomUUID().toString().take(12) },
+    /** Test seam: the document encoder (production = lenient JSON). */
+    private val encoder: (MixSessionsDocument) -> String = { PdjJson.lenient.encodeToString(it) },
 ) : MixSessionRecorder {
 
     private val lock = Any()
@@ -320,14 +322,20 @@ class MixSessionStore(
      * Force-persist synchronously (scene -> background), beating any queued write. A virgin
      * state never MATERIALIZES the file (so a fresh install can't out-LWW the user's cloud copy).
      */
-    fun flush() = synchronized(lock) {
-        val virgin = recEvents.isEmpty() && recPlayed.isEmpty() &&
-            _sessions.value.all { it.events.isEmpty() && it.playedSongIds.isEmpty() }
-        if (virgin && !file.exists()) return@synchronized
-        cancelPending()
-        saveVersion += 1
-        val doc = snapshotDocument()
-        writer.flushNow(saveVersion) { PdjJson.lenient.encodeToString(doc) }
+    fun flush() {
+        // Snapshot under the lock; encode + write OUTSIDE it (a fader event never waits behind a flush).
+        val doc: MixSessionsDocument
+        val v: Long
+        synchronized(lock) {
+            val virgin = recEvents.isEmpty() && recPlayed.isEmpty() &&
+                _sessions.value.all { it.events.isEmpty() && it.playedSongIds.isEmpty() }
+            if (virgin && !file.exists()) return
+            cancelPending()
+            saveVersion += 1
+            doc = snapshotDocument()
+            v = saveVersion
+        }
+        writer.flushNow(v) { encoder(doc) }
     }
 
     // Internals
@@ -395,7 +403,7 @@ class MixSessionStore(
         cancelPending()
         saveVersion += 1
         val doc = snapshotDocument()
-        writer.write(saveVersion) { PdjJson.lenient.encodeToString(doc) }
+        writer.write(saveVersion) { encoder(doc) }
     }
 
     companion object {

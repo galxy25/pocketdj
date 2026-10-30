@@ -353,4 +353,73 @@ class MixEnginePersistenceTest {
         val (w1, c1) = pending[0]; c1(w1())
         assertEquals("new", h.engine.loaded(A)!!.songId)
     }
+
+    // ---------------------------------------------------------------- ANS-MIX-3: launch park from file + atomic restore
+
+    @Test fun launchParkFromFileShowsTheParkedCardAndMaterializesCued() {
+        val r = Rig(); populated(r); r.store.flush()
+        val h2 = r.relaunch()
+        assertNull("nothing parked before the launch read", h2.engine.parkedCard())
+        var cardRefreshes = 0
+        h2.engine.onNowPlayingChanged = { cardRefreshes++ }
+        // The launch read happens off Main (MixGraph.launchRestore); the engine only receives the snapshot.
+        val snap = MixDeckSessionStore(r.file, VersionedJsonWriter(r.file), r.clock::read, r.sched).load()
+        assertNotNull(snap)
+        h2.engine.parkRestore(snap)
+        assertTrue(h2.engine.hasParkedRestore)
+        assertTrue("the lock-screen / Auto card refreshes on park", cardRefreshes >= 1)
+        val card = h2.engine.parkedCard()!!
+        assertEquals("the lead deck (B) is the parked subject", "b", card.songId)
+        assertEquals(10_000, card.positionMs)
+        assertNull("decks stay unloaded while parked", h2.engine.loaded(A))
+        h2.engine.materializePendingRestoreIfNeeded("autoRow")
+        assertEquals("a", h2.engine.loaded(A)!!.songId)
+        assertEquals("b", h2.engine.loaded(B)!!.songId)
+        assertNull("materialized: nothing parked any more", h2.engine.parkedCard())
+    }
+
+    @Test fun parkRestoreIsIgnoredOnceTheEngineIsInUse() {
+        val r = Rig(); populated(r); r.store.flush()
+        val h2 = r.relaunch()
+        h2.engine.load(h2.addSong("fresh", 30.0), A)
+        h2.engine.parkRestore(r.store.load())
+        assertFalse(h2.engine.hasParkedRestore)
+        assertNull(h2.engine.loaded(B))
+    }
+
+    @Test fun restorePreparesBothDecksOffMainThenCommitsAtomically() {
+        val r = Rig(); populated(r); r.store.flush()
+        val h2 = r.relaunch()
+        var work: (() -> MixEngine.RestorePrep)? = null
+        var commit: ((MixEngine.RestorePrep) -> Unit)? = null
+        h2.engine.restoreOffload = { w, c -> work = w; commit = c }
+        h2.engine.parkRestore(r.store.load())
+        var after = 0
+        h2.engine.materializePendingRestoreIfNeeded("mixTab") { after++ }
+        assertNotNull("the disk half was handed off, not run inline", work)
+        assertNull(h2.engine.loaded(A)); assertNull(h2.engine.loaded(B))
+        assertEquals("completion callbacks wait for the commit", 0, after)
+        val prep = work!!()                      // IO thread
+        assertNull("still nothing on the decks between prepare and commit", h2.engine.loaded(A))
+        commit!!(prep)                           // Main
+        assertEquals("a", h2.engine.loaded(A)!!.songId)
+        assertEquals("b", h2.engine.loaded(B)!!.songId)
+        assertEquals(42.5, h2.engine.position(A), 1e-9)
+        assertEquals(1, after)
+    }
+
+    @Test fun aRealLoadWhileTheRestoreIsPreparingDiscardsThePreparedDecks() {
+        val r = Rig(); populated(r); r.store.flush()
+        val h2 = r.relaunch()
+        var work: (() -> MixEngine.RestorePrep)? = null
+        var commit: ((MixEngine.RestorePrep) -> Unit)? = null
+        h2.engine.restoreOffload = { w, c -> work = w; commit = c }
+        h2.engine.parkRestore(r.store.load())
+        h2.engine.materializePendingRestoreIfNeeded()
+        val prep = work!!()
+        h2.engine.load(h2.addSong("fresh", 30.0), A)   // user loads a song while the disk read was in flight
+        commit!!(prep)
+        assertEquals("fresh", h2.engine.loaded(A)!!.songId)
+        assertNull("the stale restore must not land on the other deck", h2.engine.loaded(B))
+    }
 }

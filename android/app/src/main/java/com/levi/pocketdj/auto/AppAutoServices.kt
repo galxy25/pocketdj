@@ -254,6 +254,12 @@ class AppAutoMixExtras(
         )
     }
 
+    override fun materializePendingRestoreIfNeeded(trigger: String) {
+        // Only when a restore is parked: a car connect with nothing parked must not build the engine.
+        if (!app.mixGraph.hasLaunchRestore()) return
+        main.launch { app.mixGraph.mixEngine.materializePendingRestoreIfNeeded(trigger) }
+    }
+
     override val slowSkipSeconds: Double get() = if (facade.autoMixing) app.mixGraph.autoDj.skipFadeSeconds else 15.0
     override fun skipFast() { main.launch { app.mixGraph.autoDj.remoteSkip(AutoMixTab.FAST_SKIP_SECONDS) } }
     override fun skipSlow() { main.launch { val dj = app.mixGraph.autoDj; dj.remoteSkip(dj.skipFadeSeconds) } }

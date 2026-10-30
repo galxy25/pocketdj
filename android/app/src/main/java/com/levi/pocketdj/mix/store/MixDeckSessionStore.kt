@@ -223,6 +223,8 @@ class MixDeckSessionStore(
     private val writer: VersionedJsonWriter = VersionedJsonWriter(file),
     private val clock: () -> Long = System::currentTimeMillis,
     private val scheduler: StoreScheduler = StoreScheduler.DEFAULT,
+    /** Test seam: the snapshot encoder (production = [encode]). */
+    private val encoder: (MixDeckSnapshot) -> String = { encode(it) },
 ) {
     /** Min ms between position-only writes while running. */
     @Volatile var positionWriteIntervalMs: Long = 5_000
@@ -311,21 +313,28 @@ class MixDeckSessionStore(
     }
 
     /** Force-persist now (scene -> background), SYNCHRONOUSLY, beating any queued write. */
-    fun flush(nowMs: Long = clock()) = synchronized(lock) {
-        val cur = current ?: return@synchronized
-        cancelDebounce()
-        version += 1
-        lastWriteAt = nowMs
-        val snap = cur.copy(updatedAt = nowMs.toDouble())
-        current = snap
-        writer.flushNow(version) { encode(snap) }
+    fun flush(nowMs: Long = clock()) {
+        // Snapshot + version under the lock; the (possibly large) encode and the disk write run OUTSIDE it,
+        // so a position tick / save never waits behind a flush.
+        val snap: MixDeckSnapshot
+        val v: Long
+        synchronized(lock) {
+            val cur = current ?: return
+            cancelDebounce()
+            version += 1
+            lastWriteAt = nowMs
+            snap = cur.copy(updatedAt = nowMs.toDouble())
+            current = snap
+            v = version
+        }
+        writer.flushNow(v) { encoder(snap) }
     }
 
     private fun writeNow(nowMs: Long) {
         val snap = current ?: return
         version += 1
         lastWriteAt = nowMs
-        writer.write(version) { encode(snap) }
+        writer.write(version) { encoder(snap) }
     }
 
     private fun cancelDebounce() {

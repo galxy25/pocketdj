@@ -165,6 +165,26 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
      * (Mix screen / launch task) invokes [MixEngine.restorePersistedMixIfIdle] and
      * [MixEngine.materializePendingRestoreIfNeeded]; they are not auto-run here.
      */
+    private val restoreLaunched = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var restoreParkedHint = false
+
+    /**
+     * Process-death recovery: read the persisted deck snapshot OFF Main, then park it on Main so the lock
+     * screen / Auto row / Mix tab see the mix (decks stay unloaded until a Mix surface asks). Once per process;
+     * called from PocketDjApplication's first-foreground hook (not MainActivity/AppGraph).
+     */
+    fun launchRestore() {
+        if (!restoreLaunched.compareAndSet(false, true)) return
+        app.appScope.launch(Dispatchers.IO) {
+            val snap = runCatching { mixDeckSession.load() }.getOrNull() ?: return@launch
+            restoreParkedHint = true
+            withContext(Dispatchers.Main.immediate) { mixEngine.parkRestore(snap) }
+        }
+    }
+
+    /** A launch restore was parked and no Mix surface has materialized it yet (cheap, never builds the engine). */
+    fun hasLaunchRestore(): Boolean = restoreParkedHint.also { restoreParkedHint = false }
+
     @Volatile private var deckExtras: MixDeckExtras? = null
 
     /** MIX-8: the stem / loop / beat-grid controllers (built with, and hooked into, [mixEngine]). */
@@ -260,6 +280,13 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 main.launch {
                     val p = withContext(Dispatchers.IO) { work() }
                     commit(p)
+                }
+            }
+            // Restore: both decks' resolve + open + window on IO, then ONE atomic commit on main.
+            it.restoreOffload = { work, commit ->
+                main.launch {
+                    val prep = withContext(Dispatchers.IO) { work() }
+                    commit(prep)
                 }
             }
             autoDjInst?.let { dj -> installTransportOwner(it, dj, audio) }
@@ -877,14 +904,16 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection>
         get() = listOf(com.levi.pocketdj.screens.settings.sections.mixSection())
 
-    // ON_STOP: both documents are written inline so a process kill right after backgrounding
-    // cannot lose the latest positions / events.
+    // ON_STOP: both documents are flushed on the writer thread (no main wait); encode happens off the store locks.
     override val flushables: List<Flushable> = listOf(
         Flushable {
-            // Only stores that were actually built this process: constructing one just to
-            // flush it would decode + rewrite an unchanged (possibly multi-MB) document on main.
-            if (deckLazy.isInitialized()) deckLazy.value.flush()
-            if (sessionsLazy.isInitialized()) sessionsLazy.value.flush()
+            // ON_STOP hand-off: the snapshots are taken under the store locks and encoded + written on the
+            // writer thread, so the main looper never waits on mix disk work (the writers' version floor
+            // still drops any older queued write).
+            writerExecutor.execute {
+                if (deckLazy.isInitialized()) deckLazy.value.flush()
+                if (sessionsLazy.isInitialized()) sessionsLazy.value.flush()
+            }
         },
     )
 
