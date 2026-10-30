@@ -271,6 +271,12 @@ class LoopAuditionTest {
         assertTrue(shouldPauseNowPlayingForStudio("am"))
     }
 
+    @Test fun nowPlayingPauseIsSkippedWhenNothingIsPlaying() {
+        // Emulator-found: a pause sent for an already-paused Now Playing landed on the Studio session and killed the loop.
+        assertFalse(shouldPauseNowPlayingForStudio(null, nowPlayingIsPlaying = false))
+        assertTrue(shouldPauseNowPlayingForStudio(null, nowPlayingIsPlaying = true))
+    }
+
     @Test fun userStopWhileParkedClearsThePendingResumeAndReleasesFocus() = runBlocking {
         val ev = mutableListOf<String>()
         val (a, sink, _) = parkRig(ev)

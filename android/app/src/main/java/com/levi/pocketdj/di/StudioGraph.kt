@@ -130,7 +130,9 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
      */
     private fun pauseNowPlayingForStudio() {
         app.appScope.launch(Dispatchers.Main) {
-            if (!com.levi.pocketdj.studio.engine.shouldPauseNowPlayingForStudio(com.levi.pocketdj.playback.session.SessionSwitchboard.shared.current?.engine)) return@launch
+            if (!com.levi.pocketdj.studio.engine.shouldPauseNowPlayingForStudio(com.levi.pocketdj.playback.session.SessionSwitchboard.shared.current?.engine, app.playbackController.nowPlaying.value?.isPlaying == true)) return@launch
+            // Emulator-found: pausing an ALREADY-paused Now Playing still sent a controller pause that, by the time it
+            // reached the session, targeted StudioSessionPlayer (owner flipped) and stopped the loop 40 ms after it started.
             runCatching { app.playbackController.pause() }
         }
     }

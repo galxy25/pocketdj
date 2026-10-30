@@ -189,6 +189,21 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 seedStatus = "Seed: added $n (no flush)"
             }
         }) { Text("Seed 500 songs") }
+        // ANS-COL-2 emulator seed: one 153-song batch into a fresh playlist -> expect 153 History > Collection rows.
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = withContext(Dispatchers.IO) {
+                    host.graph.catalogRepository.catalogFlow.first()?.songs?.drop(1000)?.take(153)?.map { it.id } ?: emptyList()
+                }
+                val store = host.graph.collections
+                val pl = store.playlists.firstOrNull { it.name == "Seed153" } ?: store.createPlaylist("Seed153")
+                val n = store.addSongs(
+                    ids,
+                    com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id),
+                )
+                seedStatus = "Seed: added $n to Seed153"
+            }
+        }) { Text("Seed 153 songs") }
         OutlinedButton(onClick = {
             host.scope.launch {
                 val ids = withContext(Dispatchers.IO) {

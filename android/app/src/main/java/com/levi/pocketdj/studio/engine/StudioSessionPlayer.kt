@@ -15,7 +15,8 @@ import com.levi.pocketdj.playback.session.TransportOwner
 data class StudioCard(val id: String, val title: String, val subtitle: String, val parked: Boolean = false)
 
 /** Review fix: pause Now Playing for a Studio start unless the Studio already owns the session (that pause would stop the loop). */
-fun shouldPauseNowPlayingForStudio(ownerEngine: String?): Boolean = ownerEngine != "studio"
+fun shouldPauseNowPlayingForStudio(ownerEngine: String?, nowPlayingIsPlaying: Boolean = true): Boolean =
+    ownerEngine != "studio" && nowPlayingIsPlaying
 
 /** What the session adapter needs from the Studio, so the mapping is JVM-testable with a fake. */
 interface StudioTransportPort {
