@@ -39,10 +39,13 @@ internal object BackupCoordinator {
         return BackupZip.export(
             BackupPayload(
                 sourcesJson = sources, pockets = s.pockets, playlists = s.playlists,
-                setlists = s.setlists, folders = s.folders, favoritesData = fav,
+                setlists = s.setlists, folders = s.folders, editsData = editsStore(g).exportData(), favoritesData = fav,
             ),
         )
     }
+
+    private fun editsStore(g: com.levi.pocketdj.di.AppGraph) =
+        com.levi.pocketdj.data.backup.BackupEditsStore(java.io.File(g.appContext.filesDir, "backup-edits.json"))
 
     suspend fun restore(host: SettingsHost, data: ByteArray): String = restore(host.graph, data)
 
@@ -55,7 +58,8 @@ internal object BackupCoordinator {
         val sourcesAdded = (merged.size - local.size).coerceAtLeast(0)
         if (merged.size != local.size) { g.settings.setSources(merged); g.catalogRepository.refresh() }
         val favs = payload.favoritesData?.let { runCatching { g.collectionsGraph.favorites.importMerging(String(it)) }.getOrDefault(0) } ?: 0
-        return CollectionShare.restoreMessage(summary, sourcesAdded, favs, skipped.items)
+        val edits = runCatching { editsStore(g).importMerging(payload.editsData) }.getOrDefault(0)
+        return CollectionShare.restoreMessage(summary, sourcesAdded, favs, skipped.items, edits)
     }
 }
 
