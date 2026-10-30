@@ -1,6 +1,7 @@
 package com.levi.pocketdj.screens.games
 
 import androidx.activity.compose.BackHandler
+import kotlinx.coroutines.flow.getAndUpdate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -43,6 +44,15 @@ fun GamesRoute(
             showPuzzle = false
             showInThePocket = false
             sessionId = routeOpenedSession(id) { friends.entry(it) != null }
+        }
+    }
+    // Q43 deep link: open the requested game over the hub (cold start parks it until we compose).
+    val pendingGame by graph.gamesGraph.pendingGame.collectAsState()
+    LaunchedEffect(pendingGame) {
+        graph.gamesGraph.gameLinks.consume()?.let { game ->
+            sessionId = null
+            showPuzzle = game == com.levi.pocketdj.shell.GameLink.Puzzle
+            showInThePocket = game == com.levi.pocketdj.shell.GameLink.InThePocket
         }
     }
     // A round survives leaving the screen (app-scoped engine); back from setup/summary closes it.
@@ -128,5 +138,28 @@ internal fun GameSubScreen(
             }
         }
         content(Modifier.weight(1f))
+    }
+}
+
+/**
+ * Games-side consumer of `pocketdj://games/{puzzle,inthepocket}`. The dispatcher parses and gates on
+ * onboarding, then calls the `game` seam; this parks the request in [pendingGame] and lands on the Games tab,
+ * where [GamesRoute] takes it with [consume] (so a cold start with the screen not yet composed still opens it).
+ */
+class GameLinkHandler(private val postRoute: (com.levi.pocketdj.shell.ShellRoute) -> Unit) {
+    private val _pending = kotlinx.coroutines.flow.MutableStateFlow<com.levi.pocketdj.shell.GameLink?>(null)
+    val pendingGame: kotlinx.coroutines.flow.StateFlow<com.levi.pocketdj.shell.GameLink?> = _pending
+
+    fun open(game: com.levi.pocketdj.shell.GameLink) {
+        _pending.value = game
+        postRoute(com.levi.pocketdj.shell.ShellRoute.Tab(com.levi.pocketdj.navigation.PocketDjDestination.Games))
+    }
+
+    /** Atomically take the pending game, or null. */
+    fun consume(): com.levi.pocketdj.shell.GameLink? = _pending.getAndUpdate { null }
+
+    fun install(seams: com.levi.pocketdj.shell.DeepLinkSeams, takePending: () -> com.levi.pocketdj.shell.GameLink?) {
+        seams.game = { open(it) }
+        takePending()?.let { open(it) }
     }
 }

@@ -27,12 +27,15 @@ interface OnboardingGate {
  *    "coming soon" message (JBX-2 must assign this seam).
  *  - [importCollection]: SET-2/COL-15 collection import — default "Import coming soon".
  *  - [mwf]: Games MwF consumer — default parks the link in [DeepLinkDispatcher.pendingMwf].
+ *  - [game]: Games puzzle / In the Pocket opener — default parks in [DeepLinkDispatcher.pendingGame]
+ *    and lands on the Games tab.
  */
 class DeepLinkSeams {
     @Volatile var playItem: ((PlayKind, String, Boolean) -> String?)? = null
     @Volatile var joinJukebox: ((id: String, guestBase: String?) -> Unit)? = null
     @Volatile var importCollection: ((uri: String) -> Unit)? = null
     @Volatile var mwf: ((DeepLink.Mwf) -> Unit)? = null
+    @Volatile var game: ((GameLink) -> Unit)? = null
 }
 
 /**
@@ -55,6 +58,13 @@ class DeepLinkDispatcher(
     val pendingMwf: StateFlow<DeepLink.Mwf?> = _pendingMwf
 
     fun takePendingMwf(): DeepLink.Mwf? = _pendingMwf.getAndUpdate { null }
+
+    private val _pendingGame = MutableStateFlow<GameLink?>(null)
+
+    /** A game-open link nobody has consumed yet (Games area takes it with [takePendingGame]). */
+    val pendingGame: StateFlow<GameLink?> = _pendingGame
+
+    fun takePendingGame(): GameLink? = _pendingGame.getAndUpdate { null }
 
     /** The [DeepLinkHandler] registered through `FeatureModule.deepLinkHandlers`. */
     val intentHandler = DeepLinkHandler { intent -> handle(intent) }
@@ -105,6 +115,13 @@ class DeepLinkDispatcher(
             is DeepLink.Mwf -> {
                 val consumer = seams.mwf
                 if (consumer != null) consumer(link) else _pendingMwf.value = link
+            }
+            is DeepLink.Game -> {
+                val opener = seams.game
+                if (opener != null) opener(link.kind) else {
+                    _pendingGame.value = link.kind
+                    postRoute(ShellRoute.Tab(PocketDjDestination.Games))
+                }
             }
             is DeepLink.Play -> {
                 val play = seams.playItem
