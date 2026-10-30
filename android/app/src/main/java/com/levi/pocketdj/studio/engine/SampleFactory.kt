@@ -27,8 +27,8 @@ class SampleFileException(val failure: SampleFileFailure) : Exception(failure.me
 
 /**
  * Turns decoded audio into a filed [StudioSample]: import (DRM rejected) and track-region carve (inherits
- * the offset-shifted grid). Files are written into the app-managed samples root; the record is added only
- * after the audio is atomically on disk.
+ * the offset-shifted grid). Files are first written (crash-safe) into the app-managed samples root, then MOVED into the user's SAF samples
+ * folder when one is set ([StudioStore.addSampleRelocating]); the record is added only after the audio is on disk.
  */
 class SampleFactory(
     private val roots: StudioRoots,
@@ -41,6 +41,10 @@ class SampleFactory(
         val base = originalName.substringBeforeLast('.', originalName).trim()
         return base.ifEmpty { "Imported sample" }
     }
+
+    /** The audio is finalized in app storage above; now move it into the user's samples folder (off the caller's thread). */
+    private suspend fun fileRelocating(sample: StudioSample): StudioSample =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { store.addSampleRelocating(sample) }
 
     private fun destFor(id: String): Pair<String, File> {
         val name = StudioFolders.fileName(StudioFamily.SAMPLES, id)
@@ -60,7 +64,7 @@ class SampleFactory(
         } catch (e: StudioRenderException) {
             dest.delete(); throw SampleFileException(SampleFileFailure.Unreadable)
         }
-        return store.addSample(
+        return fileRelocating(
             StudioSample(id, importName(originalName), name, wasUserFolder = false, createdAt = now(),
                 durationMs = res.durationMs, source = StudioSource.File(originalName)),
         )
@@ -76,7 +80,7 @@ class SampleFactory(
         } catch (e: StudioRenderException) {
             dest.delete(); throw SampleFileException(SampleFileFailure.Carve)
         }
-        return store.addSample(
+        return fileRelocating(
             StudioSample(id, songName, name, wasUserFolder = false, createdAt = now(), durationMs = res.durationMs,
                 source = StudioSource.Track(songId, startMs, endMs), grid = grid),
         )

@@ -154,7 +154,7 @@ class LoopFactory(
     private val roots: StudioRoots,
     private val store: StudioStore,
     private val render: StudioRender,
-    private val rawFile: (StudioSample) -> File?,
+    private val rawFile: suspend (StudioSample) -> RawSource?,
     private val previewFile: File,
     private val now: () -> Double = { System.currentTimeMillis().toDouble() },
 ) {
@@ -163,9 +163,9 @@ class LoopFactory(
         val grid = sample.grid ?: throw LoopException(LoopFailure.NoGrid)
         val src = rawFile(sample) ?: throw LoopException(LoopFailure.NoSource)
         previewFile.parentFile?.mkdirs()
-        val r = try { render.renderLoop(sample.edit, src.path, anchorMs, beats, grid, previewFile) } catch (e: StudioRenderException) {
+        val r = try { render.renderLoop(sample.edit, src.file.path, anchorMs, beats, grid, previewFile) } catch (e: StudioRenderException) {
             throw LoopException(LoopFailure.from(e))
-        }
+        } finally { src.close() }
         val synthetic = StudioLoop(
             id = LoopMath.PREVIEW_ID, name = "Preview", sampleId = sample.id, anchorMs = anchorMs, beats = beats,
             bpm = r.bpm, lengthMs = r.lengthMs, frames = r.frames, fileName = previewFile.name,
@@ -179,11 +179,12 @@ class LoopFactory(
         val src = rawFile(sample) ?: throw LoopException(LoopFailure.NoSource)
         val id = StudioFactory.newLoopId()
         val fileName = StudioFolders.fileName(StudioFamily.LOOPS, id)
-        val dest = StudioFiles.appFile(roots, StudioFamily.LOOPS, fileName) ?: throw LoopException(LoopFailure.NoFolder)
+        val dest = StudioFiles.appFile(roots, StudioFamily.LOOPS, fileName)
+        if (dest == null) { src.close(); throw LoopException(LoopFailure.NoFolder) }
         dest.parentFile?.mkdirs()
-        val r = try { render.renderLoop(sample.edit, src.path, anchorMs, beats, grid, dest) } catch (e: StudioRenderException) {
+        val r = try { render.renderLoop(sample.edit, src.file.path, anchorMs, beats, grid, dest) } catch (e: StudioRenderException) {
             dest.delete(); throw LoopException(LoopFailure.from(e))
-        }
+        } finally { src.close() }
         val name = typedName?.trim().orEmpty().ifEmpty { LoopMath.defaultName(sample.name, beats) }
         return store.addLoop(
             StudioLoop(

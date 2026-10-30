@@ -216,7 +216,7 @@ class MicRecorder(
 
     @Synchronized
     fun endMonitoring() {
-        if (_recording.value) { finishTake()?.let { fileSample(it) } }
+        if (_recording.value) { finishTake()?.let { fileSampleInPlace(it) } }
         val t = thread
         stopFlag = true
         record = null
@@ -279,7 +279,7 @@ class MicRecorder(
     @Synchronized
     internal fun beginTake(): Boolean {
         if (_recording.value) return false
-        // Mic takes are written to a real file in the app-managed root; copy-out to a SAF user root is a later step.
+        // Mic takes are finalized in the app-managed root first (crash-safe); fileSample then moves them to the SAF user root.
         val appDir = roots.appDir(StudioFamily.SAMPLES)
         val minted = MicRecorderMath.mintSampleFile({ appDir.exists(it) })
         val target = StudioFiles.appFile(roots, StudioFamily.SAMPLES, minted.second) ?: return false
@@ -337,12 +337,19 @@ class MicRecorder(
     internal fun onCaptureEnded(readError: Boolean) {
         if (readError && _recording.value) {
             _failure.value = "Recording stopped: the microphone became unavailable. The audio captured so far was saved."
-            finishTake()?.let { fileSample(it) }
+            finishTake()?.let { fileSampleInPlace(it) }
         }
         val w = writer
         if (w != null && !_recording.value) { runCatching { w.close() }; writer = null }
-        if (!_recording.value) finalized?.complete(Unit)
+        if (!_recording.value) {
+            finalized?.complete(Unit)
+            // Only now is the WAV finalized (header patched, tail flushed): safe to MOVE into the SAF folder.
+            if (hasPendingRelocation()) relocateRunner { relocatePending() }
+        }
     }
+
+    /** Test seam: feed PCM through the live take's writer exactly as the capture loop does. */
+    internal fun appendForTest(bytes: ByteArray) { writer?.append(bytes, bytes.size) }
 
     internal fun watchdogTick(nowSec: Double) {
         val w = writer ?: return
@@ -356,7 +363,7 @@ class MicRecorder(
     private fun onWriterFailed() {
         if (!_recording.value) return
         _failure.value = "Recording stopped: the take couldn’t keep writing (low disk space or the samples folder became unavailable). The audio captured so far was saved."
-        finishTake()?.let { fileSample(it) }
+        finishTake()?.let { fileSampleInPlace(it) }
         stopFlag = true
     }
 
@@ -411,8 +418,36 @@ class MicRecorder(
         if (had) store.flush()
     }
 
-    fun fileSample(t: MicTake) {
+    /** Takes filed in app storage while their writer was still open; moved to the user folder once it closes. */
+    private val pendingRelocation = LinkedHashSet<String>()
+    private fun hasPendingRelocation() = synchronized(pendingRelocation) { pendingRelocation.isNotEmpty() }
+
+    /** Runs the (possibly large, SAF) relocation off the caller's thread; tests swap in a direct runner. */
+    internal var relocateRunner: (() -> Unit) -> Unit = { job -> ioScope.launch { job() } }
+
+    /**
+     * File the take WHERE IT IS (writer possibly still open, so never copy it yet): the record exists immediately and the
+     * app-storage file is finalized by the capture thread; [relocatePending] moves it after the writer closed.
+     */
+    private fun fileSampleInPlace(t: MicTake) {
         store.addSample(
+            StudioSample(
+                id = t.id, name = pendingName?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_NAME, fileName = t.fileName, wasUserFolder = t.wasUserFolder,
+                createdAt = startedAtMs, durationMs = t.durationMs, source = StudioSource.Mic,
+            ),
+        )
+        synchronized(pendingRelocation) { pendingRelocation.add(t.id) }
+    }
+
+    /** Move every in-place-filed take into the user's samples folder. Call only after its writer is closed. */
+    internal fun relocatePending() {
+        val ids = synchronized(pendingRelocation) { pendingRelocation.toList().also { pendingRelocation.clear() } }
+        for (id in ids) store.sample(id)?.let { store.addSampleRelocating(it) }
+    }
+
+    fun fileSample(t: MicTake) {
+        // Finalized in app storage (crash-safe); then moved into the user's samples folder when one is set.
+        store.addSampleRelocating(
             StudioSample(
                 id = t.id, name = pendingName?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_NAME, fileName = t.fileName, wasUserFolder = t.wasUserFolder,
                 createdAt = startedAtMs, durationMs = t.durationMs, source = StudioSource.Mic,
@@ -434,7 +469,7 @@ class MicRecorder(
                 val f = dir.resolve(name)?.file ?: continue
                 val ms = WavTakeWriter.recoveredDurationMs(f) ?: continue
                 runCatching { WavTakeWriter.repairHeader(f) }
-                store.addSample(
+                store.addSampleRelocating(
                     StudioSample(id = id, name = "Recovered recording", fileName = name, wasUserFolder = isUser,
                         createdAt = f.lastModified().toDouble(), durationMs = ms, source = StudioSource.Mic),
                 )

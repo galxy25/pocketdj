@@ -63,6 +63,12 @@ interface StudioRoots {
      */
     fun userDir(family: StudioFamily): StudioDir?
 
+    /**
+     * True when the user HAS picked a folder for [family] (even if it is unreachable right now). Lets a writer tell
+     * "no folder chosen" (silent app-storage) from "chosen but revoked" (fall back AND tell the user).
+     */
+    fun userFolderConfigured(family: StudioFamily): Boolean = userDir(family) != null
+
     /** Arranger clip/bounce audio: app-private, not a family, never user-relocatable. */
     fun arrangementsDir(): File
 }
@@ -99,8 +105,12 @@ class FileStudioDir(val dir: File) : StudioDir {
  */
 class DefaultStudioRoots(
     private val appBase: File,
+    private val userConfigured: ((StudioFamily) -> Boolean)? = null,
     private val userDirProvider: (StudioFamily) -> StudioDir? = { null },
 ) : StudioRoots {
+    override fun userFolderConfigured(family: StudioFamily): Boolean =
+        family.supportsUserFolder && (userConfigured?.invoke(family) ?: (userDirProvider(family) != null))
+
     override fun appDir(family: StudioFamily): StudioDir {
         val d = File(appBase, family.rawValue)
         d.mkdirs()

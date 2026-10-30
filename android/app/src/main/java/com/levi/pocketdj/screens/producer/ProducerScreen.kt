@@ -22,6 +22,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,6 +70,17 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
     }
     val widthDp = LocalConfiguration.current.screenWidthDp
     val iconOnly = StudioSubTab.iconOnly(widthDp)
+
+    // A new sample that could not reach the user's samples folder (revoked / write failed) says so where the action
+    // happened (any Studio creator: Samples, Demux, Takes, Tracks, slice bake), not only on the Samples screen.
+    val folderNotice by graph.studioGraph.studioStore.samplesFolderNotice.collectAsState()
+    folderNotice?.let { m ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { graph.studioGraph.studioStore.clearSamplesFolderNotice() },
+            title = { Text("Samples folder") }, text = { Text(m, Modifier.testTag("samples-folder-notice")) },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { graph.studioGraph.studioStore.clearSamplesFolderNotice() }) { Text("OK") } },
+        )
+    }
 
     Column(modifier.fillMaxSize().testTag("producer-screen")) {
         if (!hideTabs && !arrangerFullscreen) {

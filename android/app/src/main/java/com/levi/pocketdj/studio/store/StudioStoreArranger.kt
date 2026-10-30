@@ -55,7 +55,7 @@ class ArtifactSampleConverter(
             dest.delete(); return null
         }
         if (baked.durationMs <= 0) { dest.delete(); return null }
-        return store.addSample(
+        return store.addSampleRelocating(
             StudioSample(
                 id, artifact.name, name, wasUserFolder = false, createdAt = now(),
                 durationMs = baked.durationMs, source = StudioSource.File(artifact.name),

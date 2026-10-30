@@ -286,7 +286,7 @@ class TakeFiler(
         val res = try { studioRender.importAudioFile(src.path, dest) } catch (e: com.levi.pocketdj.studio.audio.StudioRenderException) {
             dest.delete(); throw TakeFileException(TakeFileFailure.Failed)
         }
-        return store.addSample(
+        return store.addSampleRelocating(
             com.levi.pocketdj.studio.model.StudioSample(
                 id, take.name, name, wasUserFolder = false, createdAt = now(), durationMs = res.durationMs,
                 source = com.levi.pocketdj.studio.model.StudioSource.Take(take.id),
