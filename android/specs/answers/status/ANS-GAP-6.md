@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-GAP-6 — STU-3 stem carve
 
@@ -15,3 +15,12 @@ state: implemented
 
 ## Questions for Levi
 - Want the stem-mode audition (synced stem player in the carve sheet) as a follow-up?
+
+## Review
+fixes applied
+- MINOR stem audition: partially fixed. Live synced stem audition remains a follow-up (still the open question above); the sheet now shows a caption in stem mode saying the preview plays the full mix.
+- MINOR download/busy: fixed. Stems download when stem mode is switched on (busy spinner, switch disabled, mode reverts with DOWNLOAD_FAILED on error); chips disabled while busy/carving; carve() snapshots enabledStems at start.
+- MINOR emulator step: not run (emulator owned by the integrator; not booted). Still to do before merge: carve 4 s of drums from a stemmed burn fixture and confirm playback.
+- NIT stem-specific error: fixed (SampleFileFailure.StemCarve with iOS wording, used by carveStems; test updated + added). Unused NONE_PICKED removed; DOWNLOAD_FAILED now used.
+- NIT availability source: fixed (burns.stemsRemote(id)).
+- Tests: 5496 run (was 5495), 0 failures; assembleDebug green.

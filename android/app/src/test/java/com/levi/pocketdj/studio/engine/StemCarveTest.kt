@@ -25,6 +25,10 @@ class StemCarveTest {
 
     private fun files() = StemCarve.STEMS.associateWith { File("/s/$it.mp3") }
 
+    @Test fun stemFailureHasStemSpecificWording() {
+        assertEquals("Couldn’t carve those stems. Try a different region or fewer stems.", SampleFileFailure.StemCarve.message)
+    }
+
     @Test fun canonicalOrderIsVocalsDrumsBassOther() {
         assertEquals(listOf("vocals", "drums", "bass", "other"), StemCarve.STEMS)
     }
@@ -98,9 +102,9 @@ class StemCarveTest {
         val env = TestEnv(tmp.newFolder()); val store = env.store()
         val f = SampleFactory(env.roots, store, StudioRender(Codec(emptyMap()), ResampleStretcher, Dispatchers.Unconfined, { }))
         try { f.carveStems("s", "S", mapOf("drums" to File("d")), setOf("drums", "bass"), 0, 1000, null); fail() }
-        catch (e: SampleFileException) { assertEquals(SampleFileFailure.Carve, e.failure) }
+        catch (e: SampleFileException) { assertEquals(SampleFileFailure.StemCarve, e.failure) }
         try { f.carveStems("s", "S", mapOf("drums" to File("nope")), setOf("drums"), 0, 1000, null); fail() }
-        catch (e: SampleFileException) { assertEquals(SampleFileFailure.Carve, e.failure) }
+        catch (e: SampleFileException) { assertEquals(SampleFileFailure.StemCarve, e.failure) }
         assertTrue(store.samples.isEmpty())
     }
 }

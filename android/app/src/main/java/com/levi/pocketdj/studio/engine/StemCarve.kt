@@ -14,7 +14,6 @@ object StemCarve {
     val STEMS: List<String> = DemuxStore.STEM_NAMES
 
     const val NO_STEMS = "Couldn’t get this track’s stems. Make sure it’s stemmed, then try again."
-    const val NONE_PICKED = "Pick at least one stem to carve."
     const val DOWNLOAD_FAILED = "Couldn’t download the stems to carve — check your connection and try again."
 
     /** The stem-source toggle shows when the stems are on the device OR stemmed server-side (downloaded on demand). */

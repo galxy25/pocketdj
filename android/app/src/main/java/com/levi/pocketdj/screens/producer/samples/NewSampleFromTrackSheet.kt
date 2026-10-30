@@ -129,6 +129,7 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
     var stemsAvailable by remember { mutableStateOf(false) }
     var stemMode by remember { mutableStateOf(false) }
     var enabledStems by remember { mutableStateOf(StemCarve.allEnabled()) }
+    var stemBusy by remember { mutableStateOf(false) }
     val playing by engine.isPlayingSample.collectAsState()
 
     DisposableEffect(Unit) { onDispose { engine.unloadSample() } }
@@ -169,8 +170,8 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
         val token = selection
         song = s; error = null; window = null; peaks = FloatArray(0)
         stemsDownloaded = burns.stemsBurned(s.id)
-        stemsAvailable = StemCarve.available(stemsDownloaded, graph.ripsRepository.entry(s.id)?.isStemmed == true)
-        stemMode = false; enabledStems = StemCarve.allEnabled()
+        stemsAvailable = StemCarve.available(stemsDownloaded, burns.stemsRemote(s.id))
+        stemMode = false; stemBusy = false; enabledStems = StemCarve.allEnabled()
         val p = cache.phaseFor(s.id)
         phase = p
         if (p is SourcePhase.Ready) scope.launch { enterReady(s, p.source, token) }
@@ -187,10 +188,29 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
         }
     }
 
+    /** Flip stem mode; switching it on fetches missing stems right away (iOS setStemMode) with a busy state. */
+    fun setStemMode(on: Boolean) {
+        stemMode = on
+        val s = song ?: return
+        if (!on || stemsDownloaded || stemBusy) return
+        val token = selection
+        stemBusy = true; error = null
+        scope.launch {
+            val r = StemCarve.resolve({ burns.localStemFiles(s.id) }, { burns.burnStems(s.id) })
+            if (token != selection) return@launch
+            stemBusy = false
+            when (r) {
+                is StemCarve.Resolved.Files -> stemsDownloaded = true
+                is StemCarve.Resolved.Failed -> { stemMode = false; error = StemCarve.DOWNLOAD_FAILED }
+            }
+        }
+    }
+
     fun carve() {
         val s = song ?: return
         val src = (phase as? SourcePhase.Ready)?.source ?: run { error = "This track isn’t on the device anymore. Burn it again, then carve."; return }
         carving = true; error = null
+        val chosenStems = enabledStems
         scope.launch {
             val sidecar = burns.localBeatGrid(s.id)
             val bg = BeatMath.inheritedGrid(
@@ -206,7 +226,7 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
                         is StemCarve.Resolved.Failed -> { error = r.message; return@launch }
                         is StemCarve.Resolved.Files -> {
                             stemsDownloaded = true
-                            studio.sampleFactory.carveStems(s.id, s.name, r.files, enabledStems, startMs, endMs, grid)
+                            studio.sampleFactory.carveStems(s.id, s.name, r.files, chosenStems, startMs, endMs, grid)
                         }
                     }
                 } else studio.sampleFactory.carveTrack(s.id, s.name, src, startMs, endMs, grid)
@@ -254,8 +274,8 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
                         onPlay = { if (playing) engine.pauseSample() else engine.playSample() },
                         onCarve = ::carve,
                         stemSection = {
-                            StemSourceSection(stemsAvailable, stemsDownloaded, stemMode, enabledStems, busy = carving,
-                                onStemMode = { stemMode = it }, onToggle = { enabledStems = StemCarve.toggle(enabledStems, it) })
+                            StemSourceSection(stemsAvailable, stemsDownloaded, stemMode, enabledStems, busy = carving || stemBusy,
+                                onStemMode = ::setStemMode, onToggle = { enabledStems = StemCarve.toggle(enabledStems, it) })
                         },
                     )
                     SourcePhase.NeedsBurn -> {

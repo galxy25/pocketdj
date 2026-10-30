@@ -42,7 +42,7 @@ fun StemSourceSection(
             Column(Modifier.weight(1f)) {
                 Text("Stem source", style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    if (downloaded) "Carve a mix of this track’s stems." else "Carve a mix of this track’s stems (downloaded when you carve).",
+                    if (downloaded) "Carve a mix of this track’s stems." else "Carve a mix of this track’s stems (downloaded when you switch this on).",
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -50,9 +50,11 @@ fun StemSourceSection(
             Switch(checked = stemMode, onCheckedChange = onStemMode, enabled = !busy, modifier = Modifier.testTag("sample-stem-mode"))
         }
         if (stemMode) {
+            Text("The preview plays the full mix; the sample is cut from only the stems selected below.",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("sample-stem-caption"))
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 for (name in DISPLAY_ORDER) {
-                    FilterChip(name in enabled, { onToggle(name) }, { Text(name.replaceFirstChar { it.uppercase() }) }, Modifier.testTag("sample-stem-$name"))
+                    FilterChip(name in enabled, { onToggle(name) }, { Text(name.replaceFirstChar { it.uppercase() }) }, Modifier.testTag("sample-stem-$name"), enabled = !busy)
                 }
             }
         }
