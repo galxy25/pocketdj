@@ -19,6 +19,28 @@ object RecentlyAdded {
     const val PLAYLIST_ID = "__pdj_recently_added__"
     const val NAME = "Recently added"
 
+    /** One History `catalogAdd` entry to record. */
+    data class CatalogAddItem(val id: String, val title: String, val artist: String?)
+
+    /**
+     * iOS `ImportedSongsStore.add` gesture granularity: one entry per fresh ALBUM plus one per fresh LOOSE song
+     * (a song whose album is not among the fresh albums), so an album import is a single "Added <album>" row.
+     * [songs] = (id, title, artist) to albumId; [albums] = (id, name, artist).
+     */
+    fun importCatalogAdds(
+        songs: List<Pair<Triple<String, String, String>, String?>>,
+        albums: List<Triple<String, String, String>>,
+    ): List<CatalogAddItem> {
+        val freshAlbumIds = albums.mapTo(HashSet()) { it.first }
+        val out = ArrayList<CatalogAddItem>()
+        for ((id, name, artist) in albums) out += CatalogAddItem(id, name, artist.ifEmpty { null })
+        for ((t, albumId) in songs) {
+            if (albumId != null && albumId in freshAlbumIds) continue
+            out += CatalogAddItem(t.first, t.second, t.third.ifEmpty { null })
+        }
+        return out
+    }
+
     /**
      * Add-times that do not come off a catalog row: in-app adds from `catalogAdd` events. The
      * LATEST catalogAdd/catalogRemove per item wins, so a newer remove cancels the add (iOS drops

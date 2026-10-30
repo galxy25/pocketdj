@@ -710,6 +710,12 @@ private fun ActivityRow(row: ActivityRowUi, onSongClick: (String) -> Unit) {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            val album = remember(row.artAlbumId) {
+                row.artAlbumId?.let { com.levi.pocketdj.di.AppGraph.get(ctx).catalogRepository.state.value.catalog?.albumsById?.get(it) }
+            }
+            if (album != null) com.levi.pocketdj.screens.browse.AlbumArt(album, Modifier.size(48.dp)) else ArtThumb(null)
+            Spacer(Modifier.width(12.dp))
             Icon(
                 imageVector = row.kind.icon(),
                 contentDescription = null,

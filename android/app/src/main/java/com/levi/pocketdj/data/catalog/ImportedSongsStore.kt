@@ -67,6 +67,9 @@ class ImportedSongsStore(private val file: File) {
     /** Fired (outside the lock) after a USER/import batch added NEW rows - the app refreshes the catalog. */
     @Volatile var onChanged: (() -> Unit)? = null
 
+    /** Fired ONLY from the user import path ([add]) with the History `catalogAdd` items (one per fresh album + loose song). */
+    @Volatile var onUserCatalogAdd: ((List<com.levi.pocketdj.data.collections.RecentlyAdded.CatalogAddItem>) -> Unit)? = null
+
     init {
         val doc = decode(file)
         songs = doc.songs.distinctBy { it.songId }
@@ -79,6 +82,7 @@ class ImportedSongsStore(private val file: File) {
     /** Idempotent per id (first wins). Returns the number of NEW rows. */
     fun add(newSongs: List<SongEntry>, newAlbums: List<AlbumEntry> = emptyList()): Int {
         val added: Int
+        var catalogAdds: List<com.levi.pocketdj.data.collections.RecentlyAdded.CatalogAddItem> = emptyList()
         synchronized(lock) {
             val songIds = songs.mapTo(HashSet()) { it.songId }
             val albumIds = albums.mapTo(HashSet()) { it.albumId }
@@ -86,12 +90,18 @@ class ImportedSongsStore(private val file: File) {
             val freshAlbums = newAlbums.distinctBy { it.albumId }.filter { albumIds.add(it.albumId) == true }
             added = freshSongs.size + freshAlbums.size
             if (added == 0) return 0
+            catalogAdds = com.levi.pocketdj.data.collections.RecentlyAdded.importCatalogAdds(
+                freshSongs.map { Triple(it.songId, it.title, it.artist) to it.albumId },
+                freshAlbums.map { Triple(it.albumId, it.name, it.artist) },
+            )
             songs = songs + freshSongs
             albums = albums + freshAlbums
             cachedDoc = null
             save()
         }
         onChanged?.invoke()
+        // History catalogAdd log (user import path only; add() is never called from a cloud pull).
+        if (catalogAdds.isNotEmpty()) onUserCatalogAdd?.invoke(catalogAdds)
         return added
     }
 
@@ -264,6 +274,7 @@ class ImportedSongsStore(private val file: File) {
         fun indexSong(e: SongEntry) = IndexSong(
             id = e.songId, albumId = e.albumId, artist = e.artist, name = e.title, year = e.year,
             bpm = e.bpm, key = e.key, camelot = e.camelot, length = e.durationMs, appleMusicId = e.appleMusicId,
+            dateAdded = e.addedAtMs.takeIf { it > 0 },
         )
 
         fun indexAlbum(e: AlbumEntry) = IndexAlbum(

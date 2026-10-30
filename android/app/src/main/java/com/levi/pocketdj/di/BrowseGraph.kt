@@ -559,7 +559,14 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     /** App-scoped add -> rip -> burn driver for the recognizer sheet (survives sheet dismissal). */
     val recognitionAdds: com.levi.pocketdj.screens.shazam.RecognitionAddController by lazy {
-        com.levi.pocketdj.screens.shazam.RecognitionAddController(app.appScope + Dispatchers.IO, appleMusicRecognition)
+        com.levi.pocketdj.screens.shazam.RecognitionAddController(app.appScope + Dispatchers.IO, appleMusicRecognition).also { c ->
+            c.onCatalogAdd = { id, title, artist ->
+                app.collectionActivity.record(
+                    kind = com.levi.pocketdj.data.activity.ActivityKind.CATALOG_ADD,
+                    itemId = id, itemTitle = title, itemArtist = artist.ifEmpty { null }, libraryWrite = com.levi.pocketdj.screens.discover.LibraryWrite.CONFIRMED_WEB,
+                )
+            }
+        }
     }
 
     /** On-demand lyrics (memory -> disk `filesDir/lyrics-cache` -> catalog CDN). */
