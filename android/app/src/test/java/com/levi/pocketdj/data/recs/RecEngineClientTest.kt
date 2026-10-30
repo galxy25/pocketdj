@@ -111,7 +111,7 @@ class RecEngineClientTest {
         }
         assertEquals(RecEngineClient.ClientError.EnrollmentRequired, results[0])
         assertEquals(RecEngineClient.ClientError.KeyMismatch, results[1])
-        assertEquals(RecEngineClient.ClientError.KeyMismatch, results[2])
+        assertEquals(RecEngineClient.ClientError.ProfileCapReached, results[2])
         assertEquals(RecEngineClient.ClientError.KeyMismatch, results[3])
     }
 

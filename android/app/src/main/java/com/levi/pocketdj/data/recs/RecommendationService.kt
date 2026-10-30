@@ -399,6 +399,9 @@ class RecommendationService(
             } catch (e: RecEngineClient.ClientError.KeyMismatch) {
                 if (ep == flushEpoch.get()) _syncError.value = KEY_MISMATCH_MESSAGE
                 return
+            } catch (e: RecEngineClient.ClientError.ProfileCapReached) {
+                if (ep == flushEpoch.get()) _syncError.value = PROFILE_CAP_MESSAGE
+                return
             } catch (e: RecEngineClient.ClientError.EnrollmentRequired) {
                 if (ep == flushEpoch.get()) _syncError.value = ENROLLMENT_REQUIRED_MESSAGE
                 return
@@ -472,7 +475,8 @@ class RecommendationService(
         } catch (e: RecEngineClient.ClientError) {
             if (ep != flushEpoch.get()) return false
             when (e) {
-                is RecEngineClient.ClientError.KeyMismatch, is RecEngineClient.ClientError.EnrollmentRequired -> Unit
+                is RecEngineClient.ClientError.KeyMismatch, is RecEngineClient.ClientError.EnrollmentRequired,
+                is RecEngineClient.ClientError.ProfileCapReached -> Unit
                 is RecEngineClient.ClientError.Http -> if (e.code !in 400..499) return false
                 is RecEngineClient.ClientError.BadResponse -> return false
             }
@@ -865,6 +869,7 @@ class RecommendationService(
         const val KEY_MISMATCH_MESSAGE =
             "This device's recommendation key doesn't match the cloud data. Tap Delete cloud data " +
                 "below to reset it — your recommendations rebuild from this device's history."
+        const val PROFILE_CAP_MESSAGE = "The recommendation service isn't accepting new profiles right now."
         const val ENROLLMENT_REQUIRED_MESSAGE =
             "This PocketDJ build predates a recommendation-service reset. " +
                 "Update the app to reconnect — your listening history is safe on this device."

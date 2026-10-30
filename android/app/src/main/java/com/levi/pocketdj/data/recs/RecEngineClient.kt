@@ -46,6 +46,9 @@ class RecEngineClient(
 
         /** The deployed enrollment secret rotated; only an app update carries the new one. */
         data object EnrollmentRequired : ClientError("enrollment-required")
+
+        /** The deployment's enrollment flood cap (MAX_PROFILES) is full: a NEW profile can't be created. */
+        data object ProfileCapReached : ClientError("profile-cap-reached")
         data object BadResponse : ClientError("bad-response")
     }
 
@@ -139,7 +142,13 @@ class RecEngineClient(
                 (PdjJson.lenient.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject)
                     ?.get("error")?.let { it as? kotlinx.serialization.json.JsonPrimitive }?.takeIf { it.isString }?.content
             }.getOrNull()
-            return if (kind == "enrollment-required") ClientError.EnrollmentRequired else ClientError.KeyMismatch
+            // Emulator finding: a re-bind after "Delete cloud data" that hit the cap read as key-mismatch, whose advice
+            // (delete cloud data) can never help. Distinct refusals, distinct recoveries.
+            return when (kind) {
+                "enrollment-required" -> ClientError.EnrollmentRequired
+                "profile-cap-reached" -> ClientError.ProfileCapReached
+                else -> ClientError.KeyMismatch
+            }
         }
     }
 }

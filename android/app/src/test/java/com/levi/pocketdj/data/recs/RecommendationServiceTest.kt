@@ -265,6 +265,11 @@ class RecommendationServiceTest {
         on("/events") { MockResponse().setResponseCode(403).setBody("""{"error":"enrollment-required"}""") }
         s.flushNow()
         assertEquals(RecommendationService.ENROLLMENT_REQUIRED_MESSAGE, s.syncError.value)
+        responders.clear()
+        // A full enrollment cap must NOT read as key-mismatch ("Delete cloud data" can't fix it).
+        on("/events") { MockResponse().setResponseCode(403).setBody("""{"error":"profile-cap-reached","max":10}""") }
+        s.flushNow()
+        assertEquals(RecommendationService.PROFILE_CAP_MESSAGE, s.syncError.value)
         assertEquals(0.0, s.syncState.lastPlayAtMs, 0.0)
     }
 
