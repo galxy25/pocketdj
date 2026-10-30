@@ -194,6 +194,10 @@ final class MixStreamLoader {
         if streams[songId].map({ !$0.failed }) == true { return true }
         guard networkAvailable, rips.hasServer, rips.manifest[songId] != nil else { return false }
         if let until = serverDownUntil, Date() < until { return false }
+        // A REJECTED token (401/403) is not "server down": the gate holds for the re-probe
+        // window, then lets one attempt through; a token change (re-typed / credsync heal)
+        // reopens it immediately (`RipsStore.isAuthRejected` keys on the token value).
+        if rips.authHoldoff { return false }
         if let t = recentFailures[songId], Date().timeIntervalSince(t) < Self.failureCooldown { return false }
         return true
     }
@@ -243,9 +247,15 @@ final class MixStreamLoader {
             s.startMs = entry.source == "analog" ? entry.startMs : nil
             Task { [weak self] in
                 var url = try? await rips.presignedURL(for: songId, ttlSeconds: 21_600)
-                if url == nil { url = try? await rips.presignedURL(for: songId, ttlSeconds: 21_600) }
+                if url == nil, !rips.isAuthRejected { url = try? await rips.presignedURL(for: songId, ttlSeconds: 21_600) }
                 guard let self, self.streams[songId] === s else { return }
-                guard let url else { self.tripServerDown("presign"); self.fail(s, why: "presign failed"); return }
+                guard let url else {
+                    // 401/403 is a credential fault, not an outage: no "server down" trip (the
+                    // auth holdoff gates instead and clears on a token change) — and say so.
+                    if rips.isAuthRejected { self.fail(s, why: "presign rejected (401 — token)") }
+                    else { self.tripServerDown("presign"); self.fail(s, why: "presign failed") }
+                    return
+                }
                 self.start(s, url: url, offset: 0)
             }
         }
@@ -427,7 +437,11 @@ final class MixStreamLoader {
                     Task { [weak self] in
                         let url = await fallback()
                         guard let self, self.streams[id] === s else { return }
-                        guard let url else { self.tripServerDown("presign"); self.fail(s, why: "side presign failed"); return }
+                        guard let url else {
+                            if self.rips.isAuthRejected { self.fail(s, why: "side presign rejected (401 — token)") }
+                            else { self.tripServerDown("presign"); self.fail(s, why: "side presign failed") }
+                            return
+                        }
                         self.start(s, url: url, offset: 0)
                     }
                 } else {

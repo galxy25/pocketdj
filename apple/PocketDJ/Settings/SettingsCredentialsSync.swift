@@ -125,9 +125,40 @@ extension SettingsStore {
     /// servers included, and clearing the URL clears the pair. The kept secret makes this
     /// device's doc differ from the pull, so `persist()` re-materializes and pushes it back —
     /// the guard doesn't just protect this device, it HEALS the fleet. `true` = keep local.
-    private static func keepLocalSecret(localSecret: String, pulledSecret: String,
-                                        localURL: String, pulledURL: String) -> Bool {
-        pulledSecret.isEmpty && !localSecret.isEmpty && !pulledURL.isEmpty && pulledURL == localURL
+    ///
+    /// SAME SERVER = same HOST (2026-10-30 incident): a device re-pointed the rip URL from
+    /// `https://levis-imac.…ts.net` to `https://levis-imac.…ts.net:10000` (the Funnel port of
+    /// the SAME rip server) with no token. The exact-string compare read that as "a different
+    /// server", adopted the empty token wholesale, and every device — iPad Auto Mix included —
+    /// 401'd every presign and `/rip-collection` ("4 ripping" forever). A port/path/scheme edit
+    /// on the same host is the same server; only a different HOST is a real reconfiguration.
+    /// (Keeping a bearer for a genuinely tokenless server on the same host is harmless — the
+    /// server ignores it.)
+    nonisolated static func keepLocalSecret(localSecret: String, pulledSecret: String,
+                                            localURL: String, pulledURL: String) -> Bool {
+        pulledSecret.isEmpty && !localSecret.isEmpty && !pulledURL.isEmpty
+            && sameServerHost(localURL, pulledURL)
+    }
+
+    /// Host-level identity of two server URLs (case-insensitive); falls back to exact string
+    /// equality when either doesn't parse to a host.
+    nonisolated static func sameServerHost(_ a: String, _ b: String) -> Bool {
+        let ta = a.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tb = b.trimmingCharacters(in: .whitespacesAndNewlines)
+        if ta == tb { return true }
+        guard let ha = serverHost(ta), let hb = serverHost(tb) else { return false }
+        return ha == hb
+    }
+
+    /// Lower-cased host of a typed server URL. Tolerates a missing scheme ("host:10000/rip" —
+    /// URL(string:) would read "host" as the scheme) and a trailing root dot ("a.ts.net.").
+    nonisolated static func serverHost(_ raw: String) -> String? {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        let withScheme = t.contains("://") ? t : "https://" + t
+        guard var h = URLComponents(string: withScheme)?.host?.lowercased(), !h.isEmpty else { return nil }
+        while h.hasSuffix(".") { h.removeLast() }
+        return h.isEmpty ? nil : h
     }
 
     /// Re-decode the on-disk doc after `CloudSyncService` pulled a newer cloud copy, apply it

@@ -640,7 +640,7 @@ final class AppModel {
         applySupersede(discover: discoverPairs, imported: importedPairs,
                        discoverAlbums: discoverAlbumPairs, amLibrary: amLibPairs)
         reconcileEditsAfterBuild(albumEdits: albumEdits, songEdits: songEdits)
-        state = .loaded
+        markCatalogLoaded()
         return true
     }
 
@@ -1259,7 +1259,7 @@ final class AppModel {
             //     superseded merge. A disagreement in EITHER direction still forces the rebuild.
             if hadData, !anyChanged, seedSupersede == amLibSupersedes,
                let seedSignature, seedSignature == provisionalSignature() {
-                state = .loaded
+                markCatalogLoaded()
                 return
             }
             // Merge + edit-overlay + sort + browse-row build for the whole (~90k-row) catalog runs
@@ -1278,7 +1278,7 @@ final class AppModel {
             applySupersede(discover: built.1, imported: built.2,
                            discoverAlbums: built.3, amLibrary: built.4)
             reconcileEditsAfterBuild(albumEdits: albumEdits, songEdits: songEdits)
-            state = .loaded
+            markCatalogLoaded()
         } catch {
             // Refresh failed (e.g. true first launch + offline). Keep whatever is already on
             // screen; only blank to an error when we have nothing seeded/loaded.
@@ -1472,6 +1472,17 @@ final class AppModel {
     /// choke point where a fresh `indexPlaylists` goes live. Wired at app init to the
     /// collections' converted-pocket source sync (gated there by the Settings toggle).
     var onCatalogAssigned: (() -> Void)?
+
+    /// Fired whenever a load/refresh pass ends in `.loaded` — INCLUDING the unchanged-refresh
+    /// fast path that never calls `assign` and the launch path whose `assign` (and so
+    /// `onCatalogAssigned`) ran while `state` was still `.loading`. The Mix downloader re-checks
+    /// its crate shortfall here, so "catalog still loading" can't outlive the load.
+    var onCatalogLoaded: (() -> Void)?
+
+    private func markCatalogLoaded() {
+        state = .loaded
+        onCatalogLoaded?()
+    }
 
     /// Assign a fully-derived catalog to `@MainActor` state in one atomic step.
     private func assign(_ d: Derived) {

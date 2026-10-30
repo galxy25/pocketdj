@@ -56,6 +56,62 @@ final class IntentServicesTests: XCTestCase {
         return (services, collections, app)
     }
 
+    // MARK: Mix → Now Playing fallback (fix/mix-automix-crate-stall review MUST 1+2)
+
+    /// The "Play in Now Playing" hand-off must leave exactly ONE audio owner: the downloader's
+    /// start-on-landing arm dies (no surprise Auto-DJ when the token heals and a song lands),
+    /// hand-played decks pause, the bar hides, and Now Playing runs the crates' union.
+    func testMixFallbackHandsOffToNowPlayingWithOneAudioOwner() async throws {
+        let (services, collections, _) = await makeServices(burnedIds: ["sng_1"])
+        let a = collections.createPocket("After Midnight")
+        collections.addSong("sng_1", toPocket: a.id)
+        collections.addSong("sng_2", toPocket: a.id)
+        let b = collections.createPocket("Moon Walk")
+        collections.addSong("sng_2", toPocket: b.id)     // shared with A
+        collections.addSong("sng_3", toPocket: b.id)
+        let d = CollectionMixDownloader(engine: services.mix, burns: services.burns,
+                                        rips: services.rips, transfers: nil)
+        d.resolveRipIds = { src in
+            if case .pocket(let id) = src { return collections.ripIds(forPocket: id) }
+            return []
+        }
+        d.resolveLoadables = { _ in [] }
+        d.songLengthSeconds = { _ in nil }
+        d.songTitleArtist = { (title: $0, artist: "A") }
+        services.mixDownloader = d
+        d.begin(sources: [.pocket(a.id), .pocket(b.id)])
+        XCTAssertTrue(d.isActive)
+        d.noteAutoStarted(initialIds: [], lead: 15, fade: 3, label: "After Midnight")   // ▶ with nothing on disk
+        XCTAssertTrue(d.autoStartPendingForTesting)
+
+        // A hand-played deck, when this host has audio.
+        services.mix.ensureEngine()
+        let decks = services.mix.isReady
+        if decks {
+            services.mix.load(songId: "sng_1", title: "T", artist: "A", bpm: 120,
+                              camelot: nil, key: nil, albumId: nil, on: .a)
+            services.mix.play(.a)
+            XCTAssertTrue(services.mix.isRunning)
+        }
+
+        let n = services.playMixCratesInNowPlaying([.pocket(a.id), .pocket(b.id)],
+                                                   names: ["After Midnight", "Moon Walk"], shuffle: false)
+
+        XCTAssertEqual(n, 3, "the crates' UNION (sng_2 once)")
+        XCTAssertEqual(Set(services.setlistPlayer.queue.map(\.id)), ["sng_1", "sng_2", "sng_3"])
+        XCTAssertTrue(services.setlistPlayer.isRunning)
+        XCTAssertFalse(d.isActive, "the download run is cancelled → the bar + button hide")
+        XCTAssertFalse(d.autoArmedForTesting, "the start-on-landing arm is disarmed")
+        XCTAssertFalse(d.autoStartPendingForTesting)
+        XCTAssertFalse(services.mix.autoMixing)
+        if decks { XCTAssertFalse(services.mix.isRunning, "hand-played decks pause — no double audio") }
+
+        // Later (token healed): a song lands → still no Auto-DJ over Now Playing.
+        d.simulateLandingForTesting("sng_2")
+        XCTAssertFalse(services.mix.autoMixing, "no surprise start after the hand-off")
+        if decks { services.mix.teardown() }
+    }
+
     // MARK: Play playlist / pocket
 
     func testPlayPlaylistSnapshotsNowPlayingAndStartsSequencer() async throws {

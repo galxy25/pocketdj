@@ -3968,8 +3968,18 @@ final class MixEngine {
             autoQueue.remove(at: j)                    // permanently unloadable — drop it
             if autoNextToLoad > j { autoNextToLoad -= 1 }
         }
-        if !deferred.isEmpty { advLog("no loadable next — \(deferred.count) deferred (stream gate closed)") }
+        if !deferred.isEmpty { logNoLoadableNext(deferred.count) }
         return false
+    }
+
+    /// The idle tick calls `ensureNextPreloaded` many times a second while the gate is closed —
+    /// the 2026-10-30 iPad session streamed ~10 identical "no loadable next — 397 deferred"
+    /// lines PER SECOND, burying the real evidence. Log on a count change, else every 30 s.
+    @ObservationIgnored private var lastNoLoadableLog: (count: Int, at: Date)?
+    private func logNoLoadableNext(_ count: Int, now: Date = Date()) {
+        if let last = lastNoLoadableLog, last.count == count, now.timeIntervalSince(last.at) < 30 { return }
+        lastNoLoadableLog = (count, now)
+        advLog("no loadable next — \(count) deferred (stream gate closed)")
     }
 
     /// Load the first loadable queue item at or after slot `p` onto `deck`, moving it INTO `p`.

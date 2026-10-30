@@ -1653,7 +1653,9 @@ final class BurnStore {
     /// songs). Per-item try/catch → partial success; disk-full aborts the remainder.
     /// Empty input is a no-op.
     @discardableResult
-    func burn(_ songs: [(id: String, title: String, artist: String)]) async -> BurnResult {
+    /// `automatic`: a background caller (the Mix download lane) — honours the rejected-token
+    /// re-probe hold. A USER burn always probes immediately (the user may have just fixed it).
+    func burn(_ songs: [(id: String, title: String, artist: String)], automatic: Bool = false) async -> BurnResult {
         stopRequested = false   // Feature 1: fresh STOP signal for this run.
         // Reset the coordinator's run-scoped progress counters so a 2nd burn doesn't show
         // "Burning 4 of 5" (the totals are NOT monotonic across runs).
@@ -1741,17 +1743,22 @@ final class BurnStore {
             // queued behind others in `transfers` for a while before its turn runs.
             // Serverless falls back to the direct URL (see RipsStore.ensureURL) — there's
             // no rip-server to presign against.
+            // An AUTOMATIC burn inside a rejected token's re-probe window: don't spend a guaranteed 401.
             var presigned = rips.hasServer
-                ? try? await rips.presignedURL(for: song.id, ttlSeconds: 21_600)
+                ? (automatic && rips.authHoldoff ? nil : try? await rips.presignedURL(for: song.id, ttlSeconds: 21_600))
                 : rips.cachedURL(song.id)
             // FUNNEL FLAKINESS (TV field 2026-09-03): a presign occasionally eats its full 12 s
             // timeout on a cold ingress path while the immediate retry rides a warm one — and on
             // this serial lane one slow track dams the whole run. One retry, then the error.
-            if presigned == nil, rips.hasServer {
+            // …but never retry a REJECTED token: the second 401 is guaranteed and only doubles
+            // the server-side noise (the 2026-10-30 iPad run: 2 presigns × every track).
+            if presigned == nil, rips.hasServer, !rips.isAuthRejected {
                 presigned = try? await rips.presignedURL(for: song.id, ttlSeconds: 21_600)
             }
             guard let durableURL = presigned else {
-                items[song.id] = errorItem(song, message: "couldn't get a playback URL — check the rip server")
+                items[song.id] = errorItem(song, message: rips.isAuthRejected
+                    ? "import server rejected this device's token — re-enter it in Settings ▸ Import server"
+                    : "couldn't get a playback URL — check the rip server")
                 result.notRipped += 1
                 continue
             }

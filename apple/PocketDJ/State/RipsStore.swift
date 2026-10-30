@@ -248,6 +248,54 @@ final class RipsStore {
     var serverUrl: String { (settings?.ripServerURL ?? "").trimmingCharacters(in: .whitespaces).trimmedTrailingSlash }
     var token: String { (settings?.ripToken ?? "").trimmingCharacters(in: .whitespaces) }
     var hasServer: Bool { !serverUrl.isEmpty }
+
+    // MARK: Auth rejection (401/403) — observed, self-clearing
+
+    /// The token value the server last REJECTED (401/403), nil once any authed call succeeds.
+    /// Stored as the token itself (in memory only — never logged/persisted) so the rejection
+    /// clears by construction the moment the token CHANGES (re-typed, or healed by credsync)
+    /// without anyone having to remember to reset it.
+    @ObservationIgnored private var rejectedToken: String?
+    /// When the current rejection was (last) observed — the re-probe backoff clock.
+    @ObservationIgnored private var rejectedAt: Date?
+    /// Bumped on every rejection/clear so observers (the Mix progress bar) re-render.
+    private(set) var authStateRevision = 0
+    /// After a rejection, automatic callers (stream gate, burn lane) hold off this long before
+    /// letting ONE more authed request through — the server's token may have been fixed to
+    /// match (a 2xx then clears the rejection for everyone). Test-dialable.
+    static var authReprobeSeconds: TimeInterval = 120
+    /// Clock seam (tests script the re-probe window).
+    @ObservationIgnored var authNow: () -> Date = { Date() }
+    /// The server rejected the CURRENT token — every presign/rip on this device will 401 until
+    /// it changes. Distinct from "server down". Sticky (UI reads this) until the token changes
+    /// or an authed call succeeds.
+    var isAuthRejected: Bool {
+        _ = authStateRevision            // observation hook (`rejectedToken` itself is ignored)
+        return hasServer && rejectedToken != nil && rejectedToken == token
+    }
+    /// Automatic (non-user) authed traffic should be held back right now: rejected, and the
+    /// re-probe window since the last rejection hasn't elapsed.
+    var authHoldoff: Bool {
+        guard isAuthRejected, let at = rejectedAt else { return false }
+        return authNow().timeIntervalSince(at) < Self.authReprobeSeconds
+    }
+    /// Record an HTTP status from an authed rip-server call (401/403 ⇒ rejected, 2xx ⇒ ok).
+    func noteAuthStatus(_ status: Int, token tok: String) {
+        if status == 401 || status == 403 {
+            rejectedAt = authNow()
+            if rejectedToken != tok {
+                rejectedToken = tok
+                authStateRevision &+= 1
+                DiagLog.shared.log("error",
+                    "ripauth rejected status=\(status) tokenPresent=\(!tok.isEmpty) — every presign/rip on this device will fail until the token changes (Settings ▸ Import server)")
+            }
+        } else if (200..<300).contains(status), rejectedToken != nil {
+            rejectedToken = nil
+            rejectedAt = nil
+            authStateRevision &+= 1
+            DiagLog.shared.log("ripauth", "accepted again status=\(status)")
+        }
+    }
     /// When on, requests ask the server to prefer the user's CLOUD-library copy of a song
     /// over their local/analog one. Sent in the POST body only when true (older servers
     /// ignore it).
@@ -507,6 +555,11 @@ final class RipsStore {
         /// local files and must NEVER hit the import server (defense-in-depth; the server
         /// rejects them too). Surfacing an explicit error beats a confusing server 4xx.
         case studioItem
+        /// The import server answered 401/403: THIS device's token is missing or wrong (the
+        /// 2026-10-30 iPad Mix stall — every presign + `/rip-collection` 401'd while the UI
+        /// sat on "4 ripping" forever and the stream gate called it "server down"). Retrying
+        /// with the same token can never succeed, so callers surface it instead of looping.
+        case unauthorized
 
         /// NOTE: the "Settings ▸ Import server" pointers here and in the `discoverError`
         /// strings below name a REAL section — SettingsView's `Text("Import server")` header
@@ -521,6 +574,7 @@ final class RipsStore {
             case .timedOut:           return "Rip timed out."
             case .stillRipping:       return "Still ripping — this track will be playable in a few minutes."
             case .studioItem:         return "Studio items play from their own files — they can’t be ripped."
+            case .unauthorized:       return "The import server rejected this device’s token (Settings ▸ Import server)."
             }
         }
     }
@@ -558,7 +612,11 @@ final class RipsStore {
         guard let requestUrl = comps.url else { throw RipError.noServer }
         var request = URLRequest(url: requestUrl)
         request.timeoutInterval = 12
-        applyAuth(&request, token: token)
+        // Capture the token the request is SENT with: the rejection must be charged to it, not
+        // to whatever the token is when the response returns (a re-typed / credsync-healed
+        // token mid-flight would otherwise be marked rejected by the old token's 401).
+        let tok = token
+        applyAuth(&request, token: tok)
         // SILENT-PARK INSTRUMENTATION (2026-09-13): plays occasionally hang with no error
         // and no advance despite the 12 s request timeout (Cameo 02:24Z / Weston 02:42Z —
         // both healed on retry once the phone's route to the server recovered). A start
@@ -574,6 +632,8 @@ final class RipsStore {
         }
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1
         DiagLog.shared.telemetry("ripreq", "presign end song=\(songId) status=\(status) elapsedMs=\(Int(-t0.timeIntervalSinceNow * 1000))")
+        noteAuthStatus(status, token: tok)
+        if status == 401 || status == 403 { throw RipError.unauthorized }
         guard (200..<300).contains(status) else {
             throw RipError.serverError(nil)
         }
@@ -1784,6 +1844,11 @@ final class RipsStore {
     struct BatchRipResult: Equatable {
         var results: [BatchRipItem] = []
         var ready = 0, queued = 0, inflight = 0, unknown = 0, total = 0
+        /// The batch was REFUSED outright (non-2xx, not the 404 fallback): nothing was queued
+        /// server-side. nil = accepted (or the per-song fallback ran). Lets the Mix rip lane
+        /// tell "4 ripping" from "4 never reached the server".
+        var refusedStatus: Int? = nil
+        var unauthorized: Bool { refusedStatus == 401 || refusedStatus == 403 }
     }
 
     /// The `/rip-collection` response envelope.
@@ -1820,10 +1885,16 @@ final class RipsStore {
             let body: [String: Any] = ripFromCloud ? ["songIds": ids, "ripFromCloud": true] : ["songIds": ids]
             post.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, response) = try await session.data(for: post)
-            guard let http = response as? HTTPURLResponse else { return await ripCollectionFallback(ids) }
+            guard let http = response as? HTTPURLResponse else {
+                return BatchRipResult(total: ids.count, refusedStatus: Self.transportFailureStatus)
+            }
             // Older server without the batch endpoint → fall back to a per-song loop.
             if http.statusCode == 404 { return await ripCollectionFallback(ids) }
-            guard (200..<300).contains(http.statusCode) else { return BatchRipResult() }
+            noteAuthStatus(http.statusCode, token: tok)
+            guard (200..<300).contains(http.statusCode) else {
+                DiagLog.shared.log("error", "ripCollection refused status=\(http.statusCode) ids=\(ids.count)")
+                return BatchRipResult(total: ids.count, refusedStatus: http.statusCode)
+            }
 
             let decoded = try JSONDecoder().decode(BatchRipResponse.self, from: data)
             // Record the queued/inflight jobs so the row's phase label updates.
@@ -1838,9 +1909,17 @@ final class RipsStore {
                 inflight: decoded.counts.inflight, unknown: decoded.counts.unknown,
                 total: decoded.counts.total)
         } catch {
-            return await ripCollectionFallback(ids)
+            // Transport / decode failure is NOT "older server": the per-song fallback would fire
+            // one POST /rip per id (~400 for a two-crate Mix) and report success, so the Mix rip
+            // lane would clear its issue and re-run that storm on every retry. Report a failed
+            // batch instead and let the caller back off. (Only a 404 means "no batch endpoint".)
+            DiagLog.shared.log("error", "ripCollection transport failure ids=\(ids.count) err=\((error as NSError).domain)#\((error as NSError).code)")
+            return BatchRipResult(total: ids.count, refusedStatus: Self.transportFailureStatus)
         }
     }
+
+    /// `BatchRipResult.refusedStatus` for a batch that never got an HTTP answer.
+    nonisolated static let transportFailureStatus = -1
 
     /// Per-song fallback when `/rip-collection` is unavailable: loop `requestRipIfNeeded`
     /// and synthesize counts from what we can observe. Classifies each song by the ACTUAL

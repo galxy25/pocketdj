@@ -154,6 +154,13 @@ final class CollectionRipBurnController {
             // removed together with the server's Apple Music capture path
             // (rip-server.mjs:549 analog-on-library-match, :798 digital-always).
             if pending > 0 { parts.append("prepared one at a time") }
+            if r.unauthorized {
+                parts = ["Import server rejected this device’s token (Settings ▸ Import server) — nothing was queued"]
+            } else if let st = r.refusedStatus {
+                parts = [st == RipsStore.transportFailureStatus
+                         ? "Couldn’t reach the import server — nothing was queued"
+                         : "Import server error \(st) — nothing was queued"]
+            }
             summary = parts.isEmpty ? "Nothing to rip." : parts.joined(separator: " · ")
             canRefresh = pending > 0 || r.ready > 0
             working = false

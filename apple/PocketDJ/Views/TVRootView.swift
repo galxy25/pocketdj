@@ -166,10 +166,12 @@ struct TVNowPlayingView: View {
 /// transient state, not an error.
 private struct TVCatalogShortfallLabel: View {
     let shortfall: (declared: Int, total: Int)
+    var stillLoading: Bool = true
     var a11yId: String
 
     var body: some View {
-        Label("Only \(shortfall.total) of \(shortfall.declared) songs available on this device — catalog still loading",
+        Label(CollectionMixDownloader.shortfallCaption(declared: shortfall.declared, total: shortfall.total,
+                                                       stillLoading: stillLoading),
               systemImage: "arrow.triangle.2.circlepath")
             .font(.callout)
             .foregroundStyle(Theme.fgDim)
@@ -287,7 +289,8 @@ struct TVMixView: View {
             if downloader.isActive && downloader.downloadedCount < downloader.totalCount {
                 Label {
                     Text("Downloading \(downloader.downloadedCount) of \(downloader.totalCount)"
-                         + (downloader.rippingCount > 0 ? " · \(downloader.rippingCount) ripping" : "")
+                         + (CollectionMixDownloader.rippingLabel(count: downloader.rippingCount,
+                                                                 issue: downloader.laneIssue).map { " " + $0 } ?? "")
                          + " — the mix starts when the first track lands")
                         .font(.callout.monospacedDigit())
                 } icon: {
@@ -301,7 +304,7 @@ struct TVMixView: View {
             // the "two crates → total=1" field case (nothing left to download, catalog just
             // never had the members) is never silent.
             if let shortfall = downloader.catalogShortfall {
-                TVCatalogShortfallLabel(shortfall: shortfall, a11yId: "tv-mix-catalog-shortfall")
+                TVCatalogShortfallLabel(shortfall: shortfall, stillLoading: downloader.catalogStillLoading, a11yId: "tv-mix-catalog-shortfall")
             }
         }
         .padding(36)
@@ -608,7 +611,7 @@ struct TVMixNowPlayingCard: View {
                     // Same start-time snapshot the Mix tab shows — the Now Playing tab is where
                     // a TV viewer actually watches a running mix, so it gets the notice too.
                     if let shortfall = downloader.catalogShortfall {
-                        TVCatalogShortfallLabel(shortfall: shortfall, a11yId: "tv-np-mix-catalog-shortfall")
+                        TVCatalogShortfallLabel(shortfall: shortfall, stillLoading: downloader.catalogStillLoading, a11yId: "tv-np-mix-catalog-shortfall")
                     }
                 }
                 queueSection
@@ -1077,7 +1080,7 @@ struct TVMixLiveSurface: View {
             // landing, so a crate that never got its full membership past the catalog this
             // run isn't silently mixing fewer songs than it declared.
             if let shortfall = downloader.catalogShortfall {
-                TVCatalogShortfallLabel(shortfall: shortfall, a11yId: "tv-mix-catalog-shortfall")
+                TVCatalogShortfallLabel(shortfall: shortfall, stillLoading: downloader.catalogStillLoading, a11yId: "tv-mix-catalog-shortfall")
             }
         }
         .padding(36)

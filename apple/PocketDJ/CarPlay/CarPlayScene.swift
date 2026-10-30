@@ -303,7 +303,7 @@ final class CarPlayController {
     /// (informational, mirrors the TV's non-alarming banner).
     private func catalogShortfallSection(_ shortfall: (declared: Int, total: Int)) -> CPListSection {
         let row = CPListItem(text: "Only \(shortfall.total) of \(shortfall.declared) songs available",
-                             detailText: "Catalog still loading on this device")
+                             detailText: "Rest not in this device’s catalog yet — re-checks as it loads")
         return CPListSection(items: [row])
     }
 

@@ -278,6 +278,40 @@ final class IntentServices {
         return name
     }
 
+    /// ZERO-DEAD-AIR escape hatch for a Mix that can't fetch audio (the import server rejected
+    /// this device's token / no server — the 2026-10-30 iPad stall, where Auto Mix took the
+    /// audio session from a playing pocket and then aired silence): stop the auto-mix and play
+    /// the crates' UNION in Now Playing, whose backends (Apple Music first) need no rip server.
+    /// Returns the queued track count (0 ⇒ nothing resolvable; the mix is left alone).
+    @discardableResult
+    func playMixCratesInNowPlaying(_ sources: [MixSource], names: [String], shuffle: Bool = true) -> Int {
+        var seen = Set<String>()
+        var ids: [String] = []
+        for src in sources {
+            let part: [String]
+            switch src {
+            case .pocket(let id):   part = collections.playableIds(forPocket: id)
+            case .playlist(let id): part = collections.playableIds(forPlaylist: id)
+            case .setlist(let id):  part = collections.playableIds(forSetlist: id)
+            }
+            for id in part where seen.insert(id).inserted { ids.append(id) }
+        }
+        guard !ids.isEmpty else { return 0 }
+        let name = names.isEmpty ? "Mix crates" : names.joined(separator: " + ")
+        guard let set = collections.playNow(songIds: ids, name: name, shuffle: shuffle, source: .mix),
+              !set.tracks.isEmpty else { return 0 }
+        // ONE audio owner after the hand-off (review MUST 1+2):
+        //  • the downloader's start-on-landing arm must die — otherwise the first song that
+        //    lands once the token heals starts Auto-DJ over Now Playing (`cancel` disarms the
+        //    continuation, stops the lanes and hides the bar);
+        //  • hand-played decks (running without Auto-DJ) pause too, not just an auto-mix.
+        mixDownloader?.cancel()
+        if mix.autoMixing { mix.stopAutoMix() } else if mix.isRunning { mix.pauseBoth() }
+        DiagLog.shared.log("mixdl", "fallback → Now Playing: \(set.tracks.count) tracks from \(sources.count) crate(s)")
+        startNowPlaying(set)
+        return set.tracks.count
+    }
+
     /// Start the sequencer on the freshly-upserted Now Playing setlist — the same
     /// track→item mapping SetlistDetailView.playableItems does (text cues stripped).
     private func startNowPlaying(_ set: Setlist) {
