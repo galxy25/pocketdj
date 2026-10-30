@@ -124,9 +124,9 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
-        // Android Auto can bind this service in a process with NO activity (post-death car connect): re-park the
-        // persisted mix here too (once-per-process idempotent; file read off Main).
-        runCatching { com.levi.pocketdj.di.AppGraph.get(applicationContext).let { it.startPlayback(); it.mixGraph.launchRestore() } }
+        // The PLAYBACK-tier graph (+ persisted-mix re-park) is started by the first controller that is NOT System UI's
+        // boot-time media-resumption bind (see ensurePlaybackGraph / PlaybackStartGate): building it here would spin up
+        // the whole graph, its loops and a hosted jukebox party on every device boot.
         // PB-3: `pdj-resolve://song/<id>` rows (rip-on-demand inside a run) load immediately and resolve their
         // real url on the loader thread; every other uri passes through the resolver untouched.
         val dataSources = com.levi.pocketdj.playback.session.ResolvingSongDataSource.wrap(
@@ -201,6 +201,7 @@ class PlaybackService : MediaLibraryService() {
         val forwarding = SequencerForwardingPlayer(
             player, DeferredControl, board = SessionSwitchboard.shared,
             restoreForResumption = { held ->
+                ensurePlaybackGraph()
                 runCatching { com.levi.pocketdj.di.AppGraph.get(applicationContext).playbackGraph.resumptionProvider.restore(held) }
             },
         )
@@ -241,11 +242,25 @@ class PlaybackService : MediaLibraryService() {
         // stateChanged events fired before this hook existed, so seed the gate now (else the first
         // row shows no next/prev/repeat/shuffle and media-session `next` is dropped).
         forwarding.syncGate()
+    }
+
+    private val graphStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Start the PLAYBACK tier (sequencer wiring, stats, widgets, recs) and re-park the persisted mix, once per service
+     * instance. Android Auto can bind in a process with NO activity (post-death car connect), so a real controller's
+     * connect is the trigger, not onCreate. Idempotent (StartupLedger + launchRestore are once-per-process).
+     */
+    private fun ensurePlaybackGraph() {
+        if (!graphStarted.compareAndSet(false, true)) return
+        runCatching { com.levi.pocketdj.di.AppGraph.get(applicationContext).let { it.startPlayback(); it.mixGraph.launchRestore() } }
         watchPlacesToggle()
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
-        mediaSession
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
+        if (PlaybackStartGate.startsGraph(controllerInfo.packageName)) ensurePlaybackGraph()
+        return mediaSession
+    }
 
     /**
      * A widget / Bluetooth media button starts this service with startForegroundService(). Media3 only
@@ -255,6 +270,8 @@ class PlaybackService : MediaLibraryService() {
      * notification replaces it in place), then drop it again if nothing started playing.
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A widget / headset / Bluetooth media button is a user action: wire playback before Media3 dispatches it.
+        if (intent?.action == Intent.ACTION_MEDIA_BUTTON) ensurePlaybackGraph()
         val result = super.onStartCommand(intent, flags, startId)
         if (intent?.action == Intent.ACTION_MEDIA_BUTTON) {
             runCatching {

@@ -62,3 +62,13 @@
 -dontwarn org.openjsse.**
 -dontwarn com.google.api.client.**
 -dontwarn org.joda.time.**
+
+# --- ShazamKit (vendored AAR) -> Retrofit 2.9 + Gson ----------------------------------------
+# ShazamKit's RecognitionEndpoint is a Retrofit `suspend` interface. Retrofit 2.9's embedded rules
+# predate R8 full mode (AGP 8 default), which strips generic signatures from classes that are not
+# kept; Retrofit then cannot read the Continuation/Call/Response type arguments at runtime. These
+# are the rules Retrofit 2.10+ ships (harmless with -dontobfuscate).
+-keep,allowobfuscation,allowshrinking interface retrofit2.Call
+-keep,allowobfuscation,allowshrinking class retrofit2.Response
+-keep,allowobfuscation,allowshrinking class kotlin.coroutines.Continuation
+-dontwarn retrofit2.**
