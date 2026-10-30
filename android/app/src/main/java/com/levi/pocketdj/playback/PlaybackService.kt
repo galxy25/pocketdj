@@ -293,7 +293,9 @@ class PlaybackService : MediaLibraryService() {
 
     // ---- ANS-LOC-1: location FGS type while audio plays with places & trips on --------------------
 
-    private var lastFgsTypes = -1
+    private val fgsTracker = com.levi.pocketdj.data.location.FgsTypeTracker()
+    private var fgsRetries = 0
+    private var lastPlacesEnabled: Boolean? = null
     private val fgsHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private var placesRevisionJob: kotlinx.coroutines.Job? = null
 
@@ -305,7 +307,7 @@ class PlaybackService : MediaLibraryService() {
     private fun syncLocationFgsType() {
         runCatching {
             val playing = mediaSession?.player?.isPlaying == true
-            if (!playing) { lastFgsTypes = -1; return }
+            if (!playing) { fgsTracker.reset(); fgsRetries = 0; return }
             val placesOn = com.levi.pocketdj.di.AppGraph.get(applicationContext).collectionsGraph.locationStore.isEnabled
             val types = com.levi.pocketdj.data.location.LocationFgsPolicy.types(
                 playing = true,
@@ -313,18 +315,37 @@ class PlaybackService : MediaLibraryService() {
                 whileInUseGranted = com.levi.pocketdj.data.location.LocationSettings.hasWhileInUse(this),
                 sdk = android.os.Build.VERSION.SDK_INT,
             )
-            if (types == lastFgsTypes) return
+            if (!fgsTracker.shouldApply(types)) return
             val nm = getSystemService(android.app.NotificationManager::class.java)
             val n = nm.activeNotifications.firstOrNull { it.id == BOOT_NOTIFICATION_ID }?.notification
             if (n == null) {
                 // Media3 posts its notification a beat after isPlaying flips: retry once.
-                fgsHandler.removeCallbacks(fgsRetry)
-                fgsHandler.postDelayed(fgsRetry, 1_500L)
+                if (fgsRetries++ < MAX_FGS_RETRIES) {
+                    fgsHandler.removeCallbacks(fgsRetry)
+                    fgsHandler.postDelayed(fgsRetry, 1_500L)
+                }
                 return
             }
-            androidx.core.app.ServiceCompat.startForeground(this, BOOT_NOTIFICATION_ID, n, types)
-            lastFgsTypes = types
+            fgsRetries = 0
+            try {
+                androidx.core.app.ServiceCompat.startForeground(this, BOOT_NOTIFICATION_ID, n, types)
+                fgsTracker.applied(types)
+            } catch (t: Throwable) {
+                // Background-start restrictions (Android 11+/14+) can refuse the location type; best-effort.
+                fgsTracker.applied(types)
+                com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.PLAYBACK, "fgs location upgrade refused types=$types: ${t.javaClass.simpleName} ${t.message}")
+            }
         }
+    }
+
+    /** Media3 re-promotes with mediaPlayback only on every notification update; re-apply ours afterwards. */
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        super.onUpdateNotification(session, startInForegroundRequired)
+        fgsTracker.onMedia3Promoted()
+        syncLocationFgsType()
+        // The provider may post asynchronously (artwork); re-assert shortly after.
+        fgsHandler.removeCallbacks(fgsRetry)
+        fgsHandler.postDelayed(fgsRetry, 400L)
     }
 
     private val fgsRetry = Runnable { syncLocationFgsType() }
@@ -333,7 +354,14 @@ class PlaybackService : MediaLibraryService() {
         placesRevisionJob?.cancel()
         placesRevisionJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main).launch {
             runCatching {
-                com.levi.pocketdj.di.AppGraph.get(applicationContext).collectionsGraph.locationStore.revisionFlow.collect { lastFgsTypes = -1; syncLocationFgsType() }
+                com.levi.pocketdj.di.AppGraph.get(applicationContext).collectionsGraph.locationStore.revisionFlow.collect {
+                    val on = com.levi.pocketdj.di.AppGraph.get(applicationContext).collectionsGraph.locationStore.isEnabled
+                    if (on != lastPlacesEnabled) {
+                        lastPlacesEnabled = on
+                        fgsTracker.reset()
+                        syncLocationFgsType()
+                    }
+                }
             }
         }
     }
@@ -341,6 +369,7 @@ class PlaybackService : MediaLibraryService() {
     companion object {
         private const val BOOT_CHANNEL = "pdj_playback_boot"
         private const val MAX_SETTLE_CHECKS = 12
+        private const val MAX_FGS_RETRIES = 5
         /** Media3's DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID. */
         private const val BOOT_NOTIFICATION_ID = 1001
     }

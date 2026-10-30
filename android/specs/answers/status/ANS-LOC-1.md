@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 - [x] FOREGROUND_SERVICE_LOCATION permission + PlaybackService foregroundServiceType="mediaPlayback|location"
 - [x] LocationFgsPolicy (pure) + PlaybackService.syncLocationFgsType: re-issues startForeground on Media3's notification with mediaPlayback|location only while playing AND places on AND while-in-use granted; resets when paused / toggled

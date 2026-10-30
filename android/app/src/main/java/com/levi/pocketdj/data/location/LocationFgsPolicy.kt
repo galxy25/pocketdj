@@ -24,3 +24,15 @@ object LocationFgsPolicy {
     /** Coarse OR fine counts as while-in-use (an approximate-only grant still yields movement hints). */
     fun whileInUse(coarse: Boolean, fine: Boolean): Boolean = coarse || fine
 }
+
+/**
+ * Tracks the type mask we last applied. Media3 re-promotes the service (mediaPlayback only) on every
+ * notification update, so [onMedia3Promoted] must invalidate the cache or the location type is never re-added.
+ */
+class FgsTypeTracker {
+    private var last = -1
+    fun shouldApply(types: Int): Boolean = types != last
+    fun applied(types: Int) { last = types }
+    fun onMedia3Promoted() { last = -1 }
+    fun reset() { last = -1 }
+}
