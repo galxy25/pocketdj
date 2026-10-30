@@ -17,6 +17,13 @@ class PocketDjDestinationTest {
     }
 
     @Test
+    fun q7_barShowsThreeTabsAndMoreFoldsTheRest() {
+        assertEquals(listOf("Browse", "History", "Collections"), PocketDjDestination.barTabs.map { it.label })
+        assertEquals(listOf("Jukebox", "Games", "Mix", "Producer"), PocketDjDestination.moreTabs.map { it.label })
+        assertEquals(PocketDjDestination.entries.toSet(), (PocketDjDestination.barTabs + PocketDjDestination.moreTabs).toSet())
+    }
+
+    @Test
     fun phases_matchRoadmap() {
         assertEquals(1, PocketDjDestination.Browse.phase)
         assertEquals(1, PocketDjDestination.History.phase)

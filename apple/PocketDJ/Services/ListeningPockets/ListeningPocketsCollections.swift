@@ -118,6 +118,11 @@ enum ListeningPocketsCollections {
         if id.hasPrefix("pkt_") { return (id, "pocket") }
         if id.hasPrefix("pls_") { return (id, "playlist") }
         if id.hasPrefix("set_") { return (id, "setlist") }
+        // Pocket Wheel run rows: a run tag is never a context, the synthetic Favorites set is not
+        // a collection the server knows, and a catalog source playlist (`pl_`) is a source whatever
+        // surface played it.
+        if id.hasPrefix(PocketWheelIds.runTagPrefix) || id == PocketWheelIds.favorites { return nil }
+        if id.hasPrefix("pl_") { return (id, "source") }
         switch source {
         case .pocket: return (id, "pocket")
         case .playlist: return (id, "source")   // a non-`pls_` playlist id is a catalog source playlist

@@ -43,6 +43,11 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { POCKET_PARAMS, POCKET_LIMITS } from './params.mjs';
 import { computeResults, emptyResults } from './analyze.mjs';
 import { loadFeatures } from './features.mjs';
+
+/// What this build of the service understands beyond upload.v1 — echoed on every POST /events.
+/// The app sends the Pocket Wheel fields (`mode`, `run`) only after seeing `wheel` here, so a play
+/// is never acknowledged (fingerprinted) by a server that would have dropped those fields.
+export const SERVER_CAPS = ['wheel'];
 import {
   Precondition, readEvents, writeEvents, readResults, readResultsVersioned, writeResults, deleteResults,
   deleteProfile, countProfiles, listProfileHashes, listResultHashes, cleanEvent, cleanLabels, mergeEvents, mergeCollectionsUpload,
@@ -345,7 +350,7 @@ export async function handler(event, context) {
           return {
             changed: merged.changed || labelsChanged || cols.changed,
             answer: () => ({ ok: true, accepted: merged.accepted, updated: merged.updated, unchanged: merged.unchanged,
-              rejected, total: doc.events.length, dirty: !!doc.dirty }),
+              rejected, total: doc.events.length, dirty: !!doc.dirty, caps: SERVER_CAPS }),
           };
         });
       }

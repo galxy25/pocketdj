@@ -123,7 +123,10 @@ final class CarPlayModel {
 
     func playPlaylist(id: String, shuffle: Bool = false) async {
         if let sp = sourcePlaylist(id) {
-            try? await services.playSongIds(sp.songIds, name: sp.name, shuffle: shuffle, source: .playlist)
+            // The source playlist's id rides as the play's origin (Pocket Wheel colour / pockets
+            // × collections) — this path used to record no origin at all.
+            try? await services.playSongIds(sp.songIds, name: sp.name, shuffle: shuffle, source: .playlist,
+                                            originId: sp.id)
         } else {
             try? await services.playPlaylist(id: id, shuffle: shuffle)
         }

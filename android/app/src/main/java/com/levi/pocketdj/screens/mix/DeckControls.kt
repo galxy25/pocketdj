@@ -301,6 +301,28 @@ fun StepButton(
 fun Modifier.combinedClickableSimple(enabled: Boolean = true, onClick: () -> Unit): Modifier =
     this.combinedClickable(enabled = enabled, onClick = onClick)
 
+/** A value <-> slider-position mapping for [DeckSlider]. */
+interface SliderMapping {
+    val sliderRange: ClosedFloatingPointRange<Double>
+    fun toSlider(value: Double): Double
+    fun fromSlider(position: Double): Double
+}
+
+/**
+ * Tempo 0.5x..2.0x on a log2 track: 0.5x, 1.00x and 2.0x sit at left, centre and right (a linear
+ * 0.5..2.0 track put 1.00x at a third, unlike Pitch 0 at centre). Near-centre drags snap to 1.00x.
+ */
+object TempoSliderMapping : SliderMapping {
+    override val sliderRange: ClosedFloatingPointRange<Double> = -1.0..1.0
+    const val SNAP = 0.015
+    override fun toSlider(value: Double): Double = kotlin.math.ln(value.coerceAtLeast(1e-6)) / kotlin.math.ln(2.0)
+    override fun fromSlider(position: Double): Double {
+        if (kotlin.math.abs(position) < SNAP) return 1.0
+        val v = Math.pow(2.0, position.coerceIn(-1.0, 1.0))
+        return Math.round(v * 100) / 100.0
+    }
+}
+
 /** Labelled slider (title + live value) flanked by −/＋ steppers. Pushes straight into the engine. */
 @Composable
 fun DeckSlider(
@@ -314,6 +336,8 @@ fun DeckSlider(
     tint: Color = DeckColors.accent,
     valueColor: Color = DeckColors.fg,
     spokenValue: String? = null,
+    /** Optional value <-> slider-position mapping (Tempo: log2 so 1.00x sits mid-track like Pitch 0). */
+    mapping: SliderMapping? = null,
     onChange: (Double) -> Unit,
 ) {
     Column(modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -325,10 +349,11 @@ fun DeckSlider(
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             StepButton(false, value, range, step, tag, onChange, tint = tint)
+            val sRange = mapping?.sliderRange ?: range
             Slider(
-                value = value.toFloat().coerceIn(range.start.toFloat(), range.endInclusive.toFloat()),
-                onValueChange = { onChange(it.toDouble()) },
-                valueRange = range.start.toFloat()..range.endInclusive.toFloat(),
+                value = (mapping?.toSlider(value) ?: value).toFloat().coerceIn(sRange.start.toFloat(), sRange.endInclusive.toFloat()),
+                onValueChange = { onChange(mapping?.fromSlider(it.toDouble()) ?: it.toDouble()) },
+                valueRange = sRange.start.toFloat()..sRange.endInclusive.toFloat(),
                 colors = SliderDefaults.colors(thumbColor = tint, activeTrackColor = tint, inactiveTrackColor = DeckColors.border),
                 modifier = Modifier
                     .weight(1f)

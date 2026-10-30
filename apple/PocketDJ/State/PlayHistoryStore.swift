@@ -112,6 +112,16 @@ final class PlayHistoryStore {
         /// ADDITIVE-OPTIONAL like `carPlay` (older/peer events decode to nil). Feeds the pockets
         /// upload's `contextId` (pockets × collections); History keeps grouping by `contextId`.
         var originCollectionId: String? = nil
+        /// Dominant CoreMotion activity over this play's audible window — "running" | "walking" |
+        /// "cycling" | "automotive" | "stationary" — settled WRITE-ONCE by `stampMotion` (own
+        /// install only, like `listeningContext`). The raw token is stored; the Pocket Wheel MODE
+        /// is derived at aggregation time so the mapping can change without a migration. nil =
+        /// unknown / not opted in / not yet settled. ADDITIVE-OPTIONAL (the `carPlay` precedent).
+        var motion: String? = nil
+        /// Set only for plays started by a Pocket Wheel run (`PocketRunTag`). ADDITIVE-OPTIONAL.
+        /// `source` stays `.pocket` for these plays on purpose: a new `PlaySource` case would make
+        /// older builds DROP the event (`LenientEvent`) and then push a log without it.
+        var pocketRun: PocketRunTag? = nil
 
         /// What happened to this playback, DERIVED (never stored) so a future outcome token can
         /// never make an event fail to decode: the skip flag wins, then the played fraction.
@@ -125,7 +135,7 @@ final class PlayHistoryStore {
         enum CodingKeys: String, CodingKey {
             case id, songId, playedAt, source, contextId, contextName, title, artist
             case originInstallId, wasSkipped, listenedFraction, tzOffsetMin, listeningContext, carPlay
-            case originCollectionId
+            case originCollectionId, motion, pocketRun
         }
     }
 
@@ -246,6 +256,8 @@ final class PlayHistoryStore {
         var contextName: String?
         /// The collection the run started from (see `PlayEvent.originCollectionId`).
         var originCollectionId: String? = nil
+        /// Set for a Pocket Wheel run row (`PlayEvent.pocketRun`).
+        var pocketRun: PocketRunTag? = nil
 
         static let browser = PlayContext(source: .browser, contextId: nil, contextName: nil)
     }
@@ -274,13 +286,14 @@ final class PlayHistoryStore {
             return nil
         }
         let playedAtDate = Date(timeIntervalSince1970: nowMs / 1000)
-        let event = PlayEvent(id: UUID(), songId: songId, playedAt: nowMs,
+        var event = PlayEvent(id: UUID(), songId: songId, playedAt: nowMs,
                               source: context.source, contextId: context.contextId,
                               contextName: context.contextName, title: title, artist: artist,
                               originInstallId: installId,
                               tzOffsetMin: TimeZone.current.secondsFromGMT(for: playedAtDate) / 60,
                               carPlay: carPlayProbe?(),
                               originCollectionId: context.originCollectionId)
+        event.pocketRun = context.pocketRun
         events.append(event)
         lastPlayedIndex[songId] = max(lastPlayedIndex[songId] ?? 0, nowMs)
         countIndex[songId, default: 0] += 1
@@ -333,6 +346,33 @@ final class PlayHistoryStore {
             changed = true
         }
         guard changed else { return }
+        revision &+= 1
+        save()
+    }
+
+    /// Fill in settled MOTION tokens (the Pocket Wheel's running/walking settle pass). Same
+    /// discipline as `stampContexts`: WRITE-ONCE (a settled token is never overwritten) and
+    /// LOCAL-ONLY (a peer's play is never tagged with how THIS device was moving). One save.
+    func stampMotion(_ tokens: [UUID: String]) {
+        guard !tokens.isEmpty else { return }
+        var changed = false
+        for i in events.indices {
+            guard events[i].motion == nil, let token = tokens[events[i].id], !token.isEmpty,
+                  !isFromAnotherDevice(events[i]) else { continue }
+            events[i].motion = token
+            changed = true
+        }
+        guard changed else { return }
+        revision &+= 1
+        save()
+    }
+
+    /// Tag an already-recorded play as part of a Pocket Wheel run (write-once: a play belongs
+    /// to at most one run). Local-only like the other stamps. Unknown id / already tagged = no-op.
+    func stampPocketRun(eventId: UUID, tag: PocketRunTag) {
+        guard let i = events.lastIndex(where: { $0.id == eventId }), events[i].pocketRun == nil,
+              !isFromAnotherDevice(events[i]) else { return }
+        events[i].pocketRun = tag
         revision &+= 1
         save()
     }
@@ -559,6 +599,14 @@ final class PlayHistoryStore {
                 byId[e.id]?.carPlay = cp
                 absorbedPeerFields = true
             }
+            if mine.motion == nil, let m = e.motion {
+                byId[e.id]?.motion = m
+                absorbedPeerFields = true
+            }
+            if mine.pocketRun == nil, let r = e.pocketRun {
+                byId[e.id]?.pocketRun = r
+                absorbedPeerFields = true
+            }
         }
         // A superset worth publishing exists if WE hold ROWS the pulled document lacks — or
         // per-row SKIP FLAGS it lacks. The flag check closes the relaunch hole: a peer doc
@@ -591,6 +639,8 @@ final class PlayHistoryStore {
         if mine.listeningContext != nil, theirs.listeningContext == nil { return true }
         if mine.tzOffsetMin != nil, theirs.tzOffsetMin == nil { return true }
         if mine.carPlay != nil, theirs.carPlay == nil { return true }
+        if mine.motion != nil, theirs.motion == nil { return true }
+        if mine.pocketRun != nil, theirs.pocketRun == nil { return true }
         return false
     }
 }
@@ -618,6 +668,8 @@ extension PlayHistoryStore.PlayEvent {
         listeningContext = (try? c.decodeIfPresent(ListeningContextTag.self, forKey: .listeningContext)) ?? nil
         carPlay = (try? c.decodeIfPresent(Bool.self, forKey: .carPlay)) ?? nil
         originCollectionId = (try? c.decodeIfPresent(String.self, forKey: .originCollectionId)) ?? nil
+        motion = (try? c.decodeIfPresent(String.self, forKey: .motion)) ?? nil
+        pocketRun = (try? c.decodeIfPresent(PocketRunTag.self, forKey: .pocketRun)) ?? nil
     }
 }
 

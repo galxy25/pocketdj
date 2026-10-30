@@ -23,6 +23,13 @@ enum MixSource: Hashable, Identifiable {
         case .setlist(let id):  return "setlist:\(id)"
         }
     }
+    /// The bare collection id (pocket / playlist / setlist) — what Play History stamps as a Mix
+    /// play's `originCollectionId`, so the Pocket Wheel colours a Mix cell by its crate.
+    var collectionId: String {
+        switch self {
+        case .pocket(let id), .playlist(let id), .setlist(let id): return id
+        }
+    }
 }
 
 /// Glue: load a resolver `MixLoadable` onto a deck without the engine needing to know the
@@ -633,7 +640,8 @@ struct MixView: View {
         let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio,
                     streamable: engine.canStream).loadables(for: src)
         let items = loadables.map { l in
-            MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000)
+            MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000,
+                                  originCollectionId: src.collectionId)
         }
         engine.startAutoMix(items, shuffled: shuffled,
                             lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,

@@ -100,6 +100,14 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
                     )
                 }
             }
+            // Icon-only segments: name the selected one so the seven glyphs are learnable.
+            if (iconOnly) Text(
+                tab.label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp).testTag("studio-tab-caption"),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
         }
         Box(Modifier.fillMaxSize()) {
             if (restored) when (tab) {

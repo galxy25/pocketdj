@@ -50,6 +50,20 @@ class LocationSettingsTest {
         assertEquals("42 % of time", ListeningLocationCopy.share(0.42))
     }
 
+    @Test fun prominentDisclosureMeetsPlayBackgroundLocationWording() {
+        // Play User Data policy: name the data (location), the feature, and background use
+        // ("closed or not in use") before the runtime prompt.
+        for (msg in listOf(ListeningLocationCopy.DISCLOSURE_FOREGROUND, ListeningLocationCopy.DISCLOSURE_BACKGROUND)) {
+            assertEquals(true, msg.contains("collects location data"))
+            assertEquals(true, msg.contains("closed or not in use"))
+            assertEquals(true, msg.contains("Allow all the time"))
+            assertEquals(true, msg.contains("background"))
+            assertEquals(true, msg.contains("optional"))
+            assertEquals(true, msg.contains(ListeningLocationCopy.TOGGLE)) // how to turn it off
+        }
+        assertEquals("No thanks", ListeningLocationCopy.DISCLOSURE_DECLINE)
+    }
+
     @Test fun deniedPermissionIngestsNothing() {
         val clock = 1_750_000_000_000L
         val src = object : ListeningLocationSource {

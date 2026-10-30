@@ -64,8 +64,11 @@ data class NowPlayingUiState(
     val isPreview: Boolean = false,
     val transport: TransportInputs = TransportInputs(false, false, false, true, false),
 ) {
-    /** Shuffle/repeat row exists only while a set runs. */
-    val showModeRow: Boolean get() = runActive
+    /**
+     * Shuffle/repeat row: while a set runs AND for a sounding Browse single (parity ask: a single
+     * gets the same deck; the first tap folds the single into a one-row run, see NowPlayingScreen).
+     */
+    val showModeRow: Boolean get() = runActive || hasTrack
     val repeatHelp: String get() = repeatHelpText(repeatMode)
 }
 

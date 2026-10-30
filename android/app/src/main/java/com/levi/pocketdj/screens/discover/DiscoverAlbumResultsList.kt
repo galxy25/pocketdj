@@ -104,7 +104,7 @@ private fun DiscoverAlbumRow(
                 Text(hit.title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     listOfNotNull(
-                        hit.artist.ifBlank { null }, hit.year?.toString(), hit.trackCount?.let { "$it tracks" },
+                        hit.artist.ifBlank { null }, hit.year?.toString(), hit.trackCount?.let { com.levi.pocketdj.screens.browse.Fmt.count(it, "track") },
                     ).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

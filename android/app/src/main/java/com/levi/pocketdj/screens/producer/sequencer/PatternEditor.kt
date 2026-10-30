@@ -192,10 +192,18 @@ private fun HeaderBar(
 ) {
     var overflow by remember { mutableStateOf(false) }
     var loopMenu by remember { mutableStateOf(false) }
+    // Two rows: the name gets the full width (the transport icons used to truncate it to "Seed Pa…").
+    androidx.compose.foundation.layout.Column {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         IconButton(onClick = onBack, Modifier.size(36.dp).testTag("seq-back")) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to patterns") }
         Text(pattern.name.ifEmpty { "Untitled pattern" }, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
         IconButton(onClick = onRename, Modifier.size(36.dp).testTag("seq-rename-${pattern.id}")) { Icon(Icons.Filled.Edit, "Rename pattern", Modifier.size(18.dp)) }
+    }
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End),
+    ) {
         IconButton(onClick = onRefresh, Modifier.size(36.dp).testTag("seq-refresh")) { Icon(Icons.Filled.Replay, "Reset playhead to start") }
         Box {
             // Tap cycles a loopBars-bar window anchored at the playhead; long-press picks the bar count (default 2).
@@ -234,7 +242,7 @@ private fun HeaderBar(
                 )
             }
         }
-    }
+    }}
 }
 
 @Composable

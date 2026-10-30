@@ -46,6 +46,7 @@ fun interface DeadAirSource {
 }
 
 /** Body of Settings ▸ Debug: build identity, backend, upload status, key import, capture. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     val diag = DiagServices.get(host.graph)
@@ -126,7 +127,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         label = { Text("Paste .pdjdiagkey contents") },
         modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 4,
     )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         Button(enabled = keyText.isNotBlank(), onClick = { pendingText = keyText; importNow(keyText) }) { Text("Import key") }
         OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("From file…") }
         OutlinedButton(enabled = keyId != null, onClick = { host.scope.launch { keyId = withContext(Dispatchers.IO) { diag.importer.remove(); diag.keyId() } } }) { Text("Remove diag key") }
@@ -139,7 +141,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     SettingsDivider()
     SettingsHeader("Recs")
     var timbreStatus by remember { mutableStateOf("Timbre corpus: not loaded") }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = {
             host.scope.launch {
                 timbreStatus = "Timbre corpus: loading…"
@@ -156,7 +159,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }
 
     var editionStatus by remember { mutableStateOf("Edition probe: not run") }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = {
             host.scope.launch {
                 val pref = com.levi.pocketdj.data.edition.EditionSettings.get(host.graph.settings)
@@ -173,7 +177,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }
 
     var seedStatus by remember { mutableStateOf("Seed: idle") }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = {
             host.scope.launch {
                 val ids = withContext(Dispatchers.IO) {
@@ -417,7 +422,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         if (meta != null && ids.size >= 2) ids.add(1, meta.id)
         ids
     }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = {
             host.scope.launch {
                 val ids = pickSeed(); seedIds = ids
@@ -523,7 +529,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             }
         }) { Text("Burn 10") } }
     // SVC-3 verify seeds: the 5 LONGEST ripped digital songs (bigger files so a force-stop can land mid-download).
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         fun burn5(bad: Boolean) {
             host.scope.launch {
                 val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
@@ -577,7 +584,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             "${d.label}:${e.loaded(d)?.songId?.takeLast(4) ?: "-"} play=${e.isPlaying(d)} pos=${"%.1f".format(e.position(d))}/${"%.1f".format(e.duration(d))} rate=${e.rate(d)} vol=${e.volume(d)}"
         }
     }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = {
             host.scope.launch {
                 val e = host.graph.mixGraph.mixEngine
@@ -618,7 +626,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         OutlinedButton(onClick = { showDeckHarness = true }) { Text("Mix: deck UI") }
     }
     if (showDeckHarness) com.levi.pocketdj.screens.mix.DebugDeckHarness(host.graph) { showDeckHarness = false }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = { mixStatus = "Mix status: ${mixLine()}" }) { Text("Mix: status") }
         OutlinedButton(onClick = {
             val e = host.graph.mixGraph.mixEngine
@@ -641,7 +650,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         val u = dj.ui.value
         return "AutoDJ mixing=${u.mixing} paused=${u.paused} trans=${u.transitioning} pos=${u.livePos}/${u.queueSize} deck=${u.liveDeck.label} status=${u.status} buf=${host.graph.mixGraph.mixStreamDecks.buffering.value.map { it.label }} strm=${host.graph.mixGraph.mixStreamDecks.streaming.value.map { it.label }} | ${mixLine()}"
     }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = {
             host.scope.launch {
                 val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
@@ -681,7 +691,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             }
         }) { Text("AutoDJ: start streamed") }
     }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = { host.graph.mixGraph.autoDj.pauseAuto(); autoStatus = autoLine() }) { Text("AutoDJ: pause") }
         OutlinedButton(onClick = { host.graph.mixGraph.autoDj.resumeAuto(); autoStatus = autoLine() }) { Text("AutoDJ: resume") }
         OutlinedButton(onClick = { autoStatus = autoLine() }) { Text("AutoDJ: status") }
@@ -696,7 +707,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         val c = st.current
         return "Pocket bridge=${host.graph.gamesGraph.pocketsBridge.isEnabled.value} build=${st.buildState} songs=${c?.songs?.size} idx=${st.currentSongIndex} outcome=${c?.outcome?.token} states=${c?.songs?.joinToString(",") { it.state.name }} runs=${host.graph.gamesGraph.scoreboard.let { sb -> sb.inThePocketStats() }}"
     }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = {
             host.scope.launch { host.graph.gamesGraph.inThePocket.buildRound(); host.graph.gamesGraph.inThePocket.start(); pocketStatus = pocketLine() }
         }) { Text("Pocket: build+start") }
@@ -732,7 +744,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         val st = host.graph.gamesGraph.puzzleEngine.state.value
         return "Gem phase=${st.phase} cd=${st.countdown} q=${st.queueIndex}/${st.queue.size} score=${st.score} cur=${st.current?.name} err=${st.lastError} exhausted=${st.poolExhausted}"
     }
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.startRoundDetached(); gemStatus = "Gem: starting" }) { Text("Gem: start") }
         OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.skip(); gemStatus = gemLine() }) { Text("Gem: skip") }
         OutlinedButton(onClick = { gemStatus = gemLine() }) { Text("Gem: status") }
@@ -876,7 +889,8 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
 
     SettingsDivider()
     SettingsHeader("Capture")
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
+    androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         Button(onClick = {
             if (capturing.value) { diag.capture.stop(); sessions = diag.capture.sessions() } else diag.capture.start()
             capturing.value = diag.capture.active
@@ -929,3 +943,4 @@ private fun ToggleRow(label: String, value: Boolean, onChange: (Boolean) -> Unit
         Switch(checked = value, onCheckedChange = onChange)
     }
 }
+

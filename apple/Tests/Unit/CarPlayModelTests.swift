@@ -465,3 +465,63 @@ final class CarPlayModelTests: XCTestCase {
         mix.pause(.a)
     }
 }
+
+/// Pocket Wheel Phase 4 — the CarPlay "▶ Pocket for now" row and "Pockets right now".
+@MainActor
+final class CarPlayPocketWheelTests: XCTestCase {
+    func testPocketForNowRowIsPresentAndTitled() async throws {
+        let app = AppModel(loader: TestData.StubLoader())
+        await app.loadIfNeeded()
+        let tmp = { (s: String) -> URL in
+            let u = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-cpw-\(s)-\(UUID().uuidString).json")
+            self.addTeardownBlock { try? FileManager.default.removeItem(at: u) }
+            return u
+        }
+        let collections = CollectionsStore(fileURL: tmp("c")); collections.app = app
+        let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!, session: URLSession(configuration: .ephemeral))
+        let player = PlayerEngine()
+        let burns = BurnStore(rips: rips, fileURL: tmp("b"))
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns,
+                                coordinator: PlaybackCoordinator(ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
+                                                                 appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider())))
+        let services = IntentServices(app: app, settings: SettingsStore(defaults: UserDefaults(suiteName: "t.\(UUID())")!),
+                                      collections: collections, setlistPlayer: seq, mix: MixEngine(burns: burns), burns: burns,
+                                      studio: StudioStore(fileURL: tmp("s")), rips: rips, favorites: FavoritesStore(fileURL: tmp("f")))
+        let model = CarPlayModel(services: services)
+        XCTAssertNil(model.pocketForNowRow(), "no wheel wired ⇒ no row")
+        let history = PlayHistoryStore(fileURL: tmp("h"))
+        let cache = PocketMomentCache(history: history, palette: PocketPaletteStore(fileURL: tmp("p")), fileURL: tmp("w"))
+        // Tuesday 2026-10-27 08:30 PDT, the fixture's CarPlay moment.
+        let now = Date(timeIntervalSince1970: 1_793_115_000)
+        cache.adopt(PocketMomentEngine.build(PocketMomentEngineTests.input(try PocketMomentEngineTests.loadFixture())))
+        let wheel = PocketWheelController(cache: cache, history: history)
+        wheel.now = { now }
+        wheel.carPlayConnected = { true }
+        services.pocketWheel = wheel
+        await model.refreshPocketForNow()
+        let row = try XCTUnwrap(model.pocketForNowRow())
+        XCTAssertEqual(row.title, "▶ Pocket for now")
+        XCTAssertEqual(row.subtitle, "Potential · Tue 8 AM")
+        let rows = model.pocketsRightNow()
+        XCTAssertFalse(rows.isEmpty)
+        XCTAssertTrue(rows.allSatisfy { $0.id.hasPrefix(CarPlayModel.pocketMomentRowPrefix) })
+        var played: PocketProfile?
+        wheel.play = { played = $0; return true }
+        let ok1 = await model.playPocketForNow()
+        XCTAssertTrue(ok1)
+        XCTAssertEqual(played?.dominantCollectionId, "pl_potential")
+        let ok2 = await model.playPocketMoment(rowId: rows[0].id)
+        let bad = await model.playPocketMoment(rowId: "nope")
+        XCTAssertTrue(ok2)
+        XCTAssertFalse(bad)
+        // Nothing fit ⇒ the car says so instead of opening an empty Now Playing.
+        wheel.play = { _ in false }
+        let failed = await model.playPocketForNow()
+        XCTAssertFalse(failed)
+        // …and the onboarding veto applies to the car door too.
+        wheel.play = { _ in true }
+        services.onboardingIncomplete = { true }
+        let vetoed = await model.playPocketForNow()
+        XCTAssertFalse(vetoed)
+    }
+}

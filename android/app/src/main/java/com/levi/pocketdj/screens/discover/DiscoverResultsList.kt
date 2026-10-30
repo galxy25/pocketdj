@@ -106,7 +106,7 @@ internal fun <T> DiscoverStateHost(
                     "Discover needs a source — add an import server in Settings, " +
                         "or sign in to Apple Music so the catalog can be searched.",
                 )
-                is DiscoverState.Unavailable -> EmptyState("${DiscoverQueryRunner.UNAVAILABLE} — ${s.message}")
+                is DiscoverState.Unavailable -> EmptyState(DiscoverQueryRunner.unavailableCopy(s.message))
                 DiscoverState.Loaded ->
                     if (ui.hits.isEmpty()) EmptyState("No $noun matches — adjust the search or the artist refine")
                     else content()

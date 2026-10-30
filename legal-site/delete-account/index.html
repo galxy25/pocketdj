@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Delete Your Account — PocketDJ</title>
+<script>try{var t=localStorage.getItem('pdj-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#ffffff; --fg:#1c1d20; --muted:#6b7078; --border:#e4e6ea;
+  --link:#0f7d72; --accent:#0d9488; --table-head:#f6f7f9; --soft:#f7f8fa;
+  --header-bg:rgba(255,255,255,0.82);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#111316; --fg:#e5e7ea; --muted:#9aa0a8; --border:#2a2d33;
+    --link:#4fd3c3; --accent:#2dd4bf; --table-head:#181a1e; --soft:#16181c;
+    --header-bg:rgba(17,19,22,0.82);
+  }
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#ffffff; --fg:#1c1d20; --muted:#6b7078; --border:#e4e6ea;
+  --link:#0f7d72; --accent:#0d9488; --table-head:#f6f7f9; --soft:#f7f8fa;
+  --header-bg:rgba(255,255,255,0.82);
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#111316; --fg:#e5e7ea; --muted:#9aa0a8; --border:#2a2d33;
+  --link:#4fd3c3; --accent:#2dd4bf; --table-head:#181a1e; --soft:#16181c;
+  --header-bg:rgba(17,19,22,0.82);
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
+  font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+a{color:var(--link);overflow-wrap:break-word}
+a:hover{text-decoration:underline}
+
+.site-header{position:sticky;top:0;z-index:20;background:var(--header-bg);
+  backdrop-filter:saturate(180%) blur(10px);-webkit-backdrop-filter:saturate(180%) blur(10px);
+  border-bottom:1px solid var(--border)}
+.hwrap{max-width:72ch;margin:0 auto;padding:0.6rem 1.25rem;display:flex;align-items:center;gap:0.9rem}
+.wordmark{font-weight:700;letter-spacing:-0.01em;color:var(--fg);text-decoration:none;font-size:1.06rem}
+.wordmark:hover{color:var(--accent);text-decoration:none}
+.doctitle{color:var(--muted);font-size:0.95rem;border-left:1px solid var(--border);padding-left:0.9rem}
+.theme-toggle{margin-left:auto;border:1px solid var(--border);background:transparent;color:var(--fg);
+  border-radius:7px;width:2.1rem;height:2.1rem;font-size:1rem;line-height:1;cursor:pointer;
+  display:flex;align-items:center;justify-content:center}
+.theme-toggle:hover{border-color:var(--accent);color:var(--accent)}
+@media (max-width:430px){.doctitle{display:none}}
+
+.page{max-width:72ch;margin:0 auto;padding:2rem 1.25rem 3rem}
+h1{font-size:2rem;line-height:1.2;margin:0.25rem 0 0.4rem;letter-spacing:-0.015em}
+h2{font-size:1.4rem;line-height:1.28;margin:2.6rem 0 0.8rem;padding-top:1.4rem;
+  border-top:1px solid var(--border);scroll-margin-top:4.8rem;letter-spacing:-0.01em}
+h3{font-size:1.12rem;line-height:1.3;margin:1.9rem 0 0.5rem;scroll-margin-top:4.8rem}
+p{margin:0.9rem 0}
+ul,ol{margin:0.9rem 0;padding-left:1.4rem}
+li{margin:0.35rem 0}
+strong{font-weight:650}
+hr{border:none;border-top:1px solid var(--border);margin:2rem 0}
+
+.effective{color:var(--muted);font-size:0.95em;margin:0.2rem 0 0}
+.notice{color:var(--muted);font-size:0.95em;border-left:3px solid var(--accent);
+  background:var(--soft);border-radius:0 6px 6px 0;padding:0.7rem 1rem;margin:1.4rem 0 0}
+.ph{color:var(--muted);font-style:italic;white-space:nowrap}
+.dotrow{background:var(--soft);border:1px solid var(--border);border-radius:8px;
+  padding:0.8rem 1rem;font-size:0.97em;line-height:1.9}
+
+.anchor{margin-left:0.45rem;color:var(--muted);text-decoration:none;font-weight:400;
+  opacity:0;transition:opacity .12s}
+h2:hover .anchor,h3:hover .anchor,.anchor:focus{opacity:1;text-decoration:none}
+@media (hover:none){.anchor{opacity:.35}}
+
+.toc{border:1px solid var(--border);border-radius:9px;background:var(--soft);
+  padding:0.4rem 1.1rem;margin:1.8rem 0 0.5rem}
+.toc>summary{cursor:pointer;font-weight:650;padding:0.55rem 0;list-style:none}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{content:"▸ ";color:var(--muted)}
+.toc[open]>summary::before{content:"▾ "}
+.toc-list{list-style:none;padding-left:0;margin:0.3rem 0 0.8rem}
+.toc-list ul{list-style:none;padding-left:1.1rem;margin:0.15rem 0}
+.toc-list li{margin:0.18rem 0}
+.toc a{color:var(--fg);text-decoration:none}
+.toc a:hover{color:var(--link);text-decoration:underline}
+
+.table-wrap{overflow-x:auto;margin:1.3rem 0;border:1px solid var(--border);border-radius:9px;
+  -webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;min-width:32rem;font-size:0.95em}
+table.four{min-width:46rem}
+th,td{text-align:left;padding:0.6rem 0.85rem;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{background:var(--table-head);font-weight:650;white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+
+.closing{color:var(--muted);font-size:0.96em;border-top:1px solid var(--border);
+  margin-top:2.8rem;padding-top:1.6rem}
+
+.site-footer{border-top:1px solid var(--border);background:var(--soft)}
+.fwrap{max-width:72ch;margin:0 auto;padding:2rem 1.25rem;font-size:0.95em;color:var(--muted)}
+.fnav{display:flex;flex-wrap:wrap;gap:0.5rem 1.4rem;margin:0 0 1rem}
+.fnav a{color:var(--fg);text-decoration:none}
+.fnav a:hover{color:var(--link);text-decoration:underline}
+.fwrap .mail{color:var(--link)}
+</style>
+</head>
+<body>
+<header class="site-header">
+  <div class="hwrap">
+    <a class="wordmark" href="/">PocketDJ</a>
+    <span class="doctitle">Delete Your Account</span>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle color theme"></button>
+  </div>
+</header>
+
+<main class="page">
+<h1>Delete Your Account</h1>
+<p class="effective">Effective date: October 29, 2026</p>
+
+<p>This page explains how to delete your account and data for <strong>PocketDJ</strong>, the music library and DJ app published by African Intellect Enterprises LLC (PocketDJ), on iPhone, iPad, Mac, Apple TV, Apple Vision Pro, and Android (Google Play and the direct download from pocket-dj.com).</p>
+<p>PocketDJ has no username or password. Your account is the <strong>profile</strong> the app creates on first run: a random identifier and the display name you choose.</p>
+<h2 id="option-1-delete-in-the-app-immediate">Option 1: delete in the app (immediate) <a class="anchor" href="#option-1-delete-in-the-app-immediate" aria-label="Permalink">#</a></h2>
+<ul>
+<li><strong>Android:</strong> open PocketDJ ▸ <strong>Settings</strong> ▸ <strong>Reset</strong> ▸ <strong>Delete account</strong>, then confirm.</li>
+<li><strong>iPhone, iPad, Mac, Apple TV, Apple Vision Pro:</strong> open PocketDJ ▸ <strong>Settings</strong> ▸ <strong>Profile</strong> ▸ <strong>Delete Account</strong>, then confirm.</li>
+</ul>
+<p>If you only want to remove what the cloud features uploaded and keep using the app as it is, use <strong>Settings ▸ Recommendations ▸ Delete cloud data</strong> instead.</p>
+<h2 id="option-2-ask-us-by-email-no-app-needed">Option 2: ask us by email (no app needed) <a class="anchor" href="#option-2-ask-us-by-email-no-app-needed" aria-label="Permalink">#</a></h2>
+<p>If you no longer have the app or can't open it, email <strong><a href="mailto:support@pocket-dj.com?subject=Delete%20my%20PocketDJ%20data"><span>support@pocket-dj.com</span></a></strong> with the subject "Delete my PocketDJ data". Tell us which devices you used and, if you can, your PocketDJ display name, so we can find your data. We will delete it and confirm by reply within one month. We may ask a follow-up question to make sure the request comes from you.</p>
+<h2 id="what-gets-deleted">What gets deleted <a class="anchor" href="#what-gets-deleted" aria-label="Permalink">#</a></h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Recommendation Engine data: listening history, favorites, feedback, collections and their names, play counts</td>
+<td>Deleted from our servers</td>
+</tr>
+<tr>
+<td>Listening-pocket data: play events, place and trip labels, walking/running labels, computed pockets, "In the Pocket" rounds and feedback</td>
+<td>Deleted from our servers</td>
+</tr>
+<tr>
+<td>Android profile-sync data (if you turned sync on)</td>
+<td>Deleted from our servers</td>
+</tr>
+<tr>
+<td>Jukebox sessions you are hosting, and your Music with Friends registration</td>
+<td>Ended and withdrawn</td>
+</tr>
+<tr>
+<td>PocketDJ records in your private iCloud database (Apple devices, in-app deletion)</td>
+<td>Deleted</td>
+</tr>
+<tr>
+<td>Everything PocketDJ stores on the device: library, collections, history, downloads, recordings, places, credentials</td>
+<td>Erased (in-app deletion)</td>
+</tr>
+<tr>
+<td>Your profile identifier and installation identifier</td>
+<td>Reset, so nothing new can be linked to the old ones</td>
+</tr>
+</tbody>
+</table>
+</div>
+<h2 id="what-is-kept-and-for-how-long">What is kept, and for how long <a class="anchor" href="#what-is-kept-and-for-how-long" aria-label="Permalink">#</a></h2>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Kept for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Content delivery network request logs (IP address, time, address requested)</td>
+<td>Up to 365 days, then deleted automatically</td>
+</tr>
+<tr>
+<td>Diagnostic logs from TestFlight and development builds</td>
+<td>Up to 14 days, then deleted automatically</td>
+</tr>
+<tr>
+<td>Copies of jukebox sessions</td>
+<td>Up to 7 days after the session was created</td>
+</tr>
+<tr>
+<td>Operational logs of our cloud functions (request metadata, not your library)</td>
+<td>Not yet on a fixed schedule</td>
+</tr>
+<tr>
+<td>Data in your own iCloud or Google account (for example an Android backup), if you deleted the app without using in-app deletion</td>
+<td>Until you remove it there: Apple Settings ▸ your name ▸ iCloud ▸ Manage Storage, or your Google account's backup settings</td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The <a href="https://legal.pocket-dj.com/privacy/">Privacy Policy</a> has the full details of what PocketDJ collects and why.</p>
+</main>
+
+<footer class="site-footer">
+  <div class="fwrap">
+    <nav class="fnav" aria-label="PocketDJ policies">
+      <a href="/">PocketDJ</a>
+      <a href="/privacy/">Privacy Policy</a>
+      <a href="/terms/">Terms of Service</a>
+      <a href="/dmca/">Copyright / DMCA Policy</a>
+      <a href="/delete-account/">Delete your account</a>
+    </nav>
+    <p>Questions or requests: <a class="mail" href="mailto:support@pocket-dj.com">support@pocket-dj.com</a></p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var root=document.documentElement, btn=document.getElementById('theme-toggle');
+  function cur(){var a=root.getAttribute('data-theme');if(a)return a;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
+  function upd(){var t=cur();if(!btn)return;
+    btn.textContent=(t==='dark')?'☀︎':'☽';
+    btn.setAttribute('aria-label',(t==='dark')?'Switch to light theme':'Switch to dark theme');}
+  upd();
+  if(btn)btn.addEventListener('click',function(){
+    var t=(cur()==='dark')?'light':'dark';
+    root.setAttribute('data-theme',t);
+    try{localStorage.setItem('pdj-theme',t);}catch(e){}
+    upd();});
+})();
+</script>
+</body>
+</html>

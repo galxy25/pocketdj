@@ -52,6 +52,8 @@ struct HistoryView: View {
     /// Listening pockets (optional like `writeBack`: a standalone preview host has none, and
     /// then the Pockets tab simply never appears).
     @Environment(ListeningPocketsService.self) private var pockets: ListeningPocketsService?
+    /// The Pocket Wheel (optional: a preview host without it just shows the cloud list).
+    @Environment(PocketMomentCache.self) private var pocketWheel: PocketMomentCache?
     @Binding var path: NavigationPath
 
     /// Declaration order IS tab order: Playback, For You, Collection (the owner's own ordering).
@@ -217,7 +219,8 @@ struct HistoryView: View {
             case .collection:
                 collectionContent
             case .pockets:
-                ListeningPocketsView(path: $path)
+                // Wheel | List (W1). The wheel needs only local history.
+                PocketsTabView(path: $path)
             case .forYou:
                 ForYouTilesView(path: $path, refreshToken: forYouRefreshToken)
             }
@@ -276,7 +279,13 @@ struct HistoryView: View {
     /// pockets" ON) or its UI-test fixture seam — `ListeningPocketsService.isEnabled` is both.
     /// While the engine is on and pockets were NEVER ASKED, it also shows, once, as the opt-in
     /// offer (`ListeningPocketsView`); a "Not now" records the choice and the tab goes away.
+    ///
+    /// Pocket Wheel: the tab is ALSO on whenever there is local history to paint (the wheel needs
+    /// no cloud opt-in). tvOS keeps the cloud-only gate (no wheel there).
     private var pocketsTabOn: Bool {
+        #if !os(tvOS)
+        if !history.events.isEmpty || !(pocketWheel?.snapshot.isEmpty ?? true) { return true }
+        #endif
         guard let pockets else { return false }
         return pockets.isEnabled || (settings.recEngineEnabled && settings.listeningPocketsChoice == nil)
     }

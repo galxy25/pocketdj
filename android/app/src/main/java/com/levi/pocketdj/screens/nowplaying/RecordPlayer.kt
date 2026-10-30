@@ -25,6 +25,11 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.platform.testTag
 import com.levi.pocketdj.ui.theme.PdjAccent
 import com.levi.pocketdj.ui.theme.PdjOnAccent
+import com.levi.pocketdj.ui.theme.PdjBackground
+import com.levi.pocketdj.ui.theme.PdjSurfaceVariant
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 
 private val Gold = Color(0xFFE0B341)
 private val GoldDark = Color(0xFF8A6A12)
@@ -40,6 +45,10 @@ fun RecordPlayer(
     bpm: Double?,
     progress: Double?,
     modifier: Modifier = Modifier,
+    /** The current track's album: its cover is the record's centre label (iOS RecordPlayerView). */
+    album: com.levi.pocketdj.data.catalog.IndexAlbum? = null,
+    /** False when nothing is loaded: the tonearm parks OFF the record. */
+    hasTrack: Boolean = true,
 ) {
     var angle by androidx.compose.runtime.saveable.rememberSaveable { mutableFloatStateOf(0f) }
     val spinningNow by rememberUpdatedState(spinning)
@@ -54,12 +63,18 @@ fun RecordPlayer(
             angle = RecordMath.advance(angle.toDouble(), dt, spinningNow, bpmNow).toFloat()
         }
     }
-    val arm = RecordMath.tonearmAngle(progress).toFloat()
-    Box(modifier.fillMaxWidth().aspectRatio(1f).padding(8.dp).testTag("np-record")) {
+    val arm = (if (hasTrack) RecordMath.tonearmAngle(progress) else RecordMath.TONEARM_PARKED_DEG).toFloat()
+    androidx.compose.foundation.layout.BoxWithConstraints(
+        modifier.fillMaxWidth().aspectRatio(1f).padding(8.dp).testTag("np-record"),
+    ) {
+        val side = if (maxWidth < maxHeight) maxWidth else maxHeight
         Canvas(Modifier.matchParentSize()) {
             val s = size.minDimension
-            // Chassis.
-            drawRoundRect(PdjAccent, size = Size(s, s), cornerRadius = CornerRadius(s * 0.08f))
+            // Chassis: iOS RecordPlayerView = Theme.bgRaised fill + a 2 pt accent outline (not a
+            // solid accent slab, which read as a flat bright-blue square on the navy UI).
+            val corner = CornerRadius(s * 0.06f)
+            drawRoundRect(PdjSurfaceVariant, size = Size(s, s), cornerRadius = corner)
+            drawRoundRect(PdjAccent, size = Size(s, s), cornerRadius = corner, style = Stroke(2.dp.toPx()))
             val center = Offset(size.width / 2f, size.height / 2f)
             val r = s * 0.42f
             rotate(angle, center) {
@@ -77,13 +92,30 @@ fun RecordPlayer(
                 drawCircle(Gold, radius = r * 0.05f, center = center + Offset(r * 0.18f, 0f))
                 drawCircle(Color.White, radius = r * 0.03f, center = center)
             }
-            // Tonearm: pivot at top-right of the chassis, needle sweeps with [arm].
+        }
+        // Centre label = the album cover, rotating with the platter.
+        if (album != null) {
+            Box(
+                Modifier
+                    .align(androidx.compose.ui.Alignment.Center)
+                    .size(side * (RecordMath.LABEL_RADIUS * 2).toFloat())
+                    .graphicsLayer { rotationZ = angle }
+                    .clip(androidx.compose.foundation.shape.CircleShape),
+            ) {
+                com.levi.pocketdj.screens.browse.AlbumArt(album, Modifier.matchParentSize(), cornerRadius = 0)
+            }
+        }
+        Canvas(Modifier.matchParentSize()) {
+            val s = size.minDimension
+            val center = Offset(size.width / 2f, size.height / 2f)
+            if (album != null) drawCircle(PdjBackground, radius = s * 0.42f * 0.03f + 2f, center = center) // spindle
+            // Tonearm (accent, like iOS): pivot at top-right of the chassis, needle sweeps with [arm].
             val pivot = Offset(s * RecordMath.ARM_PIVOT_X.toFloat(), s * RecordMath.ARM_PIVOT_Y.toFloat())
             // Positive degrees are clockwise: the arm swings from the outer edge toward the label.
             rotate(arm, pivot) {
                 val tip = Offset(pivot.x, pivot.y + s * RecordMath.ARM_LENGTH.toFloat())
-                drawLine(Color(0xFFE8ECF6), pivot, tip, strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
-                drawCircle(Color(0xFFE8ECF6), radius = 6.dp.toPx(), center = pivot)
+                drawLine(PdjAccent, pivot, tip, strokeWidth = 4.dp.toPx(), cap = StrokeCap.Round)
+                drawCircle(PdjAccent, radius = 6.dp.toPx(), center = pivot)
             }
         }
     }
@@ -135,6 +167,8 @@ object RecordMath {
 
     const val TONEARM_OUTER_DEG = 1.0
     const val TONEARM_INNER_DEG = 33.0
+    /** Rest position, swung clear of the record (nothing loaded). */
+    const val TONEARM_PARKED_DEG = -9.0
 
     // Geometry in chassis-size units (platter centre 0.5,0.5; record radius 0.42; label 0.30 of it).
     const val ARM_PIVOT_X = 0.90

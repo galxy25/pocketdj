@@ -28,6 +28,16 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q117 [Answers wave 6, ANS-STU-7]** There is no UI to save a demux into the "Pocket DJ" source yet (only the debug ingest seed). Wire a "Save to Pocket DJ" action in the Demuxer/Producer? — *Default: defer.* — Decides when profile-source rows become user-reachable.
 - **Q118 [Answers wave 6, ANS-GAP-6]** The stem-carve sheet previews the full mix, not the chosen stems (iOS auditions via a synced stem player). Port the live stem audition? — *Default: caption only, defer.* — Decides carve-sheet audition parity.
 
+## OPEN — Pocket wheel (FR2, design docs/design/pocket-wheel.md §9; building with these defaults)
+
+- **W1** Where does the wheel live? — *Default: History ▸ Pockets with a Wheel/List toggle* (alternative: the Pockets collection tab, or both).
+- **W2** Does the 100-song cap count songs STARTED (skips included; replacements don't extend) or songs played through? At 100: stop, or offer "keep going"? — *Default: started; offer "keep going".*
+- **W3** Colours automatic only, or let you pick a colour per playlist/pocket? — *Default: automatic, stable 12-colour palette synced across devices.*
+- **W4** May running/walking data go to the cloud? (Needs "Fitness" on the App Store privacy label.) — *Default: on-device only.*
+- **W5** Artist ban strength: for the run only (then just rarer in later runs), or sticky for that pocket until you lift it? — *Default: run-only + decaying penalty.*
+- **W6** Cycling as its own mode (currently folded into Trip)? Is "Home" the right name for the collection-playback mode, or does it need no sliver? — *Default: cycling = Trip; "Home".*
+- **W7** When the best match is a Mix cell, should ▶ load the run into Mix Auto-DJ, or always use the regular player? — *Default: regular player.*
+
 ## ANSWERED
 
 - **Q1 [distribution]** How do you want to install Android builds: Play Console internal testing track (TestFlight-like, needs a Play developer account + signing key upload) or direct APK sideload via adb to your phone? — *Default: debug APK, emulator only.* — Needed before the first wave worth installing on a real phone.

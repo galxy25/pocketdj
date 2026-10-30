@@ -1,0 +1,737 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Terms of Use &mdash; PocketDJ</title>
+<script>try{var t=localStorage.getItem('pdj-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
+<style>
+:root{
+  --bg:#ffffff; --surface:#f6f7f9; --surface-2:#eef0f3;
+  --fg:#1d2023; --muted:#666b73; --border:#e3e5ea;
+  --link:#1a5fb4; --link-hover:#12437f;
+  --code-bg:#eef0f3; --ph-fg:#7a5c00; --ph-bg:rgba(150,120,30,.10);
+  --header-bg:rgba(255,255,255,.82);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#17181b; --surface:#1e2024; --surface-2:#24262b;
+    --fg:#e6e7ea; --muted:#9aa0a8; --border:#2c2f35;
+    --link:#7ab3f0; --link-hover:#a9ccf5;
+    --code-bg:#24262b; --ph-fg:#d8c07a; --ph-bg:rgba(255,255,255,.06);
+    --header-bg:rgba(23,24,27,.82);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#17181b; --surface:#1e2024; --surface-2:#24262b;
+  --fg:#e6e7ea; --muted:#9aa0a8; --border:#2c2f35;
+  --link:#7ab3f0; --link-hover:#a9ccf5;
+  --code-bg:#24262b; --ph-fg:#d8c07a; --ph-bg:rgba(255,255,255,.06);
+  --header-bg:rgba(23,24,27,.82);
+}
+:root[data-theme="light"]{
+  --bg:#ffffff; --surface:#f6f7f9; --surface-2:#eef0f3;
+  --fg:#1d2023; --muted:#666b73; --border:#e3e5ea;
+  --link:#1a5fb4; --link-hover:#12437f;
+  --code-bg:#eef0f3; --ph-fg:#7a5c00; --ph-bg:rgba(150,120,30,.10);
+  --header-bg:rgba(255,255,255,.82);
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%; overflow-x:hidden}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
+  font-size:17px; line-height:1.65; overflow-x:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+a{color:var(--link); text-decoration:underline; text-underline-offset:2px; word-break:break-word}
+a:hover{color:var(--link-hover)}
+
+/* header */
+.site-header{
+  position:sticky; top:0; z-index:20;
+  background:var(--header-bg); backdrop-filter:saturate(180%) blur(10px);
+  -webkit-backdrop-filter:saturate(180%) blur(10px);
+  border-bottom:1px solid var(--border);
+}
+.site-header-inner{
+  max-width:80ch; margin:0 auto; padding:.55rem 1.25rem;
+  display:flex; align-items:center; gap:.75rem;
+}
+.wordmark{
+  font-weight:700; letter-spacing:-.01em; color:var(--fg);
+  text-decoration:none; font-size:1.05rem; white-space:nowrap;
+}
+.wordmark:hover{color:var(--fg)}
+.doc-label{color:var(--muted); font-size:.92rem; white-space:nowrap;
+  border-left:1px solid var(--border); padding-left:.75rem;}
+.spacer{flex:1 1 auto}
+.theme-toggle{
+  border:1px solid var(--border); background:var(--surface); color:var(--fg);
+  border-radius:8px; padding:.3rem .6rem; font-size:.85rem; cursor:pointer;
+  line-height:1; display:inline-flex; align-items:center; gap:.35rem;
+}
+.theme-toggle:hover{background:var(--surface-2)}
+.theme-toggle .i-dark{display:none}
+:root[data-theme="dark"] .theme-toggle .i-dark{display:inline}
+:root[data-theme="dark"] .theme-toggle .i-light{display:none}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]) .theme-toggle .i-dark{display:inline}
+  :root:not([data-theme="light"]) .theme-toggle .i-light{display:none}
+}
+
+/* layout */
+.prose{max-width:72ch; margin:0 auto; padding:1.5rem 1.25rem 4rem; overflow-wrap:break-word}
+
+h1{font-size:1.85rem; line-height:1.25; letter-spacing:-.015em; margin:.4em 0 .5em}
+h2{font-size:1.35rem; line-height:1.3; letter-spacing:-.01em; margin:2.6rem 0 .8rem;
+   padding-top:1.4rem; border-top:1px solid var(--border)}
+h3{font-size:1.12rem; line-height:1.35; margin:1.9rem 0 .6rem}
+h1,h2,h3{scroll-margin-top:4.5rem}
+h2 .anchor,h3 .anchor{opacity:0; margin-left:.3em; color:var(--muted);
+  text-decoration:none; font-weight:400; font-size:.8em}
+h2:hover .anchor,h3:hover .anchor,h2 .anchor:focus,h3 .anchor:focus{opacity:.55}
+
+p{margin:.85em 0}
+ul,ol{margin:.85em 0; padding-left:1.5em}
+li{margin:.4em 0}
+li::marker{color:var(--muted)}
+strong{font-weight:650}
+hr{border:0; border-top:1px solid var(--border); margin:2.4rem 0}
+code{background:var(--code-bg); padding:.1em .35em; border-radius:4px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.9em}
+
+blockquote{
+  margin:1.1em 0; padding:.7em 1em; background:var(--surface);
+  border-left:3px solid var(--border); border-radius:0 8px 8px 0;
+}
+blockquote p{margin:.35em 0}
+
+/* placeholder tokens */
+.ph{
+  font-style:italic; color:var(--ph-fg); background:var(--ph-bg);
+  padding:0 .28em; border-radius:4px; white-space:nowrap;
+  font-size:.96em;
+}
+
+/* effective date (first paragraph) */
+.prose > p:first-of-type{color:var(--muted)}
+.draft-note{
+  color:var(--muted); font-size:.94rem; line-height:1.55;
+  border:1px solid var(--border); background:var(--surface);
+  border-radius:8px; padding:.7rem .95rem; margin:1.4rem 0 0;
+}
+.draft-note .ph{white-space:normal}
+
+/* toc */
+.toc{
+  margin:1.6rem 0 2.4rem; border:1px solid var(--border);
+  background:var(--surface); border-radius:10px; padding:.4rem 1rem .8rem;
+}
+.toc summary{
+  cursor:pointer; font-weight:650; padding:.45rem 0; list-style:none;
+  color:var(--fg);
+}
+.toc summary::-webkit-details-marker{display:none}
+.toc summary::before{content:"\25B8"; display:inline-block; margin-right:.5em;
+  color:var(--muted); transition:transform .15s ease}
+.toc[open] summary::before{transform:rotate(90deg)}
+.toc-list{list-style:none; margin:.2rem 0 0; padding:0; column-gap:2rem}
+.toc-list li{margin:.18em 0}
+.toc-list a{text-decoration:none; color:var(--link)}
+.toc-list a:hover{text-decoration:underline}
+.toc-h2{margin-top:.5em; font-weight:600}
+.toc-h3{padding-left:1.2em; font-size:.95em}
+.toc-h3 a{color:var(--muted)}
+.toc-h3 a:hover{color:var(--link)}
+@media (min-width:900px){
+  .toc-list{column-count:2}
+  .toc-h2{break-inside:avoid}
+}
+
+/* footer */
+.site-footer{border-top:1px solid var(--border); background:var(--surface)}
+.site-footer-inner{max-width:72ch; margin:0 auto; padding:1.6rem 1.25rem 2.4rem;
+  color:var(--muted); font-size:.92rem}
+.footer-nav{display:flex; flex-wrap:wrap; gap:.5rem 1.4rem; margin-bottom:.8rem}
+.footer-nav a{text-decoration:none}
+.footer-nav a:hover{text-decoration:underline}
+.site-footer p{margin:.3em 0}
+
+@media (max-width:719px){
+  body{font-size:16.5px}
+  .doc-label{display:none}
+  h1{font-size:1.55rem}
+  h2{font-size:1.22rem}
+  .prose{padding:1.1rem 1.05rem 3rem}
+}
+</style>
+</head>
+<body>
+<header class="site-header">
+  <div class="site-header-inner">
+    <a class="wordmark" href="/">PocketDJ</a>
+    <span class="doc-label">Terms of Use</span>
+    <span class="spacer"></span>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle color theme">
+      <span class="i-light" aria-hidden="true">&#9789; Dark</span>
+      <span class="i-dark" aria-hidden="true">&#9788; Light</span>
+    </button>
+  </div>
+</header>
+
+<main class="prose">
+<h1 id="pocketdj-end-user-licence-agreement-and-terms-of-use">PocketDJ — End User Licence Agreement and Terms of Use <a class="anchor" href="#pocketdj-end-user-licence-agreement-and-terms-of-use" aria-hidden="true">#</a></h1>
+
+<p><strong>Effective date:</strong> October 29, 2026</p>
+
+
+<details class="toc" id="toc" open>
+  <summary>Contents</summary>
+  <ul class="toc-list">
+    <li class="toc-h2"><a href="#the-short-version">The short version</a></li>
+    <li class="toc-h2"><a href="#1-this-agreement">1. This agreement</a></li>
+    <li class="toc-h2"><a href="#2-eligibility-and-age">2. Eligibility and age</a></li>
+    <li class="toc-h2"><a href="#3-your-profile">3. Your profile</a></li>
+    <li class="toc-h2"><a href="#4-licence-to-use-the-app">4. Licence to use the App</a></li>
+    <li class="toc-h2"><a href="#5-what-the-app-does">5. What the App does</a></li>
+    <li class="toc-h2"><a href="#6-your-music-and-your-rights">6. Your music and your rights</a></li>
+    <li class="toc-h3"><a href="#6-1-you-must-have-the-rights-to-everything-you-put-into-pocketdj">6.1 You must have the rights to everything you put into PocketDJ</a></li>
+    <li class="toc-h3"><a href="#6-2-you-keep-ownership">6.2 You keep ownership</a></li>
+    <li class="toc-h3"><a href="#6-3-the-licence-you-give-us-and-its-limits">6.3 The licence you give us — and its limits</a></li>
+    <li class="toc-h3"><a href="#6-4-your-copies-are-yours">6.4 Your copies are yours</a></li>
+    <li class="toc-h3"><a href="#6-5-we-do-not-distribute-your-music">6.5 We do not distribute your music</a></li>
+    <li class="toc-h3"><a href="#6-6-the-public-catalogue-is-metadata-only">6.6 The public catalogue is metadata only</a></li>
+    <li class="toc-h3"><a href="#6-7-apple-music-is-playback-only">6.7 Apple Music is playback only</a></li>
+    <li class="toc-h3"><a href="#6-8-what-leaves-your-device">6.8 What leaves your device</a></li>
+    <li class="toc-h2"><a href="#7-jukebox-sessions-and-event-licensing">7. Jukebox sessions and event licensing</a></li>
+    <li class="toc-h3"><a href="#7-1-what-a-jukebox-session-is-for">7.1 What a jukebox session is for</a></li>
+    <li class="toc-h3"><a href="#7-2-you-are-responsible-for-the-licences-your-event-needs">7.2 You are responsible for the licences your event needs</a></li>
+    <li class="toc-h3"><a href="#7-3-no-broadcasting">7.3 No broadcasting</a></li>
+    <li class="toc-h3"><a href="#7-4-your-guests">7.4 Your guests</a></li>
+    <li class="toc-h3"><a href="#7-5-listen-along">7.5 Listen-along</a></li>
+    <li class="toc-h2"><a href="#8-acceptable-use">8. Acceptable use</a></li>
+    <li class="toc-h3"><a href="#8-6-content-submitted-by-other-people-and-how-to-deal-with-it">8.6 Content submitted by other people, and how to deal with it</a></li>
+    <li class="toc-h2"><a href="#9-copyright-complaints-and-repeat-infringers">9. Copyright complaints and repeat infringers</a></li>
+    <li class="toc-h2"><a href="#10-maintenance-and-support">10. Maintenance and support</a></li>
+    <li class="toc-h2"><a href="#11-term-and-termination">11. Term and termination</a></li>
+    <li class="toc-h2"><a href="#12-disclaimer-of-warranties">12. Disclaimer of warranties</a></li>
+    <li class="toc-h2"><a href="#13-limitation-of-liability">13. Limitation of liability</a></li>
+    <li class="toc-h2"><a href="#14-indemnity">14. Indemnity</a></li>
+    <li class="toc-h2"><a href="#15-governing-law-and-venue">15. Governing law and venue</a></li>
+    <li class="toc-h2"><a href="#16-disputes">16. Disputes</a></li>
+    <li class="toc-h2"><a href="#17-changes-to-these-terms">17. Changes to these Terms</a></li>
+    <li class="toc-h2"><a href="#18-general">18. General</a></li>
+    <li class="toc-h2"><a href="#19-apple-s-required-terms">19. Apple&#x27;s required terms</a></li>
+    <li class="toc-h2"><a href="#20-contact">20. Contact</a></li>
+  </ul>
+</details>
+
+<h2 id="the-short-version">The short version <a class="anchor" href="#the-short-version" aria-hidden="true">#</a></h2>
+
+<p>PocketDJ is a personal music library and DJ app. It organises and plays music you already have — records you have digitised, audio files you own, and your Apple Music library.</p>
+
+<ul>
+  <li><strong>PocketDJ does not sell you music and does not license music to you.</strong> You bring your own.</li>
+  <li><strong>You must have the rights to everything you put into it.</strong> That is the single most important thing in this agreement, and §6 spells it out.</li>
+  <li><strong>Your music stays yours.</strong> You give us only the narrow permission we need to store, process, and play it back to you. Nothing broader.</li>
+  <li><strong>Apple Music is for listening.</strong> PocketDJ plays it through your own subscription. It does not record it, capture it, or keep a copy.</li>
+  <li><strong>A jukebox session is for a private event you are hosting.</strong> If your event needs a public-performance licence, that is yours (or your venue's) to hold. PocketDJ cannot get one for you. If you switch on listen-along, your guests hear the track on their own phones — §7.5.</li>
+</ul>
+
+<p>The short version is a summary, not a substitute. The full terms below govern.</p>
+
+<hr>
+
+<h2 id="1-this-agreement">1. This agreement <a class="anchor" href="#1-this-agreement" aria-hidden="true">#</a></h2>
+
+<p><strong>1.1</strong> These Terms are a legal agreement between you and African Intellect Enterprises LLC (PocketDJ) ("PocketDJ", "we", "us", "our"), covering the PocketDJ application on iPhone, iPad, Mac, Apple TV, Apple Vision Pro, and Android (whether obtained from the App Store, from Google Play, or as a direct download from pocket-dj.com), together with the PocketDJ cloud services the app uses (collectively, the "<strong>App</strong>").</p>
+
+<p><strong>1.1a Who we are, for the law.</strong> African Intellect Enterprises LLC, doing business as PocketDJ, of 4406 NE 23rd Ave, Portland, OR 97211, United States, is the licensor of the App, the <strong>data controller</strong> for the personal data described in the Privacy Policy, and the <strong>trader</strong> for the purposes of EU and UK consumer law. Contact details are in §20.</p>
+
+<p><strong>1.1b PocketDJ is built and operated by one person.</strong> "We", "us", and "our" are drafting conventions for African Intellect Enterprises LLC; they do not describe a company, a team, or a staff. Nothing in this agreement should be read as a representation that any particular resourcing, staffing, or operational capacity stands behind the App.</p>
+
+<p><strong>1.2 This agreement is with us, not with Apple or Google.</strong> Neither Apple Inc. nor Google LLC is a party to it, and neither is responsible for the App or its contents. See §19 for the complete set of Apple-required terms.</p>
+
+<p><strong>1.3 Acceptance.</strong> By downloading, installing, or using the App, you accept these Terms. If you do not accept them, do not use the App. Where the App asks you to confirm a specific statement — for example the rights attestation in §6.1 or the event-licensing acknowledgement in §7.2 — that confirmation is part of this agreement.</p>
+
+<p><strong>1.4 Related documents.</strong> The following are incorporated into this agreement by reference:</p>
+
+<ul>
+  <li>the <a href="/privacy/">PocketDJ Privacy Policy</a> — what data the App collects and why;</li>
+  <li>the <a href="/dmca/">PocketDJ Copyright and DMCA Policy</a> — the full notice, counter-notice, and repeat-infringer procedure. §9 below is a summary of it. <strong>Where §9 and the DMCA Policy differ, the DMCA Policy governs</strong>, including its statement of what §512(c) does and does not cover;</li>
+  <li>the <a href="/notices/">PocketDJ Third-Party Notices</a> — the open-source and third-party licences that cover components of the App. Some of those licences impose conditions on you as an end user, and by using the App you agree to comply with them.</li>
+</ul>
+
+<p>Apple's own terms — including the Apple Media Services Terms and Conditions that govern Apple Music playback — apply to your use of Apple's services through the App, and are between you and Apple. If you obtained the App from Google Play, the Google Play Terms of Service also apply to that download, and are between you and Google.</p>
+
+<hr>
+
+<h2 id="2-eligibility-and-age">2. Eligibility and age <a class="anchor" href="#2-eligibility-and-age" aria-hidden="true">#</a></h2>
+
+<p><strong>2.1</strong> You must be at least 13 years old to use the App. If you are under the age of majority where you live, you may use it only with the involvement of a parent or legal guardian, who accepts these Terms on your behalf and is responsible for your use of the App.</p>
+
+<p><strong>2.1a Higher local age thresholds apply where the law sets them.</strong> PocketDJ is not directed to children under 13 and we do not knowingly collect their personal information. In the European Union and the United Kingdom, the age of consent for information-society services is between 13 and 16 depending on the country; <strong>where the applicable age in your country is higher than 13, that higher age governs</strong>, and we do not offer the App below it. This clause is drafted to track <a href="/privacy/">Privacy Policy</a> §14; if the two ever diverge, the Privacy Policy's age statement is the one to correct against.</p>
+
+<p><strong>2.2</strong> You must not use the App if you are barred from doing so under applicable law, or if we have previously terminated your access under §11.</p>
+
+<hr>
+
+<h2 id="3-your-profile">3. Your profile <a class="anchor" href="#3-your-profile" aria-hidden="true">#</a></h2>
+
+<p><strong>Vocabulary, fixed deliberately.</strong> PocketDJ does not ask you to create an account with us. It creates a <strong>profile</strong> — a randomly generated identifier and a display name you choose — so your library can sync across your devices and so jukebox guests know whose session they are in. This document uses "profile" throughout, matching <a href="/privacy/">Privacy Policy</a> §13. Where these Terms say "account" without qualification, they mean your PocketDJ profile; your <strong>Apple Account</strong> is a separate thing, held with Apple, and we never see its credentials.</p>
+
+<p><strong>3.1</strong> Some features require a profile. You are responsible for the accuracy of what you give us and for everything done through your profile.</p>
+
+<p><strong>3.2</strong> Tell us promptly at <a href="mailto:support@pocket-dj.com">support@pocket-dj.com</a> if you believe your profile has been misused or your device compromised.</p>
+
+<p><strong>3.3</strong> Do not share access to your device, your profile, or your synced library in order to give another person access to the music stored under it. That is a distribution of your copies, and §8 prohibits it.</p>
+
+<p><strong>3.4</strong> You may delete your profile at any time, from <strong>Settings ▸ Profile ▸ Delete Profile</strong>. §11.4 explains what happens to your Content when you do.</p>
+
+<p><strong>3.5</strong> You can also email <a href="mailto:contact@pocket-dj.com">contact@pocket-dj.com</a> and ask us to delete everything we hold, and we will. This is an additional path, not a substitute for the in-app one.</p>
+
+<hr>
+
+<h2 id="4-licence-to-use-the-app">4. Licence to use the App <a class="anchor" href="#4-licence-to-use-the-app" aria-hidden="true">#</a></h2>
+
+<p><strong>4.1 Scope of licence.</strong> We grant you a personal, limited, non-exclusive, non-transferable, revocable licence to use the App on Apple-branded devices that you own or control, as permitted by the Usage Rules in the Apple Media Services Terms and Conditions — including the Family Sharing and volume-purchase provisions of those rules — and, for the Android app, on Android devices that you own or control. This licence is for your own use. It grants you no rights in the App's code, design, name, or logo.</p>
+
+<p><strong>4.2 What you may not do with the App.</strong> Except where applicable law expressly permits it despite this restriction, you may not copy the App (other than as this licence allows), modify it, translate it, reverse-engineer, decompile, or disassemble it, attempt to derive its source code, rent, lease, lend, sell, redistribute, or sublicense it, or remove or obscure any proprietary notice in it.</p>
+
+<p><strong>4.3 Updates.</strong> We may issue updates, and some may be required for the App to keep working. Features may change or be removed.</p>
+
+<p><strong>4.4 No music licence.</strong> This licence covers software. <strong>It does not grant you any right in any musical work or sound recording, and it does not license any use of music — including reproduction, distribution, or public performance.</strong> Those rights, where you need them, come from the rights holders or their licensing organisations, not from us.</p>
+
+<hr>
+
+<h2 id="5-what-the-app-does">5. What the App does <a class="anchor" href="#5-what-the-app-does" aria-hidden="true">#</a></h2>
+
+<p>Stated plainly, so the rest of this document has something concrete to attach to:</p>
+
+<ul>
+  <li>It catalogues music you bring in from your own sources: recordings you make from your own records, audio files you own, and your Apple Music library.</li>
+  <li>It processes that audio to make it useful — transcoding it for playback, measuring tempo, key, beat grid, and waveform, separating it into stems when you ask, and transcribing lyrics when you ask. Some of that processing happens on your device and some happens on PocketDJ cloud services; §6.8 says which.</li>
+  <li>It plays music back to you, on your devices, including offline.</li>
+  <li>It publishes a catalogue of <strong>information about recordings</strong> — never audio (§6.6).</li>
+  <li>It runs a request line ("jukebox") for private events you host (§7).</li>
+</ul>
+
+<hr>
+
+<h2 id="6-your-music-and-your-rights">6. Your music and your rights <a class="anchor" href="#6-your-music-and-your-rights" aria-hidden="true">#</a></h2>
+
+<p><strong>This section is the point of this agreement. Read it.</strong></p>
+
+<h3 id="6-1-you-must-have-the-rights-to-everything-you-put-into-pocketdj">6.1 You must have the rights to everything you put into PocketDJ <a class="anchor" href="#6-1-you-must-have-the-rights-to-everything-you-put-into-pocketdj" aria-hidden="true">#</a></h3>
+
+<p>By importing, uploading, recording, digitising, or otherwise adding any audio, artwork, lyrics, or other material to the App (your "<strong>Content</strong>"), <strong>you represent and warrant that you own it or have obtained all rights, licences, consents, and permissions necessary</strong> for you to add it to the App and for us to handle it as §6.3 describes, and that doing so does not and will not infringe or violate anyone else's rights.</p>
+
+<p>In practice, this means Content that comes from:</p>
+
+<ul>
+  <li><strong>records, tapes, or discs you own</strong>, recorded by you from your own copy;</li>
+  <li><strong>audio files you bought or otherwise lawfully acquired</strong>;</li>
+  <li><strong>recordings, mixes, samples, and performances you made yourself</strong>; or</li>
+  <li><strong>material you have express permission from the rights holder to use</strong>.</li>
+</ul>
+
+<p>It does <strong>not</strong> include music obtained from a streaming subscription. A subscription licenses you to <em>listen</em>. It does not license you to keep a copy, and PocketDJ will not import from one (§6.7).</p>
+
+<p><strong>We cannot verify this for you, and we do not try.</strong> You take sole responsibility for determining, obtaining, and complying with any third-party terms that apply to your Content — including the terms of any service, marketplace, or label it came from. To the fullest extent permitted by law, we exclude all liability arising from Content that users bring into the App, including claims for infringement of intellectual property rights. Your indemnity in §14 covers this.</p>
+
+<h3 id="6-2-you-keep-ownership">6.2 You keep ownership <a class="anchor" href="#6-2-you-keep-ownership" aria-hidden="true">#</a></h3>
+
+<p><strong>Your Content is yours.</strong> Nothing in this agreement transfers ownership of it to us, and we claim no ownership interest in it. As between you and us, you keep every right you had before you added it.</p>
+
+<p>Stems, transcripts, analysis, waveforms, beat grids, edits, cue points, and mixes that the App produces from your Content are treated the same way: yours, held under the same rights (and the same limitations) as the material they were derived from.</p>
+
+<h3 id="6-3-the-licence-you-give-us-and-its-limits">6.3 The licence you give us — and its limits <a class="anchor" href="#6-3-the-licence-you-give-us-and-its-limits" aria-hidden="true">#</a></h3>
+
+<p>To run the App for you, we need your permission to do certain specific things with your Content. You grant us a <strong>non-exclusive, worldwide, royalty-free licence to do only the following, and only for the purpose of operating the App for you:</strong></p>
+
+<ol>
+  <li><strong>store</strong> your Content in the storage assigned to your profile;</li>
+  <li><strong>transcode and reformat</strong> it into the formats the App plays and streams;</li>
+  <li><strong>analyse</strong> it to produce tempo, musical key, beat grid, waveform, and similar measurements;</li>
+  <li><strong>separate it into stems</strong>, when you ask for that;</li>
+  <li><strong>transcribe</strong> its lyrics or speech, when you ask for that;</li>
+  <li><strong>make the technical copies</strong> required for backup, caching, error correction, and delivery; and</li>
+  <li><strong>serve it back to you</strong> on your devices.</li>
+</ol>
+
+<p><strong>That is the entire list.</strong> The licence is worldwide only because storage and delivery infrastructure is; it is royalty-free only because neither of us pays the other for it. It lasts as long as you keep the Content in PocketDJ and <strong>ends when you delete it</strong> (§11.4).</p>
+
+<p><strong>What we do not get, and are not asking for:</strong></p>
+
+<ul>
+  <li>No right to sell, license, sublicense, publish, distribute, publicly perform, or publicly display your Content.</li>
+  <li>No right to use it in advertising, marketing, or promotion.</li>
+  <li>No right to use it to train machine-learning models.</li>
+  <li>No right to make it available to any other user.</li>
+  <li>No right that survives your deletion of the Content, other than as §11.4 describes for backups already made.</li>
+</ul>
+
+<p>We use vendors — object storage and content delivery — to do the things on the list above. They act on our instructions and acquire no independent rights in your Content.</p>
+
+<h3 id="6-4-your-copies-are-yours">6.4 Your copies are yours <a class="anchor" href="#6-4-your-copies-are-yours" aria-hidden="true">#</a></h3>
+
+<p>Audio you add to PocketDJ is stored in storage assigned to your profile and is served back only to devices signed in to that profile. <strong>The App has no feature that gives another user access to your copies without your direction, and no feature that publishes them.</strong> Where two users happen to have the same recording, each has their own copy in their own storage; we do not collapse them into a shared one.</p>
+
+<p>Sharing in PocketDJ is limited to <strong>information about music</strong> — tracklists, playlists, collections, and listening history — <strong>except for listen-along, which shares audio and is described in §7.5.</strong> Exported collections carry metadata only; whoever opens one plays the music from their own library or their own subscription.</p>
+
+<h3 id="6-5-we-do-not-distribute-your-music">6.5 We do not distribute your music <a class="anchor" href="#6-5-we-do-not-distribute-your-music" aria-hidden="true">#</a></h3>
+
+<p>We will not make your Content available to other people <strong>except where you direct us to</strong> — today that means listen-along (§7.5), and nothing else. We may disclose or produce Content only where the law requires it, where you direct us to, or where it is necessary to respond to a valid legal claim.</p>
+
+<h3 id="6-6-the-public-catalogue-is-metadata-only">6.6 The public catalogue is metadata only <a class="anchor" href="#6-6-the-public-catalogue-is-metadata-only" aria-hidden="true">#</a></h3>
+
+<p>PocketDJ publishes a browsable catalogue of <strong>facts about recordings</strong> — titles, artists, albums, release information, tempo, musical key, beat grid, mood keywords, and similar analysis — so that people can see how a collection is built and be inspired by it.</p>
+
+<p><strong>The public catalogue never contains audio, and it never links to anyone's audio files.</strong> If you see something in it you want to hear, look it up on your own music service.</p>
+
+<p>Artwork shown in the catalogue is displayed under the terms of its source and remains the property of its owners. Nothing in the catalogue is licensed for redistribution.</p>
+
+<h3 id="6-7-apple-music-is-playback-only">6.7 Apple Music is playback only <a class="anchor" href="#6-7-apple-music-is-playback-only" aria-hidden="true">#</a></h3>
+
+<p>When you play a song from Apple Music in PocketDJ, it plays <strong>through Apple Music, using your own subscription</strong>. PocketDJ does not record it, capture it, download it, transcode it, or store a copy of it, and it provides no means for you to do so. Apple Music tracks cannot be added to your offline library, because a subscription lets you listen — it does not let you keep a copy.</p>
+
+<p>At your direction, PocketDJ can make changes to your own Apple Music account — adding a song or album to your library, adding songs to your playlists, or setting a favourite or rating. Those are changes you asked for in your own account, made through Apple's own interfaces. They are not copies, and we do not receive the music. Some of them, such as marking a song as a favourite in Apple Music, <strong>cannot be undone by an app</strong> — Apple provides no way to reverse them — so treat them as permanent.</p>
+
+<h3 id="6-8-what-leaves-your-device">6.8 What leaves your device <a class="anchor" href="#6-8-what-leaves-your-device" aria-hidden="true">#</a></h3>
+
+<p>We think you should be able to tell, <strong>without reading the privacy policy, which of your audio stays put and which does not.</strong> This section is about audio only. It is not a summary of everything the App collects — your search queries and our server logs, among other things, are covered by the <a href="/privacy/">Privacy Policy</a> and by the App Store and Google Play privacy labels, and are declared there. Read them for the complete picture.</p>
+
+<p><strong>Stays on your device:</strong> the audio of microphone recordings you make in Studio, the audio of mixes you record, rendered instrumentals, and on-device lyric transcription. Speech recognition (Apple's Speech framework, or Android's on-device recognizer) runs in on-device mode only; your audio is not sent to Apple, Google, or us for transcription.</p>
+
+<p><strong>Stays on your device as audio, but syncs as a document:</strong> your recorded mix <em>sessions</em>, your saved playback session, your mix deck state, and your cue points. The audio takes do not leave your device. The documents that describe them — what was loaded on each deck, where the cue points sit, what the fader was doing — sync to your own private iCloud database, the same way your library organisation does.</p>
+
+<p><strong>Goes to an import server, because the feature requires it</strong> (only if one is configured in Settings ▸ Import server; it may be ours or one you run): audio you import for your library; audio you send for stem separation, tempo/key analysis, or cloud lyric transcription — <strong>and that includes your own microphone recordings and recorded mixes if you choose to run stem separation on them.</strong> If you do not want a recording to leave your device, do not send it for processing.</p>
+
+<p><strong>Goes to Apple, not to us:</strong> song recognition sends a derived acoustic signature — not your microphone audio — to Apple's Shazam service. On Apple devices, your library organisation, playlists, favourites, and play history sync to <strong>your own private iCloud database</strong> under your Apple Account, which we cannot read. On Android they stay on the device unless you turn on the optional profile sync described in the Privacy Policy.</p>
+
+<p>The <a href="/privacy/">Privacy Policy</a> has the complete picture, including retention.</p>
+
+<hr>
+
+<h2 id="7-jukebox-sessions-and-event-licensing">7. Jukebox sessions and event licensing <a class="anchor" href="#7-jukebox-sessions-and-event-licensing" aria-hidden="true">#</a></h2>
+
+<h3 id="7-1-what-a-jukebox-session-is-for">7.1 What a jukebox session is for <a class="anchor" href="#7-1-what-a-jukebox-session-is-for" aria-hidden="true">#</a></h3>
+
+<p>A jukebox session is for a <strong>private event you are hosting</strong>. Your guests scan a code, see what is playing, and send you requests. You decide what plays. The music comes out of your speakers — and, if you switch on listen-along, out of your guests' phones as well (§7.5).</p>
+
+<p>Sessions are access-controlled by default, capped in the number of listeners they admit, and expire automatically. They are not indexed, not enumerable, and not intended to be shared beyond the people at your event.</p>
+
+<h3 id="7-2-you-are-responsible-for-the-licences-your-event-needs">7.2 You are responsible for the licences your event needs <a class="anchor" href="#7-2-you-are-responsible-for-the-licences-your-event-needs" aria-hidden="true">#</a></h3>
+
+<p><strong>PocketDJ does not license music to you and cannot obtain a licence on your behalf.</strong> Playing music where the public can hear it is a public performance, and it requires a licence — normally held by the venue.</p>
+
+<ul>
+  <li>In the <strong>United States</strong>, that means a licence covering the songwriting, from ASCAP, BMI, SESAC, or GMR.</li>
+  <li><strong>Outside the United States you will usually need two licences</strong> — one for the songwriting and a separate one for the sound recording. For example: PRS and PPL in the United Kingdom (sold together as TheMusicLicence), GEMA and GVL in Germany, SACEM and SCPP in France, APRA AMCOS and PPCA in Australia, SOCAN and Re:Sound in Canada.</li>
+</ul>
+
+<p>A private party for your own friends and family generally does not need one. A bar, club, ticketed event, corporate function, or paid DJ engagement generally does — <strong>even if it is invitation-only</strong>. If you are being paid to DJ, confirm the venue's licence in writing before the gig.</p>
+
+<p><strong>You take sole responsibility for determining, obtaining, and complying with every licence, consent, and permission your event requires.</strong> You and your venue may both be liable if it is unlicensed, and the penalties can be substantial. A streaming subscription is not a performance licence.</p>
+
+<h3 id="7-3-no-broadcasting">7.3 No broadcasting <a class="anchor" href="#7-3-no-broadcasting" aria-hidden="true">#</a></h3>
+
+<p>You may not use the App to broadcast, webcast, simulcast, or otherwise transmit music to people who are not present at your event. The jukebox is a request line for a room you are in. If you want to stream a DJ set to a remote audience, use a platform that runs a licensed DJ programme.</p>
+
+<h3 id="7-4-your-guests">7.4 Your guests <a class="anchor" href="#7-4-your-guests" aria-hidden="true">#</a></h3>
+
+<p>If you host a session, you are responsible for how you run it. Guests submit requests through a web page; what we collect from them, and for how long, is described in the <a href="/privacy/">Privacy Policy</a>, and the request form links to it. Do not use a session to collect information from guests that the request line does not ask for.</p>
+
+<h3 id="7-5-listen-along">7.5 Listen-along <a class="anchor" href="#7-5-listen-along" aria-hidden="true">#</a></h3>
+
+<p>A host can switch on <strong>listen-along</strong>, which lets guests in a session hear the current track on their own phones. It is <strong>off by default</strong>, only the host can turn it on, and when it is on, guests stream the host's own copy of the track for the duration of the session.</p>
+
+<p>This is a <strong>transmission of the recording</strong>, not a metadata feature. Three consequences follow, and you should read all three before switching it on:</p>
+
+<ul>
+  <li><strong>It is your transmission.</strong> You are directing us to make your Content available to those guests. §6.5's promise not to distribute your music is subject to this, and only to this.</li>
+  <li><strong>It may need a licence your event does not have.</strong> §7.2's performance-licensing analysis applies to listen-along at least as strongly as it applies to your speakers, and a transmission may engage rights that a room-only performance does not.</li>
+  <li><strong>It is not a broadcast service.</strong> It is for guests at your event. §7.3 still prohibits transmitting to people who are not there, and turning listen-along on does not license you to publish a session URL to a general audience.</li>
+</ul>
+
+<hr>
+
+<h2 id="8-acceptable-use">8. Acceptable use <a class="anchor" href="#8-acceptable-use" aria-hidden="true">#</a></h2>
+
+<p>You agree not to do any of the following, and not to help anyone else do them.</p>
+
+<p><strong>8.1 Rights you do not have.</strong></p>
+
+<ul>
+  <li>Add to the App any music, artwork, lyrics, or other material you do not own or have permission to use (§6.1).</li>
+  <li><strong>Use the App, or attempt to use it, as a way to obtain music you do not have the rights to.</strong> This includes trying to make the service fetch, capture, or produce a recording you did not supply, and trying to reach another user's stored copies.</li>
+  <li>Record, capture, re-record, transcode, or otherwise retain audio from a streaming service, including Apple Music. PocketDJ provides no means of doing this, and you may not use it to attempt it.</li>
+  <li>Circumvent, disable, or interfere with any digital rights management, encryption, access control, or other technical protection measure — in the App or in any service it connects to.</li>
+</ul>
+
+<p><strong>8.2 Distribution.</strong></p>
+
+<ul>
+  <li>Distribute, publish, upload, broadcast, publicly perform, or make available to the public any music in your library, through the App or by using it.</li>
+  <li>Share access to your profile, or share a session link outside your event, in order to give another person access to your stored music.</li>
+  <li>Use the App as a file-sharing service, a music locker for someone else, or a distribution point of any kind.</li>
+</ul>
+
+<p><strong>8.3 The service itself.</strong></p>
+
+<ul>
+  <li>Scrape, harvest, bulk-download, mirror, or systematically extract the catalogue or any other part of the service.</li>
+  <li>Probe, scan, or test the security of the service; attempt to gain unauthorised access to any account, system, or data; or interfere with the service's operation.</li>
+  <li>Use bots, scripts, or automated means to generate load, submit requests, or drive processing beyond ordinary personal use.</li>
+  <li>Resell, sublicense, or commercially exploit the App or access to it.</li>
+</ul>
+
+<p><strong>8.4 Everything else.</strong> Do not use the App unlawfully, to infringe anyone's rights, to harass anyone, or to submit content through the jukebox request line that is unlawful, abusive, or hateful.</p>
+
+<p><strong>8.5 Enforcement.</strong> We may investigate suspected violations and may suspend or terminate access under §11. Except as §8.6 requires, we are not obligated to monitor use of the App, and choosing not to act in one case does not waive our right to act in another.</p>
+
+<h3 id="8-6-content-submitted-by-other-people-and-how-to-deal-with-it">8.6 Content submitted by other people, and how to deal with it <a class="anchor" href="#8-6-content-submitted-by-other-people-and-how-to-deal-with-it" aria-hidden="true">#</a></h3>
+
+<p>The jukebox request line accepts free text from members of the public. That makes it user-generated content, and the following apply:</p>
+
+<ul>
+  <li><strong>Filtering.</strong> Submitted text is filtered for objectionable material before a host sees it.</li>
+  <li><strong>Reporting.</strong> Every request a host sees carries a <strong>Report</strong> action. Guests can report content shown on the guest page the same way. We act on reports promptly, and we remove material that breaches §8.4 and eject the guest who submitted it.</li>
+  <li><strong>Blocking.</strong> A host can block an abusive guest from their session, and blocked guests cannot rejoin it.</li>
+  <li><strong>Contact.</strong> <a href="mailto:support@pocket-dj.com">support@pocket-dj.com</a> reaches us about anything on this list, and it is published on the guest request page as well as here.</li>
+</ul>
+
+<hr>
+
+<h2 id="9-copyright-complaints-and-repeat-infringers">9. Copyright complaints and repeat infringers <a class="anchor" href="#9-copyright-complaints-and-repeat-infringers" aria-hidden="true">#</a></h2>
+
+<p><strong>This section summarises the <a href="/dmca/">PocketDJ Copyright and DMCA Policy</a>, which governs if the two differ.</strong> Read §9.0 before relying on any of it.</p>
+
+<p><strong>9.0 What the safe harbour covers, and what it does not.</strong> 17 U.S.C. §512(c) limits liability for infringing material that resides on our system <strong>and that was stored at the direction of a user</strong>. That is the whole of what it covers. It does <strong>not</strong> cover copies our own systems made without a user directing them; it does <strong>not</strong> cover material we choose to publish ourselves; and it does <strong>not</strong> cover public performance or transmission, which are separate acts under separate exclusive rights. Failing to qualify for a safe harbour does not by itself prejudice any other defence, and qualifying for one does not make otherwise-infringing conduct lawful. We state this plainly because a policy that gestures at "DMCA compliance" and lets the reader infer blanket protection would misdescribe both the statute and this product.</p>
+
+<p><strong>9.1 Notices.</strong> If you believe material stored or made available through PocketDJ infringes your copyright, send a notice to our designated agent:</p>
+
+<blockquote>
+<p><strong>Copyright Agent</strong>, Designated Copyright Agent<br>
+African Intellect Enterprises LLC (PocketDJ)<br>
+4406 NE 23rd Ave, Portland, OR 97211, United States<br>
+Email: <a href="mailto:dmca@pocket-dj.com">dmca@pocket-dj.com</a></p>
+</blockquote>
+
+<p>Please include everything 17 U.S.C. §512(c)(3) requires: your signature (physical or electronic); identification of the work you say is infringed; identification of the material you say is infringing, with enough detail for us to find it; your contact details; a statement that you believe in good faith the use is not authorised by the rights holder, its agent, or the law; and a statement, under penalty of perjury, that the information in the notice is accurate and that you are the rights holder or authorised to act for them.</p>
+
+<p><strong>9.2 Counter-notices.</strong> If we remove or disable material of yours and you believe that was a mistake or a misidentification, you may send a counter-notice to the same address. 17 U.S.C. §512(g)(3) requires it to contain all of the following:</p>
+
+<ol>
+  <li><strong>your physical or electronic signature;</strong></li>
+  <li><strong>identification of the material that was removed or disabled, and the location at which it appeared</strong> before it was removed or access to it was disabled;</li>
+  <li><strong>a statement under penalty of perjury</strong> that you have a good-faith belief the material was removed or disabled as a result of mistake or misidentification;</li>
+  <li><strong>your name, address, and telephone number</strong>; and</li>
+  <li><strong>a statement that you consent to the jurisdiction of the Federal District Court</strong> for the judicial district in which your address is located — or, if your address is outside the United States, for any judicial district in which we may be found — <strong>and that you will accept service of process</strong> from the person who submitted the original notice, or from that person's agent.</li>
+</ol>
+
+<p><strong>What happens next, precisely.</strong> On receiving a compliant counter-notice we will promptly send a copy of it to the person who submitted the original notice, and tell them we will restore the material in 10 business days. We will then restore the material, or cease disabling access to it, <strong>not less than 10 nor more than 14 business days</strong> after we received your counter-notice — <strong>unless</strong> our designated agent first receives notice that the complaining party has filed an action seeking a court order to restrain you from infringing activity relating to that material on our system. We cannot shorten the 10 days.</p>
+
+<p><strong>Your details go to the other side.</strong> A counter-notice contains your name, address, and telephone number, and we are required to forward it to the complaining party. It also consents to federal court jurisdiction. Do not send one casually.</p>
+
+<p>Sending either a notice or a counter-notice that materially misrepresents the position can make you liable for damages under §512(f).</p>
+
+<p><strong>9.3 Repeat infringers.</strong> We keep records of the copyright complaints we receive and of the profiles they concern. <strong>In appropriate circumstances we will terminate the profiles of users who repeatedly infringe copyright</strong>, delete the Content stored under those profiles, and decline to reinstate them. We may also terminate immediately for a single instance of clear and serious infringement. Adopting and reasonably implementing such a policy is a <strong>threshold condition</strong> of the safe harbours in 17 U.S.C. §512(i) — it is not optional and it is not a courtesy.</p>
+
+<hr>
+
+<h2 id="10-maintenance-and-support">10. Maintenance and support <a class="anchor" href="#10-maintenance-and-support" aria-hidden="true">#</a></h2>
+
+<p><strong>We are solely responsible</strong> for providing any maintenance and support for the App. <strong>Apple has no obligation whatsoever to furnish any maintenance or support services</strong> for it.</p>
+
+<p><strong>PocketDJ is built and supported by one person</strong>, and support is best-effort. Reach us at <a href="mailto:support@pocket-dj.com">support@pocket-dj.com</a> or <a href="https://pocket-dj.com/support.html">pocket-dj.com/support</a>. We do not promise a response time, and we do not promise that any particular feature will keep working.</p>
+
+<p>Nothing in this section commits us to a response time. Where §8.6 or applicable law does set one, that commitment governs over this paragraph.</p>
+
+<hr>
+
+<h2 id="11-term-and-termination">11. Term and termination <a class="anchor" href="#11-term-and-termination" aria-hidden="true">#</a></h2>
+
+<p><strong>11.1</strong> This agreement takes effect when you first use the App and continues until terminated.</p>
+
+<p><strong>11.2 By you.</strong> Stop using the App and delete it. You may delete your profile at any time (§3.4).</p>
+
+<p><strong>11.3 By us.</strong> We may suspend or terminate your access, with or without notice, if you breach these Terms — in particular §6.1 (rights in your Content), §8 (acceptable use), or §9.3 (repeat infringement) — if we are required to by law, or if we discontinue the App. Where it is practical and lawful to do so, we will give you notice and a chance to retrieve your Content first.</p>
+
+<p><strong>11.4 What happens to your Content.</strong> When you delete Content, or when you delete your profile, we delete our copies within one month, and the licence in §6.3 ends with them. Copies in routine backups age out on the backup system's own schedule. Content you have downloaded to your own devices stays on your devices; deleting it there is up to you.</p>
+
+<p><strong>11.5 Survival.</strong> §§3.3, 4.4, 6.1, 6.2, 6.5, 8, 9, 11.4, 12, 13, 14, 15, 16, 18, and 19 survive termination.</p>
+
+<hr>
+
+<h2 id="12-disclaimer-of-warranties">12. Disclaimer of warranties <a class="anchor" href="#12-disclaimer-of-warranties" aria-hidden="true">#</a></h2>
+
+<p><strong>The App is provided "as is" and "as available", without warranty of any kind.</strong> To the fullest extent permitted by law, we disclaim all warranties, express, implied, or statutory, including implied warranties of merchantability, fitness for a particular purpose, title, and non-infringement, and any warranty arising from course of dealing or usage of trade.</p>
+
+<p>We do not warrant that the App will be uninterrupted, secure, or error-free; that defects will be corrected; that analysis results (tempo, key, beat grid, stems, transcripts) will be accurate; or that your Content will be preserved. <strong>Keep your own backups of anything you cannot afford to lose.</strong></p>
+
+<p>Nothing in the App is legal advice. In particular, the descriptions of performance licensing in §7 are general information, not advice about your event.</p>
+
+<p><strong>Nothing in this section excludes or limits any warranty, guarantee, or right you have as a consumer that cannot be excluded or limited under the law of your country.</strong> If you are a consumer in a jurisdiction that grants non-excludable statutory guarantees, those guarantees apply and this section is read subject to them.</p>
+
+<hr>
+
+<h2 id="13-limitation-of-liability">13. Limitation of liability <a class="anchor" href="#13-limitation-of-liability" aria-hidden="true">#</a></h2>
+
+<p>To the fullest extent permitted by law:</p>
+
+<p><strong>13.1</strong> We will not be liable for any indirect, incidental, special, consequential, exemplary, or punitive damages, or for lost profits, lost revenue, lost goodwill, loss of data, or loss of a music library, however caused and on any theory of liability, even if we have been advised that such damages are possible.</p>
+
+<p><strong>13.2</strong> Our total aggregate liability for all claims relating to the App will not exceed the greater of (a) the amount you paid us for the App in the twelve months before the event giving rise to the claim, or (b) one hundred US dollars (US$100).</p>
+
+<p><strong>13.3</strong> These limits apply even if a remedy fails of its essential purpose.</p>
+
+<p><strong>13.4</strong> <strong>Nothing in this section limits liability for death or personal injury caused by negligence, for fraud or fraudulent misrepresentation, or for anything else that cannot lawfully be limited</strong> — including any non-excludable rights you have as a consumer.</p>
+
+<hr>
+
+<h2 id="14-indemnity">14. Indemnity <a class="anchor" href="#14-indemnity" aria-hidden="true">#</a></h2>
+
+<p>You will indemnify, defend, and hold harmless African Intellect Enterprises LLC and its officers, employees, and contractors from and against any claim, demand, loss, liability, damage, cost, or expense (including reasonable legal fees) arising out of or relating to:</p>
+
+<ol>
+  <li><strong>your Content</strong>, including any claim that it infringes or misappropriates someone's intellectual property or other rights;</li>
+  <li><strong>your use of the App</strong>, including any public performance of music you make with it and any event you host through it;</li>
+  <li><strong>your breach of these Terms</strong>, including the rights attestation in §6.1 and the acceptable-use rules in §8; or</li>
+  <li><strong>your violation of any law or of anyone else's rights.</strong></li>
+</ol>
+
+<p>We will notify you of any claim we seek indemnity for, and you may control its defence with counsel reasonably acceptable to us — provided you may not settle it in a way that imposes any obligation or admission on us without our written consent. This section does not apply where the law does not permit it, and it does not apply to a consumer to the extent applicable consumer law says otherwise.</p>
+
+<hr>
+
+<h2 id="15-governing-law-and-venue">15. Governing law and venue <a class="anchor" href="#15-governing-law-and-venue" aria-hidden="true">#</a></h2>
+
+<p><strong>15.1</strong> These Terms are governed by the laws of the State of Oregon, United States, excluding its conflict-of-laws rules and the United Nations Convention on Contracts for the International Sale of Goods.</p>
+
+<p><strong>15.2</strong> Subject to §16, the state and federal courts located in Multnomah County, Oregon, have exclusive jurisdiction over any dispute, and you consent to their jurisdiction and venue.</p>
+
+<p><strong>15.3 Consumers.</strong> If you are a consumer resident in the European Union, the United Kingdom, or another jurisdiction whose law gives you the right to bring proceedings in your local courts or to the protection of local mandatory consumer law, <strong>nothing in this section deprives you of that right or that protection.</strong></p>
+
+<hr>
+
+<h2 id="16-disputes">16. Disputes <a class="anchor" href="#16-disputes" aria-hidden="true">#</a></h2>
+
+<p><strong>16.1 Talk to us first.</strong> Before starting formal proceedings, contact us at <a href="mailto:support@pocket-dj.com">support@pocket-dj.com</a> and give us 30 days to try to resolve the problem. Most disputes are cheaper to fix by email.</p>
+
+<p><strong>16.2 Where disputes go.</strong> If we cannot resolve a dispute that way, either of us may take it to the courts named in §15, or to a small-claims court where the claim qualifies. Nothing in these Terms requires arbitration or waives your right to join a class action where the law gives you that right.</p>
+
+<hr>
+
+<h2 id="17-changes-to-these-terms">17. Changes to these Terms <a class="anchor" href="#17-changes-to-these-terms" aria-hidden="true">#</a></h2>
+
+<p><strong>17.1</strong> We may change these Terms. When we do, we will post the updated version at <a href="/terms/">legal.pocket-dj.com/terms</a> and change the effective date at the top.</p>
+
+<p><strong>17.2</strong> For material changes — anything that reduces your rights, expands the licence in §6.3, or changes §16 — we will give you reasonable advance notice, in the App or by email, before the change takes effect.</p>
+
+<p><strong>17.3</strong> Continuing to use the App after a change takes effect means you accept the updated Terms. If you do not accept them, stop using the App and delete your profile (§3.4); §11.4 governs what happens to your Content.</p>
+
+<p><strong>17.4</strong> We will not apply a change retroactively to a dispute that arose before it took effect.</p>
+
+<hr>
+
+<h2 id="18-general">18. General <a class="anchor" href="#18-general" aria-hidden="true">#</a></h2>
+
+<p><strong>18.1 Entire agreement.</strong> These Terms, together with the documents incorporated by §1.4 — the Privacy Policy, the Copyright and DMCA Policy, and the Third-Party Notices — and any in-app confirmation you give under §6.1 or §7.2, are the entire agreement between you and us about the App, and supersede any prior understanding on the subject.</p>
+
+<p><strong>18.2 Severability.</strong> If any provision is held unenforceable, it will be limited or severed to the minimum extent necessary, and the rest stays in force.</p>
+
+<p><strong>18.3 No waiver.</strong> If we do not enforce a provision, that is not a waiver of it.</p>
+
+<p><strong>18.4 Assignment.</strong> You may not assign or transfer these Terms. We may assign them to a successor in connection with a merger, acquisition, or sale of assets, on notice to you.</p>
+
+<p><strong>18.5 No third-party rights, except Apple.</strong> No one other than you and us has any right to enforce these Terms — except Apple and its subsidiaries, under §19.10.</p>
+
+<p><strong>18.6 Force majeure.</strong> Neither party is liable for a failure to perform caused by something outside its reasonable control.</p>
+
+<p><strong>18.7 Notices.</strong> We may give you notice in the App, at any email address you have given us, or at <a href="/terms/">legal.pocket-dj.com/terms</a>. Send notices to us at <a href="mailto:support@pocket-dj.com">support@pocket-dj.com</a> and, for legal notices, to African Intellect Enterprises LLC (PocketDJ) at 4406 NE 23rd Ave, Portland, OR 97211, United States.</p>
+
+<p><strong>18.8 Language.</strong> These Terms are written in English. Any translation is for convenience; the English version governs.</p>
+
+<hr>
+
+<h2 id="19-apple-s-required-terms">19. Apple's required terms <a class="anchor" href="#19-apple-s-required-terms" aria-hidden="true">#</a></h2>
+
+<p><strong>This section applies only if you obtained the App from Apple's App Store.</strong> The following are the minimum terms Apple requires in a custom end-user licence agreement for an application distributed on Apple platforms. Where they overlap with earlier sections, they are restated here in full so the required set appears in one place.</p>
+
+<p><strong>19.1 Acknowledgement.</strong> You and we acknowledge that <strong>this agreement is concluded between you and us only, and not with Apple.</strong> We, not Apple, are solely responsible for the App and its content. This agreement does not provide for usage rules for the App that conflict with the Apple Media Services Terms and Conditions as of the date you accept it, and we acknowledge we have had the opportunity to review those usage rules.</p>
+
+<p><strong>19.2 Scope of licence.</strong> The licence granted to you in §4.1 is a <strong>non-transferable licence to use the App on any Apple-branded products that you own or control</strong>, and only as permitted by the Usage Rules in the Apple Media Services Terms and Conditions — except that the App may be accessed and used by other accounts associated with you via Family Sharing or volume purchasing.</p>
+
+<p><strong>19.3 Maintenance and support.</strong> <strong>We are solely responsible</strong> for providing any maintenance and support services for the App, as specified in §10 or as required under applicable law. <strong>You and we acknowledge that Apple has no obligation whatsoever to furnish any maintenance and support services</strong> for the App.</p>
+
+<p><strong>19.4 Warranty.</strong> <strong>We are solely responsible for any product warranties</strong>, whether express or implied by law, to the extent not effectively disclaimed in §12. <strong>In the event of any failure of the App to conform to any applicable warranty, you may notify Apple, and Apple will refund the purchase price of the App to you.</strong> To the maximum extent permitted by applicable law, <strong>Apple will have no other warranty obligation whatsoever with respect to the App</strong>, and any other claims, losses, liabilities, damages, costs, or expenses attributable to a failure to conform to any warranty are our sole responsibility.</p>
+
+<p><strong>19.5 Product claims.</strong> <strong>You and we acknowledge that we, not Apple, are responsible for addressing any claims</strong> by you or any third party relating to the App or your possession and use of it, including: (i) product liability claims; (ii) any claim that the App fails to conform to any applicable legal or regulatory requirement; and (iii) claims arising under consumer protection, privacy, or similar legislation, including in connection with the App's use of any framework that processes health or similar data. This agreement does not limit our liability to you beyond what applicable law permits.</p>
+
+<p><strong>19.6 Intellectual property rights.</strong> <strong>You and we acknowledge that, in the event of any third-party claim that the App or your possession and use of it infringes that third party's intellectual property rights, we, not Apple, will be solely responsible for the investigation, defence, settlement, and discharge of that claim.</strong></p>
+
+<p><strong>19.7 Legal compliance.</strong> You represent and warrant that (i) you are not located in a country subject to a U.S. Government embargo, or that has been designated by the U.S. Government as a "terrorist supporting" country; and (ii) you are not listed on any U.S. Government list of prohibited or restricted parties.</p>
+
+<p><strong>19.8 Developer name and address.</strong> Questions, complaints, or claims about the App should be directed to:</p>
+
+<blockquote>
+<p><strong>African Intellect Enterprises LLC (PocketDJ)</strong><br>
+4406 NE 23rd Ave, Portland, OR 97211, United States<br>
+<a href="mailto:support@pocket-dj.com">support@pocket-dj.com</a></p>
+</blockquote>
+
+<p><strong>19.9 Third-party terms of agreement.</strong> <strong>You must comply with applicable third-party terms of agreement when using the App</strong> — including, for Apple Music playback, the Apple Media Services Terms and Conditions.</p>
+
+<p><strong>19.10 Third-party beneficiary.</strong> <strong>You and we acknowledge and agree that Apple, and Apple's subsidiaries, are third-party beneficiaries of this agreement, and that, upon your acceptance of this agreement, Apple will have the right (and will be deemed to have accepted the right) to enforce this agreement against you as a third-party beneficiary of it.</strong></p>
+
+<p><strong>19.11 Export.</strong> You may not use or otherwise export or re-export the App except as authorised by United States law and the laws of the jurisdiction in which the App was obtained. In particular, the App may not be exported or re-exported into any U.S.-embargoed country or to anyone on the U.S. Treasury Department's Specially Designated Nationals list or the U.S. Department of Commerce's Denied Persons or Entity Lists.</p>
+
+<p><strong>19.12 U.S. Government end users.</strong> The App and related documentation are "Commercial Items" as defined at 48 C.F.R. §2.101, consisting of "Commercial Computer Software" and "Commercial Computer Software Documentation" as those terms are used in 48 C.F.R. §12.212 or 48 C.F.R. §227.7202. They are licensed to U.S. Government end users only as Commercial Items and with only those rights granted to all other end users.</p>
+
+<hr>
+
+<h2 id="20-contact">20. Contact <a class="anchor" href="#20-contact" aria-hidden="true">#</a></h2>
+
+<blockquote>
+<p><strong>African Intellect Enterprises LLC (PocketDJ)</strong><br>
+4406 NE 23rd Ave, Portland, OR 97211, United States</p>
+<p>General and support — <a href="mailto:support@pocket-dj.com">support@pocket-dj.com</a> · <a href="https://pocket-dj.com/support.html">pocket-dj.com/support</a><br>
+Privacy and account deletion — <a href="mailto:support@pocket-dj.com">support@pocket-dj.com</a> · <a href="/delete-account/">legal.pocket-dj.com/delete-account</a><br>
+Copyright notices — <a href="mailto:dmca@pocket-dj.com">dmca@pocket-dj.com</a> (see §9.1)</p>
+</blockquote>
+</main>
+
+<footer class="site-footer">
+  <div class="site-footer-inner">
+    <nav class="footer-nav" aria-label="Related documents">
+      <a href="/privacy/">Privacy Policy</a>
+      <a href="/dmca/">Copyright &amp; DMCA Policy</a>
+      <a href="/notices/">Third-Party Notices</a>
+      <a href="mailto:contact@pocket-dj.com">contact@pocket-dj.com</a>
+    </nav>
+    <p>PocketDJ &mdash; a personal music library and DJ app.</p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var root=document.documentElement;
+  function apply(t){
+    if(t){root.setAttribute('data-theme',t);}else{root.removeAttribute('data-theme');}
+    try{localStorage.setItem('pdj-theme',t||'');}catch(e){}
+  }
+  var btn=document.getElementById('theme-toggle');
+  if(btn){btn.addEventListener('click',function(){
+    var cur=root.getAttribute('data-theme');
+    var dark=cur?cur==='dark':(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);
+    apply(dark?'light':'dark');
+  });}
+  var toc=document.getElementById('toc');
+  if(toc&&window.matchMedia&&window.matchMedia('(max-width:719px)').matches){toc.removeAttribute('open');}
+})();
+</script>
+</body>
+</html>

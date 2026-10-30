@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Legal — PocketDJ</title>
+<script>try{var t=localStorage.getItem('pdj-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
+<style>
+:root{
+  color-scheme:light dark;
+  --bg:#ffffff; --fg:#1c1d20; --muted:#6b7078; --border:#e4e6ea;
+  --link:#0f7d72; --accent:#0d9488; --table-head:#f6f7f9; --soft:#f7f8fa;
+  --header-bg:rgba(255,255,255,0.82);
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#111316; --fg:#e5e7ea; --muted:#9aa0a8; --border:#2a2d33;
+    --link:#4fd3c3; --accent:#2dd4bf; --table-head:#181a1e; --soft:#16181c;
+    --header-bg:rgba(17,19,22,0.82);
+  }
+}
+:root[data-theme="light"]{
+  color-scheme:light;
+  --bg:#ffffff; --fg:#1c1d20; --muted:#6b7078; --border:#e4e6ea;
+  --link:#0f7d72; --accent:#0d9488; --table-head:#f6f7f9; --soft:#f7f8fa;
+  --header-bg:rgba(255,255,255,0.82);
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#111316; --fg:#e5e7ea; --muted:#9aa0a8; --border:#2a2d33;
+  --link:#4fd3c3; --accent:#2dd4bf; --table-head:#181a1e; --soft:#16181c;
+  --header-bg:rgba(17,19,22,0.82);
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif,"Apple Color Emoji","Segoe UI Emoji";
+  font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+a{color:var(--link);overflow-wrap:break-word}
+a:hover{text-decoration:underline}
+
+.site-header{position:sticky;top:0;z-index:20;background:var(--header-bg);
+  backdrop-filter:saturate(180%) blur(10px);-webkit-backdrop-filter:saturate(180%) blur(10px);
+  border-bottom:1px solid var(--border)}
+.hwrap{max-width:72ch;margin:0 auto;padding:0.6rem 1.25rem;display:flex;align-items:center;gap:0.9rem}
+.wordmark{font-weight:700;letter-spacing:-0.01em;color:var(--fg);text-decoration:none;font-size:1.06rem}
+.wordmark:hover{color:var(--accent);text-decoration:none}
+.doctitle{color:var(--muted);font-size:0.95rem;border-left:1px solid var(--border);padding-left:0.9rem}
+.theme-toggle{margin-left:auto;border:1px solid var(--border);background:transparent;color:var(--fg);
+  border-radius:7px;width:2.1rem;height:2.1rem;font-size:1rem;line-height:1;cursor:pointer;
+  display:flex;align-items:center;justify-content:center}
+.theme-toggle:hover{border-color:var(--accent);color:var(--accent)}
+@media (max-width:430px){.doctitle{display:none}}
+
+.page{max-width:72ch;margin:0 auto;padding:2rem 1.25rem 3rem}
+h1{font-size:2rem;line-height:1.2;margin:0.25rem 0 0.4rem;letter-spacing:-0.015em}
+h2{font-size:1.4rem;line-height:1.28;margin:2.6rem 0 0.8rem;padding-top:1.4rem;
+  border-top:1px solid var(--border);scroll-margin-top:4.8rem;letter-spacing:-0.01em}
+p{margin:0.9rem 0}
+strong{font-weight:650}
+
+.lede{font-size:1.12rem;color:var(--fg);margin:0.6rem 0 0.2rem}
+.lede .sub{color:var(--muted)}
+.notice{color:var(--muted);font-size:0.95em;border-left:3px solid var(--accent);
+  background:var(--soft);border-radius:0 6px 6px 0;padding:0.7rem 1rem;margin:1.4rem 0 0}
+
+.docs{list-style:none;padding:0;margin:2rem 0 0;display:grid;gap:0.85rem}
+.doc{border:1px solid var(--border);border-radius:11px;background:var(--soft);
+  padding:1.05rem 1.2rem;transition:border-color .12s}
+.doc:hover{border-color:var(--accent)}
+.doc a.doclink{font-weight:650;font-size:1.08rem;color:var(--fg);text-decoration:none;
+  letter-spacing:-0.01em}
+.doc:hover a.doclink{color:var(--accent)}
+.doc a.doclink::after{content:" →";color:var(--muted);font-weight:400}
+.doc p{margin:0.3rem 0 0;color:var(--muted);font-size:0.98em}
+
+.contact{border:1px solid var(--border);border-radius:11px;background:var(--soft);
+  padding:1.05rem 1.2rem;margin:1.5rem 0 0;font-size:0.98em}
+.contact .row{margin:0.3rem 0}
+.contact .lbl{color:var(--muted)}
+
+.site-footer{border-top:1px solid var(--border);background:var(--soft)}
+.fwrap{max-width:72ch;margin:0 auto;padding:2rem 1.25rem;font-size:0.95em;color:var(--muted)}
+.fnav{display:flex;flex-wrap:wrap;gap:0.5rem 1.4rem;margin:0 0 1rem}
+.fnav a{color:var(--fg);text-decoration:none}
+.fnav a:hover{color:var(--link);text-decoration:underline}
+.fwrap .mail{color:var(--link)}
+</style>
+</head>
+<body>
+<header class="site-header">
+  <div class="hwrap">
+    <a class="wordmark" href="/">PocketDJ</a>
+    <span class="doctitle">Legal</span>
+    <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle color theme"></button>
+  </div>
+</header>
+
+<main class="page">
+<h1>PocketDJ Legal</h1>
+<p class="lede">PocketDJ is a DJ app for the music you already own. <span class="sub">It plays, mixes, and organizes your own library and your Apple Music subscription — it is not a way to obtain or distribute anyone else's recordings.</span></p>
+
+<h2>The documents</h2>
+<ul class="docs">
+  <li class="doc">
+    <a class="doclink" href="/privacy/">Privacy Policy</a>
+    <p>What stays on your device, what goes to the cloud when you ask, and everything we deliberately do not collect.</p>
+  </li>
+  <li class="doc">
+    <a class="doclink" href="/terms/">Terms of Use</a>
+    <p>The rules for using PocketDJ — including that each user's copies are their own and must be lawfully held.</p>
+  </li>
+  <li class="doc">
+    <a class="doclink" href="/dmca/">Copyright &amp; DMCA Policy</a>
+    <p>How to report infringement, how we respond to notices, and how to file a counter-notice.</p>
+  </li>
+  <li class="doc">
+    <a class="doclink" href="/delete-account/">Delete Your Account</a>
+    <p>How to delete your PocketDJ account and the data we hold, in the app or by email, and what is kept and for how long.</p>
+  </li>
+  <li class="doc">
+    <a class="doclink" href="/notices/">Third-Party Notices</a>
+    <p>Attributions and license notices for the open-source components PocketDJ includes.</p>
+  </li>
+</ul>
+
+<h2>Contact</h2>
+<div class="contact">
+  <p class="row"><span class="lbl">Support, privacy, and account deletion:</span> <a href="mailto:support@pocket-dj.com">support@pocket-dj.com</a></p>
+  <p class="row"><span class="lbl">Publisher:</span> African Intellect Enterprises LLC (PocketDJ), 4406 NE 23rd Ave, Portland, OR 97211</p>
+  <p class="row"><span class="lbl">Copyright and DMCA notices:</span> <a href="mailto:dmca@pocket-dj.com">dmca@pocket-dj.com</a></p>
+</div>
+</main>
+
+<footer class="site-footer">
+  <div class="fwrap">
+    <nav class="fnav" aria-label="PocketDJ policies">
+      <a href="/privacy/">Privacy Policy</a>
+      <a href="/terms/">Terms of Use</a>
+      <a href="/dmca/">Copyright &amp; DMCA Policy</a>
+      <a href="/notices/">Third-Party Notices</a>
+    </nav>
+    <p>Questions or requests: <a class="mail" href="mailto:contact@pocket-dj.com">contact@pocket-dj.com</a></p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var root=document.documentElement, btn=document.getElementById('theme-toggle');
+  function cur(){var a=root.getAttribute('data-theme');if(a)return a;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
+  function upd(){var t=cur();if(!btn)return;
+    btn.textContent=(t==='dark')?'☀︎':'☽';
+    btn.setAttribute('aria-label',(t==='dark')?'Switch to light theme':'Switch to dark theme');}
+  upd();
+  if(btn)btn.addEventListener('click',function(){
+    var t=(cur()==='dark')?'light':'dark';
+    root.setAttribute('data-theme',t);
+    try{localStorage.setItem('pdj-theme',t);}catch(e){}
+    upd();});
+})();
+</script>
+</body>
+</html>

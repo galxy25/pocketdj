@@ -317,12 +317,18 @@ fun CollectionTrackRow(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.width(30.dp),
         )
-        KeyChip(null, camelot)
-        Spacer(Modifier.width(6.dp))
+        // Fixed-width key + time columns: a row with a key chip (or none) keeps its time aligned.
+        androidx.compose.foundation.layout.Box(Modifier.width(40.dp), contentAlignment = Alignment.Center) {
+            KeyChip(null, camelot)
+        }
+        Spacer(Modifier.width(4.dp))
         Text(
             Fmt.duration(lengthMs),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            maxLines = 1,
+            modifier = Modifier.width(36.dp),
         )
         if (favoriteSongId != null) {
             FavoriteToggle(favoriteSongId, appleMusicId = favoriteAppleMusicId, iconSize = 18.dp)

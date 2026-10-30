@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Copyright &amp; DMCA Policy — PocketDJ</title>
+<style>
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+:root{
+  color-scheme:light;
+  --bg:#fcfbf9;
+  --surface:#ffffff;
+  --header-bg:rgba(252,251,249,0.85);
+  --text:#1e1e20;
+  --muted:#65656d;
+  --faint:#8b8b93;
+  --border:#e7e4dd;
+  --border-strong:#d8d4ca;
+  --accent:#1f5c8b;
+  --accent-2:#17506f;
+  --code-bg:#f2f1ec;
+  --notice-border:#c9b27a;
+  --notice-bg:#f7f3e9;
+  --placeholder:#8a7b57;
+  --shadow:0 1px 2px rgba(0,0,0,0.04);
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#131519;
+  --surface:#181b20;
+  --header-bg:rgba(19,21,25,0.82);
+  --text:#e6e7ea;
+  --muted:#9aa0a8;
+  --faint:#7d828b;
+  --border:#292d34;
+  --border-strong:#363b44;
+  --accent:#7db2e0;
+  --accent-2:#9ac6ec;
+  --code-bg:#22262d;
+  --notice-border:#6d5f39;
+  --notice-bg:#211f18;
+  --placeholder:#c3b184;
+  --shadow:0 1px 2px rgba(0,0,0,0.3);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    color-scheme:dark;
+    --bg:#131519;
+    --surface:#181b20;
+    --header-bg:rgba(19,21,25,0.82);
+    --text:#e6e7ea;
+    --muted:#9aa0a8;
+    --faint:#7d828b;
+    --border:#292d34;
+    --border-strong:#363b44;
+    --accent:#7db2e0;
+    --accent-2:#9ac6ec;
+    --code-bg:#22262d;
+    --notice-border:#6d5f39;
+    --notice-bg:#211f18;
+    --placeholder:#c3b184;
+    --shadow:0 1px 2px rgba(0,0,0,0.3);
+  }
+}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji",sans-serif;
+  font-size:17px;
+  line-height:1.65;
+  -webkit-font-smoothing:antialiased;
+  text-rendering:optimizeLegibility;
+  overflow-wrap:break-word;
+}
+.site-header{
+  position:sticky;top:0;z-index:10;
+  background:var(--header-bg);
+  backdrop-filter:saturate(180%) blur(8px);
+  -webkit-backdrop-filter:saturate(180%) blur(8px);
+  border-bottom:1px solid var(--border);
+}
+.header-inner{
+  max-width:72ch;margin:0 auto;padding:0.6rem 1.25rem;
+  display:flex;align-items:center;gap:1rem;
+}
+.wordmark{
+  font-weight:700;letter-spacing:-0.01em;color:var(--text);
+  text-decoration:none;font-size:1.05rem;white-space:nowrap;
+}
+.wordmark:hover{color:var(--accent)}
+.doc-title{
+  color:var(--muted);font-size:0.9rem;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis;flex:1;text-align:center;
+}
+.theme-toggle{
+  margin-left:auto;flex:none;
+  background:transparent;border:1px solid var(--border-strong);
+  color:var(--muted);border-radius:8px;padding:0.32rem 0.55rem;
+  cursor:pointer;font-size:1rem;line-height:1;
+}
+.theme-toggle:hover{color:var(--text);border-color:var(--accent)}
+.theme-toggle .to-light{display:none}
+.theme-toggle .to-dark{display:inline}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .theme-toggle .to-dark{display:none}
+  :root:not([data-theme="light"]) .theme-toggle .to-light{display:inline}
+}
+:root[data-theme="dark"] .theme-toggle .to-dark{display:none}
+:root[data-theme="dark"] .theme-toggle .to-light{display:inline}
+:root[data-theme="light"] .theme-toggle .to-dark{display:inline}
+:root[data-theme="light"] .theme-toggle .to-light{display:none}
+@media (max-width:560px){.doc-title{display:none}}
+.content{max-width:72ch;margin:0 auto;padding:2.5rem 1.25rem 1rem}
+.hero{margin-bottom:2rem}
+.hero h1{
+  font-size:1.9rem;line-height:1.2;letter-spacing:-0.02em;
+  margin:0 0 1.1rem;font-weight:700;
+}
+.meta{margin:0 0 1.1rem}
+.meta>div{display:flex;gap:0.5rem;padding:0.15rem 0;font-size:0.95rem}
+.meta dt{color:var(--muted);font-weight:600;min-width:8.5em;flex:none}
+.meta dd{margin:0;color:var(--text)}
+.notice{
+  margin:1.2rem 0 0;padding:0.7rem 0.95rem;
+  border:1px solid var(--notice-border);border-left-width:3px;
+  background:var(--notice-bg);border-radius:6px;
+  color:var(--muted);font-size:0.9rem;line-height:1.5;
+}
+.placeholder{
+  color:var(--placeholder);font-style:italic;
+  border-bottom:1px dotted currentColor;
+}
+.toc{
+  margin:0 0 2.5rem;border:1px solid var(--border);
+  border-radius:10px;background:var(--surface);box-shadow:var(--shadow);
+}
+.toc>summary{
+  cursor:pointer;padding:0.75rem 1rem;font-weight:600;
+  font-size:0.8rem;letter-spacing:0.06em;text-transform:uppercase;
+  color:var(--muted);list-style:none;
+}
+.toc>summary::-webkit-details-marker{display:none}
+.toc>summary::before{
+  content:"\25B8";display:inline-block;margin-right:0.55rem;
+  transition:transform .15s ease;color:var(--faint);
+}
+.toc[open]>summary::before{transform:rotate(90deg)}
+.toc nav{padding:0 1rem 0.85rem}
+.toc ol{margin:0;padding-left:1.4rem}
+.toc ol ol{padding-left:1.1rem;margin:0.2rem 0}
+.toc li{margin:0.3rem 0}
+.toc a{color:var(--accent);text-decoration:none;font-size:0.92rem}
+.toc a:hover{text-decoration:underline}
+section{margin:0 0 1.5rem}
+h2{
+  font-size:1.35rem;line-height:1.25;margin:2.6rem 0 0.9rem;
+  padding-top:1.9rem;border-top:1px solid var(--border);
+  letter-spacing:-0.01em;font-weight:700;scroll-margin-top:5rem;
+}
+section:first-of-type h2{border-top:none;padding-top:0;margin-top:0.4rem}
+h3{font-size:1.08rem;margin:1.9rem 0 0.6rem;font-weight:700;scroll-margin-top:5rem}
+p{margin:0 0 1rem}
+strong{font-weight:700;color:var(--text)}
+em{font-style:italic}
+a{color:var(--accent)}
+a:hover{color:var(--accent-2)}
+ul,ol{margin:0 0 1rem;padding-left:1.4rem}
+li{margin:0.4rem 0}
+li::marker{color:var(--faint)}
+code{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:0.88em;background:var(--code-bg);
+  padding:0.1em 0.35em;border-radius:4px;
+}
+.anchor{
+  margin-left:0.4rem;color:var(--faint);text-decoration:none;
+  font-weight:400;opacity:0;transition:opacity .12s ease;font-size:0.8em;
+}
+h2:hover .anchor,h3:hover .anchor,.anchor:focus{opacity:1}
+@media (hover:none){.anchor{opacity:0.35}}
+.table-wrap{overflow-x:auto;margin:0 0 1.3rem;border:1px solid var(--border);border-radius:8px}
+table{border-collapse:collapse;width:100%;font-size:0.95rem}
+th,td{text-align:left;padding:0.6rem 0.85rem;border-bottom:1px solid var(--border);vertical-align:top}
+th{background:var(--code-bg);font-weight:600}
+tr:last-child td{border-bottom:none}
+td:first-child,th:first-child{white-space:nowrap;color:var(--muted);font-weight:600}
+.site-footer{border-top:1px solid var(--border);margin-top:2rem;background:var(--surface)}
+.footer-inner{max-width:72ch;margin:0 auto;padding:1.8rem 1.25rem 2.4rem;font-size:0.9rem;color:var(--muted)}
+.footer-inner nav{display:flex;flex-wrap:wrap;gap:0.4rem 1.2rem;margin-bottom:0.9rem}
+.footer-inner a{color:var(--accent);text-decoration:none}
+.footer-inner a:hover{text-decoration:underline}
+.footer-contact{margin:0}
+@media (max-width:480px){
+  .meta>div{flex-direction:column;gap:0}
+  .meta dt{min-width:0}
+}
+@media (max-width:400px){
+  .content{padding-left:1rem;padding-right:1rem}
+  .header-inner,.footer-inner{padding-left:1rem;padding-right:1rem}
+  .hero h1{font-size:1.55rem}
+}
+</style>
+<script>
+(function(){
+  try{
+    var t=localStorage.getItem('pdj-theme');
+    if(t==='light'||t==='dark'){document.documentElement.setAttribute('data-theme',t);}
+  }catch(e){}
+})();
+</script>
+</head>
+<body>
+<header class="site-header">
+  <div class="header-inner">
+    <a class="wordmark" href="/">PocketDJ</a>
+    <span class="doc-title">Copyright &amp; DMCA Policy</span>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Toggle theme">
+      <span class="to-dark" aria-hidden="true">&#9790;</span><span class="to-light" aria-hidden="true">&#9788;</span>
+    </button>
+  </div>
+</header>
+
+<main class="content">
+  <div class="hero">
+    <h1>PocketDJ — Copyright and DMCA Policy</h1>
+    <dl class="meta">
+      <div><dt>Effective date</dt><dd>October 29, 2026</dd></div>
+      <div><dt>Applies to</dt><dd>the PocketDJ apps (iOS, iPadOS, macOS, tvOS, visionOS, Android) and PocketDJ cloud services.</dd></div>
+    </dl>
+  </div>
+
+  <details class="toc" open>
+    <summary>Contents</summary>
+    <nav>
+      <ol>
+        <li><a href="#sec-0">0. Read this part first: what this policy does and does not cover</a></li>
+        <li><a href="#sec-1">1. Designated agent</a></li>
+        <li><a href="#sec-2">2. How to submit a notice of claimed infringement</a></li>
+        <li><a href="#sec-3">3. What a valid notice must contain (17 U.S.C. § 512(c)(3)(A))</a></li>
+        <li><a href="#sec-4">4. What we do when we receive a notice</a></li>
+        <li><a href="#sec-5">5. Counter notification</a>
+          <ol>
+            <li><a href="#sec-5-1">5.1 What a counter notification must contain (17 U.S.C. § 512(g)(3))</a></li>
+            <li><a href="#sec-5-2">5.2 The statutory waiting period</a></li>
+          </ol>
+        </li>
+        <li><a href="#sec-6">6. Repeat infringer policy (17 U.S.C. § 512(i))</a></li>
+        <li><a href="#sec-7">7. For users: what happens if content you uploaded is subject to a notice</a></li>
+        <li><a href="#sec-8">8. Other rights, other complaints</a></li>
+        <li><a href="#sec-9">9. Changes</a></li>
+      </ol>
+    </nav>
+  </details>
+
+  <section id="sec-0">
+    <h2>0. Read this part first: what this policy does and does not cover<a class="anchor" href="#sec-0" aria-label="Permalink to this section">#</a></h2>
+    <p>PocketDJ takes copyright seriously, and this policy sets out how to tell us about infringing material and what we do about it.</p>
+    <p>It is also important to be precise about scope, because the law here is narrower than most copyright policies imply.</p>
+    <p><strong>Section 512(c) of the U.S. Copyright Act (17 U.S.C. § 512(c)) is a limitation on liability for infringing material that "resides on a system or network controlled or operated by or for the service provider" and that was stored at the direction of a user.</strong> That is the whole of what it covers. It is not a general shield against copyright liability, and this policy does not claim that it is. In particular:</p>
+    <ul>
+      <li><strong>It does not cover copies our own systems made.</strong> If PocketDJ's infrastructure produces a copy that no user directed, § 512(c) has nothing to say about that copy. Registering a designated agent does not change this, and no notice-and-takedown process cures it.</li>
+      <li><strong>It does not cover material we choose to publish ourselves.</strong> Anything PocketDJ publishes on its own initiative is our own act, not user-directed storage.</li>
+      <li><strong>It does not cover public performance or transmission.</strong> § 512(c) is about <em>storage</em>. A transmission we make is a separate act under a separate exclusive right, and it is outside this safe harbor.</li>
+      <li><strong>It is not the only thing standing between us and a copyright claim.</strong> Under § 512(l), failing to qualify for a safe harbor does not, on its own, prejudice any other defense. Conversely, qualifying for one does not make otherwise-infringing conduct lawful.</li>
+      <li><strong>It is conditioned on more than notice-and-takedown.</strong> § 512(c)(1) has three conditions, not one. Besides responding to notices, a provider must lack <strong>actual knowledge</strong>, and must not be <strong>aware of facts or circumstances from which infringing activity is apparent</strong> — the "red flag" standard of § 512(c)(1)(A)(ii) — and must <strong>not receive a financial benefit directly attributable to infringing activity in a case in which it has the right and ability to control that activity</strong> (§ 512(c)(1)(B)). Neither condition is satisfied by handling notices well.</li>
+      <li><strong>It says nothing about § 1201.</strong> § 512 is Title II of the DMCA. Title I — the anti-circumvention rules at 17 U.S.C. § 1201 — is a separate statute with separate liability and no notice-and-takedown cure, and this policy does not address it.</li>
+    </ul>
+    <p><strong>Which safe harbors this policy claims.</strong> § 512 contains four limitations, and a single agent designation supports § 512(b), (c), and (d) alike. This policy asserts <strong>§ 512(c)</strong> (user-directed storage). It does not assert § 512(b) (system caching) or § 512(d) (information location tools).</p>
+    <p>We say this plainly because the alternative — a policy that gestures at "DMCA compliance" and lets the reader infer blanket protection — would misdescribe both the statute and our product.</p>
+    <p><strong>How PocketDJ is designed, so the scope above is meaningful:</strong></p>
+    <ul>
+      <li>Audio in PocketDJ comes from the user: files they own and upload, recordings they make from their own analog sources (records, tapes, line-in), and audio they import into their own collection.</li>
+      <li>Each user's copies are their own, and each user accesses only their own.</li>
+      <li><strong>Apple Music is playback only.</strong> PocketDJ plays Apple Music through Apple's own frameworks using the user's own subscription. PocketDJ does not record, capture, download, or otherwise retain audio from Apple Music, and provides no means of doing so.</li>
+      <li><strong>The public catalog is metadata only</strong> — titles, artists, albums, tempo, key, and similar facts about recordings. It exists so people can see what someone played and be inspired by it. It is never a route to audio, and it carries no audio locations.</li>
+      <li><strong>Sessions are private performances hosted by the user.</strong> Jukebox sessions are token-gated by default, capped in listeners, and expire. They are intended for private events the host runs, and the host is responsible for any performance licensing their venue or event requires. PocketDJ does not license music and cannot obtain performance licences on a host's behalf.</li>
+      <li><strong>Users must hold the rights to any audio they upload, import, or record into PocketDJ.</strong> This is the core attestation, it is presented at first run, and it is a condition of using the service.</li>
+    </ul>
+  </section>
+
+  <section id="sec-1">
+    <h2>1. Designated agent<a class="anchor" href="#sec-1" aria-label="Permalink to this section">#</a></h2>
+    <p>PocketDJ's designated agent to receive notifications of claimed infringement under 17 U.S.C. § 512(c)(2) is:</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Field</th><th>Value</th></tr></thead>
+        <tbody>
+          <tr><td>Service provider</td><td>African Intellect Enterprises LLC (PocketDJ)</td></tr>
+          <tr><td>Also known as</td><td>PocketDJ, pocket-dj.com</td></tr>
+          <tr><td>Designated agent</td><td>Copyright Agent</td></tr>
+          <tr><td>Mailing address</td><td>4406 NE 23rd Ave, Portland, OR 97211, United States</td></tr>
+          <tr><td>Email</td><td><a href="mailto:dmca@pocket-dj.com">dmca@pocket-dj.com</a></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="sec-2">
+    <h2>2. How to submit a notice of claimed infringement<a class="anchor" href="#sec-2" aria-label="Permalink to this section">#</a></h2>
+    <p>If you own a copyright, or are authorized to act for someone who does, and you believe material on PocketDJ infringes it, send a written notice to the designated agent above.</p>
+    <p><strong>Preferred:</strong> email to <strong><a href="mailto:dmca@pocket-dj.com">dmca@pocket-dj.com</a></strong> with the subject line <code>DMCA Notice</code>.<br>
+    <strong>Also accepted:</strong> mail to the designated agent at <strong>4406 NE 23rd Ave, Portland, OR 97211, United States</strong>.</p>
+    <p>Email is faster and we ask you to use it. Postal notices are honored, but the clock necessarily starts on delivery.</p>
+    <p><strong>Please help us find the material.</strong> PocketDJ stores each user's own copies separately, so the single most useful thing a notice can contain is enough detail to identify a specific item — a link or URL if you have one, and otherwise the exact track title, artist, and album, plus anything that identifies where you encountered it (a session link, a shared tracklist, a profile page). "Artist X's catalog" without more does not let us locate anything.</p>
+    <p><strong>If you are not the copyright owner</strong>, you must be authorized to act on the owner's behalf. Say who you represent.</p>
+    <p><strong>Nothing here waives anything.</strong> Sending a notice, and our acting on it, does not admit infringement, waive any defense either of us has, or resolve anything on the merits.</p>
+  </section>
+
+  <section id="sec-3">
+    <h2>3. What a valid notice must contain (17 U.S.C. § 512(c)(3)(A))<a class="anchor" href="#sec-3" aria-label="Permalink to this section">#</a></h2>
+    <p>For a notice to be effective under the statute, it must be a <strong>written communication</strong> provided to the designated agent that includes <strong>substantially all</strong> of the following six elements. These are the statutory elements; we are listing them, not adding to them.</p>
+    <ol>
+      <li><strong>A physical or electronic signature</strong> of a person authorized to act on behalf of the owner of an exclusive right that is allegedly infringed. § 512(c)(3)(A)(i).</li>
+      <li><strong>Identification of the copyrighted work</strong> claimed to have been infringed — or, if a single notification covers multiple copyrighted works at a single online site, <strong>a representative list</strong> of those works. § 512(c)(3)(A)(ii).</li>
+      <li><strong>Identification of the material</strong> claimed to be infringing or to be the subject of infringing activity, and that is to be removed or access to which is to be disabled, <strong>and information reasonably sufficient to permit us to locate the material</strong>. § 512(c)(3)(A)(iii).</li>
+      <li><strong>Information reasonably sufficient to permit us to contact you</strong> — for example an address, telephone number, and, if available, an email address. § 512(c)(3)(A)(iv).</li>
+      <li><strong>A statement that you have a good faith belief</strong> that use of the material in the manner complained of is not authorized by the copyright owner, its agent, or the law. § 512(c)(3)(A)(v).</li>
+      <li><strong>A statement that the information in the notification is accurate, and — under penalty of perjury — that you are authorized to act</strong> on behalf of the owner of an exclusive right that is allegedly infringed. § 512(c)(3)(A)(vi).</li>
+    </ol>
+    <p><strong>Substantial compliance.</strong> § 512(c)(3)(B) sets out what happens when a notice falls short. A notification that fails to comply substantially with all of § 512(c)(3)(A) is not considered in determining whether we have actual knowledge or awareness of infringing activity. But if it substantially complies with elements <strong>2, 3, and 4</strong> above (clauses (ii), (iii), and (iv)), we will promptly attempt to contact you, or take other reasonable steps to assist in the receipt of a notification that does substantially comply. In plain terms: if your notice identifies the work, identifies the material, and tells us how to reach you, we will not simply discard it — we will come back to you for whatever is missing.</p>
+    <p><strong>A note on § 512(f).</strong> Under § 512(f), a person who <strong>knowingly materially misrepresents</strong> that material is infringing is liable for damages, including costs and attorneys' fees, incurred by the alleged infringer, by any copyright owner or authorized licensee, or by the service provider, as a result of our relying on the misrepresentation. The same liability applies to a knowing material misrepresentation in a counter notification (§ 5 below). Please be sure of your claim before you send it.</p>
+  </section>
+
+  <section id="sec-4">
+    <h2>4. What we do when we receive a notice<a class="anchor" href="#sec-4" aria-label="Permalink to this section">#</a></h2>
+    <ol>
+      <li><strong>We review it</strong> against the elements in § 3.</li>
+      <li><strong>If it is complete, we act expeditiously</strong> to remove the identified material or disable access to it.</li>
+      <li><strong>We take reasonable steps to promptly notify the affected user</strong> that their material has been removed or disabled, and we forward them a copy of the notice so they can respond. § 512(g)(2)(A).</li>
+      <li><strong>We record it.</strong> Each notice, our response, the date, and the material affected go into a retained log, which is also how the repeat-infringer policy in § 6 is administered.</li>
+      <li><strong>If it is incomplete</strong>, we handle it per the substantial-compliance rule in § 3.</li>
+    </ol>
+    <p><strong>We do not monitor.</strong> Consistent with § 512(m), nothing in this policy commits us to affirmatively monitor our service or to seek out infringing activity. We act on notices, on our own knowledge, and on the standard technical measures described in § 6.</p>
+  </section>
+
+  <section id="sec-5">
+    <h2>5. Counter notification<a class="anchor" href="#sec-5" aria-label="Permalink to this section">#</a></h2>
+    <p>If your material was removed or disabled and you believe that happened by mistake or misidentification, you may send a counter notification to the designated agent in § 1.</p>
+
+    <h3 id="sec-5-1">5.1 What a counter notification must contain (17 U.S.C. § 512(g)(3))<a class="anchor" href="#sec-5-1" aria-label="Permalink to this section">#</a></h3>
+    <ol>
+      <li><strong>Your physical or electronic signature.</strong> § 512(g)(3)(A).</li>
+      <li><strong>Identification of the material that was removed or disabled, and the location at which it appeared before it was removed or access to it was disabled.</strong> § 512(g)(3)(B).</li>
+      <li><strong>A statement under penalty of perjury that you have a good faith belief that the material was removed or disabled as a result of mistake or misidentification</strong> of the material. § 512(g)(3)(C).</li>
+      <li><strong>Your name, address, and telephone number</strong>, and a statement that <strong>you consent to the jurisdiction of the Federal District Court</strong> for the judicial district in which your address is located — or, if your address is outside the United States, for any judicial district in which we may be found — <strong>and that you will accept service of process</strong> from the person who submitted the original notification, or from that person's agent. § 512(g)(3)(D).</li>
+    </ol>
+
+    <h3 id="sec-5-2">5.2 The statutory waiting period<a class="anchor" href="#sec-5-2" aria-label="Permalink to this section">#</a></h3>
+    <p>This is the part people are most often surprised by, so here it is precisely.</p>
+    <p>On receiving a counter notification that complies with § 512(g)(3), we will:</p>
+    <ol>
+      <li><strong>Promptly provide the person who sent the original notice with a copy of your counter notification</strong>, and inform them that we will replace the removed material or cease disabling access to it in <strong>10 business days</strong>. § 512(g)(2)(B).</li>
+      <li><strong>Replace the material, or cease disabling access to it, not less than 10 nor more than 14 business days following our receipt of the counter notification</strong> — <strong>unless</strong> our designated agent first receives notice from the original complaining party that they have <strong>filed an action seeking a court order</strong> to restrain you from engaging in infringing activity relating to that material on our system or network. § 512(g)(2)(C).</li>
+    </ol>
+    <p>So: <strong>10 business days minimum, 14 business days maximum, and a filed lawsuit stops the clock.</strong> We cannot shorten the 10 days, and we do not intend to exceed the 14.</p>
+    <p><strong>Your details go to the other side.</strong> A counter notification contains your name, address, and telephone number, and we are required to forward a copy of it to the person who submitted the original notice. It also consents to federal court jurisdiction. Do not send one casually.</p>
+    <p><strong>Good-faith takedowns.</strong> § 512(g)(1) protects us from liability to you for removing or disabling material in good faith on the basis of a notice or apparent infringing activity, whether or not the material is ultimately determined to be infringing. Where the material resides on our system at a subscriber's direction, that protection additionally depends on our following the notification and put-back steps in § 512(g)(2) — which we do.</p>
+  </section>
+
+  <section id="sec-6">
+    <h2>6. Repeat infringer policy (17 U.S.C. § 512(i))<a class="anchor" href="#sec-6" aria-label="Permalink to this section">#</a></h2>
+    <p><strong>This is not optional and it is not a courtesy.</strong> § 512(i)(1) makes the following a <strong>threshold condition</strong> on <em>all</em> of the § 512 safe harbors — not just § 512(c). A service provider that has not satisfied it does not get any of them, no matter how well it handles individual notices.</p>
+    <p>§ 512(i)(1) requires that a service provider:</p>
+    <ul>
+      <li><strong>(A) adopt and reasonably implement, and inform subscribers and account holders of, a policy that provides for the termination in appropriate circumstances of subscribers and account holders of the service who are repeat infringers</strong>; and</li>
+      <li><strong>(B) accommodate and not interfere with standard technical measures</strong> used by copyright owners to identify or protect copyrighted works.</li>
+    </ul>
+    <p><strong>Our policy.</strong></p>
+    <ol>
+      <li><strong>We terminate repeat infringers.</strong> If a user's material is repeatedly the subject of valid notices of claimed infringement, we will terminate that user's account and their access to PocketDJ cloud services in appropriate circumstances.</li>
+      <li><strong>How we count.</strong> We record each valid notice against the account whose material it concerns. Notices withdrawn by the complaining party, and notices successfully answered by a counter notification that results in the material being restored, are not counted. We do not publish a fixed strike number, because "appropriate circumstances" is a judgment about the pattern — volume, whether the same work recurs, whether the user responded, and whether the conduct continued after warning — and a fixed number invites gaming in both directions. In practice, repeated valid notices after a warning will result in termination. <strong>We may also terminate immediately, without a prior warning and on a single notice, for a clear and serious instance of infringement.</strong></li>
+      <li><strong>What termination means.</strong> The account is closed, the user's stored material is removed from PocketDJ cloud services, and re-registering to evade termination is itself a violation.</li>
+      <li><strong>We tell users about this policy</strong> at sign-up and in the app's legal section, which is what § 512(i)(1)(A) requires — adopting a policy is not enough; users must be informed of it.</li>
+      <li><strong>Standard technical measures.</strong> We accommodate and do not interfere with standard technical measures as defined in § 512(i)(2) — measures developed through an open, broad, consensus-based process, available on reasonable non-discriminatory terms, and not imposing substantial costs or burdens on our systems.</li>
+    </ol>
+  </section>
+
+  <section id="sec-7">
+    <h2>7. For users: what happens if content you uploaded is subject to a notice<a class="anchor" href="#sec-7" aria-label="Permalink to this section">#</a></h2>
+    <p>Plain language, no legalese.</p>
+    <p><strong>What you'll see.</strong> If someone sends us a valid copyright notice about something you put in PocketDJ, we'll take that item down and email you. We'll tell you what came down and send you a copy of the notice, including who sent it and what they say they own.</p>
+    <p><strong>What comes down.</strong> Only the specific item identified in the notice. Your other music, your playlists, your sets, your mixes, and your device-local files aren't affected. If you have that track downloaded on your device, that copy is on your device — taking down the cloud copy doesn't reach it.</p>
+    <p><strong>Why this happens even if you did nothing wrong.</strong> We are required to act expeditiously on a valid notice. We are not in a position to adjudicate who owns what, and we don't try to. Notices are sometimes mistaken. That's exactly what the counter-notification process exists for.</p>
+    <p><strong>If you think it's a mistake.</strong> Send us a counter notification (§ 5). It has to include your real name, address, and phone number, a statement under penalty of perjury that you believe the removal was a mistake or misidentification, and your agreement that a federal court can hear the dispute. <strong>We are required to forward a copy of it, with your contact details, to the person who complained.</strong> That is not a choice we make — it is what the statute requires.</p>
+    <p><strong>Then you wait.</strong> By law we can't put the material back sooner than <strong>10 business days</strong> after we receive your counter notification, and we'll put it back by <strong>14 business days</strong> — unless the person who complained tells us they've gone to court to stop you. If that happens, the material stays down while the court sorts it out.</p>
+    <p><strong>Be careful what you sign.</strong> Lying in a counter notification is not a small thing: § 512(f) makes a knowing material misrepresentation actionable, and the counter notification is made under penalty of perjury. If you're not sure whether you have the rights to something, the honest move is to leave it down.</p>
+    <p><strong>If it keeps happening.</strong> Repeated valid notices about your material will get your account terminated, and a single clear and serious instance of infringement can too. We have to do this — it's a condition of the legal protections that let a service like this exist at all. It isn't discretionary and we can't make exceptions.</p>
+    <p><strong>What we can't do.</strong> We can't give you legal advice, we can't tell you whether your use is fair use, and we can't take sides in a dispute between you and a rights holder. If a notice matters to you, talk to a lawyer.</p>
+    <p><strong>The thing that prevents all of this.</strong> PocketDJ only works if you have the rights to the music you put in it — records you own, files you bought, recordings you made. That's what you confirmed when you set the app up, and it's the whole basis of the design.</p>
+  </section>
+
+  <section id="sec-8">
+    <h2>8. Other rights, other complaints<a class="anchor" href="#sec-8" aria-label="Permalink to this section">#</a></h2>
+    <ul>
+      <li><strong>Trademark, publicity, defamation, or other non-copyright complaints</strong> are not handled by this policy or by the designated agent. Send those to <a href="mailto:contact@pocket-dj.com">contact@pocket-dj.com</a>.</li>
+      <li><strong>Requests to remove metadata</strong> — a title, an artist name, a tracklist entry — are handled by the same address. We will look at them, but note that titles, artists, tempos, and keys are facts about recordings rather than the recordings themselves. <strong>This does not extend to lyrics or album artwork.</strong> Song lyrics are copyrighted literary works and cover art is a copyrighted pictorial work; neither is a fact about a recording, and requests concerning them are handled as copyright notices under this policy, not as metadata requests.</li>
+      <li><strong>This policy addresses U.S. law.</strong> § 512 is a United States statute. Notice-and-takedown regimes elsewhere differ, sometimes materially. We will act on well-founded complaints from anywhere; the specific statutory mechanics above are U.S. ones.</li>
+    </ul>
+  </section>
+
+  <section id="sec-9">
+    <h2>9. Changes<a class="anchor" href="#sec-9" aria-label="Permalink to this section">#</a></h2>
+    <p>We may update this policy. If the designated agent's details change, we will update both this page and the Copyright Office registration — the registration must be amended (which also resets the three-year renewal clock), and an out-of-date registration risks the safe harbor.</p>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <nav aria-label="Legal documents">
+      <a href="../terms/">Terms of Service</a>
+      <a href="../privacy/">Privacy Policy</a>
+      <a href="../eula/">End User License Agreement</a>
+    </nav>
+    <p class="footer-contact">Questions about this policy? <a href="mailto:contact@pocket-dj.com">contact@pocket-dj.com</a></p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var btn=document.getElementById('theme-toggle');
+  if(!btn)return;
+  function current(){
+    var explicit=document.documentElement.getAttribute('data-theme');
+    if(explicit)return explicit;
+    return (window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';
+  }
+  function sync(){
+    var mode=current();
+    btn.setAttribute('aria-label',mode==='dark'?'Switch to light theme':'Switch to dark theme');
+    btn.setAttribute('aria-pressed',mode==='dark'?'true':'false');
+  }
+  btn.addEventListener('click',function(){
+    var next=current()==='dark'?'light':'dark';
+    document.documentElement.setAttribute('data-theme',next);
+    try{localStorage.setItem('pdj-theme',next);}catch(e){}
+    sync();
+  });
+  sync();
+})();
+</script>
+</body>
+</html>

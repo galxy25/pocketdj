@@ -67,7 +67,7 @@ fun NowPlayingSearchResults(
         if (albumsOpen) results.albums.forEach { album ->
             ResultRow(
                 title = album.name,
-                subtitle = "${album.artist} · ${album.trackList.size} tracks",
+                subtitle = "${album.artist} · ${com.levi.pocketdj.screens.browse.Fmt.count(album.trackList.size, "track")}",
                 tag = "np-add-album-${album.id}",
                 onNext = { onAddNextAlbum(album) },
                 onEnd = { onAddEndAlbum(album) },

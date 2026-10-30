@@ -62,6 +62,9 @@ struct SettingsView: View {
             jukeboxSection
             forYouSection
             recommendationsSection
+            #if os(iOS)
+            pocketWheelSection
+            #endif
             mixSection
             storageSection
             editsSection
@@ -813,6 +816,18 @@ struct SettingsView: View {
     /// `ForYouFeedStore.refresh`), and fills the Suggested-collections rows. "Delete cloud data"
     /// is a separate, explicit destructive action — toggling OFF retains the server state so a
     /// flip stays cheap/reversible.
+    #if os(iOS)
+    /// Pocket Wheel (History ▸ Pockets ▸ Wheel). iOS only: the only setting today is the motion
+    /// opt-in, and only iPhone has the motion coprocessor.
+    private var pocketWheelSection: some View {
+        Section {
+            ListeningMotionSettingsSection(pocketsEnabled: settings.listeningPocketsEnabled)
+        } header: {
+            Text("Pocket Wheel")
+        }
+    }
+    #endif
+
     private var recommendationsSection: some View {
         Section {
             Toggle("Use PocketDJ Recommendation Engine", isOn: $settings.recEngineEnabled)

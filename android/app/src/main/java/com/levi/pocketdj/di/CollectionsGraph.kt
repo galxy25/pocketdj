@@ -349,6 +349,40 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 intent.getStringExtra("pdj.fakeMut")?.let { t ->
                     app.appScope.launch { runCatching { app.settings.setMusicUserToken(t) } }
                 }
+                // Q25 live-API test flow (android/specs/parity/status/Q25-am-tokens.md):
+                // `pdj.amDevToken` seeds a REAL developer token (the emulator can't reach the minting
+                // server), `pdj.amMut` a REAL Music-User-Token, `pdj.amProbe 1` runs the live probe
+                // (log tag PdjVerify; token values are never logged). Tokens persist in Settings.
+                val amDev = intent.getStringExtra("pdj.amDevToken")
+                val amMut = intent.getStringExtra("pdj.amMut")
+                val amProbe = intent.getStringExtra("pdj.amProbe") == "1"
+                if (amDev != null || amMut != null || amProbe) {
+                    app.appScope.launch(Dispatchers.IO) {
+                        amDev?.trim()?.takeIf { it.isNotEmpty() }?.let { t ->
+                            val exp = com.levi.pocketdj.data.applemusic.AppleMusicLiveProbe.jwtExpiryMs(t)
+                                ?: (System.currentTimeMillis() + 24L * 3600 * 1000)
+                            runCatching { app.musicKitDevTokenClient.invalidate() }
+                            runCatching { app.settings.setAppleMusicDeveloperToken(t, exp) }
+                            android.util.Log.d("PdjVerify", "AM probe: dev token seeded (exp=$exp)")
+                        }
+                        amMut?.trim()?.takeIf { it.isNotEmpty() }?.let { t ->
+                            runCatching { app.settings.setMusicUserToken(t) }
+                            android.util.Log.d("PdjVerify", "AM probe: MUT seeded (len=${t.length})")
+                        }
+                        if (amProbe) {
+                            val lines = runCatching {
+                                com.levi.pocketdj.data.applemusic.AppleMusicLiveProbe.run(
+                                    app.appleMusicApi,
+                                    term = intent.getStringExtra("pdj.amProbeTerm") ?: "daft punk",
+                                    probeSongId = intent.getStringExtra("pdj.amProbeSongId"),
+                                    star = intent.getStringExtra("pdj.amProbeStar") == "1",
+                                )
+                            }.getOrElse { listOf("probe crashed: ${it::class.simpleName}: ${it.message}") }
+                            lines.forEach { android.util.Log.d("PdjVerify", "AM probe: $it") }
+                            android.util.Log.d("PdjVerify", "AM probe: done")
+                        }
+                    }
+                }
             }
             if (com.levi.pocketdj.BuildConfig.DEBUG && intent.hasExtra("pdj.autoDump")) {
                 com.levi.pocketdj.auto.AutoBrowseDebug.run(

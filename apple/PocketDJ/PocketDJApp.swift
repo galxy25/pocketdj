@@ -147,7 +147,45 @@ struct PocketDJApp: App {
         if let id, id.hasPrefix(InThePocketStore.runTagPrefix) {
             return (.game, GameKind.inThePocket.label)
         }
+        // A Pocket Wheel run reads "Pocket · Tue 8 AM CarPlay" (source stays `.pocket` on purpose:
+        // a new PlaySource case would make older builds drop the event).
+        if let id, id.hasPrefix(PocketWheelIds.runTagPrefix) {
+            return (.pocket, PocketRunStore.runNames[id] ?? "Pocket")
+        }
         return collections?.historyContext(forSourceSetlistId: id) ?? (.setlist, nil)
+    }
+
+    /// The Pocket Wheel's retroactive motion settle (§1.4). Fire-and-forget; the store is
+    /// single-flighted and inert unless the user opted in and granted Motion & Fitness.
+    @MainActor private func settleMotionSoon() {
+        guard listeningMotion.isActive else { return }
+        let history = playHistory, app = app
+        Task { @MainActor in
+            await listeningMotion.settle(history: history, lengthOf: { app.songsById[$0]?.length })
+        }
+    }
+
+    /// The Play-History context of a non-Mix play (the rips / coordinator hook). A member of the
+    /// RUNNING queue is attributed to that set (tapping a member row to jump ahead adopts it into
+    /// the set), reading the run's CAPTURED origin so a newer playNow mid-navigation can't retag
+    /// it; anything else is a standalone Browser play. A Pocket Wheel run row additionally carries
+    /// its run tag — this is the ONLY place production plays get `PlayEvent.pocketRun`.
+    @MainActor
+    static func historyPlayContext(songId: String, sequencer sp: SetlistPlayer?,
+                                   runs: PocketRunStore?) -> PlayHistoryStore.PlayContext {
+        guard let sp, sp.inRunningQueue(songId) else { return .browser }
+        let origin = sp.capturedHistoryContext
+        // The collection the run started from (a pocket played via Now Playing has contextId
+        // `set_now_playing`) — rides the pockets upload as `contextId`.
+        let originCollection = sp.capturedOrigin.flatMap { o -> String? in
+            [.pocket, .playlist, .setlist].contains(o.kind) ? o.id : nil
+        }
+        let current = sp.index < sp.queue.count && sp.queue[sp.index].matches(songId) ? sp.queue[sp.index] : nil
+        return PlayHistoryStore.PlayContext(source: origin?.source ?? .setlist,
+                                            contextId: sp.sourceSetlistId,
+                                            contextName: origin?.name,
+                                            originCollectionId: originCollection,
+                                            pocketRun: runs?.tag(forPlan: current?.plan))
     }
 
     /// Wire the sync's settings-backed seams. Done HERE rather than in `init` because
@@ -326,6 +364,13 @@ struct PocketDJApp: App {
     @State private var friends: MusicWithFriendsStore
     /// "In the Pocket" — app-scoped like the puzzle engine (a round keeps tracking off-screen).
     @State private var inThePocket: InThePocketStore
+    /// Pocket Wheel: the memoised, off-main moment build (device-local cache) + the synced palette.
+    @State private var pocketWheel: PocketMomentCache
+    @State private var pocketPalette: PocketPaletteStore
+    /// Pocket Wheel best match (centre ▶, CarPlay "Pocket for now", "Play my pocket").
+    @State private var pocketWheelController: PocketWheelController
+    /// The adaptive 100-song pocket run (§4).
+    @State private var pocketRuns: PocketRunStore
     /// The App Intents bridge (Siri/Shortcuts/Spotlight → live stores). Constructed +
     /// registered with `AppDependencyManager` in `init()` so an intent that background-
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
@@ -364,6 +409,9 @@ struct PocketDJApp: App {
     /// On-device place/trip engine (opt-in, iOS; inert elsewhere) — raw location never leaves
     /// it, only opaque ids via `ListeningContextProviding`.
     @State private var listeningLocation: ListeningLocationStore
+    /// Pocket Wheel ▸ "Notice walking & running" (opt-in, iOS; inert elsewhere): settles a raw
+    /// CoreMotion activity token onto each play after the fact.
+    @State private var listeningMotion: ListeningMotionStore
     /// Listening pockets: outcome upload + results for History ▸ Pockets (rides the rec consent).
     @State private var listeningPockets: ListeningPocketsService
     /// iCloud (CloudKit private DB) sync of profile + session-data documents. RootView's
@@ -392,6 +440,10 @@ struct PocketDJApp: App {
     #endif
 
     init() {
+        #if DEBUG
+        // Q25 test seam: DEBUG-only AND inert unless PDJ_DUMP_AM_TOKENS=1 (see AMTokenDump).
+        AMTokenDump.startIfRequested()
+        #endif
         // FIXTURE MEDIA SEAM: the JSON stores are per-launch ephemeral (every store's
         // launchURL), but the app-managed MEDIA folders were not — a leftover
         // sample-smp_fixture.m4a in the durable studio root gets re-adopted by
@@ -661,6 +713,9 @@ struct PocketDJApp: App {
         let listeningLocation = ListeningLocationStore(fileURL: ListeningLocationStore.launchURL())
         listeningLocation.startIfEnabled()
         _listeningLocation = State(initialValue: listeningLocation)
+        // Running/walking for the Pocket Wheel (opt-in; Noop provider off iOS).
+        let listeningMotion = ListeningMotionStore(fileURL: ListeningMotionStore.launchURL())
+        _listeningMotion = State(initialValue: listeningMotion)
         // Peer plays count toward the storage prune (Levi's call): the merged history answers
         // "when was this last played ANYWHERE", so a track played constantly on the Mac isn't first
         // out of the phone's download cache. Read at query time rather than folded into the
@@ -914,24 +969,7 @@ struct PocketDJApp: App {
             guard let playHistory else { return }
             let title = app?.songsById[songId]?.name
             let artist = app?.songsById[songId]?.artist
-            let context: PlayHistoryStore.PlayContext
-            // A member of the RUNNING queue is attributed to that set (tapping a member row to
-            // jump ahead adopts it into the set); read the run's CAPTURED origin so a newer
-            // playNow mid-navigation can't retag it. Anything else is a standalone Browser play.
-            if let sp = setlistPlayer, sp.inRunningQueue(songId) {
-                let origin = sp.capturedHistoryContext
-                // The collection the run started from (a pocket played via Now Playing has
-                // contextId `set_now_playing`) — rides the pockets upload as `contextId`.
-                let originCollection = sp.capturedOrigin.flatMap { o -> String? in
-                    [.pocket, .playlist, .setlist].contains(o.kind) ? o.id : nil
-                }
-                context = PlayHistoryStore.PlayContext(source: origin?.source ?? .setlist,
-                                                       contextId: sp.sourceSetlistId,
-                                                       contextName: origin?.name,
-                                                       originCollectionId: originCollection)
-            } else {
-                context = .browser
-            }
+            let context = Self.historyPlayContext(songId: songId, sequencer: setlistPlayer, runs: PocketRunStore.shared)
             playHistory.record(songId: songId, title: title, artist: artist, context: context)
         }
         // NORMALIZE to the base song id: a variant play via the rip path fires this hook with
@@ -968,7 +1006,13 @@ struct PocketDJApp: App {
             playCounts?.notePlayed(songId, backend: .ripServer)
             guard let playHistory else { return }
             let name = (mix?.autoMixing == true ? mix?.autoSourceLabel : nil) ?? mixSessions?.currentName
-            let context = PlayHistoryStore.PlayContext(source: .mix, contextId: mixSessions?.currentId, contextName: name)
+            // The Auto-DJ crate the track came from rides as `originCollectionId` (the session id
+            // in `contextId` names a Mix session, not a collection) — the Pocket Wheel's colour.
+            let origin = mix?.autoMixing == true ? mix?.autoOriginCollectionId(forSongId: songId) : nil
+            let context = PlayHistoryStore.PlayContext(source: .mix, contextId: mixSessions?.currentId,
+                                                       contextName: name, originCollectionId: origin,
+                                                       pocketRun: PocketRunStore.shared?.mixTag(forSongId: songId,
+                                                                                                label: mix?.autoSourceLabel))
             let event = playHistory.record(songId: songId, title: app?.songsById[songId]?.name,
                                            artist: app?.songsById[songId]?.artist, context: context)
             mixOutcome.notePlayed(deck: deck, songId: songId, event: event)
@@ -1562,6 +1606,8 @@ struct PocketDJApp: App {
         // `ctx` rides only while the places & trips TOGGLE is on — not merely while permission
         // happens to be granted (a revoked permission must not strip already-settled contexts).
         listeningPockets.locationOptedIn = { [weak listeningLocation] in listeningLocation?.isEnabled ?? false }
+        // Motion-derived modes ride only while "Notice walking & running" is on (W4).
+        listeningPockets.motionOptedIn = { [weak listeningMotion] in listeningMotion?.isEnabled ?? false }
         // Pockets × collections: the flattened membership snapshot + add history (ids only),
         // under the same opt-in as everything else this service sends.
         listeningPockets.collectionsProvider = collectionsInput
@@ -1607,6 +1653,109 @@ struct PocketDJApp: App {
             inThePocket?.uploadWires(installId: installId) ?? []
         }
         _inThePocket = State(initialValue: inThePocket)
+        // ── Pocket Wheel ────────────────────────────────────────────────────────
+        // History ▸ Pockets ▸ Wheel: cells keyed (hour, weekday, mode), coloured by the SOURCE
+        // collection. Built off-main from local play history (works with the cloud opt-in off),
+        // memoised + cached on disk so it paints instantly; the palette syncs across devices.
+        let pocketPalette = PocketPaletteStore(fileURL: PocketPaletteStore.launchURL())
+        let pocketWheel = PocketMomentCache(history: playHistory, palette: pocketPalette,
+                                            fileURL: PocketMomentCache.launchURL())
+        pocketWheel.catalogSnapshot = { [weak app] in (app?.songsById ?? [:], app?.albumsById ?? [:]) }
+        pocketWheel.collectionsInput = collectionsInput
+        pocketWheel.favoriteIds = { [weak favorites] in favorites?.favoriteIds ?? [] }
+        pocketWheel.setlistToPlaylist = { [weak collections] in
+            Dictionary((collections?.setlists ?? []).map { ($0.id, $0.playlistId) }, uniquingKeysWith: { a, _ in a })
+        }
+        // Timbre vectors (the same CDN corpus the recs read); never fetched under the fixture seam.
+        let wheelFixture = ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil
+        pocketWheel.timbreVectors = { wheelFixture ? [:] : await TimbreCatalog.shared.vectors() }
+        pocketWheel.cloudPatterns = { [weak listeningPockets] in
+            (listeningPockets?.results?.patterns ?? []).map { .init(id: $0.id, timeBucket: $0.timeBucket, dayType: $0.dayType) }
+        }
+        pocketWheel.liveCollectionIds = { [weak collections, weak app] in
+            guard let collections, let app, app.state == .loaded else { return nil }
+            return Set(collections.pockets.map(\.id) + collections.playlists.map(\.id) + app.indexPlaylists.map(\.id))
+        }
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { pocketWheel.autoRebuild = false }
+        pocketWheel.seedDemoIfRequested()
+        // The centre ▶'s "now": time + day + CarPlay + motion (opt-in) + place guess (opt-in) +
+        // the last 45 minutes of plays, against the wheel (§3).
+        let pocketWheelController = PocketWheelController(cache: pocketWheel, history: playHistory)
+        #if os(iOS)
+        pocketWheelController.carPlayConnected = { CarPlayController.current != nil }
+        #endif
+        pocketWheelController.motionNow = { [weak listeningMotion] in await listeningMotion?.currentActivity() }
+        pocketWheelController.contextGuess = { [weak listeningLocation] in
+            guard let loc = listeningLocation, loc.isEnabled else { return nil }
+            return loc.currentContextGuess()
+        }
+        pocketWheelController.cloudResults = { [weak listeningPockets] in
+            listeningPockets?.isEnabled == true ? listeningPockets?.results : nil
+        }
+        pocketWheelController.emptyFallback = { [weak playHistory, weak favorites, weak pocketWheel] in
+            // T4: the most recently played collection, else Favorites.
+            if let e = playHistory?.events.last(where: { $0.originCollectionId != nil && $0.source != .game }),
+               let id = e.originCollectionId {
+                let name = pocketWheel?.snapshot.collectionNames[id] ?? e.contextName ?? "Your last collection"
+                return PocketProfile(tier: .empty, caption: "Getting to know you", detail: name, collections: [id: 1])
+            }
+            if let favorites, !favorites.favoriteIds.isEmpty {
+                return PocketProfile(tier: .empty, caption: "Getting to know you", detail: PocketWheelIds.favoritesName,
+                                     collections: [PocketWheelIds.favorites: 1])
+            }
+            return nil
+        }
+        let pocketRuns = PocketRunStore(history: playHistory, player: setlistPlayer, fileURL: PocketRunStore.launchURL())
+        pocketRuns.candidates = { [weak app, weak rips, weak burns, weak coordinator, weak favorites] in
+            let songs = app?.songsById ?? [:], albums = app?.albumsById ?? [:]
+            let availability = CollectorsPuzzleEngine.AudioAvailability(
+                ripManifest: rips?.manifest ?? [:], burnedIds: burns?.readyBurnedIds ?? [],
+                canStreamAppleMusic: coordinator?.canStreamAppleMusic ?? false)
+            let colls = collectionsInput()
+            let favs = favorites?.favoriteIds ?? []
+            let timbre = wheelFixture ? [:] : await TimbreCatalog.shared.vectors()
+            let nowMs = Date().timeIntervalSince1970 * 1000
+            return await Task.detached(priority: .userInitiated) {
+                PocketRunCandidates.build(songs: songs, albums: albums, availability: availability, collections: colls,
+                                          favorites: favs, timbre: timbre, nowMs: nowMs)
+            }.value
+        }
+        pocketRuns.thumbsDown = { [weak recFeedback] in
+            guard let fb = recFeedback else { return [] }
+            return Set(fb.decisions.map(\.songId).filter { fb.anyVerdict(songId: $0) == .rejected })
+        }
+        pocketRuns.togglePause = { [weak setlistPlayer, weak coordinator, weak player] in
+            guard let setlistPlayer, let coordinator, let player else { return }
+            NowPlayingPanel.togglePlayPause(sequencer: setlistPlayer, coordinator: coordinator, player: player)
+        }
+        // W7: a Mix moment's run plays through Mix Auto-DJ (crossfades, decks).
+        pocketRuns.playThroughMix = { [weak mix, weak app, weak burns, weak studio, weak collections, weak settings] rows, label in
+            guard let mix, let app, let burns, let studio, let collections, let settings else { return 0 }
+            let resolver = MixResolver(app: app, collections: collections, burns: burns, studio: studio, streamable: mix.canStream)
+            let loadables = resolver.loadables(forSongIds: rows.map(\.songId))
+            let byId = Dictionary(rows.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
+            let items = loadables.map {
+                MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000, sourceLabel: label,
+                                      originCollectionId: byId[$0.songId]?.collectionId)
+            }
+            guard items.count >= 10 else { return items.count }
+            mix.startAutoMix(items, shuffled: false, lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
+                             label: label)
+            return items.count
+        }
+        pocketRuns.mixOwnsRun = { [weak mix] label in mix?.autoMixing == true && mix?.autoSourceLabel == label }
+        pocketRuns.currentEventId = { [weak skipTracker] in skipTracker?.currentEventId }
+        pocketWheelController.play = { [weak pocketRuns] profile in await pocketRuns?.start(profile: profile) ?? false }
+        PocketRunStore.shared = pocketRuns
+        // Phase 5b (opt-in): a sustained walk / run / drive re-targets the rest of the run.
+        pocketRuns.adaptToActivity = { UserDefaults.standard.bool(forKey: ListeningMotionStore.adaptToActivityKey) }
+        pocketRuns.startActivityUpdates = { [weak listeningMotion] handler in listeningMotion?.startLiveUpdates(handler) }
+        pocketRuns.stopActivityUpdates = { [weak listeningMotion] in listeningMotion?.stopLiveUpdates() }
+        pocketRuns.profileForMode = { [weak pocketWheelController] mode in await pocketWheelController?.profile(forMode: mode) }
+        _pocketRuns = State(initialValue: pocketRuns)
+        _pocketWheelController = State(initialValue: pocketWheelController)
+        _pocketPalette = State(initialValue: pocketPalette)
+        _pocketWheel = State(initialValue: pocketWheel)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
         // globally and the sync engine itself must stay drivable by tests.
@@ -1662,6 +1811,10 @@ struct PocketDJApp: App {
         }
         cloudSync.register("studio-cues", fileURL: studio.cueSyncFileURL) { [weak studio] in
             studio?.reloadCuesFromDisk()     // cue points follow the Apple ID (media-free; NOT the full studio doc)
+        }
+        // Pocket Wheel colours: per-collection slot, earlier assignment wins (convergent merge).
+        cloudSync.register("pocket-palette", fileURL: pocketPalette.syncFileURL) { [weak pocketPalette] in
+            _ = pocketPalette?.reloadFromDisk()
         }
         cloudSync.register("game-scores", fileURL: gameScores.syncFileURL) { [weak gameScores] in
             _ = gameScores?.reloadFromDisk() // union-by-run-id — a pull never clobbers local runs
@@ -1785,6 +1938,14 @@ struct PocketDJApp: App {
             listeningLocation?.setEnabled(false)
             recEngine?.clearLocal(cloudDeleted: cloudDeleted)
         }
+        // Pocket Wheel device-local state (motion opt-in; the wheel cache + palette join in
+        // Phase 2) goes with the account.
+        accountDeletion.wheelClearLocal = { [weak listeningMotion, weak pocketWheel, weak pocketPalette, weak pocketRuns] in
+            pocketRuns?.clearLocal()
+            listeningMotion?.clearLocal()
+            pocketWheel?.clearLocal()
+            pocketPalette?.clear()
+        }
         _accountDeletion = State(initialValue: accountDeletion)
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
@@ -1792,6 +1953,7 @@ struct PocketDJApp: App {
         let intents = IntentServices(app: app, settings: settings, collections: collections,
                                      setlistPlayer: setlistPlayer, mix: mix, burns: burns,
                                      studio: studio, rips: rips, favorites: favorites)
+        intents.pocketWheel = pocketWheelController
         // CarPlay + App Intents reach the ONE feedback store through the bridge, exactly like the
         // ♥ does — never a second instance.
         intents.recFeedback = recFeedback
@@ -1901,8 +2063,13 @@ struct PocketDJApp: App {
                 .environment(accountDeletion)
                 .environment(recEngine)
                 .environment(listeningLocation)
+                .environment(listeningMotion)
                 .environment(listeningPockets)
                 .environment(inThePocket)
+                .environment(pocketWheel)
+                .environment(pocketPalette)
+                .environment(pocketWheelController)
+                .environment(pocketRuns)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
@@ -1963,6 +2130,9 @@ struct PocketDJApp: App {
                     // catalog artist IDs, so an empty catalog would resolve nothing and burn the
                     // one shot. Self-guarded and one-shot-per-install.
                     seedReleaseFeedIfReady()
+                    // The wheel's features (artist/genre/BPM) need the catalog; a launch whose
+                    // cache predates the current history rebuilds now.
+                    if app.state == .loaded { pocketWheel.historyDidChange() }
                 }
                 // Recommendation-engine auto-flush: idempotent, and internally a no-op while
                 // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
@@ -1971,6 +2141,11 @@ struct PocketDJApp: App {
                 .task { listeningPockets.startAutoFlush() }
                 // A round that was playing when the app went away keeps (or finishes) tracking.
                 .task { inThePocket.resumeTrackingIfNeeded() }
+                // A pocket run that was playing when the app went away keeps learning.
+                .task { pocketRuns.resumeTrackingIfNeeded() }
+                // Pocket Wheel: rebuild (debounced 5 s, off-main) whenever play history moves —
+                // a new play, a skip verdict, a settled context/motion, a peer's merged plays.
+                .onChange(of: playHistory.revision) { _, _ in pocketWheel.historyDidChange() }
                 // …and the same gate, observed: any path that closes it (not only the Settings
                 // toggles, which also call `enabledDidChange`) turns places & trips off.
                 .onChange(of: listeningPockets.isEnabled) { _, on in
@@ -2021,6 +2196,9 @@ struct PocketDJApp: App {
                     switch phase {
                     case .active:
                         streaming.onScenePhaseActive()
+                        // Pocket Wheel motion settle — one CoreMotion history query per
+                        // foreground, write-once stamps (inert unless opted in + permitted).
+                        settleMotionSoon()
                         // Foreground re-check of the remote endpoint config (throttled to 15 min).
                         EndpointResolver.refreshAndLog()
                         // PLAY-COUNT CAPTURE — first run, and auto-resume.

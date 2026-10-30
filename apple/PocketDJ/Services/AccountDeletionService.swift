@@ -50,6 +50,8 @@ final class AccountDeletionService {
         // The synced connection/credential subset of SettingsStore (rip server, jukebox,
         // online-search) — see SettingsCredentialsSync.swift.
         "settings-credentials",
+        // Pocket Wheel colours (PocketPaletteStore).
+        "pocket-palette",
     ]
 
     /// Recommendation-engine wipe seams (WS-E), wired in PocketDJApp. Optional so tests that
@@ -63,6 +65,9 @@ final class AccountDeletionService {
     ///    delete failed, the credential first moves into a device-local tombstone (key + the
     ///    profile id the delete must target) so a later launch can finish the erasure — a
     ///    re-enable meanwhile mints a FRESH identity instead of resurrecting the erased one.
+    /// Pocket Wheel device-local state (motion opt-in, wheel cache, palette) — wired in
+    /// PocketDJApp; optional so test hosts without the wheel graph degrade to a no-op.
+    var wheelClearLocal: (() -> Void)?
     var recDeleteCloudData: (() async -> Bool)?
     var recClearLocal: ((_ cloudDeleted: Bool) -> Void)?
 
@@ -274,6 +279,7 @@ final class AccountDeletionService {
         await friends.unregisterPushEverywhere()
         friends.eraseAll()
         recClearLocal?(recCloudDeleted)   // rec-engine cursor doc (+ the key IF the cloud delete landed)
+        wheelClearLocal?()                // Pocket Wheel: motion opt-in, wheel cache, palette
 
         // ── 4) CLEAR THE KEYCHAIN (streaming account links) ──────────────────
         // Each provider's `logout()` severs the link and forgets its stored token — for a

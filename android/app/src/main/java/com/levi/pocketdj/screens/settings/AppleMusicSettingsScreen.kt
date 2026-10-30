@@ -209,7 +209,7 @@ fun appleMusicSyncSection() = SettingsSection("appleMusicSync", 404) { host ->
             }
             Column {
                 Text(step.label, style = MaterialTheme.typography.bodyMedium)
-                step.detail?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                step.detail?.let { Text(AmSyncCopy.friendly(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
     }
@@ -359,3 +359,18 @@ fun appleMusicFavoritesSection() = SettingsSection("appleMusicFavorites", 406) {
 }
 
 private const val FAILED_PREVIEW = 20
+
+/** Plain-language sync step details (the raw "AM GET /v1/... -> 403" read like a crash log). */
+internal object AmSyncCopy {
+    private val http = Regex("""->\s*(\d{3})""")
+    fun friendly(detail: String): String {
+        val code = http.find(detail)?.groupValues?.get(1)?.toIntOrNull() ?: return detail
+        return when (code) {
+            401, 403 -> "Apple Music didn\u2019t allow this (HTTP $code). Sign out of Apple Music and sign in again, then sync."
+            404 -> "Apple Music couldn\u2019t find that playlist (HTTP 404)."
+            429 -> "Apple Music is rate-limiting requests (HTTP 429). Try again in a few minutes."
+            in 500..599 -> "Apple Music had a server problem (HTTP $code). Try again later."
+            else -> detail
+        }
+    }
+}

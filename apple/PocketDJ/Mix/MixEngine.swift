@@ -247,10 +247,16 @@ final class MixEngine {
         /// WHERE the track came from — the crate (pocket/set list) name a queue surface shows
         /// next to the row (two-crate Auto DJ provenance). nil for manual/legacy queue entries.
         let sourceLabel: String?
-        init(loadable: MixLoadable, durationMs: Int, sourceLabel: String? = nil) {
+        /// The crate's COLLECTION id (pocket / playlist / setlist) — Play History stamps it as
+        /// the play's `originCollectionId` (the Pocket Wheel's colour for a Mix cell). nil for
+        /// manual/legacy entries. Excluded from nothing: provenance is part of the row.
+        let originCollectionId: String?
+        init(loadable: MixLoadable, durationMs: Int, sourceLabel: String? = nil,
+             originCollectionId: String? = nil) {
             self.loadable = loadable
             self.durationMs = durationMs
             self.sourceLabel = sourceLabel
+            self.originCollectionId = originCollectionId
         }
     }
 
@@ -3517,6 +3523,21 @@ final class MixEngine {
         }
     }
 
+    /// The crate collection a just-started Auto-DJ track came from (Play History's
+    /// `originCollectionId` for a Mix play). Searches outward from the live cursor — the track
+    /// that just started is at (or one past) `autoLivePos` — so a song queued twice resolves to
+    /// the copy actually on air. nil when not auto-mixing or the row carries no provenance.
+    func autoOriginCollectionId(forSongId songId: String) -> String? {
+        guard autoMixing, !autoQueue.isEmpty else { return nil }
+        let start = min(max(0, autoLivePos), autoQueue.count - 1)
+        for offset in 0..<autoQueue.count {
+            for i in [start + offset, start - offset] where i >= 0 && i < autoQueue.count {
+                if autoQueue[i].loadable.songId == songId { return autoQueue[i].originCollectionId }
+            }
+        }
+        return nil
+    }
+
     /// The item repeat-one replays: the live queue slot when it still matches the on-air track
     /// (queue edits keep indices < livePos+1 stable), else a rebuilt item from the deck itself
     /// (belt for drift after drops) — nil only when the live deck is empty.
@@ -5409,7 +5430,8 @@ final class MixEngine {
                                               artist: $0.track.artist, bpm: $0.track.bpm,
                                               camelot: $0.track.camelot, key: $0.track.key,
                                               albumId: $0.track.albumId, lengthMs: $0.track.lengthMs),
-                        durationMs: $0.durationMs, sourceLabel: $0.sourceLabel)
+                        durationMs: $0.durationMs, sourceLabel: $0.sourceLabel,
+                        originCollectionId: $0.originCollectionId)
         }
         autoRepeat = auto.repeatMode.flatMap(AutoRepeatMode.init(rawValue:)) ?? .off
         autoEnabled = true
@@ -5473,7 +5495,8 @@ final class MixEngine {
             auto = MixDeckSessionStore.AutoSnapshot(
                 queue: autoQueue.map {
                     MixDeckSessionStore.AutoRow(track: trackRef($0.loadable), durationMs: $0.durationMs,
-                                                sourceLabel: $0.sourceLabel)
+                                                sourceLabel: $0.sourceLabel,
+                                                originCollectionId: $0.originCollectionId)
                 },
                 livePos: autoLivePos, nextToLoad: autoNextToLoad,
                 liveDeck: autoLiveDeck.rawValue, sourceLabel: autoSourceLabel,

@@ -35,8 +35,14 @@ enum class PocketDjDestination(
     Games("games", "Games", 5, Icons.Filled.SportsEsports, "Games");
 
     companion object {
-        /** Bottom-nav / rail order, top-to-bottom or left-to-right. */
+        /** Every top-level destination (routes, lastSection tokens), in pinned order. */
         val bottomNav: List<PocketDjDestination> = entries.toList()
+
+        /** Q7 (Levi 2026-10-29): the bar shows these three, then a "More" tab. */
+        val barTabs: List<PocketDjDestination> = listOf(Browse, History, Playlists)
+
+        /** Q7: folded into the "More" tab, in this order. */
+        val moreTabs: List<PocketDjDestination> = listOf(Jukebox, Games, Mix, Producer)
 
         /** Cold launch with nothing (valid) persisted lands here — iOS 2026-07-22. */
         val default: PocketDjDestination = History

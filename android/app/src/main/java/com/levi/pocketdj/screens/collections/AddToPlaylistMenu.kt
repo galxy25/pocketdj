@@ -30,6 +30,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.HorizontalDivider
 import com.levi.pocketdj.data.collections.AddTarget
 import com.levi.pocketdj.di.AppGraph
 import kotlinx.coroutines.Dispatchers
@@ -49,8 +53,12 @@ fun AddToPlaylistMenu(
     item: AddToItem,
     onDismiss: () -> Unit,
     onMore: () -> Unit,
-    /** Extra rows (label, action) appended after "More…" — e.g. Browse's Select / Copy. */
-    extraActions: List<Pair<String, () -> Unit>> = emptyList(),
+    /** Extra rows appended after "More…" — e.g. Browse's Select / Copy. */
+    extraActions: List<ContextAction> = emptyList(),
+    /** Song header (iOS context-menu preview): when set, it replaces the "Add to Playlist" title. */
+    header: ContextHeader? = null,
+    /** Rows ABOVE the playlist targets — Play next / Add to queue / Favorite (iOS order). */
+    leadingActions: List<ContextAction> = emptyList(),
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -67,9 +75,33 @@ fun AddToPlaylistMenu(
     AlertDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier.testTag("ctx-add-to-playlist"),
-        title = { Text("Add to Playlist") },
+        title = {
+            if (header == null) Text("Add to Playlist") else Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.testTag("ctx-header")) {
+                com.levi.pocketdj.screens.browse.AlbumArt(header.album, Modifier.size(44.dp))
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(header.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    if (header.subtitle.isNotBlank()) Text(
+                        header.subtitle, style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        },
         text = {
-            Column(Modifier.fillMaxWidth()) {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+                leadingActions.forEach { a ->
+                    MenuRow(icon = a.icon, label = a.label, checked = false, testTag = a.testTag, onClick = { a.action(); onDismiss() })
+                }
+                if (header != null) {
+                    if (leadingActions.isNotEmpty()) HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                    Text(
+                        "Add to playlist",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp, bottom = 2.dp),
+                    )
+                }
                 targets.forEachIndexed { idx, target ->
                     MenuRow(
                         icon = if (target.kind == AddTarget.Kind.POCKET) Icons.Filled.Layers else Icons.AutoMirrored.Filled.QueueMusic,
@@ -83,19 +115,20 @@ fun AddToPlaylistMenu(
                     )
                 }
                 MenuRow(
-                    icon = Icons.Filled.Search,
+                    icon = Icons.AutoMirrored.Filled.PlaylistAdd,
                     label = "More…",
                     checked = false,
                     testTag = "ctx-add-playlist-more",
                     onClick = onMore,
                 )
-                extraActions.forEachIndexed { i, (label, action) ->
+                if (extraActions.isNotEmpty()) HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                extraActions.forEachIndexed { i, a ->
                     MenuRow(
-                        icon = Icons.Filled.Search,
-                        label = label,
+                        icon = a.icon,
+                        label = a.label,
                         checked = false,
-                        testTag = "ctx-extra-$i",
-                        onClick = { action(); onDismiss() },
+                        testTag = a.testTag.ifEmpty { "ctx-extra-$i" },
+                        onClick = { a.action(); onDismiss() },
                     )
                 }
             }
@@ -104,6 +137,12 @@ fun AddToPlaylistMenu(
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
+
+/** One context-menu row with its own icon (rows used to share a search glyph). */
+class ContextAction(val label: String, val icon: ImageVector, val testTag: String = "", val action: () -> Unit)
+
+/** The song (or album) the context menu acts on, shown as the dialog header. */
+class ContextHeader(val title: String, val subtitle: String, val album: com.levi.pocketdj.data.catalog.IndexAlbum?)
 
 @Composable
 private fun MenuRow(icon: ImageVector, label: String, checked: Boolean, testTag: String, onClick: () -> Unit) {

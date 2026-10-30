@@ -115,6 +115,8 @@ internal fun linkDeviceSection() = SettingsSection(LINK_DEVICE_SECTION_ID, 51) {
                     host.scope.launch {
                         val r = withContext(Dispatchers.IO) { services.linkProbe.link(input) }
                         busy = false
+                        // Linking a device IS the opt-in to sync (default off, SyncSettings).
+                        if (r !is LinkProbeResult.Unavailable) host.graph.settings.set(com.levi.pocketdj.data.sync.SyncSettings.CLOUD_SYNC_ENABLED, true)
                         when (r) {
                             is LinkProbeResult.Existing -> { found = true; message = "Linked" + (r.name.takeIf { it.isNotEmpty() }?.let { " to $it" } ?: "") + ". Restore your stuff to this device?" }
                             LinkProbeResult.Fresh -> message = "Linked. Nothing to restore yet; this device will sync from now on."

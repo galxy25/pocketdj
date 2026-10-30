@@ -203,6 +203,10 @@ targets:
         # significant-change monitoring only — deliberately NO `location` UIBackgroundMode. The
         # prompt never fires unless the user turns the toggle on. Coordinates stay on device.
         INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "PocketDJ can notice which of your places you're at while you listen, to find the music that fits each one. Your location stays on this device; only anonymous labels like \"Location A\" are used."
+        # Pocket Wheel ▸ "Notice walking & running" (OPT-IN, default off, iOS only). Reads the
+        # motion coprocessor's own 7-day history after each play — no live updates during ordinary
+        # listening, no GPS. The prompt fires only when the user turns the toggle on.
+        INFOPLIST_KEY_NSMotionUsageDescription: "PocketDJ can notice when you were walking or running while music played, so your pocket wheel can tell a run from a commute."
         INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription: "Allow Always so PocketDJ can tell your places and trips apart while music plays in the background, such as the trip from Location A to Location B. Your location stays on this device."
         # --- MusicKit + ShazamKit entitlements ---------------------------------
         # Both app-service entitlements live in one .entitlements file. They are

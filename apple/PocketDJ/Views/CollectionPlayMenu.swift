@@ -22,11 +22,13 @@ import SwiftUI
 enum CollectionPlayback {
     static func start(_ ids: [String], title: String, shuffle: Bool,
                       source: PlayHistoryStore.PlaySource = .browser,
+                      originId: String? = nil,
                       intents: IntentServices?,
                       onStarted: (([String]) -> Void)? = nil) {
         guard !ids.isEmpty, let intents else { return }
         Task { @MainActor in
-            _ = try? await intents.playSongIds(ids, name: title, shuffle: shuffle, source: source)
+            _ = try? await intents.playSongIds(ids, name: title, shuffle: shuffle, source: source,
+                                               originId: originId)
             onStarted?(ids)
         }
     }
@@ -238,6 +240,8 @@ struct CollectionPlayMenuItems: View {
     let songIds: [String]
     /// What History files these plays under.
     var source: PlayHistoryStore.PlaySource = .browser
+    /// The collection these songs came from, when they came from one (Play History origin).
+    var originId: String? = nil
     /// Accessibility-id stem: `"<idPrefix>-play"` / `"-shuffle"`.
     let idPrefix: String
     /// Ran with the queue that was actually started — For You uses it to stamp the feedback scope
@@ -260,6 +264,6 @@ struct CollectionPlayMenuItems: View {
 
     private func start(_ ids: [String], shuffle: Bool) {
         CollectionPlayback.start(ids, title: title, shuffle: shuffle, source: source,
-                                 intents: intents, onStarted: onStarted)
+                                 originId: originId, intents: intents, onStarted: onStarted)
     }
 }

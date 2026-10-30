@@ -6,12 +6,17 @@ import android.net.Uri
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.ui.platform.testTag
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -175,8 +180,10 @@ suspend fun consumeNavRequests(
     }
 }
 
-private fun NavController.switchTab(dest: PocketDjDestination, fresh: Boolean) {
-    navigate(dest.route) {
+private fun NavController.switchTab(dest: PocketDjDestination, fresh: Boolean) = switchTo(dest.route, fresh)
+
+private fun NavController.switchTo(route: String, fresh: Boolean) {
+    navigate(route) {
         popUpTo(graph.findStartDestination().id) { saveState = !fresh }
         launchSingleTop = true
         restoreState = !fresh
@@ -240,6 +247,13 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
 
     // Persist the last-visited tab (token = iOS Section.rawValue).
     val currentTab = PocketDjDestination.bottomNav.firstOrNull { it.route == currentRoute }
+    // The tab that OWNS the visible screen: the top-most tab entry on the back stack, so a pushed
+    // screen (album, playlist, Now Playing) keeps its parent tab highlighted in the nav bar.
+    val backStack by navController.currentBackStack.collectAsState()
+    val backRoutes = backStack.map { it.destination.route }
+    val owningItem = ShellTabs.owningBarItem(backRoutes)
+    // A More-folded section pushed from the More hub (More -> Mix) gets a back arrow to the hub.
+    val pushedFromMore = currentTab != null && backRoutes.dropLast(1).lastOrNull() == MORE_ROUTE
     LaunchedEffect(currentTab) { currentTab?.let { graph.lastSection.save(it) } }
 
     // NavRequestBus consumer: atomic take (clear first), tab switches NOW on a fresh stack,
@@ -269,7 +283,7 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
         }
     }
 
-    val onDetail = currentTab == null && currentRoute != null
+    val onDetail = (currentTab == null && currentRoute != null && currentRoute != MORE_ROUTE) || pushedFromMore
     val title = when (currentRoute) {
         SETTINGS_ROUTE -> "Settings"
         SETTINGS_STORAGE_ROUTE -> "Storage"
@@ -286,6 +300,7 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
         SOURCE_PLAYLIST_ROUTE -> "Source playlist"
         JUKEBOX_JOIN_ROUTE -> "Jukebox"
         NOW_PLAYING_ROUTE -> "Now Playing"
+        MORE_ROUTE -> "More"
         else -> currentTab?.label ?: "PocketDJ"
     }
 
@@ -293,11 +308,19 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
     val layout = navLayoutFor(widthDp)
 
     // Composable context (the items lambda is not): one spring-load modifier per tab.
-    val springMods = PocketDjDestination.bottomNav.associateWith { dest ->
-        val sel = currentDestination?.hierarchy?.any { it.route == dest.route } == true
-        Modifier.springLoadTarget(sel) { navController.switchTab(dest, fresh = false) }
+    val springMods = BarItem.entries.associateWith { item ->
+        val sel = item == owningItem
+        Modifier.springLoadTarget(sel) { navController.switchTo(ShellTabs.routeFor(item), fresh = false) }
     }
 
+    val accentTint = MaterialTheme.colorScheme.primary
+    val navItemColors = androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteDefaults.itemColors(
+        navigationBarItemColors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+            indicatorColor = androidx.compose.ui.graphics.Color.Transparent,
+            selectedIconColor = accentTint,
+            selectedTextColor = accentTint,
+        ),
+    )
     NavigationSuiteScaffold(
         layoutType = if (layout == ShellNavLayout.Rail) {
             NavigationSuiteType.NavigationRail
@@ -305,23 +328,32 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
             NavigationSuiteType.NavigationBar
         },
         navigationSuiteItems = {
-            PocketDjDestination.bottomNav.forEach { dest ->
-                val selected = currentDestination?.hierarchy?.any { it.route == dest.route } == true
+            BarItem.entries.forEach { item ->
+                val selected = item == owningItem
+                val rootRoute = ShellTabs.routeFor(item)
                 item(
                     selected = selected,
-                    onClick = { navController.switchTab(dest, fresh = false) },
+                    onClick = {
+                        // Re-tapping the owning slot from a pushed screen pops back to its root
+                        // (for More: back to the hub, whichever folded section is showing).
+                        if (selected && currentRoute != rootRoute && backRoutes.contains(rootRoute)) {
+                            navController.popBackStack(rootRoute, inclusive = false)
+                        } else if (selected && currentRoute != rootRoute) {
+                            // A folded section opened directly (deep link / last section): More -> the hub.
+                            navController.navigate(rootRoute) { launchSingleTop = true }
+                        } else if (!selected) {
+                            navController.switchTo(rootRoute, fresh = false)
+                        }
+                    },
                     // COL-6: a song drag hovering a tab switches to it, so a Browse selection can
                     // be dropped onto a Collections row.
-                    modifier = springMods.getValue(dest),
-                    icon = { Icon(dest.icon, contentDescription = dest.label) },
-                    // Compact bar: label on the SELECTED item only, so seven destinations
-                    // fit a 360 dp phone without wrapping. The rail has room for all.
-                    label = {
-                        // 10.sp + Visible overflow: "Collections" (11 ch) is wider than a 7-up
-                        // bar slot at 411 dp; neighbours' labels are hidden, so it may overhang.
-                        Text(dest.label, maxLines = 1, softWrap = false, fontSize = 10.sp, overflow = TextOverflow.Visible)
-                    },
-                    alwaysShowLabel = layout == ShellNavLayout.Rail,
+                    modifier = springMods.getValue(item).testTag("nav-${item.name.lowercase()}"),
+                    icon = { Icon(item.icon, contentDescription = item.label) },
+                    // Q7: four slots, so every label fits and is always shown (iOS tab bar).
+                    label = { Text(item.label, maxLines = 1, softWrap = false, fontSize = 11.sp) },
+                    alwaysShowLabel = true,
+                    // iOS tab bars mark the selection with the accent tint, not a pill.
+                    colors = navItemColors,
                 )
             }
         },
@@ -415,6 +447,9 @@ private fun ShellNavHost(
         startDestination = startTab.route,
         modifier = modifier,
     ) {
+        composable(MORE_ROUTE) {
+            MoreHubScreen(onOpen = { dest -> nav.navigate(dest.route) { launchSingleTop = true } })
+        }
         composable(PocketDjDestination.Browse.route) {
             BrowseScreen(
                 onOpenAlbum = { albumId -> nav.navigate(albumRoute(albumId)) },
@@ -569,5 +604,69 @@ private fun ShellNavHost(
         }
         // Area-contributed pushed routes (decision D3): no edit here per package.
         graph.features.navEntries.forEach { entry -> entry.register(this, actions) }
+    }
+}
+
+/** The More hub route (Q7): lists Jukebox, Games, Mix and Producer. */
+const val MORE_ROUTE = "more"
+
+/** One bottom-bar slot (Q7): three tabs + More. */
+enum class BarItem(val label: String, val icon: androidx.compose.ui.graphics.vector.ImageVector, val dest: PocketDjDestination?) {
+    Browse("Browse", PocketDjDestination.Browse.icon, PocketDjDestination.Browse),
+    History("History", PocketDjDestination.History.icon, PocketDjDestination.History),
+    Collections("Collections", PocketDjDestination.Playlists.icon, PocketDjDestination.Playlists),
+    More("More", Icons.Filled.MoreHoriz, null),
+}
+
+/** Pure nav-bar helpers (JVM-tested). */
+object ShellTabs {
+    /** The top-most top-level destination in [routes] (back stack, bottom to top); null when none. */
+    fun owningTab(routes: List<String?>): PocketDjDestination? =
+        routes.asReversed().firstNotNullOfOrNull { r -> PocketDjDestination.bottomNav.firstOrNull { it.route == r } }
+
+    /** The bar slot that owns the visible screen: a More-folded tab (or the hub itself) lights More. */
+    fun owningBarItem(routes: List<String?>): BarItem? {
+        for (r in routes.asReversed()) {
+            if (r == MORE_ROUTE) return BarItem.More
+            val d = PocketDjDestination.bottomNav.firstOrNull { it.route == r } ?: continue
+            return barItemFor(d)
+        }
+        return null
+    }
+
+    fun barItemFor(d: PocketDjDestination): BarItem = when (d) {
+        PocketDjDestination.Browse -> BarItem.Browse
+        PocketDjDestination.History -> BarItem.History
+        PocketDjDestination.Playlists -> BarItem.Collections
+        else -> BarItem.More
+    }
+
+    /** The route a bar slot switches to. */
+    fun routeFor(item: BarItem): String = item.dest?.route ?: MORE_ROUTE
+}
+
+/** Q7 "More" hub: the four folded sections as rows (iOS More list). */
+@Composable
+private fun MoreHubScreen(onOpen: (PocketDjDestination) -> Unit) {
+    val blurbs = mapOf(
+        PocketDjDestination.Jukebox to "Take song requests from a QR code",
+        PocketDjDestination.Games to "Gem Collector, In the Pocket, Music with Friends",
+        PocketDjDestination.Mix to "Two decks, crossfader and Auto-DJ",
+        PocketDjDestination.Producer to "Samples, loops, sequencer, instruments, stems",
+    )
+    androidx.compose.foundation.lazy.LazyColumn(Modifier.fillMaxSize().testTag("more-hub")) {
+        items(PocketDjDestination.moreTabs.size) { i ->
+            val d = PocketDjDestination.moreTabs[i]
+            androidx.compose.material3.ListItem(
+                headlineContent = { Text(d.label) },
+                supportingContent = { Text(blurbs[d].orEmpty()) },
+                leadingContent = { Icon(d.icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.background),
+                modifier = Modifier
+                    .clickable { onOpen(d) }
+                    .testTag("more-${d.route}"),
+            )
+        }
     }
 }

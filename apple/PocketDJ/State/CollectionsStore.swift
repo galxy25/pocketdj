@@ -2588,6 +2588,11 @@ final class CollectionsStore {
         // Defensive: a real playlist/pocket id ever threaded directly.
         if let p = playlist(id) { return (.playlist, p.name) }
         if let pk = pocket(id) { return (.pocket, pk.name) }
+        // A catalog SOURCE playlist (`pl_…`, e.g. an Apple Music smart playlist like "Potential")
+        // or the reserved Favorites id — both are collections a play can come from (Pocket Wheel
+        // attribution) even though neither is a stored playlist.
+        if let sp = app?.indexPlaylists.first(where: { $0.id == id }) { return (.playlist, sp.name) }
+        if id == PocketWheelIds.favorites { return (.playlist, PocketWheelIds.favoritesName) }
         return (.setlist, nil)
     }
 
@@ -2606,6 +2611,8 @@ final class CollectionsStore {
         // Defensive twins of historyContext's fallbacks.
         if playlist(id) != nil { return (.playlist, id) }
         if pocket(id) != nil { return (.pocket, id) }
+        if app?.indexPlaylists.contains(where: { $0.id == id }) == true { return (.playlist, id) }
+        if id == PocketWheelIds.favorites { return (.playlist, id) }
         return nil
     }
 

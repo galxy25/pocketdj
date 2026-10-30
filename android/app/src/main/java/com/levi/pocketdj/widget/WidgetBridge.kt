@@ -96,7 +96,7 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
         val album = key.albumId?.let { catalog.albumsById[it] }
             ?: catalog.songsById[key.songId]?.albumId?.let { catalog.albumsById[it] }
             ?: return null
-        for (url in album.artCandidates()) {
+        for (url in app.albumArtworkStore.artUrls(album)) {
             val res = ctx.imageLoader.execute(
                 ImageRequest.Builder(ctx).data(url).size(512).allowHardware(false).build(),
             )
