@@ -223,7 +223,9 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         com.levi.pocketdj.data.sync.Enrollment(
             secrets = profileSecrets,
             baseUrl = { com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase },
-            enrollToken = com.levi.pocketdj.data.sync.Enrollment.tokenFrom(app.secrets),
+            enrollToken = com.levi.pocketdj.data.sync.Enrollment.tokenFrom(
+                app.secrets, com.levi.pocketdj.data.config.RemoteEndpoints::profileSyncEnroll,
+            ),
             http = app.httpClient,
         )
     }
@@ -382,9 +384,6 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 jukeboxServerURL = cur.jukeboxServerUrl,
                 jukeboxToken = cur.jukeboxToken,
                 jukeboxTokensRequiredByDefault = cur.jukeboxTokensRequiredByDefault,
-                searchAccessKeyID = app.secrets.get(com.levi.pocketdj.data.search.SearchSettings.ACCESS_KEY_ID),
-                searchSecretKey = app.secrets.get(com.levi.pocketdj.data.search.SearchSettings.SECRET_KEY),
-                searchEndpoint = com.levi.pocketdj.data.search.SearchSettings.endpoint(app.settings),
             )
         }
 
@@ -393,8 +392,6 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 app.settings.setRipServer(doc.ripServerURL, doc.ripToken)
                 app.settings.setJukeboxServer(doc.jukeboxServerURL, doc.jukeboxToken)
                 app.settings.setJukeboxTokensRequiredByDefault(doc.jukeboxTokensRequiredByDefault)
-                com.levi.pocketdj.data.search.SearchSettings.saveCreds(app.secrets, doc.searchAccessKeyID, doc.searchSecretKey)
-                com.levi.pocketdj.data.search.SearchSettings.setEndpoint(app.settings, doc.searchEndpoint)
             }
         }
     }

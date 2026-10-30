@@ -68,6 +68,16 @@ describe('endpoint schema v1', () => {
       expect(validateEndpointDoc({ ...GREEN, endpoints: { ...GREEN.endpoints, profileSyncBase: bad } }).ok).toBe(false);
   });
 
+  it('capabilities.profileSyncEnroll is optional, validated, independent of recEngineEnroll (ANS-SYNC-1)', () => {
+    const ok = validateEndpointDoc({ ...GREEN, capabilities: { profileSyncEnroll: 'sync-enroll-0123456789abcdef' } });
+    expect(ok.ok && ok.config.capabilities).toEqual({ profileSyncEnroll: 'sync-enroll-0123456789abcdef' });
+    const both = validateEndpointDoc({ ...GREEN, capabilities: { profileSyncEnroll: 'sync-enroll-0123456789abcdef', recEngineEnroll: 'rotated-secret-0123456789abcdef' } });
+    expect(both.ok && both.config.capabilities?.recEngineEnroll).toBe('rotated-secret-0123456789abcdef');
+    expect(validateEndpointDoc({ ...GREEN, capabilities: { profileSyncEnroll: 'short' } }, { strictCapabilities: true }).ok).toBe(false);
+    const lenient = validateEndpointDoc({ ...GREEN, capabilities: { profileSyncEnroll: 'short' } });
+    expect(lenient.ok && lenient.config.capabilities).toBeUndefined();
+  });
+
   it('capabilities.recEngineEnroll is optional and validated (ANS-BRW-2)', () => {
     const v0 = validateEndpointDoc(GREEN);
     expect(v0.ok && v0.config.capabilities).toBeUndefined();

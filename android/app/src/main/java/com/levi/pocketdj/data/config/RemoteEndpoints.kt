@@ -53,6 +53,8 @@ data class EndpointConfig(
     val catalogDevAliases: Set<String> = emptySet(),
     /** Optional `capabilities.recEngineEnroll` (ANS-BRW-2): the rotatable rec-engine enroll secret. */
     val recEngineEnroll: String? = null,
+    /** Optional `capabilities.profileSyncEnroll` (ANS-SYNC-1): the profile-sync Lambda's `X-PocketDJ-Enroll` token. */
+    val profileSyncEnroll: String? = null,
 ) {
     /** The optional profile-sync Lambda base; null (absent in the doc) => sync disabled, no network. */
     val profileSyncBase: String? get() = endpoints[EndpointKey.PROFILE_SYNC_BASE]
@@ -147,7 +149,8 @@ data class EndpointConfig(
                 .mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content?.lowercase() }
                 .filter(::isAllowedHost).toSet()
             val enroll = normalizeEnroll((doc["capabilities"] as? JsonObject)?.get("recEngineEnroll"))
-            return Decoded.Ok(EndpointConfig(env, out, hosts("catalogBase"), hosts("catalogBaseDev"), enroll))
+            val syncEnroll = normalizeEnroll((doc["capabilities"] as? JsonObject)?.get("profileSyncEnroll"))
+            return Decoded.Ok(EndpointConfig(env, out, hosts("catalogBase"), hosts("catalogBaseDev"), enroll, syncEnroll))
         }
     }
 }
@@ -184,6 +187,13 @@ object RemoteEndpoints {
      * with the last-good doc), else the compiled constant. Read per request so rotation needs no update.
      */
     fun recEngineEnroll(): String = current.recEngineEnroll ?: REC_ENGINE_ENROLL_SECRET
+
+    /**
+     * Profile-sync enroll capability token (ANS-SYNC-1): the live doc's `capabilities.profileSyncEnroll`
+     * (persisted with the last-good doc), else "" (no token => enrollment reports NotConfigured, no network).
+     * Never compiled into a build; read per request so rotation needs no app update.
+     */
+    fun profileSyncEnroll(): String = current.profileSyncEnroll.orEmpty()
 
     /** Optional profile-sync base from the live doc; null => sync disabled. */
     val profileSyncBase: String? get() = current.profileSyncBase

@@ -26,3 +26,4 @@ if (!v.ok) {
 console.log(`✓ ${file}: v1 env=${v.config.env}`);
 for (const [k, u] of Object.entries(v.config.endpoints)) console.log(`    ${k.padEnd(22)} ${u}`);
 console.log(`    ${'capabilities.recEngineEnroll'.padEnd(22)} ${v.config.capabilities?.recEngineEnroll ? '(set, hidden)' : '(absent: compiled constant)'}`);
+console.log(`    ${'capabilities.profileSyncEnroll'.padEnd(22)} ${v.config.capabilities?.profileSyncEnroll ? '(set, hidden)' : '(absent: profile sync cannot enroll)'}`);

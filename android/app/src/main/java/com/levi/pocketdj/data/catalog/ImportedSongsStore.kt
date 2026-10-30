@@ -115,6 +115,41 @@ class ImportedSongsStore(private val file: File) {
         onChanged?.invoke()
     }
 
+    /**
+     * A cloud pull rewrote [file] (iOS `reloadFromDisk`, key `imported-songs`): re-adopt it and refresh the
+     * catalog so pulled imports flow into the merge. Returns false (the pulled bytes stay as written).
+     */
+    fun reloadFromDisk(): Boolean {
+        val doc = decode(file)
+        val changed: Boolean
+        synchronized(lock) { changed = adopt(doc) }
+        if (changed) onChanged?.invoke()
+        return false
+    }
+
+    /** SyncEntry.applyPayload seam: write the pulled bytes + re-adopt under [lock] so a concurrent add()/remove() cannot interleave. */
+    fun writePulled(bytes: ByteArray) {
+        val changed: Boolean
+        synchronized(lock) {
+            file.parentFile?.mkdirs()
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(file)) { file.writeBytes(bytes); tmp.delete() }
+            changed = adopt(decode(file))
+        }
+        if (changed) onChanged?.invoke()
+    }
+
+    /** Caller holds [lock]. True when the song/album id sets changed. */
+    private fun adopt(doc: Document): Boolean {
+        val s = doc.songs.distinctBy { it.songId }
+        val a = doc.albums.distinctBy { it.albumId }
+        val same = s.map { it.songId }.toSet() == songs.map { it.songId }.toSet() &&
+            a.map { it.albumId }.toSet() == albums.map { it.albumId }.toSet()
+        songs = s; albums = a; cachedDoc = null
+        return !same
+    }
+
     fun clear() {
         synchronized(lock) {
             songs = emptyList(); albums = emptyList(); cachedDoc = null
@@ -196,6 +231,8 @@ class ImportedSongsStore(private val file: File) {
         }
 
         const val FILE_NAME = "pocketdj-imported-songs.json"
+        /** Cloud-sync document key (iOS `imported-songs`). */
+        const val SYNC_KEY = "imported-songs"
         const val SOURCE_NAME = "Imported"
 
         internal fun decode(file: File): Document =
