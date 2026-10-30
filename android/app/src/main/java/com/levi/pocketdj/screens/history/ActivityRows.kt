@@ -15,6 +15,8 @@ internal data class ActivityRowUi(
     val atMs: Long,
     /** Non-null only when the item resolves to a live catalog SONG (tappable). */
     val songId: String?,
+    /** Leading thumbnail URL resolved from the live catalog (song -> its album's art; album -> own art); null = placeholder. */
+    val artUrl: String? = null,
 )
 
 /**
@@ -59,6 +61,7 @@ internal fun buildActivityRows(
             ),
             atMs = event.at.toLong(),
             songId = liveSong?.id,
+            artUrl = activityArtUrl(liveSong?.albumId, event.itemId, catalog),
         )
     }
 }
@@ -92,4 +95,13 @@ internal fun catalogAddHeadline(item: String, libraryWrite: String?): String {
         return "Added $item to your library"
     }
     return "Added $item to PocketDJ ($annotation)"
+}
+
+/**
+ * Timeline thumbnail: a resolvable song uses its album's art, an album item uses its own, anything
+ * else (removed / unresolved) has none. Loaded through Coil's shared disk/memory cache.
+ */
+internal fun activityArtUrl(songAlbumId: String?, itemId: String, catalog: MergedCatalog): String? {
+    val album = songAlbumId?.let { catalog.albumsById[it] } ?: catalog.albumsById[itemId]
+    return album?.artCandidates()?.firstOrNull()
 }

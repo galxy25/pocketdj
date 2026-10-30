@@ -710,6 +710,8 @@ private fun ActivityRow(row: ActivityRowUi, onSongClick: (String) -> Unit) {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
+            ArtThumb(row.artUrl)
+            Spacer(Modifier.width(12.dp))
             Icon(
                 imageVector = row.kind.icon(),
                 contentDescription = null,

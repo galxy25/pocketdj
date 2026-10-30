@@ -278,6 +278,16 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     private fun wireImported(store: CollectionsStore) {
         wireCatalogSource()
         importedSongs.onChanged = { app.catalogRepository.remergeLocal() }
+        importedSongs.onUserCatalogAdd = { items ->
+            app.appScope.launch(Dispatchers.IO) {
+                for (i in items) {
+                    app.collectionActivity.record(
+                        kind = com.levi.pocketdj.data.activity.ActivityKind.CATALOG_ADD,
+                        itemId = i.id, itemTitle = i.title, itemArtist = i.artist,
+                    )
+                }
+            }
+        }
         store.onPortableItems = { payload ->
             app.appScope.launch(Dispatchers.IO) { runCatching { importedSongs.addPortable(payload) } }
         }
