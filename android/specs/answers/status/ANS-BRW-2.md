@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # ANS-BRW-2 Rec-engine enroll secret at runtime + Add-to uses RecSuggestionFilter
 
@@ -7,7 +7,7 @@ state: in-progress
 - [x] Both Lambdas: enrollOk accepts comma-separated REC_ENROLL_SECRETS (+legacy REC_ENROLL_SECRET), constant-time, fail closed; deploy.sh updated (JSON --environment, rotation recipe); node tests added
 - [x] src/config/endpointSchema.ts + validate-endpoints accept/validate capabilities.recEngineEnroll (vitest added); iOS ignores unknown keys (adoption optional)
 - [x] AddToActions.suggestedTargets delegates to RecSuggestionFilter.resolveTargets
-- [ ] gradle test + assemble green
+- [x] gradle :app:testDebugUnitTest :app:assembleDebug green (5348 tests, 0 failures); +6 Kotlin tests, +1 test in each Lambda suite, +1 vitest
 
 ## Files outside the owned list
 - src/config/endpointSchema.ts, src/config/remoteEndpoints.test.ts (validator is shared by validate-endpoints.ts; additive)
