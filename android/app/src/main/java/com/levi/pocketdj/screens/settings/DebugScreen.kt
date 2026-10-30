@@ -226,19 +226,26 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         host.scope.launch {
             sampleSeedStatus = withContext(Dispatchers.IO) {
                 runCatching {
-                    val rate = 44100; val n = rate * 2
-                    val bb = java.nio.ByteBuffer.allocate(44 + n * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                    bb.put("RIFF".toByteArray()).putInt(36 + n * 2).put("WAVEfmt ".toByteArray()).putInt(16)
-                        .putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
-                        .put("data".toByteArray()).putInt(n * 2)
-                    for (i in 0 until n) bb.putShort((Math.sin(2 * Math.PI * 440 * i / rate) * 12000).toInt().toShort())
-                    val f = java.io.File(host.graph.appContext.cacheDir, "SeedTone.wav").also { it.writeBytes(bb.array()) }
-                    val smp = host.graph.studioGraph.sampleFactory.importFile(f, "SeedTone.wav")
-                    // ANS-STU-6 seed: a "SeedStudio" playlist = the studio take + 2 catalog songs.
+                    // 90 s mono 8 kHz tones (440/550/660 Hz) -> 3 distinct studio samples, so a queue holds for PB-6.
+                    val rate = 8000; val n = rate * 90
+                    val ids = mutableListOf<String>()
+                    var last: com.levi.pocketdj.studio.model.StudioSample? = null
+                    for ((k, hz) in listOf(440, 550, 660).withIndex()) {
+                        val bb = java.nio.ByteBuffer.allocate(44 + n * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        bb.put("RIFF".toByteArray()).putInt(36 + n * 2).put("WAVEfmt ".toByteArray()).putInt(16)
+                            .putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
+                            .put("data".toByteArray()).putInt(n * 2)
+                        for (i in 0 until n) bb.putShort((Math.sin(2 * Math.PI * hz * i / rate) * 12000).toInt().toShort())
+                        val f = java.io.File(host.graph.appContext.cacheDir, if (k == 0) "SeedTone.wav" else "SeedTone$k.wav").also { it.writeBytes(bb.array()) }
+                        val sm = host.graph.studioGraph.sampleFactory.importFile(f, f.name)
+                        ids += sm.id; last = sm
+                    }
+                    val smp = last!!
+                    // ANS-STU-6 / PB-6 seed: a "SeedStudio" playlist = 3 studio takes + 2 catalog songs.
                     val cat = host.graph.catalogRepository.catalogFlow.first()?.songs?.take(2)?.map { it.id } ?: emptyList()
                     val store = host.graph.collections
                     val pl = store.playlists.firstOrNull { it.name == "SeedStudio" } ?: store.createPlaylist("SeedStudio")
-                    store.addSongs(listOf(smp.id) + cat, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id))
+                    store.addSongs(ids + cat, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id))
                     "Sample seed: ${smp.name} ${smp.durationMs}ms (+SeedStudio playlist)"
                 }.getOrElse { "Sample seed failed: $it" }
             }
@@ -608,6 +615,20 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 mixStatus = "Mix load: ${mixLine()}"
             }
         }) { Text("Mix: load 2 + play") }
+        // ANS-GAP-7 seed: 7 Load events (first 7 catalog songs) into the current session -> Mix sessions detail grid/CSV.
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.take(7) ?: emptyList()
+                val st = host.graph.mixGraph.mixSessions
+                songs.forEachIndexed { i, sg ->
+                    st.logEvent(com.levi.pocketdj.mix.store.MixEventKind.Load, if (i % 2 == 0) "A" else "B", sg.id, sg.name, sg.artist, sg.bpm, sg.camelot, null, null, null, 0, null)
+                    st.notePlayed(sg.id)
+                    kotlinx.coroutines.delay(150)
+                }
+                st.flush()
+                mixStatus = "Mix session seeded: ${songs.size} loads"
+            }
+        }) { Text("Seed Mix session") }
         OutlinedButton(onClick = {
             val e = host.graph.mixGraph.mixEngine
             val A = com.levi.pocketdj.mix.model.Deck.A; val B = com.levi.pocketdj.mix.model.Deck.B

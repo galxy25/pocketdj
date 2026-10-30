@@ -434,3 +434,15 @@ No FATAL EXCEPTION / ANR in logcat.
   - FOUND+FIXED (integration): (1) first-run Link a device always said "Sync across devices is turned off" with sync default OFF; a valid link code now turns sync on (rolled back on failure/unlink), test added in LinkDeviceProbeTest. (2) `S3CloudDocDatabase.req` NPE (`base()!!`) when the endpoints doc loses profileSyncBase mid-pass; now an IOException. 
   - Not verifiable here: real cross-device restore of profile-audio (pdj_ songs do not travel; pocket shows "0 songs" on B until the file exists), iOS adoption of capabilities.profileSyncEnroll, recognizer add.
 - Open: Q119 (publish endpoints doc), Q120 (no "profile not found" state after remote delete), Q121 (link code = sync opt-in). Q117 is satisfied by ANS-STU-8.
+
+## Wave 8 (answers: PB-5, PB-6, BRW-3, STU-6, GM-3, GAP-7)
+- Merged all six into feat/android-answers (no conflicts). Status files set to merged. Suite 5655 tests, 0 failures; assembleDebug green.
+- Emulator (emulator-5556, debug APK, shots in pocketdj-answers-pkgs/_shots/wave8/; 0 FATAL EXCEPTION / 0 ANR):
+  - ANS-GM-3 PASS: `am start -d pocketdj://games/puzzle` opens Gem Collector cold (after force-stop) and warm; `pocketdj://games/inthepocket` opens In the Pocket warm.
+  - ANS-BRW-3 PASS: Filters > BPM, value 120, operator changed is -> is not: value 120 kept.
+  - ANS-STU-6 PASS: new debug seed (Settings > Debug > Seed sample) builds playlist SeedStudio; studio row subtitle shows the profile name "Tester"; tap plays it (start-ok, Now Playing). Settings copy still said blank = "Studio"; fixed to "Pocket DJ".
+  - ANS-GAP-7 PASS: new debug seed "Seed Mix session"; detail opens, info button opens song sheet, overflow Export tracklist (CSV) opens the SAF save dialog "Session 1.csv" and the saved file has the iOS columns; wm 1280x800 density 240 shows the wrapped 3-per-row grid with arrows. (Export is disabled when the session has no played tracks.)
+  - ANS-PB-6 PASS: play SeedStudio queue (row 4/6 at 39 s), pause, `run-as ... kill -9` the pid, KEYCODE_MEDIA_PLAY: new pid, log `rc cmd=play verdict=resumption`, same row 4/6 resumes at the held offset (~46 s on the clock after the 7 s gap).
+  - ANS-PB-5 PARTIAL: (Q21) mock rip server on 10.0.2.2:8099: one un-ripped vinyl row, three rapid Play taps -> exactly one `POST /rip` then polling. (Q95) paused single + 22 s idle + `cmd media_session dispatch play` -> `verdict=handled`, single resumes, owner=exo; NOT run with a Mix actually holding a deck (no burned audio on the emulator, the Mix loader has nothing to load). (Q89c) Browse album play of Late Night In Kauai replaced after ~15 s: play-history row carries wasSkipped=true listenedFraction=0.05. The 12-row/4-POST run was not run (single-row check instead). Device-only: Auto/widget/BT routing after a Mix, BT/AVRCP, System UI resume card after reboot.
+- Debug seeds added (Settings > Debug): Seed sample (tone) now makes 3 x 90 s samples + SeedStudio playlist; Seed Mix session.
+- Open: Q122 (Mix paused >15 s gives up the remote play target).
