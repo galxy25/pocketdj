@@ -305,6 +305,75 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         }
     }) { Text("Bake 5 min master") }
 
+    // ANS-STU-5 emulator step: a 30-minute arrangement (2 tracks x 6 sequential 5-minute PCM16 clips), play + seek,
+    // status line reports Java heap + native heap so the paged path can be compared across time/seek.
+    var arr30Status by remember { mutableStateOf("Arr30: idle") }
+    fun heapLine(): String {
+        val rt = Runtime.getRuntime(); val mi = android.os.Debug.MemoryInfo(); android.os.Debug.getMemoryInfo(mi)
+        return "javaHeap=${(rt.totalMemory() - rt.freeMemory()) shr 20}MB pssJava=${mi.getMemoryStat("summary.java-heap")}KB pssNative=${mi.getMemoryStat("summary.native-heap")}KB"
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                arr30Status = "Arr30: seeding"
+                arr30Status = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val g = host.graph.studioGraph
+                        val arr = g.studioStore.createArrangement("Arr30")
+                        val rate = 44_100; val frames = rate * 300L
+                        val tracks = listOf(g.studioStore.addTrack(arr.id, "T1")!!, g.studioStore.addTrack(arr.id, "T2")!!)
+                        for (i in 0 until 6) {
+                            val fn = "arr30-$i.wav"
+                            val f = java.io.File(g.studioRoots.arrangementsDir(), fn)
+                            java.io.BufferedOutputStream(java.io.FileOutputStream(f), 1 shl 16).use { o ->
+                                o.write(com.levi.pocketdj.audio.core.WavWriter.header(rate, 1, com.levi.pocketdj.audio.core.WavWriter.Format.PCM16, frames * 2))
+                                val chunk = FloatArray(4096); var done = 0L
+                                while (done < frames) {
+                                    val n = minOf(4096L, frames - done).toInt()
+                                    for (k in 0 until n) chunk[k] = (0.25 * Math.sin(2 * Math.PI * (200.0 + 60 * i) * (done + k) / rate)).toFloat()
+                                    o.write(com.levi.pocketdj.audio.core.WavWriter.samplesToBytes(chunk, 0, n, com.levi.pocketdj.audio.core.WavWriter.Format.PCM16))
+                                    done += n
+                                }
+                            }
+                            for (t in tracks) g.studioStore.addClip(arr.id, t.id, com.levi.pocketdj.studio.model.StudioClip(
+                                id = com.levi.pocketdj.studio.model.StudioFactory.newClipId(), name = "Long $i", fileName = fn,
+                                startMs = i * 300_000, durationMs = 300_000, source = com.levi.pocketdj.studio.model.StudioClipSource.RECORDING,
+                                createdAt = System.currentTimeMillis().toDouble(),
+                            ))
+                        }
+                        "Arr30: seeded ${arr.id} 30:00 ${heapLine()}"
+                    }.getOrElse { "Arr30 seed failed: $it" }
+                }
+                android.util.Log.d("PdjVerify", arr30Status)
+            }
+        }) { Text("Arr30: seed") }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val g = host.graph.studioGraph
+                val arr = g.studioStore.arrangementsOrdered().firstOrNull { it.name == "Arr30" } ?: run { arr30Status = "Arr30: not seeded"; return@launch }
+                val t0 = System.currentTimeMillis()
+                val out = g.multitrackPlayer.playOutcome(arr, 0)
+                arr30Status = "Arr30: play $out in ${System.currentTimeMillis() - t0}ms ${heapLine()}"
+                android.util.Log.d("PdjVerify", arr30Status)
+            }
+        }) { Text("Arr30: play") }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val g = host.graph.studioGraph
+                val arr = g.studioStore.arrangementsOrdered().firstOrNull { it.name == "Arr30" } ?: return@launch
+                val at = listOf(1_200_000, 600_000, 1_750_000, 30_000).random()
+                val t0 = System.currentTimeMillis()
+                val out = g.multitrackPlayer.playOutcome(arr, at)
+                arr30Status = "Arr30: seek ${at / 1000}s $out in ${System.currentTimeMillis() - t0}ms ${heapLine()}"
+                android.util.Log.d("PdjVerify", arr30Status)
+            }
+        }) { Text("Arr30: seek") }
+        OutlinedButton(onClick = { arr30Status = "Arr30: ${heapLine()}"; android.util.Log.d("PdjVerify", arr30Status) }) { Text("Arr30: heap") }
+    }
+    Text(arr30Status, style = MaterialTheme.typography.bodySmall)
+
     // COL-8 emulator step: 60-song batch into the converted AM pocket "SeedDup" -> confirm dialog (>50).
     OutlinedButton(onClick = {
         host.scope.launch {

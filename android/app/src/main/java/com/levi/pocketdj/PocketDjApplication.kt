@@ -19,6 +19,12 @@ import kotlinx.coroutines.launch
 class PocketDjApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        if (BuildConfig.DEBUG) {
+            // Debug-only: log (never crash on) disk work on Main so emulator runs can grep `StrictMode` for mix/* offenders.
+            android.os.StrictMode.setThreadPolicy(
+                android.os.StrictMode.ThreadPolicy.Builder().detectDiskReads().detectDiskWrites().penaltyLog().build(),
+            )
+        }
         val scheduler = WorkScheduler(this)
         val firstForeground = AtomicBoolean(true)
         AppLifecycleObserver(

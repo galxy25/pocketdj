@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.sin
 
 private const val RATE = 44_100
+private fun ramp(frame: Long) = ((frame % 20_000).toFloat() / 20_000f) * 0.5f
 
 private fun newCtx() = MultitrackRenderContext(newTrackFx = { TrackFxKernel(RATE.toDouble(), 2) }, master = MasterFxKernel(RATE.toDouble(), 2))
     .also { it.startFeeder = false }
@@ -230,6 +231,53 @@ class MultitrackPlayerPagingTest {
         assertEquals(0, loader.wholeDecodes.get()); assertEquals(1, loader.windowDecodes.get())
         assertTrue(clips[0].isPaged); assertNull(clips[0].samples); assertEquals(RATE * 30, clips[0].frameLength)
         clips.forEach { it.reader?.close() }
+    }
+
+    /** Deterministic per-frame signal so chunk seams are checkable: L = ramp(frame), R = -ramp(frame). */
+
+    private class ChunkingLoader(val fileFrames: Int) : MultitrackClipLoader {
+        val wholeDecodes = AtomicInteger(0)
+        val windowLens = java.util.concurrent.ConcurrentLinkedQueue<Int>()
+        override suspend fun decode(fileName: String): PcmBuffer? { wholeDecodes.incrementAndGet(); error("whole decode of a long unwarped clip") }
+        override suspend fun decodeWindow(fileName: String, startMs: Int, lenMs: Int): PcmBuffer? {
+            windowLens += lenMs
+            val from = (startMs.toLong() * RATE / 1000)
+            val n = minOf((lenMs.toLong() * RATE / 1000).toInt().toLong(), fileFrames - from).toInt().coerceAtLeast(0)
+            return PcmBuffer(RATE, 2, FloatArray(n * 2) { i -> val f = from + i / 2; if (i % 2 == 0) ramp(f) else -ramp(f) })
+        }
+        override suspend fun transform(source: PcmBuffer, from: Long, frames: Long, rate: Double, pitchCents: Double): PcmBuffer? = null
+        override fun sourceStamp(fileName: String) = "v1"
+    }
+
+    @Test fun longUnwarpedClipStreamsInThirtySecondChunksWithSeamlessContent() = runBlocking {
+        val loader = ChunkingLoader(RATE * 600)
+        val clips = ArrangerClipPlan.build(listOf(track("l", "long", ms = 95_000, fileStartMs = 7_000)), 120.0, false, loader, pager = store, shortClipFrames = RATE)!!
+        assertEquals("never a whole-file decode", 0, loader.wholeDecodes.get())
+        assertEquals(listOf(30_000, 30_000, 30_000, 5_001), loader.windowLens.toList())
+        val r = clips[0].reader!!
+        assertEquals(RATE * 95, r.frameCount)
+        // Compare across every chunk seam (30 s, 60 s, 90 s) against the source signal at fileStart + frame.
+        val buf = FloatArray(8)
+        for (seam in listOf(0, RATE * 30, RATE * 60, RATE * 90, r.frameCount - 4)) {
+            val at = if (seam == 0 || seam >= r.frameCount - 4) seam else seam - 2
+            r.read(buf, 0, at, 4)
+            for (i in 0 until 4) {
+                val f = RATE.toLong() * 7 + at + i
+                assertEquals("L @${at + i}", ramp(f), buf[i * 2], 1e-3f)
+                assertEquals("R @${at + i}", -ramp(f), buf[i * 2 + 1], 1e-3f)
+            }
+        }
+        r.close()
+    }
+
+    @Test fun cancelledChunkedPlanLeavesNoPageAndNoReader() = runBlocking {
+        val ts = TrackingStore()
+        val loader = ChunkingLoader(RATE * 600)
+        var polls = 0
+        val r = ArrangerClipPlan.build(listOf(track("l", "long", ms = 95_000)), 120.0, false, loader, pager = ts, shortClipFrames = RATE, isCancelled = { ++polls > 3 })
+        assertNull(r)
+        assertEquals(ts.opened.get(), ts.closed.get())
+        assertEquals("aborted write leaves no page", 0L, ts.sizeBytes)
     }
 
     @Test fun playerStartsALongArrangementViaWindowDecodeAndPagesIt() = runBlocking {

@@ -84,6 +84,19 @@ object ArrangerClipPlan {
                 uses[clip.fileName] = left
                 // A bounded long clip decodes ONLY its window (heap O(window), not O(file)); everything else shares one whole-file decode.
                 val estFrames = if (clip.durationMs > 0) MultitrackRenderContext.msToFrames(clip.durationMs, rate) else 0
+                // Unwarped bounded long clip: decode it in 30 s chunks straight into the page, so play-start heap is
+                // O(chunk) (a 5-minute clip's whole window is ~105 MB of floats: OOM on a 192 MB heap).
+                if (pager != null && w.key != null && !w.needsBake && estFrames >= shortClipFrames) {
+                    var cancelled = false
+                    val paged = withContext(io) {
+                        runCatching {
+                            streamChunked(pager, w.key, loader, clip, estFrames, rate) { if (isCancelled()) cancelled = true; cancelled }
+                            if (cancelled) null else pager.open(w.key)
+                        }.getOrNull()
+                    }
+                    if (cancelled) { paged?.close(); closeAll(clips); return null }
+                    if (paged != null) { clips += MultitrackRenderContext.Clip(w.ti, w.startFrame, paged.frameCount, 0, null, paged); continue }
+                }
                 val ranged = if (pager != null && estFrames >= shortClipFrames) loader.decodeWindow(clip.fileName, clip.fileStartMs, clip.durationMs) else null
                 val buf = ranged ?: (if (decoded.containsKey(clip.fileName)) decoded[clip.fileName] else loader.decode(clip.fileName).also { decoded[clip.fileName] = it })
                 if (left <= 0) decoded.remove(clip.fileName)
@@ -118,6 +131,38 @@ object ArrangerClipPlan {
         } catch (t: Throwable) { closeAll(clips); throw t }
         if (pager != null) withContext(io) { pager.trim(keep) }
         return clips
+    }
+
+    /** Chunk length for [streamChunked]: whole seconds so chunk starts land on exact milliseconds. */
+    private const val CHUNK_SECONDS = 30
+
+    /**
+     * Stream a bounded clip window into its page in [CHUNK_SECONDS] chunks (one [MultitrackClipLoader.decodeWindow] per
+     * chunk, released before the next). Runs on the IO thread; [stop] is polled per chunk and aborts the write.
+     * A source shorter than the requested window is padded with silence to the requested length.
+     */
+    private fun streamChunked(
+        pager: ClipPageStore, key: ClipPageStore.Key, loader: MultitrackClipLoader, clip: StudioClip,
+        frames: Int, rate: Int, stop: () -> Boolean,
+    ) {
+        val chunkFrames = rate * CHUNK_SECONDS
+        val block = (rate / 10).coerceAtLeast(1) // divides chunkFrames: a chunk is always whole blocks
+        var chunk: PcmBuffer? = null
+        pager.writeStream(key, frames, block) { out, at, n ->
+            val cStart = at - at % chunkFrames
+            if (at % chunkFrames == 0) {
+                if (stop()) throw java.util.concurrent.CancellationException("plan superseded")
+                val lenMs = minOf(CHUNK_SECONDS * 1000L, (frames - cStart).toLong() * 1000 / rate + 1).toInt()
+                chunk = kotlinx.coroutines.runBlocking {
+                    loader.decodeWindow(clip.fileName, clip.fileStartMs + (cStart.toLong() * 1000 / rate).toInt(), lenMs)
+                } ?: throw java.io.IOException("chunk decode failed at frame $cStart")
+            }
+            val c = checkNotNull(chunk)
+            val local = at - cStart
+            val have = (c.frames - local).coerceIn(0, n)
+            if (have > 0) fillStereo(c, local, out, have)
+            if (have < n) java.util.Arrays.fill(out, have * 2, n * 2, 0f)
+        }
     }
 
     /** Interleaved stereo [n] frames of [src] starting at frame [from] into [out] (mono duplicated, extra channels dropped). */
