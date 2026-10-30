@@ -169,6 +169,8 @@ data class ForYouFeedInputs(
     val plays: List<ZoneEngine.Play> = emptyList(),
     val playCount: Map<String, Int> = emptyMap(),
     val lastPlayedMs: Map<String, Double> = emptyMap(),
+    /** The global skip penalty already injected into [zoneFeedback]/[crateFeedback] (one snapshot, reused by fallbacks). */
+    val skipPenalty: Map<String, Double> = emptyMap(),
     /** Suggestible collections (members as ids). The zone pass sees ALL of them. */
     val crates: List<ForYouFeedSnapshot.Crate> = emptyList(),
     val zoneFeedback: ZoneEngine.Feedback = ZoneEngine.Feedback(),
