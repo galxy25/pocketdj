@@ -1,5 +1,6 @@
 package com.levi.pocketdj.shell
 
+import com.levi.pocketdj.navigation.PocketDjDestination
 import java.net.URI
 import java.net.URLDecoder
 
@@ -10,6 +11,9 @@ sealed interface DeepLink {
 
     /** Music with Friends (iOS `MwFLink`); consumed by the Games area. */
     data class Mwf(val id: String, val guestBase: String?) : DeepLink
+
+    /** `pocketdj://games/{puzzle,inthepocket}` — open a game inside the Games area (Q43). */
+    data class Game(val kind: GameLink) : DeepLink
 
     /** `pocketdj://play/<kind>/<id>[?shuffle=1]` — start playback of a collection item. */
     data class Play(val kind: PlayKind, val id: String, val shuffle: Boolean) : DeepLink
@@ -32,6 +36,21 @@ enum class PlayKind(val token: String) {
 
     companion object {
         fun fromToken(t: String): PlayKind? = entries.firstOrNull { it.token == t.lowercase() }
+    }
+}
+
+/** Which game a `pocketdj://games/...` link opens. Shell-local so the shell never imports games code. */
+enum class GameLink {
+    Puzzle, InThePocket;
+
+    companion object {
+        /** Lenient tokens: `puzzle|gem|gems|collector(s)`, `inthepocket|in-the-pocket|itp`. */
+        fun fromToken(t: String?): GameLink? = when (t?.lowercase()?.replace("_", "-")) {
+            "puzzle", "gem", "gems", "collector", "collectors", "collectors-puzzle", "collectorspuzzle",
+            "gem-collector", "gemcollector" -> Puzzle
+            "inthepocket", "in-the-pocket", "itp" -> InThePocket
+            else -> null
+        }
     }
 }
 
@@ -94,6 +113,10 @@ object DeepLinkParser {
                 val kind = arg?.let(PlayKind::fromToken) ?: return DeepLink.None
                 val id = parts.getOrNull(2)?.takeIf { it.isNotBlank() } ?: return DeepLink.None
                 DeepLink.Play(kind, id, truthy(query["shuffle"]))
+            }
+            "games" -> when {
+                arg.isNullOrBlank() -> DeepLink.Navigate(ShellRoute.Tab(PocketDjDestination.Games))
+                else -> GameLink.fromToken(arg)?.let { DeepLink.Game(it) } ?: DeepLink.None
             }
             "album" -> nav(arg) { ShellRoute.Album(it) }
             "artist" -> nav(arg) { ShellRoute.Artist(it) }

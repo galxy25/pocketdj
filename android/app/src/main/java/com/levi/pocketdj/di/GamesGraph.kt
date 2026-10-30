@@ -343,6 +343,17 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /**
+     * Q43: `pocketdj://games/{puzzle,inthepocket}`. [GamesRoute] consumes it with a LaunchedEffect
+     * and opens the game overlay; the route is the Games tab wherever the More layout puts it.
+     */
+    val gameLinks: com.levi.pocketdj.screens.games.GameLinkHandler by lazy {
+        com.levi.pocketdj.screens.games.GameLinkHandler(postRoute = com.levi.pocketdj.shell.NavRequestBus::post)
+    }
+
+    /** The pending game-open signal (null when none). */
+    val pendingGame: kotlinx.coroutines.flow.StateFlow<com.levi.pocketdj.shell.GameLink?> get() = gameLinks.pendingGame
+
     override val deepLinkHandlers: List<DeepLinkHandler> by lazy { buildDeepLinkHandlers() }
 
     private fun buildDeepLinkHandlers(): List<DeepLinkHandler> {
@@ -351,6 +362,7 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
         runCatching {
             val shell = app.shellGraph
             mwfDeepLinks.install(shell.deepLinkSeams) { shell.deepLinks.takePendingMwf() }
+            gameLinks.install(shell.deepLinkSeams) { shell.deepLinks.takePendingGame() }
         }
         return listOf(
         DeepLinkHandler { intent ->

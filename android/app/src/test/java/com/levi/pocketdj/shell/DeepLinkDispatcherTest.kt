@@ -180,4 +180,21 @@ class DeepLinkDispatcherTest {
         dispatcher(FakeGate(true)).handle(DeepLinkParser.parse("pocketdj://album/a1"))
         assertEquals(listOf<ShellRoute>(ShellRoute.Album("a1")), routes)
     }
+
+    @Test fun gameLinkWithoutSeamParksAndOpensGames() = runTest {
+        val d = dispatcher(FakeGate(true))
+        assertTrue(d.handle(DeepLink.Game(GameLink.Puzzle)))
+        assertEquals(listOf<ShellRoute>(ShellRoute.Tab(PocketDjDestination.Games)), routes)
+        assertEquals(GameLink.Puzzle, d.takePendingGame())
+        assertNull(d.takePendingGame())
+    }
+
+    @Test fun gameLinkSeamReceivesAndParksNothing() = runTest {
+        val got = mutableListOf<GameLink>()
+        seams.game = { got += it }
+        val d = dispatcher(FakeGate(true))
+        d.handle(DeepLink.Game(GameLink.InThePocket))
+        assertEquals(listOf(GameLink.InThePocket), got)
+        assertNull(d.pendingGame.value)
+    }
 }

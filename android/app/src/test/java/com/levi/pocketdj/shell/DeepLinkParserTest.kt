@@ -71,4 +71,22 @@ class DeepLinkParserTest {
         assertEquals(DeepLink.None, p("content://x/3", n = "song.mp3"))
         assertEquals(DeepLink.None, p("content://x/4"))
     }
+
+    @Test fun gamesPuzzleLink() {
+        assertEquals(DeepLink.Game(GameLink.Puzzle), DeepLinkParser.parse("pocketdj://games/puzzle"))
+        assertEquals(DeepLink.Game(GameLink.Puzzle), DeepLinkParser.parse("pocketdj:///games/Puzzle"))
+    }
+
+    @Test fun gamesInThePocketLink() {
+        assertEquals(DeepLink.Game(GameLink.InThePocket), DeepLinkParser.parse("pocketdj://games/inthepocket"))
+        assertEquals(DeepLink.Game(GameLink.InThePocket), DeepLinkParser.parse("pocketdj://games/in-the-pocket"))
+    }
+
+    @Test fun gamesBareOpensTabAndUnknownGameIsNone() {
+        assertEquals(
+            DeepLink.Navigate(ShellRoute.Tab(com.levi.pocketdj.navigation.PocketDjDestination.Games)),
+            DeepLinkParser.parse("pocketdj://games"),
+        )
+        assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://games/chess"))
+    }
 }
