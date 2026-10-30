@@ -45,6 +45,9 @@ class ProfileAudioStore(private val store: ProfileSourceStore) {
         return out
     }
 
+    /** In-memory record check (no disk): safe on Main for the stall-hop probe. */
+    fun hasRecord(id: String): Boolean = ProfileSourceStore.isProfileSongId(id) && store.entry(id) != null
+
     fun hasLocalAsset(id: String): Boolean = ProfileSourceStore.isProfileSongId(id) && originalFor(id) != null
 
     /**

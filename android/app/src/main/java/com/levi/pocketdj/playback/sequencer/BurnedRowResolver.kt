@@ -2,6 +2,9 @@ package com.levi.pocketdj.playback.sequencer
 
 import com.levi.pocketdj.data.burns.CutResolved
 import java.io.File
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * What the burn store can say about one song, decoupled from [com.levi.pocketdj.data.burns.BurnStore]
@@ -28,7 +31,11 @@ fun interface BurnLookup {
  *
  * Resolves by the row's STORAGE id ([QueueItem.resolveId]) so an edition variant finds its own cut.
  */
-class BurnedRowResolver(private val lookup: BurnLookup) : LocalFileResolver, RowSourceResolver {
+class BurnedRowResolver(
+    /** The ladder rung resolves here; the synchronous [localUrlForPlayback] seam stays caller-threaded. */
+    private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val lookup: BurnLookup,
+) : LocalFileResolver, RowSourceResolver {
     override val id: String = "burned-first"
     override val rung: Rung = Rung.LOCAL_FILE
 
@@ -38,7 +45,7 @@ class BurnedRowResolver(private val lookup: BurnLookup) : LocalFileResolver, Row
     }
 
     override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? =
-        localUrlForPlayback(item)?.let(::LocalFileSource)
+        withContext(io) { localUrlForPlayback(item) }?.let(::LocalFileSource)
 
     companion object {
         /** Adapter for a `BurnStore`-shaped source. */

@@ -108,7 +108,13 @@ class PlaybackService : MediaLibraryService() {
         }
         cb
     }
-    private fun autoScopeOrNull(): kotlinx.coroutines.CoroutineScope? { auto; return autoScope }
+    /** Q96: off-Main work for the Auto binder callbacks (graph build, tree reads, search scoring). */
+    // Serialized: the Auto tree holds check-then-act state written for one thread; stays off Main.
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val autoDispatcher = kotlinx.coroutines.Dispatchers.Default.limitedParallelism(1)
+    private val autoBg = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + autoDispatcher)
+    private fun <T> autoAsync(block: () -> T) =
+        com.levi.pocketdj.auto.AutoAsync.compute(autoBg, autoDispatcher, block)
     private var forwardingPlayer: SequencerForwardingPlayer? = null
     private var exoOwner: ExoOwner? = null
     private var exoPlayer: ExoPlayer? = null
@@ -317,6 +323,7 @@ class PlaybackService : MediaLibraryService() {
         mediaSession = null
         autoScope?.cancel()
         autoScope = null
+        autoBg.cancel()
         autoSearchLatest = null
         super.onDestroy()
     }
@@ -526,7 +533,11 @@ class PlaybackService : MediaLibraryService() {
                     ).build()
                 return Futures.immediateFuture(LibraryResult.ofItem(root, params))
             }
-            return Futures.immediateFuture(LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(auto.onConnect()), params))
+            // Q96: the root is static; the auto graph (AppGraph, data, tree) is built off Main and warms the catalog.
+            autoBg.launch { runCatching { auto.onConnect() } }
+            return Futures.immediateFuture(
+                LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(com.levi.pocketdj.auto.AutoAsync.STATIC_ROOT), params),
+            )
         }
 
         override fun onGetItem(
@@ -534,10 +545,13 @@ class PlaybackService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             mediaId: String,
         ): ListenableFuture<LibraryResult<MediaItem>> {
-            val n = auto.getItem(mediaId)
-            return Futures.immediateFuture(
-                if (n == null) LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)
-                else LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(n), null),
+            return Futures.transform(
+                autoAsync { auto.getItem(mediaId) },
+                { n ->
+                    if (n == null) LibraryResult.ofError<MediaItem>(LibraryResult.RESULT_ERROR_BAD_VALUE)
+                    else LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(n), null)
+                },
+                com.google.common.util.concurrent.MoreExecutors.directExecutor(),
             )
         }
 
@@ -562,10 +576,13 @@ class PlaybackService : MediaLibraryService() {
                 }
                 return out
             }
-            val nodes = auto.getChildren(parentId, page, pageSize)
-            return Futures.immediateFuture(
-                if (nodes == null) LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)
-                else LibraryResult.ofItemList(items(nodes), params),
+            return Futures.transform(
+                autoAsync { auto.getChildren(parentId, page, pageSize) },
+                { nodes ->
+                    if (nodes == null) LibraryResult.ofError<ImmutableList<MediaItem>>(LibraryResult.RESULT_ERROR_BAD_VALUE)
+                    else LibraryResult.ofItemList(items(nodes), params)
+                },
+                com.google.common.util.concurrent.MoreExecutors.directExecutor(),
             )
         }
 
@@ -576,7 +593,7 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<Void>> {
             // Scoring scans the whole catalog: off the main thread, then notify.
-            autoScopeOrNull()?.launch(kotlinx.coroutines.Dispatchers.Default) {
+            autoBg.launch {
                 val found = auto.search(query)
                 autoSearchLatest = query to found
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -594,10 +611,18 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
-            val all = autoSearchLatest?.takeIf { it.first == query }?.second ?: auto.search(query)
-            val from = (page.toLong() * pageSize).coerceAtMost(all.size.toLong()).toInt()
-            val window = if (pageSize == Int.MAX_VALUE) all else all.subList(from, minOf(all.size, from + pageSize))
-            return Futures.immediateFuture(LibraryResult.ofItemList(items(window), params))
+            fun page(all: List<AutoNode>): LibraryResult<ImmutableList<MediaItem>> {
+                val from = (page.toLong() * pageSize).coerceAtMost(all.size.toLong()).toInt()
+                val window = if (pageSize == Int.MAX_VALUE) all else all.subList(from, minOf(all.size, from + pageSize))
+                return LibraryResult.ofItemList(items(window), params)
+            }
+            // Hit: the onSearch pass already scored it. Miss: score the catalog on Default, not on this Main callback.
+            autoSearchLatest?.takeIf { it.first == query }?.second?.let { return Futures.immediateFuture(page(it)) }
+            return Futures.transform(
+                autoAsync { auto.search(query).also { autoSearchLatest = query to it } },
+                { found -> page(found) },
+                com.google.common.util.concurrent.MoreExecutors.directExecutor(),
+            )
         }
 
         /**
