@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-SYNC-1 Profile sync go-live
 
