@@ -409,7 +409,7 @@ class LoopAuditionTest {
         val render = StudioRender(codec, ResampleStretcher, Dispatchers.Unconfined) { }
         val smpFile = env.write(StudioFamily.SAMPLES, "smp_a")
         val sample = store.addSample(StudioSample("smp_a", "Kick", smpFile, durationMs = 4000, grid = StudioGrid(120.0)))
-        val factory = LoopFactory(env.roots, store, render, { env.appFile(StudioFamily.SAMPLES, it.fileName) }, File(tmp.root, "preview.wav"), now = { 9.0 })
+        val factory = LoopFactory(env.roots, store, render, { RawSource(env.appFile(StudioFamily.SAMPLES, it.fileName)) }, File(tmp.root, "preview.wav"), now = { 9.0 })
 
         val loop = factory.save(sample, 0, LoopBeats.FOUR, null)
         assertEquals("Kick · 4 beats", loop.name)
@@ -436,7 +436,7 @@ class LoopAuditionTest {
         val smpFile = env.write(StudioFamily.SAMPLES, "smp_a")
         val sample = store.addSample(StudioSample("smp_a", "Kick", smpFile, durationMs = 4000, grid = StudioGrid(120.0)))
         val preview = File(tmp.root, "cache/studio-loop-preview.wav")
-        val factory = LoopFactory(env.roots, store, render, { env.appFile(StudioFamily.SAMPLES, it.fileName) }, preview)
+        val factory = LoopFactory(env.roots, store, render, { RawSource(env.appFile(StudioFamily.SAMPLES, it.fileName)) }, preview)
         val (syn, file) = factory.preview(sample)
         assertEquals(LoopMath.PREVIEW_ID, syn.id)
         assertEquals(88_200L, syn.frames)

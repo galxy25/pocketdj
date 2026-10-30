@@ -11,7 +11,6 @@ import com.levi.pocketdj.studio.store.StudioMaterializer
 import com.levi.pocketdj.studio.store.StudioRoots
 import com.levi.pocketdj.studio.store.StudioStore
 import java.io.File
-import kotlinx.coroutines.runBlocking
 
 /**
  * The sample render cache (`sample-<id>-r<rev>.m4a`): edits are NEVER baked into the source on Save; a
@@ -40,17 +39,24 @@ class SampleRenderCache(
     suspend fun sourceLease(s: StudioSample): StudioLease? = sourceRef(s)?.let { materializer.lease(it) }
 
     /**
-     * A local file for the raw source, or null if gone. A SAF-resident sample is materialized first (a blocking copy
-     * for a `content://` ref, so call it off the main thread, or prefer [sourceFileAsync]); the cached copy is
-     * released immediately and stays on disk until the materializer's LRU evicts it.
+     * The raw source as a [RawSource] holding its materializer lease until [RawSource.close] (so the LRU cannot evict the
+     * copy between hand-out and decode/carve). Null when gone / unreachable. Suspends: a `content://` copy never runs on
+     * the caller's thread when the caller is off-main.
      */
-    fun sourceFile(s: StudioSample): File? {
+    suspend fun sourceRaw(s: StudioSample): RawSource? {
         val ref = sourceRef(s) ?: return null
-        ref.file?.let { return it }
-        return runBlocking { materializer.lease(ref)?.let { l -> l.file.also { l.release() } } }
+        ref.file?.let { return RawSource(it) }
+        val lease = materializer.lease(ref) ?: return null
+        return RawSource(lease.file) { lease.release() }
     }
 
-    /** Suspending [sourceFile] for UI coroutines (never blocks the caller's thread). */
+    /** Run [block] on the raw source file with its lease held (released after, even on failure); null when gone. */
+    suspend fun <T> withSource(s: StudioSample, block: suspend (File) -> T): T? {
+        val raw = sourceRaw(s) ?: return null
+        return raw.use { block(it.file) }
+    }
+
+    /** The raw source file with NO lease held (only for the neutral-play handoff to a player that opens it at once). */
     suspend fun sourceFileAsync(s: StudioSample): File? {
         val ref = sourceRef(s) ?: return null
         ref.file?.let { return it }
@@ -86,4 +92,10 @@ class SampleRenderCache(
         if (s.edit.isNeutral) return sourceFileAsync(s)
         return cacheFile(s) ?: sourceFileAsync(s)
     }
+}
+
+/** A raw sample file plus the lease keeping it alive; [close] releases (idempotent). */
+class RawSource(val file: File, private val onRelease: () -> Unit = {}) : AutoCloseable {
+    private var closed = false
+    @Synchronized override fun close() { if (closed) return; closed = true; onRelease() }
 }

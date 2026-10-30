@@ -91,12 +91,6 @@ fun SamplesScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     var renaming by remember { mutableStateOf<StudioSample?>(null) }
     var moveNewFolderFor by remember { mutableStateOf<String?>(null) }
 
-    // A new sample that could not reach the user's samples folder (revoked / write failed) says so, once.
-    val folderNotice by store.samplesFolderNotice.collectAsState()
-    LaunchedEffect(folderNotice) {
-        folderNotice?.let { message = it; store.clearSamplesFolderNotice() }
-    }
-
     // A take interrupted by a kill is filed on entry.
     LaunchedEffect(Unit) { withContext(Dispatchers.IO) { runCatching { studio.micRecorder.recoverOrphans() } } }
 
@@ -192,7 +186,7 @@ fun SamplesScreen(graph: AppGraph, modifier: Modifier = Modifier) {
             confirmButton = { TextButton(onClick = { deleteBlocked = false }) { Text("OK") } })
     }
     message?.let { m ->
-        AlertDialog(onDismissRequest = { message = null }, title = { Text("Samples") }, text = { Text(m, Modifier.testTag("import-error")) },
+        AlertDialog(onDismissRequest = { message = null }, title = { Text("Import failed") }, text = { Text(m, Modifier.testTag("import-error")) },
             confirmButton = { TextButton(onClick = { message = null }) { Text("OK") } })
     }
 }

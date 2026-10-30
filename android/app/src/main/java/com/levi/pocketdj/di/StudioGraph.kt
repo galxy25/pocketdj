@@ -227,12 +227,12 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     /** Loop preview + Save both render through the REAL renderer from the RAW sample file. */
     val loopFactory: LoopFactory by lazy {
         LoopFactory(
-            studioRoots, studioStore, studioRender, { sampleRenderCache.sourceFile(it) },
+            studioRoots, studioStore, studioRender, { sampleRenderCache.sourceRaw(it) },
             File(app.appContext.cacheDir, "studio-loop-preview.wav"),
         )
     }
 
-    val sliceBaker: SliceBaker by lazy { SliceBaker(studioRoots, studioStore, studioRender, { sampleRenderCache.sourceFile(it) }) }
+    val sliceBaker: SliceBaker by lazy { SliceBaker(studioRoots, studioStore, studioRender, { sampleRenderCache.sourceRaw(it) }) }
 
     private val loopLazy: Lazy<LoopAudition> = lazy {
         val focus = parkingFocus { loopLazy.value.stop("focus-loss") }

@@ -104,7 +104,7 @@ fun SliceEditorSheet(graph: AppGraph, sampleId: String, pcm: PcmBuffer? = null, 
     // The editor owns the loaded RAW sample; load it here only when we were opened standalone.
     LaunchedEffect(sampleId) {
         val s = store.sample(sampleId) ?: return@LaunchedEffect
-        val buf = buffer ?: studio.sampleRenderCache.sourceFileAsync(s)?.let { f -> runCatching { studio.studioRender.decodeBuffer(f.path) }.getOrNull() } ?: return@LaunchedEffect
+        val buf = buffer ?: withContext(Dispatchers.IO) { studio.sampleRenderCache.withSource(s) { f -> runCatching { studio.studioRender.decodeBuffer(f.path) }.getOrNull() } } ?: return@LaunchedEffect
         buffer = buf
         peaks = withContext(Dispatchers.Default) { WaveformMath.peaks(buf, 160) }
         if (engine.loadedSampleId.value != sampleId) engine.loadSample(s, buf)

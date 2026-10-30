@@ -120,7 +120,7 @@ class SliceMathTest {
         val edit = original.edit.copy(trimStartMs = 100, trimEndMs = 3000)
         store.updateSampleEdit("smp_a", edit)
         store.setSlices("smp_a", listOf(0, 1000, 2500))
-        val baker = SliceBaker(env.roots, store, render, { env.appFile(StudioFamily.SAMPLES, it.fileName) }, now = { 7.0 })
+        val baker = SliceBaker(env.roots, store, render, { RawSource(env.appFile(StudioFamily.SAMPLES, it.fileName)) }, now = { 7.0 })
 
         val id = baker.bakePad("smp_a", 1)
         assertNotNull(id)

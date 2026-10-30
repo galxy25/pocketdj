@@ -106,4 +106,28 @@ class SampleRenderCacheSafTest {
         assertNull(cache.playableFile(id))
         assertNull(cache.sourceFileAsync(store.sample(id)!!))
     }
+
+    @Test fun sourceRawPinsTheMaterializedCopyUntilClosedSoAnotherLeaseCannotEvictIt() = runBlocking {
+        val env = TestEnv(tmp.newFolder("env"))
+        val roots = DefaultStudioRoots(File(env.base, "app"), userConfigured = { true }) { saf }
+        val store = StudioStore(env.docFile, roots)
+        val a = StudioFolders.fileName(StudioFamily.SAMPLES, "smp_a")
+        val b = StudioFolders.fileName(StudioFamily.SAMPLES, "smp_b")
+        docs[a] = ByteArray(100); docs[b] = ByteArray(100)
+        store.addSample(StudioSample("smp_a", "A", a, wasUserFolder = true, durationMs = 1000))
+        store.addSample(StudioSample("smp_b", "B", b, wasUserFolder = true, durationMs = 1000))
+        // Cap fits ONE 100-byte copy: leasing B must evict an UNPINNED A, but never a pinned one.
+        val small = StudioMaterializer(
+            tmp.newFolder("matsmall"),
+            { u -> docs[u.substringAfterLast('/')]?.let { SafStat(it.size.toLong(), 1) } },
+            { u -> docs[u.substringAfterLast('/')]?.let { ByteArrayInputStream(it) } }, 150,
+        )
+        val cache = SampleRenderCache(roots, store, StudioRender(Codec(), ResampleStretcher, Dispatchers.Unconfined, { }), small)
+        val raw = cache.sourceRaw(store.sample("smp_a")!!)!!
+        cache.sourceFileAsync(store.sample("smp_b")!!)          // pushes the materializer over its cap
+        assertTrue("pinned source must survive another lease", raw.file.isFile)
+        raw.close()
+        cache.sourceFileAsync(store.sample("smp_b")!!)          // now A is unpinned: evictable
+        assertTrue(!raw.file.isFile)
+    }
 }

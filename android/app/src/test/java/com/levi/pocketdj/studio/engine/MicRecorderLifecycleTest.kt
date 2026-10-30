@@ -59,6 +59,7 @@ class MicRecorderLifecycleTest {
         val env = TestEnv(tmp.newFolder()); val store = env.store()
         env.configured += StudioFamily.SAMPLES
         val rec = MicRecorder(env.roots, store, audioManager = null)
+        rec.relocateRunner = { it() }
         assertTrue(rec.beginTake())
         // While recording the crash-safe file is in APP storage, never the user folder.
         val name = env.roots.appDir(StudioFamily.SAMPLES).list().single()
@@ -76,6 +77,7 @@ class MicRecorderLifecycleTest {
         val env = TestEnv(tmp.newFolder()); val store = env.store()
         env.configured += StudioFamily.SAMPLES
         val rec = MicRecorder(env.roots, store, audioManager = null)
+        rec.relocateRunner = { it() }
         assertTrue(rec.beginTake())
         env.unreachable += StudioFamily.SAMPLES      // permission revoked mid-take
         rec.finalizeForExit()
@@ -101,5 +103,41 @@ class MicRecorderLifecycleTest {
         assertTrue(rec.beginTake())
         assertNotNull(rec.activeTake)
         rec.stop()
+    }
+
+    private fun dataSize(f: java.io.File): Long {
+        val h = f.inputStream().use { it.readNBytes(44) }
+        return java.nio.ByteBuffer.wrap(h).order(java.nio.ByteOrder.LITTLE_ENDIAN).getInt(40).toLong() and 0xffffffffL
+    }
+
+    @Test fun exitPathMovesTheTakeOnlyAfterTheWriterClosedSoTheSafCopyIsComplete() {
+        val env = TestEnv(tmp.newFolder()); val store = env.store()
+        env.configured += StudioFamily.SAMPLES
+        val rec = MicRecorder(env.roots, store, audioManager = null)
+        rec.relocateRunner = { it() }
+        assertTrue(rec.beginTake())
+        val name = env.roots.appDir(StudioFamily.SAMPLES).list().single()
+        // 110 kB: the writer patches its header at >= 88.2 kB, so the last 10 kB are NOT in the header until close().
+        rec.appendForTest(ByteArray(50_000)); rec.appendForTest(ByteArray(50_000)); rec.appendForTest(ByteArray(10_000))
+        rec.finalizeForExit()
+        val saf = env.userFile(StudioFamily.SAMPLES, name)
+        assertTrue(store.samples.single().wasUserFolder)
+        assertEquals(44L + 110_000, saf.length())
+        assertEquals(110_000L, dataSize(saf))
+        assertFalse(env.appFile(StudioFamily.SAMPLES, name).exists())
+    }
+
+    @Test fun readErrorPathAlsoMovesOnlyAfterClose() {
+        val env = TestEnv(tmp.newFolder()); val store = env.store()
+        env.configured += StudioFamily.SAMPLES
+        val rec = MicRecorder(env.roots, store, audioManager = null)
+        rec.relocateRunner = { it() }
+        assertTrue(rec.beginTake())
+        val name = env.roots.appDir(StudioFamily.SAMPLES).list().single()
+        rec.appendForTest(ByteArray(100_000)); rec.appendForTest(ByteArray(10_000))
+        rec.onCaptureEnded(readError = true)
+        val saf = env.userFile(StudioFamily.SAMPLES, name)
+        assertEquals(110_000L, dataSize(saf))
+        assertTrue(store.sample(store.samples.single().id)!!.wasUserFolder)
     }
 }

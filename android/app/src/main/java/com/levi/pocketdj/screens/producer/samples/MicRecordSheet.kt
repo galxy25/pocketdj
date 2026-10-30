@@ -117,11 +117,11 @@ fun MicRecordSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (String) -> 
         while (recording) { elapsedMs = (System.currentTimeMillis() - t0).toInt(); delay(100) }
     }
 
-    fun fileTake(take: MicTake) {
+    suspend fun fileTake(take: MicTake) {
         val nm = name.trim().ifEmpty { MicRecorder.DEFAULT_NAME }
-        studio.studioStore.addSampleRelocating(
-            StudioSample(take.id, nm, take.fileName, take.wasUserFolder, System.currentTimeMillis().toDouble(), take.durationMs, StudioSource.Mic),
-        )
+        val sample = StudioSample(take.id, nm, take.fileName, take.wasUserFolder, System.currentTimeMillis().toDouble(), take.durationMs, StudioSource.Mic)
+        // The SAF write can be large: off the UI thread (callers invoke this from Main).
+        withContext(Dispatchers.IO) { studio.studioStore.addSampleRelocating(sample) }
         filed = take.id
         onFiled(take.id)
     }
@@ -161,7 +161,7 @@ fun MicRecordSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (String) -> 
                     failure?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                     if (recording) {
                         Button(
-                            onClick = { scope.launch { rec.stopAwaitingFinalize()?.let(::fileTake) } },
+                            onClick = { scope.launch { rec.stopAwaitingFinalize()?.let { fileTake(it) } } },
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                             modifier = Modifier.testTag("mic-stop"),
                         ) { Icon(Icons.Filled.Stop, null); Text("Stop", Modifier.padding(start = 8.dp)) }
