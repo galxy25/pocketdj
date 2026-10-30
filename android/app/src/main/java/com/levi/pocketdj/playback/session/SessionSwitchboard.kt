@@ -18,6 +18,13 @@ class SessionSwitchboard(
     /** Called (outside the lock) with the new owner, or null when ownership was resigned away. */
     @Volatile var onChange: (TransportOwner?) -> Unit = {}
 
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<(TransportOwner?) -> Unit>()
+
+    /** Additive observers (widget bridge); survive the service replacing/clearing [onChange]. Returns the remover. */
+    fun addListener(l: (TransportOwner?) -> Unit): () -> Unit { listeners += l; return { listeners -= l } }
+
+    private fun fire(o: TransportOwner?) { onChange(o); listeners.forEach { runCatching { it(o) } } }
+
     val current: TransportOwner? get() = synchronized(lock) { owner }
 
     fun register(o: TransportOwner) = synchronized(lock) { if (o !in registered) registered += o }
@@ -44,7 +51,7 @@ class SessionSwitchboard(
         }
         if (changed) log("switchboard owner=${o.engine}")
         others.forEach { it.pauseForHandoff() }
-        if (changed) onChange(o)
+        if (changed) fire(o)
     }
 
     /** After a restore: [o] answers the next remote command although nothing has sounded yet. */
@@ -60,7 +67,7 @@ class SessionSwitchboard(
             changed = preferred === o && owner !== o
             if (changed) preferred = null
         }
-        if (changed) { log("switchboard unprefer=${o.engine}"); onChange(null) }
+        if (changed) { log("switchboard unprefer=${o.engine}"); fire(null) }
     }
 
     /** [o] is done (stopped / released): the next-most-recent registered engine may claim; ExoPlayer is the fallback. */
@@ -73,7 +80,7 @@ class SessionSwitchboard(
         }
         if (changed) {
             log("switchboard resign=${o.engine}")
-            onChange(null)
+            fire(null)
         }
     }
 
@@ -93,7 +100,7 @@ class SessionSwitchboard(
         }
         log("switchboard yield mix->exo")
         o.pauseForHandoff()
-        onChange(null)
+        fire(null)
         return true
     }
 

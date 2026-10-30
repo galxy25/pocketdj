@@ -7,7 +7,12 @@ import com.levi.pocketdj.mix.engine.autoUpcoming
 import com.levi.pocketdj.mix.engine.autoPlayed
 import com.levi.pocketdj.mix.engine.onAirTrack
 import com.levi.pocketdj.mix.engine.onAirBuffering
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import com.levi.pocketdj.audio.core.AudioTrackSink
 import com.levi.pocketdj.audio.core.Mp3Decoder
 import com.levi.pocketdj.audio.core.VoicePump
@@ -438,6 +443,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
 
     private val npMain by lazy { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) }
     @Volatile private var npInstalled = false
+
+    /** ANS-SHELL-1: DSP engagement mirror (set from the engine's change hooks); one input of the heartbeat gate. */
+    private val npEngaged = MutableStateFlow(false)
     /** Resign the npdsp MediaSession owner (set by [installNowPlayingDsp]). */
     @Volatile private var npReleaseSession: () -> Unit = {}
     /** Album/context extras + title/artist cached at engage (the controller's now-playing loses them once npdsp owns the session). */
@@ -663,13 +671,14 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             }
             ensureMediaService(); player.claim()
         }
-        engine.onDisengaged = { player.released(); npFocus.onTransportIdle() }
+        engine.onDisengaged = { npEngaged.value = false; player.released(); npFocus.onTransportIdle() }
         engine.onAudioStarted = { ensureMediaService(); player.onAudioStarted(); npFocus.onAudioStarted() }
         val chained = engine.onChanged
         // Final review recheck: onAudioStarted fires once per engagement, so a resume after a user pause (which
         // abandoned the focus) must re-request it here; idle otherwise.
         engine.onChanged = {
             chained?.invoke(); player.refresh()
+            npEngaged.value = engine.isEngaged
             if (engine.isPlaying) npFocus.onAudioStarted() else npFocus.onTransportIdle()
         }
 
@@ -706,14 +715,25 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 if (cur != lastCur) { lastCur = cur; host.onTrackStarted(cur) } else replanStemLock()
             }
         }
+        // ANS-SHELL-1: the 4 Hz heartbeat is flow-driven: it beats only while the DSP is engaged, a sequencer run
+        // exists (a pending stem-lock carry is armed by a track start) or Mix is running; idle = zero wakeups.
         npMain.launch {
             var lastMix = false
-            while (true) {
-                kotlinx.coroutines.delay(250)
-                val mixNow = deckExtras != null && mixEngine.isRunning
-                if (mixNow != lastMix) { lastMix = mixNow; com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.mixSessionActive = mixNow; host.refresh() }
-                host.heartbeat()
-                host.carryIfReady()
+            combine(npEngaged, seq.state.map { it.isRunning }.distinctUntilChanged(), mixEngine.ui.map { it.isRunning }.distinctUntilChanged()) { e, r, m ->
+                NpHeartbeatGate.shouldBeat(engaged = e, runExists = r, mixRunning = m)
+            }.distinctUntilChanged().collectLatest { beat ->
+                if (!beat) {
+                    // Settle the Mix flag once on the way down so the panel never keeps a stale "Mix active".
+                    if (lastMix) { lastMix = false; com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.mixSessionActive = false; host.refresh() }
+                    return@collectLatest
+                }
+                while (true) {
+                    val mixNow = deckExtras != null && mixEngine.isRunning
+                    if (mixNow != lastMix) { lastMix = mixNow; com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.mixSessionActive = mixNow; host.refresh() }
+                    host.heartbeat()
+                    host.carryIfReady()
+                    kotlinx.coroutines.delay(250)
+                }
             }
         }
         // A Mix session starting takes the audio from the DSP engine (one audio owner): the switchboard

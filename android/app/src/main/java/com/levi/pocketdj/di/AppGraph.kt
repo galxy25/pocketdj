@@ -288,38 +288,6 @@ class AppGraph private constructor(context: Context) {
         pc.artFallback = { album -> albumArtworkStore.cached(album.id) ?: run { albumArtworkStore.request(album); null } }
     }
 
-    // PB-1: connect the sequencer's history-context / origin / outcome seams (additive).
-    init {
-        playbackGraph.wire()
-        // MIX-12: a kill mid-take leaves a playable .aac with no row; file it at launch (off-main, streamed scan).
-        appScope.launch(Dispatchers.IO) { runCatching { mixGraph.mixRecorder.recoverOrphans() } }
-    }
-
-    // MIX-18: Now Playing DSP panel + Stem Lock observers (after playbackGraph.wire so the sequencer exists).
-    init {
-        appScope.launch(Dispatchers.Main) {
-            // Final review: the engine/host lazies construct the BurnStore (ledger read + decode) and the transfer
-            // coordinator; build them on IO first so the first frame never waits on that disk work.
-            kotlinx.coroutines.withContext(Dispatchers.IO) { runCatching { servicesGraph.burnStore } }
-            runCatching { mixGraph.installNowPlayingDsp() }
-                .onFailure { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.NP, "npdsp install FAILED: ${it.message}") }
-        }
-    }
-
-    // Final review: a hosted jukebox party resumes at launch (iOS resumePersistedSession), not only once the Jukebox tab opens.
-    init {
-        appScope.launch(Dispatchers.IO) {
-            runCatching { com.levi.pocketdj.data.jukebox.JukeboxGraph.get(appContext).repository.bootstrap() }
-        }
-    }
-
-    // STU-7: register the STUDIO_LOCAL row rung (after playbackGraph.wire so the sequencer exists).
-    init { studioGraph.wire() }
-
-    // SVC-6: subscribe the play-stats recorder at app init (not from a lazy getter) so a restored
-    // session's first play is never lost; SharedFlow has no replay.
-    init { appScope.launch(Dispatchers.IO) { servicesGraph.startPlayStats() } }
-
     /**
      * Settings ▸ Storage measurement + clears (specs/storage.md §2). Clears are
      * wired to the REAL stores/caches and never touch settings/installId. Lazy —
@@ -422,49 +390,82 @@ class AppGraph private constructor(context: Context) {
         }
     }
 
-    init {
-        // Remote endpoint config (docs/design/remote-endpoints.md): load the persisted last-good
-        // doc synchronously (tiny file) so every first request already resolves to it, then
-        // fetch the latest in the background — never blocking launch.
-        RemoteEndpoints.install(File(appContext.filesDir, "pocketdj-endpoints.json"))
-        android.util.Log.i("PocketDJ", "[endpoints] launch ${RemoteEndpoints.summary}")
-        // The forced launch fetch is issued by the foreground hook (PocketDjApplication) so a
-        // WorkManager cold start does not pay for it.
-        // Restore + persist the Browse view-state (kind/filters/sort/layout/mode,
-        // browse.md §7). Wired here (once, app-scoped) so it survives regardless
-        // of which screen renders first.
-        BrowseSession.attach(settings, appScope)
-        // One-shot, idempotent move of plaintext tokens into the SecretStore. Reads fall
-        // back to the plaintext copy until it lands, so nothing races it.
-        appScope.launch(Dispatchers.IO) {
-            runCatching { SecretMigration.run(settingsDataStore, secrets) }
-                .onFailure { android.util.Log.e("PocketDJ", "[secrets] migration failed", it) }
+    // ANS-SHELL-1 (Q98): process-start work is tiered. CORE runs on every start (workers/receivers included);
+    // the loops live in PLAYBACK (service/Auto/widget) and INTERACTIVE (first foreground).
+    private val startup = StartupLedger(
+        onError = { step, t -> android.util.Log.e("PocketDJ", "[startup] $step failed", t) },
+        run = ::runStartStep,
+    )
+
+    private fun runStartStep(step: StartStep) {
+        when (step) {
+            StartStep.ENDPOINTS -> {
+                // Remote endpoint config (docs/design/remote-endpoints.md): load the persisted last-good doc
+                // synchronously (tiny file); the forced launch fetch is issued by the foreground hook.
+                RemoteEndpoints.install(File(appContext.filesDir, "pocketdj-endpoints.json"))
+                android.util.Log.i("PocketDJ", "[endpoints] launch ${RemoteEndpoints.summary}")
+            }
+            StartStep.BROWSE_SESSION -> BrowseSession.attach(settings, appScope)
+            StartStep.SECRET_MIGRATION -> appScope.launch(Dispatchers.IO) {
+                runCatching { SecretMigration.run(settingsDataStore, secrets) }
+                    .onFailure { android.util.Log.e("PocketDJ", "[secrets] migration failed", it) }
+            }
+            StartStep.FAVORITE_SEAM ->
+                // PB-2: the notification/lock-screen heart binds to the favorites store (lazy: touched on first use).
+                com.levi.pocketdj.playback.session.FavoriteCommand.seam = object : com.levi.pocketdj.playback.session.FavoriteSeam {
+                    override val isAvailable: Boolean get() = true // the service already hides it while Mix owns audio
+                    override fun isFavorite(songId: String) = collectionsGraph.favoriteAccess.isFavorite(songId)
+                    override fun toggle(songId: String) { collectionsGraph.favoriteAccess.toggle(songId) }
+                }
+            StartStep.BURN_RECONCILE -> appScope.launch(Dispatchers.IO) {
+                // SVC-2: drop ledger items whose file vanished / were poisoned (after the onboarding gate).
+                runCatching {
+                    onboarding.waitUntilComplete()
+                    servicesGraph.burnStore.reconcileOnLaunch()
+                    // SVC-3: drop transfer records whose unique work is gone, then heal their ledger rows.
+                    servicesGraph.transfers.reconcileOnLaunch()
+                    servicesGraph.burnStore.healStrandedDownloads()
+                    // A rip that finished while the app was closed still burns (iOS launch drain).
+                    servicesGraph.burnStore.drainPendingAfterRip()
+                }.onFailure { android.util.Log.e("PocketDJ", "[burns] reconcile failed", it) }
+            }
+            // MainActivity forwards every intent to IntentSink; the modules' handlers answer.
+            StartStep.INTENT_SINK -> appScope.launch { IntentSink.install(features.deepLinkHandlers) }
+
+            StartStep.PLAYBACK_WIRE -> playbackGraph.wire() // PB-1 seams + the run-gated 1 Hz session tick
+            // MIX-12: a kill mid-take leaves a playable .aac with no row; file it (off-main, streamed scan).
+            StartStep.MIX_ORPHANS -> appScope.launch(Dispatchers.IO) { runCatching { mixGraph.mixRecorder.recoverOrphans() } }
+            // MIX-18: Now Playing DSP panel + Stem Lock observers (after the sequencer exists).
+            StartStep.NP_DSP -> appScope.launch(Dispatchers.Main) {
+                // The engine/host lazies construct the BurnStore (ledger read + decode); build it on IO first.
+                kotlinx.coroutines.withContext(Dispatchers.IO) { runCatching { servicesGraph.burnStore } }
+                runCatching { mixGraph.installNowPlayingDsp() }
+                    .onFailure { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.NP, "npdsp install FAILED: ${it.message}") }
+            }
+            // STU-7: register the STUDIO_LOCAL row rung (after PLAYBACK_WIRE so the sequencer exists).
+            StartStep.STUDIO_WIRE -> studioGraph.wire()
+            // SVC-6: subscribe the play-stats recorder before any play (SharedFlow has no replay).
+            StartStep.PLAY_STATS -> appScope.launch(Dispatchers.IO) { servicesGraph.startPlayStats() }
+            // A hosted jukebox party resumes at launch (iOS resumePersistedSession).
+            StartStep.JUKEBOX_BOOTSTRAP -> appScope.launch(Dispatchers.IO) {
+                runCatching { com.levi.pocketdj.data.jukebox.JukeboxGraph.get(appContext).repository.bootstrap() }
+            }
+            StartStep.WIDGETS -> shellGraph.startWidgets()
+            // BRW-13: the rec-engine auto-flush loop (+ release feed).
+            StartStep.RECS -> browseGraph.startRecs()
         }
-        // PB-2: the notification/lock-screen heart binds to the favorites store (lazy: touched on first use).
-        com.levi.pocketdj.playback.session.FavoriteCommand.seam = object : com.levi.pocketdj.playback.session.FavoriteSeam {
-            override val isAvailable: Boolean get() = true // the service already hides it while Mix owns audio
-            override fun isFavorite(songId: String) = collectionsGraph.favoriteAccess.isFavorite(songId)
-            override fun toggle(songId: String) { collectionsGraph.favoriteAccess.toggle(songId) }
-        }
-        // SVC-2: drop ledger items whose file vanished / were poisoned (after the onboarding gate).
-        appScope.launch(Dispatchers.IO) {
-            runCatching {
-                onboarding.waitUntilComplete()
-                servicesGraph.burnStore.reconcileOnLaunch()
-                // SVC-3: drop transfer records whose unique work is gone, then heal their ledger rows.
-                servicesGraph.transfers.reconcileOnLaunch()
-                servicesGraph.burnStore.healStrandedDownloads()
-                // A rip that finished while the app was closed still burns (iOS launch drain).
-                servicesGraph.burnStore.drainPendingAfterRip()
-            }.onFailure { android.util.Log.e("PocketDJ", "[burns] reconcile failed", it) }
-        }
-        // MainActivity forwards every intent to IntentSink; the modules' handlers answer.
-        appScope.launch { IntentSink.install(features.deepLinkHandlers) }
     }
 
-    // BRW-13: arm the rec-engine auto-flush loop. MUST stay the LAST initializer: its IO coroutine reads
-    // lazily-delegated properties (collections, collectionActivity) that are initialized in textual order.
-    init { browseGraph.startRecs() }
+    init { startup.ensure(StartTier.CORE) } // MUST stay the last initializer (reads lazies declared above)
+
+    /** Service / Android Auto / widget-driven playback: the sequencer wiring and its observers. Idempotent. */
+    fun startPlayback() = startup.ensure(StartTier.PLAYBACK)
+
+    /** First foreground (MainActivity): playback + the interactive loops. Idempotent. */
+    fun startInteractive() = startup.ensure(StartTier.INTERACTIVE)
+
+    /** Steps that have run so far (diagnostics / tests). */
+    val startedSteps: List<StartStep> get() = startup.ran()
 
     companion object {
         @Volatile

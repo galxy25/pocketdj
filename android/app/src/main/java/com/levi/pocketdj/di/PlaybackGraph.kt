@@ -23,6 +23,7 @@ import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.NavEntry
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -222,9 +223,12 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
             val snap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { sessionStore.load() }.getOrNull() }
             runCatching { sessionRestorer.restoreIfIdle(snap) }
             launch { seq.state.collect { runCatching { sessionWriter.onState(it) } } }
-            while (true) {
-                delay(1_000)
-                runCatching { sessionWriter.tick() }
+            // ANS-SHELL-1: the 1 Hz position tick exists only while a run exists (no idle wakeups).
+            seq.state.map { it.isRunning }.distinctUntilChanged().collectLatest { running ->
+                while (running) {
+                    delay(1_000)
+                    runCatching { sessionWriter.tick() }
+                }
             }
         }
         // Burned-first rung: a READY burn plays from disk (offline-capable). Without this the
