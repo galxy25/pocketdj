@@ -29,6 +29,7 @@ import com.levi.pocketdj.screens.settings.SettingsHeader
 import com.levi.pocketdj.shell.SettingsSection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** Pure copy for Settings > Recommendations (iOS `SettingsView.recommendationsSection`). */
@@ -54,6 +55,14 @@ object RecommendationsSettingsCopy {
     /** iOS: a pockets sync error shows only while pockets are on. */
     fun pocketsError(err: String?, pocketsOn: Boolean): String? = if (pocketsOn) err else null
 
+    /** What the pockets block renders; the composable consumes this so tests can pin the wiring. */
+    data class PocketsRows(val toggle: Boolean, val consent: Boolean, val error: String?)
+
+    /** [pocketsOn] null = DataStore has not emitted yet (no consent flash, no error). */
+    fun pocketsRows(recOn: Boolean, pocketsOn: Boolean?, err: String?): PocketsRows =
+        if (!recOn) PocketsRows(false, false, null)
+        else PocketsRows(true, pocketsOn == false && showConsent(false), pocketsError(err, pocketsOn == true))
+
     /** Flipping the switch is an answer (Q91a): ANSWERED=true first, then ENABLED, so History never re-offers. */
     suspend fun applyPocketsToggle(on: Boolean, set: suspend (PrefKey<Boolean>, Boolean) -> Unit) {
         set(PocketsSettings.LISTENING_POCKETS_ANSWERED, true)
@@ -77,6 +86,8 @@ internal fun recommendationsSection() = SettingsSection(
     }
     var confirmDelete by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    // Serializes pockets writes so the last tap always wins (privacy-sensitive opt-in).
+    val pocketsWriteLock = remember { kotlinx.coroutines.sync.Mutex() }
 
     SettingsHeader("Recommendations")
     SwitchRow("Use PocketDJ Recommendation Engine", enabled, "rec-engine-toggle") { on ->
@@ -87,16 +98,18 @@ internal fun recommendationsSection() = SettingsSection(
         SwitchRow("Include lifetime play counts", shareCounts, "rec-share-playcounts-toggle") { on ->
             host.scope.launch { withContext(Dispatchers.IO) { graph.settings.set(RecsSettings.SHARE_LIFETIME_PLAY_COUNTS, on) } }
         }
-        val pocketsOn by graph.settings.flow(PocketsSettings.LISTENING_POCKETS_ENABLED).collectAsState(initial = false)
-        SwitchRow(RecommendationsSettingsCopy.POCKETS_TITLE, pocketsOn, "pockets-toggle") { on ->
+        val pocketsOn by graph.settings.flow(PocketsSettings.LISTENING_POCKETS_ENABLED).collectAsState<Boolean, Boolean?>(initial = null)
+        SwitchRow(RecommendationsSettingsCopy.POCKETS_TITLE, pocketsOn == true, "pockets-toggle") { on ->
             // enabledDidChange rides the settings flow collector (CollectionsGraph pockets wiring).
             host.scope.launch {
-                withContext(Dispatchers.IO) {
-                    RecommendationsSettingsCopy.applyPocketsToggle(on) { k, v -> graph.settings.set(k, v) }
+                pocketsWriteLock.withLock {
+                    withContext(Dispatchers.IO) {
+                        RecommendationsSettingsCopy.applyPocketsToggle(on) { k, v -> graph.settings.set(k, v) }
+                    }
                 }
             }
         }
-        if (RecommendationsSettingsCopy.showConsent(pocketsOn)) {
+        if (RecommendationsSettingsCopy.pocketsRows(enabled, pocketsOn, null).consent) {
             Text(PocketsSettings.CONSENT_TEXT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         val pocketsSvc by produceState<com.levi.pocketdj.data.pockets.ListeningPocketsService?>(null) {
@@ -104,8 +117,9 @@ internal fun recommendationsSection() = SettingsSection(
         }
         // syncError is a plain volatile field, so poll it while pockets are on.
         val pocketsErr by produceState<String?>(null, pocketsSvc, pocketsOn) {
+            if (pocketsOn != true) { value = null; return@produceState }
             while (true) {
-                value = RecommendationsSettingsCopy.pocketsError(pocketsSvc?.syncError, pocketsOn)
+                value = RecommendationsSettingsCopy.pocketsRows(true, pocketsOn, pocketsSvc?.syncError).error
                 kotlinx.coroutines.delay(1000)
             }
         }
