@@ -459,3 +459,12 @@ No FATAL EXCEPTION / ANR in logcat.
 - Emulator ANS-SHELL-1: PASS. (1) Process killed (am kill), WorkManager job run via `cmd jobscheduler run -f -n androidx.work.systemjobscheduler com.levi.pocketdj <id>`: process starts, no StartupLedger frames/ensure calls, no tick/heartbeat/widget lines, no FATAL/ANR. (2) Normal launch: StartupLedger.ensure runs from MainActivity.onCreate, Browse renders (12555 songs). (3) Seed rip playlist + Play seed queue: PlaybackService up, `track start ... backend=rip`, owner=exo, dead-air 2.17 s, no FATAL/ANR. Shots in pocketdj-answers-pkgs/_shots/wave10/.
 - Caveat: the loops have no distinct log lines, so "no loop" on the worker path is inferred from the ledger never running plus the unit-tested plan; the collectLatest gating in MixGraph/PlaybackGraph has no coroutine test (source-scan test only). Widget update on normal launch not visually checked (no launcher widget placed). Device-only: Doze timing.
 - Open: none needing a decision. Pre-existing StrictMode DiskRead (AppGraph.kt:94 filesDir) on main in MainActivity.onCreate (~195 ms on emulator).
+
+## Wave 11 (ANS-LOC-1, ANS-MIX-4)
+
+- Merged: ANS-LOC-1 (location FGS type while audio plays + places on + while-in-use; FOREGROUND_SERVICE_LOCATION; LocationFgsPolicy), ANS-MIX-4 (both Mix sink factories via StudioOutputs; OboeSink.start resets disconnect/backoff state; bounded stop join; PLAYBACK profile). No merge conflicts.
+- JVM tests: 5681 run, 0 failed; assembleDebug green.
+- Emulator (emulator-5556, debug APK, shots in pocketdj-answers-pkgs/_shots/wave11/; 0 FATAL / 0 ANR):
+  - ANS-MIX-4 PASS: "Mix: load 2 + play" (two burned fixtures) logs `PocketDJ.mix: sink backend=audiotrack`, render nil->true, both deck positions advance. Burn fixtures were hand-written (no rip server): stem mp3 copied as audio + ledger rows.
+  - ANS-LOC-1 PARTIAL: while-in-use granted, pockets + places on, Play seed queue: `dumpsys activity services` shows foregroundId=1001 types=0x0A (mediaPlayback|location); pause -> 0x02 (logcat "FGS type change 10 to 2"); resume -> 0x0A. Geo-fix step NOT drivable: `adb emu geo fix` OK but gps/fused providers stay OFF with last location=null and no pocketdj listener (same limit as COL-20); dwell/trip covered by DwellDetectorTest, real movement is device-only.
+- Open: Q123 (Play FGS-location declaration / background decision), Q124 (2->10->2->10 FGS type flap on start, device check).

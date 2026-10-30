@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 - [x] MixEngine and NowPlayingDspEngine sinkFactory use StudioOutputs.create (Oboe on device, AudioTrack on emulator); logs "sink backend=oboe|audiotrack" on the MIX lane
 - [x] OboeSink.start resets disconnect/backoff state (park-then-restart after a route change previously kept stale wasDisconnected/nextRebuildAt)
