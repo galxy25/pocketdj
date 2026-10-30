@@ -69,10 +69,14 @@ class ProfileSourceStore(
     /** Mirror the profile name in; a real change re-tags on the next catalog merge. */
     fun setProfileName(name: String) {
         val changed = synchronized(lock) {
-            if (name == profileNameRaw) false else { profileNameRaw = name; cachedDoc = null; true }
+            val next = name.trim().ifEmpty { DEFAULT_NAME }
+            if (next == sourceName) { profileNameRaw = name; false } else { profileNameRaw = name; cachedDoc = null; true }
         }
         if (changed) onChanged?.invoke()
     }
+
+    /** iOS withProvisionalSources: the profile source joins the merge only once the user has >=1 item. */
+    fun syntheticDocumentsIfAny(): List<IndexJson> = if (songs().isEmpty()) emptyList() else listOf(syntheticDocument())
 
     fun songs(): List<SongEntry> = synchronized(lock) { songs }
     fun entry(id: String): SongEntry? = synchronized(lock) { songs.firstOrNull { it.songId == id } }

@@ -66,11 +66,10 @@ class ProfileAudioStore(private val store: ProfileSourceStore) {
         val id = ProfileSourceStore.SONG_ID_PREFIX + UUID.randomUUID().toString().lowercase()
         val ext = original.extension.ifEmpty { "m4a" }
         val fileName = "$id.$ext"
-        val ok = withContext(Dispatchers.IO) { copyAll(id, fileName, original, stems) }
-        if (!ok) return null
         val entry = SongEntry(id, title, kind, fileName, durationMs, bpm, key, camelot, nowMs)
-        store.add(listOf(entry))
-        return entry
+        return withContext(Dispatchers.IO) {
+            if (!copyAll(id, fileName, original, stems)) null else { store.add(listOf(entry)); entry }
+        }
     }
 
     private fun copyAll(id: String, fileName: String, original: File, stems: Map<String, File>?): Boolean {
@@ -90,7 +89,7 @@ class ProfileAudioStore(private val store: ProfileSourceStore) {
         } catch (_: Exception) { cleanup() }
     }
 
-    /** Delete an item's audio (original + stems) AND its record. */
+    /** Delete an item's audio (original + stems) AND its record. Does disk IO: call OFF Main (StorageService.clear already runs on Default). */
     fun deleteAsset(id: String) {
         originalFor(id)?.let { runCatching { it.delete() } }
         runCatching { stemsDir(id).deleteRecursively() }
@@ -100,6 +99,6 @@ class ProfileAudioStore(private val store: ProfileSourceStore) {
     /** Bytes on disk under [ProfileSourceStore.audioDir] (Settings > Storage). */
     fun usageBytes(): Long = root.takeIf { it.exists() }?.walkBottomUp()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
 
-    /** Storage "delete all": the audio AND the records (a record without its file is unplayable). */
+    /** Storage "delete all" (disk IO: call OFF Main): the audio AND the records (a record without its file is unplayable). */
     fun deleteAll() = store.clear()
 }

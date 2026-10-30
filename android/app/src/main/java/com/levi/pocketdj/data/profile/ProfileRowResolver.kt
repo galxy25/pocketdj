@@ -54,11 +54,14 @@ class ProfileMixTrackResolver(
     private val delegate: MixTrackResolver,
 ) : MixTrackResolver {
     override fun exists(songId: String): Boolean =
-        if (ProfileSourceStore.isProfileSongId(songId)) audio.hasLocalAsset(songId) else delegate.exists(songId)
+        if (ProfileSourceStore.isProfileSongId(songId)) audio.hasLocalAsset(songId) && isDecodable(songId) else delegate.exists(songId)
+
+    // Mp3Decoder is the only Mix PcmSource on Android; non-mp3 originals play in Now Playing but are not offered as mixable.
+    private fun isDecodable(songId: String) = audio.originalFor(songId)?.extension.equals("mp3", ignoreCase = true)
 
     override fun resolve(songId: String): ResolvedTrack? {
         if (!ProfileSourceStore.isProfileSongId(songId)) return delegate.resolve(songId)
-        val f = audio.originalFor(songId) ?: return null
+        val f = audio.originalFor(songId)?.takeIf { it.extension.equals("mp3", ignoreCase = true) } ?: return null
         return ResolvedTrack(file = f, isCut = true)
     }
 }

@@ -35,6 +35,20 @@ class ProfileSourceStoreTest {
         assertTrue(doc.songs.isEmpty())
     }
 
+    @Test fun emptyStoreContributesNoMergeDocumentUntilFirstItem() {
+        val s = store()
+        assertTrue(s.syntheticDocumentsIfAny().isEmpty())
+        s.add(listOf(entry("pdj_x", Kind.DEMUX)))
+        assertEquals(1, s.syntheticDocumentsIfAny().size)
+    }
+
+    @Test fun whitespaceOnlyNameEditDoesNotFireOnChanged() {
+        val s = store(); var fired = 0
+        s.onChanged = { fired++ }
+        s.setProfileName("Levi"); s.setProfileName("Levi ")
+        assertEquals(1, fired)
+    }
+
     @Test fun kindRoutesToAlbumAndArtistIsTheProfileName() {
         val s = store(); s.setProfileName("DJ Nova")
         s.add(listOf(entry("pdj_s", Kind.SAMPLE), entry("pdj_d", Kind.DEMUX)))

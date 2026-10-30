@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-STU-7 Profile custom-audio source part A
 
@@ -25,3 +25,12 @@ Android now has the iOS "Pocket DJ" profile source: records + two synthetic defa
 
 ## Tests
 `:app:testDebugUnitTest :app:assembleDebug` green: 5508 tests, 0 failures (+21 new). Emulator step not run.
+
+## Review
+- MAJOR CollectionsGraph always-on synthetic doc -> fixed: `ProfileSourceStore.syntheticDocumentsIfAny()` returns empty until >=1 item (iOS parity); test added.
+- MAJOR CatalogRepository empty-input guards -> fixed: root cause removed above, plus `remergeLocal` skips while no real merge has happened and no catalog exists.
+- MINOR Mix non-mp3 profile originals -> fixed (limited): `ProfileMixTrackResolver` exists()/resolve() refuse non-mp3 originals so they are not offered as mixable; test added. LIMITATION: no MediaCodec PcmSource yet, so m4a/wav demuxes play in Now Playing but not on Mix decks.
+- MINOR ProfileAudioStore IO -> fixed: `store.add` now runs inside the IO block in `ingest`; `deleteAsset`/`deleteAll` documented as off-Main (sole caller StorageService.clear runs on Default).
+- NIT setProfileName trimmed compare -> fixed; test added.
+
+fixes applied

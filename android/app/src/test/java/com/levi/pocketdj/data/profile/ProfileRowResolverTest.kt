@@ -73,6 +73,13 @@ class ProfileRowResolverTest {
         assertFalse(r.exists("pdj_gone")); assertNull(r.resolve("pdj_gone"))
     }
 
+    @Test fun mixRefusesNonMp3ProfileOriginals() = runBlocking {
+        val src = File(tmp.root, "x.m4a").also { it.writeBytes(byteArrayOf(1, 2, 3)) }
+        val e = audio.ingest(ProfileSourceStore.Kind.DEMUX, "T", src, 1000)!!
+        val r = ProfileMixTrackResolver(audio, inner)
+        assertFalse(r.exists(e.songId)); assertNull(r.resolve(e.songId))
+    }
+
     private class FakeSrc(override val totalFrames: Long) : PcmSource {
         override val sampleRate = 44100
         override val channels = 2

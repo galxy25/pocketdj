@@ -152,6 +152,9 @@ class CatalogRepository(
     fun remergeLocal() {
         scope.launch {
             publishLock.withLock {
+                // Never publish a local-only catalog (Ready) before any real merge has happened: it would trip the
+                // session-restore gate against a catalog with none of the real songs.
+                if (lastRealDocs.isEmpty() && _state.value.catalog == null) return@withLock
                 val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(lastRealDocs) }
                 if (inputs.isEmpty()) return@withLock
                 if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs)) return@withLock
