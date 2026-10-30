@@ -38,6 +38,13 @@ fun studioSyntheticSong(id: String, info: StudioItemInfo, artist: String = STUDI
 
 const val STUDIO_ARTIST = "Studio"
 
+/** Q50: studio items read as the user's own: artist = profile name, fallback "Pocket DJ". */
+fun studioArtistFor(profileName: String?): String = profileName?.trim().orEmpty().ifEmpty { "Pocket DJ" }
+
+/** iOS PocketsView:96 — a clean-only collection dims the catalog rows it would SKIP at play (explicit, no clean cut). */
+fun isCleanOnlyDimmed(cleanOnly: Boolean?, song: IndexSong?): Boolean =
+    cleanOnly == true && com.levi.pocketdj.data.edition.EditionPolicy.isSkipped(song)
+
 /** Row-badge label from the id shape alone (a frozen setlist row carries no lookup): "Sample"/"Loop"/"Sequence"/"Instrumental". */
 fun studioKindLabel(id: String): String? = when {
     id.startsWith("smp_") -> "Sample"

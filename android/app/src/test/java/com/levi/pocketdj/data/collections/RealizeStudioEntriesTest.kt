@@ -120,6 +120,33 @@ class RealizeStudioEntriesTest {
 
     // ---- store level: songIds* stay studio-stripped, playableIds* / playNow keep studio
 
+    @Test fun studioArtistComesFromProfileNameWithPocketDjFallback() {
+        assertEquals("DJ Levi", studioArtistFor("  DJ Levi "))
+        assertEquals("Pocket DJ", studioArtistFor(""))
+        assertEquals("Pocket DJ", studioArtistFor("   "))
+        assertEquals("Pocket DJ", studioArtistFor(null))
+        val s = store()
+        s.studioArtist = { studioArtistFor("Levi") }
+        assertEquals("Levi", s.playNow(listOf(loopId))!!.tracks[0].artist)
+        s.studioArtist = { studioArtistFor("") }
+        assertEquals("Pocket DJ", s.playNow(listOf(loopId))!!.tracks[0].artist)
+    }
+
+    @Test fun realizeUsesTheProfileArtistForStudioEntries() {
+        val c = ctx().copy(studioArtist = studioArtistFor("Levi"))
+        assertEquals("Levi", RealizeEngine.realize(playlist(loopId), c).tracks[0].artist)
+    }
+
+    @Test fun cleanOnlyDimsOnlyExplicitRowsWithoutACleanCut() {
+        val explicit = IndexSong(id = "e", artist = "A", name = "E", explicit = true)
+        val clean = IndexSong(id = "c", artist = "A", name = "C", explicit = false)
+        assertTrue(isCleanOnlyDimmed(true, explicit))
+        assertFalse(isCleanOnlyDimmed(true, clean))
+        assertFalse(isCleanOnlyDimmed(false, explicit))
+        assertFalse(isCleanOnlyDimmed(null, explicit))
+        assertFalse(isCleanOnlyDimmed(true, null))
+    }
+
     private fun store(): CollectionsStore {
         val merged = MergedCatalog.merge(listOf(IndexJson(manifest = IndexManifest(sourceName = "V"), albums = emptyList(), songs = songs)))
         return CollectionsStore(file = File(tmp.root, CollectionsStore.FILE_NAME), now = { 1_750_000_000_000.0 }).also {
