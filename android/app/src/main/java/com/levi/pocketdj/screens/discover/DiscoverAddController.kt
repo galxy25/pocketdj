@@ -28,6 +28,10 @@ interface DiscoverRipPort {
     /** `GET /album-tracks` (subscription-free). Empty on any failure. */
     suspend fun serverAlbumTracks(collectionId: String): List<DiscoverAlbumTrack>
 
+    /** `GET /album-tracks` with the album row (release date, title, count). Default: tracks only. */
+    suspend fun albumExpansion(collectionId: String): DiscoverAlbumExpansion =
+        serverAlbumTracks(collectionId).let { DiscoverAlbumExpansion(null, it) }
+
     /** Keep watching a queued job so the manifest refreshes when it lands. */
     fun watch(songId: String, jobId: String)
     suspend fun refreshManifest()
@@ -157,6 +161,62 @@ class DiscoverAddController(
         return outcome
     }
 
+    /**
+     * RETRY the Apple Music library write for an ALREADY-RECORDED provisional album (iOS `retryAlbumLibraryWrite`):
+     * the heal for failed/skipped/unconfirmed/legacy-nil writes. Idempotent on Apple's side. Persists the new token;
+     * a newly PROVEN write logs a truthful catalogAdd (the store does that). Returns the token.
+     */
+    suspend fun retryAlbumLibraryWrite(albumId: String, appleMusicId: String): String {
+        val token = try {
+            library.addAlbum(appleMusicId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            LibraryWrite.failed(e.message ?: "error")
+        }
+        store.recordAlbumLibraryWrite(albumId, token)
+        return token
+    }
+
+    /**
+     * Recheck every provisional (pre-release / partial) album against the catalog (iOS `refreshProvisionalAlbums`):
+     * retitle placeholder tracks, append new ones, learn the release date so it is rechecked on release day. A
+     * download-intent album (`preparedCopies != false`) also requests rips for its NEW tracks. Needs the rip server
+     * (the `/album-tracks` proxy); an empty expansion (offline / miss) is skipped until next launch.
+     * Returns how many albums changed.
+     */
+    suspend fun refreshProvisionalAlbums(at: Double = nowMs()): Int {
+        if (!rips.configured()) return 0
+        val snap = store.state.value
+        val due = snap.albums.filter { a ->
+            DiscoverAddsStore.needsRefresh(a, snap.entries.filter { it.albumId == a.albumId }, at)
+        }
+        var changed = 0
+        for (a in due) {
+            val exp = try {
+                rips.albumExpansion(a.appleMusicId)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                DiscoverAlbumExpansion.EMPTY
+            }
+            if (exp.tracks.isEmpty() && exp.album == null) continue
+            val r = store.applyAlbumRefresh(
+                albumId = a.albumId, title = exp.album?.title, trackCount = exp.album?.trackCount,
+                releaseDateMs = parseReleaseDateMs(exp.album?.releaseDate),
+                tracks = exp.tracks.map {
+                    DiscoverAddsStore.RefreshTrack(it.id, it.title, it.artist, it.discNumber, it.trackNumber, it.durationMs)
+                },
+                nowMs = at,
+            )
+            if (r.changed) changed++
+            if (a.preparedCopies != false) {
+                for (e in r.added) requestRip(e.songId, e.title, e.artist, e.appleMusicId, e.durationMs)
+            }
+        }
+        return changed
+    }
+
     /** Fired after a USER "Remove from Library" with the removed item - the app logs `catalogRemove`. */
     @Volatile var onUserCatalogRemove: ((DiscoverAddsStore.CatalogItem) -> Unit)? = null
 
@@ -194,6 +254,19 @@ class DiscoverAddController(
         }
 
     companion object {
+        /** Catalog `releaseDate` ("2026-11-06" or a full ISO-8601 instant) -> epoch ms; null when unparseable. */
+        fun parseReleaseDateMs(raw: String?): Double? {
+            val t = raw?.trim().orEmpty()
+            if (t.isEmpty()) return null
+            runCatching { return java.time.Instant.parse(t).toEpochMilli().toDouble() }
+            runCatching { return java.time.OffsetDateTime.parse(t).toInstant().toEpochMilli().toDouble() }
+            runCatching {
+                return java.time.LocalDate.parse(t.take(10)).atStartOfDay(java.time.ZoneOffset.UTC).toInstant()
+                    .toEpochMilli().toDouble()
+            }
+            return null
+        }
+
         /** Pure: the rip server's job view -> outcome. Error phase = rejected; anything else with a job = accepted. */
         fun outcomeOf(job: com.levi.pocketdj.data.rips.RipJob): DiscoverRipOutcome = when {
             job.isReady -> DiscoverRipOutcome.Ready

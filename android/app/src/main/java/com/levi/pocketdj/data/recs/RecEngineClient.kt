@@ -2,7 +2,6 @@ package com.levi.pocketdj.data.recs
 
 import com.levi.pocketdj.data.PdjJson
 import com.levi.pocketdj.data.config.EndpointKey
-import com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET
 import com.levi.pocketdj.data.config.RemoteEndpoints
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.encodeToString
@@ -37,7 +36,7 @@ class RecEngineClient(
     private val http: OkHttpClient,
     /** Base URL, read LIVE per request (remote endpoints); a blank/invalid base fails as BadResponse. */
     private val base: () -> String = { RemoteEndpoints.url(EndpointKey.REC_ENGINE_BASE) },
-    private val enrollSecret: () -> String = { REC_ENGINE_ENROLL_SECRET },
+    private val enrollSecret: () -> String = { RemoteEndpoints.recEngineEnroll() },
     private val deviceId: () -> String,
     private val json: Json = PdjJson.lenient,
 ) {
@@ -47,6 +46,9 @@ class RecEngineClient(
 
         /** The deployed enrollment secret rotated; only an app update carries the new one. */
         data object EnrollmentRequired : ClientError("enrollment-required")
+
+        /** The deployment's enrollment flood cap (MAX_PROFILES) is full: a NEW profile can't be created. */
+        data object ProfileCapReached : ClientError("profile-cap-reached")
         data object BadResponse : ClientError("bad-response")
     }
 
@@ -140,7 +142,13 @@ class RecEngineClient(
                 (PdjJson.lenient.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject)
                     ?.get("error")?.let { it as? kotlinx.serialization.json.JsonPrimitive }?.takeIf { it.isString }?.content
             }.getOrNull()
-            return if (kind == "enrollment-required") ClientError.EnrollmentRequired else ClientError.KeyMismatch
+            // Emulator finding: a re-bind after "Delete cloud data" that hit the cap read as key-mismatch, whose advice
+            // (delete cloud data) can never help. Distinct refusals, distinct recoveries.
+            return when (kind) {
+                "enrollment-required" -> ClientError.EnrollmentRequired
+                "profile-cap-reached" -> ClientError.ProfileCapReached
+                else -> ClientError.KeyMismatch
+            }
         }
     }
 }

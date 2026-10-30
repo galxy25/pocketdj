@@ -182,8 +182,10 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
         com.levi.pocketdj.widget.WidgetBridge(app, app.appContext)
     }
 
+    /** Starts the widget bridge (PLAYBACK tier); idempotent. Never from a worker wake. */
+    fun startWidgets() = widgets.start()
+
     override val deepLinkHandlers: List<DeepLinkHandler> by lazy {
-        widgets.start()
         // Cheap and side-effect-light: runs on the main thread during cold start. Nothing heavy
         // (history decode, catalog/collections graphs) is forced here.
         // JBX-2: a tapped/parked jukebox link joins as a guest and opens the join panel.
@@ -193,28 +195,7 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                 NavRequestBus.post(ShellRoute.JukeboxJoin(id))
             }
         }
-        deepLinkSeams.playItem = { kind, id, shuffle ->
-            if (kind == PlayKind.Setlist) {
-                NavRequestBus.post(ShellRoute.Setlist(id, autoplay = true))
-            } else {
-                app.appScope.launch {
-                    try {
-                        when (kind) {
-                            PlayKind.Playlist -> shellActions.playPlaylist(id, shuffle)
-                            PlayKind.Pocket -> shellActions.playPocket(id, shuffle)
-                            else -> shellActions.playAlbum(id, shuffle)
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        NavRequestBus.postMessage(
-                            (e as? ShellActionException)?.message ?: "Couldn't play that.",
-                        )
-                    }
-                }
-            }
-            null
-        }
+        deepLinkSeams.playItem = com.levi.pocketdj.shell.playLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
         SearchPlayBridge.handler = { request ->
             app.appScope.launch { mediaSearch.handle(request) }
         }

@@ -1777,11 +1777,35 @@ class CollectionsStore(
             val ctx = makeCtx() ?: return null
             val theSeed = seed ?: CollectionsFactory.uid()
             val theName = name ?: nextSetlistName(playlistId)
-            val setlist = RealizeEngine.buildSetlist(pl, ctx, seed = theSeed, name = theName, now = now())
+            val setlist = freezeCleanOnly(
+                RealizeEngine.buildSetlist(pl, ctx, seed = theSeed, name = theName, now = now()),
+                pl.cleanOnly == true,
+                ctx.songsById,
+            )
             publish { it.copy(setlists = it.setlists + setlist) }
             save()
             setlist
         }
+
+    /**
+     * Clean-versions-only playlist: FREEZE the decision into the setlist (iOS CollectionsStore.swift:2200) -
+     * skipped songs (explicit, no clean cut) drop, substituted ones carry `variant = "clean"` - so the
+     * frozen set plays the same editions forever, even if the toggle later flips.
+     */
+    internal fun freezeCleanOnly(
+        setlist: Setlist,
+        cleanOnly: Boolean,
+        songsById: Map<String, com.levi.pocketdj.data.catalog.IndexSong>,
+    ): Setlist {
+        if (!cleanOnly) return setlist
+        val tracks = setlist.tracks.mapNotNull { t ->
+            if (t.isText == true) return@mapNotNull t
+            val s = songsById[t.songId] ?: return@mapNotNull t
+            if (com.levi.pocketdj.data.edition.EditionPolicy.isSkipped(s)) return@mapNotNull null
+            if (s.explicit != true) t else t.copy(variant = com.levi.pocketdj.data.edition.SongVariant.CLEAN.raw)
+        }
+        return setlist.copy(tracks = tracks, totalMs = tracks.sumOf { it.shownMs })
+    }
 
     /**
      * Realize an explicit ordered id list into a fresh Setlist (the read-only
@@ -1833,7 +1857,7 @@ class CollectionsStore(
         random: Random = Random,
     ): Setlist? = synchronized(lock) {
         val merged = catalogProvider?.invoke() ?: return null
-        var tracks = songIds.mapNotNull { id ->
+        val tracks = songIds.mapNotNull { id ->
             val rep = CollectionMembership.storedRepeat(repeats[id] ?: 1)
             // Catalog first, then a synthesized studio pseudo-song (real length); else drop.
             val s = resolveSongOrStudio(merged.songsById, id, studioLookup, studioArtist().ifBlank { STUDIO_ARTIST })
@@ -1849,7 +1873,31 @@ class CollectionsStore(
                 repeatCount = rep,
             )
         }
-        if (shuffle) tracks = tracks.shuffled(random)
+        return publishNowPlaying(tracks, name, shuffle, sourceToken, originId, random)
+    }
+
+    /**
+     * ▶ a saved set list's FROZEN rows as the reserved Now Playing set: every row keeps its own
+     * variant / repeat / snapshot (nothing re-resolved against the catalog, duplicates kept).
+     */
+    fun playNowRows(
+        rows: List<SetlistTrack>,
+        name: String = "Now Playing",
+        shuffle: Boolean = false,
+        sourceToken: String? = null,
+        originId: String? = null,
+        random: Random = Random,
+    ): Setlist? = synchronized(lock) { publishNowPlaying(rows, name, shuffle, sourceToken, originId, random) }
+
+    private fun publishNowPlaying(
+        rows: List<SetlistTrack>,
+        name: String,
+        shuffle: Boolean,
+        sourceToken: String?,
+        originId: String?,
+        random: Random,
+    ): Setlist {
+        val tracks = if (shuffle) rows.shuffled(random) else rows
         val totalMs = tracks.sumOf { it.shownMs }
         val set = Setlist(
             id = NOW_PLAYING_SETLIST_ID,
@@ -1870,7 +1918,7 @@ class CollectionsStore(
             )
         }
         save()
-        set
+        return set
     }
 
     /** One live-queue row for [materializeNowPlayingSetlist]. */
@@ -2411,7 +2459,7 @@ class CollectionsStore(
         val sink = onPortableItems ?: return
         if (items.isEmpty) return
         val cat = catalogProvider?.invoke()
-        val songs = items.songs.filter { cat?.songsById?.containsKey(it.id) != true && !PlayResolver.isStudioId(it.id) }
+        val songs = items.songs.filter { cat?.songsById?.containsKey(it.id) != true && PortableItems.isPortable(it.id) }
         val albums = items.albums.filter { cat?.albumsById?.containsKey(it.id) != true }
         if (songs.isEmpty() && albums.isEmpty()) return
         sink(PortableItems.Payload(songs, albums))
@@ -2449,7 +2497,7 @@ class CollectionsStore(
         save()
     }
 
-    private fun mutateSetlist(id: String, body: (Setlist) -> Setlist): Setlist? = synchronized(lock) {
+    internal fun mutateSetlist(id: String, body: (Setlist) -> Setlist): Setlist? = synchronized(lock) {
         val idx = setlists.indexOfFirst { it.id == id }
         if (idx < 0) return null
         publish { s -> s.copy(setlists = s.setlists.replaceAt(idx, body(s.setlists[idx]))) }

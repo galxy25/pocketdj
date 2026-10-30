@@ -176,11 +176,12 @@ class GlideMachine internal constructor(private val dj: AutoDj) {
         val folBeat = 60.0 / folBpm
         val leadDb = (e.loaded(l)?.firstDownbeatMs ?: 0) / 1000.0
         val folDb = (e.loaded(f)?.firstDownbeatMs ?: 0) / 1000.0
-        val leadPhase = ((e.position(l) - leadDb) / leadBeat) % 1.0
-        val folPhase = ((e.position(f) - folDb) / folBeat) % 1.0
-        var delta = leadPhase - folPhase
-        if (delta > 0.5) delta -= 1 else if (delta < -0.5) delta += 1
-        e.seek(f, maxOf(0.0, e.position(f) + delta * folBeat))
+        val t = PhaseAlignMath.target(
+            e.position(l), e.audibleLagSeconds(l), leadDb, leadBeat,
+            e.position(f), e.audibleLagSeconds(f), folDb, folBeat,
+        )
+        e.diag("glide phase-align ${f.label}->${l.label} err=${"%.1f".format(java.util.Locale.US, t.errorMs)}ms")
+        e.seek(f, t.seekSec)
     }
 
     /** POST-ROLL step (progress 0..1): ease the incoming deck's effect OFF + tempo/pitch to natural. */

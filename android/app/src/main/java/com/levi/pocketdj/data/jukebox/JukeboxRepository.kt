@@ -57,10 +57,14 @@ class JukeboxRepository(
     @Volatile var placementSink: JukeboxPlacementSink = JukeboxPlacementSink.None,
     /** Seam: Apple-Music catalog match stage (device-only; default null). */
     @Volatile var externalMatch: JukeboxExternalMatch = JukeboxExternalMatch.None,
+    /** Seam: kicks the rip for an Apple-Music-only match the host accepts (SURF-10). */
+    @Volatile var adHocRipStarter: JukeboxAdHocRipStarter? = null,
     /** Where accepted requests land: the sequencer (null in tests that never place). */
     @Volatile var queue: JukeboxQueue? = null,
     /** Seam: the live Mix (MIX-16). Consulted per call so a mix started after construction is picked up. */
     private val mixSource: () -> MixJukeboxSource? = { MixJukeboxSeam.source },
+    /** Seam: a public rip exists for the song (tests flip it; production reads the rips manifest). */
+    private val ripPlayable: (String) -> Boolean = { rips.isPlayable(it) },
 ) {
     private val appContext by lazy { context.applicationContext }
 
@@ -76,7 +80,10 @@ class JukeboxRepository(
          * A catalog candidate; [playable] is true only when a public rip exists
          * — a match without audio must stay Deny-only (§5.1).
          */
-        data class Found(val song: IndexSong, val playable: Boolean) : Match
+        data class Found(val song: IndexSong, val playable: Boolean) : Match {
+            /** Apple-Music-only (not in the library): accepting it rips the song first. */
+            val isAdHoc: Boolean get() = JukeboxAppleMusicMatch.isAdHoc(song.id)
+        }
     }
 
     data class RequestRow(
@@ -117,6 +124,8 @@ class JukeboxRepository(
      *  because a decision bumps their seq server-side (§2.5, §4.2). Synchronized:
      *  written from the UI thread in [decide], read on Default in [ingest]. */
     private val decided: MutableSet<String> =
+        java.util.Collections.synchronizedSet(mutableSetOf<String>())
+    private val ripStarting: MutableSet<String> =
         java.util.Collections.synchronizedSet(mutableSetOf<String>())
     private var sinceSeq = 0L
     private var lastPosted: JukeboxStatePayload? = null
@@ -248,10 +257,38 @@ class JukeboxRepository(
         loopJob?.cancel()
         loopJob = null
         val session = _state.value.session ?: runCatching { sessionStore.load()?.session }.getOrNull()
-        if (session != null) kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { runCatching { client.end(session) } }
+        if (session != null) {
+            kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+                try {
+                    client.end(session)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    // best-effort: an unreachable broker must not trap the host
+                }
+            }
+        }
         sessionStore.clear()
         resetLoopBookkeeping()
         _state.value = UiState()
+    }
+
+    /**
+     * Switch hosting to [jukeboxId]: end the current party (awaited, so adopt's guard sees it gone), then adopt.
+     * Runs on the repository's own scope so a dismissed sheet can't cancel it halfway (iOS: unstructured Task).
+     * Failures surface as [UiState.notice].
+     */
+    fun switchTo(jukeboxId: String) {
+        scope.launch {
+            try {
+                endAndAwait()
+                adopt(jukeboxId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(notice = e.message ?: "Couldn't switch session") }
+            }
+        }
     }
 
     /** Flip View + Hear; an immediate tick shows guests the flip promptly. */
@@ -278,42 +315,94 @@ class JukeboxRepository(
     fun decide(requestId: String, action: JukeboxDecisionAction) {
         val session = _state.value.session ?: return
         val row = _state.value.requests.firstOrNull { it.request.id == requestId } ?: return
+        val found = row.match as? Match.Found
+        // Apple-Music-only match: the rip must be startable BEFORE the request is consumed, so a missing rip
+        // server leaves the row in the inbox (retryable) instead of losing an accepted request.
+        if (action.isPlacement && found != null && found.isAdHoc && !ripPlayable(found.song.id)) {
+            if (!ripStarting.add(requestId)) return
+            scope.launch {
+                val started = try {
+                    startAdHocRip(found.song)
+                } finally {
+                    ripStarting.remove(requestId)
+                }
+                if (!started) {
+                    _state.update { it.copy(transientError = "Couldn't start the rip for “${found.song.name}”") }
+                    return@launch
+                }
+                if (_state.value.session?.jukeboxId != session.jukeboxId) return@launch
+                _state.update { it.copy(transientError = "Ripping “${found.song.name}” - it plays when the rip lands") }
+                commitDecision(session, requestId, action, found)
+            }
+            return
+        }
+        commitDecision(session, requestId, action, found)
+    }
+
+    private suspend fun startAdHocRip(song: IndexSong): Boolean = try {
+        adHocRipStarter?.start(song) ?: false
+    } catch (c: CancellationException) {
+        throw c
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun commitDecision(
+        session: JukeboxSessionInfo,
+        requestId: String,
+        action: JukeboxDecisionAction,
+        found: Match.Found?,
+    ) {
         decided += requestId
         _state.update { current ->
             current.copy(requests = current.requests.filterNot { it.request.id == requestId })
         }
         scope.launch { runCatching { client.decide(session, requestId, action) } }
         if (action.isPlacement) {
-            val found = row.match as? Match.Found ?: return
-            // A live auto mix owns the setlist: even an un-ripped match joins ITS queue (parked behind a
-            // burn-when-ripped intent); the sequencer path below still needs a playable match.
-            scope.launch {
-                val mixOwns = runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false)
-                if (mixOwns) {
-                    try {
-                        if (onMain { mixSource()?.place(found.song, action) } == true) {
-                            kick()
-                            return@launch
-                        }
-                    } catch (c: CancellationException) {
-                        throw c
-                    } catch (e: Exception) {
-                        // Never fall back to the sequencer: it would sound on top of the live mix.
-                        _state.update { it.copy(transientError = e.message ?: "Couldn't add to the mix") }
-                        return@launch
-                    }
-                }
-                if (!found.playable) return@launch
-                val handled = try {
-                    placementSink.place(found.song, action)
-                } catch (c: CancellationException) {
-                    throw c
-                } catch (e: Exception) {
-                    false
-                }
-                if (!handled) applyPlacement(found.song, action)
-            }
+            found ?: return
+            scope.launch { route(found, action, session.jukeboxId) }
         }
+    }
+
+    /**
+     * A live auto mix owns the setlist: even an un-ripped match joins ITS queue (parked behind a
+     * burn-when-ripped intent); the sequencer path still needs a playable match. true = consumed.
+     */
+    private suspend fun placeInMix(found: Match.Found, action: JukeboxDecisionAction): Boolean {
+        val mixOwns = runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false)
+        if (!mixOwns) return false
+        return try {
+            if (onMain { mixSource()?.place(found.song, action) } == true) kick()
+            // Never fall back to the sequencer once the mix owns the audio.
+            true
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            _state.update { it.copy(transientError = e.message ?: "Couldn't add to the mix") }
+            true
+        }
+    }
+
+    private suspend fun route(found: Match.Found, action: JukeboxDecisionAction, jukeboxId: String) {
+        if (placeInMix(found, action)) return
+        if (!found.playable) return
+        val handled = try {
+            placementSink.place(found.song, action)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            if (found.isAdHoc) {
+                _state.update { it.copy(transientError = e.message ?: "“${found.song.name}” isn't playable anymore") }
+                return
+            }
+            false
+        }
+        if (found.isAdHoc) {
+            // The sink may have waited minutes for the rip: the party may have ended, or a mix started meanwhile.
+            if (_state.value.session?.jukeboxId != jukeboxId) return
+            if (placeInMix(found, action)) return
+        }
+        if (!handled) applyPlacement(found.song, action)
     }
 
     // ---- loop --------------------------------------------------------------
@@ -431,7 +520,10 @@ class JukeboxRepository(
             } catch (e: Exception) {
                 null
             }
-        val match = song?.let { Match.Found(it, rips.isPlayable(it.id)) } ?: Match.None
+        val match = song?.let {
+            // An AM-only row is "playable" once accepted: the rip is requested then (SURF-10).
+            Match.Found(it, ripPlayable(it.id) || JukeboxAppleMusicMatch.isAdHoc(it.id))
+        } ?: Match.None
         _state.update { current ->
             current.copy(
                 requests = current.requests.map { row ->
@@ -512,7 +604,7 @@ class JukeboxRepository(
                 kick()
                 return
             }
-            if (!rips.isPlayable(song.id)) {
+            if (!ripPlayable(song.id)) {
                 _state.update { it.copy(transientError = "“${song.name}” isn't playable anymore") }
                 return
             }
@@ -566,7 +658,7 @@ class JukeboxRepository(
             artist = current?.artist ?: np?.artist,
             durationMs = np?.durationMs ?: current?.lengthMs,
             positionMs = position,
-            upNext = seq?.upcoming.orEmpty().map {
+            upNext = seq?.upcomingPlayable.orEmpty().map {
                 JukeboxStatePayload.Track(title = it.title, artist = it.artist.orEmpty())
             },
         )

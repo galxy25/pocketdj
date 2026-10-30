@@ -67,6 +67,9 @@ class ImportedSongsStore(private val file: File) {
     /** Fired (outside the lock) after a USER/import batch added NEW rows - the app refreshes the catalog. */
     @Volatile var onChanged: (() -> Unit)? = null
 
+    /** Fired ONLY from the user import path ([add]) with the History `catalogAdd` items (one per fresh album + loose song). */
+    @Volatile var onUserCatalogAdd: ((List<com.levi.pocketdj.data.collections.RecentlyAdded.CatalogAddItem>) -> Unit)? = null
+
     init {
         val doc = decode(file)
         songs = doc.songs.distinctBy { it.songId }
@@ -79,6 +82,7 @@ class ImportedSongsStore(private val file: File) {
     /** Idempotent per id (first wins). Returns the number of NEW rows. */
     fun add(newSongs: List<SongEntry>, newAlbums: List<AlbumEntry> = emptyList()): Int {
         val added: Int
+        var catalogAdds: List<com.levi.pocketdj.data.collections.RecentlyAdded.CatalogAddItem> = emptyList()
         synchronized(lock) {
             val songIds = songs.mapTo(HashSet()) { it.songId }
             val albumIds = albums.mapTo(HashSet()) { it.albumId }
@@ -86,12 +90,18 @@ class ImportedSongsStore(private val file: File) {
             val freshAlbums = newAlbums.distinctBy { it.albumId }.filter { albumIds.add(it.albumId) == true }
             added = freshSongs.size + freshAlbums.size
             if (added == 0) return 0
+            catalogAdds = com.levi.pocketdj.data.collections.RecentlyAdded.importCatalogAdds(
+                freshSongs.map { Triple(it.songId, it.title, it.artist) to it.albumId },
+                freshAlbums.map { Triple(it.albumId, it.name, it.artist) },
+            )
             songs = songs + freshSongs
             albums = albums + freshAlbums
             cachedDoc = null
             save()
         }
         onChanged?.invoke()
+        // History catalogAdd log (user import path only; add() is never called from a cloud pull).
+        if (catalogAdds.isNotEmpty()) onUserCatalogAdd?.invoke(catalogAdds)
         return added
     }
 
@@ -115,6 +125,41 @@ class ImportedSongsStore(private val file: File) {
         onChanged?.invoke()
     }
 
+    /**
+     * A cloud pull rewrote [file] (iOS `reloadFromDisk`, key `imported-songs`): re-adopt it and refresh the
+     * catalog so pulled imports flow into the merge. Returns false (the pulled bytes stay as written).
+     */
+    fun reloadFromDisk(): Boolean {
+        val doc = decode(file)
+        val changed: Boolean
+        synchronized(lock) { changed = adopt(doc) }
+        if (changed) onChanged?.invoke()
+        return false
+    }
+
+    /** SyncEntry.applyPayload seam: write the pulled bytes + re-adopt under [lock] so a concurrent add()/remove() cannot interleave. */
+    fun writePulled(bytes: ByteArray) {
+        val changed: Boolean
+        synchronized(lock) {
+            file.parentFile?.mkdirs()
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(file)) { file.writeBytes(bytes); tmp.delete() }
+            changed = adopt(decode(file))
+        }
+        if (changed) onChanged?.invoke()
+    }
+
+    /** Caller holds [lock]. True when the song/album id sets changed. */
+    private fun adopt(doc: Document): Boolean {
+        val s = doc.songs.distinctBy { it.songId }
+        val a = doc.albums.distinctBy { it.albumId }
+        val same = s.map { it.songId }.toSet() == songs.map { it.songId }.toSet() &&
+            a.map { it.albumId }.toSet() == albums.map { it.albumId }.toSet()
+        songs = s; albums = a; cachedDoc = null
+        return !same
+    }
+
     fun clear() {
         synchronized(lock) {
             songs = emptyList(); albums = emptyList(); cachedDoc = null
@@ -122,6 +167,29 @@ class ImportedSongsStore(private val file: File) {
         }
         onChanged?.invoke()
     }
+
+    /**
+     * Resolve against this merge's REAL documents (first-seen claimant per Apple Music id wins, as iOS
+     * `withProvisionalSources`): remapped `amrec_` rows leave the document and come back as pairs.
+     */
+    fun resolve(realDocs: List<IndexJson>): Resolution {
+        val (s, a) = synchronized(lock) { songs to albums }
+        if (s.isEmpty() && a.isEmpty()) return Resolution.EMPTY
+        // Memoized on the identity of the entries + real docs so CatalogRepository's identity-based
+        // sameInputs no-op check still short-circuits unchanged refreshes.
+        synchronized(lock) {
+            val m = memo
+            if (m != null && m.songs === s && m.albums === a && m.real.size == realDocs.size &&
+                m.real.indices.all { m.real[it] === realDocs[it] }
+            ) return m.result
+        }
+        val r = resolveEntries(s, a, realDocs)
+        synchronized(lock) { memo = Memo(s, a, realDocs.toList(), r) }
+        return r
+    }
+
+    private class Memo(val songs: List<SongEntry>, val albums: List<AlbumEntry>, val real: List<IndexJson>, val result: Resolution)
+    private var memo: Memo? = null
 
     /** The synthetic source for the catalog merge; null when empty. Stable instance between changes. */
     fun syntheticDocument(): IndexJson? = synchronized(lock) {
@@ -138,8 +206,43 @@ class ImportedSongsStore(private val file: File) {
         }
     }
 
+    class Resolution(val documents: List<IndexJson>, val pairs: List<Pair<String, String>>) {
+        companion object { val EMPTY = Resolution(emptyList(), emptyList()) }
+    }
+
     companion object {
+        /**
+         * Land a supersede. Durability deviation from iOS order (documented): remap collections + favorites
+         * FIRST (idempotent), then prune the imported rows, because the pair is only derivable while the
+         * amrec_ row exists on disk; a kill mid-sequence re-derives the pair on the next merge.
+         * A throwing step never blocks the following ones.
+         */
+        fun landSupersede(
+            pairs: List<Pair<String, String>>,
+            removeImported: (List<String>) -> Unit,
+            remapCollections: (List<Pair<String, String>>) -> Unit,
+            remapFavorites: (List<Pair<String, String>>) -> Unit,
+        ) {
+            if (pairs.isEmpty()) return
+            runCatching { remapCollections(pairs) }
+            runCatching { remapFavorites(pairs) }
+            runCatching { removeImported(pairs.map { it.first }) }
+        }
+
+        /** Pure core of [resolve]. */
+        fun resolveEntries(songs: List<SongEntry>, albums: List<AlbumEntry>, realDocs: List<IndexJson>): Resolution {
+            val byAm = HashMap<String, String>()
+            for (d in realDocs) for (x in d.songs) x.appleMusicId?.takeIf { it.isNotEmpty() }?.let { byAm.putIfAbsent(it, x.id) }
+            val pairs = supersedePairs(songs, byAm)
+            val gone = pairs.mapTo(HashSet()) { it.first }
+            val kept = songs.filterNot { it.songId in gone }
+            val doc = if (kept.isEmpty() && albums.isEmpty()) emptyList() else listOf(syntheticIndex(kept, albums))
+            return Resolution(doc, pairs)
+        }
+
         const val FILE_NAME = "pocketdj-imported-songs.json"
+        /** Cloud-sync document key (iOS `imported-songs`). */
+        const val SYNC_KEY = "imported-songs"
         const val SOURCE_NAME = "Imported"
 
         internal fun decode(file: File): Document =
@@ -171,6 +274,7 @@ class ImportedSongsStore(private val file: File) {
         fun indexSong(e: SongEntry) = IndexSong(
             id = e.songId, albumId = e.albumId, artist = e.artist, name = e.title, year = e.year,
             bpm = e.bpm, key = e.key, camelot = e.camelot, length = e.durationMs, appleMusicId = e.appleMusicId,
+            dateAdded = e.addedAtMs.takeIf { it > 0 },
         )
 
         fun indexAlbum(e: AlbumEntry) = IndexAlbum(

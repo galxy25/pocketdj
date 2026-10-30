@@ -52,6 +52,16 @@ data class AmTrackPage(
     val rowCount: Int,
     val hasNext: Boolean,
     val nextOffset: Int?,
+    /** Raw rows in order (library id + catalog id), duplicates kept: what reconcile diffs against. */
+    val rows: List<AmTrackRow> = emptyList(),
+)
+
+/** One library-playlist track row: the library id removal addresses, and the catalog id membership is judged by. */
+data class AmTrackRow(
+    val libraryId: String?,
+    val catalogId: String?,
+    /** Other catalog ids Apple reports for the same song (purchased id, non-library playParams id). */
+    val equivalentIds: Set<String> = emptySet(),
 )
 
 data class AmPage<T>(val items: List<T>, val nextOffset: Int?, val hasCursor: Boolean = nextOffset != null) {
@@ -180,6 +190,12 @@ object AppleMusicApiModels {
         }
     }
 
+    /** `GET /v1/me/library/playlists/{id}` -> `canEdit`, STRICT: absent or unreadable reads as NOT editable. Null = no resource. */
+    fun parseLibraryPlaylistCanEdit(body: String): Boolean? {
+        val o = root(body)?.get("data").arr()?.firstOrNull().obj() ?: return null
+        return (o["attributes"].obj()?.get("canEdit") as? JsonPrimitive)?.booleanOrNull ?: false
+    }
+
     /** Ids of a created playlist response (`data[0].id`). */
     fun parseFirstId(body: String): String? =
         root(body)?.get("data").arr()?.firstOrNull().obj()?.get("id").str()
@@ -189,12 +205,23 @@ object AppleMusicApiModels {
         val r = root(body) ?: return null
         val rows = r["data"].arr() ?: return null
         val ids = LinkedHashSet<String>()
+        val trackRows = ArrayList<AmTrackRow>(rows.size)
         for (row in rows) {
-            val pp = row.obj()?.get("attributes").obj()?.get("playParams").obj() ?: continue
-            (pp["catalogId"].str() ?: pp["id"].str())?.let(ids::add)
+            val attrs = row.obj()?.get("attributes").obj()
+            val pp = attrs?.get("playParams").obj()
+            // A LIBRARY id ("i.xxx" / isLibrary) is never a catalog id: an upload or unmatched song has only
+            // that, so its catalogId stays null and reconcile fails closed instead of deleting it.
+            val isLib = (pp?.get("isLibrary") as? JsonPrimitive)?.booleanOrNull == true
+            val ppId = pp?.get("id").str()?.takeIf { !isLib && !it.startsWith("i.") }
+            val cat = pp?.get("catalogId").str() ?: ppId
+            val equiv = LinkedHashSet<String>()
+            ppId?.let(equiv::add)
+            (attrs?.get("purchasedId").str() ?: pp?.get("purchasedId").str())?.let(equiv::add)
+            cat?.let(ids::add)
+            trackRows += AmTrackRow(row.obj()?.get("id").str(), cat, equiv - setOfNotNull(cat))
         }
         val next = r["next"].str()
-        return AmTrackPage(ids.toList(), rows.size, next != null, nextOffset(next))
+        return AmTrackPage(ids.toList(), rows.size, next != null, nextOffset(next), trackRows)
     }
 
     fun parseStorefront(body: String): String? =

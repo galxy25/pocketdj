@@ -1,5 +1,6 @@
 package com.levi.pocketdj.data.burns
 
+import com.levi.pocketdj.data.rips.RipStems
 import com.levi.pocketdj.data.transfers.FakeTransferWork
 import com.levi.pocketdj.data.transfers.TransferCoordinator
 import java.io.File
@@ -22,8 +23,23 @@ class FakeTree(
     override fun isReachable() = reachable
     override fun probeWrite() = reachable && writable
     override fun exists(name: String) = name in files
+    val deleted = ArrayList<String>()
+    val deleteAllCalls = ArrayList<List<String>>()
+    val copyCounts = HashMap<String, Int>()
+    val copyThreads = HashSet<Thread>()
+    override fun deleteAll(names: Collection<String>) {
+        deleteAllCalls += names.toList()
+        for (n in names) try { delete(n) } catch (_: Exception) {}
+    }
+    override fun delete(name: String): Boolean {
+        if (!reachable) throw IOException("tree delete failed")
+        deleted += name
+        return files.remove(name) != null
+    }
     override fun copyIn(name: String, src: File) {
         if (failCopies || !reachable) throw IOException("tree write failed")
+        copyCounts[name] = (copyCounts[name] ?: 0) + 1
+        copyThreads += Thread.currentThread()
         files[name] = src.readBytes()
     }
 }
@@ -219,5 +235,199 @@ class BurnFolderSafTest {
         assertFalse(rec.wasAppStorage)
         assertEquals("content://tree/sd", rec.burnFolderTreeUri)
         assertEquals(false, store.items.value.getValue("s1").wasAppStorage)
+    }
+
+    // ---- ANS-COL-4: stems + beat grids mirrored; deleting a burn deletes the folder copy -------
+
+    private class Mirror(val prefs: FakePrefs, val tree: FakeTree, val rig: Rig, val folder: SafBurnFolder) {
+        val stage = File(rig.dir, "burns-user")
+        fun store() = BurnStore(rig.ledger, folder, rig.rips, lookup = { rig.catalog[it] ?: (null to null) }, clock = { rig.nowMs })
+        fun stemmed(id: String) {
+            rig.rips.entries[id] = digital(id).copy(
+                stems = RipStems("stems/$id/vocals.mp3", "stems/$id/drums.mp3", "stems/$id/bass.mp3", "stems/$id/other.mp3"),
+                stemVersion = 1, beatgrid = "rips/analysis/$id.json",
+            )
+            rig.rips.serve("rips/$id.mp3", 6_000)
+            BurnFileNames.STEM_NAMES.forEach { rig.rips.serve("stems/$id/$it.mp3", 1_000) }
+            rig.rips.bodies["$BASE/rips/analysis/$id.json"] = """{"beatGridBpm":120.0,"beatsMs":[0,500]}""".toByteArray()
+            rig.catalog[id] = song(id) to album("a")
+        }
+        fun auxNames(id: String) = BurnFileNames.STEM_NAMES.map { BurnFileNames.stemFileName(id, it) } + BurnFileNames.beatgridFileName(id)
+    }
+
+    private fun mirror(uri: String? = "content://tree/sd"): Mirror {
+        val rig = Rig()
+        val p = FakePrefs(uri)
+        val t = FakeTree()
+        return Mirror(p, t, rig, SafBurnFolder(rig.burns, File(rig.dir, "burns-user"), p) { t })
+    }
+
+    @Test fun burnMirrorsStemsAndBeatGridWithTreeUriOnItem() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        store.burn(listOf(bs("s1")))
+        m.auxNames("s1").forEach { assertTrue("$it mirrored", it in m.tree.files) }
+        assertTrue(m.tree.files.keys.any { it.endsWith(".mp3") && !it.startsWith("stem-") })
+        assertEquals("content://tree/sd", store.items.value.getValue("s1").treeUri)
+        assertEquals(false, store.items.value.getValue("s1").wasAppStorage)
+    }
+
+    @Test fun removeBurnsDeletesEveryFolderCopy() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        store.burn(listOf(bs("s1")))
+        assertTrue(m.tree.files.size >= 7) // audio + sidecar + 4 stems + grid
+        store.removeBurns(listOf("s1"))
+        assertTrue("left: ${m.tree.files.keys}", m.tree.files.isEmpty())
+        assertTrue(m.stage.list().orEmpty().isEmpty())
+    }
+
+    @Test fun removeStemsAndAllBurnsDeleteFolderCopies() = runTest {
+        val m = mirror(); m.stemmed("s1"); m.stemmed("s2")
+        val store = m.store()
+        store.burn(listOf(bs("s1"), bs("s2")))
+        store.removeStems(listOf("s1"))
+        BurnFileNames.STEM_NAMES.forEach { assertFalse(BurnFileNames.stemFileName("s1", it) in m.tree.files) }
+        assertTrue(BurnFileNames.beatgridFileName("s1") in m.tree.files) // grids stay
+        assertTrue(BurnFileNames.stemFileName("s2", "bass") in m.tree.files)
+        store.removeAllStems()
+        assertTrue(m.tree.files.keys.none { it.startsWith("stem-") })
+        store.removeAllBurns()
+        assertTrue("left: ${m.tree.files.keys}", m.tree.files.isEmpty())
+    }
+
+    @Test fun removeAllBurnsSweepsOrphanFolderAux() = runTest {
+        val m = mirror()
+        val store = m.store()
+        m.folder.activeWritable()
+        File(m.stage, "analysis-ghost.json").writeText("{}")
+        m.folder.mirrorFiles(m.stage, listOf("analysis-ghost.json"))
+        m.rig.rips.entries["ghost"] = digital("ghost") // user-folder aux is owned only when known
+        store.removeAllBurns()
+        assertFalse("analysis-ghost.json" in m.tree.files)
+    }
+
+    @Test fun revokedFolderIsUntouchedAndLocalDeleteStillWorks() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        store.burn(listOf(bs("s1")))
+        val before = m.tree.files.keys.toSet()
+        m.tree.reachable = false
+        store.removeBurns(listOf("s1"))
+        assertEquals(before, m.tree.files.keys)
+        assertTrue(m.tree.deleted.isEmpty())
+        assertNull(store.items.value["s1"])
+        assertTrue(m.stage.list().orEmpty().isEmpty())
+    }
+
+    @Test fun evictionLeavesFolderCopyButFreesLocal() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        store.burn(listOf(bs("s1")))
+        val before = m.tree.files.keys.toSet()
+        store.removeBurns(listOf("s1"), mirrored = false)
+        assertEquals(before, m.tree.files.keys)
+        assertTrue(m.tree.deleted.isEmpty())
+        assertNull(store.items.value["s1"])
+        store.sweepOrphanAuxFiles()
+        assertEquals(before, m.tree.files.keys)
+    }
+
+    @Test fun appStorageItemNeverTouchesTheTree() = runTest {
+        val m = mirror(uri = null); m.stemmed("s1")
+        val store = m.store()
+        store.burn(listOf(bs("s1")))
+        assertTrue(m.tree.files.isEmpty())
+        assertNull(store.items.value.getValue("s1").treeUri)
+        store.removeBurns(listOf("s1"))
+        assertTrue(m.tree.deleted.isEmpty())
+    }
+
+    @Test fun burnStemsBeatGridAndPartMirrorWhenWrittenAfterTheBurn() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        store.burn(listOf(bs("s1")))
+        m.tree.files.keys.filter { it.startsWith("stem-") || it.startsWith("analysis-") }.forEach { m.tree.files.remove(it) }
+        File(m.stage, BurnFileNames.beatgridFileName("s1")).delete()
+        File(m.stage, BurnFileNames.stemFileName("s1", "bass")).delete()
+        assertNotNull(store.burnBeatGrid("s1"))
+        assertTrue(store.burnStemPart("s1", "bass"))
+        assertEquals(setOf(BurnFileNames.beatgridFileName("s1"), BurnFileNames.stemFileName("s1", "bass")), m.tree.files.keys.filter { it.startsWith("stem-") || it.startsWith("analysis-") }.toSet())
+    }
+
+    @Test fun deleteMirroredIsNoOpWithoutReachableTree() {
+        val m = mirror(uri = null)
+        m.folder.deleteMirrored(null, listOf("a.mp3")) // no choice: no-op
+        m.tree.files["a.mp3"] = ByteArray(1)
+        m.tree.reachable = false
+        m.folder.deleteMirrored("content://tree/sd", listOf("a.mp3")) // revoked
+        assertTrue("a.mp3" in m.tree.files)
+        m.tree.reachable = true
+        m.folder.deleteMirrored("content://tree/sd", listOf("a.mp3", "", "absent.mp3"))
+        assertFalse("a.mp3" in m.tree.files)
+    }
+
+    @Test fun mirrorCopiesRunOffTheCallingThread() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        m.folder.activeWritable()
+        val caller = Thread.currentThread()
+        assertTrue(store.burnStemPart("s1", "bass"))
+        assertNotNull(store.burnBeatGrid("s1"))
+        assertNotNull(store.burnStems("s1"))
+        assertTrue(m.tree.copyThreads.isNotEmpty())
+        assertFalse("tree I/O ran on the caller thread", caller in m.tree.copyThreads)
+    }
+
+    @Test fun collectionBurnWritesEachStemToTheTreeOnce() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        store.burn(listOf(bs("s1")))
+        m.auxNames("s1").forEach { assertEquals("$it copied once", 1, m.tree.copyCounts[it]) }
+    }
+
+    @Test fun removeBurnsListsTheTreeOncePerBatchWithoutDuplicates() = runTest {
+        val m = mirror(); m.stemmed("s1"); m.stemmed("s2")
+        val store = m.store()
+        store.burn(listOf(bs("s1"), bs("s2")))
+        store.removeBurns(listOf("s1", "s2"))
+        assertEquals(1, m.tree.deleteAllCalls.size)
+        val names = m.tree.deleteAllCalls.single()
+        assertEquals(names.size, names.toSet().size)
+        assertTrue(m.tree.files.isEmpty())
+    }
+
+    @Test fun deleteGoesToTheTreeTheItemWasFinalizedInto() = runTest {
+        val rig = Rig()
+        val p = FakePrefs("content://tree/a")
+        val a = FakeTree(); val b = FakeTree()
+        val f = SafBurnFolder(rig.burns, File(rig.dir, "burns-user"), p) { if (it.endsWith("/a")) a else b }
+        val store = BurnStore(rig.ledger, f, rig.rips, lookup = { rig.catalog[it] ?: (null to null) }, clock = { rig.nowMs })
+        val m = Mirror(p, a, rig, f); m.stemmed("s1")
+        store.burn(listOf(bs("s1")))
+        assertTrue(a.files.isNotEmpty())
+        b.files["stem-s1-bass.mp3"] = ByteArray(1) // user's own same-named file in the new folder
+        p.uri = "content://tree/b"
+        store.removeBurns(listOf("s1"))
+        assertTrue("left in A: ${a.files.keys}", a.files.isEmpty())
+        assertTrue(b.deleteAllCalls.isEmpty())
+        assertTrue(b.files.containsKey("stem-s1-bass.mp3"))
+    }
+
+    @Test fun storageEvictionAdapterKeepsFolderCopies() = runTest {
+        val m = mirror(); m.stemmed("s1")
+        val store = m.store()
+        store.burn(listOf(bs("s1")))
+        val before = m.tree.files.keys.toSet()
+        com.levi.pocketdj.data.storage.BurnStorePruneAdapter(store).removeBurns(listOf("s1"))
+        assertNull(store.items.value["s1"])
+        assertEquals(before, m.tree.files.keys)
+        assertTrue(m.tree.deleted.isEmpty())
+    }
+
+    @Test fun mimeIsJsonForAnalysisSidecars() {
+        assertEquals("application/json", mimeFor("analysis-x.json"))
+        assertEquals("audio/mpeg", mimeFor("stem-x-bass.mp3"))
+        assertEquals("text/plain", mimeFor("x.txt"))
     }
 }

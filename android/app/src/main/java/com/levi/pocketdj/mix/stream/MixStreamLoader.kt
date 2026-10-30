@@ -41,7 +41,7 @@ interface StreamAdopter {
 /** [StreamAdopter] over the real [BurnStore] (whose adoption fires `onAnyBurnFinalized`). */
 class BurnStoreAdopter(
     private val burns: BurnStore,
-    private val yieldBackground: (String) -> Unit = {},
+    private val yieldBackground: (String) -> Unit = { burns.yieldBackgroundDownload(it) },
 ) : StreamAdopter {
     override fun adoptFile(songId: String, title: String, artist: String, from: File) =
         burns.adoptStreamedFile(songId, title, artist, from)
@@ -165,6 +165,10 @@ class MixStreamLoader(
     private val stemOwners = HashMap<String, MutableSet<String>>()
     private val recentStemFailures = HashMap<String, Long>()
     private val recentFailures = HashMap<String, Long>()
+    /** Consecutive whole-stream failures per song; cleared when a stream completes (ANS-MIX-1). */
+    private val consecutiveFailures = HashMap<String, Int>()
+    /** When each song's last whole-stream failure landed: a count older than [FAILURE_COUNT_WINDOW_MS] is stale. */
+    private val lastFailureAt = HashMap<String, Long>()
     private var serverDownUntil: Long? = null
     private val byTask = HashMap<Int, String>()
     private val sources = HashMap<String, String>()
@@ -204,12 +208,36 @@ class MixStreamLoader(
      * rip server to presign against, a network path, and it must not have failed within the
      * cooldown / the server be in its down-cooldown. A live non-failed stream always can.
      */
-    fun canStream(songId: String): Boolean = lock.withLock {
+    fun canStream(songId: String, forAuto: Boolean = false): Boolean = lock.withLock {
         if (streamMap[songId]?.let { !it.failed } == true) return true
         if (!network.available || !rips.hasServer() || rips.entry(songId) == null) return false
-        serverDownUntil?.let { if (clock() < it) return false }
-        recentFailures[songId]?.let { if (clock() - it < failureCooldownMs) return false }
+        val failedAt = recentFailures[songId]
+        val cooldown = if (forAuto) autoFailureCooldownMs(consecutiveFailures[songId] ?: 0) else failureCooldownMs
+        val cooledDown = failedAt == null || clock() - failedAt >= cooldown
+        serverDownUntil?.let {
+            // Server-down pauses new streams for 60 s - except an Auto-DJ PROBE: a song that already
+            // failed and whose short Auto-DJ cooldown has elapsed may try once (a single HTTP 5xx /
+            // presign blip must not stall the mix for a minute; a real outage just fails the probe).
+            if (clock() < it && !(forAuto && failedAt != null && cooledDown)) return false
+        }
+        if (!cooledDown) return false
         true
+    }
+
+    /**
+     * Auto-DJ retry cooldown after [failures] consecutive failures (Q38): 2 s, 2 s, 3 s, then the
+     * ordinary [failureCooldownMs] so a permanently broken song is not hammered.
+     */
+    internal fun autoFailureCooldownMs(failures: Int): Long =
+        AUTO_FAILURE_COOLDOWNS_MS.getOrNull(failures - 1) ?: failureCooldownMs
+
+    /**
+     * Loadable in principle (ripped, network, a server) IGNORING every transient gate (failure
+     * cooldowns, server-down): what a crate resolver asks, so a just-failed song stays in the list.
+     */
+    fun streamableInPrinciple(songId: String): Boolean = lock.withLock {
+        if (streamMap[songId]?.let { !it.failed } == true) return true
+        network.available && rips.hasServer() && rips.entry(songId) != null
     }
 
     /** In the rip manifest (streamable in principle)? */
@@ -228,14 +256,14 @@ class MixStreamLoader(
      * Begin (or join) the stream for [songId]. Null when it can't stream. A finished stream whose
      * file still exists is returned as-is (the deck plays it like a burn).
      */
-    fun open(songId: String, title: String, artist: String): Stream? = lock.withLock {
+    fun open(songId: String, title: String, artist: String, forAuto: Boolean = false): Stream? = lock.withLock {
         streamMap[songId]?.let { s ->
             if (!s.failed) {
                 val f = s.finalFile ?: s.file
                 if (!s.isComplete || f.exists()) return s
             }
         }
-        if (!canStream(songId)) return null
+        if (!canStream(songId, forAuto)) return null
         val entry = rips.entry(songId) ?: return null
         makeRoom()
         val file = File(directory, "${safe(songId)}-${UUID.randomUUID().toString().take(8)}.mp3")
@@ -244,7 +272,6 @@ class MixStreamLoader(
         val s = Stream(songId, file, title, artist, clock())
         streamMap[songId] = s
         recentFailures.remove(songId)
-        adopter.yieldBackgroundDownload(songId)
         val cutKey = entry.cutKey
         if (entry.source == "analog" && cutKey != null) {
             // Prefer the per-song cut - streaming a whole album side to reach one song is the
@@ -257,6 +284,8 @@ class MixStreamLoader(
             s.startMs = if (entry.source == "analog") entry.startMs else null
             scope.launch {
                 val url = presignWithRetry(songId)
+                // Yield only once the stream is certain to start (adoptable + presigned), and off the lock.
+                if (url != null) adopter.yieldBackgroundDownload(songId)
                 lock.withLock {
                     if (streamMap[songId] !== s) return@launch
                     if (url == null) {
@@ -511,6 +540,8 @@ class MixStreamLoader(
 
     private fun finishComplete(s: Stream, moved: File?) {
         s.isComplete = true
+        consecutiveFailures.remove(s.songId)
+        lastFailureAt.remove(s.songId)
         // Adopted: the file now lives in the burn folder.
         s.finalFile = moved ?: s.file
         val secs = (clock() - s.startedAt) / 1000.0
@@ -540,7 +571,12 @@ class MixStreamLoader(
             stemProgressed(base)
             return
         }
-        recentFailures[s.songId] = clock()
+        val now = clock()
+        val prev = lastFailureAt[s.songId]
+        if (prev != null && now - prev > FAILURE_COUNT_WINDOW_MS) consecutiveFailures.remove(s.songId)
+        lastFailureAt[s.songId] = now
+        recentFailures[s.songId] = now
+        consecutiveFailures[s.songId] = (consecutiveFailures[s.songId] ?: 0) + 1
         val id = s.songId
         post { onProgress?.invoke(id) }
         post { onFailed?.invoke(id) }
@@ -587,12 +623,18 @@ class MixStreamLoader(
 
     internal fun tripServerDownForTesting() = lock.withLock { tripServerDown("test") }
 
+    internal fun completeStreamForTesting(songId: String) = lock.withLock { streamMap[songId]?.let { finishComplete(it, null) } }
+
     internal fun failStreamForTesting(songId: String) = lock.withLock { streamMap[songId]?.let { fail(it, "test") } }
 
     companion object {
         const val DEFAULT_MAX_CONCURRENT = 3
         const val DEFAULT_MAX_RETRIES = 3
         const val DEFAULT_FAILURE_COOLDOWN_MS = 120_000L
+        /** Auto-DJ cooldown schedule for the 1st, 2nd, 3rd consecutive failure of a song. */
+        val AUTO_FAILURE_COOLDOWNS_MS = longArrayOf(2_000L, 2_000L, 3_000L).toList()
+        /** A song's consecutive-failure count resets when its last failure is older than this. */
+        const val FAILURE_COUNT_WINDOW_MS = 10 * 60_000L
         const val DEFAULT_SERVER_DOWN_COOLDOWN_MS = 60_000L
         const val REQUEST_TIMEOUT_S = 20L
         const val STEM_MAX_REQUESTS = 2

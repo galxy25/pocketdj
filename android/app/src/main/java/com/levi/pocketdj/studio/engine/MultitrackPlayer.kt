@@ -9,6 +9,8 @@ import com.levi.pocketdj.studio.model.StudioArrangement
 import com.levi.pocketdj.studio.model.StudioTrack
 import com.levi.pocketdj.studio.store.StudioStore
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,6 +25,12 @@ interface MultitrackClipLoader {
 
     /** Warp/pitch the window [from, from+frames) offline (native stretch); null on failure (caller falls back to the raw window). */
     suspend fun transform(source: PcmBuffer, from: Long, frames: Long, rate: Double, pitchCents: Double): PcmBuffer?
+
+    /** Changes whenever the source audio under [fileName] changes (page-cache invalidation on clip edit). */
+    fun sourceStamp(fileName: String): String = ""
+
+    /** Canonical PCM for ONLY [startMs, startMs+lenMs) of a clip file (bounded heap for long clips); null = unsupported/unreadable, caller decodes the whole file. */
+    suspend fun decodeWindow(fileName: String, startMs: Int, lenMs: Int): PcmBuffer? = null
 }
 
 class StudioClipLoader(private val store: StudioStore, private val render: StudioRender) : MultitrackClipLoader {
@@ -34,6 +42,15 @@ class StudioClipLoader(private val store: StudioStore, private val render: Studi
 
     override suspend fun transform(source: PcmBuffer, from: Long, frames: Long, rate: Double, pitchCents: Double): PcmBuffer? =
         runCatching { render.transformBuffer(source, from, frames, rate, pitchCents) }.getOrNull()
+
+    override suspend fun decodeWindow(fileName: String, startMs: Int, lenMs: Int): PcmBuffer? {
+        val f = store.clipFile(fileName) ?: return null
+        val pcm = runCatching { render.decodeRangeBuffer(f.path, startMs, lenMs) }.getOrNull() ?: return null
+        return if (StudioAudio.isCanonical(pcm)) pcm else pcm.toCanonical()
+    }
+
+    override fun sourceStamp(fileName: String): String =
+        store.clipFile(fileName)?.let { "${it.length()}-${it.lastModified()}" } ?: ""
 }
 
 /**
@@ -58,6 +75,13 @@ class MultitrackPlayer(
     private val onFocusRelease: () -> Unit = {},
     /** Record-to-master tap (STU-13). The default writes its temp WAVs to the JVM temp dir; the app passes the cache dir. */
     val recorder: MasterRecorder = MasterRecorder(),
+    /** ANS-STU-5: long clip windows are cached as PCM16 pages and mmap-read; null keeps everything in memory. */
+    private val pageStore: ClipPageStore? = null,
+    private val shortClipFrames: Int = ClipPageStore.SHORT_CLIP_FRAMES,
+    /** Dispatcher for page-cache file I/O and the paged context's first read-ahead (never Main). */
+    private val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
+    /** Clip file names any saved arrangement still references; page files of every other source are swept. null = no sweep. */
+    private val liveClipFiles: (() -> Set<String>)? = null,
 ) {
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -113,17 +137,21 @@ class MultitrackPlayer(
 
     private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean, record: Boolean = false, quantized: Boolean = false): PlayOutcome {
         if (!AudioFocusPolicy.gateStart("multitrack")) return PlayOutcome.REFUSED
+        if (!fromReprime) { onUserTransport?.invoke(); parked = null }   // onFocus below re-requests the held focus
         val gen = synchronized(lock) { stopInternal(keepReprime = fromReprime, reason = if (fromReprime) "reprime" else "restart"); generation.get() }
         val rate = StudioAudio.CANONICAL_RATE
         // The ONE planning path shared with ArrangerBouncer (WYSIWYG): decode once, window, warp, beat-snap.
         // Whole clips are held as float PCM on the Java heap: an over-long arrangement must degrade to a message, never an OOM crash.
         val clips = try {
-            ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate) { gen != generation.get() }
+            ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate, { gen != generation.get() }, pageStore, shortClipFrames, ioDispatcher)
         } catch (_: OutOfMemoryError) {
             synchronized(lock) { stopInternal(keepReprime = false, reason = "oom") }
             return PlayOutcome.TOO_LARGE
         } ?: return PlayOutcome.SUPERSEDED // stop-during-decode wins
-        if (gen != generation.get()) return PlayOutcome.SUPERSEDED
+        if (gen != generation.get()) { clips.forEach { it.reader?.close() }; return PlayOutcome.SUPERSEDED }
+        if (pageStore != null && liveClipFiles != null) withContext(ioDispatcher) {
+            runCatching { pageStore.retainSources(liveClipFiles.invoke() + arrangement.tracks.flatMap { t -> t.clips.map { it.fileName } }) }
+        }
         if (clips.isEmpty()) return PlayOutcome.NOTHING_TO_PLAY
 
         val isLoop = arrangement.loopEnabled && arrangement.loopEndMs > arrangement.loopStartMs
@@ -132,8 +160,10 @@ class MultitrackPlayer(
         val loopStart = MultitrackRenderContext.msToFrames(arrangement.loopStartMs, rate)
         val loopEnd = MultitrackRenderContext.msToFrames(arrangement.loopEndMs, rate)
 
-        val ctx = newContext()
-        ctx.load(clips, arrangement.tracks.size, if (isLoop) loopStart else seekFrame, isLoop, loopStart, loopEnd)
+        // load() primes the paged read-ahead synchronously (mmap page-ins): keep that off the caller's (Main) thread.
+        val ctx = withContext(ioDispatcher) {
+            newContext().also { it.load(clips, arrangement.tracks.size, if (isLoop) loopStart else seekFrame, isLoop, loopStart, loopEnd) }
+        }
         synchronized(lock) {
             // Re-check under the same lock stop() takes: a Stop that landed since the last await must not be followed by a sink start.
             if (gen != generation.get()) { ctx.release(); return PlayOutcome.SUPERSEDED }
@@ -171,9 +201,51 @@ class MultitrackPlayer(
         return PlayOutcome.STARTED
     }
 
-    fun stop(reason: String = "user-stop") { stopInternal(keepReprime = false, reason = reason); recordWanted = false; recordQuantized = false }
+    /** ANS-STU-3: any explicit play/stop supersedes a pending interruption resume. */
+    @Volatile var onUserTransport: (() -> Unit)? = null
 
-    private fun stopInternal(keepReprime: Boolean, naturalEnd: Boolean = false, reason: String = if (naturalEnd) "natural-end" else "user-stop") = synchronized(lock) {
+    /** What a transient focus loss interrupted (arrangement + timeline position); focus is HELD while set. */
+    data class Parked(val arrangement: StudioArrangement, val positionMs: Int)
+    @Volatile var parked: Parked? = null; private set
+
+    fun stop(reason: String = "user-stop") {
+        onUserTransport?.invoke()
+        stopInternal(keepReprime = false, reason = reason); recordWanted = false; recordQuantized = false
+        clearParked()
+    }
+
+    private fun clearParked() { if (parked != null) { parked = null; onFocusRelease() } }
+
+    /**
+     * Transient focus loss: remember the arrangement and the timeline position, silence the sink and KEEP the focus
+     * request so AUDIOFOCUS_GAIN arrives. A master-record take cannot be paused mid-way, so it ends instead (returns false).
+     */
+    fun parkForInterruption(): Boolean {
+        val a = latest
+        if (!_isPlaying.value || a == null) return false
+        if (recorder.isRecording) { stop("focus-transient"); return false }
+        val pos = positionMs(a) ?: startOffsetMs
+        synchronized(lock) {
+            parked = Parked(a, pos)
+            stopInternal(keepReprime = false, reason = "focus-transient", holdFocus = true)
+        }
+        return true
+    }
+
+    /**
+     * Focus regained: restart from the parked position. [fresh] resolves the CURRENT document (edits made while
+     * parked are heard); null falls back to the arrangement as it was parked.
+     */
+    suspend fun resumeFromInterruption(fresh: (String) -> StudioArrangement? = { null }): PlayOutcome {
+        val p = parked ?: return PlayOutcome.NOTHING_TO_PLAY
+        parked = null
+        val a = fresh(p.arrangement.id) ?: p.arrangement
+        val outcome = playInternal(a, p.positionMs.coerceIn(0, a.lengthMs), fromReprime = false)
+        if (outcome != PlayOutcome.STARTED && !_isPlaying.value) onFocusRelease()
+        return outcome
+    }
+
+    private fun stopInternal(keepReprime: Boolean, naturalEnd: Boolean = false, reason: String = if (naturalEnd) "natural-end" else "user-stop", holdFocus: Boolean = false) = synchronized(lock) {
         generation.incrementAndGet()
         autoStop?.cancel(); autoStop = null
         if (!keepReprime) { reprime?.cancel(); reprime = null }
@@ -190,7 +262,7 @@ class MultitrackPlayer(
         val was = _isPlaying.value
         _isPlaying.value = false
         _playingArrangementId.value = null
-        if (was) { StudioDiag.stop("multitrack", reason); onFocusRelease() }
+        if (was) { StudioDiag.stop("multitrack", reason); if (!holdFocus) onFocusRelease() }
     }
 
     /** Current timeline position while playing (cursor), else null. */

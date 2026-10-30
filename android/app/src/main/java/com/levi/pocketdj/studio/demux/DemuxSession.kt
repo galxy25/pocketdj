@@ -47,7 +47,8 @@ interface DemuxEnv {
     suspend fun burn(songId: String, title: String, artist: String): Boolean
     /** Carve [startMs, endMs) of [src] into [dest]; true on success. */
     suspend fun carve(src: File, startMs: Int, endMs: Int, dest: File): Boolean
-    fun studioFile(id: String): File?
+    /** Playable local file for a Performance item; a SAF-stored one is copied into the cache (suspend). */
+    suspend fun studioFile(id: String): File?
     suspend fun hasServer(): Boolean
     fun songStemsBurned(songId: String): Boolean
     fun songIsStemmed(songId: String): Boolean

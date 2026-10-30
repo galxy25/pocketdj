@@ -45,6 +45,8 @@ class PlayStatsStore(
         val schemaVersion: Int = PLAY_STATS_SCHEMA_VERSION,
         val stats: Map<String, Stat> = emptyMap(),
         val appleTaggingMigratedAtMs: Double? = null,
+        /** Stamped once the history log has been folded in (or deliberately skipped); additive-optional. */
+        val historySeededAtMs: Double? = null,
     )
 
     private val json = PdjJson.lenient
@@ -53,6 +55,7 @@ class PlayStatsStore(
 
     @Volatile private var stats: Map<String, Stat> = emptyMap()
     @Volatile private var migratedAtMs: Double? = null
+    @Volatile private var seededAtMs: Double? = null
     private val _revision = MutableStateFlow(0)
 
     /** Bumped on EVERY mutation (play, reload, clear, migration) so revision-keyed memos invalidate. */
@@ -66,6 +69,7 @@ class PlayStatsStore(
         decode()?.let { doc ->
             stats = doc.stats
             migratedAtMs = doc.appleTaggingMigratedAtMs
+            seededAtMs = doc.historySeededAtMs
         }
         synchronized(lock) { migrateUntaggedRows(nowMs.toDouble()) }
     }
@@ -86,6 +90,35 @@ class PlayStatsStore(
         if (changed) {
             stats = next
             _revision.value += 1
+            save()
+        }
+    }
+
+    /**
+     * One-shot migration for installs that predate this store: when the stats map is empty but the
+     * history log is not, fold each event into plays/lastPlayed/skips (same re-count window as
+     * [notePlayed]). Always stamps [Document.historySeededAtMs] so it never runs twice, and never
+     * touches a non-empty map (live stats win).
+     */
+    fun seedFromHistoryIfNeeded(events: List<com.levi.pocketdj.data.history.PlayEvent>, nowMs: Long = System.currentTimeMillis()) {
+        if (seededAtMs != null) return
+        synchronized(lock) {
+            if (seededAtMs != null) return
+            if (stats.isEmpty() && events.isNotEmpty()) {
+                val next = HashMap<String, Stat>()
+                for (e in events.sortedBy { it.playedAt }) {
+                    if (e.songId.isEmpty()) continue
+                    val cur = next[e.songId]
+                    var s = cur ?: Stat(playCount = 0, lastPlayedAt = 0.0, preTagPlayCount = 0)
+                    if (cur == null || e.playedAt - s.lastPlayedAt >= RECOUNT_WINDOW_MS) s = s.copy(playCount = s.playCount + 1)
+                    s = s.copy(lastPlayedAt = maxOf(s.lastPlayedAt, e.playedAt))
+                    if (e.wasSkipped == true) s = s.copy(skipCount = (s.skipCount ?: 0) + 1)
+                    next[e.songId] = s
+                }
+                stats = next
+                _revision.value += 1
+            }
+            seededAtMs = nowMs.toDouble()
             save()
         }
     }
@@ -167,6 +200,7 @@ class PlayStatsStore(
             stats = doc.stats
             _revision.value += 1
             migratedAtMs = listOfNotNull(migratedAtMs, doc.appleTaggingMigratedAtMs).minOrNull()
+            seededAtMs = listOfNotNull(seededAtMs, doc.historySeededAtMs).minOrNull()
             migrateUntaggedRows(nowMs.toDouble())
         }
     }
@@ -175,6 +209,7 @@ class PlayStatsStore(
     fun clear() {
         synchronized(lock) {
             stats = emptyMap()
+            seededAtMs = System.currentTimeMillis().toDouble() // a wipe must not be resurrected from history
             _revision.value += 1
             writer.deleteNow(version.incrementAndGet())
         }
@@ -183,7 +218,7 @@ class PlayStatsStore(
     fun flush() = synchronized(lock) { saveNow() }
 
     private fun render(): String =
-        json.encodeToString(Document.serializer(), Document(stats = stats, appleTaggingMigratedAtMs = migratedAtMs))
+        json.encodeToString(Document.serializer(), Document(stats = stats, appleTaggingMigratedAtMs = migratedAtMs, historySeededAtMs = seededAtMs))
 
     private fun save() {
         val snapshot = render()

@@ -1,7 +1,7 @@
 package com.levi.pocketdj.data.recs
 
 import com.levi.pocketdj.data.PdjJson
-import com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET
+import com.levi.pocketdj.data.config.RemoteEndpoints
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -23,7 +23,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /** The key + scoped profile id the sibling first-party service (listening pockets) rides. */
-data class RecCredentials(val key: String, val profileId: String, val enrollSecret: String = REC_ENGINE_ENROLL_SECRET)
+data class RecCredentials(val key: String, val profileId: String, val enrollSecret: String = RemoteEndpoints.recEngineEnroll())
 
 /**
  * The cloud RECOMMENDATION ENGINE orchestrator (iOS `RecommendationService`). While — and ONLY
@@ -399,6 +399,9 @@ class RecommendationService(
             } catch (e: RecEngineClient.ClientError.KeyMismatch) {
                 if (ep == flushEpoch.get()) _syncError.value = KEY_MISMATCH_MESSAGE
                 return
+            } catch (e: RecEngineClient.ClientError.ProfileCapReached) {
+                if (ep == flushEpoch.get()) _syncError.value = PROFILE_CAP_MESSAGE
+                return
             } catch (e: RecEngineClient.ClientError.EnrollmentRequired) {
                 if (ep == flushEpoch.get()) _syncError.value = ENROLLMENT_REQUIRED_MESSAGE
                 return
@@ -472,7 +475,8 @@ class RecommendationService(
         } catch (e: RecEngineClient.ClientError) {
             if (ep != flushEpoch.get()) return false
             when (e) {
-                is RecEngineClient.ClientError.KeyMismatch, is RecEngineClient.ClientError.EnrollmentRequired -> Unit
+                is RecEngineClient.ClientError.KeyMismatch, is RecEngineClient.ClientError.EnrollmentRequired,
+                is RecEngineClient.ClientError.ProfileCapReached -> Unit
                 is RecEngineClient.ClientError.Http -> if (e.code !in 400..499) return false
                 is RecEngineClient.ClientError.BadResponse -> return false
             }
@@ -582,6 +586,25 @@ class RecommendationService(
             persistSyncState()
         }
         flushSoon()
+    }
+
+    /**
+     * The shortlist PRODUCER (iOS `ForYouView.scheduleAudioAnalysis`): after a ranking commits, select the night's
+     * ids on device ([select], default [ForYouFeedBuilder.audioShortlist]) minus what the server already holds, and
+     * hand ONLY the ids to [enqueueAudioAnalysis]. No-op (selector never runs) with the engine off or no ranking yet.
+     * Returns the ids selected (empty when gated).
+     */
+    fun scheduleAudioAnalysis(
+        snapshot: ForYouFeedSnapshot,
+        inputs: ForYouFeedInputs,
+        select: (ForYouFeedSnapshot, ForYouFeedInputs, Set<String>) -> List<String> = { s, i, pending ->
+            ForYouFeedBuilder.audioShortlist(s, i, pending = pending)
+        },
+    ): List<String> {
+        if (!isEnabled || !snapshot.hasResult) return emptyList()
+        val ids = select(snapshot, inputs, audioPendingIds)
+        enqueueAudioAnalysis(ids)
+        return ids
     }
 
     // ---- collection suggestions (SongDetail + Add sheet) ----------------------------------
@@ -846,6 +869,7 @@ class RecommendationService(
         const val KEY_MISMATCH_MESSAGE =
             "This device's recommendation key doesn't match the cloud data. Tap Delete cloud data " +
                 "below to reset it — your recommendations rebuild from this device's history."
+        const val PROFILE_CAP_MESSAGE = "The recommendation service isn't accepting new profiles right now."
         const val ENROLLMENT_REQUIRED_MESSAGE =
             "This PocketDJ build predates a recommendation-service reset. " +
                 "Update the app to reconnect — your listening history is safe on this device."

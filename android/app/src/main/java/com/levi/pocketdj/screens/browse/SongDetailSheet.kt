@@ -90,7 +90,7 @@ fun SongDetailSheet(
     LaunchedEffect(song) {
         lyrics = song?.let { graph.browseGraph.lyricsStore.lyrics(it) }
     }
-    val canPlay = playability(songId, manifest, settings?.hasRipServer == true, song?.appleMusicId)
+    val canPlay = playability(songId, manifest, settings?.hasRipServer == true, song?.appleMusicId, graph.studioGraph.profileAudio.hasLocalAsset(songId))
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(

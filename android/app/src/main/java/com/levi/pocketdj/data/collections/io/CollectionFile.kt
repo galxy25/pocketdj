@@ -48,11 +48,11 @@ object CollectionFile {
 
     /** One pocket as a versioned `CollectionsDocument` JSON envelope. */
     fun pocketEnvelope(pocket: Pocket, json: Json = PdjJson.lenient): ByteArray =
-        CollectionsCodec.encode(json, CollectionsDocument(pockets = listOf(pocket))).toByteArray(Charsets.UTF_8)
+        CollectionsCodec.encode(json, CollectionsDocument(pockets = listOf(pocket.copy(amPlaylistId = null)))).toByteArray(Charsets.UTF_8)
 
     /** One playlist as a versioned `CollectionsDocument` JSON envelope. */
     fun playlistEnvelope(playlist: Playlist, json: Json = PdjJson.lenient): ByteArray =
-        CollectionsCodec.encode(json, CollectionsDocument(playlists = listOf(playlist))).toByteArray(Charsets.UTF_8)
+        CollectionsCodec.encode(json, CollectionsDocument(playlists = listOf(playlist.copy(amPlaylistId = null)))).toByteArray(Charsets.UTF_8)
 
     fun decodeEnvelope(data: ByteArray, json: Json = PdjJson.lenient): CollectionsDocument =
         CollectionsCodec.decode(json, String(data, Charsets.UTF_8))

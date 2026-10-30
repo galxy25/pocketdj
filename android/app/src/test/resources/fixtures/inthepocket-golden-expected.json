@@ -1,0 +1,4647 @@
+{
+  "algoVersion" : 1,
+  "cases" : [
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-seed-1",
+      "picks" : [
+        {
+          "id" : "f5",
+          "score" : 2.0643727794436111,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "8A",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f9",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f8",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Funk",
+            "120 BPM"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.266,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-seed-2",
+      "picks" : [
+        {
+          "id" : "f5",
+          "score" : 2.0643727794436111,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "8A",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f9",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f2",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-seed-3",
+      "picks" : [
+        {
+          "id" : "f1",
+          "score" : 3.3470000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "Groovy",
+            "8A",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f10",
+          "score" : 1.798,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM"
+          ]
+        },
+        {
+          "id" : "f2",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-seed-4",
+      "picks" : [
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f10",
+          "score" : 1.798,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM"
+          ]
+        },
+        {
+          "id" : "f2",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.266,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-seed-5",
+      "picks" : [
+        {
+          "id" : "f6",
+          "score" : 2.266,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "f9",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f1",
+          "score" : 3.3470000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "Groovy",
+            "8A",
+            "118 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-seed-6",
+      "picks" : [
+        {
+          "id" : "f7",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.266,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "f1",
+          "score" : 3.3470000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "Groovy",
+            "8A",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-seed-7",
+      "picks" : [
+        {
+          "id" : "f6",
+          "score" : 2.266,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "f1",
+          "score" : 3.3470000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "Groovy",
+            "8A",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f2",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f10",
+          "score" : 1.798,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-seed-8",
+      "picks" : [
+        {
+          "id" : "f5",
+          "score" : 2.0643727794436111,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "8A",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.266,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-timeonly-seed-1",
+      "picks" : [
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "s1",
+          "score" : 1.9563333333333333,
+          "why" : [
+            "Soul",
+            "8A",
+            "121 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.3969999999999998,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.49399999999999999
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.32900000000000001
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-timeonly-seed-2",
+      "picks" : [
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "f5",
+          "score" : 2.1953727794436109,
+          "why" : [
+            "Funk",
+            "8A",
+            "Groovy",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f4",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "124 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.49399999999999999
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.32900000000000001
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-timeonly-seed-3",
+      "picks" : [
+        {
+          "id" : "f1",
+          "score" : 3.4779999999999998,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "Groovy",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "f9",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.49399999999999999
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.32900000000000001
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-exclusion-familiarity-seed-1",
+      "picks" : [
+        {
+          "id" : "f9",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.7810000000000001,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "s2",
+          "score" : 1.3374220840963782,
+          "why" : [
+            "Soul",
+            "123 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f5",
+          "score" : 2.2243727794436112,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "8A",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-exclusion-familiarity-seed-2",
+      "picks" : [
+        {
+          "id" : "f9",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.7810000000000001,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.1659999999999999,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "f8",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Funk",
+            "120 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-exclusion-familiarity-seed-3",
+      "picks" : [
+        {
+          "id" : "f3",
+          "score" : 2.5876666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.7810000000000001,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "f9",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f5",
+          "score" : 2.2243727794436112,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "8A",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-exclusion-familiarity-seed-4",
+      "picks" : [
+        {
+          "id" : "f6",
+          "score" : 2.1659999999999999,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "f8",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Funk",
+            "120 BPM"
+          ]
+        },
+        {
+          "id" : "f4",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "124 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f10",
+          "score" : 1.798,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-roundlearning-seed-1",
+      "picks" : [
+        {
+          "id" : "f10",
+          "score" : 2.8480000000000003,
+          "why" : [
+            "Funk",
+            "Eve",
+            "8A",
+            "117 BPM"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 2.3410000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "f4",
+          "score" : 2.255874637892854,
+          "why" : [
+            "Funk",
+            "124 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.8660000000000001,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1.6000000000000001
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.47399999999999998
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "artist",
+          "label" : "Eve",
+          "value" : "eve",
+          "weight" : 0.45000000000000001
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.14099999999999999
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-roundlearning-seed-2",
+      "picks" : [
+        {
+          "id" : "f10",
+          "score" : 2.8480000000000003,
+          "why" : [
+            "Funk",
+            "Eve",
+            "8A",
+            "117 BPM"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 2.3410000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.6076666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f4",
+          "score" : 2.255874637892854,
+          "why" : [
+            "Funk",
+            "124 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1.6000000000000001
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.47399999999999998
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "artist",
+          "label" : "Eve",
+          "value" : "eve",
+          "weight" : 0.45000000000000001
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.14099999999999999
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-roundlearning-seed-3",
+      "picks" : [
+        {
+          "id" : "f1",
+          "score" : 3.8070000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "Groovy",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 2.3410000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "f9",
+          "score" : 2.3410000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f5",
+          "score" : 2.9743727794436112,
+          "why" : [
+            "Funk",
+            "Eve",
+            "8A",
+            "Groovy",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1.6000000000000001
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.47399999999999998
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "artist",
+          "label" : "Eve",
+          "value" : "eve",
+          "weight" : 0.45000000000000001
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.14099999999999999
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location B",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-learning-relaxed-seed-1",
+      "picks" : [
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "s1",
+          "score" : 1.9563333333333333,
+          "why" : [
+            "Soul",
+            "8A",
+            "121 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.3969999999999998,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.49399999999999999
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.32900000000000001
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location B",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-learning-relaxed-seed-2",
+      "picks" : [
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        },
+        {
+          "id" : "f5",
+          "score" : 2.1953727794436109,
+          "why" : [
+            "Funk",
+            "8A",
+            "Groovy",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f4",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "124 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.49399999999999999
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.32900000000000001
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-collections-seed-1",
+      "picks" : [
+        {
+          "id" : "f2",
+          "score" : 2.7057240079045322,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f8",
+          "score" : 2.4898493700116782,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 2.9898493700116782,
+          "why" : [
+            "Funk",
+            "121 BPM",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f10",
+          "score" : 2.6878493700116781,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM",
+            "Like Funk Night"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        },
+        {
+          "dim" : "collection",
+          "label" : "Funk Night",
+          "value" : "col_funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "collection",
+          "label" : "Chill",
+          "value" : "col_chill",
+          "weight" : 0.13
+        },
+        {
+          "dim" : "collection",
+          "label" : "Your collection",
+          "value" : "col_gone",
+          "weight" : 0.053999999999999999
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-collections-seed-2",
+      "picks" : [
+        {
+          "id" : "f2",
+          "score" : 2.7057240079045322,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f8",
+          "score" : 2.4898493700116782,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.5153937019817052,
+          "why" : [
+            "Funk",
+            "8A",
+            "119 BPM",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f9",
+          "score" : 2.4898493700116782,
+          "why" : [
+            "Funk",
+            "123 BPM",
+            "Like Funk Night"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        },
+        {
+          "dim" : "collection",
+          "label" : "Funk Night",
+          "value" : "col_funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "collection",
+          "label" : "Chill",
+          "value" : "col_chill",
+          "weight" : 0.13
+        },
+        {
+          "dim" : "collection",
+          "label" : "Your collection",
+          "value" : "col_gone",
+          "weight" : 0.053999999999999999
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-collections-seed-3",
+      "picks" : [
+        {
+          "id" : "f5",
+          "score" : 3.1132221494552894,
+          "why" : [
+            "Funk",
+            "8A",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f2",
+          "score" : 2.7057240079045322,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.5153937019817052,
+          "why" : [
+            "Funk",
+            "8A",
+            "119 BPM",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f4",
+          "score" : 2.9057240079045323,
+          "why" : [
+            "Funk",
+            "124 BPM",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        },
+        {
+          "dim" : "collection",
+          "label" : "Funk Night",
+          "value" : "col_funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "collection",
+          "label" : "Chill",
+          "value" : "col_chill",
+          "weight" : 0.13
+        },
+        {
+          "dim" : "collection",
+          "label" : "Your collection",
+          "value" : "col_gone",
+          "weight" : 0.053999999999999999
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-collections-seed-4",
+      "picks" : [
+        {
+          "id" : "f4",
+          "score" : 2.9057240079045323,
+          "why" : [
+            "Funk",
+            "124 BPM",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.5153937019817052,
+          "why" : [
+            "Funk",
+            "8A",
+            "119 BPM",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f10",
+          "score" : 2.6878493700116781,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.7598493700116782,
+          "why" : [
+            "Funk",
+            "122 BPM",
+            "Like Funk Night"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        },
+        {
+          "dim" : "collection",
+          "label" : "Funk Night",
+          "value" : "col_funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "collection",
+          "label" : "Chill",
+          "value" : "col_chill",
+          "weight" : 0.13
+        },
+        {
+          "dim" : "collection",
+          "label" : "Your collection",
+          "value" : "col_gone",
+          "weight" : 0.053999999999999999
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-collections-seed-5",
+      "picks" : [
+        {
+          "id" : "f4",
+          "score" : 2.9057240079045323,
+          "why" : [
+            "Funk",
+            "124 BPM",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f10",
+          "score" : 2.6878493700116781,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.7598493700116782,
+          "why" : [
+            "Funk",
+            "122 BPM",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 2.9898493700116782,
+          "why" : [
+            "Funk",
+            "121 BPM",
+            "Like Funk Night"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        },
+        {
+          "dim" : "collection",
+          "label" : "Funk Night",
+          "value" : "col_funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "collection",
+          "label" : "Chill",
+          "value" : "col_chill",
+          "weight" : 0.13
+        },
+        {
+          "dim" : "collection",
+          "label" : "Your collection",
+          "value" : "col_gone",
+          "weight" : 0.053999999999999999
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        118,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "118–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "history",
+      "name" : "history-collections-seed-1",
+      "picks" : [
+        {
+          "id" : "f7",
+          "score" : 3.4423428112790742,
+          "why" : [
+            "Funk",
+            "121 BPM",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 3.3167558298202904,
+          "why" : [
+            "Funk",
+            "119 BPM",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f8",
+          "score" : 2.4823428112790733,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "Like Funk Night"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Gus",
+          "value" : "gus",
+          "weight" : 0.71399999999999997
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.66200000000000003
+        },
+        {
+          "dim" : "collection",
+          "label" : "Funk Night",
+          "value" : "col_funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "collection",
+          "label" : "Road Trip",
+          "value" : "col_roadtrip",
+          "weight" : 0.20100000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        118,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "118–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "history",
+      "name" : "history-collections-seed-2",
+      "picks" : [
+        {
+          "id" : "f7",
+          "score" : 3.4423428112790742,
+          "why" : [
+            "Funk",
+            "121 BPM",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 3.3167558298202904,
+          "why" : [
+            "Funk",
+            "119 BPM",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        },
+        {
+          "id" : "f5",
+          "score" : 3.7261266671155449,
+          "why" : [
+            "Funk",
+            "From your pockets",
+            "Like Funk Night"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Gus",
+          "value" : "gus",
+          "weight" : 0.71399999999999997
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.66200000000000003
+        },
+        {
+          "dim" : "collection",
+          "label" : "Funk Night",
+          "value" : "col_funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "collection",
+          "label" : "Road Trip",
+          "value" : "col_roadtrip",
+          "weight" : 0.20100000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        119,
+        126
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "119–126 BPM",
+        "Soul\/Funk"
+      ],
+      "mode" : "history",
+      "name" : "history-place-narrowing-seed-1",
+      "picks" : [
+        {
+          "id" : "f5",
+          "score" : 2.8100000000000005,
+          "why" : [
+            "Funk",
+            "Eve",
+            "126 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.3100000000000005,
+          "why" : [
+            "Funk",
+            "119 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 1.51,
+          "why" : [
+            "Funk",
+            "122 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 0.75
+        },
+        {
+          "dim" : "artist",
+          "label" : "Dax",
+          "value" : "dax",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Eve",
+          "value" : "eve",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Gus",
+          "value" : "gus",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Hal",
+          "value" : "hal",
+          "weight" : 0.5
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        119,
+        126
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "119–126 BPM",
+        "Soul\/Funk"
+      ],
+      "mode" : "history",
+      "name" : "history-place-narrowing-seed-2",
+      "picks" : [
+        {
+          "id" : "f5",
+          "score" : 2.8100000000000005,
+          "why" : [
+            "Funk",
+            "Eve",
+            "126 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.3100000000000005,
+          "why" : [
+            "Funk",
+            "119 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "s1",
+          "score" : 3.0600000000000005,
+          "why" : [
+            "Soul",
+            "Gus",
+            "121 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 0.75
+        },
+        {
+          "dim" : "artist",
+          "label" : "Dax",
+          "value" : "dax",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Eve",
+          "value" : "eve",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Gus",
+          "value" : "gus",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Hal",
+          "value" : "hal",
+          "weight" : 0.5
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        119,
+        126
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "119–126 BPM",
+        "Soul\/Funk"
+      ],
+      "mode" : "history",
+      "name" : "history-place-narrowing-seed-3",
+      "picks" : [
+        {
+          "id" : "s1",
+          "score" : 3.0600000000000005,
+          "why" : [
+            "Soul",
+            "Gus",
+            "121 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "s5",
+          "score" : 2.1000000000000001,
+          "why" : [
+            "Soul",
+            "Hal",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "s2",
+          "score" : 3.0600000000000005,
+          "why" : [
+            "Soul",
+            "Hal",
+            "123 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 0.75
+        },
+        {
+          "dim" : "artist",
+          "label" : "Dax",
+          "value" : "dax",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Eve",
+          "value" : "eve",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Gus",
+          "value" : "gus",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Hal",
+          "value" : "hal",
+          "weight" : 0.5
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        119,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "119–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "history",
+      "name" : "history-bucket-only-seed-1",
+      "picks" : [
+        {
+          "id" : "f1",
+          "score" : 2.4894981415507571,
+          "why" : [
+            "Funk",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f5",
+          "score" : 2.4894981415507571,
+          "why" : [
+            "Funk",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Funk",
+            "122 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.75
+        },
+        {
+          "dim" : "artist",
+          "label" : "Gus",
+          "value" : "gus",
+          "weight" : 0.5
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        119,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "119–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "history",
+      "name" : "history-bucket-only-seed-2",
+      "picks" : [
+        {
+          "id" : "f5",
+          "score" : 2.4894981415507571,
+          "why" : [
+            "Funk",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f1",
+          "score" : 2.4894981415507571,
+          "why" : [
+            "Funk",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "s1",
+          "score" : 2.8100000000000005,
+          "why" : [
+            "Soul",
+            "Gus",
+            "121 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.75
+        },
+        {
+          "dim" : "artist",
+          "label" : "Gus",
+          "value" : "gus",
+          "weight" : 0.5
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        118,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "118–125 BPM",
+        "Funk"
+      ],
+      "mode" : "history",
+      "name" : "history-skips-seed-1",
+      "picks" : [
+        {
+          "id" : "f3",
+          "score" : 2.7270000000000003,
+          "why" : [
+            "Funk",
+            "Cleo",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f5",
+          "score" : 2.6564981415507578,
+          "why" : [
+            "Funk",
+            "Eve",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.7669999999999999,
+          "why" : [
+            "Funk",
+            "Bix",
+            "121 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.33300000000000002
+        },
+        {
+          "dim" : "artist",
+          "label" : "Bix",
+          "value" : "bix",
+          "weight" : 0.16700000000000001
+        },
+        {
+          "dim" : "artist",
+          "label" : "Cleo",
+          "value" : "cleo",
+          "weight" : 0.16700000000000001
+        },
+        {
+          "dim" : "artist",
+          "label" : "Dax",
+          "value" : "dax",
+          "weight" : 0.16700000000000001
+        },
+        {
+          "dim" : "artist",
+          "label" : "Eve",
+          "value" : "eve",
+          "weight" : 0.16700000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        92,
+        124
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "92–124 BPM",
+        "Hip-Hop\/Electronic"
+      ],
+      "mode" : "history",
+      "name" : "history-hiphop-seed-2",
+      "picks" : [
+        {
+          "id" : "h6",
+          "score" : 2.8929999999999998,
+          "why" : [
+            "Hip-Hop",
+            "Rae",
+            "98 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "h5",
+          "score" : 2.7602804698428427,
+          "why" : [
+            "Hip-Hop",
+            "Quin",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "h2",
+          "score" : 2.8929999999999998,
+          "why" : [
+            "Hip-Hop",
+            "Quin",
+            "96 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Hip-Hop",
+          "value" : "hip-hop",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Pam",
+          "value" : "pam",
+          "weight" : 0.33300000000000002
+        },
+        {
+          "dim" : "artist",
+          "label" : "Quin",
+          "value" : "quin",
+          "weight" : 0.33300000000000002
+        },
+        {
+          "dim" : "artist",
+          "label" : "Rae",
+          "value" : "rae",
+          "weight" : 0.33300000000000002
+        },
+        {
+          "dim" : "genre",
+          "label" : "Electronic",
+          "value" : "electronic",
+          "weight" : 0.33300000000000002
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        90,
+        150
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "90–150 BPM",
+        "Jazz\/Rock"
+      ],
+      "mode" : "cold",
+      "name" : "cold-seed-1",
+      "picks" : [
+        {
+          "id" : "r1",
+          "score" : 2.5600000000000005,
+          "why" : [
+            "Rock",
+            "Jet",
+            "150 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "r2",
+          "score" : 2.2811568571113945,
+          "why" : [
+            "Rock",
+            "Kai",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "j4",
+          "score" : 1.9329999999999998,
+          "why" : [
+            "Jazz",
+            "Oro",
+            "100 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Jazz",
+          "value" : "jazz",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Nia",
+          "value" : "nia",
+          "weight" : 0.66700000000000004
+        },
+        {
+          "dim" : "genre",
+          "label" : "Rock",
+          "value" : "rock",
+          "weight" : 0.66700000000000004
+        },
+        {
+          "dim" : "artist",
+          "label" : "Jet",
+          "value" : "jet",
+          "weight" : 0.33300000000000002
+        },
+        {
+          "dim" : "artist",
+          "label" : "Kai",
+          "value" : "kai",
+          "weight" : 0.33300000000000002
+        },
+        {
+          "dim" : "artist",
+          "label" : "Oro",
+          "value" : "oro",
+          "weight" : 0.33300000000000002
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        90,
+        150
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "90–150 BPM",
+        "Jazz\/Rock"
+      ],
+      "mode" : "cold",
+      "name" : "cold-seed-2",
+      "picks" : [
+        {
+          "id" : "r1",
+          "score" : 2.5600000000000005,
+          "why" : [
+            "Rock",
+            "Jet",
+            "150 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "r2",
+          "score" : 2.2811568571113945,
+          "why" : [
+            "Rock",
+            "Kai",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "j2",
+          "score" : 2.8929999999999998,
+          "why" : [
+            "Jazz",
+            "Oro",
+            "95 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Jazz",
+          "value" : "jazz",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Nia",
+          "value" : "nia",
+          "weight" : 0.66700000000000004
+        },
+        {
+          "dim" : "genre",
+          "label" : "Rock",
+          "value" : "rock",
+          "weight" : 0.66700000000000004
+        },
+        {
+          "dim" : "artist",
+          "label" : "Jet",
+          "value" : "jet",
+          "weight" : 0.33300000000000002
+        },
+        {
+          "dim" : "artist",
+          "label" : "Kai",
+          "value" : "kai",
+          "weight" : 0.33300000000000002
+        },
+        {
+          "dim" : "artist",
+          "label" : "Oro",
+          "value" : "oro",
+          "weight" : 0.33300000000000002
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        90,
+        150
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "90–150 BPM",
+        "Jazz\/Rock"
+      ],
+      "mode" : "cold",
+      "name" : "cold-seed-3",
+      "picks" : [
+        {
+          "id" : "j1",
+          "score" : 3.2270000000000003,
+          "why" : [
+            "Jazz",
+            "Nia",
+            "90 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "j4",
+          "score" : 1.9329999999999998,
+          "why" : [
+            "Jazz",
+            "Oro",
+            "100 BPM"
+          ]
+        },
+        {
+          "id" : "j2",
+          "score" : 2.8929999999999998,
+          "why" : [
+            "Jazz",
+            "Oro",
+            "95 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Jazz",
+          "value" : "jazz",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Nia",
+          "value" : "nia",
+          "weight" : 0.66700000000000004
+        },
+        {
+          "dim" : "genre",
+          "label" : "Rock",
+          "value" : "rock",
+          "weight" : 0.66700000000000004
+        },
+        {
+          "dim" : "artist",
+          "label" : "Jet",
+          "value" : "jet",
+          "weight" : 0.33300000000000002
+        },
+        {
+          "dim" : "artist",
+          "label" : "Kai",
+          "value" : "kai",
+          "weight" : 0.33300000000000002
+        },
+        {
+          "dim" : "artist",
+          "label" : "Oro",
+          "value" : "oro",
+          "weight" : 0.33300000000000002
+        }
+      ]
+    },
+    {
+      "name" : "cold-no-history",
+      "result" : "notEnoughCandidates"
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-localrounds-seed-1",
+      "picks" : [
+        {
+          "id" : "f9",
+          "score" : 2.3810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f8",
+          "score" : 2.1000000000000001,
+          "why" : [
+            "Funk",
+            "120 BPM"
+          ]
+        },
+        {
+          "id" : "s3",
+          "score" : 0.995,
+          "why" : [
+            "Soul",
+            "124 BPM"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 2.3810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.624
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.39500000000000002
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-localrounds-seed-2",
+      "picks" : [
+        {
+          "id" : "f10",
+          "score" : 2.298,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM"
+          ]
+        },
+        {
+          "id" : "f8",
+          "score" : 2.1000000000000001,
+          "why" : [
+            "Funk",
+            "120 BPM"
+          ]
+        },
+        {
+          "id" : "f9",
+          "score" : 2.3810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "n2",
+          "score" : 1.5,
+          "why" : [
+            "Funk"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.624
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.39500000000000002
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-localrounds-seed-3",
+      "picks" : [
+        {
+          "id" : "f6",
+          "score" : 2.9220000000000002,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "f8",
+          "score" : 2.1000000000000001,
+          "why" : [
+            "Funk",
+            "120 BPM"
+          ]
+        },
+        {
+          "id" : "f10",
+          "score" : 2.298,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 2.3810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.624
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.39500000000000002
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        119,
+        126
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "119–126 BPM",
+        "Soul\/Funk"
+      ],
+      "mode" : "history",
+      "name" : "history-localrounds-seed-1",
+      "picks" : [
+        {
+          "id" : "f9",
+          "score" : 2.2250000000000001,
+          "why" : [
+            "Funk",
+            "Dax",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f10",
+          "score" : 2.092280469842843,
+          "why" : [
+            "Funk",
+            "Eve"
+          ]
+        },
+        {
+          "id" : "s3",
+          "score" : 1.9329999999999998,
+          "why" : [
+            "Soul",
+            "124 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 1.333
+        },
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1.125
+        },
+        {
+          "dim" : "artist",
+          "label" : "Dax",
+          "value" : "dax",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Eve",
+          "value" : "eve",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Gus",
+          "value" : "gus",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Hal",
+          "value" : "hal",
+          "weight" : 0.5
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        119,
+        126
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "119–126 BPM",
+        "Soul\/Funk"
+      ],
+      "mode" : "history",
+      "name" : "history-localrounds-seed-2",
+      "picks" : [
+        {
+          "id" : "f9",
+          "score" : 2.2250000000000001,
+          "why" : [
+            "Funk",
+            "Dax",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f10",
+          "score" : 2.092280469842843,
+          "why" : [
+            "Funk",
+            "Eve"
+          ]
+        },
+        {
+          "id" : "s5",
+          "score" : 2.4329999999999998,
+          "why" : [
+            "Soul",
+            "Hal",
+            "119 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 1.333
+        },
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1.125
+        },
+        {
+          "dim" : "artist",
+          "label" : "Dax",
+          "value" : "dax",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Eve",
+          "value" : "eve",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Gus",
+          "value" : "gus",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Hal",
+          "value" : "hal",
+          "weight" : 0.5
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        119,
+        128
+      ],
+      "chips" : [
+        "Weekday evening",
+        "A -> B",
+        "119–128 BPM",
+        "Electronic\/Funk"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-trip-seed-1",
+      "picks" : [
+        {
+          "id" : "f6",
+          "score" : 2.0760000000000001,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "e2",
+          "score" : 2.1333333333333333,
+          "why" : [
+            "Electronic",
+            "128 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "e5",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Electronic",
+            "122 BPM"
+          ]
+        },
+        {
+          "id" : "f1",
+          "score" : 2.8072975250397829,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "Groovy",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Electronic",
+          "value" : "electronic",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 0.75
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.45000000000000001
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.42599999999999999
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.29999999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.25600000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        119,
+        128
+      ],
+      "chips" : [
+        "Weekday evening",
+        "A -> B",
+        "119–128 BPM",
+        "Electronic\/Funk"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-trip-seed-2",
+      "picks" : [
+        {
+          "id" : "f6",
+          "score" : 2.0760000000000001,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "e2",
+          "score" : 2.1333333333333333,
+          "why" : [
+            "Electronic",
+            "128 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f1",
+          "score" : 2.8072975250397829,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "Groovy",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.6059999999999999,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Electronic",
+          "value" : "electronic",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 0.75
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.45000000000000001
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.42599999999999999
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.29999999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.25600000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        145,
+        156
+      ],
+      "chips" : [
+        "Weekend morning",
+        "145–156 BPM",
+        "Rock"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-weekend-seed-1",
+      "picks" : [
+        {
+          "id" : "r4",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Rock",
+            "150 BPM"
+          ]
+        },
+        {
+          "id" : "r2",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Rock",
+            "155 BPM"
+          ]
+        },
+        {
+          "id" : "r6",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Rock",
+            "146 BPM"
+          ]
+        },
+        {
+          "id" : "r5",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Rock",
+            "152 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Rock",
+          "value" : "rock",
+          "weight" : 1
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        145,
+        156
+      ],
+      "chips" : [
+        "Weekend morning",
+        "145–156 BPM",
+        "Rock"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-weekend-seed-2",
+      "picks" : [
+        {
+          "id" : "r4",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Rock",
+            "150 BPM"
+          ]
+        },
+        {
+          "id" : "r2",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Rock",
+            "155 BPM"
+          ]
+        },
+        {
+          "id" : "r3",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Rock",
+            "148 BPM"
+          ]
+        },
+        {
+          "id" : "r5",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Rock",
+            "152 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Rock",
+          "value" : "rock",
+          "weight" : 1
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        88,
+        100
+      ],
+      "chips" : [
+        "Weekday night",
+        "88–100 BPM",
+        "Jazz"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-no-match-falls-to-cold",
+      "picks" : [
+        {
+          "id" : "j1",
+          "score" : 2.5600000000000005,
+          "why" : [
+            "Jazz",
+            "90 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "j4",
+          "score" : 1.6000000000000001,
+          "why" : [
+            "Jazz",
+            "100 BPM"
+          ]
+        },
+        {
+          "id" : "j3",
+          "score" : 2.5600000000000005,
+          "why" : [
+            "Jazz",
+            "88 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "j2",
+          "score" : 2.5600000000000005,
+          "why" : [
+            "Jazz",
+            "95 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Jazz",
+          "value" : "jazz",
+          "weight" : 1
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        119,
+        126
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "119–126 BPM",
+        "Soul\/Funk"
+      ],
+      "mode" : "history",
+      "name" : "cloud-ungenerated-history",
+      "picks" : [
+        {
+          "id" : "f5",
+          "score" : 2.8100000000000005,
+          "why" : [
+            "Funk",
+            "Eve",
+            "126 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.3100000000000005,
+          "why" : [
+            "Funk",
+            "119 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 1.51,
+          "why" : [
+            "Funk",
+            "122 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 1
+        },
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 0.75
+        },
+        {
+          "dim" : "artist",
+          "label" : "Dax",
+          "value" : "dax",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Eve",
+          "value" : "eve",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Gus",
+          "value" : "gus",
+          "weight" : 0.5
+        },
+        {
+          "dim" : "artist",
+          "label" : "Hal",
+          "value" : "hal",
+          "weight" : 0.5
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "limited-playable-5",
+      "picks" : [
+        {
+          "id" : "f1",
+          "score" : 3.3470000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "Groovy",
+            "8A",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f2",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "s1",
+          "score" : 1.6273333333333333,
+          "why" : [
+            "Soul",
+            "8A",
+            "121 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "name" : "limited-playable-2",
+      "result" : "notEnoughCandidates"
+    },
+    {
+      "name" : "nothing-playable",
+      "result" : "nothingPlayable"
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "playable-unknown-ids",
+      "picks" : [
+        {
+          "id" : "f1",
+          "score" : 3.3470000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "Groovy",
+            "8A",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f2",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-bigseed-184467",
+      "picks" : [
+        {
+          "id" : "f10",
+          "score" : 1.798,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM"
+          ]
+        },
+        {
+          "id" : "f2",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f1",
+          "score" : 3.3470000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "Groovy",
+            "8A",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f9",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-bigseed-922337",
+      "picks" : [
+        {
+          "id" : "f1",
+          "score" : 3.3470000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "Groovy",
+            "8A",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f9",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "123 BPM"
+          ]
+        },
+        {
+          "id" : "f5",
+          "score" : 2.0643727794436111,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "8A",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f7",
+          "score" : 1.8810000000000002,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "121 BPM"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-bigseed-123456",
+      "picks" : [
+        {
+          "id" : "f2",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f3",
+          "score" : 2.1476666666666668,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "122 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.266,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "f5",
+          "score" : 2.0643727794436111,
+          "why" : [
+            "Funk",
+            "Groovy",
+            "8A",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "cloud-seed-0",
+      "picks" : [
+        {
+          "id" : "f10",
+          "score" : 1.798,
+          "why" : [
+            "Funk",
+            "8A",
+            "117 BPM"
+          ]
+        },
+        {
+          "id" : "f6",
+          "score" : 2.266,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "f1",
+          "score" : 3.3470000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "Groovy",
+            "8A",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f4",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "124 BPM",
+            "From your pockets"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    },
+    {
+      "bpmBand" : [
+        117,
+        125
+      ],
+      "chips" : [
+        "Weekday evening",
+        "Location A",
+        "117–125 BPM",
+        "Funk\/Soul"
+      ],
+      "mode" : "cloud",
+      "name" : "same-artist-diversity",
+      "picks" : [
+        {
+          "id" : "f6",
+          "score" : 2.266,
+          "why" : [
+            "Funk",
+            "Ada",
+            "8A",
+            "119 BPM"
+          ]
+        },
+        {
+          "id" : "f2",
+          "score" : 1.6558746378928542,
+          "why" : [
+            "Funk",
+            "120 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "f1",
+          "score" : 3.3470000000000004,
+          "why" : [
+            "Funk",
+            "Ada",
+            "Groovy",
+            "8A",
+            "118 BPM",
+            "From your pockets"
+          ]
+        },
+        {
+          "id" : "n2",
+          "score" : 1,
+          "why" : [
+            "Funk"
+          ]
+        }
+      ],
+      "result" : "success",
+      "targets" : [
+        {
+          "dim" : "genre",
+          "label" : "Funk",
+          "value" : "funk",
+          "weight" : 1
+        },
+        {
+          "dim" : "artist",
+          "label" : "Ada",
+          "value" : "ada",
+          "weight" : 0.46800000000000003
+        },
+        {
+          "dim" : "genre",
+          "label" : "Soul",
+          "value" : "soul",
+          "weight" : 0.29599999999999999
+        },
+        {
+          "dim" : "mood",
+          "label" : "Groovy",
+          "value" : "groovy",
+          "weight" : 0.28100000000000003
+        },
+        {
+          "dim" : "camelot",
+          "label" : "8A",
+          "value" : "8A",
+          "weight" : 0.19800000000000001
+        }
+      ]
+    }
+  ],
+  "version" : 1
+}

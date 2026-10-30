@@ -82,6 +82,21 @@ class LinkDeviceProbeTest {
         assertTrue(s !== sut)
     }
 
+    @Test fun link_turnsSyncOn_whenOff_andBackOffIfLinkFails() = runTest {
+        var on = false
+        var probe: ProfileProbe = ProfileProbe.Existing("A")
+        val sut = S3LinkDeviceProbe(InMemorySecretStore().let { ProfileSecretStore(it) }, { "ME" }, { }, { }, { false },
+            { true }, { if (on) probe else ProfileProbe.Disabled }, { listOf("x") },
+            syncEnabled = { on }, setSyncEnabled = { on = it })
+        assertTrue(sut.link(LinkCode.encode(otherId, otherSecret)) is LinkProbeResult.Existing)
+        assertTrue(on)
+        sut.unlink()
+        assertTrue(!on)
+        probe = ProfileProbe.Unknown
+        assertTrue(sut.link(LinkCode.encode(otherId, otherSecret)) is LinkProbeResult.Unavailable)
+        assertTrue(!on)
+    }
+
     @Test fun restore_reflectsPassOutcome() = runTest {
         val f = Fixture()
         assertTrue(f.sut.restore())

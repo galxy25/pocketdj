@@ -85,7 +85,7 @@ class SliceBaker(
     private val roots: StudioRoots,
     private val store: StudioStore,
     private val render: StudioRender,
-    private val rawFile: (StudioSample) -> File?,
+    private val rawFile: suspend (StudioSample) -> RawSource?,
     private val now: () -> Double = { System.currentTimeMillis().toDouble() },
 ) {
     /** Bake pad [slot] of [sampleId]; the new sample id, or null on any failure (missing pad/file/folder, empty carve). */
@@ -95,20 +95,22 @@ class SliceBaker(
         val src = rawFile(s) ?: return null
         val id = StudioFactory.newSampleId()
         val fileName = StudioFolders.fileName(StudioFamily.SAMPLES, id)
-        val dest = StudioFiles.appFile(roots, StudioFamily.SAMPLES, fileName) ?: return null
+        val dest = StudioFiles.appFile(roots, StudioFamily.SAMPLES, fileName)
+        if (dest == null) { src.close(); return null }
         dest.parentFile?.mkdirs()
-        val carved = try { render.carveTrackRegion(src.path, start, end, dest) } catch (e: kotlinx.coroutines.CancellationException) {
+        val carved = try { render.carveTrackRegion(src.file.path, start, end, dest) } catch (e: kotlinx.coroutines.CancellationException) {
             dest.delete(); throw e
         } catch (e: Exception) {
             dest.delete(); return null
-        }
-        store.addSample(
+        } finally { src.close() }
+        // The SAF copy can be large: never on the caller's (UI) thread.
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { store.addSampleRelocating(
             StudioSample(
                 id = id, name = SliceMath.bakedName(s.name, slot), fileName = fileName, wasUserFolder = false, createdAt = now(),
                 durationMs = carved.durationMs, source = StudioSource.File("${s.name} pad ${slot + 1}"),
                 grid = SliceMath.padGrid(s.grid, start, carved.durationMs), edit = StudioSampleEdit.NEUTRAL,
             ),
-        )
+        ) }
         return id
     }
 

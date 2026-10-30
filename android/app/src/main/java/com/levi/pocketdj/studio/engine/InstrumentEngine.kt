@@ -153,6 +153,15 @@ class InstrumentEngine(
     private var replayFromMs = 0
     private var parkedMs: Int? = null
     private var replayLoop: Pair<Int, Int>? = null
+    private var lastReplay: ReplayArgs? = null
+
+    /** ANS-STU-3: any explicit replay/stop supersedes a pending interruption resume. */
+    @Volatile var onUserTransport: (() -> Unit)? = null
+
+    /** The replay a transient focus loss interrupted; focus is HELD (the idle sink-stop skips its release) while set. */
+    data class ReplayArgs(val events: List<StudioNoteEvent>, val loopRegion: Pair<Int, Int>?, val hadExtraStaffs: Boolean)
+    data class ParkedReplay(val args: ReplayArgs, val positionMs: Int)
+    @Volatile var parkedReplay: ParkedReplay? = null; private set
 
     private val renderer = BlockRenderer { out, frames ->
         java.util.Arrays.fill(out, 0, frames * 2, 0f)
@@ -179,6 +188,9 @@ class InstrumentEngine(
         synchronized(lock) {
             if (!sinkRunning) {
                 val k = sink ?: sinkFactory().also { sink = it }
+                // Review fix: a fresh focus request (live notes played during a park) takes focus from the interrupter, so no
+                // AUDIOFOCUS_GAIN will ever resume the parked replay: drop the park instead of holding focus forever.
+                if (parkedReplay != null && !resumingFromPark) { parkedReplay = null; onUserTransport?.invoke() }
                 focus()
                 k.start(renderer)
                 // Final review: an Oboe stream that failed to open leaves isRendering=false; stay "not running" so the
@@ -193,7 +205,7 @@ class InstrumentEngine(
         synchronized(lock) {
             if (!sinkRunning) return
             sink?.stop(); sinkRunning = false
-            focusRelease()
+            if (parkedReplay == null) focusRelease()
             log("instr: sink idle-stop")
         }
     }
@@ -462,7 +474,8 @@ class InstrumentEngine(
     fun replay(events: List<StudioNoteEvent>, fromMs: Int = 0, extraStaffs: List<Pair<SynthVoice, List<StudioNoteEvent>>> = emptyList(), loopRegion: Pair<Int, Int>? = null): Boolean {
         if (primary == null || _state.value.isRecordingTake) return false
         if (!AudioFocusPolicy.gateStart("instrument")) return false
-        stopReplay()
+        if (!resumingFromPark) { onUserTransport?.invoke(); clearParkedReplay() }
+        stopReplay(reason = "restart")
         val all = ArrayList<Pair<SynthVoice?, List<NoteAction>>>()
         all.add(null to TakeScore.actions(events, fromMs))
         extraStaffs.forEach { (v, ev) -> all.add(v to TakeScore.actions(ev, fromMs)) }
@@ -470,6 +483,7 @@ class InstrumentEngine(
         synchronized(lock) { backing = extraStaffs.map { it.first } }
         ensureRunning()
         replayFromMs = fromMs; parkedMs = null
+        lastReplay = ReplayArgs(events, loopRegion, extraStaffs.isNotEmpty())
         replayLoop = loopRegion?.takeIf { it.second > it.first }
         replayAnchorNanos = nanoClock()
         _state.update { it.copy(isReplaying = true) }
@@ -516,7 +530,56 @@ class InstrumentEngine(
         return parkedMs
     }
 
-    fun stopReplay(reason: String = "user-stop") {
+    @Volatile private var resumingFromPark = false
+
+    private fun clearParkedReplay() {
+        if (parkedReplay != null) { parkedReplay = null; if (!sinkRunning) focusRelease() }
+    }
+
+    /** Is a score replay audibly running (the InterruptionCoordinator's isAudible)? */
+    val isReplayAudible: Boolean get() = _state.value.isReplaying
+
+    /** Anything sounding that a transient focus loss must silence: a replay OR live/held notes. */
+    val isAudibleForPark: Boolean get() = _state.value.isReplaying || _state.value.pressedNotes.isNotEmpty()
+
+    /** The coordinator's park: park a replay (if any) and ALWAYS silence live voices. */
+    fun parkForInterruption() {
+        parkReplayForInterruption()
+        allNotesOff()
+    }
+
+    /**
+     * Transient focus loss: remember the replay's events + score position, silence it and KEEP the focus request
+     * (the idle sink-stop skips its release while parked) so AUDIOFOCUS_GAIN arrives.
+     */
+    fun parkReplayForInterruption(): Boolean {
+        val args = lastReplay
+        if (!_state.value.isReplaying || args == null) return false
+        if (args.hadExtraStaffs) {
+            // The overdub backing staffs are retired at stop and cannot be rebuilt: a partial resume would play a different
+            // arrangement, so a multi-staff replay ENDS on the interruption instead of resuming.
+            stopReplay(reason = "focus-transient-multistaff", userInitiated = false)
+            return false
+        }
+        val pos = replayPositionMs() ?: 0
+        parkedReplay = ParkedReplay(args, pos)
+        stopReplay(reason = "focus-transient", userInitiated = false)
+        primary?.allOff()
+        return true
+    }
+
+    /** Focus regained: replay the parked score from where it stopped (a multi-staff replay is never parked: it ends). */
+    fun resumeReplayFromInterruption(): Boolean {
+        val p = parkedReplay ?: return false
+        parkedReplay = null
+        resumingFromPark = true
+        val ok = try { replay(p.args.events, p.positionMs, loopRegion = p.args.loopRegion) } finally { resumingFromPark = false }
+        if (!ok && !sinkRunning) focusRelease()
+        return ok
+    }
+
+    fun stopReplay(reason: String = "user-stop", userInitiated: Boolean = reason != "restart" && reason != "focus-transient") {
+        if (userInitiated) { onUserTransport?.invoke(); clearParkedReplay() }
         if (!_state.value.isReplaying && replayJob == null) return
         val pos = replayPositionMs()
         replayJob?.cancel(); replayJob = null

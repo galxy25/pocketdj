@@ -50,6 +50,9 @@ fun DiscoverAlbumResultsList(
     modifier: Modifier = Modifier,
     /** Settle state of every recorded provisional album, keyed by album id (DISC-2); absent = not added yet. */
     addStates: Map<String, DiscoverAddState> = emptyMap(),
+    /** Album ids whose Apple Music write isn't proven (show "Add to Apple Music again"); retry returns the token. */
+    retryAlbumTokens: Map<String, String?> = emptyMap(),
+    onRetryLibraryWrite: suspend (DiscoverAlbumHit) -> String = { LibraryWrite.SKIPPED_NO_CONNECTION },
 ) {
     var expandedId by rememberSaveable { mutableStateOf<String?>(null) }
     DiscoverStateHost(ui, "album") {
@@ -59,6 +62,7 @@ fun DiscoverAlbumResultsList(
                     hit, canAddToLibrary, expanded = expandedId == hit.id,
                     onToggle = { expandedId = if (expandedId == hit.id) null else hit.id },
                     loadTracks = loadTracks, onAdd = onAdd, addState = addStates[hit.id],
+                    needsRetry = hit.id in retryAlbumTokens, retryReason = retryAlbumTokens[hit.id], onRetry = onRetryLibraryWrite,
                 )
             }
         }
@@ -74,8 +78,13 @@ private fun DiscoverAlbumRow(
     loadTracks: suspend (String) -> DiscoverAlbumExpansion,
     onAdd: suspend (DiscoverAlbumHit) -> Boolean,
     addState: DiscoverAddState? = null,
+    needsRetry: Boolean = false,
+    retryReason: String? = null,
+    onRetry: suspend (DiscoverAlbumHit) -> String = { LibraryWrite.SKIPPED_NO_CONNECTION },
 ) {
     val scope = rememberCoroutineScope()
+    var retrying by remember(hit.id) { mutableStateOf(false) }
+    var retryNotice by remember(hit.id) { mutableStateOf<String?>(null) }
     var busy by remember(hit.id) { mutableStateOf(false) }
     var added by rememberSaveable(hit.id) { mutableStateOf(false) }
     var failed by remember(hit.id) { mutableStateOf(false) }
@@ -102,9 +111,9 @@ private fun DiscoverAlbumRow(
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
-            // Album add only writes the library (no per-track rips yet): without a Music-User-Token it
-            // cannot do anything, so the button is disabled and says why instead of promising a copy.
-            val help = if (canAddToLibrary) DiscoverAddWording.addHelp("album", true) else DiscoverAddWording.ALBUM_NEEDS_SIGN_IN
+            // Enabled whenever results exist (a track source answered); without a Music-User-Token the library
+            // write is recorded as skipped (iOS RipsStore parity) and the tracks still add.
+            val help = DiscoverAddWording.addHelp("album", canAddToLibrary)
             when {
                 busy -> CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
                 // Recorded album: per-track rip progress n/m until every track settles (iOS capsule).
@@ -120,7 +129,6 @@ private fun DiscoverAlbumRow(
                             failed = !added
                         }
                     },
-                    enabled = canAddToLibrary,
                     modifier = Modifier.semantics { contentDescription = help },
                 ) { Icon(Icons.Filled.Add, contentDescription = help) }
             }
@@ -130,6 +138,14 @@ private fun DiscoverAlbumRow(
                 DiscoverAddWording.ADD_FAILED, style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(start = 80.dp, end = 16.dp),
             )
+        }
+        if (needsRetry && addState != null) {
+            DiscoverRetryRow(retrying, retryNotice, reason = retryReason, onRetry = {
+                retrying = true; retryNotice = null
+                scope.launch {
+                    try { retryNotice = AlbumLibraryWriteRetry.notice(onRetry(hit)) } finally { retrying = false }
+                }
+            })
         }
         if (expanded) {
             val t = tracks

@@ -46,11 +46,17 @@ class MultitrackRenderContext(
     private val master: MasterFx = NativeDsp.masterFx(StudioAudio.CANONICAL_RATE.toDouble()),
 ) : BlockRenderer {
 
-    /** A decoded, pre-baked clip: interleaved canonical stereo [samples]; plays frames [srcStart, srcStart+frameLength). */
+    /**
+     * A pre-baked clip: plays frames [srcStart, srcStart+frameLength) of either in-memory interleaved canonical
+     * stereo [samples] (short clips) or a paged [reader] (PCM16 page file; `samples` is null). Exactly one is set.
+     */
     class Clip(
         val trackIndex: Int, val startFrame: Int, val frameLength: Int,
-        val srcStart: Int, val samples: FloatArray,
-    )
+        val srcStart: Int, val samples: FloatArray?, val reader: ClipReader? = null,
+    ) {
+        init { require((samples != null) != (reader != null)) { "Clip needs samples or a reader" } }
+        val isPaged: Boolean get() = reader != null
+    }
 
     private var clipsByTrack: List<List<Clip>> = emptyList()
     private var trackCount = 0
@@ -65,7 +71,7 @@ class MultitrackRenderContext(
     @Volatile private var looping = false
     @Volatile private var loopStart = 0
     @Volatile private var loopEnd = 0
-    private var cursor = 0
+    @Volatile private var cursor = 0
     private var renderedTotal = 0L
     @Volatile private var masterOn = false
     @Volatile private var limitLive = true
@@ -74,6 +80,7 @@ class MultitrackRenderContext(
     private val scratch = arrayOf(FloatArray(maxBlock), FloatArray(maxBlock))
     private val mixL = FloatArray(maxBlock)
     private val mixR = FloatArray(maxBlock)
+    private val pageBuf = FloatArray(maxBlock * 2) // paged-clip read scratch (render thread only)
     private val planarMaster = arrayOf(FloatArray(maxBlock), FloatArray(maxBlock))
 
     /** Absolute frame the NEXT block starts at (timeline coordinates, loop-wrapped). */
@@ -95,6 +102,41 @@ class MultitrackRenderContext(
         // arrangement's real beats after a seek (iOS: renderedTotal = cursor).
         this.renderedTotal = cursor.toLong()
         this.looping = looping; this.loopStart = loopStart; this.loopEnd = loopEnd
+        feeder?.stop(); feeder = null
+        pagedClips = clips.filter { it.isPaged }
+        if (pagedClips.isNotEmpty()) {
+            // Seek/start re-prime: fault the first window in synchronously, then keep the feeder following the cursor.
+            prefetchAhead()
+            feeder = ClipFeeder({ prefetchAhead() }).also { if (startFeeder) it.start() }
+        }
+    }
+
+    private var pagedClips: List<Clip> = emptyList()
+    private var feeder: ClipFeeder? = null
+
+    /**
+     * Touch the pages of every paged clip in [cursor, cursor + [aheadFrames]) (wrapping through the loop region).
+     * Runs on the feeder thread (or synchronously at load); never on the render callback.
+     */
+    fun prefetchAhead(aheadFrames: Int = READ_AHEAD_FRAMES) {
+        if (pagedClips.isEmpty()) return
+        var pos = cursor
+        var left = aheadFrames
+        val ls = loopStart; val le = loopEnd
+        val hasLoop = looping && le > ls
+        if (hasLoop && (pos < ls || pos >= le)) pos = ls
+        var guard = 0
+        while (left > 0 && guard++ < 4) {
+            val span = if (hasLoop) min(left, max(1, le - pos)) else left
+            for (c in pagedClips) {
+                val os = max(c.startFrame, pos); val oe = min(c.startFrame + c.frameLength, pos + span)
+                if (oe > os) c.reader!!.prefetch(c.srcStart + (os - c.startFrame), oe - os)
+            }
+            left -= span
+            if (!hasLoop) break
+            pos += span
+            if (pos >= le) pos = ls
+        }
     }
 
     /** Live per-track mix: [gainLinear] 0 = inaudible; pan is centre-unity balance. */
@@ -114,6 +156,9 @@ class MultitrackRenderContext(
     }
 
     fun setMasterFx(p: MasterFxParams) { master.update(p); masterOn = p.active }
+
+    /** Tests / offline: when false, [load] primes once but does not spawn the feeder thread. */
+    var startFeeder = true
 
     fun setLoop(looping: Boolean, start: Int, end: Int) { this.looping = looping; loopStart = start; loopEnd = end }
 
@@ -162,8 +207,16 @@ class MultitrackRenderContext(
         val os = max(c.startFrame, pos); val oe = min(c.startFrame + c.frameLength, pos + chunk)
         if (oe <= os) return
         var d = dstOff + (os - pos) * 2
+        val samples = c.samples
+        if (samples == null) {
+            val n = oe - os
+            c.reader!!.read(pageBuf, 0, c.srcStart + (os - c.startFrame), n)
+            var s = 0
+            for (i in 0 until n) { dst[d] += pageBuf[s] * gl; dst[d + 1] += pageBuf[s + 1] * gr; d += 2; s += 2 }
+            return
+        }
         var s = (c.srcStart + (os - c.startFrame)) * 2
-        for (i in 0 until oe - os) { dst[d] += c.samples[s] * gl; dst[d + 1] += c.samples[s + 1] * gr; d += 2; s += 2 }
+        for (i in 0 until oe - os) { dst[d] += samples[s] * gl; dst[d + 1] += samples[s + 1] * gr; d += 2; s += 2 }
     }
 
     /** Scratch path: sum raw clips, run channel-strip FX (tails ring past a clip's end), then pan/gain into master. */
@@ -173,8 +226,16 @@ class MultitrackRenderContext(
             val os = max(c.startFrame, pos); val oe = min(c.startFrame + c.frameLength, pos + chunk)
             if (oe <= os) continue
             val local = os - pos
+            val samples = c.samples
+            if (samples == null) {
+                val n = oe - os
+                c.reader!!.read(pageBuf, 0, c.srcStart + (os - c.startFrame), n)
+                var s = 0
+                for (i in 0 until n) { mixL[local + i] += pageBuf[s]; mixR[local + i] += pageBuf[s + 1]; s += 2 }
+                continue
+            }
             var s = (c.srcStart + (os - c.startFrame)) * 2
-            for (i in 0 until oe - os) { mixL[local + i] += c.samples[s]; mixR[local + i] += c.samples[s + 1]; s += 2 }
+            for (i in 0 until oe - os) { mixL[local + i] += samples[s]; mixR[local + i] += samples[s + 1]; s += 2 }
         }
         scratch[0].let { System.arraycopy(mixL, 0, it, 0, chunk) }
         scratch[1].let { System.arraycopy(mixR, 0, it, 0, chunk) }
@@ -198,6 +259,13 @@ class MultitrackRenderContext(
     /** Offline pull of [frames] (no live limiter; callers peak-normalize like the bouncer). */
     fun renderOffline(frames: Int, block: Int = 512): FloatArray {
         val out = FloatArray(frames * 2)
+        var done = 0
+        renderOfflineBlocks(frames, block) { b, n -> System.arraycopy(b, 0, out, done * 2, n * 2); done += n }
+        return out
+    }
+
+    /** Block-wise offline pull: [sink] gets each rendered block (REUSED array, interleaved) so callers never hold the whole mix. */
+    fun renderOfflineBlocks(frames: Int, block: Int = 512, sink: (FloatArray, Int) -> Unit) {
         val tmp = FloatArray(block * 2)
         limitLive = false
         try {
@@ -205,16 +273,18 @@ class MultitrackRenderContext(
             while (done < frames) {
                 val n = min(block, frames - done)
                 render(tmp, n)
-                System.arraycopy(tmp, 0, out, done * 2, n * 2)
+                sink(tmp, n)
                 done += n
             }
         } finally { limitLive = true }
-        return out
     }
 
-    fun release() { trackFx.forEach { it.close() }; trackFx = emptyList(); master.close() }
+    fun release() { feeder?.stop(); feeder = null; pagedClips.forEach { it.reader?.close() }; pagedClips = emptyList(); trackFx.forEach { it.close() }; trackFx = emptyList(); master.close() }
 
     companion object {
+        /** How far ahead of the playhead the feeder keeps pages resident (~6 s). */
+        const val READ_AHEAD_FRAMES = 44_100 * 6
+
         /** Audible linear gain for a track (mute/solo, solo wins; dB clamped -24..+6 like iOS). */
         fun audibleGain(gainDb: Double, muted: Boolean, soloed: Boolean, anySolo: Boolean): Float {
             val audible = if (anySolo) soloed else !muted

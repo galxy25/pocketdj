@@ -89,6 +89,12 @@ class NowPlayingDspEngine(
     private var playWanted = false
     private var started = false
     private var endFired = false
+    private var startedAtClock = 0L
+    private var audioAnnounced = false
+    private var voiceEndedAtClock = -1L
+    private fun clockNow(): Long = graph.deck(deck).inputClock
+    /** True once the render clock has advanced past [since] by the stretcher's output delay (deterministic offline). */
+    private fun lagElapsed(since: Long): Boolean = clockNow() - since >= graph.deck(deck).latencyFrames
     private var tickCount = 0
     /** Song-window frame the voice was last positioned at (the voice reports 0 until its first rendered block). */
     private var positionedAt = 0L
@@ -135,8 +141,12 @@ class NowPlayingDspEngine(
         get() {
             val v = (if (stemOnSide()) stemGroup?.voices?.getOrNull(0) else main) ?: main ?: return 0.0
             val frame = if (started) v.playerFrame else maxOf(v.playerFrame, positionedAt)
-            return ((frame - windowStart).coerceAtLeast(0L)).toDouble() / sampleRate
+            val raw = ((frame - windowStart).coerceAtLeast(0L)).toDouble() / sampleRate
+            return npAudibleSeconds(raw, if (started && playWanted) graph.audibleLagSeconds(deck) else 0.0)
         }
+
+    internal fun graphLagSecondsForTest(): Double = graph.audibleLagSeconds(deck)
+    internal fun graphLatencyFramesForTest(): Int = graph.deck(deck).latencyFrames
 
     val durationSec: Double
         get() {
@@ -180,6 +190,8 @@ class NowPlayingDspEngine(
         graph.attach(s)
         playWanted = play
         started = false
+        audioAnnounced = false
+        voiceEndedAtClock = -1L
         endFired = false
         tickCount = 0
         // Claim the session (ExoPlayer pauses silently) BEFORE the voice starts: no double audio.
@@ -251,14 +263,24 @@ class NowPlayingDspEngine(
         tickCount++
         if (!started && playWanted && v.status == Voice.Status.PLAYING) {
             started = true
+            startedAtClock = clockNow()
+        }
+        // The stretcher delays the first audible sample: hand the session over when it actually sounds.
+        if (started && !audioAnnounced &&
+            lagElapsed(startedAtClock)) {
+            audioAnnounced = true
             onAudioStarted?.invoke()
         }
         pollHandover()
         if (!endFired && playWanted && started) {
             val frame = v.playerFrame
-            val ended = v.status == Voice.Status.ENDED ||
+            val voiceEnded = v.status == Voice.Status.ENDED ||
                 (windowEnd != Long.MAX_VALUE && frame >= windowEnd - 1) ||
                 (stemOnSide() && stemGroup?.voices?.getOrNull(0)?.let { s -> s.status == Voice.Status.ENDED || (windowEnd != Long.MAX_VALUE && s.playerFrame >= windowEnd - 1) } == true)
+            if (!voiceEnded) voiceEndedAtClock = -1L
+            else if (voiceEndedAtClock < 0L) voiceEndedAtClock = clockNow()
+            // The tail is still inside the stretcher: let it drain before the host engages the next track.
+            val ended = voiceEnded && voiceEndedAtClock >= 0L && lagElapsed(voiceEndedAtClock)
             if (ended) {
                 endFired = true
                 playWanted = false
@@ -467,3 +489,6 @@ class NowPlayingDspEngine(
         const val MAX_RETRIES = 3
     }
 }
+
+/** Audible playhead: the voice counter minus the stretcher delay, never negative (Now Playing DSP, ANS-MIX-2). */
+internal fun npAudibleSeconds(rawSeconds: Double, lagSeconds: Double): Double = (rawSeconds - lagSeconds).coerceAtLeast(0.0)

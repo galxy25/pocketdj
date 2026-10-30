@@ -254,7 +254,15 @@ class EngineMixTransportPort(
     private val art: (albumId: String?) -> String?,
 ) : MixTransportPort {
     override fun card(): MixCard? {
-        val d = engine.nowPlayingDeck ?: return null
+        val d = engine.nowPlayingDeck
+        if (d == null || engine.loaded(d) == null) {
+            // Process death: the parked (not yet materialized) mix is visible on the lock screen.
+            val p = engine.parkedCard() ?: return null
+            return MixCard(
+                songId = p.songId, title = p.title, artist = p.artist, artworkUri = art(p.albumId),
+                durationMs = p.lengthMs?.toLong(), positionMs = p.positionMs.toLong(), rate = 1f,
+            )
+        }
         val t = engine.loaded(d) ?: return null
         val dur = engine.duration(d)
         return MixCard(
@@ -270,8 +278,49 @@ class EngineMixTransportPort(
     override val canSkip get() = dj.isMixing
     override val skipFadeSeconds get() = dj.skipFadeSeconds
     override val hasSounded get() = engine.hasSoundedThisProcess
-    override fun remotePlay() = dj.remotePlay()
+    override fun remotePlay() {
+        // Lock-screen play on a parked mix: cue the decks first, THEN resume.
+        if (engine.hasParkedRestore) engine.materializePendingRestoreIfNeeded("lockScreen") { dj.remotePlay() } else dj.remotePlay()
+    }
     override fun remotePause() = dj.remotePause()
     override fun remoteSkip(fadeSeconds: Double) = dj.remoteSkip(fadeSeconds)
     override fun pauseBoth() = engine.pauseBoth()
+}
+
+/**
+ * Process-death recovery -> system surfaces. A parked (never sounded) mix becomes the PREFERRED remote target
+ * when nothing else owns the session, so the lock screen / dumpsys media_session show it and lock-screen play
+ * reaches [MixTransportPort.remotePlay] (which materializes, then plays). JVM-testable.
+ */
+object ParkedMixSession {
+    /** True when [player] was made the preferred target (and [ensureService] ran). */
+    fun offer(board: SessionSwitchboard, player: TransportOwner, hasParked: Boolean, ensureService: () -> Unit): Boolean {
+        if (!hasParked || board.current != null) return false
+        board.prefer(player)
+        ensureService()
+        return true
+    }
+
+    /** The parked mix was ejected / superseded without ever sounding. */
+    fun withdrawIfGone(board: SessionSwitchboard, player: TransportOwner, hasParked: Boolean, hasLoadedDeck: Boolean) {
+        if (!hasParked && !hasLoadedDeck) board.resignIfPreferred(player)
+    }
+}
+
+/** Q95: an idle, parked Mix gives the session back (it re-claims on its next `onAudioStarted`). */
+object MixIdleResign {
+    /**
+     * Resigns [player] when nothing wants audio, no recording keeps the engine alive, no transient-focus interruption
+     * is parked (the regain must still find the Mix as owner), and ANOTHER engine has something to front
+     * ([exoHasItem]; otherwise the paused Mix stays the remote target). Returns true if it resigned.
+     */
+    fun resignIfIdle(
+        board: SessionSwitchboard, player: TransportOwner, mixWantsAudio: Boolean, keepAlive: Boolean,
+        interruptionParked: Boolean = false, exoHasItem: Boolean = true,
+    ): Boolean {
+        if (mixWantsAudio || keepAlive || interruptionParked || !exoHasItem) return false
+        if (board.current !== player) return false
+        board.resign(player)
+        return true
+    }
 }

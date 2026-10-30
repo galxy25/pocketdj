@@ -20,6 +20,7 @@ sealed class SampleFileFailure(val message: String) {
     object Protected : SampleFileFailure("That file is DRM-protected and can’t be imported.")
     object Unreadable : SampleFileFailure("Couldn’t read that audio file.")
     object NoFolder : SampleFileFailure("Your samples folder isn’t reachable right now (Settings ▸ Storage).")
+    object StemCarve : SampleFileFailure("Couldn’t carve those stems. Try a different region or fewer stems.")
     object Carve : SampleFileFailure("Couldn’t carve this region. Try a slightly different in/out point.")
 }
 
@@ -27,8 +28,8 @@ class SampleFileException(val failure: SampleFileFailure) : Exception(failure.me
 
 /**
  * Turns decoded audio into a filed [StudioSample]: import (DRM rejected) and track-region carve (inherits
- * the offset-shifted grid). Files are written into the app-managed samples root; the record is added only
- * after the audio is atomically on disk.
+ * the offset-shifted grid). Files are first written (crash-safe) into the app-managed samples root, then MOVED into the user's SAF samples
+ * folder when one is set ([StudioStore.addSampleRelocating]); the record is added only after the audio is on disk.
  */
 class SampleFactory(
     private val roots: StudioRoots,
@@ -41,6 +42,10 @@ class SampleFactory(
         val base = originalName.substringBeforeLast('.', originalName).trim()
         return base.ifEmpty { "Imported sample" }
     }
+
+    /** The audio is finalized in app storage above; now move it into the user's samples folder (off the caller's thread). */
+    private suspend fun fileRelocating(sample: StudioSample): StudioSample =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { store.addSampleRelocating(sample) }
 
     private fun destFor(id: String): Pair<String, File> {
         val name = StudioFolders.fileName(StudioFamily.SAMPLES, id)
@@ -60,7 +65,7 @@ class SampleFactory(
         } catch (e: StudioRenderException) {
             dest.delete(); throw SampleFileException(SampleFileFailure.Unreadable)
         }
-        return store.addSample(
+        return fileRelocating(
             StudioSample(id, importName(originalName), name, wasUserFolder = false, createdAt = now(),
                 durationMs = res.durationMs, source = StudioSource.File(originalName)),
         )
@@ -76,8 +81,27 @@ class SampleFactory(
         } catch (e: StudioRenderException) {
             dest.delete(); throw SampleFileException(SampleFileFailure.Carve)
         }
-        return store.addSample(
+        return fileRelocating(
             StudioSample(id, songName, name, wasUserFolder = false, createdAt = now(), durationMs = res.durationMs,
+                source = StudioSource.Track(songId, startMs, endMs), grid = grid),
+        )
+    }
+
+    /**
+     * Carve a MIX of [enabled] stems over [startMs, endMs) (SONG-relative — stems carry no album offset). The record keeps
+     * the same `Track` provenance as a full-mix carve; [grid] is the already-inherited region-relative grid.
+     */
+    suspend fun carveStems(songId: String, songName: String, stems: Map<String, File>, enabled: Set<String>, startMs: Int, endMs: Int, grid: StudioGrid?): StudioSample {
+        val paths = StemCarve.selectedPaths(stems, enabled) ?: throw SampleFileException(SampleFileFailure.StemCarve)
+        val id = StudioFactory.newSampleId()
+        val (name, dest) = destFor(id)
+        val res = try {
+            render.carveStemMix(paths, startMs, endMs, dest)
+        } catch (e: StudioRenderException) {
+            dest.delete(); throw SampleFileException(SampleFileFailure.StemCarve)
+        }
+        return fileRelocating(
+            StudioSample(id, StemCarve.sampleName(songName, enabled), name, wasUserFolder = false, createdAt = now(), durationMs = res.durationMs,
                 source = StudioSource.Track(songId, startMs, endMs), grid = grid),
         )
     }

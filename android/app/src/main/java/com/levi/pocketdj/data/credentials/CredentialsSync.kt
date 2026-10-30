@@ -64,8 +64,10 @@ class CredentialsSync(
         val existingBytes = runCatching { file.readBytes() }.getOrNull()
         val existing = existingBytes?.let { SettingsCredentialsDocument.decode(it) }
         val live = port.read()
-        val doc = live.copy(sources = existing?.sources, appleMusicPrivateSync = existing?.appleMusicPrivateSync)
-        if (existing != null && existing.normalized() == doc.normalized()) return false
+        val doc = live.copy(
+            sources = existing?.sources, appleMusicPrivateSync = existing?.appleMusicPrivateSync,
+        )
+        if (existing != null && !existing.carriesSearchValues && existing.normalized() == doc.normalized()) return false
         if (existingBytes == null && doc.credentialsAreBlank) return false // adopt, don't race the cloud copy
         writeAtomic(SettingsCredentialsDocument.encode(doc))
         return true
@@ -83,14 +85,12 @@ class CredentialsSync(
             ?: return false
         val result = merge(port.read(), pulled)
         port.apply(result.doc)
-        if (result.keptRip || result.keptJukebox || result.keptSearch) {
-            log("guarded empty-secret wipe: kept rip=${result.keptRip} jb=${result.keptJukebox} search=${result.keptSearch}")
+        if (result.keptRip || result.keptJukebox) {
+            log("guarded empty-secret wipe: kept rip=${result.keptRip} jb=${result.keptJukebox}")
         }
         log(
             "applied: rip(url=${result.doc.ripServerURL.isNotEmpty()} tok=${result.doc.ripToken.isNotEmpty()}) " +
-                "jb(url=${result.doc.jukeboxServerURL.isNotEmpty()} tok=${result.doc.jukeboxToken.isNotEmpty()}) " +
-                "search(keys=${result.doc.searchAccessKeyID.isNotEmpty() && result.doc.searchSecretKey.isNotEmpty()} " +
-                "ep=${result.doc.searchEndpoint.isNotEmpty()})",
+                "jb(url=${result.doc.jukeboxServerURL.isNotEmpty()} tok=${result.doc.jukeboxToken.isNotEmpty()})",
         )
         return syncIfChanged()
     }
@@ -99,7 +99,6 @@ class CredentialsSync(
         val doc: SettingsCredentialsDocument,
         val keptRip: Boolean,
         val keptJukebox: Boolean,
-        val keptSearch: Boolean,
     )
 
     companion object {
@@ -116,21 +115,14 @@ class CredentialsSync(
         fun merge(local: SettingsCredentialsDocument, pulled: SettingsCredentialsDocument): MergeResult {
             val keptRip = keepLocalSecret(local.ripToken, pulled.ripToken, local.ripServerURL, pulled.ripServerURL)
             val keptJb = keepLocalSecret(local.jukeboxToken, pulled.jukeboxToken, local.jukeboxServerURL, pulled.jukeboxServerURL)
-            // The search key pair is guarded together on the endpoint (half-adopting mints a mismatched credential).
-            val keptSearch = pulled.searchAccessKeyID.isEmpty() && pulled.searchSecretKey.isEmpty() &&
-                !(local.searchAccessKeyID.isEmpty() && local.searchSecretKey.isEmpty()) &&
-                pulled.searchEndpoint == local.searchEndpoint
             val merged = local.copy(
                 ripServerURL = pulled.ripServerURL,
                 ripToken = if (keptRip) local.ripToken else pulled.ripToken,
                 jukeboxServerURL = pulled.jukeboxServerURL,
                 jukeboxToken = if (keptJb) local.jukeboxToken else pulled.jukeboxToken,
                 jukeboxTokensRequiredByDefault = pulled.jukeboxTokensRequiredByDefault,
-                searchAccessKeyID = if (keptSearch) local.searchAccessKeyID else pulled.searchAccessKeyID,
-                searchSecretKey = if (keptSearch) local.searchSecretKey else pulled.searchSecretKey,
-                searchEndpoint = pulled.searchEndpoint,
             )
-            return MergeResult(merged, keptRip, keptJb, keptSearch)
+            return MergeResult(merged, keptRip, keptJb)
         }
     }
 }

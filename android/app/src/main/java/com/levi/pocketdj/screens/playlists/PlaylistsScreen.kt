@@ -71,6 +71,10 @@ import com.levi.pocketdj.data.collections.Playlist
 import com.levi.pocketdj.data.collections.Pocket
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.Fmt
+import androidx.compose.material.icons.filled.GraphicEq
+import com.levi.pocketdj.data.collections.NOW_PLAYING_PLAYLIST_ID
+import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
+import com.levi.pocketdj.data.collections.Setlist
 import androidx.compose.runtime.produceState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.map
@@ -82,7 +86,7 @@ private enum class CreateKind { FOLDER, POCKET, PLAYLIST }
 
 /** A row a context menu is acting on. */
 private data class RowRef(val kind: Kind, val id: String, val name: String) {
-    enum class Kind { PLAYLIST, POCKET, FOLDER }
+    enum class Kind { PLAYLIST, POCKET, FOLDER, SETLIST }
 }
 
 /**
@@ -100,6 +104,8 @@ fun PlaylistsScreen(
     onOpenPocket: (pocketId: String) -> Unit,
     onOpenSourcePlaylist: (playlistId: String, sourceName: String) -> Unit,
     modifier: Modifier = Modifier,
+    /** Opens a frozen Setlist (ANS-COL-3); null hides the Setlists section. */
+    onOpenSetlist: ((setlistId: String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -243,6 +249,7 @@ fun PlaylistsScreen(
                     },
                     onOpenPlaylist = onOpenPlaylist,
                     onOpenPocket = onOpenPocket,
+                    onOpenSetlist = onOpenSetlist,
                     onCreatePlaylist = { createDialog = CreateKind.PLAYLIST },
                     onCreatePocket = { createDialog = CreateKind.POCKET },
                     onRename = { renameItem = it },
@@ -293,6 +300,7 @@ fun PlaylistsScreen(
                 RowRef.Kind.PLAYLIST -> "Rename playlist"
                 RowRef.Kind.POCKET -> "Rename pocket"
                 RowRef.Kind.FOLDER -> "Rename folder"
+                RowRef.Kind.SETLIST -> "Rename set list"
             },
             confirmLabel = "Rename",
             initial = ref.name,
@@ -302,6 +310,7 @@ fun PlaylistsScreen(
                     RowRef.Kind.PLAYLIST -> store.renamePlaylist(ref.id, name)
                     RowRef.Kind.POCKET -> store.renamePocket(ref.id, name)
                     RowRef.Kind.FOLDER -> store.renameFolder(ref.id, name)
+                    RowRef.Kind.SETLIST -> store.renameSetlist(ref.id, name)
                 }
             },
         )
@@ -313,6 +322,7 @@ fun PlaylistsScreen(
                 RowRef.Kind.PLAYLIST -> "Delete this playlist?"
                 RowRef.Kind.POCKET -> "Delete this pocket?"
                 RowRef.Kind.FOLDER -> "Delete this folder?"
+                RowRef.Kind.SETLIST -> "Delete this set list?"
             },
             text = when (ref.kind) {
                 RowRef.Kind.PLAYLIST -> "This also deletes its set lists. This can't be undone."
@@ -321,6 +331,7 @@ fun PlaylistsScreen(
                         "This can't be undone."
                 RowRef.Kind.FOLDER ->
                     "The folder's playlists and pockets move back to the top level. This can't be undone."
+                RowRef.Kind.SETLIST -> "This can't be undone."
             },
             confirmLabel = "Delete",
             onDismiss = { deleteItem = null },
@@ -329,6 +340,7 @@ fun PlaylistsScreen(
                     RowRef.Kind.PLAYLIST -> store.deletePlaylist(ref.id)
                     RowRef.Kind.POCKET -> store.deletePocket(ref.id)
                     RowRef.Kind.FOLDER -> store.deleteFolder(ref.id)
+                    RowRef.Kind.SETLIST -> store.deleteSetlist(ref.id)
                 }
             },
         )
@@ -424,6 +436,7 @@ private fun LazyListScope.userTab(
     onToggleFolder: (id: String, collapsed: Boolean) -> Unit,
     onOpenPlaylist: (String) -> Unit,
     onOpenPocket: (String) -> Unit,
+    onOpenSetlist: ((String) -> Unit)?,
     onCreatePlaylist: () -> Unit,
     onCreatePocket: () -> Unit,
     onRename: (RowRef) -> Unit,
@@ -470,6 +483,39 @@ private fun LazyListScope.userTab(
         }
     }
 
+    // Setlists (ANS-COL-3, Q75): frozen takes, newest first; the reserved Now Playing set never listed.
+    fun setlistRows(query: String) {
+        if (onOpenSetlist == null) return
+        val rows = listableSetlists(state.setlists, query)
+        if (rows.isEmpty()) return
+        item(key = "hdr-setlists") { SectionHeader("Setlists") }
+        rows.forEach { sl ->
+            item(key = "sl-${sl.id}") {
+                val trackCount = sl.tracks.count { it.isText != true }
+                CollectionRow(
+                    icon = Icons.Filled.GraphicEq,
+                    iconTint = MaterialTheme.colorScheme.tertiary,
+                    name = setlistTitle(sl),
+                    subtitle = "$trackCount ${if (trackCount == 1) "track" else "tracks"} · ${Fmt.duration(sl.totalMs)}",
+                    onClick = { onOpenSetlist(sl.id) },
+                    modifier = Modifier.testTag("setlist-row-${sl.id}"),
+                    trailing = {
+                        OverflowMenu { dismiss ->
+                            DropdownMenuItem(
+                                text = { Text("Rename") },
+                                onClick = { dismiss(); onRename(RowRef(RowRef.Kind.SETLIST, sl.id, setlistTitle(sl))) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete") },
+                                onClick = { dismiss(); onDelete(RowRef(RowRef.Kind.SETLIST, sl.id, setlistTitle(sl))) },
+                            )
+                        }
+                    },
+                )
+            }
+        }
+    }
+
     // Searching replaces the list with FLATTENED results — folder nesting
     // collapses away, ordered by the active sort (§2.2).
     if (query.isNotEmpty()) {
@@ -478,7 +524,7 @@ private fun LazyListScope.userTab(
             state.playlists.filter { Fmt.fold(it.name).contains(folded) } +
                 state.pockets.filter { Fmt.fold(it.name).contains(folded) },
         )
-        if (matches.isEmpty()) {
+        if (matches.isEmpty() && listableSetlists(state.setlists, query).isEmpty()) {
             item(key = "no-results") { SectionCaption("No results for \"$query\"") }
         } else {
             matches.forEach { m ->
@@ -488,11 +534,14 @@ private fun LazyListScope.userTab(
                 }
             }
         }
+        setlistRows(query)
         return
     }
 
     // Whole-tab empty state (§2.4).
-    if (state.playlists.isEmpty() && state.pockets.isEmpty() && recentlyAddedCount == 0) {
+    if (state.playlists.isEmpty() && state.pockets.isEmpty() && recentlyAddedCount == 0 &&
+        listableSetlists(state.setlists, "").isEmpty()
+    ) {
         item(key = "empty") {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -619,7 +668,20 @@ private fun LazyListScope.userTab(
             }
         }
     }
+
+    // 4. Setlists.
+    setlistRows("")
 }
+
+/** Setlists to list on the Collections tab: reserved Now Playing set hidden, newest first, optional name filter. */
+internal fun listableSetlists(all: List<Setlist>, query: String): List<Setlist> {
+    val folded = Fmt.fold(query.trim())
+    return all.filter { it.id != NOW_PLAYING_SETLIST_ID && it.playlistId != NOW_PLAYING_PLAYLIST_ID }
+        .filter { folded.isEmpty() || Fmt.fold(setlistTitle(it)).contains(folded) }
+        .sortedByDescending { it.generatedAt }
+}
+
+internal fun setlistTitle(sl: Setlist): String = sl.name?.takeIf { it.isNotBlank() } ?: "Set list"
 
 @Composable
 private fun PlaylistRow(

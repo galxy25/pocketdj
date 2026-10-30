@@ -71,7 +71,7 @@ class S3CloudDocDatabase(
     }
 
     private fun req(path: String): Request.Builder =
-        Request.Builder().url(base()!! + path)
+        Request.Builder().url((base() ?: throw IOException("Sync isn't configured (no profileSyncBase)")) + path)
             .header("X-PocketDJ-Profile", profileId().lowercase())
             .header("Authorization", "Bearer " + secrets.secret())
 

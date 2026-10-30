@@ -6,6 +6,7 @@ import com.levi.pocketdj.audio.core.AacEncoder
 import com.levi.pocketdj.audio.core.AudioDecoder
 import com.levi.pocketdj.audio.core.AudioDiag
 import com.levi.pocketdj.audio.core.PcmBuffer
+import com.levi.pocketdj.audio.core.PcmChunkWriter
 import com.levi.pocketdj.audio.core.WavWriter
 import com.levi.pocketdj.mix.model.BeatGrid
 import com.levi.pocketdj.mix.model.BeatMath
@@ -57,11 +58,30 @@ interface StudioCodec {
     }
     fun isProtected(path: String): Boolean
     fun writeM4a(pcm: PcmBuffer, file: File)
+    /**
+     * Streaming encode: write blocks as they are produced, [PcmChunkWriter.close] finalizes [file]. Default buffers
+     * and calls [writeM4a] on close (JVM fakes); [AndroidStudioCodec] streams straight into MediaCodec.
+     */
+    fun openM4a(file: File, sampleRate: Int): PcmChunkWriter = BufferedM4aWriter(sampleRate, 2) { writeM4a(it, file) }
     /** LPCM float WAV with an exact frame count (loops). */
     fun writeWav(pcm: PcmBuffer, file: File)
 }
 
+/** Collects chunks and hands one [PcmBuffer] to [finish] on close: the non-streaming fallback behind [StudioCodec.openM4a]. */
+class BufferedM4aWriter(private val sampleRate: Int, private val channels: Int, private val finish: (PcmBuffer) -> Unit) : PcmChunkWriter {
+    private var acc = FloatArray(0)
+    private var len = 0
+    override fun write(samples: FloatArray, frames: Int) {
+        val n = frames * channels
+        if (acc.size < len + n) acc = acc.copyOf(maxOf(acc.size * 2, len + n))
+        System.arraycopy(samples, 0, acc, len, n); len += n
+    }
+    override fun close() { finish(PcmBuffer(sampleRate, channels, acc.copyOf(len))) }
+}
+
 object AndroidStudioCodec : StudioCodec {
+    override fun openM4a(file: File, sampleRate: Int): PcmChunkWriter = AacEncoder.Stream(file, sampleRate, 2, AacEncoder.Container.M4A, bitrate = 192_000)
+
     override fun decode(path: String) = runCatching { AudioDecoder.decode(path) }.getOrNull()
 
     override fun decodeRange(path: String, startMs: Int, lenMs: Int): PcmBuffer? =

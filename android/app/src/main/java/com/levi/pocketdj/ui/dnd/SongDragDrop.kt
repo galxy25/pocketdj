@@ -95,8 +95,13 @@ fun clipboardHasSongs(context: Context): Boolean {
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun Modifier.songDragSource(enabled: Boolean, payload: () -> SongTransfer?): Modifier {
+fun Modifier.songDragSource(
+    enabled: Boolean,
+    onDragStart: () -> Unit = {},
+    payload: () -> SongTransfer?,
+): Modifier {
     val payloadL by rememberUpdatedState(payload)
+    val onDragStartL by rememberUpdatedState(onDragStart)
     val accent = MaterialTheme.colorScheme.primary
     val fg = MaterialTheme.colorScheme.onPrimary
     if (!enabled) return this
@@ -148,6 +153,10 @@ fun Modifier.songDragSource(enabled: Boolean, payload: () -> SongTransfer?): Mod
                     val t = payloadL()
                     if (t != null && t.songIds.isNotEmpty()) {
                         c.consume()
+                        // The row's long-click (Add-to menu dialog) fired at the long-press timeout; a dialog
+                        // window left on top swallows the drop ("Drop outside a valid window"), so the host
+                        // dismisses it as the item lifts (iOS: dragging dismisses the context menu).
+                        onDragStartL()
                         startTransfer(DragAndDropTransferData(clipData = dragClipOf(t), localState = t, flags = 0))
                     }
                     return@awaitEachGesture

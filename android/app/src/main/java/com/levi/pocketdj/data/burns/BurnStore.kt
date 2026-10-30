@@ -175,6 +175,13 @@ class BurnStore(
 
     fun hasLocalFile(songId: String): Boolean = localUrl(songId) != null
 
+    /**
+     * Ledger-only "is this song burned and ready" (in-memory map, NO disk): safe on Main. Used by the
+     * stall-hop `rowOnDevice` probe, where an exists()/SAF stat per queue row would block the main thread.
+     */
+    fun isReadyInLedger(songId: String): Boolean =
+        _items.value[songId]?.state == BurnState.READY && localMemo[songId] !== none // known-missing file => not on device
+
     /** Playback resolution (uncached; the moment of use re-checks the disk). */
     fun localUrlForPlayback(songId: String): File? {
         val item = _items.value[songId]?.takeIf { it.state == BurnState.READY } ?: return null
@@ -396,6 +403,7 @@ class BurnStore(
                             bytes = bytes, rippedAt = entry.rippedAt, downloadedAt = now,
                             state = BurnState.READY, error = null, wasAppStorage = !root.isUserFolder,
                             cutFileName = prev?.cutFileName, cutDownloadedAt = prev?.cutDownloadedAt,
+                            treeUri = root.treeUri.takeIf { root.isUserFolder },
                         ),
                     )
                     priorReady.remove(song.id)
@@ -489,10 +497,25 @@ class BurnStore(
             if (stopRequested || !currentCoroutineContext().isActive) break
             _progress.value = BurnProgress(done, pending.size, "Stems · ${s.artist} — ${s.title}")
             downloadStems(s.id, dir)
+            mirrorIO(dir, stemNames(s.id))
             done += 1
         }
         return stemmed.count { stemFilesPresent(it.id, dir) }
     }
+
+    /** Names of a song's stem + beat-grid files (the "aux" set living beside the audio). */
+    private fun auxNames(songId: String): List<String> =
+        BurnFileNames.STEM_NAMES.map { BurnFileNames.stemFileName(songId, it) } + BurnFileNames.beatgridFileName(songId)
+
+    private fun stemNames(songId: String): List<String> =
+        BurnFileNames.STEM_NAMES.map { BurnFileNames.stemFileName(songId, it) }
+
+    /**
+     * Mirror [names] into the user's tree OFF the caller's dispatcher: callers (Stem Lock prefetch,
+     * DSP engine, Demux panels) run on Main, and a SAF copy of a multi-MB stem must never block it.
+     */
+    private suspend fun mirrorIO(dir: File, names: List<String>) =
+        withContext(Dispatchers.IO) { folder.mirrorFiles(dir, names) }
 
     private suspend fun downloadStems(songId: String, dir: File) {
         val remote = rips.stemUrls(songId) ?: return
@@ -520,6 +543,7 @@ class BurnStore(
             if (stopRequested || !currentCoroutineContext().isActive) break
             _progress.value = BurnProgress(done, pending.size, "Beat grid · ${s.artist} — ${s.title}")
             downloadBeatgrid(s.id, dir)
+            mirrorIO(dir, listOf(BurnFileNames.beatgridFileName(s.id)))
             done += 1
         }
         return analyzed.count { File(dir, BurnFileNames.beatgridFileName(it.id)).exists() }
@@ -591,6 +615,7 @@ class BurnStore(
             }
             local[n] = dest
         }
+        mirrorIO(dir, stemNames(songId))
         return local
     }
 
@@ -603,6 +628,7 @@ class BurnStore(
         if (dest.exists()) return true
         return try {
             rips.download(url, dest)
+            mirrorIO(dir, listOf(dest.name))
             true
         } catch (e: CancellationException) {
             throw e
@@ -633,6 +659,7 @@ class BurnStore(
             moved += src to dest
             out[name] = dest
         }
+        folder.mirrorFiles(dir, moved.map { it.second.name })
         return out
     }
 
@@ -666,6 +693,7 @@ class BurnStore(
             val data = rips.downloadBytes(url)
             val parsed = BeatGridSidecar.parse(String(data, Charsets.UTF_8)) ?: return null
             writeAtomic(File(dir, BurnFileNames.beatgridFileName(songId)), data)
+            mirrorIO(dir, listOf(BurnFileNames.beatgridFileName(songId)))
             parsed
         } catch (e: CancellationException) {
             throw e
@@ -686,7 +714,7 @@ class BurnStore(
         if (_items.value[songId]?.state == BurnState.READY && localUrl(songId) != null) return null
         // A burn run is writing files right now (possibly this very audio path): don't race it.
         // The streamed file stays in the cache and plays from there.
-        // TODO(SVC-3): wire yieldBackgroundDownload so the background burn skips this song instead.
+        // (A queued background transfer is cancelled up front by [yieldBackgroundDownload] when the stream opens.)
         if (runLock.isLocked) return null
         val root = folder.activeWritable() ?: return null
         val size = from.takeIf { it.isFile }?.length() ?: return null
@@ -714,6 +742,7 @@ class BurnStore(
                     bytes = size, rippedAt = entry.rippedAt, downloadedAt = now,
                     state = BurnState.READY, wasAppStorage = !root.isUserFolder,
                     cutFileName = prev?.cutFileName, cutDownloadedAt = prev?.cutDownloadedAt,
+                    treeUri = root.treeUri.takeIf { root.isUserFolder },
                 ),
             )
             save()
@@ -740,7 +769,13 @@ class BurnStore(
      * item references it), sidecar, per-song cut, stems and beat grid; then drop the ledger
      * entries and save ONCE. Items whose dir is unreachable are skipped entirely.
      */
-    fun removeBurns(songIds: List<String>) {
+    fun removeBurns(songIds: List<String>) = removeBurns(songIds, mirrored = true)
+
+    /**
+     * [mirrored] = also delete the user-browsable folder copies (ANS-COL-4). Storage-pressure
+     * eviction passes false: it frees app-managed space only and leaves the folder copy alone.
+     */
+    fun removeBurns(songIds: List<String>, mirrored: Boolean) {
         val snapshot = _items.value
         val requested = songIds.toSet().filter { snapshot[it] != null }
         if (requested.isEmpty()) return
@@ -752,14 +787,33 @@ class BurnStore(
         if (goners.isEmpty()) return
         val survivorAudio = snapshot.values.filter { it.songId !in goners }.map { it.audioFileName }.toSet()
         val listings = HashMap<String, List<String>>()
+        // Folder copies to delete, grouped by the tree each item was finalized into.
+        val folderCopies = LinkedHashMap<String?, MutableSet<String>>()
         for ((id, dir) in goners) {
             val item = snapshot.getValue(id)
-            if (item.audioFileName.isNotEmpty() && item.audioFileName !in survivorAudio) File(dir, item.audioFileName).delete()
-            if (item.sidecarFileName.isNotEmpty()) File(dir, item.sidecarFileName).delete()
+            val copies = if (mirrored && item.wasAppStorage == false) folderCopies.getOrPut(item.treeUri) { LinkedHashSet() } else null
+            if (item.audioFileName.isNotEmpty() && item.audioFileName !in survivorAudio) {
+                File(dir, item.audioFileName).delete()
+                copies?.add(item.audioFileName)
+            }
+            if (item.sidecarFileName.isNotEmpty()) {
+                File(dir, item.sidecarFileName).delete()
+                copies?.add(item.sidecarFileName)
+            }
             resolveCutFileName(item, dir, listing = { listings.getOrPut(dir.path) { listNames(dir) } }, heal = false)
-                ?.let { File(dir, it).delete() }
+                ?.let { File(dir, it).delete(); copies?.add(it) }
+            if (copies != null) {
+                copies.addAll(auxNames(id))
+            } else if (mirrored) {
+                // App-storage item whose aux landed in a user staging root: delete from THAT root's tree.
+                for (rt in folder.roots()) if (rt.isUserFolder) {
+                    val present = auxNames(id).filter { File(rt.dir, it).exists() }
+                    if (present.isNotEmpty()) folderCopies.getOrPut(rt.treeUri) { LinkedHashSet() }.addAll(present)
+                }
+            }
             removeAuxFiles(id)
         }
+        for ((tree, names) in folderCopies) folder.deleteMirrored(tree, names)
         dropItems(goners.keys)
         save()
     }
@@ -768,24 +822,25 @@ class BurnStore(
     fun removeAllBurns() {
         requestStop()
         removeBurns(_items.value.keys.toList())
-        sweepAuxFiles { true }
+        sweepAuxFiles(mirrored = true) { true }
     }
 
-    private fun sweepAuxFiles(shouldSweep: (String) -> Boolean) {
+    private fun sweepAuxFiles(mirrored: Boolean, shouldSweep: (String) -> Boolean) {
         for (r in folder.roots()) {
+            val gone = ArrayList<String>()
             for (n in BurnStems.auxToSweep(listNames(r.dir), shouldSweep)) {
-                if (ownsAux(n, r.isUserFolder)) File(r.dir, n).delete()
+                if (ownsAux(n, r.isUserFolder) && File(r.dir, n).delete()) gone += n
             }
+            if (mirrored && r.isUserFolder) folder.deleteMirrored(r.treeUri, gone)
         }
     }
 
     /** Prune pre-pass: aux files for songs with NO ledger entry (auditioned-but-never-burned). */
-    fun sweepOrphanAuxFiles() = sweepAuxFiles { _items.value[it] == null }
+    fun sweepOrphanAuxFiles() = sweepAuxFiles(mirrored = false) { _items.value[it] == null }
 
+    /** Local aux removal only; the folder copies are deleted once, in batch, by the caller. */
     private fun removeAuxFiles(songId: String) {
-        for (r in folder.roots()) {
-            BurnStems.removeAux(r.dir, songId)
-        }
+        for (r in folder.roots()) BurnStems.removeAux(r.dir, songId)
     }
 
     /** Total on-disk bytes of burned media (audio + sidecars + cuts + stems + grids), owned files only. */
@@ -863,17 +918,28 @@ class BurnStore(
 
     /** Delete every owned stem file (beat grids stay); [protecting] = songs loaded in a live player. */
     fun removeAllStems(protecting: Set<String> = emptySet()) {
-        for (r in folder.roots()) for (f in r.dir.listFiles().orEmpty()) {
-            if (!f.isFile || !BurnFileNames.isStemFile(f.name) || !ownsAux(f.name, r.isUserFolder)) continue
-            if (BurnFileNames.auxFileSongId(f.name) in protecting) continue
-            f.delete()
+        for (r in folder.roots()) {
+            val gone = ArrayList<String>()
+            for (f in r.dir.listFiles().orEmpty()) {
+                if (!f.isFile || !BurnFileNames.isStemFile(f.name) || !ownsAux(f.name, r.isUserFolder)) continue
+                if (BurnFileNames.auxFileSongId(f.name) in protecting) continue
+                if (f.delete()) gone += f.name
+            }
+            if (r.isUserFolder) folder.deleteMirrored(r.treeUri, gone)
         }
     }
 
     fun removeStems(songIds: List<String>, protecting: Set<String> = emptySet()) {
-        for (r in folder.roots()) for (id in songIds) {
-            if (id in protecting) continue
-            for (p in BurnFileNames.STEM_NAMES) File(r.dir, BurnFileNames.stemFileName(id, p)).delete()
+        for (r in folder.roots()) {
+            val gone = ArrayList<String>()
+            for (id in songIds) {
+                if (id in protecting) continue
+                for (p in BurnFileNames.STEM_NAMES) {
+                    val n = BurnFileNames.stemFileName(id, p)
+                    if (File(r.dir, n).delete()) gone += n
+                }
+            }
+            if (r.isUserFolder) folder.deleteMirrored(r.treeUri, gone)
         }
     }
 
@@ -893,6 +959,7 @@ class BurnStore(
                 bytes = bytes, rippedAt = r.rippedAt, downloadedAt = now,
                 state = BurnState.READY, error = null, wasAppStorage = r.wasAppStorage,
                 cutFileName = prev?.cutFileName, cutDownloadedAt = prev?.cutDownloadedAt,
+                treeUri = r.burnFolderTreeUri.takeIf { !r.wasAppStorage },
             ),
         )
         save()
@@ -935,6 +1002,26 @@ class BurnStore(
             if (_items.value[id]?.state == BurnState.DOWNLOADING) dropItems(listOf(id))
         }
         save()
+    }
+
+    /**
+     * MIX STREAMING (iOS `yieldBackgroundDownload`): a deck is about to stream this song - cancel a
+     * still-pending BACKGROUND transfer of it (the lane enqueues a whole collection at once) so the
+     * file isn't fetched twice; the stream's adoption lands the same `.ready` item. Only acts on a
+     * `.downloading` row with transfers wired; a no-op on the in-process path. Returns true if it yielded.
+     */
+    fun yieldBackgroundDownload(songId: String): Boolean {
+        val row = _items.value[songId]
+        if (transfers == null || row?.state != BurnState.DOWNLOADING) return false
+        // A burn run is mid-flight (it holds runLock and would block adoption): leave the background
+        // transfer alone so the song is still delivered.
+        if (runLock.isLocked) return false
+        // A re-burn of an already-burned song: its old file is still on disk; cancelling would drop the
+        // row and orphan that file. Let the transfer finish instead.
+        val existing = itemDir(row)?.let { File(it, row.audioFileName) }
+        if (existing != null && existing.isFile && existing.length() > 0) return false
+        cancelTransfers(listOf(songId))
+        return true
     }
 
     /** Drop items whose file vanished; delete+drop poisoned <4 KB XML/HTML "audio". Call at launch. */

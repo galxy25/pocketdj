@@ -18,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.testTag
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -193,6 +194,30 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 seedStatus = "Seed: added $n (no flush)"
             }
         }) { Text("Seed 500 songs") }
+        // ANS-COL-2 emulator seed: one 153-song batch into a fresh playlist -> expect 153 History > Collection rows.
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = withContext(Dispatchers.IO) {
+                    host.graph.catalogRepository.catalogFlow.first()?.songs?.drop(1000)?.take(153)?.map { it.id } ?: emptyList()
+                }
+                val store = host.graph.collections
+                val pl = store.playlists.firstOrNull { it.name == "Seed153" } ?: store.createPlaylist("Seed153")
+                val n = store.addSongs(
+                    ids,
+                    com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id),
+                )
+                seedStatus = "Seed: added $n to Seed153"
+            }
+        }) { Text("Seed 153 songs") }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = withContext(Dispatchers.IO) {
+                    host.graph.catalogRepository.catalogFlow.first()?.songs?.take(5)?.map { it.id } ?: emptyList()
+                }
+                val sl = host.graph.collections.realize(ids, "Seed setlist")
+                seedStatus = "Seed: setlist ${sl?.id} (${ids.size} songs)"
+            }
+        }) { Text("Seed setlist") }
         Text(seedStatus, style = MaterialTheme.typography.bodySmall)
     }
     // STU emulator seed: a 2 s 440 Hz mono WAV filed as a Studio sample ("SeedTone").
@@ -201,20 +226,43 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         host.scope.launch {
             sampleSeedStatus = withContext(Dispatchers.IO) {
                 runCatching {
-                    val rate = 44100; val n = rate * 2
-                    val bb = java.nio.ByteBuffer.allocate(44 + n * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
-                    bb.put("RIFF".toByteArray()).putInt(36 + n * 2).put("WAVEfmt ".toByteArray()).putInt(16)
-                        .putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
-                        .put("data".toByteArray()).putInt(n * 2)
-                    for (i in 0 until n) bb.putShort((Math.sin(2 * Math.PI * 440 * i / rate) * 12000).toInt().toShort())
-                    val f = java.io.File(host.graph.appContext.cacheDir, "SeedTone.wav").also { it.writeBytes(bb.array()) }
-                    val smp = host.graph.studioGraph.sampleFactory.importFile(f, "SeedTone.wav")
-                    "Sample seed: ${smp.name} ${smp.durationMs}ms"
+                    // 90 s mono 8 kHz tones (440/550/660 Hz) -> 3 distinct studio samples, so a queue holds for PB-6.
+                    val rate = 8000; val n = rate * 90
+                    val ids = mutableListOf<String>()
+                    var last: com.levi.pocketdj.studio.model.StudioSample? = null
+                    for ((k, hz) in listOf(440, 550, 660).withIndex()) {
+                        val bb = java.nio.ByteBuffer.allocate(44 + n * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        bb.put("RIFF".toByteArray()).putInt(36 + n * 2).put("WAVEfmt ".toByteArray()).putInt(16)
+                            .putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
+                            .put("data".toByteArray()).putInt(n * 2)
+                        for (i in 0 until n) bb.putShort((Math.sin(2 * Math.PI * hz * i / rate) * 12000).toInt().toShort())
+                        val f = java.io.File(host.graph.appContext.cacheDir, if (k == 0) "SeedTone.wav" else "SeedTone$k.wav").also { it.writeBytes(bb.array()) }
+                        val sm = host.graph.studioGraph.sampleFactory.importFile(f, f.name)
+                        ids += sm.id; last = sm
+                    }
+                    val smp = last!!
+                    // ANS-STU-6 / PB-6 seed: a "SeedStudio" playlist = 3 studio takes + 2 catalog songs.
+                    val cat = host.graph.catalogRepository.catalogFlow.first()?.songs?.take(2)?.map { it.id } ?: emptyList()
+                    val store = host.graph.collections
+                    val pl = store.playlists.firstOrNull { it.name == "SeedStudio" } ?: store.createPlaylist("SeedStudio")
+                    store.addSongs(ids + cat, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id))
+                    "Sample seed: ${smp.name} ${smp.durationMs}ms (+SeedStudio playlist)"
                 }.getOrElse { "Sample seed failed: $it" }
             }
         }
     }) { Text("Seed sample (tone)") }
     Text(sampleSeedStatus, style = MaterialTheme.typography.bodySmall)
+    // ANS-STU-3 emulator probe: a second "app" takes AUDIOFOCUS_GAIN_TRANSIENT for 6 s, then abandons (gain returns).
+    var focusStatus by remember { mutableStateOf("Focus steal: idle") }
+    OutlinedButton(onClick = {
+        val am = host.graph.appContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val req = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            .setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            .setOnAudioFocusChangeListener { }.build()
+        focusStatus = "Focus steal: granted=${am.requestAudioFocus(req)}"
+        host.scope.launch { kotlinx.coroutines.delay(6000); am.abandonAudioFocusRequest(req); focusStatus = "Focus steal: released" }
+    }) { Text("Focus steal 6s") }
+    Text(focusStatus, style = MaterialTheme.typography.bodySmall)
 
     // STU-11 emulator seed: a Bounce artifact (copy of the seed tone) on the newest arrangement.
     OutlinedButton(onClick = {
@@ -239,6 +287,119 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             }
         }
     }) { Text("Seed bounce artifact") }
+
+    // ANS-STU-2 emulator step: synthesize a 5-minute stereo float32 master capture (the file MasterRecorder writes) and
+    // bake it through the streaming path on the newest arrangement; the status reports duration + peak Java heap.
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            sampleSeedStatus = "Bake 5 min: running"
+            sampleSeedStatus = withContext(Dispatchers.IO) {
+                runCatching {
+                    val g = host.graph.studioGraph
+                    val arr = g.studioStore.arrangementsOrdered().firstOrNull() ?: g.studioStore.createArrangement("Seed arrangement")
+                    val rate = 44_100; val frames = rate * 300L
+                    val f = java.io.File(host.graph.appContext.cacheDir, "debug-master-5min.wav")
+                    java.io.BufferedOutputStream(java.io.FileOutputStream(f), 1 shl 16).use { o ->
+                        o.write(com.levi.pocketdj.audio.core.WavWriter.header(rate, 2, com.levi.pocketdj.audio.core.WavWriter.Format.FLOAT32, 0L))
+                        val chunk = FloatArray(4096 * 2); var done = 0L
+                        while (done < frames) {
+                            val n = minOf(4096L, frames - done).toInt()
+                            for (i in 0 until n) { val v = (0.3 * Math.sin(2 * Math.PI * 220.0 * (done + i) / rate)).toFloat(); chunk[i * 2] = v; chunk[i * 2 + 1] = v }
+                            o.write(com.levi.pocketdj.audio.core.WavWriter.samplesToBytes(chunk, 0, n * 2, com.levi.pocketdj.audio.core.WavWriter.Format.FLOAT32))
+                            done += n
+                        }
+                    }
+                    val rt = Runtime.getRuntime()
+                    val t0 = System.currentTimeMillis()
+                    val art = g.masterRecordingBaker.bakeArtifact(
+                        arr.id, com.levi.pocketdj.studio.engine.MasterCapture(f, rate, false), g.studioRoots.arrangementsDir(), g.studioStore,
+                        com.levi.pocketdj.studio.store.ArrangerMath.artifactStamp(),
+                    )
+                    val msg = "Bake 5 min: ${art?.fileName} ${art?.durationMs}ms in ${System.currentTimeMillis() - t0}ms heapUsed=${(rt.totalMemory() - rt.freeMemory()) shr 20}MB max=${rt.maxMemory() shr 20}MB"
+                    android.util.Log.d("PdjVerify", msg); msg
+                }.getOrElse { "Bake 5 min failed: $it" }
+            }
+        }
+    }) { Text("Bake 5 min master") }
+
+    // ANS-BRW-2 emulator step: which source the rec-engine enroll secret provider resolves to right now (never the secret itself).
+    var enrollStatus by remember { mutableStateOf("Enroll: idle") }
+    OutlinedButton(onClick = {
+        val v = com.levi.pocketdj.data.config.RemoteEndpoints.recEngineEnroll()
+        val src = if (v == com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET) "compiled" else "doc"
+        enrollStatus = "Enroll: source=$src len=${v.length} head=${v.take(3)}"
+        android.util.Log.d("PdjVerify", enrollStatus)
+    }) { Text("Enroll: source") }
+    Text(enrollStatus, style = MaterialTheme.typography.bodySmall)
+
+    // ANS-STU-5 emulator step: a 30-minute arrangement (2 tracks x 6 sequential 5-minute PCM16 clips), play + seek,
+    // status line reports Java heap + native heap so the paged path can be compared across time/seek.
+    var arr30Status by remember { mutableStateOf("Arr30: idle") }
+    fun heapLine(): String {
+        val rt = Runtime.getRuntime(); val mi = android.os.Debug.MemoryInfo(); android.os.Debug.getMemoryInfo(mi)
+        return "javaHeap=${(rt.totalMemory() - rt.freeMemory()) shr 20}MB pssJava=${mi.getMemoryStat("summary.java-heap")}KB pssNative=${mi.getMemoryStat("summary.native-heap")}KB"
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                arr30Status = "Arr30: seeding"
+                arr30Status = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val g = host.graph.studioGraph
+                        val arr = g.studioStore.createArrangement("Arr30")
+                        val rate = 44_100; val frames = rate * 300L
+                        val tracks = listOf(g.studioStore.addTrack(arr.id, "T1")!!, g.studioStore.addTrack(arr.id, "T2")!!)
+                        for (i in 0 until 6) {
+                            val fn = "arr30-$i.wav"
+                            val f = java.io.File(g.studioRoots.arrangementsDir(), fn)
+                            java.io.BufferedOutputStream(java.io.FileOutputStream(f), 1 shl 16).use { o ->
+                                o.write(com.levi.pocketdj.audio.core.WavWriter.header(rate, 1, com.levi.pocketdj.audio.core.WavWriter.Format.PCM16, frames * 2))
+                                val chunk = FloatArray(4096); var done = 0L
+                                while (done < frames) {
+                                    val n = minOf(4096L, frames - done).toInt()
+                                    for (k in 0 until n) chunk[k] = (0.25 * Math.sin(2 * Math.PI * (200.0 + 60 * i) * (done + k) / rate)).toFloat()
+                                    o.write(com.levi.pocketdj.audio.core.WavWriter.samplesToBytes(chunk, 0, n, com.levi.pocketdj.audio.core.WavWriter.Format.PCM16))
+                                    done += n
+                                }
+                            }
+                            for (t in tracks) g.studioStore.addClip(arr.id, t.id, com.levi.pocketdj.studio.model.StudioClip(
+                                id = com.levi.pocketdj.studio.model.StudioFactory.newClipId(), name = "Long $i", fileName = fn,
+                                startMs = i * 300_000, durationMs = 300_000, source = com.levi.pocketdj.studio.model.StudioClipSource.RECORDING,
+                                createdAt = System.currentTimeMillis().toDouble(),
+                            ))
+                        }
+                        "Arr30: seeded ${arr.id} 30:00 ${heapLine()}"
+                    }.getOrElse { "Arr30 seed failed: $it" }
+                }
+                android.util.Log.d("PdjVerify", arr30Status)
+            }
+        }) { Text("Arr30: seed") }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val g = host.graph.studioGraph
+                val arr = g.studioStore.arrangementsOrdered().firstOrNull { it.name == "Arr30" } ?: run { arr30Status = "Arr30: not seeded"; return@launch }
+                val t0 = System.currentTimeMillis()
+                val out = g.multitrackPlayer.playOutcome(arr, 0)
+                arr30Status = "Arr30: play $out in ${System.currentTimeMillis() - t0}ms ${heapLine()}"
+                android.util.Log.d("PdjVerify", arr30Status)
+            }
+        }) { Text("Arr30: play") }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val g = host.graph.studioGraph
+                val arr = g.studioStore.arrangementsOrdered().firstOrNull { it.name == "Arr30" } ?: return@launch
+                val at = listOf(1_200_000, 600_000, 1_750_000, 30_000).random()
+                val t0 = System.currentTimeMillis()
+                val out = g.multitrackPlayer.playOutcome(arr, at)
+                arr30Status = "Arr30: seek ${at / 1000}s $out in ${System.currentTimeMillis() - t0}ms ${heapLine()}"
+                android.util.Log.d("PdjVerify", arr30Status)
+            }
+        }) { Text("Arr30: seek") }
+        OutlinedButton(onClick = { arr30Status = "Arr30: ${heapLine()}"; android.util.Log.d("PdjVerify", arr30Status) }) { Text("Arr30: heap") }
+    }
+    Text(arr30Status, style = MaterialTheme.typography.bodySmall)
 
     // COL-8 emulator step: 60-song batch into the converted AM pocket "SeedDup" -> confirm dialog (>50).
     OutlinedButton(onClick = {
@@ -302,6 +463,75 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             }
         }) { Text("Burn first 3") }
     }
+    // Wave-6 verify seeds: stemmed burn fixture, profile-source demux ingest, soft-cap-below-usage.
+    var w6Status by remember { mutableStateOf("W6 seed: idle") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = listOf("sng_da31790a9c81", "sng_18af57455ae4")
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val b = host.graph.servicesGraph.burnStore
+                val r = b.burn(ids.map { com.levi.pocketdj.data.burns.BurnSong(it, songs[it]?.name ?: it, songs[it]?.artist ?: "") })
+                val st = ids.map { id -> id to (runCatching { b.burnStems(id) }.getOrNull()?.size) }
+                w6Status = "W6 burn: $r stems=$st"
+                android.util.Log.d("PdjVerify", w6Status)
+            }
+        }) { Text("W6 burn stemmed") }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val g = host.graph
+                val b = g.servicesGraph.burnStore
+                val id = "sng_da31790a9c81"
+                val orig = b.localUrl(id); val stems = b.localStemFiles(id)
+                if (orig == null || stems == null) { w6Status = "W6 ingest: need stemmed burn first"; return@launch }
+                val e = g.studioGraph.profileAudio.ingest(com.levi.pocketdj.data.profile.ProfileSourceStore.Kind.DEMUX, "W6 Demux", orig, stems = stems)
+                if (e != null) {
+                    val store = g.collections
+                    val pl = store.playlists.firstOrNull { it.name == "W6PL" } ?: store.createPlaylist("W6PL")
+                    store.addSongs(listOf(e.songId), com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id))
+                }
+                w6Status = "W6 ingest: ${e?.songId}"
+                android.util.Log.d("PdjVerify", w6Status)
+            }
+        }) { Text("W6 ingest demux") }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                runCatching { host.graph.settings.set(com.levi.pocketdj.data.storage.StorageSettings.SOFT_CAP_SONGS, 1) }
+                w6Status = "W6 cap: songs=1"
+            }
+        }) { Text("W6 cap=1") }
+    }
+    Text(w6Status, style = MaterialTheme.typography.bodySmall)
+    // ANS-COL-1 emulator seed: a pocket + playlist linked to Apple Music (amPlaylistId persists across relaunch).
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val store = host.graph.collections
+            val pk = store.pockets.firstOrNull { it.name == "SeedAMPocket" } ?: store.createPocket("SeedAMPocket")
+            store.linkPocketToAppleMusic(pk.id, "p.SEEDPOCKETLINK")
+            val pl = store.playlists.firstOrNull { it.name == "SeedAMList" } ?: store.createPlaylist("SeedAMList")
+            store.linkToAppleMusic(pl.id, "p.SEEDLISTLINK")
+            android.util.Log.d("PdjVerify", "AM link seeded pocket=${pk.id} playlist=${pl.id}")
+        }
+    }) { Text("Seed AM-linked collections") }
+    // ANS-PB-1 emulator seed: clean-only playlist "SeedClean" = rip, explicit song with no clean edition, rip.
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val ids = seedIds.ifEmpty { pickSeed().also { seedIds = it } }
+            val songs = host.graph.catalogRepository.catalogFlow.first()?.songs ?: emptyList()
+            val explicit = songs.firstOrNull { com.levi.pocketdj.data.edition.CleanOnly.isSkipped(it) }
+            val playable = ids.filter { id -> songs.firstOrNull { it.id == id }?.explicit != true }.take(3)
+            if (explicit == null || playable.size < 2) { ripStatus = "Clean seed: no explicit/no rips"; return@launch }
+            val store = host.graph.collections
+            val pl = store.playlists.firstOrNull { it.name == "SeedClean" } ?: store.createPlaylist("SeedClean")
+            val target = com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id)
+            store.setCleanOnlyForPlaylist(true, pl.id)
+            store.addSongs(listOf(playable[0], explicit.id) + playable.drop(1), target)
+            ripStatus = "Clean seed: ${playable[0]} / explicit ${explicit.id} / ${playable.drop(1)}"
+            android.util.Log.d("PdjVerify", ripStatus)
+        }
+    }) { Text("Seed clean-only playlist") }
     Row { OutlinedButton(onClick = {
             host.scope.launch {
                 val ids = seedIds.ifEmpty { pickSeed().also { seedIds = it } }
@@ -385,12 +615,40 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 mixStatus = "Mix load: ${mixLine()}"
             }
         }) { Text("Mix: load 2 + play") }
+        // ANS-GAP-7 seed: 7 Load events (first 7 catalog songs) into the current session -> Mix sessions detail grid/CSV.
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.take(7) ?: emptyList()
+                val st = host.graph.mixGraph.mixSessions
+                songs.forEachIndexed { i, sg ->
+                    st.logEvent(com.levi.pocketdj.mix.store.MixEventKind.Load, if (i % 2 == 0) "A" else "B", sg.id, sg.name, sg.artist, sg.bpm, sg.camelot, null, null, null, 0, null)
+                    st.notePlayed(sg.id)
+                    kotlinx.coroutines.delay(150)
+                }
+                st.flush()
+                mixStatus = "Mix session seeded: ${songs.size} loads"
+            }
+        }) { Text("Seed Mix session") }
         OutlinedButton(onClick = {
             val e = host.graph.mixGraph.mixEngine
             val A = com.levi.pocketdj.mix.model.Deck.A; val B = com.levi.pocketdj.mix.model.Deck.B
             e.setRate(1.05, A); e.setPitch(1.0, A); e.setVolume(0.8, A); e.setRate(0.97, B); e.setVolume(0.9, B); e.setCrossfader(0.3)
             mixStatus = "Mix twist: ${mixLine()}"
         }) { Text("Mix: twist") }
+        OutlinedButton(onClick = {
+            // ANS-MIX-2 emulator step: tempo +30% on the lead, then sync the follower; the engine logs "phase-align ... err=..ms".
+            val e = host.graph.mixGraph.mixEngine
+            val A = com.levi.pocketdj.mix.model.Deck.A; val B = com.levi.pocketdj.mix.model.Deck.B
+            host.scope.launch {
+                if (e.leadDeck != A) e.setLead(A)
+                e.setRate(1.3, A)
+                e.syncToLead(B)
+                kotlinx.coroutines.delay(1500)
+                e.syncToLead(B) // second pass: the logged err is the RESIDUAL after the first align
+                mixStatus = "Mix sync+30%: lead=${e.leadDeck?.label} ${mixLine()}"
+                android.util.Log.d("PdjVerify", mixStatus)
+            }
+        }) { Text("Mix: +30% sync B") }
         OutlinedButton(onClick = { showDeckHarness = true }) { Text("Mix: deck UI") }
     }
     if (showDeckHarness) com.levi.pocketdj.screens.mix.DebugDeckHarness(host.graph) { showDeckHarness = false }
@@ -465,9 +723,10 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         OutlinedButton(onClick = { host.graph.mixGraph.autoDj.resumeAuto(); autoStatus = autoLine() }) { Text("AutoDJ: resume") }
         OutlinedButton(onClick = { autoStatus = autoLine() }) { Text("AutoDJ: status") }
     }
+    Row { OutlinedButton(onClick = { com.levi.pocketdj.di.MixDebug.failFirstPerUrl = !com.levi.pocketdj.di.MixDebug.failFirstPerUrl; autoStatus = "fail-once armed=${com.levi.pocketdj.di.MixDebug.failFirstPerUrl}" }) { Text("Mix: 500 once") } }
     Text(autoStatus, style = MaterialTheme.typography.bodySmall)
 
-    // GM-7 verify probes (debug only): the In the Pocket game screen (GAMES-8) has no UI yet.
+    // In the Pocket verify probes (debug only): drive/inspect the round without the Games UI.
     var pocketStatus by remember { mutableStateOf("Pocket: idle") }
     fun pocketLine(): String {
         val st = host.graph.gamesGraph.inThePocket.state.value
@@ -484,7 +743,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }
     Text(pocketStatus, style = MaterialTheme.typography.bodySmall)
 
-    // BRW-10 verify probe (debug only): In Da Zone has no renderer yet (REC-5); log the queue it would build.
+    // BRW-10 verify probe (debug only): log the In Da Zone queue the ranker would build.
     var zoneStatus by remember { mutableStateOf("Zone: idle") }
     OutlinedButton(onClick = {
         host.scope.launch {
@@ -505,7 +764,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }) { Text("Zone: rank now") }
     Text(zoneStatus, style = MaterialTheme.typography.bodySmall)
 
-    // GM-3 verify probes (debug only): the Gem Collector round engine has no screen yet.
+    // Gem Collector verify probes (debug only): drive/inspect the round engine directly.
     var gemStatus by remember { mutableStateOf("Gem: idle") }
     fun gemLine(): String {
         val st = host.graph.gamesGraph.puzzleEngine.state.value
@@ -516,7 +775,21 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.startRoundDetached(); gemStatus = "Gem: starting" }) { Text("Gem: start") }
         OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.skip(); gemStatus = gemLine() }) { Text("Gem: skip") }
         OutlinedButton(onClick = { gemStatus = gemLine() }) { Text("Gem: status") }
+
         OutlinedButton(onClick = { host.graph.gamesGraph.puzzleEngine.endRound(); gemStatus = gemLine() }) { Text("Gem: end") }
+    }
+    Row {
+        OutlinedButton(onClick = {
+            // ANS-PB-2 probe: one game-tagged row for an un-ripped song that has an Apple Music id -> preview rung.
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs ?: emptyList()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val s = songs.firstOrNull { it.appleMusicId != null && manifest[it.id] == null && it.explicit != true }
+                if (s == null) { gemStatus = "Gem: no un-ripped AM song"; return@launch }
+                host.graph.gamesGraph.gameRunPlayer.playRun(listOf(com.levi.pocketdj.playback.RunItem(s.id, s.name, s.artist)), "dbgpreview", "Preview probe")
+                gemStatus = "Gem: preview probe ${s.id}"
+            }
+        }) { Text("Gem: preview row") }
     }
     Text(gemStatus, style = MaterialTheme.typography.bodySmall)
 
@@ -672,7 +945,21 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
 
     SettingsDivider()
     SettingsHeader("Dead air")
-    SettingsCaption(DeadAirSource.current?.summary() ?: "Dead-air meter not available yet (ships with the playback area).")
+    // iOS DebugView parity: Today, the last 7 days and the worst transition pairs, refreshed every second.
+    var deadAir by remember { mutableStateOf(DeadAirSource.current?.summary()) }
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        while (true) {
+            deadAir = DeadAirSource.current?.summary()
+            kotlinx.coroutines.delay(1_000)
+        }
+    }
+    Text(
+        deadAir ?: "Dead-air meter not available yet.",
+        style = MaterialTheme.typography.bodySmall,
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+        modifier = Modifier.testTag("debug-deadair"),
+    )
+    SettingsCaption("Silent seconds while a set was meant to be playing. Transition = between tracks; mid-song = a stall inside a song.")
 }
 
 @Composable

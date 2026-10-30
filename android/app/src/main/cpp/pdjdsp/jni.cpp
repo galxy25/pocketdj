@@ -8,6 +8,7 @@
 #include "mixer.h"
 #include "sf2_voice.h"
 #include "stretch.h"
+#include "stretch_rt.h"
 #include "oboe_sink.h"
 
 #define JF(ret, name) extern "C" JNIEXPORT ret JNICALL Java_com_levi_pocketdj_studio_audio_NativeDsp_##name
@@ -120,8 +121,26 @@ JF(jboolean, nativeStretchExact)(JNIEnv* env, jobject, jfloatArray in, jint inFr
     return ok;
 }
 
+
+// ---- Real-time stretch (decks) ---------------------------------------------------------------
+// Called on the JVM render thread: critical arrays, no allocation. Latency is cached Kotlin-side.
+JF(jlong, nativeRtNew)(JNIEnv*, jobject, jint sr, jint maxIn, jint maxOut) { return reinterpret_cast<jlong>(new pdj::RtStretch(sr, maxIn, maxOut)); }
+JF(void, nativeRtFree)(JNIEnv*, jobject, jlong h) { delete H<pdj::RtStretch>(h); }
+JF(jint, nativeRtInputLatency)(JNIEnv*, jobject, jlong h) { return H<pdj::RtStretch>(h)->inputLatency(); }
+JF(jint, nativeRtOutputLatency)(JNIEnv*, jobject, jlong h) { return H<pdj::RtStretch>(h)->outputLatency(); }
+JF(void, nativeRtSetPitch)(JNIEnv*, jobject, jlong h, jdouble semitones) { H<pdj::RtStretch>(h)->setPitchSemitones(semitones); }
+JF(void, nativeRtReset)(JNIEnv*, jobject, jlong h) { H<pdj::RtStretch>(h)->reset(); }
+JF(void, nativeRtProcess)(JNIEnv* env, jobject, jlong h, jfloatArray in, jint inFrames, jfloatArray out, jint outFrames) {
+    if (h == 0) return;
+    auto* i = static_cast<jfloat*>(env->GetPrimitiveArrayCritical(in, nullptr));
+    auto* o = static_cast<jfloat*>(env->GetPrimitiveArrayCritical(out, nullptr));
+    if (i && o) H<pdj::RtStretch>(h)->process(i, inFrames, o, outFrames);
+    if (o) env->ReleasePrimitiveArrayCritical(out, o, 0);
+    if (i) env->ReleasePrimitiveArrayCritical(in, i, JNI_ABORT);
+}
+
 // ---- Oboe ----------------------------------------------------------------------------------
-JF(jlong, nativeOboeNew)(JNIEnv*, jobject, jint sr, jint ringFrames) { return reinterpret_cast<jlong>(new pdj::OboeOut(sr, ringFrames)); }
+JF(jlong, nativeOboeNew)(JNIEnv*, jobject, jint sr, jint ringFrames, jboolean lowLatency) { return reinterpret_cast<jlong>(new pdj::OboeOut(sr, ringFrames, lowLatency)); }
 JF(void, nativeOboeFree)(JNIEnv*, jobject, jlong h) { delete H<pdj::OboeOut>(h); }
 JF(jboolean, nativeOboeOpen)(JNIEnv*, jobject, jlong h) { return H<pdj::OboeOut>(h)->open(); }
 JF(void, nativeOboeClose)(JNIEnv*, jobject, jlong h) { H<pdj::OboeOut>(h)->close(); }

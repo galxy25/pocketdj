@@ -63,9 +63,15 @@ aws iam put-role-policy --role-name "$ROLE" --policy-name "pockets-state-access"
 ROLE_ARN="arn:aws:iam::${ACCT}:role/${ROLE}"
 
 # 3) the enrollment secret — the rec engine's, verbatim.
-ENROLL="$(aws lambda get-function-configuration --function-name "$REC_FN" --region "$REGION" \
-  --query 'Environment.Variables.REC_ENROLL_SECRET' --output text 2>/dev/null || true)"
-{ [ "$ENROLL" = "None" ] || [ -z "$ENROLL" ]; } && die "$REC_FN has no REC_ENROLL_SECRET — refusing to mint one (it must equal Config.recEngineEnrollSecret)"
+#    (the whole comma-separated REC_ENROLL_SECRETS list, so a rotation window carries over)
+ENROLL=""
+for VAR in REC_ENROLL_SECRETS REC_ENROLL_SECRET; do
+  ENROLL="$(aws lambda get-function-configuration --function-name "$REC_FN" --region "$REGION" \
+    --query "Environment.Variables.$VAR" --output text 2>/dev/null || true)"
+  [ "$ENROLL" = "None" ] && ENROLL=""
+  [ -n "$ENROLL" ] && break
+done
+[ -z "$ENROLL" ] && die "$REC_FN has no REC_ENROLL_SECRETS — refusing to mint one (it must equal Config.recEngineEnrollSecret)"
 FP="$(printf %s "$ENROLL" | shasum -a 256 | cut -c1-16)"
 say "enrollment secret copied from $REC_FN (sha256 ${FP}…)"
 MAXP="${MAX_PROFILES:-}"
@@ -79,7 +85,8 @@ say "profile enrollment cap: $MAXP"
 # 4) package + create/update. @aws-sdk (S3, Lambda) is bundled in the nodejs20.x runtime.
 ZIP="$(mktemp -d)/fn.zip"
 ( cd "$SELF" && zip -q "$ZIP" index.mjs params.mjs detect.mjs analyze.mjs features.mjs store.mjs collections.mjs )
-ENVVARS="Variables={REC_BUCKET=$REC_BUCKET,FEATURES_URL=$FEATURES_URL,REC_ENROLL_SECRET=$ENROLL,MAX_PROFILES=$MAXP}"
+ENVVARS="$(printf '{"Variables":{"REC_BUCKET":"%s","FEATURES_URL":"%s","REC_ENROLL_SECRETS":"%s","MAX_PROFILES":"%s"}}' \
+  "$REC_BUCKET" "$FEATURES_URL" "$ENROLL" "$MAXP")"
 if aws lambda get-function --function-name "$FN" --region "$REGION" >/dev/null 2>&1; then
   say "updating function code"
   aws lambda update-function-code --function-name "$FN" --zip-file "fileb://$ZIP" --region "$REGION" >/dev/null

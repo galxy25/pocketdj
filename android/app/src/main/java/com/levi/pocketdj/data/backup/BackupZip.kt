@@ -49,8 +49,8 @@ object BackupZip {
         val files = linkedMapOf(
             "manifest.json" to ZipIo.bytes(manifest, json),
             "sources.json" to ZipIo.bytes(payload.sourcesJson, json),
-            "pockets.json" to ZipIo.bytes(json.encodeToJsonElement(ListSerializer(Pocket.serializer()), payload.pockets), json),
-            "playlists.json" to ZipIo.bytes(json.encodeToJsonElement(ListSerializer(PlaylistSerializer), payload.playlists), json),
+            "pockets.json" to ZipIo.bytes(json.encodeToJsonElement(ListSerializer(Pocket.serializer()), payload.pockets.map { it.copy(amPlaylistId = null) }), json),
+            "playlists.json" to ZipIo.bytes(json.encodeToJsonElement(ListSerializer(PlaylistSerializer), payload.playlists.map { it.copy(amPlaylistId = null) }), json),
             "setlists.json" to ZipIo.bytes(json.encodeToJsonElement(ListSerializer(Setlist.serializer()), payload.setlists), json),
             "folders.json" to ZipIo.bytes(json.encodeToJsonElement(ListSerializer(PlaylistFolder.serializer()), payload.folders), json),
             "edits.json" to (payload.editsData ?: "{}".toByteArray()),

@@ -2442,3 +2442,33 @@ test('cleanActivity keeps a well-formed installId and drops a malformed one', ()
   assert.equal(state.activity[0].installId, INST_A);
   assert.equal('installId' in state.activity[1], false);
 });
+
+// ── ANS-BRW-2: rotation — REC_ENROLL_SECRETS (comma-separated, old+new) ─────────────────────────
+test('enrollOk: rotation list accepts old and new, rejects others, fails closed', async () => {
+  const { enrollOk } = await import('./index.mjs');
+  const e = (s) => ({ headers: s === null ? {} : { 'x-pocketdj-enroll': s } });
+  const saved = { one: process.env.REC_ENROLL_SECRET, many: process.env.REC_ENROLL_SECRETS };
+  try {
+    process.env.REC_ENROLL_SECRETS = 'old-secret-aaaa, new-secret-bbbbbb';
+    process.env.REC_ENROLL_SECRET = 'legacy-single-cc';
+    assert.equal(enrollOk(e('old-secret-aaaa')), true);
+    assert.equal(enrollOk(e('new-secret-bbbbbb')), true);
+    assert.equal(enrollOk(e('legacy-single-cc')), true, 'legacy var still honoured');
+    assert.equal(enrollOk(e('other-secret-zzzz')), false);
+    assert.equal(enrollOk(e('old-secret-aaa')), false, 'prefix of a secret');
+    assert.equal(enrollOk(e('old-secret-aaaa,new-secret-bbbbbb')), false, 'the list itself is not a secret');
+    assert.equal(enrollOk(e('')), false);
+    assert.equal(enrollOk(e(null)), false);
+    delete process.env.REC_ENROLL_SECRET;
+    assert.equal(enrollOk(e('legacy-single-cc')), false, 'retired once the legacy var is gone');
+    process.env.REC_ENROLL_SECRETS = ' , ,';
+    assert.equal(enrollOk(e('')), false, 'blank list fails closed');
+    assert.equal(enrollOk(e(' ')), false);
+    delete process.env.REC_ENROLL_SECRETS;
+    assert.equal(enrollOk(e('old-secret-aaaa')), false, 'unset fails closed');
+  } finally {
+    for (const [k, v] of [['REC_ENROLL_SECRET', saved.one], ['REC_ENROLL_SECRETS', saved.many]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+});

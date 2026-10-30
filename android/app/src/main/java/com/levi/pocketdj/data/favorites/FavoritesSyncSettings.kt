@@ -14,4 +14,7 @@ object FavoritesSyncSettings {
 
     /** Adopt the curator's shipped ♥ seed as this install's initial favorites. */
     val APPLY_OWNER_SEED = PrefKey.boolean("applyOwnerFavoritesSeed", false)
+
+    /** Paginated-pull cursor (ANS-COL-5): last songId (sorted catalog) already asked about; "" = start of lap. */
+    val PULL_CURSOR = PrefKey.string("favoritesPullCursorId", "")
 }

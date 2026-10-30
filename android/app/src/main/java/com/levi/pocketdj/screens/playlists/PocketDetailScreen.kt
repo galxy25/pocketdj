@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.ui.dnd.DropHighlight
 import com.levi.pocketdj.ui.dnd.acceptSongsInto
 import com.levi.pocketdj.ui.dnd.clipboardHasSongs
@@ -39,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.produceState
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.setValue
@@ -61,7 +63,7 @@ import com.levi.pocketdj.screens.browse.SongDetailSheet
  * Pocket detail (specs/playlists-ui.md §6): stats + resolution footer → Nested
  * pockets / Albums / Songs / Notes sections (move up/down + remove per row,
  * tap-to-edit notes) → ▶ Play / Shuffle over the DAG-resolved song order via
- * the reserved Now Playing setlist. Export / source-sync / rip-burn deferred.
+ * the reserved Now Playing setlist. Export (zip + CSV) landed in ANS-COL-3; source-sync / rip-burn deferred.
  */
 @Composable
 fun PocketDetailScreen(
@@ -75,7 +77,9 @@ fun PocketDetailScreen(
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val store = remember { graph.collections }
+    val exporter = com.levi.pocketdj.screens.collections.rememberCollectionExporter()
     val snackbar = remember { SnackbarHostState() }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         graph.catalogRepository.loadIfNeeded()
@@ -135,8 +139,14 @@ fun PocketDetailScreen(
         }
 
         fun playNow(shuffle: Boolean) {
-            val set = store.playNowPocket(pocketId, shuffle = shuffle) ?: return
+            val set = store.playNowPocket(pocketId, shuffle = shuffle)
+            if (set == null) { scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }; return }
             onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
+        }
+
+        fun playStudioItem(id: String) {
+            if (store.playNow(listOf(id), name = pocket.name, sourceToken = PlayContext.SOURCE_POCKET, repeats = pocket.songRepeats.filterKeys { it == id }, originId = pocketId) != null) onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
+            else scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
         }
 
         val burnController = rememberCollectionBurnController(pocketId)
@@ -201,6 +211,14 @@ fun PocketDetailScreen(
                         DropdownMenuItem(
                             text = { Text("Add note") },
                             onClick = { dismiss(); addNoteOpen = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export…") },
+                            onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.pocketZip(store, pocketId, pocket.name)) },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export CSV") },
+                            onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.pocketCsv(store, pocketId, pocket.name)) },
                         )
                         DropdownMenuItem(
                             text = { Text("Rename…") },
@@ -421,6 +439,8 @@ fun PocketDetailScreen(
                         if (studio != null) {
                             StudioItemRow(
                                 info = studio,
+                                artist = rememberStudioArtist(),
+                                onClick = { playStudioItem(songId) },
                                 badges = {
                                     pocket.songRepeats[songId]?.takeIf { it > 1 }?.let {
                                         Spacer(Modifier.width(6.dp))
@@ -443,7 +463,7 @@ fun PocketDetailScreen(
                                 bpm = song.bpm,
                                 camelot = song.camelot,
                                 lengthMs = song.length,
-                                dimmed = !manifest.containsKey(songId),
+                                dimmed = !manifest.containsKey(songId) || com.levi.pocketdj.data.collections.isCleanOnlyDimmed(pocket.cleanOnly, song),
                                 modifier = Modifier.selectableRow(rowSelection, songId, selScope, { detailSongId = songId }, rowSongId = songId),
                                 favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                                 badges = {

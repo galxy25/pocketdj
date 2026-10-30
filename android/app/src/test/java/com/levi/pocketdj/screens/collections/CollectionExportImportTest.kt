@@ -94,4 +94,46 @@ class CollectionExportImportTest {
         assertEquals("Exported a", completeExport("a", byteArrayOf(1), { true }, { deleted++ }))
         assertEquals(2, deleted)
     }
+
+    @Test fun setlistCsvRequestEncodesTheSetlistAndNamesTheFile() {
+        val dir = java.nio.file.Files.createTempDirectory("expcsv").toFile()
+        val store = com.levi.pocketdj.data.collections.CollectionsStore(file = java.io.File(dir, "c.json"), now = { 1.0 })
+        val cat = com.levi.pocketdj.data.catalog.MergedCatalog.merge(listOf(com.levi.pocketdj.data.catalog.IndexJson(
+            manifest = com.levi.pocketdj.data.catalog.IndexManifest(sourceName = "AM"),
+            songs = listOf(com.levi.pocketdj.data.catalog.IndexSong(id = "s1", artist = "Art", name = "One")))))
+        store.catalogProvider = { cat }
+        val pl = store.createPlaylist("PL"); store.addSongToPlaylist("s1", pl.id)
+        val sl = store.realize(pl.id, seed = "x", name = "Friday set")!!
+        val req = CollectionExportRequests.setlistCsv(store, sl.id, "Friday set")
+        assertEquals("Friday set.csv", req.fileName)
+        assertEquals(CollectionShare.CSV_MIME, req.mime)
+        val csv = String(req.bytes()!!, Charsets.UTF_8)
+        assertTrue(csv, csv.contains("1,One,Art,"))
+        assertEquals("unknown setlist exports nothing", null, CollectionExportRequests.setlistCsv(store, "nope", "x").bytes())
+        // playlist / pocket zip requests carry the explicit .pdjcollection tail
+        assertEquals("PL.playlist.pdjcollection", CollectionExportRequests.playlistZip(store, pl.id, "PL").fileName)
+        assertTrue(CollectionExportRequests.playlistZip(store, pl.id, "PL").bytes() != null)
+        val pk = store.createPocket("Warm"); store.addSongToPocket("s1", pk.id)
+        assertEquals("Warm.pocket.pdjcollection", CollectionExportRequests.pocketZip(store, pk.id, "Warm").fileName)
+        assertTrue(CollectionExportRequests.pocketZip(store, pk.id, "Warm").bytes() != null)
+        assertEquals(CollectionShare.CSV_MIME, CollectionExportRequests.pocketCsv(store, pk.id, "Warm").mime)
+    }
+
+    @Test fun collectionsTabSetlistsHideNowPlayingSortNewestFirstAndFilter() {
+        fun sl(id: String, name: String?, at: Double) = com.levi.pocketdj.data.collections.Setlist(id = id, name = name, generatedAt = at)
+        val all = listOf(
+            sl("a", "Old night", 1.0), sl("b", "Friday", 3.0), sl("c", null, 2.0),
+            sl(com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID, "Now Playing", 9.0),
+        )
+        val rows = com.levi.pocketdj.screens.playlists.listableSetlists(all, "")
+        assertEquals(listOf("b", "c", "a"), rows.map { it.id })
+        assertEquals(listOf("b"), com.levi.pocketdj.screens.playlists.listableSetlists(all, " FRI ").map { it.id })
+        assertEquals("Set list", com.levi.pocketdj.screens.playlists.setlistTitle(rows[1]))
+    }
+
+    @Test fun collectionsTabSetlistsHideReservedNowPlayingPlaylistTakes() {
+        val reserved = com.levi.pocketdj.data.collections.Setlist(
+            id = "x", name = "Take", generatedAt = 1.0, playlistId = com.levi.pocketdj.data.collections.NOW_PLAYING_PLAYLIST_ID)
+        assertTrue(com.levi.pocketdj.screens.playlists.listableSetlists(listOf(reserved), "").isEmpty())
+    }
 }

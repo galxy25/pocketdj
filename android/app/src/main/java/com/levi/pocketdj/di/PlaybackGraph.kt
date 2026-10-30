@@ -16,10 +16,14 @@ import com.levi.pocketdj.playback.outcome.SkipTracker
 import com.levi.pocketdj.playback.sequencer.RowResolverRegistry
 import com.levi.pocketdj.playback.sequencer.SetlistSequencer
 import com.levi.pocketdj.screens.nowplaying.NowPlayingRoutes
+import androidx.navigation.compose.composable
+import com.levi.pocketdj.playback.health.DeadAirReport
+import com.levi.pocketdj.screens.settings.DeadAirSource
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.NavEntry
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -34,6 +38,10 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
     override val area: String = "playback"
 
     override val navEntries: List<NavEntry> get() = NowPlayingRoutes.entries
+
+    /** Settings > Playback mode row (order 460; see sections/PlaybackSection). */
+    override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> =
+        listOf(com.levi.pocketdj.screens.settings.sections.playbackSection())
 
     /** The app-scoped sequencer (the Android SetlistPlayer). */
     val sequencer: SetlistSequencer get() = app.playbackController.sequencer
@@ -164,6 +172,7 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
 
     /** Non-suspending mirror of EditionSettings (the decider is read on Main). */
     @Volatile private var preferExplicitMirror: Boolean? = null
+    @Volatile private var preferExplicitLoaded = false
 
     /** Idempotent: connect the sequencer's capture seams. Called once from AppGraph init. */
     fun wire() {
@@ -178,14 +187,18 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         seq.editionDecider = com.levi.pocketdj.data.edition.PolicyEditionDecider(
             preferExplicit = { preferExplicitMirror },
             song = { id -> app.catalogRepository.state.value.catalog?.songsById?.get(id) },
-            isStored = { id -> app.servicesGraph.burnStore.hasLocalFile(id) },
+            isStored = { id -> app.servicesGraph.burnStore.isReadyInLedger(id) }, // ledger-only: runs on Main per row
+            // Collections load synchronously in their store init; the catalog and the edition setting arrive async.
+            ready = { app.catalogRepository.state.value.catalog != null && preferExplicitLoaded },
         )
         app.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            com.levi.pocketdj.data.edition.EditionSettings.flow(app.settings).collect { preferExplicitMirror = it }
+            com.levi.pocketdj.data.edition.EditionSettings.flow(app.settings).collect { preferExplicitMirror = it; preferExplicitLoaded = true }
         }
         seq.outcomes = outcomes
         // PB-5: the History choke point arms the tracker; the sequencer feeds samples + advance-aways.
         seq.skipTracker = skipTracker
+        // Q89c: Browse singles / album queues (not sequencer-owned) feed the same tracker.
+        app.playbackController.directSampler = com.levi.pocketdj.playback.outcome.DirectPlaySampler(skipTracker)
         // Off-main: the store reads the (up to 20k-row) log from disk on first touch.
         app.appScope.launch(kotlinx.coroutines.Dispatchers.Default) {
             PlayHistoryStore.get(
@@ -196,6 +209,7 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         }
         // PB-3 zero-dead-air: the KPI, the start runway, and the supervisor that ticks only while a run exists.
         seq.meter = deadAirMeter
+        DeadAirSource.current = DeadAirSource { DeadAirReport.summary(deadAirMeter) }
         seq.runwayLock = PowerRunwayLock(app.appContext)
         app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) {
             seq.state.map { it.isRunning }.distinctUntilChanged().collect { running ->
@@ -209,13 +223,22 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
             val snap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { runCatching { sessionStore.load() }.getOrNull() }
             runCatching { sessionRestorer.restoreIfIdle(snap) }
             launch { seq.state.collect { runCatching { sessionWriter.onState(it) } } }
-            while (true) {
-                delay(1_000)
-                runCatching { sessionWriter.tick() }
+            // ANS-SHELL-1: the 1 Hz position tick exists only while a run exists (no idle wakeups).
+            seq.state.map { it.isRunning }.distinctUntilChanged().collectLatest { running ->
+                while (running) {
+                    delay(1_000)
+                    runCatching { sessionWriter.tick() }
+                }
             }
         }
         // Burned-first rung: a READY burn plays from disk (offline-capable). Without this the
         // ladder fell straight through to the network manifest rung.
-        app.playbackController.localFiles = app.servicesGraph.burnedFirst
+        app.playbackController.localFiles = app.studioGraph.withProfileAudio(app.servicesGraph.burnedFirst)
+        // Q96: the stall-hop probe runs on Main for every queue row: ledger only, never File/SAF. Set BEFORE
+        // studioGraph.wire chains its studio-aware probe on top of this one.
+        // (burnStore is touched inside the lambda: wiring must not force the ledger read at init.)
+        seq.rowOnDevice = { item ->
+            app.servicesGraph.burnStore.isReadyInLedger(item.resolveId) || app.studioGraph.profileAudio.hasRecord(item.resolveId)
+        }
     }
 }

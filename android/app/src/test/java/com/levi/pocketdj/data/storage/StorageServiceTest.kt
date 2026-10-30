@@ -178,6 +178,14 @@ class StorageServiceBurnsTest {
     }
 
     @Test
+    fun deleteAllBurns_routesToTheWholeStoreClear_notAReadyOnlyIdList() = runTest {
+        var burnsCleared = 0; var stemsCleared = 0
+        val s = service(onBurns = { burnsCleared++ }, onStems = { stemsCleared++ })
+        s.deleteAllBurns()
+        assertEquals(1, burnsCleared); assertEquals(0, stemsCleared)
+    }
+
+    @Test
     fun clearingStemsDoesNotClearBurnsAndViceVersa() = runTest {
         var burnsCleared = 0; var stemsCleared = 0
         val s = service(onBurns = { burnsCleared++ }, onStems = { stemsCleared++ })

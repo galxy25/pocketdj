@@ -114,4 +114,90 @@ class SessionSwitchboardTest {
         board.setOwner(mix); assertFalse(board.exoFrontsSession())
         board.yieldMixToExo(); assertTrue(board.exoFrontsSession())
     }
+
+    @Test fun idleMixResignHandsRemotePlayToExo() {
+        val exo = Owner("exo"); val mix = Owner("mix")
+        board.register(exo)
+        board.setOwner(mix)
+        // Active Mix wants audio / is recording: the park runnable must not resign.
+        assertFalse(com.levi.pocketdj.mix.service.MixIdleResign.resignIfIdle(board, mix, mixWantsAudio = true, keepAlive = false))
+        assertFalse(com.levi.pocketdj.mix.service.MixIdleResign.resignIfIdle(board, mix, mixWantsAudio = false, keepAlive = true))
+        assertSame(mix, board.current)
+        // Idle: the Mix gives the session back; a paused single (Exo) answers the remote play.
+        assertTrue(com.levi.pocketdj.mix.service.MixIdleResign.resignIfIdle(board, mix, mixWantsAudio = false, keepAlive = false))
+        assertNull(board.current)
+        assertTrue(board.exoFrontsSession())
+        assertSame(exo.sessionPlayer, board.sessionPlayer(exo.sessionPlayer))
+        // Already resigned / someone else owns: no-op.
+        board.setOwner(exo)
+        assertFalse(com.levi.pocketdj.mix.service.MixIdleResign.resignIfIdle(board, mix, mixWantsAudio = false, keepAlive = false))
+        assertSame(exo, board.current)
+        // The Mix re-claims on its next audio start.
+        board.setOwner(mix)
+        assertSame(mix, board.current)
+    }
+
+    private class Tracked(override val engine: String, val st: FakePlayerState) : TransportOwner {
+        override val sessionPlayer: Player = fakePlayer(st)
+        override val hasSounded = true
+        var paused = 0
+        override fun pauseForHandoff() { paused++ }
+    }
+
+    @Test fun resumeYieldsAPausedMixWhenExoHoldsASingle() {
+        val exo = Tracked("exo", FakePlayerState().also { it.items = 1 })
+        val mix = Tracked("mix", FakePlayerState())
+        board.register(exo); board.setOwner(mix)
+        assertTrue(board.yieldIdleMixForResume())
+        assertEquals(1, mix.paused)
+        assertTrue(board.exoFrontsSession())
+        assertFalse(board.yieldIdleMixForResume()) // idempotent once handed back
+    }
+
+    @Test fun resumeNeverYieldsNpdspOrStudio() {
+        for (engine in listOf("npdsp", "studio")) {
+            val b = SessionSwitchboard(log = {})
+            val exo = Tracked("exo", FakePlayerState().also { it.items = 1 })
+            val o = Tracked(engine, FakePlayerState())
+            b.register(exo); b.setOwner(o)
+            assertFalse(engine, b.yieldIdleMixForResume())
+            assertEquals(engine, 0, o.paused)
+            assertSame(engine, o, b.current)
+        }
+    }
+
+    @Test fun resumeKeepsAMixThatIsPlayingOrHasNoSingleBehindIt() {
+        val exoEmpty = Tracked("exo", FakePlayerState().also { it.items = 0 })
+        val pausedMix = Tracked("mix", FakePlayerState())
+        board.register(exoEmpty); board.setOwner(pausedMix)
+        assertFalse(board.yieldIdleMixForResume())   // Mix-only session: the paused Mix is what ▶ resumes
+        assertSame(pausedMix, board.current)
+        assertEquals(0, pausedMix.paused)
+
+        val b2 = SessionSwitchboard(log = {})
+        val exo = Tracked("exo", FakePlayerState().also { it.items = 1 })
+        val playing = Tracked("mix", FakePlayerState().also { it.playWhenReady = true })
+        b2.register(exo); b2.setOwner(playing)
+        assertFalse(b2.yieldIdleMixForResume())
+        assertSame(playing, b2.current)
+    }
+
+    @Test fun idleMixKeepsTheSessionWhenExoIsEmptyOrAnInterruptionIsParked() {
+        val exo = Owner("exo"); val mix = Owner("mix")
+        board.register(exo); board.setOwner(mix)
+        val r = com.levi.pocketdj.mix.service.MixIdleResign
+        assertFalse(r.resignIfIdle(board, mix, mixWantsAudio = false, keepAlive = false, exoHasItem = false))
+        assertFalse(r.resignIfIdle(board, mix, mixWantsAudio = false, keepAlive = false, interruptionParked = true))
+        assertSame(mix, board.current)
+        assertTrue(r.resignIfIdle(board, mix, mixWantsAudio = false, keepAlive = false, exoHasItem = true))
+    }
+
+    @Test fun exoHasItemReadsTheRegisteredExoOwner() {
+        assertFalse(board.exoHasItem())
+        val st = FakePlayerState().also { it.items = 0 }
+        board.register(Tracked("exo", st))
+        assertFalse(board.exoHasItem())
+        st.items = 2
+        assertTrue(board.exoHasItem())
+    }
 }

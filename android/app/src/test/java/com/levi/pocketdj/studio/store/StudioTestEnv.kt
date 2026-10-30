@@ -31,7 +31,7 @@ class ManualScheduler : StudioScheduler {
 class TestEnv(val base: File) {
     val unreachable = mutableSetOf<StudioFamily>()
     val configured = mutableSetOf<StudioFamily>()   // families with a user folder picked
-    val roots: StudioRoots = DefaultStudioRoots(File(base, "app")) { f ->
+    val roots: StudioRoots = DefaultStudioRoots(File(base, "app"), userConfigured = { it in configured }) { f ->
         if (f in configured && f !in unreachable) FileStudioDir(File(base, "user/${f.rawValue}").also { it.mkdirs() }) else null
     }
     val docFile = File(base, "pocketdj-studio.json")

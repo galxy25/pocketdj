@@ -2,6 +2,7 @@ package com.levi.pocketdj.playback.sequencer
 
 import com.levi.pocketdj.data.rips.RipManifestEntry
 import com.levi.pocketdj.playback.PlaybackMode
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -19,7 +20,7 @@ class ResolveLadderTest {
         extra: List<RowSourceResolver> = emptyList(),
         ripConfigured: Boolean = false,
     ) = RowResolverRegistry(
-        initial = listOf(LocalFileRowResolver(files), ManifestRowResolver { manifest[it] }) + extra,
+        initial = listOf(LocalFileRowResolver(files = files), ManifestRowResolver { manifest[it] }) + extra,
         manifestHit = { manifest.containsKey(it) },
         ripServerConfigured = { ripConfigured },
     )
@@ -176,5 +177,24 @@ class ResolveLadderTest {
         val row = item("a")
         assertTrue(EditionDecider.Unchanged.decide(row, true) === row)
         assertEquals(false, EditionDecider.Unchanged.isActive())
+    }
+
+    @Test
+    fun localFileRungRunsTheFileProbeOnTheInjectedDispatcherNotTheCaller() = runBlocking {
+        val caller = Thread.currentThread().name
+        val seen = mutableListOf<String>()
+        val ex = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "fake-io") }
+        try {
+            val rung = LocalFileRowResolver(ex.asCoroutineDispatcher()) {
+                seen += Thread.currentThread().name; LocalFile("file:///x.mp3")
+            }
+            val src = rung.resolve(item("a"), ResolveContext(PlaybackMode.CLOUD, false, false))
+            assertTrue(src is LocalFileSource)
+            assertEquals(1, seen.size); assertTrue(seen[0].startsWith("fake-io"))
+            assertTrue(caller != "fake-io")
+            // A null from the probe still passes the row down the ladder.
+            val none = LocalFileRowResolver(ex.asCoroutineDispatcher(), LocalFileResolver.None)
+            assertEquals(null, none.resolve(item("a"), ResolveContext(PlaybackMode.CLOUD, false, false)))
+        } finally { ex.shutdown() }
     }
 }

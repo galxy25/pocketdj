@@ -52,8 +52,8 @@ object PocketZip {
         }
         val files = linkedMapOf(
             "manifest.json" to ZipIo.bytes(manifest, json),
-            "pocket.json" to ZipIo.bytes(json.encodeToJsonElement(Pocket.serializer(), pocket), json),
-            "pockets.json" to ZipIo.bytes(json.encodeToJsonElement(ListSerializer(Pocket.serializer()), children), json),
+            "pocket.json" to ZipIo.bytes(json.encodeToJsonElement(Pocket.serializer(), pocket.copy(amPlaylistId = null)), json),
+            "pockets.json" to ZipIo.bytes(json.encodeToJsonElement(ListSerializer(Pocket.serializer()), children.map { it.copy(amPlaylistId = null) }), json),
         )
         if (itemsData != null) files["items.json"] = itemsData
         return ZipIo.write(files)

@@ -69,6 +69,8 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                     ?.mapNotNull { s -> s.appleMusicId?.let { s.id to it } }.orEmpty()
             },
             ready = { app.onboarding.isComplete && app.catalogRepository.state.value.catalog != null },
+            loadCursor = { app.settings.get(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.PULL_CURSOR) },
+            saveCursor = { app.settings.set(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.PULL_CURSOR, it) },
             fetchSeed = {
                 kotlinx.coroutines.withContext(Dispatchers.IO) {
                     app.httpClient.newCall(
@@ -276,6 +278,16 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     private fun wireImported(store: CollectionsStore) {
         wireCatalogSource()
         importedSongs.onChanged = { app.catalogRepository.remergeLocal() }
+        importedSongs.onUserCatalogAdd = { items ->
+            app.appScope.launch(Dispatchers.IO) {
+                for (i in items) {
+                    app.collectionActivity.record(
+                        kind = com.levi.pocketdj.data.activity.ActivityKind.CATALOG_ADD,
+                        itemId = i.id, itemTitle = i.title, itemArtist = i.artist,
+                    )
+                }
+            }
+        }
         store.onPortableItems = { payload ->
             app.appScope.launch(Dispatchers.IO) { runCatching { importedSongs.addPortable(payload) } }
         }
@@ -283,7 +295,20 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
 
     /** Idempotent: the "Imported" synthetic source joins every catalog merge (also at cold-start seed). */
     private fun wireCatalogSource() {
-        app.catalogRepository.syntheticDocuments = { listOfNotNull(importedSongs.syntheticDocument()) }
+        app.catalogRepository.importedSource = { real -> importedSongs.resolve(real) }
+        // ANS-STU-7: the per-profile "Pocket DJ" source appends after every real source (only once the store has >=1 item, as iOS).
+        app.catalogRepository.syntheticDocuments = { app.studioGraph.profileSource.syntheticDocumentsIfAny() }
+        // iOS applySupersede order: drop the imported rows, THEN remap collections + favorites onto the indexed twin.
+        app.catalogRepository.onImportedSupersede = { pairs ->
+            app.appScope.launch(Dispatchers.IO) {
+                com.levi.pocketdj.data.catalog.ImportedSongsStore.landSupersede(
+                    pairs,
+                    removeImported = { importedSongs.remove(it) },
+                    remapCollections = { app.collections.remapSongIds(it) },
+                    remapFavorites = { favorites.remapSongIds(it) },
+                )
+            }
+        }
     }
 
     /** Tapped `.pdjcollection` → importAny → snackbar counts (claims DeepLinkSeams.importCollection). */
@@ -318,8 +343,17 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 intent.getStringExtra("pdj.pocketsEnable")?.let { v ->
                     app.appScope.launch(Dispatchers.IO) {
                         runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ANSWERED, true) }
-                        runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, v == "1") }
+                        runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, GamesGraph.parsePocketsEnable(v)) }
                     }
+                }
+                intent.getStringExtra("pdj.focusSteal")?.toLongOrNull()?.let { ms ->
+                    // ANS-STU-3 emulator probe: another "app" holds AUDIOFOCUS_GAIN_TRANSIENT for [ms], then abandons.
+                    val am = app.appContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                    val req = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                        .setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                        .setOnAudioFocusChangeListener { }.build()
+                    am.requestAudioFocus(req)
+                    app.appScope.launch { kotlinx.coroutines.delay(ms); am.abandonAudioFocusRequest(req) }
                 }
                 intent.getStringExtra("pdj.amApiBase")?.let { com.levi.pocketdj.data.applemusic.AppleMusicApi.debugBase = it }
                 intent.getStringExtra("pdj.fakeMut")?.let { t ->
@@ -411,6 +445,9 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = listOf(
         com.levi.pocketdj.shell.SyncEntry("favorites", com.levi.pocketdj.data.favorites.FavoritesStore.FILE_NAME,
             onPulled = { favorites.reloadFromDisk(); false }),
+        // Q75(b): imports follow the profile (iOS key "imported-songs"); a pull re-adopts the file + refreshes the catalog.
+        com.levi.pocketdj.shell.SyncEntry(com.levi.pocketdj.data.catalog.ImportedSongsStore.SYNC_KEY, com.levi.pocketdj.data.catalog.ImportedSongsStore.FILE_NAME,
+            applyPayload = { importedSongs.writePulled(it) }, onPulled = { importedSongs.reloadFromDisk() }),
     )
 
 
@@ -547,7 +584,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             listener.attach(history)
             runCatching {
                 app.browseGraph.recService.onDeleteCloudData = { key, profileId ->
-                    svc.deleteCloudData(com.levi.pocketdj.data.pockets.PocketsCredentials(key, profileId, com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET))
+                    svc.deleteCloudData(com.levi.pocketdj.data.pockets.PocketsCredentials(key, profileId, com.levi.pocketdj.data.config.RemoteEndpoints.recEngineEnroll()))
                 }
             }
             // One-time migration: builds before COL-18 wrote only ENABLED on "Not now"/"Turn on", so a stored

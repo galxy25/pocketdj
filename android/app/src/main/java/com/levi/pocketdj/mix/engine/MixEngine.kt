@@ -23,6 +23,7 @@ import com.levi.pocketdj.audio.dsp.MixDeckLevels
 import com.levi.pocketdj.mix.store.MixDeckSessionStore
 import com.levi.pocketdj.mix.store.MixDeckSnapshot
 import com.levi.pocketdj.mix.store.DeckSnapshot
+import com.levi.pocketdj.mix.store.TrackRef
 import com.levi.pocketdj.mix.store.MixEventKind
 import com.levi.pocketdj.mix.store.MixSessionRecorder
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -178,6 +179,10 @@ class MixEngine(
 
     override val isRendering: Boolean get() = sink?.isRendering == true
     override val autoMixing: Boolean get() = autoDj?.isMixing == true
+    /** True while the Auto-DJ is inside one of its own loads (incl. startAutoMix, before isMixing flips). */
+    @Volatile internal var autoLoading = false
+    /** Stream loads use the short Auto-DJ failure gate whenever the Auto-DJ drives them. */
+    internal val streamingForAuto: Boolean get() = autoMixing || autoLoading
     private val autoPaused: Boolean get() = autoDj?.isPaused == true
     override val mixWantsAudio: Boolean
         get() = st(Deck.A).isPlaying || st(Deck.B).isPlaying || (autoMixing && !autoPaused)
@@ -298,8 +303,53 @@ class MixEngine(
         deckGestureGeneration++
         autoEndedExhausted = false
         loadSeq[deck.ordinal]++
-        commitPrepared(item, deck, prepare(item, deck))
+        // A load the prefetch already prepared off Main commits at once; only a miss pays the sync prepare.
+        val cached = takePrepared(item.songId)
+        if (cached == null && item.songId in preparing) lateDiscard += item.songId
+        commitPrepared(item, deck, cached ?: prepare(item, deck))
     }
+
+    // ---- prepared-load cache (ANS-MIX-3): the Auto-DJ's next 1-2 items, prepared OFF Main
+
+    private val preparedLoads = LinkedHashMap<String, PreparedLoad>()   // main-thread only; keyed by songId (the voice name is cosmetic)
+    private val preparing = HashSet<String>()
+    private val lateDiscard = HashSet<String>()   // ids whose in-flight prefetch a sync loadNow overtook
+    /** Test/diagnostic: how many loads were served from the cache. */
+    var preparedHits = 0; private set
+
+    /** Prepare [item] off Main (when [loadOffload] is wired) so a later [loadNow] of it skips disk. Idempotent; at most [PREPARED_CAP] kept. */
+    internal fun prefetchPrepared(item: MixLoadable, deck: Deck) {
+        val off = loadOffload ?: return
+        val id = item.songId
+        if (id in preparedLoads || !preparing.add(id)) return
+        off({ prepare(item, deck) }) { p ->
+            preparing.remove(id)
+            // A sync loadNow took this id while we were preparing: the late result would be a duplicate open decoder.
+            if (lateDiscard.remove(id)) { p?.discard(); return@off }
+            if (p == null || p.notOnDisk) { p?.discard(); return@off }
+            preparedLoads.put(id, p)?.discard()
+            while (preparedLoads.size > PREPARED_CAP) {
+                val eldest = preparedLoads.keys.first()
+                preparedLoads.remove(eldest)?.discard()
+            }
+        }
+    }
+
+    private fun takePrepared(songId: String): PreparedLoad? =
+        preparedLoads.remove(songId)?.also { preparedHits++ }
+
+    /** Drop every prepared (not yet installed) load: a new/stopped mix or a file that may have changed. */
+    internal fun prunePrepared(keep: Set<String>) {
+        val it = preparedLoads.entries.iterator()
+        while (it.hasNext()) { val e = it.next(); if (e.key !in keep) { e.value.discard(); it.remove() } }
+    }
+
+    internal fun clearPrepared() {
+        preparedLoads.values.forEach { it.discard() }
+        preparedLoads.clear()
+    }
+
+    internal val preparedSongIds: List<String> get() = preparedLoads.keys.toList()
 
     /** MIX-9: the audio of [songId] is fully on this device (a load of it airs at once). */
     internal fun songOnDisk(songId: String): Boolean = resolver.exists(songId)
@@ -346,7 +396,7 @@ class MixEngine(
     }
 
     private fun commitPrepared(item: MixLoadable, deck: Deck, p: PreparedLoad?) {
-        if (!isRestoringMixSession) { pendingRestore = null; restoreSettled = true }
+        if (!isRestoringMixSession) { pendingRestore = null; restoreGen++; restoreSettled = true }
         if (p == null) return
         if (p.notOnDisk) {
             streamLoad?.invoke(item, deck)   // not on disk: playable while it downloads (MIX-10)
@@ -362,7 +412,7 @@ class MixEngine(
      * stream machine can take it. A parked restore is superseded exactly like a real load.
      */
     internal fun beginStreamLoad(deck: Deck) {
-        if (!isRestoringMixSession) { pendingRestore = null; restoreSettled = true }
+        if (!isRestoringMixSession) { pendingRestore = null; restoreGen++; restoreSettled = true }
         loadSeq[deck.ordinal]++
         ensureEngine(startNow = !isRestoringMixSession)
         masterPausedDecks = masterPausedDecks - deck
@@ -376,7 +426,7 @@ class MixEngine(
 
     /** Internal load seam (shared with tests): open [file] and load it as [meta]. False = deck untouched. */
     fun loadFile(file: java.io.File, startMs: Int?, lengthMs: Int?, meta: LoadedTrack, deck: Deck): Boolean {
-        if (!isRestoringMixSession) { pendingRestore = null; restoreSettled = true }
+        if (!isRestoringMixSession) { pendingRestore = null; restoreGen++; restoreSettled = true }
         val src = runCatching { opener.open(file) }.getOrNull() ?: return false   // unreadable / corrupt
         return loadSource(src, startMs, lengthMs, meta, deck)
     }
@@ -388,7 +438,7 @@ class MixEngine(
      */
     fun loadSource(source: PcmSource, startMs: Int?, lengthMs: Int?, meta: LoadedTrack, deck: Deck): Boolean {
         // A REAL load supersedes a parked (not-yet-materialized) restore.
-        if (!isRestoringMixSession) { pendingRestore = null; restoreSettled = true }
+        if (!isRestoringMixSession) { pendingRestore = null; restoreGen++; restoreSettled = true }
         loadSeq[deck.ordinal]++
         ensureEngine(startNow = !isRestoringMixSession)
         val voice = Voice(source, graph.sampleRate, name = "deck${deck.label}")
@@ -608,7 +658,8 @@ class MixEngine(
 
     /** End the WHOLE mix: stop any Auto-DJ and eject both decks (Settings reset rides this). */
     fun ejectAll() {
-        pendingRestore = null
+        pendingRestore = null; restoreGen++; restoreSettled = true
+        clearPrepared()
         autoDj?.endAutoLoop()
         clearDeck(Deck.A)
         clearDeck(Deck.B)
@@ -787,11 +838,12 @@ class MixEngine(
         // Phase relative to each song's measured first downbeat (0 when the grid is absent).
         val leadDb = (st(l).loaded?.firstDownbeatMs ?: 0) / 1000.0
         val folDb = (st(f).loaded?.firstDownbeatMs ?: 0) / 1000.0
-        val leadPhase = ((position(l) - leadDb) / leadBeat) % 1.0
-        val folPhase = ((position(f) - folDb) / folBeat) % 1.0
-        var delta = leadPhase - folPhase
-        if (delta > 0.5) delta -= 1 else if (delta < -0.5) delta += 1
-        seek(f, maxOf(0.0, position(f) + delta * folBeat))
+        val t = PhaseAlignMath.target(
+            position(l), audibleLagSeconds(l), leadDb, leadBeat,
+            position(f), audibleLagSeconds(f), folDb, folBeat,
+        )
+        diag("phase-align ${f.label}->${l.label} err=${"%.1f".format(Locale.US, t.errorMs)}ms lag=${"%.0f".format(Locale.US, audibleLagSeconds(f) * 1000)}/${"%.0f".format(Locale.US, audibleLagSeconds(l) * 1000)}ms")
+        seek(f, t.seekSec)
     }
 
     // ---- FX rack
@@ -878,7 +930,14 @@ class MixEngine(
      * pulse reads this at 60 fps). It honors seek and loop folding. null while the voice is not
      * rendering (just loaded / paused / ended): callers fall back to [position].
      */
+    /** Stretcher delay behind the voices' counters, source seconds (test seam: [lagSecondsOverride]). */
+    fun audibleLagSeconds(deck: Deck): Double = lagSecondsOverride?.invoke(deck) ?: graph.audibleLagSeconds(deck)
+    internal var lagSecondsOverride: ((Deck) -> Double)? = null
+
     fun truePlayhead(deck: Deck): Double? = controller(deck).trueSeconds()
+
+    /** Uncompensated voice position (runway math). */
+    fun voicePlayhead(deck: Deck): Double? = controller(deck).voiceSeconds()
 
     // ------------------------------------------------------------------------------ outcomes
 
@@ -953,45 +1012,126 @@ class MixEngine(
         get() = pendingRestore?.let(MixPersistence::parkedSummary)
 
     /**
-     * Relaunch entry: read the persisted snapshot and PARK it (no audio, no sink, no card). Skipped
-     * when the engine is already in use. If the Mix tab already asked to materialize, do it now
+     * Park an already-read launch snapshot (the file read happened OFF Main, see MixGraph.launchRestore).
+     * Skipped when the engine is already in use. If the Mix tab already asked to materialize, do it now
      * unless a set list is live.
      */
-    fun restorePersistedMixIfIdle() {
-        val store = sessionStore ?: return
+    fun parkRestore(snap: MixDeckSnapshot?) {
         if (isRunning || autoMixing || st(Deck.A).loaded != null || st(Deck.B).loaded != null) { restoreSettled = true; return }
+        // A read, a real load / eject, an earlier park or an in-flight materialize already settled the restore:
+        // a late launch snapshot must never resurrect or duplicate it.
+        if (restoreSettled || materializing) return
         restoreSettled = true
-        val snap = store.load() ?: return
+        if (snap == null) return
         pendingRestore = snap
         diag("mix RESTORE parked decks=${if (snap.deckA != null) "A" else ""}${if (snap.deckB != null) "B" else ""} auto=${snap.auto?.queue?.size ?: 0}")
+        onNowPlayingChanged?.invoke()   // the parked mix is on the lock screen / Auto row now
         if (!materializeWanted) return
         if (setlistIsLive?.invoke() == true) { diag("materialize skipped setlistLive=1"); return }
         materializeNow("launchTask")
     }
 
-    /** Mix-surface entry: actually re-load the parked snapshot onto the decks. Idempotent. */
-    fun materializePendingRestoreIfNeeded(trigger: String = "mixTab") {
+    /** True while MixGraph.launchRestore's off-Main snapshot read has not landed (a Mix-surface request just waits for it). */
+    var launchReadInFlight: () -> Boolean = { false }
+
+    /** The launch read landed (snap may be null): park it, then finish any Mix-surface request that arrived meanwhile. */
+    fun launchReadFinished(snap: MixDeckSnapshot?) {
+        parkRestore(snap)
+        if (pendingRestore == null && !materializing) drainAfterMaterialize()
+    }
+
+    /** Synchronous relaunch entry (debug / fallback): read the store on the CALLER and park. Production uses launchRestore. */
+    fun restorePersistedMixIfIdle() {
+        val store = sessionStore ?: return
+        if (isRunning || autoMixing || st(Deck.A).loaded != null || st(Deck.B).loaded != null) { restoreSettled = true; return }
+        parkRestore(store.load())
+    }
+
+    /** What a parked restore shows on the lock screen / Auto row before it is materialized (null = nothing parked). */
+    fun parkedCard(): ParkedCard? {
+        val snap = pendingRestore ?: return null
+        val liveRaw = snap.auto?.liveDeck ?: snap.leadDeck ?: (if (snap.deckA != null) "A" else "B")
+        val ds = (if (liveRaw == "B") (snap.deckB ?: snap.deckA) else (snap.deckA ?: snap.deckB)) ?: return null
+        return ParkedCard(ds.track.songId, ds.track.title, ds.track.artist, ds.track.albumId, ds.track.lengthMs, ds.positionMs)
+    }
+
+    class ParkedCard(val songId: String, val title: String, val artist: String, val albumId: String?, val lengthMs: Int?, val positionMs: Int)
+
+    /** Mix-surface entry: actually re-load the parked snapshot onto the decks. Idempotent. [then] runs on main once the decks are cued (or at once when there is nothing to do). */
+    fun materializePendingRestoreIfNeeded(trigger: String = "mixTab", then: (() -> Unit)? = null) {
         materializeWanted = true
+        if (then != null) {
+            if (pendingRestore == null && !materializing && !launchReadInFlight()) { then(); return }
+            afterMaterialize += then
+        }
+        // The launch read is still on IO: remember the request; launchReadFinished completes the job (no disk on Main).
+        if (pendingRestore == null && launchReadInFlight()) return
         // Nothing parks the launch restore for us: park from the store on first ask. That park is the launch
         // read, so IT applies the live-set-list guard (and materializes when no set list is live).
-        if (pendingRestore == null && !restoreSettled) { restorePersistedMixIfIdle(); return }
+        if (pendingRestore == null && !restoreSettled) { restorePersistedMixIfIdle(); if (pendingRestore == null && !materializing) drainAfterMaterialize(); return }
         // Final review recheck (iOS materializePendingRestoreIfNeeded): a LATER Mix-surface request always
         // finishes the job. Only the launch read defers to a live set list; a held run (durable, can last
         // across launches) must not hide the parked mix from the Mix tab forever.
         materializeNow(trigger)
+        if (!materializing) drainAfterMaterialize()
     }
+
+    private val afterMaterialize = ArrayList<() -> Unit>()
+    private var materializing = false
+    private fun drainAfterMaterialize() {
+        val run = afterMaterialize.toList(); afterMaterialize.clear()
+        run.forEach { it() }
+    }
+
+    /** Both decks' loads, prepared off Main (restore commits them atomically). */
+    class RestorePrep(val a: PreparedLoad?, val b: PreparedLoad?) {
+        fun discard() { a?.discard(); b?.discard() }
+    }
+
+    /**
+     * Off-main seam for the restore: `work` (disk) runs off Main, `commit` on Main. Null = synchronous
+     * (tests, headless).
+     */
+    var restoreOffload: ((work: () -> RestorePrep, commit: (RestorePrep) -> Unit) -> Unit)? = null
+
+    private fun loadableOf(t: TrackRef) = MixLoadable(t.songId, t.title, t.artist, t.bpm, t.camelot, t.key, t.albumId, t.lengthMs)
 
     /**
      * Rebuild the mix from the parked snapshot: decks re-loaded and CUED at their saved playheads,
      * mixer state re-applied, Auto-DJ queue rebuilt SUSPENDED. Nothing plays, the recorder is
      * detached (a restore is not a user gesture), and nothing claims the audio owner. A vanished
-     * file leaves that deck empty.
+     * file leaves that deck empty. Both decks are PREPARED off Main, then committed atomically.
      */
     private fun materializeNow(trigger: String) {
         val snap = pendingRestore ?: return
         pendingRestore = null
         if (isRunning || autoMixing || st(Deck.A).loaded != null || st(Deck.B).loaded != null) return
+        val off = restoreOffload
+        if (off == null) { commitRestore(snap, trigger, null); return }
+        materializing = true
+        val gen = restoreGen
+        off({
+            RestorePrep(
+                snap.deckA?.let { prepare(loadableOf(it.track), Deck.A) },
+                snap.deckB?.let { prepare(loadableOf(it.track), Deck.B) },
+            )
+        }) { prep ->
+            materializing = false
+            // A real load / run took the decks while we read the disk: the restore is moot, drop the voices.
+            if (gen != restoreGen || isRunning || autoMixing || st(Deck.A).loaded != null || st(Deck.B).loaded != null) {
+                prep.discard(); drainAfterMaterialize(); return@off
+            }
+            commitRestore(snap, trigger, prep)
+            drainAfterMaterialize()
+        }
+    }
+
+    private var restoreGen = 0
+    private var restorePrep: RestorePrep? = null
+
+    private fun commitRestore(snap: MixDeckSnapshot, trigger: String, prep: RestorePrep?) {
         isRestoringMixSession = true
+        restorePrep = prep
         val savedRecorder = hooks.recorder
         hooks.recorder = null
         try {
@@ -1002,17 +1142,22 @@ class MixEngine(
             val lead = snap.leadDeck?.let(Deck::fromLabel)
             if (lead != null && st(lead).loaded != null) updateUi { it.copy(leadDeck = lead) }   // after loads
             snap.auto?.let { autoDj?.restoreSuspended(it) }
-            diag("materialize trigger=$trigger xfader=${String.format(Locale.US, "%.2f", snap.crossfader)} lead=${snap.leadDeck ?: "-"}")
+            diag("materialize trigger=$trigger xfader=${String.format(Locale.US, "%.2f", snap.crossfader)} lead=${snap.leadDeck ?: "-"} prepared=${if (prep != null) 1 else 0}")
         } finally {
             hooks.recorder = savedRecorder
             isRestoringMixSession = false
+            restorePrep = null
             // NO persist here: a restore is not a write.
         }
     }
 
     private fun restoreDeck(deck: Deck, ds: DeckSnapshot) {
         val t = ds.track
-        load(MixLoadable(t.songId, t.title, t.artist, t.bpm, t.camelot, t.key, t.albumId, t.lengthMs), deck)
+        deckGestureGeneration++
+        autoEndedExhausted = false
+        val item = MixLoadable(t.songId, t.title, t.artist, t.bpm, t.camelot, t.key, t.albumId, t.lengthMs)
+        val pre = restorePrep
+        commitPrepared(item, deck, if (pre != null) (if (deck == Deck.A) pre.a else pre.b) else prepare(item, deck))
         if (st(deck).loaded?.songId != t.songId) return   // file vanished -> deck empty
         setVolume(ds.volume, deck)
         setRate(ds.rate, deck)
@@ -1031,5 +1176,5 @@ class MixEngine(
         diag("restore: deck ${deck.label} pos=${ds.positionMs} len=${lenMs ?: "-"} recued=${if (deck in deckExhaustedFromRestore) 1 else 0}")
     }
 
-    private companion object { const val SILENT_TAINT_MS = 3000L }
+    private companion object { const val SILENT_TAINT_MS = 3000L; const val PREPARED_CAP = 2 }
 }

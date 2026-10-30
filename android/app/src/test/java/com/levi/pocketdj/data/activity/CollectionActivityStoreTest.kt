@@ -188,4 +188,25 @@ class CollectionActivityStoreTest {
         fresh.flushNow()
         assertEquals(setOf("a", "b", "c"), newStore(file).events.map { it.itemId }.toSet())
     }
+
+    @Test
+    fun recordAll_capsOneBatchAtQuarterOfMax_keepingNewest_andPreservesPriorHistory() {
+        val store = newStore()
+        store.record(ActivityKind.ADD, "prior", atMs = t0)
+        val batch = (0 until 10_000).map { CollectionActivityStore.Entry("s$it") }
+        val n = store.recordAll(ActivityKind.ADD, batch, atMs = t0 + 1)
+        assertEquals(5_000, n)
+        assertEquals(5_001, store.events.size)
+        assertEquals("prior", store.events.first().itemId)
+        assertEquals("s5000", store.events[1].itemId)
+        assertEquals("s9999", store.events.last().itemId)
+    }
+
+    @Test
+    fun recordAll_underCap_oneRowPerSong() {
+        val store = newStore()
+        val n = store.recordAll(ActivityKind.ADD, (0 until 153).map { CollectionActivityStore.Entry("s$it") })
+        assertEquals(153, n)
+        assertEquals(153, store.events.size)
+    }
 }

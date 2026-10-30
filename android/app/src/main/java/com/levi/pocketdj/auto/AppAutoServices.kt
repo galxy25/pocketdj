@@ -15,6 +15,38 @@ import com.levi.pocketdj.screens.collections.AddToItem
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
+/**
+ * Q96: Android Auto binder callbacks (`onGetLibraryRoot` / `onGetChildren` / `onGetItem` / `onGetSearchResult`)
+ * arrive on the service's Main looper. The root is therefore a constant (no graph, no disk), and everything
+ * that needs the lazily built auto graph is computed off Main and delivered through a future.
+ */
+object AutoAsync {
+    /** Same node as [AutoBrowseTree.root]; constant so the root answer never waits on the graph. */
+    val STATIC_ROOT: AutoNode = AutoNode(
+        id = AutoId.Root.encoded,
+        title = "PocketDJ",
+        browsable = true,
+        childBrowsableStyle = AutoStyle.CATEGORY_LIST,
+    )
+
+    /** Run [block] on [dispatcher] (never inline); the future fails with the thrown exception. */
+    fun <T> compute(
+        scope: kotlinx.coroutines.CoroutineScope,
+        dispatcher: kotlinx.coroutines.CoroutineDispatcher,
+        block: () -> T,
+    ): com.google.common.util.concurrent.ListenableFuture<T> {
+        val out = com.google.common.util.concurrent.SettableFuture.create<T>()
+        // ATOMIC: the body always starts, so the future is completed even if the scope was already cancelled.
+        val job = scope.launch(dispatcher, start = kotlinx.coroutines.CoroutineStart.ATOMIC) {
+            try { out.set(block()) } catch (e: kotlinx.coroutines.CancellationException) { out.cancel(false); throw e }
+            catch (t: Throwable) { out.setException(t) }
+        }
+        job.invokeOnCompletion { if (!out.isDone) out.cancel(false) }
+        out.addListener({ if (out.isCancelled) job.cancel() }, com.google.common.util.concurrent.MoreExecutors.directExecutor())
+        return out
+    }
+}
+
 /** Production wiring of the Auto ports onto the app graph (device-verified through the DHU, not JVM-tested). */
 class AppAutoData(private val app: AppGraph) : AutoLibraryData {
     /** Set by the service: the open lists must be re-read (sign-in flipped, held row changed, collections changed). */
@@ -252,6 +284,23 @@ class AppAutoMixExtras(
             deck = if (ui.queueSize > 0) "Deck ${ui.liveDeck.name}" else null,
             buffering = app.mixGraph.mixEngine.streamHeld(ui.liveDeck),
         )
+    }
+
+    /** Gesture-time only (never on browse): only when a restore is parked, so nothing parked never builds the engine. */
+    override fun materializePendingRestoreIfNeeded(trigger: String) {
+        if (!app.mixGraph.hasLaunchRestore()) return
+        main.launch { app.mixGraph.mixEngine.materializePendingRestoreIfNeeded(trigger) }
+    }
+
+    override fun parkedMix(): AutoParkedMix? =
+        app.mixGraph.parkedSummary()?.let { AutoParkedMix(it.title, it.artist, it.autoLabel) }
+
+    override fun resumeParkedMix() {
+        if (!app.mixGraph.hasLaunchRestore()) return
+        main.launch {
+            val g = app.mixGraph
+            g.mixEngine.materializePendingRestoreIfNeeded("autoRow") { g.autoDj.remotePlay() }
+        }
     }
 
     override val slowSkipSeconds: Double get() = if (facade.autoMixing) app.mixGraph.autoDj.skipFadeSeconds else 15.0

@@ -19,6 +19,12 @@ data class QueueItem(
     val editionLocked: Boolean = false,
     /** Storage id actually resolved (a variant id, e.g. `sng_x_clean`); defaults to [id]. */
     val resolveId: String = id,
+    /**
+     * Clean-only collection + an explicit song with NO clean edition (Q94): the row stays in the queue
+     * (indexes, Up Next, stall hops unchanged) but is never resolved, loaded or preloaded - the
+     * sequencer advances past it (UNPLAYABLE_HERE).
+     */
+    val cleanOnlySkip: Boolean = false,
     /** Tag for rows appended by a game run; carried into the play's [com.levi.pocketdj.playback.PlayContext]. */
     val runTag: String? = null,
     val uid: String = UUID.randomUUID().toString(),

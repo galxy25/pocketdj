@@ -114,6 +114,9 @@ class RecognitionAddController(
     private val scope: kotlinx.coroutines.CoroutineScope,
     private val port: AppleMusicRecognitionPort,
 ) {
+    /** Fired once per CONFIRMED library add (History `catalogAdd`): (burnSongId, title, artist). */
+    @Volatile var onCatalogAdd: ((id: String, title: String, artist: String) -> Unit)? = null
+
     private val _states = kotlinx.coroutines.flow.MutableStateFlow<Map<String, RecognitionAddState>>(emptyMap())
     val states: kotlinx.coroutines.flow.StateFlow<Map<String, RecognitionAddState>> = _states
 
@@ -133,6 +136,7 @@ class RecognitionAddController(
                 }
                 val id = AppleMusicRecognition.burnSongId(catalogSongId, storeId)
                 patch(storeId) { it.copy(added = true, burnSongId = id) }
+                runCatching { onCatalogAdd?.invoke(id, title, artist) }
                 try {
                     if (port.startRipAndBurn(id, title, artist, storeId) == RipStart.NO_SERVER) {
                         patch(storeId) { it.copy(burnError = "No rip server — can’t download a copy to this device") }

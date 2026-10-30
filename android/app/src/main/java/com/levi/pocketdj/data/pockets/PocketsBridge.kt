@@ -47,7 +47,7 @@ interface PocketsBridge {
     val flushesRounds: Boolean get() = false
 }
 
-/** Default until the services wave wires the real bridge: disabled, empty, never networks. */
+/** Inert default (tests / before LivePocketsBridge is wired): disabled, empty, never networks. */
 object NoPocketsBridge : PocketsBridge {
     private val off = MutableStateFlow(false).asStateFlow()
     private val none = MutableStateFlow<ListeningPocketsResults?>(null).asStateFlow()

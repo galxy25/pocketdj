@@ -4,6 +4,9 @@ import com.levi.pocketdj.data.rips.PlayAction
 import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.data.rips.RipManifestEntry
 import com.levi.pocketdj.playback.PlaybackMode
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Where one queue row's audio comes from. Open interface: later packages add implementers. */
 interface RowSource {
@@ -23,7 +26,7 @@ data class StreamSource(val action: PlayAction.Stream) : RowSource {
 
 /** Nothing can play this row here; the sequencer advances ([AdvanceCause.UNPLAYABLE_HERE]). */
 data class UnplayableSource(val reason: Reason) : RowSource {
-    enum class Reason { STUDIO_LOCAL, METADATA_ONLY, NOT_ON_DEVICE }
+    enum class Reason { STUDIO_LOCAL, METADATA_ONLY, NOT_ON_DEVICE, CLEAN_ONLY_EXPLICIT }
     override val backend: String get() = "none"
 }
 
@@ -59,11 +62,15 @@ interface RowSourceResolver {
 }
 
 /** Rung 1: the burned / local file seam. */
-class LocalFileRowResolver(private val files: LocalFileResolver) : RowSourceResolver {
+class LocalFileRowResolver(
+    /** Resolvers stat the filesystem (ledger rows, SAF trees): never on the sequencer's Main scope. */
+    private val io: CoroutineDispatcher = Dispatchers.IO,
+    private val files: LocalFileResolver,
+) : RowSourceResolver {
     override val id: String = "local-file"
     override val rung: Rung = Rung.LOCAL_FILE
     override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? =
-        files.localUrlForPlayback(item)?.let(::LocalFileSource)
+        withContext(io) { files.localUrlForPlayback(item) }?.let(::LocalFileSource)
 }
 
 /**

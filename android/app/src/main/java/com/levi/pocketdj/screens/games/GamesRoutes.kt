@@ -16,6 +16,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.navigation.PocketDjDestination
+import com.levi.pocketdj.shell.DeepLinkSeams
+import com.levi.pocketdj.shell.GameLink
+import com.levi.pocketdj.shell.ShellRoute
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.getAndUpdate
 
 /**
  * Entry for the Games tab destination. Later game packages pass their openers here (the card
@@ -43,6 +50,16 @@ fun GamesRoute(
             showPuzzle = false
             showInThePocket = false
             sessionId = routeOpenedSession(id) { friends.entry(it) != null }
+        }
+    }
+    // Q43 deep link: open the requested game over the hub (cold start parks it until we compose).
+    val pendingGame by graph.gamesGraph.pendingGame.collectAsState()
+    LaunchedEffect(pendingGame) {
+        graph.gamesGraph.gameLinks.consume()?.let { game ->
+            val st = applyGameLink(game)
+            sessionId = st.sessionId
+            showPuzzle = st.showPuzzle
+            showInThePocket = st.showInThePocket
         }
     }
     // A round survives leaving the screen (app-scoped engine); back from setup/summary closes it.
@@ -92,6 +109,15 @@ fun GamesRoute(
     )
 }
 
+/** Overlay state a game deep link produces (pure so the mapping is unit-tested). */
+internal data class GameLinkState(val showPuzzle: Boolean, val showInThePocket: Boolean, val sessionId: String?)
+
+internal fun applyGameLink(game: GameLink): GameLinkState = GameLinkState(
+    showPuzzle = game == GameLink.Puzzle,
+    showInThePocket = game == GameLink.InThePocket,
+    sessionId = null,
+)
+
 /** Pure routing rule for an opened-session signal: known id -> push it; unknown -> null (Join sheet shows). */
 internal fun routeOpenedSession(id: String, isKnown: (String) -> Boolean): String? = if (isKnown(id)) id else null
 
@@ -128,5 +154,28 @@ internal fun GameSubScreen(
             }
         }
         content(Modifier.weight(1f))
+    }
+}
+
+/**
+ * Games-side consumer of `pocketdj://games/{puzzle,inthepocket}`. The dispatcher parses and gates on
+ * onboarding, then calls the `game` seam; this parks the request in [pendingGame] and lands on the Games tab,
+ * where [GamesRoute] takes it with [consume] (so a cold start with the screen not yet composed still opens it).
+ */
+class GameLinkHandler(private val postRoute: (ShellRoute) -> Unit) {
+    private val _pending = MutableStateFlow<GameLink?>(null)
+    val pendingGame: StateFlow<GameLink?> = _pending
+
+    fun open(game: GameLink) {
+        _pending.value = game
+        postRoute(ShellRoute.Tab(PocketDjDestination.Games))
+    }
+
+    /** Atomically take the pending game, or null. */
+    fun consume(): GameLink? = _pending.getAndUpdate { null }
+
+    fun install(seams: DeepLinkSeams, takePending: () -> GameLink?) {
+        seams.game = { open(it) }
+        takePending()?.let { open(it) }
     }
 }

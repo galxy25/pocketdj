@@ -128,3 +128,15 @@ internal fun isLiveRow(
     sequencerRunning: Boolean = false,
 ): Boolean =
     currentEventId != null && ref.eventId == currentEventId && (sequencerRunning || playerPlaying)
+
+/**
+ * PB-5 / SVC-11 emulator finding: a play recorded while History is open is inserted at index 0, and a keyed
+ * LazyColumn keeps the previously-first row anchored, so the new LIVE row lands above the viewport. When the
+ * reader was at the very top ([visibleFirstKey] is the old first row at offset 0) the list must follow the new
+ * head; a reader scrolled further down keeps their place.
+ */
+internal object HistoryListPin {
+    fun shouldPinToTop(prevFirstKey: Any?, newFirstKey: Any?, visibleFirstKey: Any?, visibleFirstOffset: Int): Boolean =
+        prevFirstKey != null && newFirstKey != null && newFirstKey != prevFirstKey &&
+            visibleFirstKey == prevFirstKey && visibleFirstOffset == 0
+}

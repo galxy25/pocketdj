@@ -23,21 +23,28 @@ data class SettingsCredentialsDocument(
     val jukeboxServerURL: String = "",
     val jukeboxToken: String = "",
     val jukeboxTokensRequiredByDefault: Boolean = true,
-    val searchAccessKeyID: String = "",
-    val searchSecretKey: String = "",
-    val searchEndpoint: String = "",
     /** Pass-through (raw JSON, never interpreted): re-emitted exactly as pulled so iOS keeps its catalog. */
     val appleMusicPrivateSync: JsonElement? = null,
     /** Pass-through (raw JSON, unknown SourceConfig fields survive): Android never adopts or edits it. */
     val sources: JsonElement? = null,
+    /**
+     * Q10: the online-search key pair + endpoint are DEVICE-LOCAL on Android (Keystore / DataStore) and are never
+     * read from or written to this document. iOS decodes `searchAccessKeyID` / `searchSecretKey` / `searchEndpoint`
+     * as REQUIRED strings, so empty strings are ALWAYS emitted; a carried value ([passThroughSearch], decode only) is
+     * scrubbed on the next sync. NOT serialized by the plugin (see [encode]/[decode]).
+     */
+    @kotlinx.serialization.Transient
+    val passThroughSearch: JsonObject? = null,
 ) {
+    /** True when a decoded doc still carries a non-empty search value (legacy Android / iOS) that must be scrubbed. */
+    val carriesSearchValues: Boolean
+        get() = passThroughSearch?.values?.any { (it as? kotlinx.serialization.json.JsonPrimitive)?.content?.isNotEmpty() == true } == true
+
     /** Strings trimmed (the settings setters trim) and pass-through dropped: the CONTENT used for change detection. */
     fun normalized(): SettingsCredentialsDocument = copy(
         ripServerURL = ripServerURL.trim(), ripToken = ripToken.trim(),
         jukeboxServerURL = jukeboxServerURL.trim(), jukeboxToken = jukeboxToken.trim(),
-        searchAccessKeyID = searchAccessKeyID.trim(), searchSecretKey = searchSecretKey.trim(),
-        searchEndpoint = searchEndpoint.trim(),
-        appleMusicPrivateSync = null, sources = null,
+        appleMusicPrivateSync = null, sources = null, passThroughSearch = null,
     )
 
     /**
@@ -47,8 +54,7 @@ data class SettingsCredentialsDocument(
     val credentialsAreBlank: Boolean
         get() = ripServerURL.isEmpty() && ripToken.isEmpty() &&
             jukeboxServerURL.isEmpty() && jukeboxToken.isEmpty() &&
-            jukeboxTokensRequiredByDefault &&
-            searchAccessKeyID.isEmpty() && searchSecretKey.isEmpty() && searchEndpoint.isEmpty()
+            jukeboxTokensRequiredByDefault
 
     companion object {
         const val KEY = "settings-credentials"
@@ -60,11 +66,26 @@ data class SettingsCredentialsDocument(
          * Deterministic bytes (recursively sorted keys, nulls dropped). NOT byte-identical to Swift (which
          * escapes `/`), so change detection is by decoded CONTENT ([normalized]), never by bytes.
          */
-        fun encode(doc: SettingsCredentialsDocument): ByteArray =
-            canonical(json.encodeToJsonElement(serializer(), doc)).toString().toByteArray(Charsets.UTF_8)
+        fun encode(doc: SettingsCredentialsDocument): ByteArray {
+            val base = json.encodeToJsonElement(serializer(), doc) as JsonObject
+            val withSearch = JsonObject(base + searchWireKeys(doc.passThroughSearch))
+            return canonical(withSearch).toString().toByteArray(Charsets.UTF_8)
+        }
 
-        fun decode(bytes: ByteArray): SettingsCredentialsDocument? =
-            runCatching { json.decodeFromString(serializer(), bytes.toString(Charsets.UTF_8)) }.getOrNull()
+        fun decode(bytes: ByteArray): SettingsCredentialsDocument? = runCatching {
+            val text = bytes.toString(Charsets.UTF_8)
+            val doc = json.decodeFromString(serializer(), text)
+            val obj = json.parseToJsonElement(text) as? JsonObject
+            val search = obj?.let { o -> SEARCH_KEYS.filter { it in o }.associateWith { o.getValue(it) } }
+            doc.copy(passThroughSearch = search?.takeIf { it.isNotEmpty() }?.let(::JsonObject))
+        }.getOrNull()
+
+        /** The iOS wire keys Android never interprets (see [passThroughSearch]). */
+        val SEARCH_KEYS = listOf("searchAccessKeyID", "searchSecretKey", "searchEndpoint")
+
+        /** Q10: ALWAYS blank strings (iOS requires the keys); a carried value is never re-emitted. */
+        private fun searchWireKeys(@Suppress("UNUSED_PARAMETER") kept: JsonObject?): Map<String, JsonElement> =
+            SEARCH_KEYS.associateWith { kotlinx.serialization.json.JsonPrimitive("") }
 
         internal fun canonical(e: JsonElement): JsonElement = when (e) {
             is JsonObject -> JsonObject(

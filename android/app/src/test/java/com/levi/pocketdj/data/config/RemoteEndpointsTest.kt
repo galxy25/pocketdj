@@ -195,4 +195,44 @@ class RemoteEndpointsTest {
         assertEquals("https://evil.com/a.json", RemoteEndpoints.rebaseCatalogUrl("https://evil.com/a.json"))
     }
 
+    // ---- ANS-BRW-2: capabilities.recEngineEnroll ------------------------------------------
+
+    private fun greenWithEnroll(value: String) =
+        green.dropLast(1) + ""","capabilities":{"recEngineEnroll":$value}}"""
+
+    @Test fun enrollCapabilityParsedAndFallsBackToCompiledConstant() {
+        assertEquals(REC_ENGINE_ENROLL_SECRET, RemoteEndpoints.recEngineEnroll())      // compiled-in
+        assertEquals(null, ok(green).recEngineEnroll)                                  // absent => null
+        RemoteEndpoints.apply(green)
+        assertEquals(REC_ENGINE_ENROLL_SECRET, RemoteEndpoints.recEngineEnroll())      // doc w/o capability
+        val rotated = "rotated-secret-0123456789abcdef"
+        assertTrue(RemoteEndpoints.apply(greenWithEnroll("\"$rotated\"")))
+        assertEquals(rotated, RemoteEndpoints.recEngineEnroll())
+    }
+
+    @Test fun malformedEnrollCapabilityIsIgnoredNotFatal() {
+        for (bad in listOf("\"short\"", "\"has space in it 0123456789\"", "42", "null", "\"\"")) {
+            val cfg = ok(greenWithEnroll(bad))
+            assertEquals(bad, null, cfg.recEngineEnroll)
+            assertEquals("doc still accepted for $bad", "green", cfg.env)
+        }
+    }
+
+    @Test fun enrollCapabilityPersistsWithLastGoodDoc() {
+        val file = File(dir, "pocketdj-endpoints.json")
+        RemoteEndpoints.install(file)
+        val rotated = "rotated-secret-0123456789abcdef"
+        RemoteEndpoints.apply(greenWithEnroll("\"$rotated\""))
+        RemoteEndpoints.resetForTests()
+        assertEquals(REC_ENGINE_ENROLL_SECRET, RemoteEndpoints.recEngineEnroll())
+        RemoteEndpoints.install(file)                                                  // relaunch
+        assertEquals(rotated, RemoteEndpoints.recEngineEnroll())
+        // A later rejected doc keeps the last-good secret.
+        RemoteEndpoints.apply("<html>spa fallback</html>")
+        assertEquals(rotated, RemoteEndpoints.recEngineEnroll())
+    }
+
+    @Test fun enrollCapabilityChangesConfigEquality() {
+        assertTrue(ok(green) != ok(greenWithEnroll("\"rotated-secret-0123456789abcdef\"")))
+    }
 }

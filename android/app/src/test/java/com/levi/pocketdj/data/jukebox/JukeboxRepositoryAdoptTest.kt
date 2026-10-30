@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
@@ -48,6 +49,8 @@ class JukeboxRepositoryAdoptTest {
                     return when {
                         path == "/sessions/jbNew" ->
                             MockResponse().setBody("""{"jukeboxId":"jbNew","hostKey":"hk","name":"N"}""")
+                        path == "/sessions/jbOld" ->
+                            MockResponse().setBody("{\"jukeboxId\":\"jbOld\",\"hostKey\":\"ho\",\"name\":\"O\"}")
                         path.startsWith("/sessions/missing") -> MockResponse().setResponseCode(404)
                         path.contains("/requests") -> MockResponse().setBody("""{"seq":0,"requests":[]}""")
                         else -> MockResponse().setBody("{}")
@@ -125,6 +128,31 @@ class JukeboxRepositoryAdoptTest {
         delay(300)
         assertEquals("jbNew", r.state.value.session?.jukeboxId)
         assertEquals(before, requestLog.count { it == "/sessions/other" })
+    }
+
+    @Test fun switchTo_endsOldBeforeAdoptingTarget_andCommitsTarget() = runBlocking {
+        val r = repo()
+        r.adopt("jbOld")
+        r.await("old") { it.session?.jukeboxId == "jbOld" }
+        requestLog.clear()
+        r.switchTo("jbNew")
+        r.await("new") { it.session?.jukeboxId == "jbNew" && !it.starting }
+        assertEquals("jbNew", store.load()?.session?.jukeboxId)
+        val endIdx = requestLog.indexOfFirst { it.contains("/end") }
+        val adoptIdx = requestLog.indexOf("/sessions/jbNew")
+        assertTrue(requestLog.toString(), endIdx in 0 until adoptIdx)
+    }
+
+    @Test fun switchTo_completesEvenIfCallerScopeIsCancelled() = runBlocking {
+        val r = repo()
+        r.adopt("jbOld")
+        r.await("old") { it.session?.jukeboxId == "jbOld" }
+        // Simulates the sheet leaving composition right after the tap.
+        val sheetScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        sheetScope.launch { r.switchTo("jbNew") }.join()
+        sheetScope.cancel()
+        r.await("new") { it.session?.jukeboxId == "jbNew" && !it.starting }
+        assertEquals("jbNew", store.load()?.session?.jukeboxId)
     }
 
     @Test fun bootstrapRestoreDuringAdopt_isNotOverwrittenByStart_orAdoptKeepsRestoredWhenDifferent() = runBlocking {

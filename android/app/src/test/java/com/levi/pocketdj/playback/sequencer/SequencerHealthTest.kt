@@ -618,4 +618,38 @@ class SequencerHealthTest {
         assertTrue(h.seq.trackedPlaybackRips.isEmpty())
         assertTrue(h.cancelled.isEmpty())
     }
+
+    // ---- ANS-PB-5 (Q21): play during start does not reload ------------------------------------------------
+
+    @Test
+    fun playDuringStart_doesNotReload() = runTest {
+        val h = H(this, setOf("a"))
+        h.port.gates["a"] = kotlinx.coroutines.CompletableDeferred()
+        h.start("a")
+        assertEquals(listOf("a"), h.port.loadedIds)
+        // Idle-play (remote/headset ▶) while a's start is still resolving/loading.
+        assertTrue(h.seq.startCurrent())
+        runCurrent()
+        assertEquals("one load only", listOf("a"), h.port.loadedIds)
+        h.port.gates["a"]!!.complete(Unit)
+        runCurrent()
+        assertEquals(listOf("a"), h.port.loadedIds)
+        // Once audio is flowing the start is over: an explicit restart of the row reloads again.
+        h.engine.playing = true
+        h.seq.onFirstAudio("a", "player")
+        assertTrue(h.seq.startCurrent())
+        runCurrent()
+        assertEquals(listOf("a", "a"), h.port.loadedIds)
+    }
+
+    @Test
+    fun supervisorRetryInPlace_requestsAReResolve() = runTest {
+        val h = H(this, setOf("a"))
+        h.start("a")
+        assertFalse(h.port.loads.last().reResolve)
+        h.seq.supervisorRetryInPlace()
+        runCurrent()
+        assertEquals(2, h.port.loads.size)
+        assertTrue(h.port.loads.last().reResolve)
+    }
 }

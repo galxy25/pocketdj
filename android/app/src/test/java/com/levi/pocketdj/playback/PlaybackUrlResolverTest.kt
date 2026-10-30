@@ -64,4 +64,20 @@ class PlaybackUrlResolverTest {
         assertTrue(!PlaybackUrlResolver.isLocalItemUrl("https://bucket/a.mp3", "https://bucket/a.mp3"))
         assertTrue(!PlaybackUrlResolver.isLocalItemUrl(null, null))
     }
+
+    @Test
+    fun nearEndPrefetch_presignsOnlyANetworkManifestHit() = runTest {
+        val minted = mutableListOf<String>()
+        val cache = PresignCache(backgroundScope, { true }, { id, _ -> minted += id; "u-$id" })
+        val r = PlaybackUrlResolver(cache)
+        val net = com.levi.pocketdj.playback.sequencer.StreamSource(direct)
+        assertTrue(r.prefetchNextRow("nxt", net, true))
+        runCurrent()
+        assertEquals(listOf("nxt"), minted)
+        assertEquals(false, r.prefetchNextRow("x", net, false))
+        assertEquals(false, r.prefetchNextRow("x", com.levi.pocketdj.playback.sequencer.RipOnDemandSource("x"), true))
+        assertEquals(false, r.prefetchNextRow("x", null, true))
+        runCurrent()
+        assertEquals(listOf("nxt"), minted)
+    }
 }

@@ -142,4 +142,16 @@ class BackupZipTest {
         assertEquals(payload.setlists, back.setlists)
         assertEquals(payload.folders, back.folders)
     }
+
+    @Test
+    fun backupExportNeverCarriesAmPlaylistId() {
+        val payload = BackupPayload(
+            pockets = listOf(Pocket(id = "pkt_a", name = "A", amPlaylistId = "p.X", createdAt = 1.0, updatedAt = 1.0)),
+            playlists = listOf(CollectionsFactory.makePlaylist("PL", 1.0).copy(amPlaylistId = "p.Y")),
+        )
+        val entries = ZipIo.read(BackupZip.export(payload))!!
+        assertFalse(String(entries["pockets.json"]!!).contains("amPlaylistId"))
+        assertFalse(String(entries["playlists.json"]!!).contains("amPlaylistId"))
+        assertNull(BackupZip.import(BackupZip.export(payload)).first.pockets.single().amPlaylistId)
+    }
 }

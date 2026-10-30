@@ -191,4 +191,50 @@ class ArrangerBouncerTest {
         assertTrue(store.artifacts(a.id, StudioArrangementArtifact.Kind.BOUNCE).isEmpty())
         assertTrue(dir.listFiles().orEmpty().none { it.name.contains("bounce") })
     }
+
+    // ---- ANS-STU-2: streamed bounce ----
+
+    private class Collect : com.levi.pocketdj.audio.core.PcmChunkWriter {
+        val acc = ArrayList<Float>(); var biggest = 0; var closed = false
+        override fun write(samples: FloatArray, frames: Int) { biggest = maxOf(biggest, frames); for (i in 0 until frames * 2) acc += samples[i] }
+        override fun close() { closed = true }
+    }
+
+    @Test fun streamedBounceMatchesTheWholeBufferMixdownIncludingNormalize() = runBlocking {
+        // Two hot overlapping tracks sum to 1.6 so the 2-pass peak normalize must kick in.
+        val tracks = listOf(track("t1", clip("c1", "hot", dur = 3000)), track("t2", clip("c2", "hot", start = 100, dur = 2000), pan = 0.4))
+        val w = Collect()
+        val dest = File(tmp.root, "out.m4a")
+        val b = ArrangerBouncer(FakeLoader(files + ("hot" to constPcm(RATE * 3, 0.8f))), openM4a = { f, rate ->
+            assertEquals(RATE, rate); f.writeText("m4a"); w })
+        val ms = b.bounceToFile(tracks, dest)!!
+        val whole = b.mixdown(tracks)!!
+        assertEquals(3000, ms)
+        assertTrue(w.closed); assertTrue(dest.exists())
+        assertEquals(whole.samples.size, w.acc.size)
+        assertEquals(1.0f, w.acc.maxOf { Math.abs(it) }, 1e-6f)
+        for (i in whole.samples.indices) assertEquals("sample $i", whole.samples[i], w.acc[i], 1e-6f)
+    }
+
+    @Test fun streamedBounceNeverHoldsMoreThanOneRenderBlock() = runBlocking {
+        val w = Collect()
+        val b = ArrangerBouncer(FakeLoader(mapOf("long" to constPcm(RATE * 20, 0.3f))), openM4a = { f, _ -> f.writeText("m4a"); w })
+        val ms = b.bounceToFile(listOf(track("t1", clip("c1", "long", dur = 20_000))), File(tmp.root, "long.m4a"))!!
+        assertEquals(20_000, ms)
+        assertEquals(RATE * 20 * 2, w.acc.size)
+        assertTrue("block ${w.biggest}", w.biggest <= ArrangerBouncer.BLOCK_FRAMES)
+        // Quiet mix: no scaling applied.
+        assertEquals(0.3f, w.acc[0], 1e-6f)
+    }
+
+    @Test fun streamingEncoderFailureAbortsAndLeavesNothing() = runBlocking {
+        val b = ArrangerBouncer(FakeLoader(files), openM4a = { f, _ -> f.writeText("partial"); object : com.levi.pocketdj.audio.core.PcmChunkWriter {
+            override fun write(samples: FloatArray, frames: Int) = error("encoder died")
+            override fun close() {}
+        } })
+        val dest = File(tmp.root, "x.m4a")
+        assertNull(b.bounceToFile(listOf(track("t1", clip("c1", "a"))), dest))
+        assertFalse(dest.exists())
+        assertEquals(0, tmp.root.listFiles().orEmpty().count { it.name.startsWith(".bounce") })
+    }
 }

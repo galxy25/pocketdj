@@ -146,10 +146,10 @@ data class Pocket(
     /** Recommendations OFF marker; stored `false`/null (never true). */
     val recsEnabled: Boolean? = null,
     /**
-     * Apple Music library playlist this pocket is bound to. IN-MEMORY ONLY: iOS `Pocket`
-     * CodingKeys deliberately omit it (privacy — a handle into the user's own library).
+     * Apple Music library playlist this pocket is bound to. Persisted (optional, written only
+     * when set, no schema bump); STRIPPED from every export and import — a handle into the
+     * user's own library must never travel.
      */
-    @kotlinx.serialization.Transient
     val amPlaylistId: String? = null,
     /** v7: stamped by markPlayed OUTSIDE mutate — never disturbs updatedAt. */
     @Serializable(with = EpochMsSerializer::class)
@@ -266,7 +266,7 @@ data class Playlist(
     val amSyncDirection: String? = null,
     val cleanOnly: Boolean? = null,
     val recsEnabled: Boolean? = null,
-    /** In-memory only (iOS Playlist CodingKeys omit it too); see [Pocket.amPlaylistId]. */
+    /** Persisted when set; stripped on export/import; see [Pocket.amPlaylistId]. */
     val amPlaylistId: String? = null,
     /** v7 "Recently played" key — stamped OUTSIDE mutate. */
     override val lastPlayedAt: Double? = null,
@@ -334,6 +334,8 @@ data class SetlistTrack(
     val mixSuggestions: List<MixSuggestion>? = null,
     /** Frozen loop count; null ⇒ once. */
     val repeatCount: Int? = null,
+    /** Frozen EDITION override (a clean-only realize substituting the clean cut); raw `SongVariant` token. */
+    val variant: String? = null,
 ) {
     /**
      * Length of ONE play (the player's per-track end boundary): 0 for text rows,

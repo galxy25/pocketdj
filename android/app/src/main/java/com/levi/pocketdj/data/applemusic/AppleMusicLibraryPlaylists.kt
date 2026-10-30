@@ -42,6 +42,13 @@ interface PlaylistWriteBackTransport {
 
     /** Set by [resolvePlaylistId] when the answer was a GUESS (duplicate names, no overlap). */
     val lastResolutionNote: String? get() = null
+
+    /**
+     * Reconcile an EXISTING app-created library playlist to [orderedAppleMusicIds] (remove-missing +
+     * reorder, the half an append-only push cannot do). Defaulted to UNSUPPORTED so stubs need not care.
+     */
+    suspend fun reconcile(playlistId: String, orderedAppleMusicIds: List<String>): PlaylistReconcileResult =
+        PlaylistReconcileResult.Unsupported
 }
 
 /** The three-tier library-playlist name match: exact -> trimmed -> case/diacritic folded. */
@@ -135,6 +142,45 @@ class WebApiPlaylistWriteBackTransport(
         }
         // The SAME pure judge everywhere, so two devices resolve an identity-only song identically.
         return WriteBackMatcher.bestMatch(song, candidates)
+    }
+
+    /**
+     * Web-API reconcile (fail-closed). The live rows are read FIRST and load-bearing (a read failure
+     * throws; the sync absorbs it and retries next pass). The first DELETE decides editability: if
+     * Apple refuses it nothing was touched => NotEditable. A later failure throws; the next push
+     * re-appends whatever is missing, so a half-applied reorder converges instead of losing songs.
+     */
+    override suspend fun reconcile(playlistId: String, orderedAppleMusicIds: List<String>): PlaylistReconcileResult {
+        if (!canWrite()) throw WriteBackException.NotAuthorized()
+        if (orderedAppleMusicIds.isEmpty()) return PlaylistReconcileResult.SkippedEmpty
+        val live = unwrap(api.allPlaylistTrackRows(playlistId))
+        when (val plan = PlaylistReconcilePlanner.plan(live, orderedAppleMusicIds)) {
+            is PlaylistReconcilePlanner.Plan.AlreadyInSync -> return PlaylistReconcileResult.AlreadyInSync
+            is PlaylistReconcilePlanner.Plan.Unsafe -> return PlaylistReconcileResult.NotEditable
+            is PlaylistReconcilePlanner.Plan.Edit -> {
+                // iOS: MusicKit `edit` throws on foreign playlists. Here nothing throws for us, so check
+                // canEdit STRICTLY (absent = not editable) before any destructive call.
+                when (val ce = api.libraryPlaylistCanEdit(playlistId)) {
+                    is AmResult.Ok -> if (ce.value != true) return PlaylistReconcileResult.NotEditable
+                    is AmResult.Failure ->
+                        if (PlaylistReconcilePlanner.isRefusal(ce.status)) return PlaylistReconcileResult.NotEditable else throw failure(ce)
+                    else -> unwrap(ce)
+                }
+                var first = true
+                for (batch in AppleMusicApi.batches(plan.deleteLibraryIds)) {
+                    when (val r = api.removeTracksFromPlaylist(playlistId, batch)) {
+                        is AmResult.Ok -> {}
+                        is AmResult.Failure ->
+                            if (first && PlaylistReconcilePlanner.isRefusal(r.status)) return PlaylistReconcileResult.NotEditable
+                            else throw failure(r)
+                        else -> unwrap(r)
+                    }
+                    first = false
+                }
+                for (batch in AppleMusicApi.batches(plan.appendCatalogIds)) unwrap(api.addTracksToPlaylist(playlistId, batch))
+                return PlaylistReconcileResult.Edited(orderedAppleMusicIds.size, plan.added, plan.removed)
+            }
+        }
     }
 
     /** THROWS on failure: nil from [resolveCatalogId] is the TERMINAL "not on Apple Music" verdict. */

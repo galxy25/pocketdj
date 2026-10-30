@@ -327,6 +327,7 @@ class CollectionBurnController(
         lastBurnIds = ids
         val job = scope.launch {
             var finished = false
+            var ripAfterBurn = false
             try {
                 val songs = tuples(ids)
                 // No hard cancel on Stop: requestStop() makes the store break at the next item and
@@ -335,7 +336,13 @@ class CollectionBurnController(
                 val server = hasServer()
                 if (CollectionBurnReducer.shouldRipMissing(r, server)) {
                     val missing = songs.map { it.id }.filterNot(isRipped)
-                    if (missing.isNotEmpty()) runCatching { ripCollection(missing) }
+                    if (missing.isNotEmpty()) {
+                        // Emulator verification (SVC-4): these server rips were untracked, so the bar's Stop could
+                        // neither POST /rip-cancel nor end their polls. Track + show them like an explicit Rip.
+                        lastRipIds = missing
+                        val rr = runCatching { ripCollection(missing) }.getOrNull()
+                        ripAfterBurn = rr != null && rr.queued + rr.inflight > 0
+                    }
                 }
                 _state.update {
                     it.copy(
@@ -345,6 +352,7 @@ class CollectionBurnController(
                     )
                 }
                 finished = true
+                if (ripAfterBurn) startRipPoll(lastRipIds)
             } finally {
                 if (!finished) _state.update { it.copy(working = false, inFlightOp = null) }
             }

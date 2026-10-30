@@ -79,6 +79,7 @@ fun SetlistDetailScreen(
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val store = remember { graph.collections }
+    val exporter = com.levi.pocketdj.screens.collections.rememberCollectionExporter()
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
@@ -258,6 +259,10 @@ fun SetlistDetailScreen(
                             DropdownMenuItem(
                                 text = { Text("Rename") },
                                 onClick = { dismiss(); renameOpen = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Export CSV") },
+                                onClick = { dismiss(); exporter.export(com.levi.pocketdj.screens.collections.CollectionExportRequests.setlistCsv(store, setlistId, setlist?.name ?: "Set list")) },
                             )
                             DropdownMenuItem(
                                 text = { Text("Delete set list") },

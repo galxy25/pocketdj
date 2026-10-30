@@ -107,6 +107,9 @@ android {
         }
     }
 
+    // mediaplayback + shazamkit AARs both bundle libc++_shared.so (and the app builds its own).
+    packaging { jniLibs { pickFirsts += "**/libc++_shared.so" } }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -165,6 +168,11 @@ dependencies {
     //   mediaplayback : full-track DRM controller (arm64/armv7 native .so only).
     implementation(files("libs/musickitauth-release-1.1.2.aar"))
     implementation(files("libs/mediaplayback-release-1.1.1.aar"))
+    // ShazamKit for Android 2.1.1 (Apple portal AAR, vendored); its transitive needs (not declared by the AAR) are retrofit + converter-gson + gson.
+    implementation(files("libs/shazamkit-android-release.aar"))
+    implementation(libs.retrofit)
+    implementation(libs.retrofit.converter.gson)
+    implementation(libs.gson)
     // The auth activities extend AppCompatActivity — mandatory transitive dep the
     // AARs assume but don't declare (specs/applemusic.md §1, fact 0.4).
     implementation(libs.androidx.appcompat)

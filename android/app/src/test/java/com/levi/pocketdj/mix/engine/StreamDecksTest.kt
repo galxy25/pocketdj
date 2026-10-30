@@ -35,10 +35,17 @@ class StreamDecksTest {
         val handles = HashMap<String, FakeHandle>()
         var gateOpen = true
         var opens = 0
-        override fun canStream(songId: String) = gateOpen && songId in handles
+        /** Per-flavour gate: lets a test open the Auto-DJ flavour while the manual one stays shut. */
+        var autoGateOpen: Boolean? = null
+        val asked = ArrayList<Boolean>()
+        override fun canStream(songId: String, forAuto: Boolean): Boolean {
+            asked += forAuto
+            return (if (forAuto) autoGateOpen ?: gateOpen else gateOpen) && songId in handles
+        }
         override fun isRipped(songId: String) = songId in handles
-        override fun open(songId: String, title: String, artist: String): StreamHandle? =
-            handles[songId]?.also { opens++ }
+        val openedForAuto = ArrayList<Boolean>()
+        override fun open(songId: String, title: String, artist: String, forAuto: Boolean): StreamHandle? =
+            handles[songId]?.also { opens++; openedForAuto += forAuto }
         override fun stream(songId: String): StreamHandle? = handles[songId]
     }
 
@@ -561,6 +568,30 @@ class StreamDecksTest {
         r.loader.gateOpen = false
         assertTrue("ripped but the gate is closed right now", r.decks.transientlyUnloadable("s"))
         assertFalse("never ripped: permanent", r.decks.transientlyUnloadable("zzz"))
+    }
+
+    @Test fun autoDjGateQuestionsUseTheShortAutoCooldownFlavour() {
+        val r = Rig()
+        r.loader.gateOpen = false          // manual (120 s) cooldown still closed ...
+        r.loader.autoGateOpen = true       // ... the 2-3 s Auto-DJ one has elapsed
+        assertFalse(r.decks.transientlyUnloadable("s"))
+        assertEquals("transientlyUnloadable is the Auto-DJ readiness seam", listOf(true), r.loader.asked)
+        r.loader.autoGateOpen = false
+        assertTrue(r.decks.transientlyUnloadable("s"))
+        r.loader.asked.clear()
+        assertFalse("a manual load (engine not auto-mixing) keeps the long gate", r.decks.loadStreaming(
+            MixLoadable("s", "S", "x"), A))
+        assertEquals(listOf(false), r.loader.asked)
+    }
+
+    @Test fun loadStreamingWhileAutoLoadingUsesTheAutoGateForCanStreamAndOpen() {
+        val r = Rig()
+        r.loader.gateOpen = false           // manual 120 s gate shut
+        r.loader.autoGateOpen = true        // Auto-DJ gate open
+        r.engine.autoLoading = true         // what AutoDj.loadAuto sets (also true during startAutoMix)
+        assertTrue(r.decks.loadStreaming(MixLoadable("s", "S", "x"), A))
+        assertEquals(listOf(true), r.loader.asked)
+        assertEquals("open() got the auto flavour too", listOf(true), r.loader.openedForAuto)
     }
 
     @Test fun theStallClockStartsWhenAHeldDeckStartsPLAYINGNotWhenItWasHeld() {

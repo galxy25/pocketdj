@@ -203,6 +203,7 @@ fun BrowseScreen(
                     onOpenArtist = onOpenArtist,
                     onOpenSong = { detailSongId = it },
                     onAddSong = { addItem = AddToItem.Song(it) },
+                    onSongDragStart = { addItem = null },
                     onAddAlbum = { addItem = AddToItem.Album(it) },
                     onPlaySong = { songId ->
                         // Songs-list ▶ with no album in view = a Browser single
@@ -353,6 +354,7 @@ private fun BrowseContent(
     onAddSong: (String) -> Unit,
     onAddAlbum: (String) -> Unit,
     onPlaySong: (String) -> Unit,
+    onSongDragStart: () -> Unit = {},
 ) {
     // Debounced query (~180 ms, specs/browse.md §4.1).
     var debouncedQuery by remember { mutableStateOf(query) }
@@ -771,7 +773,7 @@ private fun BrowseContent(
                                 row = row,
                                 modifier = Modifier
                                     .selectionDecor(rowSelection, songId, BROWSE_SELECTION_SCOPE)
-                                    .songDragSource(enabled = true) {
+                                    .songDragSource(enabled = true, onDragStart = onSongDragStart) {
                                         if (rowSelected) rowSelection.currentPayload() else com.levi.pocketdj.data.collections.SongTransfer(listOf(songId), null)
                                     },
                                 // Select mode armed HERE eats the tap; otherwise it opens as before.
@@ -1019,7 +1021,7 @@ fun BrowseSongRow(
     val settings by graph.settings.settings.collectAsState(initial = null)
     val preparingId by graph.playbackController.preparingSongId.collectAsState()
 
-    val playable = playability(row.song.id, manifest, settings?.hasRipServer == true, row.song.appleMusicId)
+    val playable = playability(row.song.id, manifest, settings?.hasRipServer == true, row.song.appleMusicId, graph.studioGraph.profileAudio.hasLocalAsset(row.song.id))
     val contentAlpha = if (playable == Playability.NONE) 0.45f else 1f
 
     Row(

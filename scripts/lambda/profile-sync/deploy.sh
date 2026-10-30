@@ -7,7 +7,7 @@
 #
 # Enrollment capability token (ENROLL_SECRET): $PROFILE_SYNC_ENROLL_SECRET wins (deliberate rotation),
 # else the value already on the function is preserved, else a new one is minted and printed ONCE
-# (SHOW_SECRET=1 reprints). The Android build embeds it like Config.recEngineEnrollSecret.
+# (SHOW_SECRET=1 reprints). It is published to the apps as capabilities.profileSyncEnroll in the endpoints doc (ANS-SYNC-1; never compiled in).
 # MAX_PROFILES (default 50) caps distinct enrolled profiles (preserved across redeploys).
 # Afterwards the new base URL is written into config/endpoints.<env>.json as optional `profileSyncBase`
 # and the doc is re-validated with the PWA validator (scripts/validate-endpoints.ts).
@@ -103,10 +103,14 @@ echo "$API_URL" > "$SELF/.endpoint-url.txt"
 # 6) publish the optional endpoint key and re-validate with the PWA validator.
 CFG="$ROOT/config/endpoints.${PDJ_ENV}.json"
 if [ -f "$CFG" ]; then
-  CFG="$CFG" URL="$API_URL" node -e '
+  # ANS-SYNC-1: the enroll capability is delivered through the endpoints doc (capabilities.profileSyncEnroll,
+  # read by the apps at request time, rotatable without an app update) - never compiled into a build.
+  CFG="$CFG" URL="$API_URL" ENROLL="$ENROLL" node -e '
     const fs=require("fs");const p=process.env.CFG;const d=JSON.parse(fs.readFileSync(p,"utf8"));
-    d.endpoints.profileSyncBase=process.env.URL;fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n");'
-  say "wrote profileSyncBase into $CFG"
+    d.endpoints.profileSyncBase=process.env.URL;
+    d.capabilities={...(d.capabilities||{}),profileSyncEnroll:process.env.ENROLL};
+    fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n");'
+  say "wrote profileSyncBase + capabilities.profileSyncEnroll into $CFG"
   ( cd "$ROOT" && npx --no-install tsx scripts/validate-endpoints.ts "$CFG" ) || { say "ERROR: validate-endpoints failed — fix the doc before deploying it"; exit 1; }
 fi
 say "done. Endpoint: $API_URL   verify: curl -s $API_URL/health"

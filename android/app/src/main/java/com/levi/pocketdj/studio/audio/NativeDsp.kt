@@ -44,8 +44,16 @@ object NativeDsp {
     external fun nativeSf2PresetCount(h: Long): Int
     // Stretch (offline)
     external fun nativeStretchExact(input: FloatArray, inFrames: Int, out: FloatArray, outFrames: Int, sr: Int, semitones: Double): Boolean
+    // Real-time stretch (decks; render thread)
+    external fun nativeRtNew(sr: Int, maxIn: Int, maxOut: Int): Long
+    external fun nativeRtFree(h: Long)
+    external fun nativeRtInputLatency(h: Long): Int
+    external fun nativeRtOutputLatency(h: Long): Int
+    external fun nativeRtSetPitch(h: Long, semitones: Double)
+    external fun nativeRtReset(h: Long)
+    external fun nativeRtProcess(h: Long, input: FloatArray, inFrames: Int, out: FloatArray, outFrames: Int)
     // Oboe
-    external fun nativeOboeNew(sr: Int, ringFrames: Int): Long
+    external fun nativeOboeNew(sr: Int, ringFrames: Int, lowLatency: Boolean): Long
     external fun nativeOboeFree(h: Long)
     external fun nativeOboeOpen(h: Long): Boolean
     external fun nativeOboeClose(h: Long)
@@ -64,7 +72,7 @@ object NativeDsp {
     fun masterFx(sampleRate: Double = 44_100.0): MasterFx =
         if (available) NativeMasterFx(sampleRate) else MasterFxKernel(sampleRate, 2)
 
-    fun oboeBackend(sampleRate: Int, ringFrames: Int): OboeBackend = NativeOboeBackend(sampleRate, ringFrames)
+    fun oboeBackend(sampleRate: Int, ringFrames: Int, lowLatency: Boolean = true): OboeBackend = NativeOboeBackend(sampleRate, ringFrames, lowLatency)
 }
 
 internal fun interleave(planar: Array<FloatArray>, frames: Int, out: FloatArray) {
@@ -125,8 +133,8 @@ class Sf2Synth(private val sampleRate: Int = 44_100) {
     fun close() { if (h != 0L) { NativeDsp.nativeSf2Free(h); h = 0 } }
 }
 
-internal class NativeOboeBackend(sampleRate: Int, ringFrames: Int) : OboeBackend {
-    private var h = NativeDsp.nativeOboeNew(sampleRate, ringFrames)
+internal class NativeOboeBackend(sampleRate: Int, ringFrames: Int, lowLatency: Boolean) : OboeBackend {
+    private var h = NativeDsp.nativeOboeNew(sampleRate, ringFrames, lowLatency)
     override fun open() = NativeDsp.nativeOboeOpen(h)
     override fun close() = NativeDsp.nativeOboeClose(h)
     override fun release() { if (h != 0L) { NativeDsp.nativeOboeClose(h); NativeDsp.nativeOboeFree(h); h = 0 } }

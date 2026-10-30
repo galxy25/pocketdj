@@ -9,7 +9,7 @@
 //
 // ── Auth (the rec engine's model, its own binding) ─────────────────────────────────────────────
 // Same bearer key, same SCOPED profile id (`HMAC-SHA256(profileId, key: bearerKey)`), same
-// enrollment secret (`REC_ENROLL_SECRET` — must equal `Config.recEngineEnrollSecret`; deploy.sh
+// enrollment secret (`REC_ENROLL_SECRETS` (comma-separated; legacy `REC_ENROLL_SECRET` too) — must equal `Config.recEngineEnrollSecret`; deploy.sh
 // copies it from the rec-engine function, never mints one). The trust-on-first-use keyHash binding
 // lives in THIS service's own events object, so the two services can never wedge each other.
 // Creating state needs the enrollment secret and is capped at MAX_PROFILES (counted over
@@ -99,12 +99,22 @@ function authOf(event) {
 /// Constant-time compare against `REC_ENROLL_SECRET`. FAIL-CLOSED: unset → every enrollment and
 /// every secret-authorized delete is refused.
 export function enrollOk(event) {
-  const want = process.env.REC_ENROLL_SECRET || '';
-  if (!want) return false;
+  // REC_ENROLL_SECRETS = comma-separated accepted secrets (old + new during a rotation window);
+  // legacy single REC_ENROLL_SECRET is still honoured. Every candidate is compared (no early
+  // exit) in constant time. FAIL-CLOSED when none is configured.
+  const wants = `${process.env.REC_ENROLL_SECRETS || ''},${process.env.REC_ENROLL_SECRET || ''}`
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  if (!wants.length) return false;
   const h = event.headers || {};
   const got = h['x-pocketdj-enroll'] || h['X-PocketDJ-Enroll'] || '';
-  if (typeof got !== 'string' || got.length !== want.length) return false;
-  return timingSafeEqual(Buffer.from(got, 'utf8'), Buffer.from(want, 'utf8'));
+  if (typeof got !== 'string' || !got) return false;
+  const gotBuf = Buffer.from(got, 'utf8');
+  let ok = false;
+  for (const want of wants) {
+    const wantBuf = Buffer.from(want, 'utf8');
+    if (wantBuf.length === gotBuf.length && timingSafeEqual(gotBuf, wantBuf)) ok = true;
+  }
+  return ok;
 }
 
 function bodyBytes(event) {

@@ -109,7 +109,7 @@ fun AlbumDetailScreen(
                 val tracks = catalog.tracks(album)
                 val hasServer = settings?.hasRipServer == true
                 val anyPlayable = tracks.any {
-                    playability(it.id, manifest, hasServer) != Playability.NONE
+                    playability(it.id, manifest, hasServer, it.appleMusicId, graph.studioGraph.profileAudio.hasLocalAsset(it.id)) != Playability.NONE
                 }
 
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -216,7 +216,7 @@ fun AlbumDetailScreen(
                         AlbumTrackRow(
                             position = index + 1,
                             song = song,
-                            playable = playability(song.id, manifest, hasServer, song.appleMusicId),
+                            playable = playability(song.id, manifest, hasServer, song.appleMusicId, graph.studioGraph.profileAudio.hasLocalAsset(song.id)),
                             isPreparing = preparingId == song.id,
                             zebra = index % 2 == 1,
                             onClick = { detailSongId = song.id },

@@ -61,7 +61,6 @@ fun StemsSection(session: DemuxSession, isSong: Boolean) {
     val state by session.stemState.collectAsState()
     val stemMode by session.stemMode.collectAsState()
     val player = session.player
-    val version by player.version.collectAsState()
     Column(Modifier.fillMaxWidth().testTag("demux-stems"), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Stems", style = MaterialTheme.typography.titleSmall)
         when (val s = state) {
@@ -70,11 +69,7 @@ fun StemsSection(session: DemuxSession, isSong: Boolean) {
                     Text("Stems", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                     Switch(checked = stemMode, onCheckedChange = { session.setStemMode(it) }, modifier = Modifier.testTag("demux-stems-switch"))
                 }
-                if (stemMode) {
-                    // `version` is passed down so each row recomposes when mute/solo/play state changes
-                    // (rows are otherwise skipped: same name + same session instance).
-                    DemuxStore.STEM_NAMES.forEach { StemRow(it, session, version) }
-                } else Muted(StemsCopy.STEMS_HINT)
+                if (stemMode) StemRows(player) else Muted(StemsCopy.STEMS_HINT)
             }
             DemuxStemState.Downloadable -> ActionRow(StemsCopy.DOWNLOADABLE, "Download", "demux-stems-download") { session.downloadStems() }
             DemuxStemState.Downloading -> Busy("Downloading stems…", "demux-stems-downloading")
@@ -86,20 +81,39 @@ fun StemsSection(session: DemuxSession, isSong: Boolean) {
     }
 }
 
+/**
+ * The four stem rows. Emulator finding (STU-14): the rows used to take `version` as an UNUSED parameter to force a
+ * recompose, but the Compose compiler leaves unused parameters out of the skip check, so mute/solo never redrew
+ * (icons stuck on "Mute"/play while the audio changed). The row state is now read HERE, in the scope that observes
+ * [StemPlayer.version], and passed down as plain values.
+ */
 @Composable
-@Suppress("UNUSED_PARAMETER")
-private fun StemRow(name: String, session: DemuxSession, version: Int) {
-    val player = session.player
-    val soloed = player.soloed == name
+internal fun StemRows(player: com.levi.pocketdj.studio.demux.StemPlayer) {
+    val version by player.version.collectAsState()
+    val playing = version.let { player.isPlaying }
+    val soloed = player.soloed
+    DemuxStore.STEM_NAMES.forEach { name ->
+        StemRow(
+            name = name,
+            soloed = soloed == name,
+            playing = playing,
+            audible = player.isAudible(name),
+            onSolo = { player.solo(name) },
+            onMute = { player.toggleMute(name) },
+        )
+    }
+}
+
+@Composable
+private fun StemRow(name: String, soloed: Boolean, playing: Boolean, audible: Boolean, onSolo: () -> Unit, onMute: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        IconButton(onClick = { player.solo(name) }, modifier = Modifier.size(36.dp).testTag("demux-stem-solo-$name")) {
-            Icon(if (soloed && player.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Solo $name",
+        IconButton(onClick = onSolo, modifier = Modifier.size(36.dp).testTag("demux-stem-solo-$name")) {
+            Icon(if (soloed && playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Solo $name",
                 tint = if (soloed) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary)
         }
         Icon(stemIcon(name), null, Modifier.size(18.dp))
         Text(name.replaceFirstChar { it.uppercase() }, Modifier.weight(1f).testTag("demux-stem-row-$name"))
-        val audible = player.isAudible(name)
-        IconButton(onClick = { player.toggleMute(name) }, modifier = Modifier.size(36.dp).testTag("demux-stem-mute-$name")) {
+        IconButton(onClick = onMute, modifier = Modifier.size(36.dp).testTag("demux-stem-mute-$name")) {
             Icon(if (audible) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff, if (audible) "Mute $name" else "Unmute $name",
                 tint = if (audible) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
         }

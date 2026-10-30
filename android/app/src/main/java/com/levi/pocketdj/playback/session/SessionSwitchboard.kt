@@ -18,6 +18,13 @@ class SessionSwitchboard(
     /** Called (outside the lock) with the new owner, or null when ownership was resigned away. */
     @Volatile var onChange: (TransportOwner?) -> Unit = {}
 
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<(TransportOwner?) -> Unit>()
+
+    /** Additive observers (widget bridge); survive the service replacing/clearing [onChange]. Returns the remover. */
+    fun addListener(l: (TransportOwner?) -> Unit): () -> Unit { listeners += l; return { listeners -= l } }
+
+    private fun fire(o: TransportOwner?) { onChange(o); listeners.forEach { runCatching { it(o) } } }
+
     val current: TransportOwner? get() = synchronized(lock) { owner }
 
     fun register(o: TransportOwner) = synchronized(lock) { if (o !in registered) registered += o }
@@ -44,13 +51,23 @@ class SessionSwitchboard(
         }
         if (changed) log("switchboard owner=${o.engine}")
         others.forEach { it.pauseForHandoff() }
-        if (changed) onChange(o)
+        if (changed) fire(o)
     }
 
     /** After a restore: [o] answers the next remote command although nothing has sounded yet. */
     fun prefer(o: TransportOwner) = synchronized(lock) {
         register(o)
         preferred = o
+    }
+
+    /** Drop [o]'s preferred status only (it never owned): the session goes back to whoever else fronts it. */
+    fun resignIfPreferred(o: TransportOwner) {
+        val changed: Boolean
+        synchronized(lock) {
+            changed = preferred === o && owner !== o
+            if (changed) preferred = null
+        }
+        if (changed) { log("switchboard unprefer=${o.engine}"); fire(null) }
     }
 
     /** [o] is done (stopped / released): the next-most-recent registered engine may claim; ExoPlayer is the fallback. */
@@ -63,7 +80,7 @@ class SessionSwitchboard(
         }
         if (changed) {
             log("switchboard resign=${o.engine}")
-            onChange(null)
+            fire(null)
         }
     }
 
@@ -76,15 +93,32 @@ class SessionSwitchboard(
         val o: TransportOwner
         synchronized(lock) {
             val t = owner ?: preferred ?: return false
-            if (t.engine != "mix" && t.engine != "npdsp") return false   // MIX-18: the Now Playing DSP engine is a SimpleBasePlayer too
+            if (t.engine != "mix" && t.engine != "npdsp" && t.engine != "studio") return false   // MIX-18: the Now Playing DSP engine is a SimpleBasePlayer too; ANS-STU-3: so is the Studio loop session player
             o = t
             if (owner === t) owner = null
             if (preferred === t) preferred = null
         }
         log("switchboard yield mix->exo")
         o.pauseForHandoff()
-        onChange(null)
+        fire(null)
         return true
+    }
+
+    /** True when the registered ExoPlayer owner holds a media item (a resumable single). Main-thread. */
+    fun exoHasItem(): Boolean {
+        val exo = synchronized(lock) { registered.firstOrNull { it.engine == "exo" } } ?: return false
+        return exo.sessionPlayer.mediaItemCount > 0
+    }
+
+    /**
+     * Generic resume (Now Playing, widget, Auto): yield ONLY an idle (paused) Mix, and only when ExoPlayer holds a
+     * single to resume. Never npdsp / Studio (their session player IS what is being resumed), never a Mix that is
+     * playing, and never when Exo is empty (the Mix stays the remote target). Main-thread.
+     */
+    fun yieldIdleMixForResume(): Boolean {
+        val t = synchronized(lock) { owner ?: preferred } ?: return false
+        if (t.engine != "mix" || t.sessionPlayer.playWhenReady || !exoHasItem()) return false
+        return yieldMixToExo()
     }
 
     /** True when [o] is the engine that should answer a remote command right now. */

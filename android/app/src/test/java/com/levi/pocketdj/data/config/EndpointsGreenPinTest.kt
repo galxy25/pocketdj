@@ -16,7 +16,10 @@ class EndpointsGreenPinTest {
     @Test fun compiledInEqualsGreenJsonOnEveryKey() {
         val green = ok(doc("endpoints.green.json"))
         assertEquals("green", EndpointConfig.COMPILED_IN.env)
-        assertEquals(green.endpoints, EndpointConfig.COMPILED_IN.endpoints)
+        // profileSyncBase + capabilities.profileSyncEnroll are doc-delivered ONLY (ANS-SYNC-1): never compiled in.
+        assertEquals(green.endpoints - EndpointKey.PROFILE_SYNC_BASE, EndpointConfig.COMPILED_IN.endpoints)
+        assertTrue(green.profileSyncBase != null && green.profileSyncEnroll != null)
+        assertEquals(null, EndpointConfig.COMPILED_IN.profileSyncBase)
         for (key in EndpointKey.REQUIRED) {
             assertEquals(key.wire, green.url(key), EndpointConfig.COMPILED_IN.url(key))
         }

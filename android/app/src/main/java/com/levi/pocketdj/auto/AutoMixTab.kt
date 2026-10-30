@@ -33,6 +33,8 @@ enum class AutoMixKind(val token: String) {
     /** The join URL text row of session a. */
     SESSION_URL("url"),
     NOTE("note"),
+    /** The parked (post-process-death) mix: tapping it brings the decks back and resumes. */
+    PARKED("parked"),
     ;
 
     companion object {
@@ -68,6 +70,9 @@ data class AutoMixLive(
     val buffering: Boolean = false,
 )
 
+/** What a parked mix shows in the car before it is materialized. */
+data class AutoParkedMix(val title: String?, val artist: String?, val label: String?)
+
 data class AutoJukeSession(val id: String, val name: String, val timeless: Boolean, val url: String)
 
 /**
@@ -88,6 +93,12 @@ interface AutoMixExtras {
     fun downloadState(): Pair<Int, Int>? = null
     /** Emits whenever anything the Mix rows display may have changed (duplicates are filtered here). */
     val changes: Flow<String> get() = emptyFlow()
+    /** The Mix row was opened: bring a parked (post-process-death) mix back onto the decks (CarPlay parity). Never builds the engine when nothing is parked. */
+    fun materializePendingRestoreIfNeeded(trigger: String) {}
+    /** The parked mix's summary (title / artist / source label), read WITHOUT building the engine; null = nothing parked. */
+    fun parkedMix(): AutoParkedMix? = null
+    /** The Mix-row gesture on a parked mix: materialize the decks, THEN resume (iOS CarPlayModel.materializeForGesture). */
+    fun resumeParkedMix() {}
     /** Live broker sessions; null = unreachable / not configured. */
     suspend fun jukeboxSessions(): List<AutoJukeSession>?
 }
@@ -156,7 +167,18 @@ class AutoMixTab(
     private fun mix(kind: AutoMixKind, a: String = "", b: String = "") = AutoId.Mix(kind, a, b).encoded
 
     private fun root(): List<AutoNode> {
+        // Connecting must not build the graph / touch deck files under a sounding set: only DESCRIBE the parked mix
+        // here; a Mix-row gesture (PARKED / START / TOGGLE) materializes it.
         val out = ArrayList<AutoNode>()
+        val parked = if (facade.autoMixing) null else extras.parkedMix()
+        if (parked != null) {
+            out += AutoNode(
+                mix(AutoMixKind.PARKED),
+                title = statusTitle(AutoMixLive(title = parked.title, artist = parked.artist)),
+                subtitle = listOfNotNull("Paused", parked.label?.takeIf { it.isNotBlank() }).joinToString(" · ") + " — tap to resume",
+                playable = true,
+            )
+        }
         if (facade.autoMixing) out += liveRows() else out += setupRows()
         out += AutoNode(
             mix(AutoMixKind.JUKEBOX), "Jukebox", subtitle = "Show a session's join link",
@@ -314,13 +336,14 @@ class AutoMixTab(
                 notifyMix(AutoId.Mix(AutoMixKind.DECK, id.a), *groups.toTypedArray())
                 return "${if (id.a == "a") "Deck A" else "Deck B"}: ${crate?.name ?: "Same as Deck A"}"
             }
-            AutoMixKind.START -> return start()
+            AutoMixKind.PARKED -> { extras.resumeParkedMix(); notifyMix(); return null }
+            AutoMixKind.START -> return start()   // a new mix supersedes a parked one: nothing to materialize
             AutoMixKind.STATUS -> return null
             AutoMixKind.NEW_MIX -> extras.stop()
             AutoMixKind.STOP -> extras.stop()
             AutoMixKind.TOGGLE -> {
                 // Decide at TAP time, not render time: a momentarily-stale row must act on the real state.
-                if (!facade.autoMixing) return null
+                if (!facade.autoMixing) { if (extras.parkedMix() != null) { extras.resumeParkedMix(); notifyMix() }; return null }
                 if (facade.autoPaused) facade.resumeAutoMix() else facade.pauseAutoMix()
             }
             AutoMixKind.SKIP_FAST -> if (facade.autoMixing) extras.skipFast()

@@ -353,3 +353,126 @@ Emulator smoke (pocketdj AVD, emulator-5554, debug APK):
 - Visited all 7 bottom tabs: Browse, History, Jukebox, Collections, Mix, Producer, Games.
 - Settings > Debug: Seed rip playlist, then Play seed queue. The media session went to PLAYING ("Hot [Skit]", Jadakiss) and the position advanced from 3.0 s to 12.1 s; `switchboard owner=exo`.
 - logcat: 0 FATAL EXCEPTION, 0 ANR, crash buffer empty.
+
+## Answers wave 1
+Merged (feat/android-answers): ANS-COL-1, ANS-PB-1, ANS-PB-2, ANS-PB-3, ANS-MIX-1, ANS-STU-1 (all six merged cleanly, no conflicts). JVM suite: 5211 tests, 0 failures (the merge adds the packages' tests on top of the prior 5131); assembleDebug green.
+
+Emulator (emulator-5556, pocketdj-ans AVD, debug APK; screenshots in pocketdj-answers-pkgs/_shots/wave1/; 0 FATAL EXCEPTION / 0 ANR for com.levi.pocketdj across the session):
+- ANS-COL-1 PASS: Debug "Seed AM-linked collections" (store.linkPocketToAppleMusic / linkToAppleMusic), force-stop, relaunch: `pocketdj-collections.json` still carries `amPlaylistId` on the pocket and the playlist. The iOS simulator suite step was run by the implementer (59 targeted tests, 0 failures); not re-run here.
+- ANS-PB-1 PASS: clean-only playlist (Debug "Seed clean-only playlist": rip, explicit song with no clean edition, rip): logcat shows `advance: unplayable ... reason=CLEAN_ONLY_EXPLICIT` then `UNPLAYABLE_HERE`, and the explicit row never logs `track start`. Process-kill (kill -9) + relaunch: session JSON carries `resolveId` on every row (and `cleanOnlySkip` on the explicit one) and restores the same deck.
+- ANS-PB-2 PASS: Gem round rows play from rips (ripped songs win the ladder); new Debug "Gem: preview row" plays a game-tagged un-ripped AM song: logcat `game row rung=preview`, media session PLAYING with a 30 s buffered preview. Added the `rung=preview` log line to GamePreviewRowResolver.
+- ANS-PB-3 PASS: Settings > Playback Device/Cloud flipped to Cloud, force-stop, relaunch: `playbackMode=cloud` persisted. Burn first 3 then Storage > Delete downloads: by-artist and by-collection lists show the burns; "Delete all burnt music" confirm empties `files/burns`. Seed queue across 14 transitions: Debug Dead air readout shows Today 0.7% with per-kind transition counts.
+- ANS-MIX-1 PASS: new Debug "Mix: 500 once" arms a debug-only OkHttp interceptor (inert unless armed) that injects HTTP 500 once per URL (with a 300 ms round trip). `AutoDJ: start streamed`: both decks drop, and the failed song re-opens 2.07 s later, then completes. Finding: with a zero-latency failure on the very first stream, Auto never starts (Q103).
+- ANS-STU-1 PASS: picked Documents/Instrumentals through DocumentsUI as the Takes folder; Import MIDI (needs the 32 MB SoundFont pack, downloaded in the Packs tab; without it the button routes to Packs by design) created a take; the new take's m4a landed in the SAF folder; Take actions > Use as sample made a sample via cache/studio-saf and the sample plays (AudioTrack started).
+Device-only, not verifiable here: real AM link on a subscribed account (COL-1), full-track AM inside a game round (PB-2) and AM takeover inside a run (PB-3, DRM), real network flaps (MIX-1), SD-card SAF trees (STU-1).
+
+Debug additions (debug screen only): Seed clean-only playlist, Seed AM-linked collections, Gem: preview row, Mix: 500 once. Open: Q103, Q104.
+
+## Answers wave 2
+Merged (feat/android-answers): ANS-COL-3, ANS-COL-4, ANS-MIX-2, ANS-STU-2, ANS-SURF-1, ANS-GM-1 (all six merged cleanly, no conflicts). JVM suite: 5273 tests, 0 failures (wave 1 was 5211; sum of package additions); assembleDebug green (libpdjdsp arm64-v8a + x86_64).
+
+Emulator (emulator-5556, debug APK; shots in pocketdj-answers-pkgs/_shots/wave2/; 0 FATAL EXCEPTION / 0 ANR):
+- ANS-COL-3 PASS: imported-songs file with an amrec_ row (appleMusicId of a catalog song) + a pocket referencing it, relaunch: imported doc emptied, pocket remapped to the sng_ id, no duplicate. New Debug "Seed setlist": Collections shows Setlists section, setlist detail ▸ Export CSV saved "Seed setlist.csv" (1812 B) in Downloads via DocumentsUI.
+- ANS-COL-4 PASS: burn folder = Downloads/PocketDJ via DocumentsUI; Burn 5 long: folder holds mp3 + txt, 4 stems and analysis json per song; Storage ▸ Delete all burnt music empties the folder.
+- ANS-MIX-2 PASS (with caveat): NativeTimePitchInstrumentedTest (3) and MixGraphSmokeInstrumentedTest (2) pass on the AVD. New Debug "Mix: +30% sync B": two burned songs, A at 1.3x, sync B; phase-align residual 4-13 ms (Q107), no crash. Audible quality device-only.
+- ANS-STU-2 PASS: new Debug "Bake 5 min master" (synthetic 5-min float32 capture through MasterRecordingBaker): 300000 ms in 6.2 s, valid m4a (afinfo 300.07 s), Java heap peak ~142 MB vs ~119 MB idle. Live record path and ArrangerBouncer on-emulator not run.
+- ANS-SURF-1 PASS: local broker (JUKEBOX_DRY_RUN, port 8799, 10.0.2.2) with 2 sessions: picker lists both, adopt Beta shows it in Live view, Switch session ▸ confirm ends Beta (server log `ended jukebox`) and hosts Alpha.
+- ANS-GM-1: n/a on emulator (Swift xcodebuild golden run + 58 Kotlin cases, in the JVM suite).
+Device-only, not verifiable here: real SD card (COL-4), audible stretch quality / CPU (MIX-2), low-RAM limits (STU-2).
+
+Debug additions: Seed setlist, Mix: +30% sync B, Bake 5 min master. Open: Q105, Q106, Q107.
+
+## Answers wave 3
+Merged (all clean, no conflicts): ANS-COL-2, ANS-COL-5, ANS-STU-3, ANS-BRW-1, ANS-PB-4, ANS-GM-2. JVM tests 5342 run, 0 failures (5341 after merge + 1 integration regression test).
+Emulator (emulator-5556, debug build, mock import/AM server on :8099 via 10.0.2.2):
+- ANS-COL-2 PASS: new debug seed "Seed 153 songs" -> 153 activity rows, History > Collection lists them.
+- ANS-COL-5 PASS: pdj.amApiBase mock + pdj.fakeMut + opt-in ON -> exactly 20 GET /v1/me/ratings/songs per pass; Settings shows "Checked 5011 of 75352 songs this lap" (20x250 + 11 local).
+- ANS-STU-3 PASS after fix: loop audition was killed ~40 ms after start (a pause for an already-paused Now Playing was routed to the studio session after ownership flipped). Fixed in StudioGraph.pauseNowPlayingForStudio (gate on nowPlaying.isPlaying) + regression test. Then Home -> dumpsys media_session shows "SeedTone · 4 beats / Pocket DJ Studio · Loops" PLAYING; media_session pause stops it. Multitrack: transient focus steal (new `-e pdj.focusSteal <ms>` debug extra) -> audio.stop reason=focus-transient, resumes on abandon.
+- ANS-BRW-1 PASS: ripped Discover row shows Play->Pause, mini player appears; signed-out album + queued both tracks, discover-adds + History event carry "Apple Music write skipped: no Apple Music connection".
+- ANS-PB-4 PASS (weak): 4 skips recorded for one song in PlayStatsStore; In Da Zone list (30) omits it while unskipped album peers rank. For You has no UI to show a full ranking; JVM ForYouSkipInputsTest covers the ordering.
+- ANS-GM-2 PASS: fresh install, In the Pocket "Turn on" writes listeningPocketsAnswered+Enabled = true; persists across relaunch.
+No FATAL EXCEPTION / ANR in logcat.
+Open issues: debug "Play seed queue" re-tap while a seeded song plays continues instead of restarting (debug-only, noted). No new product questions.
+
+## Answers wave 4
+Merged (no conflicts): ANS-SVC-2, ANS-BRW-2, ANS-STU-4, ANS-STU-5, ANS-MIX-3. JVM tests 5411 run, 0 failures (5409 after merge + 2 integration regression tests for chunked paging). apple/ FixtureExportTests added by SVC-2: run xcodegen before the next Apple build (pbxproj hunk).
+Emulator (emulator-5556, debug build):
+- ANS-SVC-2: n/a on emulator (simulator + JVM only; JVM IosRealFixtureTest 7 tests green).
+- ANS-BRW-2 PASS (partial wire check): offline relaunch with a planted capabilities.recEngineEnroll -> debug "Enroll: source" = doc; online relaunch (live doc has none) -> compiled fallback. The https+allowlist rule prevents pointing rec calls at a local mock, so the header on the wire is covered by JVM RecEngineClient tests only. Song long-press > Add to Playlist shows Suggested rows (Seed153, SeedRip with In-this-collection check) + More...; only 2 playlists exist so ranking is not discriminating.
+- ANS-STU-4 PASS: SAF Samples folder (Download/PocketDJ) set; mic recording (12 s) landed as sample-smp_*.m4a in the SAF folder (none in app storage), waveform + playback work, auto-detect tempo reads it (106.1 BPM), a 4-beat loop saved from it and plays, Sequencer row on it plays.
+- ANS-STU-5 FAIL then FIXED: 2 tracks x 6 sequential 5-minute PCM16 clips (30:00): play returned NOTHING_TO_PLAY with repeated OutOfMemoryError (90 MB window allocations) because each long clip's whole window was decoded at play-start. Fix: ArrangerClipPlan streams unwarped long clips in 30 s chunks straight into the page file (decodeWindow per chunk, cancel-aware); regression tests longUnwarpedClipStreamsInThirtySecondChunksWithSeamlessContent + cancelledChunkedPlanLeavesNoPageAndNoReader. After: STARTED (first build of 303 MB pages ~30 s), seeks 25-60 ms (page cache hits), Java heap 152 -> 169 MB over 3 min of playing + 3 seeks (no OOM). Warped clips still whole-window (Q109).
+- ANS-MIX-3 PASS: load 2 decks, home, force-stop, relaunch: dumpsys media_session shows PAUSED parked mix (position 4055, Intro To Indo); Mix tab shows decks cued at 0:04. Found while testing: a snapshot taken after both tracks ENDED is discarded as exhausted by design (so the card is absent then). With a restored setlist present no Mix card is published (Q110). StrictMode (new debug-only penaltyLog policy in PocketDjApplication): Auto-DJ start + skip transition (A->B) produced no violations from mix/* except the initial synchronous first-track prepare in AutoDj.startAutoMix (Q111); the many launch-time violations elsewhere are not from these packages.
+Added debug seeds: Arr30 seed/play/seek/heap, Enroll: source (Settings > Debug). Emulator env note: saved rip server URL 10.0.2.2:8099 (stale mock) must be cleared in Settings > Import server or every burn fails the presign.
+Device-only (not verifiable here): STU-4 SD card; STU-5 low-RAM glitch check; MIX-3 jank profile.
+No FATAL EXCEPTION / ANR in logcat.
+
+## Wave 5 (answers: SURF-2, GAP-1, GAP-2, GAP-4, BRW-4, BRW-5)
+- Merged all six into feat/android-answers (no conflicts). Unit tests: 5486 run, 0 failures; assembleDebug green.
+- Emulator: SURF-2 deep links (jukebox/play pocket/play setlist) launch with no crash and show a graceful not-found toast for unknown ids; verify-app-links reports unverified (assetlinks not published; expected). No FATAL/ANR in logcat.
+- GAP-1, GAP-2, BRW-4: steps need mock-server base overrides (pdj.* bases) with no emulator hook; covered by MockWebServer/unit tests only, not driven on the emulator.
+- GAP-4 (iOS backup fixture restore) and BRW-5 (release build, no-match path) not driven on the emulator this wave.
+- Device-only: live Shazam recognition, real Apple Music catalog/account, release-cert link verification.
+- Open: Q-numbers added in QUESTIONS.md (SURF-2 fingerprints, GAP-1 capture-on-accept, GAP-2 delete endpoint, GAP-4 edits overlay).
+
+## Wave 6 (answers: STU-7, GAP-3, GAP-5, GAP-6)
+- Merged all four into feat/android-answers (no conflicts). Unit tests: 5545 run, 0 failures (5543 after merge + 2 integration regression tests); assembleDebug green.
+- Emulator (new Settings > Debug "W6" seeds: burn stemmed fixture, ingest demux + W6PL playlist, cap=1; AM mock via pdj.amApiBase on host :8099):
+  - ANS-STU-7 PASS: ingested demux appears in Browse under source chip "TestDJ" (album "Pocket DJ Demuxes"), plays (PLAYING), loads on Mix Deck A (0:20). FOUND+FIXED: Browse/song sheet/album rows showed "Not playable on this device" for pdj_ rows (playability() knew nothing of profile assets); added hasProfileAsset param + ProfilePlayabilityTest (2 tests).
+  - ANS-GAP-3 PASS: mock 500 on POST /v1/me/library -> "Apple Music write failed: Apple Music API error (500)" + "Add to Apple Music again" row; mock flipped to 202, retry -> token "confirmed (web)", row gone.
+  - ANS-GAP-5 PASS: cap=1 song with 2 burns, cold start: prune ran once after the 15 s defer, evicted 1 (freed 3.99 MB), no ANR/FATAL.
+  - ANS-GAP-6 PASS: stemmed burn, Stem source on, only Drums chip, Make sample -> "Intro To Indo · drums" 0:08 sample created and auditioning (default region 8 s, not 4 s).
+- Note: pm clear wiped earlier burn fixtures; re-created via "W6 burn stemmed" (needs the rip server).
+- Device-only (not verifiable here): real stems for STU-7, real Apple Music write for GAP-3.
+- Open: Q116-Q118 in QUESTIONS.md.
+
+## Wave 7 (answers: SYNC-1, STU-8, GAP-8)
+- Merged all three into feat/android-answers (no conflicts). Status files set to merged.
+- Emulator (emulator-5556, debug APK, shots in pocketdj-answers-pkgs/_shots/wave7/; 0 FATAL EXCEPTION / 0 ANR; mock import server mock_rip.py via 10.0.2.2:8099; the second "device" for SYNC-1 is a secondary Android user on the same emulator, installed with `adb install --user 10`; the unpublished endpoints doc was injected into both apps' files/pocketdj-endpoints.json while offline so the launch refresh could not overwrite it):
+  - ANS-GAP-8 PASS: Discover album add (Wave7b Mock Album) -> POST /rip x2, Collections > Recently added lists both new tracks at the top, catalogAdd emitted (History > Collection > Activity "Added ... to PocketDJ"). Real-album artwork thumbnails are JVM-covered; mock rows have no art so the placeholder shows. Recognizer add is device-only (Shazam).
+  - ANS-STU-8 PASS: Producer > Demuxer > Hot [Skit] (burned, stemmed) > share-arrow saves original + 4 stems to the Pocket DJ source (files/profile-audio + stems/), Add-to sheet opens, new pocket W7Pocket created with the pdj_ id, pocket Play -> start-ok in 340 ms, Now Playing shows it.
+  - ANS-SYNC-1 PASS against the REAL green Lambda: toggle ON enrolls and pushes ("Pushed ... collections, play-history, settings-credentials"); device B links by code from first-run onboarding ("Welcome back, TestDJ" -> Restore) and the W7Pocket pocket appears; Delete account on the linked device ran the real cloud deletion (no "skipped" log) and the other device's next sync got 401 and stopped.
+  - FOUND+FIXED (integration): (1) first-run Link a device always said "Sync across devices is turned off" with sync default OFF; a valid link code now turns sync on (rolled back on failure/unlink), test added in LinkDeviceProbeTest. (2) `S3CloudDocDatabase.req` NPE (`base()!!`) when the endpoints doc loses profileSyncBase mid-pass; now an IOException. 
+  - Not verifiable here: real cross-device restore of profile-audio (pdj_ songs do not travel; pocket shows "0 songs" on B until the file exists), iOS adoption of capabilities.profileSyncEnroll, recognizer add.
+- Open: Q119 (publish endpoints doc), Q120 (no "profile not found" state after remote delete), Q121 (link code = sync opt-in). Q117 is satisfied by ANS-STU-8.
+
+## Wave 8 (answers: PB-5, PB-6, BRW-3, STU-6, GM-3, GAP-7)
+- Merged all six into feat/android-answers (no conflicts). Status files set to merged. Suite 5655 tests, 0 failures; assembleDebug green.
+- Emulator (emulator-5556, debug APK, shots in pocketdj-answers-pkgs/_shots/wave8/; 0 FATAL EXCEPTION / 0 ANR):
+  - ANS-GM-3 PASS: `am start -d pocketdj://games/puzzle` opens Gem Collector cold (after force-stop) and warm; `pocketdj://games/inthepocket` opens In the Pocket warm.
+  - ANS-BRW-3 PASS: Filters > BPM, value 120, operator changed is -> is not: value 120 kept.
+  - ANS-STU-6 PASS: new debug seed (Settings > Debug > Seed sample) builds playlist SeedStudio; studio row subtitle shows the profile name "Tester"; tap plays it (start-ok, Now Playing). Settings copy still said blank = "Studio"; fixed to "Pocket DJ".
+  - ANS-GAP-7 PASS: new debug seed "Seed Mix session"; detail opens, info button opens song sheet, overflow Export tracklist (CSV) opens the SAF save dialog "Session 1.csv" and the saved file has the iOS columns; wm 1280x800 density 240 shows the wrapped 3-per-row grid with arrows. (Export is disabled when the session has no played tracks.)
+  - ANS-PB-6 PASS: play SeedStudio queue (row 4/6 at 39 s), pause, `run-as ... kill -9` the pid, KEYCODE_MEDIA_PLAY: new pid, log `rc cmd=play verdict=resumption`, same row 4/6 resumes at the held offset (~46 s on the clock after the 7 s gap).
+  - ANS-PB-5 PARTIAL: (Q21) mock rip server on 10.0.2.2:8099: one un-ripped vinyl row, three rapid Play taps -> exactly one `POST /rip` then polling. (Q95) paused single + 22 s idle + `cmd media_session dispatch play` -> `verdict=handled`, single resumes, owner=exo; NOT run with a Mix actually holding a deck (no burned audio on the emulator, the Mix loader has nothing to load). (Q89c) Browse album play of Late Night In Kauai replaced after ~15 s: play-history row carries wasSkipped=true listenedFraction=0.05. The 12-row/4-POST run was not run (single-row check instead). Device-only: Auto/widget/BT routing after a Mix, BT/AVRCP, System UI resume card after reboot.
+- Debug seeds added (Settings > Debug): Seed sample (tone) now makes 3 x 90 s samples + SeedStudio playlist; Seed Mix session.
+- Open: Q122 (Mix paused >15 s gives up the remote play target).
+
+## Wave 9 (answers: PB-7)
+- Merged: ANS-PB-7 (Playback disk work off Main: injected-IO local/burned resolvers, ledger-only `rowOnDevice`, async Auto root/search).
+- JVM tests: 5662 run, 0 failed (count moved by the package's new tests). assembleDebug green.
+- Emulator ANS-PB-7: PASS. `pdj.autoDump` walks the tree (ROOT Continue/Playlists/Pockets/Mix, Mix subtree; Jukebox subtree shows "Loading..." as before). Seed rip playlist + Play seed queue (13 rows): start-ok in 2.3 s, no FATAL/ANR. StrictMode disk-read log: zero violations from the resolvers (RowSourceResolver/BurnedRowResolver) or the stall-hop probe. "Burn first 3" returned notRipped=3 (no rip server on the emulator), so a 20-row burned run and a real stall hop could not be exercised; the resolver paths are covered by the dispatcher unit tests.
+- Open (follow-ups, no decision needed): remaining Main-thread disk touches seen at row start - AlbumArtworkStore lazy `cacheDir` init (one-time, ~7 ms, AppGraph.kt:189), throttled DeadAirMeter.save from the PlaybackSupervisor tick, StudioGraph `isOnDeviceNow` disk stat. SAF profile-audio rows are no longer counted by the stall-hop probe (ledger-only, per acceptance). Device-only: profile with SAF trees.
+
+## Wave 10 (answers: SHELL-1)
+- Merged: ANS-SHELL-1 (tiered AppGraph start: CORE / PLAYBACK / INTERACTIVE via idempotent StartupLedger; workers/receivers get CORE only; 1 Hz tick only while a sequencer run exists; npdsp heartbeat flow-gated; widget poll replaced by SessionSwitchboard.addListener; recs flush interactive-only). Clean merge, no conflicts.
+- JVM tests: 5670 run, 0 failed (BackgroundStartTest picked up). assembleDebug green. ARCHITECTURE ledger SURF-2 row annotated (still PARTIAL: storage-prune soft-cap, jukebox onStart bootstrap).
+- Emulator ANS-SHELL-1: PASS. (1) Process killed (am kill), WorkManager job run via `cmd jobscheduler run -f -n androidx.work.systemjobscheduler com.levi.pocketdj <id>`: process starts, no StartupLedger frames/ensure calls, no tick/heartbeat/widget lines, no FATAL/ANR. (2) Normal launch: StartupLedger.ensure runs from MainActivity.onCreate, Browse renders (12555 songs). (3) Seed rip playlist + Play seed queue: PlaybackService up, `track start ... backend=rip`, owner=exo, dead-air 2.17 s, no FATAL/ANR. Shots in pocketdj-answers-pkgs/_shots/wave10/.
+- Caveat: the loops have no distinct log lines, so "no loop" on the worker path is inferred from the ledger never running plus the unit-tested plan; the collectLatest gating in MixGraph/PlaybackGraph has no coroutine test (source-scan test only). Widget update on normal launch not visually checked (no launcher widget placed). Device-only: Doze timing.
+- Open: none needing a decision. Pre-existing StrictMode DiskRead (AppGraph.kt:94 filesDir) on main in MainActivity.onCreate (~195 ms on emulator).
+
+## Wave 11 (ANS-LOC-1, ANS-MIX-4)
+
+- Merged: ANS-LOC-1 (location FGS type while audio plays + places on + while-in-use; FOREGROUND_SERVICE_LOCATION; LocationFgsPolicy), ANS-MIX-4 (both Mix sink factories via StudioOutputs; OboeSink.start resets disconnect/backoff state; bounded stop join; PLAYBACK profile). No merge conflicts.
+- JVM tests: 5681 run, 0 failed; assembleDebug green.
+- Emulator (emulator-5556, debug APK, shots in pocketdj-answers-pkgs/_shots/wave11/; 0 FATAL / 0 ANR):
+  - ANS-MIX-4 PASS: "Mix: load 2 + play" (two burned fixtures) logs `PocketDJ.mix: sink backend=audiotrack`, render nil->true, both deck positions advance. Burn fixtures were hand-written (no rip server): stem mp3 copied as audio + ledger rows.
+  - ANS-LOC-1 PARTIAL: while-in-use granted, pockets + places on, Play seed queue: `dumpsys activity services` shows foregroundId=1001 types=0x0A (mediaPlayback|location); pause -> 0x02 (logcat "FGS type change 10 to 2"); resume -> 0x0A. Geo-fix step NOT drivable: `adb emu geo fix` OK but gps/fused providers stay OFF with last location=null and no pocketdj listener (same limit as COL-20); dwell/trip covered by DwellDetectorTest, real movement is device-only.
+- Open: Q123 (Play FGS-location declaration / background decision), Q124 (2->10->2->10 FGS type flap on start, device check).
+
+## Wave 12 (ANS-VERIFY-1)
+- Merged: ANS-VERIFY-1 (device checklist + ledger classification + AnswersProgressLedgerTest).
+- JVM suite: 5684 tests, 0 failures (was 5681, +3 from the ledger test); assembleDebug green.
+- Emulator (emulator-5556): smoke pass only. Installed debug APK, launched, library loaded (12555 songs), visited Browse/History/Collections/More and the Mix, Producer, Games and Jukebox screens; no FATAL EXCEPTION or ANR in logcat. Shots in pocketdj-answers-pkgs/_shots/wave12/.
+- NOT run: the per-row EMU drives listed in answers/PROGRESS.md (SURF-2/6, SVC-1/4/7-11, PB-5/10, COL-6/7/10/12/18/20, BRW-7/10/12/13, MIX-5/11-16, STU-3-14, GM-4/7). Those rows stay un-flipped to DONE; the ARCHITECTURE-ANDROID.md ledger was not changed.
+- Device-only: see answers/DEVICE-CHECKLIST.md (not verifiable on emulator).
+- Open: Q103-Q124 unchanged; no new questions.

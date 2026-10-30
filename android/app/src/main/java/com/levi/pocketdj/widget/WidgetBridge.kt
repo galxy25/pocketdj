@@ -4,8 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import androidx.core.graphics.drawable.toBitmap
 import com.levi.pocketdj.playback.session.SessionSwitchboard
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.asStateFlow
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
@@ -63,9 +62,11 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
             val pc = app.playbackController
             val fav = app.collectionsGraph.favorites
             // Who owns audio: when Mix sounds, the widget goes idle.
-            val owner = flow {
-                while (true) { emit(SessionSwitchboard.shared.current?.engine); delay(OWNER_POLL_MS) }
-            }.distinctUntilChanged()
+            // ANS-SHELL-1: event-driven (SessionSwitchboard listener), no 1 Hz poll.
+            val ownerState = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+            SessionSwitchboard.shared.addListener { ownerState.value = SessionSwitchboard.shared.current?.engine }
+            ownerState.value = SessionSwitchboard.shared.current?.engine // seed AFTER registering: no lost change
+            val owner = ownerState.asStateFlow()
             val inputs = combine(pc.nowPlaying, pc.sequencer.state, fav.state, app.catalogRepository.state, owner) { np0, seq, _, cat, eng ->
                 val np = if (eng == MIX_ENGINE) null else np0
                 val songId = np?.songId
@@ -77,7 +78,7 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
                     artist = np?.artist,
                     albumId = np?.albumId,
                     isPlaying = np?.isPlaying == true,
-                    upNext = if (np != null && seq.isRunning) seq.upcoming.take(WidgetSync.UP_NEXT_MAX)
+                    upNext = if (np != null && seq.isRunning) seq.upcomingPlayable.take(WidgetSync.UP_NEXT_MAX)
                         .map { NowPlayingSnapshot.Track(it.uid, it.id, it.title, it.artist.orEmpty()) } else emptyList(),
                     isFavorite = FavoriteCommand.filled(seam, songId),
                     favoriteAvailable = FavoriteCommand.visible(seam, songId),
@@ -107,7 +108,6 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
     }
 
     private companion object {
-        const val OWNER_POLL_MS = 1_000L
         const val MIX_ENGINE = "mix"
     }
 }

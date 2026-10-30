@@ -76,7 +76,7 @@ internal fun profileSection() = SettingsSection(PROFILE_SECTION_ID, 50) { host -
     )
     SettingsCaption(
         "Your PocketDJ name shows as the artist on your samples, loops, sequences, and " +
-            "instrumentals (leave blank for \u201cStudio\u201d).",
+            "instrumentals (leave blank for \u201cPocket DJ\u201d).",
     )
 
     Row(

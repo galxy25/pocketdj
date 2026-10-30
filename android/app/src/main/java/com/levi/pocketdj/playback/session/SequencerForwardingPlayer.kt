@@ -3,6 +3,7 @@ package com.levi.pocketdj.playback.session
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import com.levi.pocketdj.playback.durable.HeldQueue
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import com.levi.pocketdj.playback.sequencer.SetlistSequencer
 
@@ -56,7 +57,59 @@ class SequencerForwardingPlayer(
     private val engine: String = "exo",
     private val log: (cmd: String, engine: String, verdict: String) -> Unit = TransportLog::rc,
     private val board: SessionSwitchboard? = null,
+    /** SessionRestorer.restore for the armed resumption set (idempotent; a live run stays untouched). */
+    private val restoreForResumption: (HeldQueue) -> Unit = {},
+    private val clockMs: () -> Long = System::currentTimeMillis,
 ) : SetGatedPlayer(player) {
+
+    @Volatile private var armedResumption: HeldQueue? = null
+    @Volatile private var armedAtMs = 0L
+
+    /**
+     * `onPlaybackResumption` answered with [held]: the very next matching setMediaItems (from Media3's own
+     * resumption path, within [ARM_TTL_MS]) restores + resumes it. One-shot and short-lived: any other set,
+     * an in-app controller set, or the TTL clears it, so a stale arm (e.g. System UI's boot-time recent
+     * query, which never sets items) can never swallow a later real load.
+     */
+    fun armResumption(held: HeldQueue) {
+        callerInternal = false // Media3's resumption set reaches us with no command-request hint of its own
+        armedAtMs = clockMs()
+        armedResumption = held
+    }
+
+    /** A resumption is armed and still inside its window (the service must not tear the start down). */
+    fun resumptionPending(): Boolean = armedResumption != null && clockMs() - armedAtMs <= ARM_TTL_MS
+
+    private fun consumeResumption(items: List<MediaItem>): Boolean {
+        val held = armedResumption ?: return false
+        // One-shot: whatever this set is, the arm ends here (consumed, foreign, internal or expired).
+        armedResumption = null
+        if (callerInternal || clockMs() - armedAtMs > ARM_TTL_MS || !held.matches(items)) return false
+        // Same guards as play(): the mic-capture gate and the switchboard arbiter. A refusal still swallows
+        // the set (it must never reach the base player) but restores/starts nothing.
+        if (!micGate("playback.remote")) { emit(TransportLog.Cmd.PLAY, TransportLog.Verdict.REFUSED_MIC); return true }
+        if (!permitted(TransportLog.Cmd.PLAY)) return true
+        // Restore the held deck (never clears a live run), then resume at the held offset. The session
+        // timeline stays empty: the sequencer, not the Media3 playlist, owns the queue.
+        restoreForResumption(held)
+        latch.clear()
+        pausedByListener = false
+        if (control.isHeldForResume) control.resumeFromHold() else if (control.hasRun && !control.isRunning) control.startCurrent()
+        emit(TransportLog.Cmd.PLAY, "resumption")
+        return true
+    }
+
+    override fun setMediaItems(mediaItems: MutableList<MediaItem>, startIndex: Int, startPositionMs: Long) {
+        if (!consumeResumption(mediaItems)) super.setMediaItems(mediaItems, startIndex, startPositionMs)
+    }
+
+    override fun setMediaItems(mediaItems: MutableList<MediaItem>, resetPosition: Boolean) {
+        if (!consumeResumption(mediaItems)) super.setMediaItems(mediaItems, resetPosition)
+    }
+
+    override fun setMediaItems(mediaItems: MutableList<MediaItem>) {
+        if (!consumeResumption(mediaItems)) super.setMediaItems(mediaItems)
+    }
 
     @Volatile private var instant: MediaMetadata? = null
     @Volatile private var pausedByListener = false
@@ -249,6 +302,9 @@ class SequencerForwardingPlayer(
     }
 
     companion object {
+        /** How long an `onPlaybackResumption` arm waits for Media3's matching setMediaItems. */
+        const val ARM_TTL_MS = 2_000L
+
         fun toExo(m: RepeatMode): Int = when (m) {
             RepeatMode.OFF -> Player.REPEAT_MODE_OFF
             RepeatMode.ALL -> Player.REPEAT_MODE_ALL

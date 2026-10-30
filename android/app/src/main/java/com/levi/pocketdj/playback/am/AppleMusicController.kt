@@ -52,7 +52,10 @@ class BackendAppleMusicController(
     override val track: AmTrack?
         get() = backend.currentRow()?.let { trackFor(it.songId, it.title, it.artist, it.albumId) }
 
-    override fun snapshot(): AmSnapshot = backend.snapshot()
+    init { monitor.onReportedStateChanged = { backend.changeListener?.invoke() } }
+
+    override fun snapshot(): AmSnapshot = monitor.reconcileSnapshot(backend.snapshot())
+
     /** Listener intent for the sequencer's [com.levi.pocketdj.playback.health.PauseDiscriminator]. */
     var onPlayIntent: ((playing: Boolean) -> Unit)? = null
 

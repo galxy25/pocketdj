@@ -37,6 +37,10 @@ data class SequencerState(
     val upcoming: List<QueueItem>
         get() = if (isRunning && index + 1 < queue.size) queue.subList(index + 1, queue.size) else emptyList()
 
+    /** [upcoming] minus clean-only skip rows (never played): what prefetch, presign, widget and guest payloads should see. */
+    val upcomingPlayable: List<QueueItem>
+        get() = upcoming.filterNot { it.cleanOnlySkip }
+
     /** The already-played head, oldest first. */
     val played: List<QueueItem>
         get() = if (isRunning && index > 0) queue.subList(0, minOf(index, queue.size)) else emptyList()

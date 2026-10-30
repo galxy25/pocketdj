@@ -171,6 +171,10 @@ class SetlistSequencer(
     private val ripWindow = PlaybackRipWindow()
     private var ripReconcileQueued = false
     private var firstAudioPending = false
+
+    /** Q21: uid of the row whose start (resolve + load + first audio) is in flight; guards a duplicate load. */
+    private var startingUid: String? = null
+
     private var currentBackend = "none"
     private var startWindow: StartWindow? = null
     private var startCapJob: Job? = null
@@ -209,6 +213,24 @@ class SetlistSequencer(
     /** Fired after [restoreHeld] installed a held deck (PB-2: consumes a latched remote ▶). */
     @Volatile var onHeldRestored: () -> Unit = {}
     val isHeldForResume: Boolean get() = held
+
+    /** Held-restore rows (uids) that lacked a persisted edition while the decider was blind: re-decided at resume. */
+    private var pendingRedecideUids: Set<String> = emptySet()
+
+    fun setPendingRedecide(uids: Set<String>) { pendingRedecideUids = uids }
+
+    private fun redecidePending() {
+        val uids = pendingRedecideUids
+        if (uids.isEmpty()) return
+        pendingRedecideUids = emptySet()
+        val decider = editionDecider
+        if (!decider.isActive() || !decider.isReady()) return
+        val cleanOnly = cleanOnlyProvider(sourceSetlistId)
+        for (i in queue.indices) {
+            val q = queue[i]
+            if (q.uid in uids && !q.editionLocked) queue[i] = decider.decide(q.copy(variant = null, resolveId = q.id), cleanOnly)
+        }
+    }
 
     /** PB-4: the offset the first ▶ of a held deck resumes at (song-relative ms), or null. */
     val resumeOffsetMs: Long? get() = pendingResumeMs
@@ -321,6 +343,15 @@ class SetlistSequencer(
         return items.map { if (it.editionLocked) it else decider.decide(it, cleanOnly) }
     }
 
+    /**
+     * Live inserts (iOS appendToQueue/insertNext/playNow insert unstamped): only a clean-only run stamps, so the
+     * explicit-no-clean-cut skip and the clean substitution hold; the global Prefer-explicit stays play()-time only.
+     */
+    private fun stampInsert(items: List<QueueItem>): List<QueueItem> {
+        if (!editionDecider.isActive() || !cleanOnlyProvider(sourceSetlistId)) return items
+        return items.map { if (it.editionLocked) it else editionDecider.decide(it, true) }
+    }
+
     /** Tear the run down (natural end included): cancels any in-flight resolve, clears the queue. */
     fun stop() {
         val wasRunning = running
@@ -345,6 +376,7 @@ class SetlistSequencer(
     fun abandonRun() = endRun()
 
     private fun endRun() {
+        pendingRedecideUids = emptySet()
         if (running) {
             skipTracker?.checkpoint() // a stop / set end never advances away: still land the final fraction
             PlayEventBus.emit(PlayStopped(queue.getOrNull(index)?.id))
@@ -409,7 +441,7 @@ class SetlistSequencer(
 
     // ---- the ONE start funnel -----------------------------------------------------------
 
-    private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false) {
+    private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false, reResolve: Boolean = false) {
         if (pausedByCascade) { pausedByCascade = false; publish() }
         if (inPlace) queue.getOrNull(index)?.let { skipTracker?.noteTrackRestarted(it.id) }
         resetTrackAudible()
@@ -419,12 +451,12 @@ class SetlistSequencer(
         // LAZY + assign + start: an inline-dispatching scope may run (and even recurse into) this
         // body before launch() returns; the handle must already be in place so a nested start
         // cancels THIS job, not a stale one.
-        val job = scope.launch(start = CoroutineStart.LAZY) { playCurrent(fresh, resumeAtMs, inPlace) }
+        val job = scope.launch(start = CoroutineStart.LAZY) { playCurrent(fresh, resumeAtMs, inPlace, reResolve) }
         playJob = job
         job.start()
     }
 
-    private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?, inPlace: Boolean) {
+    private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?, inPlace: Boolean, reResolve: Boolean) {
         if (!running || index >= queue.size) return
         // A job cancelled BEFORE it ran must do nothing - above all it must not claim a generation.
         if (!currentCoroutineContext().isActive) return
@@ -435,8 +467,16 @@ class SetlistSequencer(
         val at = index
         // A new generation retires the previous start's timers; the start window + resolve stall guard this one.
         cancelHealthTimers()
+        if (item.cleanOnlySkip) {
+            // Q94: BEFORE any resolve / load / start window. The row keeps its queue slot (no index shift).
+            log("[playback] advance: unplayable song=${item.id} index=$at/${queue.size} reason=${UnplayableSource.Reason.CLEAN_ONLY_EXPLICIT}")
+            if (failureLapComplete()) return
+            advanceToNext(AdvanceCause.UNPLAYABLE_HERE)
+            return
+        }
         waitingForLive = false
         firstAudioPending = true
+        startingUid = item.uid
         meter?.transitionBegan("start") // no-op inside an open advance/skip: a hop stays ONE transition
         beginStartWindow(item, gen)
         armResolveStall(gen)
@@ -485,6 +525,8 @@ class SetlistSequencer(
             resumeAtMs = resumeAtMs,
             index = at,
             count = queue.size,
+            reResolve = reResolve,
+            generation = gen,
         )
         log("[playback] track start song=${item.id} index=${at + 1}/${queue.size} backend=${source.backend}")
         currentBackend = source.backend
@@ -683,11 +725,20 @@ class SetlistSequencer(
         if (!running) return
         noteUserTransport()
         exitHoldIfNeeded()
-        if (index == 0) {
-            if (repeatMode == RepeatMode.ALL && queue.size > 1) index = queue.size - 1
-        } else {
-            index -= 1
+        // Clean-only skip rows are never played: step back PAST them (iOS drops them from the queue, so
+        // previous always reaches the real previous song). All earlier rows skipped = restart the current one.
+        var i = index
+        var found = false
+        for (step in 0 until queue.size) {
+            i = if (i == 0) {
+                if (repeatMode == RepeatMode.ALL && queue.size > 1) queue.size - 1 else break
+            } else {
+                i - 1
+            }
+            if (i == index) break
+            if (!queue[i].cleanOnlySkip) { found = true; break }
         }
+        if (found) index = i
         publish()
         startPlayCurrent()
     }
@@ -741,13 +792,18 @@ class SetlistSequencer(
         val nothingStarted = !startedAnyRow
         val device = modeProvider() == PlaybackMode.DEVICE
         val raisedBy = sourceSetlistId
+        val allCleanSkipped = queue.isNotEmpty() && queue.all { it.cleanOnlySkip }
         stop()
         if (nothingStarted) {
             // Device mode keeps its banner signal; cloud mode (every row unplayable / failed) gets a
             // notice the UI surfaces so a dead set never ends in silence with no feedback.
             if (device) deviceQueueUnplayable = true
             deviceUnplayableSourceId = raisedBy
-            notice = if (device) "Nothing in this set is on this device" else "None of these tracks are playable on this device yet"
+            notice = when {
+                allCleanSkipped -> "No clean versions in this set"
+                device -> "Nothing in this set is on this device"
+                else -> "None of these tracks are playable on this device yet"
+            }
             publish()
         }
     }
@@ -844,6 +900,7 @@ class SetlistSequencer(
         noteUserTransport()
         held = false
         pendingResumeMs = null
+        redecidePending()
         playsRemaining = CollectionMembership.normalizedRepeat(queue.getOrNull(index)?.repeatCount)
         publish()
         startPlayCurrent(fresh = false, resumeAtMs = at)
@@ -852,6 +909,14 @@ class SetlistSequencer(
     /** Start the current row from the top (cascade-halted deck, idle ▶). */
     fun startCurrent(): Boolean {
         if (!running || index >= queue.size) return false
+        // Q21 (BEFORE noteUserTransport, which clears the cascade halt): ▶ while this very row's start is still
+        // in flight must not load (and POST /rip) a second time.
+        if (!held && !pausedByCascade && firstAudioPending && startingUid == queue[index].uid) {
+            log("[playback] play during start - not reloading song=${queue[index].id}")
+            noteUserTransport()
+            discriminator.noteListenerIntent(true)
+            return true
+        }
         noteUserTransport()
         discriminator.noteListenerIntent(true)
         held = false
@@ -961,7 +1026,7 @@ class SetlistSequencer(
     /** Append to the end of the running queue. No-op when idle (resurrecting is a fresh [play]). */
     fun appendToQueue(items: List<QueueItem>) {
         if (!running || items.isEmpty()) return
-        queue.addAll(items)
+        queue.addAll(stampInsert(items))
         queueEdited()
     }
 
@@ -975,7 +1040,7 @@ class SetlistSequencer(
     /** "Add next": right AFTER the current one. */
     fun insertNextInQueue(items: List<QueueItem>) {
         if (!running || items.isEmpty()) return
-        queue.addAll(minOf(index + 1, queue.size), items)
+        queue.addAll(minOf(index + 1, queue.size), stampInsert(items))
         queueEdited()
     }
 
@@ -987,7 +1052,7 @@ class SetlistSequencer(
             appendToQueue(items)
             return
         }
-        queue.addAll(pos, items)
+        queue.addAll(pos, stampInsert(items))
         queueEdited()
     }
 
@@ -999,7 +1064,7 @@ class SetlistSequencer(
         if (!running || items.isEmpty()) return
         val lo = minOf(index + 1, queue.size)
         val at = slot(lo..queue.size).coerceIn(lo, queue.size)
-        queue.addAll(at, items)
+        queue.addAll(at, stampInsert(items))
         queueEdited()
     }
 
@@ -1040,12 +1105,18 @@ class SetlistSequencer(
      */
     fun playNow(item: QueueItem) {
         if (!running) return
+        val fresh = if (queue.any { it.uid == item.uid }) item.freshInstance() else item
+        val stamped = stampInsert(listOf(fresh)).single()
+        if (stamped.cleanOnlySkip) {
+            notice = "Explicit - skipped in this clean-only set"
+            publish()
+            return
+        }
         if (!isRestartOfCurrent(item.id)) noteAdvanceAway()
         noteUserTransport()
         exitHoldIfNeeded()
-        val fresh = if (queue.any { it.uid == item.uid }) item.freshInstance() else item
         val at = minOf(index + 1, queue.size)
-        queue.add(at, fresh)
+        queue.add(at, stamped)
         index = at
         queueEdited()
         startPlayCurrent()
@@ -1279,6 +1350,7 @@ class SetlistSequencer(
         startedAnyRow = true
         lastLoadedId = item.id
         firstAudioPending = true
+        startingUid = item.uid
         currentBackend = slot.source.backend
         meter?.trackStarting(slot.source.backend)
         beginStartWindow(item, gen)
@@ -1403,7 +1475,7 @@ class SetlistSequencer(
         if (!running || index >= queue.size || held || pausedByCascade) return
         val at = engine?.positionMs ?: 0L
         NPLog.lane(NPLog.SUPERVISOR, "retry in place song=${queue[index].id} atMs=$at")
-        startPlayCurrent(fresh = false, resumeAtMs = if (at > 1000) at else null)
+        startPlayCurrent(fresh = false, resumeAtMs = if (at > 1000) at else null, reResolve = true)
     }
 
     /** L3: hop / advance through the cascade breaker. */

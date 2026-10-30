@@ -426,8 +426,20 @@ private fun PlaybackContent(
         val pagingKey = state.inputsKey()
         var pageBudget by rememberSaveable(pagingKey) { mutableIntStateOf(PAGE_SIZE) }
         val visible = if (rows.size > pageBudget) rows.subList(0, pageBudget) else rows
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(visible, key = { results.refOf(it)?.eventId ?: it.song.id + it.playedAt }) { row ->
+        val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+        fun rowKey(r: com.levi.pocketdj.screens.browse.SongRow): Any = results.refOf(r)?.eventId ?: (r.song.id + r.playedAt)
+        val firstKey = visible.firstOrNull()?.let(::rowKey)
+        val prevFirstKey = remember { arrayOfNulls<Any>(1) }
+        LaunchedEffect(firstKey) {
+            val prev = prevFirstKey[0]
+            prevFirstKey[0] = firstKey
+            val shown = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.key
+            if (HistoryListPin.shouldPinToTop(prev, firstKey, shown, listState.firstVisibleItemScrollOffset)) {
+                listState.scrollToItem(0)
+            }
+        }
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            items(visible, key = { rowKey(it) }) { row ->
                 val ref = results.refOf(row) ?: return@items
                 val live = isLiveRow(ref, liveEventId, playing, seqRunning)
                 Box {
@@ -710,6 +722,12 @@ private fun ActivityRow(row: ActivityRowUi, onSongClick: (String) -> Unit) {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            val album = remember(row.artAlbumId) {
+                row.artAlbumId?.let { com.levi.pocketdj.di.AppGraph.get(ctx).catalogRepository.state.value.catalog?.albumsById?.get(it) }
+            }
+            if (album != null) com.levi.pocketdj.screens.browse.AlbumArt(album, Modifier.size(48.dp)) else ArtThumb(null)
+            Spacer(Modifier.width(12.dp))
             Icon(
                 imageVector = row.kind.icon(),
                 contentDescription = null,

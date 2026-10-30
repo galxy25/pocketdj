@@ -86,6 +86,14 @@ final class AMPlaylistSyncTests: XCTestCase {
                        "p.library.42", "the link survives a rename; the name would not have")
     }
 
+    func testLinkSurvivesEncodeDecodeRoundTrip() throws {
+        let collections = CollectionsStore(fileURL: tempURL("col-link-rt"))
+        let pl = collections.createPlaylist("Mix")
+        collections.linkToAppleMusic(playlistId: pl.id, amPlaylistId: "p.library.7")
+        let back = try CollectionsCodec.decode(CollectionsCodec.encode(CollectionsDocument(pockets: collections.pockets, playlists: collections.playlists)))
+        XCTAssertEqual(back.playlists.first(where: { $0.id == pl.id })?.amPlaylistId, "p.library.7")
+    }
+
     /// Stamping a link is bookkeeping about a sync that already happened, not a user edit — so it
     /// must not bump `updatedAt` (which would make the next sync see a phantom local change).
     func testLinkingDoesNotBumpUpdatedAt() {

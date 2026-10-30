@@ -180,4 +180,25 @@ class AddToActionsTest {
         assertEquals(CollectionsStore.ActivityHook.Kind.REMOVE, hooks[0].kind)
         assertEquals(0, s.removeAlbumFromPlaylist("alb_1", "pls_1"))
     }
+
+    @Test
+    fun suggestedTargetsDelegatesToRecSuggestionFilter() {
+        val s = store()
+        val pk = s.createPocket("PK")
+        val pl = s.createPlaylist("PL")
+        val actions = AddToActions(AddToItem.Song("sng_1"), s)
+        val wire = listOf(
+            CollectionSuggestion("playlist", pk.id), // id exists but as a pocket => wrong kind, dropped
+            CollectionSuggestion("pocket", pk.id),
+            CollectionSuggestion("playlist", pl.id),
+        )
+        val viaActions = actions.suggestedTargets(wire, emptyList(), 3)
+        val viaFilter = com.levi.pocketdj.data.recs.RecSuggestionFilter.resolveTargets(
+            wire.map { com.levi.pocketdj.data.recs.RecCollectionSuggestionWire(id = it.id, kind = it.kind) },
+            s.state.value.pockets, s.state.value.playlists, emptyList(), 3,
+        )
+        assertEquals(viaFilter, viaActions)
+        assertEquals(listOf(pt(pk.id), plt(pl.id)), viaActions)
+        assertEquals(emptyList<AddTarget>(), actions.suggestedTargets(wire, emptyList(), 0))
+    }
 }

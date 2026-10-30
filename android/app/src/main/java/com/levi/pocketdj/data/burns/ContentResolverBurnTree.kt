@@ -53,10 +53,34 @@ class ContentResolverBurnTree(private val context: Context, private val treeUri:
         false
     }
 
+    override fun delete(name: String): Boolean = try {
+        val doc = childUri(name)
+        doc != null && DocumentsContract.deleteDocument(cr, doc)
+    } catch (e: Exception) {
+        throw IOException(e.message ?: "burn folder delete failed", e)
+    }
+
+    override fun deleteAll(names: Collection<String>) {
+        val wanted = names.toHashSet()
+        if (wanted.isEmpty()) return
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, DocumentsContract.getTreeDocumentId(treeUri))
+        val hits = ArrayList<Uri>()
+        cr.query(
+            children,
+            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null, null, null,
+        )?.use { c ->
+            while (c.moveToNext()) {
+                if (c.getString(1) in wanted) hits += DocumentsContract.buildDocumentUriUsingTree(treeUri, c.getString(0))
+            }
+        }
+        for (u in hits) try { DocumentsContract.deleteDocument(cr, u) } catch (_: Exception) { /* keep going */ }
+    }
+
     override fun copyIn(name: String, src: File) {
         try {
             childUri(name)?.let { DocumentsContract.deleteDocument(cr, it) }
-            val mime = if (name.endsWith(".mp3")) "audio/mpeg" else "text/plain"
+            val mime = mimeFor(name)
             val doc = DocumentsContract.createDocument(cr, rootDocUri, mime, name)
                 ?: throw IOException("could not create $name in the burn folder")
             val out = cr.openOutputStream(doc, "wt") ?: throw IOException("could not open $name")
@@ -67,6 +91,13 @@ class ContentResolverBurnTree(private val context: Context, private val treeUri:
             throw IOException(e.message ?: "burn folder write failed", e)
         }
     }
+}
+
+/** Folder-copy MIME: audio, the beat-grid/analysis JSON, and the txt sidecar. */
+internal fun mimeFor(name: String): String = when {
+    name.endsWith(".mp3") -> "audio/mpeg"
+    name.endsWith(".json") -> "application/json"
+    else -> "text/plain"
 }
 
 /** SharedPreferences-backed chosen tree (read at enqueue / UI time only). */

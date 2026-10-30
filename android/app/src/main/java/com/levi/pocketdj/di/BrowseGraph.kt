@@ -417,17 +417,14 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
                 com.levi.pocketdj.screens.discover.DiscoverAddController.outcomeOf(job)
             }
         override suspend fun serverAlbumTracks(collectionId: String) = app.ripServerClient.albumTracks(collectionId).tracks
+        override suspend fun albumExpansion(collectionId: String) = app.ripServerClient.albumTracks(collectionId)
         override fun watch(songId: String, jobId: String) { app.ripJobTracker.pollToReady(songId, jobId) }
         override suspend fun refreshManifest() { app.ripsRepository.refresh() }
     }
 
     private val discoverLibrary = object : com.levi.pocketdj.screens.discover.DiscoverLibraryPort {
-        private fun token(r: com.levi.pocketdj.data.applemusic.AmResult<Unit>) = when (r) {
-            is com.levi.pocketdj.data.applemusic.AmResult.Ok -> com.levi.pocketdj.screens.discover.LibraryWrite.CONFIRMED_WEB
-            com.levi.pocketdj.data.applemusic.AmResult.NeedsUserToken -> com.levi.pocketdj.screens.discover.LibraryWrite.SKIPPED_NO_CONNECTION
-            is com.levi.pocketdj.data.applemusic.AmResult.RateLimited -> com.levi.pocketdj.screens.discover.LibraryWrite.failed("rate limited")
-            is com.levi.pocketdj.data.applemusic.AmResult.Failure -> com.levi.pocketdj.screens.discover.LibraryWrite.failed(r.message)
-        }
+        private fun token(r: com.levi.pocketdj.data.applemusic.AmResult<Unit>) =
+            com.levi.pocketdj.screens.discover.libraryWriteToken(r)
         override suspend fun addSong(appleMusicId: String) =
             token(app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.SONGS, listOf(appleMusicId)))
         override suspend fun addAlbum(appleMusicId: String) =
@@ -472,6 +469,19 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** "Add to Apple Music again" for a recorded provisional album; returns the stored write token. */
+    suspend fun retryAlbumLibraryWrite(hit: com.levi.pocketdj.screens.discover.DiscoverAlbumHit): String =
+        withContext(Dispatchers.IO) { discoverController.retryAlbumLibraryWrite(hit.id, hit.appleMusicId) }
+
+    /** Pre-release refresh (launch/foreground): recheck provisional Discover albums, at most daily until release day. */
+    fun refreshProvisionalAlbums() {
+        if (!provisionalRefreshing.compareAndSet(false, true)) return // single-flight
+        app.appScope.launch(Dispatchers.IO) {
+            try { runCatching { discoverController.refreshProvisionalAlbums() } } finally { provisionalRefreshing.set(false) }
+        }
+    }
+    private val provisionalRefreshing = java.util.concurrent.atomic.AtomicBoolean(false)
+
     /** "Remove from Library" for a user-added provisional song (Discover / Imported). */
     fun removeFromLibrary(songId: String, sourceName: String?, title: String, artist: String?): Boolean =
         discoverController.removeFromLibrary(songId, sourceName, title, artist) { id ->
@@ -483,12 +493,11 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
     // ---- BRW-17: "?♪?" song recognizer ------------------------------------------------------
 
     /**
-     * The capture + match pipeline. The ShazamKit-for-Android AAR (app/libs/shazamkit-android.aar) is not in
-     * the repo, so this defaults to the unavailable backend; the AudioRecord/StreamingSession adapter replaces it.
+     * The capture + match pipeline. Release uses the vendored ShazamKit 2.1.1 AAR (app/libs); debug keeps the 12 s no-match stub so the emulator flow is drivable.
      */
     var shazamBackend: com.levi.pocketdj.screens.shazam.RecognitionBackend =
         if (com.levi.pocketdj.BuildConfig.DEBUG) com.levi.pocketdj.screens.shazam.DebugListeningBackend
-        else com.levi.pocketdj.screens.shazam.UnavailableRecognitionBackend
+        else com.levi.pocketdj.screens.shazam.ShazamKitBackend(app.musicKitDevTokenClient)
 
     /** Apple Music Web API adapter behind the result sheet's Apple Music block. */
     val appleMusicRecognition: com.levi.pocketdj.screens.shazam.AppleMusicRecognitionPort by lazy {
@@ -550,7 +559,14 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     /** App-scoped add -> rip -> burn driver for the recognizer sheet (survives sheet dismissal). */
     val recognitionAdds: com.levi.pocketdj.screens.shazam.RecognitionAddController by lazy {
-        com.levi.pocketdj.screens.shazam.RecognitionAddController(app.appScope + Dispatchers.IO, appleMusicRecognition)
+        com.levi.pocketdj.screens.shazam.RecognitionAddController(app.appScope + Dispatchers.IO, appleMusicRecognition).also { c ->
+            c.onCatalogAdd = { id, title, artist ->
+                app.collectionActivity.record(
+                    kind = com.levi.pocketdj.data.activity.ActivityKind.CATALOG_ADD,
+                    itemId = id, itemTitle = title, itemArtist = artist.ifEmpty { null }, libraryWrite = com.levi.pocketdj.screens.discover.LibraryWrite.CONFIRMED_WEB,
+                )
+            }
+        }
     }
 
     /** On-demand lyrics (memory -> disk `filesDir/lyrics-cache` -> catalog CDN). */

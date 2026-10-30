@@ -2,14 +2,14 @@ package com.levi.pocketdj.data.location
 
 import com.levi.pocketdj.data.pockets.ListeningContextTag
 
-// LISTENING CONTEXT - the contract between a (future) on-device location engine and the play-history ->
+// LISTENING CONTEXT - the contract between the on-device location engine (ListeningPlaceEngine) and the play-history ->
 // listening-pockets pipeline (port of apple Location/ListeningContext.swift). Opaque ids only: never
 // coordinates, never a name. The tag type itself lives with the wire models (pockets package).
-// Android ships NO location engine yet, so [NoopListeningContextProvider] is the only implementation.
+// [NoopListeningContextProvider] remains the provider for tests / location-off contexts.
 
 /** The answer to "what was the listening context at time T?". */
 sealed interface ListeningContextLookup {
-    /** Never stamp: no location on this platform, feature off, permission missing, or T predates tracking. */
+    /** Never stamp: no location provider wired, feature off, permission missing, or T predates tracking. */
     data object Unavailable : ListeningContextLookup
 
     /** Not decidable YET (mid-trip, or a back-dated visit could still claim T). Ask again later. */

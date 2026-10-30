@@ -16,6 +16,7 @@ import com.levi.pocketdj.auto.AutoLibraryCallback
 import com.levi.pocketdj.auto.AutoNode
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.levi.pocketdj.playback.durable.HeldQueue
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import com.levi.pocketdj.playback.session.FavoriteCommand
 import com.levi.pocketdj.playback.session.SequencerControl
@@ -49,6 +50,7 @@ const val INTERNAL_HINT = "pdj.internal"
 class PlaybackService : MediaLibraryService() {
 
     private var mediaSession: MediaLibrarySession? = null
+    private val resumeExecutor: java.util.concurrent.ExecutorService by lazy { java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "pdj-resumption") } }
     private var autoScope: kotlinx.coroutines.CoroutineScope? = null
     /** Latest search only (one entry): a keystroke-per-query session must not accumulate results. */
     @Volatile private var autoSearchLatest: Pair<String, List<AutoNode>>? = null
@@ -106,7 +108,13 @@ class PlaybackService : MediaLibraryService() {
         }
         cb
     }
-    private fun autoScopeOrNull(): kotlinx.coroutines.CoroutineScope? { auto; return autoScope }
+    /** Q96: off-Main work for the Auto binder callbacks (graph build, tree reads, search scoring). */
+    // Serialized: the Auto tree holds check-then-act state written for one thread; stays off Main.
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val autoDispatcher = kotlinx.coroutines.Dispatchers.Default.limitedParallelism(1)
+    private val autoBg = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + autoDispatcher)
+    private fun <T> autoAsync(block: () -> T) =
+        com.levi.pocketdj.auto.AutoAsync.compute(autoBg, autoDispatcher, block)
     private var forwardingPlayer: SequencerForwardingPlayer? = null
     private var exoOwner: ExoOwner? = null
     private var exoPlayer: ExoPlayer? = null
@@ -116,6 +124,9 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onCreate() {
         super.onCreate()
+        // The PLAYBACK-tier graph (+ persisted-mix re-park) is started by the first controller that is NOT System UI's
+        // boot-time media-resumption bind (see ensurePlaybackGraph / PlaybackStartGate): building it here would spin up
+        // the whole graph, its loops and a hosted jukebox party on every device boot.
         // PB-3: `pdj-resolve://song/<id>` rows (rip-on-demand inside a run) load immediately and resolve their
         // real url on the loader thread; every other uri passes through the resolver untouched.
         val dataSources = com.levi.pocketdj.playback.session.ResolvingSongDataSource.wrap(
@@ -187,7 +198,13 @@ class PlaybackService : MediaLibraryService() {
             )
         }
 
-        val forwarding = SequencerForwardingPlayer(player, DeferredControl, board = SessionSwitchboard.shared)
+        val forwarding = SequencerForwardingPlayer(
+            player, DeferredControl, board = SessionSwitchboard.shared,
+            restoreForResumption = { held ->
+                ensurePlaybackGraph()
+                runCatching { com.levi.pocketdj.di.AppGraph.get(applicationContext).playbackGraph.resumptionProvider.restore(held) }
+            },
+        )
         forwardingPlayer = forwarding
         val exo = ExoOwner(forwarding)
         exoOwner = exo
@@ -199,6 +216,7 @@ class PlaybackService : MediaLibraryService() {
                     exo.hasSounded = true
                     board.setOwner(exo)
                 }
+                syncLocationFgsType()
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = refreshCustomLayout()
@@ -226,8 +244,23 @@ class PlaybackService : MediaLibraryService() {
         forwarding.syncGate()
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
-        mediaSession
+    private val graphStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * Start the PLAYBACK tier (sequencer wiring, stats, widgets, recs) and re-park the persisted mix, once per service
+     * instance. Android Auto can bind in a process with NO activity (post-death car connect), so a real controller's
+     * connect is the trigger, not onCreate. Idempotent (StartupLedger + launchRestore are once-per-process).
+     */
+    private fun ensurePlaybackGraph() {
+        if (!graphStarted.compareAndSet(false, true)) return
+        runCatching { com.levi.pocketdj.di.AppGraph.get(applicationContext).let { it.startPlayback(); it.mixGraph.launchRestore() } }
+        watchPlacesToggle()
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
+        if (PlaybackStartGate.startsGraph(controllerInfo.packageName)) ensurePlaybackGraph()
+        return mediaSession
+    }
 
     /**
      * A widget / Bluetooth media button starts this service with startForegroundService(). Media3 only
@@ -237,6 +270,8 @@ class PlaybackService : MediaLibraryService() {
      * notification replaces it in place), then drop it again if nothing started playing.
      */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // A widget / headset / Bluetooth media button is a user action: wire playback before Media3 dispatches it.
+        if (intent?.action == Intent.ACTION_MEDIA_BUTTON) ensurePlaybackGraph()
         val result = super.onStartCommand(intent, flags, startId)
         if (intent?.action == Intent.ACTION_MEDIA_BUTTON) {
             runCatching {
@@ -253,19 +288,105 @@ class PlaybackService : MediaLibraryService() {
                     .build()
                 startForeground(BOOT_NOTIFICATION_ID, n)
             }
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val handler = android.os.Handler(android.os.Looper.getMainLooper())
+            var checks = 0
+            lateinit var check: Runnable
+            check = Runnable {
                 val player = mediaSession?.player
-                if (player == null || (!player.isPlaying && !player.playWhenReady)) {
+                // A cold resumption chain (graph build, row resolve, controller connect) can outlast 3 s:
+                // keep the foreground state while a resumption is armed or a start is in flight (bounded).
+                val settling = forwardingPlayer?.let { it.resumptionPending() || DeferredControl.isStartPending } == true
+                if (settling && ++checks < MAX_SETTLE_CHECKS) {
+                    handler.postDelayed(check, 1_000L)
+                } else if (player == null || (!player.isPlaying && !player.playWhenReady)) {
                     runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
                     stopSelf()
                 }
-            }, 3_000L)
+            }
+            handler.postDelayed(check, 3_000L)
         }
         return result
     }
 
+    // ---- ANS-LOC-1: location FGS type while audio plays with places & trips on --------------------
+
+    private val fgsTracker = com.levi.pocketdj.data.location.FgsTypeTracker()
+    private var fgsRetries = 0
+    private var lastPlacesEnabled: Boolean? = null
+    private val fgsHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var placesRevisionJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * Media3 promotes with mediaPlayback only. When [LocationFgsPolicy] says so, re-issue startForeground on
+     * Media3's own notification with mediaPlayback|location; otherwise leave it (a pause lets Media3 drop the
+     * foreground state, which drops every type; the next play re-evaluates). Never throws.
+     */
+    private fun syncLocationFgsType() {
+        runCatching {
+            val playing = mediaSession?.player?.isPlaying == true
+            if (!playing) { fgsTracker.reset(); fgsRetries = 0; return }
+            val placesOn = com.levi.pocketdj.di.AppGraph.get(applicationContext).collectionsGraph.locationStore.isEnabled
+            val types = com.levi.pocketdj.data.location.LocationFgsPolicy.types(
+                playing = true,
+                placesOn = placesOn,
+                whileInUseGranted = com.levi.pocketdj.data.location.LocationSettings.hasWhileInUse(this),
+                sdk = android.os.Build.VERSION.SDK_INT,
+            )
+            if (!fgsTracker.shouldApply(types)) return
+            val nm = getSystemService(android.app.NotificationManager::class.java)
+            val n = nm.activeNotifications.firstOrNull { it.id == BOOT_NOTIFICATION_ID }?.notification
+            if (n == null) {
+                // Media3 posts its notification a beat after isPlaying flips: retry once.
+                if (fgsRetries++ < MAX_FGS_RETRIES) {
+                    fgsHandler.removeCallbacks(fgsRetry)
+                    fgsHandler.postDelayed(fgsRetry, 1_500L)
+                }
+                return
+            }
+            fgsRetries = 0
+            try {
+                androidx.core.app.ServiceCompat.startForeground(this, BOOT_NOTIFICATION_ID, n, types)
+                fgsTracker.applied(types)
+            } catch (t: Throwable) {
+                // Background-start restrictions (Android 11+/14+) can refuse the location type; best-effort.
+                fgsTracker.applied(types)
+                com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.PLAYBACK, "fgs location upgrade refused types=$types: ${t.javaClass.simpleName} ${t.message}")
+            }
+        }
+    }
+
+    /** Media3 re-promotes with mediaPlayback only on every notification update; re-apply ours afterwards. */
+    override fun onUpdateNotification(session: MediaSession, startInForegroundRequired: Boolean) {
+        super.onUpdateNotification(session, startInForegroundRequired)
+        fgsTracker.onMedia3Promoted()
+        syncLocationFgsType()
+        // The provider may post asynchronously (artwork); re-assert shortly after.
+        fgsHandler.removeCallbacks(fgsRetry)
+        fgsHandler.postDelayed(fgsRetry, 400L)
+    }
+
+    private val fgsRetry = Runnable { syncLocationFgsType() }
+
+    private fun watchPlacesToggle() {
+        placesRevisionJob?.cancel()
+        placesRevisionJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main).launch {
+            runCatching {
+                com.levi.pocketdj.di.AppGraph.get(applicationContext).collectionsGraph.locationStore.revisionFlow.collect {
+                    val on = com.levi.pocketdj.di.AppGraph.get(applicationContext).collectionsGraph.locationStore.isEnabled
+                    if (on != lastPlacesEnabled) {
+                        lastPlacesEnabled = on
+                        fgsTracker.reset()
+                        syncLocationFgsType()
+                    }
+                }
+            }
+        }
+    }
+
     companion object {
         private const val BOOT_CHANNEL = "pdj_playback_boot"
+        private const val MAX_SETTLE_CHECKS = 12
+        private const val MAX_FGS_RETRIES = 5
         /** Media3's DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID. */
         private const val BOOT_NOTIFICATION_ID = 1001
     }
@@ -278,6 +399,9 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        placesRevisionJob?.cancel()
+        fgsHandler.removeCallbacksAndMessages(null)
+        runCatching { resumeExecutor.shutdown() }
         RunTransportBus.instantMetadata = null
         RunTransportBus.stateChanged = null
         RunTransportBus.heldRestored = null
@@ -296,6 +420,7 @@ class PlaybackService : MediaLibraryService() {
         mediaSession = null
         autoScope?.cancel()
         autoScope = null
+        autoBg.cancel()
         autoSearchLatest = null
         super.onDestroy()
     }
@@ -395,21 +520,55 @@ class PlaybackService : MediaLibraryService() {
         }
 
         /**
-         * Media-button / Bluetooth resumption after the process was killed (PB-4): restore the durable
-         * queue HELD. The future fails (nothing for Media3 to load: the sequencer, not the session
-         * timeline, owns the queue), but Media3 1.6.1 then calls handlePlayButtonAction -> player.play(),
-         * which reaches the forwarding player's held-resume path. So an explicit media-button / Bluetooth
-         * play after process death DOES resume at the saved offset (iOS latched remote play). Only the
-         * restore itself never plays or writes the file.
+         * Media-button / Bluetooth resumption after the process was killed (PB-4 / ANS-PB-6).
+         *
+         * Flow: this callback answers with the held queue (read straight from the snapshot file on a worker
+         * thread: ONE decode, NO AppGraph build) and ARMS the forwarding player. Media3 then calls
+         * setMediaItems with that queue; the armed forwarding player swallows it (the sequencer, not the
+         * session timeline, owns the queue), applies the mic/arbiter gates, restores the held deck
+         * (graph built here, on that call, not at boot) and resumes at the saved offset. A set that does not
+         * match, comes from the in-app controller, or arrives after the 2 s window is passed through.
+         *
+         * Note: with MediaButtonReceiver declared, Media3 itself answers System UI's boot-time `isRecent`
+         * browse (root "androidx.media3.session.recent.root") and fetches its child through THIS callback
+         * without ever calling setMediaItems; that is why the arm is one-shot and time-limited, and why this
+         * path must stay cheap. Our own pdj.recent.root branch only serves other isRecent callers.
          */
         override fun onPlaybackResumption(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
-            runCatching {
-                com.levi.pocketdj.di.AppGraph.get(applicationContext).playbackGraph.resumptionProvider.onPlaybackResumption()
+            val out = com.google.common.util.concurrent.SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
+            val file = java.io.File(filesDir, com.levi.pocketdj.playback.durable.PLAYBACK_SESSION_FILE)
+            try {
+                resumeExecutor.execute {
+                    try {
+                        val held = HeldQueue.load(file, recentArtFor())
+                        if (held == null) {
+                            out.setException(IllegalStateException("nothing to resume"))
+                        } else {
+                            forwardingPlayer?.armResumption(held)
+                            out.set(held.toMediaItemsWithStartPosition())
+                        }
+                    } catch (t: Throwable) {
+                        out.setException(t)
+                    }
+                }
+            } catch (t: java.util.concurrent.RejectedExecutionException) {
+                out.setException(t)
             }
-            return Futures.immediateFailedFuture(IllegalStateException("held restore: sequencer owns the queue"))
+            return out
+        }
+
+        /** Album art for the resume card when the process already has its catalog; none on a cold boot (no graph build). */
+        private fun recentArtFor(): (String) -> android.net.Uri? {
+            val g = com.levi.pocketdj.di.AppGraph.peek() ?: return { null }
+            return { songId ->
+                runCatching {
+                    val album = g.catalogRepository.state.value.catalog?.let { c -> c.songsById[songId]?.albumId?.let { c.albumsById[it] } }
+                    (album?.artCandidates()?.firstOrNull() ?: album?.let { g.albumArtworkStore.cached(it.id) })?.let(android.net.Uri::parse)
+                }.getOrNull()
+            }
         }
 
         override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
@@ -464,9 +623,18 @@ class PlaybackService : MediaLibraryService() {
             // System-UI media resumption (Android 11+) binds at boot with isRecent: don't build the graph or
             // warm the catalog for that; resumption is the onPlaybackResumption path.
             if (params?.isRecent == true) {
-                return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_NOT_SUPPORTED))
+                val root = MediaItem.Builder().setMediaId(HeldQueue.RECENT_ROOT_ID)
+                    .setMediaMetadata(
+                        androidx.media3.common.MediaMetadata.Builder().setTitle("PocketDJ")
+                            .setIsBrowsable(true).setIsPlayable(false).build(),
+                    ).build()
+                return Futures.immediateFuture(LibraryResult.ofItem(root, params))
             }
-            return Futures.immediateFuture(LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(auto.onConnect()), params))
+            // Q96: the root is static; the auto graph (AppGraph, data, tree) is built off Main and warms the catalog.
+            autoBg.launch { runCatching { auto.onConnect() } }
+            return Futures.immediateFuture(
+                LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(com.levi.pocketdj.auto.AutoAsync.STATIC_ROOT), params),
+            )
         }
 
         override fun onGetItem(
@@ -474,10 +642,13 @@ class PlaybackService : MediaLibraryService() {
             browser: MediaSession.ControllerInfo,
             mediaId: String,
         ): ListenableFuture<LibraryResult<MediaItem>> {
-            val n = auto.getItem(mediaId)
-            return Futures.immediateFuture(
-                if (n == null) LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)
-                else LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(n), null),
+            return Futures.transform(
+                autoAsync { auto.getItem(mediaId) },
+                { n ->
+                    if (n == null) LibraryResult.ofError<MediaItem>(LibraryResult.RESULT_ERROR_BAD_VALUE)
+                    else LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(n), null)
+                },
+                com.google.common.util.concurrent.MoreExecutors.directExecutor(),
             )
         }
 
@@ -489,10 +660,26 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
-            val nodes = auto.getChildren(parentId, page, pageSize)
-            return Futures.immediateFuture(
-                if (nodes == null) LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)
-                else LibraryResult.ofItemList(items(nodes), params),
+            if (parentId == HeldQueue.RECENT_ROOT_ID) {
+                // Cheap recent child straight from the snapshot file: no AppGraph, no catalog warm-up.
+                val out = com.google.common.util.concurrent.SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
+                val file = java.io.File(filesDir, com.levi.pocketdj.playback.durable.PLAYBACK_SESSION_FILE)
+                resumeExecutor.execute {
+                    val held = HeldQueue.load(file, recentArtFor())
+                    out.set(
+                        if (held == null) LibraryResult.ofItemList(ImmutableList.of(), params)
+                        else LibraryResult.ofItemList(ImmutableList.of(held.currentItem()), params),
+                    )
+                }
+                return out
+            }
+            return Futures.transform(
+                autoAsync { auto.getChildren(parentId, page, pageSize) },
+                { nodes ->
+                    if (nodes == null) LibraryResult.ofError<ImmutableList<MediaItem>>(LibraryResult.RESULT_ERROR_BAD_VALUE)
+                    else LibraryResult.ofItemList(items(nodes), params)
+                },
+                com.google.common.util.concurrent.MoreExecutors.directExecutor(),
             )
         }
 
@@ -503,7 +690,7 @@ class PlaybackService : MediaLibraryService() {
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<Void>> {
             // Scoring scans the whole catalog: off the main thread, then notify.
-            autoScopeOrNull()?.launch(kotlinx.coroutines.Dispatchers.Default) {
+            autoBg.launch {
                 val found = auto.search(query)
                 autoSearchLatest = query to found
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
@@ -521,10 +708,18 @@ class PlaybackService : MediaLibraryService() {
             pageSize: Int,
             params: LibraryParams?,
         ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
-            val all = autoSearchLatest?.takeIf { it.first == query }?.second ?: auto.search(query)
-            val from = (page.toLong() * pageSize).coerceAtMost(all.size.toLong()).toInt()
-            val window = if (pageSize == Int.MAX_VALUE) all else all.subList(from, minOf(all.size, from + pageSize))
-            return Futures.immediateFuture(LibraryResult.ofItemList(items(window), params))
+            fun page(all: List<AutoNode>): LibraryResult<ImmutableList<MediaItem>> {
+                val from = (page.toLong() * pageSize).coerceAtMost(all.size.toLong()).toInt()
+                val window = if (pageSize == Int.MAX_VALUE) all else all.subList(from, minOf(all.size, from + pageSize))
+                return LibraryResult.ofItemList(items(window), params)
+            }
+            // Hit: the onSearch pass already scored it. Miss: score the catalog on Default, not on this Main callback.
+            autoSearchLatest?.takeIf { it.first == query }?.second?.let { return Futures.immediateFuture(page(it)) }
+            return Futures.transform(
+                autoAsync { auto.search(query).also { autoSearchLatest = query to it } },
+                { found -> page(found) },
+                com.google.common.util.concurrent.MoreExecutors.directExecutor(),
+            )
         }
 
         /**

@@ -210,6 +210,7 @@ class AutoDj(
         }
         loadAutoSlot(1, Deck.B)
         nextToLoad = minOf(2, queue.size)
+        prefetchUpcoming()
 
         deckEndsAt[Deck.A] = now() + (deckDurationMs[Deck.A] ?: FALLBACK_DURATION_MS).toLong()
         mixing = true
@@ -226,6 +227,7 @@ class AutoDj(
         // eject/load would read as a few-percent `.replaced` (a skip).
         if (mixing) for (d in listOf(liveDeck, liveDeck.other)) engine.reportTrackEnded(d, MixTrackEndReason.STOPPED)
         endAutoLoop()
+        engine.clearPrepared()
         engine.pauseBoth()
     }
 
@@ -288,6 +290,7 @@ class AutoDj(
         checkpointEngineStall()      // fresh end stamps below must only be shifted by the stall that FOLLOWS
         paused = false
         resumeAutoOnRemotePlay = false
+        prefetchUpcoming()           // a restored / resumed run's first transition must not pay the sync prepare
         engine.rec(MixEventKind.AutoResume)
         // Mid-transition the (possibly just-unfrozen) fade owns both decks: lifting the gate is all
         // that is needed. A blend re-arm would fire a second, immediate handoff.
@@ -382,7 +385,7 @@ class AutoDj(
         val deferred = HashSet<String>()
         while (true) {
             val k = nextUnplayedQueueIndex(exclude, deferred) ?: return null
-            if (loadAuto(queue[k], deck)) return k
+            if (loadAuto(queue[k], deck)) { prefetchUpcoming(); return k }
             if (seams.transientlyUnloadable(queue[k].loadable.songId)) {
                 deferred.add(queue[k].loadable.songId)   // stream gate closed now - keep it
                 continue
@@ -791,6 +794,7 @@ class AutoDj(
                 if (ok) break
             }
         }
+        prefetchUpcoming()
         engine.onNowPlayingChanged?.invoke()   // the now-playing deck just switched: refresh the card
         glide.beginPostroll()
         engine.persist()                       // the cursor advanced: persist the new live pos
@@ -863,10 +867,24 @@ class AutoDj(
      * failed: a failed load must not arm a transition clock against a track that isn't there.
      */
     internal fun loadAuto(item: AutoMixItem, deck: Deck): Boolean {
-        engine.loadNow(item.loadable, deck)
+        engine.autoLoading = true
+        try { engine.loadNow(item.loadable, deck) } finally { engine.autoLoading = false }
         if (engine.loaded(deck)?.songId != item.loadable.songId) return false
         deckDurationMs[deck] = item.durationMs
         return true
+    }
+
+    /** Prepare the next 1-2 unloaded queue items OFF Main so their [loadAuto] skips disk (sync prepare only on a miss). */
+    internal fun prefetchUpcoming() {
+        var k = nextToLoad
+        var n = 0
+        // Entries for removed / reordered items must not squat the cap.
+        engine.prunePrepared((nextToLoad until minOf(queue.size, nextToLoad + PREFETCH_AHEAD)).map { queue[it].loadable.songId }.toSet())
+        while (k < queue.size && n < PREFETCH_AHEAD) {
+            val item = queue[k]
+            if (seams.songOnDevice(item.loadable.songId)) { engine.prefetchPrepared(item.loadable, Deck.A); n++ }
+            k++
+        }
     }
 
     /** Move queue item [j] to [p] (p <= j); the items between shift back one. */
@@ -1060,11 +1078,13 @@ class AutoDj(
         resumeFromRestore = true           // first resume: the restored cursor wins over the play-log
         mixing = true
         refreshStatus()
+        prefetchUpcoming()
     }
 
     private fun secToMs(s: Double): Long = Math.round(s * 1000)
 
     companion object {
+        const val PREFETCH_AHEAD = 2
         const val FALLBACK_DURATION_MS = 180_000
     }
 }

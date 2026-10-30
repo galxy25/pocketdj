@@ -1,6 +1,7 @@
 package com.levi.pocketdj.studio.engine
 
 import com.levi.pocketdj.audio.core.PcmBuffer
+import com.levi.pocketdj.audio.core.StreamingResampler
 import com.levi.pocketdj.audio.core.WavWriter
 import com.levi.pocketdj.studio.audio.StudioAudio
 import com.levi.pocketdj.studio.model.StudioArrangement
@@ -256,5 +257,96 @@ class MasterRecorderTest {
         }
         assertEquals(4410, baker.toCanonical(cap(false))!!.frames)
         assertTrue(baker.toCanonical(cap(true))!!.frames > 4410)   // relabelled 48 kHz frames: longer + lower
+    }
+
+    // ---- ANS-STU-2: streamed bake ----
+
+    private fun writeSparseCapture(f: File, rate: Int, frames: Long) {
+        // Header only + a sparse zero body: a 10-minute capture without 200 MB of real writes.
+        java.io.RandomAccessFile(f, "rw").use { raf ->
+            raf.write(WavWriter.header(rate, 2, WavWriter.Format.FLOAT32, frames * 8))
+            raf.setLength(44 + frames * 8)
+        }
+    }
+
+    private class CountingWriter : com.levi.pocketdj.audio.core.PcmChunkWriter {
+        var frames = 0L; var biggest = 0; var closed = false
+        override fun write(samples: FloatArray, frames: Int) { this.frames += frames; biggest = maxOf(biggest, frames) }
+        override fun close() { closed = true }
+    }
+
+    @Test fun chunkedReadEqualsOneShotRead() {
+        val f = tmp.newFile()
+        val pcm = PcmBuffer(48_000, 2, FloatArray(10_001 * 2) { (it % 97) / 97f - 0.5f })
+        WavWriter.write(f, pcm, WavWriter.Format.FLOAT32)
+        val acc = ArrayList<Float>(); var biggest = 0
+        val h = MasterWav.readChunks(f, chunkFrames = 1000) { b, n -> biggest = maxOf(biggest, n); for (i in 0 until n * 2) acc += b[i] }!!
+        assertEquals(10_001L, h.frames); assertEquals(48_000, h.sampleRate)
+        assertEquals(1000, biggest)
+        assertEquals(pcm.samples.toList(), acc)
+        assertEquals(pcm.samples.toList(), MasterWav.read(f)!!.samples.toList())
+    }
+
+    @Test fun streamedCleanAndLofiBakeMatchTheWholeBufferPath() {
+        val baker = MasterRecordingBaker()
+        for ((rate, q) in listOf(48_000 to false, 44_100 to false, 44_100 to true, 48_000 to true)) {
+            val f = tmp.newFile()
+            WavWriter.write(f, PcmBuffer(rate, 2, FloatArray(30_000 * 2) { Math.sin(it * 0.01).toFloat() * 0.6f }), WavWriter.Format.FLOAT32)
+            val raw = MasterWav.read(f)!!
+            val expected = if (!q) raw.toCanonical()
+                else StudioAudio.relabeled(if (rate == 44_100) raw.resampled(LOFI_HARDWARE_RATE) else raw)
+            val got = baker.toCanonical(MasterCapture(f, rate, q))!!
+            assertEquals("frames rate=$rate q=$q", expected.frames, got.frames)
+            for (i in got.samples.indices) assertEquals("sample $i rate=$rate q=$q", expected.samples[i], got.samples[i], 1e-6f)
+        }
+    }
+
+    @Test fun tenMinuteBakeNeverHoldsMoreThanOneChunk() {
+        val f = tmp.newFile("long.wav")
+        val frames = 10L * 60 * 48_000
+        writeSparseCapture(f, 48_000, frames)
+        val w = CountingWriter()
+        val baker = MasterRecordingBaker(openM4a = { out, rate -> assertEquals(StudioAudio.CANONICAL_RATE, rate); out.writeText("m4a"); w })
+        val env = TestEnv(tmp.newFolder("studio"))
+        val store = env.store(); val a = store.createArrangement("A")
+        val art = baker.bakeArtifact(a.id, MasterCapture(f, 48_000, false), env.roots.arrangementsDir(), store, "long")
+        assertNotNull("success path files the artifact", art)
+        assertTrue(w.closed)
+        assertEquals(Math.ceil(frames * 44_100 / 48_000.0).toLong(), w.frames)
+        // No array handed to the encoder is larger than a few tenths of a second, never the 10-minute capture.
+        assertTrue("biggest block ${w.biggest}", w.biggest <= StreamingResampler.OUT_FRAMES)
+        assertTrue(w.biggest < 44_100 / 2)
+        assertFalse(f.exists())
+    }
+
+    @Test fun streamingEncoderFailureLeavesNoStrayFileAndNoArtifact() {
+        val env = TestEnv(tmp.newFolder("studio2"))
+        val store = env.store(); val a = store.createArrangement("A")
+        val f = tmp.newFile()
+        WavWriter.write(f, PcmBuffer(44_100, 2, FloatArray(8820) { 0.1f }), WavWriter.Format.FLOAT32)
+        val baker = MasterRecordingBaker(openM4a = { _, _ -> object : com.levi.pocketdj.audio.core.PcmChunkWriter {
+            override fun write(samples: FloatArray, frames: Int) = error("encoder died")
+            override fun close() {}
+        } })
+        assertNull(baker.bakeArtifact(a.id, MasterCapture(f, 44_100, false), env.roots.arrangementsDir(), store, "x"))
+        assertEquals(0, env.roots.arrangementsDir().listFiles().orEmpty().size)
+        assertFalse(f.exists())
+    }
+
+    @Test fun midReadFailureKeepsTheCaptureAndClosesTheOpenWriter() {
+        val env = TestEnv(tmp.newFolder("studio3"))
+        val store = env.store(); val a = store.createArrangement("A")
+        val f = tmp.newFile()
+        // The file is cut after the first chunk was already encoded: readFully throws mid-stream (header() saw it whole).
+        WavWriter.write(f, PcmBuffer(44_100, 2, FloatArray(20_000 * 2) { 0.1f }), WavWriter.Format.FLOAT32)
+        var closed = false
+        val baker = MasterRecordingBaker(openM4a = { _, _ -> object : com.levi.pocketdj.audio.core.PcmChunkWriter {
+            override fun write(samples: FloatArray, frames: Int) { java.io.RandomAccessFile(f, "rw").use { it.setLength(44 + 4096L * 8) } }
+            override fun close() { closed = true }
+        } })
+        assertNull(baker.bakeArtifact(a.id, MasterCapture(f, 44_100, false), env.roots.arrangementsDir(), store, "trunc"))
+        assertTrue("writer released", closed)
+        assertTrue("capture kept for a re-bake", f.exists())
+        assertEquals(0, env.roots.arrangementsDir().listFiles().orEmpty().size)
     }
 }

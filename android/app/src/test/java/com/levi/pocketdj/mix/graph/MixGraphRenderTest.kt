@@ -200,4 +200,21 @@ class MixGraphRenderTest {
         // not ours (they vary run to run and never recur per block): <= 0.1 % of blocks.
         assertTrue("render allocated $allocated bytes in $allocatingBlocks of $blocks blocks", allocatingBlocks <= blocks / 1000)
     }
+
+    @Test fun idleChainDrainsTheTailThenSkipsTheStretcherWithConstantLatency() {
+        val h = single(0.5f)
+        val lat = h.graph.b.latencyFrames
+        h.graph.setMain(Deck.A, null)
+        val out = h.render(sr44 * 2)
+        // tail drained: silence at the end, latency unchanged, clock still advances
+        assertEquals(0f, peak(out, sr44 * 2 - 2048, sr44 * 2), 1e-6f)
+        val clock = h.graph.a.inputClock
+        h.render(4096)
+        assertTrue(h.graph.a.inputClock > clock)
+        assertEquals(lat, h.graph.a.latencyFrames)
+        // a voice installed afterwards plays at full level again
+        h.playMain(Deck.A, h.toneVoice(TONE, 0.5f))
+        assertEquals(0.5f, peak(h.render(8192), 4000), 2e-3f)
+    }
+    private val sr44 = 44_100
 }

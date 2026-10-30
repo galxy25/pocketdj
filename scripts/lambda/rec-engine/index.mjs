@@ -17,7 +17,7 @@
 //
 // CREATING state (the FIRST `POST /events` for a profile, which binds keyHash = sha256hex(key)
 // trust-on-first-use) additionally requires the shared ENROLLMENT SECRET in
-// `x-pocketdj-enroll` — `REC_ENROLL_SECRET` on the function's env, compared in constant time.
+// `x-pocketdj-enroll` — `REC_ENROLL_SECRETS` (comma-separated; legacy `REC_ENROLL_SECRET` too) on the function's env, compared in constant time.
 // WITHOUT that gate any bearer + any profile header minted a brand-new state object, i.e. the
 // endpoint was an open, unbounded write into a bucket with no lifecycle expiry.
 // DEFENCE IN DEPTH, because that secret ships in the binary and is therefore extractable: the
@@ -25,6 +25,10 @@
 // single `rec/state/` LIST. Someone who reverses the token can enroll up to the cap and no
 // further; already-enrolled profiles never touch that branch, so the cap can never lock the real
 // user out of their own data.
+// THREAT-MODEL NOTE (ANS-BRW-2): the secret is ALSO published in plaintext as
+// capabilities.recEngineEnroll in the public, unauthenticated /config/endpoints.json, so a curl is
+// now enough to read it (no binary extraction needed). Rotation therefore only invalidates LEAKED
+// OLD values; it does not limit who can enroll. MAX_PROFILES is the load-bearing flood guard.
 // SINGLE-USER TRADEOFF, deliberately noted for the multi-user revisit: the secret ships inside
 // the app binary (`Config.recEngineEnrollSecret`), so it is a CAPABILITY TOKEN, not a per-user
 // credential — anyone who extracts it can still enroll profiles. It raises the bar from "curl
@@ -2397,12 +2401,22 @@ function authOf(event) {
 /// FAIL-CLOSED: an unset/empty env var rejects every enrollment (a redeploy that forgets the
 /// variable must not silently re-open the write path). Read per call so tests can flip it.
 export function enrollOk(event) {
-  const want = process.env.REC_ENROLL_SECRET || '';
-  if (!want) return false;
+  // REC_ENROLL_SECRETS = comma-separated accepted secrets (old + new during a rotation window);
+  // legacy single REC_ENROLL_SECRET is still honoured. Every candidate is compared (no early
+  // exit) in constant time. FAIL-CLOSED when none is configured.
+  const wants = `${process.env.REC_ENROLL_SECRETS || ''},${process.env.REC_ENROLL_SECRET || ''}`
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  if (!wants.length) return false;
   const h = event.headers || {};
   const got = h['x-pocketdj-enroll'] || h['X-PocketDJ-Enroll'] || '';
-  if (typeof got !== 'string' || got.length !== want.length) return false;
-  return timingSafeEqual(Buffer.from(got, 'utf8'), Buffer.from(want, 'utf8'));
+  if (typeof got !== 'string' || !got) return false;
+  const gotBuf = Buffer.from(got, 'utf8');
+  let ok = false;
+  for (const want of wants) {
+    const wantBuf = Buffer.from(want, 'utf8');
+    if (wantBuf.length === gotBuf.length && timingSafeEqual(gotBuf, wantBuf)) ok = true;
+  }
+  return ok;
 }
 
 /// Raw request-body size, BEFORE parsing (base64 bodies are 4/3 of their decoded length).

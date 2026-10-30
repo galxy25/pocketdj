@@ -39,8 +39,9 @@ interface RecoveryPort {
 
 /**
  * Routing / device-change recovery plus the silent-playing detector (iOS recoverFromEngineStop,
- * unparkEngineStall, silentPlayingCheck). [com.levi.pocketdj.audio.core.AudioTrackSink] already
- * recreates the AudioTrack between blocks and retries with backoff; it reports each outcome via
+ * unparkEngineStall, silentPlayingCheck). [com.levi.pocketdj.audio.core.AudioTrackSink] (emulator) and
+ * [com.levi.pocketdj.audio.core.OboeSink] (device; both via StudioOutputs) already
+ * recreate the stream between blocks and retries with backoff; it reports each outcome via
  * `onRoutingChanged`, which feeds [onSinkRouting]. The voices are decoder-driven and keep their
  * frame, so "resume at the frozen frame" is a re-kick of the pull, not a seek.
  */

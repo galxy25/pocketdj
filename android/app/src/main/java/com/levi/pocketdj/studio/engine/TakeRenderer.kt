@@ -207,6 +207,8 @@ class TakeFiler(
     private val store: StudioStore,
     private val renderer: TakeRenderer,
     private val studioRender: com.levi.pocketdj.studio.audio.StudioRender,
+    /** Makes a SAF-stored (content://) take usable wherever a File is needed; default = files only. */
+    private val materializer: com.levi.pocketdj.studio.store.StudioMaterializer? = null,
     private val now: () -> Double = { System.currentTimeMillis().toDouble() },
 ) {
     /** Render + file [result]. Throws [TakeFileException]. */
@@ -242,6 +244,23 @@ class TakeFiler(
         return null
     }
 
+    /** Like [currentAudioFile] but also resolves a SAF (file-less) ref. */
+    fun currentAudioRef(take: StudioTake): com.levi.pocketdj.studio.store.StudioFileRef? {
+        if (take.isRenderFresh) {
+            StudioFolders.fileRef(roots, StudioFamily.TAKES, take.renderedFileName!!, take.renderedWasUserFolder ?: false)?.let { return it }
+        }
+        if (take.editedEvents == null && take.renderRevision == 0) {
+            return StudioFolders.fileRef(roots, StudioFamily.TAKES, take.fileName, take.wasUserFolder)
+        }
+        return null
+    }
+
+    /** Lease of the take's CURRENT audio (direct file or SAF copy); null when it needs a render. Caller releases. */
+    suspend fun leaseCurrentAudio(take: StudioTake): com.levi.pocketdj.studio.store.StudioLease? {
+        val ref = currentAudioRef(take) ?: return null
+        return (materializer ?: com.levi.pocketdj.studio.store.StudioMaterializer.FILES_ONLY).lease(ref)
+    }
+
     /** Make sure [take] has playable audio matching its score, rendering when stale. */
     suspend fun ensureAudio(take: StudioTake, bankFor: (InstrumentKey) -> File?): File? {
         currentAudioFile(take)?.let { return it }
@@ -250,7 +269,14 @@ class TakeFiler(
 
     /** COPY the take's audio into a new sample (grid = the take's tempo, source = the take). */
     suspend fun useAsSample(take: StudioTake, bankFor: (InstrumentKey) -> File?): com.levi.pocketdj.studio.model.StudioSample {
-        val src = try { ensureAudio(take, bankFor) } catch (e: TakeRenderException.BankMissing) {
+        val lease = leaseCurrentAudio(take)
+        try {
+            return useAsSampleFrom(take, lease?.file, bankFor)
+        } finally { lease?.release() }
+    }
+
+    private suspend fun useAsSampleFrom(take: StudioTake, leased: File?, bankFor: (InstrumentKey) -> File?): com.levi.pocketdj.studio.model.StudioSample {
+        val src = leased ?: try { ensureAudio(take, bankFor) } catch (e: TakeRenderException.BankMissing) {
             throw TakeFileException(TakeFileFailure.PackMissing(e.instrument))
         } catch (e: TakeRenderException.EmptyTake) { throw TakeFileException(TakeFileFailure.NoNotes) }
             ?: throw TakeFileException(TakeFileFailure.Failed)
@@ -260,7 +286,7 @@ class TakeFiler(
         val res = try { studioRender.importAudioFile(src.path, dest) } catch (e: com.levi.pocketdj.studio.audio.StudioRenderException) {
             dest.delete(); throw TakeFileException(TakeFileFailure.Failed)
         }
-        return store.addSample(
+        return store.addSampleRelocating(
             com.levi.pocketdj.studio.model.StudioSample(
                 id, take.name, name, wasUserFolder = false, createdAt = now(), durationMs = res.durationMs,
                 source = com.levi.pocketdj.studio.model.StudioSource.Take(take.id),

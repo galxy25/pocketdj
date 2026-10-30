@@ -143,8 +143,8 @@ enum BackupZip {
         var files: [String: Data] = [
             "manifest.json": try encoder.encode(manifest),
             "sources.json": try encoder.encode(sources),
-            "pockets.json": try encoder.encode(pockets),
-            "playlists.json": try encoder.encode(playlists),
+            "pockets.json": try encoder.encode(pockets.map(\.strippedForExport)),
+            "playlists.json": try encoder.encode(playlists.map(\.strippedForExport)),
             "setlists.json": try encoder.encode(setlists),
             "folders.json": try encoder.encode(folders),
             "edits.json": editsData,

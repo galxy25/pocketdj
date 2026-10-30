@@ -51,6 +51,10 @@ data class EndpointConfig(
     val endpoints: Map<EndpointKey, String>,
     val catalogAliases: Set<String> = emptySet(),
     val catalogDevAliases: Set<String> = emptySet(),
+    /** Optional `capabilities.recEngineEnroll` (ANS-BRW-2): the rotatable rec-engine enroll secret. */
+    val recEngineEnroll: String? = null,
+    /** Optional `capabilities.profileSyncEnroll` (ANS-SYNC-1): the profile-sync Lambda's `X-PocketDJ-Enroll` token. */
+    val profileSyncEnroll: String? = null,
 ) {
     /** The optional profile-sync Lambda base; null (absent in the doc) => sync disabled, no network. */
     val profileSyncBase: String? get() = endpoints[EndpointKey.PROFILE_SYNC_BASE]
@@ -84,6 +88,12 @@ data class EndpointConfig(
         /** Retired blue catalog hosts: persisted Settings sources saved against them still rebase. */
         val LEGACY_BLUE_CATALOG_HOST = "d2p4cubg6se03u.cloudfront.net"
         val LEGACY_BLUE_CATALOG_DEV_HOST = "djictbz9w796r.cloudfront.net"
+
+        private val ENROLL_SECRET = Regex("^[A-Za-z0-9._~+/=-]{16,256}$")
+
+        /** A well-formed enroll secret or null (a malformed capability is ignored, never fatal). */
+        fun normalizeEnroll(raw: JsonElement?): String? =
+            (raw as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.takeIf { ENROLL_SECRET.matches(it) }
 
         private val POCKET_DJ = Regex("^[a-z0-9-]+(\\.[a-z0-9-]+)*\\.pocket-dj\\.com$")
         private val CLOUDFRONT = Regex("^[a-z0-9]+\\.cloudfront\\.net$")
@@ -138,7 +148,9 @@ data class EndpointConfig(
             fun hosts(k: String): Set<String> = ((aliases?.get(k) as? JsonArray) ?: JsonArray(emptyList()))
                 .mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content?.lowercase() }
                 .filter(::isAllowedHost).toSet()
-            return Decoded.Ok(EndpointConfig(env, out, hosts("catalogBase"), hosts("catalogBaseDev")))
+            val enroll = normalizeEnroll((doc["capabilities"] as? JsonObject)?.get("recEngineEnroll"))
+            val syncEnroll = normalizeEnroll((doc["capabilities"] as? JsonObject)?.get("profileSyncEnroll"))
+            return Decoded.Ok(EndpointConfig(env, out, hosts("catalogBase"), hosts("catalogBaseDev"), enroll, syncEnroll))
         }
     }
 }
@@ -169,6 +181,19 @@ object RemoteEndpoints {
     val summary: String get() = "env=${current.env} source=${source.label} fetch=$lastOutcome"
 
     fun url(key: EndpointKey): String = current.url(key)
+
+    /**
+     * Rec-engine enroll secret provider: the live doc's `capabilities.recEngineEnroll` (persisted
+     * with the last-good doc), else the compiled constant. Read per request so rotation needs no update.
+     */
+    fun recEngineEnroll(): String = current.recEngineEnroll ?: REC_ENGINE_ENROLL_SECRET
+
+    /**
+     * Profile-sync enroll capability token (ANS-SYNC-1): the live doc's `capabilities.profileSyncEnroll`
+     * (persisted with the last-good doc), else "" (no token => enrollment reports NotConfigured, no network).
+     * Never compiled into a build; read per request so rotation needs no app update.
+     */
+    fun profileSyncEnroll(): String = current.profileSyncEnroll.orEmpty()
 
     /** Optional profile-sync base from the live doc; null => sync disabled. */
     val profileSyncBase: String? get() = current.profileSyncBase

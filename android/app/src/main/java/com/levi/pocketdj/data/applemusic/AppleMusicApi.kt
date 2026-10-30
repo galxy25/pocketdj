@@ -176,6 +176,14 @@ class AppleMusicApi(
             AppleMusicApiModels.parseLibraryPlaylists(it)
         }
 
+    /** One library playlist's STRICT `canEdit` (absent = false). Null when the playlist can't be read. */
+    suspend fun libraryPlaylistCanEdit(playlistId: String): AmResult<Boolean?> =
+        call(get(url("v1", "me", "library", "playlists", playlistId)), userScoped = true) {
+            AppleMusicApiModels.parseLibraryPlaylistCanEdit(it)?.let { v -> BoolBox(v) } ?: BoolBox(null)
+        }.map { it.v }
+
+    private data class BoolBox(val v: Boolean?)
+
     /** Walks every page (bounded by [maxPages]); first non-Ok result aborts. */
     suspend fun allLibraryPlaylists(pageSize: Int = 100, maxPages: Int = 100): AmResult<List<AmLibraryPlaylist>> {
         val out = ArrayList<AmLibraryPlaylist>()
@@ -231,6 +239,24 @@ class AppleMusicApi(
             }
         }
         return AmResult.Ok(out.toList())
+    }
+
+    /** Every raw track row (order + duplicates kept) of a library playlist; 404 = empty. First non-Ok page aborts. */
+    suspend fun allPlaylistTrackRows(playlistId: String, pageSize: Int = 100, maxPages: Int = 200): AmResult<List<AmTrackRow>> {
+        val out = ArrayList<AmTrackRow>()
+        var offset = 0
+        repeat(maxPages) {
+            when (val r = playlistTracks(playlistId, offset, pageSize)) {
+                is AmResult.Ok -> {
+                    val p = r.value
+                    out += p.rows
+                    if (p.rowCount == 0) return AmResult.Ok(out)
+                    offset = p.nextOffset ?: if (p.rowCount < pageSize) return AmResult.Ok(out) else offset + p.rowCount
+                }
+                else -> return r.map { out }
+            }
+        }
+        return AmResult.Ok(out)
     }
 
     /** `POST /v1/me/library/playlists` -> the new playlist's library id. */

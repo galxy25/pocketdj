@@ -150,6 +150,25 @@ class CollectionBurnBarStateTest {
         assertTrue(c.state.value.canRefresh)
     }
 
+    @Test fun stopAfterBurnCancelsTheRipsTheBurnQueued() = runTest(StandardTestDispatcher()) {
+        // SVC-4 emulator finding: Burn -> auto-rip of the missing songs; Stop must POST /rip-cancel for them and
+        // end the poll (they were untracked, so the polls ran on for up to an hour).
+        val canceled = mutableListOf<String>()
+        val c = controller(
+            burn = { BurnResult(burned = 1, notRipped = 2, total = 3) },
+            rip = { BatchRipResult(queued = it.size, total = it.size) },
+            ripped = mutableSetOf("a"),
+            canceled = canceled,
+        )
+        c.burn(listOf("a", "b", "c")); testScheduler.runCurrent()
+        assertTrue("the queued rips show progress + Stop", c.state.value.ripInProgress)
+        assertTrue(c.state.value.showStop)
+        c.stop(); testScheduler.runCurrent()
+        assertEquals(listOf("b", "c"), canceled)
+        assertFalse(c.state.value.ripInProgress)
+        assertFalse(c.state.value.showStop)
+    }
+
     @Test fun stopDuringBurnSignalsStoreAndShowsStoppedSummary() = runTest(StandardTestDispatcher()) {
         val flag = AtomicBoolean(false)
         val gate = CompletableDeferred<Unit>()

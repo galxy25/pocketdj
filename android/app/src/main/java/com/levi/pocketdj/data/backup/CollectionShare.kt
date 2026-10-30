@@ -64,7 +64,7 @@ object CollectionShare {
     const val NOT_POCKETDJ = "That isn't a PocketDJ file"
 
     /** Full-backup restore result (iOS `importBackup`): collection counts + sources + favorites. */
-    fun restoreMessage(s: ImportSummary, sourcesAdded: Int, favoritesAdded: Int, skippedItems: Int = 0): String {
+    fun restoreMessage(s: ImportSummary, sourcesAdded: Int, favoritesAdded: Int, skippedItems: Int = 0, editsAdded: Int = 0): String {
         val parts = ArrayList<String>()
         fun add(n: Int, one: String, many: String) { if (n > 0) parts += "$n ${if (n == 1) one else many}" }
         add(s.pockets, "pocket", "pockets")
@@ -79,7 +79,12 @@ object CollectionShare {
             s.added + s.merged > 0 -> "Restored ${s.added + s.merged} item(s)"
             else -> "Already up to date - nothing new to import"
         }
-        return if (skippedItems > 0) "$base ($skippedItems catalog items not bundled)" else base
+        val withEdits = if (editsAdded > 0) {
+            // Edits are stored (and re-exported) but Android has no catalog overlay yet: never claim they were applied.
+            val note = "$editsAdded ${if (editsAdded == 1) "edit" else "edits"} saved, not yet applied on Android"
+            if (base.startsWith("Already up to date")) note else "$base; $note"
+        } else base
+        return if (skippedItems > 0) "$withEdits ($skippedItems catalog items not bundled)" else withEdits
     }
 
     /** User-facing text for a failed import (unreadable file / not a PocketDJ file). */

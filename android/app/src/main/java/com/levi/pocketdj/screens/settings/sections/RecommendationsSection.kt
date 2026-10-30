@@ -20,6 +20,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.data.pockets.PocketsSettings
+import com.levi.pocketdj.data.settings.PrefKey
 import com.levi.pocketdj.data.recs.RecommendationService
 import com.levi.pocketdj.data.recs.RecsSettings
 import com.levi.pocketdj.screens.settings.SettingsCaption
@@ -27,6 +29,7 @@ import com.levi.pocketdj.screens.settings.SettingsHeader
 import com.levi.pocketdj.shell.SettingsSection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** Pure copy for Settings > Recommendations (iOS `SettingsView.recommendationsSection`). */
@@ -43,6 +46,28 @@ object RecommendationsSettingsCopy {
         "Removes the uploaded listening history, favorites, collection data, and listening pockets from " +
             "PocketDJ's servers. Your on-device history is untouched. If the engine stays on, fresh data is " +
             "uploaded again from now on."
+
+    const val POCKETS_TITLE = "Find my listening pockets"
+
+    /** iOS: the consent caption shows while pockets are off. */
+    fun showConsent(pocketsOn: Boolean) = !pocketsOn
+
+    /** iOS: a pockets sync error shows only while pockets are on. */
+    fun pocketsError(err: String?, pocketsOn: Boolean): String? = if (pocketsOn) err else null
+
+    /** What the pockets block renders; the composable consumes this so tests can pin the wiring. */
+    data class PocketsRows(val toggle: Boolean, val consent: Boolean, val error: String?)
+
+    /** [pocketsOn] null = DataStore has not emitted yet (no consent flash, no error). */
+    fun pocketsRows(recOn: Boolean, pocketsOn: Boolean?, err: String?): PocketsRows =
+        if (!recOn) PocketsRows(false, false, null)
+        else PocketsRows(true, pocketsOn == false && showConsent(false), pocketsError(err, pocketsOn == true))
+
+    /** Flipping the switch is an answer (Q91a): ANSWERED=true first, then ENABLED, so History never re-offers. */
+    suspend fun applyPocketsToggle(on: Boolean, set: suspend (PrefKey<Boolean>, Boolean) -> Unit) {
+        set(PocketsSettings.LISTENING_POCKETS_ANSWERED, true)
+        set(PocketsSettings.LISTENING_POCKETS_ENABLED, on)
+    }
 
     /** "Never" or a relative time like "5 minutes ago". */
     fun lastSentLabel(atMs: Long?, nowMs: Long = System.currentTimeMillis()): String =
@@ -61,6 +86,8 @@ internal fun recommendationsSection() = SettingsSection(
     }
     var confirmDelete by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    // Serializes pockets writes so the last tap always wins (privacy-sensitive opt-in).
+    val pocketsWriteLock = remember { kotlinx.coroutines.sync.Mutex() }
 
     SettingsHeader("Recommendations")
     SwitchRow("Use PocketDJ Recommendation Engine", enabled, "rec-engine-toggle") { on ->
@@ -70,6 +97,34 @@ internal fun recommendationsSection() = SettingsSection(
     if (enabled) {
         SwitchRow("Include lifetime play counts", shareCounts, "rec-share-playcounts-toggle") { on ->
             host.scope.launch { withContext(Dispatchers.IO) { graph.settings.set(RecsSettings.SHARE_LIFETIME_PLAY_COUNTS, on) } }
+        }
+        val pocketsOn by graph.settings.flow(PocketsSettings.LISTENING_POCKETS_ENABLED).collectAsState<Boolean, Boolean?>(initial = null)
+        SwitchRow(RecommendationsSettingsCopy.POCKETS_TITLE, pocketsOn == true, "pockets-toggle") { on ->
+            // enabledDidChange rides the settings flow collector (CollectionsGraph pockets wiring).
+            host.scope.launch {
+                pocketsWriteLock.withLock {
+                    withContext(Dispatchers.IO) {
+                        RecommendationsSettingsCopy.applyPocketsToggle(on) { k, v -> graph.settings.set(k, v) }
+                    }
+                }
+            }
+        }
+        if (RecommendationsSettingsCopy.pocketsRows(enabled, pocketsOn, null).consent) {
+            Text(PocketsSettings.CONSENT_TEXT, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        val pocketsSvc by produceState<com.levi.pocketdj.data.pockets.ListeningPocketsService?>(null) {
+            value = withContext(Dispatchers.IO) { runCatching { graph.collectionsGraph.listeningPockets }.getOrNull() }
+        }
+        // syncError is a plain volatile field, so poll it while pockets are on.
+        val pocketsErr by produceState<String?>(null, pocketsSvc, pocketsOn) {
+            if (pocketsOn != true) { value = null; return@produceState }
+            while (true) {
+                value = RecommendationsSettingsCopy.pocketsRows(true, pocketsOn, pocketsSvc?.syncError).error
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+        pocketsErr?.let {
+            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("pockets-sync-error"))
         }
         val last by (service?.lastSyncedAtMs ?: kotlinx.coroutines.flow.MutableStateFlow<Long?>(null)).collectAsState()
         val err by (service?.syncError ?: kotlinx.coroutines.flow.MutableStateFlow<String?>(null)).collectAsState()
