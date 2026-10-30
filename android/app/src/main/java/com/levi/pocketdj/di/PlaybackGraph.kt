@@ -186,7 +186,7 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         seq.editionDecider = com.levi.pocketdj.data.edition.PolicyEditionDecider(
             preferExplicit = { preferExplicitMirror },
             song = { id -> app.catalogRepository.state.value.catalog?.songsById?.get(id) },
-            isStored = { id -> app.servicesGraph.burnStore.hasLocalFile(id) },
+            isStored = { id -> app.servicesGraph.burnStore.isReadyInLedger(id) }, // ledger-only: runs on Main per row
             // Collections load synchronously in their store init; the catalog and the edition setting arrive async.
             ready = { app.catalogRepository.state.value.catalog != null && preferExplicitLoaded },
         )
@@ -233,6 +233,8 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         // Q96: the stall-hop probe runs on Main for every queue row: ledger only, never File/SAF. Set BEFORE
         // studioGraph.wire chains its studio-aware probe on top of this one.
         // (burnStore is touched inside the lambda: wiring must not force the ledger read at init.)
-        seq.rowOnDevice = { item -> app.servicesGraph.burnStore.isReadyInLedger(item.resolveId) }
+        seq.rowOnDevice = { item ->
+            app.servicesGraph.burnStore.isReadyInLedger(item.resolveId) || app.studioGraph.profileAudio.hasRecord(item.resolveId)
+        }
     }
 }

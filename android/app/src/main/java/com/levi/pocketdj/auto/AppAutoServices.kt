@@ -36,10 +36,13 @@ object AutoAsync {
         block: () -> T,
     ): com.google.common.util.concurrent.ListenableFuture<T> {
         val out = com.google.common.util.concurrent.SettableFuture.create<T>()
-        scope.launch(dispatcher) {
+        // ATOMIC: the body always starts, so the future is completed even if the scope was already cancelled.
+        val job = scope.launch(dispatcher, start = kotlinx.coroutines.CoroutineStart.ATOMIC) {
             try { out.set(block()) } catch (e: kotlinx.coroutines.CancellationException) { out.cancel(false); throw e }
             catch (t: Throwable) { out.setException(t) }
         }
+        job.invokeOnCompletion { if (!out.isDone) out.cancel(false) }
+        out.addListener({ if (out.isCancelled) job.cancel() }, com.google.common.util.concurrent.MoreExecutors.directExecutor())
         return out
     }
 }

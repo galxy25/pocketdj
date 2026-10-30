@@ -109,9 +109,12 @@ class PlaybackService : MediaLibraryService() {
         cb
     }
     /** Q96: off-Main work for the Auto binder callbacks (graph build, tree reads, search scoring). */
-    private val autoBg = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+    // Serialized: the Auto tree holds check-then-act state written for one thread; stays off Main.
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val autoDispatcher = kotlinx.coroutines.Dispatchers.Default.limitedParallelism(1)
+    private val autoBg = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + autoDispatcher)
     private fun <T> autoAsync(block: () -> T) =
-        com.levi.pocketdj.auto.AutoAsync.compute(autoBg, kotlinx.coroutines.Dispatchers.Default, block)
+        com.levi.pocketdj.auto.AutoAsync.compute(autoBg, autoDispatcher, block)
     private var forwardingPlayer: SequencerForwardingPlayer? = null
     private var exoOwner: ExoOwner? = null
     private var exoPlayer: ExoPlayer? = null
@@ -616,7 +619,7 @@ class PlaybackService : MediaLibraryService() {
             // Hit: the onSearch pass already scored it. Miss: score the catalog on Default, not on this Main callback.
             autoSearchLatest?.takeIf { it.first == query }?.second?.let { return Futures.immediateFuture(page(it)) }
             return Futures.transform(
-                autoAsync { auto.search(query) },
+                autoAsync { auto.search(query).also { autoSearchLatest = query to it } },
                 { found -> page(found) },
                 com.google.common.util.concurrent.MoreExecutors.directExecutor(),
             )

@@ -35,4 +35,12 @@ class AutoAsyncRootTest {
             assertEquals("boom", e.cause?.message)
         }
     }
+
+    @Test fun preCancelledScopeStillCompletesTheFuture() {
+        val dead = CoroutineScope(SupervisorJob() + Dispatchers.Default).also { it.coroutineContext[kotlinx.coroutines.Job]!!.cancel() }
+        val f = AutoAsync.compute(dead, Dispatchers.Default) { 1 }
+        val deadline = System.currentTimeMillis() + 5_000
+        while (!f.isDone && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        assertTrue("future must not hang", f.isDone)
+    }
 }
