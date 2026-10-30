@@ -9,7 +9,6 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 
 ## OPEN
 
-- **Q112 [Answers wave 5, ANS-SURF-2]** assetlinks.json has only the debug fingerprint; need the direct-signing and Play App Signing SHA-256 values to publish (script refuses until placeholders replaced). Publish to jukebox.pocket-dj.com once provided? — *Default: not uploaded; verify-app-links reports unverified (1024).* — App Links verification.
 - **Q113 [Answers wave 5, ANS-GAP-1]** On accepting an ad-hoc Apple Music jukebox request, iOS captures on accept; Android requests a rip and waits up to 15 min. Match iOS? — *Default: rip-on-accept.* — Guest request latency.
 - **Q114 [Answers wave 5, ANS-GAP-2]** Does Apple accept the undocumented library-playlist track DELETE for Web-API-created playlists? Device-only check with a real account. — *Default: reconcile no-ops if refused.* — Playlist removals/reorders reaching Apple Music.
 - **Q115 [Answers wave 5, ANS-GAP-4]** Restored backup edits are stored but not applied (no catalog edits overlay on Android). Build the overlay? — *Default: stored only; COL-14 stays PARTIAL.* — Backup parity.
@@ -39,6 +38,9 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **W7** When the best match is a Mix cell, should ▶ load the run into Mix Auto-DJ, or always use the regular player? — *Default: regular player.*
 
 ## ANSWERED
+
+- **Q112 [Answers wave 5, ANS-SURF-2]** assetlinks.json has only the debug fingerprint; need the direct-signing and Play App Signing SHA-256 values to publish (script refuses until placeholders replaced). Publish to jukebox.pocket-dj.com once provided? — *Default: not uploaded; verify-app-links reports unverified (1024).* — App Links verification.
+  - **Resolved by Claude 2026-10-29 (per Levi Q3 "links should open app"):** Play App Signing uses our own key, so release = Play fingerprint 26:C3:CD:8F:…:D6:74; debug fingerprint dropped; published to https://jukebox.pocket-dj.com/.well-known/assetlinks.json (200 application/json).
 
 - **Q1 [distribution]** How do you want to install Android builds: Play Console internal testing track (TestFlight-like, needs a Play developer account + signing key upload) or direct APK sideload via adb to your phone? — *Default: debug APK, emulator only.* — Needed before the first wave worth installing on a real phone.
   - **Levi (2026-10-29):** both
