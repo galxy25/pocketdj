@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-GM-3 - Games deep links
 
@@ -12,3 +12,11 @@ state: implemented
 Notes: build needs -Pkotlin.daemon.jvmargs=-Xmx4g; one transient compiler backend failure under load, passed on rerun. Emulator step not run (shared emulator).
 ## Questions for Levi
 None.
+
+## Review
+- MINOR GamesRoutes effect untested -> fixed: extracted pure `applyGameLink(game) -> GameLinkState` (used by the LaunchedEffect) + 2 tests; effect already sits above the overlay early returns. Emulator cold/warm step NOT run (shared emulator; integrator owns it).
+- NIT missing tokens -> fixed: collectorspuzzle, gem-collector, gemcollector (+ test).
+- NIT dispatcher fallback double-post -> rejected (optional; harmless defence, left as is).
+- NIT imports -> fixed (imports sorted, FQNs replaced in GameLinkHandler).
+
+fixes applied. Suite 5607 tests, 0 failures (was 5604); assembleDebug green.

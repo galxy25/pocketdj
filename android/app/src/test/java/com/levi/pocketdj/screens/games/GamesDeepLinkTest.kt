@@ -34,4 +34,17 @@ class GamesDeepLinkTest {
         assertEquals(GameLink.InThePocket, GameLink.fromToken("ITP"))
         assertNull(GameLink.fromToken(null))
     }
+
+    @Test fun applyGameLinkPuzzleOpensOnlyPuzzleAndClearsSession() {
+        assertEquals(GameLinkState(true, false, null), applyGameLink(GameLink.Puzzle))
+    }
+
+    @Test fun applyGameLinkInThePocketOpensOnlyItp() {
+        assertEquals(GameLinkState(false, true, null), applyGameLink(GameLink.InThePocket))
+    }
+
+    @Test fun lenientTokensCoverGameNames() {
+        for (t in listOf("gem-collector", "gemcollector", "collectorsPuzzle", "collectors_puzzle", "Gem-Collector"))
+            assertEquals(t, GameLink.Puzzle, GameLink.fromToken(t))
+    }
 }

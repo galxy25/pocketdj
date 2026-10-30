@@ -46,7 +46,8 @@ enum class GameLink {
     companion object {
         /** Lenient tokens: `puzzle|gem|gems|collector(s)`, `inthepocket|in-the-pocket|itp`. */
         fun fromToken(t: String?): GameLink? = when (t?.lowercase()?.replace("_", "-")) {
-            "puzzle", "gem", "gems", "collector", "collectors", "collectors-puzzle" -> Puzzle
+            "puzzle", "gem", "gems", "collector", "collectors", "collectors-puzzle", "collectorspuzzle",
+            "gem-collector", "gemcollector" -> Puzzle
             "inthepocket", "in-the-pocket", "itp" -> InThePocket
             else -> null
         }
