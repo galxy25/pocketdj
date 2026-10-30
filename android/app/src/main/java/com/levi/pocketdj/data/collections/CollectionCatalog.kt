@@ -41,6 +41,11 @@ const val STUDIO_ARTIST = "Studio"
 /** Q50: studio items read as the user's own: artist = profile name, fallback "Pocket DJ". */
 fun studioArtistFor(profileName: String?): String = profileName?.trim().orEmpty().ifEmpty { "Pocket DJ" }
 
+/** Q50 wiring (AppGraph calls this): studio tracks carry the live profile name as artist. */
+fun wireStudioArtist(store: CollectionsStore, profileName: () -> String?) {
+    store.studioArtist = { studioArtistFor(runCatching { profileName() }.getOrNull()) }
+}
+
 /** iOS PocketsView:96 — a clean-only collection dims the catalog rows it would SKIP at play (explicit, no clean cut). */
 fun isCleanOnlyDimmed(cleanOnly: Boolean?, song: IndexSong?): Boolean =
     cleanOnly == true && com.levi.pocketdj.data.edition.EditionPolicy.isSkipped(song)

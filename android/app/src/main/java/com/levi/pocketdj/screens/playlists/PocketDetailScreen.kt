@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.ui.dnd.DropHighlight
 import com.levi.pocketdj.ui.dnd.acceptSongsInto
 import com.levi.pocketdj.ui.dnd.clipboardHasSongs
@@ -144,7 +145,7 @@ fun PocketDetailScreen(
         }
 
         fun playStudioItem(id: String) {
-            if (store.playNow(listOf(id), name = pocket.name) != null) onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
+            if (store.playNow(listOf(id), name = pocket.name, sourceToken = PlayContext.SOURCE_POCKET, repeats = pocket.songRepeats.filterKeys { it == id }, originId = pocketId) != null) onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
             else scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
         }
 

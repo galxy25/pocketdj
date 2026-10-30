@@ -132,6 +132,22 @@ class RealizeStudioEntriesTest {
         assertEquals("Pocket DJ", s.playNow(listOf(loopId))!!.tracks[0].artist)
     }
 
+    @Test fun wireStudioArtistFollowsTheRealProfileStore() {
+        val profile = com.levi.pocketdj.data.sync.ProfileStore(File(tmp.root, "pocketdj-profile.json"))
+        val s = store()
+        wireStudioArtist(s) { profile.name }
+        assertEquals("Pocket DJ", s.playNow(listOf(loopId))!!.tracks[0].artist)
+        profile.setName("DJ Levi")
+        assertEquals("DJ Levi", s.playNow(listOf(loopId))!!.tracks[0].artist)
+        wireStudioArtist(s) { error("boom") }
+        assertEquals("Pocket DJ", s.playNow(listOf(loopId))!!.tracks[0].artist)
+    }
+
+    @Test fun playNowHonorsRepeatCountForASingleStudioRow() {
+        val set = store().playNow(listOf(loopId), repeats = mapOf(loopId to 4))!!
+        assertEquals(4, set.tracks[0].repeatCount)
+    }
+
     @Test fun realizeUsesTheProfileArtistForStudioEntries() {
         val c = ctx().copy(studioArtist = studioArtistFor("Levi"))
         assertEquals("Levi", RealizeEngine.realize(playlist(loopId), c).tracks[0].artist)

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 - [x] Studio row tap -> store.playNow([id]) + open Now Playing (Pocket + Playlist detail); failure -> snackbar
 - [x] studioArtist = profile name, fallback "Pocket DJ" (AppGraph collections lazy; studioArtistFor())
@@ -11,3 +11,10 @@ Notes: ANS-PB-1 had no status file in this branch, so dimming uses EditionPolicy
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR PocketDetail/PlaylistDetail studio row tap ignored repeat count -> fixed (repeats, sourceToken, originId passed to store.playNow in both screens; test playNowHonorsRepeatCountForASingleStudioRow)
+- MINOR artist-from-profile wiring untested -> fixed (wireStudioArtist(store, profile) in CollectionCatalog.kt, called by AppGraph; test against a real ProfileStore on a temp file)
+- NIT rememberStudioArtist per-row collector / main-thread profile read -> not changed (optional; one-frame default only)
+
+fixes applied. Suite 5601, 0 failures (was 5599; +2). assembleDebug OK. (MicRecorderLifecycleTest stall watchdog flaked once, passed on rerun, unrelated.)

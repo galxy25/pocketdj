@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.ui.dnd.DropHighlight
 import com.levi.pocketdj.ui.dnd.acceptSongsInto
 import com.levi.pocketdj.ui.dnd.clipboardHasSongs
@@ -338,7 +339,7 @@ fun PlaylistDetailScreen(
                             rowNote = rememberRowNote(node.songId, node.songId?.let { manifest.containsKey(it) } ?: false),
                             onTapSong = { detailSongId = it },
                             onTapStudio = { id ->
-                                if (store.playNow(listOf(id), name = playlist.name) != null) onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
+                                if (store.playNow(listOf(id), name = playlist.name, sourceToken = PlayContext.SOURCE_PLAYLIST, repeats = mapOf(id to (node.repeatCount ?: 1)), originId = playlistId) != null) onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
                                 else scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
                             },
                             cleanOnly = playlist.cleanOnly,
