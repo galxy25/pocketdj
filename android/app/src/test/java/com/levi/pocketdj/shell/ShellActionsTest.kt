@@ -167,6 +167,25 @@ class ShellActionsTest {
     }
 
     @Test
+    fun playSetlist_playsSavedRows_tagsSetlist_shuffleKeepsSongs_unknownIdThrows() = runTest {
+        val r = rig()
+        val pl = r.store.createPlaylist("Peak", listOf("s1", "s2", "s3"))
+        val saved = r.store.realize(pl.id, seed = "x", name = "Friday")!!
+        assertEquals("Friday", r.actions.playSetlist(saved.id))
+        val p = r.played.single()
+        assertEquals(listOf("s1", "s2", "s3"), p.set.tracks.map { it.songId })
+        assertEquals(NOW_PLAYING_SETLIST_ID, p.set.id)
+        assertEquals(PlayContext.SOURCE_SETLIST, p.context.source)
+        assertEquals(saved.id, r.store.state.value.nowPlayingOriginId)
+        r.actions.playSetlist(saved.id, shuffle = true)
+        assertEquals(setOf("s1", "s2", "s3"), r.played.last().set.tracks.map { it.songId }.toSet())
+        expect("I couldn't find that set list in PocketDJ.") { r.actions.playSetlist("set_nope") }
+        r.incomplete = true
+        expect("Finish setting up PocketDJ in the app first.") { r.actions.playSetlist(saved.id) }
+        assertEquals(2, r.played.size)
+    }
+
+    @Test
     fun playSong_oneTrackBrowserSet_returnsTitle() = runTest {
         val r = rig()
         assertEquals("Song s2", r.actions.playSong("s2"))

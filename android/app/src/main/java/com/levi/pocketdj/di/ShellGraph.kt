@@ -194,23 +194,20 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
             }
         }
         deepLinkSeams.playItem = { kind, id, shuffle ->
-            if (kind == PlayKind.Setlist) {
-                NavRequestBus.post(ShellRoute.Setlist(id, autoplay = true))
-            } else {
-                app.appScope.launch {
-                    try {
-                        when (kind) {
-                            PlayKind.Playlist -> shellActions.playPlaylist(id, shuffle)
-                            PlayKind.Pocket -> shellActions.playPocket(id, shuffle)
-                            else -> shellActions.playAlbum(id, shuffle)
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        NavRequestBus.postMessage(
-                            (e as? ShellActionException)?.message ?: "Couldn't play that.",
-                        )
+            app.appScope.launch {
+                try {
+                    when (kind) {
+                        PlayKind.Playlist -> shellActions.playPlaylist(id, shuffle)
+                        PlayKind.Pocket -> shellActions.playPocket(id, shuffle)
+                        PlayKind.Setlist -> shellActions.playSetlist(id, shuffle)
+                        PlayKind.Album -> shellActions.playAlbum(id, shuffle)
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    NavRequestBus.postMessage(
+                        (e as? ShellActionException)?.message ?: "Couldn't play that.",
+                    )
                 }
             }
             null

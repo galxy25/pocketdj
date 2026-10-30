@@ -1,0 +1,14 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.levi.pocketdj",
+      "sha256_cert_fingerprints": [
+        "8F:37:E0:E2:86:51:CF:10:DD:4B:4E:A9:9F:8B:9E:A8:58:E5:85:F8:BB:60:55:93:7E:BE:44:5E:24:94:70:9D",
+        "REPLACE_WITH_DIRECT_SIGNING_RELEASE_SHA256",
+        "REPLACE_WITH_PLAY_APP_SIGNING_SHA256"
+      ]
+    }
+  }
+]

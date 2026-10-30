@@ -67,6 +67,39 @@ class DeepLinkDispatcherTest {
         assertEquals(listOf("Playing from links is coming soon"), messages)
     }
 
+    @Test fun everyPlayKindReachesPlayItemSeamWithShuffle() = runTest {
+        val seen = mutableListOf<Triple<PlayKind, String, Boolean>>()
+        seams.playItem = { k, id, sh -> seen += Triple(k, id, sh); null }
+        val d = dispatcher(FakeGate(true))
+        d.handle(DeepLinkParser.parse("pocketdj://play/playlist/p1?shuffle=1"))
+        d.handle(DeepLinkParser.parse("pocketdj://play/pocket/k1"))
+        d.handle(DeepLinkParser.parse("pocketdj://play/setlist/s1?shuffle=1"))
+        d.handle(DeepLinkParser.parse("pocketdj://play/album/a1"))
+        assertEquals(
+            listOf(
+                Triple(PlayKind.Playlist, "p1", true),
+                Triple(PlayKind.Pocket, "k1", false),
+                Triple(PlayKind.Setlist, "s1", true),
+                Triple(PlayKind.Album, "a1", false),
+            ),
+            seen,
+        )
+        assertTrue(routes.isEmpty())
+    }
+
+    @Test fun playItemFailureMessageIsPosted() = runTest {
+        seams.playItem = { _, _, _ -> "nope" }
+        dispatcher(FakeGate(true)).handle(DeepLinkParser.parse("pocketdj://play/setlist/s1"))
+        assertEquals(listOf("nope"), messages)
+    }
+
+    @Test fun httpsJukeboxLinkReachesJoinSeam() = runTest {
+        val joined = mutableListOf<String>()
+        seams.joinJukebox = { id, _ -> joined += id }
+        dispatcher(FakeGate(true)).handle(DeepLinkParser.parse("https://jukebox.pocket-dj.com/exmkrd5a/"))
+        assertEquals(listOf("exmkrd5a"), joined)
+    }
+
     @Test fun newestLinkOfAKindWinsWhileParked() = runTest {
         val gate = FakeGate(false)
         val joined = mutableListOf<String>()

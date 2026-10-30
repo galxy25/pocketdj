@@ -48,3 +48,19 @@ Once Step 1 is done (so signing won't fail), add to each app entitlements file
 
 then `apple/scripts/testflight*.sh`. Verify: tapping `https://jukebox.pocket-dj.com/<id>/` on a
 device with the app installed opens the app to the join sheet (not Safari).
+
+## Android App Links (`assetlinks.json`)
+
+`.well-known/assetlinks.json` (this dir) is served at
+`https://jukebox.pocket-dj.com/.well-known/assetlinks.json` (200, `application/json`, no redirect) and lets
+the Android app's `autoVerify` intent filter (`jukebox.pocket-dj.com`) open `https://` jukebox links directly.
+It must list EVERY signing cert users can install: debug (filled in), the direct-signing release key
+(`keytool -list -v -keystore <release.jks>`), and the Play App Signing cert (Play Console -> App integrity).
+Replace the two `REPLACE_WITH_*` entries, then publish both well-known files in one step:
+
+```bash
+scripts/publish-jukebox-wellknown.sh      # uploads AASA + assetlinks, invalidates CloudFront, curls both
+adb shell pm verify-app-links --re-verify com.levi.pocketdj
+adb shell pm get-app-links com.levi.pocketdj    # jukebox.pocket-dj.com: verified
+```
+(The `.well-known/apple-app-site-association` here is a copy of the root file, kept in sync for the script.)
