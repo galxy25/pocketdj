@@ -41,7 +41,7 @@ interface StreamAdopter {
 /** [StreamAdopter] over the real [BurnStore] (whose adoption fires `onAnyBurnFinalized`). */
 class BurnStoreAdopter(
     private val burns: BurnStore,
-    private val yieldBackground: (String) -> Unit = {},
+    private val yieldBackground: (String) -> Unit = { burns.yieldBackgroundDownload(it) },
 ) : StreamAdopter {
     override fun adoptFile(songId: String, title: String, artist: String, from: File) =
         burns.adoptStreamedFile(songId, title, artist, from)

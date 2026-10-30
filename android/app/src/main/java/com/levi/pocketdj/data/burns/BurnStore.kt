@@ -707,7 +707,7 @@ class BurnStore(
         if (_items.value[songId]?.state == BurnState.READY && localUrl(songId) != null) return null
         // A burn run is writing files right now (possibly this very audio path): don't race it.
         // The streamed file stays in the cache and plays from there.
-        // TODO(SVC-3): wire yieldBackgroundDownload so the background burn skips this song instead.
+        // (A queued background transfer is cancelled up front by [yieldBackgroundDownload] when the stream opens.)
         if (runLock.isLocked) return null
         val root = folder.activeWritable() ?: return null
         val size = from.takeIf { it.isFile }?.length() ?: return null
@@ -995,6 +995,18 @@ class BurnStore(
             if (_items.value[id]?.state == BurnState.DOWNLOADING) dropItems(listOf(id))
         }
         save()
+    }
+
+    /**
+     * MIX STREAMING (iOS `yieldBackgroundDownload`): a deck is about to stream this song - cancel a
+     * still-pending BACKGROUND transfer of it (the lane enqueues a whole collection at once) so the
+     * file isn't fetched twice; the stream's adoption lands the same `.ready` item. Only acts on a
+     * `.downloading` row with transfers wired; a no-op on the in-process path. Returns true if it yielded.
+     */
+    fun yieldBackgroundDownload(songId: String): Boolean {
+        if (transfers == null || _items.value[songId]?.state != BurnState.DOWNLOADING) return false
+        cancelTransfers(listOf(songId))
+        return true
     }
 
     /** Drop items whose file vanished; delete+drop poisoned <4 KB XML/HTML "audio". Call at launch. */
