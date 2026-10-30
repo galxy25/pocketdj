@@ -20,6 +20,9 @@ Everything the emulator cannot prove. One checkbox per item. Use the release-lik
 - [ ] **Real mic + MIDI** (STU-3/10): record a Sample via mic (built-in and Bluetooth input); USB and BLE MIDI keyboard note-on drives instruments; DRM-protected file import is refused with the message.
 - [ ] **Real stems** (STU-7/15/14): Stemify a song, download stems, play synced stems in Demuxer (mute/solo), chord quality on a real song.
 
+- [ ] **Cue seek on Apple Music** (STU-6): drop a cue on an AM-backed row in Producer ▸ Cues and tap it: playback starts then seeks to the cue (emulator verified the local-file path only).
+- [ ] **In the Pocket cloud mode** (GM-7): with the listening-pockets service accepting the profile (green MAX_PROFILES cap is currently full), a round uses server pocket results and uploads the round.
+
 ## Apple Music / accounts (needs a subscribed account)
 - [ ] **Full-track AM** (PB-2/3, Q36): sign into Apple Music, play an AM-only song full length; in a game round confirm 30 s previews are used (Q36 default: previews only).
 - [ ] **AM sign-in + link** (SURF-3, COL-1): onboarding stage 2 completes with a real account.

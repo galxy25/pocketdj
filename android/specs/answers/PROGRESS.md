@@ -42,3 +42,33 @@ Legend: **DEV** = remaining gap is device-only (DEVICE-CHECKLIST.md). **EMU** = 
 | BRW-11 / BRW-15, COL-8 | Planned: outside answers scope |
 
 Full JVM suite count at this tip is recorded in status/ANS-VERIFY-1.md.
+
+## Integrator verification (2026-10-30, emulator-5556 / emulator-5554)
+
+Every EMU row above was driven on an emulator; the ledger rows carry the evidence. FIXED = a bug found while verifying, fixed with a test, then re-driven.
+
+| Row | Result | Fix |
+|---|---|---|
+| SURF-2, SURF-6 | PASS | — |
+| SVC-1 | FIXED | 60b9a325 rip-on-demand queue row plays the presigned URL |
+| SVC-4 | FIXED | 5075e668 Stop cancels a Burn's auto-rips; single-flight rips-manifest refresh (OOM) |
+| SVC-7, SVC-8, SVC-9, SVC-10 | PASS | two emulators against the green profile-sync Lambda (doc injected locally, not published) |
+| SVC-11, PB-5 | FIXED | a8e0bc04 History keeps a new live row in view |
+| PB-10 | PASS | — |
+| COL-6 | FIXED | 25ab54bd long-press menu no longer swallows a song drop |
+| COL-7, COL-10, COL-12, COL-18, COL-20 | PASS | COL-18 via the results fixture (live service capped) |
+| BRW-7, BRW-10 | PASS | — |
+| BRW-12 | FIXED | c63c8fc9 For You Refresh OOM (largeHeap) |
+| BRW-13 | FIXED | 24c7be1d profile-cap-reached is not key-mismatch |
+| MIX-5, MIX-11, MIX-12, MIX-13, MIX-14, MIX-15, MIX-16 | PASS | — |
+| STU-3, STU-4, STU-6, STU-7, STU-11, STU-12 | PASS | — |
+| STU-14 | FIXED | 2edcfe20 stem rows redraw on mute/solo |
+| GM-4, GM-7 | PASS | GM-7 local mode; cloud mode needs the pockets cap raised |
+
+Review fixes (answers/review, merged 6bbb937e): no app graph on System UI's boot-time media-resumption bind; Retrofit full-mode R8 keep rules for ShazamKit.
+
+### For Levi
+- Green rec-engine and listening-pockets Lambdas refuse new profiles (`403 profile-cap-reached`, MAX_PROFILES default 10 is full). New Play installs cannot use cloud recommendations, listening pockets or In the Pocket cloud mode until it is raised (`MAX_PROFILES=<n> scripts/lambda/<fn>/deploy.sh`).
+- Profile sync works end to end but stays dark until the endpoints doc with `profileSyncBase` + `capabilities.profileSyncEnroll` is published (Q119).
+- Data safety: release builds use live ShazamKit (mic audio signatures sent to Apple on tap of the recognize button), which may count as "Audio" on the form.
+- iOS `RecEngineClient.map403` folds profile-cap-reached into key-mismatch the same way (Android fixed).
