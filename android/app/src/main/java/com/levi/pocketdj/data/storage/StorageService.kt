@@ -64,6 +64,10 @@ class StorageService(
     private val mixSessionsDir: File? = null,
     /** MIX-12: deletes every take except the in-flight one. */
     private val clearMixSessions: (() -> Unit)? = null,
+    /** ANS-STU-7: bytes of the "Pocket DJ" profile audio (originals + stems). */
+    private val profileAudioBytes: (() -> Long)? = null,
+    /** ANS-STU-7: delete every profile item (audio + records). */
+    private val clearProfileAudio: (() -> Unit)? = null,
 ) {
     /**
      * The slice of StudioStore the Storage screen uses (a port for JVM tests). [deleteAll] is STRICT: it
@@ -106,6 +110,7 @@ class StorageService(
         STUDIO_TAKES(clearable = true),
         STUDIO_INSTRUMENTS(clearable = true), // downloaded SoundFonts: re-downloadable
         MIX_SESSIONS(clearable = true), // recorded mix takes: explicit delete-all, skips the active take
+        PROFILE_AUDIO(clearable = true), // the user's saved demuxes/samples in the "Pocket DJ" source: explicit + confirmed
         ;
 
         /** The Studio family a STUDIO_* category maps to, else null. */
@@ -136,6 +141,7 @@ class StorageService(
             Category.FAVORITES -> favoritesFile?.let(::fileSize) ?: 0L
             Category.LYRICS -> lyricsCacheDir?.let(::dirSize) ?: 0L
             Category.MIX_SESSIONS -> mixSessionsDir?.let(::dirSize) ?: 0L
+            Category.PROFILE_AUDIO -> runCatching { profileAudioBytes?.invoke() }.getOrNull() ?: 0L
             Category.STUDIO_SAMPLES, Category.STUDIO_LOOPS, Category.STUDIO_SEQUENCES,
             Category.STUDIO_TAKES, Category.STUDIO_INSTRUMENTS ->
                 runCatching { category.studioFamily?.let { studioOps?.usageBytes(it) } }.getOrNull() ?: 0L
@@ -167,6 +173,7 @@ class StorageService(
                 clearLyrics?.invoke() ?: lyricsCacheDir?.listFiles()?.forEach { it.delete() }
             }
             Category.MIX_SESSIONS -> runCatching { clearMixSessions?.invoke() }
+            Category.PROFILE_AUDIO -> runCatching { clearProfileAudio?.invoke() }
             Category.STUDIO_SAMPLES, Category.STUDIO_LOOPS, Category.STUDIO_SEQUENCES,
             Category.STUDIO_TAKES, Category.STUDIO_INSTRUMENTS ->
                 runCatching { category.studioFamily?.let { studioOps?.deleteAll(it) } }

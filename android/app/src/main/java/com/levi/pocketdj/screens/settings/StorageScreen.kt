@@ -412,6 +412,12 @@ internal fun storageCategoryMeta(category: Category): StorageCategoryMeta = when
         clearTitle = "Delete mix recordings?",
         clearBody = "Permanently deletes every recorded mix take from this device. Session logs are kept.",
     )
+    Category.PROFILE_AUDIO -> StorageCategoryMeta(
+        title = "Pocket DJ audio",
+        description = "Demuxes and samples saved to your Pocket DJ source (originals and stems).",
+        clearTitle = "Delete Pocket DJ audio?",
+        clearBody = "Permanently deletes every song saved to your Pocket DJ source from this device. This can't be undone.",
+    )
 }
 
 private fun studioMeta(title: String, description: String, noun: String) = StorageCategoryMeta(

@@ -328,6 +328,8 @@ class AppGraph private constructor(context: Context) {
             // MIX-12: recorded mix takes; delete-all never unlinks the in-flight take.
             mixSessionsDir = com.levi.pocketdj.mix.recording.SessionFolders.root(appContext.filesDir),
             clearMixSessions = { mixGraph.mixRecorder.deleteAllRecordings() },
+            profileAudioBytes = { studioGraph.profileAudio.usageBytes() },
+            clearProfileAudio = { studioGraph.profileAudio.deleteAll() },
         )
     }
 

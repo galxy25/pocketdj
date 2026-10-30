@@ -243,7 +243,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val audio = app.appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         MixEngine(
             sinkFactory = { AudioTrackSink(audio) },
-            resolver = BurnStoreTrackResolver(app.servicesGraph.burnStore),
+            resolver = com.levi.pocketdj.data.profile.ProfileMixTrackResolver(app.studioGraph.profileAudio, BurnStoreTrackResolver(app.servicesGraph.burnStore)),
             opener = MixSourceOpener { f ->
                 // Mp3Decoder is the only PcmSource today; a burn it cannot open (e.g. adopted .wav) is refused visibly.
                 val d = runCatching { Mp3Decoder(f) }.getOrNull()
@@ -269,7 +269,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 val b = app.servicesGraph.burnStore
                 // Stream-gate-aware readiness: ripped-but-gated songs are deferred, never dropped.
                 dj.seams = com.levi.pocketdj.mix.engine.LoaderAutoSeams(
-                    burned = { id -> b.hasLocalFile(id) },
+                    burned = { id -> b.hasLocalFile(id) || app.studioGraph.profileAudio.hasLocalAsset(id) },
                     finishedStream = { id -> mixStreamLoader.stream(id)?.let { st -> st.isComplete && !st.failed } == true },
                     ripped = { id -> mixStreamLoader.isRipped(id) },
                     canStream = { id -> mixStreamLoader.canStream(id, forAuto = true) },
@@ -280,7 +280,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             val burns = app.servicesGraph.burnStore
             val extras = MixDeckExtras(
                 engine = it,
-                provider = BurnStemProvider(burns, mixStreamLoader),
+                provider = BurnStemProvider(burns, mixStreamLoader).let { base ->
+                    com.levi.pocketdj.data.profile.ProfileStemProvider(app.studioGraph.profileAudio, base) { f -> runCatching { Mp3Decoder(f) }.getOrNull() }
+                },
                 runner = VoiceRunner { v -> val p = VoicePump(v).start(); AutoCloseable { p.stopAndJoin() } },
                 scope = main,
                 localGrid = { id -> burns.localBeatGrid(id) },
@@ -534,7 +536,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     private val npHostLazy = lazy {
         val controller = app.playbackController
         val seq = app.playbackGraph.sequencer
-        val resolver = BurnStoreTrackResolver(app.servicesGraph.burnStore)
+        val resolver = com.levi.pocketdj.data.profile.ProfileMixTrackResolver(app.studioGraph.profileAudio, BurnStoreTrackResolver(app.servicesGraph.burnStore))
         val ports = object : com.levi.pocketdj.mix.nowplaying.DspHostPorts {
             override val currentSongId: String? get() = seq.state.value.let { if (it.isRunning) it.currentSongId else null }
             override val currentTitle: String? get() = controller.nowPlaying.value?.title
@@ -742,7 +744,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val catalog = { app.catalogRepository.state.value.catalog }
         CollectionMixDownloader(
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
-            burns = BurnStoreMixBurns(burns, app.servicesGraph.transfers),
+            burns = BurnStoreMixBurns(burns, app.servicesGraph.transfers) { id -> app.studioGraph.profileAudio.hasLocalAsset(id) },
             rips = RipsMixRips(ripsRepo, app.ripServerClient, app.servicesGraph.ripCoordinator),
             host = autoMixHost,
         ).also { d ->
@@ -1004,7 +1006,8 @@ class CatalogResolverSources(private val app: AppGraph) : MixResolverSources {
     }
     override fun setlist(setlistId: String): Setlist? = app.collections.setlist(setlistId)
     override fun song(songId: String): IndexSong? = catalog()?.songsById?.get(songId)
-    override fun isOnDisk(songId: String): Boolean = app.servicesGraph.burnStore.localUrl(songId) != null
+    override fun isOnDisk(songId: String): Boolean =
+        app.servicesGraph.burnStore.localUrl(songId) != null || app.studioGraph.profileAudio.hasLocalAsset(songId)
     override fun cleanOnly(source: com.levi.pocketdj.mix.model.MixSource): Boolean = when (source) {
         is com.levi.pocketdj.mix.model.MixSource.Pocket -> app.collections.pocket(source.value)?.cleanOnly == true
         is com.levi.pocketdj.mix.model.MixSource.Playlist -> app.collections.playlist(source.value)?.cleanOnly == true
@@ -1034,8 +1037,10 @@ private fun countLeaves(n: com.levi.pocketdj.data.collections.PlaylistNode): Int
 class BurnStoreMixBurns(
     private val burns: BurnStore,
     private val transfers: com.levi.pocketdj.data.transfers.TransferCoordinator,
+    /** ANS-STU-7: `pdj_` profile items are on disk by definition (never burned/ripped). */
+    private val profileOnDisk: (String) -> Boolean = { false },
 ) : MixDownloadBurns {
-    override fun isOnDisk(songId: String) = burns.localUrl(songId) != null
+    override fun isOnDisk(songId: String) = burns.localUrl(songId) != null || profileOnDisk(songId)
     override val userBurnActive: Boolean get() = burns.loopActive
     override suspend fun burn(songId: String, title: String, artist: String) {
         burns.burn(listOf(BurnSong(songId, title, artist)))

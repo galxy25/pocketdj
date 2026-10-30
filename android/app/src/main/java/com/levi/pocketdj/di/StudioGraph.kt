@@ -507,6 +507,32 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         StudioAnalyzer(studioStore, studioPlayback, studioMaterializer) { path -> runCatching { studioRender.decodeBuffer(path) }.getOrNull() }
     }
 
+    // ---- ANS-STU-7: the per-profile "Pocket DJ" custom-audio source (iOS ProfileSourceStore). Device-local, no cloud sync.
+
+    /** Records + synthetic catalog source. Lazy: reads its small doc on first touch (the catalog merge, off-main). */
+    val profileSource: com.levi.pocketdj.data.profile.ProfileSourceStore by lazy {
+        val files = app.appContext.filesDir
+        com.levi.pocketdj.data.profile.ProfileSourceStore(
+            File(files, com.levi.pocketdj.data.profile.ProfileSourceStore.FILE_NAME), File(files, "profile-audio"),
+        ).also { s ->
+            val profile = app.servicesGraph.profile
+            s.setProfileName(profile.name)
+            s.onChanged = { app.catalogRepository.remergeLocal() }
+            // A rename re-tags the source + every item artist on the next merge.
+            app.appScope.launch(Dispatchers.IO) {
+                profile.state.collect { st -> s.setProfileName(st.name) }
+            }
+        }
+    }
+
+    val profileAudio: com.levi.pocketdj.data.profile.ProfileAudioStore by lazy {
+        com.levi.pocketdj.data.profile.ProfileAudioStore(profileSource)
+    }
+
+    /** Wraps the burned-first playback resolver so `pdj_` rows play from the profile audio store. */
+    fun withProfileAudio(base: com.levi.pocketdj.playback.sequencer.LocalFileResolver): com.levi.pocketdj.playback.sequencer.LocalFileResolver =
+        com.levi.pocketdj.data.profile.ProfileLocalFileResolver(profileAudio, base)
+
     /** Wired into AppGraph's collections init: lazy, so a user who never has a studio id never builds the store. */
     val collectionsLookup: StudioLookup = StudioLookup { id -> studioPlayback.infoFor(id) }
 
@@ -531,6 +557,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
      */
     fun wire() {
         val ctl = app.playbackController
+        ctl.rowResolvers.register(com.levi.pocketdj.data.profile.ProfileFenceResolver(profileAudio))
         ctl.rowResolvers.register(StudioRowResolver(prepare = { id -> studioPlayback.prepare(id) }))
         val prevOnDevice = ctl.sequencer.rowOnDevice
         ctl.sequencer.rowOnDevice = { item ->
@@ -698,6 +725,8 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     override val resetHooks: List<ResetHook> = listOf(
         ResetHook {
+            // ANS-STU-7: the profile source owns durable media (originals + stems): purge both with the record.
+            profileSource.clear()
             val s = studioStore
             StudioFamily.entries.forEach { s.deleteAll(it) }
             s.clearCues()
