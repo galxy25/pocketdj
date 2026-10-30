@@ -326,7 +326,8 @@ fun appleMusicFavoritesSection() = SettingsSection("appleMusicFavorites", 406) {
     st.lastError?.let {
         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("favorites-sync-error"))
     }
-    if (st.pullTotal > 0) {
+    androidx.compose.runtime.LaunchedEffect(sync, twoWay) { runCatching { sync.loadProgress() } }
+    if (twoWay && st.pullTotal > 0) {
         SettingsCaption("Checked ${st.pullDone} of ${st.pullTotal} songs this lap")
     }
     st.lastSyncedAtMs?.let {

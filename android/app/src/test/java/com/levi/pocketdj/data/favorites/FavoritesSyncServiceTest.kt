@@ -64,7 +64,7 @@ class FavoritesSyncServiceTest {
         seedOpt: Boolean = false,
         seed: String = "{}",
         ready: () -> Boolean = { true },
-        cursor: IntArray = intArrayOf(0),
+        cursor: Array<String> = arrayOf(""),
     ): FavoritesSyncService {
         val tokens = StaticAppleMusicTokens("dev", user)
         val api = AppleMusicApi(
@@ -284,20 +284,20 @@ class FavoritesSyncServiceTest {
     private fun gets() = requests().filter { it.method == "GET" }
 
     @Test fun pullPagesTwentyBatchesAndAdvancesCursor() = runTest {
-        val cursor = intArrayOf(0)
+        val cursor = arrayOf("")
         val pairs = bigCatalog(12_000)
         service(store(), pairs = pairs, cursor = cursor).run()
         assertEquals(20, gets().size)
-        assertEquals(5_000, cursor[0])
+        assertEquals("s04999", cursor[0])
     }
 
     @Test fun cursorWrapsAtEndOfCatalog() = runTest {
-        val cursor = intArrayOf(10_000)
+        val cursor = arrayOf("s09999")
         val pairs = bigCatalog(12_000)
         val svc = service(store(), pairs = pairs, cursor = cursor)
         svc.run()
         assertEquals(8, gets().size) // 2000 ids = 8 batches
-        assertEquals(0, cursor[0])
+        assertEquals("", cursor[0])
         assertEquals(12_000, svc.state.value.pullDone)
         assertEquals(12_000, svc.state.value.pullTotal)
     }
@@ -307,7 +307,7 @@ class FavoritesSyncServiceTest {
         s.set("s11999", true, "am11999")
         s.markPushed("s11999", s.entry("s11999")!!.atMs)
         val pairs = bigCatalog(12_000)
-        service(s, pairs = pairs, cursor = intArrayOf(0)).run()
+        service(s, pairs = pairs, cursor = arrayOf("")).run()
         val ids = gets().joinToString(",") { java.net.URLDecoder.decode(it.path!!, "UTF-8") }
         assertTrue(ids.contains("am11999"))
         assertFalse(ids.contains("am07000"))
@@ -317,10 +317,10 @@ class FavoritesSyncServiceTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest) = MockResponse().setResponseCode(429).setHeader("Retry-After", "0")
         }
-        val cursor = intArrayOf(5_000)
+        val cursor = arrayOf("s04999")
         val svc = service(store(), pairs = bigCatalog(12_000), cursor = cursor)
         svc.run()
-        assertEquals(5_000, cursor[0])
+        assertEquals("s04999", cursor[0])
         assertNotNull(svc.state.value.lastError)
         assertNull(svc.state.value.lastSyncedAtMs)
     }
@@ -328,7 +328,43 @@ class FavoritesSyncServiceTest {
     @Test fun pageOnlyReconcile_offPageLoveNotTouched() = runTest {
         ratingsBody = """{"data":[{"id":"am11000","type":"ratings","attributes":{"value":1}}]}"""
         val s = store()
-        service(s, pairs = bigCatalog(12_000), cursor = intArrayOf(0)).run()
+        service(s, pairs = bigCatalog(12_000), cursor = arrayOf("")).run()
         assertNull(s.entry("s11000")) // off-page: untouched this pass
+    }
+
+    @Test fun offPageFavoritesDoNotInflatePassBeyondTwentyBatches() = runTest {
+        val s = store()
+        for (i in 11_000 until 11_600) { s.set("s%05d".format(i), true, "am%05d".format(i)); s.markPushed("s%05d".format(i), s.entry("s%05d".format(i))!!.atMs) }
+        service(s, pairs = bigCatalog(12_000), cursor = arrayOf("")).run()
+        assertTrue(gets().size <= 20)
+    }
+
+    @Test fun cursorSurvivesCatalogShiftByStableSongId() = runTest {
+        val cursor = arrayOf("s04999")
+        // Songs inserted BEFORE the cursor must not shift the resume point.
+        val pairs = bigCatalog(12_000) + listOf("a0001" to "amA1", "a0002" to "amA2")
+        service(store(), pairs = pairs, cursor = cursor).run()
+        val ids = gets().joinToString(",") { java.net.URLDecoder.decode(it.path!!, "UTF-8") }
+        assertTrue(ids.contains("am05000"))
+        assertFalse(ids.contains("am04999"))
+        assertEquals("s09999", cursor[0])
+    }
+
+    @Test fun duplicateAmIdsAskedOnce() = runTest {
+        val pairs = listOf("s1" to "am1", "s2" to "am1", "s3" to "am1")
+        service(store(), pairs = pairs).run()
+        val ids = gets().joinToString(",") { java.net.URLDecoder.decode(it.path!!, "UTF-8") }
+        assertEquals(1, Regex("am1").findAll(ids).count())
+    }
+
+    @Test fun loadProgressFromPersistedCursorAndClearedWhenOff() = runTest {
+        val pairs = bigCatalog(100)
+        val on = service(store(), pairs = pairs, cursor = arrayOf("s00039"))
+        on.loadProgress()
+        assertEquals(40, on.state.value.pullDone)
+        assertEquals(100, on.state.value.pullTotal)
+        val off = service(store(), twoWay = false, pairs = pairs, cursor = arrayOf("s00039"))
+        off.loadProgress()
+        assertEquals(0, off.state.value.pullTotal)
     }
 }

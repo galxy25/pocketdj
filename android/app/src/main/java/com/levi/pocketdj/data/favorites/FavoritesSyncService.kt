@@ -67,13 +67,13 @@ class FavoritesSyncService(
     /** iOS `syncFavoritesIfReady` gate: onboarding complete AND catalog loaded (automatic triggers only). */
     private val ready: () -> Boolean = { true },
     private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true },
-    /** Persisted pull cursor (`FavoritesSyncSettings.PULL_CURSOR`): index into the sorted catalog pairs. */
-    private val loadCursor: (suspend () -> Int)? = null,
-    private val saveCursor: (suspend (Int) -> Unit)? = null,
+    /** Persisted pull cursor (`FavoritesSyncSettings.PULL_CURSOR`): the LAST songId covered ("" = lap start). */
+    private val loadCursor: (suspend () -> String)? = null,
+    private val saveCursor: (suspend (String) -> Unit)? = null,
 ) {
-    private var memCursor = 0
+    private var memCursor = ""
     private suspend fun readCursor() = loadCursor?.invoke() ?: memCursor
-    private suspend fun writeCursor(v: Int) { if (saveCursor != null) saveCursor.invoke(v) else memCursor = v }
+    private suspend fun writeCursor(v: String) { if (saveCursor != null) saveCursor.invoke(v) else memCursor = v }
 
     data class State(
         val isSyncing: Boolean = false,
@@ -104,6 +104,7 @@ class FavoritesSyncService(
                 // Only claim "last synced" when the pull actually reconciled something.
                 if (pull()) _state.value = _state.value.copy(lastSyncedAtMs = clock())
             } else {
+                _state.value = _state.value.copy(pullDone = 0, pullTotal = 0)
                 applySeedIfNeeded()
             }
             _state.value = _state.value.copy(lastError = null)
@@ -156,11 +157,32 @@ class FavoritesSyncService(
         firstError?.let { throw SyncFailure(it) }
     }
 
+    /** Seeds "Checked x of y" from the persisted cursor (process death); no-op while two-way is OFF. */
+    suspend fun loadProgress() {
+        if (!twoWayEnabled()) { _state.value = _state.value.copy(pullDone = 0, pullTotal = 0); return }
+        val ids = catalogPairs().map { it.first }.sorted()
+        if (ids.isEmpty()) return
+        val cur = readCursor()
+        _state.value = _state.value.copy(pullDone = if (cur.isEmpty()) 0 else coveredThrough(ids, cur), pullTotal = ids.size)
+    }
+
+    /** Count of sorted [ids] that are <= [cursor] (i.e. index of the first id strictly greater). */
+    private fun coveredThrough(ids: List<String>, cursor: String): Int {
+        var lo = 0
+        var hi = ids.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (ids[mid] <= cursor) lo = mid + 1 else hi = mid
+        }
+        return lo
+    }
+
     /**
-     * One PAGE of the pull (ANS-COL-5 / Q85): [PAGE_BATCHES] x 250 ids starting at the persisted cursor
-     * over the stable-sorted catalog, wrapping. Locally-hearted and pending ids are ALWAYS asked about
-     * (so unfavorites and fresh hearts reconcile every pass). Only the page is reconciled; the cursor
-     * advances only after a fully-read page (a rate limit / unreadable batch aborts without moving it).
+     * One PAGE of the pull (ANS-COL-5 / Q85): a fixed budget of [PAGE_SIZE] distinct ids per pass.
+     * Pending / locally-hearted ids are asked first (so unfavorites and fresh hearts reconcile),
+     * capped at half the budget (the rest are covered as the lap reaches them); the remainder is
+     * filled from the sorted catalog starting after the persisted LAST-COVERED songId, wrapping.
+     * Only the page is reconciled; the cursor advances only after a fully-read page.
      * True when the reconcile actually ran.
      */
     private suspend fun pull(): Boolean {
@@ -168,17 +190,29 @@ class FavoritesSyncService(
         val all = catalogPairs().sortedBy { it.first }
         if (all.isEmpty()) return false
         val total = all.size
-        val start = readCursor().let { if (it < 0 || it >= total) 0 else it }
-        val end = minOf(total, start + PAGE_SIZE)
+        val amBySong = all.toMap()
         val page = LinkedHashMap<String, String>()
-        for (i in start until end) page[all[i].first] = all[i].second
-        val local = HashSet<String>()
-        favorites.entries().forEach { if (it.favorited) local += it.songId }
-        favorites.pendingPushes.forEach { local += it.songId }
-        for ((songId, amId) in all) if (songId in local) page[songId] = amId
+        val askIds = LinkedHashSet<String>()
+        val localOrder = LinkedHashSet<String>()
+        favorites.pendingPushes.forEach { localOrder += it.songId }
+        favorites.entries().forEach { if (it.favorited) localOrder += it.songId }
+        for (songId in localOrder) {
+            if (askIds.size >= PAGE_SIZE / 2) break
+            val amId = amBySong[songId] ?: continue
+            page[songId] = amId
+            askIds += amId
+        }
+        val cursor = readCursor()
+        val start = if (cursor.isEmpty()) 0 else coveredThrough(all.map { it.first }, cursor).let { if (it >= total) 0 else it }
+        var end = start
+        while (end < total && askIds.size < PAGE_SIZE) {
+            page[all[end].first] = all[end].second
+            askIds += all[end].second
+            end++
+        }
 
         val now = clock()
-        val loved = when (val r = remote.lovedIds(page.values.toList())) {
+        val loved = when (val r = remote.lovedIds(askIds.toList())) {
             is AmResult.Ok -> r.value
             else -> throw SyncFailure("Could not read Apple Music loved songs: ${describe(r)}")
         }
@@ -192,7 +226,7 @@ class FavoritesSyncService(
                 }
             }
         }
-        writeCursor(if (end >= total) 0 else end)
+        writeCursor(if (end >= total) "" else all[end - 1].first)
         _state.value = _state.value.copy(pullDone = end, pullTotal = total)
         return true
     }
