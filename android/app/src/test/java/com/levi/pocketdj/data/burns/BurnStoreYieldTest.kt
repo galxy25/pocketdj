@@ -47,4 +47,29 @@ class BurnStoreYieldTest {
         assertEquals(BurnState.READY, e.store.items.value.getValue("s1").state)
         assertNull(e.c.record("s1"))
     }
+
+    @Test fun yieldIsSkippedWhileABurnRunHoldsTheLock() = runTest {
+        val e = Env()
+        e.store.burn(listOf(bs("s1")))
+        val f = BurnStore::class.java.getDeclaredField("runLock").apply { isAccessible = true }
+        val lock = f.get(e.store) as kotlinx.coroutines.sync.Mutex
+        lock.lock()
+        try {
+            assertFalse(e.store.yieldBackgroundDownload("s1"))
+            assertTrue(e.c.record("s1") != null)                    // background transfer survives
+            assertEquals(BurnState.DOWNLOADING, e.store.items.value.getValue("s1").state)
+        } finally { lock.unlock() }
+        assertTrue(e.store.yieldBackgroundDownload("s1"))           // run finished: yield allowed
+    }
+
+    @Test fun yieldIsSkippedWhenReburnWouldOrphanAnExistingFile() = runTest {
+        val e = Env()
+        e.store.burn(listOf(bs("s1")))
+        val item = e.store.items.value.getValue("s1")
+        val dir = e.r.folder.dirFor(item.wasAppStorage)!!
+        File(dir, item.audioFileName).writeBytes(ByteArray(2_000))
+        assertFalse(e.store.yieldBackgroundDownload("s1"))
+        assertTrue(e.c.record("s1") != null)
+        assertTrue(File(dir, item.audioFileName).exists())
+    }
 }

@@ -1004,7 +1004,15 @@ class BurnStore(
      * `.downloading` row with transfers wired; a no-op on the in-process path. Returns true if it yielded.
      */
     fun yieldBackgroundDownload(songId: String): Boolean {
-        if (transfers == null || _items.value[songId]?.state != BurnState.DOWNLOADING) return false
+        val row = _items.value[songId]
+        if (transfers == null || row?.state != BurnState.DOWNLOADING) return false
+        // A burn run is mid-flight (it holds runLock and would block adoption): leave the background
+        // transfer alone so the song is still delivered.
+        if (runLock.isLocked) return false
+        // A re-burn of an already-burned song: its old file is still on disk; cancelling would drop the
+        // row and orphan that file. Let the transfer finish instead.
+        val existing = itemDir(row)?.let { File(it, row.audioFileName) }
+        if (existing != null && existing.isFile && existing.length() > 0) return false
         cancelTransfers(listOf(songId))
         return true
     }

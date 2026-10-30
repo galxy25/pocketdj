@@ -43,6 +43,7 @@ class StorageSoftCapTest {
         assertTrue("audio + sidecar freed, was ${res.freedBytes}", res.freedBytes >= 5_000L)
         assertEquals(setOf("a", "b"), store.items.value.keys)
         assertFalse(r.names().any { it.contains("c.mp3") || it.endsWith("-c.mp3") })
+        assertFalse("sidecar left behind", r.names().any { it.contains("c.txt") })
         assertEquals(123L, set.last)
     }
 
