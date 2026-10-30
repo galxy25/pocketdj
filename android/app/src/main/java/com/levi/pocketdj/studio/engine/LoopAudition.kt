@@ -207,6 +207,16 @@ class LoopAudition(
     private val focusRelease: (() -> Unit)? = null,
     private val diag: (String) -> Unit = {},
 ) {
+    /** ANS-STU-3: fires true when a loop starts sounding, false when it stops or parks (the Studio session claims / resigns on it). */
+    @Volatile var onAudible: ((Boolean) -> Unit)? = null
+    /** ANS-STU-3: any explicit start/stop (not a park) supersedes a pending interruption resume. */
+    @Volatile var onUserTransport: (() -> Unit)? = null
+
+    /** What a transient focus loss interrupted; focus is deliberately HELD while this is set so AUDIOFOCUS_GAIN arrives. */
+    data class Parked(val id: String, val file: File, val frames: Long)
+    @Volatile var parked: Parked? = null; private set
+    @Volatile private var current: Parked? = null
+
     private val graph = RenderGraph()
     private var sink: AudioSink? = null
     private val _playingId = MutableStateFlow<String?>(null)
@@ -226,6 +236,11 @@ class LoopAudition(
     /** Loop [file] as [id], conformed to [frames] (<= 0: as decoded). False when refused, unreadable or superseded. */
     suspend fun play(id: String, file: File, frames: Long): Boolean {
         if (!AudioFocusPolicy.gateStart("loop")) { lastRefusal = "mic-capture-active"; diag("loop play refused: mic capture"); return false }
+        return playInternal(id, file, frames, resume = false)
+    }
+
+    private suspend fun playInternal(id: String, file: File, frames: Long, resume: Boolean): Boolean {
+        if (!resume) { onUserTransport?.invoke(); clearParked() }
         val gen = synchronized(lock) { generation += 1; _arming.value = id; generation }
         val raw = try { decode(file.path) } catch (e: CancellationException) {
             synchronized(lock) { if (generation == gen) _arming.value = null }
@@ -252,22 +267,61 @@ class LoopAudition(
                 return false
             }
             _playingId.value = id
-            StudioDiag.play("loop", "user-play", started = true, detail = "id=$id")
+            current = Parked(id, file, frames)
+            StudioDiag.play("loop", if (resume) "focus-resume" else "user-play", started = true, detail = "id=$id")
+            onAudible?.invoke(true)
             diag("loop play $id decoded=${raw.frames} looped=${buf.frames} expected=$frames")
             return true
         }
     }
 
-    fun stop(reason: String = "user-stop") = synchronized(lock) { generation++; _arming.value = null; stopInternal(releaseFocus = true, reason = reason) }
+    fun stop(reason: String = "user-stop") {
+        onUserTransport?.invoke()
+        synchronized(lock) {
+            generation++; _arming.value = null
+            stopInternal(releaseFocus = true, reason = reason)
+            clearParked()
+        }
+    }
+
+    /** Drop a pending park; the held focus is released because no resume will ever come. */
+    private fun clearParked() { if (parked != null) { parked = null; focusRelease?.invoke() } }
 
     private fun stopInternal(releaseFocus: Boolean, reason: String = "user-stop") {
         graph.removeTrack(TRACK)
         if (_playingId.value != null) {
             StudioDiag.stop("loop", reason)
             _playingId.value = null
+            current = null
             sink?.stop()
             if (releaseFocus) focusRelease?.invoke()
+            onAudible?.invoke(false)
         }
+    }
+
+    /** Is a loop audibly looping right now (the InterruptionCoordinator's isAudible)? */
+    val isAudible: Boolean get() = _playingId.value != null
+
+    /**
+     * Transient focus loss (iOS interruptionParked): remember WHICH loop was sounding, silence it and KEEP the focus
+     * request so AUDIOFOCUS_GAIN is delivered. A loop still decoding is cancelled (nothing sounded to resume).
+     */
+    fun parkForInterruption(): Boolean = synchronized(lock) {
+        val cur = current
+        if (_playingId.value == null || cur == null) return false
+        parked = cur
+        stopInternal(releaseFocus = false, reason = "focus-transient")
+        true
+    }
+
+    /** Focus regained: restart exactly the parked loop. False when nothing was parked or it cannot restart. */
+    suspend fun resumeFromInterruption(): Boolean {
+        val p = parked ?: return false
+        parked = null
+        if (!AudioFocusPolicy.gateStart("loop")) { focusRelease?.invoke(); return false }
+        val ok = playInternal(p.id, p.file, p.frames, resume = true)
+        if (!ok && _playingId.value == null && _arming.value == null) focusRelease?.invoke()   // the held focus has no one left to serve
+        return ok
     }
 
     fun release() {

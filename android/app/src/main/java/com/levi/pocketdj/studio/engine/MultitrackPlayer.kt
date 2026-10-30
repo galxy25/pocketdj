@@ -113,6 +113,7 @@ class MultitrackPlayer(
 
     private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean, record: Boolean = false, quantized: Boolean = false): PlayOutcome {
         if (!AudioFocusPolicy.gateStart("multitrack")) return PlayOutcome.REFUSED
+        if (!fromReprime) { onUserTransport?.invoke(); parked = null }   // onFocus below re-requests the held focus
         val gen = synchronized(lock) { stopInternal(keepReprime = fromReprime, reason = if (fromReprime) "reprime" else "restart"); generation.get() }
         val rate = StudioAudio.CANONICAL_RATE
         // The ONE planning path shared with ArrangerBouncer (WYSIWYG): decode once, window, warp, beat-snap.
@@ -171,9 +172,51 @@ class MultitrackPlayer(
         return PlayOutcome.STARTED
     }
 
-    fun stop(reason: String = "user-stop") { stopInternal(keepReprime = false, reason = reason); recordWanted = false; recordQuantized = false }
+    /** ANS-STU-3: any explicit play/stop supersedes a pending interruption resume. */
+    @Volatile var onUserTransport: (() -> Unit)? = null
 
-    private fun stopInternal(keepReprime: Boolean, naturalEnd: Boolean = false, reason: String = if (naturalEnd) "natural-end" else "user-stop") = synchronized(lock) {
+    /** What a transient focus loss interrupted (arrangement + timeline position); focus is HELD while set. */
+    data class Parked(val arrangement: StudioArrangement, val positionMs: Int)
+    @Volatile var parked: Parked? = null; private set
+
+    fun stop(reason: String = "user-stop") {
+        onUserTransport?.invoke()
+        stopInternal(keepReprime = false, reason = reason); recordWanted = false; recordQuantized = false
+        clearParked()
+    }
+
+    private fun clearParked() { if (parked != null) { parked = null; onFocusRelease() } }
+
+    /**
+     * Transient focus loss: remember the arrangement and the timeline position, silence the sink and KEEP the focus
+     * request so AUDIOFOCUS_GAIN arrives. A master-record take cannot be paused mid-way, so it ends instead (returns false).
+     */
+    fun parkForInterruption(): Boolean {
+        val a = latest
+        if (!_isPlaying.value || a == null) return false
+        if (recorder.isRecording) { stop("focus-transient"); return false }
+        val pos = positionMs(a) ?: startOffsetMs
+        synchronized(lock) {
+            parked = Parked(a, pos)
+            stopInternal(keepReprime = false, reason = "focus-transient", holdFocus = true)
+        }
+        return true
+    }
+
+    /**
+     * Focus regained: restart from the parked position. [fresh] resolves the CURRENT document (edits made while
+     * parked are heard); null falls back to the arrangement as it was parked.
+     */
+    suspend fun resumeFromInterruption(fresh: (String) -> StudioArrangement? = { null }): PlayOutcome {
+        val p = parked ?: return PlayOutcome.NOTHING_TO_PLAY
+        parked = null
+        val a = fresh(p.arrangement.id) ?: p.arrangement
+        val outcome = playInternal(a, p.positionMs.coerceIn(0, a.lengthMs), fromReprime = false)
+        if (outcome != PlayOutcome.STARTED && !_isPlaying.value) onFocusRelease()
+        return outcome
+    }
+
+    private fun stopInternal(keepReprime: Boolean, naturalEnd: Boolean = false, reason: String = if (naturalEnd) "natural-end" else "user-stop", holdFocus: Boolean = false) = synchronized(lock) {
         generation.incrementAndGet()
         autoStop?.cancel(); autoStop = null
         if (!keepReprime) { reprime?.cancel(); reprime = null }
@@ -190,7 +233,7 @@ class MultitrackPlayer(
         val was = _isPlaying.value
         _isPlaying.value = false
         _playingArrangementId.value = null
-        if (was) { StudioDiag.stop("multitrack", reason); onFocusRelease() }
+        if (was) { StudioDiag.stop("multitrack", reason); if (!holdFocus) onFocusRelease() }
     }
 
     /** Current timeline position while playing (cursor), else null. */

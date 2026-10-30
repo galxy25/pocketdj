@@ -246,6 +246,57 @@ class InstrumentEngineTest {
         assertEquals(1, r.voices.single().hits.size)         // the cancelled score never sent its note-off/any more events
     }
 
+    // ---- ANS-STU-3: transient-loss park/resume of a replay ----
+
+    @Test fun transientLossParksTheReplayAndGainResumesFromThePosition() = runTest {
+        val r = Rig(this); r.load()
+        val score = listOf(StudioNoteEvent(0, 500, 60, 90), StudioNoteEvent(3_000, 3_500, 62, 90))
+        r.engine.replay(score)
+        advanceTimeBy(1_200)
+        assertTrue(r.engine.isReplayAudible)
+        assertTrue(r.engine.parkReplayForInterruption())
+        assertFalse(r.engine.isReplayAudible)
+        val parked = r.engine.parkedReplay!!
+        assertEquals(1_200, parked.positionMs)
+        assertEquals(score, parked.args.events)
+        advanceTimeBy(5_000)
+        assertEquals("a parked score emits nothing", 2, r.voices.single().hits.size)   // note 60 on/off only
+        assertTrue(r.engine.resumeReplayFromInterruption())
+        assertTrue(r.engine.isReplayAudible)
+        assertNull(r.engine.parkedReplay)
+        advanceTimeBy(2_000)                                      // resumed at 1200 -> the 3000 note is due at +1800
+        assertTrue(r.voices.single().hits.any { it.note == 62 && it.on })
+    }
+
+    @Test fun userStopWhileParkedClearsParkAndNeverResumes() = runTest {
+        val r = Rig(this); r.load()
+        var user = 0
+        r.engine.onUserTransport = { user++ }
+        r.engine.replay(listOf(StudioNoteEvent(0, 5_000, 60, 90)))
+        advanceTimeBy(500)
+        r.engine.parkReplayForInterruption()
+        r.engine.stopReplay()
+        assertNull(r.engine.parkedReplay)
+        assertFalse(r.engine.resumeReplayFromInterruption())
+        assertTrue(user >= 1)
+    }
+
+    @Test fun permanentLossClearsAParkedReplay() = runTest {
+        val r = Rig(this); r.load()
+        r.engine.replay(listOf(StudioNoteEvent(0, 5_000, 60, 90)))
+        advanceTimeBy(500)
+        r.engine.parkReplayForInterruption()
+        r.engine.stopReplay("focus-loss")
+        assertNull(r.engine.parkedReplay)
+        assertFalse(r.engine.resumeReplayFromInterruption())
+    }
+
+    @Test fun parkWithoutAReplayIsANoOp() = runTest {
+        val r = Rig(this); r.load()
+        assertFalse(r.engine.parkReplayForInterruption())
+        assertNull(r.engine.parkedReplay)
+    }
+
     @Test fun replayFromMidScoreChasesTheSoundingNote() = runTest {
         val r = Rig(this); r.load()
         r.engine.replay(listOf(StudioNoteEvent(0, 1_000, 60, 90), StudioNoteEvent(2_000, 2_500, 62, 90)), fromMs = 500)

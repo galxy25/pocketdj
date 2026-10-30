@@ -19,6 +19,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
@@ -293,6 +294,64 @@ class MultitrackPlayerTest {
         assertEquals(1, sinks[0].stops)
         assertFalse(p.clock.isRunning)
         assertEquals(null, p.playingArrangementId.value)
+    }
+
+    // ---- ANS-STU-3: transient-loss park/resume ----
+
+    @Test fun transientLossParksAtThePositionKeepingFocusAndResumesThere() = runBlocking {
+        val sinks = mutableListOf<FakeSink>()
+        val events = mutableListOf<String>()
+        val p = MultitrackPlayer(Loader(files), { FakeSink().also { sinks += it } }, scope, reprimeDebounceMs = 30,
+            onFocus = { events += "focus" }, onFocusRelease = { events += "release" })
+        val a = arr(track("t1", "a"))
+        assertTrue(p.play(a, fromMs = 300))
+        events.clear()
+        assertTrue(p.parkForInterruption())
+        assertFalse(p.isPlaying.value)
+        assertEquals(1, sinks[0].stops)
+        val parked = p.parked!!
+        assertTrue("parked at/after the seek point", parked.positionMs >= 300)
+        assertFalse("focus HELD while parked", "release" in events)
+        assertEquals(PlayOutcome.STARTED, p.resumeFromInterruption())
+        assertTrue(p.isPlaying.value)
+        assertEquals(parked.positionMs, p.startOffsetMs)
+        assertEquals(2, sinks.size)
+        assertNull(p.parked)
+        p.stop()
+    }
+
+    @Test fun userStopWhileParkedClearsParkAndReleasesFocus() = runBlocking {
+        val events = mutableListOf<String>()
+        var userCalls = 0
+        val p = MultitrackPlayer(Loader(files), { FakeSink() }, scope, onFocusRelease = { events += "release" })
+        p.onUserTransport = { userCalls++ }
+        p.play(arr(track("t1", "a")))
+        p.parkForInterruption()
+        events.clear()
+        p.stop()
+        assertNull(p.parked)
+        assertTrue("release" in events)
+        assertTrue(userCalls >= 2)
+        assertEquals(PlayOutcome.NOTHING_TO_PLAY, p.resumeFromInterruption())
+    }
+
+    @Test fun resumeUsesTheFreshDocumentWhenOneIsSupplied() = runBlocking {
+        val sinks = mutableListOf<FakeSink>()
+        val p = player(Loader(files), sinks)
+        p.play(arr(track("t1", "a")))
+        p.parkForInterruption()
+        val edited = arr(track("t1", "a"), track("t2", "b"))
+        assertEquals(PlayOutcome.STARTED, p.resumeFromInterruption { edited.takeIf { e -> e.id == it } })
+        assertEquals(edited, p.parked ?: edited)   // parked cleared; fresh doc is what plays
+        val both = sinks.last().pull(32)
+        assertEquals(0.1f + 0.2f, both[0], 1e-4f)
+        p.stop()
+    }
+
+    @Test fun parkWhileSilentIsANoOp() {
+        val p = player(Loader(files), mutableListOf())
+        assertFalse(p.parkForInterruption())
+        assertNull(p.parked)
     }
 
     @Test fun seekStartsMidArrangementAndRecordsOffset() = runBlocking {

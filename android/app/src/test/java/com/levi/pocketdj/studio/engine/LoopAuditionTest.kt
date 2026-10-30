@@ -168,6 +168,85 @@ class LoopAuditionTest {
         for (i in 0 until total) assertEquals("frame $i", ((i % loopFrames) / 1024f), out[i * 2], 1e-6f)
     }
 
+    // ---- ANS-STU-3: session claim + transient-loss park/resume ----
+
+    private fun parkRig(events: MutableList<String>): Triple<LoopAudition, FakeSink, MutableList<String>> {
+        val sink = FakeSink()
+        val decoded = PcmBuffer(44_100, 2, FloatArray(200 * 2) { 0.5f })
+        val a = LoopAudition({ sink }, { decoded }, focus = { events += "focus"; true }, focusRelease = { events += "release" })
+        a.onAudible = { events += "audible=$it" }
+        a.onUserTransport = { events += "user" }
+        return Triple(a, sink, events)
+    }
+
+    @Test fun audibleCallbackClaimsOnStartAndResignsOnStop() = runBlocking {
+        val ev = mutableListOf<String>()
+        val (a, _, _) = parkRig(ev)
+        assertTrue(a.play("lp_a", File("a.wav"), 200))
+        assertTrue(a.isAudible)
+        assertTrue("audible=true" in ev)
+        a.stop()
+        assertFalse(a.isAudible)
+        assertEquals("audible=false", ev.last { it.startsWith("audible") })
+    }
+
+    @Test fun transientLossParksKeepingFocusAndGainResumesTheSameLoop() = runBlocking {
+        val ev = mutableListOf<String>()
+        val (a, sink, _) = parkRig(ev)
+        a.play("lp_a", File("a.wav"), 200)
+        ev.clear()
+        assertTrue(a.parkForInterruption())
+        assertFalse(a.isAudible)
+        assertFalse(sink.isRendering)
+        assertEquals("lp_a", a.parked!!.id)
+        assertFalse("focus must be HELD while parked, else AUDIOFOCUS_GAIN never arrives", "release" in ev)
+        assertTrue("session resigns while parked", "audible=false" in ev)
+        assertTrue(a.resumeFromInterruption())
+        assertEquals("lp_a", a.playingId.value)
+        assertTrue(sink.isRendering)
+        assertNull(a.parked)
+        assertEquals(200L, a.loopedFrames)
+    }
+
+    @Test fun userStopWhileParkedClearsThePendingResumeAndReleasesFocus() = runBlocking {
+        val ev = mutableListOf<String>()
+        val (a, sink, _) = parkRig(ev)
+        a.play("lp_a", File("a.wav"), 200)
+        a.parkForInterruption(); ev.clear()
+        a.stop()
+        assertNull(a.parked)
+        assertTrue("release" in ev); assertTrue("user" in ev)
+        assertFalse(a.resumeFromInterruption())
+        assertFalse(sink.isRendering)
+    }
+
+    @Test fun permanentLossStopsAndClears() = runBlocking {
+        val ev = mutableListOf<String>()
+        val (a, _, _) = parkRig(ev)
+        a.play("lp_a", File("a.wav"), 200)
+        a.parkForInterruption()
+        a.stop("focus-loss")                      // AUDIOFOCUS_LOSS after the transient
+        assertNull(a.parked); assertFalse(a.isAudible)
+        assertFalse(a.resumeFromInterruption())
+    }
+
+    @Test fun parkWhileSilentIsANoOp() {
+        val (a, _, _) = parkRig(mutableListOf())
+        assertFalse(a.parkForInterruption())
+        assertNull(a.parked)
+    }
+
+    @Test fun userPlayWhileParkedSupersedesTheParkedLoop() = runBlocking {
+        val ev = mutableListOf<String>()
+        val (a, _, _) = parkRig(ev)
+        a.play("lp_a", File("a.wav"), 200)
+        a.parkForInterruption()
+        assertTrue(a.play("lp_b", File("b.wav"), 200))
+        assertNull(a.parked)
+        assertEquals("lp_b", a.playingId.value)
+        assertFalse(a.resumeFromInterruption())
+    }
+
     @Test fun auditionPadsAShortFileToTheAuthoritativeFrames() = runBlocking {
         val decoded = PcmBuffer(44_100, 2, FloatArray(100 * 2) { 1f })
         val sink = FakeSink()

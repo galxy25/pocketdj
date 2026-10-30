@@ -55,6 +55,13 @@ interface StemPlayer {
     fun solo(name: String)
     fun toggleMute(name: String)
     fun stop()
+
+    /** ANS-STU-3 transient focus loss: pause KEEPING the position and the focus request; false when nothing was playing. */
+    fun parkForInterruption(): Boolean = false
+    /** Focus regained: continue exactly where [parkForInterruption] stopped. */
+    fun resumeFromInterruption(): Boolean = false
+    /** A permanent focus loss after a park: forget the pending resume and release the held focus. */
+    fun dropInterruptionPark() {}
 }
 
 /** Single-file fallback: plays one mix with android.media.MediaPlayer (any container the platform decodes). */
@@ -92,14 +99,36 @@ class SingleFileStemPlayer(private val focus: () -> Unit = {}, private val focus
     override fun togglePlayPause() {
         val p = mp ?: return
         if (p.isPlaying) { pausedAt = p.currentPosition / 1000.0; p.pause(); focusRelease(); StudioDiag.stop("demux", "user-pause") }
-        else { if (!AudioFocusPolicy.gateStart("demux")) return; focus(); StudioDiag.play("demux", "user-play", started = true); if (p.currentPosition >= p.duration - 50) p.seekTo(0); p.start() }
+        else { parkedByInterruption = false; if (!AudioFocusPolicy.gateStart("demux")) return; focus(); StudioDiag.play("demux", "user-play", started = true); if (p.currentPosition >= p.duration - 50) p.seekTo(0); p.start() }
         bump()
     }
 
     override fun seek(sec: Double) { mp?.seekTo((sec.coerceIn(0.0, durationSec) * 1000).toInt()); pausedAt = sec; bump() }
     override fun solo(name: String) { if (!isPlaying) togglePlayPause() }
     override fun toggleMute(name: String) {}
-    override fun stop() { if (isPlaying) StudioDiag.stop("demux", "user-stop"); runCatching { mp?.release() }; mp = null; loadedId = null; pausedAt = 0.0; focusRelease(); bump() }
+
+    @Volatile private var parkedByInterruption = false
+    override fun parkForInterruption(): Boolean {
+        val p = mp ?: return false
+        if (!isPlaying) return false
+        pausedAt = p.currentPosition / 1000.0; p.pause(); parkedByInterruption = true
+        StudioDiag.stop("demux", "focus-transient"); bump()
+        return true
+    }
+    override fun resumeFromInterruption(): Boolean {
+        val p = mp ?: return false
+        if (!parkedByInterruption) return false
+        parkedByInterruption = false
+        if (!AudioFocusPolicy.gateStart("demux")) { focusRelease(); return false }
+        StudioDiag.play("demux", "focus-resume", started = true); p.start(); bump()
+        return true
+    }
+    override fun dropInterruptionPark() { if (parkedByInterruption) { parkedByInterruption = false; focusRelease() } }
+    override fun stop() {
+        parkedByInterruption = false
+        if (isPlaying) StudioDiag.stop("demux", "user-stop")
+        runCatching { mp?.release() }; mp = null; loadedId = null; pausedAt = 0.0; focusRelease(); bump()
+    }
     private fun bump() { _version.value = _version.value + 1 }
 }
 
@@ -172,7 +201,7 @@ class VoiceGroupStemPlayer(
 
     private fun applyGains() { for (i in voices.indices) voices[i].setGain(if (mix.isAudible(names[i])) 1f else 0f) }
 
-    override fun togglePlayPause() { if (playing) pauseNow() else if (AudioFocusPolicy.gateStart("demux")) startSynced(if (pausedAt >= durationSec) 0.0 else pausedAt) }
+    override fun togglePlayPause() { parkedByInterruption = false; if (playing) pauseNow() else if (AudioFocusPolicy.gateStart("demux")) startSynced(if (pausedAt >= durationSec) 0.0 else pausedAt) }
 
     override fun seek(sec: Double) {
         val t = sec.coerceIn(0.0, durationSec)
@@ -181,11 +210,37 @@ class VoiceGroupStemPlayer(
 
     override fun solo(name: String) {
         mix.solo(name); applyGains()
+        if (!playing) parkedByInterruption = false
         if (!playing && AudioFocusPolicy.gateStart("demux")) startSynced(if (pausedAt >= durationSec) 0.0 else pausedAt)
         bump()
     }
 
     override fun toggleMute(name: String) { mix.toggleMute(name); applyGains(); bump() }
+
+    @Volatile private var parkedByInterruption = false
+
+    /** Transient focus loss: pause keeping the position; the focus request is HELD so AUDIOFOCUS_GAIN arrives. */
+    override fun parkForInterruption(): Boolean {
+        if (!playing) return false
+        pausedAt = currentTimeSec
+        token++
+        StudioDiag.stop("demux", "focus-transient")
+        group?.pauseAll(); playing = false; started = false
+        parkedByInterruption = true
+        bump()
+        return true
+    }
+
+    override fun dropInterruptionPark() { if (parkedByInterruption) { parkedByInterruption = false; focusRelease() } }
+
+    override fun resumeFromInterruption(): Boolean {
+        if (!parkedByInterruption) return false
+        parkedByInterruption = false
+        if (playing || group == null) return false
+        if (!AudioFocusPolicy.gateStart("demux")) { focusRelease(); return false }
+        startSynced(if (pausedAt >= durationSec) 0.0 else pausedAt)
+        return true
+    }
 
     private fun pauseNow() {
         if (!playing) return
@@ -236,6 +291,7 @@ class VoiceGroupStemPlayer(
 
     override fun stop() {
         token++
+        parkedByInterruption = false
         if (playing) StudioDiag.stop("demux", "user-stop")
         group?.pauseAll()
         sink?.let { runCatching { it.stop() }; runCatching { it.release() } }
@@ -278,9 +334,15 @@ class RoutingStemPlayer(
         return next.load(id, files)
     }
 
-    override fun togglePlayPause() = active.togglePlayPause()
+    /** ANS-STU-3: an explicit play/pause/solo/stop supersedes a pending interruption resume (the coordinator forgets). */
+    @Volatile var onUserTransport: (() -> Unit)? = null
+
+    override fun togglePlayPause() { onUserTransport?.invoke(); active.togglePlayPause() }
     override fun seek(sec: Double) = active.seek(sec)
-    override fun solo(name: String) = active.solo(name)
+    override fun solo(name: String) { onUserTransport?.invoke(); active.solo(name) }
     override fun toggleMute(name: String) = active.toggleMute(name)
-    override fun stop() { single.stop(); multi.stop() }
+    override fun stop() { onUserTransport?.invoke(); single.stop(); multi.stop() }
+    override fun parkForInterruption() = active.parkForInterruption()
+    override fun resumeFromInterruption() = active.resumeFromInterruption()
+    override fun dropInterruptionPark() { single.dropInterruptionPark(); multi.dropInterruptionPark() }
 }
