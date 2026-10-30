@@ -381,3 +381,15 @@ Emulator (emulator-5556, debug APK; shots in pocketdj-answers-pkgs/_shots/wave2/
 Device-only, not verifiable here: real SD card (COL-4), audible stretch quality / CPU (MIX-2), low-RAM limits (STU-2).
 
 Debug additions: Seed setlist, Mix: +30% sync B, Bake 5 min master. Open: Q105, Q106, Q107.
+
+## Answers wave 3
+Merged (all clean, no conflicts): ANS-COL-2, ANS-COL-5, ANS-STU-3, ANS-BRW-1, ANS-PB-4, ANS-GM-2. JVM tests 5342 run, 0 failures (5341 after merge + 1 integration regression test).
+Emulator (emulator-5556, debug build, mock import/AM server on :8099 via 10.0.2.2):
+- ANS-COL-2 PASS: new debug seed "Seed 153 songs" -> 153 activity rows, History > Collection lists them.
+- ANS-COL-5 PASS: pdj.amApiBase mock + pdj.fakeMut + opt-in ON -> exactly 20 GET /v1/me/ratings/songs per pass; Settings shows "Checked 5011 of 75352 songs this lap" (20x250 + 11 local).
+- ANS-STU-3 PASS after fix: loop audition was killed ~40 ms after start (a pause for an already-paused Now Playing was routed to the studio session after ownership flipped). Fixed in StudioGraph.pauseNowPlayingForStudio (gate on nowPlaying.isPlaying) + regression test. Then Home -> dumpsys media_session shows "SeedTone · 4 beats / Pocket DJ Studio · Loops" PLAYING; media_session pause stops it. Multitrack: transient focus steal (new `-e pdj.focusSteal <ms>` debug extra) -> audio.stop reason=focus-transient, resumes on abandon.
+- ANS-BRW-1 PASS: ripped Discover row shows Play->Pause, mini player appears; signed-out album + queued both tracks, discover-adds + History event carry "Apple Music write skipped: no Apple Music connection".
+- ANS-PB-4 PASS (weak): 4 skips recorded for one song in PlayStatsStore; In Da Zone list (30) omits it while unskipped album peers rank. For You has no UI to show a full ranking; JVM ForYouSkipInputsTest covers the ordering.
+- ANS-GM-2 PASS: fresh install, In the Pocket "Turn on" writes listeningPocketsAnswered+Enabled = true; persists across relaunch.
+No FATAL EXCEPTION / ANR in logcat.
+Open issues: debug "Play seed queue" re-tap while a seeded song plays continues instead of restarting (debug-only, noted). No new product questions.

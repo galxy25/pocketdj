@@ -235,6 +235,17 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         }
     }) { Text("Seed sample (tone)") }
     Text(sampleSeedStatus, style = MaterialTheme.typography.bodySmall)
+    // ANS-STU-3 emulator probe: a second "app" takes AUDIOFOCUS_GAIN_TRANSIENT for 6 s, then abandons (gain returns).
+    var focusStatus by remember { mutableStateOf("Focus steal: idle") }
+    OutlinedButton(onClick = {
+        val am = host.graph.appContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val req = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            .setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            .setOnAudioFocusChangeListener { }.build()
+        focusStatus = "Focus steal: granted=${am.requestAudioFocus(req)}"
+        host.scope.launch { kotlinx.coroutines.delay(6000); am.abandonAudioFocusRequest(req); focusStatus = "Focus steal: released" }
+    }) { Text("Focus steal 6s") }
+    Text(focusStatus, style = MaterialTheme.typography.bodySmall)
 
     // STU-11 emulator seed: a Bounce artifact (copy of the seed tone) on the newest arrangement.
     OutlinedButton(onClick = {

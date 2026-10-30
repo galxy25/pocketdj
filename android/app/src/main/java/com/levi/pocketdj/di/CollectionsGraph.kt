@@ -334,6 +334,15 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                         runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, GamesGraph.parsePocketsEnable(v)) }
                     }
                 }
+                intent.getStringExtra("pdj.focusSteal")?.toLongOrNull()?.let { ms ->
+                    // ANS-STU-3 emulator probe: another "app" holds AUDIOFOCUS_GAIN_TRANSIENT for [ms], then abandons.
+                    val am = app.appContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                    val req = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                        .setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                        .setOnAudioFocusChangeListener { }.build()
+                    am.requestAudioFocus(req)
+                    app.appScope.launch { kotlinx.coroutines.delay(ms); am.abandonAudioFocusRequest(req) }
+                }
                 intent.getStringExtra("pdj.amApiBase")?.let { com.levi.pocketdj.data.applemusic.AppleMusicApi.debugBase = it }
                 intent.getStringExtra("pdj.fakeMut")?.let { t ->
                     app.appScope.launch { runCatching { app.settings.setMusicUserToken(t) } }
