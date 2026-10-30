@@ -10,7 +10,7 @@ namespace pdj {
 
 class OboeOut : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback {
 public:
-    OboeOut(int sampleRate, int ringFrames);
+    OboeOut(int sampleRate, int ringFrames, bool lowLatency = true);
     ~OboeOut();
     bool open();      // build + start the stream
     void close();
@@ -29,6 +29,7 @@ public:
 private:
     int sampleRate_;
     int ringFrames_;
+    bool lowLatency_;  // Studio: LowLatency+Exclusive; Mix/Now Playing: PowerSaving+Shared (battery, ducking, coexists with Studio)
     std::vector<float> ring_;
     std::atomic<long long> head_{0};   // frames written (producer)
     std::atomic<long long> tail_{0};   // frames read (consumer = audio callback)

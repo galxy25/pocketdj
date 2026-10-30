@@ -4,8 +4,8 @@
 
 namespace pdj {
 
-OboeOut::OboeOut(int sampleRate, int ringFrames)
-    : sampleRate_(sampleRate), ringFrames_(ringFrames), ring_((size_t)ringFrames * 2, 0.f) {}
+OboeOut::OboeOut(int sampleRate, int ringFrames, bool lowLatency)
+    : sampleRate_(sampleRate), ringFrames_(ringFrames), lowLatency_(lowLatency), ring_((size_t)ringFrames * 2, 0.f) {}
 
 OboeOut::~OboeOut() { close(); }
 
@@ -16,8 +16,8 @@ bool OboeOut::open() {
     disconnected_.store(false, std::memory_order_release);
     oboe::AudioStreamBuilder b;
     b.setDirection(oboe::Direction::Output)
-        ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
-        ->setSharingMode(oboe::SharingMode::Exclusive)
+        ->setPerformanceMode(lowLatency_ ? oboe::PerformanceMode::LowLatency : oboe::PerformanceMode::PowerSaving)
+        ->setSharingMode(lowLatency_ ? oboe::SharingMode::Exclusive : oboe::SharingMode::Shared)
         ->setFormat(oboe::AudioFormat::Float)
         ->setChannelCount(2)
         ->setSampleRate(sampleRate_)
@@ -30,7 +30,7 @@ bool OboeOut::open() {
     if (r != oboe::Result::OK || !stream_) { stream_.reset(); return false; }
     int burst = stream_->getFramesPerBurst();
     burst_.store(burst, std::memory_order_relaxed);
-    stream_->setBufferSizeInFrames(burst * 2);  // two bursts: low latency without crackle
+    stream_->setBufferSizeInFrames(burst * (lowLatency_ ? 2 : 4));  // two bursts: low latency without crackle
     latencyFrames_.store(stream_->getBufferSizeInFrames(), std::memory_order_relaxed);
     if (stream_->requestStart() != oboe::Result::OK) { stream_->close(); stream_.reset(); return false; }
     return true;

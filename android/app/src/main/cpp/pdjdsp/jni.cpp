@@ -140,7 +140,7 @@ JF(void, nativeRtProcess)(JNIEnv* env, jobject, jlong h, jfloatArray in, jint in
 }
 
 // ---- Oboe ----------------------------------------------------------------------------------
-JF(jlong, nativeOboeNew)(JNIEnv*, jobject, jint sr, jint ringFrames) { return reinterpret_cast<jlong>(new pdj::OboeOut(sr, ringFrames)); }
+JF(jlong, nativeOboeNew)(JNIEnv*, jobject, jint sr, jint ringFrames, jboolean lowLatency) { return reinterpret_cast<jlong>(new pdj::OboeOut(sr, ringFrames, lowLatency)); }
 JF(void, nativeOboeFree)(JNIEnv*, jobject, jlong h) { delete H<pdj::OboeOut>(h); }
 JF(jboolean, nativeOboeOpen)(JNIEnv*, jobject, jlong h) { return H<pdj::OboeOut>(h)->open(); }
 JF(void, nativeOboeClose)(JNIEnv*, jobject, jlong h) { H<pdj::OboeOut>(h)->close(); }

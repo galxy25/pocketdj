@@ -120,16 +120,24 @@ object StudioOutputs {
     fun chooseBackend(nativeAvailable: Boolean, isEmulator: Boolean): Backend =
         if (nativeAvailable && !isEmulator) Backend.OBOE else Backend.AUDIO_TRACK
 
-    /** The backend [create] picks on this device (for logs/diagnostics). */
-    fun currentBackend(): Backend =
-        chooseBackend(NativeDsp.available, looksLikeEmulator(android.os.Build.FINGERPRINT, android.os.Build.HARDWARE, android.os.Build.PRODUCT))
+    /** Oboe stream profile: Studio wants the lowest latency; Mix / Now Playing is background playback. */
+    enum class Profile { STUDIO, PLAYBACK }
 
-    fun create(audioManager: AudioManager, sampleRate: Int = CANONICAL_RATE_INT, blockFrames: Int = 512): AudioSink {
-        val emu = looksLikeEmulator(android.os.Build.FINGERPRINT, android.os.Build.HARDWARE, android.os.Build.PRODUCT)
-        return when (chooseBackend(NativeDsp.available, emu)) {
-            Backend.OBOE -> OboeSink(sampleRate, blockFrames) { NativeDsp.oboeBackend(sampleRate, blockFrames * 4) }
+    private fun emulator() = looksLikeEmulator(android.os.Build.FINGERPRINT, android.os.Build.HARDWARE, android.os.Build.PRODUCT)
+
+    /** The single decision both [create] and the logs use. */
+    fun currentBackend(): Backend = chooseBackend(NativeDsp.available, emulator())
+
+    fun create(audioManager: AudioManager, sampleRate: Int = CANONICAL_RATE_INT, blockFrames: Int = 512, profile: Profile = Profile.STUDIO): AudioSink =
+        when (currentBackend()) {
+            Backend.OBOE -> OboeSink(sampleRate, blockFrames) { NativeDsp.oboeBackend(sampleRate, blockFrames * 4, lowLatency = profile == Profile.STUDIO) }
             Backend.AUDIO_TRACK -> AudioTrackSink(audioManager, sampleRate, blockFrames)
         }
+
+    /** Mix / Now Playing sink (shared, power-saving Oboe on device) that logs the chosen backend on the MIX lane. */
+    fun createPlayback(audioManager: AudioManager, log: (String) -> Unit): AudioSink {
+        log("sink backend=${currentBackend().name.lowercase().replace("_", "")}")
+        return create(audioManager, profile = Profile.PLAYBACK)
     }
 
     private const val CANONICAL_RATE_INT = StudioAudio.CANONICAL_RATE
