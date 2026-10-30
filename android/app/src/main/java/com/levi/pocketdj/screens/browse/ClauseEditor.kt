@@ -63,12 +63,8 @@ object ClauseReducer {
         return c.copy(field = fieldId, op = f.ops.first(), value = "", values = emptySet(), min = null, max = null)
     }
 
-    /** Changing the op keeps the field; values that no longer fit the op shape are dropped. */
-    fun changeOp(c: Clause, op: FilterOp): Clause = when (op) {
-        FilterOp.EQ, FilterOp.NEQ -> c.copy(op = op, values = emptySet(), min = null, max = null)
-        FilterOp.IN_LIST, FilterOp.NOT_IN_LIST -> c.copy(op = op, value = "", min = null, max = null)
-        FilterOp.BETWEEN -> c.copy(op = op, value = "", values = emptySet())
-    }
+    /** iOS FilterSheet parity: changing the op keeps every value; only a field change clears them. */
+    fun changeOp(c: Clause, op: FilterOp): Clause = c.copy(op = op)
 
     fun toggleValue(c: Clause, v: String): Clause =
         c.copy(values = if (v in c.values) c.values - v else c.values + v)

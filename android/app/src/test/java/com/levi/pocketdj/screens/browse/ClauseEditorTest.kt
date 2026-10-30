@@ -22,12 +22,24 @@ class ClauseEditorTest {
         assertEquals(c, ClauseReducer.changeField(c, "nope"))
     }
 
-    @Test fun opChangeDropsShapeMismatchedValues() {
-        val c = Clause("genre", FilterOp.IN_LIST, values = setOf("Rock"))
-        val eq = ClauseReducer.changeOp(c, FilterOp.EQ)
-        assertTrue(eq.values.isEmpty()); assertEquals(FilterOp.EQ, eq.op)
+    @Test fun opChangeKeepsValues() {
+        val c = Clause("bpm", FilterOp.EQ, "120", values = setOf("a"), min = 1.0, max = 2.0)
+        val n = ClauseReducer.changeOp(c, FilterOp.BETWEEN)
+        assertEquals(FilterOp.BETWEEN, n.op)
+        assertEquals(c.copy(op = FilterOp.BETWEEN), n)
+        assertEquals("120", n.value)
+        assertEquals(c, ClauseReducer.changeOp(n, FilterOp.EQ))
+    }
+
+    @Test fun opChangeToListKeepsSingleValue() {
         val back = ClauseReducer.changeOp(Clause("genre", FilterOp.EQ, "Rock"), FilterOp.NOT_IN_LIST)
-        assertEquals("", back.value)
+        assertEquals("Rock", back.value)
+    }
+
+    @Test fun fieldChangeStillClearsValues() {
+        val c = Clause("bpm", FilterOp.EQ, "120", values = setOf("a"))
+        val n = ClauseReducer.changeField(c, "genre")
+        assertEquals("", n.value); assertTrue(n.values.isEmpty())
     }
 
     @Test fun newClauseUsesFirstFieldAndOp() {
