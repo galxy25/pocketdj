@@ -64,6 +64,7 @@ class FavoritesSyncServiceTest {
         seedOpt: Boolean = false,
         seed: String = "{}",
         ready: () -> Boolean = { true },
+        cursor: IntArray = intArrayOf(0),
     ): FavoritesSyncService {
         val tokens = StaticAppleMusicTokens("dev", user)
         val api = AppleMusicApi(
@@ -74,6 +75,7 @@ class FavoritesSyncServiceTest {
             s, ApiFavoritesRemote(api, tokens),
             twoWayEnabled = { twoWay }, seedOptIn = { seedOpt },
             catalogPairs = { pairs }, fetchSeed = { seed }, clock = { 50_000.0 }, ready = ready,
+            loadCursor = { cursor[0] }, saveCursor = { cursor[0] = it },
         )
     }
 
@@ -276,5 +278,57 @@ class FavoritesSyncServiceTest {
         service(s).run()
         assertEquals(2, starPosts)
         assertTrue(s.pendingPushes.isEmpty())
+    }
+
+    private fun bigCatalog(n: Int) = (0 until n).map { "s%05d".format(it) to "am%05d".format(it) }
+    private fun gets() = requests().filter { it.method == "GET" }
+
+    @Test fun pullPagesTwentyBatchesAndAdvancesCursor() = runTest {
+        val cursor = intArrayOf(0)
+        val pairs = bigCatalog(12_000)
+        service(store(), pairs = pairs, cursor = cursor).run()
+        assertEquals(20, gets().size)
+        assertEquals(5_000, cursor[0])
+    }
+
+    @Test fun cursorWrapsAtEndOfCatalog() = runTest {
+        val cursor = intArrayOf(10_000)
+        val pairs = bigCatalog(12_000)
+        val svc = service(store(), pairs = pairs, cursor = cursor)
+        svc.run()
+        assertEquals(8, gets().size) // 2000 ids = 8 batches
+        assertEquals(0, cursor[0])
+        assertEquals(12_000, svc.state.value.pullDone)
+        assertEquals(12_000, svc.state.value.pullTotal)
+    }
+
+    @Test fun locallyHeartedAlwaysIncludedOutsidePage() = runTest {
+        val s = store()
+        s.set("s11999", true, "am11999")
+        s.markPushed("s11999", s.entry("s11999")!!.atMs)
+        val pairs = bigCatalog(12_000)
+        service(s, pairs = pairs, cursor = intArrayOf(0)).run()
+        val ids = gets().joinToString(",") { java.net.URLDecoder.decode(it.path!!, "UTF-8") }
+        assertTrue(ids.contains("am11999"))
+        assertFalse(ids.contains("am07000"))
+    }
+
+    @Test fun rateLimitedPageDoesNotAdvanceCursor() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setResponseCode(429).setHeader("Retry-After", "0")
+        }
+        val cursor = intArrayOf(5_000)
+        val svc = service(store(), pairs = bigCatalog(12_000), cursor = cursor)
+        svc.run()
+        assertEquals(5_000, cursor[0])
+        assertNotNull(svc.state.value.lastError)
+        assertNull(svc.state.value.lastSyncedAtMs)
+    }
+
+    @Test fun pageOnlyReconcile_offPageLoveNotTouched() = runTest {
+        ratingsBody = """{"data":[{"id":"am11000","type":"ratings","attributes":{"value":1}}]}"""
+        val s = store()
+        service(s, pairs = bigCatalog(12_000), cursor = intArrayOf(0)).run()
+        assertNull(s.entry("s11000")) // off-page: untouched this pass
     }
 }

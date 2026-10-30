@@ -69,6 +69,8 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                     ?.mapNotNull { s -> s.appleMusicId?.let { s.id to it } }.orEmpty()
             },
             ready = { app.onboarding.isComplete && app.catalogRepository.state.value.catalog != null },
+            loadCursor = { app.settings.get(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.PULL_CURSOR) },
+            saveCursor = { app.settings.set(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.PULL_CURSOR, it) },
             fetchSeed = {
                 kotlinx.coroutines.withContext(Dispatchers.IO) {
                     app.httpClient.newCall(

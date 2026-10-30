@@ -67,11 +67,21 @@ class FavoritesSyncService(
     /** iOS `syncFavoritesIfReady` gate: onboarding complete AND catalog loaded (automatic triggers only). */
     private val ready: () -> Boolean = { true },
     private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true },
+    /** Persisted pull cursor (`FavoritesSyncSettings.PULL_CURSOR`): index into the sorted catalog pairs. */
+    private val loadCursor: (suspend () -> Int)? = null,
+    private val saveCursor: (suspend (Int) -> Unit)? = null,
 ) {
+    private var memCursor = 0
+    private suspend fun readCursor() = loadCursor?.invoke() ?: memCursor
+    private suspend fun writeCursor(v: Int) { if (saveCursor != null) saveCursor.invoke(v) else memCursor = v }
+
     data class State(
         val isSyncing: Boolean = false,
         val lastError: String? = null,
         val lastSyncedAtMs: Double? = null,
+        /** "x of y" for the paginated pull: catalog entries covered so far this lap / total. */
+        val pullDone: Int = 0,
+        val pullTotal: Int = 0,
     )
 
     private val running = AtomicBoolean(false)
@@ -146,18 +156,34 @@ class FavoritesSyncService(
         firstError?.let { throw SyncFailure(it) }
     }
 
-    /** True when the reconcile actually ran. */
+    /**
+     * One PAGE of the pull (ANS-COL-5 / Q85): [PAGE_BATCHES] x 250 ids starting at the persisted cursor
+     * over the stable-sorted catalog, wrapping. Locally-hearted and pending ids are ALWAYS asked about
+     * (so unfavorites and fresh hearts reconcile every pass). Only the page is reconciled; the cursor
+     * advances only after a fully-read page (a rate limit / unreadable batch aborts without moving it).
+     * True when the reconcile actually ran.
+     */
     private suspend fun pull(): Boolean {
         if (!remote.canSync()) return false
-        val pairs = catalogPairs()
-        if (pairs.isEmpty()) return false
+        val all = catalogPairs().sortedBy { it.first }
+        if (all.isEmpty()) return false
+        val total = all.size
+        val start = readCursor().let { if (it < 0 || it >= total) 0 else it }
+        val end = minOf(total, start + PAGE_SIZE)
+        val page = LinkedHashMap<String, String>()
+        for (i in start until end) page[all[i].first] = all[i].second
+        val local = HashSet<String>()
+        favorites.entries().forEach { if (it.favorited) local += it.songId }
+        favorites.pendingPushes.forEach { local += it.songId }
+        for ((songId, amId) in all) if (songId in local) page[songId] = amId
+
         val now = clock()
-        val loved = when (val r = remote.lovedIds(pairs.map { it.second })) {
+        val loved = when (val r = remote.lovedIds(page.values.toList())) {
             is AmResult.Ok -> r.value
             else -> throw SyncFailure("Could not read Apple Music loved songs: ${describe(r)}")
         }
         favorites.withCoalescedSaves {
-            for ((songId, amId) in pairs) {
+            for ((songId, amId) in page) {
                 val isLoved = amId in loved
                 // Absence of a rating is not a decision to unfavorite: only touch songs that are
                 // loved upstream or already have a local entry.
@@ -166,6 +192,8 @@ class FavoritesSyncService(
                 }
             }
         }
+        writeCursor(if (end >= total) 0 else end)
+        _state.value = _state.value.copy(pullDone = end, pullTotal = total)
         return true
     }
 
@@ -186,7 +214,11 @@ class FavoritesSyncService(
         )
     }
 
-    private companion object { const val STAR_CHUNK = 250 }
+    companion object {
+        private const val STAR_CHUNK = 250
+        const val PAGE_BATCHES = 20
+        const val PAGE_SIZE = PAGE_BATCHES * AppleMusicApi.BATCH_SIZE
+    }
 
     private class SyncFailure(message: String) : Exception(message)
 

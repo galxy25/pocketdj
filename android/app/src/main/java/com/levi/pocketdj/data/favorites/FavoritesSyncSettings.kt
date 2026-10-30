@@ -14,4 +14,7 @@ object FavoritesSyncSettings {
 
     /** Adopt the curator's shipped ♥ seed as this install's initial favorites. */
     val APPLY_OWNER_SEED = PrefKey.boolean("applyOwnerFavoritesSeed", false)
+
+    /** Paginated-pull cursor (ANS-COL-5): index into the sorted catalog of the next page to ask Apple about. */
+    val PULL_CURSOR = PrefKey.int("favoritesPullCursor", 0)
 }

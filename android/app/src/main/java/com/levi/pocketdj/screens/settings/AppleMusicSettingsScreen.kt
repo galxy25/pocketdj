@@ -114,10 +114,17 @@ fun appleMusicWriteBackSection() = SettingsSection("appleMusicWriteBack", 405) {
                 color = if (failed.isEmpty()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
                 modifier = Modifier.testTag("writeback-failed"),
             )
-            failed.forEach { job ->
+            var showAllFailed by remember { mutableStateOf(false) }
+            val shownFailed = if (showAllFailed) failed else failed.take(FAILED_PREVIEW)
+            shownFailed.forEach { job ->
                 val title = catalog?.songsById?.get(job.songId)?.name ?: job.title.ifEmpty { job.songId }
                 Text("$title → ${job.playlistName}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("writeback-failed-job"))
                 job.lastError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            }
+            if (!showAllFailed && failed.size > FAILED_PREVIEW) {
+                TextButton(onClick = { showAllFailed = true }, modifier = Modifier.testTag("writeback-failed-showall")) {
+                    Text("Show all (${failed.size})")
+                }
             }
             // A GUESSED playlist match is a successful delivery that may have gone to the wrong place.
             queue.resolutionWarning?.let {
@@ -319,6 +326,9 @@ fun appleMusicFavoritesSection() = SettingsSection("appleMusicFavorites", 406) {
     st.lastError?.let {
         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("favorites-sync-error"))
     }
+    if (st.pullTotal > 0) {
+        SettingsCaption("Checked ${st.pullDone} of ${st.pullTotal} songs this lap")
+    }
     st.lastSyncedAtMs?.let {
         SettingsCaption("Last synced " + java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(it.toLong())))
     }
@@ -346,3 +356,5 @@ fun appleMusicFavoritesSection() = SettingsSection("appleMusicFavorites", 406) {
             "from “Favorite Songs”, so remove it there yourself.",
     )
 }
+
+private const val FAILED_PREVIEW = 20
