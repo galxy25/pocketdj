@@ -128,7 +128,9 @@ class CollectionActivityStore(
      */
     fun recordAll(kind: ActivityKind, entries: List<Entry>, atMs: Double = System.currentTimeMillis().toDouble()): Int =
         synchronized(lock) {
-            val fresh = entries.filter { it.itemId.isNotEmpty() }.map {
+            // iOS parity (maxBatchContribution): one gesture can contribute at most maxEvents/4
+            // rows, keeping the NEWEST, so a select-all add cannot flush the prior history.
+            val fresh = entries.filter { it.itemId.isNotEmpty() }.takeLast(maxBatchContribution).map {
                 ActivityEvent(
                     id = UUID.randomUUID().toString(),
                     at = atMs,
@@ -149,6 +151,9 @@ class CollectionActivityStore(
             save()
             fresh.size
         }
+
+    /** Max rows a single [recordAll] batch may contribute (iOS `maxBatchContribution`). */
+    val maxBatchContribution: Int get() = maxEvents / 4
 
     data class Entry(
         val itemId: String,
