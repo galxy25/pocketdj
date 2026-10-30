@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-STU-8 Profile custom-audio source part B: Demuxer "Save to Pocket DJ library" + Add-to
 
@@ -19,3 +19,10 @@ None.
 
 ## Summary
 The Demuxer now saves the loaded demux (original + stems) as a Pocket DJ profile item and immediately presents the Add-to sheet, matching iOS saveDemux.
+
+## Review
+- MINOR save cancelled when leaving screen: fixed (save now runs on a process-scoped SupervisorJob scope; completion posts to Main, opens Add-to if still shown, else toasts "Saved to Pocket DJ library").
+- MINOR emulator step not run: rejected for this pass (shared emulator owned by integrator); must be run at the merged tip. Remerge runs in ProfileSourceStore.onChanged before ingest returns the id.
+- NIT no feedback on failed save: fixed (toast "Couldn't save this demux" when audio present and id null).
+
+fixes applied
