@@ -63,7 +63,6 @@ class BackupMergeTest {
         val (p, _) = BackupZip.import(IoTestSupport.resource("backup/ios-backup.pocketdj.zip"))
         assertTrue(p.favoritesData != null)
         assertTrue(p.editsData != null)
-        assertTrue(BackupEdits.count(p.editsData) >= 0)
     }
 
     @Test
@@ -88,9 +87,43 @@ class BackupMergeTest {
         assertEquals(setOf("sng_1"), PortableItems.referencedIds(pocket, emptyList()).songs)
     }
 
+    private val iosEdits = """{"schemaVersion":1,"meta":{"platform":"iOS","exportedAt":"2020-01-01T00:00:00Z"},
+        "albums":{"alb_1":{"name":"Renamed Album"}},"songs":{"sng_1":{"name":"Fixed","bpm":128},"sng_2":{"key":"8A"}}}"""
+
     @Test
-    fun restoreMessageMentionsEdits() {
-        val s = com.levi.pocketdj.data.collections.io.ImportSummary(com.levi.pocketdj.data.collections.io.ImportKind.BACKUP)
-        assertTrue(CollectionShare.restoreMessage(s, 0, 0, 0, 3).startsWith("Restored 3 edits"))
+    fun realIosShapeCountsMergesAndIsIdempotent() {
+        val dir = java.nio.file.Files.createTempDirectory("edits").toFile()
+        val store = BackupEditsStore(java.io.File(dir, "e.json"))
+        assertEquals(3, BackupEdits.count(b(iosEdits)))
+        assertEquals(3, store.importMerging(b(iosEdits)))
+        assertEquals("second restore of same backup changes nothing", 0, store.importMerging(b(iosEdits)))
+        val changed = iosEdits.replace("\"Fixed\"", "\"Fixed2\"")
+        assertEquals(1, store.importMerging(b(changed)))
+        val o = obj(store.exportData()!!)
+        assertEquals("Fixed2", o["songs"]!!.jsonObject["sng_1"]!!.jsonObject["name"]!!.jsonPrimitive.content)
+        assertEquals("8A", o["songs"]!!.jsonObject["sng_2"]!!.jsonObject["key"]!!.jsonPrimitive.content)
+        assertEquals("Renamed Album", o["albums"]!!.jsonObject["alb_1"]!!.jsonObject["name"]!!.jsonPrimitive.content)
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun exportRestampsSchemaAndMeta() {
+        val dir = java.nio.file.Files.createTempDirectory("edits").toFile()
+        val store = BackupEditsStore(java.io.File(dir, "e.json"))
+        store.importMerging(b(iosEdits))
+        val o = obj(store.exportData()!!)
+        assertEquals(2, o["schemaVersion"]!!.jsonPrimitive.content.toInt())
+        assertEquals("Android", o["meta"]!!.jsonObject["platform"]!!.jsonPrimitive.content)
+        assertTrue(o["meta"]!!.jsonObject["exportedAt"]!!.jsonPrimitive.content != "2020-01-01T00:00:00Z")
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun restoreMessageNeverClaimsEditsWereApplied() {
+        val none = com.levi.pocketdj.data.collections.io.ImportSummary(com.levi.pocketdj.data.collections.io.ImportKind.BACKUP)
+        val m = CollectionShare.restoreMessage(none, 0, 0, 0, 3)
+        assertFalse(m, m.contains("Restored"))
+        assertTrue(m, m.contains("not yet applied"))
+        assertEquals("Already up to date - nothing new to import", CollectionShare.restoreMessage(none, 0, 0, 0, 0))
     }
 }

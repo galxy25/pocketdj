@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-GAP-4 - COL-14 complete
 - [x] onPortableItems seam: already wired in CollectionsGraph.wireImported (importedSongs.addPortable); materializePortableItems now filters via PortableItems.isPortable.
@@ -12,3 +12,12 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+- MAJOR restored edits never applied -> fixed (honestly): a catalog overlay is out of this package's scope, so COL-14 stays PARTIAL for "edits applied on restore". The restore message no longer says edits were "Restored"; it says "N edits saved, not yet applied on Android". Test restoreMessageNeverClaimsEditsWereApplied added. Follow-up needed: catalog edits overlay.
+- MINOR importMerging count -> fixed: BackupEdits.changedCount counts only new/different ids; re-restore returns 0 ("Already up to date"). Test realIosShapeCountsMergesAndIsIdempotent.
+- MINOR vacuous fixture test -> fixed: removed the `>= 0` assertion; added real iOS-shape edits (albums+songs) test asserting merged values through BackupEditsStore. BackupCoordinator.restore itself still needs an AppGraph and is not driven in a unit test.
+- NIT export meta/schemaVersion -> fixed: BackupEdits.restamp (schemaVersion 2, meta platform Android, fresh exportedAt); test exportRestampsSchemaAndMeta.
+- Suite: 5420 tests, 0 failures (was 5418: +3 new, -1 obsolete restoreMessageMentionsEdits); assembleDebug green.
+
+fixes applied
