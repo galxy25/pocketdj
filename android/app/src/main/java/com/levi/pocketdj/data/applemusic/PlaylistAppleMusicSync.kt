@@ -65,7 +65,7 @@ data class AmSyncReport(
 ) {
     @Serializable
     data class Change(
-        /** "created" | "updated" | "imported" | "skipped" | "not imported" */
+        /** "created" | "updated" | "reconciled" | "imported" | "skipped" | "not imported" */
         val kind: String,
         val name: String,
         val added: Int = 0,
@@ -109,8 +109,8 @@ data class AmCatalogLookup(val catalogId: String? = null, val checkedAtMs: Doubl
 
 /**
  * Bidirectional PocketDJ <-> Apple Music library-playlist sync via [AMPlaylistSyncClient]
- * (iOS `PlaylistAppleMusicSync`). PUSH = create + append only (the on-device RECONCILE half -
- * removals/reorders - is omitted on Android). PULL imports remote playlists with no local
+ * (iOS `PlaylistAppleMusicSync`). PUSH = create + append, then RECONCILE (removals + reorders via
+ * the transport's Web-API delete+append, fail-closed; see [PlaylistReconcilePlanner]). PULL imports remote playlists with no local
  * counterpart, only when [importNewPlaylistsEnabled] says so (nil/false = import nothing).
  */
 class PlaylistAppleMusicSync(
@@ -271,6 +271,33 @@ class PlaylistAppleMusicSync(
                 pushed.playlists.size - created.size - updated.size, pushed.errors.size,
             ),
         )
+
+        // 3. RECONCILE (removals + reorders; skips just-created playlists). Fail-closed: any throw
+        // skips that playlist for this pass, an empty target never edits.
+        val tr2 = transport
+        if (tr2 != null && tr2.canWrite()) {
+            beginStep("Reconciling removals & reorders")
+            var reconciled = 0
+            val justCreated = created.map { normName(it.name) }.toSet()
+            // Never reconcile the same REMOTE playlist twice in one pass.
+            val reconciledIds = HashSet<String>()
+            for (pl in outgoing) {
+                if (normName(pl.name) in justCreated) continue
+                updateStep("Checking “${pl.name}”")
+                // PREFER THE DURABLE LINK: reconcile rewrites contents, so a by-name guess after a rename
+                // could overwrite the wrong list. Name only when there is no link yet.
+                val amId = linkedAmPlaylistId(pl, host)
+                    ?: try { tr2.resolvePlaylistId(pl.name, pl.trackCatalogIds) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+                    ?: continue
+                if (!reconciledIds.add(amId)) continue
+                val res = try { tr2.reconcile(amId, pl.trackCatalogIds) } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
+                if (res is PlaylistReconcileResult.Edited) {
+                    reconciled++
+                    changes += AmSyncReport.Change("reconciled", pl.name, res.added, res.removed, "now ${res.count} tracks in PocketDJ order")
+                }
+            }
+            finishStep(if (reconciled == 0) "Nothing to fix" else "$reconciled playlist${if (reconciled == 1) "" else "s"} re-ordered/pruned")
+        }
     }
 
     private suspend fun pullHalf(host: AmSyncHost, changes: MutableList<AmSyncReport.Change>) {
@@ -458,6 +485,13 @@ class PlaylistAppleMusicSync(
             return AmOutgoingResolution(sendable, skipped.filter { normName(it.name) !in sendableNames })
         }
 
+        /** The Apple Music playlist id an outgoing entry is already bound to (first linked local wins); null => resolve by name. */
+        fun linkedAmPlaylistId(entry: AmOutgoingPlaylist, host: AmSyncHost): String? {
+            for (id in entry.localPlaylistIds) host.playlists.firstOrNull { it.id == id }?.amPlaylistId?.takeIf { it.isNotEmpty() }?.let { return it }
+            for (id in entry.localPocketIds) host.pockets.firstOrNull { it.id == id }?.amPlaylistId?.takeIf { it.isNotEmpty() }?.let { return it }
+            return null
+        }
+
         fun resolveOutgoing(host: AmSyncHost): List<AmOutgoingPlaylist> = resolveOutgoingDetailed(host).playlists
 
         /** Songs in PUSHABLE collections named in [onlyCollectionsNamed] (normalized) that carry no store id. */
@@ -546,9 +580,11 @@ class PlaylistAppleMusicSync(
             val parts = mutableListOf<String>()
             val created = changes.count { it.kind == "created" }
             val updated = changes.count { it.kind == "updated" }
+            val reconciled = changes.count { it.kind == "reconciled" }
             val imported = changes.count { it.kind == "imported" }
             if (created > 0) parts += "$created created"
             if (updated > 0) parts += "$updated updated"
+            if (reconciled > 0) parts += "$reconciled reconciled"
             if (imported > 0) parts += "$imported imported"
             if (parts.isEmpty()) parts += "Everything in sync"
             if (errors.isNotEmpty()) parts += "${errors.size} error${if (errors.size == 1) "" else "s"}"
@@ -578,4 +614,92 @@ class CollectionsAmSyncHost(
     override fun linkPocket(pocketId: String, amPlaylistId: String) = store.linkPocketToAppleMusic(pocketId, amPlaylistId)
     override fun createPlaylist(name: String, songIds: List<String>, source: SourcePlaylist?) =
         store.createPlaylist(name, songIds, source)
+}
+
+/**
+ * Outcome of reconciling an app-created Apple Music playlist to an exact ordered track list
+ * (iOS `PlaylistReconcileResult`; the destructive remove + reorder half of the hybrid sync).
+ */
+sealed interface PlaylistReconcileResult {
+    /** Contents now equal the ordered target; added/removed are the net MEMBERSHIP delta (reorders alone are 0/0). */
+    data class Edited(val count: Int, val added: Int, val removed: Int) : PlaylistReconcileResult
+    data object AlreadyInSync : PlaylistReconcileResult
+    /** Apple refused the edit (or the live rows can't be judged safely) - nothing was touched. */
+    data object NotEditable : PlaylistReconcileResult
+    /** Empty target: refuse to wipe the playlist (the "empty != deletion" guard). */
+    data object SkippedEmpty : PlaylistReconcileResult
+    data object Unsupported : PlaylistReconcileResult
+}
+
+/**
+ * PURE diff of a live library playlist against the target order. The Web API has no replace-all, so a
+ * reconcile is DELETE(rows) + POST(append): the minimal delete set keeps the longest prefix already
+ * correct, so a removal-only change never rewrites a track it did not have to.
+ */
+object PlaylistReconcilePlanner {
+    sealed interface Plan {
+        data object AlreadyInSync : Plan
+        /** Live rows lack an id we can reason about (e.g. an uploaded file): fail closed. */
+        data object Unsafe : Plan
+        data class Edit(
+            val deleteLibraryIds: List<String>,
+            val appendCatalogIds: List<String>,
+            val added: Int,
+            val removed: Int,
+        ) : Plan
+    }
+
+    /** A 4xx on the first DELETE (not auth / rate-limit) means "this playlist can't be edited here". */
+    fun isRefusal(status: Int?): Boolean = status != null && status in 400..499 && status != 401 && status != 429
+
+    fun plan(live: List<AmTrackRow>, target: List<String>): Plan {
+        if (live.any { it.libraryId == null || it.catalogId == null }) return Plan.Unsafe
+        val targetSet = target.toSet()
+        // Judge each live row by its WHOLE id set (iOS catalogIds(of:)): an equivalent id of a target
+        // song counts as that song, so a regional/reissue mapping is not a perpetual remove + re-add.
+        val liveCat = live.map { r ->
+            if (r.catalogId!! in targetSet) r.catalogId
+            else r.equivalentIds.firstOrNull { it in targetSet } ?: r.catalogId
+        }
+        if (liveCat == target) return Plan.AlreadyInSync
+        val liveSet = liveCat.toSet()
+        val added = target.count { it !in liveSet }
+        val removed = liveCat.count { it !in targetSet }
+        val kept = live.indices.filter { liveCat[it] in targetSet }
+        val keptCat = kept.map { liveCat[it] }
+        var keepFrom: Int
+        var deletes: List<AmTrackRow>
+        // DELETE addresses the SONG (library id), not the entry: a deleted id that also sits in the kept
+        // prefix would remove that copy too, so such a plan is not allowed.
+        fun clashes(del: List<AmTrackRow>, keptRows: List<AmTrackRow>) =
+            del.map { it.libraryId }.toSet().let { d -> keptRows.any { it.libraryId in d } }
+        val removalOnly = keptCat.size <= target.size && target.subList(0, keptCat.size) == keptCat &&
+            !clashes(live.filterIndexed { i, _ -> liveCat[i] !in targetSet }, kept.map { live[it] })
+        if (removalOnly) {
+            deletes = live.filterIndexed { i, _ -> liveCat[i] !in targetSet }
+            keepFrom = keptCat.size
+        } else {
+            var p = 0
+            while (p < liveCat.size && p < target.size && liveCat[p] == target[p]) p++
+            while (true) {
+                val d = live.drop(p).map { it.libraryId }.toSet()
+                val firstClash = live.take(p).indexOfFirst { it.libraryId in d }
+                if (firstClash < 0) break
+                p = firstClash
+            }
+            deletes = live.drop(p)
+            keepFrom = p
+        }
+        // Only re-add what THIS pass deleted. Anything else missing is the push's job: a just-pushed track
+        // may not be visible in the (eventually consistent) read yet, and appending it here would duplicate it.
+        val budget = HashMap<String, Int>()
+        val delIdx = if (removalOnly) live.indices.filter { liveCat[it] !in targetSet } else (keepFrom until live.size).toList()
+        if (!removalOnly) for (i in delIdx) budget.merge(liveCat[i], 1, Int::plus)
+        val append = if (removalOnly) emptyList() else target.drop(keepFrom).filter { id ->
+            val n = budget[id] ?: 0
+            if (n > 0) { budget[id] = n - 1; true } else false
+        }
+        if (deletes.isEmpty() && append.isEmpty()) return Plan.AlreadyInSync
+        return Plan.Edit(deletes.map { it.libraryId!! }.distinct(), append, added, removed)
+    }
 }
