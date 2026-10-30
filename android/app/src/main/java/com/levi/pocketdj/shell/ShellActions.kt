@@ -18,6 +18,7 @@ sealed class ShellActionException(message: String) : Exception(message) {
     data object SetupIncomplete : ShellActionException("Finish setting up PocketDJ in the app first.")
     data object PlaylistNotFound : ShellActionException("I couldn't find that playlist in PocketDJ.")
     data object PocketNotFound : ShellActionException("I couldn't find that pocket in PocketDJ.")
+    data object SetlistNotFound : ShellActionException("I couldn't find that set list in PocketDJ.")
     data object SongNotFound : ShellActionException("I couldn't find that song in your PocketDJ sources.")
     data object MixSourceNotFound :
         ShellActionException("I couldn't find that pocket, playlist, or set list in PocketDJ.")
@@ -126,6 +127,35 @@ class ShellActions(
         if (set == null || set.tracks.isEmpty()) throw ShellActionException.EmptyCollection(pocket.name)
         start(set, pocket.name)
         return pocket.name
+    }
+
+    /**
+     * ▶/🔀 a saved (frozen) set list: its song rows (text cues dropped) become the reserved Now Playing
+     * set, with each row's frozen repeat count kept. Returns the set list's display name.
+     */
+    suspend fun playSetlist(id: String, shuffle: Boolean = false): String {
+        veto()
+        ensureReady()
+        val saved = collections.setlist(id) ?: throw ShellActionException.SetlistNotFound
+        val name = saved.name ?: "Set list"
+        val rows = saved.tracks.filter { it.isText != true && it.songId.isNotEmpty() }
+        val set: Setlist?
+        if (saved.id == NOW_PLAYING_SETLIST_ID) {
+            // Reserved set: replay in place; rebuilding it from itself would clobber the real origin.
+            set = saved.copy(tracks = if (shuffle) rows.shuffled() else rows)
+        } else {
+            collections.playlist(saved.playlistId)?.let { collections.markPlaylistPlayed(it.id) }
+            set = collections.playNowRows(
+                rows = rows,
+                name = name,
+                shuffle = shuffle,
+                sourceToken = PlayContext.SOURCE_SETLIST,
+                originId = saved.id,
+            )
+        }
+        if (set == null || set.tracks.isEmpty()) throw ShellActionException.EmptyCollection(name)
+        start(set, name)
+        return name
     }
 
     /** ▶ one catalog song as a one-track Now Playing set. Returns the title. */

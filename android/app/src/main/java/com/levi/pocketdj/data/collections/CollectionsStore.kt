@@ -1857,7 +1857,7 @@ class CollectionsStore(
         random: Random = Random,
     ): Setlist? = synchronized(lock) {
         val merged = catalogProvider?.invoke() ?: return null
-        var tracks = songIds.mapNotNull { id ->
+        val tracks = songIds.mapNotNull { id ->
             val rep = CollectionMembership.storedRepeat(repeats[id] ?: 1)
             // Catalog first, then a synthesized studio pseudo-song (real length); else drop.
             val s = resolveSongOrStudio(merged.songsById, id, studioLookup, studioArtist().ifBlank { STUDIO_ARTIST })
@@ -1873,7 +1873,31 @@ class CollectionsStore(
                 repeatCount = rep,
             )
         }
-        if (shuffle) tracks = tracks.shuffled(random)
+        return publishNowPlaying(tracks, name, shuffle, sourceToken, originId, random)
+    }
+
+    /**
+     * ▶ a saved set list's FROZEN rows as the reserved Now Playing set: every row keeps its own
+     * variant / repeat / snapshot (nothing re-resolved against the catalog, duplicates kept).
+     */
+    fun playNowRows(
+        rows: List<SetlistTrack>,
+        name: String = "Now Playing",
+        shuffle: Boolean = false,
+        sourceToken: String? = null,
+        originId: String? = null,
+        random: Random = Random,
+    ): Setlist? = synchronized(lock) { publishNowPlaying(rows, name, shuffle, sourceToken, originId, random) }
+
+    private fun publishNowPlaying(
+        rows: List<SetlistTrack>,
+        name: String,
+        shuffle: Boolean,
+        sourceToken: String?,
+        originId: String?,
+        random: Random,
+    ): Setlist {
+        val tracks = if (shuffle) rows.shuffled(random) else rows
         val totalMs = tracks.sumOf { it.shownMs }
         val set = Setlist(
             id = NOW_PLAYING_SETLIST_ID,
@@ -1894,7 +1918,7 @@ class CollectionsStore(
             )
         }
         save()
-        set
+        return set
     }
 
     /** One live-queue row for [materializeNowPlayingSetlist]. */
@@ -2473,7 +2497,7 @@ class CollectionsStore(
         save()
     }
 
-    private fun mutateSetlist(id: String, body: (Setlist) -> Setlist): Setlist? = synchronized(lock) {
+    internal fun mutateSetlist(id: String, body: (Setlist) -> Setlist): Setlist? = synchronized(lock) {
         val idx = setlists.indexOfFirst { it.id == id }
         if (idx < 0) return null
         publish { s -> s.copy(setlists = s.setlists.replaceAt(idx, body(s.setlists[idx]))) }

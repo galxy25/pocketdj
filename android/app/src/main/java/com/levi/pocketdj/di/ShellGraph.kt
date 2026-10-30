@@ -193,28 +193,7 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                 NavRequestBus.post(ShellRoute.JukeboxJoin(id))
             }
         }
-        deepLinkSeams.playItem = { kind, id, shuffle ->
-            if (kind == PlayKind.Setlist) {
-                NavRequestBus.post(ShellRoute.Setlist(id, autoplay = true))
-            } else {
-                app.appScope.launch {
-                    try {
-                        when (kind) {
-                            PlayKind.Playlist -> shellActions.playPlaylist(id, shuffle)
-                            PlayKind.Pocket -> shellActions.playPocket(id, shuffle)
-                            else -> shellActions.playAlbum(id, shuffle)
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        NavRequestBus.postMessage(
-                            (e as? ShellActionException)?.message ?: "Couldn't play that.",
-                        )
-                    }
-                }
-            }
-            null
-        }
+        deepLinkSeams.playItem = com.levi.pocketdj.shell.playLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
         SearchPlayBridge.handler = { request ->
             app.appScope.launch { mediaSearch.handle(request) }
         }
