@@ -413,3 +413,14 @@ No FATAL EXCEPTION / ANR in logcat.
 - GAP-4 (iOS backup fixture restore) and BRW-5 (release build, no-match path) not driven on the emulator this wave.
 - Device-only: live Shazam recognition, real Apple Music catalog/account, release-cert link verification.
 - Open: Q-numbers added in QUESTIONS.md (SURF-2 fingerprints, GAP-1 capture-on-accept, GAP-2 delete endpoint, GAP-4 edits overlay).
+
+## Wave 6 (answers: STU-7, GAP-3, GAP-5, GAP-6)
+- Merged all four into feat/android-answers (no conflicts). Unit tests: 5545 run, 0 failures (5543 after merge + 2 integration regression tests); assembleDebug green.
+- Emulator (new Settings > Debug "W6" seeds: burn stemmed fixture, ingest demux + W6PL playlist, cap=1; AM mock via pdj.amApiBase on host :8099):
+  - ANS-STU-7 PASS: ingested demux appears in Browse under source chip "TestDJ" (album "Pocket DJ Demuxes"), plays (PLAYING), loads on Mix Deck A (0:20). FOUND+FIXED: Browse/song sheet/album rows showed "Not playable on this device" for pdj_ rows (playability() knew nothing of profile assets); added hasProfileAsset param + ProfilePlayabilityTest (2 tests).
+  - ANS-GAP-3 PASS: mock 500 on POST /v1/me/library -> "Apple Music write failed: Apple Music API error (500)" + "Add to Apple Music again" row; mock flipped to 202, retry -> token "confirmed (web)", row gone.
+  - ANS-GAP-5 PASS: cap=1 song with 2 burns, cold start: prune ran once after the 15 s defer, evicted 1 (freed 3.99 MB), no ANR/FATAL.
+  - ANS-GAP-6 PASS: stemmed burn, Stem source on, only Drums chip, Make sample -> "Intro To Indo · drums" 0:08 sample created and auditioning (default region 8 s, not 4 s).
+- Note: pm clear wiped earlier burn fixtures; re-created via "W6 burn stemmed" (needs the rip server).
+- Device-only (not verifiable here): real stems for STU-7, real Apple Music write for GAP-3.
+- Open: Q116-Q118 in QUESTIONS.md.

@@ -445,6 +445,47 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             }
         }) { Text("Burn first 3") }
     }
+    // Wave-6 verify seeds: stemmed burn fixture, profile-source demux ingest, soft-cap-below-usage.
+    var w6Status by remember { mutableStateOf("W6 seed: idle") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = listOf("sng_da31790a9c81", "sng_18af57455ae4")
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val b = host.graph.servicesGraph.burnStore
+                val r = b.burn(ids.map { com.levi.pocketdj.data.burns.BurnSong(it, songs[it]?.name ?: it, songs[it]?.artist ?: "") })
+                val st = ids.map { id -> id to (runCatching { b.burnStems(id) }.getOrNull()?.size) }
+                w6Status = "W6 burn: $r stems=$st"
+                android.util.Log.d("PdjVerify", w6Status)
+            }
+        }) { Text("W6 burn stemmed") }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val g = host.graph
+                val b = g.servicesGraph.burnStore
+                val id = "sng_da31790a9c81"
+                val orig = b.localUrl(id); val stems = b.localStemFiles(id)
+                if (orig == null || stems == null) { w6Status = "W6 ingest: need stemmed burn first"; return@launch }
+                val e = g.studioGraph.profileAudio.ingest(com.levi.pocketdj.data.profile.ProfileSourceStore.Kind.DEMUX, "W6 Demux", orig, stems = stems)
+                if (e != null) {
+                    val store = g.collections
+                    val pl = store.playlists.firstOrNull { it.name == "W6PL" } ?: store.createPlaylist("W6PL")
+                    store.addSongs(listOf(e.songId), com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id))
+                }
+                w6Status = "W6 ingest: ${e?.songId}"
+                android.util.Log.d("PdjVerify", w6Status)
+            }
+        }) { Text("W6 ingest demux") }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                runCatching { host.graph.settings.set(com.levi.pocketdj.data.storage.StorageSettings.SOFT_CAP_SONGS, 1) }
+                w6Status = "W6 cap: songs=1"
+            }
+        }) { Text("W6 cap=1") }
+    }
+    Text(w6Status, style = MaterialTheme.typography.bodySmall)
     // ANS-COL-1 emulator seed: a pocket + playlist linked to Apple Music (amPlaylistId persists across relaunch).
     OutlinedButton(onClick = {
         host.scope.launch {

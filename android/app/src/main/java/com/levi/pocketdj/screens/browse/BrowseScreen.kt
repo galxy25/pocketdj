@@ -966,7 +966,7 @@ fun BrowseSongRow(
     val settings by graph.settings.settings.collectAsState(initial = null)
     val preparingId by graph.playbackController.preparingSongId.collectAsState()
 
-    val playable = playability(row.song.id, manifest, settings?.hasRipServer == true, row.song.appleMusicId)
+    val playable = playability(row.song.id, manifest, settings?.hasRipServer == true, row.song.appleMusicId, graph.studioGraph.profileAudio.hasLocalAsset(row.song.id))
     val contentAlpha = if (playable == Playability.NONE) 0.45f else 1f
 
     Row(

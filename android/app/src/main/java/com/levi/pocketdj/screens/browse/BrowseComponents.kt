@@ -47,9 +47,12 @@ fun playability(
     manifest: RipsManifest,
     hasRipServer: Boolean,
     appleMusicId: String? = null,
+    /** A "Pocket DJ" profile-source row whose audio is on this device: plays locally, never via manifest/AM/rip. */
+    hasProfileAsset: Boolean = false,
 ): Playability =
     when {
         PlayResolver.isStudioId(songId) -> Playability.NONE
+        hasProfileAsset -> Playability.STREAM
         manifest.containsKey(songId) -> Playability.STREAM
         !appleMusicId.isNullOrBlank() -> Playability.APPLE_MUSIC
         hasRipServer -> Playability.RIP
