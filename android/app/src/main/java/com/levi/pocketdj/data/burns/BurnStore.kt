@@ -707,7 +707,7 @@ class BurnStore(
         if (_items.value[songId]?.state == BurnState.READY && localUrl(songId) != null) return null
         // A burn run is writing files right now (possibly this very audio path): don't race it.
         // The streamed file stays in the cache and plays from there.
-        // TODO(SVC-3): wire yieldBackgroundDownload so the background burn skips this song instead.
+        // (A queued background transfer is cancelled up front by [yieldBackgroundDownload] when the stream opens.)
         if (runLock.isLocked) return null
         val root = folder.activeWritable() ?: return null
         val size = from.takeIf { it.isFile }?.length() ?: return null
@@ -995,6 +995,26 @@ class BurnStore(
             if (_items.value[id]?.state == BurnState.DOWNLOADING) dropItems(listOf(id))
         }
         save()
+    }
+
+    /**
+     * MIX STREAMING (iOS `yieldBackgroundDownload`): a deck is about to stream this song - cancel a
+     * still-pending BACKGROUND transfer of it (the lane enqueues a whole collection at once) so the
+     * file isn't fetched twice; the stream's adoption lands the same `.ready` item. Only acts on a
+     * `.downloading` row with transfers wired; a no-op on the in-process path. Returns true if it yielded.
+     */
+    fun yieldBackgroundDownload(songId: String): Boolean {
+        val row = _items.value[songId]
+        if (transfers == null || row?.state != BurnState.DOWNLOADING) return false
+        // A burn run is mid-flight (it holds runLock and would block adoption): leave the background
+        // transfer alone so the song is still delivered.
+        if (runLock.isLocked) return false
+        // A re-burn of an already-burned song: its old file is still on disk; cancelling would drop the
+        // row and orphan that file. Let the transfer finish instead.
+        val existing = itemDir(row)?.let { File(it, row.audioFileName) }
+        if (existing != null && existing.isFile && existing.length() > 0) return false
+        cancelTransfers(listOf(songId))
+        return true
     }
 
     /** Drop items whose file vanished; delete+drop poisoned <4 KB XML/HTML "audio". Call at launch. */

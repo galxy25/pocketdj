@@ -41,7 +41,7 @@ interface StreamAdopter {
 /** [StreamAdopter] over the real [BurnStore] (whose adoption fires `onAnyBurnFinalized`). */
 class BurnStoreAdopter(
     private val burns: BurnStore,
-    private val yieldBackground: (String) -> Unit = {},
+    private val yieldBackground: (String) -> Unit = { burns.yieldBackgroundDownload(it) },
 ) : StreamAdopter {
     override fun adoptFile(songId: String, title: String, artist: String, from: File) =
         burns.adoptStreamedFile(songId, title, artist, from)
@@ -272,7 +272,6 @@ class MixStreamLoader(
         val s = Stream(songId, file, title, artist, clock())
         streamMap[songId] = s
         recentFailures.remove(songId)
-        adopter.yieldBackgroundDownload(songId)
         val cutKey = entry.cutKey
         if (entry.source == "analog" && cutKey != null) {
             // Prefer the per-song cut - streaming a whole album side to reach one song is the
@@ -285,6 +284,8 @@ class MixStreamLoader(
             s.startMs = if (entry.source == "analog") entry.startMs else null
             scope.launch {
                 val url = presignWithRetry(songId)
+                // Yield only once the stream is certain to start (adoptable + presigned), and off the lock.
+                if (url != null) adopter.yieldBackgroundDownload(songId)
                 lock.withLock {
                     if (streamMap[songId] !== s) return@launch
                     if (url == null) {
