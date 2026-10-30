@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.foryou
 
+import com.levi.pocketdj.data.stats.PlayCountService
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
@@ -393,9 +394,9 @@ private suspend fun loadForYouList(graph: AppGraph, stores: ForYouStores, route:
                     memberSongIds = stores.collections.playableIdsForAnyCollection(cid),
                     tracks = inputs.tracks, playCount = { counts[it] ?: 0 },
                     feedback = inputs.crateFeedback[cid]
-                        ?: com.levi.pocketdj.data.stats.PlayCountService.withSkips(
-                            ZoneEngine.Feedback(),
-                            com.levi.pocketdj.data.stats.PlayCountService(graph.servicesGraph.playStats).snapshot().skipPenalty,
+                        ?: PlayCountService.withSkips(
+                            stores.feedback.zoneFeedback(route.feedbackContext, inputs.nowMs),
+                            inputs.skipPenalty,
                         ), timbre = inputs.timbre,
                 )
                 ForYouListData(

@@ -49,4 +49,42 @@ class ForYouSkipInputsTest {
         assertEquals(setOf("a", "b", "c"), ranked.toSet()) // demoted, never removed
         assertEquals("a", ranked.last())
     }
+
+    private fun ev(id: String, song: String, at: Double, skipped: Boolean? = null) =
+        com.levi.pocketdj.data.history.PlayEvent(id = id, songId = song, playedAt = at, wasSkipped = skipped)
+
+    @Test fun seedFoldsHistoryIntoEmptyStatsOnceAndFeedsSnapshot() {
+        val s = store()
+        val events = listOf(ev("1", "a", 1_000_000.0), ev("2", "a", 2_000_000.0, skipped = true), ev("3", "b", 3_000_000.0))
+        s.seedFromHistoryIfNeeded(events, nowMs = 5)
+        val snap = PlayCountService(s).snapshot()
+        assertEquals(2, snap.plays["a"])
+        assertEquals(1, snap.skips["a"])
+        assertEquals(2_000_000.0, snap.lastPlayedMs["a"]!!, 0.0)
+        assertEquals(1, snap.plays["b"])
+        assertEquals(true, "a" in snap.skipPenalty)
+        // second call is a no-op even with new events
+        s.seedFromHistoryIfNeeded(events + ev("4", "c", 4_000_000.0), nowMs = 6)
+        assertFalse("c" in PlayCountService(s).snapshot().plays)
+    }
+
+    @Test fun seedNeverOverwritesLiveStatsAndSurvivesReload() {
+        val dir = Files.createTempDirectory("pdj-seed").toFile()
+        val f = File(dir, PlayStatsStore.FILE_NAME)
+        val s = PlayStatsStore(f, nowMs = 0)
+        s.notePlayed("x", 1_000_000)
+        s.seedFromHistoryIfNeeded(listOf(ev("1", "h", 1.0)), nowMs = 5)
+        assertFalse("h" in s.playCountsSnapshot())
+        s.flush()
+        val again = PlayStatsStore(f, nowMs = 0)
+        again.seedFromHistoryIfNeeded(listOf(ev("1", "h", 1.0)), nowMs = 9)
+        assertFalse("h" in again.playCountsSnapshot())
+    }
+
+    @Test fun inputsCarrySkipPenaltyForFallbacks() {
+        val inputs = com.levi.pocketdj.data.recs.ForYouFeedInputs(skipPenalty = mapOf("a" to 0.5))
+        val fb = PlayCountService.withSkips(ZoneEngine.Feedback(suppressed = setOf("z")), inputs.skipPenalty)
+        assertEquals(mapOf("a" to 0.5), fb.skipPenalty)
+        assertEquals(setOf("z"), fb.suppressed)
+    }
 }

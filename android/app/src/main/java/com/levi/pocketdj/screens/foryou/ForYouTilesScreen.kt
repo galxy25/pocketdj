@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.foryou
 
+import com.levi.pocketdj.data.stats.PlayCountService
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
@@ -183,11 +184,14 @@ internal object ForYouInputsFactory {
         val feedback = graph.browseGraph.recFeedbackStore
         val history = PlayHistoryStore.get(graph.appContext)
         // Cumulative counts from PlayStatsStore (iOS ForYouView:301), snapshotted here on IO, never Main.
-        val snap = com.levi.pocketdj.data.stats.PlayCountService(graph.servicesGraph.playStats).snapshot()
+        val playStats = graph.servicesGraph.playStats
+        // One-time: an upgrade from a pre-stats build has history but an empty stats doc.
+        playStats.seedFromHistoryIfNeeded(history.events)
+        val snap = PlayCountService(playStats).snapshot()
         val counts = snap.plays
         val last = snap.lastPlayedMs
         val penalty = snap.skipPenalty
-        fun withSkips(fb: ZoneEngine.Feedback) = com.levi.pocketdj.data.stats.PlayCountService.withSkips(fb, penalty)
+        fun withSkips(fb: ZoneEngine.Feedback) = PlayCountService.withSkips(fb, penalty)
 
         val members = collections.suggestibleCollections()
         val recsOff = collections.recommendationsOffIds()
@@ -198,6 +202,7 @@ internal object ForYouInputsFactory {
             plays = history.recentPlaysForZone().map { ZoneEngine.Play(it.songId, it.playedAt) },
             playCount = counts,
             lastPlayedMs = last,
+            skipPenalty = penalty,
             crates = members.map { ForYouFeedSnapshot.Crate(it.id, it.kind, it.name, it.songIds) },
             zoneFeedback = withSkips(feedback.zoneFeedback(ForYouTileKind.ZONE.raw, now)),
             crateFeedback = members.filter { it.id !in recsOff }
