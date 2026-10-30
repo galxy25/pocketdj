@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
         // The store constructor reads + decodes the whole log from disk (multi-MB
         // at the 20k cap), so construction happens OFF-MAIN per its own contract.
         val graph = AppGraph.get(this)
+        graph.startInteractive() // ANS-SHELL-1: playback wiring + rec flush; a worker cold start never gets here
         val appContext = applicationContext
         // Process-level ON_STOP: flush every module's pending writes (idempotent re-register guard).
         ProcessLifecycleOwner.get().lifecycle.let { lc ->

@@ -182,8 +182,10 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
         com.levi.pocketdj.widget.WidgetBridge(app, app.appContext)
     }
 
+    /** Starts the widget bridge (PLAYBACK tier); idempotent. Never from a worker wake. */
+    fun startWidgets() = widgets.start()
+
     override val deepLinkHandlers: List<DeepLinkHandler> by lazy {
-        widgets.start()
         // Cheap and side-effect-light: runs on the main thread during cold start. Nothing heavy
         // (history decode, catalog/collections graphs) is forced here.
         // JBX-2: a tapped/parked jukebox link joins as a guest and opens the join panel.
