@@ -543,7 +543,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     Row { OutlinedButton(onClick = { com.levi.pocketdj.di.MixDebug.failFirstPerUrl = !com.levi.pocketdj.di.MixDebug.failFirstPerUrl; autoStatus = "fail-once armed=${com.levi.pocketdj.di.MixDebug.failFirstPerUrl}" }) { Text("Mix: 500 once") } }
     Text(autoStatus, style = MaterialTheme.typography.bodySmall)
 
-    // GM-7 verify probes (debug only): the In the Pocket game screen (GAMES-8) has no UI yet.
+    // In the Pocket verify probes (debug only): drive/inspect the round without the Games UI.
     var pocketStatus by remember { mutableStateOf("Pocket: idle") }
     fun pocketLine(): String {
         val st = host.graph.gamesGraph.inThePocket.state.value
@@ -559,7 +559,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }
     Text(pocketStatus, style = MaterialTheme.typography.bodySmall)
 
-    // BRW-10 verify probe (debug only): In Da Zone has no renderer yet (REC-5); log the queue it would build.
+    // BRW-10 verify probe (debug only): log the In Da Zone queue the ranker would build.
     var zoneStatus by remember { mutableStateOf("Zone: idle") }
     OutlinedButton(onClick = {
         host.scope.launch {
@@ -580,7 +580,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }) { Text("Zone: rank now") }
     Text(zoneStatus, style = MaterialTheme.typography.bodySmall)
 
-    // GM-3 verify probes (debug only): the Gem Collector round engine has no screen yet.
+    // Gem Collector verify probes (debug only): drive/inspect the round engine directly.
     var gemStatus by remember { mutableStateOf("Gem: idle") }
     fun gemLine(): String {
         val st = host.graph.gamesGraph.puzzleEngine.state.value

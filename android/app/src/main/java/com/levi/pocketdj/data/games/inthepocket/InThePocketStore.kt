@@ -54,7 +54,7 @@ class InThePocketStore(
     private val buildDispatcher: CoroutineDispatcher = Dispatchers.Default,
     /** false = persist inline (tests); true = coalesced off-thread writes. */
     private val asyncPersist: Boolean = true,
-    /** Resolved on EVERY use, so a bridge assigned after construction (services wave) is honoured. */
+    /** Resolved on EVERY use, so a bridge assigned after construction (LivePocketsBridge, wired async) is honoured. */
     private val bridgeProvider: (() -> PocketsBridge)? = null,
 ) {
     private val bridge: PocketsBridge get() = bridgeProvider?.invoke() ?: bridgeFixed

@@ -68,15 +68,15 @@ fun InThePocketScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     val games = graph.gamesGraph
     // The real bridge is assigned asynchronously after launch: observe it so an early open recomposes onto it.
     val servicesBridge by games.servicesBridgeFlow.collectAsState()
-    val bridge = servicesBridge ?: games.pocketsBridge
-    val enabled by bridge.isEnabled.collectAsState()
-    if (!enabled && bridge === com.levi.pocketdj.data.pockets.NoPocketsBridge) {
-        // No pockets service in this build (iOS third branch).
-        Box(modifier.fillMaxSize().testTag("itp-unavailable"), contentAlignment = Alignment.Center) {
-            Text(InThePocketScreenLogic.UNAVAILABLE_TEXT, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val bridge = servicesBridge
+    if (bridge == null) {
+        // The real bridge is still being wired (async after launch): never flash "isn't available".
+        Box(modifier.fillMaxSize().testTag("itp-loading"), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
         }
         return
     }
+    val enabled by bridge.isEnabled.collectAsState()
     if (!enabled) {
         PocketsOptInView(games.pocketsOptIn, modifier)
         return
