@@ -110,4 +110,37 @@ class AudioFocusPolicyTest {
         c.onTransientLoss(); c.forget("a"); c.onGain()
         assertEquals(0, resumed)
     }
+
+    // ---- ANS-STU-3: every engine rides the SAME coordinator (transient parks, gain resumes, permanent stops) ----
+
+    @Test fun coordinatorParksOnlyTheAudibleStudioEnginesAndResumesExactlyThose() = kotlinx.coroutines.runBlocking {
+        val c = InterruptionCoordinator()
+        val sink = FakeSink()
+        val decoded = com.levi.pocketdj.audio.core.PcmBuffer(44_100, 2, FloatArray(200 * 2) { 0.5f })
+        val loop = LoopAudition({ sink }, { decoded })
+        c.register("loop", { loop.isAudible }, { loop.parkForInterruption() }, { kotlinx.coroutines.runBlocking { loop.resumeFromInterruption() } })
+        var seqParked = 0
+        c.register("pattern", { false }, { seqParked++ }, { })      // silent engine: untouched
+        loop.onUserTransport = { c.forget("loop") }
+        loop.play("lp", java.io.File("l.wav"), 200)
+        c.onTransientLoss()
+        assertFalse(loop.isAudible); assertTrue(c.isParked("loop")); assertEquals(0, seqParked)
+        c.onGain()
+        assertTrue(loop.isAudible)
+    }
+
+    @Test fun permanentLossForgetsSoALaterGainResumesNothing() = kotlinx.coroutines.runBlocking {
+        val c = InterruptionCoordinator()
+        val sink = FakeSink()
+        val decoded = com.levi.pocketdj.audio.core.PcmBuffer(44_100, 2, FloatArray(200 * 2) { 0.5f })
+        val loop = LoopAudition({ sink }, { decoded })
+        c.register("loop", { loop.isAudible }, { loop.parkForInterruption() }, { kotlinx.coroutines.runBlocking { loop.resumeFromInterruption() } })
+        loop.onUserTransport = { c.forget("loop") }
+        loop.play("lp", java.io.File("l.wav"), 200)
+        c.onTransientLoss()
+        loop.stop("focus-loss")                                  // AUDIOFOCUS_LOSS: the graph's onLoss
+        c.onGain()
+        assertFalse(loop.isAudible)
+        assertFalse(c.isParked("loop"))
+    }
 }

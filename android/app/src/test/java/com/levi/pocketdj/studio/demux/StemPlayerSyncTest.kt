@@ -117,4 +117,74 @@ class StemPlayerSyncTest {
         p.togglePlayPause()
         assertFalse(p.isPlaying)
     }
+
+    // ---- ANS-STU-3: transient-loss park/resume ----
+
+    private fun loadWithFocus(events: MutableList<String>): VoiceGroupStemPlayer {
+        val p = VoiceGroupStemPlayer(
+            sinkFactory = { OfflineRenderer().also { sink = it } },
+            openSource = { SyntheticPcmSource(total = 200_000) { _, _ -> 0.25f } },
+            scope = scope, focus = { events += "focus" }, focusRelease = { events += "release" },
+        )
+        p.load("k#stems", names.associateWith { File(it) })
+        player = p
+        return p
+    }
+
+    @Test fun transientLossPausesKeepingFocusAndGainResumesPlayback() {
+        val ev = mutableListOf<String>()
+        val p = loadWithFocus(ev)
+        p.togglePlayPause()
+        waitFor("playing") { p.isPlaying }
+        ev.clear()
+        assertTrue(p.parkForInterruption())
+        assertFalse(p.isPlaying)
+        assertFalse("focus must stay held while parked", "release" in ev)
+        assertTrue(p.resumeFromInterruption())
+        waitFor("playing again") { p.isPlaying }
+        assertFalse(p.resumeFromInterruption())   // park consumed
+    }
+
+    @Test fun userToggleWhileParkedSupersedesTheResume() {
+        val p = loadWithFocus(mutableListOf())
+        p.togglePlayPause()
+        waitFor("playing") { p.isPlaying }
+        p.parkForInterruption()
+        p.togglePlayPause()                       // the user presses play themselves
+        waitFor("playing") { p.isPlaying }
+        assertFalse("no second resume", p.resumeFromInterruption())
+    }
+
+    @Test fun permanentLossDropsThePendingResumeAndReleasesFocus() {
+        val ev = mutableListOf<String>()
+        val p = loadWithFocus(ev)
+        p.togglePlayPause()
+        waitFor("playing") { p.isPlaying }
+        p.parkForInterruption(); ev.clear()
+        p.dropInterruptionPark()
+        assertTrue("release" in ev)
+        assertFalse(p.resumeFromInterruption())
+        assertFalse(p.isPlaying)
+    }
+
+    @Test fun parkWhilePausedIsANoOp() {
+        val p = loadWithFocus(mutableListOf())
+        assertFalse(p.parkForInterruption())
+        assertFalse(p.resumeFromInterruption())
+    }
+
+    @Test fun routingForwardsParkAndFiresUserTransportOnlyForExplicitCommands() {
+        val calls = mutableListOf<String>()
+        val inner = loadWithFocus(mutableListOf())
+        val routing = RoutingStemPlayer(inner, inner, scope)
+        routing.onUserTransport = { calls += "user" }
+        routing.togglePlayPause()
+        waitFor("playing") { inner.isPlaying }
+        assertTrue(routing.parkForInterruption())
+        assertEquals("park is not a user transport", listOf("user"), calls)
+        assertTrue(routing.resumeFromInterruption())
+        assertEquals(listOf("user"), calls)
+        routing.stop()
+        assertEquals(listOf("user", "user"), calls)
+    }
 }

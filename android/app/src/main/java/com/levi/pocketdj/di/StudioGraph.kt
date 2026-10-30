@@ -123,6 +123,31 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     /** Transient-loss park / gain resume pairing (iOS interruptionParked). Sample + pattern park-and-resume; the rest stop. */
     val interruptions = com.levi.pocketdj.studio.engine.InterruptionCoordinator()
 
+    /**
+     * Park Now Playing before a Studio voice sounds. Review fix: when the Studio loop already owns the media session the
+     * in-app controller targets StudioSessionPlayer, whose pause = remoteStop would kill the very loop being (re)started,
+     * so the pause is skipped then. The ownership check runs on Main, FIFO-ordered before the loop's setOwner launch.
+     */
+    private fun pauseNowPlayingForStudio() {
+        app.appScope.launch(Dispatchers.Main) {
+            if (!com.levi.pocketdj.studio.engine.shouldPauseNowPlayingForStudio(com.levi.pocketdj.playback.session.SessionSwitchboard.shared.current?.engine)) return@launch
+            runCatching { app.playbackController.pause() }
+        }
+    }
+
+
+    /**
+     * ANS-STU-3: the focus handle every Studio engine shares in shape. A TRANSIENT loss parks every audible engine
+     * (the engine keeps its focus request), GAIN resumes exactly those, a permanent loss runs [onPermanentLoss]
+     * (which stops + clears the engine's park).
+     */
+    private fun parkingFocus(onPermanentLoss: () -> Unit) = AudioFocusPolicy.FocusHandle(
+        audioManager,
+        onTransientLoss = { app.appScope.launch(Dispatchers.Main) { interruptions.onTransientLoss() } },
+        onGain = { app.appScope.launch(Dispatchers.Main) { interruptions.onGain() } },
+        onLoss = { app.appScope.launch(Dispatchers.Main) { onPermanentLoss() } },
+    )
+
     private val engineLazy: Lazy<StudioEngine> = lazy {
         val focus = AudioFocusPolicy.FocusHandle(
             audioManager,
@@ -136,7 +161,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             scope = app.appScope,
             focus = {
                 // One audible owner: park Now Playing (and a running pattern) before the Studio sample sounds.
-                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                pauseNowPlayingForStudio()
                 if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
                 focus.requestPlayback()
             },
@@ -150,21 +175,27 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     /** STU-12: the Tracks arranger player (one render callback; clip decode/bake via the shared StudioRender). */
     private val multitrackLazy: Lazy<com.levi.pocketdj.studio.engine.MultitrackPlayer> = lazy {
-        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { multitrackPlayer.stop("focus-loss") } }
+        val focus = parkingFocus { multitrackPlayer.stop("focus-loss") }
         com.levi.pocketdj.studio.engine.MultitrackPlayer(
             loader = com.levi.pocketdj.studio.engine.StudioClipLoader(studioStore, studioRender),
             sinkFactory = { StudioOutputs.create(audioManager) },
             scope = app.appScope,
             onFocus = {
                 // One audible owner: park Now Playing (and a running pattern / sample) before the arranger sounds.
-                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                pauseNowPlayingForStudio()
                 if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
                 if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
                 focus.requestPlayback()
             },
             onFocusRelease = { focus.abandon() },
             recorder = com.levi.pocketdj.studio.engine.MasterRecorder(tempDir = { File(app.appContext.cacheDir, "master-rec") }),
-        )
+        ).also { m ->
+            m.onUserTransport = { interruptions.forget("multitrack") }
+            interruptions.register(
+                "multitrack", { m.isPlaying.value }, { m.parkForInterruption() },
+                { app.appScope.launch(Dispatchers.Main) { m.resumeFromInterruption { id -> studioStore.arrangement(id) } } },
+            )
+        }
     }
     val multitrackPlayer: com.levi.pocketdj.studio.engine.MultitrackPlayer get() = multitrackLazy.value.also { ensureLoopStopObserver() }
 
@@ -199,26 +230,76 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     val sliceBaker: SliceBaker by lazy { SliceBaker(studioRoots, studioStore, studioRender, { sampleRenderCache.sourceFile(it) }) }
 
     private val loopLazy: Lazy<LoopAudition> = lazy {
-        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { loopAudition.stop("focus-loss") } }
+        val focus = parkingFocus { loopLazy.value.stop("focus-loss") }
         LoopAudition(
             sinkFactory = { StudioOutputs.create(audioManager) },
             decode = { runCatching { studioRender.decodeBuffer(it) }.getOrNull() },
             focus = {
                 // One audible owner: park Now Playing and any sample audition before a loop sounds.
-                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                pauseNowPlayingForStudio()
                 if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
                 if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
                 focus.requestPlayback()
             },
             focusRelease = { focus.abandon() },
             diag = { msg -> runCatching { com.levi.pocketdj.audio.core.AudioDiag.emit("studio.loop $msg") } },
-        )
+        ).also { l ->
+            l.onUserTransport = { interruptions.forget("loop") }
+            interruptions.register(
+                "loop", { l.isAudible }, { l.parkForInterruption() },
+                { app.appScope.launch(Dispatchers.Main) { l.resumeFromInterruption() } },
+            )
+            // ANS-STU-3: a sounding loop owns the media session (notification + foreground service); stop/park resigns.
+            l.onParkChanged = { app.appScope.launch(Dispatchers.Main) { studioSessionPlayer.refresh() } }
+            l.onAudible = { on ->
+                app.appScope.launch(Dispatchers.Main) {
+                    if (on) { ensureStudioMediaService(); studioSessionPlayer.onAudioStarted() } else studioSessionPlayer.onAudioStopped()
+                }
+            }
+        }
     }
     val loopAudition: LoopAudition get() = loopLazy.value.also { ensureLoopStopObserver() }
 
+    /** ANS-STU-3: the Studio loop as a [com.levi.pocketdj.playback.session.TransportOwner] (engine "studio"). */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    val studioSessionPlayer: com.levi.pocketdj.studio.engine.StudioSessionPlayer by lazy {
+        com.levi.pocketdj.studio.engine.StudioSessionPlayer(
+            android.os.Looper.getMainLooper(),
+            object : com.levi.pocketdj.studio.engine.StudioTransportPort {
+                override fun card(): com.levi.pocketdj.studio.engine.StudioCard? {
+                    val loop = loopLazy.value
+                    val id = loop.playingId.value ?: loop.parked?.id ?: return null
+                    val l = studioStore.loop(id)
+                    return com.levi.pocketdj.studio.engine.StudioCard(
+                        id = id, title = l?.name ?: "Loop preview", subtitle = "Pocket DJ Studio · Loops",
+                        parked = loop.playingId.value == null,
+                    )
+                }
+                override fun remotePlay() {}   // a card exists only while the loop sounds: already playing
+                override fun remoteStop() { app.appScope.launch(Dispatchers.Main) { loopLazy.value.stop("user-stop") } }
+                override fun handoff() { app.appScope.launch(Dispatchers.Main) { loopLazy.value.stop("superseded") } }
+            },
+        )
+    }
+
+    private var studioServiceLink: com.google.common.util.concurrent.ListenableFuture<androidx.media3.session.MediaController>? = null
+
+    /** Binds an in-app MediaController so PlaybackService starts and goes foreground while the loop (the session player) sounds. */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun ensureStudioMediaService() {
+        if (studioServiceLink != null) return
+        val ctx = app.appContext
+        val token = androidx.media3.session.SessionToken(
+            ctx, android.content.ComponentName(ctx, com.levi.pocketdj.playback.PlaybackService::class.java),
+        )
+        studioServiceLink = androidx.media3.session.MediaController.Builder(ctx, token)
+            .setConnectionHints(android.os.Bundle().apply { putBoolean(com.levi.pocketdj.playback.INTERNAL_HINT, true) })
+            .buildAsync()
+    }
+
     private var loopStopObserverAdded = false
 
-    /** Backgrounding (process ON_STOP, main thread) silences the loop; onPause / rotation must NOT (they run the flush funnel). */
+    /** Backgrounding (process ON_STOP, main thread) silences the other Studio voices (NOT the loop: it owns the media session); onPause / rotation must NOT (they run the flush funnel). */
     private fun ensureLoopStopObserver() {
         if (loopStopObserverAdded) return
         loopStopObserverAdded = true
@@ -227,7 +308,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
                 override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
                     // Final review: a take ends when the APP backgrounds, not on every activity pause (rotation, Recents, split-screen).
                     if (micLazy.isInitialized()) micRecorder.finalizeForExit()
-                    if (loopLazy.isInitialized()) loopAudition.stop("superseded")
+                    // ANS-STU-3: the loop audition is NOT stopped here - it keeps playing behind the studio media notification.
                     if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
                     // Final review: the same "stops when backgrounded" default for the other Studio voices (no notification
                     // or lock-screen control exists for them, and the frozen-app freezer makes them stutter).
@@ -255,7 +336,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         PatternEngine(
             sinkFactory = { StudioOutputs.create(audioManager) },
             focus = {
-                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                pauseNowPlayingForStudio()
                 if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
                 if (loopLazy.isInitialized()) loopAudition.stop("superseded")
                 focus.requestPlayback()
@@ -290,13 +371,13 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
 
     private val instrumentLazy: Lazy<com.levi.pocketdj.studio.engine.InstrumentEngine> = lazy {
-        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { instrumentEngine.stopReplay("focus-loss"); instrumentEngine.allNotesOff() } }
+        val focus = parkingFocus { instrumentEngine.stopReplay("focus-loss"); instrumentEngine.allNotesOff() }
         com.levi.pocketdj.studio.engine.InstrumentEngine(
             sinkFactory = { StudioOutputs.create(audioManager) },
             scope = app.appScope,
             focus = {
                 // One audible owner: park Now Playing and every other Studio voice before the keys sound.
-                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                pauseNowPlayingForStudio()
                 if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
                 if (loopLazy.isInitialized()) loopAudition.stop("superseded")
                 if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
@@ -305,6 +386,8 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             focusRelease = { focus.abandon() },
             log = { msg -> runCatching { com.levi.pocketdj.audio.core.AudioDiag.emit("studio.instr $msg") } },
         ).also { eng ->
+            eng.onUserTransport = { interruptions.forget("instrument") }
+            interruptions.register("instrument", { eng.isAudibleForPark }, { eng.parkForInterruption() }, { eng.resumeReplayFromInterruption() })
             // An engine-ended take (length cap) is filed, never silently dropped.
             eng.setOnTakeAutoStopped { r ->
                 app.appScope.launch(Dispatchers.IO) {
@@ -330,7 +413,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             studioRoots, studioStore, audioManager,
             onCaptureBegin = {
                 // Park Now Playing and take transient focus so nothing bleeds into the take.
-                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                pauseNowPlayingForStudio()
                 captureFocus.requestCapture()
             },
             onCaptureEnd = { captureFocus.abandon() },
@@ -481,19 +564,20 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
 
     private val demuxPlayerLazy: Lazy<com.levi.pocketdj.studio.demux.StemPlayer> = lazy {
-        val focus = AudioFocusPolicy.FocusHandle(audioManager) {
-            app.appScope.launch(Dispatchers.Main) { if (demuxPlayer.isPlaying) { StudioDiag.stop("demux", "focus-loss"); demuxPlayer.togglePlayPause() } }
+        val focus = parkingFocus {
+            interruptions.forget("demux")
+            if (demuxPlayer.isPlaying) { StudioDiag.stop("demux", "focus-loss"); demuxPlayer.togglePlayPause() } else demuxPlayer.dropInterruptionPark()
         }
         val request = {
             // One audible owner: park Now Playing and every Studio voice before the Demuxer sounds.
-            app.appScope.launch { runCatching { app.playbackController.pause() } }
+            pauseNowPlayingForStudio()
             if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
             if (loopLazy.isInitialized()) loopAudition.stop("superseded")
             if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
             focus.requestPlayback()
             Unit
         }
-        com.levi.pocketdj.studio.demux.RoutingStemPlayer(
+        val routing = com.levi.pocketdj.studio.demux.RoutingStemPlayer(
             single = com.levi.pocketdj.studio.demux.SingleFileStemPlayer(request) { focus.abandon() },
             multi = com.levi.pocketdj.studio.demux.VoiceGroupStemPlayer(
                 sinkFactory = { StudioOutputs.create(audioManager) },
@@ -502,6 +586,9 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             ),
             scope = app.appScope,
         )
+        routing.onUserTransport = { interruptions.forget("demux") }
+        interruptions.register("demux", { routing.isPlaying }, { routing.parkForInterruption() }, { routing.resumeFromInterruption() })
+        routing
     }
     private val demuxPlayer: com.levi.pocketdj.studio.demux.StemPlayer get() = demuxPlayerLazy.value.also { ensureLoopStopObserver() }
 
