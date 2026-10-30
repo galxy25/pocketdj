@@ -54,18 +54,31 @@ class RipOnDemandResolver(
     /** The server queued a playback rip (the session tracks it for the rip window). */
     private val onQueued: suspend (songId: String) -> Unit = {},
     private val log: (String) -> Unit = { NPLog.lane(NPLog.RIPREQ, it) },
+    /**
+     * The durable mp3 as the player should fetch it (iOS / [com.levi.pocketdj.data.rips.RipPlayWait] parity): the
+     * rips bucket may be private, so the controller swaps in the presigned URL for [songId] (null = keep the job's
+     * url). A rip-on-demand row has no 403 re-presign retry, so an unsigned private URL would skip the row.
+     */
+    private val signDurable: suspend (songId: String, url: String) -> String? = { _, _ -> null },
 ) {
+    private suspend fun durable(songId: String, url: String): RipResolution.Durable {
+        val signed = runCatching { signDurable(songId, url) }
+            .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+            .getOrNull()
+        return RipResolution.Durable(signed ?: url)
+    }
+
     suspend fun resolve(songId: String, capMs: Long = RipWaitCap.FALLBACK_MS + RipWaitCap.SLACK_MS): RipResolution {
         log("rip-post begin song=$songId")
         val job = requestRip(songId)
         log("rip-post end song=$songId phase=${job.phase} live=${if (job.streamUrl != null) 1 else 0}")
         val ready = job.url
-        if (job.isReady && ready != null) return RipResolution.Durable(ready)
+        if (job.isReady && ready != null) return durable(songId, ready)
         if (job.phase == RipJob.PHASE_ERROR) throw IOException(job.error ?: "Rip failed")
         if (job.jobId != null) onQueued(songId)
         job.streamUrl?.let { return RipResolution.Live(liveUrl(it), job.jobId) }
         if (job.jobId == null) throw IOException(job.error ?: "Rip did not start")
-        return RipResolution.Durable(awaitDurable(job, capMs))
+        return durable(songId, awaitDurable(job, capMs))
     }
 }
 

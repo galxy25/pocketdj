@@ -98,6 +98,40 @@ class CloudRowResolverTest {
     )
 
     @Test
+    fun durableUrl_isSigned_whenThePresignerMintsOne_bothReadyAndAwaited() = runTest {
+        val signedFor = mutableListOf<String>()
+        fun signing(job: RipJob) = RipOnDemandResolver(
+            requestRip = { job },
+            awaitDurable = { _, _ -> "https://rips/done.mp3" },
+            liveUrl = { it },
+            signDurable = { id, _ -> signedFor += id; "https://rips/$id.mp3?X-Amz-Signature=s" },
+        )
+        assertEquals(
+            RipResolution.Durable("https://rips/sng_a.mp3?X-Amz-Signature=s"),
+            signing(RipJob(phase = "ready", url = "https://rips/ready.mp3")).resolve("sng_a"),
+        )
+        assertEquals(
+            RipResolution.Durable("https://rips/sng_b.mp3?X-Amz-Signature=s"),
+            signing(RipJob(phase = "queued", jobId = "j")).resolve("sng_b"),
+        )
+        assertEquals(listOf("sng_a", "sng_b"), signedFor)
+    }
+
+    @Test
+    fun durableUrl_fallsBackToTheJobUrl_whenSigningIsUnavailableOrFails() = runTest {
+        val none = RipOnDemandResolver(
+            requestRip = { RipJob(phase = "ready", url = "https://rips/ready.mp3") },
+            awaitDurable = { _, _ -> "u" }, liveUrl = { it }, signDurable = { _, _ -> null },
+        )
+        assertEquals(RipResolution.Durable("https://rips/ready.mp3"), none.resolve("sng_a"))
+        val boom = RipOnDemandResolver(
+            requestRip = { RipJob(phase = "ready", url = "https://rips/ready.mp3") },
+            awaitDurable = { _, _ -> "u" }, liveUrl = { it }, signDurable = { _, _ -> throw IOException("presign 500") },
+        )
+        assertEquals(RipResolution.Durable("https://rips/ready.mp3"), boom.resolve("sng_a"))
+    }
+
+    @Test
     fun alreadyReady_isDurable_withoutQueueingOrPolling() = runTest {
         val queued = mutableListOf<String>()
         val awaited = mutableListOf<RipJob>()

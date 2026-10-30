@@ -289,6 +289,8 @@ class PlaybackController(
             awaitDurable = { job, capMs -> awaitDurableRip(job, capMs) },
             liveUrl = { path -> liveRipUrl(path) },
             onQueued = { id -> withContext(Dispatchers.Main) { sequencer.notePlaybackRipQueued(id) } },
+            // Same as the interactive ▶ wait (RipPlayWait): play the presigned URL when a server can mint one.
+            signDurable = { id, _ -> if (settings.current().hasRipServer) presigns?.urlFor(id) else null },
         ),
     ).also { RipOnDemandBridge.session = it }
 
