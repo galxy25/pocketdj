@@ -1,7 +1,7 @@
 package com.levi.pocketdj.data.recs
 
 import com.levi.pocketdj.data.PdjJson
-import com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET
+import com.levi.pocketdj.data.config.RemoteEndpoints
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -23,7 +23,7 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /** The key + scoped profile id the sibling first-party service (listening pockets) rides. */
-data class RecCredentials(val key: String, val profileId: String, val enrollSecret: String = REC_ENGINE_ENROLL_SECRET)
+data class RecCredentials(val key: String, val profileId: String, val enrollSecret: String = RemoteEndpoints.recEngineEnroll())
 
 /**
  * The cloud RECOMMENDATION ENGINE orchestrator (iOS `RecommendationService`). While — and ONLY

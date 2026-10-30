@@ -33,7 +33,14 @@ export interface EndpointConfig {
   endpoints: Record<Exclude<EndpointKey, 'profileSyncBase'>, string> & { profileSyncBase?: string };
   /** Extra catalog hosts whose persisted URLs rebase onto this doc's catalog bases. */
   aliases: { catalogBase: string[]; catalogBaseDev: string[] };
+  /** Optional capabilities (ANS-BRW-2). Present only when the doc carries a valid one; the PWA
+   *  ignores it. `recEngineEnroll` = the rotatable rec-engine enrollment secret the native
+   *  clients read at request time (Android adopts it; iOS ignores unknown keys). */
+  capabilities?: { recEngineEnroll?: string };
 }
+
+/** Enroll-secret shape the native clients accept (mirrors Kotlin EndpointConfig.normalizeEnroll). */
+export const ENROLL_SECRET_RE = /^[A-Za-z0-9._~+/=-]{16,256}$/;
 
 /** Today's values (the blue account, 011183829623) — the last-resort fallback. Must equal
  *  config/endpoints.blue.json (a vitest pins that). */
@@ -90,7 +97,7 @@ function hostList(raw: unknown): string[] {
 
 /** Validate a parsed JSON document. Unknown top-level / endpoint keys are ignored (forward
  *  compatible); ANY invalid URL among known keys rejects the whole document. */
-export function validateEndpointDoc(raw: unknown): ValidationResult {
+export function validateEndpointDoc(raw: unknown, opts: { strictCapabilities?: boolean } = {}): ValidationResult {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, reason: 'not an object' };
   const doc = raw as Record<string, unknown>;
   if (doc.v !== ENDPOINT_SCHEMA_VERSION) return { ok: false, reason: `unsupported v=${String(doc.v)}` };
@@ -117,6 +124,26 @@ export function validateEndpointDoc(raw: unknown): ValidationResult {
   out.listeningPocketsBase ??= out.recEngineBase;
   out.searchConfigURL ??= `${out.catalogBase}/search-config.json`;
   const al = (doc.aliases && typeof doc.aliases === 'object' ? doc.aliases : {}) as Record<string, unknown>;
+  // Optional capabilities. At RUNTIME (PWA, matching Android) a malformed capability is DROPPED and
+  // the rest of the doc is still accepted: rejecting the whole doc would strand clients on stale or
+  // dead compiled-in endpoints. The deploy-time gate (scripts/validate-endpoints.ts) passes
+  // `strictCapabilities` so a typo is REJECTED before it ships.
+  const strict = opts.strictCapabilities === true;
+  let capabilities: EndpointConfig['capabilities'];
+  if (doc.capabilities !== undefined) {
+    if (!doc.capabilities || typeof doc.capabilities !== 'object' || Array.isArray(doc.capabilities)) {
+      if (strict) return { ok: false, reason: 'rejected capabilities' };
+    } else {
+      const c = doc.capabilities as Record<string, unknown>;
+      if (c.recEngineEnroll !== undefined) {
+        if (typeof c.recEngineEnroll === 'string' && ENROLL_SECRET_RE.test(c.recEngineEnroll.trim())) {
+          capabilities = { recEngineEnroll: c.recEngineEnroll.trim() };
+        } else if (strict) {
+          return { ok: false, reason: 'rejected capabilities.recEngineEnroll' };
+        }
+      }
+    }
+  }
   return {
     ok: true,
     config: {
@@ -124,6 +151,7 @@ export function validateEndpointDoc(raw: unknown): ValidationResult {
       env,
       endpoints: out as EndpointConfig['endpoints'],
       aliases: { catalogBase: hostList(al.catalogBase), catalogBaseDev: hostList(al.catalogBaseDev) },
+      ...(capabilities ? { capabilities } : {}),
     },
   };
 }

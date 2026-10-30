@@ -4,7 +4,7 @@
 # this endpoint holds no Apple credentials; auth is the per-profile TOFU bearer key the app
 # mints (see index.mjs header).
 #
-# ENROLLMENT SECRET (REC_ENROLL_SECRET): creating a NEW profile's state object requires this
+# ENROLLMENT SECRET (REC_ENROLL_SECRETS, comma-separated list; legacy REC_ENROLL_SECRET accepted): creating a NEW profile's state object requires this
 # shared secret in `x-pocketdj-enroll`; without it POST /events was an open write into a bucket
 # with no lifecycle expiry. The app ships the same value in `Config.recEngineEnrollSecret`, so
 # it is a capability token, not a per-user credential (see the index.mjs header for the
@@ -32,7 +32,11 @@
 set -euo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../../lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 SHOW_SECRET=0
-for arg in "$@"; do [ "$arg" = "--show-secret" ] && SHOW_SECRET=1; done
+FORCE_DROP=0
+for arg in "$@"; do
+  [ "$arg" = "--show-secret" ] && SHOW_SECRET=1
+  [ "$arg" = "--force-drop-compiled" ] && FORCE_DROP=1
+done
 export AWS_PROFILE="${AWS_PROFILE:-$PDJ_PROFILE}"
 REGION="$PDJ_REGION"; ACCT="$PDJ_ACCOUNT"
 FN="pocketdj-rec-engine"; ROLE="pocketdj-rec-engine-role"; API_NAME="pocketdj-rec-engine"
@@ -75,16 +79,43 @@ ROLE_ARN="arn:aws:iam::${ACCT}:role/${ROLE}"
 # 3) package + create/update the function (index.mjs only; @aws-sdk is bundled in the runtime).
 #    Resolve the enrollment secret FIRST: $REC_ENROLL_SECRET wins (deliberate rotation), else the
 #    value already deployed (so a plain code re-run never invalidates shipped builds), else mint.
-ENROLL="${REC_ENROLL_SECRET:-}"
+#    ROTATION (ANS-BRW-2): the deployed value is REC_ENROLL_SECRETS, a COMMA-SEPARATED list
+#    (old,new) — the Lambda accepts any member. Rotate with no outage:
+#      1. REC_ENROLL_SECRETS="<old>,<new>" ./deploy.sh      (both accepted)
+#      2. publish the endpoints doc with capabilities.recEngineEnroll=<new> (CONFIG_ONLY deploy)
+#      3. DO NOT drop <old> while any client still sends the COMPILED constant. iOS/macOS/tvOS/
+#         visionOS hard-code Config.recEngineEnrollSecret (they do not read the doc), as do
+#         pre-BRW-2 Android builds. <old> (= the compiled constant) must stay in the list until iOS
+#         reads capabilities.recEngineEnroll AND every older install has aged out. Dropping it
+#         locks those clients out of enrolling and out of the "Delete cloud data" path. This script
+#         REFUSES a list that omits the compiled constant unless --force-drop-compiled is passed.
+#    $REC_ENROLL_SECRET (single) is still honoured as input for back-compat.
+ENROLL="${REC_ENROLL_SECRETS:-${REC_ENROLL_SECRET:-}}"
 if [ -z "$ENROLL" ]; then
-  ENROLL="$(aws lambda get-function-configuration --function-name "$FN" --region "$REGION" \
-    --query 'Environment.Variables.REC_ENROLL_SECRET' --output text 2>/dev/null || true)"
-  [ "$ENROLL" = "None" ] && ENROLL=""
+  for VAR in REC_ENROLL_SECRETS REC_ENROLL_SECRET; do
+    ENROLL="$(aws lambda get-function-configuration --function-name "$FN" --region "$REGION" \
+      --query "Environment.Variables.$VAR" --output text 2>/dev/null || true)"
+    [ "$ENROLL" = "None" ] && ENROLL=""
+    [ -n "$ENROLL" ] && break
+  done
 fi
 MINTED=0
 if [ -z "$ENROLL" ]; then
   ENROLL="$(openssl rand -hex 24)"; MINTED=1
 fi
+# Guard (ANS-BRW-2 review): refuse to drop the secret compiled into shipped iOS builds.
+CONFIG_SWIFT="$SELF/../../../apple/PocketDJ/Support/Config.swift"
+COMPILED="$(sed -n 's/.*recEngineEnrollSecret = "\([^"]*\)".*/\1/p' "$CONFIG_SWIFT" 2>/dev/null | head -1)"
+if [ "$MINTED" = "0" ] && [ -n "$COMPILED" ] && [ "$FORCE_DROP" = "0" ]; then
+  case ",$ENROLL," in
+    *",$COMPILED,"*) ;;
+    *) echo "[deploy-rec-engine] REFUSING: REC_ENROLL_SECRETS omits the secret compiled into Config.swift (sha256 $(printf %s "$COMPILED" | shasum -a 256 | cut -c1-16)…)." >&2
+       echo "    Shipped iOS/macOS/tvOS/visionOS and pre-BRW-2 Android builds would lose enrollment and cloud-data delete." >&2
+       echo "    Keep it in the list, or pass --force-drop-compiled if you really mean it." >&2
+       exit 1 ;;
+  esac
+fi
+[ "${GUARD_ONLY:-0}" = "1" ] && { echo "[deploy-rec-engine] guard ok"; exit 0; }   # test seam (test-deploy-guard.sh)
 # Identify the secret by FINGERPRINT, never by value (see the header). 16 hex chars of sha256 is
 # plenty to tell "the deployment matches the shipped Config constant" from "it doesn't".
 FP="$(printf %s "$ENROLL" | shasum -a 256 | cut -c1-16)"
@@ -108,7 +139,9 @@ if [ -z "$MAXP" ]; then
 fi
 say "profile enrollment cap: $MAXP"
 ZIP="$(mktemp -d)/fn.zip"; ( cd "$SELF" && zip -q -r "$ZIP" index.mjs )
-ENVVARS="Variables={REC_BUCKET=$REC_BUCKET,FEATURES_URL=$FEATURES_URL,REC_ENROLL_SECRET=$ENROLL,MAX_PROFILES=$MAXP}"
+# JSON form: REC_ENROLL_SECRETS contains commas, which the CLI shorthand syntax can't carry.
+ENVVARS="$(printf '{"Variables":{"REC_BUCKET":"%s","FEATURES_URL":"%s","REC_ENROLL_SECRETS":"%s","MAX_PROFILES":"%s"}}' \
+  "$REC_BUCKET" "$FEATURES_URL" "$ENROLL" "$MAXP")"
 if aws lambda get-function --function-name "$FN" --region "$REGION" >/dev/null 2>&1; then
   say "updating function code"
   aws lambda update-function-code --function-name "$FN" --zip-file "fileb://$ZIP" --region "$REGION" >/dev/null

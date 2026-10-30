@@ -535,7 +535,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             listener.attach(history)
             runCatching {
                 app.browseGraph.recService.onDeleteCloudData = { key, profileId ->
-                    svc.deleteCloudData(com.levi.pocketdj.data.pockets.PocketsCredentials(key, profileId, com.levi.pocketdj.data.config.REC_ENGINE_ENROLL_SECRET))
+                    svc.deleteCloudData(com.levi.pocketdj.data.pockets.PocketsCredentials(key, profileId, com.levi.pocketdj.data.config.RemoteEndpoints.recEngineEnroll()))
                 }
             }
             // One-time migration: builds before COL-18 wrote only ENABLED on "Not now"/"Turn on", so a stored

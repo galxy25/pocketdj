@@ -68,6 +68,25 @@ describe('endpoint schema v1', () => {
       expect(validateEndpointDoc({ ...GREEN, endpoints: { ...GREEN.endpoints, profileSyncBase: bad } }).ok).toBe(false);
   });
 
+  it('capabilities.recEngineEnroll is optional and validated (ANS-BRW-2)', () => {
+    const v0 = validateEndpointDoc(GREEN);
+    expect(v0.ok && v0.config.capabilities).toBeUndefined();
+    const ok = validateEndpointDoc({ ...GREEN, capabilities: { recEngineEnroll: 'rotated-secret-0123456789abcdef' } });
+    expect(ok.ok && ok.config.capabilities?.recEngineEnroll).toBe('rotated-secret-0123456789abcdef');
+    for (const bad of ['short', 42, 'has space in it 0123456789'])
+      expect(validateEndpointDoc({ ...GREEN, capabilities: { recEngineEnroll: bad } }, { strictCapabilities: true }).ok).toBe(false);
+    expect(validateEndpointDoc({ ...GREEN, capabilities: [] }, { strictCapabilities: true }).ok).toBe(false);
+    // RUNTIME (lenient, matches Android): malformed capability is dropped, doc still accepted
+    for (const bad of ['short', 42, 'has space in it 0123456789']) {
+      const r = validateEndpointDoc({ ...GREEN, capabilities: { recEngineEnroll: bad } });
+      expect(r.ok && r.config.capabilities).toBeUndefined();
+      expect(r.ok).toBe(true);
+    }
+    expect(validateEndpointDoc({ ...GREEN, capabilities: [] }).ok).toBe(true);
+    // unknown capability keys are ignored (forward compatible)
+    expect(validateEndpointDoc({ ...GREEN, capabilities: { somethingNew: true } }).ok).toBe(true);
+  });
+
   it('host allowlist', () => {
     for (const ok of [
       'app.pocket-dj.com', 'pocket-dj.com', 'd2p4cubg6se03u.cloudfront.net',
