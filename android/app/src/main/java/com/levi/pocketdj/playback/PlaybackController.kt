@@ -808,9 +808,10 @@ class PlaybackController(
             withContext(Dispatchers.Main) { amController?.play() ?: run { amMonitor.noteIntentionalPause(false) } }
             if (amController == null) appleMusicBackend?.resume()
         } else {
-            // Q95: a Mix that still holds the session (even idle/parked) must not swallow this play.
+            // Q95: an idle Mix must not swallow a play meant for a paused single - but npdsp/Studio/a playing Mix, or a
+            // Mix with no single behind it, are what the user is resuming: play() goes to the owning session player.
             withController {
-                com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldMixToExo()
+                com.levi.pocketdj.playback.session.SessionSwitchboard.shared.yieldIdleMixForResume()
                 it.play()
             }
         }

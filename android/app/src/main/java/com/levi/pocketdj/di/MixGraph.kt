@@ -377,6 +377,8 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             sessionPlayerRef?.let { p ->
                 com.levi.pocketdj.mix.service.MixIdleResign.resignIfIdle(
                     com.levi.pocketdj.playback.session.SessionSwitchboard.shared, p, e.mixWantsAudio, e.keepEngineAlive(),
+                    interruptionParked = focus.interruptionParked,
+                    exoHasItem = com.levi.pocketdj.playback.session.SessionSwitchboard.shared.exoHasItem(),
                 )
             }
         }

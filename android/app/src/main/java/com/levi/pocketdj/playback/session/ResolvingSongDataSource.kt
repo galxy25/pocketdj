@@ -84,7 +84,7 @@ class RipOnDemandSession(
 
     /**
      * Start (or join) the resolution for [songId]; every other song's entry is dropped and cancelled.
-     * Q21: an IN-FLIGHT resolution of the same song is joined (exactly one `POST /rip` per row) unless
+     * Q21: an IN-FLIGHT (or completed-Durable) resolution of the same song is joined (exactly one `POST /rip` per row) unless
      * [reResolve] (retry-in-place wants a fresh url, so it re-POSTs). [via] / [gen] are trace only.
      */
     fun begin(
@@ -99,7 +99,7 @@ class RipOnDemandSession(
             d.cancel()
         }
         val existing = inflight[songId]
-        val joined = existing != null && existing.isActive && !reResolve
+        val joined = existing != null && !reResolve && (existing.isActive || existing.isCompletedDurable())
         log("rip-begin song=$songId via=$via gen=$gen joined=${if (joined) 1 else 0} reResolve=${if (reResolve) 1 else 0}")
         if (joined) return existing!!
         if (existing != null) { inflight.remove(songId, existing); existing.cancel() }
@@ -116,6 +116,11 @@ class RipOnDemandSession(
             d
         }
     }
+
+    /** A finished, successful DURABLE result is reusable (⏮ restart / cascade-halt restart must not re-POST); Live may expire. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private fun Deferred<RipResolution>.isCompletedDurable(): Boolean =
+        isCompleted && !isCancelled && runCatching { getCompleted() }.getOrNull() is RipResolution.Durable
 
     /** Join an EXISTING resolution (loader thread): never starts one, never cancels another song's. */
     fun join(songId: String): Deferred<RipResolution>? = inflight[songId]

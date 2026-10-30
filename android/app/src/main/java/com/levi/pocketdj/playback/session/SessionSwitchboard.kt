@@ -97,6 +97,23 @@ class SessionSwitchboard(
         return true
     }
 
+    /** True when the registered ExoPlayer owner holds a media item (a resumable single). Main-thread. */
+    fun exoHasItem(): Boolean {
+        val exo = synchronized(lock) { registered.firstOrNull { it.engine == "exo" } } ?: return false
+        return exo.sessionPlayer.mediaItemCount > 0
+    }
+
+    /**
+     * Generic resume (Now Playing, widget, Auto): yield ONLY an idle (paused) Mix, and only when ExoPlayer holds a
+     * single to resume. Never npdsp / Studio (their session player IS what is being resumed), never a Mix that is
+     * playing, and never when Exo is empty (the Mix stays the remote target). Main-thread.
+     */
+    fun yieldIdleMixForResume(): Boolean {
+        val t = synchronized(lock) { owner ?: preferred } ?: return false
+        if (t.engine != "mix" || t.sessionPlayer.playWhenReady || !exoHasItem()) return false
+        return yieldMixToExo()
+    }
+
     /** True when [o] is the engine that should answer a remote command right now. */
     fun isActive(o: TransportOwner): Boolean = synchronized(lock) {
         val target = owner ?: preferred

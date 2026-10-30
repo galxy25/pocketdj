@@ -175,8 +175,6 @@ class SetlistSequencer(
     /** Q21: uid of the row whose start (resolve + load + first audio) is in flight; guards a duplicate load. */
     private var startingUid: String? = null
 
-    /** Q21: the next [startPlayCurrent] must re-resolve (retry-in-place re-POSTs instead of joining). */
-    private var reResolveNext = false
     private var currentBackend = "none"
     private var startWindow: StartWindow? = null
     private var startCapJob: Job? = null
@@ -444,7 +442,6 @@ class SetlistSequencer(
     // ---- the ONE start funnel -----------------------------------------------------------
 
     private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false, reResolve: Boolean = false) {
-        reResolveNext = reResolve
         if (pausedByCascade) { pausedByCascade = false; publish() }
         if (inPlace) queue.getOrNull(index)?.let { skipTracker?.noteTrackRestarted(it.id) }
         resetTrackAudible()
@@ -454,12 +451,12 @@ class SetlistSequencer(
         // LAZY + assign + start: an inline-dispatching scope may run (and even recurse into) this
         // body before launch() returns; the handle must already be in place so a nested start
         // cancels THIS job, not a stale one.
-        val job = scope.launch(start = CoroutineStart.LAZY) { playCurrent(fresh, resumeAtMs, inPlace) }
+        val job = scope.launch(start = CoroutineStart.LAZY) { playCurrent(fresh, resumeAtMs, inPlace, reResolve) }
         playJob = job
         job.start()
     }
 
-    private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?, inPlace: Boolean) {
+    private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?, inPlace: Boolean, reResolve: Boolean) {
         if (!running || index >= queue.size) return
         // A job cancelled BEFORE it ran must do nothing - above all it must not claim a generation.
         if (!currentCoroutineContext().isActive) return
@@ -480,8 +477,6 @@ class SetlistSequencer(
         waitingForLive = false
         firstAudioPending = true
         startingUid = item.uid
-        val reResolve = reResolveNext
-        reResolveNext = false
         meter?.transitionBegan("start") // no-op inside an open advance/skip: a hop stays ONE transition
         beginStartWindow(item, gen)
         armResolveStall(gen)

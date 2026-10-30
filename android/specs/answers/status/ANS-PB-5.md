@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # ANS-PB-5 - PlaybackController pass (Q17 / Q21 / Q95 / Q89c)
 
@@ -25,3 +25,13 @@ None.
 
 ## Summary
 Rip wait cap = item length + 60 s; exactly one POST /rip per row (join in-flight, retry-in-place re-resolves, duplicate idle-play suppressed, traced via=load|watch|retry); idle Mix resigns the session and resume() yields a held Mix to Exo; Browse singles/album queues now feed SkipTracker through DirectPlaySampler.
+
+## Review
+- MAJOR resume() yields npdsp/Studio/active Mix -> fixed: PlaybackController.resume() now calls SessionSwitchboard.yieldIdleMixForResume(): yields ONLY a paused Mix (session player not playWhenReady) while ExoPlayer holds an item; never npdsp/Studio, never a playing Mix, never when Exo is empty (play goes to the owner). Tests: SessionSwitchboardTest resumeYieldsAPausedMix..., resumeNeverYieldsNpdspOrStudio, resumeKeepsAMixThatIsPlayingOrHasNoSingleBehindIt.
+- MAJOR park resigns during transient focus loss -> fixed: MixIdleResign.resignIfIdle takes interruptionParked (MixGraph passes focus.interruptionParked) and skips. Test: MixAudioFocusTest.parkAfterLongTransientLossDoesNotResign... (loss, park, gain still resumes), plus switchboard test.
+- MAJOR resign with nothing to front -> fixed: resignIfIdle takes exoHasItem (SessionSwitchboard.exoHasItem() reads the registered Exo owner's item count); a Mix-only session keeps the paused Mix as remote target. Tests: idleMixKeepsTheSessionWhenExoIsEmptyOrAnInterruptionIsParked, exoHasItemReadsTheRegisteredExoOwner.
+- MINOR no Q21 trace recorded -> accepted/partial: emulator is the integrator's, so no device trace; CloudRowResolverTest asserts one joined=0 per row (load, duplicate load, completed-durable restart). Auto-DJ stop resigns only via the 15 s park (now gated by exoHasItem / interruption latch); deviation flagged for the integrator.
+- MINOR completed Durable not joined -> fixed: begin() joins a completed Durable result (non-reResolve); Live or reResolve re-POSTs. Tests: completedDurable_isJoinedByAFreshPlay_butReResolveRePosts, completedLive_isNotJoinedByAFreshPlay (replaces the old locking test).
+- NIT reResolveNext field -> fixed: reResolve is a playCurrent parameter; field removed.
+
+fixes applied. Tests: 5617 total, 0 failures (was 5611, +6); assembleDebug green.

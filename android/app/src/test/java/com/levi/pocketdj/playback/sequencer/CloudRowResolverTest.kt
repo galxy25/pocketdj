@@ -313,7 +313,7 @@ class CloudRowResolverTest {
     }
 
     @Test
-    fun completedResolution_isNotJoinedByAFreshPlay() = runTest {
+    fun completedDurable_isJoinedByAFreshPlay_butReResolveRePosts() = runTest {
         var posts = 0
         val session = RipOnDemandSession(
             backgroundScope,
@@ -323,9 +323,29 @@ class CloudRowResolverTest {
             ),
             log = { },
         )
+        val first = session.begin("sng_a").also { runCurrent(); it.await() }
+        // ⏮ restart / cascade-halt restart of a row whose durable url is known: no second POST.
+        assertTrue(session.begin("sng_a") === first)
+        runCurrent()
+        assertEquals(1, posts)
+        // Retry-in-place wants a fresh url: re-POSTs.
+        session.begin("sng_a", reResolve = true)
+        runCurrent()
+        assertEquals(2, posts)
+    }
+
+    @Test
+    fun completedLive_isNotJoinedByAFreshPlay() = runTest {
+        var posts = 0
+        val session = RipOnDemandSession(
+            backgroundScope,
+            RipOnDemandResolver(
+                requestRip = { posts++; RipJob(phase = "ripping", jobId = "j", streamUrl = "/hls/a/index.m3u8") },
+                awaitDurable = { _, _ -> "u" }, liveUrl = { it },
+            ),
+            log = { },
+        )
         session.begin("sng_a").also { runCurrent(); it.await() }
-        // The watcher joins the finished one (no POST); a brand-new play of the row starts fresh.
-        assertTrue(session.join("sng_a") != null)
         session.begin("sng_a")
         runCurrent()
         assertEquals(2, posts)
