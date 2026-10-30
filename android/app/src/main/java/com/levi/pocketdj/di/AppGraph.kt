@@ -385,6 +385,8 @@ class AppGraph private constructor(context: Context) {
             collectionsGraph.wireWriteBack(store)
             // STU-7: studio items count/realize/play with their real lengths (lazy; never builds the studio store for catalog ids).
             store.studioLookup = studioGraph.collectionsLookup
+            // Q50: studio rows/tracks carry the profile name as artist (fallback "Pocket DJ").
+            com.levi.pocketdj.data.collections.wireStudioArtist(store) { servicesGraph.profile.name }
             // Warm the studio store on IO so statsForPocket/rows never do its first JSON read on main.
             appScope.launch(kotlinx.coroutines.Dispatchers.IO) { runCatching { if (store.hasStudioItems()) studioGraph.studioStore } }
             // STU-7 review: key detection + pre-bounce/render at ADD time (iOS StudioAnalyzer.prepare on Add-to).

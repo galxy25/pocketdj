@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.ui.dnd.DropHighlight
 import com.levi.pocketdj.ui.dnd.acceptSongsInto
 import com.levi.pocketdj.ui.dnd.clipboardHasSongs
@@ -83,6 +84,7 @@ fun PlaylistDetailScreen(
     val store = remember { graph.collections }
     val exporter = com.levi.pocketdj.screens.collections.rememberCollectionExporter()
     val snackbar = remember { SnackbarHostState() }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     val forceScope = androidx.compose.runtime.rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
@@ -148,7 +150,7 @@ fun PlaylistDetailScreen(
             // Playing setlist, stamps lastPlayedAt, opens NP autostarting (§5.4).
             val set = store.playNowPlaylist(playlistId, shuffle = shuffle)
             if (set == null) {
-                // catalog not wired yet
+                scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
                 return
             }
             onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
@@ -336,6 +338,11 @@ fun PlaylistDetailScreen(
                             manifestHit = node.songId?.let { manifest.containsKey(it) } ?: false,
                             rowNote = rememberRowNote(node.songId, node.songId?.let { manifest.containsKey(it) } ?: false),
                             onTapSong = { detailSongId = it },
+                            onTapStudio = { id ->
+                                if (store.playNow(listOf(id), name = playlist.name, sourceToken = PlayContext.SOURCE_PLAYLIST, repeats = mapOf(id to (node.repeatCount ?: 1)), originId = playlistId) != null) onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
+                                else scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
+                            },
+                            cleanOnly = playlist.cleanOnly,
                             onOpenAlbum = onOpenAlbum,
                             onOpenPocket = onOpenPocket,
                             menu = { dismiss ->
@@ -547,6 +554,8 @@ private fun NodeRow(
     manifestHit: Boolean,
     rowNote: String? = null,
     onTapSong: (String) -> Unit,
+    onTapStudio: ((String) -> Unit)? = null,
+    cleanOnly: Boolean? = null,
     onOpenAlbum: (String) -> Unit,
     onOpenPocket: (String) -> Unit,
     menu: @Composable androidx.compose.foundation.layout.ColumnScope.(dismiss: () -> Unit) -> Unit,
@@ -559,6 +568,8 @@ private fun NodeRow(
             if (studio != null) {
                 StudioItemRow(
                     info = studio,
+                    artist = rememberStudioArtist(),
+                    onClick = onTapStudio?.let { f -> { f(songId!!) } },
                     badges = {
                         node.repeatCount?.takeIf { it > 1 }?.let {
                             Spacer(Modifier.width(6.dp))
@@ -581,7 +592,7 @@ private fun NodeRow(
                     bpm = song.bpm,
                     camelot = song.camelot,
                     lengthMs = song.length,
-                    dimmed = !manifestHit,
+                    dimmed = !manifestHit || com.levi.pocketdj.data.collections.isCleanOnlyDimmed(cleanOnly, song),
                     modifier = Modifier.selectableRow(selection, node.nodeId, selectionScope, { onTapSong(song.id) }, rowSongId = song.id),
                     favoriteSongId = song.id, favoriteAppleMusicId = song.appleMusicId,
                     badges = {

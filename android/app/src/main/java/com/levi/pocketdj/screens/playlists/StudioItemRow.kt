@@ -30,22 +30,34 @@ fun rememberStudioInfo(id: String?): StudioItemInfo? {
     return info
 }
 
+/** The studio-row artist label (Q50): the profile name, fallback "Pocket DJ". Recomposes when the profile changes. */
+@Composable
+fun rememberStudioArtist(): String {
+    val context = LocalContext.current
+    val name by produceState(initialValue = "Pocket DJ") {
+        val graph = AppGraph.get(context)
+        graph.servicesGraph.profile.state.collect { value = com.levi.pocketdj.data.collections.studioArtistFor(it.name) }
+    }
+    return name
+}
+
 /**
  * A collection row for a Studio item (sample / loop / sequence / instrumental): title, the "Studio"
- * performer label, bpm + key when known, the REAL length, and a kind badge. Not tappable into the
- * catalog song sheet (a studio id has no catalog entry).
+ * performer label, bpm + key when known, the REAL length, and a kind badge. Tapping plays the item (the
+ * caller wires onClick to playNow); a studio id has no catalog song sheet.
  */
 @Composable
 fun StudioItemRow(
     info: StudioItemInfo,
     modifier: Modifier = Modifier,
+    artist: String = "Pocket DJ",
     onClick: (() -> Unit)? = null,
     badges: (@Composable RowScope.() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
     CollectionTrackRow(
         title = info.title,
-        subtitle = "Studio",
+        subtitle = artist,
         album = null,
         bpm = info.bpm,
         camelot = info.camelot,

@@ -120,6 +120,49 @@ class RealizeStudioEntriesTest {
 
     // ---- store level: songIds* stay studio-stripped, playableIds* / playNow keep studio
 
+    @Test fun studioArtistComesFromProfileNameWithPocketDjFallback() {
+        assertEquals("DJ Levi", studioArtistFor("  DJ Levi "))
+        assertEquals("Pocket DJ", studioArtistFor(""))
+        assertEquals("Pocket DJ", studioArtistFor("   "))
+        assertEquals("Pocket DJ", studioArtistFor(null))
+        val s = store()
+        s.studioArtist = { studioArtistFor("Levi") }
+        assertEquals("Levi", s.playNow(listOf(loopId))!!.tracks[0].artist)
+        s.studioArtist = { studioArtistFor("") }
+        assertEquals("Pocket DJ", s.playNow(listOf(loopId))!!.tracks[0].artist)
+    }
+
+    @Test fun wireStudioArtistFollowsTheRealProfileStore() {
+        val profile = com.levi.pocketdj.data.sync.ProfileStore(File(tmp.root, "pocketdj-profile.json"))
+        val s = store()
+        wireStudioArtist(s) { profile.name }
+        assertEquals("Pocket DJ", s.playNow(listOf(loopId))!!.tracks[0].artist)
+        profile.setName("DJ Levi")
+        assertEquals("DJ Levi", s.playNow(listOf(loopId))!!.tracks[0].artist)
+        wireStudioArtist(s) { error("boom") }
+        assertEquals("Pocket DJ", s.playNow(listOf(loopId))!!.tracks[0].artist)
+    }
+
+    @Test fun playNowHonorsRepeatCountForASingleStudioRow() {
+        val set = store().playNow(listOf(loopId), repeats = mapOf(loopId to 4))!!
+        assertEquals(4, set.tracks[0].repeatCount)
+    }
+
+    @Test fun realizeUsesTheProfileArtistForStudioEntries() {
+        val c = ctx().copy(studioArtist = studioArtistFor("Levi"))
+        assertEquals("Levi", RealizeEngine.realize(playlist(loopId), c).tracks[0].artist)
+    }
+
+    @Test fun cleanOnlyDimsOnlyExplicitRowsWithoutACleanCut() {
+        val explicit = IndexSong(id = "e", artist = "A", name = "E", explicit = true)
+        val clean = IndexSong(id = "c", artist = "A", name = "C", explicit = false)
+        assertTrue(isCleanOnlyDimmed(true, explicit))
+        assertFalse(isCleanOnlyDimmed(true, clean))
+        assertFalse(isCleanOnlyDimmed(false, explicit))
+        assertFalse(isCleanOnlyDimmed(null, explicit))
+        assertFalse(isCleanOnlyDimmed(true, null))
+    }
+
     private fun store(): CollectionsStore {
         val merged = MergedCatalog.merge(listOf(IndexJson(manifest = IndexManifest(sourceName = "V"), albums = emptyList(), songs = songs)))
         return CollectionsStore(file = File(tmp.root, CollectionsStore.FILE_NAME), now = { 1_750_000_000_000.0 }).also {
