@@ -63,11 +63,12 @@ object ClauseReducer {
         return c.copy(field = fieldId, op = f.ops.first(), value = "", values = emptySet(), min = null, max = null)
     }
 
-    /** Changing the op keeps the field; values that no longer fit the op shape are dropped. */
-    fun changeOp(c: Clause, op: FilterOp): Clause = when (op) {
-        FilterOp.EQ, FilterOp.NEQ -> c.copy(op = op, values = emptySet(), min = null, max = null)
-        FilterOp.IN_LIST, FilterOp.NOT_IN_LIST -> c.copy(op = op, value = "", min = null, max = null)
-        FilterOp.BETWEEN -> c.copy(op = op, value = "", values = emptySet())
+    /** iOS FilterSheet parity: changing the op keeps every value; only a field change clears them. */
+    fun changeOp(c: Clause, op: FilterOp): Clause {
+        // Moving a list clause to is/is not with no single value: seed it from the first list value so the
+        // local engine (compares c.value) and online FilterQuery (value, else values.first()) agree.
+        val seed = if ((op == FilterOp.EQ || op == FilterOp.NEQ) && c.value.isEmpty()) c.values.firstOrNull().orEmpty() else c.value
+        return c.copy(op = op, value = seed)
     }
 
     fun toggleValue(c: Clause, v: String): Clause =
