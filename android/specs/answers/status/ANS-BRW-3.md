@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 ANS-BRW-3: Filter clause op change keeps values (iOS FilterSheet parity, Q32).
 - [x] ClauseReducer.changeOp = c.copy(op = op); only changeField clears values

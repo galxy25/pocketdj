@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 - [x] Studio row tap -> store.playNow([id]) + open Now Playing (Pocket + Playlist detail); failure -> snackbar
 - [x] studioArtist = profile name, fallback "Pocket DJ" (AppGraph collections lazy; studioArtistFor())

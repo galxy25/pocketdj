@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-GM-3 - Games deep links
 

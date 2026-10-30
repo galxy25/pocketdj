@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 Tests: MixSessionCsvTest, 5 new tests; full JVM suite + assembleDebug green. Build needed -Pkotlin.daemon.jvmargs=-Xmx4g once (OOM under concurrent builds).
 
