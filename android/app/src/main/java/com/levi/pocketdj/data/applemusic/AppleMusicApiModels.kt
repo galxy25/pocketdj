@@ -52,7 +52,12 @@ data class AmTrackPage(
     val rowCount: Int,
     val hasNext: Boolean,
     val nextOffset: Int?,
+    /** Raw rows in order (library id + catalog id), duplicates kept: what reconcile diffs against. */
+    val rows: List<AmTrackRow> = emptyList(),
 )
+
+/** One library-playlist track row: the library id removal addresses, and the catalog id membership is judged by. */
+data class AmTrackRow(val libraryId: String?, val catalogId: String?)
 
 data class AmPage<T>(val items: List<T>, val nextOffset: Int?, val hasCursor: Boolean = nextOffset != null) {
     val hasNext: Boolean get() = nextOffset != null
@@ -189,12 +194,15 @@ object AppleMusicApiModels {
         val r = root(body) ?: return null
         val rows = r["data"].arr() ?: return null
         val ids = LinkedHashSet<String>()
+        val trackRows = ArrayList<AmTrackRow>(rows.size)
         for (row in rows) {
-            val pp = row.obj()?.get("attributes").obj()?.get("playParams").obj() ?: continue
-            (pp["catalogId"].str() ?: pp["id"].str())?.let(ids::add)
+            val pp = row.obj()?.get("attributes").obj()?.get("playParams").obj()
+            val cat = pp?.let { it["catalogId"].str() ?: it["id"].str() }
+            cat?.let(ids::add)
+            trackRows += AmTrackRow(row.obj()?.get("id").str(), cat)
         }
         val next = r["next"].str()
-        return AmTrackPage(ids.toList(), rows.size, next != null, nextOffset(next))
+        return AmTrackPage(ids.toList(), rows.size, next != null, nextOffset(next), trackRows)
     }
 
     fun parseStorefront(body: String): String? =
