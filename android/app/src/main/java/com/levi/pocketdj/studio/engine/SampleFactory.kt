@@ -85,4 +85,23 @@ class SampleFactory(
                 source = StudioSource.Track(songId, startMs, endMs), grid = grid),
         )
     }
+
+    /**
+     * Carve a MIX of [enabled] stems over [startMs, endMs) (SONG-relative — stems carry no album offset). The record keeps
+     * the same `Track` provenance as a full-mix carve; [grid] is the already-inherited region-relative grid.
+     */
+    suspend fun carveStems(songId: String, songName: String, stems: Map<String, File>, enabled: Set<String>, startMs: Int, endMs: Int, grid: StudioGrid?): StudioSample {
+        val paths = StemCarve.selectedPaths(stems, enabled) ?: throw SampleFileException(SampleFileFailure.Carve)
+        val id = StudioFactory.newSampleId()
+        val (name, dest) = destFor(id)
+        val res = try {
+            render.carveStemMix(paths, startMs, endMs, dest)
+        } catch (e: StudioRenderException) {
+            dest.delete(); throw SampleFileException(SampleFileFailure.Carve)
+        }
+        return fileRelocating(
+            StudioSample(id, StemCarve.sampleName(songName, enabled), name, wasUserFolder = false, createdAt = now(), durationMs = res.durationMs,
+                source = StudioSource.Track(songId, startMs, endMs), grid = grid),
+        )
+    }
 }
