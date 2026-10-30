@@ -57,6 +57,12 @@ import com.levi.pocketdj.mix.recording.SessionFolders
 import com.levi.pocketdj.mix.store.MixRecording
 import com.levi.pocketdj.mix.store.MixSession
 import com.levi.pocketdj.mix.store.MixSessionStore
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.SnackbarHostState
+import com.levi.pocketdj.mix.store.MixSessionCsv
+import com.levi.pocketdj.screens.browse.SongDetailSheet
+import com.levi.pocketdj.screens.collections.ExportRequest
+import com.levi.pocketdj.screens.collections.rememberCollectionExporter
 import java.io.File
 import java.util.Date
 import kotlinx.coroutines.delay
@@ -212,16 +218,43 @@ private fun SessionDetail(store: MixSessionStore, player: RecordingPlayer, folde
     DisposableEffect(id) { onDispose { player.stop() } }
     // A deleted-from-under-us session: bounce back to the list.
     LaunchedEffect(session == null) { if (session == null) onBack() }
+    val ctx = LocalContext.current
+    val catalogRepo = remember { AppGraph.get(ctx).catalogRepository }
+    val exporter = rememberCollectionExporter()
+    var sheetSongId by rememberSaveable { mutableStateOf<String?>(null) }
+    val sheetSnackbar = remember { SnackbarHostState() }
+    var overflow by remember { mutableStateOf(false) }
     Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
-        Column {
+        Column(Modifier.weight(1f)) {
             Text(session?.name ?: "Session", style = MaterialTheme.typography.titleLarge)
             Text("$trackCount tracks · ${events.size} actions", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Box {
+            IconButton(onClick = { overflow = true }, modifier = Modifier.testTag("mix-session-more")) { Icon(Icons.Filled.MoreVert, "More") }
+            DropdownMenu(overflow, { overflow = false }) {
+                DropdownMenuItem(
+                    text = { Text("Export tracklist (CSV)") },
+                    modifier = Modifier.testTag("mix-session-export-csv"),
+                    onClick = {
+                        overflow = false
+                        val name = session?.name
+                        exporter.export(ExportRequest(MixSessionCsv.filename(name), MixSessionCsv.MIME) {
+                            val cat = catalogRepo.state.value.catalog ?: return@ExportRequest null
+                            MixSessionCsv.bytes(store.playedSongIds(id), cat.songsById, cat.albumsById)
+                        })
+                    },
+                )
+            }
         }
     }
     val recs = session?.recordingsList.orEmpty()
     if (recs.isNotEmpty()) RecordingsPanel(store, player, folder, id, recs)
-    MixReplayTimeline(events)
+    MixReplayTimeline(
+        events, onOpenSong = { sheetSongId = it },
+        songInCatalog = { catalogRepo.state.value.catalog?.songsById?.containsKey(it) == true },
+    )
+    sheetSongId?.let { SongDetailSheet(songId = it, onDismiss = { sheetSongId = null }, snackbar = sheetSnackbar) }
     val err by player.lastError.collectAsState()
     err?.let {
         AlertDialog(

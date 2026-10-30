@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +18,8 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
@@ -85,6 +88,35 @@ object ReplayClock {
 
     fun speedLabel(speed: Double): String =
         if (speed == speed.toLong().toDouble()) "${speed.toLong()}×" else "$speed×"
+}
+
+/** Pure layout/tap rules for the timeline (iOS `MixSessionsView` wrappedTimeline + handleTap). */
+object ReplayLayout {
+    /** Width (dp) at which the timeline switches from one card per row to the wrapped grid. */
+    const val WRAP_MIN_DP = 600
+
+    /** Cards per wrapped row: 1 below [WRAP_MIN_DP] (vertical list), 3 on tablets, 5 on very wide panes. */
+    fun perRow(widthDp: Int): Int = when {
+        widthDp < WRAP_MIN_DP -> 1
+        widthDp < 900 -> 3
+        else -> 5
+    }
+
+    fun isWrapped(widthDp: Int) = perRow(widthDp) > 1
+
+    fun <T> rows(items: List<T>, perRow: Int): List<List<T>> = items.chunked(maxOf(1, perRow))
+
+    /** A tapped card: a LOAD with a resolvable song opens its metadata; everything else jumps the playhead. */
+    sealed class Tap {
+        data class Metadata(val songId: String) : Tap()
+        data class Jump(val tMs: Int) : Tap()
+    }
+
+    fun tap(event: MixSessionEvent, songInCatalog: (String) -> Boolean): Tap {
+        val id = event.songId
+        return if (event.kind == com.levi.pocketdj.mix.store.MixEventKind.Load && id != null && songInCatalog(id)) Tap.Metadata(id)
+        else Tap.Jump(event.tMs)
+    }
 }
 
 @Composable
@@ -167,7 +199,13 @@ fun TimelineCard(event: MixSessionEvent, active: Boolean, onTap: () -> Unit, mod
  * Auto-scroll only while playing and not scrubbing; tapping a card jumps the playhead there.
  */
 @Composable
-fun MixReplayTimeline(events: List<MixSessionEvent>, modifier: Modifier = Modifier) {
+fun MixReplayTimeline(
+    events: List<MixSessionEvent>,
+    modifier: Modifier = Modifier,
+    /** Optional hook: return true if the tap was consumed (e.g. a load card opened the metadata sheet). */
+    onOpenSong: ((String) -> Unit)? = null,
+    songInCatalog: (String) -> Boolean = { false },
+) {
     val durationMs = events.lastOrNull()?.tMs ?: 0
     var replayMs by rememberSaveable { mutableFloatStateOf(0f) }
     var playing by remember { mutableStateOf(false) }
@@ -177,6 +215,7 @@ fun MixReplayTimeline(events: List<MixSessionEvent>, modifier: Modifier = Modifi
     val tMs = remember(events) { events.map { it.tMs } }
     val currentIndex = ReplayClock.currentIndex(tMs, replayMs.toDouble())
     val listState = rememberLazyListState()
+    var wrapPerRow by remember { mutableIntStateOf(1) }
 
     LaunchedEffect(playing) {
         if (!playing) return@LaunchedEffect
@@ -196,7 +235,7 @@ fun MixReplayTimeline(events: List<MixSessionEvent>, modifier: Modifier = Modifi
         val i = currentIndex ?: return@LaunchedEffect
         if (ReplayClock.shouldAutoScroll(playing, scrubbing)) {
             val info = listState.layoutInfo
-            listState.animateScrollToItem((i - info.visibleItemsInfo.size / 2).coerceAtLeast(0))
+            listState.animateScrollToItem((i / wrapPerRow - info.visibleItemsInfo.size / 2).coerceAtLeast(0))
         }
     }
 
@@ -232,13 +271,46 @@ fun MixReplayTimeline(events: List<MixSessionEvent>, modifier: Modifier = Modifi
         if (events.isEmpty()) {
             Text("No actions recorded", Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            LazyColumn(
-                Modifier.fillMaxSize().testTag("mix-replay-timeline"), state = listState,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                itemsIndexed(events, key = { _, e -> e.id }) { i, e ->
-                    TimelineCard(e, active = i == currentIndex, onTap = { replayMs = e.tMs.toFloat() })
+            val onTap: (MixSessionEvent) -> Unit = { e ->
+                when (val t = ReplayLayout.tap(e, songInCatalog)) {
+                    is ReplayLayout.Tap.Metadata -> onOpenSong?.invoke(t.songId) ?: run { replayMs = e.tMs.toFloat() }
+                    is ReplayLayout.Tap.Jump -> replayMs = t.tMs.toFloat()
+                }
+            }
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val perRow = ReplayLayout.perRow(maxWidth.value.toInt())
+                androidx.compose.runtime.SideEffect { wrapPerRow = perRow }
+                if (perRow <= 1) {
+                    LazyColumn(
+                        Modifier.fillMaxSize().testTag("mix-replay-timeline"), state = listState,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        itemsIndexed(events, key = { _, e -> e.id }) { i, e ->
+                            TimelineCard(e, active = i == currentIndex, onTap = { onTap(e) })
+                        }
+                    }
+                } else {
+                    val rows = remember(events, perRow) { ReplayLayout.rows(events, perRow) }
+                    LazyColumn(
+                        Modifier.fillMaxSize().testTag("mix-replay-timeline-wrapped"), state = listState,
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        itemsIndexed(rows) { rowIdx, row ->
+                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.Top) {
+                                    row.forEachIndexed { i, e ->
+                                        TimelineCard(e, active = rowIdx * perRow + i == currentIndex, onTap = { onTap(e) }, modifier = Modifier.weight(1f))
+                                        if (i < row.size - 1) Icon(Icons.AutoMirrored.Filled.ArrowForward, null, Modifier.size(12.dp).align(Alignment.CenterVertically), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    // Keep a short last row's cards the same width as full rows.
+                                    repeat(perRow - row.size) { Box(Modifier.weight(1f)) }
+                                }
+                                if (rowIdx < rows.size - 1) Icon(Icons.AutoMirrored.Filled.Undo, null, Modifier.padding(start = 6.dp).size(14.dp), tint = MaterialTheme.colorScheme.tertiary)
+                            }
+                        }
+                    }
                 }
             }
         }
