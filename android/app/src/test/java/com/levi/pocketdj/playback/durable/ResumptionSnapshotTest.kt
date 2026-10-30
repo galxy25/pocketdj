@@ -124,6 +124,7 @@ class ResumptionSnapshotTest {
         assertEquals(1, held.index)
         assertEquals(listOf("a", "b", "c"), d.seq.state.value.queue.map { it.id })
         assertTrue(d.seq.isHeldForResume)
-        assertFalse(d.seq.isRunning && d.h.port.loads.isNotEmpty())
+        assertEquals(1, d.store.loadCount) // loadHeld()+restore(): exactly one decode
+        assertTrue(d.h.port.loads.isEmpty()) // restore is HELD: nothing reached the port
     }
 }

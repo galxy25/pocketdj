@@ -263,19 +263,29 @@ class PlaybackService : MediaLibraryService() {
                     .build()
                 startForeground(BOOT_NOTIFICATION_ID, n)
             }
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            val handler = android.os.Handler(android.os.Looper.getMainLooper())
+            var checks = 0
+            lateinit var check: Runnable
+            check = Runnable {
                 val player = mediaSession?.player
-                if (player == null || (!player.isPlaying && !player.playWhenReady)) {
+                // A cold resumption chain (graph build, row resolve, controller connect) can outlast 3 s:
+                // keep the foreground state while a resumption is armed or a start is in flight (bounded).
+                val settling = forwardingPlayer?.let { it.resumptionPending() || DeferredControl.isStartPending } == true
+                if (settling && ++checks < MAX_SETTLE_CHECKS) {
+                    handler.postDelayed(check, 1_000L)
+                } else if (player == null || (!player.isPlaying && !player.playWhenReady)) {
                     runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
                     stopSelf()
                 }
-            }, 3_000L)
+            }
+            handler.postDelayed(check, 3_000L)
         }
         return result
     }
 
     companion object {
         private const val BOOT_CHANNEL = "pdj_playback_boot"
+        private const val MAX_SETTLE_CHECKS = 12
         /** Media3's DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID. */
         private const val BOOT_NOTIFICATION_ID = 1001
     }
@@ -406,32 +416,55 @@ class PlaybackService : MediaLibraryService() {
         }
 
         /**
-         * Media-button / Bluetooth resumption after the process was killed (PB-4): restore the durable
-         * queue HELD. The future fails (nothing for Media3 to load: the sequencer, not the session
-         * timeline, owns the queue), but Media3 1.6.1 then calls handlePlayButtonAction -> player.play(),
-         * which reaches the forwarding player's held-resume path. So an explicit media-button / Bluetooth
-         * play after process death DOES resume at the saved offset (iOS latched remote play). Only the
-         * restore itself never plays or writes the file.
+         * Media-button / Bluetooth resumption after the process was killed (PB-4 / ANS-PB-6).
+         *
+         * Flow: this callback answers with the held queue (read straight from the snapshot file on a worker
+         * thread: ONE decode, NO AppGraph build) and ARMS the forwarding player. Media3 then calls
+         * setMediaItems with that queue; the armed forwarding player swallows it (the sequencer, not the
+         * session timeline, owns the queue), applies the mic/arbiter gates, restores the held deck
+         * (graph built here, on that call, not at boot) and resumes at the saved offset. A set that does not
+         * match, comes from the in-app controller, or arrives after the 2 s window is passed through.
+         *
+         * Note: with MediaButtonReceiver declared, Media3 itself answers System UI's boot-time `isRecent`
+         * browse (root "androidx.media3.session.recent.root") and fetches its child through THIS callback
+         * without ever calling setMediaItems; that is why the arm is one-shot and time-limited, and why this
+         * path must stay cheap. Our own pdj.recent.root branch only serves other isRecent callers.
          */
         override fun onPlaybackResumption(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
             val out = com.google.common.util.concurrent.SettableFuture.create<MediaSession.MediaItemsWithStartPosition>()
-            resumeExecutor.execute {
-                // Off Main: graph + one file decode. The restore itself runs on Main when the forwarding
-                // player receives the matching setMediaItems.
-                val held = runCatching {
-                    com.levi.pocketdj.di.AppGraph.get(applicationContext).playbackGraph.resumptionProvider.loadHeld()
-                }.getOrNull()
-                if (held == null) {
-                    out.setException(IllegalStateException("nothing to resume"))
-                } else {
-                    forwardingPlayer?.armResumption(held)
-                    out.set(held.toMediaItemsWithStartPosition())
+            val file = java.io.File(filesDir, com.levi.pocketdj.playback.durable.PLAYBACK_SESSION_FILE)
+            try {
+                resumeExecutor.execute {
+                    try {
+                        val held = HeldQueue.load(file, recentArtFor())
+                        if (held == null) {
+                            out.setException(IllegalStateException("nothing to resume"))
+                        } else {
+                            forwardingPlayer?.armResumption(held)
+                            out.set(held.toMediaItemsWithStartPosition())
+                        }
+                    } catch (t: Throwable) {
+                        out.setException(t)
+                    }
                 }
+            } catch (t: java.util.concurrent.RejectedExecutionException) {
+                out.setException(t)
             }
             return out
+        }
+
+        /** Album art for the resume card when the process already has its catalog; none on a cold boot (no graph build). */
+        private fun recentArtFor(): (String) -> android.net.Uri? {
+            val g = com.levi.pocketdj.di.AppGraph.peek() ?: return { null }
+            return { songId ->
+                runCatching {
+                    val album = g.catalogRepository.state.value.catalog?.let { c -> c.songsById[songId]?.albumId?.let { c.albumsById[it] } }
+                    (album?.artCandidates()?.firstOrNull() ?: album?.let { g.albumArtworkStore.cached(it.id) })?.let(android.net.Uri::parse)
+                }.getOrNull()
+            }
         }
 
         override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
@@ -521,7 +554,7 @@ class PlaybackService : MediaLibraryService() {
                 val out = com.google.common.util.concurrent.SettableFuture.create<LibraryResult<ImmutableList<MediaItem>>>()
                 val file = java.io.File(filesDir, com.levi.pocketdj.playback.durable.PLAYBACK_SESSION_FILE)
                 resumeExecutor.execute {
-                    val held = HeldQueue.load(file)
+                    val held = HeldQueue.load(file, recentArtFor())
                     out.set(
                         if (held == null) LibraryResult.ofItemList(ImmutableList.of(), params)
                         else LibraryResult.ofItemList(ImmutableList.of(held.currentItem()), params),
