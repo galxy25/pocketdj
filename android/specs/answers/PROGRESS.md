@@ -8,7 +8,7 @@ Legend: **DEV** = remaining gap is device-only (DEVICE-CHECKLIST.md). **EMU** = 
 
 | Row | Disposition |
 |---|---|
-| SURF-2 | EMU (tiered start, storage-prune log); CODE: storage prune measure-only, jukebox onStart bootstrap deferred (DEFAULT) |
+| SURF-2 | EMU (tiered start, storage-prune log). Storage-prune gap RESOLVED: `StorageManager.pruneIfDue()` is called from WorkScheduler.kt:142 and PocketDjApplication.kt:48 (SVC-6 DONE). Jukebox onStart bootstrap deferred (DEFAULT) |
 | SURF-3 | DEV (real AM sign-in); link probe now live via SVC-9 |
 | SURF-4 | DEV (App Links verification); seams importCollection/mwf done by COL-14/GM-10 packages |
 | SURF-5 | DEV (Assistant voice); MixFacade implemented by MIX-16 |
@@ -19,14 +19,14 @@ Legend: **DEV** = remaining gap is device-only (DEVICE-CHECKLIST.md). **EMU** = 
 | SVC-1 | EMU (Still ripping flow, mid-queue URL refresh); DEV presigned private bucket |
 | SVC-4 | EMU (burned-first resolver, Rip/Burn bar Stop); CODE: Stemify from the bar (SVC-11 covers action) |
 | SVC-7 / SVC-9 / SVC-10 | EMU two-emulator link/restore (Q119-Q121); DEV relink; CODE: QR camera scan deferred (code entry + QR display shipped), sources/appleMusicPrivateSync re-emit only (DEFAULT) |
-| SVC-8 | Lambda deployed to green by ANS-SYNC-1; endpoints doc publish pending (Q119) |
-| SVC-11 / PB-5 | EMU (History glyph + live row); CODE: noteSkip per-song count unwired until a PlayCountService port exists (DEFAULT) |
+| SVC-8 | DONE except Q119 endpoints-doc publish (Levi decision). Lambda deployed to green by ANS-SYNC-1; integrator flips Planned -> DONE |
+| SVC-11 / PB-5 | EMU (History glyph + live row). noteSkip gap RESOLVED: wired to `playStats.noteSkipped` in PlaybackGraph.kt:67 and MixGraph.kt:886 (PlayStatsStore sink, the Q24 proposal, is built; no longer a DEFAULT) |
 | SVC-14 | DEV (SD card); DEFAULT staged-copy doubling |
 | PB-10 | EMU (rip->rip gap, mid-track reorder) |
 | COL-6 | EMU (drag onto Collections row) |
-| COL-7 / COL-12 | EMU; CODE: owner-gate seam only (no owner identity), no catalogAdd producer (DEFAULT) |
+| COL-7 / COL-12 | EMU; catalogAdd producer gap RESOLVED: CATALOG_ADD events produced at BrowseGraph.kt:364, :565 and CollectionsGraph.kt:285. Remaining CODE: owner-gate seam only (no owner identity) (DEFAULT) |
 | COL-9 / COL-11 | DEV (real AM + MUT); CODE: reconcile removals partly landed by GAP-2; Q114 |
-| COL-10 | EMU (favorites drive); CODE: backup/profile-sync registration and remapSongIds caller |
+| COL-10 | EMU (favorites drive). Gaps RESOLVED: `SyncEntry("favorites")` registered at CollectionsGraph.kt:446; remapSongIds called at CollectionsGraph.kt:307-308 and BrowseGraph.kt:385-386 |
 | COL-14 | CODE: Q115 edits overlay (DEFAULT: stored only) |
 | COL-18 / COL-20 | EMU (History > Pockets); DEV (dwell); CODE: Open Now Playing after Play (Q91 default) |
 | BRW-10 / BRW-12 / BRW-13 | EMU (For You flows); CODE: New/release feed BRW-14, RecSuggestionFilter, similarSongs, enqueueAudioAnalysis (DEFAULT deferred) |
@@ -35,6 +35,7 @@ Legend: **DEV** = remaining gap is device-only (DEVICE-CHECKLIST.md). **EMU** = 
 | MIX-12 / MIX-17 / MIX-18 | Planned: not in the answers program; remain Planned (parity waves) |
 | STU-3 / STU-4 / STU-6 / STU-7 / STU-14 / STU-12 / STU-11 | EMU (Producer sub-tab flows); DEV (mic, seam clicks, real stems); CODE: stem carve in STU-3 delivered by GAP-6, Q118 preview audition (DEFAULT) |
 | STU-5 / STU-8 / STU-9 / STU-15 / STU-16 | Planned: outside answers scope, see parity roadmap |
+| BRW-7 | EMU (timeline + History > Collection tab); CODE: timeline artwork thumbnails missing (no question yet; DEFAULT: text rows, add as a Levi question if wanted); owner-gate `filterToOwnLibrary` = same DEFAULT as COL-12 |
 | STU-10 | CODE: take-score overdub (DEFAULT deferred); DEV MIDI hardware |
 | GM-4 / GM-7 | EMU (Gem Collector, In the Pocket flows); DEV cloud mode |
 | GM-8 / GM-10 | Planned: outside answers scope; GM-3 deep links done |
