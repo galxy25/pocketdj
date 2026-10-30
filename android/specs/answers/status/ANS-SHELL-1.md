@@ -26,3 +26,11 @@ INTERACTIVE: recs.
 
 ## Questions for Levi
 - none
+
+## Review
+- MAJOR INTENT_SINK in CORE: fixed (moved to INTERACTIVE; worker start no longer builds `features`). Test: CORE plan excludes it + source-scan test that no CORE branch of runStartStep references features/playback/mix/games/studio/browse/shell graphs.
+- MINOR tests only check enum: fixed in part (new seam scan test over runStartStep; plan assertions updated). A full coroutine test of the collectLatest gates was not added (would need graph refactor): rejected for scope.
+- MINOR RECS tier: fixed (RECS moved to PLAYBACK so recEnabledMirror seeds in car-only sessions).
+- NIT WidgetBridge owner seed: fixed (listener registered first, then seed).
+
+fixes applied

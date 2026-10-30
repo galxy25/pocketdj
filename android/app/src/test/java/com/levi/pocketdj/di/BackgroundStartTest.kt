@@ -15,17 +15,35 @@ class BackgroundStartTest {
         assertTrue(plan.isNotEmpty())
         assertTrue(plan.all { it.tier == StartTier.CORE })
         assertTrue(StartupPlan.loopSteps(StartTier.CORE).isEmpty())
-        for (loop in listOf(StartStep.PLAYBACK_WIRE, StartStep.NP_DSP, StartStep.WIDGETS, StartStep.RECS, StartStep.PLAY_STATS)) {
+        for (loop in listOf(StartStep.PLAYBACK_WIRE, StartStep.NP_DSP, StartStep.WIDGETS, StartStep.RECS, StartStep.PLAY_STATS, StartStep.INTENT_SINK)) {
             assertFalse("$loop must not start from a worker", loop in plan)
         }
     }
 
-    @Test fun playbackPlanAddsLoopsButNotRecsFlush() {
+    @Test fun playbackPlanAddsLoopsAndRecsButNotIntentSink() {
         val plan = StartupPlan.steps(StartTier.PLAYBACK)
         assertTrue(plan.containsAll(StartupPlan.steps(StartTier.CORE)))
         assertTrue(StartStep.PLAYBACK_WIRE in plan && StartStep.NP_DSP in plan && StartStep.WIDGETS in plan)
-        assertFalse(StartStep.RECS in plan)
+        assertTrue(StartStep.RECS in plan) // car-only sessions must still seed the rec gate + flush
+        assertFalse(StartStep.INTENT_SINK in plan)
     }
+
+    /** CORE branches of runStartStep must not touch the lazy feature registry or any loop-owning graph. */
+    @Test fun coreStepActionsNeverReachFeaturesOrLoopGraphs() {
+        val f = listOf("src/main/java", "app/src/main/java").map { java.io.File(it, "com/levi/pocketdj/di/AppGraph.kt") }.first { it.exists() }
+        val body = f.readText().substringAfter("private fun runStartStep").substringBefore("init { startup.ensure")
+        val core = StartupPlan.steps(StartTier.CORE).map { it.name }
+        val branches = Regex("""StartStep\.([A-Z_]+) ->""").findAll(body).toList()
+        assertTrue(branches.isNotEmpty())
+        val forbidden = listOf("features", "playbackGraph", "mixGraph", "gamesGraph", "studioGraph", "browseGraph", "shellGraph")
+        branches.forEachIndexed { i, m ->
+            if (m.groupValues[1] !in core) return@forEachIndexed
+            val end = branches.getOrNull(i + 1)?.range?.first ?: body.length
+            val text = body.substring(m.range.last, end)
+            for (w in forbidden) assertFalse("CORE step ${m.groupValues[1]} references $w", Regex("""\b$w\b""").containsMatchIn(text))
+        }
+    }
+
 
     @Test fun foregroundPlanIncludesEverythingInDependencyOrder() {
         val plan = StartupPlan.steps(StartTier.INTERACTIVE)
@@ -40,6 +58,7 @@ class BackgroundStartTest {
         ledger.ensure(StartTier.CORE)
         assertEquals(StartupPlan.steps(StartTier.CORE), ran)
         assertFalse(ledger.hasRun(StartStep.RECS))
+        assertFalse(ledger.hasRun(StartStep.INTENT_SINK))
         ledger.ensure(StartTier.INTERACTIVE)
         ledger.ensure(StartTier.PLAYBACK)
         ledger.ensure(StartTier.INTERACTIVE)

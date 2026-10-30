@@ -7,7 +7,7 @@ package com.levi.pocketdj.di
  *   config, rips, collections: data seams only, NO recurring loops.
  * - [StartTier.PLAYBACK]: the PlaybackService / Android Auto / widget-driven playback. Adds the sequencer wiring,
  *   play stats, the Now Playing DSP, the widget bridge.
- * - [StartTier.INTERACTIVE]: the first foreground (MainActivity). Adds the rec-engine flush loop.
+ * - [StartTier.INTERACTIVE]: the first foreground (MainActivity). Adds the intent sink (builds all feature graphs).
  *
  * Tiers are cumulative. This file is pure (no Android types) so the plan is JVM-testable.
  */
@@ -19,7 +19,6 @@ enum class StartStep(val tier: StartTier, val ownsLoop: Boolean = false) {
     SECRET_MIGRATION(StartTier.CORE),
     FAVORITE_SEAM(StartTier.CORE),
     BURN_RECONCILE(StartTier.CORE),
-    INTENT_SINK(StartTier.CORE),
 
     /** Sequencer seams + the (run-gated) 1 Hz session tick. */
     PLAYBACK_WIRE(StartTier.PLAYBACK, ownsLoop = true),
@@ -32,8 +31,11 @@ enum class StartStep(val tier: StartTier, val ownsLoop: Boolean = false) {
     /** Widget bridge: snapshot sync is flow-driven (SessionSwitchboard.onChange), no poll. */
     WIDGETS(StartTier.PLAYBACK, ownsLoop = true),
 
-    /** Rec-engine auto-flush loop + release feed. */
-    RECS(StartTier.INTERACTIVE, ownsLoop = true),
+    /** Rec-engine enabled-mirror seeding + auto-flush loop + release feed (the roadmap allows it for UI/playback starts). */
+    RECS(StartTier.PLAYBACK, ownsLoop = true),
+
+    /** Deep-link handlers; builds every feature graph, so never from a worker. Intents arrive only via MainActivity. */
+    INTENT_SINK(StartTier.INTERACTIVE),
 }
 
 object StartupPlan {

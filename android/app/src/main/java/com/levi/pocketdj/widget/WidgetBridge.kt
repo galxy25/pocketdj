@@ -63,8 +63,9 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
             val fav = app.collectionsGraph.favorites
             // Who owns audio: when Mix sounds, the widget goes idle.
             // ANS-SHELL-1: event-driven (SessionSwitchboard listener), no 1 Hz poll.
-            val ownerState = kotlinx.coroutines.flow.MutableStateFlow(SessionSwitchboard.shared.current?.engine)
+            val ownerState = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
             SessionSwitchboard.shared.addListener { ownerState.value = SessionSwitchboard.shared.current?.engine }
+            ownerState.value = SessionSwitchboard.shared.current?.engine // seed AFTER registering: no lost change
             val owner = ownerState.asStateFlow()
             val inputs = combine(pc.nowPlaying, pc.sequencer.state, fav.state, app.catalogRepository.state, owner) { np0, seq, _, cat, eng ->
                 val np = if (eng == MIX_ENGINE) null else np0
