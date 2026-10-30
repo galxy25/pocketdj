@@ -32,6 +32,7 @@ interface OboeBackend {
 class OboeSink(
     override val sampleRate: Int,
     private val blockFrames: Int = 512,
+    private val spawnFeeder: Boolean = true, // false = tests drive [pumpOnce] by hand
     private val backendFactory: () -> OboeBackend,
 ) : AudioSink {
     override val clock = RenderClock(sampleRate)
@@ -40,6 +41,10 @@ class OboeSink(
     private var backend: OboeBackend? = null
     @Volatile private var thread: Thread? = null
     @Volatile private var running = false
+    /** Bumped by every stop(); a feeder that outlived a bounded join sees its generation is stale and exits. */
+    @Volatile private var generation = 0
+    /** Native close/release handed to a feeder still inside open()/render when stop() gave up joining. */
+    private val orphanClose = java.util.concurrent.atomic.AtomicReference<Runnable?>(null)
     @Volatile private var rendering = false
     @Volatile private var renderer: BlockRenderer? = null
     private val buf = FloatArray(blockFrames * 2)
@@ -59,16 +64,23 @@ class OboeSink(
         this.renderer = renderer
         running = true
         rendering = true
+        // A park (stop) then restart is a fresh stream: clear any disconnect/backoff state left by the last life.
         rebuildAttempt = 0
-        thread = Thread({ loop() }, "pdj-oboe-feed").also { it.priority = Thread.MAX_PRIORITY; it.start() }
+        wasDisconnected = false
+        nextRebuildAt = 0L
+        renderFailed = false
+        if (spawnFeeder) {
+            val gen = generation
+            thread = Thread({ loop(gen) }, "pdj-oboe-feed").also { it.priority = Thread.MAX_PRIORITY; it.start() }
+        }
     }
 
     /** Test seam: wire a backend + renderer WITHOUT spawning the feeder thread (drive [pumpOnce] by hand). */
     internal fun attachForTest(b: OboeBackend, r: BlockRenderer) { backend = b; renderer = r; rendering = true }
 
-    private fun loop() {
+    private fun loop(gen: Int) {
         runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
-        while (running) {
+        while (running && gen == generation) {
             val worked = try { pumpOnce(System.nanoTime() / 1_000_000) } catch (e: Throwable) {
                 rendering = false
                 AudioDiag.stop("OboeSink", "render-exception", e.toString())
@@ -79,6 +91,7 @@ class OboeSink(
             renderFailed = false
             if (!worked) try { Thread.sleep(pause) } catch (_: InterruptedException) { }
         }
+        orphanClose.getAndSet(null)?.run() // stop() timed out on us: free the native handle now that nothing uses it
     }
 
     /**
@@ -117,13 +130,23 @@ class OboeSink(
 
     @Synchronized override fun stop() {
         running = false
-        // Join fully before freeing the native handle (the feeder may be inside write()); the loop exits on `running`.
-        thread?.let { t -> if (t !== Thread.currentThread()) { while (t.isAlive()) runCatching { t.join(200) } } }
+        generation++
+        val b = backend
+        val t = thread
+        // Bounded join (main-thread callers): the feeder may be inside a slow native open() or a render.
+        if (t != null && t !== Thread.currentThread()) runCatching { t.join(JOIN_MS) }
         thread = null
-        backend?.let { runCatching { it.close() }; runCatching { it.release() } }
         backend = null
         renderer = null
         rendering = false
+        if (b != null) {
+            val free = Runnable { runCatching { b.close() }; runCatching { b.release() } }
+            if (t != null && t.isAlive && t !== Thread.currentThread()) {
+                // Never free a handle the feeder may still be using: it frees it when it exits (or we do, if it already did).
+                orphanClose.set(free)
+                if (!t.isAlive) orphanClose.getAndSet(null)?.run()
+            } else free.run()
+        }
     }
 
     override fun release() = stop()
@@ -134,6 +157,7 @@ class OboeSink(
     }
 
     companion object {
+        const val JOIN_MS = 500L
         /** Rebuild backoff: 20, 40, 80, then 100 ms — the first three attempts land inside 300 ms. */
         fun retryDelayMs(attempt: Int): Long = minOf(100L, 20L shl attempt.coerceIn(0, 10))
     }
