@@ -9,6 +9,7 @@ Everything the emulator cannot prove. One checkbox per item. Use the release-lik
 - [ ] **Mix + routing** (PB-5/MIX-11): start a Mix, lock screen; lock-screen and Bluetooth/AVRCP play/pause/next work; widget shows Mix; Android Auto/DHU shows Mix row. Pause the Mix >15 s then press Bluetooth play (Q122: should resume the paused single, confirm that is what you want).
 - [ ] **Phone call / focus** (STU-16, Q86): during Sample and Pattern playback take a call: they pause and resume after. Loop/Multitrack/Instrument/Demux STOP on transient focus loss (as built) - confirm wanted or ask for park+resume. Unplug headphones and reconnect BT during each Studio engine: re-primes, no silence.
 - [ ] **Doze / OEM kills** (SHELL-1): leave a playing queue 30 min with screen off on battery; playback continues. Force-stop, then wait for the nightly workers (or `adb shell cmd jobscheduler run -f`): no crash, no audio start.
+- [ ] **Mix Skip double-tap** (MIX-14): during Auto-mix, double-tap "Skip to next" with a finger: the crossfade takes ~5 s (fast sweep); a single tap uses Settings ▸ Mix ▸ Skip fade (15 s default). adb taps on the emulator are too slow to register as a double-tap.
 - [ ] **Jank** (MIX-3): Developer options > GPU profile bars, scroll Browse (full library), Mix deck sliders, History: no sustained red bars.
 
 ## Studio / Producer
@@ -27,6 +28,7 @@ Everything the emulator cannot prove. One checkbox per item. Use the release-lik
 - [ ] **Jukebox AM request** (GAP-1/SURF-10): host a jukebox, guest requests an AM song; AM catalog search stage returns results; Q113 rip-on-accept latency.
 
 ## Sync / storage / SD
+- [ ] **Private rips bucket** (SVC-1): with the real (private) rips bucket, play a queue that includes a not-yet-ripped song; when its rip lands mid-queue it must play (the app now presigns the durable URL; emulator-verified only against a mock server).
 - [ ] **Restore / relink** (SYNC-1, SVC-9): enable "Sync across devices" on phone A, Link a device on phone B (code entry + QR display), data appears; delete account on B, A shows the Q120 message. Needs the endpoints doc published (Q119).
 - [ ] **SAF burn folder** (SVC-14, COL-4, STU-1/4, PB-7): pick a folder on a real SD card; burn a song: 4 stems + analysis json appear; revoke the grant in system settings: app degrades without crashing; sample/loop trees on SD play.
 - [ ] **Release cert / App Links** (SURF-2/4): install the Play-signed build; `adb shell pm get-app-links com.levi.pocketdj` shows jukebox.pocket-dj.com verified; tapping a https jukebox link opens the app.
