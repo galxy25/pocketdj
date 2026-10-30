@@ -86,7 +86,10 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     /** Studio family roots: app-private `filesDir/studio/<family>/` + optional SAF user roots. */
     val studioRoots: StudioRoots by lazy {
-        DefaultStudioRoots(File(app.appContext.filesDir, "studio")) { family ->
+        DefaultStudioRoots(
+            File(app.appContext.filesDir, "studio"),
+            userConfigured = { family -> !userFolderTreeUri(family).isNullOrEmpty() },
+        ) { family ->
             SafStudioDir.open(app.appContext, userFolderTreeUri(family)) as StudioDir?
         }
     }
@@ -116,7 +119,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     val studioRender: StudioRender by lazy { StudioRender(stretcher = NativeStretcher) }
 
-    val sampleRenderCache: SampleRenderCache by lazy { SampleRenderCache(studioRoots, studioStore, studioRender) }
+    val sampleRenderCache: SampleRenderCache by lazy { SampleRenderCache(studioRoots, studioStore, studioRender, studioMaterializer) }
 
     val sampleFactory: SampleFactory by lazy { SampleFactory(studioRoots, studioStore, studioRender) }
 

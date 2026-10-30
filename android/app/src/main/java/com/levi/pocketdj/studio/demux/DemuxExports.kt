@@ -175,7 +175,7 @@ class DemuxExporter(
             val (fileName, dest) = sampleDest(id) ?: return ExportOutcome(false, "Your samples folder isn’t reachable right now (Settings ▸ Storage).")
             try {
                 val carved = render.carveTrackRegion(stem, region.first, region.second, dest)
-                store.addSample(
+                store.addSampleRelocating(
                     StudioSample(
                         id, "${source.displayName} · ${DrumLanes.label(kind).lowercase()}", fileName, wasUserFolder = false, createdAt = now(),
                         durationMs = carved.durationMs, source = provenance(source, region.first, region.second),
@@ -245,7 +245,7 @@ class DemuxExporter(
         val (fileName, dest) = sampleDest(id) ?: return ExportOutcome(false, "Your samples folder isn’t reachable right now (Settings ▸ Storage).")
         return try {
             val res = if (stemPaths != null) render.carveStemMix(stemPaths, startMs, endMs, dest) else render.carveTrackRegion(audioPath, startMs, endMs, dest)
-            store.addSample(
+            store.addSampleRelocating(
                 StudioSample(id, name, fileName, wasUserFolder = false, createdAt = now(), durationMs = res.durationMs, source = provenance(source, startMs, endMs)),
             )
             ExportOutcome(true, "Sample “$name” created.")

@@ -250,6 +250,43 @@ class StudioStore(
         return sample
     }
 
+    private val _samplesFolderNotice = MutableStateFlow<String?>(null)
+    /** Visible notice when a new sample could not reach the user's samples folder (revoked / write failed). */
+    val samplesFolderNotice: StateFlow<String?> = _samplesFolderNotice.asStateFlow()
+    fun clearSamplesFolderNotice() { _samplesFolderNotice.value = null }
+
+    /**
+     * File a sample whose audio was FINALIZED in app storage first (crash-safe: an interrupted capture/carve is
+     * adopted by the orphan scan), MOVING it into the user's samples folder when one is configured, reachable and
+     * writable (patterned on [addTakeRelocating]). A configured-but-revoked folder, or a failed copy, keeps the audio
+     * in app storage (`wasUserFolder=false`) and raises [samplesFolderNotice]. Idempotent for a re-file after the move.
+     */
+    fun addSampleRelocating(sample: StudioSample): StudioSample {
+        var s = sample
+        val name = sample.fileName
+        val appDir = roots.appDir(StudioFamily.SAMPLES)
+        val user = roots.userDir(StudioFamily.SAMPLES)
+        val src = appDir.resolve(name)?.file
+        if (src == null) {
+            // Already moved by an earlier attempt (crash-retry / double file): the user copy is authoritative.
+            if (user != null && user.exists(name)) s = s.copy(wasUserFolder = true)
+        } else if (user != null && user.isWritable()) {
+            val ok = runCatching {
+                user.openOutput(name)?.use { out -> src.inputStream().use { it.copyTo(out) } } != null
+            }.getOrDefault(false) && user.exists(name) && (src.length() == 0L || user.length(name) > 0L)
+            if (ok) {
+                appDir.delete(name)
+                s = s.copy(wasUserFolder = true)
+            } else {
+                runCatching { user.delete(name) }   // never leave a half-written copy behind
+                _samplesFolderNotice.value = "Couldn’t save to your samples folder, so “${sample.name}” was kept in app storage."
+            }
+        } else if (roots.userFolderConfigured(StudioFamily.SAMPLES)) {
+            _samplesFolderNotice.value = "Your samples folder isn’t reachable (permission revoked or drive missing), so “${sample.name}” was saved to app storage."
+        }
+        return addSample(s)
+    }
+
     fun renameSample(id: String, name: String) {
         val n = name.trimmedOrNull() ?: return
         updateSample(id) { it.copy(name = n) }

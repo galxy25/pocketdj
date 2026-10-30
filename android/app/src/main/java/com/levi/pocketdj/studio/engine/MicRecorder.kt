@@ -279,7 +279,7 @@ class MicRecorder(
     @Synchronized
     internal fun beginTake(): Boolean {
         if (_recording.value) return false
-        // Mic takes are written to a real file in the app-managed root; copy-out to a SAF user root is a later step.
+        // Mic takes are finalized in the app-managed root first (crash-safe); fileSample then moves them to the SAF user root.
         val appDir = roots.appDir(StudioFamily.SAMPLES)
         val minted = MicRecorderMath.mintSampleFile({ appDir.exists(it) })
         val target = StudioFiles.appFile(roots, StudioFamily.SAMPLES, minted.second) ?: return false
@@ -412,7 +412,8 @@ class MicRecorder(
     }
 
     fun fileSample(t: MicTake) {
-        store.addSample(
+        // Finalized in app storage (crash-safe); then moved into the user's samples folder when one is set.
+        store.addSampleRelocating(
             StudioSample(
                 id = t.id, name = pendingName?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_NAME, fileName = t.fileName, wasUserFolder = t.wasUserFolder,
                 createdAt = startedAtMs, durationMs = t.durationMs, source = StudioSource.Mic,
@@ -434,7 +435,7 @@ class MicRecorder(
                 val f = dir.resolve(name)?.file ?: continue
                 val ms = WavTakeWriter.recoveredDurationMs(f) ?: continue
                 runCatching { WavTakeWriter.repairHeader(f) }
-                store.addSample(
+                store.addSampleRelocating(
                     StudioSample(id = id, name = "Recovered recording", fileName = name, wasUserFolder = isUser,
                         createdAt = f.lastModified().toDouble(), durationMs = ms, source = StudioSource.Mic),
                 )

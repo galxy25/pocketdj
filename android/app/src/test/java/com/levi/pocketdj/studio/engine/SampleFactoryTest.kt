@@ -57,6 +57,37 @@ class SampleFactoryTest {
         assertEquals("Imported sample", f.importName(".wav"))
     }
 
+    @Test fun safDestinationImportAndCarveLandInTheUserFolder() = runBlocking {
+        val (env, f, store) = setup(Codec(ramp))
+        env.configured += StudioFamily.SAMPLES
+        val imp = f.importFile(File("x.wav"), "Loop.wav")
+        val carved = f.carveTrack("sng_1", "Song", LocalSource(File("a.mp3"), isCut = false, offsetMs = 0), 1000, 2000, null)
+        for (s in listOf(imp, carved)) {
+            assertTrue(store.sample(s.id)!!.wasUserFolder)
+            assertTrue(env.userFile(StudioFamily.SAMPLES, s.fileName).isFile)
+            assertFalse(env.appFile(StudioFamily.SAMPLES, s.fileName).exists())   // MOVED, not copied
+        }
+        assertNull(store.samplesFolderNotice.value)
+    }
+
+    @Test fun revokedFolderFallsBackToAppStorageWithANotice() = runBlocking {
+        val (env, f, store) = setup(Codec(ramp))
+        env.configured += StudioFamily.SAMPLES; env.unreachable += StudioFamily.SAMPLES
+        val s = f.importFile(File("x.wav"), "Loop.wav")
+        assertFalse(store.sample(s.id)!!.wasUserFolder)
+        assertTrue(env.appFile(StudioFamily.SAMPLES, s.fileName).isFile)
+        assertTrue(store.samplesFolderNotice.value!!.contains("isn’t reachable"))
+        store.clearSamplesFolderNotice()
+        assertNull(store.samplesFolderNotice.value)
+    }
+
+    @Test fun noFolderConfiguredIsSilentAppStorage() = runBlocking {
+        val (_, f, store) = setup(Codec(ramp))
+        val s = f.importFile(File("x.wav"), "Loop.wav")
+        assertFalse(store.sample(s.id)!!.wasUserFolder)
+        assertNull(store.samplesFolderNotice.value)
+    }
+
     @Test fun drmProtectedImportIsRejectedAndLeavesNothingBehind() = runBlocking {
         val (env, f, store) = setup(Codec(ramp, drm = true))
         try { f.importFile(File("x.m4p"), "Song.m4p"); fail("expected rejection") }

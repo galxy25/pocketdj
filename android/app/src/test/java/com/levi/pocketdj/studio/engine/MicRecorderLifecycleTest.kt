@@ -1,6 +1,7 @@
 package com.levi.pocketdj.studio.engine
 
 import com.levi.pocketdj.studio.model.StudioSource
+import com.levi.pocketdj.studio.store.StudioFamily
 import com.levi.pocketdj.studio.store.TestEnv
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -52,6 +53,36 @@ class MicRecorderLifecycleTest {
         repeat(14) { rec.watchdogTick(now); now += 0.5 }
         assertTrue(rec.captureStalled.value)
         rec.stop()
+    }
+
+    @Test fun takeIsFinalizedInAppStorageThenRelocatedToTheUserFolder() {
+        val env = TestEnv(tmp.newFolder()); val store = env.store()
+        env.configured += StudioFamily.SAMPLES
+        val rec = MicRecorder(env.roots, store, audioManager = null)
+        assertTrue(rec.beginTake())
+        // While recording the crash-safe file is in APP storage, never the user folder.
+        val name = env.roots.appDir(StudioFamily.SAMPLES).list().single()
+        assertTrue(env.appFile(StudioFamily.SAMPLES, name).isFile)
+        assertFalse(env.userFile(StudioFamily.SAMPLES, name).exists())
+        rec.finalizeForExit()
+        val s = store.samples.single()
+        assertEquals(name, s.fileName)
+        assertTrue(s.wasUserFolder)
+        assertTrue(env.userFile(StudioFamily.SAMPLES, name).isFile)
+        assertFalse(env.appFile(StudioFamily.SAMPLES, name).exists())
+    }
+
+    @Test fun takeStaysInAppStorageWhenTheFolderIsRevokedAtFileTime() {
+        val env = TestEnv(tmp.newFolder()); val store = env.store()
+        env.configured += StudioFamily.SAMPLES
+        val rec = MicRecorder(env.roots, store, audioManager = null)
+        assertTrue(rec.beginTake())
+        env.unreachable += StudioFamily.SAMPLES      // permission revoked mid-take
+        rec.finalizeForExit()
+        val s = store.samples.single()
+        assertFalse(s.wasUserFolder)
+        assertTrue(env.appFile(StudioFamily.SAMPLES, s.fileName).isFile)
+        assertNotNull(store.samplesFolderNotice.value)
     }
 
     @Test fun pendingNameIsUsedWhenATakeIsFiledOnExit() {

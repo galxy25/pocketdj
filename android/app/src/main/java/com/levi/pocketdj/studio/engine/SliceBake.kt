@@ -102,7 +102,7 @@ class SliceBaker(
         } catch (e: Exception) {
             dest.delete(); return null
         }
-        store.addSample(
+        store.addSampleRelocating(
             StudioSample(
                 id = id, name = SliceMath.bakedName(s.name, slot), fileName = fileName, wasUserFolder = false, createdAt = now(),
                 durationMs = carved.durationMs, source = StudioSource.File("${s.name} pad ${slot + 1}"),

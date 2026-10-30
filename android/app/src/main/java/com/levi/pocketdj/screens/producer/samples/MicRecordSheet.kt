@@ -119,7 +119,7 @@ fun MicRecordSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (String) -> 
 
     fun fileTake(take: MicTake) {
         val nm = name.trim().ifEmpty { MicRecorder.DEFAULT_NAME }
-        studio.studioStore.addSample(
+        studio.studioStore.addSampleRelocating(
             StudioSample(take.id, nm, take.fileName, take.wasUserFolder, System.currentTimeMillis().toDouble(), take.durationMs, StudioSource.Mic),
         )
         filed = take.id

@@ -127,7 +127,7 @@ fun SampleEditorSheet(graph: AppGraph, sampleId: String, onDismiss: () -> Unit) 
     // Load the RAW file once; the edit stays on the chain, never in the file.
     LaunchedEffect(sampleId) {
         val s = store.sample(sampleId) ?: return@LaunchedEffect
-        val file = studio.sampleRenderCache.sourceFile(s)
+        val file = studio.sampleRenderCache.sourceFileAsync(s)
         val buf = if (file == null) null else runCatching { studio.studioRender.decodeBuffer(file.path) }.getOrNull()
         if (buf == null) { loadError = true; return@LaunchedEffect }
         pcm = buf
