@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # ANS-STU-4 — Mic/import/carve samples move to the SAF user folder
 
@@ -17,3 +17,10 @@ state: in-progress
 
 ## Questions for Levi
 None.
+
+## Summary
+New samples (mic, import, track carve, demux kit/cut, take->sample, slice bake, artifact->sample) are finalized in app storage first, then moved into the user's SAF samples folder via StudioStore.addSampleRelocating; a revoked or failing folder falls back to app storage with a visible dialog notice. SampleRenderCache reads SAF samples through StudioMaterializer.
+
+## Tests
+Full `:app:testDebugUnitTest :app:assembleDebug` green: 5354 tests, 0 failures (prior 5309 at STU-3 tip). New: StudioSampleRelocationTest (5), SampleRenderCacheSafTest (2), SampleFactoryTest +3, MicRecorderLifecycleTest +2 (12 new).
+Emulator step (mic sample into SAF folder, plays in Loops/Sequencer) not run: emulator owned by integrator.

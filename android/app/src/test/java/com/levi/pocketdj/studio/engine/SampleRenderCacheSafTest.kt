@@ -51,7 +51,7 @@ class SampleRenderCacheSafTest {
     private class Codec : StudioCodec {
         val decoded = mutableListOf<String>()
         var writes = 0
-        private val pcm = PcmBuffer(44_100, 1, FloatArray(44_100))
+        private val pcm = PcmBuffer(44_100, 2, FloatArray(44_100 * 2))
         override fun decode(path: String): PcmBuffer { decoded += File(path).readText(); return pcm }
         override fun decodeNativeRate(path: String) = pcm
         override fun isProtected(path: String) = false
