@@ -139,14 +139,20 @@ class ShellActions(
         val saved = collections.setlist(id) ?: throw ShellActionException.SetlistNotFound
         val name = saved.name ?: "Set list"
         val rows = saved.tracks.filter { it.isText != true && it.songId.isNotEmpty() }
-        val set = collections.playNow(
-            songIds = rows.map { it.songId },
-            name = name,
-            shuffle = shuffle,
-            sourceToken = PlayContext.SOURCE_SETLIST,
-            repeats = rows.mapNotNull { r -> r.repeatCount?.let { r.songId to it } }.toMap(),
-            originId = saved.id,
-        )
+        val set: Setlist?
+        if (saved.id == NOW_PLAYING_SETLIST_ID) {
+            // Reserved set: replay in place; rebuilding it from itself would clobber the real origin.
+            set = saved.copy(tracks = if (shuffle) rows.shuffled() else rows)
+        } else {
+            collections.playlist(saved.playlistId)?.let { collections.markPlaylistPlayed(it.id) }
+            set = collections.playNowRows(
+                rows = rows,
+                name = name,
+                shuffle = shuffle,
+                sourceToken = PlayContext.SOURCE_SETLIST,
+                originId = saved.id,
+            )
+        }
         if (set == null || set.tracks.isEmpty()) throw ShellActionException.EmptyCollection(name)
         start(set, name)
         return name

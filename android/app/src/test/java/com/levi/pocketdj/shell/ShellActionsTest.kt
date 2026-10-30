@@ -15,6 +15,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -183,6 +184,50 @@ class ShellActionsTest {
         r.incomplete = true
         expect("Finish setting up PocketDJ in the app first.") { r.actions.playSetlist(saved.id) }
         assertEquals(2, r.played.size)
+    }
+
+    @Test
+    fun playSetlist_keepsFrozenVariantRepeatsDuplicates_stampsPlaylist_reservedReplayKeepsOrigin() = runTest {
+        val r = rig()
+        val pl = r.store.createPlaylist("Peak", listOf("s1", "s2"))
+        val base = r.store.realize(pl.id, seed = "x", name = "Friday")!!
+        val frozen = listOf(
+            base.tracks[0].copy(variant = "clean", repeatCount = 1),
+            base.tracks[1].copy(repeatCount = 2),
+            base.tracks[0].copy(variant = "clean", repeatCount = 3),
+            base.tracks[0].copy(songId = "ghost_gone", name = "Ghost"),
+        )
+        val saved = base.copy(tracks = frozen)
+        r.store.mutateSetlist(base.id) { it.copy(tracks = frozen) }
+        assertNull(r.store.playlist(pl.id)?.lastPlayedAt)
+        r.actions.playSetlist(saved.id)
+        val got = r.played.last().set.tracks
+        assertEquals(listOf("clean", null, "clean", null), got.map { it.variant })
+        assertEquals(listOf(1, 2, 3, null), got.map { it.repeatCount })
+        assertEquals(listOf("s1", "s2", "s1", "ghost_gone"), got.map { it.songId })
+        assertNotNull(r.store.playlist(pl.id)?.lastPlayedAt)
+        // Reserved set replay must not overwrite the real origin.
+        r.actions.playSetlist(NOW_PLAYING_SETLIST_ID)
+        assertEquals(saved.id, r.store.state.value.nowPlayingOriginId)
+        assertEquals(PlayContext.SOURCE_SETLIST, r.store.state.value.nowPlayingSource)
+    }
+
+    @Test
+    fun playLinkSeam_setlistPlaysThroughActions_andFailuresPostMessage() = runTest {
+        val r = rig()
+        val pl = r.store.createPlaylist("Peak", listOf("s1", "s2"))
+        val saved = r.store.realize(pl.id, seed = "x", name = "Friday")!!
+        val msgs = mutableListOf<String>()
+        var job: kotlinx.coroutines.Job? = null
+        val seam = playLinkSeam(r.actions, this, { job = it }) { msgs += it }
+        assertNull(seam(PlayKind.Setlist, saved.id, false))
+        job!!.join()
+        assertEquals(PlayContext.SOURCE_SETLIST, r.played.single().context.source)
+        assertEquals(saved.id, r.store.state.value.nowPlayingOriginId)
+        seam(PlayKind.Setlist, "set_nope", false)
+        job!!.join()
+        assertEquals(listOf("I couldn't find that set list in PocketDJ."), msgs)
+        assertEquals(1, r.played.size)
     }
 
     @Test
