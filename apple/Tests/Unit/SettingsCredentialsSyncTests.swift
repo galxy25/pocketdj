@@ -357,6 +357,45 @@ final class SettingsCredentialsSyncTests: XCTestCase {
         XCTAssertEqual(store.jukeboxToken, "jb-secret", "untouched pairs still adopt normally")
     }
 
+    /// 2026-10-30: the SAME rip server re-pointed at its Funnel port (`:10000`) with no token
+    /// fleet-wiped the token because the guard compared exact URL strings. Same host ⇒ same
+    /// server ⇒ the local secret is kept (and pushed back — the heal).
+    func testSameHostPortChangeWithEmptyTokenKeepsLocalSecret() async throws {
+        let db = MemoryDB()
+        let store = makeStore("ported")
+        configure(store)
+        setMtime(store.credentialsSyncFileURL, ms: 1_000_000)
+        let ported = SettingsCredentialsDocument(
+            ripServerURL: "https://rip.example.ts.net:10000", ripToken: "",
+            jukeboxServerURL: "https://jb.example.ts.net/jukebox", jukeboxToken: "jb-secret",
+            jukeboxTokensRequiredByDefault: false,
+            searchAccessKeyID: "AKIAEXAMPLE", searchSecretKey: "search-s3cr3t",
+            searchEndpoint: "https://search.example.aoss.amazonaws.com",
+            appleMusicPrivateSync: nil)
+        await db.seed("settings-credentials", payload: try JSONEncoder().encode(ported),
+                      modifiedAtMs: Date().timeIntervalSince1970 * 1000)
+
+        let svc = makeService(db: db)
+        register(store, with: svc)
+        await svc.syncNow()
+
+        XCTAssertEqual(store.ripServerURL, "https://rip.example.ts.net:10000", "the new port adopts")
+        XCTAssertEqual(store.ripToken, "rip-secret", "…but the same host keeps its token")
+        await svc.pushDirty()
+        let doc = await db.docs["settings-credentials"]
+        let healed = try JSONDecoder().decode(SettingsCredentialsDocument.self, from: XCTUnwrap(doc).payload)
+        XCTAssertEqual(healed.ripServerURL, "https://rip.example.ts.net:10000")
+        XCTAssertEqual(healed.ripToken, "rip-secret", "the kept token heals the cloud doc")
+    }
+
+    func testSameServerHostIsHostLevelAndCaseInsensitive() {
+        XCTAssertTrue(SettingsStore.sameServerHost("https://a.ts.net", "https://A.ts.net:10000"))
+        XCTAssertTrue(SettingsStore.sameServerHost("https://a.ts.net/rip", "http://a.ts.net"))
+        XCTAssertFalse(SettingsStore.sameServerHost("https://a.ts.net", "https://b.ts.net"))
+        XCTAssertFalse(SettingsStore.sameServerHost("not a url", "also not"))
+        XCTAssertTrue(SettingsStore.sameServerHost("same-junk", "same-junk"))
+    }
+
     /// Clearing a server PAIR (URL and token together) on another device is a legitimate
     /// removal and must still propagate — the guard requires a non-empty pulled URL, so a
     /// cleared pair adopts (matches the LWW blank-edit doctrine above).

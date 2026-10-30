@@ -681,9 +681,11 @@ struct MixView: View {
                             .font(.caption.weight(.semibold)).foregroundStyle(Theme.fg)
                         Text("· ~\(CollectionMixDownloader.etaLabel(downloader.etaSeconds)) left")
                             .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
-                        if downloader.rippingCount > 0 {
-                            Text("· \(downloader.rippingCount) ripping")
-                                .font(.caption).foregroundStyle(Theme.fgDim)
+                        if let ripping = CollectionMixDownloader.rippingLabel(count: downloader.rippingCount,
+                                                                              issue: downloader.laneIssue) {
+                            Text(ripping)
+                                .font(.caption)
+                                .foregroundStyle(downloader.laneIssue == nil ? Theme.fgDim : Theme.accent)
                         }
                     }
                     .lineLimit(1)
@@ -698,6 +700,18 @@ struct MixView: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("mix-dl-bar")
+                // Zero dead air: when the lanes CAN'T fetch audio (token rejected / no server),
+                // offer the crates in Now Playing — Apple Music needs no import server.
+                if downloader.laneIssue == .tokenRejected || downloader.laneIssue == .noServer {
+                    Button { playCratesInNowPlaying() } label: {
+                        Label("Play in Now Playing", systemImage: "play.circle")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(Theme.accent)
+                    .help("The Mix can't fetch songs on this device — keep listening via Now Playing")
+                    .accessibilityIdentifier("mix-dl-fallback-nowplaying")
+                }
                 Button { downloader.cancel() } label: {
                     Image(systemName: "xmark").font(.caption.weight(.semibold))
                 }
@@ -739,8 +753,22 @@ struct MixView: View {
     /// Shared copy for the partial-catalog notice (Levi, "ship everything" — the field-work
     /// call on tonight's TV two-crate stall): non-alarming, expected transient state.
     private func catalogShortfallCaption(_ shortfall: (declared: Int, total: Int)) -> some View {
-        Text("Only \(shortfall.total) of \(shortfall.declared) songs available on this device — catalog still loading")
+        Text(CollectionMixDownloader.shortfallCaption(declared: shortfall.declared, total: shortfall.total,
+                                                      stillLoading: downloader.catalogStillLoading))
             .font(.caption).foregroundStyle(Theme.fgDim).lineLimit(2)
+    }
+
+    /// The download bar's zero-dead-air fallback: the active run's crates → Now Playing.
+    private func playCratesInNowPlaying() {
+        let sources = downloader.sources
+        let names: [String] = sources.compactMap { src in
+            switch src {
+            case .pocket(let id):   return collections.pocket(id)?.name
+            case .playlist(let id): return collections.playlist(id)?.name
+            case .setlist(let id):  return collections.setlist(id).map { $0.name ?? "Set list" }
+            }
+        }
+        intents.playMixCratesInNowPlaying(sources, names: names)
     }
 
     /// The single bottom Play/Pause — starts/stops BOTH decks (and the engine). Mirrors the

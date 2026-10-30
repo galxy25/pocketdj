@@ -870,6 +870,7 @@ struct PocketDJApp: App {
             collections?.declaredMemberCount(for: source) ?? 0
         }
         mixDownloader.catalogSongCount = { [weak app] in app?.songsById.count ?? 0 }
+        mixDownloader.catalogIsLoading = { [weak app] in app.map { $0.state != .loaded } ?? false }
         mixDownloader.songLengthSeconds = { [weak app] id in
             (app?.songsById[id]?.length).map { Double($0) / 1000 }   // catalog length is ms
         }
@@ -891,7 +892,11 @@ struct PocketDJApp: App {
         // reconciles source-converted pockets + source-duplicated playlists with their
         // source playlists, gated by the global Settings toggle (per-item opt-outs live
         // on the items themselves).
-        app.onCatalogAssigned = { [weak app, weak collections, weak settings] in
+        app.onCatalogAssigned = { [weak app, weak collections, weak settings, weak mixDownloader] in
+            // A Mix crate run that began against a partial catalog re-resolves on every assign
+            // (auto-recovers members that resolved late; flips the shortfall copy honestly).
+            // Ahead of the converted-pocket guard: it must run whatever that toggle says.
+            mixDownloader?.catalogDidChange()
             guard let app, let collections, settings?.syncConvertedPockets == true else { return }
             collections.syncConvertedCollections(with: app.indexPlaylists)
         }

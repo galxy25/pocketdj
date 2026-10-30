@@ -61,18 +61,80 @@ final class CollectionMixDownloader {
     private(set) var downloadedIds: Set<String> = []
     /// Non-nil exactly when this run's crates DECLARED more members than resolved (declared >
     /// `totalCount`) — the partial-catalog signature (an enabled source unsynced/still loading
-    /// on THIS device), never a collection that genuinely has fewer resolvable tracks. Computed
-    /// once at `begin()` alongside the declared=/catalog= diagnostics line — a start-time
-    /// snapshot like `totalCount`/`downloadedCount`: a mix that starts AFTER the catalog catches
-    /// up gets a fresh (nil) reading on its own `begin()`, but THIS run's reading is never
-    /// hot-updated. Drives the UI surfaces' "Only N of M songs available…" line.
+    /// on THIS device), never a collection that genuinely has fewer resolvable tracks — and never
+    /// cross-crate duplicates (see `effectiveDeclared`). Computed at `begin()` alongside the
+    /// declared=/catalog= diagnostics line and RE-computed by `catalogDidChange()` on every
+    /// catalog assign, which also folds late-resolving members into the run. Drives the UI
+    /// surfaces' shortfall line (`shortfallCaption`).
     private(set) var catalogShortfall: (declared: Int, total: Int)?
+    /// The shortfall was observed while the catalog was still LOADING (the honest "catalog
+    /// still loading" copy); false ⇒ the catalog finished and those members are genuinely not
+    /// in this device's catalog (missing/disabled source) — different copy, same number.
+    private(set) var catalogStillLoading = false
+
+    /// Why the rip/burn lanes can't make progress, or nil when they can. The "K ripping" count
+    /// alone was a lie in the 2026-10-30 iPad session: every `/rip-collection` + presign 401'd
+    /// (the device had no token) yet the bar sat on "4 ripping" forever. Surfaces read this to
+    /// say what is actually wrong; the lanes keep retrying on a backoff underneath.
+    enum LaneIssue: Equatable {
+        /// 401/403 — this device's import-server token is missing or wrong.
+        case tokenRejected
+        /// Songs need a rip but no import server is configured on this device.
+        case noServer
+        /// The server refused the rip batch with a non-auth status (5xx, …); retrying.
+        case ripServerRefused(Int)
+        /// The batch was accepted but nothing flipped ready for the stall window; re-requested.
+        case ripsStalled
+    }
+    /// The lane issue the rip lane last OBSERVED (auth rejection is read live — see `laneIssue`).
+    private(set) var observedLaneIssue: LaneIssue?
+    /// The live lane issue: a rejected token (read live off `RipsStore`, so a credsync heal or a
+    /// re-typed token clears it instantly) outranks whatever the rip lane last saw.
+    var laneIssue: LaneIssue? {
+        guard isActive else { return nil }
+        if rips.isAuthRejected { return .tokenRejected }
+        return observedLaneIssue
+    }
+
+    /// Honest bar copy for the rip-pending count (pure, unit-tested): "· 4 ripping" only when
+    /// the server actually has them; otherwise what is really in the way.
+    nonisolated static func rippingLabel(count: Int, issue: LaneIssue?) -> String? {
+        guard count > 0 else {
+            return issue == .tokenRejected ? "· import server rejected this device’s token" : nil
+        }
+        switch issue {
+        case .tokenRejected?:           return "· \(count) can’t rip — import server rejected this device’s token"
+        case .noServer?:                return "· \(count) need an import server to rip"
+        case .ripServerRefused(let c)?: return "· \(count) waiting — import server error \(c), retrying"
+        case .ripsStalled?:             return "· \(count) ripping (stalled — re-requested)"
+        case nil:                       return "· \(count) ripping"
+        }
+    }
+
+    /// Honest shortfall copy (pure): "still loading" only while the catalog actually is.
+    nonisolated static func shortfallCaption(declared: Int, total: Int, stillLoading: Bool) -> String {
+        stillLoading
+            ? "Only \(total) of \(declared) songs available on this device — catalog still loading"
+            : "\(declared - total) of \(declared) crate songs aren’t in this device’s catalog — a source may be missing or disabled"
+    }
 
     // MARK: Tunables (test-dialable, mirroring CollectionRipBurnController)
 
     static var ripPollIntervalMs = 4500
     static var ripPollMaxTicks = 1600     // ~2 h at 4.5 s/tick — never polls forever
     static var idleWaitMs = 500           // burn-lane wait while a user burn owns the store
+    /// Rip-lane watchdog: an ACCEPTED batch with no manifest flip for this many poll ticks is
+    /// stalled (~10 min at 4.5 s — one real-time capture is ~4 min, so this is several songs'
+    /// worth of silence) → re-POST the still-pending ids (the server dedupes: manifest skip +
+    /// inflight join, so a re-request of a healthy job is a no-op) and say so.
+    static var ripStallTicks = 133
+    /// Refused-batch retry backoff, in poll ticks: base · 2^(attempt-1), capped (~5 min).
+    static var ripRetryBaseTicks = 2
+    static var ripRetryMaxTicks = 67
+    nonisolated static func ripRetryDelayTicks(attempt: Int, base: Int, cap: Int) -> Int {
+        let a = max(1, min(attempt, 16))
+        return min(cap, base << (a - 1))
+    }
 
     /// 256 kbps MP3 ⇒ 32 KB of file per second of playback (the spec's bytes ≈ seconds × 32 KB).
     nonisolated static let bytesPerPlaybackSecond: Double = 32_768
@@ -142,6 +204,8 @@ final class CollectionMixDownloader {
     /// app init; nil in tests (the line simply omits the extra fields).
     @ObservationIgnored var declaredMemberCount: (@MainActor (MixSource) -> Int)?
     @ObservationIgnored var catalogSongCount: (@MainActor () -> Int)?
+    /// The device catalog is still loading (AppModel.state != .loaded) — picks the shortfall copy.
+    @ObservationIgnored var catalogIsLoading: (@MainActor () -> Bool)?
     /// …a song's catalog length in seconds (ETA input; manifest `durationMs` is the fallback)…
     @ObservationIgnored var songLengthSeconds: (@MainActor (String) -> Double?)?
     /// …and a song's display title/artist for `BurnStore.burn`'s item tuple.
@@ -166,6 +230,11 @@ final class CollectionMixDownloader {
     @ObservationIgnored private var burnQueue: [String] = []
     @ObservationIgnored private var driveTask: Task<Void, Never>?
     @ObservationIgnored private var ripPollTask: Task<Void, Never>?
+    /// Ids the rip lane is still waiting on (instance state so a catalog re-resolution can feed
+    /// newly-resolved rip-needing songs into a RUNNING lane).
+    @ObservationIgnored private var ripPending: Set<String> = []
+    /// A (re)POST of `ripPending` is due on the lane's next tick (new ids merged in).
+    @ObservationIgnored private var ripRequestDue = false
 
     // Auto-mix continuation bookkeeping (armed by `noteAutoStarted`).
     @ObservationIgnored private var autoArmed = false
@@ -207,11 +276,8 @@ final class CollectionMixDownloader {
         // Studio (`smp_`/`lp_`/`ptn_`/`tk_`) and profile (`pdj_`) items never download — they are
         // device-local by construction. Mirrors the ripIds funnel's own fences. Cross-crate
         // duplicates collapse to their first appearance.
-        var seen = Set<String>()
-        let ids = newSources.flatMap { resolveRipIds?($0) ?? [] }.filter {
-            seen.insert($0).inserted
-                && !StudioFactory.isStudioId($0) && !ProfileSourceStore.isProfileSongId($0)
-        }
+        let resolved = resolveDownloadable(newSources)
+        let ids = resolved.ids
         self.sources = newSources
         burnMisses = 0
         retriedMisses = false
@@ -230,6 +296,9 @@ final class CollectionMixDownloader {
         burnQueue = remainder.filter { rips.cachedURL($0) != nil }
         let needsRip = remainder.filter { rips.cachedURL($0) == nil }
         rippingCount = needsRip.count
+        observedLaneIssue = nil
+        ripPending = []
+        ripRequestDue = false
 
         // Field diagnosability (Levi's live TV stall, "0 of 391" with no evidence trail): the
         // partition IS the diagnosis — cached-on-disk vs burn-lane vs rip-lane, plus whether the
@@ -238,13 +307,13 @@ final class CollectionMixDownloader {
         // signature (device tvos-8E34293E: two multi-song crates → total=1 because the TV's
         // catalog didn't have their source loaded — NOT an empty crate). Log both so the field
         // line is self-diagnosing instead of an investigation.
-        let declared = declaredMemberCount.map { f in newSources.reduce(0) { $0 + f($1) } }
+        let declared = effectiveDeclared(sources: newSources, resolved: resolved)
         // Levi's "ship everything" call on tonight's TV field work: a shortfall is INFORMATION,
         // not silence — declared > total means real crate members got dropped for a catalog
         // reason (device mid-load / source still syncing), not legitimate filtering, so publish
         // it for the UI surfaces below `guard` to render even when nothing ends up downloadable
         // this run (e.g. the resolvable subset is already fully on disk).
-        catalogShortfall = declared.flatMap { $0 > totalCount ? (declared: $0, total: totalCount) : nil }
+        updateShortfall(declared: declared)
         DiagLog.shared.telemetry(
             "mixdl", "begin sources=\(newSources.count) total=\(totalCount) onDisk=\(downloadedCount)"
             + " burnQ=\(burnQueue.count) needsRip=\(needsRip.count) manifest=\(rips.manifest.count)"
@@ -252,8 +321,8 @@ final class CollectionMixDownloader {
             + (catalogSongCount.map { " catalog=\($0())" } ?? ""))
         if let declared, declared > 0, totalCount < declared {
             DiagLog.shared.log("warn",
-                "mixdl \(declared - totalCount)/\(declared) crate members unresolved — partial catalog"
-                + " (an enabled source may be missing/unloaded on this device)")
+                "mixdl \(declared - totalCount)/\(declared) crate members unresolved (cross-crate dupes excluded) — partial catalog"
+                + " (catalogLoading=\(catalogStillLoading); re-resolves on the next catalog assign)")
         }
         guard totalCount > 0, !remainder.isEmpty else {
             isActive = false        // nothing to do — everything is already on disk
@@ -261,10 +330,102 @@ final class CollectionMixDownloader {
         }
         isActive = true
         installHooks()
-        if !needsRip.isEmpty {
-            ripPollTask = Task { [weak self] in await self?.ripAndPoll(needsRip) }
-        }
+        if !needsRip.isEmpty { startRipLane(needsRip) }
         driveTask = Task { [weak self] in await self?.drive() }
+    }
+
+    /// Resolve `sources` to their downloadable ids: per-source lists (studio/profile fenced) and
+    /// the cross-crate UNION in first-appearance order.
+    private func resolveDownloadable(_ sources: [MixSource]) -> (ids: [String], perSourceCount: Int) {
+        var seen = Set<String>()
+        var ids: [String] = []
+        var perSource = 0
+        for src in sources {
+            var own = Set<String>()
+            for id in resolveRipIds?(src) ?? []
+            where !StudioFactory.isStudioId(id) && !ProfileSourceStore.isProfileSongId(id) && own.insert(id).inserted {
+                perSource += 1
+                if seen.insert(id).inserted { ids.append(id) }
+            }
+        }
+        return (ids, perSource)
+    }
+
+    /// The crates' declared member count, CORRECTED for cross-crate overlap. The raw per-crate
+    /// sum double-counts a song that lives in both crates, while `totalCount` is the deduped
+    /// union — so two overlapping, fully-resolved crates read as a "partial catalog". That was
+    /// the 2026-10-30 iPad report verbatim: After Midnight (279) + Moon Walk (139) share 14
+    /// songs → "14/418 crate members unresolved — partial catalog" / "Only 404 of 418 songs
+    /// available on this device — catalog still loading" with EVERY member resolved. The
+    /// overlap is exactly Σ per-source resolved − |union|; subtracting it leaves only members
+    /// that genuinely failed to resolve.
+    private func effectiveDeclared(sources: [MixSource],
+                                   resolved: (ids: [String], perSourceCount: Int)) -> Int? {
+        guard let f = declaredMemberCount else { return nil }
+        let raw = sources.reduce(0) { $0 + f($1) }
+        let overlap = max(0, resolved.perSourceCount - resolved.ids.count)
+        return max(0, raw - overlap)
+    }
+
+    private func updateShortfall(declared: Int?) {
+        catalogShortfall = declared.flatMap { $0 > totalCount ? (declared: $0, total: totalCount) : nil }
+        catalogStillLoading = catalogShortfall != nil && (catalogIsLoading?() ?? false)
+    }
+
+    // MARK: Catalog re-resolution (auto-recover members that resolved late)
+
+    /// The device catalog was (re)assigned — wired to `AppModel.onCatalogAssigned`. A run that
+    /// started while the catalog was partial (cache seed, a source still syncing) re-resolves
+    /// its crates and folds every newly-resolved member in: on-disk → downloaded, ripped →
+    /// burn lane (and straight into a running auto-mix — it can stream now), un-ripped → the rip
+    /// lane. Before this the shortfall was "a start-time snapshot … never hot-updated": the
+    /// missing songs stayed missing until the user re-picked the crates.
+    func catalogDidChange() {
+        guard !sources.isEmpty else { return }
+        let resolved = resolveDownloadable(sources)
+        let fresh = resolved.ids.filter { !trackedIds.contains($0) }
+        let declared = effectiveDeclared(sources: sources, resolved: resolved)
+        guard !fresh.isEmpty else {
+            if let had = catalogShortfall {
+                // The catalog may have finished loading (copy flips from "still loading" to
+                // "not in this device's catalog") even though no member moved.
+                updateShortfall(declared: declared)
+                if catalogShortfall == nil {
+                    DiagLog.shared.log("mixdl", "catalog caught up — shortfall \(had.declared - had.total) cleared")
+                }
+            }
+            return
+        }
+        DiagLog.shared.log("mixdl", "catalog re-resolve: +\(fresh.count) member(s) now in the catalog (total \(totalCount) → \(totalCount + fresh.count))")
+        if !isActive {
+            // The run had finished (everything resolvable was on disk) or never had work: re-seed
+            // through `begin`, which IS the resume path (the auto-mix arm survives — `begin`
+            // never touches it).
+            let srcs = sources
+            sources = []
+            begin(sources: srcs)
+            continueAutoMixIfArmed()
+            return
+        }
+        orderedIds.append(contentsOf: fresh)
+        trackedIds.formUnion(fresh)
+        totalCount = orderedIds.count
+        var newRips: [String] = []
+        for id in fresh {
+            if burns.localURL(forSong: id) != nil {
+                downloadedIds.insert(id)
+            } else if rips.cachedURL(id) != nil {
+                burnQueue.append(id)
+            } else {
+                newRips.append(id)
+            }
+        }
+        downloadedCount = downloadedIds.count
+        updateShortfall(declared: declared)
+        if !newRips.isEmpty { startRipLane(newRips) }
+        if driveTask == nil { driveTask = Task { [weak self] in await self?.drive() } }
+        recomputeETA()
+        continueAutoMixIfArmed()
     }
 
     /// Called when an auto-mix over this downloader's collection starts: seeds the append-dedupe
@@ -323,6 +484,10 @@ final class CollectionMixDownloader {
         etaSeconds = nil
         downloadedIds = []
         catalogShortfall = nil
+        catalogStillLoading = false
+        observedLaneIssue = nil
+        ripPending = []
+        ripRequestDue = false
         orderedIds = []
         trackedIds = []
         burnQueue = []
@@ -381,6 +546,13 @@ final class CollectionMixDownloader {
 
     private func drive() async {
         while !Task.isCancelled {
+            if !burnQueue.isEmpty, rips.authHoldoff {
+                // Rejected token: every presign is a guaranteed 401 — park the lane instead of
+                // burning 400 rejections in a row. `authHoldoff` lapses after the re-probe
+                // window (one burn then probes) and clears at once on a token change.
+                try? await RipsStore.sleep(ms: Self.idleWaitMs * 4)
+                continue
+            }
             if let id = nextBurnId() {
                 burnQueue.removeAll { $0 == id }
                 await burnOne(id)
@@ -442,6 +614,11 @@ final class CollectionMixDownloader {
             // MISS whose error string names the failing step (presign / manifest / write). The
             // first five stream verbatim, then every 25th — enough to see the shape without
             // flooding a 375-track run.
+            if rips.isAuthRejected, !burnQueue.contains(id) {
+                // Not this song's fault — the credential is. Keep it queued (front) so it lands
+                // the moment the token heals, instead of falling out of the run.
+                burnQueue.insert(id, at: 0)
+            }
             burnMisses += 1
             if burnMisses <= 5 || burnMisses % 25 == 0 {
                 DiagLog.shared.log("error",
@@ -453,20 +630,65 @@ final class CollectionMixDownloader {
 
     // MARK: Rip lane (enqueue once + manifest poll, CollectionRipBurnController cadence)
 
-    private func ripAndPoll(_ ids: [String]) async {
-        let rips = self.rips
-        // `error` category streams immediately and does not need telemetry mode: a rip lane
-        // that can't reach the server is exactly the fact a stalled field session must surface.
-        if !rips.hasServer {
-            DiagLog.shared.log("error", "mixdl rip lane: \(ids.count) tracks need rip but NO SERVER configured (settings.ripServerURL empty on this device)")
-        } else {
-            DiagLog.shared.telemetry("mixdl", "rip lane start ids=\(ids.count)")
+    /// Start the rip lane for `ids`, or feed them into the running one.
+    private func startRipLane(_ ids: [String]) {
+        ripPending.formUnion(ids)
+        ripRequestDue = true
+        if ripPollTask == nil {
+            ripPollTask = Task { [weak self] in await self?.ripAndPoll() }
         }
-        _ = await rips.ripCollection(ids)
-        if Task.isCancelled { return }
-        var pending = Set(ids)
+    }
+
+    /// Enqueue + manifest poll with a WATCHDOG. The old lane POSTed once, ignored the answer and
+    /// polled for 2 h: a refused batch (every call 401'd on the 2026-10-30 iPad) read as
+    /// "4 ripping" forever. Now every (re)request's outcome is classified —
+    ///   • refused (401/403 → `.tokenRejected`, other → `.ripServerRefused`): retry on an
+    ///     exponential backoff, and never while the auth holdoff says a 401 is guaranteed;
+    ///   • accepted: clear the issue, then the stall watchdog — no manifest flip for
+    ///     `ripStallTicks` ⇒ `.ripsStalled` + re-POST (server-side dedupe makes it safe);
+    ///   • no server: `.noServer`, still poll the public manifest (another device may rip them).
+    /// A flip moves the song to the burn lane and joins the running mix (it can stream now).
+    private func ripAndPoll() async {
+        let rips = self.rips
+        if !rips.hasServer {
+            DiagLog.shared.log("error", "mixdl rip lane: \(ripPending.count) tracks need rip but NO SERVER configured (settings.ripServerURL empty on this device)")
+        } else {
+            DiagLog.shared.telemetry("mixdl", "rip lane start ids=\(ripPending.count)")
+        }
         var ticks = 0
-        while !pending.isEmpty, ticks < Self.ripPollMaxTicks, !Task.isCancelled {
+        var nextRequestTick = 0
+        var attempts = 0
+        var lastProgressTick = 0
+        var accepted = false
+        while !ripPending.isEmpty, ticks < Self.ripPollMaxTicks, !Task.isCancelled {
+            if !rips.hasServer {
+                observedLaneIssue = .noServer
+            } else if ripRequestDue || ticks >= nextRequestTick, !rips.authHoldoff {
+                ripRequestDue = false
+                let ids = orderedIds.filter { ripPending.contains($0) }
+                let r = await rips.ripCollection(ids)
+                if Task.isCancelled { return }
+                if let status = r.refusedStatus {
+                    attempts += 1
+                    accepted = false
+                    observedLaneIssue = r.unauthorized ? .tokenRejected : .ripServerRefused(status)
+                    let delay = Self.ripRetryDelayTicks(attempt: attempts, base: Self.ripRetryBaseTicks,
+                                                         cap: Self.ripRetryMaxTicks)
+                    nextRequestTick = ticks + delay
+                    DiagLog.shared.log("error",
+                        "mixdl rip lane: batch of \(ids.count) REFUSED status=\(status) attempt=\(attempts) — retry in \(delay) ticks")
+                } else {
+                    if attempts > 0 {
+                        DiagLog.shared.log("mixdl", "rip lane: batch of \(ids.count) accepted after \(attempts) refusal(s)")
+                    }
+                    attempts = 0
+                    // A stall re-request stays "stalled" until a song actually lands.
+                    if observedLaneIssue != .ripsStalled { observedLaneIssue = nil }
+                    accepted = true
+                    lastProgressTick = ticks
+                    nextRequestTick = ticks + Self.ripStallTicks
+                }
+            }
             ticks += 1
             try? await RipsStore.sleep(ms: Self.ripPollIntervalMs)
             if Task.isCancelled { return }
@@ -474,15 +696,29 @@ final class CollectionMixDownloader {
             if Task.isCancelled { return }
             // Each id whose manifest entry flipped ready moves into the burn lane (order kept).
             var flipped = false
-            for id in orderedIds where pending.contains(id) && rips.cachedURL(id) != nil {
-                pending.remove(id)
+            for id in orderedIds where ripPending.contains(id) && rips.cachedURL(id) != nil {
+                ripPending.remove(id)
                 burnQueue.append(id)
                 flipped = true
+            }
+            if flipped {
+                lastProgressTick = ticks
+                if observedLaneIssue == .ripsStalled { observedLaneIssue = nil }
+                if accepted { nextRequestTick = ticks + Self.ripStallTicks }
+                if driveTask == nil { driveTask = Task { [weak self] in await self?.drive() } }
+            } else if accepted, !ripPending.isEmpty, ticks - lastProgressTick >= Self.ripStallTicks,
+                      observedLaneIssue != .ripsStalled {
+                observedLaneIssue = .ripsStalled
+                DiagLog.shared.log("warn",
+                    "mixdl rip lane STALLED: \(ripPending.count) pending, no rip landed in \(ticks - lastProgressTick) ticks — re-requesting")
             }
             recomputeETA()        // also refreshes rippingCount
             // Streaming mode: a freshly-ripped song is STREAMABLE now — it can join the mix
             // without waiting for its download.
             if flipped { continueAutoMixIfArmed() }
+        }
+        if !ripPending.isEmpty, ticks >= Self.ripPollMaxTicks {
+            DiagLog.shared.log("warn", "mixdl rip lane gave up after \(ticks) ticks — \(ripPending.count) never ripped")
         }
         ripPollTask = nil
     }
@@ -557,6 +793,7 @@ final class CollectionMixDownloader {
         driveTask?.cancel(); driveTask = nil
         ripPollTask?.cancel(); ripPollTask = nil
         burnQueue = []
+        ripPending = []
         rippingCount = 0
         etaSeconds = nil
         removeHooks()
