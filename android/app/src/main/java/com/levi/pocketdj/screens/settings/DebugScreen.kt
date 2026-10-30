@@ -189,6 +189,15 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 seedStatus = "Seed: added $n (no flush)"
             }
         }) { Text("Seed 500 songs") }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = withContext(Dispatchers.IO) {
+                    host.graph.catalogRepository.catalogFlow.first()?.songs?.take(5)?.map { it.id } ?: emptyList()
+                }
+                val sl = host.graph.collections.realize(ids, "Seed setlist")
+                seedStatus = "Seed: setlist ${sl?.id} (${ids.size} songs)"
+            }
+        }) { Text("Seed setlist") }
         Text(seedStatus, style = MaterialTheme.typography.bodySmall)
     }
     // STU emulator seed: a 2 s 440 Hz mono WAV filed as a Studio sample ("SeedTone").
@@ -235,6 +244,40 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             }
         }
     }) { Text("Seed bounce artifact") }
+
+    // ANS-STU-2 emulator step: synthesize a 5-minute stereo float32 master capture (the file MasterRecorder writes) and
+    // bake it through the streaming path on the newest arrangement; the status reports duration + peak Java heap.
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            sampleSeedStatus = "Bake 5 min: running"
+            sampleSeedStatus = withContext(Dispatchers.IO) {
+                runCatching {
+                    val g = host.graph.studioGraph
+                    val arr = g.studioStore.arrangementsOrdered().firstOrNull() ?: g.studioStore.createArrangement("Seed arrangement")
+                    val rate = 44_100; val frames = rate * 300L
+                    val f = java.io.File(host.graph.appContext.cacheDir, "debug-master-5min.wav")
+                    java.io.BufferedOutputStream(java.io.FileOutputStream(f), 1 shl 16).use { o ->
+                        o.write(com.levi.pocketdj.audio.core.WavWriter.header(rate, 2, com.levi.pocketdj.audio.core.WavWriter.Format.FLOAT32, 0L))
+                        val chunk = FloatArray(4096 * 2); var done = 0L
+                        while (done < frames) {
+                            val n = minOf(4096L, frames - done).toInt()
+                            for (i in 0 until n) { val v = (0.3 * Math.sin(2 * Math.PI * 220.0 * (done + i) / rate)).toFloat(); chunk[i * 2] = v; chunk[i * 2 + 1] = v }
+                            o.write(com.levi.pocketdj.audio.core.WavWriter.samplesToBytes(chunk, 0, n * 2, com.levi.pocketdj.audio.core.WavWriter.Format.FLOAT32))
+                            done += n
+                        }
+                    }
+                    val rt = Runtime.getRuntime()
+                    val t0 = System.currentTimeMillis()
+                    val art = g.masterRecordingBaker.bakeArtifact(
+                        arr.id, com.levi.pocketdj.studio.engine.MasterCapture(f, rate, false), g.studioRoots.arrangementsDir(), g.studioStore,
+                        com.levi.pocketdj.studio.store.ArrangerMath.artifactStamp(),
+                    )
+                    val msg = "Bake 5 min: ${art?.fileName} ${art?.durationMs}ms in ${System.currentTimeMillis() - t0}ms heapUsed=${(rt.totalMemory() - rt.freeMemory()) shr 20}MB max=${rt.maxMemory() shr 20}MB"
+                    android.util.Log.d("PdjVerify", msg); msg
+                }.getOrElse { "Bake 5 min failed: $it" }
+            }
+        }
+    }) { Text("Bake 5 min master") }
 
     // COL-8 emulator step: 60-song batch into the converted AM pocket "SeedDup" -> confirm dialog (>50).
     OutlinedButton(onClick = {
@@ -412,6 +455,20 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             e.setRate(1.05, A); e.setPitch(1.0, A); e.setVolume(0.8, A); e.setRate(0.97, B); e.setVolume(0.9, B); e.setCrossfader(0.3)
             mixStatus = "Mix twist: ${mixLine()}"
         }) { Text("Mix: twist") }
+        OutlinedButton(onClick = {
+            // ANS-MIX-2 emulator step: tempo +30% on the lead, then sync the follower; the engine logs "phase-align ... err=..ms".
+            val e = host.graph.mixGraph.mixEngine
+            val A = com.levi.pocketdj.mix.model.Deck.A; val B = com.levi.pocketdj.mix.model.Deck.B
+            host.scope.launch {
+                if (e.leadDeck != A) e.setLead(A)
+                e.setRate(1.3, A)
+                e.syncToLead(B)
+                kotlinx.coroutines.delay(1500)
+                e.syncToLead(B) // second pass: the logged err is the RESIDUAL after the first align
+                mixStatus = "Mix sync+30%: lead=${e.leadDeck?.label} ${mixLine()}"
+                android.util.Log.d("PdjVerify", mixStatus)
+            }
+        }) { Text("Mix: +30% sync B") }
         OutlinedButton(onClick = { showDeckHarness = true }) { Text("Mix: deck UI") }
     }
     if (showDeckHarness) com.levi.pocketdj.screens.mix.DebugDeckHarness(host.graph) { showDeckHarness = false }

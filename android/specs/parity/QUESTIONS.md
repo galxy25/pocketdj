@@ -13,6 +13,9 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q104 [Answers wave 1, ANS-PB-3]** Settings > Storage > Burned music by artist shows "0 MB" for artists whose downloads total under 0.5 MB. Show kB below 1 MB? — *Default: leave.* — Cosmetic.
 
 (Q1–Q102 and W1–W7 resolved 2026-10-29)
+- **Q105 [ANS-COL-3, Setlists list]** The Collections tab now has a global Setlists section (newest first; reserved Now Playing set hidden; Rename/Delete rows) because Q75 said "no partial". Keep a global list, or only the per-playlist list? — *Default: keep global section.* — Decides Collections tab clutter.
+- **Q106 [ANS-GM-1, scorer tie-break]** The Swift In the Pocket scorer breaks ties between equal-scored collection members by dictionary order, so the same seed can pick different songs run to run. Make the tie-break order-independent in Swift and Kotlin (changes seeded replays; goldens regenerated)? — *Default: leave; golden fixture avoids ties.* — Decides determinism of seeded rounds.
+- **Q107 [ANS-MIX-2, phase-align residual]** On the emulator the +30% sync residual (second align pass) measured 4-13 ms against the <5 ms target (8 samples: -156 pre-align, then 12.8, -5.8, -3.8, -4.3, -3.8, 8.6, 7.2; reported stretcher lag wobbles 150-195 ms). Emulator audio clock jitter is the suspected cause; needs a real device. Accept 10 ms tolerance? — *Default: leave; measure on device.* — Decides phase-align tuning.
 
 ## ANSWERED
 

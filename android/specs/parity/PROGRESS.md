@@ -367,3 +367,17 @@ Emulator (emulator-5556, pocketdj-ans AVD, debug APK; screenshots in pocketdj-an
 Device-only, not verifiable here: real AM link on a subscribed account (COL-1), full-track AM inside a game round (PB-2) and AM takeover inside a run (PB-3, DRM), real network flaps (MIX-1), SD-card SAF trees (STU-1).
 
 Debug additions (debug screen only): Seed clean-only playlist, Seed AM-linked collections, Gem: preview row, Mix: 500 once. Open: Q103, Q104.
+
+## Answers wave 2
+Merged (feat/android-answers): ANS-COL-3, ANS-COL-4, ANS-MIX-2, ANS-STU-2, ANS-SURF-1, ANS-GM-1 (all six merged cleanly, no conflicts). JVM suite: 5273 tests, 0 failures (wave 1 was 5211; sum of package additions); assembleDebug green (libpdjdsp arm64-v8a + x86_64).
+
+Emulator (emulator-5556, debug APK; shots in pocketdj-answers-pkgs/_shots/wave2/; 0 FATAL EXCEPTION / 0 ANR):
+- ANS-COL-3 PASS: imported-songs file with an amrec_ row (appleMusicId of a catalog song) + a pocket referencing it, relaunch: imported doc emptied, pocket remapped to the sng_ id, no duplicate. New Debug "Seed setlist": Collections shows Setlists section, setlist detail ▸ Export CSV saved "Seed setlist.csv" (1812 B) in Downloads via DocumentsUI.
+- ANS-COL-4 PASS: burn folder = Downloads/PocketDJ via DocumentsUI; Burn 5 long: folder holds mp3 + txt, 4 stems and analysis json per song; Storage ▸ Delete all burnt music empties the folder.
+- ANS-MIX-2 PASS (with caveat): NativeTimePitchInstrumentedTest (3) and MixGraphSmokeInstrumentedTest (2) pass on the AVD. New Debug "Mix: +30% sync B": two burned songs, A at 1.3x, sync B; phase-align residual 4-13 ms (Q107), no crash. Audible quality device-only.
+- ANS-STU-2 PASS: new Debug "Bake 5 min master" (synthetic 5-min float32 capture through MasterRecordingBaker): 300000 ms in 6.2 s, valid m4a (afinfo 300.07 s), Java heap peak ~142 MB vs ~119 MB idle. Live record path and ArrangerBouncer on-emulator not run.
+- ANS-SURF-1 PASS: local broker (JUKEBOX_DRY_RUN, port 8799, 10.0.2.2) with 2 sessions: picker lists both, adopt Beta shows it in Live view, Switch session ▸ confirm ends Beta (server log `ended jukebox`) and hosts Alpha.
+- ANS-GM-1: n/a on emulator (Swift xcodebuild golden run + 58 Kotlin cases, in the JVM suite).
+Device-only, not verifiable here: real SD card (COL-4), audible stretch quality / CPU (MIX-2), low-RAM limits (STU-2).
+
+Debug additions: Seed setlist, Mix: +30% sync B, Bake 5 min master. Open: Q105, Q106, Q107.
