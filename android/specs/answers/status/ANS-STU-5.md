@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-STU-5 Tracks paging part B: clip windows as PCM16 page files with read-ahead
 

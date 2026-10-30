@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # ANS-STU-4 — Mic/import/carve samples move to the SAF user folder
 

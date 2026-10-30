@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 Real iOS-exported fixtures now back Android import tests.
 
