@@ -130,6 +130,21 @@ final class MixStreamLoader {
         onStemProgress?(base)
         for l in stemListeners.values { l(base) }
     }
+    /// Further SONG-stream listeners (np-mix-mode phase 3: the Now Playing DSP plays a buffer
+    /// stream's growing file; `onProgress` stays the Mix engine's). Keyed like the stem ones.
+    private var progressListeners: [UUID: (String) -> Void] = [:]
+    @discardableResult
+    func addProgressListener(_ listener: @escaping (String) -> Void) -> UUID {
+        let id = UUID()
+        progressListeners[id] = listener
+        return id
+    }
+    func removeProgressListener(_ id: UUID) { progressListeners[id] = nil }
+    /// Fan a song-stream event (bytes / resolved / complete / failed) out to every listener.
+    private func songProgressed(_ songId: String) {
+        onProgress?(songId)
+        for l in progressListeners.values { l(songId) }
+    }
 
     // MARK: State
 
@@ -361,7 +376,7 @@ final class MixStreamLoader {
 
     /// Route an event for `key` to the right listener: a stem part fans out as its base song.
     private func notify(_ key: String) {
-        if let base = Self.stemSongId(fromKey: key) { stemProgressed(base) } else { onProgress?(key) }
+        if let base = Self.stemSongId(fromKey: key) { stemProgressed(base) } else { songProgressed(key) }
     }
 
     /// All four parts landed: MOVE them into the burn folder as ordinary burned stems (a deck's
@@ -419,6 +434,10 @@ final class MixStreamLoader {
             cancelTransfer(s)
             streams[id] = nil
             try? FileManager.default.removeItem(at: s.fileURL)
+            // Anyone still holding the record (an unpinned reader) must learn it is dead — a
+            // cancel that tells no one leaves a growing-file reader holding forever.
+            s.failed = true
+            songProgressed(id)
         }
     }
 
@@ -464,6 +483,8 @@ final class MixStreamLoader {
             cancelTransfer(victim)
             streams[victim.songId] = nil
             try? FileManager.default.removeItem(at: victim.fileURL)
+            victim.failed = true           // a reader still holding it hears it died (no cooldown)
+            songProgressed(victim.songId)
             onFailed?(victim.songId)       // back to the downloader lane — it still needs the file
         }
     }
@@ -573,7 +594,7 @@ final class MixStreamLoader {
             return
         }
         recentFailures[s.songId] = Date()
-        onProgress?(s.songId)
+        songProgressed(s.songId)
         onFailed?(s.songId)
         // Keep a failed stream that already has bytes: a deck may be playing its prefix. Drop
         // the record so a later open (after the cooldown) starts clean.
@@ -608,7 +629,7 @@ final class MixStreamLoader {
         s.startMs = startMs
         s.isCut = isCut
         s.adoptable = adoptable
-        if finished { complete(s) } else { onProgress?(songId) }
+        if finished { complete(s) } else { songProgressed(songId) }
         return s
     }
     /// The rip server stopped answering (a presign/HTTP failure): new streams refused for the cooldown.

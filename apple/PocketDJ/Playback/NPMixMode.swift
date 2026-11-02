@@ -21,7 +21,11 @@ import Foundation
 ///  • it is SUSPENDED (buffering paused, chip "Paused — Mix tab is live") while a Mix-tab session
 ///    plays — one DSP surface at a time.
 ///
-/// Apple Music rows are not ripped or handed off in phase 2 (phase 4): they say so honestly
+/// Phase 3: a ripped row that isn't local STARTS in the DSP on its growing buffer file (controls
+/// live from the first second; "Buffering…" while it holds for bytes) — see `SetlistPlayer`
+/// "Mix Mode phase 3".
+///
+/// Apple Music rows are not ripped or handed off yet (phase 4): they say so honestly
 /// ("Apple Music only").
 struct NPMixModeState: Codable, Equatable {
     var enabled = false
@@ -66,6 +70,9 @@ enum NPMixMode {
         case ready
         /// The DSP owns the audio.
         case engaged
+        /// Phase 3: the DSP plays the row from its GROWING file and is holding for bytes (the
+        /// playhead caught the download / a seek past it). Controls stay live. nil = size unknown.
+        case holding(Double?)
         /// The current track's local copy is downloading (it plays from its stream meanwhile).
         /// nil = size not known yet.
         case buffering(Double?)
@@ -87,6 +94,7 @@ enum NPMixMode {
             case .off: return nil
             case .ready: return "Ready"
             case .engaged: return "Mixing"
+            case let .holding(f): return f.map { "Buffering \(Int(($0 * 100).rounded(.down)))%" } ?? "Buffering…"
             case let .buffering(f): return f.map { "Buffering \(Int(($0 * 100).rounded(.down)))%" } ?? "Buffering…"
             case .stemsLoading: return "Loading stems…"
             case .ripping: return "Ripping — mixable next play"
@@ -99,7 +107,7 @@ enum NPMixMode {
         /// The controls are usable (the current track is, or can be swapped onto, a local file).
         var controlsLive: Bool {
             switch self {
-            case .ready, .engaged, .stemsLoading: return true
+            case .ready, .engaged, .holding, .stemsLoading: return true
             default: return false
             }
         }
@@ -110,6 +118,7 @@ enum NPMixMode {
             case .off: return "off"
             case .ready: return "ready"
             case .engaged: return "engaged"
+            case .holding: return "holding"
             case .buffering: return "buffering"
             case .stemsLoading: return "stemsLoading"
             case .ripping: return "ripping"
@@ -140,6 +149,8 @@ enum NPMixMode {
         var storageFull: Bool
         /// This network adds no Mix Mode downloads (cellular policy Off).
         var cellularOff: Bool = false
+        /// Phase 3: the engaged DSP is holding its growing file for bytes.
+        var dspHolding: Bool = false
     }
 
     /// THE CHIP. Order matters: "off" and "not running" first, then the session-wide states
@@ -148,7 +159,10 @@ enum NPMixMode {
         guard i.enabled, i.running else { return .off }
         if i.held { return .waiting }
         if i.mixTabLive { return .suspended }
-        if i.engaged { return i.stemsLoading ? .stemsLoading : .engaged }
+        if i.engaged {
+            if i.dspHolding { return .holding(i.bufferFraction) }
+            return i.stemsLoading ? .stemsLoading : .engaged
+        }
         if i.mixable { return .ready }
         if i.onAppleMusic { return .unavailable("Apple Music only") }
         if i.live { return .unavailable("Live capture") }

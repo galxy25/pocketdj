@@ -609,11 +609,12 @@ final class MixEngine {
     /// full length — play only once complete).
     @ObservationIgnored private var streamBytesPerSecond: [Deck: Double] = [:]
     /// Seconds of runway needed past the playhead to start / to resume after an underrun.
-    nonisolated static let streamStartRunway: Double = 2
-    nonisolated static let streamResumeRunway: Double = 4
+    /// (Shared with the Now Playing DSP — `GrowingFileSchedule`.)
+    nonisolated static let streamStartRunway: Double = GrowingFileSchedule.startRunway
+    nonisolated static let streamResumeRunway: Double = GrowingFileSchedule.resumeRunway
     /// Bytes counted as present can include a torn trailing mp3 frame; never schedule the last
     /// stretch before the frontier.
-    nonisolated static let streamFrontierMargin: Double = 1.5
+    nonisolated static let streamFrontierMargin: Double = GrowingFileSchedule.frontierMargin
     /// Four stem player nodes per deck, all summing into the deck's `inputMixer` (so they ride the
     /// same tempo/pitch/effect/crossfader chain as the main file). Idle until stem mode wires real
     /// files; their burn-folder scope is held in `stemReleases`.
@@ -1681,9 +1682,8 @@ final class MixEngine {
             let total = file.length
             let startMs = s.isCut ? nil : s.startMs
             let windowMs = s.isCut ? nil : streamWindowMs[deck]
-            let start = min(max(0, AVAudioFramePosition((Double(startMs ?? 0) / 1000.0) * sr)), total)
-            let windowed = windowMs.map { AVAudioFramePosition((Double($0) / 1000.0) * sr) }
-            let count = windowed.map { min(total - start, max(0, $0)) } ?? (total - start)
+            let (start, count) = GrowingFileSchedule.window(fileLength: total, sampleRate: sr,
+                                                            startMs: startMs, windowMs: windowMs)
             guard sr > 0, count > 0 else {
                 // A complete file with nothing in the window can never play — fail the deck. A
                 // partial one just hasn't got its header/frames yet.
@@ -1705,15 +1705,15 @@ final class MixEngine {
         }
         guard let sr = sampleRates[deck], let start = startFrames[deck], let fullEnd = streamFullEnd[deck],
               let end = endFrames[deck] else { return }
-        let frontier: AVAudioFramePosition = s.isComplete ? fullEnd : min(fullEnd, Self.streamPlayableFrames(
-            bytes: s.bytesReceived, bytesPerSecond: streamBytesPerSecond[deck], sampleRate: sr,
-            startFrame: start))
+        let frontier = GrowingFileSchedule.frontier(bytes: s.bytesReceived, complete: s.isComplete,
+                                                    bytesPerSecond: streamBytesPerSecond[deck], sampleRate: sr,
+                                                    start: start, fullEnd: fullEnd)
 
         if streamHolding[deck] == true {
             let posFrame = start + AVAudioFramePosition(position(deck) * sr)
             let runway = (state(deck).isPlaying ? Self.streamResumeRunway : Self.streamStartRunway)
-            let need = min(fullEnd, posFrame + AVAudioFramePosition((s.isComplete ? 0 : runway) * sr))
-            guard s.isComplete || (frontier > posFrame && frontier >= need) else { return }
+            guard GrowingFileSchedule.canStart(position: posFrame, frontier: frontier, fullEnd: fullEnd,
+                                               complete: s.isComplete, runway: runway, sampleRate: sr) else { return }
             guard let f = try? AVAudioFile(forReading: url) else { return }
             files[deck] = f
             paths[deck] = url.path
@@ -1733,9 +1733,8 @@ final class MixEngine {
             // appends while the runway is short, big ones once it's comfortable — every pending
             // segment pins an open file, so a fast download must not queue hundreds of them.
             let playFrame = start + AVAudioFramePosition((truePlayhead(deck) ?? position(deck)) * sr)
-            let runway = Double(end - playFrame) / sr
-            let chunk = runway < 10 ? 1.0 : 15.0
-            guard s.isComplete || Double(frontier - end) / sr >= chunk else { return }
+            guard GrowingFileSchedule.shouldAppend(scheduledEnd: end, frontier: frontier, playFrame: playFrame,
+                                                   sampleRate: sr, complete: s.isComplete) else { return }
             guard let f = try? AVAudioFile(forReading: url) else { return }
             if fileScheduled[deck] == true, loopWindow(deck) == nil, !stemActive(deck) {
                 player.scheduleSegment(f, startingFrame: end, frameCount: AVAudioFrameCount(frontier - end),
@@ -1998,13 +1997,7 @@ final class MixEngine {
     /// download completes (its frame→byte map is unknowable mid-flight). Pure.
     nonisolated static func streamBytesPerSecond(totalFrames: AVAudioFramePosition, sampleRate: Double,
                                                  expectedBytes: Int64?) -> Double? {
-        guard sampleRate > 0, totalFrames > 0 else { return nil }
-        let seconds = Double(totalFrames) / sampleRate
-        guard let expected = expectedBytes, expected > 0 else {
-            return CollectionMixDownloader.bytesPerPlaybackSecond   // no length: the 256 kbps house rate
-        }
-        guard seconds >= Double(expected) / 41_000 else { return nil }
-        return Double(expected) / seconds
+        GrowingFileSchedule.bytesPerSecond(totalFrames: totalFrames, sampleRate: sampleRate, expectedBytes: expectedBytes)
     }
 
     /// The last FILE frame safe to schedule given `bytes` downloaded: bytes → seconds at the
@@ -2012,9 +2005,8 @@ final class MixEngine {
     /// (headerless) ⇒ nothing until complete. Pure.
     nonisolated static func streamPlayableFrames(bytes: Int64, bytesPerSecond: Double?, sampleRate: Double,
                                                  startFrame: AVAudioFramePosition) -> AVAudioFramePosition {
-        guard let bps = bytesPerSecond, bps > 0 else { return startFrame }
-        let seconds = Double(bytes) / bps - streamFrontierMargin
-        return max(startFrame, AVAudioFramePosition(max(0, seconds) * sampleRate))
+        GrowingFileSchedule.playableFrames(bytes: bytes, bytesPerSecond: bytesPerSecond, sampleRate: sampleRate,
+                                           startFrame: startFrame)
     }
 
     // MARK: - Transport
@@ -6321,8 +6313,8 @@ final class MixEngine {
                 var pos = min(position(d) + dt * state(d).rate, dur)   // source advances at rate× wall time
                 // STREAMING underrun: the playhead caught the downloaded frontier — hold it there
                 // (the pump resumes with runway) instead of running on over silence.
-                if let frontier = streamFrontierSeconds(d), !stemActive(d), frontier < dur - 0.05,
-                   pos >= frontier - 0.05 {
+                if let frontier = streamFrontierSeconds(d), !stemActive(d),
+                   GrowingFileSchedule.underrun(position: pos, scheduledEnd: frontier, duration: dur) {
                     pos = min(pos, frontier)
                     setPosition(d, pos)
                     holdStream(d)

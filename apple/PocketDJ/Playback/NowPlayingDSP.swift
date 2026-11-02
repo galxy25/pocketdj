@@ -19,9 +19,13 @@ import UIKit
 /// plus 4 stem `AVAudioPlayerNode`s summing into the SAME `inputMixer`, so the stems ride the same
 /// tempo / pitch / effect / gain chain as the single file (exactly like `MixEngine`).
 ///
-/// It ONLY works for a LOCAL file (a burned or studio track) — normal playback is a single `AVPlayer`
+/// It plays a LOCAL file (a burned or studio track) — normal playback is a single `AVPlayer`
 /// with no DSP surface, so `SetlistPlayer` hands the current track's audio off to this engine AT its
-/// current position when the user first touches a mix control (`SetlistPlayer.engageMix`). The
+/// current position when the user first touches a mix control (`SetlistPlayer.engageMix`) — or, in
+/// Mix Mode (np-mix-mode phase 3), a GROWING file: a ripped row's `MixStreamLoader` buffer stream,
+/// played while it downloads (`engageStreaming`; the Mix deck's streaming rules, shared through
+/// `GrowingFileSchedule`): never scheduled past the downloaded frontier, HELD there ("Buffering…")
+/// until there is runway again, appended as bytes land, swapped to the adopted file on completion. The
 /// control state is EPHEMERAL — it resets on every track change (`resetControls`), so nothing here is
 /// ever persisted. (STEM LOCK — `SetlistPlayer.stemLock`, `StemLock.swift` — re-applies a carried stem
 /// set on the next track; the session, not this engine, owns and persists it.)
@@ -118,6 +122,8 @@ final class NowPlayingDSP {
         didSet {
             if let id = stemListenerId { oldValue?.removeStemListener(id) }
             stemListenerId = streamer?.addStemListener { [weak self] songId in self?.stemStreamProgressed(songId) }
+            if let id = progressListenerId { oldValue?.removeProgressListener(id) }
+            progressListenerId = streamer?.addProgressListener { [weak self] songId in self?.mainStreamProgressed(songId) }
         }
     }
     @ObservationIgnored private var stemListenerId: UUID?
@@ -125,10 +131,62 @@ final class NowPlayingDSP {
     /// `BurnStore.burnStems`. Test seam.
     @ObservationIgnored var stemFetcher: ((String) async -> Bool)?
     /// TEST SEAM: caps the full song's schedulable audio at this song second, as if it were still
-    /// arriving (the Now Playing main is always a complete local file today — `currentTrackMixable`
-    /// gates on it — so "stems off while the full song is behind the playhead" is otherwise
-    /// unreachable). Clear it with `releaseMainFrontierForTesting`.
+    /// arriving (a complete local file otherwise — the growing-file path below is the real thing).
+    /// Clear it with `releaseMainFrontierForTesting`.
     @ObservationIgnored private(set) var mainFrontierForTesting: Double?
+
+    // MARK: Growing file (np-mix-mode phase 3 — the full song plays WHILE it downloads)
+    //
+    // `engageStreaming` takes a `MixStreamLoader` buffer stream instead of a finished file. Until
+    // its header is readable the song is unattached (`file == nil`, provisional catalog duration);
+    // from then on `mainFrontierFrame` is the schedulable frontier (bytes → frames at the header's
+    // byte rate − the torn-frame margin, `GrowingFileSchedule.frontier`). The full song's voice is
+    // NEVER scheduled past it: a start / resume / seek without runway HOLDS (`isBuffering` — the
+    // engine keeps running so the session and a locked phone stay alive, the card's cursor
+    // freezes); the loader's progress events (`pumpMain`) attach, resume a hold once there is
+    // runway, and APPEND the next stretch to the on-air voice from a fresh open (an open sees only
+    // the bytes present at open time; chained segments render bit-identical to one). Only a
+    // segment that reaches the window's END arms the end handler — a frontier is not the end.
+    // Complete: the adopted burn file (under its scope) replaces the partial, and this is an
+    // ordinary local file from then on (`onMainStreamFinished`). Dead (`failed`): what arrived is
+    // final (`mainTruncated`) — stems on air keep carrying; the full song plays up to its last
+    // frame and then hands the row back to the host (`onMainStreamFailed`, the plain stream).
+
+    /// The buffer stream the full song is growing from (nil once complete / dead / never).
+    @ObservationIgnored private var mainStream: MixStreamLoader.Stream?
+    /// Where the growing file currently lives (its Caches partial, then the adopted burn).
+    @ObservationIgnored private var mainURL: URL?
+    @ObservationIgnored private var mainStreamWindowMs: Int?
+    @ObservationIgnored private var mainBytesPerSecond: Double?
+    /// The schedulable frontier (file frames) while growing — or the FINAL last frame of a dead
+    /// stream (`mainTruncated`). nil ⇒ the whole slice is there.
+    @ObservationIgnored private var mainFrontierFrame: AVAudioFramePosition?
+    /// How far the full song's voice is scheduled (file frames) — the append cursor.
+    @ObservationIgnored private var mainScheduledEnd: AVAudioFramePosition = 0
+    /// The stream died: `mainFrontierFrame` is its last frame for good.
+    @ObservationIgnored private(set) var mainTruncated = false
+    /// First audio not yet rendered since `engageStreaming` (fires `onFirstAudio` once).
+    @ObservationIgnored private var firstAudioOwed = false
+    /// A growing-file engagement has not started rendering yet (the host's start watchdog).
+    var awaitingFirstAudio: Bool { firstAudioOwed }
+    /// A TRACK START (vs. a mid-song hand-off): the first start needs only the start runway.
+    @ObservationIgnored private var startRunwayOwed = false
+    @ObservationIgnored private var progressListenerId: UUID?
+    /// The full song is still downloading (OBSERVED — the chip / the panel).
+    private(set) var isStreamingMain = false
+    /// Play intent, but HELD at `pausedAt` waiting for bytes (OBSERVED — "Buffering…").
+    private(set) var isBuffering = false
+    /// When the current hold began (nil when not holding).
+    @ObservationIgnored private(set) var bufferingSince: Date?
+    /// Fired once, deferred, when the voices first start after `engageStreaming`.
+    @ObservationIgnored var onFirstAudio: (() -> Void)?
+    /// The full song must play past the last frame of its DEAD stream (and no stems carry it):
+    /// the host takes the row back at this song second (deferred). nil ⇒ the song ends there.
+    @ObservationIgnored var onMainStreamFailed: ((Double) -> Void)?
+    /// The growing file completed — its final (adopted) location.
+    @ObservationIgnored var onMainStreamFinished: ((URL) -> Void)?
+    /// A hold began (true) / ended (false).
+    @ObservationIgnored var onBufferingChange: ((Bool) -> Void)?
 
     // MARK: Render-clock scrubber (song-relative seconds; NOT observed → position reads don't relayout)
     //
@@ -234,6 +292,7 @@ final class NowPlayingDSP {
     /// rate-scaled; non-observable). Falls back to `pausedAt` while paused or before the scheduled
     /// voice has begun rendering — mirrors `MixEngine.truePlayhead`'s nil→`position` fallback.
     var currentTime: Double {
+        if isBuffering { return min(max(0, pausedAt), duration) }   // HELD: the playhead is frozen
         let t = (isPlaying ? (livePlayhead() ?? anchoredPlayhead()) : nil) ?? pausedAt
         return min(max(0, t), duration)
     }
@@ -297,6 +356,13 @@ final class NowPlayingDSP {
         MixEngine.stemNames.compactMap { stemFiles[$0] != nil ? stemNodes[$0] : nil }.map { StemSync.startFrame(of: $0) }
     }
     func setMainFrontierForTesting(_ seconds: Double) { mainFrontierForTesting = seconds }
+    /// The growing full song's schedulable frontier / scheduled end (song seconds); nil = whole.
+    func mainFrontierSecondsForTesting() -> Double? { mainFrontierSeconds }
+    func mainScheduledEndSecondsForTesting() -> Double {
+        sampleRate > 0 ? Double(mainScheduledEnd - segStartFrame) / sampleRate : 0
+    }
+    func firstAudioOwedForTesting() -> Bool { firstAudioOwed }
+    var isAttachedForTesting: Bool { file != nil }
     func releaseMainFrontierForTesting() {
         mainFrontierForTesting = nil
         advanceStemHandover()
@@ -394,6 +460,7 @@ final class NowPlayingDSP {
     /// lands first; a pending one re-checks once the voices are back.
     private func handleEngineConfigurationChange() {
         guard isEngaged, isPlaying else { return }
+        if isBuffering { _ = startEngineIfNeeded(); return }   // nothing scheduled: just keep the engine up
         let pos = currentTime
         NPLog.trace("npdsp engine config change @\(String(format: "%.2f", pos))s — restarting")
         settleStemFade()
@@ -481,6 +548,7 @@ final class NowPlayingDSP {
         stemPartsRequired = nil                        // a Stem Lock carry re-states it per track
         fileRelease?()                                 // release a prior engage's scope
         fileRelease = release
+        resetMainStream()                              // a complete file: no growing state
         file = f
         sampleRate = sr
         segStartFrame = segStart
@@ -501,6 +569,121 @@ final class NowPlayingDSP {
         if play { startAudio(fromSongSeconds: pos) }
     }
 
+    /// GROWING FILE (np-mix-mode phase 3): take over a ripped row from its `MixStreamLoader`
+    /// buffer stream — the song plays WHILE it downloads, so its controls are live from the first
+    /// second. `atSeconds` is song-relative (a restore-resume / a mid-song hand-off); `play`
+    /// starts audio at once when there is runway there and otherwise HOLDS ("Buffering…") until
+    /// the bytes arrive. `atTrackStart`: a fresh track needs only the start runway (2 s); a
+    /// mid-song hand-off the resume runway (4 s). `requireRunway` (the hand-off from a plain
+    /// player that is still sounding): refuse — touching NOTHING — unless the stream can play at
+    /// `atSeconds` right now, so the caller never trades sound for a hold. Returns false when it
+    /// refused (no audio device, a dead stream, a file AVAudioFile can't decode by its extension,
+    /// no runway under `requireRunway`).
+    @discardableResult
+    func engageStreaming(_ s: MixStreamLoader.Stream, lengthMs: Int?, atSeconds: Double, songId: String?,
+                         play: Bool, atTrackStart: Bool = true, requireRunway: Bool = false) -> Bool {
+        build()
+        guard built, !s.failed else { return false }
+        // The AVAudioFile-decodes-by-EXTENSION trap: a growing file under a neutral name would open
+        // as nothing (or noise) — refuse; the caller plays the row its plain way.
+        let url = s.isComplete ? (s.finalURL ?? s.fileURL) : s.fileURL
+        guard GrowingFileSchedule.decodableByExtension(url) else {
+            NPLog.trace("npdsp stream \(s.songId) refused — \(url.lastPathComponent) is not decodable by its extension")
+            return false
+        }
+        if requireRunway, !Self.streamCanPlay(s, url: url, windowMs: lengthMs, at: atSeconds,
+                                               runway: GrowingFileSchedule.resumeRunway) {
+            return false
+        }
+        resetStemIntent()
+        _stemMode = false
+        stemPartsRequired = nil
+        fileRelease?(); fileRelease = nil
+        resetMainStream()
+        file = nil
+        sampleRate = 0
+        segStartFrame = 0
+        segEndFrame = 0
+        mainStream = s
+        mainURL = url
+        isStreamingMain = true
+        mainStreamWindowMs = lengthMs
+        duration = Double(lengthMs ?? Self.fallbackDurationMs) / 1000   // provisional until the header
+        loadedSongId = songId
+        stemsAvailable = songId.map { stemsObtainable($0) } ?? false
+        isEngaged = true
+        firstAudioOwed = true
+        startRunwayOwed = atTrackStart
+        applyRate(); applyPitch(); applyVolume()
+        for e in MixEngine.Effect.allCases { applyEffect(e) }
+        pausedAt = max(0, atSeconds)
+        isPlaying = false
+        playAnchor = nil
+        pumpMain()                                     // attach now if the header is already there
+        NPLog.trace("npdsp engage STREAM \(s.songId) at=\(String(format: "%.2f", pausedAt))s play=\(play) attached=\(file != nil)")
+        if play { startAudio(fromSongSeconds: pausedAt) }   // plays with runway, else HOLDS
+        return true
+    }
+
+    /// Catalog length fallback for a stream whose header isn't readable yet (the Mix deck's).
+    static let fallbackDurationMs = 180_000
+
+    /// Could `s` play from `at` (song seconds) with `runway` RIGHT NOW? Opens the partial file
+    /// once; mutates nothing (the `requireRunway` probe).
+    private static func streamCanPlay(_ s: MixStreamLoader.Stream, url: URL, windowMs: Int?, at: Double,
+                                      runway: Double) -> Bool {
+        guard s.resolved, s.bytesReceived > 0 || s.isComplete, let f = try? AVAudioFile(forReading: url) else { return false }
+        let sr = f.processingFormat.sampleRate
+        let w = GrowingFileSchedule.window(fileLength: f.length, sampleRate: sr,
+                                           startMs: s.isCut ? nil : s.startMs, windowMs: s.isCut ? nil : windowMs)
+        guard sr > 0, w.count > 0 else { return false }
+        let fullEnd = w.start + w.count
+        let pos = w.start + AVAudioFramePosition(max(0, at) * sr)
+        guard pos < fullEnd else { return false }
+        let bps = GrowingFileSchedule.bytesPerSecond(totalFrames: f.length, sampleRate: sr, expectedBytes: s.expectedBytes)
+        let frontier = GrowingFileSchedule.frontier(bytes: s.bytesReceived, complete: s.isComplete, bytesPerSecond: bps,
+                                                    sampleRate: sr, start: w.start, fullEnd: fullEnd)
+        return GrowingFileSchedule.canStart(position: pos, frontier: frontier, fullEnd: fullEnd,
+                                            complete: s.isComplete, runway: runway, sampleRate: sr)
+    }
+
+    /// Forget every growing-file fact (the stream itself keeps downloading — every stream
+    /// completes, and the finished file is adopted as a burn).
+    private func resetMainStream() {
+        mainStream = nil
+        mainURL = nil
+        mainStreamWindowMs = nil
+        mainBytesPerSecond = nil
+        mainFrontierFrame = nil
+        mainScheduledEnd = 0
+        mainTruncated = false
+        firstAudioOwed = false
+        startRunwayOwed = false
+        if isStreamingMain { isStreamingMain = false }
+        if isBuffering { isBuffering = false }
+        bufferingSince = nil
+    }
+
+    /// Seek the engaged song to `t` (song seconds) — the card / CarPlay scrubber and the inline
+    /// row scrubber route here while the DSP owns the audio. Playing: rescheduled from the target
+    /// (on the stems or the full song, whichever the intent asks and can carry it); a target past
+    /// a growing file's frontier HOLDS there and resumes once the bytes arrive (never from the
+    /// frontier, never from 0:00). Paused: the target is where ▶ resumes.
+    func seek(toSongSeconds t: Double) {
+        guard isEngaged else { return }
+        let target = min(max(0, t), max(0, duration - 0.05))
+        settleStemFade()
+        if isPlaying {
+            startAudio(fromSongSeconds: target)
+            advanceStemHandover()
+            refreshStemMonitor()
+        } else {
+            pausedAt = target
+            playAnchor = nil
+        }
+        NPLog.trace("npdsp seek → \(String(format: "%.2f", target))s playing=\(isPlaying) holding=\(isBuffering)")
+    }
+
     /// Hand the audio back: stop everything, release scopes, and RETURN the current SONG-RELATIVE
     /// position (seconds) so the caller can reload the AVPlayer there (`startMs + position`). Does NOT
     /// reset the control state — `resetControls()` is the separate ephemeral clear.
@@ -513,6 +696,7 @@ final class NowPlayingDSP {
         interruptedWhilePlaying = false
         playAnchor = nil
         file = nil
+        resetMainStream()
         _stemMode = false
         fileRelease?(); fileRelease = nil
         isPlaying = false
@@ -551,6 +735,7 @@ final class NowPlayingDSP {
     func pause() {
         guard isPlaying else { return }
         pausedAt = currentTime
+        if isBuffering { setBuffering(false) }   // a held playhead just becomes a paused one
         settleStemFade()                         // never park a half-faded handover
         player.pause()
         for n in stemNodes.values { n.pause() }
@@ -720,16 +905,59 @@ final class NowPlayingDSP {
             }
             cutToStems()
         case .toFullMix:
-            if mainFrontierForTesting == nil, pos >= duration - 0.05 {
+            if mainTruncated {
+                // The full song's stream DIED: it can't carry the rest of the song any more — the
+                // stems stay on air (the Mix deck's `mainTruncated` rule).
+                NPLog.trace("npdsp full song truncated — stems stay")
+                _stemHandover = nil
+                return
+            }
+            let mf = mainFrontierSeconds
+            if mf == nil, pos >= duration - 0.05 {
                 cutToFullMix()                    // the slice is over — reports the end (see there)
                 return
             }
-            let mainEnd = min(duration, mainFrontierForTesting ?? duration)
-            guard StemSync.handoverReady(runway: mainEnd - pos, complete: mainFrontierForTesting == nil,
+            let mainEnd = min(duration, mf ?? duration)
+            guard StemSync.handoverReady(runway: mainEnd - pos, complete: mf == nil,
                                          songLeft: duration - pos) else { return }
             cutToFullMix()
             releaseStemStream()                   // done with these stems: stop downloading them
         }
+    }
+
+    /// Where the full song's playable audio ends while it is still arriving / was cut short
+    /// (song seconds; the test seam caps it too). nil ⇒ the whole slice.
+    private var mainFrontierSeconds: Double? {
+        var f = mainFrontierForTesting
+        if mainStream != nil || mainTruncated {
+            let reach = (file != nil && sampleRate > 0)
+                ? Double((mainFrontierFrame ?? segStartFrame) - segStartFrame) / sampleRate : 0
+            f = min(f ?? .infinity, reach)
+        }
+        return f
+    }
+
+    /// The full song is still ARRIVING (or not attached yet) and can't carry `pos` with `runway`.
+    /// A complete / plain file — or a dead stream, whose audio is final — never needs bytes.
+    private func mainNeedsBytes(at pos: Double, runway: Double) -> Bool {
+        guard mainStream != nil else { return false }
+        guard file != nil, sampleRate > 0, let fr = mainFrontierFrame else { return true }
+        let posFrame = segStartFrame + AVAudioFramePosition(max(0, pos) * sampleRate)
+        return !GrowingFileSchedule.canStart(position: posFrame, frontier: fr, fullEnd: segEndFrame,
+                                             complete: false, runway: runway, sampleRate: sampleRate)
+    }
+
+    /// The full song's stream is DEAD and has no audio left at `pos` (or never had any).
+    private func mainRanDry(at pos: Double) -> Bool {
+        guard mainTruncated else { return false }
+        guard file != nil, sampleRate > 0, let fr = mainFrontierFrame else { return true }
+        let posFrame = segStartFrame + AVAudioFramePosition(max(0, pos) * sampleRate)
+        return posFrame >= fr - AVAudioFramePosition(GrowingFileSchedule.underrunLead * sampleRate)
+    }
+
+    /// The runway a held full song needs before it may start at the playhead.
+    private var mainRunwayNeeded: Double {
+        startRunwayOwed ? GrowingFileSchedule.startRunway : GrowingFileSchedule.resumeRunway
     }
 
     /// Where the wired stems' playable audio ends (song seconds).
@@ -769,7 +997,7 @@ final class NowPlayingDSP {
                 // Re-arm the main file at the new generation (a brief restart beats an end that
                 // would never fire).
                 setVoiceGains(main: 1, stems: 1)
-                if scheduleMain(fromSongSeconds: pos) { startScheduled(stemMode: false, fromSongSeconds: pos) }
+                rearmMain(at: pos, play: true)
                 dropPendingStems()
                 return
             }
@@ -790,7 +1018,7 @@ final class NowPlayingDSP {
             guard scheduleStems(fromSongSeconds: from) else {
                 // Zero-length stems: re-arm the main file AT THE NEW generation, or its natural end
                 // would be swallowed forever (play out, never advance).
-                if scheduleMain(fromSongSeconds: pos), was { startScheduled(stemMode: false, fromSongSeconds: pos) }
+                rearmMain(at: pos, play: was)
                 dropPendingStems()
                 return
             }
@@ -813,6 +1041,20 @@ final class NowPlayingDSP {
         settleStemFade()
         let pos = currentTime
         let was = isPlaying
+        if mainNeedsBytes(at: pos, runway: 0.1) || mainRanDry(at: pos) {
+            // The full song can't carry the playhead: still arriving (HOLD there — the pump
+            // resumes it with runway) or its stream died before reaching it (the host takes the
+            // row back). Never a "natural end" mid-song.
+            stopVoices(main: false, stems: true)
+            _stemMode = false
+            _stemHandover = nil
+            if !was { pausedAt = pos }
+            else if mainRanDry(at: pos) { mainRanOut(at: pos) }
+            else { holdMain(at: pos) }
+            NPLog.trace("npdsp → full song @\(String(format: "%.2f", pos))s — \(isBuffering ? "held for bytes" : "unavailable")")
+            refreshStemMonitor()
+            return
+        }
         if stemsRendering,
            let start = StemSync.sampleStart(clocks: stemVoices() + [inputMixer], lead: StemSync.startLead, rate: _rate),
            let p = stemPlayhead(at: start), p < duration - 0.05 {
@@ -1034,8 +1276,7 @@ final class NowPlayingDSP {
     /// re-engage with runway), and a pending handover whose readiness depends on the playhead.
     /// Runs only while there's something to watch.
     private func refreshStemMonitor() {
-        let needed = isEngaged && isPlaying && ((_stemMode && stemFrontier != nil) || _stemHandover != nil)
-        if !needed { stemMonitor?.cancel(); stemMonitor = nil; return }
+        if !monitorNeeded { stemMonitor?.cancel(); stemMonitor = nil; return }
         guard stemMonitor == nil else { return }
         stemMonitor = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -1047,9 +1288,21 @@ final class NowPlayingDSP {
         }
     }
 
+    /// Something only TIME changes needs watching: partial stems on air, a pending handover, or
+    /// a growing / cut-short full song on air closing on the end of what it could schedule.
+    private var monitorNeeded: Bool {
+        guard isEngaged, isPlaying else { return false }
+        return (_stemMode && stemFrontier != nil) || _stemHandover != nil || mainWatchNeeded
+    }
+    private var mainWatchNeeded: Bool {
+        isEngaged && isPlaying && !isBuffering && !_stemMode && (mainStream != nil || mainTruncated)
+    }
+
     private func stemMonitorTick() {
         guard isEngaged, isPlaying else { stemMonitor?.cancel(); stemMonitor = nil; return }
         guard stemFade == nil else { return }
+        if mainWatchNeeded { mainUnderrunCheck() }
+        guard isEngaged, isPlaying else { stemMonitor?.cancel(); stemMonitor = nil; return }
         let pos = currentTime
         if _stemMode, stemFrontier != nil, stemEndSeconds < duration - 0.05,
            pos >= stemEndSeconds - StemSync.underrunLead {
@@ -1064,8 +1317,198 @@ final class NowPlayingDSP {
         } else if _stemHandover != nil {
             advanceStemHandover()
         }
-        let still = (_stemMode && stemFrontier != nil) || _stemHandover != nil
-        if !still { stemMonitor?.cancel(); stemMonitor = nil }
+        if !monitorNeeded { stemMonitor?.cancel(); stemMonitor = nil }
+    }
+
+    // MARK: Growing file — pump, hold, append, finish, failure
+
+    /// The full song on air reached the end of what it could schedule while more is still to
+    /// come: bytes that landed since may extend it; otherwise HOLD right there (a dead stream
+    /// with nothing more hands the row back instead).
+    private func mainUnderrunCheck() {
+        guard sampleRate > 0, file != nil else { return }
+        func scheduledEndSeconds() -> Double { Double(mainScheduledEnd - segStartFrame) / sampleRate }
+        let pos = currentTime
+        guard GrowingFileSchedule.underrun(position: pos, scheduledEnd: scheduledEndSeconds(), duration: duration) else { return }
+        if mainStream != nil { pumpMain() }
+        guard mainWatchNeeded else { return }
+        let end = scheduledEndSeconds()
+        guard GrowingFileSchedule.underrun(position: pos, scheduledEnd: end, duration: duration) else { return }
+        let at = min(pos, end)
+        if mainStream != nil {
+            NPLog.trace("npdsp underrun @\(String(format: "%.2f", at))s → hold (frontier \(String(format: "%.2f", mainFrontierSeconds ?? -1))s)")
+            DiagLog.shared.telemetry("npmix", "dsp underrun at \(String(format: "%.1f", at))s → hold")
+            holdMain(at: at)
+            advanceStemHandover()                 // stems waiting with runway? they carry the song instead
+        } else {
+            mainRanOut(at: at)
+        }
+    }
+
+    /// HOLD the full song at `pos`: nothing scheduled, the playhead frozen, play intent kept. The
+    /// ENGINE keeps running (the audio session — and a locked phone — stay alive through the
+    /// wait); the pump resumes it once the frontier gives it runway.
+    private func holdMain(at pos: Double) {
+        stopVoices(main: true, stems: false)      // generation first: the flushed segment is stale
+        pausedAt = min(max(0, pos), duration)
+        playAnchor = nil
+        isPlaying = true
+        if !isBuffering { setBuffering(true) }
+        configureSession()
+        _ = startEngineIfNeeded()
+        refreshStemMonitor()
+    }
+
+    private func setBuffering(_ on: Bool) {
+        isBuffering = on
+        bufferingSince = on ? Date() : nil
+        onBufferingChange?(on)
+    }
+
+    /// The full song's stream is DEAD and the playhead reached its last frame (or it never had
+    /// one): with a host, hand the row back at this second (the plain stream carries on);
+    /// standalone, the bytes we have ARE the song — it ends here.
+    private func mainRanOut(at pos: Double) {
+        stopVoices(main: true, stems: false)
+        let p = min(max(0, pos), duration)
+        pausedAt = p
+        playAnchor = nil
+        isPlaying = false
+        if isBuffering { setBuffering(false) }
+        refreshStemMonitor()
+        NPLog.trace("npdsp full song ran dry @\(String(format: "%.2f", p))s (stream dead) → \(onMainStreamFailed != nil ? "host" : "end")")
+        if let cb = onMainStreamFailed {
+            Task { @MainActor in cb(p) }
+        } else {
+            pausedAt = duration
+            Task { @MainActor [weak self] in self?.onReachedEnd?() }
+        }
+    }
+
+    /// The loader's song fan-in.
+    private func mainStreamProgressed(_ songId: String) {
+        guard let s = mainStream, s.songId == songId else { return }
+        pumpMain()
+    }
+
+    /// Extend the growing full song to the new byte frontier: attach on the first readable
+    /// header, resume a HELD playhead once it has runway, append the next stretch to the voice on
+    /// air, and become an ordinary file on completion. Idempotent; every progress event lands here.
+    private func pumpMain() {
+        guard let s = mainStream, built, isEngaged else { return }
+        if s.failed { handleMainStreamFailure(); return }
+        guard s.resolved, s.bytesReceived > 0 || s.isComplete else { return }
+        let url = s.isComplete ? (s.finalURL ?? s.fileURL) : s.fileURL
+        // An ADOPTED file lives in the burn folder now: read it under that folder's scope (a
+        // user-picked folder is security-scoped), held like any engaged file's.
+        if s.isComplete, s.adopted, url != mainURL, let h = burns.localURLForPlayback(forSong: s.songId) {
+            if h.url.standardizedFileURL == url.standardizedFileURL {
+                fileRelease?(); fileRelease = h.release
+            } else {
+                h.release?()
+            }
+        }
+        mainURL = url
+        if file == nil {
+            // FIRST ATTACH — the header (and its full-length claim) is readable now.
+            guard let f = try? AVAudioFile(forReading: url) else {
+                if s.isComplete { handleMainStreamFailure(); }
+                return
+            }
+            let sr = f.processingFormat.sampleRate
+            let w = GrowingFileSchedule.window(fileLength: f.length, sampleRate: sr,
+                                               startMs: s.isCut ? nil : s.startMs,
+                                               windowMs: s.isCut ? nil : mainStreamWindowMs)
+            guard sr > 0, w.count > 0 else {
+                if s.isComplete { handleMainStreamFailure() }   // complete with nothing in the window
+                return
+            }
+            engine.connect(player, to: inputMixer, format: f.processingFormat)
+            file = f
+            sampleRate = sr
+            segStartFrame = w.start
+            segEndFrame = w.start + w.count
+            duration = Double(w.count) / sr                 // the real window replaces the catalog guess
+            mainBytesPerSecond = GrowingFileSchedule.bytesPerSecond(totalFrames: f.length, sampleRate: sr,
+                                                                     expectedBytes: s.expectedBytes)
+            mainFrontierFrame = w.start
+            mainScheduledEnd = w.start
+            if pausedAt > duration { pausedAt = duration }
+            NPLog.trace("npdsp stream attach \(s.songId) dur=\(String(format: "%.1f", duration))s bps=\(Int(mainBytesPerSecond ?? 0))")
+        }
+        guard mainStream != nil, sampleRate > 0 else { return }
+        let frontier = GrowingFileSchedule.frontier(bytes: s.bytesReceived, complete: s.isComplete,
+                                                    bytesPerSecond: mainBytesPerSecond, sampleRate: sampleRate,
+                                                    start: segStartFrame, fullEnd: segEndFrame)
+        mainFrontierFrame = max(mainFrontierFrame ?? segStartFrame, frontier)   // never backwards
+        if s.isComplete {
+            finishMainStream(s, url: url)                  // (gives a voice on air its last stretch)
+        } else if !isBuffering, isPlaying, !_stemMode, clockNode === player, mainScheduledEnd > segStartFrame {
+            let playFrame = segStartFrame + AVAudioFramePosition(currentTime * sampleRate)
+            if GrowingFileSchedule.shouldAppend(scheduledEnd: mainScheduledEnd, frontier: frontier, playFrame: playFrame,
+                                                sampleRate: sampleRate, complete: false),
+               let f = try? AVAudioFile(forReading: url) {
+                appendMain(f, to: frontier)
+            }
+        }
+        if isBuffering, isPlaying, !_stemMode, !mainNeedsBytes(at: pausedAt, runway: mainRunwayNeeded) {
+            let reach = Double((mainFrontierFrame ?? segEndFrame) - segStartFrame) / sampleRate - pausedAt
+            NPLog.trace("npdsp \(firstAudioOwed ? "start" : "resume") \(s.songId) @\(String(format: "%.2f", pausedAt))s runway=\(String(format: "%.1f", reach))s")
+            startAudio(fromSongSeconds: pausedAt)
+        }
+        if _stemHandover != nil { advanceStemHandover() }   // the full song's runway grew
+    }
+
+    /// Append `[mainScheduledEnd, to)` to the full song's voice on air. A stretch that reaches the
+    /// window's end carries the END handler (armed at the current generation).
+    private func appendMain(_ f: AVAudioFile, to frontier: AVAudioFramePosition) {
+        let to = min(frontier, segEndFrame)
+        guard to > mainScheduledEnd else { return }
+        let handler: AVAudioNodeCompletionHandler? = to >= segEndFrame ? endHandler(generation) : nil
+        player.scheduleSegment(f, startingFrame: mainScheduledEnd, frameCount: AVAudioFrameCount(to - mainScheduledEnd),
+                               at: nil, completionHandler: handler)
+        file = f
+        mainScheduledEnd = to
+    }
+
+    /// The download finished: the whole window is there — an ordinary local file from now on.
+    private func finishMainStream(_ s: MixStreamLoader.Stream, url: URL) {
+        // The voice on air gets the last stretch (with the end) before the stream bookkeeping goes.
+        if isPlaying, !isBuffering, !_stemMode, clockNode === player, mainScheduledEnd > segStartFrame,
+           mainScheduledEnd < segEndFrame, let f = try? AVAudioFile(forReading: url) {
+            appendMain(f, to: segEndFrame)
+        }
+        if let f = try? AVAudioFile(forReading: url) { file = f }   // later schedules read the final file
+        mainStream = nil
+        mainFrontierFrame = nil
+        isStreamingMain = false
+        NPLog.trace("npdsp stream complete \(s.songId) → \(s.adopted ? "adopted burn" : "local file")")
+        refreshStemMonitor()
+        onMainStreamFinished?(url)
+    }
+
+    /// The stream died for good. What arrived is FINAL (`mainTruncated`): stems on air keep
+    /// carrying the song (a "back to the full song" request is dropped); a full song on air plays
+    /// up to its last frame and then hands the row back (`mainRanOut`, via the monitor); a held
+    /// one hands it back now; a paused one when ▶ asks for audio it doesn't have.
+    private func handleMainStreamFailure() {
+        guard let s = mainStream else { return }
+        mainStream = nil
+        isStreamingMain = false
+        mainTruncated = true
+        DiagLog.shared.log("error", "npdsp stream \(s.songId) failed — \(file == nil ? "before audio" : "truncated at \(String(format: "%.1f", mainFrontierSeconds ?? 0))s")")
+        if _stemMode {
+            if _stemHandover == .toFullMix { _stemHandover = nil }
+            refreshStemMonitor()
+            return
+        }
+        // The voice on air gets whatever stretch it hadn't scheduled yet — it's all there is.
+        if isPlaying, !isBuffering, clockNode === player, let fr = mainFrontierFrame, fr > mainScheduledEnd,
+           mainScheduledEnd > segStartFrame, let url = mainURL, let f = try? AVAudioFile(forReading: url) {
+            appendMain(f, to: fr)
+        }
+        if isPlaying, isBuffering { mainRanOut(at: pausedAt); return }
+        refreshStemMonitor()
     }
 
     func toggleStemMute(_ name: String) {
@@ -1212,11 +1655,16 @@ final class NowPlayingDSP {
     /// schedulable (at/past the slice end).
     @discardableResult
     private func scheduleMain(fromSongSeconds pos: Double) -> Bool {
+        // A GROWING file is re-opened for every schedule (an open sees only the bytes present
+        // when it was made) and bounded by its frontier.
+        if mainStream != nil, let url = mainURL, let fresh = try? AVAudioFile(forReading: url) { file = fresh }
         guard let f = file, sampleRate > 0 else { return false }
         player.stop()
-        let frame = min(max(segStartFrame, segStartFrame + AVAudioFramePosition(pos * sampleRate)), segEndFrame)
-        let count = segEndFrame - frame
+        let playableEnd = min(segEndFrame, mainFrontierFrame ?? segEndFrame)
+        let frame = min(max(segStartFrame, segStartFrame + AVAudioFramePosition(pos * sampleRate)), playableEnd)
+        let count = playableEnd - frame
         guard count > 0 else { return false }
+        mainScheduledEnd = playableEnd
         // The single file's render clock is the playhead: this segment begins at song-second
         // (frame − segStartFrame)/sr (≈ the clamped `pos`).
         clockNode = player
@@ -1224,10 +1672,21 @@ final class NowPlayingDSP {
         segStartSongSeconds = Double(frame - segStartFrame) / sampleRate
         mainSegStartSeconds = segStartSongSeconds
         let gen = generation
-        player.scheduleSegment(f, startingFrame: frame, frameCount: AVAudioFrameCount(count), at: nil) { [weak self] in
-            Task { @MainActor in self?.handleReachedEnd(gen) }
-        }
+        // Only a segment that reaches the window's END is the song's end — a frontier isn't.
+        let handler: AVAudioNodeCompletionHandler? = playableEnd >= segEndFrame ? endHandler(gen) : nil
+        player.scheduleSegment(f, startingFrame: frame, frameCount: AVAudioFrameCount(count), at: nil,
+                               completionHandler: handler)
         return true
+    }
+
+    /// Re-arm the full song at `pos` after a refused handover (a brief restart beats an end that
+    /// would never fire) — or HOLD there when a growing file can't carry it yet.
+    private func rearmMain(at pos: Double, play: Bool) {
+        if scheduleMain(fromSongSeconds: pos) {
+            if play { startScheduled(stemMode: false, fromSongSeconds: pos) }
+        } else if play, mainNeedsBytes(at: pos, runway: 0) {
+            holdMain(at: pos)
+        }
     }
 
     /// Stop + (re)schedule the 4 stems from a song-relative position (past the encoder priming)
@@ -1281,6 +1740,17 @@ final class NowPlayingDSP {
             _stemMode = false
             if _stemHandover != .toFullMix, stemStream != nil { _stemHandover = .toStems } else { _stemHandover = nil }
         }
+        if !_stemMode {
+            // GROWING FILE: never schedule past the frontier — HOLD at `pos` until the bytes give
+            // it runway (a pending stems handover may carry the deck meanwhile); a dead stream
+            // with nothing left here hands the row back.
+            if mainNeedsBytes(at: pos, runway: mainRunwayNeeded) {
+                holdMain(at: pos)
+                advanceStemHandover()
+                return
+            }
+            if mainRanDry(at: pos) { mainRanOut(at: pos); return }
+        }
         generation += 1
         let scheduled: Bool = _stemMode ? scheduleStems(fromSongSeconds: stemFrontier == nil ? min(pos, maxStemSeconds()) : pos)
                                         : scheduleMain(fromSongSeconds: pos)
@@ -1303,6 +1773,13 @@ final class NowPlayingDSP {
         // drift-free). `pausedAt` seeds the pre-render fallback at the segment's start position.
         pausedAt = pos
         isPlaying = true
+        if isBuffering { setBuffering(false) }
+        if firstAudioOwed {
+            firstAudioOwed = false
+            startRunwayOwed = false
+            let cb = onFirstAudio
+            Task { @MainActor in cb?() }          // deferred: never re-enter the caller mid-start
+        }
         refreshStemMonitor()
     }
 

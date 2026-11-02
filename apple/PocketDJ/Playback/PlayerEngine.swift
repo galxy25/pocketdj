@@ -91,6 +91,12 @@ final class PlayerEngine {
     private var externalPause: (() -> Void)?
     /// The streaming source's playback speed for the card (the Now Playing DSP's tempo); nil ⇒ 1×.
     private var externalRate: (() -> Double)?
+    /// Seek the external source to a SONG-relative second (the card / CarPlay / inline scrubber);
+    /// nil ⇒ the source can't be scrubbed from here (Apple Music scrubs through the coordinator).
+    private var externalSeek: ((Double) -> Void)?
+    /// The external source wants to play but is waiting for bytes (the Now Playing DSP holding a
+    /// growing file) — the card shows the honest buffering state (cursor frozen, ⏸ glyph).
+    private var externalStalled: (() -> Bool)?
     /// ~1 Hz ticker that refreshes the card's elapsed time + play state while external.
     @ObservationIgnored private var externalTicker: Task<Void, Never>?
 
@@ -699,6 +705,8 @@ final class PlayerEngine {
                                  position: @escaping () -> Double,
                                  isPlaying: @escaping () -> Bool,
                                  rate: (() -> Double)? = nil,
+                                 seek: ((Double) -> Void)? = nil,
+                                 stalled: (() -> Bool)? = nil,
                                  play: @escaping () -> Void,
                                  pause: @escaping () -> Void) {
         // Idle our AVPlayer + drop any per-item end observer / boundary from a prior local track
@@ -719,10 +727,12 @@ final class PlayerEngine {
         externalPosition = position
         externalIsPlaying = isPlaying
         externalRate = rate
+        externalSeek = seek
+        externalStalled = stalled
         externalPlay = play
         externalPause = pause
         cardOffsetSec = 0
-        isStalled = false
+        isStalled = stalled?() ?? false
         firstAudioPending = false   // the stream's own first audio is the provider's signal
 
         // Seed the card from the stream's LIVE state — never a hard-coded 0:00 / playing. A
@@ -760,6 +770,7 @@ final class PlayerEngine {
     /// One external-ticker beat: mirror the stream's live play state + position into the card.
     private func externalTick() {
         isPlaying = externalIsPlaying?() ?? isPlaying
+        if let externalStalled { isStalled = externalStalled() }
         clock.currentTime = externalPosition?() ?? clock.currentTime
         updateNowPlayingInfo()
     }
@@ -843,11 +854,22 @@ final class PlayerEngine {
         externalActive = false
         externalPosition = nil; externalIsPlaying = nil; externalPlay = nil; externalPause = nil
         externalRate = nil
+        if externalStalled != nil { isStalled = false }
+        externalSeek = nil; externalStalled = nil
         externalTicker?.cancel(); externalTicker = nil
     }
 
     /// Seek to an absolute time (seconds). No-op for a live stream beyond its buffer.
     func seek(to seconds: Double) {
+        if externalActive {
+            // An external source that can scrub (the Now Playing DSP) takes the SONG-relative
+            // target (the external card timeline is song-relative: `cardOffsetSec` is 0).
+            guard let externalSeek else { return }
+            externalSeek(max(0, seconds))
+            clock.currentTime = externalPosition?() ?? max(0, seconds)
+            updateNowPlayingInfo()
+            return
+        }
         if holdPlayUntilSeek, pendingSeekMs != nil {
             // A hand-off is still waiting for its item: the listener's scrub is where it lands.
             pendingSeekMs = Int((max(0, seconds) * 1000).rounded())

@@ -538,7 +538,14 @@ final class SetlistPlayer {
     }
 
     private func startStallStillOwed(_ gen: Int) -> Bool {
-        isRunning && playGeneration == gen && !isHeldForResume && !pausedByCascade && !mixEngaged
+        if mixEngaged {
+            // A growing-file start (phase 3): owed while the DSP still holds for its first audio
+            // with the listener wanting sound.
+            guard let dsp, growingUid != nil else { return false }
+            return isRunning && playGeneration == gen && !isHeldForResume && !pausedByCascade
+                && dsp.isPlaying && dsp.awaitingFirstAudio && !player.interruptionOpen
+        }
+        return isRunning && playGeneration == gen && !isHeldForResume && !pausedByCascade && !mixEngaged
             && coordinator.activeBackend != .appleMusic
             && player.hasLoadedItem && player.timeControlStatus != .playing
             && !player.pausedByListener && !player.interruptionOpen && !player.trackEndAlreadySignaled
@@ -890,6 +897,8 @@ final class SetlistPlayer {
         resetMixMode(to: false)            // …and its Mix Mode
         handOffFallback = nil
         endHandOffRunway(reason: "stop")
+        growingRefusedUid = nil
+        growingStartPausedUid = nil
         sessionStore?.clear()
     }
 
@@ -1312,7 +1321,15 @@ final class SetlistPlayer {
     var currentTrackMixable: Bool {
         guard isRunning, index < queue.count, !isHeldForResume else { return false }
         guard coordinator.activeBackend != .appleMusic, !player.isLive else { return false }
-        guard let np = rips.nowPlaying, queue[index].matches(np.songId), !np.live, np.url.isFileURL else { return false }
+        guard let np = rips.nowPlaying, queue[index].matches(np.songId), !np.live else { return false }
+        // Phase 3: the DSP is playing this row from its growing buffer file…
+        if mixEngaged, growingUid == queue[index].uid { return true }
+        // …or the row streams from its presigned URL and the buffer lane's copy covers the
+        // playhead: the first touch moves it onto the growing file (`engageGrowingFromStream`).
+        guard np.url.isFileURL else {
+            _ = prefetchRevision                 // re-read when the buffer's reach flips (below)
+            return growingTouchCovers(queue[index], np)
+        }
         // A local file is playing (burned OR studio). Studio ids have no BurnStore file but ARE local.
         // The burn lookup walks the row's EDITION ladder (a substituted row's file lives under the
         // variant id, a legacy burn under the base) even though `np.songId` is the base — the same
@@ -1338,6 +1355,8 @@ final class SetlistPlayer {
     private func engageMix(atSeconds at: Double?, play: Bool?) {
         guard isRunning, index < queue.count, !mixEngaged, let dsp, currentTrackMixable,
               let np = rips.nowPlaying else { return }
+        // Phase 3: a PRESIGNED stream whose buffer covers the playhead moves onto the growing file.
+        if !np.url.isFileURL { engageGrowingFromStream(np, atSeconds: at, play: play); return }
         let it = queue[index]
         let startSec = Double(np.startMs ?? 0) / 1000
         let atSeconds = at ?? max(0, player.currentTime - startSec)   // AVPlayer clock is absolute-in-file
@@ -1351,14 +1370,8 @@ final class SetlistPlayer {
                    atSeconds: atSeconds, songId: it.id, play: false)
         // 2) Idle the AVPlayer + claim the card (beginExternalNowPlaying pauses it + replaces its item),
         //    now with the correct duration in hand — single card writer preserved.
-        player.beginExternalNowPlaying(
-            title: it.title, artist: it.artist, songId: it.id,
-            durationSeconds: it.lengthMs.map { Double($0) / 1000 } ?? dsp.duration,
-            position: { [weak dsp] in dsp?.currentTime ?? 0 },
-            isPlaying: { [weak dsp] in dsp?.isPlaying ?? false },
-            rate: { [weak dsp] in dsp?.rate ?? 1 },   // the card's cursor moves at the DSP's tempo
-            play: { [weak dsp] in dsp?.resume() },
-            pause: { [weak dsp] in dsp?.pause() })
+        //    (The card's cursor moves at the DSP's tempo, and its scrubber drives the DSP.)
+        publishDSPCard(it, dsp)
         // 3) Only now that the AVPlayer is idle, start the DSP audio if we were playing — so exactly one
         //    engine ever sounds during the swap — and re-publish the card from the DSP's live state
         //    at once (it was published paused a moment ago, before the DSP sounded).
@@ -1395,9 +1408,12 @@ final class SetlistPlayer {
     private func endMixEngagement() {
         guard mixEngaged else { return }
         dsp?.onReachedEnd = nil
+        clearGrowingCallbacks(dsp)
         dsp?.disengage()
         dsp?.resetControls()
         mixEngaged = false
+        growingUid = nil
+        growingLeftStream = nil
     }
 
     /// Observe the Mix-tab session seam; when it flips ACTIVE while the Now Playing mix panel is
@@ -1829,7 +1845,8 @@ final class SetlistPlayer {
             failed: pf?.songFailedRecently(it.resolveId) ?? false,
             storageFull: pf?.songBlockedRecently(it.resolveId) ?? false,
             cellularOff: pf.map { NowPlayingPrefetcher.mixReach(network: $0.network(), cellular: mixModeSettings().cellular,
-                                                                window: mixModeSettings().ahead) == nil } ?? false))
+                                                                window: mixModeSettings().ahead) == nil } ?? false,
+            dspHolding: mixEngaged && growingUid == it.uid && (dsp?.isBuffering ?? false)))
     }
 
     /// The buffer strip: the next `ahead` rows' local state (● local · ◐ buffering ·
@@ -2013,6 +2030,304 @@ final class SetlistPlayer {
         handOffCurrentToLocal(reason: "after-start")
     }
 
+    // MARK: - Mix Mode phase 3: the DSP plays the GROWING file (np-mix-mode §5 phase 3)
+    //
+    // With Mix Mode on, a ripped row that isn't local STARTS in `NowPlayingDSP` on its
+    // `MixStreamLoader` buffer stream (`startOnGrowingFile`) — no presigned AVPlayer download
+    // of the same bytes, and every control is live from the first second. The DSP never reads
+    // past the written frontier: a start / underrun / seek without runway HOLDS ("Buffering…",
+    // the card's cursor frozen) and resumes with runway. Backstops: the start watchdog (no first
+    // audio by `startStallEscalateSeconds` ⇒ hop / advance, the existing rule) and a mid-song
+    // hold longer than `growingHoldFallbackSeconds` ⇒ the row falls back to its plain stream at
+    // the same position. A dead buffer stream falls back the same way once the audio that did
+    // arrive has played. A row already streaming from its presigned URL (Mix Mode turned on
+    // mid-song) moves onto the growing file on the FIRST CONTROL TOUCH (`engageMix`, Q2) once
+    // the buffer covers the playhead — refused across an interruption, paused stays paused.
+    // Ownership is the F4 one: the card is published through `beginExternalNowPlaying` (one
+    // writer, DSP-driven position / rate / play / pause / seek), the Mix tab going live tears the
+    // engagement down, and a durable restore re-enters here on ▶ at the saved position.
+
+    /// SEAM (wired at app init to the shared `MixStreamLoader`): open — or join — the buffer
+    /// lane's stream for an audio id (origin `.buffer`; nil when it can't stream: not ripped,
+    /// offline, cooldown, an explicit download pending).
+    @ObservationIgnored var openBufferStream: ((_ audioId: String, _ title: String, _ artist: String) -> MixStreamLoader.Stream?)?
+    /// SEAM: the buffer stream already running for an audio id (never opens one).
+    @ObservationIgnored var bufferStream: ((String) -> MixStreamLoader.Stream?)?
+    /// The row (uid) the DSP is playing from its growing file (nil = not on one).
+    @ObservationIgnored private(set) var growingUid: UUID?
+    /// The presigned stream a mid-song touch hand-off left (the fallback target), by row uid.
+    @ObservationIgnored private var growingLeftStream: (uid: UUID, np: RipsStore.NowPlaying)?
+    /// A row whose growing file failed / stalled this play — it plays the plain way now.
+    @ObservationIgnored private var growingRefusedUid: UUID?
+    /// A media-services reset re-enters a PAUSED growing row paused.
+    @ObservationIgnored private var growingStartPausedUid: UUID?
+    @ObservationIgnored private var growingHoldTask: Task<Void, Never>?
+    /// A mid-song hold this long falls back to the plain stream (the start has the watchdog).
+    static var growingHoldFallbackSeconds: Double = 20
+    /// Growing-file starts / fallbacks performed (diagnostics + tests).
+    @ObservationIgnored private(set) var growingStartCount = 0
+    @ObservationIgnored private(set) var growingFallbackCount = 0
+
+    /// May `it` (the row about to start) start in the DSP on its growing file? Mix Mode
+    /// buffering (on, not suspended by the Mix tab, not device mode), a DSP with a graph, a
+    /// RIPPED row that would stream from the rip (an Apple-Music-first row stays on Apple Music
+    /// until phase 4), and not refused this play.
+    private func growingStartEligible(_ it: Item) -> Bool {
+        guard mixModeBuffering, dsp != nil, openBufferStream != nil, growingRefusedUid != it.uid,
+              !StudioFactory.isStudioId(it.id), !ProfileSourceStore.isProfileSongId(it.id),
+              let entry = rips.manifest[it.resolveId], AppleMusicCatalog.storeID(fromSongID: it.id) == nil else { return false }
+        // An analog song with no per-song CUT streams its whole album SIDE from byte 0: a song
+        // minutes into the side would hold until the download got there, while the plain
+        // AVPlayer range-seeks straight to it. It plays plain (the touch moves it over once
+        // the buffer covers the playhead).
+        if entry.source == "analog", entry.cutKey == nil, (entry.startMs ?? 0) > 0 { return false }
+        return !coordinator.streamsAppleMusicFirst(id: it.id, title: it.title, artist: it.artist, variant: it.variant)
+    }
+
+    /// A start this far into the song that the buffer doesn't cover yet plays plain instead —
+    /// the growing file would hold until the download reached it, the presigned AVPlayer seeks
+    /// there at once (the dead-air rule: never trade an instant start for a slow one).
+    static var growingDeepResumeMs = 15_000
+
+    /// Start the current row in the DSP on its growing buffer stream (the cloud branch of
+    /// `playCurrent`). False — touching nothing — when it isn't eligible or the DSP refused; the
+    /// caller then plays the row the plain way.
+    private func startOnGrowingFile(_ it: Item, gen: Int, resumeAtMs: Int?, startPaused: Bool) -> Bool {
+        guard growingStartEligible(it), let dsp,
+              let s = openBufferStream?(it.resolveId, it.title, it.artist), !s.failed else { return false }
+        if let ms = resumeAtMs, ms > Self.growingDeepResumeMs {
+            let covered = GrowingFileSchedule.coveredFileSeconds(
+                bytes: s.bytesReceived, expectedBytes: s.expectedBytes, complete: s.isComplete,
+                fileDurationSeconds: it.lengthMs.map { Double($0) / 1000 }) ?? 0
+            guard covered >= Double(ms) / 1000 + GrowingFileSchedule.startRunway else {
+                // (The stream keeps downloading — the first touch moves the row onto it later.)
+                NPMixMode.log("start song=\(it.id) at=\(ms)ms not buffered that far → plain stream")
+                return false
+            }
+        }
+        if mixEngaged { endMixEngagement() }
+        let at = Double(resumeAtMs ?? 0) / 1000
+        armGrowingCallbacks(dsp, uid: it.uid)
+        dsp.onFirstAudio = { [weak self] in
+            guard let self, self.playGeneration == gen, self.growingUid == it.uid else { return }
+            self.handleFirstAudio(source: "dsp-stream")
+        }
+        guard dsp.engageStreaming(s, lengthMs: it.lengthMs, atSeconds: at, songId: it.id,
+                                  play: false, atTrackStart: true) else {
+            clearGrowingCallbacks(dsp)
+            NPMixMode.log("start song=\(it.id) growing file refused by the DSP → plain stream")
+            return false
+        }
+        // The outgoing source goes quiet first; the card + remote transport go to the DSP.
+        coordinator.stopAppleMusicIfActive()
+        if !startPaused { beginStartWindow(it, gen: gen) }
+        growingUid = it.uid
+        growingLeftStream = nil
+        stampGrowingNowPlaying(it, url: s.isComplete ? (s.finalURL ?? s.fileURL) : s.fileURL,
+                               startMs: s.isCut ? nil : s.startMs)
+        publishDSPCard(it, dsp)
+        mixEngaged = true
+        if !startPaused { dsp.resume() }          // plays with runway, else HOLDS for the bytes
+        player.refreshExternalNowPlaying()
+        growingStartCount &+= 1
+        logTrackStart(it, backend: "dsp-stream", resumeAtMs: resumeAtMs)
+        NPMixMode.log("start song=\(it.id) → DSP on the growing file at=\(Int(at * 1000))ms bytes=\(s.bytesReceived)/\(s.expectedBytes.map(String.init) ?? "?") \(dsp.isBuffering ? "holding" : "playing")\(startPaused ? " paused" : "")")
+        if !startPaused { armStartStall(gen: gen, songId: it.id) }   // the start watchdog is the backstop
+        persistSession()
+        return true
+    }
+
+    /// The row's identity on `rips.nowPlaying` for a growing-file play — the same songId as
+    /// before (no second history play), the stream's local file. Our own stamp: never a jump.
+    private func stampGrowingNowPlaying(_ it: Item, url: URL, startMs: Int?) {
+        rips.setNowPlaying(RipsStore.NowPlaying(songId: it.id, title: it.title, artist: it.artist,
+                                                url: url, live: false, startMs: startMs, seekMs: startMs,
+                                                waveform: nil))
+        ownNowPlayingStamp = (url, it.id)
+    }
+
+    /// Publish the system card on the DSP's behalf (one writer — `PlayerEngine`'s external
+    /// path): DSP position / tempo / play / pause / SCRUB, and the honest buffering state while
+    /// it holds for bytes. Also idles the AVPlayer (`beginExternalNowPlaying` pauses + empties it).
+    private func publishDSPCard(_ it: Item, _ dsp: NowPlayingDSP) {
+        player.beginExternalNowPlaying(
+            title: it.title, artist: it.artist, songId: it.id,
+            durationSeconds: it.lengthMs.map { Double($0) / 1000 } ?? dsp.duration,
+            position: { [weak dsp] in dsp?.currentTime ?? 0 },
+            isPlaying: { [weak dsp] in dsp?.isPlaying ?? false },
+            rate: { [weak dsp] in (dsp?.isBuffering ?? false) ? 0 : (dsp?.rate ?? 1) },
+            seek: { [weak dsp] t in dsp?.seek(toSongSeconds: t) },
+            stalled: { [weak dsp] in dsp?.isBuffering ?? false },
+            play: { [weak dsp] in dsp?.resume() },
+            pause: { [weak dsp] in dsp?.pause() })
+    }
+
+    private func armGrowingCallbacks(_ dsp: NowPlayingDSP, uid: UUID) {
+        dsp.onReachedEnd = { [weak self] in self?.handleDSPEnded() }
+        // (The DSP reports a dead stream only when the listener wanted the audio it lacks.)
+        dsp.onMainStreamFailed = { [weak self] at in
+            self?.growingFallBack(uid: uid, atSeconds: at, play: true, reason: "stream failed")
+        }
+        dsp.onMainStreamFinished = { [weak self] url in self?.growingStreamFinished(uid: uid, url: url) }
+        dsp.onBufferingChange = { [weak self] holding in self?.growingBufferingChanged(uid: uid, holding) }
+    }
+
+    private func clearGrowingCallbacks(_ dsp: NowPlayingDSP?) {
+        dsp?.onMainStreamFailed = nil
+        dsp?.onMainStreamFinished = nil
+        dsp?.onBufferingChange = nil
+        dsp?.onFirstAudio = nil
+        growingHoldTask?.cancel(); growingHoldTask = nil
+    }
+
+    /// The growing file completed (adopted as a burn, or a complete cut): re-stamp the row onto
+    /// its final file (same song ⇒ no history play) so every later path — an F4 re-engage after
+    /// the Mix tab, a media-services reset — opens a file that exists.
+    private func growingStreamFinished(uid: UUID, url: URL) {
+        guard growingUid == uid, isRunning, index < queue.count, queue[index].uid == uid else { return }
+        let it = queue[index]
+        let startMs = burns.localURLForPlayback(forSong: it.id, decision: it.editionDecision).flatMap { res -> Int? in
+            res.release?()
+            return res.url.standardizedFileURL == url.standardizedFileURL ? burns.startMs(forSong: res.id) : nil
+        } ?? rips.nowPlaying?.startMs
+        stampGrowingNowPlaying(it, url: url, startMs: startMs)
+        NPMixMode.log("growing song=\(it.id) complete → \(url.lastPathComponent)")
+        prefetchRevision &+= 1
+        scheduleStemLockReplan()               // the current row is local now: its stems come next
+    }
+
+    /// A hold began / ended. A hold that outlasts its budget with the listener still wanting
+    /// sound falls back to the plain stream — the supervisor's retry-in-place for the DSP lane.
+    /// Mid-song: `growingHoldFallbackSeconds`. A START hold is the start watchdog's first (it
+    /// escalates at `startStallEscalateSeconds`); this only backstops the watchdog standing down
+    /// — a start paused and resumed while still waiting would otherwise hold forever.
+    private func growingBufferingChanged(uid: UUID, _ holding: Bool) {
+        growingHoldTask?.cancel(); growingHoldTask = nil
+        prefetchRevision &+= 1
+        player.refreshExternalNowPlaying()
+        guard holding, let dsp else { return }
+        let wait = dsp.awaitingFirstAudio ? Self.startStallEscalateSeconds + 2 : Self.growingHoldFallbackSeconds
+        growingHoldTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0.01, wait) * 1_000_000_000))
+            guard !Task.isCancelled, let self, let dsp = self.dsp, self.growingUid == uid, dsp.isBuffering,
+                  dsp.isPlaying, !self.player.interruptionOpen else { return }
+            self.growingFallBack(uid: uid, atSeconds: dsp.currentTime, play: true, reason: "held \(Int(wait))s")
+        }
+    }
+
+    /// The growing file can't carry the row (its stream died after the audio it had, or a hold
+    /// ran too long): leave the DSP and put the row on its PLAIN stream at the same song
+    /// position — the presigned stream a touch hand-off left, else a fresh resolve (refused for
+    /// the growing path this play). Paused stays paused; never claims an advance.
+    private func growingFallBack(uid: UUID, atSeconds: Double, play wasPlaying: Bool, reason: String) {
+        guard growingUid == uid, mixEngaged, isRunning, index < queue.count, queue[index].uid == uid else { return }
+        let it = queue[index]
+        let atMs = max(0, Int((atSeconds * 1000).rounded()))
+        let left = growingLeftStream?.uid == uid ? growingLeftStream?.np : nil
+        growingRefusedUid = uid
+        growingFallbackCount &+= 1
+        NPMixMode.log("growing song=\(it.id) \(reason) at=\(atMs)ms → plain stream\(left != nil ? " (the one it left)" : "")")
+        endMixEngagement()
+        if let left {
+            DeadAirMeter.shared.transitionBegan(cause: "npmix-fallback")
+            playLocalFile(left.url, songId: it.id, title: it.title, artist: it.artist,
+                          startMs: left.startMs, rips: rips, player: player,
+                          endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: left.startMs),
+                          atMs: atMs, deferPlayUntilSeeked: true)
+            ownNowPlayingStamp = (left.url, it.id)
+            if wasPlaying { beginHandOffRunway(songId: it.id) } else { player.pause() }
+        } else {
+            if !wasPlaying { growingStartPausedUid = uid }
+            startPlayCurrent(fresh: false, resumeAtMs: atMs > 0 ? atMs : nil)
+        }
+        prefetchRevision &+= 1
+    }
+
+    @ObservationIgnored private var lastTouchCovers = false
+    /// A buffer-lane stream progressed (wired to the loader's song fan-in): when it is the
+    /// CURRENT row's and the row still streams from its presigned URL, its reach flipping
+    /// "covers the playhead" re-renders the panel (the bytes themselves aren't observable).
+    func noteBufferStreamProgress(_ audioId: String) {
+        guard mixMode.enabled, !mixEngaged, isRunning, index < queue.count, queue[index].resolveId == audioId,
+              let np = rips.nowPlaying, !np.url.isFileURL, queue[index].matches(np.songId) else { return }
+        let covers = growingTouchCovers(queue[index], np)
+        if covers != lastTouchCovers {
+            lastTouchCovers = covers
+            prefetchRevision &+= 1
+            if covers { NPMixMode.log("touch-ready song=\(queue[index].id) — the buffer covers the playhead") }
+        }
+    }
+
+    /// Mix Mode turned on mid-song over a PRESIGNED stream: does the buffer lane's stream of the
+    /// same row cover the playhead (+ the resume runway)? A cheap byte estimate (no file open —
+    /// `currentTrackMixable` reads it); the DSP re-checks exactly at the touch.
+    private func growingTouchCovers(_ it: Item, _ np: RipsStore.NowPlaying) -> Bool {
+        guard mixModeBuffering, !mixEngaged, dsp != nil, growingRefusedUid != it.uid,
+              let s = bufferStream?(it.resolveId), !s.failed, s.resolved else { return false }
+        let songRel = max(0, player.currentTime - Double(np.startMs ?? 0) / 1000)
+        // A per-song CUT starts at the song's 0:00; a digital file / an analog side is the
+        // presigned file the AVPlayer is playing (its duration known), offset by the side start.
+        let fileDuration: Double?
+        let need: Double
+        if s.isCut {
+            fileDuration = it.lengthMs.map { Double($0) / 1000 }
+            need = songRel
+        } else {
+            fileDuration = player.duration > 0 ? player.duration : it.lengthMs.map { Double($0) / 1000 }
+            need = Double(s.startMs ?? 0) / 1000 + songRel
+        }
+        guard let covered = GrowingFileSchedule.coveredFileSeconds(bytes: s.bytesReceived, expectedBytes: s.expectedBytes,
+                                                                   complete: s.isComplete, fileDurationSeconds: fileDuration)
+        else { return false }
+        return covered >= need + GrowingFileSchedule.resumeRunway
+    }
+
+    /// The FIRST TOUCH on a row streaming from its presigned URL whose buffer covers the
+    /// playhead: move it onto the growing file in the DSP at the same song position. Same rules
+    /// as the phase-2 hand-off — never across an open interruption, never mid-start, a paused
+    /// stream stays paused — and the DSP refuses (touching nothing) unless it can play there NOW.
+    private func engageGrowingFromStream(_ np: RipsStore.NowPlaying, atSeconds at: Double?, play: Bool?) {
+        guard let dsp, index < queue.count else { return }
+        let it = queue[index]
+        guard !player.interruptionOpen, !isStartPending, resolvingGeneration == nil,
+              let s = bufferStream?(it.resolveId), !s.failed else {
+            NPMixMode.log("touch song=\(it.id) growing hand-off refused (interruption / start pending / no stream)")
+            return
+        }
+        let songRel = at ?? max(0, player.currentTime - Double(np.startMs ?? 0) / 1000)
+        // PAUSED = anything but "the listener wants sound" (the phase-2 rule): a hand-off never STARTS audio.
+        let paused = play.map { !$0 } ?? (player.pausedByListener || !player.listenerIntentPlaying)
+        armGrowingCallbacks(dsp, uid: it.uid)
+        let uid = it.uid
+        dsp.onFirstAudio = { [weak self] in
+            guard let self, self.growingUid == uid else { return }   // (deferred: the row may have moved on)
+            self.handleFirstAudio(source: "dsp-stream-handoff")
+        }
+        // Open WITHOUT sounding (the AVPlayer is still the only voice), and only if it can play here now.
+        guard dsp.engageStreaming(s, lengthMs: it.lengthMs, atSeconds: songRel, songId: it.id, play: false,
+                                  atTrackStart: false, requireRunway: true) else {
+            clearGrowingCallbacks(dsp)
+            dsp.onReachedEnd = nil
+            NPMixMode.log("touch song=\(it.id) growing hand-off refused (no runway at \(Int(songRel))s yet)")
+            return
+        }
+        growingUid = it.uid
+        growingLeftStream = (it.uid, np)
+        stampGrowingNowPlaying(it, url: s.isComplete ? (s.finalURL ?? s.fileURL) : s.fileURL,
+                               startMs: s.isCut ? nil : s.startMs)
+        publishDSPCard(it, dsp)                   // idles the AVPlayer — exactly one voice at a time
+        mixEngaged = true
+        if !paused {
+            DeadAirMeter.shared.transitionBegan(cause: "npmix-growing-handoff")
+            DeadAirMeter.shared.trackStarting(backend: "handoff")
+            dsp.resume()
+        }
+        player.refreshExternalNowPlaying()
+        handOffCount &+= 1
+        NPMixMode.log("handoff song=\(it.id) stream → DSP growing file at=\(Int(songRel * 1000))ms paused=\(paused ? 1 : 0)")
+        persistSession()
+    }
+
     /// MEDIA SERVICES RESET while the DSP owns the audio (np-mix-mode §4.4): the engine graph is
     /// gone, so tear the engagement down and put the track back on the AVPlayer at the DSP's
     /// last position (paused stays paused). No-op when nothing is engaged.
@@ -2026,9 +2341,17 @@ final class SetlistPlayer {
         let atMs = max(0, Int((dsp.currentTime * 1000).rounded()))
         let wasPlaying = dsp.isPlaying
         let it = queue[index]
-        NPMixMode.log("media services reset while engaged song=\(it.id) at=\(atMs)ms — back to the AVPlayer")
+        let wasGrowing = growingUid == it.uid && dsp.isStreamingMain
+        NPMixMode.log("media services reset while engaged song=\(it.id) at=\(atMs)ms — \(wasGrowing ? "re-start on the growing file" : "back to the AVPlayer")")
         endMixEngagement()
         dsp.rebuildAfterMediaReset()
+        if wasGrowing {
+            // A still-growing partial can't go to the AVPlayer: re-enter the row (the growing
+            // path again, on the fresh graph) at the same position — paused stays paused.
+            if !wasPlaying { growingStartPausedUid = it.uid }
+            startPlayCurrent(fresh: false, resumeAtMs: atMs)
+            return
+        }
         guard let np = rips.nowPlaying, it.matches(np.songId), np.url.isFileURL else {
             startPlayCurrent(fresh: false, resumeAtMs: atMs)
             return
@@ -2571,6 +2894,11 @@ final class SetlistPlayer {
         // over this row — the "jumps back to the buffered song" bug (drive log 2026-10-28 03:01).
         coordinator.supersedePendingPlay()
         let it = queue[index]
+        // Phase 3 bookkeeping: a refusal / a paused re-entry belongs to ONE row's play.
+        if growingRefusedUid != it.uid { growingRefusedUid = nil }
+        lastTouchCovers = false
+        let growingPausedStart = growingStartPausedUid == it.uid
+        growingStartPausedUid = nil
         resolveStallTask?.cancel(); resolveStallTask = nil
         liveBackstopTask?.cancel(); liveBackstopTask = nil
         startStallTask?.cancel(); startStallTask = nil   // the previous start's watchdog is moot
@@ -2700,6 +3028,10 @@ final class SetlistPlayer {
                           endBoundaryMs: nil, atMs: resumeAtMs)
             applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
             startedLocal("stemcut")
+        } else if startOnGrowingFile(it, gen: playGen, resumeAtMs: resumeAtMs, startPaused: growingPausedStart) {
+            // MIX MODE (phase 3): the row plays in the DSP from its growing buffer file. The Stem
+            // Lock takes it over on the full song, as at any track start.
+            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
         } else {
             // SILENCE THE OUTGOING TRACK FIRST. Resolving a cloud row is an async round-trip
             // (an Apple Music lookup, or a rip that may still be queued), and until it lands

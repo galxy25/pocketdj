@@ -274,9 +274,10 @@ struct MixModeStatusChip: View {
 
     var body: some View {
         let ind = sequencer.mixModeIndicator
-        if case .buffering = ind {
+        switch ind {
+        case .buffering, .holding:
             TimelineView(.periodic(from: .now, by: 0.5)) { _ in chip(sequencer.mixModeIndicator) }
-        } else {
+        default:
             chip(ind)
         }
     }
@@ -289,7 +290,7 @@ struct MixModeStatusChip: View {
                     Circle().fill(Theme.accent).frame(width: 6, height: 6)
                 case .ready:
                     Circle().stroke(Theme.accent, lineWidth: 1.5).frame(width: 6, height: 6)
-                case .buffering, .waiting:
+                case .buffering, .holding, .waiting:
                     Image(systemName: "arrow.down.circle").font(.caption2)
                 case .unavailable, .suspended, .ripping:
                     Image(systemName: "exclamationmark.circle").font(.caption2)

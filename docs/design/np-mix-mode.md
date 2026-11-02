@@ -1,5 +1,5 @@
-Status: PHASES 1–2 IMPLEMENTED on `feat/np-mix-mode` (phase 1 merged 2026-11-02 as 22025b40; phase 2
-2026-11-02, not merged; phases 3–5 are design only). Levi's defaults applied: Q2 engage on touch (the
+Status: PHASES 1–3 IMPLEMENTED on `feat/np-mix-mode` (phase 1 merged 2026-11-02 as 22025b40; phase 2
+merged as 6caf7005; phase 3 2026-11-02, not merged — §9.2; phases 4–5 are design only). Levi's defaults applied: Q2 engage on touch (the
 Stem Lock still engages at start), Q3 fixed 48 h, Q4 per session + an off-by-default "Start new
 sessions in Mix Mode", Q5 yes (Stem Lock prefetch is temporary), Q6 2 GB cap, Q8 no reordering, Q9
 no tempo/FX carry, Q10 no tvOS, Q11 Keep option offered.
@@ -666,3 +666,34 @@ removes that); the TV ignores the flag.
   re-fetched).
 - **Media-services reset recreates the `NowPlayingDSP` graph** (engaged or not).
 
+## 9.2 Phase 3 as built (2026-11-02)
+
+| Piece | Where | Notes |
+|---|---|---|
+| Shared scheduling | `Playback/GrowingFileSchedule.swift` | Pure: `bytesPerSecond`, `playableFrames`, `window`, `frontier`, `canStart` (start runway 2 s / resume 4 s), `shouldAppend` (1 s / 15 s chunks), `underrun`, `coveredFileSeconds` (a no-open reach estimate), `decodableByExtension`. `MixEngine.pumpStream` + its tick underrun check now call these (its `stream*` names forward), so the deck and Now Playing can't drift. |
+| Song-stream fan-in | `MixStreamLoader.addProgressListener` | `onProgress` stays the Mix engine's; the Now Playing DSP and `SetlistPlayer.noteBufferStreamProgress` listen too. A stream CANCELLED (`cancel(songIds:)`) or EVICTED (`makeRoom`) is now marked `failed` and announced — a reader holding the record used to wait forever. |
+| DSP growing file | `NowPlayingDSP.engageStreaming` / `pumpMain` / `holdMain` / `appendMain` / `finishMainStream` / `handleMainStreamFailure` / `seek(toSongSeconds:)` | Never scheduled past the frontier; start / underrun / seek without runway HOLD (`isBuffering`, engine kept running, playhead frozen, intent kept); resume with runway at the held point; appends from fresh opens; only a segment reaching the window's END arms the end; complete ⇒ the adopted burn under its scope (`onMainStreamFinished`); dead ⇒ `mainTruncated` (stems keep carrying, `.toFullMix` dropped; a full song plays to its last frame, then `onMainStreamFailed`). `requireRunway` probe refuses touching nothing. A file AVAudioFile can't decode by its EXTENSION is refused. `onFirstAudio` once per engage. |
+| Growing START | `SetlistPlayer.startOnGrowingFile` (cloud branch of `playCurrent`, after burned / stem-cut) | Eligible: `mixModeBuffering` (on, Mix tab idle, not device mode), a DSP, ripped, not Apple-Music-first, not an Apple Music catalog id, not an analog song WITHOUT a cut (its side streams from byte 0), not refused this play, and — for a restore-resume deeper than `growingDeepResumeMs` (15 s) — only when the buffer already covers it. Opens / joins the buffer stream (`openBufferStream` → `MixStreamLoader.open(…, origin: .buffer)`; an explicit pending Download refuses it ⇒ plain). The DSP opens paused, `beginExternalNowPlaying` idles the AVPlayer and claims the card (one writer: position / tempo / play / pause / SCRUB / the honest "stalled" state), then the DSP starts (or holds). `rips.nowPlaying` = the buffer file, same songId (one history play, our own stamp — never a jump). The Stem Lock applies as at any start. Start window + the START WATCHDOG (owed while the DSP awaits first audio) are the backstop: no audio by `startStallEscalateSeconds` ⇒ hop / advance. |
+| Touch hand-off | `SetlistPlayer.engageGrowingFromStream` (from `engageMix`) | A row on its PRESIGNED stream (Mix Mode turned on mid-song): `currentTrackMixable` is true once the buffer's estimated reach covers the playhead + 4 s (`growingTouchCovers`, re-rendered by `noteBufferStreamProgress`); the first control TOUCH moves it onto the growing file at the same song position. Phase-2 rules: refused across an open interruption / a pending start / a resolve; paused (listener pause or no play intent) stays paused; the DSP probes first. |
+| Fallbacks | `SetlistPlayer.growingFallBack` | A dead buffer stream (once its audio ran out) or a MID-SONG hold > `growingHoldFallbackSeconds` (20 s): leave the DSP and put the row on its plain stream at the same position — the presigned stream a touch hand-off left, else a fresh resolve (refused for the growing path for this row's play). No advance, no generation claimed. |
+| Ownership | `publishDSPCard`, `PlayerEngine.beginExternalNowPlaying(seek:stalled:)`, `PlayerEngine.seek` | External sources may now scrub (`seek`) and report buffering (`stalled` ⇒ cursor frozen, ⏸ glyph). The F4 complete-file engagement uses the same card (its scrub used to do nothing). Apple Music impersonation passes no `seek`, so a card scrub there is now a no-op (it used to jump the card's clock for a second). |
+| Durable / reset / Mix tab | `resumeFromHold` → `playCurrent`; `handleMediaServicesReset`; `observeMixSessionForEngagement` | A restore resumes on the growing file at the saved position (held until ▶ — no stream opened before). A media-services reset while growing re-enters the row on the fresh graph at the same position (a partial can't go to the AVPlayer; paused stays paused). A live Mix tab tears the engagement down (F4) and suspends growing starts. |
+| UI | `NPMixMode.Indicator.holding` | Engaged + holding ⇒ chip "Buffering n%" with controls LIVE. `.buffering` (controls disabled) remains only for a presigned row whose buffer is still behind the playhead. |
+| Diagnostics | `[npmix]` | `start song=… → DSP on the growing file`, `… → plain stream` (refused / deep resume), `touch-ready`, `handoff … stream → DSP growing file`, `growing … complete`, `growing … <reason> → plain stream`; `[npmix] dsp underrun at …`; NPLog `npdsp engage STREAM / attach / start|resume / underrun / ran dry / complete`. |
+
+Deviations from the phase-3 plan: (a) the mid-song presigned → growing move is ON TOUCH (Q2) rather
+than automatic — no cut nobody asked for; the phase-2 swap-on-land (AVPlayer → complete local file)
+still runs when the buffer completes untouched; (b) a dead Now Playing stream does NOT truncate the
+song and end it there (the Mix deck's rule) — it plays what arrived, then the row goes back to its
+plain stream (no audio lost, no skipped tail); (c) a mid-song hold has its own 20 s fallback (the
+supervisor never acts while the DSP owns the audio); (d) deep restore-resumes and analog side-only
+songs start plain (dead-air rule); (e) the "Buffering…" of a holding DSP is a new indicator case
+(`.holding`) because its controls stay live.
+
+Known limits (phase 3): the growing path trusts the LAME/Xing full-length header and the
+Content-Length (shared with the Mix deck — a headerless file plays only once complete); an analog
+stream that flips from its cut to the side fallback after the start keeps the cut-time `startMs` on
+`rips.nowPlaying` until completion re-stamps it (the DSP itself attaches with the final geometry);
+the buffer stream keeps downloading after a fallback / skip (every stream completes — it adopts as a
+temporary burn); device verification (locked phone holding a start, CarPlay card during a hold,
+DeadAirMeter on growing starts) is still owed.
