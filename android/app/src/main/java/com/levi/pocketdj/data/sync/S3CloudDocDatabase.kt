@@ -49,6 +49,9 @@ class S3CloudDocDatabase(
         secrets.clearUnauthorized()
     }
 
+    /** Q120: a failed relink rolled back to an identity the server had already refused - raise the flag again. */
+    fun restoreUnauthorized() = markUnauthorized()
+
     private fun markUnauthorized() {
         _unauthorized.value = true
         runCatching { secrets.markUnauthorized(profileId()) }

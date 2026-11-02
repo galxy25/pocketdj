@@ -157,12 +157,11 @@ class CatalogRepository(
                 if (lastRealDocs.isEmpty() && _state.value.catalog == null) return@withLock
                 val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(lastRealDocs) }
                 if (inputs.isEmpty()) return@withLock
-                if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs)) return@withLock
-                val mergedCatalog = withContext(Dispatchers.Default) {
-                    mergeCount++
-                    MergedCatalog.merge(inputs)
-                }
+                val e = withContext(Dispatchers.IO) { currentEdits() }
+                if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs) && lastAppliedEdits === e) return@withLock
+                val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
                 lastMergedInputs = inputs
+                lastAppliedEdits = e
                 _state.update { it.copy(catalog = mergedCatalog, phase = Phase.Ready) }
                 notifySupersede(prov)
             }
@@ -189,6 +188,41 @@ class CatalogRepository(
     @Volatile
     var mergeCount = 0
         private set
+
+    /**
+     * Q115 / COL-14: the catalog edits overlay (iOS `EditsStore` doc overlaid in `buildEffective`). Read on every
+     * merge; the provider must return the SAME instance while the edits are unchanged (compared by identity).
+     */
+    @Volatile
+    var edits: () -> CatalogEdits = { CatalogEdits.EMPTY }
+
+    /** The overlay instance behind the currently-published catalog. */
+    @Volatile private var lastAppliedEdits: CatalogEdits? = null
+
+    private fun currentEdits(): CatalogEdits = runCatching { edits() }.getOrDefault(CatalogEdits.EMPTY)
+
+    private fun buildCatalog(inputs: List<IndexJson>, e: CatalogEdits): MergedCatalog {
+        mergeCount++
+        return e.apply(MergedCatalog.merge(inputs))
+    }
+
+    /**
+     * Re-overlay the current edits onto the published inputs (no network) - iOS `applyEdits()` after a save /
+     * import. A no-op before the first publish (the first merge reads the edits itself) or when nothing changed.
+     */
+    fun reapplyEdits() {
+        scope.launch {
+            publishLock.withLock {
+                val inputs = lastMergedInputs ?: return@withLock
+                if (_state.value.catalog == null) return@withLock
+                val e = withContext(Dispatchers.IO) { currentEdits() }
+                if (lastAppliedEdits === e) return@withLock
+                val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                lastAppliedEdits = e
+                _state.update { it.copy(catalog = mergedCatalog) }
+            }
+        }
+    }
 
     private fun sameInputs(a: List<IndexJson>?, b: List<IndexJson>): Boolean =
         a != null && a.size == b.size && a.indices.all { a[it] === b[it] }
@@ -250,11 +284,10 @@ class CatalogRepository(
         lastRealDocs = cached
         val prov = publishLock.withLock {
             val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(cached) }
-            val merged = withContext(Dispatchers.Default) {
-                mergeCount++
-                MergedCatalog.merge(inputs)
-            }
+            val e = withContext(Dispatchers.IO) { currentEdits() }
+            val merged = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
             lastMergedInputs = inputs
+            lastAppliedEdits = e
             _state.update { it.copy(catalog = merged, phase = Phase.Ready, error = null) }
             prov
         }
@@ -291,11 +324,10 @@ class CatalogRepository(
                     lastRealDocs = emptyList()
                     val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(emptyList()) }
                     if (inputs.isEmpty()) return@withLock null
-                    val mergedCatalog = withContext(Dispatchers.Default) {
-                        mergeCount++
-                        MergedCatalog.merge(inputs)
-                    }
+                    val e = withContext(Dispatchers.IO) { currentEdits() }
+                    val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
                     lastMergedInputs = inputs
+                    lastAppliedEdits = e
                     _state.update { it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError) }
                     prov
                 }
@@ -314,17 +346,16 @@ class CatalogRepository(
             lastRealDocs = loaded
             val prov = publishLock.withLock {
                 val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(loaded) }
-                if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs)) {
-                    // Every source unchanged (304 / failure on seed): skip the derived rebuild.
+                val e = withContext(Dispatchers.IO) { currentEdits() }
+                if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs) && lastAppliedEdits === e) {
+                    // Every source unchanged (304 / failure on seed) and no new edits: skip the derived rebuild.
                     _state.update { it.copy(phase = Phase.Ready, error = lastError) }
                     return@withLock prov
                 }
-                val mergedCatalog = withContext(Dispatchers.Default) {
-                    mergeCount++
-                    MergedCatalog.merge(inputs)
-                }
+                val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
                 merged = true
                 lastMergedInputs = inputs
+                lastAppliedEdits = e
                 _state.update {
                     it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError)
                 }

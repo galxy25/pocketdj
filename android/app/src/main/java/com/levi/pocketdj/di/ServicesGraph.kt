@@ -249,6 +249,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             profileId = { profile.id },
             adoptProfileId = { profile.adoptIdentity(it) },
             clearUnauthorized = { s3Database.clearUnauthorized() },
+            markUnauthorized = { s3Database.restoreUnauthorized() },
             isUnauthorized = { s3Database.unauthorized.value },
             syncConfigured = { com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase != null },
             probeCloud = { cloudSync.probeCloudProfile() },
@@ -260,6 +261,30 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 userSyncEnabled = v
                 app.appScope.launch(Dispatchers.IO) { app.settings.set(SyncSettings.CLOUD_SYNC_ENABLED, v) }
             },
+        )
+    }
+
+    /** Q120: "This profile was deleted on another device" -> Start fresh (Relink = [linkProbe]). */
+    val profileRecovery: com.levi.pocketdj.data.sync.ProfileRecovery by lazy {
+        com.levi.pocketdj.data.sync.ProfileRecovery(
+            secrets = profileSecrets,
+            adoptProfileId = { profile.adoptIdentity(it) },
+            clearUnauthorized = { s3Database.clearUnauthorized() },
+            forgetWatermarks = {
+                cloudSync.holdPushesForIdentityChange()
+                cloudSync.releasePushHold()
+                cloudSync.forgetAccountStatus() // no network: the next pass re-reads the account
+            },
+        )
+    }
+
+    /** Q120: the current sync-identity problem for Settings (null = none / sync not configured). */
+    fun profileSyncProblem(unauthorized: Boolean): com.levi.pocketdj.data.sync.ProfileSyncProblem? {
+        if (!unauthorized) return null // the common case never touches the keystore
+        return com.levi.pocketdj.data.sync.ProfileSyncProblem.of(
+            configured = com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase != null,
+            unauthorized = true,
+            relinkRequired = runCatching { profileSecrets.relinkRequiredFor(profile.id) }.getOrDefault(false),
         )
     }
 

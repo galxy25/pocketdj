@@ -15,19 +15,19 @@ Legend: **DEV** = remaining gap is device-only (DEVICE-CHECKLIST.md). **EMU** = 
 | SURF-6 | EMU (relaunch persistence; JVM DataStore test covers) |
 | SURF-7 | DEV (widget render, cold start) |
 | SURF-8 / SURF-9 | DEV (head unit / DHU); EMU with DHU if available |
-| SURF-10 | DEV (AM catalog search stage) |
+| SURF-10 | DEV (AM catalog search stage). Q113 answered (match iOS): AM-only accepts queue at once (SDK stream / capture kicked on accept), no 15-min rip wait |
 | SVC-1 | EMU (Still ripping flow, mid-queue URL refresh); DEV presigned private bucket |
 | SVC-4 | EMU (burned-first resolver, Rip/Burn bar Stop); CODE: Stemify from the bar (SVC-11 covers action) |
-| SVC-7 / SVC-9 / SVC-10 | EMU two-emulator link/restore (Q119-Q121); DEV relink; CODE: QR camera scan deferred (code entry + QR display shipped), sources/appleMusicPrivateSync re-emit only (DEFAULT) |
+| SVC-7 / SVC-9 / SVC-10 | EMU two-emulator link/restore (Q119-Q121); Q120 answered: dedicated "This profile was deleted on another device" state (Settings > Profile, Start fresh / Relink; sync stays opt-in OFF, endpoints doc unpublished); DEV relink; CODE: QR camera scan deferred (code entry + QR display shipped), sources/appleMusicPrivateSync re-emit only (DEFAULT) |
 | SVC-8 | DONE except Q119 endpoints-doc publish (Levi decision). Lambda deployed to green by ANS-SYNC-1; integrator flips Planned -> DONE |
 | SVC-11 / PB-5 | EMU (History glyph + live row). noteSkip gap RESOLVED: wired to `playStats.noteSkipped` in PlaybackGraph.kt:67 and MixGraph.kt:886 (PlayStatsStore sink, the Q24 proposal, is built; no longer a DEFAULT) |
 | SVC-14 | DEV (SD card); DEFAULT staged-copy doubling |
 | PB-10 | EMU (rip->rip gap, mid-track reorder) |
 | COL-6 | EMU (drag onto Collections row) |
 | COL-7 / COL-12 | EMU; catalogAdd producer gap RESOLVED: CATALOG_ADD events produced at BrowseGraph.kt:364, :565 and CollectionsGraph.kt:285. Remaining CODE: owner-gate seam only (no owner identity) (DEFAULT) |
-| COL-9 / COL-11 | DEV (real AM + MUT); CODE: reconcile removals partly landed by GAP-2; Q114 |
+| COL-9 / COL-11 | DEV (real AM + MUT); reconcile landed by GAP-2; Q114 answered (match iOS): audited against iOS `reconcile` guards, one divergence fixed (2xx-but-ignored DELETE re-read before append, never duplicates) |
 | COL-10 | EMU (favorites drive). Gaps RESOLVED: `SyncEntry("favorites")` registered at CollectionsGraph.kt:446; remapSongIds called at CollectionsGraph.kt:307-308 and BrowseGraph.kt:385-386 |
-| COL-14 | CODE: Q115 edits overlay (DEFAULT: stored only) |
+| COL-14 | DONE: Q115 catalog edits overlay built (restored edits applied; answers2/gaps-sync) |
 | COL-18 / COL-20 | EMU (History > Pockets); DEV (dwell); CODE: Open Now Playing after Play (Q91 default) |
 | BRW-10 / BRW-12 / BRW-13 | EMU (For You flows); CODE: New/release feed BRW-14, RecSuggestionFilter, similarSongs, enqueueAudioAnalysis (DEFAULT deferred) |
 | BRW-16 / BRW-17 | DEV (AM write; Q84 AAR missing); CODE: pre-release album refresh, retry UI |

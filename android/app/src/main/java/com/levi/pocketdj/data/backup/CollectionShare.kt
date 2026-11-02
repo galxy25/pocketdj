@@ -73,18 +73,15 @@ object CollectionShare {
         add(s.folders, "folder", "folders")
         add(sourcesAdded, "source", "sources")
         add(favoritesAdded, "favorite", "favorites")
+        // Q115: restored edits are applied to the catalog by the overlay, so they count like any restored item.
+        add(editsAdded, "edit", "edits")
         val base = when {
-            parts.isNotEmpty() && (s.added + s.merged > 0 || sourcesAdded > 0 || favoritesAdded > 0) ->
+            parts.isNotEmpty() && (s.added + s.merged > 0 || sourcesAdded > 0 || favoritesAdded > 0 || editsAdded > 0) ->
                 "Restored " + parts.joinToString(", ")
             s.added + s.merged > 0 -> "Restored ${s.added + s.merged} item(s)"
             else -> "Already up to date - nothing new to import"
         }
-        val withEdits = if (editsAdded > 0) {
-            // Edits are stored (and re-exported) but Android has no catalog overlay yet: never claim they were applied.
-            val note = "$editsAdded ${if (editsAdded == 1) "edit" else "edits"} saved, not yet applied on Android"
-            if (base.startsWith("Already up to date")) note else "$base; $note"
-        } else base
-        return if (skippedItems > 0) "$withEdits ($skippedItems catalog items not bundled)" else withEdits
+        return if (skippedItems > 0) "$base ($skippedItems catalog items not bundled)" else base
     }
 
     /** User-facing text for a failed import (unreadable file / not a PocketDJ file). */

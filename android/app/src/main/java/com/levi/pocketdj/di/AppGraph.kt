@@ -166,11 +166,17 @@ class AppGraph private constructor(context: Context) {
         json = json,
     )
 
+    /** Q115 / COL-14: restored backup edits (`edits.json`), overlaid on every catalog merge like iOS `EditsStore`. */
+    val catalogEdits: com.levi.pocketdj.data.catalog.CatalogEditsFile =
+        com.levi.pocketdj.data.catalog.CatalogEditsFile(
+            File(appContext.filesDir, com.levi.pocketdj.data.catalog.CatalogEditsFile.FILE_NAME),
+        )
+
     val catalogRepository: CatalogRepository = CatalogRepository(
         service = catalogService,
         settings = settings,
         scope = appScope,
-    )
+    ).also { repo -> repo.edits = { catalogEdits.current() } }
 
     /** Cover-art fallback for albums with no bundled art (the whole AM-Local catalog): tokenless iTunes lookup, batched + memoized. */
     val albumArtworkStore: com.levi.pocketdj.data.catalog.AlbumArtworkStore by lazy {

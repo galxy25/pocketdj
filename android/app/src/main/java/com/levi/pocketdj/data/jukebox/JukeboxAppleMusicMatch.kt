@@ -6,16 +6,14 @@ import com.levi.pocketdj.data.applemusic.AppleMusicApi
 import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.screens.shazam.AppleMusicRecognition
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Stage 4 of the iOS four-stage matcher (SURF-10): the Apple Music catalog search for songs the
  * library does not have at all. Developer-token catalog search only (no sign-in needed). A hit may
  * map BACK to an indexed song (store id / appleMusicId / normalized title+artist); otherwise it is an
  * AM-only match carried as an ad-hoc [IndexSong] under the colon-free `amrec_<storeId>` id - the same
- * id the recognizer's add flow rips and burns with (Android has no MusicKit stream, so a rip is
- * how an AM-only row becomes audible).
+ * id the recognizer's add flow rips and burns with. The sequencer plays it through the Apple Music
+ * SDK when that can run here, else through the rip-on-demand capture kicked on accept (Q113).
  */
 class JukeboxAppleMusicMatch(
     private val api: AppleMusicApi,
@@ -60,32 +58,23 @@ class JukeboxAppleMusicMatch(
                 appleMusicId = storeId,
             )
 
-        /** An Apple-Music-only row (not in the library): playable only after a rip. */
+        /**
+         * An Apple-Music-only row (not in the library). Q113: queued at once like iOS's `am:<storeId>` row;
+         * the sequencer's ladder streams it through the Apple Music SDK or captures it via rip-on-demand.
+         */
         fun isAdHoc(songId: String): Boolean = songId.startsWith(AD_HOC_PREFIX)
+
+        /** The Apple Music store id behind an ad-hoc SONG id (`amrec_<storeId>`); null for anything else. */
+        fun storeIdOf(songId: String): String? {
+            if (!songId.startsWith(AD_HOC_PREFIX) || songId.startsWith(AD_HOC_ALBUM_PREFIX)) return null
+            return songId.removePrefix(AD_HOC_PREFIX).takeIf { it.isNotBlank() }
+        }
+
+        private const val AD_HOC_ALBUM_PREFIX = "amrec_album_"
     }
 }
 
-/** Seam: ask the rip pipeline to prepare an AM-only match (false = no rip server configured). */
+/** Seam: ask the rip pipeline to start capturing an AM-only match (false = no rip server configured). */
 fun interface JukeboxAdHocRipStarter {
     suspend fun start(song: IndexSong): Boolean
-}
-
-/**
- * Placement sink for AM-only rows: they have no audio until the rip lands, so wait (bounded) for it,
- * then return false so the repository's normal queue placement runs. Rows that already have a rip,
- * and every library row, pass straight through. A timeout throws, which the repository treats as
- * "not handled" and surfaces as a transient "isn't playable" hint.
- */
-class JukeboxAmPlacementSink(
-    private val isPlayable: (String) -> Boolean,
-    private val waitMs: Long = 15 * 60 * 1000L,
-    private val pollMs: Long = 2_000L,
-) : JukeboxPlacementSink {
-    override suspend fun place(song: IndexSong, action: JukeboxDecisionAction): Boolean {
-        if (!JukeboxAppleMusicMatch.isAdHoc(song.id) || isPlayable(song.id)) return false
-        withTimeoutOrNull(waitMs) {
-            while (!isPlayable(song.id)) delay(pollMs)
-        } ?: throw IllegalStateException("“${song.name}” didn't finish ripping in time")
-        return false
-    }
 }

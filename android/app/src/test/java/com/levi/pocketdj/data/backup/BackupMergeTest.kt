@@ -118,12 +118,38 @@ class BackupMergeTest {
         dir.deleteRecursively()
     }
 
+    /** Q115: edits are applied by the overlay now, so the restore message counts them as restored. */
     @Test
-    fun restoreMessageNeverClaimsEditsWereApplied() {
+    fun restoreMessageCountsAppliedEdits() {
         val none = com.levi.pocketdj.data.collections.io.ImportSummary(com.levi.pocketdj.data.collections.io.ImportKind.BACKUP)
-        val m = CollectionShare.restoreMessage(none, 0, 0, 0, 3)
-        assertFalse(m, m.contains("Restored"))
-        assertTrue(m, m.contains("not yet applied"))
+        assertEquals("Restored 3 edits", CollectionShare.restoreMessage(none, 0, 0, 0, 3))
+        assertEquals("Restored 1 edit", CollectionShare.restoreMessage(none, 0, 0, 0, 1))
+        assertEquals("Restored 2 sources, 1 edit", CollectionShare.restoreMessage(none, 2, 0, 0, 1))
         assertEquals("Already up to date - nothing new to import", CollectionShare.restoreMessage(none, 0, 0, 0, 0))
+    }
+
+    /** Q115 end to end: a restored iOS edits doc lands in the file the catalog overlay reads, and applies. */
+    @Test
+    fun restoredEditsReachTheCatalogOverlay() {
+        val dir = java.nio.file.Files.createTempDirectory("edits").toFile()
+        val file = java.io.File(dir, com.levi.pocketdj.data.catalog.CatalogEditsFile.FILE_NAME)
+        val overlay = com.levi.pocketdj.data.catalog.CatalogEditsFile(file)
+        assertTrue(overlay.current().isEmpty)
+        assertEquals(3, BackupEditsStore(file).importMerging(b(iosEdits)))
+        overlay.invalidate()
+        val edits = overlay.current()
+        assertEquals("Fixed", edits.songs["sng_1"]!!.name)
+        assertEquals(128.0, edits.songs["sng_1"]!!.bpm!!, 0.0)
+        assertEquals("Renamed Album", edits.albums["alb_1"]!!.name)
+        val doc = com.levi.pocketdj.data.catalog.IndexJson(
+            albums = listOf(com.levi.pocketdj.data.catalog.IndexAlbum(id = "alb_1", artist = "A", name = "Orig", trackList = listOf("sng_1"))),
+            songs = listOf(com.levi.pocketdj.data.catalog.IndexSong(id = "sng_1", albumId = "alb_1", artist = "A", name = "Orig", bpm = 90.0)),
+        )
+        val c = edits.apply(com.levi.pocketdj.data.catalog.MergedCatalog.merge(listOf(doc)))
+        assertEquals("Renamed Album", c.albumsById["alb_1"]!!.name)
+        assertEquals("Fixed", c.tracks(c.albums.single()).single().name)
+        assertEquals(128.0, c.songsById["sng_1"]!!.bpm!!, 0.0)
+        assertTrue("unchanged file => same overlay instance", edits === overlay.current())
+        dir.deleteRecursively()
     }
 }

@@ -79,22 +79,14 @@ class JukeboxAppleMusicMatchTest {
         assertEquals(0, server.requestCount)
     }
 
-    @Test fun sinkPassesLibraryAndAlreadyRippedRowsThrough() = runTest {
-        val sink = JukeboxAmPlacementSink(isPlayable = { it == "amrec_1" }, waitMs = 50, pollMs = 1)
-        assertFalse(sink.place(IndexSong(id = "sng_1", artist = "a", name = "n"), JukeboxDecisionAction.NEXT))
-        assertFalse(sink.place(IndexSong(id = "amrec_1", artist = "a", name = "n"), JukeboxDecisionAction.NEXT))
-    }
-
-    @Test fun sinkWaitsForTheRipThenLetsTheRepositoryPlace() = runTest {
-        var polls = 0
-        val sink = JukeboxAmPlacementSink(isPlayable = { ++polls > 3 }, waitMs = 60_000, pollMs = 10)
-        assertFalse(sink.place(IndexSong(id = "amrec_2", artist = "a", name = "n"), JukeboxDecisionAction.END))
-        assertTrue(polls > 3)
-    }
-
-    @Test fun sinkThrowsWhenTheRipNeverLands() = runTest {
-        val sink = JukeboxAmPlacementSink(isPlayable = { false }, waitMs = 100, pollMs = 10)
-        val err = runCatching { sink.place(IndexSong(id = "amrec_3", artist = "a", name = "Slow"), JukeboxDecisionAction.NEXT) }
-        assertTrue(err.exceptionOrNull() is IllegalStateException)
+    /** Q113: the ladder streams an ad-hoc row through the SDK by the store id carried in its id. */
+    @Test fun storeIdOfReadsOnlyAdHocSongIds() {
+        assertEquals("1440", JukeboxAppleMusicMatch.storeIdOf("amrec_1440"))
+        assertEquals("1440", JukeboxAppleMusicMatch.storeIdOf(JukeboxAppleMusicMatch.adHocSong("1440", "t", "a", null, false).id))
+        assertNull("album ids are not songs", JukeboxAppleMusicMatch.storeIdOf("amrec_album_99"))
+        assertNull(JukeboxAppleMusicMatch.storeIdOf("amrec_"))
+        assertNull(JukeboxAppleMusicMatch.storeIdOf("sng_1"))
+        assertFalse(JukeboxAppleMusicMatch.isAdHoc("sng_1"))
+        assertTrue(JukeboxAppleMusicMatch.isAdHoc("amrec_1"))
     }
 }

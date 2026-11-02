@@ -43,6 +43,11 @@ data class MergedCatalog(
         album.trackList.distinct().mapNotNull { songsById[it] }
 
     companion object {
+        /** Album browse order: artist, then name, case-insensitively (shared with the edits overlay re-sort). */
+        val BROWSE_ORDER: Comparator<IndexAlbum> =
+            compareBy(String.CASE_INSENSITIVE_ORDER, IndexAlbum::artist)
+                .thenBy(String.CASE_INSENSITIVE_ORDER, IndexAlbum::name)
+
         val EMPTY = MergedCatalog(
             albums = emptyList(),
             songs = emptyList(),
@@ -95,10 +100,7 @@ data class MergedCatalog(
                 if (contributed) sourceNames.add(sourceName)
             }
 
-            val sortedAlbums = albumsById.values.sortedWith(
-                compareBy(String.CASE_INSENSITIVE_ORDER, IndexAlbum::artist)
-                    .thenBy(String.CASE_INSENSITIVE_ORDER, IndexAlbum::name),
-            )
+            val sortedAlbums = albumsById.values.sortedWith(BROWSE_ORDER)
 
             return MergedCatalog(
                 albums = sortedAlbums,

@@ -98,17 +98,34 @@ class PlaylistAppleMusicSyncReconcileTest {
         """{"id":"i.$it","attributes":{"playParams":{"catalogId":"$it"}}}"""
     }
 
+    /**
+     * [honourDelete] = a 2xx DELETE really removes the rows from later reads (the `live(...)` shape, ids `i.<cat>`);
+     * false models Apple answering 2xx while keeping them (the undocumented-endpoint risk, Q114).
+     */
     private fun serve(
         trackBody: String, deleteCode: Int = 204, postCode: Int = 204,
         playlistBody: String = """{"data":[{"id":"p.1","attributes":{"canEdit":true}}]}""",
+        honourDelete: Boolean = true,
     ): MutableList<RecordedRequest> {
         val seen = mutableListOf<RecordedRequest>()
+        // Only a `live(...)`-shaped body is mutable (its rows are exactly i.<cat> -> <cat>).
+        val rows: MutableList<String>? = Regex("\"id\":\"i\\.(\\w+)\"").findAll(trackBody).map { it.groupValues[1] }
+            .toMutableList().takeIf { live(*it.toTypedArray()) == trackBody }
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 seen += request
                 return when (request.method) {
-                    "GET" -> MockResponse().setBody(if (request.path!!.contains("/tracks")) trackBody else playlistBody)
-                    "DELETE" -> MockResponse().setResponseCode(deleteCode)
+                    "GET" -> MockResponse().setBody(
+                        if (!request.path!!.contains("/tracks")) playlistBody
+                        else rows?.let { live(*it.toTypedArray()) } ?: trackBody,
+                    )
+                    "DELETE" -> {
+                        if (honourDelete && deleteCode in 200..299) {
+                            val ids = request.requestUrl!!.queryParameter("ids[library-songs]").orEmpty().split(",").toSet()
+                            rows?.removeAll { "i.$it" in ids }
+                        }
+                        MockResponse().setResponseCode(deleteCode)
+                    }
                     else -> MockResponse().setResponseCode(postCode)
                 }
             }
@@ -124,6 +141,25 @@ class PlaylistAppleMusicSyncReconcileTest {
         assertEquals(listOf("DELETE", "POST"), writes.map { it.method })
         assertTrue(writes[0].path!!.contains("ids%5Blibrary-songs%5D=i.c%2Ci.b") || writes[0].path!!.contains("ids[library-songs]=i.c,i.b"))
         assertEquals(listOf("b", "c"), Regex("\"id\":\"(\\w+)\"").findAll(writes[1].body.readUtf8()).map { it.groupValues[1] }.toList())
+    }
+
+    /**
+     * Q114: iOS's MusicKit `edit` either applies or throws (notEditable) - it can never half-apply into
+     * duplicates. Android's undocumented DELETE may answer 2xx yet keep the rows; appending the re-adds then
+     * would duplicate them, so the transport re-reads first and stops with nothing appended.
+     */
+    @Test fun transportDeleteAcknowledgedButIgnoredNeverAppendsDuplicates() = runBlocking {
+        val seen = serve(live("a", "c", "b"), honourDelete = false)
+        assertEquals(PlaylistReconcileResult.NotEditable, transport().reconcile("p.1", listOf("a", "b", "c")))
+        assertTrue("no POST: re-adding would duplicate the kept rows", seen.none { it.method == "POST" })
+    }
+
+    /** Removal-only needs no append, so it never pays the verification read. */
+    @Test fun removalOnlySkipsTheVerificationRead() = runBlocking {
+        val seen = serve(live("a", "x", "b"))
+        assertEquals(PlaylistReconcileResult.Edited(2, 0, 1), transport().reconcile("p.1", listOf("a", "b")))
+        assertEquals(1, seen.count { it.method == "GET" && it.path!!.contains("/tracks") })
+        assertTrue(seen.none { it.method == "POST" })
     }
 
     @Test fun transportAlreadyInSyncWritesNothing() = runBlocking {

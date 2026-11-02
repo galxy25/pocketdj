@@ -224,7 +224,12 @@ class PlaybackController(
             // PB-8: Apple Music rung. Null backend (AM not wired) / emulator (canPlayFullTrack=false) => falls through.
             appleMusicBackend?.let { backend ->
                 AppleMusicRowResolver(
-                    appleMusicIdFor = { item -> catalog.state.value.catalog?.songsById?.get(item.id)?.appleMusicId },
+                    // Off-catalog `amrec_<storeId>` rows (jukebox AM-only accepts, Q113) carry their store id in
+                    // the id itself - iOS streams the equivalent `am:<storeId>` row through MusicKit.
+                    appleMusicIdFor = { item ->
+                        catalog.state.value.catalog?.songsById?.get(item.id)?.appleMusicId
+                            ?: com.levi.pocketdj.data.jukebox.JukeboxAppleMusicMatch.storeIdOf(item.id)
+                    },
                     // Cached facts only on the resolve path (a token fetch here is dead air on every row);
                     // a cold token is warmed off-path so the next row sees it.
                     canPlayFullTrack = { canPlayFullTrackWarming() },

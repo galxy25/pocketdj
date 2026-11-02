@@ -122,6 +122,15 @@ class CloudSyncService(
     /** Link rolled back / nothing to restore: pushes are governed by [pushAllowed] alone again. */
     fun releasePushHold() { identityHold = false }
 
+    /**
+     * Q120: the identity changed out from under the cached [Status.accountAvailable] (Start fresh / Relink after
+     * "profile deleted"): forget it (null = unknown, the switch is usable again) WITHOUT a network probe; the next
+     * pass re-reads it. Also drops the stale error/summary of the dead identity.
+     */
+    fun forgetAccountStatus() {
+        _status.value = _status.value.copy(accountAvailable = null, lastError = null, lastSummary = null)
+    }
+
     private val entries = java.util.concurrent.CopyOnWriteArrayList<Entry>()
     private val syncing = AtomicBoolean(false)
 

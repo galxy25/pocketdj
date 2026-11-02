@@ -41,7 +41,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
-/** SURF-10: accepting an Apple-Music-only match requests the rip first, then places once it lands. */
+/** SURF-10 / Q113: accepting an Apple-Music-only match queues it at once (SDK stream, or capture kicked on accept). */
 @OptIn(ExperimentalCoroutinesApi::class)
 class JukeboxRepositoryAdHocRipTest {
     @get:Rule val tmp = TemporaryFolder()
@@ -81,7 +81,9 @@ class JukeboxRepositoryAdHocRipTest {
                     return when {
                         path == "/sessions/jb1" -> MockResponse().setBody("""{"jukeboxId":"jb1","hostKey":"hk","name":"N"}""")
                         path == "/cat.json" -> MockResponse().setBody("""{"manifest":{"sourceName":"A"},"albums":[],"songs":[]}""")
-                        path.contains("/decide") -> { decisions += path; MockResponse().setBody("{}") }
+                        // `/requests/<id>/decision` (was matched as "/decide", which never hit: the
+                        // "no decision posted" assertions below were vacuous).
+                        path.endsWith("/decision") -> { decisions += path; MockResponse().setBody("{}") }
                         path.contains("/requests") ->
                             if (served.compareAndSet(false, true)) {
                                 MockResponse().setBody(
@@ -127,6 +129,7 @@ class JukeboxRepositoryAdHocRipTest {
     private fun harness(
         starterResult: Boolean,
         mix: MixJukeboxSource? = null,
+        streamable: Boolean = false,
     ): Harness {
         val base = server.url("/").toString().removeSuffix("/")
         val client = JukeboxClient(OkHttpClient(), PdjJson.lenient) { JukeboxClient.Config(base, "tok", "install-1") }
@@ -149,7 +152,7 @@ class JukeboxRepositoryAdHocRipTest {
         )
         repo.queue = queue
         repo.externalMatch = JukeboxExternalMatch { _, _ -> song }
-        repo.placementSink = JukeboxAmPlacementSink(isPlayable = { playable.get() }, waitMs = 10_000, pollMs = 20)
+        repo.adHocStreamable = { streamable }
         repo.adHocRipStarter = JukeboxAdHocRipStarter { starts.incrementAndGet(); starterResult }
         return Harness(repo, queue, playable, starts)
     }
@@ -181,35 +184,59 @@ class JukeboxRepositoryAdHocRipTest {
         assertTrue("no decision posted for a request that could not be fulfilled", decisions.isEmpty())
     }
 
-    @Test fun placesOnlyAfterTheRipLands() = runBlocking {
+    /** Q113 (match iOS): off-SDK the capture is kicked on accept and the row is queued AT ONCE (no rip wait). */
+    @Test fun capturesOnAcceptAndQueuesImmediatelyWithoutWaitingForTheRip() = runBlocking {
         val h = harness(starterResult = true)
         awaitRow(h)
         h.repo.decide("r1", JukeboxDecisionAction.NEXT)
-        withTimeout(10_000) { while (h.repo.state.value.requests.isNotEmpty()) delay(20) }
-        delay(200)
-        assertEquals(1, h.starts.get())
-        assertTrue("nothing queued while the rip is in flight", h.queue.calls.isEmpty())
-        h.playable.set(true)
         try {
             withTimeout(10_000) { while (h.queue.calls.isEmpty()) delay(20) }
         } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
             throw AssertionError("not placed; state=${h.repo.state.value}")
         }
+        assertEquals("the rip never landed - placement must not wait for it", false, h.playable.get())
+        assertEquals(1, h.starts.get())
         assertEquals(listOf("next:amrec_77"), h.queue.calls.toList())
+        assertTrue(h.repo.state.value.requests.isEmpty())
+        withTimeout(10_000) { while (decisions.isEmpty()) delay(20) }
+        assertEquals(1, decisions.size)
     }
 
-    @Test fun mixStartedDuringTheRipWaitTakesThePlacementNotTheSequencer() = runBlocking {
-        val port = FakeMix()
+    /** Q113: when the Apple Music SDK can stream here the row plays like iOS `am:` - no rip is requested at all. */
+    @Test fun sdkStreamableQueuesWithoutKickingARip() = runBlocking {
+        val h = harness(starterResult = false, streamable = true)
+        awaitRow(h)
+        h.repo.decide("r1", JukeboxDecisionAction.END)
+        withTimeout(10_000) { while (h.queue.calls.isEmpty()) delay(20) }
+        assertEquals(listOf("end:amrec_77"), h.queue.calls.toList())
+        assertEquals("no rip server needed, none asked for", 0, h.starts.get())
+        assertEquals(null, h.repo.state.value.transientError)
+    }
+
+    /** A live Mix can only load a burned file (iOS acceptIntoMix): the burn is kicked even when the SDK could stream. */
+    @Test fun mixOnAirAtAcceptKicksTheBurnAndParksInTheMix() = runBlocking {
+        val port = FakeMix().also { it.autoMixing = true }
         val burns = AtomicInteger(0)
         val mix = MixJukeboxSource(port = { port }, isLoadable = { false }, requestBurn = { burns.incrementAndGet() })
-        val h = harness(starterResult = true, mix = mix)
+        val h = harness(starterResult = true, mix = mix, streamable = true)
         awaitRow(h)
         h.repo.decide("r1", JukeboxDecisionAction.NEXT)
-        withTimeout(10_000) { while (h.repo.state.value.requests.isNotEmpty()) delay(20) }
-        port.autoMixing = true // host starts Auto-Mix while the rip is in flight
-        h.playable.set(true)
         withTimeout(10_000) { while (mix.pendingCount == 0) delay(20) }
+        assertEquals("rip kicked for the mix's burn", 1, h.starts.get())
         assertTrue("sequencer must not sound on top of the live mix", h.queue.calls.isEmpty())
         assertEquals("parked behind a burn", 1, burns.get())
+    }
+
+    /** Mix on air and no rip server: the request cannot be fulfilled, so it stays in the inbox. */
+    @Test fun mixOnAirWithoutARipServerKeepsTheRow() = runBlocking {
+        val port = FakeMix().also { it.autoMixing = true }
+        val mix = MixJukeboxSource(port = { port }, isLoadable = { false }, requestBurn = {})
+        val h = harness(starterResult = false, mix = mix, streamable = true)
+        awaitRow(h)
+        h.repo.decide("r1", JukeboxDecisionAction.NEXT)
+        withTimeout(10_000) { while (h.repo.state.value.transientError == null) delay(20) }
+        assertEquals(1, h.repo.state.value.requests.size)
+        assertEquals(0, mix.pendingCount)
+        assertTrue(decisions.isEmpty())
     }
 }

@@ -52,13 +52,19 @@ internal fun linkDeviceSection() = SettingsSection(LINK_DEVICE_SECTION_ID, 51) {
         SettingsCaption("Device sync isn’t configured for this build, so linking is unavailable. Nothing is sent over the network.")
         return@SettingsSection
     }
+    val deleted = unauthorized &&
+        services.profileSyncProblem(true) == com.levi.pocketdj.data.sync.ProfileSyncProblem.DELETED
     if (unauthorized) {
         Text(
-            "Profile not authorized — relink",
+            // Q120: a 401 after the other device ran Delete account gets the dedicated copy (Profile has Start fresh).
+            if (deleted) com.levi.pocketdj.screens.settings.sections.SyncUi.PROFILE_DELETED_TITLE else "Profile not authorized — relink",
             color = MaterialTheme.colorScheme.error,
             modifier = Modifier.testTag("link-unauthorized"),
         )
-        SettingsCaption("Enter a fresh code from your other device below.")
+        SettingsCaption(
+            if (deleted) "Enter a code from a device that still has your profile below, or Start fresh under Profile."
+            else "Enter a fresh code from your other device below.",
+        )
     }
 
     var myCode by remember { mutableStateOf<String?>(null) }
@@ -71,7 +77,8 @@ internal fun linkDeviceSection() = SettingsSection(LINK_DEVICE_SECTION_ID, 51) {
 
     SettingsCaption("Show this device’s code, then type it (or scan it) on your other device.")
     OutlinedButton(
-        enabled = !busy,
+        // A deleted profile's code would hand out credentials the server no longer accepts.
+        enabled = !busy && !deleted,
         onClick = {
             if (myCode != null) { myCode = null; return@OutlinedButton }
             busy = true; showError = null
