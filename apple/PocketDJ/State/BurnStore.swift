@@ -603,6 +603,14 @@ final class BurnStore {
     /// twice. The stream's adoption lands the same `.ready` item. No-op on the in-process path.
     /// Returns true when an (EXPLICIT) background burn was yielded — the stream then carries
     /// that explicit origin, so its adoption is a pinned download, never a temporary one.
+    /// An EXPLICIT background Download of `songId` is queued / in flight on the iOS transfer lane
+    /// (`TransferCoordinator`) — the only download `yieldBackgroundDownload` can cancel. The Now
+    /// Playing buffer lane never streams such a song (np-mix-mode review SHOULD): it would
+    /// cancel the user's download, and a stream that then failed lost it silently.
+    func hasPendingExplicitDownload(songId: String) -> Bool {
+        transfers != nil && items[songId]?.state == .downloading
+    }
+
     @discardableResult
     func yieldBackgroundDownload(songId: String) -> Bool {
         guard let transfers, items[songId]?.state == .downloading else { return false }

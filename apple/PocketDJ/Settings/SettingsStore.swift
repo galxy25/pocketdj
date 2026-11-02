@@ -225,6 +225,13 @@ final class SettingsStore {
     /// Cap (decimal GB) on the TEMPORARY buffer footprint: over it, the sweep removes the
     /// soonest-expiring unprotected holds first. nil ⇒ `npMixBufferDefaultCapGB` (2 GB).
     var npMixBufferCapGB: Double?
+    /// Mix Mode: rows buffered AHEAD of the current one on Wi-Fi (np-mix-mode §2.3). nil ⇒
+    /// `NPMixMode.defaultBufferAhead` (3); the picker offers 1 / 3 / 5 / 10.
+    var npMixBufferAhead: Int?
+    /// Mix Mode on a cellular path (`NPMixCellularPolicy` raw value). nil ⇒ `.nextSong`.
+    var npMixCellular: String?
+    /// "Start new sessions in Mix Mode" (Levi's Q4 default: OFF — Mix Mode is per session).
+    var npMixModeDefaultOn: Bool?
     /// Epoch ms of the last temporary-asset sweep START (stamped first — the 10-23 lesson).
     var lastTemporarySweepAt: Double?
 
@@ -244,6 +251,15 @@ final class SettingsStore {
         return v > 0 && v.isFinite ? v : Self.npMixBufferDefaultTTLHours
     }
     /// The temporary-footprint cap in force, in bytes (decimal GB, like the soft cap).
+    /// The Wi-Fi buffer window in force (1…10 rows past the current one).
+    var npMixBufferAheadEffective: Int {
+        guard let v = npMixBufferAhead, v > 0 else { return NPMixMode.defaultBufferAhead }
+        return min(v, NPMixMode.bufferAheadOptions.max() ?? 10)
+    }
+    /// The cellular policy in force (an unknown raw value — a newer build's — reads as default).
+    var npMixCellularPolicy: NPMixCellularPolicy {
+        npMixCellular.flatMap(NPMixCellularPolicy.init(rawValue:)) ?? .nextSong
+    }
     var npMixBufferCapBytes: Int {
         let gb = npMixBufferCapGB.flatMap { $0 > 0 && $0.isFinite ? $0 : nil } ?? Self.npMixBufferDefaultCapGB
         return Int(gb * StorageManager.bytesPerGB)
@@ -532,6 +548,9 @@ final class SettingsStore {
         self.storageAutoManage = data.storageAutoManage ?? Self.storageAutoManageDefault
         self.npMixBufferTTLHours = data.npMixBufferTTLHours
         self.npMixBufferCapGB = data.npMixBufferCapGB
+        self.npMixBufferAhead = data.npMixBufferAhead
+        self.npMixCellular = data.npMixCellular
+        self.npMixModeDefaultOn = data.npMixModeDefaultOn
         self.lastTemporarySweepAt = data.lastTemporarySweepAt
         self.debugLoggingEnabled = data.debugLoggingEnabled ?? false
         self.remoteTelemetryEnabled = data.remoteTelemetryEnabled ?? false
@@ -766,7 +785,10 @@ final class SettingsStore {
             listeningPocketsEnabled: listeningPocketsChoice,
             npMixBufferTTLHours: npMixBufferTTLHours,
             npMixBufferCapGB: npMixBufferCapGB,
-            lastTemporarySweepAt: lastTemporarySweepAt)
+            lastTemporarySweepAt: lastTemporarySweepAt,
+            npMixBufferAhead: npMixBufferAhead,
+            npMixCellular: npMixCellular,
+            npMixModeDefaultOn: npMixModeDefaultOn)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -818,6 +840,9 @@ final class SettingsStore {
         storageAutoManage = d.storageAutoManage ?? Self.storageAutoManageDefault
         npMixBufferTTLHours = d.npMixBufferTTLHours
         npMixBufferCapGB = d.npMixBufferCapGB
+        npMixBufferAhead = d.npMixBufferAhead
+        npMixCellular = d.npMixCellular
+        npMixModeDefaultOn = d.npMixModeDefaultOn
         lastTemporarySweepAt = d.lastTemporarySweepAt
         debugLoggingEnabled = d.debugLoggingEnabled ?? false
         // The capture buffer follows its setting on reset, exactly as DebugView's toggle does —
@@ -1030,6 +1055,12 @@ struct SettingsData: Codable {
     var npMixBufferCapGB: Double? = nil
     /// Optional so older blobs still decode — epoch ms of the last temporary sweep start.
     var lastTemporarySweepAt: Double? = nil
+    /// Optional so older blobs still decode — Mix Mode's Wi-Fi buffer window (nil ⇒ 3).
+    var npMixBufferAhead: Int? = nil
+    /// Optional so older blobs still decode — Mix Mode's cellular policy raw value (nil ⇒ next song).
+    var npMixCellular: String? = nil
+    /// Optional so older blobs still decode — start new sessions in Mix Mode (nil ⇒ off).
+    var npMixModeDefaultOn: Bool? = nil
 
     static let `default` = SettingsData(
         // No shipped default catalog source — same reasoning as the blank rip/jukebox URLs

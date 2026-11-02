@@ -642,21 +642,38 @@ struct PocketDJApp: App {
         // bytes arrive (the finished stream is adopted as an ordinary burn).
         let mixStreamer = MixStreamLoader(rips: rips, burns: burns)
         mixStreamer.onProgress = { [weak mix] songId in mix?.streamProgressed(songId) }
-        mixStreamer.pinnedIds = { [weak mix] in mix?.streamingSongIds ?? [] }
+        // Never evicted to make room: what a Mix deck plays, AND the Now Playing current + next
+        // rows (np-mix-mode §2.5 — the Mix tab's lane can't cancel the buffer a hand-off waits on).
+        mixStreamer.pinnedIds = { [weak mix, weak setlistPlayer] in
+            (mix?.streamingSongIds ?? []).union(setlistPlayer?.pinnedStreamIds ?? [])
+        }
         mix.streamer = mixStreamer
         // Now Playing stems stream through the same loader's stem lane (one transfer per song).
         setlistPlayer.dsp?.streamer = mixStreamer
         // STEM LOCK download lane: the next track's whole song (through this same loader — a
         // finished stream is adopted as a burn) paired with its stems, part by part in priority
         // order. Idle unless a session's Stem Lock carries stems.
-        setlistPlayer.stemLockPrefetcher = StemLockPrefetcher.live(
+        // NOW PLAYING MIX MODE (np-mix-mode phase 2) rides the same lane: the current + upcoming
+        // rows made local (temporary burns), sized by these settings.
+        setlistPlayer.prefetcher = NowPlayingPrefetcher.live(
             streamer: mixStreamer, burns: burns, rips: rips,
             isCatalogOwner: { [weak coordinator] in coordinator?.isCatalogOwner() ?? false })
-        setlistPlayer.stemLockSongFetchable = { [weak mixStreamer] id in mixStreamer?.canStream(id) ?? false }
-        setlistPlayer.stemLockStreamedFile = { [weak mixStreamer] id in
+        setlistPlayer.prefetchSongFetchable = { [weak mixStreamer] id in mixStreamer?.canStream(id) ?? false }
+        setlistPlayer.prefetchedCutFile = { [weak mixStreamer] id in
             guard let s = mixStreamer?.stream(for: id), s.isComplete, !s.adopted, s.isCut,
                   let url = s.finalURL, FileManager.default.fileExists(atPath: url.path) else { return nil }
             return url
+        }
+        setlistPlayer.prefetchProgress = { [weak mixStreamer] id in
+            guard let s = mixStreamer?.stream(for: id) else { return nil }
+            if s.isComplete { return 1 }
+            guard let total = s.expectedBytes, total > 0 else { return nil }
+            return min(1, max(0, Double(s.bytesReceived) / Double(total)))
+        }
+        setlistPlayer.networkAvailable = { [weak mixStreamer] in mixStreamer?.networkAvailable ?? true }
+        setlistPlayer.mixModeSettings = { [weak settings] in
+            guard let settings else { return (NPMixMode.defaultBufferAhead, .nextSong, false) }
+            return (settings.npMixBufferAheadEffective, settings.npMixCellularPolicy, settings.npMixModeDefaultOn ?? false)
         }
         mix.artworkURLsProvider = artworkURLsProvider
         // F4: a Mix-tab session (deck / Auto-DJ) starting must tear down a live Now Playing mix
@@ -1055,7 +1072,9 @@ struct PocketDJApp: App {
                 ids.insert(sp.queue[sp.index].resolveId)
                 ids.formUnion(sp.protectedWindowSongIds())
             } else if let session = playbackSession {
-                ids.formUnion(session.windowSongIds(ahead: SetlistPlayer.prefetchAhead))
+                // The held / persisted session's window — Mix Mode's (larger) one included.
+                ids.formUnion(session.windowSongIds(ahead: max(SetlistPlayer.prefetchAhead,
+                                                               settings.npMixBufferAheadEffective)))
             }
             if let pf = setlistPlayer?.stemLockPrefetcher { ids.formUnion(pf.activeSongIds) }
             if let ms = mixStreamer { ids.formUnion(ms.activeSongIds) }
@@ -1063,6 +1082,14 @@ struct PocketDJApp: App {
         }
         // A hold landing may push the temporary footprint over the buffer cap (2 GB default).
         burns.onTemporaryHoldsChanged = { [weak storage] in storage?.scheduleCapSweepIfNeeded() }
+        // Mix Mode OFF → the cap check (np-mix-mode §3.5); the DISK GUARD before every buffer
+        // step: ≥ 1 GB free and the temporary footprint under the cap, evicting the
+        // soonest-expiring unprotected buffer first; a step that still doesn't fit is skipped.
+        setlistPlayer.onMixModeOff = { [weak storage] in storage?.scheduleCapSweepIfNeeded() }
+        setlistPlayer.prefetcher?.diskGuard = { [weak storage] step in
+            guard let storage else { return true }
+            return await storage.admitBufferStep(step.description)
+        }
         #if os(iOS)
         // Let the BGAppRefreshTask reconcile the rips manifest while backgrounded (the rip
         // itself is server-side; this only catches up the client's "ripped" view).
@@ -2351,7 +2378,7 @@ struct PocketDJApp: App {
         // surface in another without switching tabs. Applies on every platform, but the command
         // registers only where a second window can actually show (macOS + iPadOS; NOT iPhone).
         #if !os(tvOS)
-        .commands { NewWindowCommands(); SongEditCommands() }
+        .commands { NewWindowCommands(); SongEditCommands(); NowPlayingControlCommands(sequencer: setlistPlayer) }
         #endif
     }
 }
@@ -2383,6 +2410,25 @@ private struct SongEditCommands: Commands {
             } else {
                 Button("Paste Songs") {}.disabled(true)
             }
+        }
+        #else
+        EmptyCommands()
+        #endif
+    }
+}
+
+/// Controls ▸ Mix Mode (⌥⌘M) — macOS only (np-mix-mode §1.1). The App owns the sequencer, so it
+/// is handed in directly (a Commands struct does not inherit the WindowGroup environment).
+private struct NowPlayingControlCommands: Commands {
+    let sequencer: SetlistPlayer
+
+    var body: some Commands {
+        #if os(macOS)
+        CommandMenu("Controls") {
+            Toggle("Mix Mode", isOn: Binding(get: { sequencer.mixMode.enabled },
+                                             set: { sequencer.setMixMode($0) }))
+                .keyboardShortcut("m", modifiers: [.command, .option])
+                .disabled(!sequencer.isRunning)
         }
         #else
         EmptyCommands()

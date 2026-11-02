@@ -34,15 +34,17 @@ final class NowPlayingDSP {
 
     // MARK: Graph nodes (never observed — mutating the node graph must not invalidate the UI)
 
-    @ObservationIgnored private let engine = AVAudioEngine()
-    @ObservationIgnored private let player = AVAudioPlayerNode()
-    @ObservationIgnored private let inputMixer = AVAudioMixerNode()
-    @ObservationIgnored private let timePitch = AVAudioUnitTimePitch()
-    @ObservationIgnored private let comp = AVAudioUnitEffect(audioComponentDescription: NowPlayingDSP.dynamicsDesc)
-    @ObservationIgnored private let filter = AVAudioUnitEQ(numberOfBands: 1)
-    @ObservationIgnored private let reverb = AVAudioUnitReverb()
-    @ObservationIgnored private let flanger = AVAudioUnitDelay()
-    @ObservationIgnored private let masterLimiter = AVAudioUnitEffect(audioComponentDescription: NowPlayingDSP.limiterDesc)
+    // `var`, not `let`: a media-services reset orphans every engine/node in the process, and
+    // Apple's contract is to RECREATE them (`rebuildAfterMediaReset`).
+    @ObservationIgnored private var engine = AVAudioEngine()
+    @ObservationIgnored private var player = AVAudioPlayerNode()
+    @ObservationIgnored private var inputMixer = AVAudioMixerNode()
+    @ObservationIgnored private var timePitch = AVAudioUnitTimePitch()
+    @ObservationIgnored private var comp = AVAudioUnitEffect(audioComponentDescription: NowPlayingDSP.dynamicsDesc)
+    @ObservationIgnored private var filter = AVAudioUnitEQ(numberOfBands: 1)
+    @ObservationIgnored private var reverb = AVAudioUnitReverb()
+    @ObservationIgnored private var flanger = AVAudioUnitDelay()
+    @ObservationIgnored private var masterLimiter = AVAudioUnitEffect(audioComponentDescription: NowPlayingDSP.limiterDesc)
     @ObservationIgnored private var stemNodes: [String: AVAudioPlayerNode] = [:]
     @ObservationIgnored private var built = false
 
@@ -413,6 +415,34 @@ final class NowPlayingDSP {
             resume()
         }
     }
+
+    /// MEDIA SERVICES RESET (np-mix-mode §4.4): mediaserverd restarted, so this graph is orphaned —
+    /// re-engaging it would "play" into nothing (dead air on every later track of a Stem Lock
+    /// session, which engages at each start). Drop any engagement and RECREATE the engine + every
+    /// node; the next `engage` builds the fresh graph lazily. The caller (`SetlistPlayer`) has
+    /// already put the track back on the AVPlayer. Controls are kept (they re-apply on build).
+    func rebuildAfterMediaReset() {
+        if isEngaged { _ = disengage() }
+        if let o = configChangeObserver { NotificationCenter.default.removeObserver(o); configChangeObserver = nil }
+        if let o = interruptionObserver { NotificationCenter.default.removeObserver(o); interruptionObserver = nil }
+        if captureTapped { inputMixer.removeTap(onBus: 0); captureTapped = false }
+        if engine.isRunning { engine.stop() }
+        engine = AVAudioEngine()
+        player = AVAudioPlayerNode()
+        inputMixer = AVAudioMixerNode()
+        timePitch = AVAudioUnitTimePitch()
+        comp = AVAudioUnitEffect(audioComponentDescription: Self.dynamicsDesc)
+        filter = AVAudioUnitEQ(numberOfBands: 1)
+        reverb = AVAudioUnitReverb()
+        flanger = AVAudioUnitDelay()
+        masterLimiter = AVAudioUnitEffect(audioComponentDescription: Self.limiterDesc)
+        stemNodes = [:]
+        built = false
+        mediaResetRebuilds += 1
+        NPLog.trace("npdsp media services reset → graph recreated (rebuilds on next engage)")
+    }
+    /// Graph recreations after a media-services reset (diagnostics + tests).
+    @ObservationIgnored private(set) var mediaResetRebuilds = 0
 
     /// TEST SEAM: the system stops the engine (`stopOnly`), and then — unless `stopOnly` — posts
     /// its configuration change.

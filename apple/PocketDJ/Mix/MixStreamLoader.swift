@@ -245,6 +245,14 @@ final class MixStreamLoader {
             }
         }
         guard canStream(songId), let entry = rips.manifest[songId] else { return nil }
+        // EXPLICIT DOWNLOADS SURVIVE (np-mix-mode review SHOULD): the speculative buffer lane
+        // never takes over a pending explicit background Download — yielding would cancel it,
+        // and a buffer stream that then failed (or was evicted to make room) lost the user's
+        // download silently. The download lands the same file; the lane waits on it instead.
+        if origin == .buffer, burns.hasPendingExplicitDownload(songId: songId) {
+            DiagLog.shared.telemetry("mixstream", "open \(songId) refused for buffer — explicit download pending")
+            return nil
+        }
         makeRoom()
         let file = dir.appendingPathComponent("\(Self.safe(songId))-\(UUID().uuidString.prefix(8)).mp3")
         FileManager.default.createFile(atPath: file.path, contents: nil)

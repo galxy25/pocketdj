@@ -263,7 +263,7 @@ final class PlayerEngine {
     /// file) so the sequencer advances at the track's own length inside a shared album mp3.
     func load(url: URL, live: Bool, startMs: Int?, title: String = "", artist: String = "",
               songId: String? = nil, endBoundaryMs: Int? = nil, songStartMs: Int? = nil,
-              scopeRelease: (() -> Void)? = nil) {
+              scopeRelease: (() -> Void)? = nil, deferPlayUntilSeeked: Bool = false) {
         // Loading a real item ends any external-source impersonation (Apple Music handoff).
         NPLog.trace("engine.load title=\(title) live=\(live)")
         endExternalNowPlaying()
@@ -280,6 +280,9 @@ final class PlayerEngine {
         clock.duration = 0
         duration = 0
         pendingSeekMs = live ? nil : startMs
+        // np-mix-mode HAND-OFF: a mid-song move onto the same bytes must not sound the file's
+        // top before the seek lands — hold the render until the item is ready AND seeked.
+        holdPlayUntilSeek = deferPlayUntilSeeked && pendingSeekMs != nil
         endBoundarySec = (live ? nil : endBoundaryMs).map { Double($0) / 1000 }
         trackEndSignaled = false
         nowPlayingTitle = title
@@ -340,9 +343,12 @@ final class PlayerEngine {
         // collection semantics (⏮ previous / ⏭ next while a set runs, disabled otherwise).
         setNextPreviousEnabled(onNext != nil)
         setLikeCommandEnabled(true)            // reclaim heals the ♥ if a Mix interlude disabled it
-        player.play()
+        if !holdPlayUntilSeek { player.play() }
         updateNowPlayingInfo()
     }
+
+    /// A `load(deferPlayUntilSeeked: true)` is still waiting for its seek before rendering.
+    @ObservationIgnored private(set) var holdPlayUntilSeek = false
 
     /// The current audio output ports ("AirPlay:Living Room") — for the failure diag line, so
     /// a route-dependent failure is visible in the trace instead of looking like a bad file.
@@ -396,8 +402,23 @@ final class PlayerEngine {
         if d.isFinite, d > 0 { clock.duration = d; duration = d }
         if let ms = pendingSeekMs, d.isFinite, d > 0 {
             pendingSeekMs = nil
-            let target = min(Double(ms) / 1000.0, d - 0.1)
-            seek(to: max(0, target))
+            let target = max(0, min(Double(ms) / 1000.0, d - 0.1))
+            if holdPlayUntilSeek {
+                // Seek FIRST, render after — the hand-off's whole cut is load + seek (no blip of
+                // the song's top). A pause meanwhile (`pausedByListener`) keeps it silent.
+                let time = CMTime(seconds: target, preferredTimescale: 600)
+                clock.currentTime = target
+                player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak item] _ in
+                    Task { @MainActor in
+                        guard let self, let item, item === self.player.currentItem, self.holdPlayUntilSeek else { return }
+                        self.holdPlayUntilSeek = false
+                        if !self.pausedByListener { self.player.play() }
+                        self.updateNowPlayingInfo()
+                    }
+                }
+            } else {
+                seek(to: target)
+            }
         }
         updateNowPlayingInfo()
     }
@@ -426,6 +447,12 @@ final class PlayerEngine {
         setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
         setLikeCommandEnabled(true)             // …and heals the ♥ a Mix card interlude disabled
         pausedByListener = false
+        if holdPlayUntilSeek {
+            // np-mix-mode HAND-OFF still seeking: a ▶ (lock screen / CarPlay / the supervisor)
+            // must not sound the file's TOP — the seek completion starts the render.
+            NPLog.trace("engine.play during hand-off hold → deferred to the seek")
+            isPlaying = true; updateNowPlayingInfo(); return
+        }
         player.play(); isPlaying = true; updateNowPlayingInfo()
     }
     func pause() {
@@ -524,7 +551,7 @@ final class PlayerEngine {
     /// Never un-pauses a listener pause. Used by the start watchdog (8 s), the supervisor's L1,
     /// and a ⏯ press on a still-waiting item.
     func rekick(by caller: String) {
-        guard !externalActive, player.currentItem != nil, !pausedByListener else { return }
+        guard !externalActive, player.currentItem != nil, !pausedByListener, !holdPlayUntilSeek else { return }
         configureAudioSession(by: caller)
         listenerIntentPlaying = true
         interruptionOpen = false
@@ -614,6 +641,9 @@ final class PlayerEngine {
         toggleCount += 1
         if externalActive { (externalIsPlaying?() ?? isPlaying) ? pause() : play(); return }
         guard player.currentItem != nil else { NPLog.trace("engine.toggle REFUSED (idle)"); return }
+        // A hand-off hold (np-mix-mode) reads `.paused` while it seeks, but the listener hears a
+        // PLAYING track: ⏯ there means pause (and ▶ after a pause means play).
+        if holdPlayUntilSeek { pausedByListener ? play() : pause(); return }
         // A track that WANTS to play but is still waiting for data shows ⏸ on the honest card;
         // a ▶/⏯ press there means "play it", not "pause it" — re-kick instead of pausing (the
         // old behaviour made the field "kick" take two presses). The discrete pause still pauses.
@@ -818,6 +848,13 @@ final class PlayerEngine {
 
     /// Seek to an absolute time (seconds). No-op for a live stream beyond its buffer.
     func seek(to seconds: Double) {
+        if holdPlayUntilSeek, pendingSeekMs != nil {
+            // A hand-off is still waiting for its item: the listener's scrub is where it lands.
+            pendingSeekMs = Int((max(0, seconds) * 1000).rounded())
+            clock.currentTime = max(0, seconds)
+            updateNowPlayingInfo()
+            return
+        }
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         clock.currentTime = max(0, seconds)
@@ -845,6 +882,7 @@ final class PlayerEngine {
         cardOffsetSec = 0; isStalled = false
         firstAudioPending = false
         pendingSeekMs = nil
+        holdPlayUntilSeek = false
         endBoundarySec = nil; trackEndSignaled = false
         scopeRelease?(); scopeRelease = nil   // release the user-folder file's security scope
         artworkToken += 1; nowPlayingSongId = nil; nowPlayingArtwork = nil   // drop any in-flight art fetch

@@ -1,8 +1,9 @@
-# Now Playing Mix Mode (design, 2026-11-02)
-
-Status: PHASE 1 IMPLEMENTED on `feat/np-mix-mode` (2026-11-02, not merged; phases 2–5 are design
-only). Levi's defaults applied: Q3 fixed 48 h, Q5 yes (Stem Lock prefetch is temporary), Q6 2 GB cap,
-Q11 Keep option offered. Phase-1 notes vs. this design: (a) `AssetOrigin` gained `.incidental` (the
+Status: PHASES 1–2 IMPLEMENTED on `feat/np-mix-mode` (phase 1 merged 2026-11-02 as 22025b40; phase 2
+2026-11-02, not merged; phases 3–5 are design only). Levi's defaults applied: Q2 engage on touch (the
+Stem Lock still engages at start), Q3 fixed 48 h, Q4 per session + an off-by-default "Start new
+sessions in Mix Mode", Q5 yes (Stem Lock prefetch is temporary), Q6 2 GB cap, Q8 no reordering, Q9
+no tempo/FX carry, Q10 no tvOS, Q11 Keep option offered.
+Phase-1 notes vs. this design: (a) `AssetOrigin` gained `.incidental` (the
 Now Playing stems toggle: no pin, no hold — legacy permanent); (b) a hold's expiry moves LATER when
 another asset of the same song lands (never earlier); (c) holds carry ledger byte credits so cap
 planning never scans the disk, and `userFolderPath` so a burn-folder switch releases user-folder
@@ -10,6 +11,15 @@ assets instead of deleting same-named files in the new folder; (d) the sweep nev
 per-song cuts (only explicit burns export them); (e) any existing ledger row (ready / downloading /
 error) or an owed download makes a buffer landing explicit; (f) the worker disk guard (§2.3) and
 `cutFile` holds are phase 2.
+Phase-2 notes vs. this design (see §9 for the full list): the disk guard landed (`cutFile` holds did
+NOT — a buffered analog cut stays an un-adopted Caches/mixstream file, swept with the cache as
+before); the planner is `NowPlayingPrefetcher.plan(_ input:)` in `Playback/NowPlayingPrefetch.swift`
+(Stem Lock plan = Mix Mode off, byte for byte); the hand-off is an AVPlayer reload that holds the
+render until the seek lands (`PlayerEngine.load(deferPlayUntilSeeked:)`) instead of a volume dip;
+the chip has one extra state, `.waiting` ("Buffers on ▶", a held restore); the ⋯ menu is the Now
+Playing record's context menu (the deck has no separate ⋯ button); the buffer lane never streams a
+song with an explicit background Download pending (review SHOULD: that stream cancelled the download,
+and a failed stream lost it).
 Platforms: iOS/iPadOS, macOS, visionOS (they share `NowPlayingPanel`). tvOS is out of scope for v1
 (§1.1). Android follows the parity program later.
 
@@ -613,3 +623,46 @@ rules (verify at the committed tip, the XcodeGen test-count trap: check the COUN
    **Default: no** (per-track reset, as F4). A later "Mix Lock" if you want it.
 10. **tvOS:** **Default: not in v1** (no TV mix panel exists, 5 GB TV cap).
 11. **"Keep" as a TTL option** (buffer becomes a normal download): **Default: offer it** in the picker.
+
+## 9. Phase 2 as built (2026-11-02)
+
+| Piece | Where | Notes |
+|---|---|---|
+| Session state | `Playback/NPMixMode.swift` (`NPMixModeState`, `NPMixCellularPolicy`, `NPMixMode.Indicator`, `BufferDot`), `SetlistPlayer.mixMode` / `setMixMode` / `toggleMixMode` / `mixModeIndicator` / `mixModeBufferStrip` | Per session; `play()` starts it from `npMixModeDefaultOn`; `stop()` clears it; persisted as `Snapshot.npMixMode` (optional, no schema bump); restore is HELD (chip "Buffers on ▶", no downloads until ▶). tvOS: never on, a synced flag restores off there. |
+| Lane | `Playback/NowPlayingPrefetch.swift` (`NowPlayingPrefetcher`, `typealias StemLockPrefetcher`) | `plan(_ input:)`: Mix Mode off = the Stem Lock plan exactly; on = current song (when it is a presigned rip stream) → current stems → per row song → stems, muted parts last, then any Stem Lock step not already planned (Mix Mode never fetches less than the lock). `mixReach`: Wi-Fi `npMixBufferAhead` rows + all stems; cellular `.nextSong` = current + next, stems only on request (the Stems toggle on / the lock); cellular `.off` = nothing extra; `.full` = Wi-Fi; Low Data = current row, no stems; offline = nothing. Re-plans on track start, queue edit, lock change, Mix Mode on/off, Mix-tab session flips, and network-class changes (`StemLockNetworkMonitor.onChange`). Device playback mode: Mix Mode never downloads. |
+| Disk guard | `StorageManager.admitBufferStep` → `NowPlayingPrefetcher.diskVerdict` | Before EVERY lane step (Stem Lock too): ≥ 1 GB free after the step (`volumeAvailableCapacityForImportantUsage`, read off-main) and the temporary footprint under `npMixBufferCapGB`; short ⇒ `sweepTemporary(capOverrideBytes:)` evicts the soonest-expiring unprotected buffer (the step's own song is protected: it is `inFlight`), re-check, else skip (`blockedCooldown` 120 s, chip "Storage full"). |
+| Hand-off | `SetlistPlayer.handOffCurrentToLocal(reason:)` | Trigger: the `.song(current)` step landing, Mix Mode turning on, and first audio of a presigned start (a landing during the resolve). Same bytes only (`res.id == resolveId`, or the prefetched cut). Position = AVPlayer clock − stream `startMs` (song-relative), re-based onto the local file's `startMs` (side → side, side → cut). `deferPlayUntilSeeked` holds the render until the seek lands; a listener pause survives; a scrub during the hold wins. Never claims a generation, never re-stamps history (`nowPlaying.songId` unchanged ⇒ no `onPlay`), never within 3 s of the end, refused while a resolve is in flight, on Apple Music / live HLS, while engaged, while the Mix tab is live. Our own re-stamp is never read as a jump (`ownNowPlayingStamp` — the adopt observer runs a turn later, after a possible index move). Under a Stem Lock carrying stems the DSP engages at the same position. `DeadAirMeter` measures the cut (`npmix-handoff`). |
+| Mix tab | `observeMixSessionForEngagement` | A live Mix session suspends Mix Mode (chip "Paused — Mix tab is live", lane re-planned without it, no hand-off); its end re-plans and resumes. `MixStreamLoader.pinnedIds` now also pins the Now Playing current + next audio ids. |
+| Media-services reset | `SetlistPlayer.handleMediaServicesReset` (iOS/visionOS observer) | While engaged: tear the DSP down, reload the AVPlayer at the DSP position (paused stays paused). |
+| Explicit downloads (review SHOULD) | `BurnStore.hasPendingExplicitDownload`, `MixStreamLoader.open` (`.buffer` refused), `NowPlayingPrefetcher.live` / `awaitPendingDownload` | The buffer lane never yields (cancels) a pending explicit background Download. The playing row waits on it (≤ 90 s); upcoming rows are left to it. A Mix deck's explicit open still takes the download over (unchanged; it is explicit itself). |
+| UI | `NowPlayingMixPanel` (header always shown while a session runs, `np-mix-mode` switch, `np-mix-mode-status` chip, `np-mix-buffer-strip`), `MixModeMenuToggle` (record context menu + mini-bar context menu, `np-menu-mix-mode`), macOS Controls ▸ Mix Mode ⌥⌘M (`NowPlayingControlCommands`), Settings ▸ Storage ▸ Mix Mode buffer (start-in-Mix-Mode toggle, buffer-ahead 1/3/5/10, cellular policy) | Buffering ⇒ controls shown disabled; Apple Music / live ⇒ hidden ("hide, don't grey"). tvOS keeps F4's panel. |
+| Diagnostics | `[npmix]` DiagLog + NPLog | mode on/off (+ new-session default / cleared), `plan net=… song=… a → b`, network changes, Mix-tab suspend/resume, hand-offs with position + start + paused, deferrals/skips, media reset. Lane steps stay on `[stemlock]` (`prefetch … ok|FAILED|SKIPPED (storage…)`). `[storage] diskguard …`. |
+
+Known limits (phase 2): Apple Music rows are not ripped or handed off (chip "Apple Music only"); a
+buffer `.song` step cancelled by a re-plan leaves its `MixStreamLoader` transfer running to
+completion (the loader's every-stream-completes rule) — the bytes still adopt as a TEMPORARY burn;
+the AVPlayer already streaming the current row and the lane fetch the same bytes once (phase 3
+removes that); the TV ignores the flag.
+
+### 9.1 Phase 2 review fixes (2026-11-02)
+
+- **A hand-off never starts audio.** Refused while an audio-session interruption is open (a call,
+  Siri, another app — a reload would play over it / steal the audio back); "paused" = a listener
+  pause OR the engine no longer intending to play (route loss, an interruption that ended without
+  resume), not only `pausedByListener`.
+- **A failed local file falls back to the stream.** `handleFailed` on the handed-off file reverts
+  the row onto the presigned stream it left, at the same song position (the hand-off point when the
+  file died before loading), once; a second failure advances as ever. Cleared on every track start.
+- **Runway across the cut.** A playing hand-off (and a fallback) holds a `PlaybackRunway` from the
+  reload until first audio (cap 10 s) — nothing renders while the seek lands.
+- **The hold reads as playing.** `PlayerEngine.toggle()` during the seek hold pauses (it read
+  `.paused` and called `play()`, sounding the file's top); `play()` there clears the pause and lets
+  the seek start the render; `rekick` stands down.
+- **Own-stamp match is URL + song** (two songs of one analog side share a file — a foreign play of
+  the other one is a real jump; the DSP must not keep rendering ours over it).
+- **Explicit download pending on an upcoming row:** its song is left to the download, but it plans
+  as local so its STEMS are still fetched (it used to be skipped whole — a Stem Lock regression).
+- **Mix tab idle again:** retries the hand-off (a buffer that landed while suspended is never
+  re-fetched).
+- **Media-services reset recreates the `NowPlayingDSP` graph** (engaged or not).
+

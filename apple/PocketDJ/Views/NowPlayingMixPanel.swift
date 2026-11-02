@@ -3,9 +3,13 @@ import SwiftUI
 /// F4 — the collapsible Mix mini-panel docked on the Now Playing deck. It exposes tempo / pitch /
 /// gain / effects / stems for the CURRENTLY PLAYING local track by driving `NowPlayingDSP`.
 ///
-/// Visibility: shown ONLY when the current track is a local/mixable file AND no Mix-tab session is
-/// actively playing (`SetlistPlayer.mixAvailable`). Otherwise the whole section is HIDDEN — never
-/// greyed. Collapsed by default (`@AppStorage("nowPlayingMixExpanded")`).
+/// Visibility (np-mix-mode phase 2): the HEADER — chevron · "Mix" · status chip · the MIX MODE
+/// switch — shows whenever a session runs (tvOS keeps F4's rule: no Mix Mode there, Q10). The
+/// CONTROLS show when the current track is mixable (`SetlistPlayer.mixAvailable`); with Mix Mode
+/// on they also show, DISABLED, while the track's local copy buffers ("Buffering 42%" in the
+/// chip). A track that can never be local (Apple Music, a live capture) keeps F4's "hide, don't
+/// grey" rule. Collapsed by default (`@AppStorage("nowPlayingMixExpanded")`); turning Mix Mode on
+/// expands it once.
 ///
 /// ENGAGE = swap-on-touch: every control first calls `SetlistPlayer.engageMix()` (idempotent), which
 /// on the FIRST touch hands the current track's audio off the `AVPlayer` into the DSP graph AT the
@@ -29,6 +33,24 @@ struct NowPlayingMixPanel: View {
     private var mixActive: Bool { mix.isRunning || mix.autoMixing }
     private var available: Bool { sequencer.mixAvailable(mixActive: mixActive) }
 
+    /// Mix Mode lives on every Now Playing surface but the TV (Q10).
+    private static var mixModeSupported: Bool {
+        #if os(tvOS)
+        return false
+        #else
+        return true
+        #endif
+    }
+    /// The header shows whenever a session runs (F4 on tvOS: only when mixable).
+    private var showsHeader: Bool { Self.mixModeSupported ? sequencer.isRunning : available }
+    private var indicator: NPMixMode.Indicator { sequencer.mixModeIndicator }
+    /// Controls visible: mixable — or, in Mix Mode, buffering towards mixable (shown disabled).
+    private var controlsVisible: Bool {
+        if available { return true }
+        if case .buffering = indicator { return true }
+        return false
+    }
+
     /// Whether the current track HAS stems anywhere — burned on disk, a profile item's, or in the
     /// catalog (streamed in on demand while the full song keeps playing) — read from the stores so
     /// the Stems toggle is enabled BEFORE the swap (the DSP only learns `stemsAvailable` once
@@ -44,10 +66,22 @@ struct NowPlayingMixPanel: View {
     private func engage() { sequencer.engageMix() }
 
     var body: some View {
-        if available {
+        if showsHeader {
             VStack(alignment: .leading, spacing: 8) {
                 header
-                if expanded { controls }
+                if !controlsVisible, sequencer.stemLock.enabled {
+                    // A locked session on a track that can't be mixed still says why this track
+                    // plays the full mix (expanded or not, as before the header was always shown).
+                    StemLockStatusRow(indicator: sequencer.stemLockIndicator)
+                }
+                if expanded {
+                    if controlsVisible {
+                        controls
+                            .disabled(!available)
+                            .opacity(available ? 1 : 0.45)
+                    }
+                    if sequencer.mixMode.enabled { MixModeBufferStrip() }
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
@@ -64,28 +98,59 @@ struct NowPlayingMixPanel: View {
     // MARK: Header (chevron + "Mix" + engaged dot)
 
     private var header: some View {
-        Button {
-            withAnimation { expanded.toggle() }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2)
-                Image(systemName: "slider.horizontal.3").font(.caption)
-                Text("Mix").font(.caption.weight(.semibold))
-                if sequencer.mixEngaged {
-                    Circle().fill(Theme.accent).frame(width: 6, height: 6)
-                        .accessibilityLabel("Engaged")
+        HStack(spacing: 6) {
+            Button {
+                withAnimation { expanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2)
+                    Image(systemName: "slider.horizontal.3").font(.caption)
+                    Text("Mix").font(.caption.weight(.semibold))
+                    if sequencer.mixEngaged {
+                        Circle().fill(Theme.accent).frame(width: 6, height: 6)
+                            .accessibilityLabel("Engaged")
+                    }
+                    if sequencer.stemLock.enabled {
+                        Image(systemName: "lock.fill").font(.caption2)
+                            .accessibilityLabel("Stem Lock on")
+                    }
+                    Spacer(minLength: 4)
                 }
-                if sequencer.stemLock.enabled {
-                    Image(systemName: "lock.fill").font(.caption2)
-                        .accessibilityLabel("Stem Lock on")
-                }
-                Spacer()
+                .foregroundStyle(sequencer.mixEngaged ? Theme.accent : Theme.fgDim)
+                .contentShape(Rectangle())
             }
-            .foregroundStyle(sequencer.mixEngaged ? Theme.accent : Theme.fgDim)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("np-mix-toggle")
+            if Self.mixModeSupported {
+                MixModeStatusChip()
+                mixModeSwitch
+            }
+        }
+    }
+
+    /// The MIX MODE capsule switch (`np-mix-mode`): session state, not a mix control — it
+    /// never engages the DSP by itself.
+    private var mixModeSwitch: some View {
+        let on = sequencer.mixMode.enabled
+        return Button {
+            withAnimation { sequencer.setMixMode(!on) }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "waveform.badge.plus")
+                Text("Mix Mode")
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(on ? Theme.accent : Theme.fgDim)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(on ? Theme.accent.opacity(0.18) : Theme.bgOverlay))
+            .overlay(Capsule().stroke(on ? Theme.accent : Theme.border))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("np-mix-toggle")
+        .accessibilityLabel("Mix Mode")
+        .accessibilityValue(on ? "On" : "Off")
+        .accessibilityHint("Buffers this and the upcoming songs so the mix controls work on any track")
+        .accessibilityIdentifier("np-mix-mode")
     }
 
     // MARK: Controls
@@ -199,6 +264,82 @@ extension NowPlayingMixPanel {
         .accessibilityValue(locked ? "On" : "Off")
         .accessibilityHint("Keeps this stem setup for the next tracks")
         .accessibilityIdentifier("np-mix-stem-lock")
+    }
+}
+
+/// MIX MODE's status chip on the panel header (`np-mix-mode-status`). Re-reads twice a second
+/// while buffering (the byte progress isn't observable), otherwise only on state changes.
+struct MixModeStatusChip: View {
+    @Environment(SetlistPlayer.self) private var sequencer
+
+    var body: some View {
+        let ind = sequencer.mixModeIndicator
+        if case .buffering = ind {
+            TimelineView(.periodic(from: .now, by: 0.5)) { _ in chip(sequencer.mixModeIndicator) }
+        } else {
+            chip(ind)
+        }
+    }
+
+    @ViewBuilder private func chip(_ ind: NPMixMode.Indicator) -> some View {
+        if let text = ind.chipText {
+            HStack(spacing: 4) {
+                switch ind {
+                case .engaged, .stemsLoading:
+                    Circle().fill(Theme.accent).frame(width: 6, height: 6)
+                case .ready:
+                    Circle().stroke(Theme.accent, lineWidth: 1.5).frame(width: 6, height: 6)
+                case .buffering, .waiting:
+                    Image(systemName: "arrow.down.circle").font(.caption2)
+                case .unavailable, .suspended, .ripping:
+                    Image(systemName: "exclamationmark.circle").font(.caption2)
+                case .off:
+                    EmptyView()
+                }
+                Text(text).lineLimit(1).minimumScaleFactor(0.75)
+            }
+            .font(.caption2)
+            .foregroundStyle(ind.controlsLive ? Theme.accent : Theme.fgDim)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Mix Mode status")
+            .accessibilityValue(text)
+            .accessibilityIdentifier("np-mix-mode-status")
+        }
+    }
+}
+
+/// The one-line buffer strip under the controls (`np-mix-buffer-strip`): the next rows as
+/// ● local · ◐ buffering · ○ queued · ⨯ unavailable.
+struct MixModeBufferStrip: View {
+    @Environment(SetlistPlayer.self) private var sequencer
+
+    var body: some View {
+        let rows = sequencer.mixModeBufferStrip()
+        if !rows.isEmpty {
+            HStack(spacing: 6) {
+                Text("Up next").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+                ForEach(rows) { r in
+                    Text(r.dot.glyph)
+                        .font(.caption2)
+                        .foregroundStyle(r.dot == .local ? Theme.accent : Theme.fgDim)
+                        .help("\(r.title) — \(Self.word(r.dot))")
+                }
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Buffer")
+            .accessibilityValue(rows.map { Self.word($0.dot) }.joined(separator: ", "))
+            .accessibilityIdentifier("np-mix-buffer-strip")
+        }
+    }
+
+    static func word(_ d: NPMixMode.BufferDot) -> String {
+        switch d {
+        case .local: return "on device"
+        case .buffering: return "buffering"
+        case .queued: return "queued"
+        case .unavailable: return "unavailable"
+        }
     }
 }
 

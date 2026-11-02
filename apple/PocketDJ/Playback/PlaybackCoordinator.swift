@@ -33,14 +33,16 @@ import Observation
 @MainActor
 func playLocalFile(_ url: URL, songId: String, title: String, artist: String,
                    startMs: Int?, rips: RipsStore, player: PlayerEngine,
-                   endBoundaryMs: Int? = nil, atMs: Int? = nil, release: (() -> Void)? = nil) {
+                   endBoundaryMs: Int? = nil, atMs: Int? = nil, release: (() -> Void)? = nil,
+                   deferPlayUntilSeeked: Bool = false) {
     let seekMs = RipsStore.cueSeekMs(sharedFileStartMs: startMs, atMs: atMs, live: false)
     let np = RipsStore.NowPlaying(songId: songId, title: title, artist: artist,
                                   url: url, live: false, startMs: startMs, seekMs: seekMs,
                                   waveform: nil)
     rips.setNowPlaying(np)
     player.load(url: url, live: false, startMs: seekMs, title: title, artist: artist,
-                songId: songId, endBoundaryMs: endBoundaryMs, songStartMs: startMs, scopeRelease: release)
+                songId: songId, endBoundaryMs: endBoundaryMs, songStartMs: startMs, scopeRelease: release,
+                deferPlayUntilSeeked: deferPlayUntilSeeked)
 }
 
 @MainActor
