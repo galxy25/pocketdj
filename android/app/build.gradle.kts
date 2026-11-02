@@ -31,6 +31,9 @@ android {
         // Diagnostics upload channel gate (decision D8): DEBUG || DIAG_CHANNEL.
         // Release builds stay false; a TestFlight-style internal channel flips it.
         buildConfigField("boolean", "DIAG_CHANNEL", "false")
+        // Song recognizer: release always runs ShazamKit; debug uses a no-match stub unless built with
+        // -PrealShazam=true (the stub hid a release-only Shazam 401, 2026-11).
+        buildConfigField("boolean", "REAL_SHAZAM", (project.findProperty("realShazam") == "true").toString())
         // Build identity for Settings ▸ Debug (SVC-5); "unknown" outside a git checkout.
         val gitSha = runCatching {
             val p = ProcessBuilder("git", "rev-parse", "--short", "HEAD").directory(projectDir)

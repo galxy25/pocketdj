@@ -108,7 +108,8 @@ fun hitInfoOf(title: String?, artist: String?, artwork: String?, appleMusicId: S
     ShazamHitInfo(title?.takeIf { it.isNotBlank() }, artist?.takeIf { it.isNotBlank() }, artwork, appleMusicId?.takeIf { it.isNotBlank() })
 
 /**
- * Live recognizer: shazam catalog (developer token = rip-server /musickit-token, shared with MusicKit) +
+ * Live recognizer: shazam catalog (developer token = rip-server /musickit-token, shared with MusicKit;
+ * the key's Media ID must have ShazamKit enabled or every match is UNAUTHORIZED) +
  * StreamingSession fed by AudioRecord 48 kHz mono PCM16. Device-only; the logic lives in [ShazamStreamDriver].
  */
 class ShazamKitBackend(
@@ -122,6 +123,10 @@ class ShazamKitBackend(
         // The SDK callback is synchronous: warm the token first (cached after the first call).
         val token = try { tokens.developerToken() } catch (e: CancellationException) { throw e } catch (t: Throwable) {
             return RecognitionResult.Error("Couldn’t reach the import server for a Shazam token. Check Settings.")
+        }
+        // A malformed / expired token gets the same bare 401 from Shazam as an unprovisioned key; say which.
+        ShazamDeveloperToken.problems(token).takeIf { it.isNotEmpty() }?.let {
+            return RecognitionResult.Error("The Shazam developer token is invalid (${it.joinToString()}).")
         }
         val provider = DeveloperTokenProvider { DeveloperToken(tokens.cachedTokenOrNull() ?: token) }
         val stream = try { sessionFactory(provider) } catch (e: CancellationException) { throw e } catch (t: Throwable) {
@@ -158,7 +163,7 @@ private class RealStream(private val s: com.shazam.shazamkit.StreamingSession) :
                         StreamOutcome.Match(m?.let { hitInfoOf(it.title, it.artist, it.artworkURL?.toString(), it.appleMusicID) })
                     }
                     is MatchResult.NoMatch -> StreamOutcome.NoMatch
-                    is MatchResult.Error -> StreamOutcome.Error(r.exception.message ?: "Recognition failed")
+                    is MatchResult.Error -> StreamOutcome.Error(shazamMatchErrorMessage(r.exception.matchError.name, r.exception.message))
                 },
             )
         }

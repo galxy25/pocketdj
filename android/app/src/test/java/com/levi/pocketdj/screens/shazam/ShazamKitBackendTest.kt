@@ -17,6 +17,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class ShazamKitBackendTest {
+    private companion object {
+        /** Well-formed (unsigned) developer JWT: recognize() rejects malformed tokens before the SDK. */
+        val JWT = ShazamDeveloperTokenTest.jwt()
+    }
+
     private class FakePcm : PcmSource {
         override val bufferSize = 4096
         val started = AtomicBoolean(false)
@@ -136,9 +141,25 @@ class ShazamKitBackendTest {
         assertTrue(r is RecognitionResult.Error)
     }
 
-    @Test fun session_factory_throwable_maps_to_error() = runBlocking {
+    @Test fun malformed_token_is_error_before_session() = runBlocking {
         val server = okhttp3.mockwebserver.MockWebServer()
         server.enqueue(okhttp3.mockwebserver.MockResponse().setBody("""{"token":"abc","ttlSec":3600}"""))
+        server.start()
+        try {
+            val r = backend(server.url("/").toString().trimEnd('/')) { error("session must not be created") }.recognize()
+            assertTrue(r is RecognitionResult.Error && r.message.contains("not a JWT"))
+        } finally { server.shutdown() }
+    }
+
+    @Test fun unauthorized_match_error_names_the_portal_fix() {
+        assertEquals(UNAUTHORIZED_MESSAGE, shazamMatchErrorMessage("UNAUTHORIZED", "HTTP 401"))
+        assertEquals("HTTP 500", shazamMatchErrorMessage("SOMETHING_NEW", "HTTP 500"))
+        assertEquals("Recognition failed", shazamMatchErrorMessage(null, null))
+    }
+
+    @Test fun session_factory_throwable_maps_to_error() = runBlocking {
+        val server = okhttp3.mockwebserver.MockWebServer()
+        server.enqueue(okhttp3.mockwebserver.MockResponse().setBody("""{"token":"$JWT","ttlSec":3600}"""))
         server.start()
         try {
             val r = backend(server.url("/").toString().trimEnd('/')) { throw NoClassDefFoundError("retrofit2/Retrofit\$Builder") }.recognize()
@@ -148,7 +169,7 @@ class ShazamKitBackendTest {
 
     @Test fun token_is_fetched_and_session_gets_provider_then_match_is_hit() = runBlocking {
         val server = okhttp3.mockwebserver.MockWebServer()
-        server.enqueue(okhttp3.mockwebserver.MockResponse().setBody("""{"token":"abc","ttlSec":3600}"""))
+        server.enqueue(okhttp3.mockwebserver.MockResponse().setBody("""{"token":"$JWT","ttlSec":3600}"""))
         server.start()
         try {
             val info = ShazamHitInfo("Song", "Artist", null, "42")
@@ -158,7 +179,7 @@ class ShazamKitBackendTest {
                 FakeStream(StreamOutcome.Match(info))
             }.recognize()
             assertEquals(RecognitionResult.Hit(info), r)
-            assertEquals("abc", provided)
+            assertEquals(JWT, provided)
         } finally { server.shutdown() }
     }
 
