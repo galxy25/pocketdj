@@ -31,6 +31,9 @@ interface MultitrackClipLoader {
 
     /** Canonical PCM for ONLY [startMs, startMs+lenMs) of a clip file (bounded heap for long clips); null = unsupported/unreadable, caller decodes the whole file. */
     suspend fun decodeWindow(fileName: String, startMs: Int, lenMs: Int): PcmBuffer? = null
+
+    /** Canonical-rate frame count of [fileName] from a header probe (no decode), or null when unknown: lets a durationMs-0 clip stream in chunks (Q109). */
+    fun sourceFrames(fileName: String): Int? = null
 }
 
 class StudioClipLoader(private val store: StudioStore, private val render: StudioRender) : MultitrackClipLoader {
@@ -51,6 +54,12 @@ class StudioClipLoader(private val store: StudioStore, private val render: Studi
 
     override fun sourceStamp(fileName: String): String =
         store.clipFile(fileName)?.let { "${it.length()}-${it.lastModified()}" } ?: ""
+
+    override fun sourceFrames(fileName: String): Int? {
+        val f = store.clipFile(fileName) ?: return null
+        val us = render.probeDurationUs(f.path) ?: return null
+        return if (us > 0) Math.round(us / 1_000_000.0 * StudioAudio.CANONICAL_RATE).toInt() else null
+    }
 }
 
 /**

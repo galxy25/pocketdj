@@ -57,6 +57,8 @@ interface StudioCodec {
         return StudioAudio.slice(full, from, n) ?: PcmBuffer(full.sampleRate, full.channels, FloatArray(0))
     }
     fun isProtected(path: String): Boolean
+    /** Container duration in microseconds from a header probe (no decode); null when unknown. */
+    fun durationUs(path: String): Long? = null
     fun writeM4a(pcm: PcmBuffer, file: File)
     /**
      * Streaming encode: write blocks as they are produced, [PcmChunkWriter.close] finalizes [file]. Default buffers
@@ -91,6 +93,9 @@ object AndroidStudioCodec : StudioCodec {
         val rate = probe(path) { it.getInteger(MediaFormat.KEY_SAMPLE_RATE) } ?: return null
         AudioDecoder.decode(path, rate = rate)
     }.getOrNull()
+
+    override fun durationUs(path: String): Long? =
+        probe(path) { if (it.containsKey(MediaFormat.KEY_DURATION)) it.getLong(MediaFormat.KEY_DURATION) else null }
 
     /** A FairPlay/DRM asset exposes DRM init data (or the legacy .m4p extension). */
     override fun isProtected(path: String): Boolean {
@@ -447,6 +452,9 @@ class StudioRender(
     }
 
     suspend fun decodeBuffer(path: String): PcmBuffer = serial { decodeOrThrow(path) }
+
+    /** Header-only duration probe (not serialized: no decode, no encoder). */
+    fun probeDurationUs(path: String): Long? = runCatching { codec.durationUs(path) }.getOrNull()
 
     /** Ranged decode: just [startMs, startMs+lenMs) of [path] (null when unreadable/empty). */
     suspend fun decodeRangeBuffer(path: String, startMs: Int, lenMs: Int): PcmBuffer? =
