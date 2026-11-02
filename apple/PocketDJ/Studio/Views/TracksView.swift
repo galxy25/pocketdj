@@ -1868,6 +1868,8 @@ struct TracksView: View {
         busyMessage = "Importing stems…"; baking = true
         Task {
             defer { baking = false }
+            // EXPLICIT stem import (np-mix-mode §3.3): buffered stems become a download.
+            burns.pin(songIds: [songId], reason: "tracks-stems")
             guard let got = burns.localStemURLs(forSong: songId) else { return }
             for stem in ["drums", "bass", "other", "vocals"] {
                 guard let url = got.urls[stem],

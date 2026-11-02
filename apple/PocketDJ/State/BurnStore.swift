@@ -78,6 +78,74 @@ final class BurnStore {
         /// Songs the user asked to download that weren't ripped yet — the rip was started and the
         /// burn owes them. ADDITIVE-OPTIONAL so an older document decodes unchanged.
         var pendingAfterRip: [PendingBurn]? = nil
+        /// Assets the BUFFER lane created (np-mix-mode §3.1). ADDITIVE-OPTIONAL: no
+        /// `burnSchemaVersion` bump, and an older document decodes with NO holds — i.e. every
+        /// file already on the device stays pinned. Absence of a hold = pinned, always.
+        var temporaryHolds: [TemporaryHold]? = nil
+    }
+
+    /// TEMPORARY HOLD (docs/design/np-mix-mode.md §3): the assets of ONE song id that the
+    /// buffer lane downloaded on its own (Stem Lock prefetch today; Mix Mode in phase 2). Only
+    /// what the lane CREATED is listed — a file that was already on disk is never added — and
+    /// the expiry sweep deletes exactly these, nothing else. Promotion (`pin`) drops the hold
+    /// and keeps the files. Per device: the ledger is not cloud-synced.
+    struct TemporaryHold: Codable, Equatable, Identifiable {
+        var id: String { songId }
+        /// The id the files are named under (variant-aware: an audio hold is keyed by the burn
+        /// ledger's id, a stem hold by the stem id — the two can differ for a substituted row).
+        var songId: String
+        /// The burned audio (ledger row + sidecar) was created by the buffer lane.
+        var audio: Bool
+        /// Stem parts the buffer lane created.
+        var stemParts: [String]
+        /// Reserved (phase 2): a Caches/mixstream analog cut played via the prefetched-cut seam.
+        var cutFile: String? = nil
+        var createdAtMs: Double
+        /// FIXED at landing (Q3): `createdAtMs + TTL`. A later asset landing for the same song
+        /// moves it LATER, never earlier (the newest asset gets its full window).
+        var expiresAtMs: Double
+        /// Bytes credited to the audio file at creation (cap planning reads the ledger, never
+        /// the disk). For a shared analog side only the creator credits it.
+        var audioBytes: Int? = nil
+        /// Bytes per stem part at creation.
+        var stemBytes: [String: Int]? = nil
+        /// Stem parts written to the USER-picked burn folder (the rest live in app storage) —
+        /// the sweep deletes each part from the root it was actually written to, never a
+        /// same-named explicit copy in the other root.
+        var stemPartsInUserFolder: [String]? = nil
+        /// The user-picked folder (standardized path) the user-folder assets above were written
+        /// to. The sweep deletes a user-folder asset ONLY while that same folder is the active
+        /// one — after a folder switch a same-named file in the NEW folder is not ours, so the
+        /// asset is released (kept, pinned) instead.
+        var userFolderPath: String? = nil
+
+        /// The bytes this hold accounts for (cap planning / the Storage section).
+        var bytes: Int {
+            (audio ? (audioBytes ?? 0) : 0)
+                + stemParts.reduce(0) { $0 + (stemBytes?[$1] ?? 0) }
+        }
+        var isEmpty: Bool { !audio && stemParts.isEmpty && cutFile == nil }
+    }
+
+    /// Who is asking for an asset (np-mix-mode §3.3).
+    enum AssetOrigin: Equatable {
+        /// An EXPLICIT Download / Mix action (the label is the reason in the `[storage]` log).
+        /// Pins whatever it touches — including files that are already on disk.
+        case explicit(String)
+        /// The buffer lane (speculative prefetch): creates a temporary hold for what it creates.
+        case buffer
+        /// Neither (legacy permanent behaviour, no pin): the Now Playing stems toggle — a
+        /// control touch, which the design does not count as an explicit action.
+        case incidental
+
+        var isExplicit: Bool { if case .explicit = self { return true } else { return false } }
+        /// Join rule: explicit wins; incidental (permanent) beats buffer (temporary).
+        func merged(with other: AssetOrigin) -> AssetOrigin {
+            if isExplicit { return self }
+            if other.isExplicit { return other }
+            if self == .incidental || other == .incidental { return .incidental }
+            return .buffer
+        }
     }
 
     /// A download the user asked for before the song existed as a file. Persisted, because the rip
@@ -181,6 +249,8 @@ final class BurnStore {
             items = Dictionary(doc.items.map { ($0.songId, $0) }, uniquingKeysWith: { first, _ in first })
             pendingAfterRip = Dictionary((doc.pendingAfterRip ?? []).map { ($0.songId, $0) },
                                          uniquingKeysWith: { first, _ in first })
+            temporaryHolds = Dictionary((doc.temporaryHolds ?? []).map { ($0.songId, $0) },
+                                        uniquingKeysWith: { first, _ in first })
         } else if let legacyFileURL,
                   let data = try? Data(contentsOf: legacyFileURL),
                   let doc = try? JSONDecoder().decode(Document.self, from: data) {
@@ -445,6 +515,8 @@ final class BurnStore {
             state: .ready, error: nil, wasAppStorage: record.wasAppStorage,
             cutFileName: prevCut?.cutFileName, cutDownloadedAt: prevCut?.cutDownloadedAt)
         save()
+        // Every background burn record comes from `burn(...)` — an explicit download.
+        pin(songIds: [record.songId], reason: "download")
         onAnyBurnFinalized?(record.songId, bytes)   // fan-out AFTER the .ready item landed
     }
 
@@ -456,10 +528,23 @@ final class BurnStore {
     /// The file is MOVED (a deck's open `AVAudioFile`s keep reading the same inode). Returns the
     /// adopted audio URL, or nil when there was nothing to adopt (already burned, not in the
     /// manifest, no writable folder, empty file) — the caller keeps playing its own copy.
+    ///
+    /// `origin` (np-mix-mode §3.3): `.explicit` (the default — every Mix-deck stream) pins the
+    /// song even when nothing is adopted; `.buffer` (the Now Playing prefetch lane) writes a
+    /// TEMPORARY HOLD for what this call created — but never when the song was already
+    /// downloaded (a `.ready` row, even one whose file is purged or on an unplugged folder), nor
+    /// while an explicit download of it is in flight (`.downloading`) or owed (`pendingAfterRip`):
+    /// those bytes belong to the explicit action.
     @discardableResult
-    func adoptStreamedFile(songId: String, title: String, artist: String, from tempURL: URL) -> URL? {
+    func adoptStreamedFile(songId: String, title: String, artist: String, from tempURL: URL,
+                           origin: AssetOrigin = .explicit("mix")) -> URL? {
+        if case let .explicit(why) = origin { pin(songIds: [songId], reason: why) }
         guard let entry = rips.manifest[songId] else { return nil }
         if items[songId]?.state == .ready, localURL(forSong: songId) != nil { return nil }
+        // ANY existing ledger row — ready (purged / unreachable folder), downloading (an explicit
+        // burn in flight), error (an explicit attempt that failed) — or an owed download means
+        // the user already asked for this song: the landing bytes are never temporary.
+        let explicitOwned = items[songId] != nil || pendingAfterRip[songId] != nil
         guard let folder = resolveBurnFolder(allowRePersist: true) else { return nil }
         let dir = folder.url
         defer { if folder.scoped { dir.stopAccessingSecurityScopedResource() } }
@@ -470,9 +555,13 @@ final class BurnStore {
         let audioURL = dir.appendingPathComponent(audioName)
         do {
             // Analog: a sibling song already wrote the shared side — keep it (same object).
-            let analogShared = entry.source == "analog" && fm.fileExists(atPath: audioURL.path)
+            // REVIEW MUST (2026-11-02): a file already at this name with no ledger row (a lost or
+            // purged ledger, a tvOS orphan, a pre-feature download) was NOT created by this call.
+            // The bytes are replaced as before, but the buffer lane never makes it temporary.
+            let preExisting = fm.fileExists(atPath: audioURL.path)
+            let analogShared = entry.source == "analog" && preExisting
             if !analogShared {
-                if fm.fileExists(atPath: audioURL.path) { try fm.removeItem(at: audioURL) }
+                if preExisting { try fm.removeItem(at: audioURL) }
                 try fm.moveItem(at: tempURL, to: audioURL)
             }
             let sidecar = Self.buildSidecar(songId: songId, fallback: (id: songId, title: title, artist: artist),
@@ -490,6 +579,17 @@ final class BurnStore {
                 state: .ready, error: nil, wasAppStorage: !folder.isUserFolder,
                 cutFileName: prev?.cutFileName, cutDownloadedAt: prev?.cutDownloadedAt)
             save()
+            if origin == .buffer && !explicitOwned {
+                if preExisting {
+                    // Already on disk (a sibling's shared analog side, or an orphaned earlier
+                    // download): not created here, so never temporary — an orphan side with no
+                    // other row referencing it would otherwise be deleted by the sweep.
+                    DiagLog.shared.log("storage", "buffer keep \(songId) (audio already on disk)")
+                } else {
+                    noteBufferCreated(songId: songId, audioBytes: size,
+                                      inUserFolder: folder.isUserFolder, folderURL: dir)
+                }
+            }
             onAnyBurnFinalized?(songId, size)
             return audioURL
         } catch {
@@ -501,11 +601,243 @@ final class BurnStore {
     /// MIX STREAMING: a deck is about to stream this song — cancel a still-pending BACKGROUND
     /// burn of it (the iOS lane enqueues a whole collection at once) so the file isn't fetched
     /// twice. The stream's adoption lands the same `.ready` item. No-op on the in-process path.
-    func yieldBackgroundDownload(songId: String) {
-        guard let transfers, items[songId]?.state == .downloading else { return }
+    /// Returns true when an (EXPLICIT) background burn was yielded — the stream then carries
+    /// that explicit origin, so its adoption is a pinned download, never a temporary one.
+    @discardableResult
+    func yieldBackgroundDownload(songId: String) -> Bool {
+        guard let transfers, items[songId]?.state == .downloading else { return false }
         transfers.cancelAll(songIds: [songId])
         items[songId] = nil
         save()
+        return true
+    }
+
+    // MARK: Temporary holds — the temporary-vs-pinned asset ledger (np-mix-mode phase 1)
+    //
+    // ABSENCE OF A HOLD = PINNED. Every file that predates this feature, every explicit
+    // Download / Mix result, and everything not created by the buffer lane has no hold and is
+    // never touched by the expiry sweep. A hold lists only what the buffer lane CREATED.
+
+    /// Song id → hold. Observed: the Storage section + the song-row "buffered" badge read it.
+    private(set) var temporaryHolds: [String: TemporaryHold] = [:]
+    /// Injected clock for hold creation (tests). Production: wall clock, epoch ms.
+    @ObservationIgnored var clockMs: () -> Double = { Date().timeIntervalSince1970 * 1000 }
+    /// Fired after a hold is created or grows (the storage manager's cap check). nil-safe.
+    @ObservationIgnored var onTemporaryHoldsChanged: (() -> Void)?
+
+    /// The TTL for NEW holds, hours; nil ⇒ "Keep" (buffer assets are pinned at creation).
+    /// No settings wired (tests) ⇒ the 48 h default.
+    private var bufferTTLHours: Double? {
+        guard let settings else { return SettingsStore.npMixBufferDefaultTTLHours }
+        return settings.npMixBufferEffectiveTTLHours
+    }
+
+    /// This song's AUDIO is a temporary buffer (not a download).
+    func isTemporary(_ songId: String) -> Bool { temporaryHolds[songId]?.audio == true }
+    /// Epoch ms at which this song's hold expires (nil = pinned / nothing buffered).
+    func temporaryExpiry(_ songId: String) -> Double? { temporaryHolds[songId]?.expiresAtMs }
+    /// Bytes the holds account for (ledger credits — no disk scan).
+    var temporaryFootprintBytes: Int { temporaryHolds.values.reduce(0) { $0 + $1.bytes } }
+
+    /// PROMOTE (pin): drop the holds of `songIds` and keep their files. The ONE funnel every
+    /// explicit Download / Mix action calls — including when the file is already there. Matches
+    /// by BASE song id, so pinning a row also pins its edition variants' holds (over-pinning only
+    /// ever keeps a file; under-pinning could delete an explicit download). No-op for ids without
+    /// a hold. Returns how many holds were dropped.
+    @discardableResult
+    func pin(songIds: some Sequence<String>, reason: String) -> Int {
+        guard !temporaryHolds.isEmpty else { return 0 }
+        var bases = Set<String>()
+        for id in songIds where !id.isEmpty { bases.insert(SongVariant.baseId(id)) }
+        guard !bases.isEmpty else { return 0 }
+        let hit = temporaryHolds.keys.filter { bases.contains(SongVariant.baseId($0)) }
+        guard !hit.isEmpty else { return 0 }
+        for id in hit { temporaryHolds[id] = nil }
+        save()
+        DiagLog.shared.log("storage", "pin n=\(hit.count) reason=\(reason) ids=\(hit.sorted().prefix(5).joined(separator: ","))")
+        return hit.count
+    }
+
+    /// Settings ▸ Storage ▸ "Keep all": every buffered asset becomes a normal download.
+    @discardableResult
+    func pinAllTemporary(reason: String) -> Int {
+        let n = temporaryHolds.count
+        guard n > 0 else { return 0 }
+        temporaryHolds = [:]
+        save()
+        DiagLog.shared.log("storage", "pin all n=\(n) reason=\(reason)")
+        return n
+    }
+
+    /// The buffer lane CREATED an asset for `songId` (audio and/or one stem part): add it to
+    /// the song's hold with expiry `now + TTL` (moving an existing hold's expiry later, never
+    /// earlier). TTL "Keep" ⇒ no hold: the asset is a normal download from birth.
+    private func noteBufferCreated(songId: String, audioBytes: Int? = nil, stemPart: String? = nil,
+                                   stemBytes: Int = 0, inUserFolder: Bool = false,
+                                   folderURL: URL? = nil) {
+        guard let ttl = bufferTTLHours else {
+            DiagLog.shared.log("storage", "buffer keep \(songId) (TTL=Keep — pinned at creation)")
+            return
+        }
+        // REVIEW MUST (2026-11-02): a USER-PICKED burn folder may be shared — an iCloud Drive
+        // folder, an external drive moved between Macs. The ledger is per device, so another
+        // device's EXPLICIT download of the same song reuses this file by name (`burnStems`
+        // returns existing parts; `burn` overwrites in place) and this device's sweep would
+        // delete it from under that device. Nothing written to a user folder is ever made
+        // temporary: it stays a normal download (today's Stem Lock behaviour). Only the app's
+        // own storage, which no other device can see, carries holds.
+        if inUserFolder {
+            DiagLog.shared.log("storage", "buffer keep \(songId) (user-picked folder may be shared — pinned at creation)")
+            return
+        }
+        let now = clockMs()
+        let expires = now + ttl * 3_600_000
+        var h = temporaryHolds[songId]
+            ?? TemporaryHold(songId: songId, audio: false, stemParts: [], createdAtMs: now, expiresAtMs: expires)
+        h.expiresAtMs = max(h.expiresAtMs, expires)
+        if inUserFolder {
+            let path = folderURL?.standardizedFileURL.path
+            if let old = h.userFolderPath, old != path {
+                // The burn folder changed since the earlier user-folder assets landed: release
+                // those (kept on disk, pinned) — the sweep must never resolve them in the new one.
+                h.stemParts.removeAll { (h.stemPartsInUserFolder ?? []).contains($0) }
+                h.stemPartsInUserFolder = nil
+                if h.audio, items[songId]?.wasAppStorage == false { h.audio = false; h.audioBytes = nil }
+            }
+            h.userFolderPath = path
+        }
+        if let audioBytes { h.audio = true; h.audioBytes = audioBytes }
+        if let part = stemPart {
+            if !h.stemParts.contains(part) { h.stemParts.append(part) }
+            var sb = h.stemBytes ?? [:]; sb[part] = stemBytes; h.stemBytes = sb
+            var uf = Set(h.stemPartsInUserFolder ?? [])
+            if inUserFolder { uf.insert(part) } else { uf.remove(part) }
+            h.stemPartsInUserFolder = uf.isEmpty ? nil : uf.sorted()
+        }
+        temporaryHolds[songId] = h
+        save()
+        DiagLog.shared.log("storage", "hold \(songId) audio=\(h.audio ? 1 : 0) stems=\(h.stemParts.joined(separator: ",")) expires=\(Int(h.expiresAtMs))")
+        onTemporaryHoldsChanged?()
+    }
+
+    /// What one `removeTemporaryAssets` call did.
+    struct TemporaryRemoval: Equatable {
+        var songs = 0      // holds fully removed
+        var bytes = 0      // ledger-credited bytes of what was deleted
+        var kept = 0       // holds kept (in part) because their folder is unreachable right now
+    }
+
+    /// THE SWEEP PRIMITIVE: delete exactly what each listed song's hold lists — the buffered
+    /// audio (shared-analog-aware: a side another ledger row still references survives; sidecar
+    /// too; a per-song CUT is never touched, cuts only come from explicit burns) and the listed
+    /// stem parts, each from the root it was written to — then drop the holds (and the audio
+    /// ledger rows) and save ONCE. Pinned files are never named by a hold, so they cannot be
+    /// deleted here. An unreachable user folder keeps its row, its files and that part of the
+    /// hold (retried next sweep). The CALLER owns the protected set (`StorageManager`).
+    /// Synchronous on the main actor ON PURPOSE: validation → delete → ledger commit happen in
+    /// one turn, so no pin / burn / adoption can interleave between them.
+    @discardableResult
+    func removeTemporaryAssets(songIds: [String]) -> TemporaryRemoval {
+        let ids = Set(songIds).filter { temporaryHolds[$0] != nil }
+        guard !ids.isEmpty else { return TemporaryRemoval() }
+        var out = TemporaryRemoval()
+        let fm = FileManager.default
+        // AUDIO: resolve reachability first (an unreachable item is a survivor).
+        var goners: [String: (url: URL, scoped: Bool)] = [:]
+        var audioDone = Set<String>()
+        for id in ids {
+            guard let h = temporaryHolds[id], h.audio else { audioDone.insert(id); continue }
+            guard let item = items[id] else { audioDone.insert(id); continue }   // dangling hold
+            // Not a ready buffer row any more (an explicit burn took it over): drop the flag only.
+            guard item.state == .ready else { audioDone.insert(id); continue }
+            guard let resolved = itemDir(item) else { continue }                  // unreachable → keep
+            if item.wasAppStorage == false,
+               resolved.url.standardizedFileURL.path != h.userFolderPath {
+                // The burn folder changed since this landed: not provably ours here — release it.
+                if resolved.scoped { resolved.url.stopAccessingSecurityScopedResource() }
+                audioDone.insert(id)
+                continue
+            }
+            goners[id] = resolved
+        }
+        let survivorAudio = Set(items.values.filter { goners[$0.songId] == nil }.map(\.audioFileName))
+        for (id, resolved) in goners {
+            guard let item = items[id] else { continue }
+            let dir = resolved.url
+            if !item.audioFileName.isEmpty && !survivorAudio.contains(item.audioFileName) {
+                try? fm.removeItem(at: dir.appendingPathComponent(item.audioFileName))
+            }
+            if !item.sidecarFileName.isEmpty {
+                try? fm.removeItem(at: dir.appendingPathComponent(item.sidecarFileName))
+            }
+            if resolved.scoped { dir.stopAccessingSecurityScopedResource() }
+            items[id] = nil
+            audioDone.insert(id)
+        }
+        // STEMS: each listed part from the root it was written to.
+        let appDir = appBurnsDir()
+        var user: (url: URL, scoped: Bool, isUserFolder: Bool)?
+        if settings?.burnFolderBookmark != nil,
+           let r = resolveBurnFolder(allowRePersist: false, requireWritable: false), r.isUserFolder {
+            user = r
+        }
+        defer { if let user, user.scoped { user.url.stopAccessingSecurityScopedResource() } }
+        let userPath = user?.url.standardizedFileURL.path
+        for id in ids {
+            guard var h = temporaryHolds[id] else { continue }
+            let inUser = Set(h.stemPartsInUserFolder ?? [])
+            var keptParts: [String] = []
+            for part in h.stemParts {
+                guard Self.stemNames.contains(part) else { continue }   // unknown name: release
+                if inUser.contains(part), user != nil, userPath != h.userFolderPath { continue }   // folder switched: release
+                guard let root = inUser.contains(part) ? user?.url : appDir else { keptParts.append(part); continue }
+                try? fm.removeItem(at: root.appendingPathComponent(Self.stemFileName(id, part)))
+                out.bytes += h.stemBytes?[part] ?? 0
+            }
+            if audioDone.contains(id) {
+                if h.audio, goners[id] != nil { out.bytes += h.audioBytes ?? 0 }
+                h.audio = false
+                h.audioBytes = nil
+            }
+            h.stemParts = keptParts
+            h.stemBytes = h.stemBytes?.filter { keptParts.contains($0.key) }
+            h.stemPartsInUserFolder = h.stemPartsInUserFolder?.filter { keptParts.contains($0) }
+            if h.isEmpty {
+                temporaryHolds[id] = nil
+                out.songs += 1
+            } else {
+                temporaryHolds[id] = h
+                out.kept += 1
+            }
+        }
+        save()
+        return out
+    }
+
+    /// Drop holds whose assets an explicit DELETE just removed (no dangling holds).
+    private func forgetHolds(_ ids: some Sequence<String>, stemsOnly: Bool = false, audioOnly: Bool = false) {
+        var changed = false
+        for id in ids {
+            guard var h = temporaryHolds[id] else { continue }
+            if audioOnly {
+                guard h.audio else { continue }
+                h.audio = false; h.audioBytes = nil
+                temporaryHolds[id] = h.isEmpty ? nil : h
+            } else if stemsOnly {
+                guard !h.stemParts.isEmpty else { continue }
+                h.stemParts = []; h.stemBytes = nil; h.stemPartsInUserFolder = nil
+                temporaryHolds[id] = h.isEmpty ? nil : h
+            } else {
+                temporaryHolds[id] = nil
+            }
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    /// TEST SEAM: plant a hold directly (sweep tests fabricate thousands of them).
+    func injectHoldForTesting(_ hold: TemporaryHold) {
+        temporaryHolds[hold.songId] = hold
     }
 
     // MARK: Feature 2 — burnt-music folder resolution (security-scoped)
@@ -711,7 +1043,14 @@ final class BurnStore {
     /// the existing local files (scope held) without re-downloading. Returns the local urls + a
     /// scope-release closure (nil for app storage), or nil if the song isn't stemmed in the manifest
     /// / the folder is unwritable / a download failed. No streaming.
-    func burnStems(forSong songId: String) async -> (urls: [String: URL], release: (() -> Void)?)? {
+    ///
+    /// `origin`: `.explicit` (default — Song Detail, Studio, Demux, Mix decks) pins the song's
+    /// hold before AND after (a buffer part landing mid-burn can't stay temporary);
+    /// `.incidental` (the Now Playing stems toggle) neither pins nor holds; `.buffer` holds each
+    /// part it creates.
+    func burnStems(forSong songId: String, origin: AssetOrigin = .explicit("stems")) async -> (urls: [String: URL], release: (() -> Void)?)? {
+        if case let .explicit(why) = origin { pin(songIds: [songId], reason: why) }
+        defer { if case let .explicit(why) = origin { pin(songIds: [songId], reason: why) } }
         if let existing = localStemURLs(forSong: songId) { return existing }   // scope held by the read
         guard let remote = rips.stemURLs(forSong: songId),
               let folder = resolveBurnFolder(allowRePersist: true) else { return nil }
@@ -727,8 +1066,14 @@ final class BurnStore {
             if FileManager.default.fileExists(atPath: dest.path) { local[name] = dest; continue }
             do {
                 let data = try await rips.downloadBytes(url)
+                // Landed by someone else while we downloaded: theirs stands (and keeps its status).
+                if FileManager.default.fileExists(atPath: dest.path) { local[name] = dest; continue }
                 try data.write(to: dest, options: .atomic)
                 local[name] = dest
+                if origin == .buffer {
+                    noteBufferCreated(songId: songId, stemPart: name, stemBytes: data.count,
+                                      inUserFolder: folder.isUserFolder, folderURL: dir)
+                }
             } catch { return bail() }
         }
         return (local, folder.scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
@@ -767,7 +1112,13 @@ final class BurnStore {
     /// file). Idempotent: an existing part returns true with no network. False when the song
     /// isn't stemmed in the manifest, the folder is unwritable, or the download failed (a
     /// cancelled task included — the partial download is never written).
-    func burnStemPart(forSong songId: String, part: String) async -> Bool {
+    ///
+    /// `origin`: `.buffer` (the Stem Lock / Mix Mode lane) records a TEMPORARY hold for a part it
+    /// creates — a part already on disk is never added; `.explicit` pins the song's hold even
+    /// when the part already exists.
+    func burnStemPart(forSong songId: String, part: String,
+                      origin: AssetOrigin = .explicit("stems")) async -> Bool {
+        if case let .explicit(why) = origin { pin(songIds: [songId], reason: why) }
         guard Self.stemNames.contains(part),
               let url = rips.stemURLs(forSong: songId)?[part],
               let folder = resolveBurnFolder(allowRePersist: true) else { return false }
@@ -778,7 +1129,14 @@ final class BurnStore {
         do {
             let data = try await rips.downloadBytes(url)
             guard !Task.isCancelled else { return false }
+            // Someone else (an explicit burn) landed this part while we downloaded: theirs
+            // stands — the check and the write share one main-actor turn, so it can't race.
+            if FileManager.default.fileExists(atPath: dest.path) { return true }
             try data.write(to: dest, options: .atomic)
+            if origin == .buffer {
+                noteBufferCreated(songId: songId, stemPart: part, stemBytes: data.count,
+                                  inUserFolder: folder.isUserFolder, folderURL: dir)
+            }
             return true
         } catch { return false }
     }
@@ -789,8 +1147,13 @@ final class BurnStore {
     /// the existing file. Returns part → burned URL, or nil (no writable folder / a move failed —
     /// the caller keeps playing its own copies). ALL OR NOTHING: a move that fails part-way moves
     /// the parts already moved back, so the caller's files are exactly where it left them.
+    ///
+    /// `origin`: `.explicit` (a Mix deck's set) pins the song; `.buffer` holds each part MOVED
+    /// here (a part already burned is not created by this call and is never held).
     @discardableResult
-    func adoptStreamedStems(songId: String, files: [String: URL]) -> [String: URL]? {
+    func adoptStreamedStems(songId: String, files: [String: URL],
+                            origin: AssetOrigin = .explicit("mix")) -> [String: URL]? {
+        if case let .explicit(why) = origin { pin(songIds: [songId], reason: why) }
         guard Set(files.keys) == Set(Self.stemNames),
               let folder = resolveBurnFolder(allowRePersist: true) else { return nil }
         let dir = folder.url
@@ -808,6 +1171,15 @@ final class BurnStore {
             }
             moved.append((src, dest))
             out[name] = dest
+        }
+        if origin == .buffer {
+            for m in moved {
+                guard let name = Self.stemNames.first(where: { m.to.lastPathComponent == Self.stemFileName(songId, $0) })
+                else { continue }
+                let size = ((try? fm.attributesOfItem(atPath: m.to.path))?[.size] as? Int) ?? 0
+                noteBufferCreated(songId: songId, stemPart: name, stemBytes: size,
+                                  inUserFolder: folder.isUserFolder, folderURL: dir)
+            }
         }
         return out
     }
@@ -963,6 +1335,7 @@ final class BurnStore {
             try? FileManager.default.removeItem(at: dir.appendingPathComponent(item.sidecarFileName))
         }
         items[songId] = nil
+        forgetHolds([songId])
         save()
     }
 
@@ -1020,6 +1393,8 @@ final class BurnStore {
             removeAuxFiles(forSong: id)
             items[id] = nil
         }
+        // Its audio AND all four stems are gone — no dangling hold (`forgetHolds` saves).
+        forgetHolds(gonerIds)
         save()
     }
 
@@ -1135,6 +1510,8 @@ final class BurnStore {
                 // newer remote cut still re-downloads on the next burn pass).
                 cutDownloadedAt: cutName == nil ? nil : downloadedMs)
             adopted += 1
+            // Recovered media is treated as a download: never let a stale hold expire it.
+            forgetHolds([songId], audioOnly: true)
         }
         if adopted > 0 { save() }
         return adopted
@@ -1445,6 +1822,7 @@ final class BurnStore {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(n))
             }
         }
+        forgetHolds(temporaryHolds.keys.filter { !protecting.contains($0) }, stemsOnly: true)
     }
 
     /// Delete just the stem files (the 4 parts) for the given songs, both roots — beat grids
@@ -1458,6 +1836,7 @@ final class BurnStore {
                 }
             }
         }
+        forgetHolds(ids.filter { !protecting.contains($0) }, stemsOnly: true)
     }
 
     /// Visit each possible burn root once — the app-managed `burns/` dir, then the
@@ -1510,6 +1889,9 @@ final class BurnStore {
             }
             if scoped { dir.stopAccessingSecurityScopedResource() }
         }
+        // A dropped row's audio is gone: no hold may outlive it (a later re-landing of the same
+        // id must start from "pinned unless the buffer creates it").
+        forgetHolds(temporaryHolds.keys.filter { temporaryHolds[$0]?.audio == true && items[$0] == nil }, audioOnly: true)
         if changed { save() }
     }
 
@@ -1555,6 +1937,7 @@ final class BurnStore {
     /// fully offline. Idempotent per song; the Task is store-owned so it outlives the sheet.
     func startRipAndBurn(songId: String, title: String, artist: String,
                          appleMusicId: String?, lengthMs: Int?) {
+        pin(songIds: [songId], reason: "rip-burn")   // explicit — even when already on device
         guard ripBurnTasks[songId] == nil, localURL(forSong: songId) == nil else { return }
         ripBurning.insert(songId); ripBurnError[songId] = nil
         ripBurnTasks[songId] = Task { [weak self] in
@@ -1570,6 +1953,7 @@ final class BurnStore {
     /// doesn't fan out 12 independent 30-min timers + 12 simultaneous manifest GETs against
     /// the concurrency-1 real-time ripper. Budget scales with track count (serial capture).
     func startRipAndBurnAlbum(_ tracks: [RipBurnTrack]) {
+        pin(songIds: tracks.map(\.id), reason: "rip-burn")
         let todo = tracks.filter { localURL(forSong: $0.id) == nil }
         guard !todo.isEmpty else { return }
         let key = "album:" + todo.map(\.id).sorted().joined(separator: ",")
@@ -1663,6 +2047,13 @@ final class BurnStore {
         let unique = orderedUnique(songs)
         var result = BurnResult(total: unique.count)
         guard !unique.isEmpty else { return result }
+        // EXPLICIT Download / Mix-lane action (np-mix-mode §3.3): pin FIRST — the freshness
+        // check below skips files that are already there, and a buffered (temporary) copy must
+        // become a download either way. Pinned again per landed item and at the end, so a
+        // buffer asset that lands mid-run can never stay temporary.
+        let pinReason = automatic ? "mix-download" : "download"
+        pin(songIds: unique.map(\.id), reason: pinReason)
+        defer { pin(songIds: unique.map(\.id), reason: pinReason) }
 
         // Feature 2: resolve the active burn folder ONCE for the whole run (user-picked +
         // security-scoped when set, else Application Support). Bracket scoped access around
@@ -1840,6 +2231,7 @@ final class BurnStore {
                     bytes: data.count, rippedAt: entry.rippedAt, downloadedAt: now,
                     state: .ready, error: nil,
                     wasAppStorage: !isUserFolder)
+                pin(songIds: [song.id], reason: pinReason)
                 result.burned += 1
                 // Export this analog song's per-song cut INLINE (keeps a single progress counter —
                 // no separate "making cuts" phase). No-op for digital / cutless songs.
@@ -2155,6 +2547,7 @@ final class BurnStore {
     /// three launches from now.
     func burnWhenRipped(songId: String, title: String, artist: String,
                         nowMs: Double = Date().timeIntervalSince1970 * 1000) {
+        pin(songIds: [songId], reason: "download")
         guard pendingAfterRip[songId] == nil else { return }
         pendingAfterRip[songId] = PendingBurn(songId: songId, title: title, artist: artist,
                                               requestedAtMs: nowMs)
@@ -2193,7 +2586,9 @@ final class BurnStore {
 
     private func save() {
         let doc = Document(items: items.values.sorted { $0.downloadedAt < $1.downloadedAt },
-                           pendingAfterRip: pendingAfterRip.values.sorted { $0.requestedAtMs < $1.requestedAtMs })
+                           pendingAfterRip: pendingAfterRip.values.sorted { $0.requestedAtMs < $1.requestedAtMs },
+                           temporaryHolds: temporaryHolds.isEmpty ? nil
+                               : temporaryHolds.values.sorted { ($0.createdAtMs, $0.songId) < ($1.createdAtMs, $1.songId) })
         if let data = try? JSONEncoder().encode(doc) { try? data.write(to: fileURL, options: .atomic) }
     }
 

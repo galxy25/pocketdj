@@ -1031,11 +1031,20 @@ struct PocketDJApp: App {
         }
         // The prune must never delete a file an engine holds OPEN: both Mix decks, the
         // inline/now-playing track, and the sequencer's current queue item are off-limits.
-        storage.protectedSongIds = { [weak mix, weak rips, weak setlistPlayer] in
+        // The temporary-asset sweep (np-mix-mode §3.5) reads the SAME set, extended with
+        // everything about to play or still downloading: the Now Playing window (current + the
+        // prefetch window, held/restored sessions included), the persisted session's window when
+        // no session is live yet (a cold-launch sweep can run before the restore), the Mix
+        // auto-queue's next tracks, live streams / claimed stem sets, and the prefetch lane's
+        // in-flight + pending steps.
+        storage.protectedSongIds = { [weak mix, weak rips, weak setlistPlayer, weak mixStreamer,
+                                      weak playbackSession] in
             var ids = Set<String>()
             if let m = mix {
                 if let a = m.loaded(.a)?.songId { ids.insert(a) }
                 if let b = m.loaded(.b)?.songId { ids.insert(b) }
+                ids.formUnion(m.autoUpcomingSongIds.prefix(SetlistPlayer.prefetchAhead + 1))
+                ids.formUnion(m.streamingSongIds)
             }
             if let np = rips?.nowPlaying?.songId { ids.insert(np) }
             if let sp = setlistPlayer, sp.isRunning, sp.index < sp.queue.count {
@@ -1044,15 +1053,27 @@ struct PocketDJApp: App {
                 // base would leave the file the player has open eligible for eviction.
                 ids.insert(sp.queue[sp.index].id)
                 ids.insert(sp.queue[sp.index].resolveId)
+                ids.formUnion(sp.protectedWindowSongIds())
+            } else if let session = playbackSession {
+                ids.formUnion(session.windowSongIds(ahead: SetlistPlayer.prefetchAhead))
             }
+            if let pf = setlistPlayer?.stemLockPrefetcher { ids.formUnion(pf.activeSongIds) }
+            if let ms = mixStreamer { ids.formUnion(ms.activeSongIds) }
             return ids
         }
+        // A hold landing may push the temporary footprint over the buffer cap (2 GB default).
+        burns.onTemporaryHoldsChanged = { [weak storage] in storage?.scheduleCapSweepIfNeeded() }
         #if os(iOS)
         // Let the BGAppRefreshTask reconcile the rips manifest while backgrounded (the rip
         // itself is server-side; this only catches up the client's "ripped" view).
         RipReconcileBridge.shared.refresh = { [weak rips] in await rips?.refreshManifest() }
         // Let the daily storage-prune BGTask reach the live prune engine (gate included).
-        StoragePruneBridge.shared.prune = { [weak storage] in await storage?.pruneIfDue() }
+        StoragePruneBridge.shared.prune = { [weak storage] in
+            // The temporary-asset expiry sweep rides the same BG task — NOT gated on the soft
+            // cap (the TTL is on by default); its own 60-min gate + no-holds fast exit apply.
+            await storage?.sweepTemporaryIfDue(reason: "bgtask")
+            await storage?.pruneIfDue()
+        }
         #endif
         // ── Studio cross-wiring ────────────────────────────────────────────────
         // The store resolves per-family folder bookmarks through settings; the mic recorder
@@ -2187,6 +2208,8 @@ struct PocketDJApp: App {
                         // would let burns grow past the cap indefinitely. Cheap: pruneIfDue
                         // exits on its own 20 h gate (and instantly when no cap is active).
                         await storage.pruneIfDue()
+                        // Temporary (buffered) assets expire on a 60-min while-active cadence.
+                        await storage.sweepTemporaryIfDue(reason: "tick")
                     }
                 }
                 // Cross-device freshness while the app is OPEN. Without this, a Mac that stays
@@ -2257,7 +2280,12 @@ struct PocketDJApp: App {
                         // best-effort). Gated inside; a plain Task defers it past the
                         // activation tick so foregrounding never waits on disk scans. A TV
                         // that never leaves .active is covered by the 15-min tick above.
-                        Task { await storage.pruneIfDue() }
+                        Task {
+                            await storage.pruneIfDue()
+                            // Launch + every foreground (deferred past the activation tick; at
+                            // most every 5 min; instant no-op with no holds).
+                            await storage.sweepTemporaryIfDue(reason: "foreground", minIntervalMs: 5 * 60 * 1000)
+                        }
                     case .background:
                         DeadAirMeter.shared.flush()   // persist + summary line before suspension
                         streaming.onScenePhaseBackground()

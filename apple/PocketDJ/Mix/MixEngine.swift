@@ -1449,6 +1449,11 @@ final class MixEngine {
     func load(songId: String, title: String, artist: String, bpm: Double?,
               camelot: String?, key: String?, albumId: String?, lengthMs: Int? = nil, on deck: Deck) {
         deckGestureGeneration &+= 1
+        // EXPLICIT MIX ACTION (np-mix-mode §3.3): loading a song onto a deck — by hand or by the
+        // Auto-DJ — pins it, so a temporary (buffered) copy becomes a download and the sweep can
+        // never take a file out from under a deck. Covers the streaming path too (`loadStreaming`
+        // is only reached from here; its stream is explicit by default).
+        burns.pin(songIds: [songId], reason: "mix-deck")
         // A load while an exhausted-ended auto mix is armed for pickup means the DJ started
         // hand-mixing: the pickup dies here, or a later background download landing would
         // eject these decks mid-performance and restart the old mix unbidden. Auto-machine

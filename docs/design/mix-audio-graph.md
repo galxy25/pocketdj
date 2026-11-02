@@ -301,6 +301,31 @@ the current playback SESSION (`SetlistPlayer.stemLock`, model + download lane in
 - **Surfaces.** CarPlay / lock screen / widgets show the DSP's card as for any engaged track (one
   card writer). tvOS gets the same lock button (its Now Playing tab reuses `NowPlayingPanel` whole).
 
+## Planned — Now Playing Mix Mode (design only, `docs/design/np-mix-mode.md`)
+
+Nothing below is built yet. Keep this section in step with the phases as they land.
+
+- **Phases 1–2 change no graph.** Mix Mode buffers the current + upcoming rows into local files
+  (temporary burns) so the `NowPlayingDSP` chain above can take any track. Engagement stays
+  swap-on-touch; the Stem Lock still engages at track start.
+- **Phase 3 changes scheduling, not topology.** The Mix deck's growing-file scheduling (segments to
+  the byte frontier, `streamHolding`, pump on byte growth, truncation of a dead stream) moves into a
+  shared helper beside `StemSync` (`GrowingFileSchedule`) used by both `MixEngine` and
+  `NowPlayingDSP`. Then the sentence above, "the full song is always a COMPLETE local file here",
+  stops being true: a Now Playing main can hold for bytes exactly like a streaming Mix deck, and the
+  `.toFullMix` runway check becomes live code instead of a test-only path.
+- **Phase 4 changes no graph.** An Apple Music → local hand-off starts the DSP at MusicKit's
+  position. It is a source switch outside the graph (MusicKit is out of process).
+- **Phase 5 (optional) is the only topology change:** a 3-band `eq3` (`AVAudioUnitEQ`, the Mix
+  channel-strip shape: Low shelf 320 Hz / Mid peak 1 kHz / High shelf 3.2 kHz) between `flanger` and
+  `mainMixerNode`, attached at build time like every other node (the graph stays write-once):
+
+  ```
+  player + 4 stems → inputMixer → timePitch → comp → filter → reverb → flanger → eq3 (NEW) → mainMixerNode → limiter → output
+  ```
+
+  The SVG beside this file draws the Mix deck graph only, so it needs no change for any of these phases.
+
 ## Known limitations
 
 - **The graph is write-once.** No node is ever attached/detached/reconnected while running; the

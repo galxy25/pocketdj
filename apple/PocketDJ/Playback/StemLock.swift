@@ -199,6 +199,19 @@ final class StemLockPrefetcher {
 
     var isIdle: Bool { worker == nil && pending.isEmpty }
 
+    /// Song ids the lane is fetching or about to fetch (in-flight + pending; audio and stem ids)
+    /// — the temporary-asset sweep never deletes these (np-mix-mode §3.5).
+    var activeSongIds: Set<String> {
+        var ids = Set<String>()
+        for step in (inFlight.map { [$0] } ?? []) + pending {
+            switch step {
+            case let .song(id, _, _): ids.insert(id)
+            case let .stem(id, _): ids.insert(id)
+            }
+        }
+        return ids
+    }
+
     /// Run `plan`: keep the in-flight fetch if the plan still wants it, otherwise cancel it.
     func apply(_ plan: Plan) {
         for id in plan.stemify where !stemifyRequested.contains(id) {
@@ -269,8 +282,11 @@ final class StemLockPrefetcher {
 
 extension StemLockPrefetcher {
     /// Production wiring: whole songs through the shared `MixStreamLoader` (a finished stream is
-    /// adopted as an ordinary burn, so the track plays from the device at the boundary — the
-    /// prefetch IS a download), stem parts through `BurnStore.burnStemPart`, cloud separation
+    /// adopted as a burn, so the track plays from the device at the boundary), stem parts
+    /// through `BurnStore.burnStemPart` — BOTH with origin `.buffer` (np-mix-mode Q5 = yes): a
+    /// prefetch is speculative, so what it creates is a TEMPORARY asset that expires after the
+    /// Settings TTL unless an explicit Download / Mix action pins it (a file already on the
+    /// device is never made temporary), cloud separation
     /// through `RipsStore.stemify` (owner installs only — a hybrid user's lock never enqueues
     /// server work), and the network class from an `NWPathMonitor`.
     static func live(streamer: MixStreamLoader, burns: BurnStore, rips: RipsStore,
@@ -280,7 +296,7 @@ extension StemLockPrefetcher {
         p.network = { monitor.current }
         p.fetchSong = { [weak streamer] step in
             guard case let .song(id, title, artist) = step, let streamer,
-                  let s = streamer.open(id, title: title, artist: artist) else { return false }
+                  let s = streamer.open(id, title: title, artist: artist, origin: .buffer) else { return false }
             while !Task.isCancelled {
                 if s.isComplete { return true }
                 if s.failed || streamer.stream(for: id) !== s { return false }
@@ -288,7 +304,9 @@ extension StemLockPrefetcher {
             }
             return false
         }
-        p.fetchStemPart = { [weak burns] id, part in await burns?.burnStemPart(forSong: id, part: part) ?? false }
+        p.fetchStemPart = { [weak burns] id, part in
+            await burns?.burnStemPart(forSong: id, part: part, origin: .buffer) ?? false
+        }
         p.requestStemify = { [weak rips] id in
             guard isCatalogOwner(), let rips else { return }
             Task { await rips.stemify(id) }

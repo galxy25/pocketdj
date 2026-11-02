@@ -40,6 +40,8 @@ struct StorageView: View {
     /// scan; instruments via InstrumentPackStore). Missing key = not measured yet.
     @State private var studioBytes: [StudioFamily: Int] = [:]
     @State private var confirmingDeleteAll = false
+    @State private var confirmingClearBuffer = false
+    @State private var showAllBufferRows = false
     @State private var confirmingDeleteRecordings = false
     /// Which studio family a delete-all confirmation is up for (nil = none).
     @State private var confirmingStudioDelete: StudioFamily?
@@ -50,6 +52,7 @@ struct StorageView: View {
             burnFolderSection
             sessionFolderSection
             capSection
+            mixBufferSection
             deleteMusicSection
             recordingsSection
             // ViewBuilder tops out at 10 children — the studio area rides in one Group.
@@ -353,6 +356,127 @@ struct StorageView: View {
                     guard settings.storageSoftCapGB != nil else { return }
                     settings.storageSoftCapGB = $0
                     settings.persist()
+                })
+    }
+
+    // MARK: Mix Mode buffer (temporary assets — np-mix-mode §3.6)
+
+    /// Holds, soonest expiry first (the order the sweep removes them in).
+    private var bufferHolds: [BurnStore.TemporaryHold] {
+        burns.temporaryHolds.values.sorted { ($0.expiresAtMs, $0.songId) < ($1.expiresAtMs, $1.songId) }
+    }
+
+    private static let bufferRowLimit = 25
+
+    private var mixBufferSection: some View {
+        let holds = bufferHolds
+        return Section {
+            HStack {
+                Label("Buffered", systemImage: "clock.arrow.circlepath")
+                Spacer()
+                Text("\(holds.count) song\(holds.count == 1 ? "" : "s") · \(formatBytes(burns.temporaryFootprintBytes))")
+                    .foregroundStyle(.secondary).font(.callout.monospacedDigit())
+                    .accessibilityIdentifier("storage-buffer-usage")
+            }
+            if let next = holds.first {
+                Text("Next expiry \(Self.expiryPhrase(next.expiresAtMs)).")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("storage-buffer-next-expiry")
+            }
+            Picker("Keep buffered songs for", selection: bufferTTLBinding) {
+                ForEach(SettingsStore.npMixBufferTTLOptions, id: \.self) { h in
+                    Text(Self.ttlLabel(h)).tag(h)
+                }
+            }
+            .accessibilityIdentifier("storage-buffer-ttl")
+            Picker("Buffer limit", selection: bufferCapBinding) {
+                ForEach(SettingsStore.npMixBufferCapOptions, id: \.self) { gb in
+                    Text(gb < 1 ? "\(Int(gb * 1000)) MB" : "\(Int(gb)) GB").tag(gb)
+                }
+            }
+            .accessibilityIdentifier("storage-buffer-cap")
+            ForEach(Array(holds.prefix(showAllBufferRows ? holds.count : Self.bufferRowLimit))) { h in
+                bufferRow(h)
+            }
+            if holds.count > Self.bufferRowLimit && !showAllBufferRows {
+                Button("Show all \(holds.count)") { showAllBufferRows = true }
+                    .accessibilityIdentifier("storage-buffer-show-all")
+            }
+            if !holds.isEmpty {
+                HStack {
+                    Button("Keep all") {
+                        burns.pinAllTemporary(reason: "storage-keep-all")
+                        refreshUsage()
+                    }
+                    .accessibilityIdentifier("storage-buffer-keep-all")
+                    Spacer()
+                    Button("Clear now", role: .destructive) { confirmingClearBuffer = true }
+                        .accessibilityIdentifier("storage-buffer-clear")
+                }
+            }
+        } header: {
+            Text("Mix Mode buffer")
+        } footer: {
+            Text((settings.npMixBufferEffectiveTTLHours == nil
+                 ? "Songs and stems Now Playing downloads ahead on its own (Stem Lock) are kept like downloads. Songs already buffered still expire on schedule — tap Keep all to keep them."
+                 : "Songs and stems Now Playing downloads ahead on its own (Stem Lock) are temporary: they're removed after the time above unless you download or mix them first — then they're yours to keep. Nothing playing or coming up next is ever removed, and downloads you asked for are never temporary.")
+                 // Buffer assets written to a user-picked folder are pinned at creation (the folder
+                 // may be shared with another device — BurnStore.noteBufferCreated).
+                 + (settings.burnFolderBookmark != nil
+                    ? " While a burn folder you picked is in use, buffered songs go there and are kept like downloads (another device may share that folder)."
+                    : ""))
+        }
+        .confirmationDialog("Clear the Mix Mode buffer?", isPresented: $confirmingClearBuffer, titleVisibility: .visible) {
+            Button("Clear buffered songs", role: .destructive) {
+                Task {
+                    await storage.sweepTemporary(reason: "storage-clear", ignoreExpiry: true)
+                    refreshUsage()
+                }
+            }
+        } message: {
+            Text("Removes every buffered song and stem except what's playing or up next. Your downloads are not affected.")
+        }
+    }
+
+    private func bufferRow(_ h: BurnStore.TemporaryHold) -> some View {
+        let title = burns.items[h.songId]?.title ?? burns.lookup?(SongVariant.baseId(h.songId)).song?.name ?? h.songId
+        let artist = burns.items[h.songId]?.artist ?? burns.lookup?(SongVariant.baseId(h.songId)).song?.artist ?? ""
+        let parts = (h.audio ? ["song"] : []) + h.stemParts
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(artist.isEmpty ? title : "\(artist) — \(title)").lineLimit(1)
+            Text("\(parts.joined(separator: " · ")) · \(formatBytes(h.bytes)) · expires \(Self.expiryPhrase(h.expiresAtMs))")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("storage-buffer-row-\(h.songId)")
+    }
+
+    /// "in 31 h" / "in 2 days" / "now" — relative to the wall clock.
+    static func expiryPhrase(_ expiresAtMs: Double, nowMs: Double = Date().timeIntervalSince1970 * 1000) -> String {
+        let hours = (expiresAtMs - nowMs) / 3_600_000
+        if hours <= 0 { return "now" }
+        if hours < 1 { return "in \(max(1, Int((hours * 60).rounded()))) min" }
+        if hours < 48 { return "in \(Int(hours.rounded())) h" }
+        return "in \(Int((hours / 24).rounded())) days"
+    }
+
+    static func ttlLabel(_ hours: Double) -> String {
+        if hours == SettingsStore.npMixBufferKeepSentinel { return "Keep (treat as downloads)" }
+        if hours >= 72, hours.truncatingRemainder(dividingBy: 24) == 0 { return "\(Int(hours / 24)) days" }
+        return "\(Int(hours)) h"
+    }
+
+    private var bufferTTLBinding: Binding<Double> {
+        Binding(get: { settings.npMixBufferTTLHours ?? SettingsStore.npMixBufferDefaultTTLHours },
+                set: { settings.npMixBufferTTLHours = $0; settings.persist() })
+    }
+
+    private var bufferCapBinding: Binding<Double> {
+        Binding(get: { settings.npMixBufferCapGB ?? SettingsStore.npMixBufferDefaultCapGB },
+                set: {
+                    settings.npMixBufferCapGB = $0
+                    settings.persist()
+                    storage.scheduleCapSweepIfNeeded()   // a lower cap applies right away
                 })
     }
 
