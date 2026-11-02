@@ -140,4 +140,44 @@ class MicRecorderLifecycleTest {
         assertEquals(110_000L, dataSize(saf))
         assertTrue(store.sample(store.samples.single().id)!!.wasUserFolder)
     }
+    /**
+     * Q125: a take filed IN PLACE (writer still open: exit / read error) must not be announced as a new sample until its
+     * WAV is finalized — the "Pocket DJ Samples" auto-file copies the bytes the moment it hears about it.
+     */
+    @Test fun inPlaceFiledTakeIsAnnouncedOnceOnlyAfterTheWriterClosed() {
+        for (user in listOf(false, true)) {
+            val env = TestEnv(tmp.newFolder()); val store = env.store()
+            if (user) env.configured += StudioFamily.SAMPLES
+            val rec = MicRecorder(env.roots, store, audioManager = null)
+            rec.relocateRunner = { it() }
+            val seen = mutableListOf<Long>()
+            store.onSampleAdded = { s ->
+                val ref = store.localUrlForPlayback(s.id)!!.ref
+                seen += dataSize(ref.file!!)
+            }
+            assertTrue(rec.beginTake())
+            rec.appendForTest(ByteArray(100_000)); rec.appendForTest(ByteArray(10_000))
+            rec.onCaptureEnded(readError = true)
+            assertEquals("user=$user", listOf(110_000L), seen)
+            // A later explicit file of the same take (the sheet's fileTake) is an upsert: no second announcement.
+            store.addSampleRelocating(store.samples.single())
+            assertEquals(1, seen.size)
+        }
+    }
+
+    @Test fun inPlaceTakeDeletedBeforeCloseIsNeverAnnounced() {
+        val env = TestEnv(tmp.newFolder()); val store = env.store()
+        var fired = 0
+        store.onSampleAdded = { fired++ }
+        val rec = MicRecorder(env.roots, store, audioManager = null)
+        var deferred: (() -> Unit)? = null
+        rec.relocateRunner = { deferred = it }
+        assertTrue(rec.beginTake())
+        rec.appendForTest(ByteArray(1_000))
+        rec.onCaptureEnded(readError = true)
+        assertEquals(0, fired)
+        store.deleteSample(store.samples.single().id)
+        deferred!!()
+        assertEquals(0, fired)
+    }
 }

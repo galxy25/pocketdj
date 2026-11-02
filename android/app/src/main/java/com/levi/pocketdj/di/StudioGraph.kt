@@ -102,6 +102,11 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             File(app.appContext.filesDir, StudioStore.FILE_NAME), studioRoots, writerExecutor, ExecutorStudioScheduler(),
         ).also { s ->
             s.onFamilyDeleted = { f -> if (f == StudioFamily.INSTRUMENTS) instrumentPacks.rescanDownloads() }
+            // Q125: every NEW sample is auto-filed into the "Pocket DJ Samples" profile album (iOS Stage 5). The profile
+            // store + materializer stay lazy until the first new sample.
+            com.levi.pocketdj.data.profile.SampleAlbumFiler.attach(
+                s, { ref -> studioMaterializer.lease(ref) }, { profileAudio }, app.appScope,
+            )
             // Reconcile lists SAF trees: never on the first caller's (possibly main) thread.
             app.appScope.launch(Dispatchers.IO) { runCatching { s.reconcileOnLaunch() } }
         }

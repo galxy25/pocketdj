@@ -11,7 +11,7 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 
 (Q1–Q102 and W1–W7 resolved 2026-10-29)
 
-- **Q125 [Answers2 Studio review, sampler album]** iOS automatically adds every new sampler sample to the "Pocket DJ Samples" profile album; Android has the hook (`StudioStore.onSampleAdded`) but nothing is wired to it, so new samples never appear in that album. Wire it to match iOS? — *Default: yes, match iOS.* — Sampler parity.
+(nothing open)
 
 ## OPEN — Pocket wheel (FR2, design docs/design/pocket-wheel.md §9; building with these defaults)
 
@@ -288,3 +288,5 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q123 [Answers wave 11, ANS-LOC-1]** Play Console needs a Foreground Service "location" declaration (use case: stamp background plays with places & trips while music plays) before submission; the in-app toggle + FGS type are done. Also confirm the keep-background-location decision (C2 reversal 2026-10-29) stays for the Play flavor. — *Default: ACCESS_BACKGROUND_LOCATION stays declared with the disclosure flow; FGS location type held only while audio plays + places on + while-in-use granted.* — blocks Play submission only. Levi: request all the permissions we need
 
 - **Q124 [Answers wave 11, ANS-LOC-1]** On play start the FGS type flips 2 -> 10 -> 2 -> 10 within ~40 ms (Media3 re-promotes with mediaPlayback after syncLocationFgsType). Harmless on the emulator (settles at 0xA); worth a device check that no notification flicker/foreground-type exception occurs on Android 14+/15 hardware. — *Default: ship as is.* Levi: no answer — default wins (2026-11-02)
+
+- **Q125 [Answers2 Studio review, sampler album]** iOS automatically adds every new sampler sample to the "Pocket DJ Samples" profile album; Android has the hook (`StudioStore.onSampleAdded`) but nothing is wired to it, so new samples never appear in that album. Wire it to match iOS? — *Default: yes, match iOS.* — Sampler parity. Levi: yes (2026-11-02, in chat)
