@@ -430,7 +430,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 com.levi.pocketdj.data.applemusic.PlaylistAppleMusicSync.LOOKUPS_FILE,
             )) runCatching { File(files, n).delete() }
             // Q115: restored catalog edits are APPLIED now, so a reset / account deletion must drop them too.
-            runCatching { app.catalogEdits.file.delete(); app.catalogEdits.invalidate() }
+            runCatching { app.catalogEdits.file.delete(); app.catalogEdits.invalidate(); app.catalogRepository.reapplyEdits() }
             runCatching { app.appContext.getSharedPreferences("pdj-amsync", android.content.Context.MODE_PRIVATE).edit().clear().apply() }
         },
     )

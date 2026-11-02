@@ -214,4 +214,15 @@ class S3CloudDocDatabaseTest {
         try { db().fetch("profile") } catch (e: IOException) { assertFalse(e.message!!.contains(secret)) }
         assertFalse(secrets.toString().contains(secret))
     }
+
+    /** Review (Q120): Start fresh clears the secret mid-pass - no request may go out without one (no 401 to self-flag). */
+    @Test fun noSecret_sendsNothing_andNeverFlagsTheIdentity() = runTest {
+        secrets.clear()
+        server.enqueue(MockResponse().setResponseCode(401))
+        val d = db()
+        try { d.fetch("collections"); fail("expected IOException") } catch (_: IOException) {}
+        try { d.save(CloudDoc("collections", ByteArray(1), 1.0, "Pixel")) ; fail("expected IOException") } catch (_: IOException) {}
+        assertEquals(0, server.requestCount)
+        assertFalse(d.unauthorized.value)
+    }
 }

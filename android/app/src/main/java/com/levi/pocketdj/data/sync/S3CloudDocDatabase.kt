@@ -73,10 +73,15 @@ class S3CloudDocDatabase(
         return secrets.hasSecret()
     }
 
-    private fun req(path: String): Request.Builder =
-        Request.Builder().url((base() ?: throw IOException("Sync isn't configured (no profileSyncBase)")) + path)
+    private fun req(path: String): Request.Builder {
+        val url = (base() ?: throw IOException("Sync isn't configured (no profileSyncBase)")) + path
+        // Never send an empty bearer: a pass still in flight when Start fresh (Q120) cleared the secret would get
+        // a 401 that names the NEW identity and re-raise "profile deleted" on a profile that was never enrolled.
+        val secret = secrets.secret().takeIf { it.isNotEmpty() } ?: throw IOException("Profile not enrolled yet")
+        return Request.Builder().url(url)
             .header("X-PocketDJ-Profile", profileId().lowercase())
-            .header("Authorization", "Bearer " + secrets.secret())
+            .header("Authorization", "Bearer $secret")
+    }
 
     private suspend fun <T> call(request: Request, handle: (okhttp3.Response) -> T): T = withContext(Dispatchers.IO) {
         try {

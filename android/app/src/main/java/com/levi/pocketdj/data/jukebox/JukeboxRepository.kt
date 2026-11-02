@@ -326,17 +326,19 @@ class JukeboxRepository(
         if (action.isPlacement && found != null && found.isAdHoc && !ripPlayable(found.song.id)) {
             if (!ripStarting.add(requestId)) return
             scope.launch {
-                val ready = try {
-                    prepareAdHoc(found.song)
+                // The latch is held until the row has left the inbox, so a second tap racing the end of the
+                // preparation can never commit (and queue) the same request twice.
+                try {
+                    val prep = prepareAdHoc(found.song)
+                    if (prep == AdHocPrep.NONE) {
+                        _state.update { it.copy(transientError = "Couldn't start the rip for “${found.song.name}”") }
+                        return@launch
+                    }
+                    if (_state.value.session?.jukeboxId != session.jukeboxId) return@launch
+                    commitDecision(session, requestId, action, found, ripKicked = prep == AdHocPrep.RIP)
                 } finally {
                     ripStarting.remove(requestId)
                 }
-                if (!ready) {
-                    _state.update { it.copy(transientError = "Couldn't start the rip for “${found.song.name}”") }
-                    return@launch
-                }
-                if (_state.value.session?.jukeboxId != session.jukeboxId) return@launch
-                commitDecision(session, requestId, action, found)
             }
             return
         }
@@ -352,11 +354,14 @@ class JukeboxRepository(
      * capture is already running when the row comes up. A live Mix can only load a burned file (iOS
      * `acceptIntoMix`), so with the Mix on air the rip + burn is always kicked. true = the row can be placed.
      */
-    private suspend fun prepareAdHoc(song: IndexSong): Boolean {
+    private suspend fun prepareAdHoc(song: IndexSong): AdHocPrep {
         val mixOwns = runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false)
-        if (!mixOwns && streamsNow()) return true
-        return startAdHocRip(song)
+        if (!mixOwns && streamsNow()) return AdHocPrep.STREAM
+        return if (startAdHocRip(song)) AdHocPrep.RIP else AdHocPrep.NONE
     }
+
+    /** How an accepted AM-only row will sound: SDK stream, a rip kicked on accept, or not at all (row stays). */
+    private enum class AdHocPrep { STREAM, RIP, NONE }
 
     private suspend fun streamsNow(): Boolean = try {
         adHocStreamable()
@@ -379,6 +384,7 @@ class JukeboxRepository(
         requestId: String,
         action: JukeboxDecisionAction,
         found: Match.Found?,
+        ripKicked: Boolean = false,
     ) {
         decided += requestId
         _state.update { current ->
@@ -387,7 +393,7 @@ class JukeboxRepository(
         scope.launch { runCatching { client.decide(session, requestId, action) } }
         if (action.isPlacement) {
             found ?: return
-            scope.launch { route(found, action, session.jukeboxId) }
+            scope.launch { route(found, action, session.jukeboxId, ripKicked) }
         }
     }
 
@@ -410,7 +416,15 @@ class JukeboxRepository(
         }
     }
 
-    private suspend fun route(found: Match.Found, action: JukeboxDecisionAction, jukeboxId: String) {
+    private suspend fun route(found: Match.Found, action: JukeboxDecisionAction, jukeboxId: String, ripKicked: Boolean = false) {
+        // A Mix that went on air between accept (SDK stream chosen, no rip) and here can only load a burned file:
+        // kick the rip now, or the parked insert waits out its 15 min deadline for a burn nothing will produce.
+        if (found.isAdHoc && !ripKicked && !ripPlayable(found.song.id) &&
+            runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false) &&
+            !startAdHocRip(found.song)
+        ) {
+            _state.update { it.copy(transientError = "Couldn't start the rip for “${found.song.name}”") }
+        }
         if (placeInMix(found, action)) return
         if (!found.playable) return
         if (_state.value.session?.jukeboxId != jukeboxId) return

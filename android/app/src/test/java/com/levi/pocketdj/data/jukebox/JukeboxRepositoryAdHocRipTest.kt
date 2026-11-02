@@ -130,6 +130,7 @@ class JukeboxRepositoryAdHocRipTest {
         starterResult: Boolean,
         mix: MixJukeboxSource? = null,
         streamable: Boolean = false,
+        streamableFn: (suspend () -> Boolean)? = null,
     ): Harness {
         val base = server.url("/").toString().removeSuffix("/")
         val client = JukeboxClient(OkHttpClient(), PdjJson.lenient) { JukeboxClient.Config(base, "tok", "install-1") }
@@ -152,7 +153,7 @@ class JukeboxRepositoryAdHocRipTest {
         )
         repo.queue = queue
         repo.externalMatch = JukeboxExternalMatch { _, _ -> song }
-        repo.adHocStreamable = { streamable }
+        repo.adHocStreamable = streamableFn ?: { streamable }
         repo.adHocRipStarter = JukeboxAdHocRipStarter { starts.incrementAndGet(); starterResult }
         return Harness(repo, queue, playable, starts)
     }
@@ -238,5 +239,23 @@ class JukeboxRepositoryAdHocRipTest {
         assertEquals(1, h.repo.state.value.requests.size)
         assertEquals(0, mix.pendingCount)
         assertTrue(decisions.isEmpty())
+    }
+
+    /**
+     * Review: the Mix goes on air between accept (SDK stream chosen => no rip) and placement. The Mix parks the
+     * insert behind a burn, so the rip must be kicked then - else it waits out its 15 min deadline for nothing.
+     */
+    @Test fun mixStartingBetweenAcceptAndPlacementStillKicksTheRip() = runBlocking {
+        val port = FakeMix()
+        val burns = AtomicInteger(0)
+        val mix = MixJukeboxSource(port = { port }, isLoadable = { false }, requestBurn = { burns.incrementAndGet() })
+        // The stream check is the last moment the Mix is off: it goes on air right after.
+        val h = harness(starterResult = true, mix = mix, streamableFn = { port.autoMixing = true; true })
+        awaitRow(h)
+        h.repo.decide("r1", JukeboxDecisionAction.NEXT)
+        withTimeout(10_000) { while (mix.pendingCount == 0) delay(20) }
+        assertEquals("rip kicked once the mix owned the audio", 1, h.starts.get())
+        assertTrue(h.queue.calls.isEmpty())
+        assertEquals(1, burns.get())
     }
 }
