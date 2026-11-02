@@ -31,6 +31,8 @@ import kotlin.random.Random
 interface MixEnginePort : MixSettingsSink {
     val autoMixing: Boolean
     val isRunning: Boolean
+    /** A fresh Auto-DJ start is pending (prepare hop / Q103 retry rest): it counts as mixing for the leave decision. */
+    val autoStartPending: Boolean get() = false
     var autoEnabled: Boolean
     val autoUi: StateFlow<AutoUiState>
 
@@ -368,5 +370,5 @@ class MixViewModel(
      * (auto or manual decks) keeps its downloads feeding the queue. Touches ONLY the downloader:
      * the engine's no-teardown-on-leave rule stands.
      */
-    fun handleMixLeave() = downloads.handleMixLeave(engine.autoMixing || engine.isRunning)
+    fun handleMixLeave() = downloads.handleMixLeave(engine.autoMixing || engine.autoStartPending || engine.isRunning)
 }

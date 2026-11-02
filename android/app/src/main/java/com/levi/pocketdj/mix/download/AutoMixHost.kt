@@ -23,6 +23,8 @@ interface AutoMixHost {
     val autoSourceLabel: String?
     /** Song ids the running mix will play, in order (live slot onward). */
     val autoUpcomingSongIds: List<String>
+    /** A fresh auto start is pending (prepare hop / retry rest): the mix is not [autoMixing] YET. */
+    val autoStartPending: Boolean get() = false
 
     fun autoQueueInsert(item: AutoMixItem, placement: AutoPlacement)
     fun startAutoMix(items: List<AutoMixItem>, shuffled: Boolean, lead: Double, fade: Double, label: String?)

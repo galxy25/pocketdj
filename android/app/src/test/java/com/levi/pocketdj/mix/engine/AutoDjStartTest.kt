@@ -179,6 +179,48 @@ class AutoDjStartTest {
         assertEquals("the deck loads were served by the off-Main prepares", 0, mainResolves)
     }
 
+    @Test fun deferredStartFinishedFiresOnceAfterThePrepareHopOnly() {
+        val r = AutoRig(n = 4)
+        var fired = 0
+        r.dj.onDeferredStartFinished = { assertTrue("fires once the mix exists", r.dj.isMixing); fired++ }
+        val queued = ArrayList<() -> Unit>()
+        r.e.loadOffload = { work, commit -> queued += { commit(work()) } }
+        r.start()
+        assertEquals(0, fired)
+        queued.toList().forEach { it() }
+        assertTrue(r.dj.isMixing)
+        assertEquals(1, fired)
+    }
+
+    @Test fun deferredStartFinishedFiresAfterAQ103Retry() {
+        val (r, sched) = gatedRig()
+        var fired = 0
+        r.dj.onDeferredStartFinished = { fired++ }
+        r.start()
+        assertEquals(0, fired)
+        openGate(r)
+        sched.runNext()
+        assertTrue(r.dj.isMixing)
+        assertEquals(1, fired)
+    }
+
+    @Test fun deferredStartFinishedNeverFiresForASynchronousStartOrACancelledOne() {
+        val r = AutoRig(n = 4)
+        var fired = 0
+        r.dj.onDeferredStartFinished = { fired++ }
+        r.start()                                          // no offload seam: completes inside startAutoMix
+        assertTrue(r.dj.isMixing)
+        assertEquals("the caller sees isMixing right after the call: not deferred", 0, fired)
+
+        val queued = ArrayList<() -> Unit>()
+        r.e.loadOffload = { work, commit -> queued += { commit(work()) } }
+        r.start()
+        r.dj.stopAutoMix()                                 // a Stop during the hop
+        queued.toList().forEach { it() }
+        assertFalse(r.dj.isMixing)
+        assertEquals(0, fired)
+    }
+
     @Test fun q111AStopDuringThePrepareHopDiscardsTheLateResult() {
         val r = AutoRig(n = 4)
         val queued = ArrayList<() -> Unit>()

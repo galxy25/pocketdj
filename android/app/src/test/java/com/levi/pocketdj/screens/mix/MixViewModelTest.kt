@@ -25,6 +25,7 @@ class MixViewModelTest {
     private class FakeEngine : MixEnginePort {
         override var autoMixing = false
         override var isRunning = false
+        override var autoStartPending = false
         override var autoEnabled = false
         override val autoUi = MutableStateFlow(AutoUiState())
         val log = ArrayList<String>()
@@ -290,6 +291,15 @@ class MixViewModelTest {
         r.engine.autoMixing = false; r.engine.isRunning = true; vm.handleMixLeave()
         assertEquals(listOf(false, true, true), r.downloads.leaves)
         assertFalse(r.engine.log.contains("stop"))                           // never tears the engine down
+    }
+
+    @Test fun leaveDuringAPendingAutoStartKeepsTheDownloadRun() = runTest {
+        // Q103/Q111: an Auto-DJ start between its setup and its first deck load (prepare hop or a
+        // retry rest of up to ~9 s) is not isMixing yet - it must still count as mixing on leave.
+        val r = rig(); val vm = r.vm()
+        r.engine.autoStartPending = true
+        vm.handleMixLeave()
+        assertEquals(listOf(true), r.downloads.leaves)
     }
 
     @Test fun runPushesSettingsBeforeMaterializing_thenPushesChangesImmediately() = runTest {

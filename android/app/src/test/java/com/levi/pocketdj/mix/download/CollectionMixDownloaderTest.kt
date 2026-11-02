@@ -77,6 +77,7 @@ class CollectionMixDownloaderTest {
         override var deckGestureGeneration = 0
         override var autoSourceLabel: String? = null
         override var autoUpcomingSongIds: List<String> = emptyList()
+        override var autoStartPending = false
         val streaming = HashSet<String>()
         val inserts = ArrayList<Pair<AutoMixItem, AutoPlacement>>()
         class Start(val items: List<AutoMixItem>, val shuffled: Boolean, val lead: Double, val fade: Double, val label: String?)
@@ -358,6 +359,44 @@ class CollectionMixDownloaderTest {
         // dedupe: another landing appends nothing new
         r.d.simulateLandingForTesting("c")
         assertEquals(2, r.host.inserts.size)
+        r.d.cancel()
+    }
+
+    @Test fun landingsDuringAPendingAutoStartAreAppendedOnceItStarts() = runTest {
+        // a on disk, b + c neither ripped nor on disk yet: the mix starts over {a}.
+        val r = rig(listOf("a", "b", "c"), onDisk = setOf("a"), ripped = emptySet())
+        r.burns.gate = CompletableDeferred()
+        r.d.begin(crate)
+        r.host.autoSourceLabel = "mine"
+        r.host.autoStartPending = true                    // prepare hop / Q103 retry rest: not mixing yet
+        r.d.noteAutoStarted(setOf("a"), lead = 12.0, fade = 4.0, label = "mine", shuffled = false)
+        r.burns.disk += "b"; r.d.simulateLandingForTesting("b")
+        r.burns.disk += "c"; r.d.simulateLandingForTesting("c")   // the LAST one: the run finishes
+        assertFalse(r.d.isActive)
+        assertTrue("nothing can join before the mix exists", r.host.inserts.isEmpty())
+        assertTrue("a pending start is never restarted", r.host.starts.isEmpty())
+
+        r.host.autoStartPending = false; r.host.autoMixing = true
+        r.d.noteAutoStartFinished()
+        assertEquals(listOf("b", "c"), r.host.inserts.map { it.first.loadable.songId })
+        r.d.noteAutoStartFinished()
+        assertEquals("dedupe", 2, r.host.inserts.size)
+    }
+
+    @Test fun aPendingStartNeverReStartsTheZeroStartMix() = runTest {
+        // Zero-start: nothing loadable, so the FIRST landing starts the mix - whose start then goes pending.
+        val r = rig(listOf("a", "b", "c"), ripped = emptySet())
+        r.burns.gate = CompletableDeferred()
+        r.d.begin(crate)
+        r.d.noteAutoStarted(emptySet(), lead = 12.0, fade = 4.0, label = "mine", shuffled = false)
+        r.burns.disk += "a"; r.d.simulateLandingForTesting("a")
+        assertEquals(listOf("a"), r.host.starts.single().items.map { it.loadable.songId })
+        r.host.autoSourceLabel = "mine"; r.host.autoStartPending = true
+        r.burns.disk += "b"; r.d.simulateLandingForTesting("b")
+        assertEquals("still one start", 1, r.host.starts.size)
+        r.host.autoStartPending = false; r.host.autoMixing = true
+        r.d.noteAutoStartFinished()
+        assertEquals(listOf("b"), r.host.inserts.map { it.first.loadable.songId })
         r.d.cancel()
     }
 
