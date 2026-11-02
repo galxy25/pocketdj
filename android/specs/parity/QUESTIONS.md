@@ -11,7 +11,7 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 
 (Q1–Q102 and W1–W7 resolved 2026-10-29)
 
-(nothing open)
+- **Q125 [Answers2 Studio review, sampler album]** iOS automatically adds every new sampler sample to the "Pocket DJ Samples" profile album; Android has the hook (`StudioStore.onSampleAdded`) but nothing is wired to it, so new samples never appear in that album. Wire it to match iOS? — *Default: yes, match iOS.* — Sampler parity.
 
 ## OPEN — Pocket wheel (FR2, design docs/design/pocket-wheel.md §9; building with these defaults)
 
