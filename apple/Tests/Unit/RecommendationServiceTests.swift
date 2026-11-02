@@ -609,6 +609,20 @@ final class RecommendationServiceTests: XCTestCase {
                        "must not point at the reset that cannot help")
     }
 
+    /// A full enrollment cap (MAX_PROFILES) must not read as a key mismatch: "Delete cloud
+    /// data" can't free a slot, and an app update can't either.
+    func testFlushSurfacesProfileCapDistinctly() async {
+        let env = makeEnv(enabled: true)
+        env.history.record(songId: "sng_a", context: .browser, at: 1_000)
+        env.spy.status = 403
+        env.spy.body = Data(#"{"error":"profile-cap-reached","max":10}"#.utf8)
+        await env.svc.flushNow()
+        XCTAssertEqual(env.svc.syncError, RecommendationService.profileCapMessage)
+        let err = env.svc.syncError ?? ""
+        XCTAssertFalse(err.contains("Delete cloud data"), "must not point at the reset: \(err)")
+        XCTAssertFalse(err.contains("Update the app"), "must not point at an update: \(err)")
+    }
+
     // MARK: - Client snapshot budget (R5)
 
     func testSnapshotTotalSongIdBudgetIsCapped() async throws {

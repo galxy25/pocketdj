@@ -194,6 +194,7 @@ final class WidgetSync {
             // Repeat/shuffle mode changes (from the deck, the widget, or a lock-screen command)
             // must republish so the widget's glyphs reflect the running set's state.
             _ = setlist.repeatMode
+            _ = setlist.effectiveRepeatMode   // a pocket run forces it off (sourceSetlistId)
             _ = setlist.shuffleEnabled
             _ = player.isPlaying
             _ = rips.nowPlaying?.songId
@@ -289,7 +290,9 @@ final class WidgetSync {
         let amCatalogId = base.songId.flatMap { appleMusicId($0) }
         // Repeat/shuffle are set-level modes — surface them only while a set is running (a single
         // track / Apple Music play has no queue to repeat or shuffle, so the glyphs read off).
-        let repeatRaw = setlist.isRunning ? setlist.repeatMode.rawValue : "off"
+        // The EFFECTIVE mode: a Pocket Wheel run forces repeat off, so the widget must not light
+        // the sticky one.
+        let repeatRaw = setlist.isRunning ? setlist.effectiveRepeatMode.rawValue : "off"
         let shuffleOn = setlist.isRunning ? setlist.shuffleEnabled : false
         // THE TUNING LOOP ON THE WIDGET. The scope rides the snapshot so a tap made while the app
         // is QUIT can name the list it belongs to without the widget process resolving anything —

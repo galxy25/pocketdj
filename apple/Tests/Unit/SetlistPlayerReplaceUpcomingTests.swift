@@ -1,4 +1,5 @@
 import XCTest
+import MediaPlayer
 @testable import PocketDJ
 
 /// Pocket Wheel Phase 5a — `SetlistPlayer.replaceUpcoming` protection invariants (§4.4), as a
@@ -161,6 +162,40 @@ final class SetlistPlayerReplaceUpcomingTests: XCTestCase {
         XCTAssertEqual(p.repeatMode, .all, "…but the listener's sticky repeat setting is untouched")
         p.play([replacement("c")], sourceSetlistId: "set_ordinary")
         XCTAssertEqual(p.effectiveRepeatMode, .all, "the next ordinary set repeats again")
+        p.stop()
+    }
+
+    /// The repeat GLYPH follows the effective mode during a run: the deck/widget/CarPlay read
+    /// `effectiveRepeatMode`, the controls are inert (a tap can't flip a sticky mode the glyph
+    /// isn't showing), and the lock-screen card is told off.
+    func testRepeatControlsShowAndObeyTheEffectiveModeDuringARun() {
+        let p = makePlayer()
+        p.setRepeatMode(.one)
+        XCTAssertFalse(p.isRepeatForcedOff)
+        XCTAssertEqual(NowPlayingDeckCluster.repeatGlyph(p.effectiveRepeatMode), "repeat.1")
+
+        p.play([replacement("a"), replacement("b")], sourceSetlistId: PocketWheelIds.runTag(run))
+        XCTAssertTrue(p.isRepeatForcedOff)
+        XCTAssertEqual(NowPlayingDeckCluster.repeatGlyph(p.effectiveRepeatMode), "repeat",
+                       "the deck must not show repeat-song while the run will stop at 100")
+        XCTAssertEqual(NowPlayingDeckCluster.repeatHelp(p.effectiveRepeatMode, forcedOff: p.isRepeatForcedOff),
+                       "Repeat off during a pocket run")
+        #if os(iOS)
+        XCTAssertEqual(MPRemoteCommandCenter.shared().changeRepeatModeCommand.currentRepeatType, .off,
+                       "the lock-screen card shows the run's effective off")
+        #endif
+
+        p.cycleRepeatMode()          // deck / widget / CarPlay tap
+        p.setRepeatMode(.all)        // lock-screen command
+        XCTAssertEqual(p.repeatMode, .one, "a tap mid-run must not silently rewrite the sticky mode")
+        XCTAssertEqual(p.effectiveRepeatMode, .off)
+
+        p.play([replacement("c")], sourceSetlistId: "set_ordinary")
+        XCTAssertFalse(p.isRepeatForcedOff)
+        XCTAssertEqual(p.effectiveRepeatMode, .one, "the next ordinary set gets the sticky mode back")
+        XCTAssertEqual(NowPlayingDeckCluster.repeatHelp(p.effectiveRepeatMode, forcedOff: false), "Repeat song")
+        p.cycleRepeatMode()
+        XCTAssertEqual(p.repeatMode, .off, "controls work again outside a run")
         p.stop()
     }
 }

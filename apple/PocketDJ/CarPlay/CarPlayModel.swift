@@ -261,7 +261,8 @@ final class CarPlayModel {
     func isShuffleOn() -> Bool { services.setlistPlayer.shuffleEnabled }
     func toggleShuffle() { services.setlistPlayer.toggleShuffle() }
     /// Whole-session repeat mode (off / all / one).
-    func repeatMode() -> RepeatMode { services.setlistPlayer.repeatMode }
+    /// The mode playback obeys (a Pocket Wheel run forces it off), which is what the glyph shows.
+    func repeatMode() -> RepeatMode { services.setlistPlayer.effectiveRepeatMode }
     func cycleRepeat() { services.setlistPlayer.cycleRepeatMode() }
 
     func removeFromQueue(uid: UUID) { services.setlistPlayer.removeUpcoming(uids: [uid]) }

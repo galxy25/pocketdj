@@ -195,6 +195,42 @@ final class PocketRunStoreTests: XCTestCase {
         XCTAssertEqual(ctx.name, store.active?.label)
         player.stop()
     }
+    /// Up Next "Re-tuned ✦" (§4.5): a re-target lights the badge on exactly the swapped rows that
+    /// are in the queue, it clears on its own after `retunedBadgeSeconds`, and ending the run
+    /// clears it immediately.
+    func testRetunedBadgeLightsSwappedRowsThenClears() async throws {
+        let (store, player, _) = makeStore()
+        store.retunedBadgeSeconds = 0.2
+        await store.start(profile: PocketRunPlannerTests.profile(), seed: 1)
+        XCTAssertTrue(store.retunedUids.isEmpty, "a fresh run has nothing re-tuned")
+        let before = Set(player.queue.map(\.uid))
+        var running = PocketRunPlannerTests.profile()
+        running.collections = ["pkt_late": 1]
+        running.genres = ["electronic": 1]
+        running.mode = .running
+        await store.retarget(to: running, mode: .running)
+        let lit = store.retunedUids
+        XCTAssertFalse(lit.isEmpty, "the re-target swapped rows")
+        let queueUids = Set(player.queue.map(\.uid))
+        XCTAssertTrue(lit.isSubset(of: queueUids), "only rows actually in Up Next are badged")
+        XCTAssertTrue(lit.isDisjoint(with: before), "badged rows are the NEW replacement rows")
+        let some = try XCTUnwrap(lit.first)
+        XCTAssertTrue(store.isRetuned(some))
+        XCTAssertTrue(RetunedBadge(uid: some, store: store).store?.isRetuned(some) == true)
+        XCTAssertFalse(store.isRetuned(player.queue[player.index].uid), "the sounding row is never re-tuned")
+
+        let deadline = Date().addingTimeInterval(5)
+        while !store.retunedUids.isEmpty, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertTrue(store.retunedUids.isEmpty, "the badge clears after a few seconds")
+
+        // Re-lit, then the run ends: cleared at once (no badge outliving its run).
+        store.retunedBadgeSeconds = 60
+        running.collections = ["pl_pot": 1]
+        await store.retarget(to: running, mode: .walking)
+        store.stop()
+        XCTAssertTrue(store.retunedUids.isEmpty, "ending the run drops the badge")
+        player.stop()
+    }
 }
 
 /// Phase 5b — adapt to activity mid-run.
@@ -252,4 +288,5 @@ final class PocketRunActivityTests: XCTestCase {
         XCTAssertEqual(player.queue.count, 100, "re-targeting substitutes; it never extends the run")
         player.stop()
     }
+
 }

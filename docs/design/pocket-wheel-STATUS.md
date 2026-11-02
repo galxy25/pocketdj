@@ -81,6 +81,7 @@ Lambda (`scripts/lambda/listening-pockets`):
 
 - Levi: add **"Fitness"** to the App Store privacy label before shipping Phase 6 (W4). Not touched by this build.
 - Mix-path (W7) runs don't replan/top-up live (sequencer path only).
-- Up Next "Re-tuned ✦" row badge (store exposes `retunedUids`; the row view doesn't draw it yet).
+- ~~Up Next "Re-tuned ✦" row badge~~ DONE 2026-11-02 (`fix/ios-followups-1102`): `RetunedBadge` on the docked panel's Up Next + the expanded queue flank; only rows that actually landed are badged; clears after `retunedBadgeSeconds` (4 s) per latest swap (re-plan AND re-target), and at run end.
+- ~~Repeat glyph shows the sticky mode during a run~~ DONE 2026-11-02: deck / widget / CarPlay / lock-screen show `effectiveRepeatMode`; repeat controls are inert while a run owns the sequencer (`isRepeatForcedOff`) so a tap can't silently change the hidden sticky mode.
 - Pinch-to-day-donut (Phase 3b iPad nice-to-have) not built.
 - Android port (§7) not started; the shared fixture `apple/Tests/Fixtures/pocket-wheel-history.json` is ready for it.

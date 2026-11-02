@@ -117,7 +117,7 @@ final class RecEngineClientTests: XCTestCase {
 
         // Unknown/garbled 403 bodies keep the old mapping — the in-app reset is the only
         // recovery the app can offer for a refusal it doesn't recognize.
-        for body in [#"{"error":"profile-cap-reached","max":10}"#, "not json", ""] {
+        for body in [#"{"error":"something-new"}"#, "not json", ""] {
             spy.body = Data(body.utf8)
             do {
                 _ = try await client.forYou(limit: 5, key: "k", profileId: "p")
@@ -127,6 +127,38 @@ final class RecEngineClientTests: XCTestCase {
             } catch {
                 XCTFail("unexpected error type: \(error)")
             }
+        }
+    }
+
+    /// MAX_PROFILES full is its own refusal: it used to collapse into `.keyMismatch`, whose
+    /// "Delete cloud data" advice can never free a slot (mirrors Android's map403 fix).
+    func test403ProfileCapReachedIsDistinctFromKeyMismatch() async {
+        let spy = Spy()
+        spy.status = 403
+        spy.body = Data(#"{"error":"profile-cap-reached","max":10}"#.utf8)
+        let client = makeClient(spy)
+        do {
+            _ = try await client.postEvents(RecUploadBatch(deviceId: "d", sentAtMs: 1),
+                                            key: "k", profileId: "p")
+            XCTFail("a 403 must throw")
+        } catch let e as RecEngineClient.ClientError {
+            XCTAssertEqual(e, .profileCapReached)
+        } catch {
+            XCTFail("unexpected error type: \(error)")
+        }
+    }
+
+    /// The pure mapping, body by body (same table as Android's RecEngineClientTest).
+    func testMap403Table() {
+        let cases: [(String, RecEngineClient.ClientError)] = [
+            (#"{"error":"enrollment-required"}"#, .enrollmentRequired),
+            (#"{"error":"key-mismatch"}"#, .keyMismatch),
+            (#"{"error":"profile-cap-reached","max":3}"#, .profileCapReached),
+            (#"{"error":42}"#, .keyMismatch),
+            ("", .keyMismatch),
+        ]
+        for (body, want) in cases {
+            XCTAssertEqual(RecEngineClient.map403(Data(body.utf8)), want, "body: \(body)")
         }
     }
 
