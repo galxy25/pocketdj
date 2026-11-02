@@ -1,10 +1,13 @@
 # PocketDJ release R8 rules (release plan A1.5).
 #
-# v1 strategy: shrink (drop unused code/resources, e.g. most of material-icons-extended) but do
-# NOT obfuscate. Class names stay readable in NPLog/diag traces and in the few places that log
-# or compare `javaClass.simpleName`, and nothing persisted by class name can drift between builds.
--dontobfuscate
+# Shrink AND obfuscate (Play "DEX code optimization": v1 shipped -dontobfuscate and scored 6%
+# obfuscation; Play wants >= 25%). Crash/diag stack traces are de-obfuscated with the
+# mapping.txt that release-aab.sh saves next to every AAB (and Play keeps per upload) — use
+# `retrace` from cmdline-tools on NPLog/diag traces. Class names that are PERSISTED or looked up
+# by name are kept below (WorkManager workers, Glance callbacks, JNI, Apple/JavaCPP, serializers);
+# everything else may be renamed. `javaClass.simpleName` is only used in log strings.
 -keepattributes SourceFile,LineNumberTable,Signature,InnerClasses,EnclosingMethod,*Annotation*
+-renamesourcefileattribute SourceFile
 
 # --- Apple Music for Android SDK (vendored AARs) --------------------------------------------
 # mediaplayback is JavaCPP-backed: libappleMusicSDK.so calls back into Java by name, and its
@@ -42,10 +45,13 @@
     public *;
 }
 
-# --- Glance: action callbacks are instantiated reflectively from their class name ----------
+# --- Glance: action callbacks are instantiated reflectively from their class name, which is
+# written into widget PendingIntents (they survive an app update until the widget re-renders).
 -keep class * implements androidx.glance.appwidget.action.ActionCallback { <init>(); }
 
-# --- WorkManager: workers are created reflectively (consumer rules cover the ctor; belt+braces)
+# --- WorkManager: workers are created reflectively from the class name PERSISTED in WorkManager's
+# database (periodic work enqueued by 1.0.0 must still resolve after an update), so the names of
+# every worker stay stable across builds.
 -keep class * extends androidx.work.ListenableWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);
 }
@@ -67,7 +73,7 @@
 # ShazamKit's RecognitionEndpoint is a Retrofit `suspend` interface. Retrofit 2.9's embedded rules
 # predate R8 full mode (AGP 8 default), which strips generic signatures from classes that are not
 # kept; Retrofit then cannot read the Continuation/Call/Response type arguments at runtime. These
-# are the rules Retrofit 2.10+ ships (harmless with -dontobfuscate).
+# are the rules Retrofit 2.10+ ships.
 -keep,allowobfuscation,allowshrinking interface retrofit2.Call
 -keep,allowobfuscation,allowshrinking class retrofit2.Response
 -keep,allowobfuscation,allowshrinking class kotlin.coroutines.Continuation
