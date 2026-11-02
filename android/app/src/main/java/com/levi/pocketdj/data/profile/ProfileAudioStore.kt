@@ -65,9 +65,12 @@ class ProfileAudioStore(private val store: ProfileSourceStore) {
         key: String? = null,
         camelot: String? = null,
         nowMs: Double = System.currentTimeMillis().toDouble(),
+        /** The original's real extension when [original] is a cache copy whose own name doesn't carry it (SAF lease). */
+        ext: String? = null,
     ): SongEntry? {
         val id = ProfileSourceStore.SONG_ID_PREFIX + UUID.randomUUID().toString().lowercase()
-        val ext = original.extension.ifEmpty { "m4a" }
+        val ext = ext?.trim('.')?.takeIf { it.isNotEmpty() && it.all(Char::isLetterOrDigit) }
+            ?: original.extension.ifEmpty { "m4a" }
         val fileName = "$id.$ext"
         val entry = SongEntry(id, title, kind, fileName, durationMs, bpm, key, camelot, nowMs)
         return withContext(Dispatchers.IO) {

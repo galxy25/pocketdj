@@ -239,15 +239,28 @@ class StudioStore(
 
     /** File a sample record (audio already on disk). Upserts by id so a crash-retry never duplicates. */
     fun addSample(sample: StudioSample): StudioSample {
-        var isNew = false
-        synchronized(lock) {
-            val cur = _state.value
-            val i = cur.samples.indexOfFirst { it.id == sample.id }
-            isNew = i < 0
-            commit(cur.copy(samples = if (i >= 0) cur.samples.replaced(i, sample) else cur.samples + sample))
-        }
-        if (isNew) onSampleAdded?.invoke(sample)
+        if (fileSampleRecord(sample)) onSampleAdded?.invoke(sample)
         return sample
+    }
+
+    /**
+     * File a sample record whose audio is STILL BEING WRITTEN (a mic take filed in place while its writer is open) WITHOUT
+     * announcing it: [onSampleAdded] consumers copy the bytes immediately (Q125 "Pocket DJ Samples"). Returns true when the
+     * id was new; the caller then owes ONE [announceSampleAdded] once the file is final.
+     */
+    fun addSampleDeferringNotice(sample: StudioSample): Boolean = fileSampleRecord(sample)
+
+    /** The deferred [onSampleAdded] for an [addSampleDeferringNotice] record, with its CURRENT state; no-op once deleted. */
+    fun announceSampleAdded(id: String) {
+        sample(id)?.let { onSampleAdded?.invoke(it) }
+    }
+
+    /** Upsert by id; true when the id was new. */
+    private fun fileSampleRecord(sample: StudioSample): Boolean = synchronized(lock) {
+        val cur = _state.value
+        val i = cur.samples.indexOfFirst { it.id == sample.id }
+        commit(cur.copy(samples = if (i >= 0) cur.samples.replaced(i, sample) else cur.samples + sample))
+        i < 0
     }
 
     private val _samplesFolderNotice = MutableStateFlow<String?>(null)
