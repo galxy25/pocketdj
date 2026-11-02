@@ -277,7 +277,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                     finishedStream = { id -> mixStreamLoader.stream(id)?.let { st -> st.isComplete && !st.failed } == true },
                     ripped = { id -> mixStreamLoader.isRipped(id) },
                     canStream = { id -> mixStreamLoader.canStream(id, forAuto = true) },
+                    armProbe = { on -> mixStreamLoader.armAutoStartProbe(on) },
                 )
+                // Q103: a fresh start whose first slot the stream gate refuses keeps its queue and retries on Main.
+                val retryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+                dj.startRetryScheduler = { ms, block -> retryHandler.postDelayed(block, ms) }
             }
             val main = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             // MIX-8: stems + loop + beat-grid controllers, hooked into the engine.
@@ -374,18 +378,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         // Final review: an idle / displaced Mix must stop its AudioTrack + urgent render thread (pauseEngineIfIdle had no
         // caller). A grace period keeps pause/resume taps from thrashing the HAL; the next play rebuilds the sink.
         val parkHandler = android.os.Handler(android.os.Looper.getMainLooper())
-        // Q95: the idle park also RESIGNS the Mix owner so a remote/BT/Auto play goes to whoever else fronts the session
-        // (a paused single); the Mix re-claims on its next onAudioStarted.
-        val parkRunnable = Runnable {
-            e.pauseEngineIfIdle()
-            sessionPlayerRef?.let { p ->
-                com.levi.pocketdj.mix.service.MixIdleResign.resignIfIdle(
-                    com.levi.pocketdj.playback.session.SessionSwitchboard.shared, p, e.mixWantsAudio, e.keepEngineAlive(),
-                    interruptionParked = focus.interruptionParked,
-                    exoHasItem = com.levi.pocketdj.playback.session.SessionSwitchboard.shared.exoHasItem(),
-                )
-            }
-        }
+        // Q122: the idle park only stops the sink - a paused Mix KEEPS the session (remote play resumes what was
+        // paused last); it resigns only when ejected (onNowPlayingChanged below).
+        val parkRunnable = Runnable { e.pauseEngineIfIdle() }
         fun parkSinkSoon(delayMs: Long) { parkHandler.removeCallbacks(parkRunnable); parkHandler.postDelayed(parkRunnable, delayMs) }
         e.keepEngineAlive = { recorderBuilt && mixRecorder.isRecording }   // an open take keeps the sink (and the decks) alive
         e.setlistIsLive = { app.playbackGraph.sequencer.isRunning }       // never materialize a parked mix behind a live set list
@@ -424,10 +419,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             com.levi.pocketdj.mix.service.ParkedMixSession.withdrawIfGone(
                 com.levi.pocketdj.playback.session.SessionSwitchboard.shared, player, e.hasParkedRestore, e.nowPlayingDeck != null,
             )
-            // Q95: the Mix was stopped / ejected (no deck, nothing parked): stop being the session owner now.
-            if (e.nowPlayingDeck == null && !e.hasParkedRestore && !e.mixWantsAudio) {
-                com.levi.pocketdj.playback.session.SessionSwitchboard.shared.resign(player)
-            }
+            // Q95/Q122: the Mix was ejected (no deck, nothing parked): nothing left to resume - stop being the session owner.
+            com.levi.pocketdj.mix.service.MixSessionRetention.resignIfEjected(
+                com.levi.pocketdj.playback.session.SessionSwitchboard.shared, player,
+                hasLoadedDeck = e.nowPlayingDeck != null, hasParked = e.hasParkedRestore, mixWantsAudio = e.mixWantsAudio,
+            )
             player.refresh(); focus.onTransportIdle()
             if (!e.mixWantsAudio) parkSinkSoon(15_000) else parkHandler.removeCallbacks(parkRunnable)
         }

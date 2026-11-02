@@ -17,6 +17,8 @@ interface AutoSeams {
     fun songOnDevice(songId: String): Boolean
     /** A load of [songId] failed only because the stream gate is closed RIGHT NOW (defer, never drop). */
     fun transientlyUnloadable(songId: String): Boolean = false
+    /** Q103: while armed, ONE Auto-DJ stream open may pass the server-down gate (a start-retry probe). */
+    fun armStartProbe(on: Boolean) {}
 }
 
 /**
@@ -28,7 +30,9 @@ internal class LoaderAutoSeams(
     private val finishedStream: (String) -> Boolean,
     private val ripped: (String) -> Boolean,
     private val canStream: (String) -> Boolean,
+    private val armProbe: (Boolean) -> Unit = {},
 ) : AutoSeams {
+    override fun armStartProbe(on: Boolean) = armProbe(on)
     /** On device = burned file, or a finished, non-failed stream. */
     override fun songOnDevice(songId: String) = burned(songId) || finishedStream(songId)
     /** Ripped, not burned, and the stream gate refuses right now: defer, never drop. */

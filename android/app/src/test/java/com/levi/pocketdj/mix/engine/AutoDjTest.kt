@@ -18,9 +18,12 @@ internal class FakeSeams : AutoSeams {
     val streams = HashMap<Deck, StreamView>()
     var onDevice: (String) -> Boolean = { true }
     val gated = HashSet<String>()
+    /** Q103: every armStartProbe call, in order. */
+    val probeArms = ArrayList<Boolean>()
     override fun stream(deck: Deck): StreamView? = streams[deck]
     override fun songOnDevice(songId: String) = onDevice(songId)
     override fun transientlyUnloadable(songId: String) = songId in gated
+    override fun armStartProbe(on: Boolean) { probeArms += on }
 }
 
 /** Engine harness + a wired Auto-DJ over synthetic [n] songs of [seconds] each. */
@@ -29,8 +32,9 @@ internal class AutoRig(
     seed: Int = 7,
     store: com.levi.pocketdj.mix.store.MixDeckSessionStore? = null,
     tweak: (Int, com.levi.pocketdj.mix.model.MixLoadable) -> com.levi.pocketdj.mix.model.MixLoadable = { _, l -> l },
+    songs: HashMap<String, ResolvedTrack> = HashMap(),
 ) {
-    val h = EngineHarness(store)
+    val h = EngineHarness(store, songs = songs)
     val e get() = h.engine
     val seams = FakeSeams()
     val dj = AutoDj(h.engine, seams, Random(seed))
@@ -62,7 +66,7 @@ class AutoDjTest {
         // Off-main seam stand-in: runs the work, commits (as MixGraph's IO -> Main hop would).
         rig.e.loadOffload = { work, commit -> commit(work()) }
         rig.start()
-        assertEquals("start preloads A/B synchronously (a miss) and prefetches the next two", listOf("s2", "s3"), rig.e.preparedSongIds)
+        assertEquals("start prepares A/B in its own off-Main hop (Q111) and prefetches the next two", listOf("s2", "s3"), rig.e.preparedSongIds)
         assertEquals(0, rig.e.preparedHits)
         rig.run(35.0)                                    // first transition retires A and loads s2 onto it
         assertEquals("s2", rig.id(Deck.A))

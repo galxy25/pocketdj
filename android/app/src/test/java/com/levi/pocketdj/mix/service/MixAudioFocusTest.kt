@@ -200,8 +200,8 @@ class MixAudioFocusTest {
         tr.isOwner = true
         startPlaying()
         m.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)   // phone call
-        // 15 s later the park runnable fires (what MixGraph.parkRunnable does):
-        val resigned = MixIdleResign.resignIfIdle(board, mix, tr.mixWantsAudio, false, interruptionParked = m.interruptionParked, exoHasItem = true)
+        // 15 s later the park runnable fires: Q122 - it only parks the sink; a loaded (paused) Mix never resigns.
+        val resigned = MixSessionRetention.resignIfEjected(board, mix, hasLoadedDeck = true, hasParked = false, mixWantsAudio = tr.mixWantsAudio)
         assertFalse(resigned)
         tr.isOwner = board.isActive(mix)
         m.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)

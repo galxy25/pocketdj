@@ -303,6 +303,12 @@ class MixEngine(
         deckGestureGeneration++
         autoEndedExhausted = false
         loadSeq[deck.ordinal]++
+        // Q111: a fresh Auto-DJ start's first loads were prepared off Main (a null verdict = the open failed).
+        if (startPrepared.containsKey(item.songId)) {
+            if (item.songId in preparing) lateDiscard += item.songId   // a racing prefetch of it lands as a duplicate
+            commitPrepared(item, deck, startPrepared.remove(item.songId))
+            return
+        }
         // A load the prefetch already prepared off Main commits at once; only a miss pays the sync prepare.
         val cached = takePrepared(item.songId)
         if (cached == null && item.songId in preparing) lateDiscard += item.songId
@@ -347,6 +353,44 @@ class MixEngine(
     internal fun clearPrepared() {
         preparedLoads.values.forEach { it.discard() }
         preparedLoads.clear()
+        discardStartPrepared()
+    }
+
+    // ---- Q111: a fresh Auto-DJ start's first loads, prepared OFF Main in one hop
+
+    /** Start-prepared verdicts by songId, INCLUDING not-on-disk / open-failed ones (consumed by the next [loadNow]). */
+    private val startPrepared = HashMap<String, PreparedLoad?>()
+    private var startPrepareGen = 0
+
+    /**
+     * Prepare [items] (the start's first slots) off Main via [loadOffload], then run [done] on Main once every
+     * one has landed. Unlike [prefetchPrepared], not-on-disk verdicts are kept too: the resolve itself is a
+     * disk read. False = no offload seam (the caller loads synchronously; [done] is never called).
+     * Superseded by the next call or [discardStartPrepared] (a late result is discarded, [done] never runs).
+     */
+    internal fun prepareForStart(items: List<MixLoadable>, done: () -> Unit): Boolean {
+        val off = loadOffload ?: return false
+        discardStartPrepared()
+        val gen = startPrepareGen
+        var left = items.size + 1   // +1: [done] only after every hop has been issued (an inline offload settles at once)
+        fun settle() { if (--left == 0 && gen == startPrepareGen) done() }
+        items.forEachIndexed { i, item ->
+            if (item.songId in preparedLoads) { settle(); return@forEachIndexed }   // the prefetch cache already has it
+            off({ prepare(item, if (i == 0) Deck.A else Deck.B) }) { p ->
+                if (gen != startPrepareGen) { p?.discard(); return@off }
+                startPrepared.put(item.songId, p)?.discard()
+                settle()
+            }
+        }
+        settle()
+        return true
+    }
+
+    /** Drop (and close) every unconsumed start prepare and supersede any in-flight one. */
+    internal fun discardStartPrepared() {
+        startPrepareGen++
+        startPrepared.values.forEach { it?.discard() }
+        startPrepared.clear()
     }
 
     internal val preparedSongIds: List<String> get() = preparedLoads.keys.toList()
