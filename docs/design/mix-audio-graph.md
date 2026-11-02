@@ -241,8 +241,10 @@ handover (`advanceStemHandover` / `cutToStems` / `cutToFullMix`, built on `StemS
   stopped `lastRenderTime` is nil, so the playhead is carried by `playAnchor` (the last live
   reading + its host time, projected at the deck's rate) — before, `currentTime` fell back to the
   current segment's START, so a resume (or a pending stem handover acting meanwhile) replayed the
-  song from there. Not handled: a media-services reset (the Mix engine rebuilds its graph; this
-  one doesn't).
+  song from there. A media-services reset (iOS / visionOS) RECREATES the engine and every node
+  (`NowPlayingDSP.rebuildAfterMediaReset`, driven by `SetlistPlayer.handleMediaServicesReset`
+  after it put the track back on the AVPlayer); the fresh graph builds lazily on the next engage —
+  without it, every later engage (each Stem Lock track start) "played" into an orphaned graph.
 - **Test seams:** `captureForTesting()` taps `inputMixer` (installed on first use only),
   `stemStartFramesForTesting()`, `setMainFrontierForTesting` / `releaseMainFrontierForTesting`,
   `simulateEngineStopForTesting`, `simulateInterruptionForTesting`.
@@ -318,8 +320,9 @@ step with the phases as they land.
   the seek lands (`PlayerEngine.load(deferPlayUntilSeeked:)`); the DSP is not involved unless the
   Stem Lock carries stems (then it engages at that position, as at a track start).
 - **Media-services reset** while the DSP owns a track: the engagement is torn down and the track
-  goes back to the AVPlayer at the DSP's position (`SetlistPlayer.handleMediaServicesReset`) — the
-  graph itself is not rebuilt in place.
+  goes back to the AVPlayer at the DSP's position (`SetlistPlayer.handleMediaServicesReset`), then
+  the orphaned graph is recreated (`NowPlayingDSP.rebuildAfterMediaReset`, engaged or not) and
+  rebuilt on the next engage.
 - **One DSP surface at a time** still holds: a live Mix-tab session tears the engagement down (F4)
   AND suspends Mix Mode's buffering until it stops.
 - **Phase 3 changes scheduling, not topology.** The Mix deck's growing-file scheduling (segments to

@@ -468,6 +468,9 @@ final class SetlistPlayer {
     /// phone with nothing rendering was suspended mid-start: "Fever" 17:07:29), capped.
     private func beginStartWindow(_ it: Item, gen: Int) {
         endStartWindow(reason: "superseded")
+        // A new start (skip / advance / repeat) supersedes any hand-off of the previous play.
+        handOffFallback = nil
+        endHandOffRunway(reason: "track-start")
         let runway = PlaybackRunway("pocketdj-start-\(it.id)")
         startWindow = (gen, it.id, runway)
         let cap = Self.startRunwayCapSeconds
@@ -496,6 +499,7 @@ final class SetlistPlayer {
         endStallEpisode(reason: "firstAudio.\(source)")
         startStallTask?.cancel(); startStallTask = nil
         endStartWindow(reason: "firstAudio.\(source)")
+        endHandOffRunway(reason: "firstAudio.\(source)")
         retryOwedHandOff()
     }
 
@@ -884,6 +888,8 @@ final class SetlistPlayer {
         sessionId = ""
         resetStemLock()                    // the session is over — so is its Stem Lock
         resetMixMode(to: false)            // …and its Mix Mode
+        handOffFallback = nil
+        endHandOffRunway(reason: "stop")
         sessionStore?.clear()
     }
 
@@ -1412,9 +1418,13 @@ final class SetlistPlayer {
                 // Mix Mode is SUSPENDED while a Mix-tab session is live (its lane pauses) and
                 // resumes on the next re-plan once it stops (np-mix-mode §4.5).
                 if self.mixMode.enabled {
-                    NPMixMode.log("mix tab \(self.mixSessionActive?() == true ? "live — suspended" : "idle — resumed")")
+                    let live = self.mixSessionActive?() == true
+                    NPMixMode.log("mix tab \(live ? "live — suspended" : "idle — resumed")")
                     self.prefetchRevision &+= 1
                     self.scheduleStemLockReplan()
+                    // A current-row buffer that landed while suspended (a cancelled step that
+                    // finished anyway) is never re-fetched — hand off onto it now.
+                    if !live { self.handOffCurrentToLocal(reason: "mix-tab-idle") }
                 }
             }
         }
@@ -1692,10 +1702,14 @@ final class SetlistPlayer {
         // An UPCOMING row with an explicit Download already pending lands on its own — the lane
         // neither streams it (that would cancel the download) nor waits on it (that would stall
         // the rows behind it). Only the playing row waits on it (`NowPlayingPrefetcher.live`).
-        if !isCurrent, burns.hasPendingExplicitDownload(songId: it.resolveId) { fetchable = false }
+        let explicitPending = !isCurrent && burns.hasPendingExplicitDownload(songId: it.resolveId)
+        if explicitPending { fetchable = false }
         let local = hasDeviceFile(it) || prefetchedCutFile?(it.resolveId) != nil
         return .init(songId: it.id, audioId: it.resolveId, title: it.title, artist: it.artist,
-                     songLocal: local,
+                     // …but its STEMS are still planned: the download makes the song local, so it
+                     // plans as local (no song step) instead of being skipped whole (the Stem
+                     // Lock would otherwise lose the next track's stems to a pending download).
+                     songLocal: local || explicitPending,
                      songFetchable: fetchable,
                      stemsLocal: burns.stemPartsBurned(forSong: it.id),
                      stemsRemote: burns.stemsRemote(forSong: it.id),
@@ -1727,7 +1741,7 @@ final class SetlistPlayer {
     @ObservationIgnored private var handOffOwedUid: UUID?
     /// The URL our own in-place re-stamp of the CURRENT row put on `rips.nowPlaying` (a hand-off)
     /// — `adoptNowPlayingIfJumped` must never read it as a jump. Cleared once `nowPlaying` moves on.
-    @ObservationIgnored private var ownNowPlayingStamp: URL?
+    @ObservationIgnored private var ownNowPlayingStamp: (url: URL, songId: String)?
 
     /// SEAM (wired at app init to `SettingsStore`): the Wi-Fi buffer window, the cellular
     /// policy, and "Start new sessions in Mix Mode". Defaults = the shipped defaults.
@@ -1865,6 +1879,13 @@ final class SetlistPlayer {
         let it = queue[index]
         guard let np = rips.nowPlaying, it.matches(np.songId), !np.live, !np.url.isFileURL,
               player.hasLoadedItem, !player.trackEndAlreadySignaled else { return false }
+        // An audio-session INTERRUPTION is open (a call, Siri, another app took the audio): never
+        // touch the engine — a reload + seek would start our audio over the call / steal it back
+        // from the other app. The track finishes on its stream; the next one plays local.
+        if player.interruptionOpen {
+            NPMixMode.log("handoff song=\(it.id) refused (interruption open) reason=\(reason)")
+            return false
+        }
         // The start window is still open (no first audio yet): the stream's clock means nothing
         // yet — try again on first audio.
         if isStartPending {
@@ -1891,7 +1912,10 @@ final class SetlistPlayer {
             NPMixMode.log("handoff song=\(it.id) skipped (at=\(songRelMs)ms of \(lengthMs)ms — too near the end)")
             return false
         }
-        let paused = player.pausedByListener
+        // PAUSED = anything but "the listener wants sound": a listener pause, a route loss, an
+        // interruption that ended without resume, a cascade halt. Only a playing stream resumes on
+        // the local file — a hand-off must never START audio.
+        let paused = player.pausedByListener || !player.listenerIntentPlaying
         if !paused {
             // The cut (load + seek) is measured like any transition; first audio closes it.
             DeadAirMeter.shared.transitionBegan(cause: "npmix-handoff")
@@ -1903,7 +1927,15 @@ final class SetlistPlayer {
                       endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: target.startMs),
                       atMs: songRelMs, release: target.release, deferPlayUntilSeeked: true)
         if paused { player.pause() }
-        ownNowPlayingStamp = target.url
+        ownNowPlayingStamp = (target.url, it.id)
+        // The local file FAILING (a bad adoption, a route-dependent decode error) must not skip
+        // a song that was streaming fine: `handleFailed` puts it back on this stream, once.
+        handOffFallback = (it.uid, target.url, np, songRelMs)
+        if !paused {
+            // Nothing renders between the reload and the seek landing: hold a background runway
+            // so a locked phone / CarPlay isn't suspended in that gap (first audio ends it).
+            beginHandOffRunway(songId: it.id)
+        }
         handOffCount &+= 1
         NPMixMode.log("handoff song=\(it.id) stream → local at=\(songRelMs)ms start=\(target.startMs ?? 0) paused=\(paused ? 1 : 0) reason=\(reason)")
         prefetchRevision &+= 1
@@ -1918,6 +1950,58 @@ final class SetlistPlayer {
 
     /// The hand-off never cuts into the last moments of a song (it would race the natural end).
     static var handOffMinRemainingMs = 3_000
+    /// The last hand-off of the CURRENT row: its uid, the local file it moved onto, and the
+    /// stream it left — `handleFailed` reverts onto that stream once if the local file fails.
+    @ObservationIgnored private var handOffFallback: (uid: UUID, local: URL, stream: RipsStore.NowPlaying, atMs: Int)?
+    /// The background runway across a hand-off's reload → seek → first audio.
+    @ObservationIgnored private var handOffRunway: PlaybackRunway?
+    @ObservationIgnored private var handOffRunwayCap: Task<Void, Never>?
+    /// How long a hand-off runway is held at most (first audio normally ends it in < 1 s).
+    static var handOffRunwayCapSeconds: Double = 10
+    /// TEST PROBE: a hand-off runway is held.
+    var handOffRunwayHeld: Bool { handOffRunway != nil }
+
+    private func beginHandOffRunway(songId: String) {
+        endHandOffRunway(reason: "superseded")
+        let runway = PlaybackRunway("pocketdj-npmix-handoff-\(songId)")
+        handOffRunway = runway
+        let cap = Self.handOffRunwayCapSeconds
+        handOffRunwayCap = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(cap * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            guard let self else { runway.end(reason: "owner-gone"); return }
+            if self.handOffRunway === runway { self.endHandOffRunway(reason: "cap") }
+        }
+    }
+
+    private func endHandOffRunway(reason: String) {
+        handOffRunwayCap?.cancel(); handOffRunwayCap = nil
+        handOffRunway?.end(reason: reason)
+        handOffRunway = nil
+    }
+
+    /// The handed-off local file FAILED to play: put the row back on the stream it left, at the
+    /// same song position (once — a second failure advances as ever). True when it reverted.
+    private func revertFailedHandOff() -> Bool {
+        guard let fb = handOffFallback, index < queue.count, queue[index].uid == fb.uid,
+              let np = rips.nowPlaying, np.url == fb.local else { return false }
+        handOffFallback = nil
+        let it = queue[index]
+        let wasPaused = player.pausedByListener || !player.listenerIntentPlaying
+        // The local clock — or, when the file died before it ever loaded (clock at 0), where the
+        // hand-off left the stream.
+        let liveRelMs = Int(((player.currentTime - Double(np.startMs ?? 0) / 1000) * 1000).rounded())
+        let songRelMs = liveRelMs > 0 ? liveRelMs : fb.atMs
+        NPMixMode.log("handoff song=\(it.id) local file FAILED → back on the stream at=\(songRelMs)ms")
+        playLocalFile(fb.stream.url, songId: it.id, title: it.title, artist: it.artist,
+                      startMs: fb.stream.startMs, rips: rips, player: player,
+                      endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: fb.stream.startMs),
+                      atMs: songRelMs, deferPlayUntilSeeked: true)
+        if wasPaused { player.pause() } else { beginHandOffRunway(songId: it.id) }
+        ownNowPlayingStamp = (fb.stream.url, it.id)
+        prefetchRevision &+= 1
+        return true
+    }
     /// Hand-offs performed (diagnostics + tests).
     @ObservationIgnored private(set) var handOffCount = 0
 
@@ -1933,12 +2017,18 @@ final class SetlistPlayer {
     /// gone, so tear the engagement down and put the track back on the AVPlayer at the DSP's
     /// last position (paused stays paused). No-op when nothing is engaged.
     func handleMediaServicesReset() {
-        guard mixEngaged, isRunning, index < queue.count, let dsp else { return }
+        guard mixEngaged, isRunning, index < queue.count, let dsp else {
+            // Nothing engaged — the DSP graph is orphaned all the same: recreate it so the next
+            // engage (a control touch, every Stem Lock track start) doesn't play into nothing.
+            dsp?.rebuildAfterMediaReset()
+            return
+        }
         let atMs = max(0, Int((dsp.currentTime * 1000).rounded()))
         let wasPlaying = dsp.isPlaying
         let it = queue[index]
         NPMixMode.log("media services reset while engaged song=\(it.id) at=\(atMs)ms — back to the AVPlayer")
         endMixEngagement()
+        dsp.rebuildAfterMediaReset()
         guard let np = rips.nowPlaying, it.matches(np.songId), np.url.isFileURL else {
             startPlayCurrent(fresh: false, resumeAtMs: atMs)
             return
@@ -1947,7 +2037,7 @@ final class SetlistPlayer {
                       startMs: np.startMs, rips: rips, player: player,
                       endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: np.startMs),
                       atMs: atMs, deferPlayUntilSeeked: true)
-        ownNowPlayingStamp = np.url
+        ownNowPlayingStamp = (np.url, it.id)
         if !wasPlaying { player.pause() }
     }
 
@@ -2017,7 +2107,10 @@ final class SetlistPlayer {
         // turn (an end / skip right after the hand-off), the stale stamp would read as a foreign
         // jump BACK to the row we just left. Never a jump.
         if let own = ownNowPlayingStamp {
-            if rips.nowPlaying?.url == own, coordinator.activeBackend != .appleMusic { return }
+            // URL *and* song: two songs of one analog side share a file — a foreign play of the
+            // other song on it is a real jump (the DSP must not keep rendering ours over it).
+            if rips.nowPlaying?.url == own.url, rips.nowPlaying?.songId == own.songId,
+               coordinator.activeBackend != .appleMusic { return }
             ownNowPlayingStamp = nil       // someone else stamped since: judge it normally
         }
         // The manual play's identity comes from whichever backend OWNS the audio: an Apple
@@ -2128,6 +2221,7 @@ final class SetlistPlayer {
     private func handleFailed() {
         guard isRunning, index < queue.count,
               let npId = rips.nowPlaying?.songId, queue[index].matches(npId) else { return }
+        if revertFailedHandOff() { return }
         DiagLog.shared.log("playback", "advance: item failed mid-song song=\(queue[index].id) index=\(index)")
         advanceToNext()
     }

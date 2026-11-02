@@ -643,3 +643,26 @@ buffer `.song` step cancelled by a re-plan leaves its `MixStreamLoader` transfer
 completion (the loader's every-stream-completes rule) — the bytes still adopt as a TEMPORARY burn;
 the AVPlayer already streaming the current row and the lane fetch the same bytes once (phase 3
 removes that); the TV ignores the flag.
+
+### 9.1 Phase 2 review fixes (2026-11-02)
+
+- **A hand-off never starts audio.** Refused while an audio-session interruption is open (a call,
+  Siri, another app — a reload would play over it / steal the audio back); "paused" = a listener
+  pause OR the engine no longer intending to play (route loss, an interruption that ended without
+  resume), not only `pausedByListener`.
+- **A failed local file falls back to the stream.** `handleFailed` on the handed-off file reverts
+  the row onto the presigned stream it left, at the same song position (the hand-off point when the
+  file died before loading), once; a second failure advances as ever. Cleared on every track start.
+- **Runway across the cut.** A playing hand-off (and a fallback) holds a `PlaybackRunway` from the
+  reload until first audio (cap 10 s) — nothing renders while the seek lands.
+- **The hold reads as playing.** `PlayerEngine.toggle()` during the seek hold pauses (it read
+  `.paused` and called `play()`, sounding the file's top); `play()` there clears the pause and lets
+  the seek start the render; `rekick` stands down.
+- **Own-stamp match is URL + song** (two songs of one analog side share a file — a foreign play of
+  the other one is a real jump; the DSP must not keep rendering ours over it).
+- **Explicit download pending on an upcoming row:** its song is left to the download, but it plans
+  as local so its STEMS are still fetched (it used to be skipped whole — a Stem Lock regression).
+- **Mix tab idle again:** retries the hand-off (a buffer that landed while suspended is never
+  re-fetched).
+- **Media-services reset recreates the `NowPlayingDSP` graph** (engaged or not).
+

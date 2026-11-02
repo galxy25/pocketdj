@@ -447,6 +447,12 @@ final class PlayerEngine {
         setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
         setLikeCommandEnabled(true)             // …and heals the ♥ a Mix card interlude disabled
         pausedByListener = false
+        if holdPlayUntilSeek {
+            // np-mix-mode HAND-OFF still seeking: a ▶ (lock screen / CarPlay / the supervisor)
+            // must not sound the file's TOP — the seek completion starts the render.
+            NPLog.trace("engine.play during hand-off hold → deferred to the seek")
+            isPlaying = true; updateNowPlayingInfo(); return
+        }
         player.play(); isPlaying = true; updateNowPlayingInfo()
     }
     func pause() {
@@ -545,7 +551,7 @@ final class PlayerEngine {
     /// Never un-pauses a listener pause. Used by the start watchdog (8 s), the supervisor's L1,
     /// and a ⏯ press on a still-waiting item.
     func rekick(by caller: String) {
-        guard !externalActive, player.currentItem != nil, !pausedByListener else { return }
+        guard !externalActive, player.currentItem != nil, !pausedByListener, !holdPlayUntilSeek else { return }
         configureAudioSession(by: caller)
         listenerIntentPlaying = true
         interruptionOpen = false
@@ -635,6 +641,9 @@ final class PlayerEngine {
         toggleCount += 1
         if externalActive { (externalIsPlaying?() ?? isPlaying) ? pause() : play(); return }
         guard player.currentItem != nil else { NPLog.trace("engine.toggle REFUSED (idle)"); return }
+        // A hand-off hold (np-mix-mode) reads `.paused` while it seeks, but the listener hears a
+        // PLAYING track: ⏯ there means pause (and ▶ after a pause means play).
+        if holdPlayUntilSeek { pausedByListener ? play() : pause(); return }
         // A track that WANTS to play but is still waiting for data shows ⏸ on the honest card;
         // a ▶/⏯ press there means "play it", not "pause it" — re-kick instead of pausing (the
         // old behaviour made the field "kick" take two presses). The discrete pause still pauses.

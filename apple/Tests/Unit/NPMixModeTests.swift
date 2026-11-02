@@ -850,6 +850,151 @@ final class NPMixModeTests: XCTestCase {
         XCTAssertTrue(r.player.pausedByListener, "paused stays paused")
         XCTAssertEqual(r.seq.index, 0)
     }
+
+    // MARK: - Phase 2 review (adversarial): playback safety of the hand-off
+
+    /// MUST: a hand-off never STARTS audio. An open interruption (call / Siri / another app took
+    /// the audio) refuses it outright; an interruption that ended WITHOUT resume (the engine no
+    /// longer intends to play, but `pausedByListener` is false) hands off PAUSED.
+    func testHandOffNeverStartsAudioAcrossAnInterruption() async throws {
+        let r = try makeRig(manifest: digital(["a", "b"]))
+        await startStreaming(r, ["a", "b"])
+        r.seq.setMixMode(true)
+        land(r, "a")
+        r.player.clock.currentTime = 20
+        r.player.handleInterruption(began: true, shouldResume: nil)
+        XCTAssertFalse(r.seq.handOffCurrentToLocal(reason: "test"), "never reload the engine during a call")
+        XCTAssertFalse(r.rips.nowPlaying?.url.isFileURL ?? true)
+        r.player.handleInterruption(began: false, shouldResume: false)
+        r.player.noteListenerIntent(false)            // the system said don't resume: the set holds
+        XCTAssertFalse(r.player.pausedByListener, "precondition: not a listener pause")
+        XCTAssertTrue(r.seq.handOffCurrentToLocal(reason: "test"))
+        XCTAssertTrue(r.player.pausedByListener, "a held (not playing) stream hands off PAUSED — the seek must not start it")
+    }
+
+    /// SHOULD: ⏯ (lock screen / CarPlay) during the hand-off's seek hold means PAUSE — the engine
+    /// reads `.paused` there, and `toggle()` used to call `play()`, sounding the file's top.
+    func testTogglePausesDuringTheHandOffHold() async throws {
+        let r = try makeRig(manifest: digital(["a", "b"]))
+        await startStreaming(r, ["a", "b"])
+        r.seq.setMixMode(true)
+        land(r, "a")
+        r.player.clock.currentTime = 30
+        XCTAssertTrue(r.seq.handOffCurrentToLocal(reason: "test"))
+        XCTAssertTrue(r.player.holdPlayUntilSeek)
+        r.player.toggle()
+        XCTAssertTrue(r.player.pausedByListener, "⏯ during the hold pauses")
+        r.player.toggle()
+        XCTAssertFalse(r.player.pausedByListener, "…and ⏯ again resumes (after the seek)")
+        XCTAssertTrue(r.player.holdPlayUntilSeek, "the render still waits for the seek")
+    }
+
+    /// MUST: the local file the hand-off moved onto FAILING must not skip a song that was
+    /// streaming fine — it goes back on the stream at the same position (once; a second failure
+    /// advances as ever).
+    func testFailedHandOffFileFallsBackToTheStream() async throws {
+        let r = try makeRig(manifest: digital(["a", "b"]))
+        await startStreaming(r, ["a", "b"])
+        let streamURL = try XCTUnwrap(r.rips.nowPlaying?.url)
+        r.seq.setMixMode(true)
+        land(r, "a")
+        r.player.clock.currentTime = 42.5
+        XCTAssertTrue(r.seq.handOffCurrentToLocal(reason: "test"))
+        r.player.clock.currentTime = 50
+        r.player.onTrackFailed?()
+        XCTAssertEqual(r.seq.index, 0, "the song is NOT skipped")
+        XCTAssertEqual(r.rips.nowPlaying?.url, streamURL, "back on its stream")
+        XCTAssertEqual(r.rips.nowPlaying?.seekMs, 50_000, "at the same position")
+        r.player.onTrackFailed?()
+        await waitUntil("a second failure advances") { r.seq.index == 1 }
+    }
+
+    /// The file died before it ever loaded (clock still 0): the stream resumes where the hand-off
+    /// left it, not at 0:00.
+    func testFallbackBeforeTheLocalFileLoadedResumesAtTheHandOffPoint() async throws {
+        let r = try makeRig(manifest: digital(["a", "b"]))
+        await startStreaming(r, ["a", "b"])
+        r.seq.setMixMode(true)
+        land(r, "a")
+        r.player.clock.currentTime = 61
+        XCTAssertTrue(r.seq.handOffCurrentToLocal(reason: "test"))
+        r.player.clock.currentTime = 0
+        r.player.onTrackFailed?()
+        XCTAssertEqual(r.rips.nowPlaying?.seekMs, 61_000)
+        XCTAssertEqual(r.seq.index, 0)
+    }
+
+    /// SHOULD: nothing renders between the reload and the seek — a locked phone must hold a
+    /// background runway across it; first audio ends it.
+    func testHandOffHoldsARunwayUntilFirstAudio() async throws {
+        let r = try makeRig(manifest: digital(["a", "b"]))
+        await startStreaming(r, ["a", "b"])
+        r.seq.setMixMode(true)
+        land(r, "a")
+        r.player.clock.currentTime = 30
+        XCTAssertTrue(r.seq.handOffCurrentToLocal(reason: "test"))
+        XCTAssertTrue(r.seq.handOffRunwayHeld)
+        r.player.simulateFirstAudioForTesting()
+        await waitUntil("runway released on first audio") { !r.seq.handOffRunwayHeld }
+    }
+
+    /// SHOULD: our own re-stamp is matched by URL AND song — a foreign play of ANOTHER song on the
+    /// same file (two songs of one analog side) is a real jump and is adopted.
+    func testOwnStampDoesNotHideAForeignPlayOfAnotherSongOnTheSameFile() async throws {
+        let r = try makeRig(manifest: digital(["a", "b", "c"]))
+        await startStreaming(r, ["a", "b", "c"])
+        r.seq.setMixMode(true)
+        land(r, "a")
+        r.player.clock.currentTime = 30
+        XCTAssertTrue(r.seq.handOffCurrentToLocal(reason: "test"))
+        let local = try XCTUnwrap(r.rips.nowPlaying?.url)
+        await Task.yield()
+        r.rips.setNowPlaying(.init(songId: "b", title: "b", artist: "A", url: local, live: false,
+                                   startMs: 120_000, seekMs: 120_000, waveform: nil))
+        await waitUntil("the foreign play of b is adopted") { r.seq.index == 1 }
+    }
+
+    /// SHOULD: an upcoming row whose explicit Download is pending still gets its STEMS planned
+    /// (the download makes it local) — it used to be skipped whole.
+    func testUpcomingPendingDownloadStillPlansItsStems() async throws {
+        var m = digital(["a", "b"])
+        m["b"]?.stems = .init(vocals: "rips/stems/b/vocals.mp3", drums: "rips/stems/b/drums.mp3",
+                              bass: "rips/stems/b/bass.mp3", other: "rips/stems/b/other.mp3")
+        let r = try makeRig(manifest: m, items: [downloadingItem("b")], transfers: makeTransfers())
+        let pf = NowPlayingPrefetcher()
+        var gate: CheckedContinuation<Bool, Never>?
+        pf.fetchSong = { _ in await withCheckedContinuation { gate = $0 } }
+        r.seq.prefetcher = pf
+        r.seq.prefetchSongFetchable = { _ in true }
+        await startStreaming(r, ["a", "b"])
+        r.seq.setMixMode(true)
+        await waitUntil("buffering a") { pf.inFlight?.description == "song:a" }
+        XCTAssertEqual(pf.pending.map(\.description), ["vocals:b", "drums:b", "other:b", "bass:b"],
+                       "b's song is left to its download; its stems are still fetched")
+        gate?.resume(returning: false)
+    }
+
+    /// MUST: a media-services reset orphans the DSP graph — it is RECREATED, and the next engage
+    /// (a control touch / the next Stem Lock track) builds and runs a fresh one.
+    func testMediaServicesResetRecreatesTheDSPGraph() async throws {
+        let (r, dsp) = try dspRig(["g1", "g2"])
+        r.seq.play([item("g1", lengthMs: 12_000), item("g2", lengthMs: 12_000)])
+        await waitUntil("g1 playing") { r.rips.nowPlaying?.songId == "g1" }
+        r.seq.engageMix()
+        try XCTSkipUnless(dsp.isReady, "no audio device on this test host")
+        r.seq.handleMediaServicesReset()
+        XCTAssertEqual(dsp.mediaResetRebuilds, 1)
+        XCTAssertFalse(dsp.isReady, "the orphaned graph is dropped")
+        r.seq.engageMix()
+        XCTAssertTrue(dsp.isReady, "a fresh graph is built on the next engage")
+        XCTAssertTrue(r.seq.mixEngaged)
+        // Not engaged at the reset: the graph is still recreated.
+        r.seq.skipNext()
+        await waitUntil("g2 playing") { r.rips.nowPlaying?.songId == "g2" }
+        XCTAssertFalse(r.seq.mixEngaged)
+        r.seq.handleMediaServicesReset()
+        XCTAssertEqual(dsp.mediaResetRebuilds, 2)
+    }
 }
 
 /// A mutable flag the `mixSessionActive` seam reads (observable, so the sequencer's observation
