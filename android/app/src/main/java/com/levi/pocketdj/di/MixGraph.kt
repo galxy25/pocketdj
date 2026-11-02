@@ -758,6 +758,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             h.startHook = { items, shuffled, lead, fade, label -> dj.startAutoMix(items, shuffled, lead, fade, label) }
             h.labelProvider = { dj.sourceLabel }
             h.upcomingProvider = { dj.autoUpcoming.map { it.songId } }
+            h.startPendingProvider = { dj.startPending }
         }
     }
 
@@ -791,6 +792,8 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             d.catalogSongCount = { catalog()?.songsById?.size ?: 0 }
             d.songLengthSeconds = { id -> catalog()?.songsById?.get(id)?.length?.takeIf { it > 0 }?.let { it / 1000.0 } }
             d.songTitleArtist = { id -> catalog()?.songsById?.get(id)?.let { it.name to it.artist } ?: (id to "") }
+            // Songs that landed while a fresh start was pending join the mix the moment it starts.
+            autoDj.onDeferredStartFinished = { d.noteAutoStartFinished() }
         }
     }
 
@@ -802,6 +805,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val enginePort = object : com.levi.pocketdj.screens.mix.MixEnginePort {
             override val autoMixing get() = engine.autoMixing
             override val isRunning get() = engine.isRunning
+            override val autoStartPending get() = dj.startPending
             override var autoEnabled: Boolean
                 get() = dj.enabled
                 set(v) = dj.setAutoEnabled(v)
@@ -1119,6 +1123,7 @@ class EngineAutoMixHost(
     var startHook: ((List<AutoMixItem>, Boolean, Double, Double, String?) -> Unit)? = null
     var labelProvider: (() -> String?)? = null
     var upcomingProvider: (() -> List<String>)? = null
+    var startPendingProvider: (() -> Boolean)? = null
 
     override val autoMixing get() = engine.autoMixing
     override val autoEndedExhausted get() = engine.autoEndedExhausted
@@ -1126,6 +1131,7 @@ class EngineAutoMixHost(
     override val deckGestureGeneration get() = engine.deckGestureGeneration
     override val autoSourceLabel get() = labelProvider?.invoke()
     override val autoUpcomingSongIds get() = upcomingProvider?.invoke().orEmpty()
+    override val autoStartPending get() = startPendingProvider?.invoke() == true
     override fun autoQueueInsert(item: AutoMixItem, placement: AutoPlacement) { insertHook?.invoke(item, placement) }
     override fun startAutoMix(items: List<AutoMixItem>, shuffled: Boolean, lead: Double, fade: Double, label: String?) {
         startHook?.invoke(items, shuffled, lead, fade, label)

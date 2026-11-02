@@ -218,6 +218,12 @@ class CollectionMixDownloader(
         armGestureGeneration = host.deckGestureGeneration
     }
 
+    /**
+     * The Auto-DJ's deferred start just started the mix: append what landed while it was pending
+     * ([AutoDj.onDeferredStartFinished]).
+     */
+    fun noteAutoStartFinished() = continueAutoMixIfArmed()
+
     // ---- cancel / leave -----------------------------------------------------------------------
 
     /** Tear the run down. NEVER touches the engine - a running mix keeps what it has. */
@@ -417,6 +423,9 @@ class CollectionMixDownloader(
             }
         }
         if (fresh.isEmpty()) return
+        // A start between its setup and its first deck load: never re-start it, never mark anything appended -
+        // [noteAutoStartFinished] appends these once it runs.
+        if (host.autoStartPending) return
         if (host.autoMixing) {
             autoStartPending = false
             if (host.autoSourceLabel != autoLabel) return // someone else's mix

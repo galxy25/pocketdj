@@ -203,7 +203,8 @@ class AutoDj(
             }
         }
         startRetries = 0
-        beginStart(++startGen, probe = false)
+        inStartCall = true
+        try { beginStart(++startGen, probe = false) } finally { inStartCall = false }
     }
 
     // ---- fresh-start phases (Q111: first prepare off Main; Q103: a gated first slot keeps the queue and retries)
@@ -220,6 +221,15 @@ class AutoDj(
      * a first slot the stream gate refuses ends the start (the pre-Q103 behaviour; JVM tests opt in).
      */
     var startRetryScheduler: ((delayMs: Long, block: () -> Unit) -> Unit)? = null
+
+    /**
+     * Fired on Main when a fresh start that went PENDING (prepare hop / Q103 retry rest) finally starts the mix,
+     * i.e. NOT for a start that completed inside [startAutoMix] itself. The collection downloader appends the
+     * songs that landed during the pending window (it could not while [isMixing] was false).
+     */
+    var onDeferredStartFinished: (() -> Unit)? = null
+    /** Inside [startAutoMix]'s synchronous body: a completion there is not deferred. */
+    private var inStartCall = false
 
     /**
      * Q111: prepare the first two queue items OFF Main (resolver + decoder open are disk reads), then load
@@ -287,6 +297,8 @@ class AutoDj(
         engine.play(Deck.A)
         refreshStatus()
         engine.persist()   // the whole (post-shuffle) queue + cursor survives a kill
+        // LAST: the listener may insert into the (now running) queue.
+        if (!inStartCall) onDeferredStartFinished?.invoke()
     }
 
     /** User Stop: ends the machine and pauses both decks. */
