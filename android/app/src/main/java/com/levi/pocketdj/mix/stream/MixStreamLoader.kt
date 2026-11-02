@@ -170,6 +170,8 @@ class MixStreamLoader(
     /** When each song's last whole-stream failure landed: a count older than [FAILURE_COUNT_WINDOW_MS] is stale. */
     private val lastFailureAt = HashMap<String, Long>()
     private var serverDownUntil: Long? = null
+    /** Q103: an Auto-DJ start retry may open ONE stream through the server-down gate while armed. */
+    private var startProbeArmed = false
     private val byTask = HashMap<Int, String>()
     private val sources = HashMap<String, String>()
     private val taskIds = AtomicInteger()
@@ -218,11 +220,18 @@ class MixStreamLoader(
             // Server-down pauses new streams for 60 s - except an Auto-DJ PROBE: a song that already
             // failed and whose short Auto-DJ cooldown has elapsed may try once (a single HTTP 5xx /
             // presign blip must not stall the mix for a minute; a real outage just fails the probe).
-            if (clock() < it && !(forAuto && failedAt != null && cooledDown)) return false
+            // Q103: an Auto-DJ START retry is armed to probe ONE stream through the gate (consumed by [open]).
+            if (clock() < it && !(forAuto && failedAt != null && cooledDown) && !(forAuto && startProbeArmed)) return false
         }
         if (!cooledDown) return false
         true
     }
+
+    /**
+     * Q103: arm (or disarm) the Auto-DJ start-retry probe. While armed, ONE `forAuto` [open] may pass the
+     * server-down gate (per-song failure cooldowns still apply); the open that passes consumes it.
+     */
+    fun armAutoStartProbe(on: Boolean) = lock.withLock { startProbeArmed = on }
 
     /**
      * Auto-DJ retry cooldown after [failures] consecutive failures (Q38): 2 s, 2 s, 3 s, then the
@@ -265,6 +274,10 @@ class MixStreamLoader(
         }
         if (!canStream(songId, forAuto)) return null
         val entry = rips.entry(songId) ?: return null
+        if (forAuto && startProbeArmed && serverDownUntil?.let { clock() < it } == true) {
+            startProbeArmed = false   // one probe per armed retry: a real outage just fails it (and re-trips the gate)
+            telemetry("auto start probe $songId through server-down")
+        }
         makeRoom()
         val file = File(directory, "${safe(songId)}-${UUID.randomUUID().toString().take(8)}.mp3")
         directory.mkdirs()

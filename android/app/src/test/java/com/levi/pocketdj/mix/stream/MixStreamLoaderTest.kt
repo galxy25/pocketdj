@@ -181,6 +181,23 @@ class MixStreamLoaderTest {
         assertTrue("a good response clears server-down", loader.canStream("b"))
     }
 
+    @Test fun q103ArmedStartProbeLetsExactlyOneAutoOpenThroughServerDown() {
+        digital("a"); digital("b"); digital("c")
+        origin.status["/side/b.mp3"] = 500   // the outage is real: the probe fails (a good one would clear the gate mid-test)
+        loader.tripServerDownForTesting()
+        assertFalse("never-failed song refused by server-down", loader.canStream("b", forAuto = true))
+        assertNull(loader.open("b", "B", "x", forAuto = true))
+        loader.armAutoStartProbe(true)
+        assertFalse("the manual gate ignores the Auto-DJ start probe", loader.canStream("b"))
+        assertTrue(loader.canStream("b", forAuto = true))
+        assertNotNull("the armed retry's probe opens", loader.open("b", "B", "x", forAuto = true))
+        assertFalse("consumed: a second song is still refused", loader.canStream("c", forAuto = true))
+        assertNull(loader.open("c", "C", "x", forAuto = true))
+        // Disarm is idempotent and leaves the server-down gate as it was.
+        loader.armAutoStartProbe(true); loader.armAutoStartProbe(false)
+        assertFalse(loader.canStream("c", forAuto = true))
+    }
+
     @Test fun staleFailureCountResetsAfterTheWindow() {
         digital("a")
         fun failOnce() { assertNotNull(loader.open("a", "A", "x", forAuto = true)); loader.failStreamForTesting("a") }

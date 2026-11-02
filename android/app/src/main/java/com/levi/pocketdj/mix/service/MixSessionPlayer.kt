@@ -307,20 +307,23 @@ object ParkedMixSession {
     }
 }
 
-/** Q95: an idle, parked Mix gives the session back (it re-claims on its next `onAudioStarted`). */
-object MixIdleResign {
-    /**
-     * Resigns [player] when nothing wants audio, no recording keeps the engine alive, no transient-focus interruption
-     * is parked (the regain must still find the Mix as owner), and ANOTHER engine has something to front
-     * ([exoHasItem]; otherwise the paused Mix stays the remote target). Returns true if it resigned.
-     */
-    fun resignIfIdle(
-        board: SessionSwitchboard, player: TransportOwner, mixWantsAudio: Boolean, keepAlive: Boolean,
-        interruptionParked: Boolean = false, exoHasItem: Boolean = true,
+/**
+ * Q122 (reverts Q95's "a Mix paused > 15 s resigns"): a PAUSED Mix keeps the session, so a remote / lock-screen /
+ * Bluetooth play after a pause resumes whatever was paused last - the Mix, when the Mix was paused last (any other
+ * engine that sounds afterwards claims the session itself). The Mix gives the session back only once it has
+ * nothing left to resume: no deck loaded, nothing parked, nothing wanting audio (stopped + ejected).
+ */
+object MixSessionRetention {
+    fun shouldResign(hasLoadedDeck: Boolean, hasParked: Boolean, mixWantsAudio: Boolean): Boolean =
+        !hasLoadedDeck && !hasParked && !mixWantsAudio
+
+    /** Resigns [player] when [shouldResign]; returns true if it was the session target and resigned. */
+    fun resignIfEjected(
+        board: SessionSwitchboard, player: TransportOwner, hasLoadedDeck: Boolean, hasParked: Boolean, mixWantsAudio: Boolean,
     ): Boolean {
-        if (mixWantsAudio || keepAlive || interruptionParked || !exoHasItem) return false
-        if (board.current !== player) return false
+        if (!shouldResign(hasLoadedDeck, hasParked, mixWantsAudio)) return false
+        val was = board.isActive(player)
         board.resign(player)
-        return true
+        return was
     }
 }

@@ -202,13 +202,82 @@ class AutoDj(
                 moveItem(j, 0)
             }
         }
-        if (!loadAutoSlot(0, Deck.A)) {
+        startRetries = 0
+        beginStart(++startGen, probe = false)
+    }
+
+    // ---- fresh-start phases (Q111: first prepare off Main; Q103: a gated first slot keeps the queue and retries)
+
+    /** Bumped by every new start and every [endAutoLoop]: a stale prepare hop / retry must never land. */
+    private var startGen = 0
+    /** Start retries used so far by the CURRENT start (Q103). */
+    private var startRetries = 0
+    /** A fresh start is between its synchronous setup and the first deck load (prepare hop or retry rest). */
+    var startPending = false; private set
+
+    /**
+     * Q103 seam: run [block] on Main after `delayMs` (MixGraph wires a main Handler). Null = no retries:
+     * a first slot the stream gate refuses ends the start (the pre-Q103 behaviour; JVM tests opt in).
+     */
+    var startRetryScheduler: ((delayMs: Long, block: () -> Unit) -> Unit)? = null
+
+    /**
+     * Q111: prepare the first two queue items OFF Main (resolver + decoder open are disk reads), then load
+     * them. Without an offload seam (tests, restore) the loads stay synchronous.
+     */
+    private fun beginStart(gen: Int, probe: Boolean) {
+        startPending = true
+        val gesture = engine.deckGestureGeneration
+        val first = queue.take(2).map { it.loadable }
+        val offloaded = engine.prepareForStart(first) {
+            // A manual deck gesture (load / play) during the hop took the decks over: the start yields.
+            if (gen != startGen) return@prepareForStart
+            if (engine.deckGestureGeneration != gesture) { abandonStart("a deck gesture took over"); return@prepareForStart }
+            finishStart(gen, probe)
+        }
+        if (!offloaded) finishStart(gen, probe)
+    }
+
+    private fun abandonStart(why: String) {
+        advLog("start: abandoned - $why")
+        startPending = false
+        engine.discardStartPrepared()
+        queue.clear()
+        refreshStatus()
+    }
+
+    private fun finishStart(gen: Int, probe: Boolean) {
+        startPending = false
+        // Q103: a RETRY may push ONE stream through the server-down gate (a probe; a good response clears it).
+        if (probe) seams.armStartProbe(true)
+        val firstLoaded = try { loadAutoSlot(0, Deck.A) } finally { if (probe) seams.armStartProbe(false) }
+        if (!firstLoaded) {
+            engine.discardStartPrepared()
+            val scheduler = startRetryScheduler
+            // What survives loadAutoSlot is only what the stream gate refuses RIGHT NOW (unloadable songs were dropped).
+            if (queue.isNotEmpty() && scheduler != null && startRetries < START_RETRY_ATTEMPTS) {
+                startRetries += 1
+                val attempt = startRetries
+                advLog("start: first slot gated (stream gate closed) - keeping ${queue.size} queued, retry $attempt/$START_RETRY_ATTEMPTS in ${START_RETRY_REST_MS / 1000}s")
+                startPending = true
+                val gesture = engine.deckGestureGeneration
+                scheduler(START_RETRY_REST_MS) {
+                    if (gen != startGen || !startPending) return@scheduler
+                    if (engine.deckGestureGeneration != gesture) { abandonStart("a deck gesture took over"); return@scheduler }
+                    advLog("start: retry $attempt/$START_RETRY_ATTEMPTS")
+                    beginStart(gen, probe = true)
+                }
+                refreshStatus()
+                return
+            }
+            if (queue.isNotEmpty()) advLog("start: first slot still gated after $startRetries retr${if (startRetries == 1) "y" else "ies"} - giving up")
             queue.clear()
             refreshStatus()
             engine.persist()   // the eject above emptied both decks: land that state
             return
         }
         loadAutoSlot(1, Deck.B)
+        engine.discardStartPrepared()   // an unconsumed start prepare (a skipped slot) must not linger
         nextToLoad = minOf(2, queue.size)
         prefetchUpcoming()
 
@@ -232,6 +301,9 @@ class AutoDj(
     }
 
     override fun endAutoLoop() {
+        // A pending fresh start (prepare hop / Q103 retry rest) is cancelled by any end (Stop, Auto off, eject all).
+        startGen++
+        if (startPending) { startPending = false; engine.discardStartPrepared(); queue.clear() }
         if (mixing) onSkipCommandsEnabled?.invoke(false)
         val wasMixing = mixing
         // Abort any in-flight glide so a Stop mid-transition never leaves an effect on / a deck pitched.
@@ -1085,6 +1157,10 @@ class AutoDj(
 
     companion object {
         const val PREFETCH_AHEAD = 2
+        /** Q103: a fresh start whose first slot the stream gate refuses retries this many times... */
+        const val START_RETRY_ATTEMPTS = 3
+        /** ...resting this long between attempts (past the 2 s / 2 s / 3 s Auto-DJ failure cooldowns). */
+        const val START_RETRY_REST_MS = 3_000L
         const val FALLBACK_DURATION_MS = 180_000
     }
 }
