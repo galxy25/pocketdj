@@ -216,4 +216,42 @@ class AutoDjStartTest {
         assertFalse(r.dj.isMixing)
         assertEquals("s3", r.id(Deck.B))
     }
+
+    @Test fun q111ARestoreMaterializingDuringTheHopNeverTakesTheDecksBack() {
+        // A parked mix (s3 on Deck A) from an earlier process.
+        val old = AutoRig(n = 4)
+        old.e.load(old.items[3].loadable, Deck.A)
+        val snap = checkNotNull(old.e.mixDeckSnapshot())
+
+        val r = AutoRig(n = 4)
+        var restoreWork: (() -> MixEngine.RestorePrep)? = null
+        var restoreCommit: ((MixEngine.RestorePrep) -> Unit)? = null
+        r.e.restoreOffload = { w, c -> restoreWork = w; restoreCommit = c }
+        r.e.parkRestore(snap)
+        r.e.materializePendingRestoreIfNeeded("car")     // Android Auto opened the Mix row: restore prep on IO
+        val queued = ArrayList<() -> Unit>()
+        r.e.loadOffload = { work, commit -> queued += { commit(work()) } }
+        r.start()                                        // ...and the driver taps a crate before it lands
+        restoreCommit!!(restoreWork!!())                 // the restore's IO finishes FIRST
+        queued.toList().forEach { it() }
+        assertTrue("the start wins over the stale restore", r.dj.isMixing)
+        assertEquals("s0", r.id(Deck.A)); assertEquals("s1", r.id(Deck.B))
+        assertEquals(4, r.dj.queueSize)
+        assertFalse(r.e.hasParkedRestore)
+    }
+
+    @Test fun q111ALaunchSnapshotLandingDuringTheHopIsNotParked() {
+        val old = AutoRig(n = 4)
+        old.e.load(old.items[3].loadable, Deck.A)
+        val snap = checkNotNull(old.e.mixDeckSnapshot())
+        val r = AutoRig(n = 4)
+        val queued = ArrayList<() -> Unit>()
+        r.e.loadOffload = { work, commit -> queued += { commit(work()) } }
+        r.start()
+        r.e.launchReadFinished(snap)                     // the off-Main launch read lands mid-hop
+        assertFalse("the start settled the restore: the old mix never parks", r.e.hasParkedRestore)
+        queued.toList().forEach { it() }
+        assertTrue(r.dj.isMixing)
+        assertEquals("s0", r.id(Deck.A))
+    }
 }

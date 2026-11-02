@@ -371,6 +371,9 @@ class MixEngine(
     internal fun prepareForStart(items: List<MixLoadable>, done: () -> Unit): Boolean {
         val off = loadOffload ?: return false
         discardStartPrepared()
+        // The start owns the decks NOW (pre-Q111 its synchronous first load did this in the same call): a parked /
+        // materializing / still-being-read launch restore must not land during the hop and take the decks back.
+        if (!isRestoringMixSession) { pendingRestore = null; restoreGen++; restoreSettled = true }
         val gen = startPrepareGen
         var left = items.size + 1   // +1: [done] only after every hop has been issued (an inline offload settles at once)
         fun settle() { if (--left == 0 && gen == startPrepareGen) done() }
