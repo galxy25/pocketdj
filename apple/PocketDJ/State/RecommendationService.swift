@@ -647,6 +647,10 @@ final class RecommendationService {
                 guard epoch == flushEpoch else { return }
                 syncError = Self.keyMismatchMessage
                 return   // cursors NOT advanced
+            } catch RecEngineClient.ClientError.profileCapReached {
+                guard epoch == flushEpoch else { return }
+                syncError = Self.profileCapMessage
+                return   // cursors NOT advanced; retry next cycle (a slot may free up)
             } catch RecEngineClient.ClientError.enrollmentRequired {
                 guard epoch == flushEpoch else { return }
                 syncError = Self.enrollmentRequiredMessage
@@ -726,7 +730,7 @@ final class RecommendationService {
         } catch let e as RecEngineClient.ClientError {
             guard epoch == flushEpoch else { return false }
             switch e {
-            case .keyMismatch, .enrollmentRequired, .http(400..<500):
+            case .keyMismatch, .enrollmentRequired, .profileCapReached, .http(400..<500):
                 break   // can never succeed with this credential (a peer already deleted it,
                         // or the secret rotated) — stop retrying and re-enroll the scoped id
             case .http, .badResponse:
@@ -937,6 +941,13 @@ final class RecommendationService {
     private static let keyMismatchMessage =
         "This device's recommendation key doesn't match the cloud data. Tap Delete cloud data "
         + "below to reset it — your recommendations rebuild from this device's history."
+
+    /// The enrollment-cap message (server 403 `profile-cap-reached`): the deployment's
+    /// MAX_PROFILES flood guard is full, so a NEW profile can't be created. Neither "Delete
+    /// cloud data" nor an app update helps — it must not borrow either message. Same copy as
+    /// Android's `PROFILE_CAP_MESSAGE`.
+    static let profileCapMessage =
+        "The recommendation service isn't accepting new profiles right now."
 
     /// The rotated-secret message (server 403 `enrollment-required` on an upload that would
     /// CREATE state): this build's baked-in secret predates a server rotation, and no in-app

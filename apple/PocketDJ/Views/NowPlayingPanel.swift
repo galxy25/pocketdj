@@ -405,6 +405,7 @@ struct NowPlayingPanel: View {
                         Text(item.artist).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
                     }
                     Spacer(minLength: 4)
+                    RetunedBadge(uid: item.uid)
                     Button {
                         sequencer.removeUpcoming(uids: [item.uid])
                     } label: {
@@ -845,11 +846,14 @@ struct NowPlayingDeckCluster: View {
 
     private var repeatToggle: some View {
         Button { sequencer.cycleRepeatMode() } label: {
-            Image(systemName: sequencer.repeatMode == .one ? "repeat.1" : "repeat")
+            Image(systemName: Self.repeatGlyph(sequencer.effectiveRepeatMode))
                 .font(.subheadline)
-                .foregroundStyle(sequencer.repeatMode == .off ? Theme.fgDim : Theme.accent)
+                .foregroundStyle(sequencer.effectiveRepeatMode == .off ? Theme.fgDim : Theme.accent)
         }
         .buttonStyle(.plain)
+        // A pocket run forces repeat off (W2): show that, and don't offer a tap that would only
+        // flip a sticky mode the glyph can't show.
+        .disabled(sequencer.isRepeatForcedOff)
         .help(repeatHelp)
         .accessibilityLabel("Repeat")
         .accessibilityValue(repeatHelp)
@@ -859,7 +863,15 @@ struct NowPlayingDeckCluster: View {
     /// off → "Repeat off"; all → "Repeat session"; one → "Repeat song" (matches the user's ask:
     /// toggle between repeat-song and repeat-session).
     private var repeatHelp: String {
-        switch sequencer.repeatMode {
+        Self.repeatHelp(sequencer.effectiveRepeatMode, forcedOff: sequencer.isRepeatForcedOff)
+    }
+
+    /// The repeat glyph for the mode playback actually obeys (`effectiveRepeatMode`).
+    static func repeatGlyph(_ mode: RepeatMode) -> String { mode == .one ? "repeat.1" : "repeat" }
+
+    static func repeatHelp(_ mode: RepeatMode, forcedOff: Bool) -> String {
+        if forcedOff { return "Repeat off during a pocket run" }
+        switch mode {
         case .off: return "Repeat off"
         case .all: return "Repeat session"
         case .one: return "Repeat song"
@@ -1162,5 +1174,36 @@ enum NowPlayingSearch {
             .sorted { $0.score != $1.score ? $0.score > $1.score : $0.order < $1.order }
             .prefix(cap)
             .map(\.item)
+    }
+}
+
+// MARK: - Pocket run "Re-tuned ✦" badge
+
+/// The subtle "Re-tuned ✦" badge on an Up Next row a Pocket Wheel re-plan / re-target just
+/// swapped (design §4.5: "the Up Next list updates in place, with a subtle badge on the swapped
+/// rows for a few seconds"). Reads `PocketRunStore.retunedUids` through `shared` (optional, so a
+/// surface without the store in its environment just draws nothing); the store clears the set
+/// after `retunedBadgeSeconds`, which fades the badge out.
+struct RetunedBadge: View {
+    let uid: UUID
+    var store: PocketRunStore? = PocketRunStore.shared
+
+    static let label = "Re-tuned ✦"
+
+    var body: some View {
+        let on = store?.isRetuned(uid) == true
+        Group {
+            if on {
+                Text(Self.label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .transition(.opacity)
+                    .accessibilityLabel("Re-tuned for your pocket")
+                    .accessibilityIdentifier("np-retuned")
+            }
+        }
+        .animation(.easeInOut(duration: 0.35), value: on)
     }
 }

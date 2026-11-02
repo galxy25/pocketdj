@@ -14,8 +14,8 @@ import Foundation
 /// user-configured third-party server (jukebox broker, shared rip server) that logged the
 /// broadcast `X-PocketDJ-Profile` can't address this profile's rec state. See that type's doc.
 ///
-/// A 403 is not one condition — the body names it (`key-mismatch` vs `enrollment-required`)
-/// and the recoveries differ, so `run` maps it to distinct `ClientError`s.
+/// A 403 is not one condition — the body names it (`key-mismatch` vs `enrollment-required` vs
+/// `profile-cap-reached`) and the recoveries differ, so `run` maps it to distinct `ClientError`s.
 struct RecEngineClient {
     /// Injected base (tests); nil ⇒ `Config.recEngineBase` read LIVE per request (remote endpoints).
     var base: URL? = nil
@@ -40,6 +40,12 @@ struct RecEngineClient {
         /// recoveries differ: a key mismatch is fixed in-app ("Delete cloud data"), a rotated
         /// secret only by updating the app.
         case enrollmentRequired
+        /// The deployment's enrollment flood cap (`MAX_PROFILES`) is full
+        /// (`{ error: 'profile-cap-reached', max: N }`): the server refused to CREATE a NEW
+        /// profile's state. Distinct from `.keyMismatch` because "Delete cloud data" can never
+        /// help — a re-bind after a delete that hits the cap would otherwise loop the user back
+        /// to the same dead-end advice (the Android emulator finding this mirrors).
+        case profileCapReached
         case badResponse
     }
 
@@ -81,10 +87,14 @@ struct RecEngineClient {
     /// `profile-cap-reached`) and the recoveries differ, so the client must not collapse them.
     /// Anything unrecognized keeps the old `.keyMismatch` mapping — the in-app reset path is
     /// the only recovery the app can offer for an unknown refusal anyway.
-    private static func map403(_ body: Data) -> ClientError {
+    static func map403(_ body: Data) -> ClientError {
         struct Err: Decodable { let error: String? }
         let kind = (try? JSONDecoder().decode(Err.self, from: body))?.error
-        return kind == "enrollment-required" ? .enrollmentRequired : .keyMismatch
+        switch kind {
+        case "enrollment-required": return .enrollmentRequired
+        case "profile-cap-reached": return .profileCapReached
+        default: return .keyMismatch
+        }
     }
 
     /// `POST /events` — upload a delta batch. Longer timeout: a first-enable drain can carry

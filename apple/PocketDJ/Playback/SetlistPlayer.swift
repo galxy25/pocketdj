@@ -284,8 +284,17 @@ final class SetlistPlayer {
     /// The repeat mode the PLAYBACK obeys: a Pocket Wheel run is exactly 100 played-through songs
     /// (W2), so repeat never applies while one owns the sequencer — WITHOUT touching the user's
     /// sticky `repeatMode`, which the next ordinary set picks straight back up.
+    ///
+    /// EVERY repeat surface (Now Playing deck, widget, CarPlay, lock-screen card) shows THIS, not
+    /// the sticky mode — a glyph lit for `.all` while the run will still stop at song 100 lies.
     var effectiveRepeatMode: RepeatMode {
-        sourceSetlistId?.hasPrefix(PocketWheelIds.runTagPrefix) == true ? .off : repeatMode
+        isRepeatForcedOff ? .off : repeatMode
+    }
+    /// True while a Pocket Wheel run (`pwr_` tag) owns the sequencer: repeat is forced off (W2)
+    /// and the repeat controls are inert (`setRepeatMode` ignores them), so a tap can't silently
+    /// change a sticky mode the glyph isn't showing.
+    var isRepeatForcedOff: Bool {
+        sourceSetlistId?.hasPrefix(PocketWheelIds.runTagPrefix) == true
     }
     /// Whether the running queue's UPCOMING tail is live-shuffled. Reset per `play()` (the new
     /// queue is presented in its given order — the one-shot `playNow(shuffle:)` handles initial
@@ -801,7 +810,7 @@ final class SetlistPlayer {
         player.onRepeatModeChange = { [weak self] in self?.setRepeatMode($0) }
         player.onShuffleChange = { [weak self] in self?.setShuffle($0) }
         player.setRepeatShuffleCommandsEnabled(true)
-        player.setRemoteRepeatMode(repeatMode)
+        player.setRemoteRepeatMode(effectiveRepeatMode)
         player.setRemoteShuffle(shuffleEnabled)
         // Apple Music STREAMS through MusicKit's own player, which the PlayerEngine end hook
         // above never sees — so wire its end-of-track straight into the sequencer's advance,
@@ -908,7 +917,16 @@ final class SetlistPlayer {
     /// Set the whole-session repeat mode explicitly (the lock-screen / CarPlay changeRepeatMode
     /// command routes here). No-op when unchanged. Safe while idle/held — the mode simply rides
     /// the next run; only a running set persists it.
+    ///
+    /// Ignored while a Pocket Wheel run owns the sequencer (`isRepeatForcedOff`): the run's
+    /// repeat is off by contract, the glyph shows off, and the listener's sticky mode must ride
+    /// through the run untouched. The lock-screen card is re-asserted to off so a remote change
+    /// there doesn't leave it showing a mode the run won't obey.
     func setRepeatMode(_ mode: RepeatMode) {
+        if isRepeatForcedOff {
+            player.setRemoteRepeatMode(.off)
+            return
+        }
         guard mode != repeatMode else { return }
         repeatMode = mode
         player.setRemoteRepeatMode(mode)

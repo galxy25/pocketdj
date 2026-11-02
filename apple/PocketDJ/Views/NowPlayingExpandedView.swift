@@ -210,9 +210,13 @@ struct NowPlayingExpandedView: View {
                 ForEach(Array(upcoming.prefix(queueShown).enumerated()),
                         id: \.element.uid) { offset, item in
                     Button { sequencer.jumpToUpcoming(uid: item.uid) } label: {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(item.title).font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
-                            Text(item.artist).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                        HStack(spacing: 6) {
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(item.title).font(.caption).foregroundStyle(Theme.fg).lineLimit(1)
+                                Text(item.artist).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                            }
+                            Spacer(minLength: 4)
+                            RetunedBadge(uid: item.uid)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())

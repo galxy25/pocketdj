@@ -71,8 +71,13 @@ final class PocketRunStore {
     private(set) var buildState: BuildState = .idle
     /// Bumped on every visible change (centre progress ring, Up Next badges).
     private(set) var revision = 0
-    /// Rows re-tuned by the last re-plan (Up Next "Re-tuned ✦" badge for a few seconds).
+    /// Rows re-tuned by the last re-plan / re-target (Up Next "Re-tuned ✦" badge for a few
+    /// seconds, §4.5). Only rows that actually landed in the queue (a protected row the player
+    /// declined to swap is NOT re-tuned); cleared `retunedBadgeSeconds` after the LATEST swap.
     private(set) var retunedUids: Set<UUID> = []
+    /// How long the "Re-tuned ✦" badge shows (seam so tests needn't wait 4 s).
+    @ObservationIgnored var retunedBadgeSeconds: Double = 4
+    @ObservationIgnored private var retunedGeneration = 0
 
     var isRunning: Bool { active != nil && active?.finished == false }
     var progress: (done: Int, total: Int, key: PocketMomentKey?)? {
@@ -469,14 +474,29 @@ final class PocketRunStore {
             }
         }
         let applied = player.replaceUpcoming(items, removing: Set(result.removals))
-        retunedUids = Set(items.values.map(\.uid))
+        flashRetuned(Set(items.values.map(\.uid)))
         revision &+= 1
         let ms = Int(Date().timeIntervalSince(started) * 1000)
         DiagLog.shared.log("pocketrun", "replan run=\(a.runId.uuidString.prefix(8)) skips=\(a.skips) replaced=\(result.replacements.count) removed=\(result.removals.count) applied=\(applied) banned=[\(result.banned.joined(separator: ","))] ms=\(ms)")
         trimToInvariant()
+    }
+
+    /// Whether the Up Next row with this `Item.uid` shows the "Re-tuned ✦" badge.
+    func isRetuned(_ uid: UUID) -> Bool { retunedUids.contains(uid) }
+
+    /// Light the badge on the swapped rows still in the queue, then clear it after
+    /// `retunedBadgeSeconds` — unless a newer swap re-lit it meanwhile (its own timer clears it;
+    /// an older timer must not cut the newer badge short).
+    private func flashRetuned(_ uids: Set<UUID>) {
+        let live = uids.intersection(player?.queue.map(\.uid) ?? [])
+        retunedGeneration &+= 1
+        retunedUids = live
+        guard !live.isEmpty else { return }
+        let gen = retunedGeneration, secs = retunedBadgeSeconds
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            self?.retunedUids = []
+            try? await Task.sleep(nanoseconds: UInt64(max(0, secs) * 1_000_000_000))
+            guard let self, self.retunedGeneration == gen else { return }
+            self.retunedUids = []
         }
     }
 
@@ -520,7 +540,7 @@ final class PocketRunStore {
         a.profile = profile
         a.bench = plan.bench
         active = a
-        retunedUids = Set(items.values.map(\.uid))
+        flashRetuned(Set(items.values.map(\.uid)))
         revision &+= 1
         persist()
         DiagLog.shared.log("pocketrun", "retarget run=\(a.runId.uuidString.prefix(8)) mode=\(mode.rawValue) applied=\(applied)")
@@ -541,6 +561,7 @@ final class PocketRunStore {
         tickerTask?.cancel(); tickerTask = nil
         replanTask?.cancel(); replanTask = nil
         topUpTask?.cancel(); topUpTask = nil
+        retunedGeneration &+= 1; retunedUids = []
         a.finished = true
         a.endedAtMs = nowMs
         let summary = RunSummary(id: a.runId, momentKey: a.momentKey, label: a.label, startedAtMs: a.startedAtMs,

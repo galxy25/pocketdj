@@ -318,4 +318,28 @@ final class WidgetNowPlayingTests: XCTestCase {
         XCTAssertEqual(snap.appleMusicId, "am_a")
         h.seq.stop()
     }
+
+    /// A Pocket Wheel run forces repeat off (W2): the widget snapshot carries the EFFECTIVE mode,
+    /// not the listener's sticky one.
+    func testPublishCarriesEffectiveRepeatDuringAPocketRun() throws {
+        try XCTSkipIf(NowPlayingShared.defaults == nil, "App Group not provisioned in this run")
+        let h = makeSyncHarness()
+        h.seq.setRepeatMode(.all)
+        // A fresh WidgetSync over the same state publishes synchronously in init.
+        func publishNow() {
+            _ = WidgetSync(setlist: h.seq, player: PlayerEngine(), rips: RipsStore(),
+                           coordinator: PlaybackCoordinator(
+                            ripProvider: RipServerPlaybackProvider(rips: RipsStore(), player: PlayerEngine()),
+                            appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider())),
+                           artCandidates: { _ in [] }, favorites: h.favorites, appleMusicId: { _ in nil })
+        }
+        h.seq.play([item("a"), item("b")], sourceSetlistId: PocketWheelIds.runTag(UUID()))
+        publishNow()
+        XCTAssertEqual(NowPlayingShared.read().repeatMode, "off")
+        h.seq.play([item("c")], sourceSetlistId: "set_1")
+        publishNow()
+        XCTAssertEqual(NowPlayingShared.read().repeatMode, "all")
+        h.seq.stop()
+        NowPlayingShared.write(.empty)
+    }
 }
