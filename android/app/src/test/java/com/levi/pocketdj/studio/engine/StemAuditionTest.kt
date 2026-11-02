@@ -118,6 +118,23 @@ class StemAuditionTest {
         assertEquals("mutes re-applied after the reload", listOf("drums"), StemCarve.STEMS.filter { stems.isAudible(it) })
     }
 
+    @Test fun aBackgroundStopKeepsTheAuditionPosition() {
+        // StudioGraph's ON_STOP observer stops the stem player (position wiped); the sheet stays in stem mode.
+        val mix = FakeMix(); val stems = FakeStems(); val a = StemAudition(mix, stems)
+        a.enterStems("s1", four, StemCarve.allEnabled())
+        a.toggle(); a.seek(40.0)
+        assertEquals(40.0, a.playheadSec(), 0.0)
+        stems.stop()
+        assertEquals("playhead holds where the audition was", 40.0, a.playheadSec(), 0.0)
+        a.toggle()
+        assertTrue(stems.isPlaying)
+        assertEquals("resumes at the position, not 0", 40.0, stems.currentTimeSec, 0.0)
+        stems.currentTimeSec = 52.0; a.playheadSec()
+        stems.stop()
+        a.exitStems()
+        assertEquals("full mix takes over at the remembered position", 52.0, mix.pos, 0.0)
+    }
+
     // ---- the real synced player: what you hear is exactly the chosen stems ----
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

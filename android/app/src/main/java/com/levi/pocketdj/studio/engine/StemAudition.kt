@@ -34,14 +34,18 @@ class StemAudition(private val mix: MixAudition, private val stems: StemPlayer) 
 
     val isPlaying: Boolean get() = if (auditioningStems) stems.isPlaying else mix.isPlaying
 
-    fun playheadSec(): Double = if (auditioningStems) stems.currentTimeSec else mix.playheadSec()
+    fun playheadSec(): Double = if (auditioningStems) stemPos() else mix.playheadSec()
+
+    /** Last stem position seen while loaded: an ON_STOP stop wipes the player's, the sheet keeps its place. */
+    private var lastStemSec = 0.0
+    private fun stemPos(): Double = if (stems.durationSec > 0) stems.currentTimeSec.also { lastStemSec = it } else lastStemSec
 
     fun toggle() {
-        if (auditioningStems) { if (ensureLoaded()) stems.togglePlayPause() }
+        if (auditioningStems) { if (ensureLoaded()) { stems.togglePlayPause(); stemPos() } }
         else if (mix.isPlaying) mix.pause() else mix.play()
     }
 
-    fun seek(sec: Double) { if (auditioningStems) { if (ensureLoaded()) stems.seek(sec) } else mix.seek(sec) }
+    fun seek(sec: Double) { if (auditioningStems) { if (ensureLoaded()) { stems.seek(sec); stemPos() } } else mix.seek(sec) }
 
     private var loadedId: String? = null
     private var loadedFiles: Map<String, File> = emptyMap()
@@ -53,6 +57,7 @@ class StemAudition(private val mix: MixAudition, private val stems: StemPlayer) 
         val id = loadedId ?: return false
         if (!stems.load(id, loadedFiles)) return false
         applyMutes(lastEnabled)
+        stems.seek(lastStemSec)
         return true
     }
 
@@ -72,7 +77,7 @@ class StemAudition(private val mix: MixAudition, private val stems: StemPlayer) 
         auditioningStems = true
         loadedId = "$songId#cut-stems"; loadedFiles = set
         applyMutes(enabled)
-        stems.seek(pos)
+        stems.seek(pos); lastStemSec = pos
         if (wasPlaying) stems.togglePlayPause()
         return true
     }
@@ -80,7 +85,7 @@ class StemAudition(private val mix: MixAudition, private val stems: StemPlayer) 
     /** Back to the full mix at the stems' position (playing if they were); the stem decoders are released. */
     fun exitStems() {
         if (!auditioningStems) return
-        val pos = stems.currentTimeSec
+        val pos = stemPos()
         val wasPlaying = stems.isPlaying
         stems.stop()
         auditioningStems = false; loadedId = null
@@ -98,7 +103,7 @@ class StemAudition(private val mix: MixAudition, private val stems: StemPlayer) 
     /** New selection / carve / dismiss: silence and release the stem player (the full-mix preview is the caller's). */
     fun release() {
         stems.stop()
-        auditioningStems = false; loadedId = null
+        auditioningStems = false; loadedId = null; lastStemSec = 0.0
     }
 
     companion object {

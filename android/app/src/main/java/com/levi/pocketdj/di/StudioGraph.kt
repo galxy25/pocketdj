@@ -654,7 +654,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         interruptions.register("stem-audition", { p.isPlaying }, { p.parkForInterruption() }, { p.resumeFromInterruption() })
         p
     }
-    val stemAuditionPlayer: com.levi.pocketdj.studio.demux.StemPlayer get() = stemAuditionLazy.value
+    val stemAuditionPlayer: com.levi.pocketdj.studio.demux.StemPlayer get() = stemAuditionLazy.value.also { ensureLoopStopObserver() }
 
     /** The Demuxer's selection/resolve/stems state machine (one per app; the screen is a pure renderer of it). */
     /** STU-15: drum-pattern / melody analyzers + cloud lyrics (one run per source key). */
