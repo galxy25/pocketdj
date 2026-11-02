@@ -70,6 +70,12 @@
 -dontwarn org.joda.time.**
 
 # --- ShazamKit (vendored AAR) -> Retrofit 2.9 + Gson ----------------------------------------
+# The AAR's consumer rules keep only com.shazam.shazamkit.internal.** (+ MediaItem members), while
+# its Gson/Retrofit internals also touch the public API package (DeveloperToken, Signature,
+# MatchResult, MatchedMediaItem...). With obfuscation on, R8 would rename/inline those; a real
+# match can't be produced on the emulator to prove they're safe, so keep the whole (small) SDK.
+-keep class com.shazam.shazamkit.** { *; }
+-keep interface com.shazam.shazamkit.** { *; }
 # ShazamKit's RecognitionEndpoint is a Retrofit `suspend` interface. Retrofit 2.9's embedded rules
 # predate R8 full mode (AGP 8 default), which strips generic signatures from classes that are not
 # kept; Retrofit then cannot read the Continuation/Call/Response type arguments at runtime. These
