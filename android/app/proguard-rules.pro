@@ -48,6 +48,10 @@
 # --- Glance: action callbacks are instantiated reflectively from their class name, which is
 # written into widget PendingIntents (they survive an app update until the widget re-renders).
 -keep class * implements androidx.glance.appwidget.action.ActionCallback { <init>(); }
+# GlanceAppWidgetManager persists each provider's canonicalName in its DataStore and
+# getGlanceIds(NowPlayingWidget::class.java) looks it up by that name: a renamed provider finds no
+# widgets (refreshWidgets silently no-ops) until the next APPWIDGET_UPDATE re-registers it.
+-keepnames class * extends androidx.glance.appwidget.GlanceAppWidget
 
 # --- WorkManager: workers are created reflectively from the class name PERSISTED in WorkManager's
 # database (periodic work enqueued by 1.0.0 must still resolve after an update), so the names of
