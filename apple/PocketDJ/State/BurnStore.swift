@@ -555,9 +555,13 @@ final class BurnStore {
         let audioURL = dir.appendingPathComponent(audioName)
         do {
             // Analog: a sibling song already wrote the shared side — keep it (same object).
-            let analogShared = entry.source == "analog" && fm.fileExists(atPath: audioURL.path)
+            // REVIEW MUST (2026-11-02): a file already at this name with no ledger row (a lost or
+            // purged ledger, a tvOS orphan, a pre-feature download) was NOT created by this call.
+            // The bytes are replaced as before, but the buffer lane never makes it temporary.
+            let preExisting = fm.fileExists(atPath: audioURL.path)
+            let analogShared = entry.source == "analog" && preExisting
             if !analogShared {
-                if fm.fileExists(atPath: audioURL.path) { try fm.removeItem(at: audioURL) }
+                if preExisting { try fm.removeItem(at: audioURL) }
                 try fm.moveItem(at: tempURL, to: audioURL)
             }
             let sidecar = Self.buildSidecar(songId: songId, fallback: (id: songId, title: title, artist: artist),
@@ -576,9 +580,15 @@ final class BurnStore {
                 cutFileName: prev?.cutFileName, cutDownloadedAt: prev?.cutDownloadedAt)
             save()
             if origin == .buffer && !explicitOwned {
-                // A shared analog side a sibling already wrote is NOT credited (not created here).
-                noteBufferCreated(songId: songId, audioBytes: analogShared ? 0 : size,
-                                  inUserFolder: folder.isUserFolder, folderURL: dir)
+                if preExisting {
+                    // Already on disk (a sibling's shared analog side, or an orphaned earlier
+                    // download): not created here, so never temporary — an orphan side with no
+                    // other row referencing it would otherwise be deleted by the sweep.
+                    DiagLog.shared.log("storage", "buffer keep \(songId) (audio already on disk)")
+                } else {
+                    noteBufferCreated(songId: songId, audioBytes: size,
+                                      inUserFolder: folder.isUserFolder, folderURL: dir)
+                }
             }
             onAnyBurnFinalized?(songId, size)
             return audioURL
@@ -667,6 +677,17 @@ final class BurnStore {
                                    folderURL: URL? = nil) {
         guard let ttl = bufferTTLHours else {
             DiagLog.shared.log("storage", "buffer keep \(songId) (TTL=Keep — pinned at creation)")
+            return
+        }
+        // REVIEW MUST (2026-11-02): a USER-PICKED burn folder may be shared — an iCloud Drive
+        // folder, an external drive moved between Macs. The ledger is per device, so another
+        // device's EXPLICIT download of the same song reuses this file by name (`burnStems`
+        // returns existing parts; `burn` overwrites in place) and this device's sweep would
+        // delete it from under that device. Nothing written to a user folder is ever made
+        // temporary: it stays a normal download (today's Stem Lock behaviour). Only the app's
+        // own storage, which no other device can see, carries holds.
+        if inUserFolder {
+            DiagLog.shared.log("storage", "buffer keep \(songId) (user-picked folder may be shared — pinned at creation)")
             return
         }
         let now = clockMs()

@@ -417,9 +417,14 @@ struct StorageView: View {
         } header: {
             Text("Mix Mode buffer")
         } footer: {
-            Text(settings.npMixBufferEffectiveTTLHours == nil
+            Text((settings.npMixBufferEffectiveTTLHours == nil
                  ? "Songs and stems Now Playing downloads ahead on its own (Stem Lock) are kept like downloads. Songs already buffered still expire on schedule — tap Keep all to keep them."
                  : "Songs and stems Now Playing downloads ahead on its own (Stem Lock) are temporary: they're removed after the time above unless you download or mix them first — then they're yours to keep. Nothing playing or coming up next is ever removed, and downloads you asked for are never temporary.")
+                 // Buffer assets written to a user-picked folder are pinned at creation (the folder
+                 // may be shared with another device — BurnStore.noteBufferCreated).
+                 + (settings.burnFolderBookmark != nil
+                    ? " While a burn folder you picked is in use, buffered songs go there and are kept like downloads (another device may share that folder)."
+                    : ""))
         }
         .confirmationDialog("Clear the Mix Mode buffer?", isPresented: $confirmingClearBuffer, titleVisibility: .visible) {
             Button("Clear buffered songs", role: .destructive) {

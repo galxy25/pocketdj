@@ -290,10 +290,15 @@ final class TemporaryHoldTests: XCTestCase {
         let settings = makeSettings()
         settings.burnFolderBookmark = bookmarkA
         let burns = try makeBurns(rips, settings: settings)
-        _ = await burns.burnStemPart(forSong: "sng_uf", part: "vocals", origin: .buffer)
+        // Buffer assets are never CREATED as holds in a user folder any more (see
+        // `testBufferAssetsInAUserPickedFolderAreNeverTemporary`); the sweep primitive must still
+        // treat a planted one safely, so plant it.
         let partA = a.appendingPathComponent("stem-sng_uf-vocals.mp3")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: partA.path))
-        XCTAssertEqual(burns.temporaryHolds["sng_uf"]?.stemPartsInUserFolder, ["vocals"])
+        try Data("BUF".utf8).write(to: partA)
+        var planted = hold("sng_uf", parts: ["vocals"])
+        planted.stemPartsInUserFolder = ["vocals"]
+        planted.userFolderPath = a.standardizedFileURL.path
+        burns.injectHoldForTesting(planted)
         // Switch folders; B already holds an EXPLICIT copy under the same name.
         settings.burnFolderBookmark = bookmarkB
         let partB = b.appendingPathComponent("stem-sng_uf-vocals.mp3")
@@ -316,11 +321,96 @@ final class TemporaryHoldTests: XCTestCase {
         let settings = makeSettings()
         settings.burnFolderBookmark = try XCTUnwrap(BurnStore.makeBookmark(for: d))
         let burns = try makeBurns(rips, settings: settings)
-        _ = await burns.burnStemPart(forSong: "sng_uk", part: "drums", origin: .buffer)
         let part = d.appendingPathComponent("stem-sng_uk-drums.mp3")
-        XCTAssertTrue(FileManager.default.fileExists(atPath: part.path))
+        try Data("BUF".utf8).write(to: part)
+        var planted = hold("sng_uk", parts: ["drums"])
+        planted.stemPartsInUserFolder = ["drums"]
+        planted.userFolderPath = d.standardizedFileURL.path
+        burns.injectHoldForTesting(planted)
         burns.removeTemporaryAssets(songIds: ["sng_uk"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: part.path))
+    }
+
+    /// REVIEW MUST (2026-11-02): a user-picked burn folder can be SHARED (iCloud Drive, an external
+    /// drive between Macs) while the ledger is per device. Device B's explicit Download reuses a
+    /// file of the same name (`burnStems` returns the existing parts as-is), so a hold on device A
+    /// would let A's sweep delete B's explicit download. Buffer assets in a user folder are
+    /// therefore pinned at creation; only app storage carries holds.
+    func testBufferAssetsInAUserPickedFolderAreNeverTemporary() async throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_sh": .init(key: "rips/sng_sh.mp3", source: "digital", stems: stems("sng_sh"))])
+        let d = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-holds-shared-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: d) }
+        let settings = makeSettings()
+        settings.burnFolderBookmark = try XCTUnwrap(BurnStore.makeBookmark(for: d))
+        let deviceA = try makeBurns(rips, settings: settings)
+        // Device A's Stem Lock buffers the vocals part and the audio into the shared folder.
+        let ok = await deviceA.burnStemPart(forSong: "sng_sh", part: "vocals", origin: .buffer)
+        XCTAssertTrue(ok)
+        XCTAssertNotNil(deviceA.adoptStreamedFile(songId: "sng_sh", title: "S", artist: "A",
+                                                  from: try tempFile(), origin: .buffer))
+        XCTAssertTrue(deviceA.temporaryHolds.isEmpty, "nothing in a user-picked folder is temporary")
+        XCTAssertFalse(deviceA.isTemporary("sng_sh"))
+        // Whatever device B does with those files, A's sweep can't touch them.
+        let r = deviceA.removeTemporaryAssets(songIds: ["sng_sh"])
+        XCTAssertEqual(r, BurnStore.TemporaryRemoval())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: d.appendingPathComponent("stem-sng_sh-vocals.mp3").path))
+        XCTAssertNotNil(deviceA.localURL(forSong: "sng_sh"))
+    }
+
+    /// REVIEW MUST (2026-11-02): a file already sitting at the adoption name with NO ledger row
+    /// (a lost / purged ledger, a tvOS orphan, a pre-feature download) was not created by the
+    /// buffer lane — it must never become temporary.
+    func testBufferAdoptionOverAFileAlreadyOnDiskIsNeverHeld() throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_or": .init(key: "rips/sng_or.mp3", source: "digital")])
+        // Learn the adoption name from a throwaway store sharing the same burns dir.
+        let probe = try makeBurns(rips)
+        let url = try XCTUnwrap(probe.adoptStreamedFile(songId: "sng_or", title: "O", artist: "A",
+                                                        from: try tempFile(), origin: .explicit("probe")))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        // A fresh ledger (the old one lost) — the file is still there.
+        try? FileManager.default.removeItem(at: indexURL)
+        let burns = try makeBurns(rips)
+        XCTAssertNil(burns.items["sng_or"])
+        XCTAssertNotNil(burns.adoptStreamedFile(songId: "sng_or", title: "O", artist: "A",
+                                                from: try tempFile(), origin: .buffer))
+        XCTAssertNil(burns.temporaryHolds["sng_or"], "a file that was already on the device stays pinned")
+    }
+
+    /// REVIEW MUST (2026-11-02): an orphaned analog SIDE (no row references it) that the buffer
+    /// lane "shares" must not become a hold — the sweep would delete the only copy.
+    func testBufferAdoptionOfAnOrphanedAnalogSideIsNeverHeld() throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_an1": .init(key: "rips/alb_x.mp3", source: "analog", startMs: 0),
+                          "sng_an2": .init(key: "rips/alb_x.mp3", source: "analog", startMs: 60_000)])
+        let probe = try makeBurns(rips)
+        let side = try XCTUnwrap(probe.adoptStreamedFile(songId: "sng_an1", title: "1", artist: "A",
+                                                         from: try tempFile(), origin: .explicit("probe")))
+        try? FileManager.default.removeItem(at: indexURL)
+        let burns = try makeBurns(rips)
+        XCTAssertNotNil(burns.adoptStreamedFile(songId: "sng_an2", title: "2", artist: "A",
+                                                from: try tempFile(), origin: .buffer))
+        XCTAssertNil(burns.temporaryHolds["sng_an2"])
+        burns.removeTemporaryAssets(songIds: ["sng_an2"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: side.path), "the orphaned side survives")
+    }
+
+    /// REVIEW MUST (2026-11-02): explicit Studio use pins (design §3.3: Studio / Demux / Tracks).
+    /// A take resolves its melody stem by song key at every use — buffered stems under it must
+    /// become a download, or the sweep breaks the take.
+    func testStudioTakeMelodyStemResolutionPinsBufferedStems() throws {
+        let burns = try makeBurns(makeRips())
+        for p in ["vocals", "drums", "bass", "other"] { try write("stem-sng_tk-\(p).mp3") }
+        burns.injectHoldForTesting(hold("sng_tk", parts: ["vocals", "drums", "bass", "other"]))
+        let demuxDir = dir.appendingPathComponent("demux", isDirectory: true)
+        let demux = DemuxStore(cacheDir: DemuxStore.defaultCacheDir(demuxDir))
+        let got = DemuxTakeSwitch.resolveMelodyStem(key: "sng_tk", burns: burns, demux: demux)
+        XCTAssertNotNil(got)
+        got?.release?()
+        XCTAssertNil(burns.temporaryHolds["sng_tk"], "a stem a take is built on is a download")
     }
 
     // MARK: Pin paths — every explicit Download / Mix action

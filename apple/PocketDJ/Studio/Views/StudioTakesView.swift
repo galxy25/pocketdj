@@ -887,6 +887,9 @@ enum DemuxTakeSwitch {
     /// back via `release`), custom audio from the demux stems cache.
     static func resolveMelodyStem(key: String, burns: BurnStore, demux: DemuxStore)
         -> (url: URL, release: (() -> Void)?)? {
+        // A take built on a song's stems resolves them by key at every use — so they must be a
+        // download, never a temporary buffer the sweep can remove (np-mix-mode §3.3).
+        if DemuxSource.isSongKey(key) { burns.pin(songIds: [key], reason: "studio-take") }
         if let stems = burns.localStemURLs(forSong: key),
            let url = stems.urls["vocals"] ?? stems.urls["other"] {
             return (url, stems.release)

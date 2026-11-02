@@ -180,6 +180,7 @@ struct StudioNewSampleFromTrackView: View {
             stemAuditionLoading = true
             Task {
                 defer { stemAuditionLoading = false }
+                burns.pin(songIds: [song.id], reason: "studio-sample")
                 var local = burns.localStemURLs(forSong: song.id)
                 if local == nil {
                     local = await burns.burnStems(forSong: song.id)
@@ -686,6 +687,8 @@ struct StudioNewSampleFromTrackView: View {
     /// beat nudge. Returns false when no local file resolves (→ the caller falls to burn/rip).
     @discardableResult
     private func enterReady(_ song: IndexSong) async -> Bool {
+        // EXPLICIT Studio use (np-mix-mode §3.3): sampling a buffered song makes it a download.
+        burns.pin(songIds: [song.id], reason: "studio-sample")
         guard let handle = burns.localURLForPlaybackPreferringCut(forSong: song.id) else { return false }
         // The song's offset within the resolved file: 0 for a per-song cut, the analog album offset
         // for a shared side. The audition window is the WHOLE SONG in FILE ms — never the whole
@@ -781,6 +784,7 @@ struct StudioNewSampleFromTrackView: View {
         carving = true
         carveError = nil
         defer { carving = false }
+        burns.pin(songIds: [song.id], reason: "studio-sample")
         var resolved = burns.localStemURLs(forSong: song.id)
         if resolved == nil { resolved = await burns.burnStems(forSong: song.id) }
         guard let stems = resolved else {

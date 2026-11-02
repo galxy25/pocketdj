@@ -359,6 +359,12 @@ func sweepTemporary(now: Double = Date().timeIntervalSince1970 * 1000,
 
 ### 3.6 Interaction with the rest
 
+- **User-picked burn folders (review, 2026-11-02):** a picked folder can be shared between
+  devices (iCloud Drive, an external drive), while the ledger is per device: another device's
+  explicit Download reuses a same-named file, so a hold there would let this device's sweep delete
+  it. Buffer assets written to a user-picked folder are therefore pinned at creation; only the
+  app's own storage carries holds. Likewise a file already at the adoption name with no ledger row
+  (a lost ledger, an orphan) never becomes temporary.
 - **Sync:** the burn ledger is per device and is not cloud-synced, so holds are per device too. The
   playback-session snapshot IS synced; it carries only the Mix Mode flag (§4.6). Another device that
   restores the session starts its own buffer on its first ▶.

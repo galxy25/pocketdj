@@ -1243,6 +1243,10 @@ struct StudioDemuxView: View {
                 phase = .failed("This track isn’t in the loaded catalog anymore.")
                 return
             }
+            // EXPLICIT Studio use (np-mix-mode §3.3: Demux): a buffered (temporary) copy of
+            // this song's audio / stems becomes a download — the sweep must never pull the
+            // source out from under a demux, a take or a saved profile item.
+            burns.pin(songIds: [id], reason: "demux")
             if let local = await ensureSongAudio(song) {
                 guard isCurrent(src) else { local.release?(); return }
                 await enterReady(src, url: local.url, release: local.release, lengthMs: songLengthMs(song))
