@@ -152,6 +152,29 @@ class LinkDeviceProbeTest {
         assertEquals(false, c.held)
     }
 
+    /** Q120: a failed Relink from "profile deleted on another device" must leave that state up (old creds are dead). */
+    @Test fun failedRelinkFromADeletedProfile_keepsTheUnauthorizedFlag() = runTest {
+        var unauthorized = true
+        var id = "DEAD-ID"
+        val secrets = ProfileSecretStore(InMemorySecretStore()).also { it.adopt("DEAD-ID", "11".repeat(32)) }
+        val sut = S3LinkDeviceProbe(
+            secrets, { id }, { id = it }, { unauthorized = false }, { unauthorized },
+            { true }, { ProfileProbe.Unknown }, { null },
+            markUnauthorized = { unauthorized = true },
+        )
+        assertTrue(sut.link(LinkCode.encode(otherId, otherSecret)) is LinkProbeResult.Unavailable)
+        assertEquals("DEAD-ID", id)
+        assertTrue("still flagged: the dedicated deleted state stays", unauthorized)
+        // A successful relink clears it.
+        val ok = S3LinkDeviceProbe(
+            secrets, { id }, { id = it }, { unauthorized = false }, { unauthorized },
+            { true }, { ProfileProbe.Fresh }, { null },
+            markUnauthorized = { unauthorized = true },
+        )
+        assertEquals(LinkProbeResult.Fresh, ok.link(LinkCode.encode(otherId, otherSecret)))
+        assertEquals(false, unauthorized)
+    }
+
     @Test fun unlinkWithoutLink_isNoOp() = runTest {
         val f = Fixture()
         f.sut.unlink()

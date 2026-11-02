@@ -158,8 +158,8 @@ object BackupEdits {
 }
 
 /**
- * File-backed `edits.json`. KNOWN GAP (COL-14 PARTIAL): no catalog overlay consumes it on Android yet, so restored
- * edits are preserved and round-trip to iOS backups but are NOT applied to Browse/Now Playing/Mix.
+ * File-backed `edits.json`. Restored edits round-trip to iOS backups AND are applied to the catalog by the overlay
+ * ([com.levi.pocketdj.data.catalog.CatalogEdits] via [com.levi.pocketdj.data.catalog.CatalogEditsFile], Q115).
  */
 class BackupEditsStore(private val file: java.io.File) {
     @Synchronized fun exportData(): ByteArray? = rawBytes()?.let { BackupEdits.restamp(it) }

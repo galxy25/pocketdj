@@ -69,6 +69,11 @@ class S3LinkDeviceProbe(
      */
     private val syncEnabled: () -> Boolean = { true },
     private val setSyncEnabled: (Boolean) -> Unit = {},
+    /**
+     * Q120: re-raise the 401 flag for the (restored) previous identity. A failed relink from the "profile deleted
+     * on another device" state must leave that state up - the old credentials are still dead.
+     */
+    private val markUnauthorized: () -> Unit = {},
 ) : CodeLinkProbe {
     @Volatile private var enabledByLink = false
     private class PreLink(val secrets: com.levi.pocketdj.data.sync.ProfileSecretStore.Snapshot, val id: String)
@@ -109,6 +114,7 @@ class S3LinkDeviceProbe(
         }
         return identityLock.withLock {
             val prev = PreLink(secrets.snapshot(), profileId())
+            val wasUnauthorized = isUnauthorized()
             // Keep the ORIGINAL identity across a re-link: unlink() must go back to the device's own.
             val original = preLink ?: prev
             if (!syncEnabled()) { setSyncEnabled(true); enabledByLink = true }
@@ -121,6 +127,8 @@ class S3LinkDeviceProbe(
                 secrets.restore(prev.secrets)
                 adoptProfileId(prev.id)
                 clearUnauthorized()
+                // The previous identity was already refused (e.g. deleted on another device): keep saying so.
+                if (wasUnauthorized) markUnauthorized()
                 // The rollback re-applies the previous identity; a previous link (if any) stays unlinkable.
                 if (preLink == null) releasePushes()
                 if (enabledByLink && preLink == null) { setSyncEnabled(false); enabledByLink = false }

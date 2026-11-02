@@ -59,6 +59,11 @@ class JukeboxRepository(
     @Volatile var externalMatch: JukeboxExternalMatch = JukeboxExternalMatch.None,
     /** Seam: kicks the rip for an Apple-Music-only match the host accepts (SURF-10). */
     @Volatile var adHocRipStarter: JukeboxAdHocRipStarter? = null,
+    /**
+     * Seam (Q113): the Apple Music SDK can stream a full track on this device right now, so an AM-only row
+     * queued into the sequencer plays like iOS's `am:<storeId>` row (no rip needed). Default false.
+     */
+    @Volatile var adHocStreamable: suspend () -> Boolean = { false },
     /** Where accepted requests land: the sequencer (null in tests that never place). */
     @Volatile var queue: JukeboxQueue? = null,
     /** Seam: the live Mix (MIX-16). Consulted per call so a mix started after construction is picked up. */
@@ -316,27 +321,54 @@ class JukeboxRepository(
         val session = _state.value.session ?: return
         val row = _state.value.requests.firstOrNull { it.request.id == requestId } ?: return
         val found = row.match as? Match.Found
-        // Apple-Music-only match: the rip must be startable BEFORE the request is consumed, so a missing rip
-        // server leaves the row in the inbox (retryable) instead of losing an accepted request.
+        // Apple-Music-only match: the stream or capture must be possible BEFORE the request is consumed, so a
+        // missing rip server (and no SDK stream) leaves the row in the inbox (retryable) instead of losing it.
         if (action.isPlacement && found != null && found.isAdHoc && !ripPlayable(found.song.id)) {
             if (!ripStarting.add(requestId)) return
             scope.launch {
-                val started = try {
-                    startAdHocRip(found.song)
+                // The latch is held until the row has left the inbox, so a second tap racing the end of the
+                // preparation can never commit (and queue) the same request twice.
+                try {
+                    val prep = prepareAdHoc(found.song)
+                    if (prep == AdHocPrep.NONE) {
+                        _state.update { it.copy(transientError = "Couldn't start the rip for “${found.song.name}”") }
+                        return@launch
+                    }
+                    if (_state.value.session?.jukeboxId != session.jukeboxId) return@launch
+                    commitDecision(session, requestId, action, found, ripKicked = prep == AdHocPrep.RIP)
                 } finally {
                     ripStarting.remove(requestId)
                 }
-                if (!started) {
-                    _state.update { it.copy(transientError = "Couldn't start the rip for “${found.song.name}”") }
-                    return@launch
-                }
-                if (_state.value.session?.jukeboxId != session.jukeboxId) return@launch
-                _state.update { it.copy(transientError = "Ripping “${found.song.name}” - it plays when the rip lands") }
-                commitDecision(session, requestId, action, found)
             }
             return
         }
         commitDecision(session, requestId, action, found)
+    }
+
+    /**
+     * Q113 (match iOS): an Apple-Music-only accept never waits for the rip. iOS queues `am:<storeId>` straight
+     * into the sequencer and its provider chain streams it; Android places the `amrec_<storeId>` row at once and
+     * the sequencer's resolve ladder plays it - the Apple Music SDK stream when it can run here, else the
+     * rip-on-demand rung's live HLS capture. Off-SDK the capture is kicked HERE, on accept, with title + artist,
+     * so the rip server mints the ad-hoc row (a bare `POST /rip` for an unknown `amrec_` id is a 404) and the
+     * capture is already running when the row comes up. A live Mix can only load a burned file (iOS
+     * `acceptIntoMix`), so with the Mix on air the rip + burn is always kicked. true = the row can be placed.
+     */
+    private suspend fun prepareAdHoc(song: IndexSong): AdHocPrep {
+        val mixOwns = runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false)
+        if (!mixOwns && streamsNow()) return AdHocPrep.STREAM
+        return if (startAdHocRip(song)) AdHocPrep.RIP else AdHocPrep.NONE
+    }
+
+    /** How an accepted AM-only row will sound: SDK stream, a rip kicked on accept, or not at all (row stays). */
+    private enum class AdHocPrep { STREAM, RIP, NONE }
+
+    private suspend fun streamsNow(): Boolean = try {
+        adHocStreamable()
+    } catch (c: CancellationException) {
+        throw c
+    } catch (e: Exception) {
+        false
     }
 
     private suspend fun startAdHocRip(song: IndexSong): Boolean = try {
@@ -352,6 +384,7 @@ class JukeboxRepository(
         requestId: String,
         action: JukeboxDecisionAction,
         found: Match.Found?,
+        ripKicked: Boolean = false,
     ) {
         decided += requestId
         _state.update { current ->
@@ -360,7 +393,7 @@ class JukeboxRepository(
         scope.launch { runCatching { client.decide(session, requestId, action) } }
         if (action.isPlacement) {
             found ?: return
-            scope.launch { route(found, action, session.jukeboxId) }
+            scope.launch { route(found, action, session.jukeboxId, ripKicked) }
         }
     }
 
@@ -383,24 +416,25 @@ class JukeboxRepository(
         }
     }
 
-    private suspend fun route(found: Match.Found, action: JukeboxDecisionAction, jukeboxId: String) {
+    private suspend fun route(found: Match.Found, action: JukeboxDecisionAction, jukeboxId: String, ripKicked: Boolean = false) {
+        // A Mix that went on air between accept (SDK stream chosen, no rip) and here can only load a burned file:
+        // kick the rip now, or the parked insert waits out its 15 min deadline for a burn nothing will produce.
+        if (found.isAdHoc && !ripKicked && !ripPlayable(found.song.id) &&
+            runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false) &&
+            !startAdHocRip(found.song)
+        ) {
+            _state.update { it.copy(transientError = "Couldn't start the rip for “${found.song.name}”") }
+        }
         if (placeInMix(found, action)) return
         if (!found.playable) return
-        val handled = try {
+        if (_state.value.session?.jukeboxId != jukeboxId) return
+        // Q113: an AM-only row goes straight into the queue - the ladder streams or captures it (no rip wait).
+        val handled = !found.isAdHoc && try {
             placementSink.place(found.song, action)
         } catch (c: CancellationException) {
             throw c
         } catch (e: Exception) {
-            if (found.isAdHoc) {
-                _state.update { it.copy(transientError = e.message ?: "“${found.song.name}” isn't playable anymore") }
-                return
-            }
             false
-        }
-        if (found.isAdHoc) {
-            // The sink may have waited minutes for the rip: the party may have ended, or a mix started meanwhile.
-            if (_state.value.session?.jukeboxId != jukeboxId) return
-            if (placeInMix(found, action)) return
         }
         if (!handled) applyPlacement(found.song, action)
     }
@@ -604,7 +638,8 @@ class JukeboxRepository(
                 kick()
                 return
             }
-            if (!ripPlayable(song.id)) {
+            // An AM-only row has no rip yet by design (Q113): the sequencer's ladder streams / captures it.
+            if (!ripPlayable(song.id) && !JukeboxAppleMusicMatch.isAdHoc(song.id)) {
                 _state.update { it.copy(transientError = "“${song.name}” isn't playable anymore") }
                 return
             }

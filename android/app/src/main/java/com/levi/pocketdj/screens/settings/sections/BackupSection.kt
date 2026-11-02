@@ -45,7 +45,7 @@ internal object BackupCoordinator {
     }
 
     private fun editsStore(g: com.levi.pocketdj.di.AppGraph) =
-        com.levi.pocketdj.data.backup.BackupEditsStore(java.io.File(g.appContext.filesDir, "backup-edits.json"))
+        com.levi.pocketdj.data.backup.BackupEditsStore(g.catalogEdits.file)
 
     suspend fun restore(host: SettingsHost, data: ByteArray): String = restore(host.graph, data)
 
@@ -59,6 +59,11 @@ internal object BackupCoordinator {
         if (merged.size != local.size) { g.settings.setSources(merged); g.catalogRepository.refresh() }
         val favs = payload.favoritesData?.let { runCatching { g.collectionsGraph.favorites.importMerging(String(it)) }.getOrDefault(0) } ?: 0
         val edits = runCatching { editsStore(g).importMerging(payload.editsData) }.getOrDefault(0)
+        if (edits > 0) {
+            // Q115: the overlay re-reads the merged document and re-publishes the catalog with the edits applied.
+            g.catalogEdits.invalidate()
+            g.catalogRepository.reapplyEdits()
+        }
         return CollectionShare.restoreMessage(summary, sourcesAdded, favs, skipped.items, edits)
     }
 }

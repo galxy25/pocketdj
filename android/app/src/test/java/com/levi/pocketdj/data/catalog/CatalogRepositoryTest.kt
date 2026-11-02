@@ -115,6 +115,40 @@ class CatalogRepositoryTest {
         assertEquals("no source was re-requested", requests, server.requestCount)
     }
 
+    /** Q115: the edits overlay is applied on the merge, and a later restore re-publishes without a fetch. */
+    @Test fun editsOverlayAppliesOnLoadAndReapplyRepublishesWithoutFetch() {
+        server.enqueue(MockResponse().setBody(body).setHeader("ETag", "\"v1\""))
+        server.enqueue(MockResponse().setResponseCode(304))
+        val file = File(tmp.root, CatalogEditsFile.FILE_NAME)
+        file.writeText("""{"schemaVersion":2,"albums":{},"songs":{"real_1":{"name":"Edited One","bpm":101}}}""")
+        val overlay = CatalogEditsFile(file)
+        val r = repo()
+        r.edits = { overlay.current() }
+        r.loadIfNeeded(); await(r, 1)
+        assertEquals("Edited One", r.state.value.catalog!!.songsById["real_1"]!!.name)
+        assertEquals(101.0, r.state.value.catalog!!.songsById["real_1"]!!.bpm!!, 0.0)
+        assertEquals("Real Wins", r.state.value.catalog!!.songsById["amrec_dup"]!!.name)
+
+        // An unchanged 304 refresh with unchanged edits does not rebuild.
+        val merges = r.mergeCount
+        r.refresh(); await(r, 2)
+        assertEquals(merges, r.mergeCount)
+
+        // A restore merged new edits into the file: reapply re-publishes, no source re-requested.
+        val requests = server.requestCount
+        file.writeText("""{"schemaVersion":2,"albums":{},"songs":{"real_1":{"name":"Edited Twice"},"amrec_dup":{"artist":"B"}}}""")
+        overlay.invalidate()
+        r.reapplyEdits()
+        val end = System.currentTimeMillis() + 10_000
+        while (r.state.value.catalog!!.songsById["real_1"]!!.name != "Edited Twice" && System.currentTimeMillis() < end) Thread.sleep(5)
+        val cat = r.state.value.catalog!!
+        assertEquals("Edited Twice", cat.songsById["real_1"]!!.name)
+        assertEquals("a field the new doc dropped falls back to the index", null, cat.songsById["real_1"]!!.bpm)
+        assertEquals("B", cat.songsById["amrec_dup"]!!.artist)
+        assertEquals(cat.songsById["real_1"], cat.songs.first { it.id == "real_1" })
+        assertEquals("no source was re-requested", requests, server.requestCount)
+    }
+
     @Test fun provisionalRowsShowEvenWhenNoSourceLoads() {
         server.enqueue(MockResponse().setResponseCode(500))
         val adds = DiscoverAddsStore(File(tmp.root, "d.json"))

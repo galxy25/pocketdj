@@ -81,7 +81,9 @@ class JukeboxGraph private constructor(context: Context) {
                     ?: "us"
             },
         )
-        repo.placementSink = JukeboxAmPlacementSink(isPlayable = app.ripsRepository::isPlayable)
+        // Q113: no rip wait - an AM-only accept is placed at once; the sequencer ladder streams (SDK) or
+        // captures (rip-on-demand) it. Off-SDK the capture is kicked on accept so the server knows the row.
+        repo.adHocStreamable = { app.playbackController.canPlayFullTrackWarming() }
         repo.adHocRipStarter = JukeboxAdHocRipStarter { song ->
             app.browseGraph.appleMusicRecognition.startRipAndBurn(
                 song.id, song.name, song.artist, song.appleMusicId.orEmpty(),

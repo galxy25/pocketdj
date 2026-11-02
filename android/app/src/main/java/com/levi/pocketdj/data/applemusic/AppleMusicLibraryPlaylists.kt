@@ -177,6 +177,15 @@ class WebApiPlaylistWriteBackTransport(
                     }
                     first = false
                 }
+                // Q114 (iOS assumption: an edit either applies or is refused - never half-applied into
+                // duplicates). The DELETE is undocumented for Web-API-created playlists: if Apple answered 2xx
+                // but kept the rows, appending the re-adds would DUPLICATE them. Verify before appending; a
+                // row still there => stop, nothing appended (the next push/reconcile converges).
+                if (plan.appendCatalogIds.isNotEmpty() && plan.deleteLibraryIds.isNotEmpty()) {
+                    val deleted = plan.deleteLibraryIds.toSet()
+                    val after = unwrap(api.allPlaylistTrackRows(playlistId))
+                    if (after.any { it.libraryId in deleted }) return PlaylistReconcileResult.NotEditable
+                }
                 for (batch in AppleMusicApi.batches(plan.appendCatalogIds)) unwrap(api.addTracksToPlaylist(playlistId, batch))
                 return PlaylistReconcileResult.Edited(orderedAppleMusicIds.size, plan.added, plan.removed)
             }

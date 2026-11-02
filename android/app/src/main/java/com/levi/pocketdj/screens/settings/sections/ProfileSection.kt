@@ -1,7 +1,16 @@
 package com.levi.pocketdj.screens.settings.sections
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.testTag
+import com.levi.pocketdj.data.sync.ProfileSyncProblem
+import com.levi.pocketdj.onboarding.LinkProbeResult
+import com.levi.pocketdj.shell.SettingsHost
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -116,7 +125,92 @@ internal fun profileSection() = SettingsSection(PROFILE_SECTION_ID, 50) { host -
             )
         }
     }
-    SettingsCaption(SyncUi.caption(syncStatus.accountAvailable, syncStatus.lastError, syncStatus.lastSummary))
+    val unauthorized by services.s3Database.unauthorized.collectAsState()
+    val problem = remember(unauthorized, profileState.id) { services.profileSyncProblem(unauthorized) }
+    // Hoisted: a successful relink clears the flag (the block disappears) but its outcome + Restore must stay.
+    var relinked by remember { mutableStateOf<LinkProbeResult?>(null) }
+    if (problem == ProfileSyncProblem.DELETED) ProfileDeletedBlock(host) { relinked = it }
+    relinked?.let { r ->
+        var restoring by remember { mutableStateOf(false) }
+        var note by remember(r) { mutableStateOf(SyncUi.relinkMessage(r)) }
+        Text(note, style = MaterialTheme.typography.bodySmall, modifier = Modifier.testTag("profile-relink-message"))
+        if (r is LinkProbeResult.Existing) OutlinedButton(
+            enabled = !restoring,
+            onClick = {
+                restoring = true
+                host.scope.launch {
+                    val ok = withContext(Dispatchers.IO) { services.linkProbe.restore() }
+                    restoring = false
+                    if (ok) relinked = null else note = "Couldn’t restore right now. Try Sync now."
+                    if (ok) host.snackbar.showSnackbar("Restored.")
+                }
+            },
+            modifier = Modifier.testTag("profile-relink-restore"),
+        ) { Text("Restore my stuff") }
+    }
+    SettingsCaption(SyncUi.caption(syncStatus.accountAvailable, syncStatus.lastError, syncStatus.lastSummary, problem))
+}
+
+/**
+ * Q120: the dedicated "This profile was deleted on another device" state (a 401 on this device's identity after
+ * the other device ran Delete account). Nothing syncs meanwhile. Start fresh = a new profile on this device
+ * (local data kept); Relink = enter a code from a device that still has a profile.
+ */
+@Composable
+private fun ColumnScope.ProfileDeletedBlock(host: SettingsHost, onLinked: (LinkProbeResult) -> Unit) {
+    val services = host.graph.servicesGraph
+    var relinking by remember { mutableStateOf(false) }
+    var code by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    Text(
+        SyncUi.PROFILE_DELETED_TITLE,
+        color = MaterialTheme.colorScheme.error,
+        modifier = Modifier.padding(top = 8.dp).testTag("profile-deleted"),
+    )
+    SettingsCaption(SyncUi.PROFILE_DELETED_DETAIL)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(
+            enabled = !busy,
+            onClick = {
+                busy = true
+                host.scope.launch {
+                    withContext(Dispatchers.IO) { services.profileRecovery.startFresh() }
+                    busy = false
+                    host.snackbar.showSnackbar(SyncUi.STARTED_FRESH)
+                }
+            },
+            modifier = Modifier.testTag("profile-start-fresh"),
+        ) { Text("Start fresh") }
+        OutlinedButton(
+            enabled = !busy,
+            onClick = { relinking = !relinking; message = null },
+            modifier = Modifier.testTag("profile-relink"),
+        ) { Text("Relink") }
+    }
+    if (relinking) {
+        OutlinedTextField(
+            value = code,
+            onValueChange = { code = it; message = null },
+            label = { Text("Code from your other device") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().testTag("profile-relink-code"),
+        )
+        Button(
+            enabled = !busy && code.isNotBlank(),
+            onClick = {
+                busy = true
+                host.scope.launch {
+                    // The same link flow as Settings > Link a device (adopts the other device's identity).
+                    val r = withContext(Dispatchers.IO) { services.linkProbe.link(code) }
+                    busy = false
+                    if (r is LinkProbeResult.Unavailable) message = r.reason else onLinked(r)
+                }
+            },
+            modifier = Modifier.testTag("profile-relink-submit"),
+        ) { Text("Link") }
+    }
+    message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 }
 
 /** Pure copy/state rules for the sync row (JVM-tested). */
@@ -124,10 +218,31 @@ internal object SyncUi {
     fun switchEnabled(accountAvailable: Boolean?): Boolean = accountAvailable != false
     fun switchOn(pref: Boolean, accountAvailable: Boolean?): Boolean = pref && accountAvailable != false
     const val NO_ACCOUNT = "Sync isn\u2019t set up on this device yet, so your profile and play data stay on this device."
-    fun caption(accountAvailable: Boolean?, lastError: String?, lastSummary: String?): String = when {
+    const val PROFILE_DELETED_TITLE = "This profile was deleted on another device"
+    const val PROFILE_DELETED_DETAIL =
+        "Nothing syncs from this device until you choose. Start fresh keeps everything on this device under a new " +
+            "profile; Relink joins a profile you still have on another device (enter its code)."
+    const val PROFILE_DELETED_CAPTION = "Sync is paused: this profile no longer exists. Your data stays on this device."
+    const val STARTED_FRESH = "Started a fresh profile on this device"
+
+    fun caption(
+        accountAvailable: Boolean?,
+        lastError: String?,
+        lastSummary: String?,
+        problem: ProfileSyncProblem? = null,
+    ): String = when {
+        problem == ProfileSyncProblem.DELETED -> PROFILE_DELETED_CAPTION
         accountAvailable == false -> NO_ACCOUNT
         lastError != null -> "Sync failed: $lastError"
         lastSummary != null -> lastSummary
         else -> "Your profile and play data follow you across your devices."
+    }
+
+    /** Relink outcome copy (the same link flow as Settings > Link a device). */
+    fun relinkMessage(r: LinkProbeResult): String = when (r) {
+        is LinkProbeResult.Existing ->
+            "Linked" + (r.name.takeIf { it.isNotEmpty() }?.let { " to $it" } ?: "") + ". Restore your stuff to this device?"
+        LinkProbeResult.Fresh -> "Linked. Nothing to restore yet; this device will sync from now on."
+        is LinkProbeResult.Unavailable -> r.reason
     }
 }
