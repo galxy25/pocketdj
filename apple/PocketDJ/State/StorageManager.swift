@@ -269,7 +269,7 @@ final class StorageManager {
     /// single-flight with the prune (`isPruning`).
     @discardableResult
     func sweepTemporary(now: Double = Date().timeIntervalSince1970 * 1000, reason: String,
-                        ignoreExpiry: Bool = false) async -> SweepResult? {
+                        ignoreExpiry: Bool = false, capOverrideBytes: Int? = nil) async -> SweepResult? {
         guard !isPruning else { return nil }
         guard !burns.temporaryHolds.isEmpty else {
             lastSweep = SweepResult()
@@ -279,7 +279,7 @@ final class StorageManager {
         defer { isPruning = false }
         settings.lastTemporarySweepAt = now
         settings.persist()
-        let capBytes = settings.npMixBufferCapBytes
+        let capBytes = capOverrideBytes.map { max(0, $0) } ?? settings.npMixBufferCapBytes
         let plan = Self.planSweep(holds: Array(burns.temporaryHolds.values), now: now, capBytes: capBytes,
                                   protected: protectedSongIds(), ignoreExpiry: ignoreExpiry)
         DiagLog.shared.log("storage", "sweep start reason=\(reason) holds=\(burns.temporaryHolds.count) footprint=\(burns.temporaryFootprintBytes) cap=\(capBytes) n=\(plan.delete.count) protected=\(plan.skippedProtected)")
@@ -320,6 +320,51 @@ final class StorageManager {
         guard !burns.temporaryHolds.isEmpty, !isPruning else { return }
         if let last = settings.lastTemporarySweepAt, now >= last, now - last < minIntervalMs { return }
         await sweepTemporary(now: now, reason: reason)
+    }
+
+    // MARK: The buffer lane's disk guard (np-mix-mode §2.3)
+
+    /// Free bytes on the app's volume ("important usage" — what iOS would free for a user
+    /// download). Read OFF the main actor (a `statfs`, not a scan). Injectable for tests.
+    @ObservationIgnored var freeBytesProvider: () async -> Int? = {
+        await Task.detached(priority: .utility) {
+            let url = URL(fileURLWithPath: NSHomeDirectory())
+            #if os(tvOS)
+            // tvOS has no "important usage" figure — the plain available capacity.
+            guard let v = try? url.resourceValues(forKeys: [.volumeAvailableCapacityKey])
+                .volumeAvailableCapacity else { return nil }
+            return v
+            #else
+            guard let v = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+                .volumeAvailableCapacityForImportantUsage else { return nil }
+            return Int(clamping: v)
+            #endif
+        }.value
+    }
+
+    /// May the Now Playing buffer lane start one more download? (Before EVERY step — Stem Lock
+    /// and Mix Mode alike.) It needs ≥ 1 GB free after the step and the temporary footprint
+    /// under the buffer cap; short of either, it first sweeps the soonest-expiring UNPROTECTED
+    /// buffer (never what is playing / up next / downloading — the lane's own step included)
+    /// down to what the step needs, then checks again. False ⇒ the step is skipped.
+    func admitBufferStep(_ label: String) async -> Bool {
+        let cap = settings.npMixBufferCapBytes
+        let free = await freeBytesProvider()
+        let verdict = NowPlayingPrefetcher.diskVerdict(freeBytes: free, footprint: burns.temporaryFootprintBytes,
+                                                       capBytes: cap)
+        guard case let .evict(need) = verdict else { return true }
+        let footprint = burns.temporaryFootprintBytes
+        DiagLog.shared.log("storage", "diskguard step=\(label) free=\(free ?? -1) footprint=\(footprint) cap=\(cap) need=\(need) → evict")
+        if footprint > 0 {
+            await sweepTemporary(reason: "diskguard", capOverrideBytes: footprint - need)
+        }
+        let free2 = await freeBytesProvider()
+        let ok = NowPlayingPrefetcher.diskVerdict(freeBytes: free2, footprint: burns.temporaryFootprintBytes,
+                                                  capBytes: cap) == .ok
+        if !ok {
+            DiagLog.shared.log("storage", "diskguard step=\(label) REFUSED free=\(free2 ?? -1) footprint=\(burns.temporaryFootprintBytes) cap=\(cap)")
+        }
+        return ok
     }
 
     /// A hold just landed (`BurnStore.onTemporaryHoldsChanged`): when the temporary footprint is

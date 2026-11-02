@@ -645,6 +645,9 @@ struct NowPlayingDeckCluster: View {
                         if let share = currentShareText {
                             ShareLink(item: share) { Label("Share", systemImage: "square.and.arrow.up") }
                         }
+                        #if !os(tvOS)
+                        MixModeMenuToggle()
+                        #endif
                     }
             }
             transport
@@ -985,10 +988,31 @@ struct NowPlayingMiniBar: View {
         .foregroundStyle(Theme.accent)
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(Theme.bgRaised)
+        #if !os(tvOS)
+        // Long-press / right-click the strip: Mix Mode without expanding the deck.
+        .contextMenu { if current != nil { MixModeMenuToggle() } }
+        #endif
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("np-mini-bar")
     }
 }
+
+#if !os(tvOS)
+/// "Mix Mode" with a checkmark — the Now Playing record's menu and the mini-player's context
+/// menu (np-mix-mode §1.1). Session state: no-op with no session.
+struct MixModeMenuToggle: View {
+    @Environment(SetlistPlayer.self) private var sequencer
+
+    var body: some View {
+        Toggle(isOn: Binding(get: { sequencer.mixMode.enabled },
+                             set: { sequencer.setMixMode($0) })) {
+            Label("Mix Mode", systemImage: "waveform.badge.plus")
+        }
+        .disabled(!sequencer.isRunning)
+        .accessibilityIdentifier("np-menu-mix-mode")
+    }
+}
+#endif
 
 // MARK: - The record player
 

@@ -401,7 +401,16 @@ final class SetlistPlayer {
         player.onLocalInterruptionBegan = { [weak coordinator] in
             coordinator?.appleMusic.scheduleStrayPlayCheck(source: "interruption")
         }
+        #if !os(macOS)
+        // np-mix-mode §4.4: `NowPlayingDSP` does not survive a media-services reset — Mix Mode
+        // makes an engaged DSP common, so the track goes back to the AVPlayer at its position.
+        mediaResetObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleMediaServicesReset() }
+        }
+        #endif
     }
+    @ObservationIgnored private var mediaResetObserver: NSObjectProtocol?
 
     /// What the set does after a stray MusicKit play was silenced.
     enum StrayReclaimAction: String, Equatable {
@@ -487,6 +496,7 @@ final class SetlistPlayer {
         endStallEpisode(reason: "firstAudio.\(source)")
         startStallTask?.cancel(); startStallTask = nil
         endStartWindow(reason: "firstAudio.\(source)")
+        retryOwedHandOff()
     }
 
     #if DEBUG
@@ -641,6 +651,8 @@ final class SetlistPlayer {
         armEngineHooks()
         // STEM LOCK is per SESSION: a fresh run (new `sessionId`) starts unlocked.
         resetStemLock()
+        // …and so is MIX MODE (Q4) — unless Settings says new sessions start in it.
+        resetMixMode(to: mixModeSettings().defaultOn)
         // Durable session: a fresh run gets a fresh identity + an immediate snapshot, and the
         // ~1 Hz position sampler starts feeding the store's throttled refresh.
         sessionId = "pses_" + UUID().uuidString
@@ -871,6 +883,7 @@ final class SetlistPlayer {
         pendingResumeMs = nil
         sessionId = ""
         resetStemLock()                    // the session is over — so is its Stem Lock
+        resetMixMode(to: false)            // …and its Mix Mode
         sessionStore?.clear()
     }
 
@@ -1299,7 +1312,7 @@ final class SetlistPlayer {
         // variant id, a legacy burn under the base) even though `np.songId` is the base — the same
         // split `playCurrent` resolves through.
         return StudioFactory.isStudioId(np.songId) || hasDeviceFile(queue[index])
-            || stemLockStreamedFile?(queue[index].resolveId) == np.url   // Stem Lock: a prefetched cut
+            || prefetchedCutFile?(queue[index].resolveId) == np.url   // Stem Lock: a prefetched cut
     }
 
     /// The full F4 eligibility gate: mixable current track AND no active Mix-tab session (mutually
@@ -1396,6 +1409,13 @@ final class SetlistPlayer {
                 guard let self else { return }
                 self.observeMixSessionForEngagement()
                 if self.mixEngaged, self.mixSessionActive?() == true { self.endMixEngagement() }
+                // Mix Mode is SUSPENDED while a Mix-tab session is live (its lane pauses) and
+                // resumes on the next re-plan once it stops (np-mix-mode §4.5).
+                if self.mixMode.enabled {
+                    NPMixMode.log("mix tab \(self.mixSessionActive?() == true ? "live — suspended" : "idle — resumed")")
+                    self.prefetchRevision &+= 1
+                    self.scheduleStemLockReplan()
+                }
             }
         }
     }
@@ -1408,18 +1428,33 @@ final class SetlistPlayer {
     /// The song (by row id) whose carried stems could not be brought up — drives the
     /// "unavailable" indicator. Cleared on every track start.
     private(set) var stemLockUnavailableSongId: String?
-    /// The download lane pairing upcoming tracks' whole songs with their stems (wired at app
-    /// init; nil in tests that don't exercise it — the lock then only carries the stem state).
-    @ObservationIgnored var stemLockPrefetcher: StemLockPrefetcher? {
+    /// The Now Playing download lane (`NowPlayingPrefetcher`): the Stem Lock's next-track songs
+    /// + carried stems, and Mix Mode's current + upcoming rows (wired at app init; nil in tests
+    /// that don't exercise it — the lock then only carries the stem state).
+    @ObservationIgnored var prefetcher: NowPlayingPrefetcher? {
         didSet {
-            stemLockPrefetcher?.onStepFinished = { [weak self] step, ok in self?.stemLockStepFinished(step, ok) }
+            prefetcher?.onStepFinished = { [weak self] step, ok in self?.prefetchStepFinished(step, ok) }
+            prefetcher?.onNetworkChange = { [weak self] in self?.prefetchNetworkChanged() }
         }
     }
     /// SEAM: a COMPLETE whole-song stream file for an audio id that the burn ledger didn't adopt
     /// (an analog per-song cut) — wired to the shared `MixStreamLoader`. nil = none.
-    @ObservationIgnored var stemLockStreamedFile: ((String) -> URL?)?
+    @ObservationIgnored var prefetchedCutFile: ((String) -> URL?)?
     /// SEAM: can this audio id's whole song be fetched right now (ripped + server + network)?
-    @ObservationIgnored var stemLockSongFetchable: ((String) -> Bool)?
+    @ObservationIgnored var prefetchSongFetchable: ((String) -> Bool)?
+    /// Compatibility names (one release — the lane was born as the Stem Lock's).
+    var stemLockPrefetcher: NowPlayingPrefetcher? {
+        get { prefetcher }
+        set { prefetcher = newValue }
+    }
+    var stemLockStreamedFile: ((String) -> URL?)? {
+        get { prefetchedCutFile }
+        set { prefetchedCutFile = newValue }
+    }
+    var stemLockSongFetchable: ((String) -> Bool)? {
+        get { prefetchSongFetchable }
+        set { prefetchSongFetchable = newValue }
+    }
     /// True while the lock itself drives the DSP (its stem calls must not read as user changes).
     @ObservationIgnored private var applyingStemLock = false
     /// When the lock asked the current track for its stems (the handover-timing line).
@@ -1448,7 +1483,7 @@ final class SetlistPlayer {
         }
         stemLock = st
         stemLockUnavailableSongId = nil
-        if !on { stemLockPrefetcher?.cancelAll() }
+        if !on { prefetcher?.cancelAll() }
         StemLock.log("lock \(on ? "ON" : "OFF") session=\(sessionId) song=\(currentSongId ?? "-")\(on ? " carry " + st.logSummary : "")")
         persistSession()
         scheduleStemLockReplan()
@@ -1468,7 +1503,7 @@ final class SetlistPlayer {
         stemLock = StemLockState()
         stemLockUnavailableSongId = nil
         stemLockRequestedAt = nil
-        stemLockPrefetcher?.cancelAll()
+        prefetcher?.cancelAll()
     }
 
     /// The DSP's user-change + handover hooks (re-armed whenever the DSP seam is set).
@@ -1548,49 +1583,90 @@ final class SetlistPlayer {
         StemLock.log("carry song=\(it.id) \(stemLock.logSummary) local=\(local.sorted().joined(separator: ",")) → \(dsp.stemsOnAir ? "on air" : "full mix first, stems loading")")
     }
 
-    /// A prefetch step finished: a stem part of the PLAYING track joins its partial set.
-    private func stemLockStepFinished(_ step: StemLockPrefetcher.Step, _ ok: Bool) {
-        guard ok, case let .stem(songId, _) = step, mixEngaged, currentSongId == songId else { return }
-        dsp?.stemPartsLanded(songId)
+    /// A prefetch step finished: a stem part of the PLAYING track joins its partial set, and the
+    /// playing track's whole song landing hands a presigned stream over to the local file
+    /// (Mix Mode, np-mix-mode §4.2).
+    private func prefetchStepFinished(_ step: NowPlayingPrefetcher.Step, _ ok: Bool) {
+        prefetchRevision &+= 1
+        guard ok else { return }
+        switch step {
+        case let .stem(songId, _):
+            guard mixEngaged, currentSongId == songId else { return }
+            dsp?.stemPartsLanded(songId)
+        case let .song(id, _, _):
+            guard isRunning, index < queue.count, queue[index].resolveId == id else { return }
+            handOffCurrentToLocal(reason: "landed")
+        }
     }
 
     /// Coalesce re-plans (a queue edit + a track start in one turn plan once).
     private func scheduleStemLockReplan() {
-        guard let pf = stemLockPrefetcher, stemLock.enabled || !pf.isIdle, !stemLockReplanQueued else { return }
+        guard let pf = prefetcher, stemLock.enabled || mixMode.enabled || !pf.isIdle,
+              !stemLockReplanQueued else { return }
         stemLockReplanQueued = true
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.stemLockReplanQueued = false
-            self.replanStemLock()
+            self.replanPrefetch()
         }
     }
 
-    /// Re-plan the Stem Lock download lane from the current queue position (see
-    /// `StemLockPrefetcher.plan` for the order). Lock off / stems off / held / idle: cancel —
-    /// the ordinary presign prefetch is all that runs then (no speculative stem fetch).
-    func replanStemLock() {
-        guard let pf = stemLockPrefetcher else { return }
-        guard stemLock.wantsStems, isRunning, !isHeldForResume, index < queue.count else { pf.cancelAll(); return }
-        let upcoming = queue[(index + 1)..<min(queue.count, index + 1 + Self.prefetchAhead)]
+    /// The network class changed (Wi-Fi ↔ cellular ↔ Low Data ↔ offline): the window resizes.
+    private func prefetchNetworkChanged() {
+        if mixMode.enabled { NPMixMode.log("network → \(prefetcher?.network().rawValue ?? "-")") }
+        scheduleStemLockReplan()
+    }
+
+    /// Compatibility name (the lane's Stem Lock origin).
+    func replanStemLock() { replanPrefetch() }
+
+    /// Re-plan the Now Playing download lane from the current queue position (see
+    /// `NowPlayingPrefetcher.plan(_:)` for the order). Nothing wanted (lock without stems, Mix
+    /// Mode off / suspended / device mode), held, idle: cancel — the ordinary presign prefetch
+    /// is all that runs then (no speculative fetch).
+    func replanPrefetch() {
+        guard let pf = prefetcher else { return }
+        prefetchRevision &+= 1
+        let buffering = mixModeBuffering
+        guard stemLock.wantsStems || buffering, isRunning, !isHeldForResume, index < queue.count else {
+            pf.cancelAll(); return
+        }
+        let cfg = mixModeSettings()
+        let ahead = max(Self.prefetchAhead, buffering ? cfg.ahead : 0)
+        let upcoming = queue[(index + 1)..<min(queue.count, index + 1 + ahead)]
             .filter { !StudioFactory.isStudioId($0.id) && !ProfileSourceStore.isProfileSongId($0.id) }
-            .map(stemLockTrack)
-        var current: StemLockPrefetcher.Track?
-        if mixEngaged, let dsp, dsp.stemMode, !dsp.unwiredStemParts.isEmpty {
-            let t = stemLockTrack(queue[index])
+            .map { prefetchTrack($0, isCurrent: false) }
+        let cur = queue[index]
+        let current: NowPlayingPrefetcher.Track? = StudioFactory.isStudioId(cur.id) || ProfileSourceStore.isProfileSongId(cur.id)
+            ? nil : prefetchTrack(cur, isCurrent: true)
+        var partial = false
+        if mixEngaged, let dsp, dsp.stemMode, !dsp.unwiredStemParts.isEmpty, let t = current {
             // A missing part that is on disk by now (landed between events) joins right here.
             if !t.stemsLocal.isDisjoint(with: dsp.unwiredStemParts) { dsp.stemPartsLanded(t.songId) }
-            current = t
+            partial = true
         }
-        pf.apply(StemLockPrefetcher.plan(current: current, upcoming: upcoming, carry: stemLock,
-                                         network: pf.network(), window: Self.prefetchAhead))
+        let input = NowPlayingPrefetchInput(
+            current: current, upcoming: upcoming, stemLock: stemLock,
+            mixMode: buffering ? mixMode : NPMixModeState(), network: pf.network(),
+            window: cfg.ahead, stemLockWindow: Self.prefetchAhead, cellular: cfg.cellular,
+            currentStemsPartial: partial, currentStemsWanted: mixEngaged && (dsp?.stemMode ?? false),
+            isCatalogOwner: coordinator.isCatalogOwner())
+        let plan = NowPlayingPrefetcher.plan(input)
+        if buffering {
+            let line = "plan net=\(input.network.rawValue) song=\(cur.id) " + (plan.steps.isEmpty ? "(nothing to fetch)" : plan.steps.map(\.description).joined(separator: " → "))
+            if line != lastMixPlanLine { lastMixPlanLine = line; NPMixMode.log(line) }
+        }
+        pf.apply(plan)
     }
 
     /// The song ids the temporary-asset sweep must spare for THIS session (np-mix-mode §3.5):
     /// the current row and the next `ahead` rows — both the row id and the edition-resolved id —
     /// whenever a session is running, a HELD (restored, not yet ▶) one included: a relaunch
-    /// must never sweep the songs it is about to play.
-    func protectedWindowSongIds(ahead: Int = SetlistPlayer.prefetchAhead) -> Set<String> {
+    /// must never sweep the songs it is about to play. Default `ahead`: the Stem Lock window, or
+    /// Mix Mode's (larger) buffer window while Mix Mode is on.
+    func protectedWindowSongIds(ahead: Int? = nil) -> Set<String> {
         guard isRunning, index < queue.count else { return [] }
+        let ahead = ahead ?? max(Self.prefetchAhead, mixMode.enabled ? mixModeSettings().ahead : 0)
         var ids = Set<String>()
         for it in queue[index..<min(queue.count, index + 1 + max(0, ahead))] {
             ids.insert(it.id)
@@ -1599,14 +1675,280 @@ final class SetlistPlayer {
         return ids
     }
 
-    private func stemLockTrack(_ it: Item) -> StemLockPrefetcher.Track {
-        // Device mode plays ONLY burned files — the lock never downloads a whole song into it.
-        let fetchable = playbackMode() != .device && (stemLockSongFetchable?(it.resolveId) ?? false)
+    /// The audio ids of the current row + the next one — the Mix-stream loader never evicts
+    /// these to make room (np-mix-mode §2.5), so the Mix tab's lane can't cancel the buffer the
+    /// Now Playing hand-off is waiting on.
+    var pinnedStreamIds: Set<String> {
+        guard isRunning, index < queue.count else { return [] }
+        return Set(queue[index..<min(queue.count, index + 2)].map(\.resolveId))
+    }
+
+    private func prefetchTrack(_ it: Item, isCurrent: Bool) -> NowPlayingPrefetcher.Track {
+        // Device mode plays ONLY burned files — the lane never downloads a whole song into it.
+        var fetchable = playbackMode() != .device && (prefetchSongFetchable?(it.resolveId) ?? false)
+        // The PLAYING row is fetched only when it can hand off (a presigned rip stream): an
+        // Apple Music row finishes on Apple Music in phase 2 and a live capture has no file.
+        if isCurrent, coordinator.activeBackend == .appleMusic || player.isLive { fetchable = false }
+        // An UPCOMING row with an explicit Download already pending lands on its own — the lane
+        // neither streams it (that would cancel the download) nor waits on it (that would stall
+        // the rows behind it). Only the playing row waits on it (`NowPlayingPrefetcher.live`).
+        if !isCurrent, burns.hasPendingExplicitDownload(songId: it.resolveId) { fetchable = false }
+        let local = hasDeviceFile(it) || prefetchedCutFile?(it.resolveId) != nil
         return .init(songId: it.id, audioId: it.resolveId, title: it.title, artist: it.artist,
-                     songLocal: hasDeviceFile(it) || stemLockStreamedFile?(it.resolveId) != nil,
+                     songLocal: local,
                      songFetchable: fetchable,
                      stemsLocal: burns.stemPartsBurned(forSong: it.id),
-                     stemsRemote: burns.stemsRemote(forSong: it.id))
+                     stemsRemote: burns.stemsRemote(forSong: it.id),
+                     source: prefetchSource(it, local: local))
+    }
+
+    private func prefetchSource(_ it: Item, local: Bool) -> NowPlayingPrefetcher.Track.Source {
+        if StudioFactory.isStudioId(it.id) || ProfileSourceStore.isProfileSongId(it.id) { return .studioOrProfile }
+        if local { return .local }
+        if AppleMusicCatalog.storeID(fromSongID: it.id) != nil { return .catalogOnly }
+        if rips.manifest[it.resolveId] != nil { return .ripped }
+        let src = coordinator.sourceOfSong(SongVariant.baseId(it.id))
+        if src == Config.appleMusicSourceName || src == AppleMusicLibraryStore.sourceName { return .appleMusicOnly }
+        return .unavailable
+    }
+
+    // MARK: - Now Playing MIX MODE (np-mix-mode phase 2 — see `NPMixMode`)
+
+    /// The session's Mix Mode. Per session (Q4): a fresh `play` starts it from
+    /// `mixModeSettings().defaultOn` ("Start new sessions in Mix Mode", off by default);
+    /// persisted in the durable session; cleared by `stop()`.
+    private(set) var mixMode = NPMixModeState()
+    /// Bumped when the lane's state moves (a re-plan, a step finishing) — the buffer strip and
+    /// the chip re-read the non-observable prefetcher through it.
+    private(set) var prefetchRevision = 0
+    @ObservationIgnored private var lastMixPlanLine = ""
+    /// A hand-off that was due while the track's start window was still open (first audio
+    /// not yet heard): retried on first audio. The row's uid — a track change voids it.
+    @ObservationIgnored private var handOffOwedUid: UUID?
+    /// The URL our own in-place re-stamp of the CURRENT row put on `rips.nowPlaying` (a hand-off)
+    /// — `adoptNowPlayingIfJumped` must never read it as a jump. Cleared once `nowPlaying` moves on.
+    @ObservationIgnored private var ownNowPlayingStamp: URL?
+
+    /// SEAM (wired at app init to `SettingsStore`): the Wi-Fi buffer window, the cellular
+    /// policy, and "Start new sessions in Mix Mode". Defaults = the shipped defaults.
+    @ObservationIgnored var mixModeSettings: () -> (ahead: Int, cellular: NPMixCellularPolicy, defaultOn: Bool) = {
+        (NPMixMode.defaultBufferAhead, .nextSong, false)
+    }
+    /// SEAM: the byte progress (0…1) of a buffer-lane stream for an audio id (the chip's
+    /// "Buffering 42%"); nil = unknown. Wired to the shared `MixStreamLoader`.
+    @ObservationIgnored var prefetchProgress: ((String) -> Double?)?
+    /// SEAM: Mix Mode turned OFF — the storage manager runs its cap check (np-mix-mode §3.5).
+    @ObservationIgnored var onMixModeOff: (() -> Void)?
+    /// SEAM: the device has a network path (the chip's "Offline"). Default: assume yes.
+    @ObservationIgnored var networkAvailable: () -> Bool = { true }
+
+    /// Mix Mode is on AND allowed to download right now: not suspended by a live Mix-tab session,
+    /// not in device playback mode (the lane never downloads into device mode).
+    var mixModeBuffering: Bool {
+        Self.mixModeSupported && mixMode.enabled && mixSessionActive?() != true && playbackMode() != .device
+    }
+
+    /// Mix Mode exists on iOS / iPadOS / macOS / visionOS — NOT tvOS in v1 (Q10): a TV never
+    /// turns it on, and a synced session that carries it restores with it off there.
+    nonisolated static var mixModeSupported: Bool {
+        #if os(tvOS)
+        return false
+        #else
+        return true
+        #endif
+    }
+
+    /// Turn the session's Mix Mode on/off (np-mix-mode §1.4–1.5). ON: the panel auto-expands
+    /// once, the lane re-plans with the current + upcoming rows. OFF: buffering stops (pending
+    /// steps are cancelled; the Stem Lock's own plan, if any, carries on), the CURRENT track
+    /// keeps whatever it is playing — an engaged DSP keeps its controls until the track ends —
+    /// and buffered files stay temporary, expiring on schedule. No-op with no session.
+    func setMixMode(_ on: Bool) {
+        guard isRunning, mixMode.enabled != on, Self.mixModeSupported || !on else { return }
+        mixMode.enabled = on
+        handOffOwedUid = nil
+        lastMixPlanLine = ""
+        if on { UserDefaults.standard.set(true, forKey: "nowPlayingMixExpanded") }
+        NPMixMode.log("mode \(on ? "ON" : "OFF") session=\(sessionId) song=\(currentSongId ?? "-") net=\(prefetcher?.network().rawValue ?? "-")")
+        persistSession()
+        if !on {
+            // Re-plan synchronously: the Mix Mode steps leave the lane NOW (the lock's stay).
+            replanPrefetch()
+            onMixModeOff?()
+        } else {
+            scheduleStemLockReplan()
+            // The current row may already be complete on disk (a stream adopted moments ago).
+            handOffCurrentToLocal(reason: "mode-on")
+        }
+    }
+
+    func toggleMixMode() { setMixMode(!mixMode.enabled) }
+
+    /// New session / stop: Mix Mode starts as `on` (the Settings default for a new session).
+    private func resetMixMode(to on: Bool) {
+        if mixMode.enabled != on { NPMixMode.log("mode \(on ? "ON (new-session default)" : "cleared (session ended / new session)")") }
+        mixMode = NPMixModeState(enabled: on && Self.mixModeSupported)
+        handOffOwedUid = nil
+        lastMixPlanLine = ""
+    }
+
+    /// What the Now Playing Mix panel's status chip shows for the current track.
+    var mixModeIndicator: NPMixMode.Indicator {
+        _ = prefetchRevision
+        guard mixMode.enabled, isRunning, index < queue.count else { return .off }
+        let it = queue[index]
+        let np = rips.nowPlaying
+        let streaming = np.map { it.matches($0.songId) && !$0.live && !$0.url.isFileURL } ?? false
+        let pf = prefetcher
+        return NPMixMode.indicator(.init(
+            enabled: true, running: true, held: isHeldForResume,
+            mixTabLive: mixSessionActive?() == true,
+            engaged: mixEngaged, stemsLoading: dsp?.stemsLoading ?? false,
+            mixable: currentTrackMixable,
+            onAppleMusic: coordinator.activeBackend == .appleMusic,
+            live: player.isLive || (np.map { it.matches($0.songId) && $0.live } ?? false),
+            offline: !networkAvailable(),
+            ripped: rips.manifest[it.resolveId] != nil,
+            deviceMode: playbackMode() == .device,
+            bufferFraction: prefetchProgress?(it.resolveId),
+            buffering: streaming && (pf?.isPlannedSong(it.resolveId) ?? false),
+            failed: pf?.songFailedRecently(it.resolveId) ?? false,
+            storageFull: pf?.songBlockedRecently(it.resolveId) ?? false,
+            cellularOff: pf.map { NowPlayingPrefetcher.mixReach(network: $0.network(), cellular: mixModeSettings().cellular,
+                                                                window: mixModeSettings().ahead) == nil } ?? false))
+    }
+
+    /// The buffer strip: the next `ahead` rows' local state (● local · ◐ buffering ·
+    /// ○ queued · ⨯ unavailable). Cheap ledger lookups only (≤ 10 rows).
+    func mixModeBufferStrip(ahead: Int? = nil) -> [NPMixMode.BufferRow] {
+        _ = prefetchRevision
+        guard mixMode.enabled, isRunning, index < queue.count else { return [] }
+        let n = ahead ?? mixModeSettings().ahead
+        let pf = prefetcher
+        return queue[(index + 1)..<min(queue.count, index + 1 + max(0, n))].map { it in
+            let dot: NPMixMode.BufferDot
+            if hasDeviceFile(it) || prefetchedCutFile?(it.resolveId) != nil || StudioFactory.isStudioId(it.id)
+                || ProfileSourceStore.isProfileSongId(it.id) {
+                dot = .local
+            } else if pf?.isFetchingSong(it.resolveId) == true {
+                dot = .buffering
+            } else if pf?.isPlannedSong(it.resolveId) == true {
+                dot = .queued
+            } else if rips.manifest[it.resolveId] != nil, playbackMode() != .device,
+                      !(pf?.songFailedRecently(it.resolveId) ?? false) {
+                dot = .queued       // ripped: buffered once it enters the network's window
+            } else {
+                dot = .unavailable
+            }
+            return NPMixMode.BufferRow(id: it.uid, title: it.title, dot: dot)
+        }
+    }
+
+    /// MID-SONG HAND-OFF (np-mix-mode §1.4 / §4.2): the current track is playing from its
+    /// presigned rip STREAM and the identical bytes just became a local file (the buffer lane's
+    /// `.song` step adopted it). Reload the AVPlayer onto the local file AT THE SAME SONG
+    /// POSITION (startMs-aware: a shared analog side and a per-song cut map through the song's
+    /// own 0:00), holding the render until the seek lands so nothing of the file's top sounds.
+    /// Plain playback — the DSP still engages on the first control touch (Q2) — except under a
+    /// Stem Lock carrying stems, which engages the DSP right here like any track start.
+    ///
+    /// Never touches the generation (`playGeneration`) or the end-of-track hooks: it is the SAME
+    /// track, the SAME history play (`rips.nowPlaying.songId` is unchanged, so no `onPlay`), and
+    /// an end/skip/stop racing it supersedes it through the guards below. Refused while a resolve
+    /// is in flight, while Apple Music / a live capture owns the audio, while the DSP is engaged,
+    /// near the song's end, and while a Mix-tab session is live. Returns true when it handed off.
+    @discardableResult
+    func handOffCurrentToLocal(reason: String) -> Bool {
+        guard mixMode.enabled, isRunning, !isHeldForResume, index < queue.count, !mixEngaged,
+              mixSessionActive?() != true, !pausedByCascade else { return false }
+        guard coordinator.activeBackend != .appleMusic, !player.isLive, resolvingGeneration == nil else { return false }
+        let it = queue[index]
+        guard let np = rips.nowPlaying, it.matches(np.songId), !np.live, !np.url.isFileURL,
+              player.hasLoadedItem, !player.trackEndAlreadySignaled else { return false }
+        // The start window is still open (no first audio yet): the stream's clock means nothing
+        // yet — try again on first audio.
+        if isStartPending {
+            handOffOwedUid = it.uid
+            NPMixMode.log("handoff song=\(it.id) deferred (start pending) reason=\(reason)")
+            return false
+        }
+        handOffOwedUid = nil
+        // SAME BYTES only: the rip of the id the stream resolved under (`resolveId`), never
+        // another edition the ladder would fall back to.
+        let target: (url: URL, release: (() -> Void)?, startMs: Int?)
+        if let res = burns.localURLForPlayback(forSong: it.id, decision: it.editionDecision), res.id == it.resolveId {
+            target = (res.url, res.release, burns.startMs(forSong: res.id))
+        } else if let cut = prefetchedCutFile?(it.resolveId) {
+            target = (cut, nil, nil)
+        } else {
+            return false
+        }
+        let streamStartSec = Double(np.startMs ?? 0) / 1000
+        let songRelMs = max(0, Int(((player.currentTime - streamStartSec) * 1000).rounded()))
+        let lengthMs = it.lengthMs ?? (player.duration > 0 ? Int((player.duration - streamStartSec) * 1000) : nil)
+        if let lengthMs, songRelMs > lengthMs - Self.handOffMinRemainingMs {
+            target.release?()
+            NPMixMode.log("handoff song=\(it.id) skipped (at=\(songRelMs)ms of \(lengthMs)ms — too near the end)")
+            return false
+        }
+        let paused = player.pausedByListener
+        if !paused {
+            // The cut (load + seek) is measured like any transition; first audio closes it.
+            DeadAirMeter.shared.transitionBegan(cause: "npmix-handoff")
+            DeadAirMeter.shared.trackStarting(backend: "handoff")
+        }
+        loadedAnyDeviceTrack = true
+        playLocalFile(target.url, songId: it.id, title: it.title, artist: it.artist,
+                      startMs: target.startMs, rips: rips, player: player,
+                      endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: target.startMs),
+                      atMs: songRelMs, release: target.release, deferPlayUntilSeeked: true)
+        if paused { player.pause() }
+        ownNowPlayingStamp = target.url
+        handOffCount &+= 1
+        NPMixMode.log("handoff song=\(it.id) stream → local at=\(songRelMs)ms start=\(target.startMs ?? 0) paused=\(paused ? 1 : 0) reason=\(reason)")
+        prefetchRevision &+= 1
+        if stemLock.wantsStems {
+            // The lock carries stems: engage the DSP at the same position, as at a track start.
+            applyStemLockOnTrackStart(resumeAtMs: songRelMs)
+        } else {
+            scheduleStemLockReplan()     // the current row is local now: its stems come next
+        }
+        return true
+    }
+
+    /// The hand-off never cuts into the last moments of a song (it would race the natural end).
+    static var handOffMinRemainingMs = 3_000
+    /// Hand-offs performed (diagnostics + tests).
+    @ObservationIgnored private(set) var handOffCount = 0
+
+    /// First audio of the current track: a hand-off that came due during the start retries now.
+    private func retryOwedHandOff() {
+        guard let uid = handOffOwedUid else { return }
+        handOffOwedUid = nil
+        guard isRunning, index < queue.count, queue[index].uid == uid else { return }
+        handOffCurrentToLocal(reason: "after-start")
+    }
+
+    /// MEDIA SERVICES RESET while the DSP owns the audio (np-mix-mode §4.4): the engine graph is
+    /// gone, so tear the engagement down and put the track back on the AVPlayer at the DSP's
+    /// last position (paused stays paused). No-op when nothing is engaged.
+    func handleMediaServicesReset() {
+        guard mixEngaged, isRunning, index < queue.count, let dsp else { return }
+        let atMs = max(0, Int((dsp.currentTime * 1000).rounded()))
+        let wasPlaying = dsp.isPlaying
+        let it = queue[index]
+        NPMixMode.log("media services reset while engaged song=\(it.id) at=\(atMs)ms — back to the AVPlayer")
+        endMixEngagement()
+        guard let np = rips.nowPlaying, it.matches(np.songId), np.url.isFileURL else {
+            startPlayCurrent(fresh: false, resumeAtMs: atMs)
+            return
+        }
+        playLocalFile(np.url, songId: it.id, title: it.title, artist: it.artist,
+                      startMs: np.startMs, rips: rips, player: player,
+                      endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: np.startMs),
+                      atMs: atMs, deferPlayUntilSeeked: true)
+        ownNowPlayingStamp = np.url
+        if !wasPlaying { player.pause() }
     }
 
     // MARK: - Internals
@@ -1670,6 +2012,14 @@ final class SetlistPlayer {
     private func adoptNowPlayingIfJumped() {
         observeNowPlaying()   // re-arm for the next change (always, even on the no-op paths)
         guard isRunning, index < queue.count else { return }
+        // OUR OWN in-place re-stamp (a Mix Mode hand-off / media-reset hand-back moved the SAME
+        // row onto another URL). This observer runs a turn later — if the index moved in that
+        // turn (an end / skip right after the hand-off), the stale stamp would read as a foreign
+        // jump BACK to the row we just left. Never a jump.
+        if let own = ownNowPlayingStamp {
+            if rips.nowPlaying?.url == own, coordinator.activeBackend != .appleMusic { return }
+            ownNowPlayingStamp = nil       // someone else stamped since: judge it normally
+        }
         // The manual play's identity comes from whichever backend OWNS the audio: an Apple
         // Music row ▶ sets `coordinator.appleMusic.nowPlaying`, never `rips.nowPlaying` —
         // keying off the rip path alone left AM jumps unadopted (deck + widget stale on the
@@ -2245,7 +2595,7 @@ final class SetlistPlayer {
                           atMs: resumeAtMs, release: res.release)
             applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
             startedLocal("burned")
-        } else if stemLock.wantsStems, let url = stemLockStreamedFile?(it.resolveId) {
+        } else if stemLock.wantsStems, let url = prefetchedCutFile?(it.resolveId) {
             // STEM LOCK: the prefetch finished this song as a per-song CUT stream (an analog cut
             // isn't adopted into the burn ledger) — play that local file, so the carried stems
             // can take it over, instead of streaming the same bytes again.
@@ -2324,6 +2674,10 @@ final class SetlistPlayer {
             }
             applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)       // a stream: full mix, lock kept
             startedLocal(player.isLive ? "hls" : "presigned")
+            // MIX MODE: a presigned rip stream may hand off to its local copy — the file may have
+            // landed WHILE this resolve was in flight (a hand-off is refused then), so check
+            // again on first audio (and the buffer lane's landing checks too).
+            if mixMode.enabled, !player.isLive { handOffOwedUid = it.uid }
             // A live HLS capture has no natural end → don't rely on the hook; offer "Next".
             if player.isLive {
                 waitingForLive = true
@@ -2411,6 +2765,10 @@ final class SetlistPlayer {
         // first ▶ (`resumeFromHold` → `playCurrent`) re-applies it to the resumed track.
         stemLock = snap.stemLock ?? StemLockState()
         stemLockUnavailableSongId = nil
+        // Mix Mode rides it too — HELD like everything else: no buffering until the first ▶
+        // (`resumeFromHold` → `playCurrent` → the track-start re-plan).
+        mixMode = Self.mixModeSupported ? (snap.npMixMode ?? NPMixModeState()) : NPMixModeState()
+        handOffOwedUid = nil
         canonicalOrder = shuffleEnabled ? queue.map(\.uid) : nil
         currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
         deviceQueueUnplayable = false
@@ -2595,6 +2953,7 @@ final class SetlistPlayer {
             repeatMode: repeatMode.rawValue,
             shuffleEnabled: shuffleEnabled,
             stemLock: stemLock.enabled ? stemLock : nil,
+            npMixMode: mixMode.enabled ? mixMode : nil,
             updatedAt: Date().timeIntervalSince1970 * 1000)
         sessionStore.save(snap)
     }

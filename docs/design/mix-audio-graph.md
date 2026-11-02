@@ -250,8 +250,8 @@ handover (`advanceStemHandover` / `cutToStems` / `cutToFullMix`, built on `StemS
 ### Stem Lock — carrying the stem set across tracks (Now Playing only)
 
 The lock button (🔒, `np-mix-stem-lock`) beside the panel's Stems toggle turns on **Stem Lock** for
-the current playback SESSION (`SetlistPlayer.stemLock`, model + download lane in
-`apple/PocketDJ/Playback/StemLock.swift`). No graph topology changes; the Mix tab is untouched.
+the current playback SESSION (`SetlistPlayer.stemLock`, model in
+`apple/PocketDJ/Playback/StemLock.swift`, download lane in `Playback/NowPlayingPrefetch.swift`). No graph topology changes; the Mix tab is untouched.
 
 - **Session scope.** A session is one `SetlistPlayer` run — one `sessionId`. A fresh
   `SetlistPlayer.play(...)` (any new playlist / queue / collection play) mints a new id and clears
@@ -281,7 +281,7 @@ the current playback SESSION (`SetlistPlayer.stemLock`, model + download lane in
   anywhere, or the DSP refused the file → the full mix plays, `stemLockIndicator == .unavailable`
   (a one-line "Stem Lock · no stems for this track — full mix" under the panel, or in its place when
   the panel is hidden), and the lock carries on to the next track.
-- **Download/stream order** (`StemLockPrefetcher`, one fetch at a time, only while the lock carries
+- **Download/stream order** (`NowPlayingPrefetcher` in `Playback/NowPlayingPrefetch.swift`, one fetch at a time, only while the lock carries
   stems): ① the playing track's missing ENABLED parts when a partial set is on air; ② the next
   track's WHOLE SONG (through the shared `MixStreamLoader` — a finished stream is adopted as a burn,
   so the boundary plays a local file the DSP can take over; never in device mode); ③ its enabled
@@ -301,13 +301,27 @@ the current playback SESSION (`SetlistPlayer.stemLock`, model + download lane in
 - **Surfaces.** CarPlay / lock screen / widgets show the DSP's card as for any engaged track (one
   card writer). tvOS gets the same lock button (its Now Playing tab reuses `NowPlayingPanel` whole).
 
-## Planned — Now Playing Mix Mode (design only, `docs/design/np-mix-mode.md`)
+## Now Playing Mix Mode (`docs/design/np-mix-mode.md`)
 
-Nothing below is built yet. Keep this section in step with the phases as they land.
+Phases 1–2 are BUILT (no graph change); phases 3–5 below are still planned. Keep this section in
+step with the phases as they land.
 
-- **Phases 1–2 change no graph.** Mix Mode buffers the current + upcoming rows into local files
-  (temporary burns) so the `NowPlayingDSP` chain above can take any track. Engagement stays
-  swap-on-touch; the Stem Lock still engages at track start.
+- **Phases 1–2 changed no graph.** Mix Mode (`SetlistPlayer.mixMode`, the `np-mix-mode` switch on
+  the panel header) buffers the current + upcoming rows into local files (TEMPORARY burns, phase-1
+  holds) through the same one-at-a-time lane the Stem Lock uses (`NowPlayingPrefetcher`), so the
+  `NowPlayingDSP` chain above can take any track. Engagement stays swap-on-touch (Q2); the Stem
+  Lock still engages at track start. The full song is still always a COMPLETE local file when the
+  DSP opens it.
+- **Swap-on-land is a source switch outside the graph.** A current row streaming from its
+  presigned rip URL moves onto the identical local file at the same song position when the buffer
+  lands (`SetlistPlayer.handOffCurrentToLocal`) — an AVPlayer reload whose render is held until
+  the seek lands (`PlayerEngine.load(deferPlayUntilSeeked:)`); the DSP is not involved unless the
+  Stem Lock carries stems (then it engages at that position, as at a track start).
+- **Media-services reset** while the DSP owns a track: the engagement is torn down and the track
+  goes back to the AVPlayer at the DSP's position (`SetlistPlayer.handleMediaServicesReset`) — the
+  graph itself is not rebuilt in place.
+- **One DSP surface at a time** still holds: a live Mix-tab session tears the engagement down (F4)
+  AND suspends Mix Mode's buffering until it stops.
 - **Phase 3 changes scheduling, not topology.** The Mix deck's growing-file scheduling (segments to
   the byte frontier, `streamHolding`, pump on byte growth, truncation of a dead stream) moves into a
   shared helper beside `StemSync` (`GrowingFileSchedule`) used by both `MixEngine` and

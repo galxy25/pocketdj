@@ -395,6 +395,26 @@ struct StorageView: View {
                 }
             }
             .accessibilityIdentifier("storage-buffer-cap")
+            #if !os(tvOS)
+            Toggle("Start new sessions in Mix Mode", isOn: Binding(
+                get: { settings.npMixModeDefaultOn ?? false },
+                set: { settings.npMixModeDefaultOn = $0; settings.persist() }))
+                .accessibilityIdentifier("storage-mixmode-default")
+            Picker("Mix Mode buffers ahead", selection: Binding(
+                get: { settings.npMixBufferAheadEffective },
+                set: { settings.npMixBufferAhead = $0; settings.persist() })) {
+                ForEach(NPMixMode.bufferAheadOptions, id: \.self) { n in
+                    Text("\(n) song\(n == 1 ? "" : "s")").tag(n)
+                }
+            }
+            .accessibilityIdentifier("storage-mixmode-ahead")
+            Picker("Mix Mode on cellular", selection: Binding(
+                get: { settings.npMixCellularPolicy },
+                set: { settings.npMixCellular = $0.rawValue; settings.persist() })) {
+                ForEach(NPMixCellularPolicy.allCases, id: \.self) { p in Text(p.label).tag(p) }
+            }
+            .accessibilityIdentifier("storage-mixmode-cellular")
+            #endif
             ForEach(Array(holds.prefix(showAllBufferRows ? holds.count : Self.bufferRowLimit))) { h in
                 bufferRow(h)
             }
@@ -418,8 +438,8 @@ struct StorageView: View {
             Text("Mix Mode buffer")
         } footer: {
             Text((settings.npMixBufferEffectiveTTLHours == nil
-                 ? "Songs and stems Now Playing downloads ahead on its own (Stem Lock) are kept like downloads. Songs already buffered still expire on schedule — tap Keep all to keep them."
-                 : "Songs and stems Now Playing downloads ahead on its own (Stem Lock) are temporary: they're removed after the time above unless you download or mix them first — then they're yours to keep. Nothing playing or coming up next is ever removed, and downloads you asked for are never temporary.")
+                 ? "Songs and stems Now Playing downloads ahead on its own (Mix Mode, Stem Lock) are kept like downloads. Songs already buffered still expire on schedule — tap Keep all to keep them."
+                 : "Songs and stems Now Playing downloads ahead on its own (Mix Mode, Stem Lock) are temporary: they're removed after the time above unless you download or mix them first — then they're yours to keep. Nothing playing or coming up next is ever removed, and downloads you asked for are never temporary.")
                  // Buffer assets written to a user-picked folder are pinned at creation (the folder
                  // may be shared with another device — BurnStore.noteBufferCreated).
                  + (settings.burnFolderBookmark != nil
