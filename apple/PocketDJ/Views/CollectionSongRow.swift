@@ -588,6 +588,12 @@ struct RowTransport: View {
     }
     /// A burned local file exists for this song (device-mode playable with no server).
     private var hasBurnedFile: Bool { burns.localURL(forSong: song.id) != nil }
+    /// "Buffered · expires in 31 h" — the temporary copy's accessibility label.
+    static func bufferedLabel(_ expiresAtMs: Double?, nowMs: Double = Date().timeIntervalSince1970 * 1000) -> String {
+        guard let expiresAtMs else { return "Buffered" }
+        let h = max(0, (expiresAtMs - nowMs) / 3_600_000)
+        return h < 1 ? "Buffered · expires within the hour" : "Buffered · expires in \(Int(h.rounded())) h"
+    }
     /// The user asked for this download and it hasn't landed yet — persisted in `BurnStore`, so the
     /// row shows the same truth after a relaunch as it did the moment they tapped.
     private var awaitingBurn: Bool { burns.isAwaitingBurn(song.id) }
@@ -648,9 +654,18 @@ struct RowTransport: View {
                     // track, and the glyph becomes a checkmark once the file is on disk. Tapping
                     // the checkmark is how you manage that file — delete it, or go look at it.
                     if hasBurnedFile, busy == nil {
+                        // A BUFFERED copy (np-mix-mode §3.6: Now Playing fetched it ahead on its
+                        // own) is temporary — it shows a clock and offers Keep, the explicit
+                        // action that makes it a download.
+                        let buffered = burns.isTemporary(song.id)
                         Menu {
+                            if buffered {
+                                Button { burns.pin(songIds: [song.id], reason: "row-keep") } label: {
+                                    Label("Keep download", systemImage: "arrow.down.circle")
+                                }
+                            }
                             Button(role: .destructive) { burns.removeBurns(songIds: [song.id]) } label: {
-                                Label("Delete download", systemImage: "trash")
+                                Label(buffered ? "Delete buffered copy" : "Delete download", systemImage: "trash")
                             }
                             if let url = burns.localURL(forSong: song.id) {
                                 #if os(macOS)
@@ -664,11 +679,11 @@ struct RowTransport: View {
                                 #endif
                             }
                         } label: {
-                            Image(systemName: "checkmark.circle.fill").font(.caption)
+                            Image(systemName: buffered ? "clock.arrow.circlepath" : "checkmark.circle.fill").font(.caption)
                         }
                         .buttonStyle(.borderless)
-                        .foregroundStyle(Theme.accent)
-                        .accessibilityLabel("Downloaded")
+                        .foregroundStyle(buffered ? Theme.fgDim : Theme.accent)
+                        .accessibilityLabel(buffered ? Self.bufferedLabel(burns.temporaryExpiry(song.id)) : "Downloaded")
                         .accessibilityIdentifier("row-download-\(song.id)")
                     } else {
                         Button { doDownload() } label: {

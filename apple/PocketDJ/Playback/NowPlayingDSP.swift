@@ -648,7 +648,9 @@ final class NowPlayingDSP {
         }
         let gen = stemIntentGen
         let fetch: (String) async -> Bool = stemFetcher ?? { [burns] id in
-            guard let got = await burns.burnStems(forSong: id) else { return false }
+            // `.incidental`: a Now Playing control touch is not an explicit download — it neither
+            // pins a buffered song nor makes these stems temporary (np-mix-mode §3.3).
+            guard let got = await burns.burnStems(forSong: id, origin: .incidental) else { return false }
             got.release?()                       // `wireStems` re-acquires (and holds) its own scope
             return true
         }

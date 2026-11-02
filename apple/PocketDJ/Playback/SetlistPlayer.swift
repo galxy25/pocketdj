@@ -1585,6 +1585,20 @@ final class SetlistPlayer {
                                          network: pf.network(), window: Self.prefetchAhead))
     }
 
+    /// The song ids the temporary-asset sweep must spare for THIS session (np-mix-mode §3.5):
+    /// the current row and the next `ahead` rows — both the row id and the edition-resolved id —
+    /// whenever a session is running, a HELD (restored, not yet ▶) one included: a relaunch
+    /// must never sweep the songs it is about to play.
+    func protectedWindowSongIds(ahead: Int = SetlistPlayer.prefetchAhead) -> Set<String> {
+        guard isRunning, index < queue.count else { return [] }
+        var ids = Set<String>()
+        for it in queue[index..<min(queue.count, index + 1 + max(0, ahead))] {
+            ids.insert(it.id)
+            ids.insert(it.resolveId)
+        }
+        return ids
+    }
+
     private func stemLockTrack(_ it: Item) -> StemLockPrefetcher.Track {
         // Device mode plays ONLY burned files — the lock never downloads a whole song into it.
         let fetchable = playbackMode() != .device && (stemLockSongFetchable?(it.resolveId) ?? false)

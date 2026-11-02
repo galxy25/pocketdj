@@ -215,6 +215,39 @@ final class SettingsStore {
     /// (`StorageManager.tvDefaultCapGB`); the gate itself lives in
     /// `StorageManager.autoManageGate` so only tvOS pruning consults this switch.
     var storageAutoManage: Bool
+    /// NOW PLAYING MIX MODE buffer (docs/design/np-mix-mode.md §3.2): how long an asset the
+    /// buffer lane downloaded on its own (Stem Lock prefetch today, Mix Mode later) stays on the
+    /// device before the expiry sweep removes it — FIXED from the moment it landed. nil ⇒ the
+    /// default (`npMixBufferDefaultTTLHours`, 48 h). `npMixBufferKeepSentinel` (0) is the "Keep
+    /// (treat as downloads)" option: new buffer assets are pinned at creation. A change applies to
+    /// assets buffered AFTER it (existing holds keep their expiry). See `BurnStore.TemporaryHold`.
+    var npMixBufferTTLHours: Double?
+    /// Cap (decimal GB) on the TEMPORARY buffer footprint: over it, the sweep removes the
+    /// soonest-expiring unprotected holds first. nil ⇒ `npMixBufferDefaultCapGB` (2 GB).
+    var npMixBufferCapGB: Double?
+    /// Epoch ms of the last temporary-asset sweep START (stamped first — the 10-23 lesson).
+    var lastTemporarySweepAt: Double?
+
+    nonisolated static let npMixBufferDefaultTTLHours: Double = 48
+    nonisolated static let npMixBufferDefaultCapGB: Double = 2
+    /// The stored TTL value meaning "Keep (treat as downloads)".
+    nonisolated static let npMixBufferKeepSentinel: Double = 0
+    /// The Settings ▸ Storage TTL picker: 6 h / 12 h / 24 h / 48 h / 3 days / 7 days / Keep.
+    nonisolated static let npMixBufferTTLOptions: [Double] = [6, 12, 24, 48, 72, 168, npMixBufferKeepSentinel]
+    nonisolated static let npMixBufferCapOptions: [Double] = [0.5, 1, 2, 5, 10, 20]
+
+    /// The TTL in force, in hours — nil ⇒ "Keep" (buffer assets are pinned at creation). A
+    /// corrupt/negative stored value reads as the default, never as Keep or as "expire now".
+    var npMixBufferEffectiveTTLHours: Double? {
+        guard let v = npMixBufferTTLHours else { return Self.npMixBufferDefaultTTLHours }
+        if v == Self.npMixBufferKeepSentinel { return nil }
+        return v > 0 && v.isFinite ? v : Self.npMixBufferDefaultTTLHours
+    }
+    /// The temporary-footprint cap in force, in bytes (decimal GB, like the soft cap).
+    var npMixBufferCapBytes: Int {
+        let gb = npMixBufferCapGB.flatMap { $0 > 0 && $0.isFinite ? $0 : nil } ?? Self.npMixBufferDefaultCapGB
+        return Int(gb * StorageManager.bytesPerGB)
+    }
     /// Platform default for `storageAutoManage`: tvOS manages its own storage out of the
     /// box; every other platform stays fully user-managed until a cap is set.
     nonisolated static var storageAutoManageDefault: Bool {
@@ -497,6 +530,9 @@ final class SettingsStore {
         self.lastStoragePruneAt = data.lastStoragePruneAt
         self.storageSoftCapSongs = data.storageSoftCapSongs
         self.storageAutoManage = data.storageAutoManage ?? Self.storageAutoManageDefault
+        self.npMixBufferTTLHours = data.npMixBufferTTLHours
+        self.npMixBufferCapGB = data.npMixBufferCapGB
+        self.lastTemporarySweepAt = data.lastTemporarySweepAt
         self.debugLoggingEnabled = data.debugLoggingEnabled ?? false
         self.remoteTelemetryEnabled = data.remoteTelemetryEnabled ?? false
         self.samplesFolderBookmark = data.samplesFolderBookmark
@@ -727,7 +763,10 @@ final class SettingsStore {
             forYouRefreshCadence: forYouRefreshCadence.rawValue,
             forYouRefreshMinutes: forYouRefreshMinutes,
             forYouRefreshWeekday: forYouRefreshWeekday,
-            listeningPocketsEnabled: listeningPocketsChoice)
+            listeningPocketsEnabled: listeningPocketsChoice,
+            npMixBufferTTLHours: npMixBufferTTLHours,
+            npMixBufferCapGB: npMixBufferCapGB,
+            lastTemporarySweepAt: lastTemporarySweepAt)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -777,6 +816,9 @@ final class SettingsStore {
         lastStoragePruneAt = d.lastStoragePruneAt
         storageSoftCapSongs = d.storageSoftCapSongs
         storageAutoManage = d.storageAutoManage ?? Self.storageAutoManageDefault
+        npMixBufferTTLHours = d.npMixBufferTTLHours
+        npMixBufferCapGB = d.npMixBufferCapGB
+        lastTemporarySweepAt = d.lastTemporarySweepAt
         debugLoggingEnabled = d.debugLoggingEnabled ?? false
         // The capture buffer follows its setting on reset, exactly as DebugView's toggle does —
         // a nuclear reset must not leave diagnostics RUNNING while their toggles read off.
@@ -982,6 +1024,12 @@ struct SettingsData: Codable {
     /// as OFF (see `SettingsStore.listeningPocketsChoice`); inert while the rec engine is off.
     /// Defaulted so the memberwise call sites that predate it compile unchanged.
     var listeningPocketsEnabled: Bool? = nil
+    /// Optional so older blobs still decode — the Mix Mode buffer TTL (nil ⇒ 48 h, 0 ⇒ Keep).
+    var npMixBufferTTLHours: Double? = nil
+    /// Optional so older blobs still decode — the temporary-buffer cap (nil ⇒ 2 GB).
+    var npMixBufferCapGB: Double? = nil
+    /// Optional so older blobs still decode — epoch ms of the last temporary sweep start.
+    var lastTemporarySweepAt: Double? = nil
 
     static let `default` = SettingsData(
         // No shipped default catalog source — same reasoning as the blank rip/jukebox URLs

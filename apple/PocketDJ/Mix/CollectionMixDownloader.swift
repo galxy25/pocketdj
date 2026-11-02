@@ -305,6 +305,9 @@ final class CollectionMixDownloader {
         // lesson): what's already on disk is downloaded; the remainder partitions into the burn
         // lane (manifest-ready) and the rip lane (needs the server's real-time capture).
         downloadedIds = Set(ids.filter { burns.localURL(forSong: $0) != nil })
+        // The Mix download lane is an EXPLICIT Mix action: songs it counts as already downloaded
+        // never reach `burn(...)` (which pins), so a buffered copy is pinned right here.
+        burns.pin(songIds: downloadedIds, reason: "mix-download")
         downloadedCount = downloadedIds.count
         let remainder = ids.filter { !downloadedIds.contains($0) }
         burnQueue = remainder.filter { rips.cachedURL($0) != nil }
@@ -439,6 +442,7 @@ final class CollectionMixDownloader {
         for id in fresh {
             if burns.localURL(forSong: id) != nil {
                 downloadedIds.insert(id)
+                burns.pin(songIds: [id], reason: "mix-download")   // explicit, already on disk
             } else if rips.cachedURL(id) != nil {
                 burnQueue.append(id)
             } else {
@@ -761,6 +765,10 @@ final class CollectionMixDownloader {
 
     private func noteDownloaded(_ id: String) {
         guard isActive, trackedIds.contains(id), !downloadedIds.contains(id) else { return }
+        // A song this explicit lane is fetching landed by ANY path (its own burn, or a Now
+        // Playing buffer stream adopting the same bytes — `onAnyBurnFinalized` fires after the
+        // hold is written): it is a Mix download now, never a temporary buffer.
+        burns.pin(songIds: [id], reason: "mix-download")
         downloadedIds.insert(id)
         downloadedCount = downloadedIds.count
         // First landing = the zero-start moment; then a breadcrumb every 25 so a stall's LAST

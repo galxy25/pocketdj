@@ -1,7 +1,15 @@
 # Now Playing Mix Mode (design, 2026-11-02)
 
-Status: DESIGN ONLY. No code has been written. Branch: `feat/np-mix-mode` (sub-branches per phase,
-`feat/np-mix-mode-p1` …).
+Status: PHASE 1 IMPLEMENTED on `feat/np-mix-mode` (2026-11-02, not merged; phases 2–5 are design
+only). Levi's defaults applied: Q3 fixed 48 h, Q5 yes (Stem Lock prefetch is temporary), Q6 2 GB cap,
+Q11 Keep option offered. Phase-1 notes vs. this design: (a) `AssetOrigin` gained `.incidental` (the
+Now Playing stems toggle: no pin, no hold — legacy permanent); (b) a hold's expiry moves LATER when
+another asset of the same song lands (never earlier); (c) holds carry ledger byte credits so cap
+planning never scans the disk, and `userFolderPath` so a burn-folder switch releases user-folder
+assets instead of deleting same-named files in the new folder; (d) the sweep never deletes analog
+per-song cuts (only explicit burns export them); (e) any existing ledger row (ready / downloading /
+error) or an owed download makes a buffer landing explicit; (f) the worker disk guard (§2.3) and
+`cutFile` holds are phase 2.
 Platforms: iOS/iPadOS, macOS, visionOS (they share `NowPlayingPanel`). tvOS is out of scope for v1
 (§1.1). Android follows the parity program later.
 

@@ -50,6 +50,10 @@ final class MixStreamLoader {
         fileprivate(set) var failed = false
         /// The complete file's location: the adopted burn file, or `fileURL` when not adopted.
         fileprivate(set) var finalURL: URL?
+        /// Who asked for these bytes (np-mix-mode §3.3). `.buffer` (the Now Playing prefetch
+        /// lane) adopts as a TEMPORARY burn; any explicit opener joining upgrades it — explicit
+        /// wins — and every existing caller defaults to explicit.
+        fileprivate(set) var origin: BurnStore.AssetOrigin = .explicit("mix")
         /// The complete file was adopted into the burn folder (`finalURL` is the burn file).
         var adopted: Bool { finalURL != nil && finalURL != fileURL }
         /// The bytes are the song's BURN audio (digital mp3 / analog side) → adopt on completion.
@@ -81,6 +85,8 @@ final class MixStreamLoader {
         let parts: [String: Stream]
         /// The four files now live in the burn folder (`finalURL` of each part names it).
         fileprivate(set) var adopted = false
+        /// Merged origin of every opener (explicit wins; see `BurnStore.AssetOrigin.merged`).
+        fileprivate(set) var origin: BurnStore.AssetOrigin = .explicit("mix")
         init(songId: String, parts: [String: Stream]) { self.songId = songId; self.parts = parts }
         var isComplete: Bool { !parts.isEmpty && parts.values.allSatisfy(\.isComplete) }
         var failed: Bool { parts.values.contains(where: \.failed) }
@@ -219,22 +225,37 @@ final class MixStreamLoader {
 
     /// Begin (or join) the stream for `songId`. Returns nil when it can't stream. A finished
     /// stream whose file still exists is returned as-is (the deck plays it like a burn).
+    ///
+    /// `origin` (np-mix-mode §3.3): default `.explicit("mix")` — every Mix deck. The Now Playing
+    /// buffer lane passes `.buffer`. Joining a live buffer stream explicitly upgrades it (explicit
+    /// wins); joining a finished, adopted one explicitly pins its burn.
     @discardableResult
-    func open(_ songId: String, title: String, artist: String) -> Stream? {
+    func open(_ songId: String, title: String, artist: String,
+              origin: BurnStore.AssetOrigin = .explicit("mix")) -> Stream? {
         if let s = streams[songId], !s.failed {
             let path = (s.finalURL ?? s.fileURL).path
-            if !s.isComplete || FileManager.default.fileExists(atPath: path) { return s }
+            if !s.isComplete || FileManager.default.fileExists(atPath: path) {
+                let merged = s.origin.merged(with: origin)
+                if merged != s.origin {
+                    DiagLog.shared.telemetry("mixstream", "origin \(songId) upgraded → \(merged.isExplicit ? "explicit" : "incidental")")
+                    s.origin = merged
+                }
+                if s.isComplete, case let .explicit(why) = origin { burns.pin(songIds: [songId], reason: why) }
+                return s
+            }
         }
         guard canStream(songId), let entry = rips.manifest[songId] else { return nil }
         makeRoom()
         let file = dir.appendingPathComponent("\(Self.safe(songId))-\(UUID().uuidString.prefix(8)).mp3")
         FileManager.default.createFile(atPath: file.path, contents: nil)
         let s = Stream(songId: songId, fileURL: file, title: title, artist: artist)
+        s.origin = origin
         streams[songId] = s
         recentFailures[songId] = nil
         // A queued/in-flight BACKGROUND burn of the same file would download it twice — the
-        // stream takes over (adoption lands the same `.ready` item the burn would have).
-        burns.yieldBackgroundDownload(songId: songId)
+        // stream takes over (adoption lands the same `.ready` item the burn would have). That
+        // burn was an EXPLICIT download, so the stream inherits its origin: never temporary.
+        if burns.yieldBackgroundDownload(songId: songId) { s.origin = s.origin.merged(with: .explicit("download")) }
         let rips = self.rips
         if entry.source == "analog", let cutKey = entry.cutKey {
             // Prefer the per-song cut — streaming a whole album side to reach one song is the
@@ -289,12 +310,19 @@ final class MixStreamLoader {
 
     /// Begin (or join) streaming `songId`'s 4 stems, all at once (the engine can only switch
     /// once EVERY part has runway, so they must arrive together). Returns nil when it can't.
+    ///
+    /// `origin`: nil ⇒ derived from the owner — a Mix deck is explicit, the Now Playing toggle is
+    /// `.incidental` (permanent, no pin, as before). Joins merge (explicit wins).
     @discardableResult
-    func openStems(_ songId: String, owner: String = mixStemOwner) -> StemSet? {
+    func openStems(_ songId: String, owner: String = mixStemOwner,
+                   origin: BurnStore.AssetOrigin? = nil) -> StemSet? {
+        let origin = origin ?? (owner == Self.mixStemOwner ? .explicit("mix") : .incidental)
         if let set = stemSets[songId], !set.failed {
             let files = set.parts.values.map { ($0.finalURL ?? $0.fileURL).path }
             if !set.isComplete || files.allSatisfy({ FileManager.default.fileExists(atPath: $0) }) {
                 stemOwners[songId, default: []].insert(owner)
+                set.origin = set.origin.merged(with: origin)
+                if set.adopted, case let .explicit(why) = origin { burns.pin(songIds: [songId], reason: why) }
                 return set
             }
         }
@@ -311,6 +339,7 @@ final class MixStreamLoader {
             sources.append((s, url))
         }
         let set = StemSet(songId: songId, parts: parts)
+        set.origin = origin
         stemSets[songId] = set
         stemOwners[songId] = [owner]
         recentStemFailures[songId] = nil
@@ -333,7 +362,7 @@ final class MixStreamLoader {
         guard let set = stemSets[base], set.isComplete, !set.adopted else { return }
         var files: [String: URL] = [:]
         for (name, s) in set.parts { files[name] = s.fileURL }
-        guard let moved = burns.adoptStreamedStems(songId: base, files: files) else { return }
+        guard let moved = burns.adoptStreamedStems(songId: base, files: files, origin: set.origin) else { return }
         for (name, url) in moved { set.parts[name]?.finalURL = url }
         set.adopted = true
         DiagLog.shared.telemetry("mixstream", "stems done \(base)")
@@ -361,6 +390,17 @@ final class MixStreamLoader {
         }
         stemSets[songId] = nil
         DiagLog.shared.telemetry("mixstream", "stems cancel \(songId)")
+    }
+
+    /// Song ids (base ids for stem sets) with bytes STILL ARRIVING or a stem set some engine
+    /// still holds — the temporary-asset sweep never deletes these (np-mix-mode §3.5).
+    var activeSongIds: Set<String> {
+        var ids = Set<String>()
+        for (key, s) in streams where !s.isComplete && !s.failed {
+            ids.insert(Self.stemSongId(fromKey: key) ?? key)
+        }
+        for (base, owners) in stemOwners where !owners.isEmpty { ids.insert(base) }
+        return ids
     }
 
     /// Cancel streams (collection run cancelled). Deck-pinned songs are left alone.
@@ -494,7 +534,8 @@ final class MixStreamLoader {
         // Adopted: the file now lives in the burn folder (each deck re-acquires its own held
         // scope through `BurnStore.localURLForPlayback` when it swaps over).
         if s.adoptable,
-           let adopted = burns.adoptStreamedFile(songId: s.songId, title: s.title, artist: s.artist, from: s.fileURL) {
+           let adopted = burns.adoptStreamedFile(songId: s.songId, title: s.title, artist: s.artist,
+                                                 from: s.fileURL, origin: s.origin) {
             s.finalURL = adopted
         }
         let secs = Date().timeIntervalSince(s.startedAt)
@@ -548,8 +589,10 @@ final class MixStreamLoader {
     @discardableResult
     func injectStreamForTesting(songId: String, file: URL, bytes: Int64, expected: Int64?,
                                 startMs: Int? = nil, isCut: Bool = false, adoptable: Bool = false,
-                                finished: Bool = false) -> Stream {
+                                finished: Bool = false,
+                                origin: BurnStore.AssetOrigin = .explicit("mix")) -> Stream {
         let s = streams[songId] ?? Stream(songId: songId, fileURL: file, title: songId, artist: "")
+        if streams[songId] == nil { s.origin = origin } else { s.origin = s.origin.merged(with: origin) }
         streams[songId] = s
         s.resolved = true
         s.bytesReceived = bytes

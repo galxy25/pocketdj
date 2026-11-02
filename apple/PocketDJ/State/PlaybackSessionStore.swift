@@ -194,6 +194,22 @@ final class PlaybackSessionStore {
 
     // MARK: - Read
 
+    /// The current + next `ahead` rows of the live (or, before any restore ran, the PERSISTED)
+    /// session — row ids and edition-variant ids. The temporary-asset sweep spares these, so a
+    /// cold-launch sweep that runs before `SetlistPlayer.restore` can't delete what the restored
+    /// session is about to play. A few-KB read at most; never throws.
+    func windowSongIds(ahead: Int) -> Set<String> {
+        guard let snap = current ?? load(), snap.index >= 0, snap.index < snap.queue.count else { return [] }
+        var ids = Set<String>()
+        for row in snap.queue[snap.index..<min(snap.queue.count, snap.index + 1 + max(0, ahead))] {
+            ids.insert(row.songId)
+            if let v = row.variant.flatMap(SongVariant.init(rawValue:)) {
+                ids.insert(SongVariant.variantId(row.songId, v))
+            }
+        }
+        return ids
+    }
+
     /// The persisted snapshot, or nil. LENIENT: any read/decode failure, a schema-version
     /// mismatch, or an empty queue → nil — never throws, never blocks launch on repair.
     func load() -> Snapshot? {
