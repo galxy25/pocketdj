@@ -238,6 +238,10 @@ class AppleMusicBackend(
 
     private fun ensureController(): MediaPlayerController {
         controller?.let { return it }
+        // The SDK never loads its own natives: without this, createLocalController throws
+        // UnsatisfiedLinkError (FootHillConfig.config) and every full-track attempt silently
+        // degraded to a preview. Throws if the .so is unavailable; the callers catch Throwable.
+        loadNatives()
         val built = MediaPlayerControllerFactory.createLocalController(appContext, tokenProvider)
         built.addListener(listener)
         controller = built
@@ -353,5 +357,20 @@ class AppleMusicBackend(
 
         fun isArm(): Boolean =
             Build.SUPPORTED_ABIS?.any { it == "arm64-v8a" || it == "armeabi-v7a" } == true
+
+        /**
+         * libappleMusicSDK.so (mediaplayback AAR) + its libc++_shared, loaded the way Apple's MusicKit
+         * sample does (System.loadLibrary). Once per process; a failure is cached and rethrown so every
+         * attempt degrades to a preview instead of retrying dlopen.
+         * 16 KB pages: verified on an android-36 ps16k AVD (AppleMusicSdkLoadInstrumentedTest).
+         */
+        private val nativeLoad: Result<Unit> by lazy {
+            runCatching {
+                System.loadLibrary("c++_shared")
+                System.loadLibrary("appleMusicSDK")
+            }
+        }
+
+        fun loadNatives() = nativeLoad.getOrThrow()
     }
 }
