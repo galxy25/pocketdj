@@ -326,6 +326,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
                         it.arp.stop()
                     }
                     if (demuxPlayerLazy.isInitialized()) demuxPlayer.stop()
+                    if (stemAuditionLazy.isInitialized()) stemAuditionPlayer.stop()
                 }
             })
         }
@@ -625,6 +626,35 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         routing
     }
     private val demuxPlayer: com.levi.pocketdj.studio.demux.StemPlayer get() = demuxPlayerLazy.value.also { ensureLoopStopObserver() }
+
+    /**
+     * Q118: the stem-carve sheet's live stem audition (iOS `stemAudition = StemPlayer()`): four synced stems on the Mix
+     * audio core, separate from the Demuxer's player so the sheet never disturbs a loaded demux. One audible owner.
+     */
+    private val stemAuditionLazy: Lazy<com.levi.pocketdj.studio.demux.StemPlayer> = lazy {
+        lateinit var p: com.levi.pocketdj.studio.demux.VoiceGroupStemPlayer
+        val focus = parkingFocus {
+            interruptions.forget("stem-audition")
+            if (p.isPlaying) { StudioDiag.stop("stem-audition", "focus-loss"); p.togglePlayPause() } else p.dropInterruptionPark()
+        }
+        val request = {
+            pauseNowPlayingForStudio()
+            if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
+            if (loopLazy.isInitialized()) loopAudition.stop("superseded")
+            if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
+            if (demuxPlayerLazy.isInitialized() && demuxPlayer.isPlaying) demuxPlayer.togglePlayPause()
+            focus.requestPlayback()
+            Unit
+        }
+        p = com.levi.pocketdj.studio.demux.VoiceGroupStemPlayer(
+            sinkFactory = { StudioOutputs.create(audioManager) },
+            openSource = { f -> runCatching { com.levi.pocketdj.audio.core.Mp3Decoder(f) as com.levi.pocketdj.audio.core.PcmSource }.getOrNull() },
+            scope = app.appScope, focus = request, focusRelease = { focus.abandon() },
+        )
+        interruptions.register("stem-audition", { p.isPlaying }, { p.parkForInterruption() }, { p.resumeFromInterruption() })
+        p
+    }
+    val stemAuditionPlayer: com.levi.pocketdj.studio.demux.StemPlayer get() = stemAuditionLazy.value.also { ensureLoopStopObserver() }
 
     /** The Demuxer's selection/resolve/stems state machine (one per app; the screen is a pure renderer of it). */
     /** STU-15: drum-pattern / melody analyzers + cloud lyrics (one run per source key). */

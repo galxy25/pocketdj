@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.studio.engine.StemAudition
 import com.levi.pocketdj.studio.engine.StemCarve
 
 /**
@@ -33,6 +34,8 @@ fun StemSourceSection(
     stemMode: Boolean,
     enabled: Set<String>,
     busy: Boolean,
+    /** Q118: the synced stem player is the audible audition (chips live-mute it). */
+    auditioningStems: Boolean = false,
     onStemMode: (Boolean) -> Unit,
     onToggle: (String) -> Unit,
 ) {
@@ -50,7 +53,7 @@ fun StemSourceSection(
             Switch(checked = stemMode, onCheckedChange = onStemMode, enabled = !busy, modifier = Modifier.testTag("sample-stem-mode"))
         }
         if (stemMode) {
-            Text("The preview plays the full mix; the sample is cut from only the stems selected below.",
+            Text(StemAudition.caption(auditioningStems),
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("sample-stem-caption"))
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 for (name in DISPLAY_ORDER) {

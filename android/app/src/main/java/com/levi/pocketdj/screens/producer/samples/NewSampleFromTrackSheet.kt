@@ -56,6 +56,8 @@ import com.levi.pocketdj.studio.audio.SourcePhase
 import com.levi.pocketdj.studio.audio.StudioAudio
 import com.levi.pocketdj.studio.demux.BeatMath
 import com.levi.pocketdj.studio.engine.SampleFileException
+import com.levi.pocketdj.studio.engine.EngineMixAudition
+import com.levi.pocketdj.studio.engine.StemAudition
 import com.levi.pocketdj.studio.engine.StemCarve
 import com.levi.pocketdj.studio.model.StudioGrid
 import com.levi.pocketdj.studio.model.StudioSample
@@ -130,10 +132,17 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
     var stemMode by remember { mutableStateOf(false) }
     var enabledStems by remember { mutableStateOf(StemCarve.allEnabled()) }
     var stemBusy by remember { mutableStateOf(false) }
-    val playing by engine.isPlayingSample.collectAsState()
+    // Q118: what you HEAR is what gets carved. Full-mix mode auditions the song window through the engine preview;
+    // stem mode auditions the four stems through a synced player whose mutes follow the chips live.
+    val audition = remember { StemAudition(EngineMixAudition(engine), studio.stemAuditionPlayer) }
+    var auditioningStems by remember { mutableStateOf(false) }
+    val enginePlaying by engine.isPlayingSample.collectAsState()
+    val stemVersion by studio.stemAuditionPlayer.version.collectAsState()
+    @Suppress("UNUSED_EXPRESSION") stemVersion
+    val playing = if (auditioningStems) audition.isPlaying else enginePlaying
 
-    DisposableEffect(Unit) { onDispose { engine.unloadSample() } }
-    LaunchedEffect(Unit) { while (true) { playhead = engine.samplePlayheadSeconds(); delay(if (playing) 40 else 250) } }
+    DisposableEffect(Unit) { onDispose { audition.release(); engine.unloadSample() } }
+    LaunchedEffect(Unit) { while (true) { playhead = audition.playheadSec(); delay(if (audition.isPlaying) 40 else 250) } }
 
     val results = remember(query, catalog.catalog, phase) {
         NewSampleLogic.search(catalog.catalog?.songs.orEmpty(), query, { burns.hasLocalFile(it) })
@@ -169,6 +178,7 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
         selection++
         val token = selection
         song = s; error = null; window = null; peaks = FloatArray(0)
+        audition.release(); auditioningStems = false   // the previous song's stem audition dies here
         stemsDownloaded = burns.stemsBurned(s.id)
         stemsAvailable = StemCarve.available(stemsDownloaded, burns.stemsRemote(s.id))
         stemMode = false; stemBusy = false; enabledStems = StemCarve.allEnabled()
@@ -188,19 +198,28 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
         }
     }
 
-    /** Flip stem mode; switching it on fetches missing stems right away (iOS setStemMode) with a busy state. */
+    /**
+     * Flip stem mode (iOS setStemMode): switching it on fetches missing stems right away (busy state), then routes the
+     * audition to the synced stem player at the full mix's position; switching it off hands the position back.
+     */
     fun setStemMode(on: Boolean) {
-        stemMode = on
-        val s = song ?: return
-        if (!on || stemsDownloaded || stemBusy) return
+        val s = song
+        if (!on) { stemMode = false; audition.exitStems(); auditioningStems = false; return }
+        if (s == null || stemBusy) { stemMode = on; return }
+        stemMode = true
         val token = selection
         stemBusy = true; error = null
         scope.launch {
             val r = StemCarve.resolve({ burns.localStemFiles(s.id) }, { burns.burnStems(s.id) })
             if (token != selection) return@launch
             stemBusy = false
+            if (!stemMode) return@launch
             when (r) {
-                is StemCarve.Resolved.Files -> stemsDownloaded = true
+                is StemCarve.Resolved.Files -> {
+                    stemsDownloaded = true
+                    // An unopenable set keeps stem mode (the carve still uses the stems); the caption says the preview is the full mix.
+                    auditioningStems = audition.enterStems(s.id, r.files, enabledStems)
+                }
                 is StemCarve.Resolved.Failed -> { stemMode = false; error = StemCarve.DOWNLOAD_FAILED }
             }
         }
@@ -230,6 +249,7 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
                         }
                     }
                 } else studio.sampleFactory.carveTrack(s.id, s.name, src, startMs, endMs, grid)
+                audition.release(); auditioningStems = false
                 engine.unloadSample()
                 onFiled(made.id)
                 onDismiss()
@@ -259,7 +279,7 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
                 }
             } else {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { selection++; engine.unloadSample(); song = null; phase = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    IconButton(onClick = { selection++; audition.release(); auditioningStems = false; stemMode = false; stemBusy = false; engine.unloadSample(); song = null; phase = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                     Column(Modifier.weight(1f)) {
                         Text(s.name, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(s.artist, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -270,12 +290,13 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
                         peaks = peaks, lenMs = lenMs, startMs = startMs, endMs = endMs, playheadMs = (playhead * 1000).toInt(),
                         playing = playing, gridBpm = gridBpm, carving = carving, error = error,
                         onRegion = { a, b -> startMs = a; endMs = b },
-                        onSeek = { f -> engine.seekSample(f * lenMs / 1000.0) },
-                        onPlay = { if (playing) engine.pauseSample() else engine.playSample() },
+                        onSeek = { f -> audition.seek(f * lenMs / 1000.0) },
+                        onPlay = { audition.toggle() },
                         onCarve = ::carve,
                         stemSection = {
                             StemSourceSection(stemsAvailable, stemsDownloaded, stemMode, enabledStems, busy = carving || stemBusy,
-                                onStemMode = ::setStemMode, onToggle = { enabledStems = StemCarve.toggle(enabledStems, it) })
+                                auditioningStems = auditioningStems, onStemMode = ::setStemMode,
+                                onToggle = { enabledStems = StemCarve.toggle(enabledStems, it); audition.applyMutes(enabledStems) })
                         },
                     )
                     SourcePhase.NeedsBurn -> {

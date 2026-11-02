@@ -60,6 +60,20 @@ class DemuxSaveTest {
         assertNotNull(store.originalFor(id)); assertNull(store.stemFiles(id))
     }
 
+    /** Q117 + Q116: a saved mp3 demux is a Mix-eligible "Pocket DJ" row with its four stems; a non-mp3 one plays in Now Playing only. */
+    @Test fun savedMp3DemuxIsMixEligibleWithItsStemsAndNonMp3StaysOffTheDecks() = runBlocking {
+        val store = audioStore()
+        val none = object : com.levi.pocketdj.mix.engine.MixTrackResolver { override fun resolve(songId: String) = null }
+        val mix = com.levi.pocketdj.data.profile.ProfileMixTrackResolver(store, none)
+        val id = DemuxSave.save(file("song.mp3"), "Song", 60_000, null, stemSet("c"), null, null, null, store)!!
+        assertTrue(mix.exists(id))
+        assertEquals("mp3", mix.resolve(id)!!.file.extension)
+        assertEquals(DemuxStore.STEM_NAMES.toSet(), store.stemFiles(id)!!.keys)
+        val m4a = DemuxSave.save(file("song.m4a"), "Song", 60_000, null, stemSet("d"), null, null, null, store)!!
+        assertNotNull("still a playable profile row", store.originalFor(m4a))
+        assertTrue(!mix.exists(m4a)); assertNull(mix.resolve(m4a))
+    }
+
     @Test fun missingAudioSavesNothing() = runBlocking {
         val store = audioStore()
         assertNull(DemuxSave.save(null, "T", 1, null, null, null, null, null, store))
