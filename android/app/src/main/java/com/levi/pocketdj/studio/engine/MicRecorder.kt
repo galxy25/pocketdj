@@ -430,19 +430,31 @@ class MicRecorder(
      * app-storage file is finalized by the capture thread; [relocatePending] moves it after the writer closed.
      */
     private fun fileSampleInPlace(t: MicTake) {
-        store.addSample(
+        // The new-sample notice (Q125 auto-file copies the bytes) is DEFERRED to relocatePending: the WAV isn't final yet.
+        val isNew = store.addSampleDeferringNotice(
             StudioSample(
                 id = t.id, name = pendingName?.trim()?.takeIf { it.isNotEmpty() } ?: DEFAULT_NAME, fileName = t.fileName, wasUserFolder = t.wasUserFolder,
                 createdAt = startedAtMs, durationMs = t.durationMs, source = StudioSource.Mic,
             ),
         )
-        synchronized(pendingRelocation) { pendingRelocation.add(t.id) }
+        synchronized(pendingRelocation) {
+            pendingRelocation.add(t.id)
+            if (isNew) pendingAnnounce.add(t.id)
+        }
     }
 
-    /** Move every in-place-filed take into the user's samples folder. Call only after its writer is closed. */
+    /** In-place-filed takes whose [StudioStore.onSampleAdded] is owed once their writer has closed. */
+    private val pendingAnnounce = LinkedHashSet<String>()
+
+    /** Move every in-place-filed take into the user's samples folder, then announce the new ones. Call only after its writer is closed. */
     internal fun relocatePending() {
-        val ids = synchronized(pendingRelocation) { pendingRelocation.toList().also { pendingRelocation.clear() } }
-        for (id in ids) store.sample(id)?.let { store.addSampleRelocating(it) }
+        val (ids, announce) = synchronized(pendingRelocation) {
+            (pendingRelocation.toList() to pendingAnnounce.toSet()).also { pendingRelocation.clear(); pendingAnnounce.clear() }
+        }
+        for (id in ids) {
+            store.sample(id)?.let { store.addSampleRelocating(it) }
+            if (id in announce) store.announceSampleAdded(id)   // no-op when deleted meanwhile
+        }
     }
 
     fun fileSample(t: MicTake) {
