@@ -2,13 +2,20 @@
 <resources>
     <!--
       Base theme for a Compose-only app. We extend a platform Material theme
-      (no Material Components dependency needed) and let Compose + enableEdgeToEdge()
-      own the actual colors and system-bar handling. windowBackground is our dark
-      navy so there is no white flash before the first Compose frame.
+      (no Material Components dependency needed) and let Compose own the colors.
+      windowBackground is our dark navy so there is no white flash before the first
+      Compose frame.
+
+      System bars: edge-to-edge is enforced by the platform (minSdk 35, targetSdk 36),
+      so bar colors are always transparent and android:statusBarColor /
+      android:navigationBarColor are deprecated no-ops — they are deliberately absent
+      (Play's edge-to-edge check). PocketDJ is dark-only, so bar icons stay LIGHT, and
+      the 3-button nav bar gets no contrast scrim (Compose pads content above it).
     -->
     <style name="Theme.PocketDJ" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/pdj_background</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
     </style>
 </resources>

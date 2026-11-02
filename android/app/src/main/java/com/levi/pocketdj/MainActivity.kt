@@ -4,7 +4,6 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.levi.pocketdj.shell.FlushOnStop
 import com.levi.pocketdj.data.history.PlayHistoryStore
@@ -23,12 +22,13 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // PocketDJ is dark-only (iOS pins .preferredColorScheme(.dark) at the app root), so the
-        // system bars always draw LIGHT icons, whatever the system light/dark setting is.
-        enableEdgeToEdge(
-            statusBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-        )
+        // Edge-to-edge: minSdk 35 + targetSdk 36 means the platform ENFORCES it on every device
+        // this app installs on (transparent bars, content under them; Compose pads with
+        // WindowInsets). The bar styling — light icons (PocketDJ is dark-only, like iOS's
+        // .preferredColorScheme(.dark)) and no nav-bar scrim — lives in Theme.PocketDJ. We do NOT
+        // call enableEdgeToEdge(): androidx.activity's pre-35 fallbacks (EdgeToEdgeApi26..30) call
+        // Window.setStatusBarColor / setNavigationBarColor / layoutInDisplayCutoutMode, which Play
+        // flags as deprecated edge-to-edge APIs.
         // Eagerly build the graph + history store so every play is recorded
         // (the store subscribes to PlayEventBus) even before any screen opens.
         // The store constructor reads + decodes the whole log from disk (multi-MB

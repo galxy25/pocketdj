@@ -7,7 +7,7 @@
 #   PocketDJ-<ver>-<code>.aab        signed with the UPLOAD key   -> Play Console upload
 #   PocketDJ-<ver>-<code>.apk        universal APK signed with the APP-SIGNING key (same signature
 #                                    Play serves) -> sideload / adb install
-#   SHA256SUMS, mapping-<code>.txt (R8), native-alignment.txt
+#   SHA256SUMS, mapping-<code>.txt (R8; gated by check-r8-mapping.sh), native-alignment.txt
 #
 # Inputs (never commit these):
 #   ~/.config/pocketdj/android-signing/{pocketdj-upload.p12 (alias upload), pocketdj-appsigning.p12 (alias pocketdj)}
@@ -65,7 +65,12 @@ echo "==> bundleRelease (upload key)"
 ANDROID_UPLOAD_STORE_FILE="$UPLOAD_P12" ANDROID_UPLOAD_KEY_ALIAS=upload \
   "${GRADLE[@]}" :app:bundleRelease
 cp app/build/outputs/bundle/release/app-release.aab "$OUT_DIR/$BASE.aab"
-cp app/build/outputs/mapping/release/mapping.txt "$OUT_DIR/mapping-$VERSION_CODE.txt" 2>/dev/null || true
+# Release builds are obfuscated: without this mapping, NPLog/diag stack traces cannot be retraced.
+cp app/build/outputs/mapping/release/mapping.txt "$OUT_DIR/mapping-$VERSION_CODE.txt" || die "R8 mapping.txt missing"
+echo "==> R8 keep gate (persisted / by-name classes unrenamed)"
+"$SCRIPT_DIR/check-r8-mapping.sh" "$OUT_DIR/mapping-$VERSION_CODE.txt" > "$WORK/r8-gate.txt" \
+  || { cat "$WORK/r8-gate.txt"; die "R8 mapping gate failed"; }
+tail -1 "$WORK/r8-gate.txt"
 
 # --- 2. Universal APK, app-signing key (matches Play's signature) -------------------------------
 echo "==> assembleRelease (app-signing key)"

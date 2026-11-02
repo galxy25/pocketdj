@@ -128,6 +128,10 @@ class AppleMusicBackend(
         userTokenSnapshot = runCatching { settings.current().musicUserToken }.getOrDefault("")
         val confirm = CompletableDeferred<Boolean>()
         playConfirm = confirm
+        // dlopen + JNI_OnLoad of the 6.8 MB SDK lib happens once, OFF the main thread (the path
+        // AppleMusicSdkLoadInstrumentedTest verified); a failure is cached and ensureController
+        // below rethrows it -> false -> preview.
+        if (controller == null) withContext(Dispatchers.IO) { runCatching { loadNatives() } }
         val issued = withContext(Dispatchers.Main) {
             try {
                 val c = ensureController()
@@ -238,6 +242,10 @@ class AppleMusicBackend(
 
     private fun ensureController(): MediaPlayerController {
         controller?.let { return it }
+        // The SDK never loads its own natives: without this, createLocalController throws
+        // UnsatisfiedLinkError (FootHillConfig.config) and every full-track attempt silently
+        // degraded to a preview. Throws if the .so is unavailable; the callers catch Throwable.
+        loadNatives()
         val built = MediaPlayerControllerFactory.createLocalController(appContext, tokenProvider)
         built.addListener(listener)
         controller = built
@@ -353,5 +361,27 @@ class AppleMusicBackend(
 
         fun isArm(): Boolean =
             Build.SUPPORTED_ABIS?.any { it == "arm64-v8a" || it == "armeabi-v7a" } == true
+
+        /**
+         * libappleMusicSDK.so (mediaplayback AAR) + its libc++_shared, loaded the way Apple's MusicKit
+         * sample does (System.loadLibrary). Once per process; a failure is cached and rethrown so every
+         * attempt degrades to a preview instead of retrying dlopen.
+         * 16 KB pages: verified on an android-36 ps16k AVD (AppleMusicSdkLoadInstrumentedTest).
+         */
+        private val nativeLoad = OnceLoader {
+            System.loadLibrary("c++_shared")
+            System.loadLibrary("appleMusicSDK")
+        }
+
+        fun loadNatives() = nativeLoad.ensure()
     }
+}
+
+/**
+ * Runs [load] at most once per instance, on first [ensure]; a failure is cached and rethrown by every
+ * later [ensure] (no dlopen retry storm). Thread-safe ([lazy] is synchronized).
+ */
+internal class OnceLoader(load: () -> Unit) {
+    private val result: Result<Unit> by lazy { runCatching(load) }
+    fun ensure() = result.getOrThrow()
 }
