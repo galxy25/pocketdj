@@ -80,13 +80,18 @@ final class MixStreamingTests: XCTestCase {
 
     func testBytesPerSecondTrustsOnlyAFullLengthHeader() {
         // 12 s at 44.1 kHz whose file is 384 KB: a header claiming the full 12 s ⇒ 32 KB/s.
-        let bps = MixEngine.streamBytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: 384_000)
+        let bps = MixEngine.streamBytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: 384_000, claim: .frameCount)
         XCTAssertEqual(bps ?? -1, 32_000, accuracy: 1)
         // A length that couldn't hold the whole object even at 320 kbps is a PARTIAL-derived
         // estimate (no Xing header) — unknowable mid-flight ⇒ nil (play once complete).
-        XCTAssertNil(MixEngine.streamBytesPerSecond(totalFrames: 44_100, sampleRate: 44_100, expectedBytes: 384_000))
+        XCTAssertNil(MixEngine.streamBytesPerSecond(totalFrames: 44_100, sampleRate: 44_100, expectedBytes: 384_000, claim: .frameCount))
+        // A PLAUSIBLE length the file never declared (no Xing/Info/VBRI — a 128 kbps headerless
+        // partial's estimate) is not trusted either; nor one sniffed before the first frame arrived.
+        XCTAssertNil(MixEngine.streamBytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: 384_000, claim: .absent))
+        XCTAssertNil(MixEngine.streamBytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: 384_000, claim: .undetermined))
+        XCTAssertNil(MixEngine.streamBytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: nil, claim: .absent))
         // No Content-Length: the 256 kbps house rate.
-        XCTAssertEqual(MixEngine.streamBytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: nil),
+        XCTAssertEqual(MixEngine.streamBytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: nil, claim: .frameCount),
                        CollectionMixDownloader.bytesPerPlaybackSecond)
     }
 

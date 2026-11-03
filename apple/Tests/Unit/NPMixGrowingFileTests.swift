@@ -112,10 +112,10 @@ final class NPMixGrowingFileTests: XCTestCase {
 
     func testScheduleTablesAndTheMixDeckForwardsToThem() {
         // 12 s whose file is 384 KB ⇒ 32 KB/s; the Mix deck's names are the shared functions.
-        XCTAssertEqual(GrowingFileSchedule.bytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: 384_000) ?? -1,
+        XCTAssertEqual(GrowingFileSchedule.bytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: 384_000, claim: .frameCount) ?? -1,
                        32_000, accuracy: 1)
-        XCTAssertEqual(MixEngine.streamBytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: 384_000),
-                       GrowingFileSchedule.bytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: 384_000))
+        XCTAssertEqual(MixEngine.streamBytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: 384_000, claim: .frameCount),
+                       GrowingFileSchedule.bytesPerSecond(totalFrames: 529_200, sampleRate: 44_100, expectedBytes: 384_000, claim: .frameCount))
         XCTAssertEqual(MixEngine.streamResumeRunway, GrowingFileSchedule.resumeRunway)
         XCTAssertEqual(MixEngine.streamStartRunway, GrowingFileSchedule.startRunway)
         // Frontier: 160 000 B at 32 000 B/s = 5 s − the 1.5 s torn-frame margin, capped at the window end.
