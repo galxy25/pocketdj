@@ -222,6 +222,13 @@ final class NPMixAppleMusicTests: XCTestCase {
         XCTAssertEqual(NPMixMode.Indicator.ripping.chipText, "Ripping — mixable next play")
         XCTAssertFalse(NPMixMode.Indicator.ripping.controlsLive)
         XCTAssertEqual(ind { $0.onAppleMusic = false; $0.ripped = true; $0.mixable = true }, .ready, "non-AM unchanged")
+        // A ripped AM row is never "Apple Music only" — it says why its copy isn't local yet.
+        XCTAssertEqual(ind { $0.ripped = true }, .buffering(nil), "ripped + allowed: the lane takes it")
+        XCTAssertEqual(ind { $0.ripped = true; $0.failed = true }, .unavailable("Download failed"))
+        XCTAssertEqual(ind { $0.ripped = true; $0.cellularOff = true }, .unavailable("Cellular — buffering off"))
+        XCTAssertEqual(ind { $0.ripping = true; $0.rippingEdition = "explicit" }, .rippingEdition("explicit"))
+        XCTAssertEqual(NPMixMode.Indicator.rippingEdition("clean").chipText, "Ripping clean edition — mixable next play")
+        XCTAssertFalse(NPMixMode.Indicator.rippingEdition("clean").controlsLive)
     }
 
     /// Stray MusicKit ▶ while the DSP owns the audio (e.g. after an AM hand-off): resume the DSP,

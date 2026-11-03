@@ -1048,7 +1048,8 @@ final class NPMixGrowingFileTests: XCTestCase {
         r.seq.setMixMode(true)
         try feed(r.loader, "a", tempMP3("ar"), data, 0.3)    // 3.6 s − margin: behind 8 s + 4
         XCTAssertFalse(r.seq.currentTrackMixable)
-        XCTAssertEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"))
+        XCTAssertFalse(r.seq.mixModeIndicator.controlsLive, "its rip exists but doesn't cover the playhead yet")
+        XCTAssertNotEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"), "a ripped row never says so")
         r.seq.engageMix()
         XCTAssertFalse(r.seq.mixEngaged)
         try feed(r.loader, "a", tempMP3("ar2"), data, 1, finished: true)
@@ -1258,6 +1259,98 @@ final class NPMixGrowingFileTests: XCTestCase {
         owner = true
         r.rips.setJobForTesting("a", phase: nil)
         XCTAssertEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"), "nothing in flight")
+    }
+
+    /// LEVI'S REPRO (iPhone, 2026-11-02, "Workout"): an Apple-Music-sourced row whose SAME-edition
+    /// rip exists plays on Apple Music; Mix Mode is turned on MID-SONG. The lane must re-plan to
+    /// buffer the CURRENT row (owner AND public user — buffering an existing rip is not ripping),
+    /// the chip must say "Buffering…" — never "Apple Music only" — and once the copy covers
+    /// MusicKit's playhead, "Ready — tap a control…".
+    func testCurrentAppleMusicRowWithItsRipBuffersWhenMixModeTurnsOnMidSong() async throws {
+        let data = try noise
+        for owner in [true, false] {
+            let r = try seqRig(["a", "b"], mixDefault: false)
+            r.coord.isCatalogOwner = { owner }
+            let pf = NowPlayingPrefetcher()
+            var asked: [String] = []
+            pf.requestRip = { asked.append($0) }
+            pf.fetchSong = { _ in try? await Task.sleep(nanoseconds: 5_000_000_000); return false }
+            r.seq.prefetcher = pf
+            r.seq.prefetchSongFetchable = { _ in true }
+            await startPlain(r, ["a", "b"])
+            r.coord.sourceOfSong = { _ in Config.appleMusicSourceName }
+            putOnAppleMusic(r, "a", at: 3)
+            XCTAssertEqual(r.seq.mixModeIndicator, .off)
+            r.seq.setMixMode(true)                           // mid-song, not at session start
+            await waitUntil("the current AM row is planned (owner=\(owner))") { pf.isPlannedSong("a") }
+            XCTAssertNotEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"), "a same-edition rip exists")
+            if case .buffering = r.seq.mixModeIndicator {} else {
+                XCTFail("expected Buffering…, got \(r.seq.mixModeIndicator) (owner=\(owner))")
+            }
+            XCTAssertFalse(asked.contains("a"), "an existing rip is never re-ripped")
+            try feed(r.loader, "a", tempMP3("rp\(owner)"), data, 0.95)
+            r.seq.noteBufferStreamProgress("a")
+            XCTAssertEqual(r.seq.mixModeIndicator, .readyFromAppleMusic, "owner=\(owner)")
+            r.seq.stop()
+        }
+    }
+
+    /// A ripped Apple Music row whose copy CAN'T buffer right now still says why — never
+    /// "Apple Music only" (that is reserved for rows with no rip of their edition).
+    func testRippedAppleMusicRowNeverSaysAppleMusicOnly() async throws {
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        r.coord.sourceOfSong = { _ in Config.appleMusicSourceName }
+        putOnAppleMusic(r, "a", at: 3)
+        r.seq.setMixMode(true)
+        XCTAssertNotEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"))
+    }
+
+    /// The upcoming AM-sourced ripped row's presign is fetched ahead, so its start under Mix Mode
+    /// is rip-first (`preferLocalAudio`) — and plain Apple Music first without Mix Mode.
+    func testUpcomingAppleMusicRowWithARipGetsItsPresignAheadSoItStartsLocal() async throws {
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        r.coord.appleMusicReadyOverrideForTests = true
+        r.coord.sourceOfSong = { $0 == "b" ? Config.appleMusicSourceName : nil }
+        await startPlain(r, ["a", "b"])
+        await waitUntil("b's presign is in hand") { r.rips.prefetchedURL("b") != nil }
+        XCTAssertFalse(r.coord.streamsAppleMusicFirst(id: "b", title: "b", artist: "A", variant: nil, preferLocalAudio: true),
+                       "Mix Mode: the ripped AM row starts from its rip")
+        XCTAssertTrue(r.coord.streamsAppleMusicFirst(id: "b", title: "b", artist: "A", variant: nil))
+    }
+
+    /// EDITION MISMATCH (Levi's repro, second song): the row wants the EXPLICIT edition, only the
+    /// clean one is ripped. It stays on Apple Music; the owner's chip names the edition being
+    /// ripped, a public user's says "Apple Music only"; the owner's rip-ahead asks for the
+    /// specific edition id — and never for an edition whose catalog id is unknown.
+    func testEditionMismatchChipAndRipAheadAskForTheWantedEdition() async throws {
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        var owner = true
+        r.coord.isCatalogOwner = { owner }
+        r.coord.sourceOfSong = { _ in Config.appleMusicSourceName }
+        let pf = NowPlayingPrefetcher()
+        var asked: [String] = []
+        pf.requestRip = { asked.append($0) }
+        r.seq.prefetcher = pf
+        r.seq.prefetchSongFetchable = { _ in false }
+        func ed(_ id: String, catalog: String?) -> SetlistPlayer.Item {
+            var i = item(id); i.variant = .explicit; i.editionLocked = true; i.editionCatalogId = catalog; return i
+        }
+        // Only the CLEAN (base) cuts are ripped.
+        r.rips.setManifest(["a": .init(key: "rips/a.mp3", source: "digital"), "b": .init(key: "rips/b.mp3", source: "digital"),
+                            "c": .init(key: "rips/c.mp3", source: "digital")])
+        r.seq.play([ed("a", catalog: "111"), ed("b", catalog: "222"), ed("c", catalog: nil)])
+        await pause(0.1)
+        putOnAppleMusic(r, "a_explicit", at: 2)
+        await pause(0.1)
+        r.seq.setMixMode(true)
+        r.seq.replanPrefetch()
+        XCTAssertEqual(asked, ["b_explicit"], "the wanted edition — and never c (its edition's catalog id is unknown)")
+        r.rips.setJobForTesting("a_explicit", phase: .ripping)
+        XCTAssertEqual(r.seq.mixModeIndicator, .rippingEdition("explicit"))
+        XCTAssertEqual(r.seq.mixModeIndicator.chipText, "Ripping explicit edition — mixable next play")
+        owner = false
+        XCTAssertEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"))
     }
 
     /// A rip landing for a window row re-plans the lane (its song + stems buffer next).

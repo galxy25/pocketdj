@@ -771,6 +771,17 @@ locked phone, CarPlay card after the hand-off) is owed.
 - **MUST — picked folders:** evicted iCloud copies and another device's explicit reuse (§3.6).
 - **SHOULD (fixed):** a growing file that already fell back this play is never offered again for
   an AM hand-off (`appleMusicLocalCopy` honours `growingRefusedUid`) — no touch-driven flapping.
+- **MUST — Levi's device repro (TF 1793665643, a pre-phase-4 build; "Workout", Mix Mode on
+  mid-song):** both AM rows said "Apple Music only" although same-edition rips existed. Phase 4
+  already buffers a CURRENT AM row that is ripped (any user — buffering an existing rip is not
+  ripping; `prefetchTrack` keeps it fetchable under Mix Mode, `setMixMode(true)` re-plans) and
+  `prefetchUpcoming` presigns AM-sourced ripped rows so their start is rip-first. Fixed on top:
+  the chip says "Apple Music only" ONLY for a row with no rip of its edition — a ripped AM row
+  falls through to the local-copy states ("Buffering n%", "Download failed", "Cellular — buffering
+  off", …); an edition-substituted row whose edition isn't ripped shows the owner
+  "Ripping explicit edition — mixable next play" (`.rippingEdition`) while that capture is in
+  flight, public users "Apple Music only"; the owner's rip-ahead asks for the `<base>_<edition>`
+  id and never for an edition whose catalog id is unknown (the `EditionPolicy.lazyRipId` gate).
 - **Open (SHOULD, not fixed):** a growing fallback that re-resolves the row (AM hand-off, phase-3
   start) goes through `coordinator.play` again, whose `onPlay` counts a second play when it lands
   more than 30 s after the first (pre-existing for phase 3); on macOS `serverIsThisHost` answers

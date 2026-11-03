@@ -87,6 +87,9 @@ enum NPMixMode {
         case stemsLoading
         /// Owner only: an Apple-Music-only row being ripped (phase 4 — never produced in phase 2).
         case ripping
+        /// Owner only: the row asks for an EDITION ("explicit" / "clean") that isn't ripped yet
+        /// (only the other one is) and the rip server is capturing it.
+        case rippingEdition(String)
         /// Nothing local can exist for this play ("Apple Music only", "Live capture", "Offline",
         /// "Download failed", "Storage full", "Not ripped").
         case unavailable(String)
@@ -106,6 +109,7 @@ enum NPMixMode {
             case let .buffering(f): return f.map { "Buffering \(Int(($0 * 100).rounded(.down)))%" } ?? "Buffering…"
             case .stemsLoading: return "Loading stems…"
             case .ripping: return "Ripping — mixable next play"
+            case let .rippingEdition(e): return "Ripping \(e) edition — mixable next play"
             case let .unavailable(why): return why
             case .suspended: return "Paused — Mix tab is live"
             case .waiting: return "Buffers on ▶"
@@ -130,7 +134,7 @@ enum NPMixMode {
             case .holding: return "holding"
             case .buffering: return "buffering"
             case .stemsLoading: return "stemsLoading"
-            case .ripping: return "ripping"
+            case .ripping, .rippingEdition: return "ripping"
             case .unavailable: return "unavailable"
             case .suspended: return "suspended"
             case .waiting: return "waiting"
@@ -163,6 +167,9 @@ enum NPMixMode {
         /// Phase 4, OWNER ONLY (the caller folds the gate in): the current Apple-Music-only row
         /// has a rip in flight on the server.
         var ripping: Bool = false
+        /// The row's wanted edition when it is edition-substituted ("explicit" / "clean") — names
+        /// the edition being ripped in the chip.
+        var rippingEdition: String? = nil
     }
 
     /// THE CHIP. Order matters: "off" and "not running" first, then the session-wide states
@@ -176,10 +183,13 @@ enum NPMixMode {
             return i.stemsLoading ? .stemsLoading : .engaged
         }
         if i.mixable { return i.onAppleMusic ? .readyFromAppleMusic : .ready }
-        if i.onAppleMusic {
-            // A ripped AM row whose local copy is downloading (it finishes on AM meanwhile).
-            if i.ripped, i.buffering { return .buffering(i.bufferFraction) }
-            return i.ripping ? .ripping : .unavailable("Apple Music only")
+        // An Apple Music row with NO rip of its edition: "Apple Music only" (or, for the owner,
+        // its rip in flight). A RIPPED one (same edition) is never "Apple Music only" (Levi's
+        // 2026-11-02 repro): it falls through to the local-copy states below — "Buffering n%"
+        // while the lane fetches it (it finishes on Apple Music meanwhile), else why it can't.
+        if i.onAppleMusic, !i.ripped {
+            if i.ripping { return i.rippingEdition.map { .rippingEdition($0) } ?? .ripping }
+            return .unavailable("Apple Music only")
         }
         if i.live { return .unavailable("Live capture") }
         if i.storageFull { return .unavailable("Storage full") }

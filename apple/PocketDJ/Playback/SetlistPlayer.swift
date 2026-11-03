@@ -1754,6 +1754,10 @@ final class SetlistPlayer {
         if local { return .local }
         if AppleMusicCatalog.storeID(fromSongID: it.id) != nil { return .catalogOnly }
         if rips.manifest[it.resolveId] != nil { return .ripped }
+        // An edition-substituted row whose edition isn't ripped: only rippable when that
+        // edition's CATALOG id is known (the server captures `<base>_<edition>` by it — the
+        // same hard gate as `EditionPolicy.lazyRipId`); else nothing to ask for.
+        if it.variant != nil, (it.editionCatalogId ?? "").isEmpty { return .unavailable }
         let src = coordinator.sourceOfSong(SongVariant.baseId(it.id))
         if src == Config.appleMusicSourceName || src == AppleMusicLibraryStore.sourceName { return .appleMusicOnly }
         return .unavailable
@@ -1865,7 +1869,8 @@ final class SetlistPlayer {
                                                                 window: mixModeSettings().ahead) == nil } ?? false,
             dspHolding: mixEngaged && growingUid == it.uid && (dsp?.isBuffering ?? false),
             // OWNER ONLY: a public / hybrid user never sees "Ripping" (they never rip).
-            ripping: coordinator.isCatalogOwner() && (rips.isRipInFlight(it.resolveId) || rips.isRipInFlight(it.id))))
+            ripping: coordinator.isCatalogOwner() && (rips.isRipInFlight(it.resolveId) || rips.isRipInFlight(it.id)),
+            rippingEdition: it.variant.flatMap { v in rips.isRipInFlight(it.resolveId) ? v.rawValue : nil }))
     }
 
     /// The buffer strip: the next `ahead` rows' local state (● local · ◐ buffering ·

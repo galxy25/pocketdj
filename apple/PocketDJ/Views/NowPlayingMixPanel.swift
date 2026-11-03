@@ -293,7 +293,7 @@ struct MixModeStatusChip: View {
                     Circle().stroke(Theme.accent, lineWidth: 1.5).frame(width: 6, height: 6)
                 case .buffering, .holding, .waiting:
                     Image(systemName: "arrow.down.circle").font(.caption2)
-                case .unavailable, .suspended, .ripping:
+                case .unavailable, .suspended, .ripping, .rippingEdition:
                     Image(systemName: "exclamationmark.circle").font(.caption2)
                 case .off:
                     EmptyView()
