@@ -218,6 +218,96 @@ final class MixStreamingTests: XCTestCase {
         engine.teardown()
     }
 
+    /// A growing mp3 with NO full-length header (no Xing/VBRI/TLEN — user digital files): an
+    /// open of the partial file reports a length ESTIMATED from the bytes present (~3.6 s at
+    /// 30 %). The deck must not adopt that as the song: it stays unattached, held (Buffering…),
+    /// on the provisional catalog length until the download completes — then the WHOLE song is
+    /// its window (seekable to 9 s, scheduled to 12 s), never a song that "ends" at 3.6 s.
+    func testHeaderlessGrowingFileHoldsUntilCompleteThenPlaysTheWholeSong() async throws {
+        let data = try StemAudioProbe.bundled("stem-noise-12s", in: Self.self)   // headerless
+        let rips = makeRips()
+        let burns = try MixBurnFixture.burnStore(ids: [], rips: rips)
+        let engine = MixEngine(burns: burns)
+        let loader = MixStreamLoader(rips: rips, burns: burns, configuration: stubConfig())
+        loader.onProgress = { [weak engine] in engine?.streamProgressed($0) }
+        engine.streamer = loader
+        let file = tempFile("hl")
+        let total = Int64(data.count)
+        func feed(_ fraction: Double, finished: Bool = false) throws {
+            let n = finished ? data.count : Int(Double(data.count) * fraction)
+            try data.prefix(n).write(to: file)
+            loader.injectStreamForTesting(songId: "hl", file: file, bytes: Int64(n), expected: total, finished: finished)
+        }
+
+        try feed(0.3)
+        load(engine, "hl")
+        engine.play(.a)
+        XCTAssertEqual(engine.loaded(.a)?.songId, "hl")
+        XCTAssertTrue(engine.isBuffering(.a), "no full-length claim: nothing is schedulable until complete")
+        XCTAssertFalse(engine.fileScheduledForTesting(.a))
+        XCTAssertEqual(engine.duration(.a), 12, accuracy: 0.01, "the catalog length stays provisional — not the partial's 3.6 s")
+        XCTAssertFalse(engine.deckReadyToAir(.a))
+
+        try feed(0.6)
+        XCTAssertTrue(engine.isBuffering(.a))
+        XCTAssertFalse(engine.fileScheduledForTesting(.a))
+        XCTAssertEqual(engine.duration(.a), 12, accuracy: 0.01)
+
+        try feed(1.0, finished: true)
+        XCTAssertFalse(engine.isBuffering(.a), "complete: it plays")
+        XCTAssertTrue(engine.fileScheduledForTesting(.a))
+        XCTAssertFalse(engine.isStreaming(.a))
+        XCTAssertEqual(engine.duration(.a), 12, accuracy: 0.2, "the whole song — not the partial open's estimate")
+        XCTAssertEqual(engine.scheduledEndSecondsForTesting(.a) ?? 0, 12, accuracy: 0.2, "scheduled to the real end")
+        engine.seek(.a, toSeconds: 9)
+        XCTAssertTrue(engine.fileScheduledForTesting(.a), "9 s is real audio, not past a 3.6 s end")
+        XCTAssertEqual(engine.position(.a), 9, accuracy: 0.001)
+        engine.teardown()
+    }
+
+    /// The same under AUTO-DJ, with no catalog length (a digital file) and a WRONG catalog
+    /// duration on the queue item: the live headerless deck holds (Buffering… on air, not ready),
+    /// and once complete the machine times its crossfade off the REAL 12 s — as it does for a
+    /// header-claimed stream attaching mid-load on the standby deck.
+    func testAutoDJTimesHeaderlessAndHeaderClaimedStreamsOffTheRealLength() async throws {
+        let headerless = try StemAudioProbe.bundled("stem-noise-12s", in: Self.self)
+        let claimed = try fixture
+        let rips = makeRips()
+        let burns = try MixBurnFixture.burnStore(ids: [], rips: rips)
+        let engine = MixEngine(burns: burns)
+        let loader = MixStreamLoader(rips: rips, burns: burns, configuration: stubConfig())
+        loader.onProgress = { [weak engine] in engine?.streamProgressed($0) }
+        engine.streamer = loader
+        let fa = tempFile("ha"), fb = tempFile("hb")
+        let n = Int(Double(headerless.count) * 0.3)
+        try headerless.prefix(n).write(to: fa)
+        loader.injectStreamForTesting(songId: "ha", file: fa, bytes: Int64(n), expected: Int64(headerless.count))
+        let half = claimed.count / 2
+        try claimed.prefix(half).write(to: fb)
+        loader.injectStreamForTesting(songId: "hb", file: fb, bytes: Int64(half), expected: Int64(claimed.count))
+
+        engine.startAutoMix(["ha", "hb"].map {
+            .init(loadable: MixLoadable(songId: $0, title: $0, artist: "A", bpm: 120, camelot: "8A",
+                                        key: nil, albumId: nil, lengthMs: nil), durationMs: 200_000)
+        }, shuffled: false, lead: 4, fade: 1, label: "mix")
+        XCTAssertEqual(engine.onAirTrack?.songId, "ha")
+        XCTAssertTrue(engine.onAirBuffering, "the headerless on-air deck waits — Buffering…")
+        XCTAssertFalse(engine.deckReadyToAir(.a))
+        XCTAssertGreaterThan(engine.duration(.a), 11, "never the partial open's ~3.6 s estimate")
+        XCTAssertEqual(Double(engine.autoDeckDurationMsForTesting(.b) ?? 0), 12_000, accuracy: 200,
+                       "the header-claimed standby attached during its load: the real window, not the catalog's 200 s")
+
+        try headerless.write(to: fa)
+        loader.injectStreamForTesting(songId: "ha", file: fa, bytes: Int64(headerless.count),
+                                      expected: Int64(headerless.count), finished: true)
+        XCTAssertFalse(engine.onAirBuffering, "complete: on air")
+        XCTAssertEqual(engine.duration(.a), 12, accuracy: 0.2)
+        XCTAssertEqual(Double(engine.autoDeckDurationMsForTesting(.a) ?? 0), 12_000, accuracy: 200,
+                       "the crossfade is timed off the real length once known")
+        XCTAssertEqual(engine.scheduledEndSecondsForTesting(.a) ?? 0, 12, accuracy: 0.2)
+        engine.teardown()
+    }
+
     /// A stream that dies before any audio drops the track (a deck never sits on silence), and
     /// the cooldown makes `canStream` refuse it — so the auto machine's preload re-check drops
     /// the song instead of re-opening a dead stream every tick.

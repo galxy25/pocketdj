@@ -608,6 +608,15 @@ final class MixEngine {
     /// Bytes of file per second of audio, learned at attach (nil ⇒ the header didn't claim the
     /// full length — play only once complete).
     @ObservationIgnored private var streamBytesPerSecond: [Deck: Double] = [:]
+    /// The growing file has NO full-length header (no Xing/VBRI/TLEN — e.g. a user digital
+    /// file): a partial open's length is an ESTIMATE from the bytes present, never the song. The
+    /// deck stays unattached (held, Buffering…, on the provisional catalog length) until the
+    /// download completes, without re-opening the file on every progress event.
+    @ObservationIgnored private var streamHeaderless: Set<Deck> = []
+    /// The REAL song window (ms) a stream learned when it attached during the current load —
+    /// survives the stream completing (`clearStream`) so `loadAuto`, which stamps the auto
+    /// machine's duration AFTER `load` returns, times the crossfade off it, not the catalog guess.
+    @ObservationIgnored private var streamAttachedWindowMs: [Deck: Int] = [:]
     /// Seconds of runway needed past the playhead to start / to resume after an underrun.
     /// (Shared with the Now Playing DSP — `GrowingFileSchedule`.)
     nonisolated static let streamStartRunway: Double = GrowingFileSchedule.startRunway
@@ -974,6 +983,7 @@ final class MixEngine {
         playNotedThisLoad.remove(deck)
         endReportedThisLoad.remove(deck)
         positionHighWater[deck] = nil
+        streamAttachedWindowMs[deck] = nil     // learned again if THIS load streams + attaches
     }
 
     // MARK: - Durable mix-deck session (state)
@@ -1414,6 +1424,8 @@ final class MixEngine {
     }
     /// Does the engine trust this deck's MAIN-file schedule to be live?
     func fileScheduledForTesting(_ deck: Deck) -> Bool { fileScheduled[deck] == true }
+    /// Seconds of the song window the full-mix file is bounded to (nil before attach).
+    func scheduledEndSecondsForTesting(_ deck: Deck) -> Double? { files[deck] == nil ? nil : mainEndSeconds(deck) }
     /// Drive the `.AVAudioEngineConfigurationChange` observer body directly (the real
     /// notification is posted by the private engine instance, which tests can't post as).
     func simulateConfigChangeForTesting() { handleEngineConfigurationChange() }
@@ -1675,8 +1687,10 @@ final class MixEngine {
             }
         }
 
-        // FIRST ATTACH — the header (and its full-length claim) is readable now.
+        // FIRST ATTACH — the header (and its full-length claim) is readable now. A file already
+        // found HEADERLESS waits for completion without re-opening on every event.
         if files[deck] == nil {
+            if streamHeaderless.contains(deck), !s.isComplete { return }
             guard let file = try? AVAudioFile(forReading: url), let inputMixer = inputMixers[deck] else { return }
             let sr = file.processingFormat.sampleRate
             let total = file.length
@@ -1690,6 +1704,17 @@ final class MixEngine {
                 if s.isComplete { handleStreamFailure(deck) }
                 return
             }
+            let bps = Self.streamBytesPerSecond(totalFrames: total, sampleRate: sr, expectedBytes: s.expectedBytes)
+            if bps == nil, !s.isComplete {
+                // HEADERLESS (no full-length claim): this open's length is an estimate from the
+                // bytes present — never the song's window (attached here, the completed song
+                // would "end" — and the auto machine advance — where the partial did). Hold,
+                // unattached, until complete (the NP DSP's `pumpMain` rule, mirrored).
+                if streamHeaderless.insert(deck).inserted {
+                    DiagLog.shared.telemetry("mixstream", "deck \(deck.rawValue) \(s.songId) headerless — holds until complete")
+                }
+                return
+            }
             engine.connect(player, to: inputMixer, format: file.processingFormat)
             files[deck] = file
             paths[deck] = url.path
@@ -1697,11 +1722,18 @@ final class MixEngine {
             startFrames[deck] = start
             endFrames[deck] = start
             streamFullEnd[deck] = start + count
-            streamBytesPerSecond[deck] = Self.streamBytesPerSecond(totalFrames: total, sampleRate: sr,
-                                                                   expectedBytes: s.expectedBytes)
+            streamBytesPerSecond[deck] = bps
             mutate(deck) { $0.startMs = startMs }
             setDuration(deck, Double(count) / sr)      // the real window replaces the catalog guess
             if position(deck) > duration(deck) { setPosition(deck, duration(deck)) }
+            // …and so does the AUTO machine's clock: the crossfade is timed off the real length
+            // once known (a held deck's end clock is frozen anyway; a playing one re-stamps).
+            let realMs = Int((Double(count) / sr * 1000).rounded())
+            streamAttachedWindowMs[deck] = realMs
+            if autoMixing, autoDeckDurationMs[deck] != nil {
+                autoDeckDurationMs[deck] = realMs
+                restampAutoEnd(deck)
+            }
         }
         guard let sr = sampleRates[deck], let start = startFrames[deck], let fullEnd = streamFullEnd[deck],
               let end = endFrames[deck] else { return }
@@ -1819,6 +1851,7 @@ final class MixEngine {
         streamWindowMs[deck] = nil
         streamFullEnd[deck] = nil
         streamBytesPerSecond[deck] = nil
+        streamHeaderless.remove(deck)
     }
 
     /// Hold a playing streaming deck whose playhead caught the byte frontier (the tick calls this):
@@ -4003,7 +4036,9 @@ final class MixEngine {
     private func loadAuto(_ item: AutoMixItem, onto deck: Deck) -> Bool {
         load(item.loadable, on: deck)
         guard state(deck).loaded?.songId == item.loadable.songId else { return false }
-        autoDeckDurationMs[deck] = item.durationMs
+        // A stream that attached DURING the load knows the real window — the catalog's
+        // `durationMs` is only a guess (wrong for a digital file with no catalog length).
+        autoDeckDurationMs[deck] = streamAttachedWindowMs[deck] ?? item.durationMs
         return true
     }
 
