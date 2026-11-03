@@ -28,7 +28,9 @@ import UIKit
 /// until there is runway again, appended as bytes land, swapped to the adopted file on completion. The
 /// control state is EPHEMERAL — it resets on every track change (`resetControls`), so nothing here is
 /// ever persisted. (STEM LOCK — `SetlistPlayer.stemLock`, `StemLock.swift` — re-applies a carried stem
-/// set on the next track; the session, not this engine, owns and persists it.)
+/// set on the next track; FX LOCK — `SetlistPlayer.fxLock`, `FXLock.swift` — stamps carried effects
+/// as the idle control state, which every engage RAMPS IN (`applyEffectsAtEngage`); the session,
+/// not this engine, owns and persists both.)
 ///
 /// Reuses `MixEngine.Effect` / `MixEngine.rateRange` / `.pitchRange` / `.volumeRange` / `.stemNames`
 /// so the Mix tab's control components (`DeckSlider` / `EffectButton`) bind straight to it.
@@ -249,6 +251,10 @@ final class NowPlayingDSP {
     /// or an internal drop (a failed stream / an underrun), so the state a Stem Lock carries is
     /// only ever changed by the listener.
     @ObservationIgnored var onUserStemChange: (() -> Void)?
+    /// FX LOCK: fired after a USER-facing effect control changed the effects state (`setEffect`,
+    /// `setEffectStrength`) — never by `applyCarriedEffects` / `resetControls`, so the effects an
+    /// FX Lock carries are only ever changed by the listener.
+    @ObservationIgnored var onUserEffectChange: (() -> Void)?
     /// Fired when a handover to the stems COMMITS (`cutToStems`) with the engaged song's id —
     /// the Stem Lock handover-timing line.
     @ObservationIgnored var onStemsOnAir: ((String) -> Void)?
@@ -341,6 +347,11 @@ final class NowPlayingDSP {
     var timePitchPitchCents: Float { timePitch.pitch }
     var eqGlobalGain: Float { filter.globalGain }
     var reverbWetDryMix: Float { reverb.wetDryMix }
+    var reverbBypassed: Bool { reverb.bypass }
+    var flangerWetDryMix: Float { flanger.wetDryMix }
+    var flangerBypassed: Bool { flanger.bypass }
+    var compressorBypassed: Bool { comp.bypass }
+    var filterBandBypassed: Bool { filter.bands.first?.bypass ?? true }
     func stemNodeVolume(_ name: String) -> Float? { stemNodes[name]?.volume }
 
     // Handover / alignment seams (tests listen to real samples — see `captureForTesting`).
@@ -563,7 +574,7 @@ final class NowPlayingDSP {
         // Bind the varying `player → inputMixer` link to the file's real format (only that link).
         engine.connect(player, to: inputMixer, format: f.processingFormat)
         applyRate(); applyPitch(); applyVolume()
-        for e in MixEngine.Effect.allCases { applyEffect(e) }
+        applyEffectsAtEngage()
 
         let pos = min(max(0, atSeconds), duration)
         pausedAt = pos
@@ -617,7 +628,7 @@ final class NowPlayingDSP {
         firstAudioOwed = true
         startRunwayOwed = atTrackStart
         applyRate(); applyPitch(); applyVolume()
-        for e in MixEngine.Effect.allCases { applyEffect(e) }
+        applyEffectsAtEngage()
         pausedAt = max(0, atSeconds)
         isPlaying = false
         playAnchor = nil
@@ -695,6 +706,7 @@ final class NowPlayingDSP {
     func disengage() -> Double {
         let pos = currentTime
         resetStemIntent()                       // stale-proofs any fetch/stream/fade (track change)
+        cancelEffectRamp()
         stopVoices(main: true, stems: true)
         if engine.isRunning { engine.stop() }   // idle the graph so the AVPlayer owns audio alone
         interruptedWhilePlaying = false
@@ -729,6 +741,7 @@ final class NowPlayingDSP {
         _stemHandover = nil
         _stemMuted = []
         _stemVol = [:]
+        cancelEffectRamp()
         guard built else { return }
         applyRate(); applyPitch(); applyVolume()
         for e in MixEngine.Effect.allCases { applyEffect(e) }
@@ -774,12 +787,105 @@ final class NowPlayingDSP {
 
     func setEffect(_ effect: MixEngine.Effect, enabled: Bool) {
         _effectOn[effect.rawValue] = enabled
+        effectRampScale[effect.rawValue] = nil   // the listener's hand beats an FX Lock ramp-in
         applyEffect(effect)
+        onUserEffectChange?()
     }
 
     func setEffectStrength(_ effect: MixEngine.Effect, _ strength: Double) {
         _effectStrength[effect.rawValue] = min(max(strength, 0), 1)
+        effectRampScale[effect.rawValue] = nil
         applyEffect(effect)
+        onUserEffectChange?()
+    }
+
+    // MARK: - FX Lock seams (`SetlistPlayer` drives these — see `FXLock`)
+
+    /// The effects state as the FX Lock carries it: every effect that is ON or whose strength the
+    /// listener set (an absent effect is off at the default strength).
+    var effectSettings: [String: FXLockState.Setting] {
+        var out: [String: FXLockState.Setting] = [:]
+        for e in MixEngine.Effect.allCases where isEnabled(e) || _effectStrength[e.rawValue] != nil {
+            out[e.rawValue] = .init(on: isEnabled(e), strength: strength(e))
+        }
+        return out
+    }
+
+    /// Stamp a carried effects state as the control state (every effect not listed goes back to
+    /// off at the default strength). Never notifies `onUserEffectChange`. Engaged: the newly-on
+    /// effects RAMP IN over `fxRampSeconds` (no pop); otherwise the next engage ramps them in.
+    func applyCarriedEffects(_ fx: [String: FXLockState.Setting]) {
+        let wasOn = Set(MixEngine.Effect.allCases.filter { isEnabled($0) }.map(\.rawValue))
+        var on: [String: Bool] = [:]
+        var strength: [String: Double] = [:]
+        for e in MixEngine.Effect.allCases {
+            guard let st = fx[e.rawValue] else { continue }
+            if st.on { on[e.rawValue] = true }
+            strength[e.rawValue] = min(max(st.strength, 0), 1)
+        }
+        _effectOn = on
+        _effectStrength = strength
+        guard built else { return }
+        if isEngaged {
+            rampInEffects(only: Set(on.keys).subtracting(wasOn))
+        } else {
+            cancelEffectRamp()
+            for e in MixEngine.Effect.allCases { applyEffect(e) }
+        }
+    }
+
+    /// How long carried effects take to come up from transparent to their set strength (FX Lock).
+    static var fxRampSeconds: Double = 0.25
+    /// A ramp-in is still moving (tests).
+    var effectRampInFlight: Bool { effectRamp != nil }
+    @ObservationIgnored private var effectRamp: Task<Void, Never>?
+    /// Effect rawValue → the 0…1 share of its strength currently applied while it ramps in.
+    @ObservationIgnored private var effectRampScale: [String: Float] = [:]
+
+    /// The graph at an engage: an engage normally starts neutral (all off — no ramp, the old
+    /// path); a carried FX Lock state ramps its ON effects in from transparent.
+    private func applyEffectsAtEngage() {
+        rampInEffects(only: Set(MixEngine.Effect.allCases.filter { isEnabled($0) }.map(\.rawValue)))
+    }
+
+    /// Ramp `keys` (ON effects) from strength 0 — wet 0 / threshold 0 dB / cutoff ~18 kHz, i.e.
+    /// transparent — to their set strength in `fxRampSteps` main-actor steps; every other effect
+    /// is applied as-is. A user change to an effect drops it out of the ramp (`setEffect…`);
+    /// `disengage` / `resetControls` cancel it.
+    private func rampInEffects(only keys: Set<String>) {
+        cancelEffectRamp()
+        for k in keys { effectRampScale[k] = 0 }
+        for e in MixEngine.Effect.allCases { applyEffect(e) }
+        guard !keys.isEmpty, Self.fxRampSeconds > 0 else {
+            effectRampScale = [:]
+            for e in MixEngine.Effect.allCases { applyEffect(e) }
+            return
+        }
+        let steps = Self.fxRampSteps
+        let stepNs = UInt64(max(0.001, Self.fxRampSeconds / Double(steps)) * 1_000_000_000)
+        effectRamp = Task { @MainActor [weak self] in
+            for i in 1...steps {
+                try? await Task.sleep(nanoseconds: stepNs)
+                guard let self, !Task.isCancelled else { return }
+                let k = Float(i) / Float(steps)
+                for key in Array(self.effectRampScale.keys) {
+                    self.effectRampScale[key] = k
+                    if let e = MixEngine.Effect(rawValue: key) { self.applyEffect(e) }
+                }
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.effectRampScale = [:]
+            self.effectRamp = nil
+        }
+    }
+    static let fxRampSteps = 12
+
+    private func cancelEffectRamp() {
+        effectRamp?.cancel()
+        effectRamp = nil
+        guard !effectRampScale.isEmpty else { return }
+        effectRampScale = [:]
+        for e in MixEngine.Effect.allCases { applyEffect(e) }   // land every effect at its set value
     }
 
     /// Ask for the stems (on) or the full song (off). Records INTENT; the audio follows under the
@@ -1648,7 +1754,8 @@ final class NowPlayingDSP {
     private func applyEffect(_ effect: MixEngine.Effect) {
         guard built else { return }
         let on = isEnabled(effect)
-        let s = Float(strength(effect))
+        // FX Lock ramp-in: the applied share of the strength (1 when settled).
+        let s = Float(strength(effect)) * (effectRampScale[effect.rawValue] ?? 1)
         switch effect {
         case .reverb:
             reverb.wetDryMix = s * 100; reverb.bypass = !on

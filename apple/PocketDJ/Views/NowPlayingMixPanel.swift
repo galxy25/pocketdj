@@ -16,7 +16,9 @@ import SwiftUI
 /// on the FIRST touch hands the current track's audio off the `AVPlayer` into the DSP graph AT the
 /// current position; the control then applies to the truly-playing track. Control state is EPHEMERAL
 /// — `SetlistPlayer` resets it on every track change, unless the session's STEM LOCK (the 🔒 beside the
-/// Stems toggle) carries the stem set forward (see `StemLock`).
+/// Stems toggle) carries the stem set forward (see `StemLock`), or its FX LOCK (the 🔒 at the right end of
+/// the Effects group's header, placed like the Stem Lock) carries the effects forward (see `FXLock`; tempo / pitch / gain
+/// still reset).
 ///
 /// Reuses the Mix tab's `DeckSlider` / `EffectButton` / `StepButton` / `ChipStrengthPopover`, bound to
 /// `NowPlayingDSP` instead of a `MixEngine` deck. iPhone-portrait width constraints are handled by the
@@ -75,6 +77,7 @@ struct NowPlayingMixPanel: View {
                     // plays the full mix (expanded or not, as before the header was always shown).
                     StemLockStatusRow(indicator: sequencer.stemLockIndicator)
                 }
+                if !controlsVisible { FXLockStatusRow(indicator: sequencer.fxLockIndicator) }
                 if expanded {
                     if controlsVisible {
                         controls
@@ -87,12 +90,15 @@ struct NowPlayingMixPanel: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
             .accessibilityIdentifier("np-mix-panel")
-        } else if sequencer.stemLock.enabled, sequencer.isRunning {
+        } else if (sequencer.stemLock.enabled || sequencer.fxLock.wantsFX), sequencer.isRunning {
             // The panel hides on a track that can't be mixed (a stream, Apple Music) — but a
-            // session locked to stems must still say why this track plays the full mix.
-            StemLockStatusRow(indicator: sequencer.stemLockIndicator)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
+            // session locked to stems / effects must still say why this track plays without them.
+            VStack(alignment: .leading, spacing: 4) {
+                if sequencer.stemLock.enabled { StemLockStatusRow(indicator: sequencer.stemLockIndicator) }
+                FXLockStatusRow(indicator: sequencer.fxLockIndicator)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
         }
     }
 
@@ -114,6 +120,15 @@ struct NowPlayingMixPanel: View {
                     if sequencer.stemLock.enabled {
                         Image(systemName: "lock.fill").font(.caption2)
                             .accessibilityLabel("Stem Lock on")
+                    }
+                    if sequencer.fxLock.enabled {
+                        HStack(spacing: 1) {
+                            Image(systemName: "lock.fill")
+                            Text("FX")
+                        }
+                        .font(.caption2)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("FX Lock on")
                     }
                     Spacer(minLength: 4)
                 }
@@ -184,7 +199,25 @@ struct NowPlayingMixPanel: View {
 
     private var effectsGrid: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Effects").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+            // FX LOCK mirrors the Stem Lock's placement in the Stems header: on the header line
+            // itself (no new row), on the RIGHT — "Effects", then the status text, then the lock
+            // (the Effects group has no On/Off toggle, so the lock is the trailing item, where the
+            // Stems header's lock + On/Off sit). The capsule's vertical padding is absorbed so the
+            // line keeps the label's height.
+            HStack {
+                Text("Effects").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+                Spacer(minLength: 4)
+                // The lock carries effects this track can't take yet (an Apple Music row whose
+                // local copy is ready — a control touch moves it, Q1): say so on the same line,
+                // where the Stems header shows its pending badge.
+                if sequencer.fxLockIndicator == .waiting {
+                    Text(available ? "FX Lock · tap a control to apply" : "FX Lock · waiting for the local copy")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                        .lineLimit(1).minimumScaleFactor(0.75)
+                        .accessibilityIdentifier("np-fx-lock-waiting")
+                }
+                fxLockButton
+            }
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                 ForEach(MixEngine.Effect.allCases) { effect in
                     EffectButton(effect: effect,
@@ -246,6 +279,31 @@ struct NowPlayingMixPanel: View {
 }
 
 extension NowPlayingMixPanel {
+    /// FX LOCK — carry this track's effects (each one's on/off + strength) to every following
+    /// track of the session; tempo / pitch / gain still reset. Session state, not a mix control:
+    /// it doesn't engage the DSP by itself. Same glyph + capsule as the Stem Lock.
+    fileprivate var fxLockButton: some View {
+        let locked = sequencer.fxLock.enabled
+        return Button {
+            sequencer.setFXLock(!locked)
+        } label: {
+            Image(systemName: locked ? "lock.fill" : "lock.open")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(locked ? Theme.accent : Theme.fgDim)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Capsule().fill(Theme.bgOverlay))
+                .overlay(Capsule().stroke(locked ? Theme.accent : Theme.border))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        // Absorb the capsule's 3 pt top/bottom padding: the header line stays the label's height.
+        .padding(.vertical, -3)
+        .accessibilityLabel("FX Lock")
+        .accessibilityValue(locked ? "On" : "Off")
+        .accessibilityHint("Keeps these effects for the next tracks")
+        .accessibilityIdentifier("np-mix-fx-lock")
+    }
+
     /// STEM LOCK — carry this track's stem set (on/off + which parts) to every following track
     /// of the session. Session state, not a mix control: it doesn't engage the DSP by itself.
     fileprivate var stemLockButton: some View {
@@ -377,6 +435,34 @@ struct StemLockStatusRow: View {
             .foregroundStyle(Theme.fgDim)
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier("np-stem-lock-status")
+        }
+    }
+}
+
+/// The FX Lock line for a session whose lock carries effects the CURRENT track can't take (it
+/// plays outside the DSP, or the Mix tab is live): the track plays dry, the lock carries on.
+/// Nothing for any other state — an applied / idle lock needs no words.
+struct FXLockStatusRow: View {
+    let indicator: FXLock.Indicator
+
+    private var text: String? {
+        switch indicator {
+        case .waiting: return "FX Lock · effects can't apply to this track — kept for the next"
+        case .dormant: return "FX Lock · paused while the Mix tab plays"
+        case .off, .idle, .applied: return nil
+        }
+    }
+
+    var body: some View {
+        if let text {
+            HStack(spacing: 5) {
+                Image(systemName: "lock.fill")
+                Text(text).lineLimit(1).minimumScaleFactor(0.8)
+            }
+            .font(.caption2)
+            .foregroundStyle(Theme.fgDim)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("np-fx-lock-status")
         }
     }
 }

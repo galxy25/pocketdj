@@ -244,7 +244,11 @@ final class SetlistPlayer {
     /// `AVPlayer` into `NowPlayingDSP` (the DSP owns the audio; the AVPlayer is idle, and the system
     /// Now Playing card is published on the DSP's behalf via `PlayerEngine.beginExternalNowPlaying`,
     /// so there is still exactly ONE card writer). Ephemeral — reset to false on every track change.
-    private(set) var mixEngaged = false
+    /// EVERY engage path flips it (a touch, a Stem/FX Lock track start, a growing-file start, the
+    /// Apple Music hand-off), so the FX Lock checks its carried effects reached the DSP right here.
+    private(set) var mixEngaged = false {
+        didSet { if mixEngaged, !oldValue { fxLockDidEngage() } }
+    }
 
     /// CRITIC-D — set when a DEVICE-mode run finished without EVER loading a single burned
     /// file (the whole queue was unplayable on-device). One-shot, non-optional signal the
@@ -336,7 +340,10 @@ final class SetlistPlayer {
     /// nil in unit tests that don't exercise the hand-off. The sequencer owns the AVPlayer↔DSP swap so
     /// end-advance, the durable session, and the single-owner lock-screen card stay coherent across it.
     @ObservationIgnored var dsp: NowPlayingDSP? {
-        didSet { wireStemLockHooks() }
+        didSet {
+            wireStemLockHooks()
+            stampFXLockIfIdle()            // a session restored before the seam was wired
+        }
     }
 
     /// F4 SEAM (wired at app init): reads whether a Mix-tab session (deck / Auto-DJ) is active —
@@ -670,6 +677,7 @@ final class SetlistPlayer {
         armEngineHooks()
         // STEM LOCK is per SESSION: a fresh run (new `sessionId`) starts unlocked.
         resetStemLock()
+        resetFXLock()                      // …and so is the FX LOCK
         // …and so is MIX MODE (Q4) — unless Settings says new sessions start in it.
         resetMixMode(to: mixModeSettings().defaultOn)
         // Durable session: a fresh run gets a fresh identity + an immediate snapshot, and the
@@ -882,7 +890,7 @@ final class SetlistPlayer {
             res.release?()
             return true
         }
-        guard stemLock.wantsStems || mixModeBuffering else { return false }
+        guard localLaneWanted || mixModeBuffering else { return false }
         return prefetchedCutFile?(laneAudioId(it, isCurrent: false)) != nil
     }
 
@@ -974,6 +982,7 @@ final class SetlistPlayer {
         pendingResumeMs = nil
         sessionId = ""
         resetStemLock()                    // the session is over — so is its Stem Lock
+        resetFXLock()                      // …and its FX Lock
         resetMixMode(to: false)            // …and its Mix Mode
         handOffFallback = nil
         endHandOffRunway(reason: "stop")
@@ -1453,6 +1462,15 @@ final class SetlistPlayer {
         //    real card duration (the DSP slice length) instead of a 0-length card with no scrubber.
         dsp.engage(url: np.url, startMs: np.startMs, lengthMs: it.lengthMs,
                    atSeconds: atSeconds, songId: it.id, play: false)
+        // The DSP REFUSED the file (AVAudioFile can't open it — it picks its decoder by extension;
+        // a corrupt / mislabelled burn; an empty slice): the AVPlayer keeps the track. Idling it
+        // below anyway left a "playing" card over dead air for the whole track (every FX Lock
+        // track start reaches here, not just a touch).
+        guard dsp.isEngaged, dsp.loadedSongId == it.id else {
+            NPLog.trace("setlist ENGAGE mix REFUSED by the DSP id=\(it.id) — stays on the AVPlayer")
+            DiagLog.shared.log("playback", "npmix engage refused song=\(it.id) (DSP can't open the file) — AVPlayer keeps it")
+            return
+        }
         // 2) Idle the AVPlayer + claim the card (beginExternalNowPlaying pauses it + replaces its item),
         //    now with the correct duration in hand — single card writer preserved.
         //    (The card's cursor moves at the DSP's tempo, and its scrubber drives the DSP.)
@@ -1499,6 +1517,9 @@ final class SetlistPlayer {
         mixEngaged = false
         growingUid = nil
         growingLeftStream = nil
+        // FX LOCK: everything else reset (tempo / pitch / gain / stems) — the carried effects are
+        // the control state the NEXT engage ramps in.
+        stampFXLockIfIdle()
     }
 
     /// Observe the Mix-tab session seam; when it flips ACTIVE while the Now Playing mix panel is
@@ -1625,6 +1646,7 @@ final class SetlistPlayer {
     /// The DSP's user-change + handover hooks (re-armed whenever the DSP seam is set).
     private func wireStemLockHooks() {
         dsp?.onUserStemChange = { [weak self] in self?.stemControlsChangedByUser() }
+        dsp?.onUserEffectChange = { [weak self] in self?.effectControlsChangedByUser() }
         dsp?.onStemsOnAir = { [weak self] songId in self?.stemsWentOnAir(songId) }
     }
 
@@ -1701,6 +1723,160 @@ final class SetlistPlayer {
         StemLock.log("carry song=\(it.id) \(stemLock.logSummary) local=\(local.sorted().joined(separator: ",")) → \(dsp.stemsOnAir ? "on air" : "full mix first, stems loading")")
     }
 
+    /// Every lock's track-start step, in order: the Stem Lock first (it may engage the DSP for its
+    /// stems), then the FX Lock (engages it for effects when nothing did). Called at EVERY track
+    /// start path, right after the new source was handed over (same turn).
+    private func applyLocksOnTrackStart(resumeAtMs: Int?, liveClock: Bool = false) {
+        let wasEngaged = mixEngaged
+        applyStemLockOnTrackStart(resumeAtMs: resumeAtMs, liveClock: liveClock)
+        applyFXLockOnTrackStart(resumeAtMs: resumeAtMs, liveClock: liveClock)
+        // A lock took a COMPLETE local file into the DSP at this start and it is playing: the DSP
+        // renders at once, and the AVPlayer it idled never reports first audio — close the start
+        // bookkeeping (dead-air meter, start window, stall episode) here, exactly as the Apple
+        // Music hand-off does for a complete file. A growing file reports its own first audio.
+        if !wasEngaged, mixEngaged, growingUid == nil, dsp?.isPlaying == true {
+            DeadAirMeter.shared.trackStarting(backend: "dsp-lock")
+            handleFirstAudio(source: "dsp-lock")
+        }
+    }
+
+    /// A lock wants the current/next rows on a LOCAL file (the lane's per-song cut, a whole-song
+    /// prefetch) — the DSP can only carry stems / effects on a file it owns.
+    private var localLaneWanted: Bool { stemLock.wantsStems || fxLock.wantsFX }
+
+    // MARK: - FX Lock (carry the Now Playing EFFECTS across tracks — see `FXLock`)
+
+    /// The session's FX Lock and the effects it carries. Off by default; persisted in the durable
+    /// session; cleared by a new session (`play`) and by `stop()`.
+    private(set) var fxLock = FXLockState()
+    /// True while the lock itself drives the DSP's effects (never read as a user change).
+    @ObservationIgnored private var applyingFXLock = false
+    /// The debounced snapshot write after a mid-track effect change (a strength drag fires per tick).
+    @ObservationIgnored private var fxLockPersistTask: Task<Void, Never>?
+
+    private func persistFXLockSoon() {
+        fxLockPersistTask?.cancel()
+        fxLockPersistTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled, let self, self.fxLock.enabled else { return }
+            self.fxLockPersistTask = nil
+            self.persistSession()
+        }
+    }
+
+    /// What the Now Playing surfaces show for the FX Lock on the current track.
+    var fxLockIndicator: FXLock.Indicator {
+        guard fxLock.enabled else { return .off }
+        guard fxLock.wantsFX, currentSongId != nil, !isHeldForResume else { return .idle }
+        if mixEngaged { return .applied }
+        if mixSessionActive?() == true { return .dormant }
+        return .waiting
+    }
+
+    /// Turn the session's FX Lock on/off. ON captures the CURRENT effects state as the set to
+    /// carry; OFF forgets it — later tracks reset as before (the current track keeps whatever it
+    /// is playing). No-op with no session.
+    func setFXLock(_ on: Bool) {
+        guard isRunning else { return }
+        var st = FXLockState()
+        if on {
+            st.enabled = true
+            st.effects = dsp?.effectSettings ?? [:]
+        }
+        fxLock = st
+        // Off with the DSP idle: its control state may hold a stamped carry nobody hears yet —
+        // the next engage must start neutral, exactly as unlocked.
+        if !on, !mixEngaged { dsp?.resetControls() }
+        FXLock.log("lock \(on ? "ON" : "OFF") session=\(sessionId) song=\(currentSongId ?? "-")\(on ? " carry " + st.logSummary : "")")
+        persistSession()
+        scheduleStemLockReplan()
+    }
+
+    #if DEBUG
+    /// Tests: stamp the carried FX Lock state directly (as a restore would).
+    func setFXLockForTesting(_ st: FXLockState) {
+        fxLock = st
+        stampFXLockIfIdle()
+    }
+    #endif
+
+    /// New session / stop: unlocked, nothing carried (an idle DSP drops a stamped carry).
+    private func resetFXLock() {
+        guard fxLock.enabled else { return }
+        FXLock.log("lock cleared (session ended / new session)")
+        fxLock = FXLockState()
+        if !mixEngaged { dsp?.resetControls() }
+    }
+
+    /// The DSP is idle (between engagements): its control state IS the carry, so the panel shows
+    /// it and the next engage — wherever it comes from — ramps the effects in.
+    private func stampFXLockIfIdle() {
+        guard fxLock.enabled, !mixEngaged, let dsp else { return }
+        applyingFXLock = true
+        defer { applyingFXLock = false }
+        dsp.applyCarriedEffects(fxLock.effects)
+    }
+
+    /// The listener changed an effect: that is what carries forward now.
+    private func effectControlsChangedByUser() {
+        guard fxLock.enabled, !applyingFXLock, let dsp else { return }
+        let fx = dsp.effectSettings
+        guard fx != fxLock.effects else { return }
+        let wanted = fxLock.wantsFX
+        fxLock.effects = fx
+        FXLock.log("carry updated mid-track song=\(currentSongId ?? "-") \(fxLock.logSummary)")
+        persistFXLockSoon()
+        // Only an effect switching the lock between "carries something" and "nothing" changes
+        // the lane (a strength drag fires this per tick).
+        if fxLock.wantsFX != wanted { scheduleStemLockReplan() }
+    }
+
+    /// The DSP just took a track over (any path — see `mixEngaged`). The idle stamp normally means
+    /// the engage already ramped the carried effects in; if anything moved the control state in
+    /// between, the carry wins (ramped).
+    private func fxLockDidEngage() {
+        guard fxLock.enabled, let dsp else { return }
+        if dsp.effectSettings != fxLock.effects {
+            applyingFXLock = true
+            dsp.applyCarriedEffects(fxLock.effects)
+            applyingFXLock = false
+        }
+        if fxLock.wantsFX, isRunning, index < queue.count {
+            FXLock.log("applied song=\(queue[index].id) \(fxLock.logSummary) (DSP owns the track, ramp \(Int(NowPlayingDSP.fxRampSeconds * 1000))ms)")
+        }
+    }
+
+    /// A NEW track just started (same turn as the source hand-over — see `applyLocksOnTrackStart`).
+    /// Locked with at least one effect ON: a mixable row (local file / growing file) is handed to
+    /// the DSP at once — the carried effects ramp in from its first second (the point of the lock;
+    /// unlocked tracks keep F4's swap-on-touch). A row the DSP can't own (Apple Music — which only
+    /// ever moves on a control TOUCH, Levi's Q1 — a plain stream, a live capture) plays dry under
+    /// the "waiting" indicator and the lock carries on; a live Mix-tab session leaves it dormant.
+    private func applyFXLockOnTrackStart(resumeAtMs: Int?, liveClock: Bool = false) {
+        guard fxLock.enabled, isRunning, index < queue.count else { return }
+        let it = queue[index]
+        guard fxLock.wantsFX else {
+            FXLock.log("carry song=\(it.id) fx=none → dry")
+            return
+        }
+        if mixEngaged {
+            FXLock.log("carry song=\(it.id) \(fxLock.logSummary) → on the DSP (engaged at start)")
+            return
+        }
+        if mixSessionActive?() == true {
+            FXLock.log("carry song=\(it.id) \(fxLock.logSummary) → DORMANT (Mix tab live) — dry, lock kept")
+            return
+        }
+        guard dsp != nil, currentTrackMixable, coordinator.activeBackend != .appleMusic else {
+            let why = coordinator.activeBackend == .appleMusic ? "Apple Music" : (player.isLive ? "live capture" : "not a local file")
+            FXLock.log("carry song=\(it.id) \(fxLock.logSummary) → WAITING (\(why)) — dry, lock kept")
+            return
+        }
+        engageMix(atSeconds: liveClock ? nil : (resumeAtMs.map { Double($0) / 1000 } ?? 0),
+                  play: !player.pausedByListener)
+        FXLock.log("carry song=\(it.id) \(fxLock.logSummary) → \(mixEngaged ? "engaged at start" : "WAITING (DSP refused the file) — dry, lock kept")")
+    }
+
     /// A prefetch step finished: a stem part of the PLAYING track joins its partial set, and the
     /// playing track's whole song landing hands a presigned stream over to the local file
     /// (Mix Mode, np-mix-mode §4.2).
@@ -1719,7 +1895,7 @@ final class SetlistPlayer {
 
     /// Coalesce re-plans (a queue edit + a track start in one turn plan once).
     private func scheduleStemLockReplan() {
-        guard let pf = prefetcher, stemLock.enabled || mixMode.enabled || !pf.isIdle,
+        guard let pf = prefetcher, stemLock.enabled || fxLock.enabled || mixMode.enabled || !pf.isIdle,
               !stemLockReplanQueued else { return }
         stemLockReplanQueued = true
         Task { @MainActor [weak self] in
@@ -1746,7 +1922,7 @@ final class SetlistPlayer {
         guard let pf = prefetcher else { return }
         prefetchRevision &+= 1
         let buffering = mixModeBuffering
-        guard stemLock.wantsStems || buffering, isRunning, !isHeldForResume, index < queue.count else {
+        guard stemLock.wantsStems || fxLock.wantsFX || buffering, isRunning, !isHeldForResume, index < queue.count else {
             pf.cancelAll(); return
         }
         let cfg = mixModeSettings()
@@ -1768,7 +1944,7 @@ final class SetlistPlayer {
             mixMode: buffering ? mixMode : NPMixModeState(), network: pf.network(),
             window: cfg.ahead, stemLockWindow: Self.prefetchAhead, cellular: cfg.cellular,
             currentStemsPartial: partial, currentStemsWanted: mixEngaged && (dsp?.stemMode ?? false),
-            isCatalogOwner: coordinator.isCatalogOwner())
+            isCatalogOwner: coordinator.isCatalogOwner(), fxLockSongs: fxLock.wantsFX)
         let plan = NowPlayingPrefetcher.plan(input)
         if buffering {
             let line = "plan net=\(input.network.rawValue) song=\(cur.id) " + (plan.steps.isEmpty ? "(nothing to fetch)" : plan.steps.map(\.description).joined(separator: " → "))
@@ -2065,9 +2241,9 @@ final class SetlistPlayer {
         handOffCount &+= 1
         NPMixMode.log("handoff song=\(it.id) stream → local at=\(songRelMs)ms start=\(target.startMs ?? 0) paused=\(paused ? 1 : 0) reason=\(reason)")
         prefetchRevision &+= 1
-        if stemLock.wantsStems {
-            // The lock carries stems: engage the DSP at the same position, as at a track start.
-            applyStemLockOnTrackStart(resumeAtMs: songRelMs)
+        if stemLock.wantsStems || fxLock.wantsFX {
+            // A lock carries stems / effects: engage the DSP at the same position, as at a track start.
+            applyLocksOnTrackStart(resumeAtMs: songRelMs)
         } else {
             scheduleStemLockReplan()     // the current row is local now: its stems come next
         }
@@ -2727,6 +2903,9 @@ final class SetlistPlayer {
                       atMs: atMs, deferPlayUntilSeeked: true)
         ownNowPlayingStamp = (np.url, it.id)
         if !wasPlaying { player.pause() }
+        // The locks re-take the track on the FRESH graph at the same position (a reset must not
+        // silently drop the carried stems / effects for the rest of the song).
+        applyLocksOnTrackStart(resumeAtMs: atMs)
     }
 
     // MARK: - Internals
@@ -2853,7 +3032,7 @@ final class SetlistPlayer {
         }
         // The row's own play started the audio a hop ago: the lock takes it over from wherever
         // the AVPlayer's clock is now.
-        applyStemLockOnTrackStart(resumeAtMs: nil, liveClock: true)
+        applyLocksOnTrackStart(resumeAtMs: nil, liveClock: true)
     }
 
     /// Hand the system Now Playing card to the Apple Music stream for `it` — the shared tail
@@ -3301,7 +3480,7 @@ final class SetlistPlayer {
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
                           endBoundaryMs: nil, atMs: resumeAtMs, release: res.release)
-            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+            applyLocksOnTrackStart(resumeAtMs: resumeAtMs)
             startedLocal("studio")
             return
         }
@@ -3321,7 +3500,7 @@ final class SetlistPlayer {
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
                           endBoundaryMs: nil, atMs: resumeAtMs, release: res.release)
-            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+            applyLocksOnTrackStart(resumeAtMs: resumeAtMs)
             startedLocal("profile")
             return
         }
@@ -3357,7 +3536,7 @@ final class SetlistPlayer {
                               startMs: start, rips: rips, player: player,
                               endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
                               atMs: resumeAtMs, release: res.release)
-                applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+                applyLocksOnTrackStart(resumeAtMs: resumeAtMs)
                 startedLocal("burned")
                 // Finite local file → the end notification (or length boundary) advances us.
             } else {
@@ -3387,9 +3566,9 @@ final class SetlistPlayer {
                           startMs: start, rips: rips, player: player,
                           endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
                           atMs: resumeAtMs, release: res.release)
-            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+            applyLocksOnTrackStart(resumeAtMs: resumeAtMs)
             startedLocal("burned")
-        } else if stemLock.wantsStems, let url = prefetchedCutFile?(playedResolveId(it)) {
+        } else if localLaneWanted, let url = prefetchedCutFile?(playedResolveId(it)) {
             // STEM LOCK: the prefetch finished this song as a per-song CUT stream (an analog cut
             // isn't adopted into the burn ledger) — play that local file, so the carried stems
             // can take it over, instead of streaming the same bytes again.
@@ -3398,12 +3577,12 @@ final class SetlistPlayer {
             playLocalFile(url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
                           endBoundaryMs: nil, atMs: resumeAtMs)
-            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+            applyLocksOnTrackStart(resumeAtMs: resumeAtMs)
             startedLocal("stemcut")
         } else if startOnGrowingFile(it, gen: playGen, resumeAtMs: resumeAtMs, startPaused: growingPausedStart) {
             // MIX MODE (phase 3): the row plays in the DSP from its growing buffer file. The Stem
             // Lock takes it over on the full song, as at any track start.
-            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+            applyLocksOnTrackStart(resumeAtMs: resumeAtMs)
         } else {
             // SILENCE THE OUTGOING TRACK FIRST. Resolving a cloud row is an async round-trip
             // (an Apple Music lookup, or a rip that may still be queued), and until it lands
@@ -3467,7 +3646,7 @@ final class SetlistPlayer {
             // Auto-advance rides `coordinator.appleMusic.onTrackEnded` (wired in play()) either way.
             if coordinator.activeBackend == .appleMusic {
                 handOffCardToAppleMusic(for: it)
-                applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)   // (unavailable: not a local file)
+                applyLocksOnTrackStart(resumeAtMs: resumeAtMs)   // (unavailable: not a local file)
                 // The start window stays open until MusicKit REPORTS playing (`onFirstAudio`) or
                 // its cap; the provider's never-started verdict owns a dead AM start.
                 if coordinator.appleMusic.audioConfirmed {
@@ -3478,7 +3657,7 @@ final class SetlistPlayer {
                 logTrackStart(it, backend: "appleMusic", resumeAtMs: resumeAtMs)
                 return
             }
-            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)       // a stream: full mix, lock kept
+            applyLocksOnTrackStart(resumeAtMs: resumeAtMs)       // a stream: full mix, lock kept
             startedLocal(player.isLive ? "hls" : "presigned")
             // MIX MODE: a presigned rip stream may hand off to its local copy — the file may have
             // landed WHILE this resolve was in flight (a hand-off is refused then), so check
@@ -3571,6 +3750,11 @@ final class SetlistPlayer {
         // first ▶ (`resumeFromHold` → `playCurrent`) re-applies it to the resumed track.
         stemLock = snap.stemLock ?? StemLockState()
         stemLockUnavailableSongId = nil
+        // The FX Lock too: its carried effects become the (idle) DSP's control state now, so the
+        // panel shows them and the first ▶'s engage ramps them in.
+        fxLock = snap.fxLock ?? FXLockState()
+        if !mixEngaged { dsp?.resetControls() }
+        stampFXLockIfIdle()
         // Mix Mode rides it too — HELD like everything else: no buffering until the first ▶
         // (`resumeFromHold` → `playCurrent` → the track-start re-plan).
         mixMode = Self.mixModeSupported ? (snap.npMixMode ?? NPMixModeState()) : NPMixModeState()
@@ -3760,6 +3944,7 @@ final class SetlistPlayer {
             shuffleEnabled: shuffleEnabled,
             stemLock: stemLock.enabled ? stemLock : nil,
             npMixMode: mixMode.enabled ? mixMode : nil,
+            fxLock: fxLock.enabled ? fxLock : nil,
             updatedAt: Date().timeIntervalSince1970 * 1000)
         sessionStore.save(snap)
     }

@@ -334,6 +334,23 @@ the current playback SESSION (`SetlistPlayer.stemLock`, model in
 - **Surfaces.** CarPlay / lock screen / widgets show the DSP's card as for any engaged track (one
   card writer). tvOS gets the same lock button (its Now Playing tab reuses `NowPlayingPanel` whole).
 
+### FX Lock — carrying the effects across tracks (Now Playing only)
+
+The 🔒 in the panel's Effects header (`np-mix-fx-lock`, upper right of the header line — placed like the Stem Lock in the Stems header) turns on **FX Lock**
+for the session (`SetlistPlayer.fxLock`, `apple/PocketDJ/Playback/FXLock.swift`; full write-up in
+`np-mix-mode.md` §10). **No topology change**; it changes PARAMETER SCHEDULING at an engage:
+
+- The carried effects (each effect's on/off + strength) are stamped as the IDLE DSP's control state
+  after every `endMixEngagement` (tempo / pitch / gain / stems reset as before), and every engage
+  (`engage` / `engageStreaming`) RAMPS the ON effects in: the applied strength is `strength × k`, k
+  0 → 1 in 12 main-actor steps over `NowPlayingDSP.fxRampSeconds` (250 ms). At k = 0 every effect is
+  transparent (reverb / flanger wet 0, comp threshold 0 dB + makeup 0, LP cutoff ≈ 18 kHz), so the
+  node can be un-bypassed at the first sample with no click. A user touch on an effect lands it at
+  once; `disengage` / `resetControls` cancel the ramp (landing every effect at its set value).
+- With an effect ON, a mixable track ENGAGES AT ITS START (like the Stem Lock), on every start path
+  (and after a media-services reset's hand-back); Apple Music / plain streams / a live Mix tab leave
+  it dry (indicator `.waiting` / `.dormant`) and the lock carries on.
+
 ## Now Playing Mix Mode (`docs/design/np-mix-mode.md`)
 
 Phases 1–3 are BUILT (no graph change — phase 3 changed SCHEDULING only); phases 4–5 below are

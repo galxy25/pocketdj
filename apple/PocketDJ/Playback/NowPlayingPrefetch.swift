@@ -29,6 +29,10 @@ struct NowPlayingPrefetchInput: Equatable {
     /// Apple-Music-only row (`Plan.rips`) or to separate stems (`Plan.stemify` for Mix Mode). A
     /// hybrid / public install never enqueues server work (integrity audit; App Store 5.2.3).
     var isCatalogOwner: Bool = false
+    /// FX LOCK carrying an effect that is on (`FXLockState.wantsFX`): the next tracks' WHOLE SONGS
+    /// are made local within the lock window, so each boundary plays a file the DSP can take
+    /// over at its start (effects need the DSP). Songs only — no stems for the FX Lock.
+    var fxLockSongs: Bool = false
 }
 
 /// The Now Playing download lane (np-mix-mode §2): ONE fetch at a time, in plan order, so the
@@ -151,6 +155,15 @@ final class NowPlayingPrefetcher {
         return plan
     }
 
+    /// The FX Lock's whole-song steps: each upcoming row in reach whose audio isn't local but can
+    /// be fetched (Wi-Fi: the window; cellular / Low Data: the next track; offline: none).
+    static func fxLockSongSteps(upcoming: [Track], network: Network, window: Int) -> [Step] {
+        guard network != .offline else { return [] }
+        let reach = network == .unmetered ? max(0, window) : min(1, max(0, window))
+        return upcoming.prefix(reach).filter { !$0.songLocal && $0.songFetchable }
+            .map { .song(id: $0.audioId, title: $0.title, artist: $0.artist) }
+    }
+
     /// How far Mix Mode reaches on `network` (rows past the current one) and which stems it
     /// fetches there (np-mix-mode §2.3). nil ⇒ Mix Mode adds nothing on this network.
     enum StemPolicy: Equatable {
@@ -190,9 +203,16 @@ final class NowPlayingPrefetcher {
     /// the lock still gets its next song + enabled stems), and the lock's stemify request rides.
     /// A row whose audio can't be made local is skipped whole (its stems could never play).
     static func plan(_ i: NowPlayingPrefetchInput) -> Plan {
-        let lock = plan(current: i.currentStemsPartial ? i.current : nil,
+        var lock = plan(current: i.currentStemsPartial ? i.current : nil,
                         upcoming: Array(i.upcoming.prefix(max(0, i.stemLockWindow))),
                         carry: i.stemLock, network: i.network, window: i.stemLockWindow)
+        if i.fxLockSongs {
+            // FX Lock: the window's songs (the Stem Lock reach — Wi-Fi the window, cellular / Low
+            // Data the next track), after anything the Stem Lock already planned.
+            for s in fxLockSongSteps(upcoming: Array(i.upcoming.prefix(max(0, i.stemLockWindow))),
+                                     network: i.network, window: i.stemLockWindow)
+            where !lock.steps.contains(s) { lock.steps.append(s) }
+        }
         guard i.mixMode.enabled, let reach = mixReach(network: i.network, cellular: i.cellular, window: i.window)
         else { return lock }
         var steps: [Step] = []

@@ -3,7 +3,7 @@ merged as 6caf7005; phase 3 merged as d3d8ff86; phase 4 2026-11-02, not merged �
 design only). Levi's defaults applied: Q2 engage on touch (the
 Stem Lock still engages at start), Q3 fixed 48 h, Q4 per session + an off-by-default "Start new
 sessions in Mix Mode", Q5 yes (Stem Lock prefetch is temporary), Q6 2 GB cap, Q8 no reordering, Q9
-no tempo/FX carry, Q10 no tvOS, Q11 Keep option offered.
+no tempo/FX carry (EFFECTS revised by §10 — FX Lock), Q10 no tvOS, Q11 Keep option offered.
 Phase-1 notes vs. this design: (a) `AssetOrigin` gained `.incidental` (the
 Now Playing stems toggle: no pin, no hold — legacy permanent); (b) a hold's expiry moves LATER when
 another asset of the same song lands (never earlier); (c) holds carry ledger byte credits so cap
@@ -807,3 +807,68 @@ locked phone, CarPlay card after the hand-off) is owed.
   more than 30 s after the first (pre-existing for phase 3); on macOS `serverIsThisHost` answers
   false when the `/health` probe fails, so a rip-server Mac with a flaky probe can still send a Mix
   Mode rip (fail-open, same as the passive rip).
+
+## 10. FX Lock (2026-11-02, `feat/np-fx-lock`)
+
+Levi: "add effect lock like we have stem lock so if i set an effect for one song it will keep
+applied". The Stem Lock's sibling, mirroring its architecture (`Playback/FXLock.swift`,
+`SetlistPlayer` "FX Lock"). It revises Q9 for EFFECTS only: tempo, pitch and gain still reset per
+track, locked or not.
+
+- **UI.** The 🔒 capsule (`np-mix-fx-lock`, label "FX Lock", the Stem Lock's glyph + style) sits
+  on the "Effects" header line in the SAME relative place the Stem Lock holds in the Stems header
+  (Levi, review pass): upper RIGHT — `Effects · Spacer · [status] · 🔒`, as the Stems header is
+  `Stems · Spacer · [pending badge] · 🔒 · On/Off` (the Effects group has no On/Off, so its lock is
+  the trailing item). No new row; the capsule's 3 pt vertical padding is absorbed
+  (`.padding(.vertical, -3)`) so the line keeps the label's height. The panel header shows "🔒FX" while locked. The stems section is untouched.
+- **What carries.** Every effect the Effects group offers (comp / reverb / flanger / filter): its
+  on/off and its strength (the knob driving its wet/dry and parameters) — `FXLockState.effects`,
+  only effects moved off neutral. Captured from USER effect actions only
+  (`NowPlayingDSP.onUserEffectChange`, fired by `setEffect` / `setEffectStrength`); ON snapshots the
+  current state, a mid-track change is what carries, OFF forgets it (the current track keeps what it
+  plays; the next resets as before). A lock carrying nothing that is ON changes nothing (`wantsFX`).
+- **Where it lives between tracks.** The idle DSP's CONTROL STATE is the carry: every
+  `endMixEngagement` resets all controls and re-stamps the carried effects
+  (`NowPlayingDSP.applyCarriedEffects`, no notify), as do a restore and the DSP seam's wiring. So the
+  panel always shows what will apply, and EVERY engage — whichever path — brings them up:
+  `NowPlayingDSP.engage` / `engageStreaming` ramp the ON effects in from transparent
+  (`applyEffectsAtEngage` → `rampInEffects`: strength × 0→1 in 12 main-actor steps over
+  `fxRampSeconds` = 250 ms; wet 0 / threshold 0 dB / cutoff ≈ 18 kHz are transparent) — no pop at a
+  boundary. A user touch on an effect mid-ramp lands it at once and leaves the ramp.
+  `SetlistPlayer.mixEngaged`'s didSet re-checks the carry reached the DSP on every engage.
+- **Engage at start.** With `wantsFX`, a mixable row (a local file, a stem cut, a Mix Mode growing
+  file) is handed to the DSP at its start (`applyFXLockOnTrackStart`, after the Stem Lock's step in
+  `applyLocksOnTrackStart`) — the point of the lock. Unlocked rows keep Q2's swap-on-touch. Every
+  start path calls it: local / studio / profile / burned / stem cut, the phase-3 growing-file start,
+  a resolved stream (dry → "waiting"), Apple Music (dry → "waiting"), an adopted row ▶ (live
+  clock), the phase-2 swap-on-land (`handOffCurrentToLocal` engages when a lock wants stems OR
+  effects), and the media-services reset's hand-back (both locks now re-take the track on the fresh
+  graph at the same position — before, a reset dropped the Stem Lock's stems for the rest of the
+  song too). The phase-4 Apple Music touch hand-off needs no call: its engage ramps the stamp in.
+  A lock engage of a complete, playing file closes the start bookkeeping itself (dead-air meter,
+  start window, stall episode — `handleFirstAudio("dsp-lock")`, the AM hand-off's precedent): the
+  AVPlayer it idled never reports first audio (this was also true of the Stem Lock's start engage).
+- **Dormant / waiting, honestly.** `fxLockIndicator`: `.off`, `.idle` (nothing ON / held),
+  `.applied` (the DSP owns the track), `.waiting` (Apple Music — which never moves on its own, Q1 —
+  a plain stream, a live capture: dry, lock kept; "FX Lock · effects can't apply to this track —
+  kept for the next" in the panel's place, or "FX Lock · tap a control to apply" on the Effects
+  line when an AM row's local copy is ready), `.dormant` (a Mix-tab session is live: "FX Lock ·
+  paused while the Mix tab plays"; no engage at starts; nothing re-engages when the Mix tab stops
+  mid-track — the next start / touch does).
+- **Downloads.** With `wantsFX` the lane fetches the next tracks' WHOLE SONGS (no stems) in the
+  Stem Lock window (`NowPlayingPrefetchInput.fxLockSongs` → `fxLockSongSteps`: Wi-Fi the window,
+  cellular / Low Data the next track, offline none), so each boundary is a file the DSP can take;
+  a finished per-song cut is played locally under it (`localLaneWanted`). Lock off → nothing.
+- **Session scope + persistence.** `PlaybackSessionStore.Snapshot.fxLock` (optional, no schema
+  bump; `FXLockState` decodes missing keys as defaults and keeps unknown effect keys). Cleared by a
+  fresh `play` and by `stop()` (an idle DSP drops the stamp). Mid-track changes persist debounced
+  (400 ms) — a strength drag fires per tick.
+- **DiagLog** `[fxlock]`: lock on/off + carry, per-track `carry song=… → engaged at start /
+  on the DSP / WAITING (Apple Music | not a local file | live capture | DSP refused the file) /
+  DORMANT (Mix tab live)`, `applied song=… (DSP owns the track, ramp 250ms)`, `carry updated
+  mid-track`.
+- **Lock screen / CarPlay** are unaffected beyond the DSP card an engaged track always publishes.
+- **Tests:** `FXLockTests` (model + plan; carry, ramp, tempo/pitch/gain reset, mid-track update +
+  ramp override, unlock + nothing-on, persistence/restore/new session/stop, Stem + FX together,
+  media reset) and `NPMixGrowingFileTests` "FX Lock" (growing-file start, Apple Music waiting →
+  touch hand-off, Mix-tab dormancy, swap-on-land).
