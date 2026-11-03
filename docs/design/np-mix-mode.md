@@ -1,5 +1,6 @@
-Status: PHASES 1–3 IMPLEMENTED on `feat/np-mix-mode` (phase 1 merged 2026-11-02 as 22025b40; phase 2
-merged as 6caf7005; phase 3 2026-11-02, not merged — §9.2; phases 4–5 are design only). Levi's defaults applied: Q2 engage on touch (the
+Status: PHASES 1–4 IMPLEMENTED on `feat/np-mix-mode` (phase 1 merged 2026-11-02 as 22025b40; phase 2
+merged as 6caf7005; phase 3 merged as d3d8ff86; phase 4 2026-11-02, not merged — §9.3; phase 5 is
+design only). Levi's defaults applied: Q2 engage on touch (the
 Stem Lock still engages at start), Q3 fixed 48 h, Q4 per session + an off-by-default "Start new
 sessions in Mix Mode", Q5 yes (Stem Lock prefetch is temporary), Q6 2 GB cap, Q8 no reordering, Q9
 no tempo/FX carry, Q10 no tvOS, Q11 Keep option offered.
@@ -369,12 +370,27 @@ func sweepTemporary(now: Double = Date().timeIntervalSince1970 * 1000,
 
 ### 3.6 Interaction with the rest
 
-- **User-picked burn folders (review, 2026-11-02):** a picked folder can be shared between
-  devices (iCloud Drive, an external drive), while the ledger is per device: another device's
-  explicit Download reuses a same-named file, so a hold there would let this device's sweep delete
-  it. Buffer assets written to a user-picked folder are therefore pinned at creation; only the
-  app's own storage carries holds. Likewise a file already at the adoption name with no ledger row
-  (a lost ledger, an orphan) never becomes temporary.
+- **User-picked burn folders (Levi, 2026-11-02 — reverses the phase-1 review's "pinned at
+  creation"):** by default the buffer lane tracks exactly what IT created in a picked folder, like
+  app storage: the hold records the folder (`userFolderPath`) and each file's identity
+  (`userFolderFiles`: name → modification time at creation), and the sweep deletes those files on
+  expiry. A picked folder may be shared with another device (iCloud Drive, an external drive) —
+  "it's up to the user to know it is shared"; the Storage footer says so. Still never deleted: a
+  file we didn't create (a file already at the adoption name with no ledger row — a lost ledger,
+  an orphan — or a stem part already on disk never becomes temporary: the `adoptStreamedFile` /
+  `burnStemPart` guards), a file REWRITTEN since we wrote it (identity mismatch ⇒ released, kept),
+  anything in a different folder than the one it was written to (folder switch ⇒ released), and
+  anything pinned by an explicit action on THIS device (`pin`). Settings ▸ Storage ▸ Mix Mode
+  buffer ▸ **"Keep buffered files in shared/picked folders"** (`npMixKeepPickedFolderBuffers`,
+  nil ⇒ off) restores the old rule: buffer assets in a picked folder are pinned at creation.
+  Review fixes (2026-11-02): an EVICTED iCloud copy (only its `.<name>.icloud` placeholder is on
+  this device — `fileExists` says no) counts as pre-existing: written over, never held; an
+  EXPLICIT action that reuses an existing picked-folder file as-is (an explicit stems download
+  returns existing parts) bumps its modification time past the ± 2 s tolerance, so another
+  device's hold on that shared file reads it as rewritten and releases it; a picked-folder file
+  whose identity can't be read at creation is pinned, and a hold that records identities but not
+  this file's releases it (a hold with no identities at all — written by a phase-1 build — keeps
+  the path-only rule).
 - **Sync:** the burn ledger is per device and is not cloud-synced, so holds are per device too. The
   playback-session snapshot IS synced; it carries only the Mix Mode flag (§4.6). Another device that
   restores the session starts its own buffer on its first ▶.
@@ -675,7 +691,7 @@ removes that); the TV ignores the flag.
 | DSP growing file | `NowPlayingDSP.engageStreaming` / `pumpMain` / `holdMain` / `appendMain` / `finishMainStream` / `handleMainStreamFailure` / `seek(toSongSeconds:)` | Never scheduled past the frontier; start / underrun / seek without runway HOLD (`isBuffering`, engine kept running, playhead frozen, intent kept); resume with runway at the held point; appends from fresh opens; only a segment reaching the window's END arms the end; complete ⇒ the adopted burn under its scope (`onMainStreamFinished`); dead ⇒ `mainTruncated` (stems keep carrying, `.toFullMix` dropped; a full song plays to its last frame, then `onMainStreamFailed`). `requireRunway` probe refuses touching nothing. A file AVAudioFile can't decode by its EXTENSION is refused. `onFirstAudio` once per engage. |
 | Growing START | `SetlistPlayer.startOnGrowingFile` (cloud branch of `playCurrent`, after burned / stem-cut) | Eligible: `mixModeBuffering` (on, Mix tab idle, not device mode), a DSP, ripped, not Apple-Music-first, not an Apple Music catalog id, not an analog song WITHOUT a cut (its side streams from byte 0), not refused this play, and — for a restore-resume deeper than `growingDeepResumeMs` (15 s) — only when the buffer already covers it. Opens / joins the buffer stream (`openBufferStream` → `MixStreamLoader.open(…, origin: .buffer)`; an explicit pending Download refuses it ⇒ plain). The DSP opens paused, `beginExternalNowPlaying` idles the AVPlayer and claims the card (one writer: position / tempo / play / pause / SCRUB / the honest "stalled" state), then the DSP starts (or holds). `rips.nowPlaying` = the buffer file, same songId (one history play, our own stamp — never a jump). The Stem Lock applies as at any start. Start window + the START WATCHDOG (owed while the DSP awaits first audio) are the backstop: no audio by `startStallEscalateSeconds` ⇒ hop / advance. |
 | Touch hand-off | `SetlistPlayer.engageGrowingFromStream` (from `engageMix`) | A row on its PRESIGNED stream (Mix Mode turned on mid-song): `currentTrackMixable` is true once the buffer's estimated reach covers the playhead + 4 s (`growingTouchCovers`, re-rendered by `noteBufferStreamProgress`); the first control TOUCH moves it onto the growing file at the same song position. Phase-2 rules: refused across an open interruption / a pending start / a resolve; paused (listener pause or no play intent) stays paused; the DSP probes first. |
-| Fallbacks | `SetlistPlayer.growingFallBack` | A dead buffer stream (once its audio ran out) or a MID-SONG hold > `growingHoldFallbackSeconds` (20 s): leave the DSP and put the row on its plain stream at the same position — the presigned stream a touch hand-off left, else a fresh resolve (refused for the growing path for this row's play). No advance, no generation claimed. |
+| Fallbacks | `SetlistPlayer.growingFallBack` | A dead buffer stream (once its audio ran out) or a MID-SONG hold > `growingHoldFallbackSeconds` (5 s since 2026-11-02; was 20 s — an underrun or a scrub far past the frontier; a START hold keeps the start watchdog's budget): leave the DSP and put the row on its plain stream at the same position — the presigned stream a touch hand-off left, else a fresh resolve (refused for the growing path for this row's play). No advance, no generation claimed. |
 | Ownership | `publishDSPCard`, `PlayerEngine.beginExternalNowPlaying(seek:stalled:)`, `PlayerEngine.seek` | External sources may now scrub (`seek`) and report buffering (`stalled` ⇒ cursor frozen, ⏸ glyph). The F4 complete-file engagement uses the same card (its scrub used to do nothing). Apple Music impersonation passes no `seek`, so a card scrub there is now a no-op (it used to jump the card's clock for a second). |
 | Durable / reset / Mix tab | `resumeFromHold` → `playCurrent`; `handleMediaServicesReset`; `observeMixSessionForEngagement` | A restore resumes on the growing file at the saved position (held until ▶ — no stream opened before). A media-services reset while growing re-enters the row on the fresh graph at the same position (a partial can't go to the AVPlayer; paused stays paused). A live Mix tab tears the engagement down (F4) and suspends growing starts. |
 | UI | `NPMixMode.Indicator.holding` | Engaged + holding ⇒ chip "Buffering n%" with controls LIVE. `.buffering` (controls disabled) remains only for a presigned row whose buffer is still behind the playhead. |
@@ -685,7 +701,7 @@ Deviations from the phase-3 plan: (a) the mid-song presigned → growing move is
 than automatic — no cut nobody asked for; the phase-2 swap-on-land (AVPlayer → complete local file)
 still runs when the buffer completes untouched; (b) a dead Now Playing stream does NOT truncate the
 song and end it there (the Mix deck's rule) — it plays what arrived, then the row goes back to its
-plain stream (no audio lost, no skipped tail); (c) a mid-song hold has its own 20 s fallback (the
+plain stream (no audio lost, no skipped tail); (c) a mid-song hold has its own 5 s fallback (20 s until 2026-11-02) (the
 supervisor never acts while the DSP owns the audio); (d) deep restore-resumes and analog side-only
 songs start plain (dead-air rule); (e) the "Buffering…" of a holding DSP is a new indicator case
 (`.holding`) because its controls stay live.
@@ -701,9 +717,93 @@ start lead at the current tempo (a closer frontier faked the song's end at 2×).
 
 Known limits (phase 3): the growing path trusts the LAME/Xing full-length header and the
 Content-Length (shared with the Mix deck — a headerless file plays only once complete); a scrub far
-past the frontier holds until the bytes get there (≤ 20 s, then the plain stream at the target); an analog
+past the frontier holds until the bytes get there (≤ 5 s, then the plain stream at the target); an analog
 stream that flips from its cut to the side fallback after the start keeps the cut-time `startMs` on
 `rips.nowPlaying` until completion re-stamps it (the DSP itself attaches with the final geometry);
 the buffer stream keeps downloading after a fallback / skip (every stream completes — it adopts as a
 temporary burn); device verification (locked phone holding a start, CarPlay card during a hold,
 DeadAirMeter on growing starts) is still owed.
+
+## 9.3 Phase 4 as built (2026-11-02) — Apple Music rows
+
+Levi's decisions: **Q1** = an Apple-Music-streaming current track hands off to its local copy on
+the FIRST CONTROL TOUCH (otherwise it finishes on Apple Music); **Q7** = rip ahead the next 2
+Apple-Music-only rows, OWNER ONLY; public users see "Apple Music only" (App Store 5.2.3 line —
+never a rip for a non-owner).
+
+| Piece | Where | Notes |
+|---|---|---|
+| Rip ahead (step 0) | `NowPlayingPrefetcher.plan(_:)` → `Plan.rips`; `apply` → `requestRip`; `NowPlayingPrefetcher.live` → `requestOwnerPlaybackRip` | Owner only (planner `isCatalogOwner` AND the live seam re-checks `isCatalogOwner()`). The first `ripAhead` (2) Apple-Music-only, non-local upcoming rows within `max(window, 2)` rows — never the playing row (the passive rip already covers an AM start). Fire-and-forget, deduped per song id for `ripRetrySeconds` (10 min). Production: deferred entirely on the rip server's own Mac (`serverIsThisHost` — the 10-14 cascade: a capture drives Music.app and interrupts our AM stream), else `requestRipIfNeeded(playback: true)` — the rip-ahead window gate, tracked by the session and cancelled once out of the window. A landing (`RipsStore.onRipReady` → `SetlistPlayer.noteRipLanded`) re-plans so its song + stems buffer. |
+| Mix Mode stemify | `plan(_:)` → `Plan.stemify` | Owner only: the current + window rows whose audio is (or can be made) local with no stems anywhere; deduped per song id (`stemifyRequested`; the cloud fleet dedups by song id too). |
+| Prefer local | `PlaybackCoordinator.providers(for:preferLocalAudio:)`, `play(…preferLocalAudio:)`, `streamsAppleMusicFirst(…preferLocalAudio:)`; `RipServerPlaybackProvider.startsWithoutRoundTrip` | Mix Mode buffering ⇒ an AM-sourced row that is ripped AND whose presigned URL is already in hand (`RipsStore.prefetchedURL`) plays from the rip, Apple Music right behind it as the fallback. Ripped-but-no-presign, un-ripped, `am:` catalog ids: Apple Music first (no dead-air regression). The AM near-end pre-arm uses the same answer. `prefetchAppleMusic` keeps pre-resolving those rows (the fallback stays instant). A COMPLETE local copy never reaches the coordinator (burned files play directly). |
+| Growing start of an AM row | `growingStartEligible(_:resumeAtMs:)` | An AM-sourced ripped row starts on its growing buffer only when the buffer already holds the start runway at the start position (as fast as AM); otherwise AM / the presign. |
+| Current AM row buffers | `prefetchTrack` | With Mix Mode buffering, a ripped row playing on Apple Music IS fetched (its local copy is what the touch switches to). Chip "Buffering n%" meanwhile (controls shown disabled). |
+| Touch hand-off | `SetlistPlayer.handOffFromAppleMusic` (from `engageMix`), `appleMusicHandOffReady`, `appleMusicLocalCopy` | Ready (chip "Ready — tap a control to switch to the local copy", `.readyFromAppleMusic`) when: Mix Mode buffering, the provider's now-playing is this row, MusicKit confirmed audio, not in the last `amHandoffTailGuardSeconds` (3 s), and a local copy covers MusicKit's position + lead: the SAME-edition burn (`id == resolveId`), a prefetched cut, or a per-song buffer stream covering it + the 4 s resume runway. Order: DSP opened PAUSED at the target (refused ⇒ AM untouched) → `prearmHandoffSession` (mixable, no-op in the foreground) → `stopAppleMusicIfActive` (stop + `releaseMusicKit`: queue emptied ⇒ no stale CarPlay/lock-screen card, the end monitor cancelled ⇒ no stray end advance) → `rips.setNowPlaying(…, announce: false)` (no second history play; our own stamp) → `publishDSPCard` → DSP resume. Paused stays paused. Refused across an open interruption, a pending start, a resolve, a live Mix tab. Never automatic: the swap-on-land refuses AM rows, the Stem Lock never engages an AM row at its start. |
+| Stray MusicKit ▶ after a hand-off | `strayReclaimAction(…dspEngaged:)` → `.resumeDSP` | Silenced by the provider; the DSP resumes — never a restart of the row from 0:00 over it (also fixes the same latent case for phase-3 growing engagements). |
+| Drift instrumentation | `[npmix] am-handoff … amRaw= amSmoothed= lead= target=`; `DeadAirMeter` cause `npmix-am-handoff` (to `dsp-burned` / `dsp-cut` / `dsp-growing`); `touch-ready`, `rip request`, `rip landed`, `prefer-local`, `start … Apple Music row …` lines | Phase 0 could not run headless. The lead is `SetlistPlayer.amHandoffLeadMsDefault` (0) overridable with UserDefaults `pdj.npmix.amHandoffLeadMs` (no build needed to calibrate from a drive). |
+| Indicator | `NPMixMode.Indicator.readyFromAppleMusic`, `.ripping` (`IndicatorInput.ripping`, owner-gated by the caller), AM + buffering ⇒ `.buffering` | Public users: "Apple Music only" always. Buffer strip: an owner's row being ripped shows ○. |
+
+Deviations: (a) the design's `.rip` STEP is a fire-and-forget plan list (`Plan.rips`) — a step
+would hold the one-at-a-time worker for a POST and its runway; (b) "presign cached" means the
+prefetched presigned URL is in hand (`canPlayImmediately` alone still owes a presign round trip on
+the private bucket); (c) the hand-off lead defaults to 0 ms until a drive measures it (Phase 0);
+(d) the Stem Lock does not auto-engage an AM row (Q1 is touch-only).
+
+Known limits (phase 4): the AM → local seam is uncalibrated (short audible seam expected; tune
+`pdj.npmix.amHandoffLeadMs` from the `[npmix] am-handoff` lines); on the rip server's own Mac Mix
+Mode never rips (same-host deferral), so AM-only rows stay "Apple Music only" there; a current AM
+row and its buffer fetch the same song twice (stream + buffer); device verification (seam by ear,
+locked phone, CarPlay card after the hand-off) is owed.
+
+### 9.4 Phase 4 review fixes (2026-11-02)
+
+- **MUST — MusicKit's own start leaves our session's interruption open.** Field logs
+  (ios-3712BFDE, 10-23…10-25): every Apple Music start after a local row logs `AM play …` and
+  `interruption began … external=1` in the same second, with no `ended`. `interruptionOpen`
+  therefore stayed true for the whole AM row, so (a) the Q1 touch hand-off was ALWAYS refused for
+  an AM row that followed a local one, and (b) a growing-file start right after an AM row (no
+  `PlayerEngine.load` to clear the flag) never ran its mid-song hold fallback — a scrub past the
+  frontier held until the bytes arrived. Fix: the hand-off is refused for an interruption only
+  while MusicKit is NOT audibly playing and was not paused by the listener on purpose (a real call
+  pauses MusicKit); a DSP start (`startOnGrowingFile`, not paused) and the hand-off clear the stale
+  interruption exactly as `load` does (`PlayerEngine.clearStaleInterruptionForStart`, which also
+  forgets the stale "was playing").
+- **MUST — picked folders:** evicted iCloud copies and another device's explicit reuse (§3.6).
+- **SHOULD (fixed):** a growing file that already fell back this play is never offered again for
+  an AM hand-off (`appleMusicLocalCopy` honours `growingRefusedUid`) — no touch-driven flapping.
+- **MUST — Levi's device repro (TF 1793665643, a pre-phase-4 build; "Workout", Mix Mode on
+  mid-song):** both AM rows said "Apple Music only" although same-edition rips existed. Phase 4
+  already buffers a CURRENT AM row that is ripped (any user — buffering an existing rip is not
+  ripping; `prefetchTrack` keeps it fetchable under Mix Mode, `setMixMode(true)` re-plans) and
+  `prefetchUpcoming` presigns AM-sourced ripped rows so their start is rip-first. Fixed on top:
+  the chip says "Apple Music only" ONLY for a row with no rip of its edition — a ripped AM row
+  falls through to the local-copy states ("Buffering n%", "Download failed", "Cellular — buffering
+  off", …); an edition-substituted row whose edition isn't ripped shows the owner
+  "Ripping explicit edition — mixable next play" (`.rippingEdition`) while that capture is in
+  flight, public users "Apple Music only"; the owner's rip-ahead asks for the `<base>_<edition>`
+  id and never for an edition whose catalog id is unknown (the `EditionPolicy.lazyRipId` gate).
+- **MUST — rule A, edition-agnostic instrumental (Levi's second repro: Stem Lock with vocals
+  muted; `<id>_explicit` rows with only the base rip played Apple Music, "UNAVAILABLE — full
+  mix").** With the lock carrying stems and VOCALS MUTED, a PREFERENCE row (never a clean-only
+  restriction) whose wanted edition has no rip and no burn plays the BASE cut (ripped or burned,
+  with stems) instead (`vocalsMutedEditionSubstitute`): the lane plans/fetches the base song +
+  stems for it (`laneAudioId` → the `.song` step's id); at the row's start the substitution is
+  recorded (`editionSubstitution`, sticky for that play — un-muting mid-track keeps the local
+  file and the chip adds "· Clean edition" / "· Explicit edition"), the growing-file start takes
+  the base buffer even for an AM-sourced row, and the plain resolve is the base rip, RIP-FIRST
+  (`PlaybackCoordinator.play(…ripFirst:)`), never Apple Music; the swap-on-land and the touch
+  hand-off match the base cut as the same bytes (`playedResolveId`, `amHandOffTargetId`); the
+  owner still lazily asks for the wanted edition. Never when vocals are audible at the start.
+  Only the base id substitutes, so row identity / history / stems keys are untouched. Log:
+  `[npmix] edition-substitute row=… played=<edition> requested=<edition> reason=vocals-muted
+  via=start|am-handoff file=<id>` (`played` names the other edition — the base cut is assumed to
+  be it).
+- **MUST — B, edition-aware buffer dots:** a dot is full only when the file the row WILL play is
+  local — the start's own unmemoized lookup (`rowWillPlayLocally`: the edition ladder's burned
+  file, or under a Stem Lock / Mix Mode the lane's complete cut of the id it fetches); the
+  buffering / queued states key on that same lane id.
+- **Open (SHOULD, not fixed):** a growing fallback that re-resolves the row (AM hand-off, phase-3
+  start) goes through `coordinator.play` again, whose `onPlay` counts a second play when it lands
+  more than 30 s after the first (pre-existing for phase 3); on macOS `serverIsThisHost` answers
+  false when the `/health` probe fails, so a rip-server Mac with a flaky probe can still send a Mix
+  Mode rip (fail-open, same as the passive rip).

@@ -519,7 +519,17 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     #if DEBUG
     /// Tests: MusicKit's player can't run headless; stamp "an AM row owns MusicKit".
     func setOwnsMusicKitForTests(_ on: Bool) { ownsMusicKit = on }
+    /// Tests: stamp a streaming track's play state — playing (the clock runs from `position`)
+    /// or paused at it, audio confirmed or not, and its catalog length.
+    func setPlaybackForTests(playing: Bool, audioConfirmed: Bool, position: Double, duration: Double) {
+        isPlaying = playing
+        self.audioConfirmed = audioConfirmed
+        durationSeconds = duration
+        positionBase = max(0, position)
+        positionStartWall = playing ? Date() : nil
+    }
     #endif
+
 }
 
 /// The slice of MusicKit's `ApplicationMusicPlayer` the release-on-leave + stray-play guard
@@ -576,6 +586,13 @@ extension AppleMusicPlaybackProvider {
     var positionSeconds: Double {
         guard let start = positionStartWall else { return positionBase }
         return positionBase + Date().timeIntervalSince(start)
+    }
+
+    /// MusicKit's RAW `playbackTime` (seconds) while this provider owns MusicKit, else nil — the
+    /// Mix Mode hand-off's drift log reads it next to the smoothed `positionSeconds`.
+    var rawPlaybackTimeSeconds: Double? {
+        guard ownsMusicKit else { return nil }
+        return ApplicationMusicPlayer.shared.playbackTime
     }
 
     /// (Re)start the smooth clock from `seconds` — playback just started/resumed/seeked.
@@ -1031,6 +1048,7 @@ extension AppleMusicPlaybackProvider {
 extension AppleMusicPlaybackProvider {
     var isReady: Bool { false }
     var positionSeconds: Double { 0 }
+    var rawPlaybackTimeSeconds: Double? { nil }
     func tryPlay(_ song: IndexSong, atMs: Int?) async -> Bool { false }
     func prefetch(_ songs: [IndexSong]) {}
     func togglePlayPause() {}

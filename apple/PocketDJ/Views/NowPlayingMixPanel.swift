@@ -7,8 +7,9 @@ import SwiftUI
 /// switch — shows whenever a session runs (tvOS keeps F4's rule: no Mix Mode there, Q10). The
 /// CONTROLS show when the current track is mixable (`SetlistPlayer.mixAvailable`); with Mix Mode
 /// on they also show, DISABLED, while the track's local copy buffers ("Buffering 42%" in the
-/// chip). A track that can never be local (Apple Music, a live capture) keeps F4's "hide, don't
-/// grey" rule. Collapsed by default (`@AppStorage("nowPlayingMixExpanded")`); turning Mix Mode on
+/// chip). A track that can never be local (Apple Music with no local copy, a live capture) keeps
+/// F4's "hide, don't grey" rule; an Apple Music row whose local copy exists (phase 4) shows its
+/// controls live and the first touch switches it to that copy (`SetlistPlayer.handOffFromAppleMusic`). Collapsed by default (`@AppStorage("nowPlayingMixExpanded")`); turning Mix Mode on
 /// expands it once.
 ///
 /// ENGAGE = swap-on-touch: every control first calls `SetlistPlayer.engageMix()` (idempotent), which
@@ -288,16 +289,22 @@ struct MixModeStatusChip: View {
                 switch ind {
                 case .engaged, .stemsLoading:
                     Circle().fill(Theme.accent).frame(width: 6, height: 6)
-                case .ready:
+                case .ready, .readyFromAppleMusic:
                     Circle().stroke(Theme.accent, lineWidth: 1.5).frame(width: 6, height: 6)
                 case .buffering, .holding, .waiting:
                     Image(systemName: "arrow.down.circle").font(.caption2)
-                case .unavailable, .suspended, .ripping:
+                case .unavailable, .suspended, .ripping, .rippingEdition:
                     Image(systemName: "exclamationmark.circle").font(.caption2)
                 case .off:
                     EmptyView()
                 }
                 Text(text).lineLimit(1).minimumScaleFactor(0.75)
+                // Rule A: a vocals-muted substitution whose vocals were un-muted mid-track says
+                // which edition is actually playing.
+                if let note = sequencer.editionSubstituteNote {
+                    Text("· \(note)").lineLimit(1).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("np-mix-edition-note")
+                }
             }
             .font(.caption2)
             .foregroundStyle(ind.controlsLive ? Theme.accent : Theme.fgDim)

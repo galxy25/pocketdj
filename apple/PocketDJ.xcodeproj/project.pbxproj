@@ -480,6 +480,7 @@
 		ABCC5E6FC592288749543E17 /* CloudSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C3A971B345113403B50653A /* CloudSyncService.swift */; };
 		ABE011EB9EA8EABC9DC5E5EC /* RecEngineClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E5A19100207C85EBAE83A88 /* RecEngineClientTests.swift */; };
 		ABF4B5A7921C446E58F389C3 /* IndexModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF481BEFB010A4B04D48FEF4 /* IndexModels.swift */; };
+		ACCBA3BAA2B230BE660FCD4A /* NPMixAppleMusicTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 519855243ED85D5A0CABE3A6 /* NPMixAppleMusicTests.swift */; };
 		AD3EE26B5DB4C440DCB831F2 /* SetlistPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3935954919B57E952BF1C431 /* SetlistPlayer.swift */; };
 		AD79BE2A0C296F05BD4FEC00 /* ShareTextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8CDD03499C13CD44823435E /* ShareTextTests.swift */; };
 		AE5D2D8DC5AC95FEE7524D14 /* ShazamButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A26FB1782AD3927FBAA0BDD /* ShazamButton.swift */; };
@@ -978,6 +979,7 @@
 		50DDC4AF02307C599A67FAC1 /* InThePocketScorer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InThePocketScorer.swift; sourceTree = "<group>"; };
 		515710DFD898E3333BA5E75C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		516E189238D3FDFD66A2CDB2 /* CollectionRecsToggle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionRecsToggle.swift; sourceTree = "<group>"; };
+		519855243ED85D5A0CABE3A6 /* NPMixAppleMusicTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NPMixAppleMusicTests.swift; sourceTree = "<group>"; };
 		51C6E6AB956C25C696D951AF /* PocketRunStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketRunStoreTests.swift; sourceTree = "<group>"; };
 		51E8A4CA246E714141860B6B /* MasterFX.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterFX.swift; sourceTree = "<group>"; };
 		5228C8D690080EBEBD73EA44 /* PocketWheelUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketWheelUITests.swift; sourceTree = "<group>"; };
@@ -1667,6 +1669,7 @@
 				F6D8C95F97FEDC55C7D0636C /* NowPlayingQueueTests.swift */,
 				DE1E7D524B8FBC810A5822D4 /* NowPlayingResizeTests.swift */,
 				953559C0D61E61016A6C09EC /* NowPlayingStemsHandoverTests.swift */,
+				519855243ED85D5A0CABE3A6 /* NPMixAppleMusicTests.swift */,
 				1D30EEADABE0A9AE21CB8CB3 /* NPMixGrowingFileTests.swift */,
 				1C2038B6E203D5E5988B3040 /* NPMixModeTests.swift */,
 				BBA38A12EAEC05F7AF595018 /* OnboardingGuardsTests.swift */,
@@ -2865,6 +2868,7 @@
 				A0279D1181768C6669DBF5AB /* MusicWithFriendsStoreTests.swift in Sources */,
 				16BD3A0CFE7D49D2270C22BF /* MwFLinkTests.swift in Sources */,
 				85AAA9F97092EE21AC145807 /* MwFModelsTests.swift in Sources */,
+				ACCBA3BAA2B230BE660FCD4A /* NPMixAppleMusicTests.swift in Sources */,
 				E5B4B9D9CF6505AC2438BCD2 /* NPMixGrowingFileTests.swift in Sources */,
 				9614C2D12C9D8162AD346EF0 /* NPMixModeTests.swift in Sources */,
 				B688B5492F612476C91DE9E3 /* NewcomerParityTests.swift in Sources */,

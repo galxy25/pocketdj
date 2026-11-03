@@ -1020,7 +1020,12 @@ struct PocketDJApp: App {
         // A download asked for before the song had a file: the rip has now landed, so finish the
         // burn. Fires without the user returning to the row — that is what makes ⤓ on an unripped
         // track a real request rather than an error message.
-        rips.onRipReady = { [weak burns] _ in Task { await burns?.drainPendingAfterRip() } }
+        // NP Mix Mode phase 4: an Apple-Music-only row in the Mix Mode window was just ripped —
+        // the lane re-plans so its song + stems buffer for the boundary.
+        rips.onRipReady = { [weak burns, weak setlistPlayer] id in
+            Task { await burns?.drainPendingAfterRip() }
+            setlistPlayer?.noteRipLanded(id)
+        }
         coordinator.onPlay = { [weak playCounts] songId, backend in
             // Defense in depth: the coordinator already reports statsId (the base id) for its
             // own variant plays — normalize anyway so no future call path can mint a ghost id.

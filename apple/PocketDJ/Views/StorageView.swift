@@ -414,6 +414,10 @@ struct StorageView: View {
                 ForEach(NPMixCellularPolicy.allCases, id: \.self) { p in Text(p.label).tag(p) }
             }
             .accessibilityIdentifier("storage-mixmode-cellular")
+            Toggle("Keep buffered files in shared/picked folders", isOn: Binding(
+                get: { settings.npMixKeepPickedFolderBuffers ?? false },
+                set: { settings.npMixKeepPickedFolderBuffers = $0; settings.persist() }))
+                .accessibilityIdentifier("storage-buffer-keep-picked")
             #endif
             ForEach(Array(holds.prefix(showAllBufferRows ? holds.count : Self.bufferRowLimit))) { h in
                 bufferRow(h)
@@ -440,11 +444,11 @@ struct StorageView: View {
             Text((settings.npMixBufferEffectiveTTLHours == nil
                  ? "Songs and stems Now Playing downloads ahead on its own (Mix Mode, Stem Lock) are kept like downloads. Songs already buffered still expire on schedule — tap Keep all to keep them."
                  : "Songs and stems Now Playing downloads ahead on its own (Mix Mode, Stem Lock) are temporary: they're removed after the time above unless you download or mix them first — then they're yours to keep. Nothing playing or coming up next is ever removed, and downloads you asked for are never temporary.")
-                 // Buffer assets written to a user-picked folder are pinned at creation (the folder
-                 // may be shared with another device — BurnStore.noteBufferCreated).
-                 + (settings.burnFolderBookmark != nil
-                    ? " While a burn folder you picked is in use, buffered songs go there and are kept like downloads (another device may share that folder)."
-                    : ""))
+                 // Picked folders (Levi 2026-11-02): what the buffer lane wrote there expires like
+                 // app storage unless the keep switch is on (BurnStore.noteBufferCreated).
+                 + (settings.npMixKeepPickedFolderBuffers == true
+                    ? " Songs buffered into a burn folder you picked are kept like downloads."
+                    : " Songs buffered into a burn folder you picked are removed on the same schedule — if that folder is shared with another device (iCloud Drive, an external drive), it loses them too. Turn on Keep buffered files in shared/picked folders to keep them. Files you downloaded, and files that were already there, are never removed."))
         }
         .confirmationDialog("Clear the Mix Mode buffer?", isPresented: $confirmingClearBuffer, titleVisibility: .visible) {
             Button("Clear buffered songs", role: .destructive) {

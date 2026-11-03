@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import Observation
 import XCTest
 @testable import PocketDJ
@@ -707,6 +708,54 @@ final class NPMixGrowingFileTests: XCTestCase {
         XCTAssertEqual(r.seq.index, 0)
     }
 
+    /// Levi 2026-11-02: the mid-song hold budget is 5 s (was 20).
+    func testMidSongHoldBudgetIsFiveSeconds() {
+        XCTAssertEqual(SetlistPlayer.growingHoldFallbackSeconds, 5)
+    }
+
+    /// A scrub FAR past the downloaded frontier holds, then — at the real 5 s default — falls back
+    /// to the plain stream at the scrub target (not 20 s of dead air, not before the budget).
+    func testScrubFarPastTheFrontierFallsBackAfterFiveSeconds() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        let presigned = try XCTUnwrap(r.rips.nowPlaying?.url)
+        r.seq.setMixMode(true)
+        r.player.clock.currentTime = 2
+        try feed(r.loader, "a", tempMP3("s5"), data, 0.95)
+        r.seq.engageMix()
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(r.seq.mixEngaged)
+        await waitUntil("rendering") { r.dsp.currentTime > 2.2 && !r.dsp.awaitingFirstAudio }
+        let held = Date()
+        r.dsp.seek(toSongSeconds: 11)                       // far past the frontier: holds
+        XCTAssertTrue(r.dsp.isBuffering)
+        await pause(3.5)
+        XCTAssertTrue(r.seq.mixEngaged, "still inside the 5 s budget")
+        await waitUntil("fell back to the plain stream", timeout: 6) { !r.seq.mixEngaged }
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(held), 4.9)
+        XCTAssertEqual(r.rips.nowPlaying?.url, presigned)
+        XCTAssertEqual(r.rips.nowPlaying?.seekMs ?? 0, 11_000, accuracy: 100, "at the scrub target")
+        XCTAssertEqual(r.seq.index, 0, "a fallback, never a skip")
+    }
+
+    /// A START hold keeps the start-watchdog semantics: the short mid-song budget never applies
+    /// while the DSP still awaits its first audio.
+    func testStartHoldIsNotCutShortByTheMidSongBudget() async throws {
+        SetlistPlayer.startStallRekickSeconds = 30
+        SetlistPlayer.startStallEscalateSeconds = 30
+        SetlistPlayer.growingHoldFallbackSeconds = 0.2
+        let r = try seqRig(["a", "b"])
+        _ = r.loader.injectStreamForTesting(songId: "a", file: tempMP3("sk"), bytes: 0, expected: 400_000, origin: .buffer)
+        r.seq.play([item("a"), item("b")])
+        await waitUntil("a on the growing file") { r.seq.mixEngaged }
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(r.dsp.isBuffering)
+        await pause(1.0)
+        XCTAssertTrue(r.seq.mixEngaged, "a start hold waits for the watchdog, not the 0.2 s mid-song budget")
+        XCTAssertEqual(r.seq.growingFallbackCount, 0)
+    }
+
     /// The START WATCHDOG backstops a growing start that never gets bytes: it escalates (hop /
     /// advance through the cascade breaker) exactly as for any stalled start.
     func testStartWatchdogBackstopsAGrowingStartThatNeverGetsBytes() async throws {
@@ -899,6 +948,553 @@ final class NPMixGrowingFileTests: XCTestCase {
         let p = loader.injectStreamForTesting(songId: "c2", file: tempMP3("c2"), bytes: 10, expected: 1_000, origin: .buffer)
         loader.cancel(songIds: ["c2"])
         XCTAssertFalse(p.failed)
+    }
+
+    // MARK: - Phase 4: Apple Music rows
+
+    private final class FakeMusicKit: MusicKitPlayerControl {
+        var isPlaying = false
+        var releaseCount = 0
+        let subject = PassthroughSubject<Void, Never>()
+        var stateChanges: AnyPublisher<Void, Never> { subject.eraseToAnyPublisher() }
+        func release() { releaseCount += 1; isPlaying = false }
+    }
+
+    /// Put the running row `id` on APPLE MUSIC at `pos` (MusicKit can't run headless): the state a
+    /// won Apple Music start leaves — the coordinator's backend, MusicKit owned, the provider's
+    /// now-playing + clock, the rip path's own now-playing cleared, the card impersonating MusicKit.
+    @discardableResult
+    private func putOnAppleMusic(_ r: SeqRig, _ id: String, at pos: Double, playing: Bool = true,
+                                 duration: Double = 12) -> FakeMusicKit {
+        let fake = FakeMusicKit()
+        fake.isPlaying = playing
+        let am = r.coord.appleMusic
+        am.musicKitPlayer = fake
+        r.rips.setNowPlaying(nil, announce: false)
+        r.coord.setActiveBackendForTests(.appleMusic)
+        am.setOwnsMusicKitForTests(true)
+        am.setNowPlayingForTests(.init(songId: id, title: id, artist: "A"))
+        am.setPlaybackForTests(playing: playing, audioConfirmed: true, position: pos, duration: duration)
+        r.seq.appleMusicPositionOverride = { pos }
+        r.player.beginExternalNowPlaying(title: id, artist: "A", songId: id, durationSeconds: duration,
+                                         position: { pos }, isPlaying: { playing },
+                                         play: { [weak am] in am?.resume() }, pause: { [weak am] in am?.pausePlayback() })
+        return fake
+    }
+
+    /// Q1: an Apple Music row whose buffer covers MusicKit's playhead goes LIVE ("Ready — tap a
+    /// control…") and the FIRST TOUCH cuts over in the DSP at MusicKit's position + the lead:
+    /// MusicKit stopped AND released (no stale card, nothing to resume), no second history play,
+    /// the card's scrubber now drives the DSP, same row.
+    func testFirstTouchHandsAnAppleMusicRowToItsBufferAtMusicKitsPosition() async throws {
+        let data = try noise
+        UserDefaults.standard.set(250, forKey: "pdj.npmix.amHandoffLeadMs")
+        addTeardownBlock { UserDefaults.standard.removeObject(forKey: "pdj.npmix.amHandoffLeadMs") }
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        var plays: [String] = []
+        await startPlain(r, ["a", "b"])
+        r.rips.onPlay = { plays.append($0) }
+        let fake = putOnAppleMusic(r, "a", at: 3)
+        try feed(r.loader, "a", tempMP3("am"), data, 0.95)
+        XCTAssertFalse(r.seq.currentTrackMixable, "Mix Mode off: an Apple Music row is never mixable")
+        r.seq.setMixMode(true)
+        XCTAssertTrue(r.seq.currentTrackMixable, "the local copy covers MusicKit's playhead")
+        XCTAssertEqual(r.seq.mixModeIndicator, .readyFromAppleMusic)
+        XCTAssertEqual(r.coord.activeBackend, .appleMusic, "nothing moved on its own")
+        r.seq.engageMix()                                    // the touch
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(r.seq.mixEngaged)
+        XCTAssertEqual(r.seq.amHandOffCount, 1)
+        XCTAssertNil(r.coord.activeBackend, "Apple Music left")
+        XCTAssertEqual(fake.releaseCount, 1, "MusicKit stopped AND its queue emptied — no stale CarPlay card")
+        XCTAssertFalse(r.coord.appleMusic.ownsMusicKit)
+        XCTAssertEqual(r.rips.nowPlaying?.songId, "a")
+        XCTAssertTrue(r.rips.nowPlaying?.url.isFileURL ?? false)
+        XCTAssertEqual(r.dsp.currentTime, 3.25, accuracy: 0.3, "MusicKit's position + the 250 ms lead")
+        XCTAssertTrue(r.dsp.isPlaying)
+        XCTAssertTrue(plays.isEmpty, "Apple Music already counted this play — no second one")
+        XCTAssertTrue(NowPlayingArbiter.shared.isActive(r.player), "one card writer")
+        XCTAssertEqual(r.seq.mixModeIndicator, .engaged)
+        r.player.seek(to: 6)
+        XCTAssertEqual(r.dsp.currentTime, 6, accuracy: 0.05, "the card's scrubber drives the DSP now")
+        XCTAssertEqual(r.seq.index, 0)
+    }
+
+    /// Q1: WITHOUT a touch the Apple Music row finishes on Apple Music — the buffer completing,
+    /// the swap-on-land hand-off, the Mix Mode toggle: none of them cut over.
+    func testAppleMusicRowNeverHandsOffWithoutATouch() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        let fake = putOnAppleMusic(r, "a", at: 3)
+        r.seq.setMixMode(true)
+        try feed(r.loader, "a", tempMP3("an"), data, 1, finished: true)
+        r.seq.noteBufferStreamProgress("a")
+        XCTAssertFalse(r.seq.handOffCurrentToLocal(reason: "test"), "the swap-on-land never takes an AM row")
+        await pause(0.2)
+        XCTAssertEqual(r.coord.activeBackend, .appleMusic)
+        XCTAssertFalse(r.seq.mixEngaged)
+        XCTAssertEqual(fake.releaseCount, 0)
+    }
+
+    /// No local copy covering MusicKit's playhead ⇒ not mixable, the touch does nothing, MusicKit
+    /// keeps playing. Same in the last seconds of the track, before MusicKit confirmed audio, and
+    /// while a Mix-tab session is live.
+    func testAppleMusicHandOffRefusals() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        let fake = putOnAppleMusic(r, "a", at: 8)
+        r.seq.setMixMode(true)
+        try feed(r.loader, "a", tempMP3("ar"), data, 0.3)    // 3.6 s − margin: behind 8 s + 4
+        XCTAssertFalse(r.seq.currentTrackMixable)
+        XCTAssertFalse(r.seq.mixModeIndicator.controlsLive, "its rip exists but doesn't cover the playhead yet")
+        XCTAssertNotEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"), "a ripped row never says so")
+        r.seq.engageMix()
+        XCTAssertFalse(r.seq.mixEngaged)
+        try feed(r.loader, "a", tempMP3("ar2"), data, 1, finished: true)
+        // Last seconds of the track: it finishes on Apple Music.
+        r.seq.appleMusicPositionOverride = { 10 }
+        XCTAssertFalse(r.seq.currentTrackMixable, "inside the tail guard")
+        r.seq.appleMusicPositionOverride = { 4 }
+        // MusicKit hasn't confirmed audio yet.
+        r.coord.appleMusic.setPlaybackForTests(playing: true, audioConfirmed: false, position: 4, duration: 12)
+        XCTAssertFalse(r.seq.currentTrackMixable, "a start still in flight on Apple Music")
+        r.coord.appleMusic.setPlaybackForTests(playing: true, audioConfirmed: true, position: 4, duration: 12)
+        // A live Mix-tab session (one DSP surface): suspended.
+        let live = GrowLiveFlag()
+        r.seq.mixSessionActive = { live.on }
+        live.on = true
+        XCTAssertFalse(r.seq.currentTrackMixable)
+        r.seq.engageMix()
+        XCTAssertFalse(r.seq.mixEngaged)
+        live.on = false
+        XCTAssertTrue(r.seq.currentTrackMixable)
+        XCTAssertEqual(fake.releaseCount, 0, "every refusal left MusicKit alone")
+        XCTAssertEqual(r.coord.activeBackend, .appleMusic)
+    }
+
+    /// A PAUSED Apple Music row hands off paused; ▶ on the card then plays the DSP.
+    func testPausedAppleMusicHandsOffPaused() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        putOnAppleMusic(r, "a", at: 2, playing: false)
+        r.seq.setMixMode(true)
+        try feed(r.loader, "a", tempMP3("ap"), data, 0.95)
+        r.seq.engageMix()
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(r.seq.mixEngaged)
+        XCTAssertFalse(r.dsp.isPlaying, "paused stays paused")
+        XCTAssertEqual(r.dsp.currentTime, 2, accuracy: 0.3)
+        r.player.play()
+        XCTAssertTrue(r.dsp.isPlaying, "the card's ▶ drives the DSP")
+    }
+
+    /// After the hand-off Apple Music can't move the set: a late end-of-track report from the
+    /// provider is ignored (its backend is gone), and a STRAY MusicKit play (a stale card's ▶)
+    /// is silenced and resumes the DSP — never a restart of the row from 0:00.
+    func testAfterTheHandOffAppleMusicCannotAdvanceOrRestartTheRow() async throws {
+        let data = try noise
+        AppleMusicPlaybackProvider.strayGraceSeconds = 0
+        addTeardownBlock { @MainActor in AppleMusicPlaybackProvider.strayGraceSeconds = 1.5 }
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        let fake = putOnAppleMusic(r, "a", at: 3)
+        r.seq.setMixMode(true)
+        try feed(r.loader, "a", tempMP3("as"), data, 0.95)
+        r.seq.engageMix()
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(r.seq.mixEngaged)
+        r.coord.appleMusic.onTrackEnded?(.natural)          // a stray end report
+        XCTAssertEqual(r.seq.index, 0, "no stray end-of-track advance")
+        XCTAssertTrue(r.seq.mixEngaged)
+        let url = r.rips.nowPlaying?.url
+        r.dsp.pause()
+        fake.isPlaying = true                                // MusicKit resumed on its own
+        XCTAssertEqual(r.coord.appleMusic.checkForStrayPlay(source: "test"), .reclaim)
+        await waitUntil("the DSP resumed") { r.dsp.isPlaying }
+        XCTAssertTrue(r.seq.mixEngaged)
+        XCTAssertEqual(r.rips.nowPlaying?.url, url, "the row was not restarted")
+        XCTAssertEqual(r.seq.index, 0)
+    }
+
+    /// A BURNED (adopted) copy takes the Apple Music row over at MusicKit's position.
+    func testFirstTouchHandsAnAppleMusicRowToItsBurnedCopy() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        let tmp = tempMP3("ab")
+        try data.write(to: tmp)
+        let burned = try XCTUnwrap(r.burns.adoptStreamedFile(songId: "a", title: "a", artist: "A", from: tmp, origin: .buffer))
+        let fake = putOnAppleMusic(r, "a", at: 5)
+        r.seq.setMixMode(true)
+        XCTAssertTrue(r.seq.currentTrackMixable)
+        r.seq.engageMix()
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(r.seq.mixEngaged)
+        XCTAssertEqual(r.rips.nowPlaying?.url.standardizedFileURL, burned.standardizedFileURL)
+        XCTAssertEqual(r.dsp.currentTime, 5, accuracy: 0.3)
+        XCTAssertEqual(fake.releaseCount, 1)
+        XCTAssertNil(r.coord.activeBackend)
+    }
+
+    /// The touch is refused across an open audio-session interruption (a call): MusicKit is
+    /// paused by it (not by the listener) — nothing changes.
+    func testAppleMusicHandOffRefusedAcrossAnInterruption() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        let fake = putOnAppleMusic(r, "a", at: 3, playing: false)
+        r.seq.setMixMode(true)
+        try feed(r.loader, "a", tempMP3("ai"), data, 0.95)
+        r.player.handleInterruption(began: true, shouldResume: nil)
+        r.seq.engageMix()
+        XCTAssertFalse(r.seq.mixEngaged)
+        XCTAssertEqual(fake.releaseCount, 0)
+        XCTAssertEqual(r.coord.activeBackend, .appleMusic)
+    }
+
+    /// REVIEW MUST (2026-11-02, field logs ios-3712BFDE 10-23…25): MusicKit's OWN start interrupts
+    /// our session ("AM play …" + "interruption began … external=1", never ended). With MusicKit
+    /// audibly playing that is not a call: the touch hands off, and the stale interruption is
+    /// cleared (or the growing file's hold fallback would never fire).
+    func testAppleMusicHandOffIsNotBlockedByMusicKitsOwnStaleInterruption() async throws {
+        let data = try noise
+        SetlistPlayer.growingHoldFallbackSeconds = 0.2
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        // Build the DSP graph up front, so a REFUSED hand-off fails here instead of skipping.
+        let warm = tempMP3("azw")
+        try data.write(to: warm)
+        r.dsp.engage(url: warm, startMs: nil, lengthMs: 12_000, atSeconds: 0, songId: "warm", play: false)
+        r.dsp.disengage()
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        let fake = putOnAppleMusic(r, "a", at: 3)
+        r.player.handleInterruption(began: true, shouldResume: nil)   // MusicKit's start did this
+        r.seq.setMixMode(true)
+        try feed(r.loader, "a", tempMP3("az"), data, 0.95)
+        XCTAssertTrue(r.seq.currentTrackMixable)
+        r.seq.engageMix()
+        XCTAssertTrue(r.seq.mixEngaged, "MusicKit audibly playing proves no call holds the audio")
+        XCTAssertEqual(fake.releaseCount, 1)
+        XCTAssertFalse(r.player.interruptionOpen, "the stale interruption is over")
+        // …so a hold past the frontier still falls back (5 s rule) instead of holding forever.
+        await waitUntil("rendering") { r.dsp.currentTime > 3.2 && !r.dsp.awaitingFirstAudio }
+        r.dsp.seek(toSongSeconds: 11.5)
+        XCTAssertTrue(r.dsp.isBuffering)
+        await waitUntil("fell back") { !r.seq.mixEngaged }
+        XCTAssertEqual(r.seq.growingFallbackCount, 1)
+        XCTAssertEqual(r.seq.index, 0)
+        // The growing file that failed this play is never offered for a second hand-off.
+        XCTAssertNil(r.seq.amHandOffCopyKindForTests(atSongSeconds: 4))
+    }
+
+    /// REVIEW MUST (2026-11-02): an Apple Music row left our session's interruption open; the
+    /// NEXT row starts in the DSP on its growing file (no `PlayerEngine.load` to clear it). Its
+    /// mid-song hold must still fall back after the budget — not hold forever.
+    func testGrowingStartAfterAnAppleMusicRowStillFallsBackOnALongHold() async throws {
+        let data = try noise
+        SetlistPlayer.growingHoldFallbackSeconds = 0.2
+        let r = try seqRig(["a", "b"])
+        await startPlain(r, ["a", "b"])
+        putOnAppleMusic(r, "a", at: 3)
+        r.player.handleInterruption(began: true, shouldResume: nil)   // MusicKit's start did this
+        await pause(0.1)                                     // the now-playing observers settle on a
+        try feed(r.loader, "b", tempMP3("gb"), data, 0.95)
+        r.seq.skipNext()
+        await waitUntil("b on the growing file") { r.seq.index == 1 && r.seq.mixEngaged }
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertFalse(r.player.interruptionOpen)
+        await waitUntil("rendering") { r.dsp.currentTime > 0.5 && !r.dsp.awaitingFirstAudio }
+        r.dsp.seek(toSongSeconds: 11.5)
+        XCTAssertTrue(r.dsp.isBuffering)
+        await waitUntil("fell back to the plain stream") { !r.seq.mixEngaged }
+        XCTAssertEqual(r.seq.growingFallbackCount, 1)
+        XCTAssertEqual(r.seq.index, 1, "a fallback, never a skip")
+    }
+
+    /// Q7, OWNER ONLY: the lane asks the rip server for the next 2 Apple-Music-only rows; a
+    /// public / hybrid install never does, and the chip says "Apple Music only" there while the
+    /// owner's says "Ripping — mixable next play".
+    func testOwnerAsksForTheNextTwoAppleMusicOnlyRowsAndPublicUsersNever() async throws {
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        let amOnly: Set<String> = ["x", "y", "z"]
+        r.coord.sourceOfSong = { amOnly.contains($0) ? Config.appleMusicSourceName : nil }
+        var owner = true
+        r.coord.isCatalogOwner = { owner }
+        let pf = NowPlayingPrefetcher()
+        var asked: [String] = []
+        pf.requestRip = { asked.append($0) }
+        r.seq.prefetcher = pf
+        r.seq.prefetchSongFetchable = { _ in false }
+        await startPlain(r, ["a", "x", "b", "y", "z"])
+        r.seq.setMixMode(true)
+        r.seq.replanPrefetch()
+        XCTAssertEqual(asked, ["x", "y"], "the next two AM-only rows — never z, never the playing row")
+        // The public user (a fresh lane — nothing deduped): no rip, ever.
+        owner = false
+        let pf2 = NowPlayingPrefetcher()
+        var asked2: [String] = []
+        pf2.requestRip = { asked2.append($0) }
+        r.seq.prefetcher = pf2
+        r.seq.replanPrefetch()
+        XCTAssertTrue(asked2.isEmpty, "a non-owner never asks for a rip")
+    }
+
+    func testRippingChipIsOwnerOnly() async throws {
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        var owner = true
+        r.coord.isCatalogOwner = { owner }
+        await startPlain(r, ["a", "b"])
+        // Row a is now an Apple-Music-only row (not ripped) playing on Apple Music, its rip in flight.
+        r.rips.setManifest(["b": .init(key: "rips/b.mp3", source: "digital")])
+        r.coord.sourceOfSong = { $0 == "a" ? Config.appleMusicSourceName : nil }
+        putOnAppleMusic(r, "a", at: 2)
+        r.rips.setJobForTesting("a", phase: .ripping)
+        r.seq.setMixMode(true)
+        XCTAssertEqual(r.seq.mixModeIndicator, .ripping)
+        owner = false
+        XCTAssertEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"), "a public user never sees Ripping")
+        owner = true
+        r.rips.setJobForTesting("a", phase: nil)
+        XCTAssertEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"), "nothing in flight")
+    }
+
+    /// LEVI'S REPRO (iPhone, 2026-11-02, "Workout"): an Apple-Music-sourced row whose SAME-edition
+    /// rip exists plays on Apple Music; Mix Mode is turned on MID-SONG. The lane must re-plan to
+    /// buffer the CURRENT row (owner AND public user — buffering an existing rip is not ripping),
+    /// the chip must say "Buffering…" — never "Apple Music only" — and once the copy covers
+    /// MusicKit's playhead, "Ready — tap a control…".
+    func testCurrentAppleMusicRowWithItsRipBuffersWhenMixModeTurnsOnMidSong() async throws {
+        let data = try noise
+        for owner in [true, false] {
+            let r = try seqRig(["a", "b"], mixDefault: false)
+            r.coord.isCatalogOwner = { owner }
+            let pf = NowPlayingPrefetcher()
+            var asked: [String] = []
+            pf.requestRip = { asked.append($0) }
+            pf.fetchSong = { _ in try? await Task.sleep(nanoseconds: 5_000_000_000); return false }
+            r.seq.prefetcher = pf
+            r.seq.prefetchSongFetchable = { _ in true }
+            await startPlain(r, ["a", "b"])
+            r.coord.sourceOfSong = { _ in Config.appleMusicSourceName }
+            putOnAppleMusic(r, "a", at: 3)
+            XCTAssertEqual(r.seq.mixModeIndicator, .off)
+            r.seq.setMixMode(true)                           // mid-song, not at session start
+            await waitUntil("the current AM row is planned (owner=\(owner))") { pf.isPlannedSong("a") }
+            XCTAssertNotEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"), "a same-edition rip exists")
+            if case .buffering = r.seq.mixModeIndicator {} else {
+                XCTFail("expected Buffering…, got \(r.seq.mixModeIndicator) (owner=\(owner))")
+            }
+            XCTAssertFalse(asked.contains("a"), "an existing rip is never re-ripped")
+            try feed(r.loader, "a", tempMP3("rp\(owner)"), data, 0.95)
+            r.seq.noteBufferStreamProgress("a")
+            XCTAssertEqual(r.seq.mixModeIndicator, .readyFromAppleMusic, "owner=\(owner)")
+            r.seq.stop()
+        }
+    }
+
+    /// A ripped Apple Music row whose copy CAN'T buffer right now still says why — never
+    /// "Apple Music only" (that is reserved for rows with no rip of their edition).
+    func testRippedAppleMusicRowNeverSaysAppleMusicOnly() async throws {
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        r.coord.sourceOfSong = { _ in Config.appleMusicSourceName }
+        putOnAppleMusic(r, "a", at: 3)
+        r.seq.setMixMode(true)
+        XCTAssertNotEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"))
+    }
+
+    /// The upcoming AM-sourced ripped row's presign is fetched ahead, so its start under Mix Mode
+    /// is rip-first (`preferLocalAudio`) — and plain Apple Music first without Mix Mode.
+    func testUpcomingAppleMusicRowWithARipGetsItsPresignAheadSoItStartsLocal() async throws {
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        r.coord.appleMusicReadyOverrideForTests = true
+        r.coord.sourceOfSong = { $0 == "b" ? Config.appleMusicSourceName : nil }
+        await startPlain(r, ["a", "b"])
+        await waitUntil("b's presign is in hand") { r.rips.prefetchedURL("b") != nil }
+        XCTAssertFalse(r.coord.streamsAppleMusicFirst(id: "b", title: "b", artist: "A", variant: nil, preferLocalAudio: true),
+                       "Mix Mode: the ripped AM row starts from its rip")
+        XCTAssertTrue(r.coord.streamsAppleMusicFirst(id: "b", title: "b", artist: "A", variant: nil))
+    }
+
+    /// EDITION MISMATCH (Levi's repro, second song): the row wants the EXPLICIT edition, only the
+    /// clean one is ripped. It stays on Apple Music; the owner's chip names the edition being
+    /// ripped, a public user's says "Apple Music only"; the owner's rip-ahead asks for the
+    /// specific edition id — and never for an edition whose catalog id is unknown.
+    func testEditionMismatchChipAndRipAheadAskForTheWantedEdition() async throws {
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        var owner = true
+        r.coord.isCatalogOwner = { owner }
+        r.coord.sourceOfSong = { _ in Config.appleMusicSourceName }
+        let pf = NowPlayingPrefetcher()
+        var asked: [String] = []
+        pf.requestRip = { asked.append($0) }
+        r.seq.prefetcher = pf
+        r.seq.prefetchSongFetchable = { _ in false }
+        func ed(_ id: String, catalog: String?) -> SetlistPlayer.Item {
+            var i = item(id); i.variant = .explicit; i.editionLocked = true; i.editionCatalogId = catalog; return i
+        }
+        // Only the CLEAN (base) cuts are ripped.
+        r.rips.setManifest(["a": .init(key: "rips/a.mp3", source: "digital"), "b": .init(key: "rips/b.mp3", source: "digital"),
+                            "c": .init(key: "rips/c.mp3", source: "digital")])
+        r.seq.play([ed("a", catalog: "111"), ed("b", catalog: "222"), ed("c", catalog: nil)])
+        await pause(0.1)
+        putOnAppleMusic(r, "a_explicit", at: 2)
+        await pause(0.1)
+        r.seq.setMixMode(true)
+        r.seq.replanPrefetch()
+        XCTAssertEqual(asked, ["b_explicit"], "the wanted edition — and never c (its edition's catalog id is unknown)")
+        r.rips.setJobForTesting("a_explicit", phase: .ripping)
+        XCTAssertEqual(r.seq.mixModeIndicator, .rippingEdition("explicit"))
+        XCTAssertEqual(r.seq.mixModeIndicator.chipText, "Ripping explicit edition — mixable next play")
+        owner = false
+        XCTAssertEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"))
+    }
+
+    // MARK: - Rule A: edition-agnostic instrumental (Levi 2026-11-02, second repro)
+
+    private func stemmed(_ id: String) -> RipsStore.ManifestEntry {
+        .init(key: "rips/\(id).mp3", source: "digital",
+              stems: .init(vocals: "stems/\(id)/vocals.mp3", drums: "stems/\(id)/drums.mp3",
+                           bass: "stems/\(id)/bass.mp3", other: "stems/\(id)/other.mp3"))
+    }
+    private func explicitRow(_ id: String, locked: Bool = false, variant: SongVariant = .explicit) -> SetlistPlayer.Item {
+        var i = item(id); i.variant = variant; i.editionLocked = locked; i.editionCatalogId = "cat-\(id)"; return i
+    }
+    private var vocalsMuted: StemLockState {
+        var st = StemLockState(); st.enabled = true; st.stemsOn = true; st.muted = ["vocals"]; return st
+    }
+
+    /// The pure rule: only a vocals-muted carry, only a PREFERENCE row whose edition has no rip,
+    /// only onto a ripped BASE cut with stems — never a clean-only restriction, never with the
+    /// vocals audible, never when the wanted edition is ripped.
+    func testVocalsMutedEditionSubstituteRule() async throws {
+        let r = try seqRig(["a"], mixDefault: false)
+        r.rips.setManifest(["a": stemmed("a"), "b": stemmed("b"), "n": .init(key: "rips/n.mp3", source: "digital"),
+                            "w": stemmed("w"), "w_explicit": stemmed("w_explicit")])
+        await startPlain(r, ["a"])
+        let b = explicitRow("b")
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(b), "no lock: the normal edition rule")
+        var audible = vocalsMuted; audible.muted = ["drums"]
+        r.seq.setStemLockForTesting(audible)
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(b), "vocals audible: never")
+        r.seq.setStemLockForTesting(vocalsMuted)
+        XCTAssertEqual(r.seq.vocalsMutedEditionSubstitute(b), "b")
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(explicitRow("b", locked: true, variant: .clean)),
+                     "a clean-only RESTRICTION never substitutes")
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(explicitRow("n")), "the base has no stems")
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(explicitRow("w")), "the wanted edition is ripped")
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(item("b")), "no edition requested")
+    }
+
+    /// The repro: an explicit row with only the base rip (+ stems) under a vocals-muted lock. The
+    /// lane plans the BASE cut, the dot fills only when that file is local, and the row's start
+    /// plays the base rip — never Apple Music — logging the substitution.
+    func testVocalsMutedLockPlaysTheBaseRipForAnUnrippedEdition() async throws {
+        let r = try seqRig(["a"], mixDefault: false)
+        r.rips.setManifest(["a": stemmed("a"), "b": stemmed("b")])
+        r.coord.appleMusicReadyOverrideForTests = true
+        r.coord.sourceOfSong = { $0 == "b" ? Config.appleMusicSourceName : nil }
+        let pf = NowPlayingPrefetcher()
+        pf.fetchSong = { _ in try? await Task.sleep(nanoseconds: 5_000_000_000); return false }
+        r.seq.prefetcher = pf
+        r.seq.prefetchSongFetchable = { _ in true }
+        r.seq.play([item("a"), explicitRow("b")])
+        await waitUntil("a streaming") { r.rips.nowPlaying?.songId == "a" }
+        r.player.simulateFirstAudioForTesting()
+        await waitUntil("start window closed") { !r.seq.isStartPending }
+        r.seq.setStemLockForTesting(vocalsMuted)
+        r.seq.setMixMode(true)
+        r.seq.replanPrefetch()
+        XCTAssertTrue(pf.isPlannedSong("b"), "the lane fetches the BASE cut")
+        XCTAssertFalse(pf.isPlannedSong("b_explicit"))
+        XCTAssertNotEqual(r.seq.mixModeBufferStrip().first?.dot, .local, "not local yet")
+        r.seq.skipNext()
+        await waitUntil("b resolved") { r.rips.nowPlaying?.songId == "b" }
+        XCTAssertEqual(r.coord.activeBackend, .ripServer, "the base rip — never Apple Music")
+        XCTAssertEqual(r.rips.nowPlaying?.url.path, "/rips/b.mp3", "the base cut's bytes")
+        XCTAssertEqual(r.seq.editionSubstitution?.id, "b")
+        XCTAssertNil(r.seq.editionSubstituteNote, "vocals muted: no note")
+        // Phase 2 swap-on-land: the BASE cut landing is the SAME bytes this play streams.
+        r.player.simulateFirstAudioForTesting()
+        await waitUntil("b's start window closed") { !r.seq.isStartPending }
+        let tmp = tempMP3("sl")
+        try (try noise).write(to: tmp)
+        XCTAssertNotNil(r.burns.adoptStreamedFile(songId: "b", title: "b", artist: "A", from: tmp, origin: .buffer))
+        XCTAssertTrue(r.seq.handOffCurrentToLocal(reason: "test"), "the edition match takes the substituted base cut")
+        XCTAssertTrue(r.rips.nowPlaying?.url.isFileURL ?? false)
+        // Un-muting mid-track keeps the local base file; the chip notes the edition.
+        r.seq.setStemLockForTesting(StemLockState(enabled: true, stemsOn: true, muted: [], volumes: [:]))
+        XCTAssertEqual(r.seq.editionSubstituteNote, "Clean edition")
+        XCTAssertEqual(r.rips.nowPlaying?.songId, "b")
+        XCTAssertEqual(r.seq.index, 1)
+    }
+
+    /// Mix Mode on: the substituted row STARTS in the DSP on the base cut's growing file (the lock
+    /// can mute its vocals) — not on Apple Music, even though its source is Apple Music.
+    func testVocalsMutedSubstitutionStartsOnTheBaseGrowingFile() async throws {
+        let data = try noise
+        let r = try seqRig(["a"], mixDefault: false)
+        r.rips.setManifest(["a": stemmed("a"), "b": stemmed("b")])
+        r.coord.sourceOfSong = { $0 == "b" ? Config.appleMusicSourceName : nil }
+        await startPlain(r, ["a"])
+        r.seq.play([item("a"), explicitRow("b")])
+        await waitUntil("a streaming") { r.rips.nowPlaying?.songId == "a" }
+        r.player.simulateFirstAudioForTesting()
+        await waitUntil("start window closed") { !r.seq.isStartPending }
+        r.seq.setStemLockForTesting(vocalsMuted)
+        r.seq.setMixMode(true)
+        let file = tempMP3("rb")
+        try feed(r.loader, "b", file, data, 0.95)
+        XCTAssertEqual(r.seq.mixModeBufferStrip().first?.dot, .queued, "its BASE rip will buffer (the edition's isn't ripped)")
+        r.seq.skipNext()
+        await waitUntil("b on the base growing file") { r.seq.index == 1 && r.seq.mixEngaged }
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertEqual(r.rips.nowPlaying?.url, file)
+        XCTAssertEqual(r.seq.editionSubstitution?.id, "b")
+    }
+
+    /// B: a dot is FULL only when the file the row WILL play is local — the start's own lookup
+    /// (unmemoized), so a burn whose file vanished never shows full; rule A's base cut counts
+    /// only while the lock mutes the vocals.
+    func testBufferDotsAreEditionAwareAndMatchTheStart() async throws {
+        let r = try seqRig(["a"], mixDefault: false)
+        r.rips.setManifest(["a": stemmed("a"), "b": stemmed("b"), "c": stemmed("c")])
+        let cuts = GrowLiveFlag()
+        r.seq.prefetchedCutFile = { id in (id == "c" && cuts.on) ? URL(fileURLWithPath: "/tmp/c-cut.mp3") : nil }
+        r.seq.play([item("a"), item("b"), explicitRow("c", locked: true, variant: .clean)])
+        await waitUntil("a streaming") { r.rips.nowPlaying?.songId == "a" }
+        r.seq.setMixMode(true)
+        let tmp = tempMP3("db")
+        try (try noise).write(to: tmp)
+        let burned = try XCTUnwrap(r.burns.adoptStreamedFile(songId: "b", title: "b", artist: "A", from: tmp, origin: .buffer))
+        XCTAssertEqual(r.seq.mixModeBufferStrip()[0].dot, .local)
+        try FileManager.default.removeItem(at: burned)      // the file went away (the memo didn't)
+        XCTAssertNotEqual(r.seq.mixModeBufferStrip()[0].dot, .local, "never full for a file the start can't open")
+        // A clean-only row: the base cut's prefetched copy is NOT what it will play.
+        cuts.on = true
+        XCTAssertNotEqual(r.seq.mixModeBufferStrip()[1].dot, .local, "another edition's copy never fills the dot")
+    }
+
+    /// A rip landing for a window row re-plans the lane (its song + stems buffer next).
+    func testRipLandingReplansTheLane() async throws {
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        let pf = NowPlayingPrefetcher()
+        r.seq.prefetcher = pf
+        var fetchable: Set<String> = []
+        r.seq.prefetchSongFetchable = { fetchable.contains($0) }
+        pf.fetchSong = { _ in try? await Task.sleep(nanoseconds: 5_000_000_000); return false }
+        await startPlain(r, ["a", "x", "b"])
+        r.seq.setMixMode(true)
+        r.seq.replanPrefetch()
+        XCTAssertFalse(pf.isPlannedSong("x"))
+        r.rips.setManifest(["a": .init(key: "rips/a.mp3", source: "digital"), "b": .init(key: "rips/b.mp3", source: "digital"),
+                            "x": .init(key: "rips/x.mp3", source: "digital")])
+        fetchable = ["x", "b"]
+        r.seq.noteRipLanded("x")
+        await waitUntil("x planned") { pf.isPlannedSong("x") }
     }
 }
 

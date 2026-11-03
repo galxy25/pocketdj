@@ -118,6 +118,12 @@ final class BurnStore {
         /// one — after a folder switch a same-named file in the NEW folder is not ours, so the
         /// asset is released (kept, pinned) instead.
         var userFolderPath: String? = nil
+        /// FILE identity of each user-folder asset this hold lists: file name → its modification
+        /// time (epoch ms) when the buffer lane wrote it. The sweep deletes a user-folder file only
+        /// while it is still THAT file — one rewritten since (another device's download into a
+        /// shared folder, a user edit) is not ours any more and is released (kept). nil for app
+        /// storage and for holds written before 2026-11-02 (path + folder checks only).
+        var userFolderFiles: [String: Double]? = nil
 
         /// The bytes this hold accounts for (cap planning / the Storage section).
         var bytes: Int {
@@ -558,7 +564,10 @@ final class BurnStore {
             // REVIEW MUST (2026-11-02): a file already at this name with no ledger row (a lost or
             // purged ledger, a tvOS orphan, a pre-feature download) was NOT created by this call.
             // The bytes are replaced as before, but the buffer lane never makes it temporary.
+            // …and an EVICTED iCloud copy at that name (another device's download, not on this
+            // device yet: only its `.<name>.icloud` placeholder is here) is pre-existing too.
             let preExisting = fm.fileExists(atPath: audioURL.path)
+            let evictedCopy = folder.isUserFolder && Self.hasEvictedICloudPlaceholder(audioURL)
             let analogShared = entry.source == "analog" && preExisting
             if !analogShared {
                 if preExisting { try fm.removeItem(at: audioURL) }
@@ -580,14 +589,14 @@ final class BurnStore {
                 cutFileName: prev?.cutFileName, cutDownloadedAt: prev?.cutDownloadedAt)
             save()
             if origin == .buffer && !explicitOwned {
-                if preExisting {
+                if preExisting || evictedCopy {
                     // Already on disk (a sibling's shared analog side, or an orphaned earlier
                     // download): not created here, so never temporary — an orphan side with no
                     // other row referencing it would otherwise be deleted by the sweep.
                     DiagLog.shared.log("storage", "buffer keep \(songId) (audio already on disk)")
                 } else {
                     noteBufferCreated(songId: songId, audioBytes: size,
-                                      inUserFolder: folder.isUserFolder, folderURL: dir)
+                                      inUserFolder: folder.isUserFolder, folderURL: dir, fileURL: audioURL)
                 }
             }
             onAnyBurnFinalized?(songId, size)
@@ -682,21 +691,33 @@ final class BurnStore {
     /// earlier). TTL "Keep" ⇒ no hold: the asset is a normal download from birth.
     private func noteBufferCreated(songId: String, audioBytes: Int? = nil, stemPart: String? = nil,
                                    stemBytes: Int = 0, inUserFolder: Bool = false,
-                                   folderURL: URL? = nil) {
+                                   folderURL: URL? = nil, fileURL: URL? = nil) {
         guard let ttl = bufferTTLHours else {
             DiagLog.shared.log("storage", "buffer keep \(songId) (TTL=Keep — pinned at creation)")
             return
         }
-        // REVIEW MUST (2026-11-02): a USER-PICKED burn folder may be shared — an iCloud Drive
-        // folder, an external drive moved between Macs. The ledger is per device, so another
-        // device's EXPLICIT download of the same song reuses this file by name (`burnStems`
-        // returns existing parts; `burn` overwrites in place) and this device's sweep would
-        // delete it from under that device. Nothing written to a user folder is ever made
-        // temporary: it stays a normal download (today's Stem Lock behaviour). Only the app's
-        // own storage, which no other device can see, carries holds.
-        if inUserFolder {
-            DiagLog.shared.log("storage", "buffer keep \(songId) (user-picked folder may be shared — pinned at creation)")
+        // USER-PICKED burn folders (Levi 2026-11-02, reversing the phase-1 review's "pinned at
+        // creation"): by default what OUR buffer lane created there is tracked exactly like app
+        // storage — the folder (path) and each file's identity (name + modification time) go in
+        // the hold, and the sweep cleans them up on expiry. A picked folder may be shared with
+        // another device; "it's up to the user to know it is shared". Still never temporary: a
+        // file that pre-existed (callers never report one), anything an explicit action on THIS
+        // device pinned (`pin`), and — at sweep time — a file rewritten since we wrote it. The
+        // Settings ▸ Storage switch "Keep buffered files in shared/picked folders" restores the
+        // old rule (pinned at creation).
+        if inUserFolder, settings?.npMixKeepPickedFolderBuffers == true {
+            DiagLog.shared.log("storage", "buffer keep \(songId) (picked folder — Keep buffered files in picked folders is on)")
             return
+        }
+        // A picked-folder file whose identity can't be read can't be proven ours at sweep time:
+        // never temporary (the sweep would otherwise fall back to path-only rules).
+        var mtime: Double = 0
+        if inUserFolder, let fileURL {
+            guard let m = Self.modificationMs(fileURL) else {
+                DiagLog.shared.log("storage", "buffer keep \(songId) (picked-folder file identity unreadable — pinned at creation)")
+                return
+            }
+            mtime = m
         }
         let now = clockMs()
         let expires = now + ttl * 3_600_000
@@ -711,8 +732,14 @@ final class BurnStore {
                 h.stemParts.removeAll { (h.stemPartsInUserFolder ?? []).contains($0) }
                 h.stemPartsInUserFolder = nil
                 if h.audio, items[songId]?.wasAppStorage == false { h.audio = false; h.audioBytes = nil }
+                h.userFolderFiles = nil
             }
             h.userFolderPath = path
+            if let fileURL {
+                var files = h.userFolderFiles ?? [:]
+                files[fileURL.lastPathComponent] = mtime
+                h.userFolderFiles = files
+            }
         }
         if let audioBytes { h.audio = true; h.audioBytes = audioBytes }
         if let part = stemPart {
@@ -726,6 +753,53 @@ final class BurnStore {
         save()
         DiagLog.shared.log("storage", "hold \(songId) audio=\(h.audio ? 1 : 0) stems=\(h.stemParts.joined(separator: ",")) expires=\(Int(h.expiresAtMs))")
         onTemporaryHoldsChanged?()
+    }
+
+    /// iCloud Drive keeps an EVICTED file (synced from another device, its bytes not on this one)
+    /// as a hidden `.<name>.icloud` placeholder: `fileExists` at the real name says no, yet the
+    /// file exists — writing it here REPLACES the other device's copy in the shared folder.
+    /// The buffer lane therefore never makes such a file temporary (deleting it would delete
+    /// theirs everywhere).
+    nonisolated static func hasEvictedICloudPlaceholder(_ url: URL) -> Bool {
+        let stub = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).icloud")
+        return FileManager.default.fileExists(atPath: stub.path)
+    }
+
+    /// An EXPLICIT action on THIS device claims a file that already sits in a picked folder (an
+    /// explicit stems download reuses existing parts as-is): bump its modification time, so
+    /// another device that buffered the same file into the shared folder sees it REWRITTEN and
+    /// its sweep releases it instead of deleting this device's download
+    /// (`userFolderFileIsOurs`). App storage is per device: never touched.
+    private func claimExistingPickedFolderFiles(_ urls: some Sequence<URL>) {
+        let app = appBurnsDir()?.standardizedFileURL.path
+        let fm = FileManager.default
+        var n = 0
+        for u in urls {
+            let p = u.standardizedFileURL.path
+            if let app, p == app || p.hasPrefix(app + "/") { continue }
+            // Strictly past the identity tolerance (± 2 s) even right after the other write.
+            let was = (try? fm.attributesOfItem(atPath: u.path))?[.modificationDate] as? Date
+            let stamp = max(Date(), (was ?? .distantPast).addingTimeInterval(3))
+            if (try? fm.setAttributes([.modificationDate: stamp], ofItemAtPath: u.path)) != nil { n += 1 }
+        }
+        if n > 0 { DiagLog.shared.log("storage", "claim n=\(n) picked-folder file(s) for an explicit action") }
+    }
+
+    /// A file's modification time, epoch ms (nil when it can't be read).
+    nonisolated static func modificationMs(_ url: URL) -> Double? {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date)
+            .map { $0.timeIntervalSince1970 * 1000 }
+    }
+
+    /// Is the user-folder file at `url` still the one this hold's buffer lane wrote? A recorded
+    /// identity must match (± 2 s — coarse filesystems); a file rewritten since is someone
+    /// else's. A hold with no recorded identity for it (pre-2026-11-02) keeps the old
+    /// path-only rule. A missing file is trivially "ours" (deleting nothing is safe).
+    private static func userFolderFileIsOurs(_ url: URL, in h: TemporaryHold) -> Bool {
+        guard let files = h.userFolderFiles else { return true }   // a pre-identity hold: path rules only
+        guard let recorded = files[url.lastPathComponent] else { return false }   // never recorded: not provably ours
+        guard let now = modificationMs(url) else { return true }
+        return abs(now - recorded) <= 2_000
     }
 
     /// What one `removeTemporaryAssets` call did.
@@ -766,6 +840,15 @@ final class BurnStore {
                 audioDone.insert(id)
                 continue
             }
+            if item.wasAppStorage == false, !item.audioFileName.isEmpty,
+               !Self.userFolderFileIsOurs(resolved.url.appendingPathComponent(item.audioFileName), in: h) {
+                // Rewritten since our buffer lane wrote it (another device's download into a
+                // shared folder): not ours any more — release (keep the file and its row).
+                DiagLog.shared.log("storage", "sweep release \(id) audio (picked-folder file changed since buffered)")
+                if resolved.scoped { resolved.url.stopAccessingSecurityScopedResource() }
+                audioDone.insert(id)
+                continue
+            }
             goners[id] = resolved
         }
         let survivorAudio = Set(items.values.filter { goners[$0.songId] == nil }.map(\.audioFileName))
@@ -799,7 +882,12 @@ final class BurnStore {
                 guard Self.stemNames.contains(part) else { continue }   // unknown name: release
                 if inUser.contains(part), user != nil, userPath != h.userFolderPath { continue }   // folder switched: release
                 guard let root = inUser.contains(part) ? user?.url : appDir else { keptParts.append(part); continue }
-                try? fm.removeItem(at: root.appendingPathComponent(Self.stemFileName(id, part)))
+                let partURL = root.appendingPathComponent(Self.stemFileName(id, part))
+                if inUser.contains(part), !Self.userFolderFileIsOurs(partURL, in: h) {
+                    DiagLog.shared.log("storage", "sweep release \(id) \(part) (picked-folder file changed since buffered)")
+                    continue                                    // released: kept on disk, dropped from the hold
+                }
+                try? fm.removeItem(at: partURL)
                 out.bytes += h.stemBytes?[part] ?? 0
             }
             if audioDone.contains(id) {
@@ -811,6 +899,7 @@ final class BurnStore {
             h.stemBytes = h.stemBytes?.filter { keptParts.contains($0.key) }
             h.stemPartsInUserFolder = h.stemPartsInUserFolder?.filter { keptParts.contains($0) }
             if h.isEmpty {
+                h.userFolderFiles = nil
                 temporaryHolds[id] = nil
                 out.songs += 1
             } else {
@@ -1059,7 +1148,10 @@ final class BurnStore {
     func burnStems(forSong songId: String, origin: AssetOrigin = .explicit("stems")) async -> (urls: [String: URL], release: (() -> Void)?)? {
         if case let .explicit(why) = origin { pin(songIds: [songId], reason: why) }
         defer { if case let .explicit(why) = origin { pin(songIds: [songId], reason: why) } }
-        if let existing = localStemURLs(forSong: songId) { return existing }   // scope held by the read
+        if let existing = localStemURLs(forSong: songId) {                 // scope held by the read
+            if case .explicit = origin { claimExistingPickedFolderFiles(existing.urls.values) }
+            return existing
+        }
         guard let remote = rips.stemURLs(forSong: songId),
               let folder = resolveBurnFolder(allowRePersist: true) else { return nil }
         let dir = folder.url
@@ -1071,16 +1163,23 @@ final class BurnStore {
         for name in Self.stemNames {
             guard let url = remote[name] else { return bail() }
             let dest = dir.appendingPathComponent(Self.stemFileName(songId, name))
-            if FileManager.default.fileExists(atPath: dest.path) { local[name] = dest; continue }
+            if FileManager.default.fileExists(atPath: dest.path) {
+                if case .explicit = origin, folder.isUserFolder { claimExistingPickedFolderFiles([dest]) }
+                local[name] = dest; continue
+            }
+            // An EVICTED iCloud copy (another device's file, not downloaded here) is already there.
+            let evicted = folder.isUserFolder && Self.hasEvictedICloudPlaceholder(dest)
             do {
                 let data = try await rips.downloadBytes(url)
                 // Landed by someone else while we downloaded: theirs stands (and keeps its status).
                 if FileManager.default.fileExists(atPath: dest.path) { local[name] = dest; continue }
                 try data.write(to: dest, options: .atomic)
                 local[name] = dest
-                if origin == .buffer {
+                if origin == .buffer, evicted {
+                    DiagLog.shared.log("storage", "buffer keep \(songId) \(name) (an evicted iCloud copy was already there)")
+                } else if origin == .buffer {
                     noteBufferCreated(songId: songId, stemPart: name, stemBytes: data.count,
-                                      inUserFolder: folder.isUserFolder, folderURL: dir)
+                                      inUserFolder: folder.isUserFolder, folderURL: dir, fileURL: dest)
                 }
             } catch { return bail() }
         }
@@ -1133,7 +1232,12 @@ final class BurnStore {
         let dir = folder.url
         defer { if folder.scoped { dir.stopAccessingSecurityScopedResource() } }
         let dest = dir.appendingPathComponent(Self.stemFileName(songId, part))
-        if FileManager.default.fileExists(atPath: dest.path) { return true }
+        if FileManager.default.fileExists(atPath: dest.path) {
+            if case .explicit = origin, folder.isUserFolder { claimExistingPickedFolderFiles([dest]) }
+            return true
+        }
+        // An EVICTED iCloud copy (another device's file, not downloaded here) is already there.
+        let evicted = folder.isUserFolder && Self.hasEvictedICloudPlaceholder(dest)
         do {
             let data = try await rips.downloadBytes(url)
             guard !Task.isCancelled else { return false }
@@ -1141,9 +1245,11 @@ final class BurnStore {
             // stands — the check and the write share one main-actor turn, so it can't race.
             if FileManager.default.fileExists(atPath: dest.path) { return true }
             try data.write(to: dest, options: .atomic)
-            if origin == .buffer {
+            if origin == .buffer, evicted {
+                DiagLog.shared.log("storage", "buffer keep \(songId) \(part) (an evicted iCloud copy was already there)")
+            } else if origin == .buffer {
                 noteBufferCreated(songId: songId, stemPart: part, stemBytes: data.count,
-                                  inUserFolder: folder.isUserFolder, folderURL: dir)
+                                  inUserFolder: folder.isUserFolder, folderURL: dir, fileURL: dest)
             }
             return true
         } catch { return false }
@@ -1169,9 +1275,15 @@ final class BurnStore {
         let fm = FileManager.default
         var out: [String: URL] = [:]
         var moved: [(from: URL, to: URL)] = []
+        var evicted = Set<String>()
         for (name, src) in files {
             let dest = dir.appendingPathComponent(Self.stemFileName(songId, name))
-            if fm.fileExists(atPath: dest.path) { out[name] = dest; continue }
+            if fm.fileExists(atPath: dest.path) {
+                if case .explicit = origin, folder.isUserFolder { claimExistingPickedFolderFiles([dest]) }
+                out[name] = dest; continue
+            }
+            // An EVICTED iCloud copy is already there: replaced here, but never ours to expire.
+            if folder.isUserFolder, Self.hasEvictedICloudPlaceholder(dest) { evicted.insert(name) }
             do { try fm.moveItem(at: src, to: dest) } catch {
                 DiagLog.shared.log("error", "mixstream adopt stems \(songId)/\(name) failed: \(error.localizedDescription)")
                 for m in moved { try? fm.moveItem(at: m.to, to: m.from) }   // roll back: no half-adopted set
@@ -1184,9 +1296,13 @@ final class BurnStore {
             for m in moved {
                 guard let name = Self.stemNames.first(where: { m.to.lastPathComponent == Self.stemFileName(songId, $0) })
                 else { continue }
+                if evicted.contains(name) {
+                    DiagLog.shared.log("storage", "buffer keep \(songId) \(name) (an evicted iCloud copy was already there)")
+                    continue
+                }
                 let size = ((try? fm.attributesOfItem(atPath: m.to.path))?[.size] as? Int) ?? 0
                 noteBufferCreated(songId: songId, stemPart: name, stemBytes: size,
-                                  inUserFolder: folder.isUserFolder, folderURL: dir)
+                                  inUserFolder: folder.isUserFolder, folderURL: dir, fileURL: m.to)
             }
         }
         return out

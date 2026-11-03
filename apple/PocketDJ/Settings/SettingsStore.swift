@@ -232,6 +232,12 @@ final class SettingsStore {
     var npMixCellular: String?
     /// "Start new sessions in Mix Mode" (Levi's Q4 default: OFF — Mix Mode is per session).
     var npMixModeDefaultOn: Bool?
+    /// "Keep buffered files in shared/picked folders" (Levi 2026-11-02: default OFF). OFF ⇒ a
+    /// buffer asset the lane CREATED in a user-picked burn folder is temporary like one in app
+    /// storage (its folder + file identity recorded in the hold) and expires on schedule — "it's
+    /// up to the user to know it is shared". ON ⇒ those assets are pinned at creation (the phase-1
+    /// review rule). App storage is unaffected either way. nil ⇒ off.
+    var npMixKeepPickedFolderBuffers: Bool?
     /// Epoch ms of the last temporary-asset sweep START (stamped first — the 10-23 lesson).
     var lastTemporarySweepAt: Double?
 
@@ -551,6 +557,7 @@ final class SettingsStore {
         self.npMixBufferAhead = data.npMixBufferAhead
         self.npMixCellular = data.npMixCellular
         self.npMixModeDefaultOn = data.npMixModeDefaultOn
+        self.npMixKeepPickedFolderBuffers = data.npMixKeepPickedFolderBuffers
         self.lastTemporarySweepAt = data.lastTemporarySweepAt
         self.debugLoggingEnabled = data.debugLoggingEnabled ?? false
         self.remoteTelemetryEnabled = data.remoteTelemetryEnabled ?? false
@@ -788,7 +795,8 @@ final class SettingsStore {
             lastTemporarySweepAt: lastTemporarySweepAt,
             npMixBufferAhead: npMixBufferAhead,
             npMixCellular: npMixCellular,
-            npMixModeDefaultOn: npMixModeDefaultOn)
+            npMixModeDefaultOn: npMixModeDefaultOn,
+            npMixKeepPickedFolderBuffers: npMixKeepPickedFolderBuffers)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -843,6 +851,7 @@ final class SettingsStore {
         npMixBufferAhead = d.npMixBufferAhead
         npMixCellular = d.npMixCellular
         npMixModeDefaultOn = d.npMixModeDefaultOn
+        npMixKeepPickedFolderBuffers = d.npMixKeepPickedFolderBuffers
         lastTemporarySweepAt = d.lastTemporarySweepAt
         debugLoggingEnabled = d.debugLoggingEnabled ?? false
         // The capture buffer follows its setting on reset, exactly as DebugView's toggle does —
@@ -1061,6 +1070,8 @@ struct SettingsData: Codable {
     var npMixCellular: String? = nil
     /// Optional so older blobs still decode — start new sessions in Mix Mode (nil ⇒ off).
     var npMixModeDefaultOn: Bool? = nil
+    /// Optional so older blobs still decode — keep buffered files in a picked folder (nil ⇒ off).
+    var npMixKeepPickedFolderBuffers: Bool? = nil
 
     static let `default` = SettingsData(
         // No shipped default catalog source — same reasoning as the blank rip/jukebox URLs
