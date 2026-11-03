@@ -113,6 +113,9 @@ final class PlaybackSessionStore {
         /// The session's NOW PLAYING MIX MODE (np-mix-mode §4.6) — optional/defaulted like the
         /// Stem Lock (nil = off), so no schema bump. The flag only: buffers are per device.
         var npMixMode: NPMixModeState? = nil
+        /// The session's FX LOCK + the effects it carries (`FXLockState`) — optional/defaulted
+        /// like the Stem Lock (nil = lock off), so no schema bump.
+        var fxLock: FXLockState? = nil
         /// Epoch ms of the last write (informational — a session never expires on its own).
         var updatedAt: Double
     }

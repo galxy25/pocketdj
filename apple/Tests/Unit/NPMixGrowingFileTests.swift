@@ -1498,6 +1498,124 @@ final class NPMixGrowingFileTests: XCTestCase {
     }
 }
 
+// MARK: - FX Lock on the Mix Mode paths (growing start, Apple Music, Mix tab, swap-on-land)
+
+extension NPMixGrowingFileTests {
+    private func reverbLock(_ strength: Double = 0.6) -> FXLockState {
+        FXLockState(enabled: true, effects: [MixEngine.Effect.reverb.rawValue: .init(on: true, strength: strength)])
+    }
+
+    /// The GROWING-FILE DSP start (phase 3) carries the locked effects: the next row starts in the
+    /// DSP on its buffer stream with them on (ramped in), no touch.
+    func testFXLockCarriesOntoTheGrowingFileStart() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"])
+        try feed(r.loader, "a", tempMP3("fxa"), data, 0.6)
+        try feed(r.loader, "b", tempMP3("fxb"), data, 0.6)
+        r.seq.play([item("a"), item("b")])
+        await waitUntil("a on the growing file") { r.seq.mixEngaged }
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        r.dsp.setEffectStrength(.reverb, 0.6)
+        r.dsp.setEffect(.reverb, enabled: true)
+        r.dsp.setRate(0.9)
+        r.seq.setFXLock(true)
+        r.seq.skipNext()
+        await waitUntil("b on its growing file") { r.seq.mixEngaged && r.dsp.loadedSongId == "b" }
+        XCTAssertEqual(r.seq.growingStartCount, 2)
+        XCTAssertTrue(r.dsp.isStreamingMain || r.rips.nowPlaying?.url.isFileURL == true)
+        XCTAssertTrue(r.dsp.isEnabled(.reverb))
+        XCTAssertEqual(r.dsp.rate, 1, accuracy: 1e-9, "tempo never carries")
+        XCTAssertEqual(r.seq.fxLockIndicator, .applied)
+        await waitUntil("ramp landed") { !r.dsp.effectRampInFlight }
+        XCTAssertEqual(r.dsp.reverbWetDryMix, 60, accuracy: 0.01)
+        XCTAssertFalse(r.dsp.reverbBypassed)
+    }
+
+    /// APPLE MUSIC ROW: the lock is kept but DORMANT on the stream ("waiting" — dry, MusicKit is
+    /// out of process) and never moves the row by itself (Q1); the TOUCH hand-off brings the
+    /// carried effects up on the local copy the moment the DSP owns it.
+    func testFXLockWaitsOnAnAppleMusicRowThenAppliesOnTheTouchHandOff() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        r.seq.setFXLockForTesting(reverbLock())
+        putOnAppleMusic(r, "a", at: 3)
+        XCTAssertEqual(r.seq.fxLockIndicator, .waiting, "Apple Music: dry for now, lock kept")
+        XCTAssertFalse(r.seq.mixEngaged)
+        XCTAssertFalse(r.dsp.isEngaged)
+        XCTAssertTrue(r.dsp.isEnabled(.reverb), "the panel shows what will apply")
+        try feed(r.loader, "a", tempMP3("fxam"), data, 0.95)
+        r.seq.setMixMode(true)
+        XCTAssertTrue(r.seq.currentTrackMixable)
+        await pause(0.1)
+        XCTAssertEqual(r.coord.activeBackend, .appleMusic, "the lock never cuts an Apple Music row over on its own")
+        XCTAssertFalse(r.seq.mixEngaged)
+        r.seq.engageMix()                                    // the touch
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertEqual(r.seq.amHandOffCount, 1)
+        XCTAssertTrue(r.seq.mixEngaged)
+        XCTAssertTrue(r.dsp.isEnabled(.reverb))
+        XCTAssertEqual(r.seq.fxLockIndicator, .applied)
+        await waitUntil("ramp landed") { !r.dsp.effectRampInFlight }
+        XCTAssertEqual(r.dsp.reverbWetDryMix, 60, accuracy: 0.01)
+        XCTAssertTrue(r.seq.fxLock.wantsFX, "the lock carries on")
+    }
+
+    /// MIX TAB live: one DSP surface — the engagement is torn down, the lock goes DORMANT (kept,
+    /// never engaging the next row), and wakes as "waiting" once the Mix tab stops.
+    func testFXLockIsDormantWhileTheMixTabIsLive() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"])
+        let live = GrowLiveFlag()
+        r.seq.mixSessionActive = { live.on }
+        try feed(r.loader, "a", tempMP3("fxm"), data, 0.6)
+        try feed(r.loader, "b", tempMP3("fxmb"), data, 0.6)
+        r.seq.play([item("a"), item("b")])
+        await waitUntil("a on the growing file") { r.seq.mixEngaged }
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        r.dsp.setEffect(.filter, enabled: true)
+        r.seq.setFXLock(true)
+        live.on = true
+        await waitUntil("torn down") { !r.seq.mixEngaged }
+        XCTAssertEqual(r.seq.fxLockIndicator, .dormant)
+        XCTAssertFalse(r.dsp.isEngaged)
+        XCTAssertTrue(r.seq.fxLock.wantsFX, "the lock is kept")
+        r.seq.skipNext()
+        await waitUntil("b playing") { r.rips.nowPlaying?.songId == "b" }
+        await pause(0.1)
+        XCTAssertFalse(r.seq.mixEngaged, "dormant: no engage under a live Mix tab")
+        XCTAssertFalse(r.dsp.isPlaying, "no hidden second audio source")
+        XCTAssertEqual(r.seq.fxLockIndicator, .dormant)
+        live.on = false
+        XCTAssertEqual(r.seq.fxLockIndicator, .waiting, "the Mix tab stopped: applies on the next DSP take-over")
+        XCTAssertTrue(r.dsp.isEnabled(.filter), "…with the carried effects")
+    }
+
+    /// The Mix Mode SWAP-ON-LAND (phase 2): the playing stream's bytes land as a local file — the
+    /// FX Lock takes it straight into the DSP at the same position with the carried effects.
+    func testFXLockTakesTheSwapOnLandIntoTheDSP() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        r.seq.setFXLockForTesting(FXLockState(enabled: true, effects: [MixEngine.Effect.compressor.rawValue: .init(on: true, strength: 0.5)]))
+        XCTAssertEqual(r.seq.fxLockIndicator, .waiting, "a plain stream: dry for now")
+        r.seq.setMixMode(true)
+        let tmp = tempMP3("fxland")
+        try data.write(to: tmp)
+        XCTAssertNotNil(r.burns.adoptStreamedFile(songId: "a", title: "a", artist: "A", from: tmp, origin: .buffer))
+        r.player.clock.currentTime = 2
+        XCTAssertTrue(r.seq.handOffCurrentToLocal(reason: "test"))
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(r.seq.mixEngaged, "the lock engages the landed file at once")
+        XCTAssertEqual(r.dsp.loadedSongId, "a")
+        XCTAssertEqual(r.dsp.currentTime, 2, accuracy: 0.3, "same song position")
+        XCTAssertTrue(r.dsp.isEnabled(.compressor))
+        XCTAssertEqual(r.seq.fxLockIndicator, .applied)
+        XCTAssertEqual(r.seq.index, 0)
+        XCTAssertEqual(r.seq.handOffCount, 1)
+    }
+}
+
 @MainActor
 @Observable
 private final class GrowLiveFlag { var on = false }
