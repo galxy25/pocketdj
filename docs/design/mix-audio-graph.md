@@ -223,9 +223,35 @@ handover (`advanceStemHandover` / `cutToStems` / `cutToFullMix`, built on `StemS
   pump's re-open throttle); a 10 Hz monitor (only while partial stems are on air or a handover is
   pending) hands back to the full song `underrunLead` (1 s) before their frontier, keeping the
   request so they re-engage with 4 s of runway. A failed stem stream drops a pending request or
-  hands on-air stems back. The full song is always a COMPLETE local file here
-  (`SetlistPlayer.currentTrackMixable` gates on it), so the full song never holds; the
-  `.toFullMix` path still checks its runway (`setMainFrontierForTesting` exercises it).
+  hands on-air stems back. The full song is a complete local file — OR, in Mix Mode (np-mix-mode
+  phase 3), a GROWING one (see "The full song while it downloads" below), so the full song can
+  HOLD for bytes too, and the `.toFullMix` path's runway check is live code (a stems → full song
+  handover waits for the growing song's runway exactly like the Mix deck's).
+- **The full song while it downloads** (`NowPlayingDSP.engageStreaming`, phase 3): the player
+  plays a `MixStreamLoader` buffer stream's growing mp3 with the Mix deck's rules, SHARED through
+  `GrowingFileSchedule` (`apple/PocketDJ/Playback/GrowingFileSchedule.swift`, beside `StemSync` —
+  `MixEngine.pumpStream` and the tick's underrun check call the same functions):
+  - unattached until the header is readable (provisional catalog duration), then `player →
+    inputMixer` is reconnected ONCE at the file's format (the deck's per-load rule);
+  - the voice is NEVER scheduled past the frontier (bytes → frames at the header's byte rate −
+    the 1.5 s torn-frame margin); every schedule re-opens the file (an open sees only the bytes
+    present at open time) and only a segment that reaches the window's END arms the end handler;
+  - a start / resume / seek without runway HOLDS (`isBuffering`: nothing scheduled, playhead
+    frozen at `pausedAt`, play intent kept, the ENGINE kept running so the session — and a locked
+    phone — stay alive); the loader's song fan-in (`MixStreamLoader.addProgressListener` →
+    `pumpMain`) resumes it with 2 s of runway at a track start, 4 s after an underrun / seek;
+  - the voice on air gets the next stretch APPENDED from a fresh open (1 s chunks while the runway
+    is short, 15 s once comfortable); the 10 Hz monitor also watches a growing song on air and
+    holds it `underrunLead` (50 ms) before the end of what it could schedule;
+  - a pending stems handover may carry a held song (complete stems start at once);
+  - complete: the adopted burn (re-acquired under its scope) replaces the partial — an ordinary
+    local file from then on (`onMainStreamFinished`);
+  - dead (`failed`): what arrived is FINAL (`mainTruncated`). Stems on air keep carrying (a
+    "back to the full song" request is dropped); a full song on air plays to its last frame and a
+    held one stops at once — then the row goes back to the host (`onMainStreamFailed`, the plain
+    stream) instead of a fake end.
+  Every hold / resume stops / reschedules through `stopVoices` (generation first), so a flushed
+  frontier segment can never fake an end.
 - **The end-of-track generation** (`generation`, guarding `handleReachedEnd` →
   `SetlistPlayer.handleDSPEnded` → advance) is bumped ONLY at a handover's COMMIT — before the
   incoming voice is scheduled (so it captures the new generation), after the outgoing one is known
@@ -245,8 +271,13 @@ handover (`advanceStemHandover` / `cutToStems` / `cutToFullMix`, built on `StemS
   (`NowPlayingDSP.rebuildAfterMediaReset`, driven by `SetlistPlayer.handleMediaServicesReset`
   after it put the track back on the AVPlayer); the fresh graph builds lazily on the next engage —
   without it, every later engage (each Stem Lock track start) "played" into an orphaned graph.
+- **Seek** (`NowPlayingDSP.seek(toSongSeconds:)`): the card / CarPlay / inline scrubber reach the
+  DSP through `PlayerEngine`'s external `seek` closure (before, a scrub while engaged hit the idle
+  AVPlayer and did nothing). Playing: rescheduled from the target on whichever voice the intent
+  asks for and can carry it; past a growing file's frontier it HOLDS at the target.
 - **Test seams:** `captureForTesting()` taps `inputMixer` (installed on first use only),
   `stemStartFramesForTesting()`, `setMainFrontierForTesting` / `releaseMainFrontierForTesting`,
+  `mainFrontierSecondsForTesting` / `mainScheduledEndSecondsForTesting`,
   `simulateEngineStopForTesting`, `simulateInterruptionForTesting`.
 
 ### Stem Lock — carrying the stem set across tracks (Now Playing only)
@@ -305,15 +336,15 @@ the current playback SESSION (`SetlistPlayer.stemLock`, model in
 
 ## Now Playing Mix Mode (`docs/design/np-mix-mode.md`)
 
-Phases 1–2 are BUILT (no graph change); phases 3–5 below are still planned. Keep this section in
-step with the phases as they land.
+Phases 1–3 are BUILT (no graph change — phase 3 changed SCHEDULING only); phases 4–5 below are
+still planned. Keep this section in step with the phases as they land.
 
 - **Phases 1–2 changed no graph.** Mix Mode (`SetlistPlayer.mixMode`, the `np-mix-mode` switch on
   the panel header) buffers the current + upcoming rows into local files (TEMPORARY burns, phase-1
   holds) through the same one-at-a-time lane the Stem Lock uses (`NowPlayingPrefetcher`), so the
   `NowPlayingDSP` chain above can take any track. Engagement stays swap-on-touch (Q2); the Stem
-  Lock still engages at track start. The full song is still always a COMPLETE local file when the
-  DSP opens it.
+  Lock still engages at track start. (Phases 1–2: the full song is a COMPLETE local file when the
+  DSP opens it; phase 3 below adds the growing one.)
 - **Swap-on-land is a source switch outside the graph.** A current row streaming from its
   presigned rip URL moves onto the identical local file at the same song position when the buffer
   lands (`SetlistPlayer.handOffCurrentToLocal`) — an AVPlayer reload whose render is held until
@@ -325,12 +356,16 @@ step with the phases as they land.
   rebuilt on the next engage.
 - **One DSP surface at a time** still holds: a live Mix-tab session tears the engagement down (F4)
   AND suspends Mix Mode's buffering until it stops.
-- **Phase 3 changes scheduling, not topology.** The Mix deck's growing-file scheduling (segments to
-  the byte frontier, `streamHolding`, pump on byte growth, truncation of a dead stream) moves into a
-  shared helper beside `StemSync` (`GrowingFileSchedule`) used by both `MixEngine` and
-  `NowPlayingDSP`. Then the sentence above, "the full song is always a COMPLETE local file here",
-  stops being true: a Now Playing main can hold for bytes exactly like a streaming Mix deck, and the
-  `.toFullMix` runway check becomes live code instead of a test-only path.
+- **Phase 3 (BUILT) changed scheduling, not topology.** The Mix deck's growing-file decisions
+  (attach window, byte frontier, hold → resume runway, append chunking, underrun) are the shared
+  `GrowingFileSchedule` used by both `MixEngine` and `NowPlayingDSP` (see "The full song while it
+  downloads" above). With Mix Mode on, a ripped row that isn't local STARTS in the DSP on its
+  buffer stream (`SetlistPlayer.startOnGrowingFile` — no presigned AVPlayer download of the same
+  bytes); a row already on its presigned stream moves onto the growing file on the first control
+  TOUCH once the buffer covers the playhead (`engageGrowingFromStream`, the DSP probes first and
+  refuses touching nothing). A Now Playing main can now hold for bytes exactly like a streaming
+  Mix deck. Backstops outside the graph: the start watchdog (no first audio ⇒ hop / advance) and a
+  mid-song hold > 20 s / a dead stream ⇒ the row back on its plain stream at the same position.
 - **Phase 4 changes no graph.** An Apple Music → local hand-off starts the DSP at MusicKit's
   position. It is a source switch outside the graph (MusicKit is out of process).
 - **Phase 5 (optional) is the only topology change:** a 3-band `eq3` (`AVAudioUnitEQ`, the Mix
@@ -372,6 +407,10 @@ step with the phases as they land.
   sidecars and are only auto-downloaded when Beat pulse is on (or a loop forces it); Studio items
   have beats but no downbeats; profile items have neither (catalog BPM only). Anything beat-locked
   needs the synthesized-lattice fallback (`60/bpm` anchored at `firstDownbeatMs`).
+- **A growing Now Playing song that starts deep into the file waits for the bytes** (a held
+  start), so a restore-resume past 15 s the buffer doesn't cover yet, and an analog song with no
+  per-song cut (its side streams from byte 0), start on the plain AVPlayer stream instead (it
+  range-seeks); the touch hand-off moves them later.
 - **Streaming decks are file decks with a moving end.** While a deck streams, `endFrames` is the
   downloaded frontier, so seek/loop/restart/stems-off can only reach audio that has landed (a seek
   past it holds at the target until the bytes arrive). The frame↔byte map trusts the LAME/Xing

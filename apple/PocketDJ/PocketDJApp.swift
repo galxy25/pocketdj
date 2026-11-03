@@ -671,6 +671,14 @@ struct PocketDJApp: App {
             return min(1, max(0, Double(s.bytesReceived) / Double(total)))
         }
         setlistPlayer.networkAvailable = { [weak mixStreamer] in mixStreamer?.networkAvailable ?? true }
+        // NP MIX MODE phase 3: a ripped row STARTS in the DSP on its growing buffer stream (and a
+        // presigned row moves onto it on the first control touch once it covers the playhead).
+        setlistPlayer.openBufferStream = { [weak mixStreamer] id, title, artist in
+            guard let mixStreamer, mixStreamer.canStream(id) else { return nil }
+            return mixStreamer.open(id, title: title, artist: artist, origin: .buffer)
+        }
+        setlistPlayer.bufferStream = { [weak mixStreamer] id in mixStreamer?.stream(for: id) }
+        mixStreamer.addProgressListener { [weak setlistPlayer] id in setlistPlayer?.noteBufferStreamProgress(id) }
         setlistPlayer.mixModeSettings = { [weak settings] in
             guard let settings else { return (NPMixMode.defaultBufferAhead, .nextSong, false) }
             return (settings.npMixBufferAheadEffective, settings.npMixCellularPolicy, settings.npMixModeDefaultOn ?? false)
