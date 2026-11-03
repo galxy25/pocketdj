@@ -814,6 +814,78 @@ final class SetlistPlayer {
         Task { await rips.requestEditionRipIfNeeded(base: it.id, decision: decision, playback: true) }
     }
 
+    // MARK: - Rule A: edition-agnostic instrumental (Levi 2026-11-02)
+    //
+    // A Stem Lock carrying stems with the VOCALS MUTED makes the two editions of a song sound the
+    // same (the edition difference lives in the vocals). A row that wants an edition with no rip
+    // (only the base cut is ripped, with stems) plays the BASE rip + stems locally instead of
+    // Apple Music — where the lock can't mute anything. Preference rows only (a clean-only
+    // RESTRICTION never substitutes), decided at the row's start / at planning, sticky for the
+    // playing row (un-muting mid-track keeps the local file; the chip notes the edition), and
+    // never when vocals are audible at the start. Only the BASE id substitutes, so the row's
+    // identity (`matches`, history, stems — all keyed on `it.id`) is untouched.
+
+    /// The Stem Lock carries stems with the vocals muted.
+    var stemLockMutesVocals: Bool { stemLock.wantsStems && stemLock.muted.contains("vocals") }
+
+    /// Rule A: the base id this row would play instead of its wanted edition, or nil.
+    func vocalsMutedEditionSubstitute(_ it: Item) -> String? {
+        guard stemLockMutesVocals, it.variant != nil, it.editionDecision.allowsStoredFallback,
+              it.resolveId != it.id else { return nil }
+        // The wanted edition is available itself (on device or ripped): no substitution.
+        if burns.hasLocalFile(forSong: it.resolveId) || rips.manifest[it.resolveId] != nil { return nil }
+        // The base cut must be playable here (burned or ripped) AND have stems somewhere.
+        guard burns.hasLocalFile(forSong: it.id) || rips.manifest[it.id] != nil else { return nil }
+        guard burns.stemsBurned(forSong: it.id) || burns.stemsRemote(forSong: it.id) else { return nil }
+        return it.id
+    }
+
+    /// The substitution the PLAYING row took (sticky for its play).
+    private(set) var editionSubstitution: (uid: UUID, id: String, requested: SongVariant)?
+
+    /// The id the CURRENT play of `it` resolves its local copy under: the rule-A base id when
+    /// this play substituted, else `resolveId`.
+    private func playedResolveId(_ it: Item) -> String {
+        if let s = editionSubstitution, s.uid == it.uid { return s.id }
+        return it.resolveId
+    }
+
+    /// The id the buffer lane should fetch for `it`: the playing row's sticky choice, else rule A
+    /// as of now.
+    private func laneAudioId(_ it: Item, isCurrent: Bool) -> String {
+        if isCurrent { return playedResolveId(it) }
+        return vocalsMutedEditionSubstitute(it) ?? it.resolveId
+    }
+
+    private func noteEditionSubstitution(_ it: Item, _ id: String, via: String) {
+        guard let v = it.variant else { return }
+        editionSubstitution = (it.uid, id, v)
+        let played = v == .explicit ? "clean" : "explicit"
+        NPMixMode.log("edition-substitute row=\(it.id) played=\(played) requested=\(v.rawValue) reason=vocals-muted via=\(via) file=\(id)")
+    }
+
+    /// The small chip note while a substituted row plays with its vocals AUDIBLE (un-muted
+    /// mid-track): which edition is actually playing. nil otherwise.
+    var editionSubstituteNote: String? {
+        guard isRunning, index < queue.count, let s = editionSubstitution, s.uid == queue[index].uid,
+              !stemLockMutesVocals else { return nil }
+        return s.requested == .explicit ? "Clean edition" : "Explicit edition"
+    }
+
+    /// B — will THIS row play from a local file right now (the exact lookup its start uses: the
+    /// edition ladder's burned file, or — under a Stem Lock / Mix Mode — the lane's complete
+    /// per-song cut of the id it would fetch)? Unmemoized on purpose: the dot must agree with
+    /// the start, not with a cached answer.
+    func rowWillPlayLocally(_ it: Item) -> Bool {
+        if StudioFactory.isStudioId(it.id) || ProfileSourceStore.isProfileSongId(it.id) { return true }
+        if let res = burns.localURLForPlayback(forSong: it.id, decision: it.editionDecision) {
+            res.release?()
+            return true
+        }
+        guard stemLock.wantsStems || mixModeBuffering else { return false }
+        return prefetchedCutFile?(laneAudioId(it, isCurrent: false)) != nil
+    }
+
     /// Is there a burned file this row could play on device, honouring its edition decision?
     /// (The ladder — wanted edition, legacy, other edition — so a prefer-explicit row whose
     /// explicit rip hasn't landed still counts its legacy burn as playable.)
@@ -1346,7 +1418,7 @@ final class SetlistPlayer {
         // variant id, a legacy burn under the base) even though `np.songId` is the base — the same
         // split `playCurrent` resolves through.
         return StudioFactory.isStudioId(np.songId) || hasDeviceFile(queue[index])
-            || prefetchedCutFile?(queue[index].resolveId) == np.url   // Stem Lock: a prefetched cut
+            || prefetchedCutFile?(playedResolveId(queue[index])) == np.url   // Stem Lock: a prefetched cut
     }
 
     /// The full F4 eligibility gate: mixable current track AND no active Mix-tab session (mutually
@@ -1528,6 +1600,11 @@ final class SetlistPlayer {
         scheduleStemLockReplan()
     }
 
+    #if DEBUG
+    /// Tests: stamp the carried Stem Lock state directly (the DSP capture can't run headless).
+    func setStemLockForTesting(_ st: StemLockState) { stemLock = st }
+    #endif
+
     /// The current track's stem state (when the DSP owns it) into `st`.
     private func captureStemLock(into st: inout StemLockState) {
         guard mixEngaged, let dsp else { st.stemsOn = false; st.muted = []; st.volumes = [:]; return }
@@ -1635,7 +1712,7 @@ final class SetlistPlayer {
             guard mixEngaged, currentSongId == songId else { return }
             dsp?.stemPartsLanded(songId)
         case let .song(id, _, _):
-            guard isRunning, index < queue.count, queue[index].resolveId == id else { return }
+            guard isRunning, index < queue.count, playedResolveId(queue[index]) == id else { return }
             handOffCurrentToLocal(reason: "landed")
         }
     }
@@ -1726,7 +1803,9 @@ final class SetlistPlayer {
 
     private func prefetchTrack(_ it: Item, isCurrent: Bool) -> NowPlayingPrefetcher.Track {
         // Device mode plays ONLY burned files — the lane never downloads a whole song into it.
-        var fetchable = playbackMode() != .device && (prefetchSongFetchable?(it.resolveId) ?? false)
+        // Rule A: a vocals-muted lock fetches the BASE cut for a row whose edition isn't ripped.
+        let audioId = laneAudioId(it, isCurrent: isCurrent)
+        var fetchable = playbackMode() != .device && (prefetchSongFetchable?(audioId) ?? false)
         // The PLAYING row is fetched only when it can hand off (a presigned rip stream): an
         // Apple Music row finishes on Apple Music in phase 2 and a live capture has no file.
         // Phase 4: with Mix Mode buffering, a RIPPED row playing on Apple Music IS fetched — its
@@ -1735,10 +1814,10 @@ final class SetlistPlayer {
         // An UPCOMING row with an explicit Download already pending lands on its own — the lane
         // neither streams it (that would cancel the download) nor waits on it (that would stall
         // the rows behind it). Only the playing row waits on it (`NowPlayingPrefetcher.live`).
-        let explicitPending = !isCurrent && burns.hasPendingExplicitDownload(songId: it.resolveId)
+        let explicitPending = !isCurrent && burns.hasPendingExplicitDownload(songId: audioId)
         if explicitPending { fetchable = false }
-        let local = hasDeviceFile(it) || prefetchedCutFile?(it.resolveId) != nil
-        return .init(songId: it.id, audioId: it.resolveId, title: it.title, artist: it.artist,
+        let local = hasDeviceFile(it) || prefetchedCutFile?(audioId) != nil
+        return .init(songId: it.id, audioId: audioId, title: it.title, artist: it.artist,
                      // …but its STEMS are still planned: the download makes the song local, so it
                      // plans as local (no song step) instead of being skipped whole (the Stem
                      // Lock would otherwise lose the next track's stems to a pending download).
@@ -1746,14 +1825,14 @@ final class SetlistPlayer {
                      songFetchable: fetchable,
                      stemsLocal: burns.stemPartsBurned(forSong: it.id),
                      stemsRemote: burns.stemsRemote(forSong: it.id),
-                     source: prefetchSource(it, local: local))
+                     source: prefetchSource(it, local: local, audioId: audioId))
     }
 
-    private func prefetchSource(_ it: Item, local: Bool) -> NowPlayingPrefetcher.Track.Source {
+    private func prefetchSource(_ it: Item, local: Bool, audioId: String) -> NowPlayingPrefetcher.Track.Source {
         if StudioFactory.isStudioId(it.id) || ProfileSourceStore.isProfileSongId(it.id) { return .studioOrProfile }
         if local { return .local }
         if AppleMusicCatalog.storeID(fromSongID: it.id) != nil { return .catalogOnly }
-        if rips.manifest[it.resolveId] != nil { return .ripped }
+        if rips.manifest[audioId] != nil { return .ripped }
         // An edition-substituted row whose edition isn't ripped: only rippable when that
         // edition's CATALOG id is known (the server captures `<base>_<edition>` by it — the
         // same hard gate as `EditionPolicy.lazyRipId`); else nothing to ask for.
@@ -1859,12 +1938,13 @@ final class SetlistPlayer {
             onAppleMusic: coordinator.activeBackend == .appleMusic,
             live: player.isLive || (np.map { it.matches($0.songId) && $0.live } ?? false),
             offline: !networkAvailable(),
-            ripped: rips.manifest[it.resolveId] != nil,
+            ripped: rips.manifest[laneAudioId(it, isCurrent: true)] != nil
+                || (coordinator.activeBackend != .appleMusic && vocalsMutedEditionSubstitute(it) != nil),
             deviceMode: playbackMode() == .device,
-            bufferFraction: prefetchProgress?(it.resolveId),
-            buffering: (streaming || coordinator.activeBackend == .appleMusic) && (pf?.isPlannedSong(it.resolveId) ?? false),
-            failed: pf?.songFailedRecently(it.resolveId) ?? false,
-            storageFull: pf?.songBlockedRecently(it.resolveId) ?? false,
+            bufferFraction: prefetchProgress?(laneAudioId(it, isCurrent: true)),
+            buffering: (streaming || coordinator.activeBackend == .appleMusic) && (pf?.isPlannedSong(laneAudioId(it, isCurrent: true)) ?? false),
+            failed: pf?.songFailedRecently(laneAudioId(it, isCurrent: true)) ?? false,
+            storageFull: pf?.songBlockedRecently(laneAudioId(it, isCurrent: true)) ?? false,
             cellularOff: pf.map { NowPlayingPrefetcher.mixReach(network: $0.network(), cellular: mixModeSettings().cellular,
                                                                 window: mixModeSettings().ahead) == nil } ?? false,
             dspHolding: mixEngaged && growingUid == it.uid && (dsp?.isBuffering ?? false),
@@ -1882,15 +1962,18 @@ final class SetlistPlayer {
         let pf = prefetcher
         return queue[(index + 1)..<min(queue.count, index + 1 + max(0, n))].map { it in
             let dot: NPMixMode.BufferDot
-            if hasDeviceFile(it) || prefetchedCutFile?(it.resolveId) != nil || StudioFactory.isStudioId(it.id)
-                || ProfileSourceStore.isProfileSongId(it.id) {
+            // B (edition-aware): FULL only when the file this row WILL play is local — the same
+            // lookup its start uses (edition ladder + rule A), never another edition's copy the
+            // start would skip. The lane's states key on the id the lane fetches for it.
+            let audioId = laneAudioId(it, isCurrent: false)
+            if rowWillPlayLocally(it) {
                 dot = .local
-            } else if pf?.isFetchingSong(it.resolveId) == true {
+            } else if pf?.isFetchingSong(audioId) == true {
                 dot = .buffering
-            } else if pf?.isPlannedSong(it.resolveId) == true {
+            } else if pf?.isPlannedSong(audioId) == true {
                 dot = .queued
-            } else if rips.manifest[it.resolveId] != nil, playbackMode() != .device,
-                      !(pf?.songFailedRecently(it.resolveId) ?? false) {
+            } else if rips.manifest[audioId] != nil, playbackMode() != .device,
+                      !(pf?.songFailedRecently(audioId) ?? false) {
                 dot = .queued       // ripped: buffered once it enters the network's window
             } else if coordinator.isCatalogOwner(), rips.isRipInFlight(it.resolveId) || rips.isRipInFlight(it.id) {
                 dot = .queued       // owner: the rip server is capturing it — buffered once it lands
@@ -1940,9 +2023,9 @@ final class SetlistPlayer {
         // SAME BYTES only: the rip of the id the stream resolved under (`resolveId`), never
         // another edition the ladder would fall back to.
         let target: (url: URL, release: (() -> Void)?, startMs: Int?)
-        if let res = burns.localURLForPlayback(forSong: it.id, decision: it.editionDecision), res.id == it.resolveId {
+        if let res = burns.localURLForPlayback(forSong: it.id, decision: it.editionDecision), res.id == playedResolveId(it) {
             target = (res.url, res.release, burns.startMs(forSong: res.id))
-        } else if let cut = prefetchedCutFile?(it.resolveId) {
+        } else if let cut = prefetchedCutFile?(playedResolveId(it)) {
             target = (cut, nil, nil)
         } else {
             return false
@@ -2104,7 +2187,7 @@ final class SetlistPlayer {
     private func growingStartEligible(_ it: Item, resumeAtMs: Int? = nil) -> Bool {
         guard mixModeBuffering, dsp != nil, openBufferStream != nil, growingRefusedUid != it.uid,
               !StudioFactory.isStudioId(it.id), !ProfileSourceStore.isProfileSongId(it.id),
-              let entry = rips.manifest[it.resolveId], AppleMusicCatalog.storeID(fromSongID: it.id) == nil else { return false }
+              let entry = rips.manifest[playedResolveId(it)], AppleMusicCatalog.storeID(fromSongID: it.id) == nil else { return false }
         // An analog song with no per-song CUT streams its whole album SIDE from byte 0: a song
         // minutes into the side would hold until the download got there, while the plain
         // AVPlayer range-seeks straight to it. It plays plain (the touch moves it over once
@@ -2115,7 +2198,10 @@ final class SetlistPlayer {
         // AVPlayer stops. Plain stream.
         if let pf = prefetcher, NowPlayingPrefetcher.mixReach(network: pf.network(), cellular: mixModeSettings().cellular,
                                                              window: mixModeSettings().ahead) == nil { return false }
-        guard coordinator.streamsAppleMusicFirst(id: it.id, title: it.title, artist: it.artist, variant: it.variant) else {
+        // Rule A: a vocals-muted substitution never goes to Apple Music (it would sound the
+        // muted vocals) — it starts on its growing file like any ripped non-AM row.
+        guard coordinator.streamsAppleMusicFirst(id: it.id, title: it.title, artist: it.artist, variant: it.variant),
+              playedResolveId(it) == it.resolveId else {
             return true
         }
         // Phase 4: an APPLE-MUSIC-sourced ripped row starts on its growing file only when that is
@@ -2123,7 +2209,7 @@ final class SetlistPlayer {
         // position (the buffer lane fetched it ahead). Otherwise Apple Music (or the cached
         // presign, `preferLocalAudio`) starts it: never trade an instant start for a hold.
         let at = Double(resumeAtMs ?? 0) / 1000
-        guard let s = bufferStream?(it.resolveId), !s.failed, s.resolved, s.isCut || (s.startMs ?? 0) == 0,
+        guard let s = bufferStream?(playedResolveId(it)), !s.failed, s.resolved, s.isCut || (s.startMs ?? 0) == 0,
               let covered = GrowingFileSchedule.coveredFileSeconds(
                 bytes: s.bytesReceived, expectedBytes: s.expectedBytes, complete: s.isComplete,
                 fileDurationSeconds: it.lengthMs.map { Double($0) / 1000 }),
@@ -2145,7 +2231,7 @@ final class SetlistPlayer {
     /// caller then plays the row the plain way.
     private func startOnGrowingFile(_ it: Item, gen: Int, resumeAtMs: Int?, startPaused: Bool) -> Bool {
         guard growingStartEligible(it, resumeAtMs: resumeAtMs), let dsp,
-              let s = openBufferStream?(it.resolveId, it.title, it.artist), !s.failed else { return false }
+              let s = openBufferStream?(playedResolveId(it), it.title, it.artist), !s.failed else { return false }
         if let ms = resumeAtMs, ms > Self.growingDeepResumeMs {
             let covered = GrowingFileSchedule.coveredFileSeconds(
                 bytes: s.bytesReceived, expectedBytes: s.expectedBytes, complete: s.isComplete,
@@ -2303,7 +2389,9 @@ final class SetlistPlayer {
     /// CURRENT row's and the row still streams from its presigned URL, its reach flipping
     /// "covers the playhead" re-renders the panel (the bytes themselves aren't observable).
     func noteBufferStreamProgress(_ audioId: String) {
-        guard mixMode.enabled, !mixEngaged, isRunning, index < queue.count, queue[index].resolveId == audioId else { return }
+        guard mixMode.enabled, !mixEngaged, isRunning, index < queue.count,
+              queue[index].resolveId == audioId || laneAudioId(queue[index], isCurrent: true) == audioId
+                || vocalsMutedEditionSubstitute(queue[index]) == audioId else { return }
         // Phase 4: an Apple Music row — its local copy reaching MusicKit's playhead makes the
         // controls live ("Ready — tap a control to switch to the local copy").
         if coordinator.activeBackend == .appleMusic {
@@ -2329,7 +2417,7 @@ final class SetlistPlayer {
     /// `currentTrackMixable` reads it); the DSP re-checks exactly at the touch.
     private func growingTouchCovers(_ it: Item, _ np: RipsStore.NowPlaying) -> Bool {
         guard mixModeBuffering, !mixEngaged, dsp != nil, growingRefusedUid != it.uid,
-              let s = bufferStream?(it.resolveId), !s.failed, s.resolved else { return false }
+              let s = bufferStream?(playedResolveId(it)), !s.failed, s.resolved else { return false }
         let songRel = max(0, player.currentTime - Double(np.startMs ?? 0) / 1000)
         // A per-song CUT starts at the song's 0:00; a digital file / an analog side is the
         // presigned file the AVPlayer is playing (its duration known), offset by the side start.
@@ -2356,7 +2444,7 @@ final class SetlistPlayer {
         guard let dsp, index < queue.count else { return }
         let it = queue[index]
         guard !player.interruptionOpen, !isStartPending, resolvingGeneration == nil,
-              let s = bufferStream?(it.resolveId), !s.failed else {
+              let s = bufferStream?(playedResolveId(it)), !s.failed else {
             NPMixMode.log("touch song=\(it.id) growing hand-off refused (interruption / start pending / no stream)")
             return
         }
@@ -2441,15 +2529,17 @@ final class SetlistPlayer {
     private func appleMusicLocalCopy(_ it: Item, atSongSeconds t: Double) -> AMLocalCopy? {
         // The SAME cut Apple Music is streaming: the burn this row resolves under (an
         // edition-substituted row's variant), never a fallback to the other edition.
+        // Rule A: under a vocals-muted lock the BASE cut stands in for an un-ripped edition.
+        let target = amHandOffTargetId(it)
         if EditionPolicy.resolveStored(base: it.id, decision: it.editionDecision,
-                                       isStored: { self.burns.localURL(forSong: $0) != nil })?.id == it.resolveId {
+                                       isStored: { self.burns.localURL(forSong: $0) != nil })?.id == target {
             return .burned
         }
-        if let url = prefetchedCutFile?(it.resolveId) { return .cut(url) }
+        if let url = prefetchedCutFile?(target) { return .cut(url) }
         // A growing file that already failed / stalled THIS play (it fell back) is never offered
         // again — a second touch would only hold → fall back → re-resolve Apple Music again.
         guard growingRefusedUid != it.uid,
-              let s = bufferStream?(it.resolveId), !s.failed, s.resolved, s.isCut || (s.startMs ?? 0) == 0,
+              let s = bufferStream?(target), !s.failed, s.resolved, s.isCut || (s.startMs ?? 0) == 0,
               let covered = GrowingFileSchedule.coveredFileSeconds(
                 bytes: s.bytesReceived, expectedBytes: s.expectedBytes, complete: s.isComplete,
                 fileDurationSeconds: it.lengthMs.map { Double($0) / 1000 }),
@@ -2469,6 +2559,11 @@ final class SetlistPlayer {
         }
     }
     #endif
+
+    /// The id an Apple Music row's local copy must be: its own edition, or (rule A) the base cut.
+    private func amHandOffTargetId(_ it: Item) -> String {
+        vocalsMutedEditionSubstitute(it) ?? it.resolveId
+    }
 
     /// The hand-off target for the current Apple Music row: MusicKit's position + the lead.
     private func appleMusicHandOffTarget() -> Double {
@@ -2520,7 +2615,7 @@ final class SetlistPlayer {
         switch copy {
         case .burned:
             guard let res = burns.localURLForPlayback(forSong: it.id, decision: it.editionDecision) else { return }
-            guard res.id == it.resolveId else { res.release?(); return }
+            guard res.id == amHandOffTargetId(it) else { res.release?(); return }
             let start = burns.startMs(forSong: res.id)
             dsp.engage(url: res.url, startMs: start, lengthMs: it.lengthMs, atSeconds: target, songId: it.id,
                        play: false, release: res.release)
@@ -2580,6 +2675,7 @@ final class SetlistPlayer {
             }
         }
         player.refreshExternalNowPlaying()
+        if amHandOffTargetId(it) != it.resolveId { noteEditionSubstitution(it, amHandOffTargetId(it), via: "am-handoff") }
         amHandOffCount &+= 1
         let rawText = raw.map { String(format: "%.2f", $0) } ?? "-"
         NPMixMode.log("am-handoff song=\(it.id) Apple Music → DSP \(kind) amRaw=\(rawText)s amSmoothed=\(String(format: "%.2f", smoothed))s lead=\(leadMs)ms target=\(String(format: "%.2f", target))s paused=\(wasPlaying ? 0 : 1)")
@@ -3164,6 +3260,8 @@ final class SetlistPlayer {
         // over this row — the "jumps back to the buffered song" bug (drive log 2026-10-28 03:01).
         coordinator.supersedePendingPlay()
         let it = queue[index]
+        // Rule A's choice belongs to ONE play of one row (a fallback / hand-back keeps it).
+        if fresh || editionSubstitution?.uid != it.uid { editionSubstitution = nil }
         // Phase 3 bookkeeping: a refusal / a paused re-entry belongs to ONE row's play.
         if growingRefusedUid != it.uid { growingRefusedUid = nil }
         lastTouchCovers = false
@@ -3275,6 +3373,10 @@ final class SetlistPlayer {
         // offline), else stream / rip-on-demand via the coordinator (Apple Music → rip).
         // Same edition rule as device mode — a substituted row only ever plays its variant's
         // audio (burned, streamed, or ripped), never the base explicit cut.
+        // Rule A (a vocals-muted Stem Lock): an un-ripped edition plays the BASE cut + stems.
+        if editionSubstitution == nil, let sub = vocalsMutedEditionSubstitute(it) {
+            noteEditionSubstitution(it, sub, via: "start")
+        }
         if let res = burns.localURLForPlayback(forSong: it.id, decision: decision) {
             loadedAnyDeviceTrack = true
             coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
@@ -3287,7 +3389,7 @@ final class SetlistPlayer {
                           atMs: resumeAtMs, release: res.release)
             applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
             startedLocal("burned")
-        } else if stemLock.wantsStems, let url = prefetchedCutFile?(it.resolveId) {
+        } else if stemLock.wantsStems, let url = prefetchedCutFile?(playedResolveId(it)) {
             // STEM LOCK: the prefetch finished this song as a per-song CUT stream (an analog cut
             // isn't adopted into the burn ledger) — play that local file, so the carried stems
             // can take it over, instead of streaming the same bytes again.
@@ -3335,8 +3437,14 @@ final class SetlistPlayer {
             let t0 = Date()
             // Phase 4: Mix Mode prefers the rip for an Apple-Music-sourced row whose rip starts
             // instantly (presign cached) — never when that would be slower than Apple Music.
+            // Rule A: the substituted row resolves the BASE cut, rip-first (never Apple Music
+            // first — it would sound the vocals the lock mutes); the owner still asks for the
+            // wanted edition so the next play has it.
+            let substituted = playedResolveId(it) != it.resolveId
+            if substituted { lazyRipWantedEdition(it) }
             await coordinator.play(id: it.id, title: it.title, artist: it.artist,
-                                   atMs: resumeAtMs, variant: it.variant, preferLocalAudio: mixModeBuffering)
+                                   atMs: resumeAtMs, variant: substituted ? nil : it.variant,
+                                   preferLocalAudio: mixModeBuffering, ripFirst: substituted)
             if resolvingGeneration == playGen { resolvingGeneration = nil }
             if playGen == playGeneration { resolveStallTask?.cancel(); resolveStallTask = nil }
             let ms = Int(Date().timeIntervalSince(t0) * 1000)

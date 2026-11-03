@@ -1353,6 +1353,131 @@ final class NPMixGrowingFileTests: XCTestCase {
         XCTAssertEqual(r.seq.mixModeIndicator, .unavailable("Apple Music only"))
     }
 
+    // MARK: - Rule A: edition-agnostic instrumental (Levi 2026-11-02, second repro)
+
+    private func stemmed(_ id: String) -> RipsStore.ManifestEntry {
+        .init(key: "rips/\(id).mp3", source: "digital",
+              stems: .init(vocals: "stems/\(id)/vocals.mp3", drums: "stems/\(id)/drums.mp3",
+                           bass: "stems/\(id)/bass.mp3", other: "stems/\(id)/other.mp3"))
+    }
+    private func explicitRow(_ id: String, locked: Bool = false, variant: SongVariant = .explicit) -> SetlistPlayer.Item {
+        var i = item(id); i.variant = variant; i.editionLocked = locked; i.editionCatalogId = "cat-\(id)"; return i
+    }
+    private var vocalsMuted: StemLockState {
+        var st = StemLockState(); st.enabled = true; st.stemsOn = true; st.muted = ["vocals"]; return st
+    }
+
+    /// The pure rule: only a vocals-muted carry, only a PREFERENCE row whose edition has no rip,
+    /// only onto a ripped BASE cut with stems — never a clean-only restriction, never with the
+    /// vocals audible, never when the wanted edition is ripped.
+    func testVocalsMutedEditionSubstituteRule() async throws {
+        let r = try seqRig(["a"], mixDefault: false)
+        r.rips.setManifest(["a": stemmed("a"), "b": stemmed("b"), "n": .init(key: "rips/n.mp3", source: "digital"),
+                            "w": stemmed("w"), "w_explicit": stemmed("w_explicit")])
+        await startPlain(r, ["a"])
+        let b = explicitRow("b")
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(b), "no lock: the normal edition rule")
+        var audible = vocalsMuted; audible.muted = ["drums"]
+        r.seq.setStemLockForTesting(audible)
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(b), "vocals audible: never")
+        r.seq.setStemLockForTesting(vocalsMuted)
+        XCTAssertEqual(r.seq.vocalsMutedEditionSubstitute(b), "b")
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(explicitRow("b", locked: true, variant: .clean)),
+                     "a clean-only RESTRICTION never substitutes")
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(explicitRow("n")), "the base has no stems")
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(explicitRow("w")), "the wanted edition is ripped")
+        XCTAssertNil(r.seq.vocalsMutedEditionSubstitute(item("b")), "no edition requested")
+    }
+
+    /// The repro: an explicit row with only the base rip (+ stems) under a vocals-muted lock. The
+    /// lane plans the BASE cut, the dot fills only when that file is local, and the row's start
+    /// plays the base rip — never Apple Music — logging the substitution.
+    func testVocalsMutedLockPlaysTheBaseRipForAnUnrippedEdition() async throws {
+        let r = try seqRig(["a"], mixDefault: false)
+        r.rips.setManifest(["a": stemmed("a"), "b": stemmed("b")])
+        r.coord.appleMusicReadyOverrideForTests = true
+        r.coord.sourceOfSong = { $0 == "b" ? Config.appleMusicSourceName : nil }
+        let pf = NowPlayingPrefetcher()
+        pf.fetchSong = { _ in try? await Task.sleep(nanoseconds: 5_000_000_000); return false }
+        r.seq.prefetcher = pf
+        r.seq.prefetchSongFetchable = { _ in true }
+        r.seq.play([item("a"), explicitRow("b")])
+        await waitUntil("a streaming") { r.rips.nowPlaying?.songId == "a" }
+        r.player.simulateFirstAudioForTesting()
+        await waitUntil("start window closed") { !r.seq.isStartPending }
+        r.seq.setStemLockForTesting(vocalsMuted)
+        r.seq.setMixMode(true)
+        r.seq.replanPrefetch()
+        XCTAssertTrue(pf.isPlannedSong("b"), "the lane fetches the BASE cut")
+        XCTAssertFalse(pf.isPlannedSong("b_explicit"))
+        XCTAssertNotEqual(r.seq.mixModeBufferStrip().first?.dot, .local, "not local yet")
+        r.seq.skipNext()
+        await waitUntil("b resolved") { r.rips.nowPlaying?.songId == "b" }
+        XCTAssertEqual(r.coord.activeBackend, .ripServer, "the base rip — never Apple Music")
+        XCTAssertEqual(r.rips.nowPlaying?.url.path, "/rips/b.mp3", "the base cut's bytes")
+        XCTAssertEqual(r.seq.editionSubstitution?.id, "b")
+        XCTAssertNil(r.seq.editionSubstituteNote, "vocals muted: no note")
+        // Phase 2 swap-on-land: the BASE cut landing is the SAME bytes this play streams.
+        r.player.simulateFirstAudioForTesting()
+        await waitUntil("b's start window closed") { !r.seq.isStartPending }
+        let tmp = tempMP3("sl")
+        try (try noise).write(to: tmp)
+        XCTAssertNotNil(r.burns.adoptStreamedFile(songId: "b", title: "b", artist: "A", from: tmp, origin: .buffer))
+        XCTAssertTrue(r.seq.handOffCurrentToLocal(reason: "test"), "the edition match takes the substituted base cut")
+        XCTAssertTrue(r.rips.nowPlaying?.url.isFileURL ?? false)
+        // Un-muting mid-track keeps the local base file; the chip notes the edition.
+        r.seq.setStemLockForTesting(StemLockState(enabled: true, stemsOn: true, muted: [], volumes: [:]))
+        XCTAssertEqual(r.seq.editionSubstituteNote, "Clean edition")
+        XCTAssertEqual(r.rips.nowPlaying?.songId, "b")
+        XCTAssertEqual(r.seq.index, 1)
+    }
+
+    /// Mix Mode on: the substituted row STARTS in the DSP on the base cut's growing file (the lock
+    /// can mute its vocals) — not on Apple Music, even though its source is Apple Music.
+    func testVocalsMutedSubstitutionStartsOnTheBaseGrowingFile() async throws {
+        let data = try noise
+        let r = try seqRig(["a"], mixDefault: false)
+        r.rips.setManifest(["a": stemmed("a"), "b": stemmed("b")])
+        r.coord.sourceOfSong = { $0 == "b" ? Config.appleMusicSourceName : nil }
+        await startPlain(r, ["a"])
+        r.seq.play([item("a"), explicitRow("b")])
+        await waitUntil("a streaming") { r.rips.nowPlaying?.songId == "a" }
+        r.player.simulateFirstAudioForTesting()
+        await waitUntil("start window closed") { !r.seq.isStartPending }
+        r.seq.setStemLockForTesting(vocalsMuted)
+        r.seq.setMixMode(true)
+        let file = tempMP3("rb")
+        try feed(r.loader, "b", file, data, 0.95)
+        XCTAssertEqual(r.seq.mixModeBufferStrip().first?.dot, .queued, "its BASE rip will buffer (the edition's isn't ripped)")
+        r.seq.skipNext()
+        await waitUntil("b on the base growing file") { r.seq.index == 1 && r.seq.mixEngaged }
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertEqual(r.rips.nowPlaying?.url, file)
+        XCTAssertEqual(r.seq.editionSubstitution?.id, "b")
+    }
+
+    /// B: a dot is FULL only when the file the row WILL play is local — the start's own lookup
+    /// (unmemoized), so a burn whose file vanished never shows full; rule A's base cut counts
+    /// only while the lock mutes the vocals.
+    func testBufferDotsAreEditionAwareAndMatchTheStart() async throws {
+        let r = try seqRig(["a"], mixDefault: false)
+        r.rips.setManifest(["a": stemmed("a"), "b": stemmed("b"), "c": stemmed("c")])
+        let cuts = GrowLiveFlag()
+        r.seq.prefetchedCutFile = { id in (id == "c" && cuts.on) ? URL(fileURLWithPath: "/tmp/c-cut.mp3") : nil }
+        r.seq.play([item("a"), item("b"), explicitRow("c", locked: true, variant: .clean)])
+        await waitUntil("a streaming") { r.rips.nowPlaying?.songId == "a" }
+        r.seq.setMixMode(true)
+        let tmp = tempMP3("db")
+        try (try noise).write(to: tmp)
+        let burned = try XCTUnwrap(r.burns.adoptStreamedFile(songId: "b", title: "b", artist: "A", from: tmp, origin: .buffer))
+        XCTAssertEqual(r.seq.mixModeBufferStrip()[0].dot, .local)
+        try FileManager.default.removeItem(at: burned)      // the file went away (the memo didn't)
+        XCTAssertNotEqual(r.seq.mixModeBufferStrip()[0].dot, .local, "never full for a file the start can't open")
+        // A clean-only row: the base cut's prefetched copy is NOT what it will play.
+        cuts.on = true
+        XCTAssertNotEqual(r.seq.mixModeBufferStrip()[1].dot, .local, "another edition's copy never fills the dot")
+    }
+
     /// A rip landing for a window row re-plans the lane (its song + stems buffer next).
     func testRipLandingReplansTheLane() async throws {
         let r = try seqRig(["a", "b"], mixDefault: false)

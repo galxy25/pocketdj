@@ -299,6 +299,12 @@ struct MixModeStatusChip: View {
                     EmptyView()
                 }
                 Text(text).lineLimit(1).minimumScaleFactor(0.75)
+                // Rule A: a vocals-muted substitution whose vocals were un-muted mid-track says
+                // which edition is actually playing.
+                if let note = sequencer.editionSubstituteNote {
+                    Text("· \(note)").lineLimit(1).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("np-mix-edition-note")
+                }
             }
             .font(.caption2)
             .foregroundStyle(ind.controlsLive ? Theme.accent : Theme.fgDim)

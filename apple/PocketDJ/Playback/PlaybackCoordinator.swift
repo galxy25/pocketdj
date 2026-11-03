@@ -133,7 +133,11 @@ final class PlaybackCoordinator {
     /// start for a slow presign — the dead-air rule), and Apple Music stays in the chain right
     /// behind the rip as its fallback. (A COMPLETE local copy never reaches the coordinator:
     /// `SetlistPlayer` plays burned files directly.)
-    func providers(for song: IndexSong, preferLocalAudio: Bool = false) -> [any TrackPlaybackProvider] {
+    ///
+    /// `ripFirst` (np-mix-mode rule A — a vocals-muted Stem Lock playing another edition's rip):
+    /// a RIPPED Apple-Music-sourced row goes rip-first even when that still owes a presign round
+    /// trip — Apple Music would sound the very vocals the lock mutes (and has no stems).
+    func providers(for song: IndexSong, preferLocalAudio: Bool = false, ripFirst: Bool = false) -> [any TrackPlaybackProvider] {
         var ordered: [any TrackPlaybackProvider] = []
         // A namespaced `am:<storeID>` id (a Jukebox request matched only in the Apple
         // Music catalog — no indexed source) resolves directly via MusicKit, so it gets
@@ -167,8 +171,9 @@ final class PlaybackCoordinator {
         let ripStartsNow = ripProvider.canPlayImmediately(song.id)
         // Mix Mode: a ripped AM row whose rip starts as fast as Apple Music goes rip-first. A
         // namespaced `am:` id has no rip (catalog-only) — never.
-        let preferRip = preferLocalAudio && amBySource && !amNamespaced
-            && ripProvider.startsWithoutRoundTrip(song.id)
+        let preferRip = amBySource && !amNamespaced
+            && ((preferLocalAudio && ripProvider.startsWithoutRoundTrip(song.id))
+                || (ripFirst && ripStartsNow))
         let amFirst = (amBySource && !preferRip) || (amAsFallback && !ripStartsNow)
 
         if amFirst { ordered.append(appleMusic) }
@@ -230,7 +235,8 @@ final class PlaybackCoordinator {
     /// the resolving id: a variant play resolves under "<baseId>_clean" but history/stats/
     /// favorites must key the BASE song (the real catalog identity). Callers other than the
     /// id-convenience below pass nothing.
-    func play(_ song: IndexSong, atMs: Int? = nil, statsId: String? = nil, preferLocalAudio: Bool = false) async {
+    func play(_ song: IndexSong, atMs: Int? = nil, statsId: String? = nil, preferLocalAudio: Bool = false,
+              ripFirst: Bool = false) async {
         // SUPERSEDE TOKEN: a skip storm overlaps plays. A superseded play must not touch the
         // shared state the NEWER one owns — before, an older resolve's late failure wrote
         // `lastErrorMessage` after the newer play cleared it, and the sequencer read that as
@@ -239,7 +245,7 @@ final class PlaybackCoordinator {
         playToken &+= 1
         let token = playToken
         lastErrorMessage = nil
-        let chain = providers(for: song, preferLocalAudio: preferLocalAudio)
+        let chain = providers(for: song, preferLocalAudio: preferLocalAudio, ripFirst: ripFirst)
         if preferLocalAudio, chain.first?.backend == .ripServer, isAppleMusicSourced(id: song.id) {
             DiagLog.shared.log("npmix", "prefer-local song=\(song.id) → rip first (presign cached; Apple Music behind it)")
         }
@@ -338,11 +344,12 @@ final class PlaybackCoordinator {
     /// becomes "<id>_clean|_explicit" and its `appleMusicId` the edition's catalog id —
     /// while `statsId` keeps history/stats keyed on the base song.
     func play(id: String, title: String, artist: String, atMs: Int? = nil,
-              variant: SongVariant? = nil, preferLocalAudio: Bool = false) async {
+              variant: SongVariant? = nil, preferLocalAudio: Bool = false, ripFirst: Bool = false) async {
         let song = projectedSong(id: id, title: title, artist: artist, variant: variant)
         // A variant play resolves under its variant identity but must still SCORE as the
         // base song, so history/stats/favorites key the real catalog identity.
-        await play(song, atMs: atMs, statsId: variant == nil ? nil : id, preferLocalAudio: preferLocalAudio)
+        await play(song, atMs: atMs, statsId: variant == nil ? nil : id, preferLocalAudio: preferLocalAudio,
+                   ripFirst: ripFirst)
     }
 
     /// The EXACT `IndexSong` the row-▶ path hands to the provider chain for `id`. Split out

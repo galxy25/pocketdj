@@ -782,6 +782,26 @@ locked phone, CarPlay card after the hand-off) is owed.
   "Ripping explicit edition — mixable next play" (`.rippingEdition`) while that capture is in
   flight, public users "Apple Music only"; the owner's rip-ahead asks for the `<base>_<edition>`
   id and never for an edition whose catalog id is unknown (the `EditionPolicy.lazyRipId` gate).
+- **MUST — rule A, edition-agnostic instrumental (Levi's second repro: Stem Lock with vocals
+  muted; `<id>_explicit` rows with only the base rip played Apple Music, "UNAVAILABLE — full
+  mix").** With the lock carrying stems and VOCALS MUTED, a PREFERENCE row (never a clean-only
+  restriction) whose wanted edition has no rip and no burn plays the BASE cut (ripped or burned,
+  with stems) instead (`vocalsMutedEditionSubstitute`): the lane plans/fetches the base song +
+  stems for it (`laneAudioId` → the `.song` step's id); at the row's start the substitution is
+  recorded (`editionSubstitution`, sticky for that play — un-muting mid-track keeps the local
+  file and the chip adds "· Clean edition" / "· Explicit edition"), the growing-file start takes
+  the base buffer even for an AM-sourced row, and the plain resolve is the base rip, RIP-FIRST
+  (`PlaybackCoordinator.play(…ripFirst:)`), never Apple Music; the swap-on-land and the touch
+  hand-off match the base cut as the same bytes (`playedResolveId`, `amHandOffTargetId`); the
+  owner still lazily asks for the wanted edition. Never when vocals are audible at the start.
+  Only the base id substitutes, so row identity / history / stems keys are untouched. Log:
+  `[npmix] edition-substitute row=… played=<edition> requested=<edition> reason=vocals-muted
+  via=start|am-handoff file=<id>` (`played` names the other edition — the base cut is assumed to
+  be it).
+- **MUST — B, edition-aware buffer dots:** a dot is full only when the file the row WILL play is
+  local — the start's own unmemoized lookup (`rowWillPlayLocally`: the edition ladder's burned
+  file, or under a Stem Lock / Mix Mode the lane's complete cut of the id it fetches); the
+  buffering / queued states key on that same lane id.
 - **Open (SHOULD, not fixed):** a growing fallback that re-resolves the row (AM hand-off, phase-3
   start) goes through `coordinator.play` again, whose `onPlay` counts a second play when it lands
   more than 30 s after the first (pre-existing for phase 3); on macOS `serverIsThisHost` answers
