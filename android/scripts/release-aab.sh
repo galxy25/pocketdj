@@ -58,7 +58,9 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$LOCK" "$WORK"' EXIT
 
 cd "$ANDROID_DIR"
-GRADLE=(./gradlew -Pkotlin.compiler.execution.strategy=in-process
+# --no-configuration-cache: signing passwords arrive as env vars read at configuration time; a cached
+# configuration would persist them (encrypted, but on disk) under android/.gradle. Dev builds keep it.
+GRADLE=(./gradlew -Pkotlin.compiler.execution.strategy=in-process --no-configuration-cache
   "-PversionCode=$VERSION_CODE" "-PversionName=$VERSION_NAME" ${GRADLE_EXTRA_ARGS:-})
 BASE="PocketDJ-$VERSION_NAME-$VERSION_CODE"
 echo "==> PocketDJ Android $VERSION_NAME ($VERSION_CODE) -> $OUT_DIR"
@@ -71,7 +73,8 @@ cp app/build/outputs/bundle/release/app-release.aab "$OUT_DIR/$BASE.aab"
 # Release builds are obfuscated: without this mapping, NPLog/diag stack traces cannot be retraced.
 cp app/build/outputs/mapping/release/mapping.txt "$OUT_DIR/mapping-$VERSION_CODE.txt" || die "R8 mapping.txt missing"
 echo "==> R8 keep gate (persisted / by-name classes unrenamed)"
-"$SCRIPT_DIR/check-r8-mapping.sh" "$OUT_DIR/mapping-$VERSION_CODE.txt" > "$WORK/r8-gate.txt" \
+"$SCRIPT_DIR/check-r8-mapping.sh" "$OUT_DIR/mapping-$VERSION_CODE.txt" \
+  app/build/outputs/mapping/release/seeds.txt > "$WORK/r8-gate.txt" \
   || { cat "$WORK/r8-gate.txt"; die "R8 mapping gate failed"; }
 tail -1 "$WORK/r8-gate.txt"
 
