@@ -55,6 +55,30 @@ enum NPMixCellularPolicy: String, Codable, CaseIterable {
 }
 
 enum NPMixMode {
+    #if DEBUG
+    /// DEBUG-only layout seam (`PDJ_NP_MIX_CHIP=<state>[:<note>]`): pin the Now Playing Mix
+    /// panel's status chip to one state so its LONGEST texts can be eyeballed at phone widths
+    /// (the states themselves need Apple Music / a rip server / a live Mix tab to occur).
+    /// States: readyAM · ripping · rippingEdition · suspended · amOnly · buffering · ready.
+    static let debugChipOverride: (Indicator, String?)? = {
+        guard let raw = ProcessInfo.processInfo.environment["PDJ_NP_MIX_CHIP"] else { return nil }
+        let parts = raw.split(separator: ":", maxSplits: 1).map(String.init)
+        let note = parts.count > 1 ? parts[1] : nil
+        let ind: Indicator
+        switch parts.first ?? "" {
+        case "readyAM": ind = .readyFromAppleMusic
+        case "ripping": ind = .ripping
+        case "rippingEdition": ind = .rippingEdition("explicit")
+        case "suspended": ind = .suspended
+        case "amOnly": ind = .unavailable("Apple Music only")
+        case "buffering": ind = .buffering(0.42)
+        case "ready": ind = .ready
+        default: return nil
+        }
+        return (ind, note)
+    }()
+    #endif
+
     /// The `[npmix]` DiagLog lane (song ids only, never titles) + the Now Playing trace.
     @MainActor
     static func log(_ message: String) {

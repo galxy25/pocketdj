@@ -77,7 +77,6 @@ struct NowPlayingMixPanel: View {
                     // plays the full mix (expanded or not, as before the header was always shown).
                     StemLockStatusRow(indicator: sequencer.stemLockIndicator)
                 }
-                if !controlsVisible { FXLockStatusRow(indicator: sequencer.fxLockIndicator) }
                 if expanded {
                     if controlsVisible {
                         controls
@@ -90,58 +89,71 @@ struct NowPlayingMixPanel: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
             .accessibilityIdentifier("np-mix-panel")
-        } else if (sequencer.stemLock.enabled || sequencer.fxLock.wantsFX), sequencer.isRunning {
+        } else if sequencer.stemLock.enabled, sequencer.isRunning {
             // The panel hides on a track that can't be mixed (a stream, Apple Music) — but a
-            // session locked to stems / effects must still say why this track plays without them.
-            VStack(alignment: .leading, spacing: 4) {
-                if sequencer.stemLock.enabled { StemLockStatusRow(indicator: sequencer.stemLockIndicator) }
-                FXLockStatusRow(indicator: sequencer.fxLockIndicator)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
+            // session locked to stems must still say why this track plays without them. (The FX
+            // Lock has NO status line anywhere — Levi 2026-11-03: its held / paused state lives
+            // in the lock glyph's own look + VoiceOver value, never in extra vertical space.)
+            StemLockStatusRow(indicator: sequencer.stemLockIndicator)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
         }
     }
 
-    // MARK: Header (chevron + "Mix" + engaged dot)
+    // MARK: Header (chevron + "Mix" + engaged dot · status chip · Mix Mode switch)
 
-    private var header: some View {
-        HStack(spacing: 6) {
-            Button {
-                withAnimation { expanded.toggle() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2)
-                    Image(systemName: "slider.horizontal.3").font(.caption)
-                    Text("Mix").font(.caption.weight(.semibold))
-                    if sequencer.mixEngaged {
-                        Circle().fill(Theme.accent).frame(width: 6, height: 6)
-                            .accessibilityLabel("Engaged")
-                    }
-                    if sequencer.stemLock.enabled {
-                        Image(systemName: "lock.fill").font(.caption2)
-                            .accessibilityLabel("Stem Lock on")
-                    }
-                    if sequencer.fxLock.enabled {
-                        HStack(spacing: 1) {
-                            Image(systemName: "lock.fill")
-                            Text("FX")
-                        }
-                        .font(.caption2)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("FX Lock on")
-                    }
-                    Spacer(minLength: 4)
+    @ViewBuilder private var header: some View {
+        if Self.mixModeSupported {
+            MixModeIndicatorReader { ind, note in
+                MixPanelHeaderLayout(chip: MixModeChipLabel.Content(indicator: ind, note: note)) {
+                    headerToggle
+                } modeSwitch: {
+                    mixModeSwitch
                 }
-                .foregroundStyle(sequencer.mixEngaged ? Theme.accent : Theme.fgDim)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("np-mix-toggle")
-            if Self.mixModeSupported {
-                MixModeStatusChip()
-                mixModeSwitch
-            }
+        } else {
+            HStack(spacing: 6) { headerToggle; Spacer(minLength: 4) }
         }
+    }
+
+    /// Chevron · "Mix" · engaged dot · lock badges — the expand / collapse button.
+    private var headerToggle: some View {
+        Button {
+            withAnimation { expanded.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption2)
+                Image(systemName: "slider.horizontal.3").font(.caption)
+                Text("Mix").font(.caption.weight(.semibold))
+                if sequencer.mixEngaged {
+                    Circle().fill(Theme.accent).frame(width: 6, height: 6)
+                        .accessibilityLabel("Engaged")
+                }
+                if sequencer.stemLock.enabled {
+                    Image(systemName: "lock.fill").font(.caption2)
+                        .accessibilityLabel("Stem Lock on")
+                }
+                if sequencer.fxLock.enabled {
+                    let fx = sequencer.fxLockIndicator
+                    // Held (this track can't take the effects) / paused (Mix tab live): an
+                    // OUTLINED, dimmed lock — the words ride in the VoiceOver value only.
+                    HStack(spacing: 1) {
+                        Image(systemName: fx.isHeld ? "lock" : "lock.fill")
+                        Text("FX")
+                    }
+                    .font(.caption2)
+                    .opacity(fx.isHeld ? 0.6 : 1)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("FX Lock on")
+                    .accessibilityValue(fx.statusText(mixable: available) ?? "")
+                    .accessibilityIdentifier("np-mix-fx-lock-badge")
+                }
+            }
+            .foregroundStyle(sequencer.mixEngaged ? Theme.accent : Theme.fgDim)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("np-mix-toggle")
     }
 
     /// The MIX MODE capsule switch (`np-mix-mode`): session state, not a mix control — it
@@ -207,15 +219,9 @@ struct NowPlayingMixPanel: View {
             HStack {
                 Text("Effects").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
                 Spacer(minLength: 4)
-                // The lock carries effects this track can't take yet (an Apple Music row whose
-                // local copy is ready — a control touch moves it, Q1): say so on the same line,
-                // where the Stems header shows its pending badge.
-                if sequencer.fxLockIndicator == .waiting {
-                    Text(available ? "FX Lock · tap a control to apply" : "FX Lock · waiting for the local copy")
-                        .font(.caption2).foregroundStyle(Theme.fgDim)
-                        .lineLimit(1).minimumScaleFactor(0.75)
-                        .accessibilityIdentifier("np-fx-lock-waiting")
-                }
+                // A lock holding effects this track can't take yet (an Apple Music row whose
+                // local copy is ready — a control touch moves it, Q1) says so through the
+                // capsule's own look (outlined glyph, dashed border) + its VoiceOver value; no text.
                 fxLockButton
             }
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
@@ -284,22 +290,26 @@ extension NowPlayingMixPanel {
     /// it doesn't engage the DSP by itself. Same glyph + capsule as the Stem Lock.
     fileprivate var fxLockButton: some View {
         let locked = sequencer.fxLock.enabled
+        let fx = sequencer.fxLockIndicator
+        let held = locked && fx.isHeld
         return Button {
             sequencer.setFXLock(!locked)
         } label: {
-            Image(systemName: locked ? "lock.fill" : "lock.open")
+            Image(systemName: locked ? (held ? "lock" : "lock.fill") : "lock.open")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(locked ? Theme.accent : Theme.fgDim)
+                .opacity(held ? 0.6 : 1)
                 .padding(.horizontal, 8).padding(.vertical, 3)
                 .background(Capsule().fill(Theme.bgOverlay))
-                .overlay(Capsule().stroke(locked ? Theme.accent : Theme.border))
+                .overlay(Capsule().stroke(locked ? Theme.accent : Theme.border,
+                                          style: StrokeStyle(lineWidth: 1, dash: held ? [2, 2] : [])))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         // Absorb the capsule's 3 pt top/bottom padding: the header line stays the label's height.
         .padding(.vertical, -3)
         .accessibilityLabel("FX Lock")
-        .accessibilityValue(locked ? "On" : "Off")
+        .accessibilityValue(locked ? (fx.statusText(mixable: available).map { "On, \($0)" } ?? "On") : "Off")
         .accessibilityHint("Keeps these effects for the next tracks")
         .accessibilityIdentifier("np-mix-fx-lock")
     }
@@ -326,51 +336,128 @@ extension NowPlayingMixPanel {
     }
 }
 
-/// MIX MODE's status chip on the panel header (`np-mix-mode-status`). Re-reads twice a second
-/// while buffering (the byte progress isn't observable), otherwise only on state changes.
-struct MixModeStatusChip: View {
+/// Reads MIX MODE's indicator (+ the rule-A edition note) for the panel header. Re-reads twice a
+/// second while buffering (the byte progress isn't observable), otherwise only on state changes.
+struct MixModeIndicatorReader<Content: View>: View {
     @Environment(SetlistPlayer.self) private var sequencer
+    @ViewBuilder let content: (NPMixMode.Indicator, String?) -> Content
 
-    var body: some View {
-        let ind = sequencer.mixModeIndicator
-        switch ind {
-        case .buffering, .holding:
-            TimelineView(.periodic(from: .now, by: 0.5)) { _ in chip(sequencer.mixModeIndicator) }
-        default:
-            chip(ind)
-        }
+    private var current: (NPMixMode.Indicator, String?) {
+        #if DEBUG
+        if let o = NPMixMode.debugChipOverride { return o }
+        #endif
+        return (sequencer.mixModeIndicator, sequencer.editionSubstituteNote)
     }
 
-    @ViewBuilder private func chip(_ ind: NPMixMode.Indicator) -> some View {
-        if let text = ind.chipText {
-            HStack(spacing: 4) {
-                switch ind {
-                case .engaged, .stemsLoading:
-                    Circle().fill(Theme.accent).frame(width: 6, height: 6)
-                case .ready, .readyFromAppleMusic:
-                    Circle().stroke(Theme.accent, lineWidth: 1.5).frame(width: 6, height: 6)
-                case .buffering, .holding, .waiting:
-                    Image(systemName: "arrow.down.circle").font(.caption2)
-                case .unavailable, .suspended, .ripping, .rippingEdition:
-                    Image(systemName: "exclamationmark.circle").font(.caption2)
-                case .off:
-                    EmptyView()
+    var body: some View {
+        let (ind, note) = current
+        switch ind {
+        case .buffering, .holding:
+            TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                let (i, n) = current
+                content(i, n)
+            }
+        default:
+            content(ind, note)
+        }
+    }
+}
+
+/// The Mix panel header's layout (Levi 2026-11-03: the chip was CUT OFF on an iPhone). The chip is
+/// CENTERED and never truncated: it sits inline between the "Mix" toggle and the Mix Mode switch
+/// when its one line fits there (no extra height — "Ready", "Mixing", "Buffering 42%"); otherwise
+/// it drops to its own centered line under them, wrapping to 2 lines (scaling to 0.8 first if
+/// even that's tight). With no chip (Mix Mode off) the header is the single row it always was.
+struct MixPanelHeaderLayout<Toggle: View, Switch: View>: View {
+    let chip: MixModeChipLabel.Content?
+    @ViewBuilder let toggle: Toggle
+    @ViewBuilder let modeSwitch: Switch
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                toggle
+                if let chip {
+                    MixModeChipLabel(content: chip, wraps: false)
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Spacer(minLength: 4)
                 }
-                Text(text).lineLimit(1).minimumScaleFactor(0.75)
-                // Rule A: a vocals-muted substitution whose vocals were un-muted mid-track says
-                // which edition is actually playing.
-                if let note = sequencer.editionSubstituteNote {
-                    Text("· \(note)").lineLimit(1).foregroundStyle(Theme.fgDim)
-                        .accessibilityIdentifier("np-mix-edition-note")
+                modeSwitch
+            }
+            VStack(spacing: 3) {
+                HStack(spacing: 6) {
+                    toggle
+                    Spacer(minLength: 4)
+                    modeSwitch
+                }
+                if let chip {
+                    MixModeChipLabel(content: chip, wraps: true)
+                        .frame(maxWidth: .infinity)
                 }
             }
-            .font(.caption2)
-            .foregroundStyle(ind.controlsLive ? Theme.accent : Theme.fgDim)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Mix Mode status")
-            .accessibilityValue(text)
-            .accessibilityIdentifier("np-mix-mode-status")
         }
+    }
+}
+
+/// MIX MODE's status chip (`np-mix-mode-status`) — pure, so the header layout is testable.
+struct MixModeChipLabel: View {
+    struct Content: Equatable {
+        let indicator: NPMixMode.Indicator
+        let text: String
+        /// Rule A: a vocals-muted substitution whose vocals were un-muted mid-track says which
+        /// edition is actually playing ("Clean edition").
+        let note: String?
+
+        /// nil when the indicator has no chip (Mix Mode off).
+        init?(indicator: NPMixMode.Indicator, note: String?) {
+            guard let text = indicator.chipText else { return nil }
+            self.indicator = indicator
+            self.text = text
+            self.note = note
+        }
+
+        /// The chip's full words (text + note), as VoiceOver reads them.
+        var spoken: String { note.map { "\(text) · \($0)" } ?? text }
+    }
+
+    let content: Content
+    /// false = one line at its natural width (the inline slot); true = centered, up to 2 lines.
+    let wraps: Bool
+
+    var body: some View {
+        let ind = content.indicator
+        HStack(spacing: 4) {
+            switch ind {
+            case .engaged, .stemsLoading:
+                Circle().fill(Theme.accent).frame(width: 6, height: 6)
+            case .ready, .readyFromAppleMusic:
+                Circle().stroke(Theme.accent, lineWidth: 1.5).frame(width: 6, height: 6)
+            case .buffering, .holding, .waiting:
+                Image(systemName: "arrow.down.circle").font(.caption2)
+            case .unavailable, .suspended, .ripping, .rippingEdition:
+                Image(systemName: "exclamationmark.circle").font(.caption2)
+            case .off:
+                EmptyView()
+            }
+            label
+                .multilineTextAlignment(.center)
+                .lineLimit(wraps ? 2 : 1)
+                .minimumScaleFactor(wraps ? 0.8 : 1)
+                .fixedSize(horizontal: !wraps, vertical: true)
+        }
+        .font(.caption2)
+        .foregroundStyle(ind.controlsLive ? Theme.accent : Theme.fgDim)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Mix Mode status")
+        .accessibilityValue(content.spoken)
+        .accessibilityIdentifier("np-mix-mode-status")
+    }
+
+    /// One Text so the note wraps with the status as a single centered paragraph.
+    private var label: Text {
+        guard let note = content.note else { return Text(content.text) }
+        return Text(content.text) + Text(" · \(note)").foregroundStyle(Theme.fgDim)
     }
 }
 
@@ -439,30 +526,21 @@ struct StemLockStatusRow: View {
     }
 }
 
-/// The FX Lock line for a session whose lock carries effects the CURRENT track can't take (it
-/// plays outside the DSP, or the Mix tab is live): the track plays dry, the lock carries on.
-/// Nothing for any other state — an applied / idle lock needs no words.
-struct FXLockStatusRow: View {
-    let indicator: FXLock.Indicator
+extension FXLock.Indicator {
+    /// Held (the lock carries effects THIS track can't take) or paused (the Mix tab is live):
+    /// the lock glyph draws outlined + dimmed instead of filled.
+    var isHeld: Bool { self == .waiting || self == .dormant }
 
-    private var text: String? {
-        switch indicator {
-        case .waiting: return "FX Lock · effects can't apply to this track — kept for the next"
-        case .dormant: return "FX Lock · paused while the Mix tab plays"
+    /// The words the old FX Lock status line said — now only the lock's VoiceOver value (no
+    /// visible line: Levi 2026-11-03). `mixable` = the current track can be swapped onto the DSP
+    /// by a control touch (an Apple Music row whose local copy is ready).
+    func statusText(mixable: Bool) -> String? {
+        switch self {
+        case .waiting:
+            return mixable ? "tap a control to apply"
+                           : "effects can't apply to this track — kept for the next"
+        case .dormant: return "paused while the Mix tab plays"
         case .off, .idle, .applied: return nil
-        }
-    }
-
-    var body: some View {
-        if let text {
-            HStack(spacing: 5) {
-                Image(systemName: "lock.fill")
-                Text(text).lineLimit(1).minimumScaleFactor(0.8)
-            }
-            .font(.caption2)
-            .foregroundStyle(Theme.fgDim)
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("np-fx-lock-status")
         }
     }
 }
