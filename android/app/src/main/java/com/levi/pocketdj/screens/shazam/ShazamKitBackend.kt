@@ -103,12 +103,16 @@ object ShazamStreamDriver {
     }
 }
 
+/** The `[shazam]` diag lane (logcat + DiagLog). Secret-free: never pass the token. */
+internal fun shazamDiag(line: String) = com.levi.pocketdj.diag.NPLog.lane("shazam", line)
+
 /** MediaItem fields -> hit info. [artwork] etc. are plain strings so tests need no ShazamKit types. */
 fun hitInfoOf(title: String?, artist: String?, artwork: String?, appleMusicId: String?): ShazamHitInfo =
     ShazamHitInfo(title?.takeIf { it.isNotBlank() }, artist?.takeIf { it.isNotBlank() }, artwork, appleMusicId?.takeIf { it.isNotBlank() })
 
 /**
- * Live recognizer: shazam catalog (developer token = rip-server /musickit-token, shared with MusicKit) +
+ * Live recognizer: shazam catalog (developer token = rip-server /musickit-token, shared with MusicKit;
+ * the key's Media ID must have ShazamKit enabled or every match is UNAUTHORIZED) +
  * StreamingSession fed by AudioRecord 48 kHz mono PCM16. Device-only; the logic lives in [ShazamStreamDriver].
  */
 class ShazamKitBackend(
@@ -116,16 +120,27 @@ class ShazamKitBackend(
     private val timeoutMs: Long = ShazamStreamDriver.DEFAULT_TIMEOUT_MS,
     private val sessionFactory: suspend (DeveloperTokenProvider) -> ShazamStream = ::createRealStream,
     private val pcmFactory: () -> PcmSource = { AudioRecordPcm() },
+    /** Technical detail for the `[shazam]` diag lane; the user only ever sees friendly copy. */
+    private val diag: (String) -> Unit = ::shazamDiag,
 ) : RecognitionBackend {
 
     override suspend fun recognize(): RecognitionResult {
         // The SDK callback is synchronous: warm the token first (cached after the first call).
         val token = try { tokens.developerToken() } catch (e: CancellationException) { throw e } catch (t: Throwable) {
-            return RecognitionResult.Error("Couldn’t reach the import server for a Shazam token. Check Settings.")
+            diag("token fetch failed: ${t.javaClass.simpleName}: ${t.message}")
+            return RecognitionResult.Error(RECOGNITION_UNAVAILABLE_MESSAGE)
         }
+        // A malformed token gets the same bare 401 from Shazam as an unprovisioned key; say which (diag only).
+        ShazamDeveloperToken.problems(token).takeIf { it.isNotEmpty() }?.let {
+            diag("developer token rejected locally: ${it.joinToString()}")
+            return RecognitionResult.Error(RECOGNITION_UNAVAILABLE_MESSAGE)
+        }
+        // Device-clock findings never block (Apple checks iat/exp on its own clock).
+        ShazamDeveloperToken.clockNotes(token).takeIf { it.isNotEmpty() }?.let { diag("developer token clock note: ${it.joinToString()}") }
         val provider = DeveloperTokenProvider { DeveloperToken(tokens.cachedTokenOrNull() ?: token) }
         val stream = try { sessionFactory(provider) } catch (e: CancellationException) { throw e } catch (t: Throwable) {
-            return RecognitionResult.Error(t.message ?: "Couldn’t start recognition")
+            diag("session start failed: ${t.javaClass.name}: ${t.message}")
+            return RecognitionResult.Error(RECOGNITION_UNAVAILABLE_MESSAGE)
         }
         return ShazamStreamDriver.run(stream, pcmFactory(), SAMPLE_RATE, timeoutMs)
     }
@@ -158,7 +173,11 @@ private class RealStream(private val s: com.shazam.shazamkit.StreamingSession) :
                         StreamOutcome.Match(m?.let { hitInfoOf(it.title, it.artist, it.artworkURL?.toString(), it.appleMusicID) })
                     }
                     is MatchResult.NoMatch -> StreamOutcome.NoMatch
-                    is MatchResult.Error -> StreamOutcome.Error(r.exception.message ?: "Recognition failed")
+                    is MatchResult.Error -> {
+                        val code = r.exception.matchError.name
+                        shazamDiag(shazamMatchErrorDiag(code, r.exception.message))
+                        StreamOutcome.Error(shazamMatchErrorMessage(code))
+                    }
                 },
             )
         }

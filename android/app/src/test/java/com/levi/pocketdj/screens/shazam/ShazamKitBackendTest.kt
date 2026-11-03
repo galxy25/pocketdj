@@ -11,12 +11,18 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 class ShazamKitBackendTest {
+    private companion object {
+        /** Well-formed (unsigned) developer JWT: recognize() rejects malformed tokens before the SDK. */
+        val JWT = ShazamDeveloperTokenTest.jwt()
+    }
+
     private class FakePcm : PcmSource {
         override val bufferSize = 4096
         val started = AtomicBoolean(false)
@@ -120,6 +126,7 @@ class ShazamKitBackendTest {
 
     private fun backend(
         baseUrl: String,
+        diag: (String) -> Unit = {},
         sessionFactory: suspend (com.shazam.shazamkit.DeveloperTokenProvider) -> ShazamStream,
     ) = ShazamKitBackend(
         tokens = com.levi.pocketdj.data.applemusic.MusicKitDeveloperTokenClient(
@@ -129,6 +136,7 @@ class ShazamKitBackendTest {
         timeoutMs = 2_000,
         sessionFactory = sessionFactory,
         pcmFactory = { FakePcm() },
+        diag = diag,
     )
 
     @Test fun unconfigured_server_maps_to_error() = runBlocking {
@@ -136,19 +144,72 @@ class ShazamKitBackendTest {
         assertTrue(r is RecognitionResult.Error)
     }
 
-    @Test fun session_factory_throwable_maps_to_error() = runBlocking {
+    @Test fun malformed_token_is_error_before_session() = runBlocking {
         val server = okhttp3.mockwebserver.MockWebServer()
         server.enqueue(okhttp3.mockwebserver.MockResponse().setBody("""{"token":"abc","ttlSec":3600}"""))
         server.start()
         try {
-            val r = backend(server.url("/").toString().trimEnd('/')) { throw NoClassDefFoundError("retrofit2/Retrofit\$Builder") }.recognize()
-            assertEquals(RecognitionResult.Error("retrofit2/Retrofit\$Builder"), r)
+            val lines = mutableListOf<String>()
+            val r = backend(server.url("/").toString().trimEnd('/'), diag = { lines += it }) { error("session must not be created") }.recognize()
+            // Users get friendly copy; the technical reason is diag-only.
+            assertEquals(RecognitionResult.Error(RECOGNITION_UNAVAILABLE_MESSAGE), r)
+            assertTrue(lines.toString(), lines.any { it.contains("not a JWT") })
+            assertTrue("token leaked into diag: $lines", lines.none { it.contains("abc") })
+        } finally { server.shutdown() }
+    }
+
+    @Test fun token_valid_on_apples_clock_is_not_blocked_by_a_skewed_device_clock() = runBlocking {
+        // iat a day in the future and exp long past by THIS clock: Apple's clock decides, so the
+        // request must still reach the SDK (clock findings are diag notes only).
+        val far = ShazamDeveloperTokenTest.jwt(claims = """{"iss":"T","iat":${System.currentTimeMillis() / 1000 + 86_400},"exp":${System.currentTimeMillis() / 1000 + 90_000}}""")
+        val past = ShazamDeveloperTokenTest.jwt(claims = """{"iss":"T","iat":1000,"exp":4600}""")
+        for (tok in listOf(far, past)) {
+            val server = okhttp3.mockwebserver.MockWebServer()
+            server.enqueue(okhttp3.mockwebserver.MockResponse().setBody("""{"token":"$tok","ttlSec":3600}"""))
+            server.start()
+            try {
+                val lines = mutableListOf<String>()
+                var created = false
+                val r = backend(server.url("/").toString().trimEnd('/'), diag = { lines += it }) {
+                    created = true; FakeStream(StreamOutcome.NoMatch)
+                }.recognize()
+                assertTrue("session must be created for $tok", created)
+                assertEquals(RecognitionResult.NoMatch, r)
+                assertTrue(lines.toString(), lines.any { it.contains("clock note") })
+                assertTrue("token leaked into diag", lines.none { it.contains(tok) })
+            } finally { server.shutdown() }
+        }
+    }
+
+    @Test fun match_errors_use_public_copy_with_detail_in_diag() {
+        // UNAUTHORIZED (unprovisioned Media ID) must never tell an end user to edit portal config.
+        assertEquals(RECOGNITION_UNAVAILABLE_MESSAGE, shazamMatchErrorMessage("UNAUTHORIZED"))
+        assertEquals(RECOGNITION_UNAVAILABLE_MESSAGE, shazamMatchErrorMessage("SOMETHING_NEW"))
+        assertEquals(RECOGNITION_UNAVAILABLE_MESSAGE, shazamMatchErrorMessage(null))
+        for (code in listOf("UNAUTHORIZED", "MATCH_ATTEMPT_FAILED", "INVALID_SIGNATURE", "PROVIDED_EMPTY_AUDIO_DATA", null)) {
+            val msg = shazamMatchErrorMessage(code)
+            assertFalse(msg, Regex("(?i)media id|token|key|401|portal|server").containsMatchIn(msg))
+        }
+        assertTrue(shazamMatchErrorDiag("UNAUTHORIZED", "HTTP 401").contains("Media ID needs the ShazamKit service"))
+        assertEquals("match error SOMETHING_NEW: HTTP 500", shazamMatchErrorDiag("SOMETHING_NEW", "HTTP 500"))
+    }
+
+    @Test fun session_factory_throwable_maps_to_error() = runBlocking {
+        val server = okhttp3.mockwebserver.MockWebServer()
+        server.enqueue(okhttp3.mockwebserver.MockResponse().setBody("""{"token":"$JWT","ttlSec":3600}"""))
+        server.start()
+        try {
+            val lines = mutableListOf<String>()
+            val r = backend(server.url("/").toString().trimEnd('/'), diag = { lines += it }) { throw NoClassDefFoundError("retrofit2/Retrofit\$Builder") }.recognize()
+            assertEquals(RecognitionResult.Error(RECOGNITION_UNAVAILABLE_MESSAGE), r)
+            // The class name (an R8 keep regression signal) stays in the diag lane.
+            assertTrue(lines.toString(), lines.any { it.contains("NoClassDefFoundError") && it.contains("retrofit2/Retrofit\$Builder") })
         } finally { server.shutdown() }
     }
 
     @Test fun token_is_fetched_and_session_gets_provider_then_match_is_hit() = runBlocking {
         val server = okhttp3.mockwebserver.MockWebServer()
-        server.enqueue(okhttp3.mockwebserver.MockResponse().setBody("""{"token":"abc","ttlSec":3600}"""))
+        server.enqueue(okhttp3.mockwebserver.MockResponse().setBody("""{"token":"$JWT","ttlSec":3600}"""))
         server.start()
         try {
             val info = ShazamHitInfo("Song", "Artist", null, "42")
@@ -158,7 +219,7 @@ class ShazamKitBackendTest {
                 FakeStream(StreamOutcome.Match(info))
             }.recognize()
             assertEquals(RecognitionResult.Hit(info), r)
-            assertEquals("abc", provided)
+            assertEquals(JWT, provided)
         } finally { server.shutdown() }
     }
 

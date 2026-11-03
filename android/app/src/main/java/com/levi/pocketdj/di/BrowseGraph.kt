@@ -493,10 +493,12 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
     // ---- BRW-17: "?♪?" song recognizer ------------------------------------------------------
 
     /**
-     * The capture + match pipeline. Release uses the vendored ShazamKit 2.1.1 AAR (app/libs); debug keeps the 12 s no-match stub so the emulator flow is drivable.
+     * The capture + match pipeline. Release uses the vendored ShazamKit 2.1.1 AAR (app/libs); debug keeps the 12 s
+     * no-match stub so the emulator flow is drivable, unless built with `-PrealShazam=true` (BuildConfig.REAL_SHAZAM):
+     * the stub hid a release-only 401 for weeks, so a debug build must be able to run the real recognizer.
      */
     var shazamBackend: com.levi.pocketdj.screens.shazam.RecognitionBackend =
-        if (com.levi.pocketdj.BuildConfig.DEBUG) com.levi.pocketdj.screens.shazam.DebugListeningBackend
+        if (com.levi.pocketdj.BuildConfig.DEBUG && !com.levi.pocketdj.BuildConfig.REAL_SHAZAM) com.levi.pocketdj.screens.shazam.DebugListeningBackend
         else com.levi.pocketdj.screens.shazam.ShazamKitBackend(app.musicKitDevTokenClient)
 
     /** Apple Music Web API adapter behind the result sheet's Apple Music block. */
