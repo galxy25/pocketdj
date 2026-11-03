@@ -414,8 +414,17 @@ still planned. Keep this section in step with the phases as they land.
 - **Streaming decks are file decks with a moving end.** While a deck streams, `endFrames` is the
   downloaded frontier, so seek/loop/restart/stems-off can only reach audio that has landed (a seek
   past it holds at the target until the bytes arrive). The frame↔byte map trusts the LAME/Xing
-  full-length header of our 256 kbps CBR rips; a headerless file plays only once complete. An
-  analog song without a fetchable per-song cut streams its whole album side up to `startMs`.
+  full-length header of our 256 kbps CBR rips; a headerless file (no Xing/VBRI/TLEN — a user
+  digital file) plays only once complete: its partial open's length is an ESTIMATE from the bytes
+  present, so the deck stays UNATTACHED (`streamHeaderless`, held, Buffering…, on the provisional
+  catalog length, not ready to air) until the download completes, then attaches the whole song —
+  the Now Playing DSP's `pumpMain` rule, mirrored (attaching the partial made a 12 s song "end" at
+  3.6 s). Detection is the shared `GrowingFileSchedule.bytesPerSecond` 320 kbps bound, so a
+  LOW-bitrate headerless file (128 kbps past ~40 % downloaded) can still pass as header-claimed. When a stream
+  attaches, the real window also replaces the auto machine's catalog `durationMs`
+  (`autoDeckDurationMs`, re-stamped; `loadAuto` reads `streamAttachedWindowMs` for an attach
+  during its own load), so the crossfade is timed off the real length. An analog song without a
+  fetchable per-song cut streams its whole album side up to `startMs`.
 - **Handover alignment is sample-locked only on one render clock.** When the outgoing and
   incoming voices render at the same rate (both 44.1 kHz — every Demucs stem set against a
   44.1 kHz rip) the incoming voice starts on the outgoing one's exact frame. A full mix at another
