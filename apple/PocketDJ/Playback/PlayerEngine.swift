@@ -840,6 +840,21 @@ final class PlayerEngine {
         play()
     }
 
+    /// A START that never goes through `load` (the Now Playing DSP starting a row on its growing
+    /// file, the Apple Music → local hand-off): the same rule `load` applies — the listener wants
+    /// sound, so an interruption that never delivered `.ended` is over. FIELD (ios-3712BFDE,
+    /// 2026-10-23…25): MusicKit's own start interrupts our session ("AM play …" then
+    /// "interruption began … external=1" in the same second) and never ends it, so the flag stays
+    /// set for the whole Apple Music row and every DSP-only start after it — which refused the
+    /// Mix Mode touch hand-off and disabled the growing file's hold fallback. Also forgets the
+    /// stale "was playing" so a late `.ended` can't resume audio the listener paused since.
+    func clearStaleInterruptionForStart(reason: String) {
+        guard interruptionOpen else { return }
+        interruptionOpen = false
+        wasPlayingAtInterruption = false
+        DiagLog.shared.log("session", "interruption stale-cleared by=\(reason)")
+    }
+
     /// Holds a real local AVPlayer item (not an Apple Music impersonation).
     var hasLocalItem: Bool { !externalActive && player.currentItem != nil }
 

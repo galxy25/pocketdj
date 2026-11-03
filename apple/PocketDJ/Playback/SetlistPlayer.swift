@@ -2166,6 +2166,10 @@ final class SetlistPlayer {
         }
         // The outgoing source goes quiet first; the card + remote transport go to the DSP.
         coordinator.stopAppleMusicIfActive()
+        // A START, like `PlayerEngine.load`: an interruption that never ended (MusicKit's own
+        // start leaves one open for the whole Apple Music row before this) is over — or the
+        // mid-song hold fallback (`growingBufferingChanged`) would never fire for this row.
+        if !startPaused { player.clearStaleInterruptionForStart(reason: "growing-start") }
         if !startPaused { beginStartWindow(it, gen: gen) }
         growingUid = it.uid
         growingLeftStream = nil
@@ -2437,13 +2441,29 @@ final class SetlistPlayer {
             return .burned
         }
         if let url = prefetchedCutFile?(it.resolveId) { return .cut(url) }
-        guard let s = bufferStream?(it.resolveId), !s.failed, s.resolved, s.isCut || (s.startMs ?? 0) == 0,
+        // A growing file that already failed / stalled THIS play (it fell back) is never offered
+        // again — a second touch would only hold → fall back → re-resolve Apple Music again.
+        guard growingRefusedUid != it.uid,
+              let s = bufferStream?(it.resolveId), !s.failed, s.resolved, s.isCut || (s.startMs ?? 0) == 0,
               let covered = GrowingFileSchedule.coveredFileSeconds(
                 bytes: s.bytesReceived, expectedBytes: s.expectedBytes, complete: s.isComplete,
                 fileDurationSeconds: it.lengthMs.map { Double($0) / 1000 }),
               covered >= t + GrowingFileSchedule.resumeRunway else { return nil }
         return .growing(s)
     }
+
+    #if DEBUG
+    /// Tests: which local copy would take the CURRENT row over at `t` ("burned"/"cut"/"growing").
+    func amHandOffCopyKindForTests(atSongSeconds t: Double) -> String? {
+        guard index < queue.count else { return nil }
+        switch appleMusicLocalCopy(queue[index], atSongSeconds: t) {
+        case .burned: return "burned"
+        case .cut: return "cut"
+        case .growing: return "growing"
+        case nil: return nil
+        }
+    }
+    #endif
 
     /// The hand-off target for the current Apple Music row: MusicKit's position + the lead.
     private func appleMusicHandOffTarget() -> Double {
@@ -2470,11 +2490,18 @@ final class SetlistPlayer {
     private func handOffFromAppleMusic() {
         guard let dsp, index < queue.count else { return }
         let it = queue[index]
-        guard !player.interruptionOpen, !isStartPending, resolvingGeneration == nil, appleMusicHandOffReady else {
+        let am = coordinator.appleMusic
+        // REVIEW MUST (2026-11-02): MusicKit's OWN start interrupts our session and never ends it
+        // (drive logs: "AM play …" + "interruption began … external=1", no "ended"), so
+        // `interruptionOpen` alone refused every hand-off of an AM row that followed a local one.
+        // A real interruption (a call, Siri) pauses MusicKit too: MusicKit AUDIBLY playing — or
+        // paused by the listener on purpose — proves nothing is holding the audio.
+        let interruptionHolds = player.interruptionOpen
+            && !((am.isPlaying && am.audioConfirmed) || am.pauseIsIntentional)
+        guard !interruptionHolds, !isStartPending, resolvingGeneration == nil, appleMusicHandOffReady else {
             NPMixMode.log("am-handoff song=\(it.id) refused (interruption / start pending / not ready)")
             return
         }
-        let am = coordinator.appleMusic
         let smoothed = appleMusicPosition
         let raw = am.rawPlaybackTimeSeconds
         let leadMs = Self.amHandoffLeadMs
@@ -2521,6 +2548,9 @@ final class SetlistPlayer {
             DeadAirMeter.shared.trackStarting(backend: "dsp-\(kind)")
         }
         // 2) A locked phone can't activate an exclusive session once MusicKit stops: mixable first.
+        //    (MusicKit's start left our session's interruption open — it is over now: without
+        //    this the growing file's hold fallback below would never fire.)
+        player.clearStaleInterruptionForStart(reason: "am-handoff")
         player.prearmHandoffSession(reason: "am-handoff song=\(it.id)")
         // 3) MusicKit goes quiet and is RELEASED (queue emptied — no stale card, no stray end).
         coordinator.stopAppleMusicIfActive()

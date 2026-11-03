@@ -564,7 +564,10 @@ final class BurnStore {
             // REVIEW MUST (2026-11-02): a file already at this name with no ledger row (a lost or
             // purged ledger, a tvOS orphan, a pre-feature download) was NOT created by this call.
             // The bytes are replaced as before, but the buffer lane never makes it temporary.
+            // …and an EVICTED iCloud copy at that name (another device's download, not on this
+            // device yet: only its `.<name>.icloud` placeholder is here) is pre-existing too.
             let preExisting = fm.fileExists(atPath: audioURL.path)
+            let evictedCopy = folder.isUserFolder && Self.hasEvictedICloudPlaceholder(audioURL)
             let analogShared = entry.source == "analog" && preExisting
             if !analogShared {
                 if preExisting { try fm.removeItem(at: audioURL) }
@@ -586,7 +589,7 @@ final class BurnStore {
                 cutFileName: prev?.cutFileName, cutDownloadedAt: prev?.cutDownloadedAt)
             save()
             if origin == .buffer && !explicitOwned {
-                if preExisting {
+                if preExisting || evictedCopy {
                     // Already on disk (a sibling's shared analog side, or an orphaned earlier
                     // download): not created here, so never temporary — an orphan side with no
                     // other row referencing it would otherwise be deleted by the sweep.
@@ -706,6 +709,16 @@ final class BurnStore {
             DiagLog.shared.log("storage", "buffer keep \(songId) (picked folder — Keep buffered files in picked folders is on)")
             return
         }
+        // A picked-folder file whose identity can't be read can't be proven ours at sweep time:
+        // never temporary (the sweep would otherwise fall back to path-only rules).
+        var mtime: Double = 0
+        if inUserFolder, let fileURL {
+            guard let m = Self.modificationMs(fileURL) else {
+                DiagLog.shared.log("storage", "buffer keep \(songId) (picked-folder file identity unreadable — pinned at creation)")
+                return
+            }
+            mtime = m
+        }
         let now = clockMs()
         let expires = now + ttl * 3_600_000
         var h = temporaryHolds[songId]
@@ -722,7 +735,7 @@ final class BurnStore {
                 h.userFolderFiles = nil
             }
             h.userFolderPath = path
-            if let fileURL, let mtime = Self.modificationMs(fileURL) {
+            if let fileURL {
                 var files = h.userFolderFiles ?? [:]
                 files[fileURL.lastPathComponent] = mtime
                 h.userFolderFiles = files
@@ -742,6 +755,36 @@ final class BurnStore {
         onTemporaryHoldsChanged?()
     }
 
+    /// iCloud Drive keeps an EVICTED file (synced from another device, its bytes not on this one)
+    /// as a hidden `.<name>.icloud` placeholder: `fileExists` at the real name says no, yet the
+    /// file exists — writing it here REPLACES the other device's copy in the shared folder.
+    /// The buffer lane therefore never makes such a file temporary (deleting it would delete
+    /// theirs everywhere).
+    nonisolated static func hasEvictedICloudPlaceholder(_ url: URL) -> Bool {
+        let stub = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).icloud")
+        return FileManager.default.fileExists(atPath: stub.path)
+    }
+
+    /// An EXPLICIT action on THIS device claims a file that already sits in a picked folder (an
+    /// explicit stems download reuses existing parts as-is): bump its modification time, so
+    /// another device that buffered the same file into the shared folder sees it REWRITTEN and
+    /// its sweep releases it instead of deleting this device's download
+    /// (`userFolderFileIsOurs`). App storage is per device: never touched.
+    private func claimExistingPickedFolderFiles(_ urls: some Sequence<URL>) {
+        let app = appBurnsDir()?.standardizedFileURL.path
+        let fm = FileManager.default
+        var n = 0
+        for u in urls {
+            let p = u.standardizedFileURL.path
+            if let app, p == app || p.hasPrefix(app + "/") { continue }
+            // Strictly past the identity tolerance (± 2 s) even right after the other write.
+            let was = (try? fm.attributesOfItem(atPath: u.path))?[.modificationDate] as? Date
+            let stamp = max(Date(), (was ?? .distantPast).addingTimeInterval(3))
+            if (try? fm.setAttributes([.modificationDate: stamp], ofItemAtPath: u.path)) != nil { n += 1 }
+        }
+        if n > 0 { DiagLog.shared.log("storage", "claim n=\(n) picked-folder file(s) for an explicit action") }
+    }
+
     /// A file's modification time, epoch ms (nil when it can't be read).
     nonisolated static func modificationMs(_ url: URL) -> Double? {
         ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date)
@@ -753,7 +796,8 @@ final class BurnStore {
     /// else's. A hold with no recorded identity for it (pre-2026-11-02) keeps the old
     /// path-only rule. A missing file is trivially "ours" (deleting nothing is safe).
     private static func userFolderFileIsOurs(_ url: URL, in h: TemporaryHold) -> Bool {
-        guard let recorded = h.userFolderFiles?[url.lastPathComponent] else { return true }
+        guard let files = h.userFolderFiles else { return true }   // a pre-identity hold: path rules only
+        guard let recorded = files[url.lastPathComponent] else { return false }   // never recorded: not provably ours
         guard let now = modificationMs(url) else { return true }
         return abs(now - recorded) <= 2_000
     }
@@ -1104,7 +1148,10 @@ final class BurnStore {
     func burnStems(forSong songId: String, origin: AssetOrigin = .explicit("stems")) async -> (urls: [String: URL], release: (() -> Void)?)? {
         if case let .explicit(why) = origin { pin(songIds: [songId], reason: why) }
         defer { if case let .explicit(why) = origin { pin(songIds: [songId], reason: why) } }
-        if let existing = localStemURLs(forSong: songId) { return existing }   // scope held by the read
+        if let existing = localStemURLs(forSong: songId) {                 // scope held by the read
+            if case .explicit = origin { claimExistingPickedFolderFiles(existing.urls.values) }
+            return existing
+        }
         guard let remote = rips.stemURLs(forSong: songId),
               let folder = resolveBurnFolder(allowRePersist: true) else { return nil }
         let dir = folder.url
@@ -1116,14 +1163,21 @@ final class BurnStore {
         for name in Self.stemNames {
             guard let url = remote[name] else { return bail() }
             let dest = dir.appendingPathComponent(Self.stemFileName(songId, name))
-            if FileManager.default.fileExists(atPath: dest.path) { local[name] = dest; continue }
+            if FileManager.default.fileExists(atPath: dest.path) {
+                if case .explicit = origin, folder.isUserFolder { claimExistingPickedFolderFiles([dest]) }
+                local[name] = dest; continue
+            }
+            // An EVICTED iCloud copy (another device's file, not downloaded here) is already there.
+            let evicted = folder.isUserFolder && Self.hasEvictedICloudPlaceholder(dest)
             do {
                 let data = try await rips.downloadBytes(url)
                 // Landed by someone else while we downloaded: theirs stands (and keeps its status).
                 if FileManager.default.fileExists(atPath: dest.path) { local[name] = dest; continue }
                 try data.write(to: dest, options: .atomic)
                 local[name] = dest
-                if origin == .buffer {
+                if origin == .buffer, evicted {
+                    DiagLog.shared.log("storage", "buffer keep \(songId) \(name) (an evicted iCloud copy was already there)")
+                } else if origin == .buffer {
                     noteBufferCreated(songId: songId, stemPart: name, stemBytes: data.count,
                                       inUserFolder: folder.isUserFolder, folderURL: dir, fileURL: dest)
                 }
@@ -1178,7 +1232,12 @@ final class BurnStore {
         let dir = folder.url
         defer { if folder.scoped { dir.stopAccessingSecurityScopedResource() } }
         let dest = dir.appendingPathComponent(Self.stemFileName(songId, part))
-        if FileManager.default.fileExists(atPath: dest.path) { return true }
+        if FileManager.default.fileExists(atPath: dest.path) {
+            if case .explicit = origin, folder.isUserFolder { claimExistingPickedFolderFiles([dest]) }
+            return true
+        }
+        // An EVICTED iCloud copy (another device's file, not downloaded here) is already there.
+        let evicted = folder.isUserFolder && Self.hasEvictedICloudPlaceholder(dest)
         do {
             let data = try await rips.downloadBytes(url)
             guard !Task.isCancelled else { return false }
@@ -1186,7 +1245,9 @@ final class BurnStore {
             // stands — the check and the write share one main-actor turn, so it can't race.
             if FileManager.default.fileExists(atPath: dest.path) { return true }
             try data.write(to: dest, options: .atomic)
-            if origin == .buffer {
+            if origin == .buffer, evicted {
+                DiagLog.shared.log("storage", "buffer keep \(songId) \(part) (an evicted iCloud copy was already there)")
+            } else if origin == .buffer {
                 noteBufferCreated(songId: songId, stemPart: part, stemBytes: data.count,
                                   inUserFolder: folder.isUserFolder, folderURL: dir, fileURL: dest)
             }
@@ -1214,9 +1275,15 @@ final class BurnStore {
         let fm = FileManager.default
         var out: [String: URL] = [:]
         var moved: [(from: URL, to: URL)] = []
+        var evicted = Set<String>()
         for (name, src) in files {
             let dest = dir.appendingPathComponent(Self.stemFileName(songId, name))
-            if fm.fileExists(atPath: dest.path) { out[name] = dest; continue }
+            if fm.fileExists(atPath: dest.path) {
+                if case .explicit = origin, folder.isUserFolder { claimExistingPickedFolderFiles([dest]) }
+                out[name] = dest; continue
+            }
+            // An EVICTED iCloud copy is already there: replaced here, but never ours to expire.
+            if folder.isUserFolder, Self.hasEvictedICloudPlaceholder(dest) { evicted.insert(name) }
             do { try fm.moveItem(at: src, to: dest) } catch {
                 DiagLog.shared.log("error", "mixstream adopt stems \(songId)/\(name) failed: \(error.localizedDescription)")
                 for m in moved { try? fm.moveItem(at: m.to, to: m.from) }   // roll back: no half-adopted set
@@ -1229,6 +1296,10 @@ final class BurnStore {
             for m in moved {
                 guard let name = Self.stemNames.first(where: { m.to.lastPathComponent == Self.stemFileName(songId, $0) })
                 else { continue }
+                if evicted.contains(name) {
+                    DiagLog.shared.log("storage", "buffer keep \(songId) \(name) (an evicted iCloud copy was already there)")
+                    continue
+                }
                 let size = ((try? fm.attributesOfItem(atPath: m.to.path))?[.size] as? Int) ?? 0
                 noteBufferCreated(songId: songId, stemPart: name, stemBytes: size,
                                   inUserFolder: folder.isUserFolder, folderURL: dir, fileURL: m.to)

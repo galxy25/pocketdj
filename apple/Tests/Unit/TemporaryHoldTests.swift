@@ -442,6 +442,86 @@ final class TemporaryHoldTests: XCTestCase {
         XCTAssertTrue(burns.temporaryHolds.isEmpty)
     }
 
+    /// REVIEW MUST (2026-11-02): an iCloud Drive picked folder keeps another device's EVICTED file
+    /// as a hidden `.<name>.icloud` placeholder — `fileExists` at the real name says no. The lane's
+    /// write replaces that shared file; holding it would let this device's sweep delete the other
+    /// device's download everywhere. Never temporary (a part with no placeholder still is).
+    func testEvictedICloudCopyInAPickedFolderIsNeverHeld() async throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_ic": .init(key: "rips/sng_ic.mp3", source: "digital", stems: stems("sng_ic"))])
+        let (d, bookmark) = try pickedFolder("ic")
+        let settings = makeSettings()
+        settings.burnFolderBookmark = bookmark
+        try Data("stub".utf8).write(to: d.appendingPathComponent(".stem-sng_ic-vocals.mp3.icloud"))
+        let burns = try makeBurns(rips, settings: settings)
+        let okV = await burns.burnStemPart(forSong: "sng_ic", part: "vocals", origin: .buffer)
+        let okD = await burns.burnStemPart(forSong: "sng_ic", part: "drums", origin: .buffer)
+        XCTAssertTrue(okV && okD)
+        XCTAssertEqual(burns.temporaryHolds["sng_ic"]?.stemParts, ["drums"],
+                       "the part over an evicted iCloud copy is never temporary; a fresh one is")
+        burns.removeTemporaryAssets(songIds: ["sng_ic"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: d.appendingPathComponent("stem-sng_ic-vocals.mp3").path))
+        // Audio: the adoption name's placeholder makes the adopted file pre-existing too.
+        let probe = try makeBurns(rips, settings: makeSettings())
+        let name = try XCTUnwrap(probe.adoptStreamedFile(songId: "sng_ic", title: "I", artist: "A",
+                                                         from: try tempFile(), origin: .explicit("probe"))).lastPathComponent
+        try? FileManager.default.removeItem(at: indexURL)
+        try Data("stub".utf8).write(to: d.appendingPathComponent(".\(name).icloud"))
+        let burns2 = try makeBurns(rips, settings: settings)
+        let audio = try XCTUnwrap(burns2.adoptStreamedFile(songId: "sng_ic", title: "I", artist: "A",
+                                                           from: try tempFile(), origin: .buffer))
+        XCTAssertEqual(audio.lastPathComponent, name)
+        XCTAssertFalse(burns2.temporaryHolds["sng_ic"]?.audio ?? false, "audio over an evicted copy is never temporary")
+    }
+
+    /// REVIEW MUST (2026-11-02): device B's EXPLICIT stems download reuses the parts device A's
+    /// buffer lane wrote into the SHARED picked folder (`burnStemPart`/`burnStems` return an existing
+    /// part as-is — no rewrite). B now claims them (bumps the modification time), so A's sweep sees
+    /// them rewritten and releases them instead of deleting B's download.
+    func testAnotherDevicesExplicitReuseOfASharedBufferedPartIsNeverDeleted() async throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_sx": .init(key: "rips/sng_sx.mp3", source: "digital", stems: stems("sng_sx"))])
+        let (d, bookmark) = try pickedFolder("sx")
+        let settingsA = makeSettings()
+        settingsA.burnFolderBookmark = bookmark
+        let deviceA = try makeBurns(rips, settings: settingsA)
+        let okA = await deviceA.burnStemPart(forSong: "sng_sx", part: "vocals", origin: .buffer)
+        XCTAssertTrue(okA)
+        XCTAssertEqual(deviceA.temporaryHolds["sng_sx"]?.stemParts, ["vocals"])
+        // Device B: its own ledger, the same shared folder, an explicit download right away.
+        let indexB = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-holds-indexB-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: indexB) }
+        let settingsB = makeSettings()
+        settingsB.burnFolderBookmark = bookmark
+        let deviceB = BurnStore(rips: rips, fileURL: indexB)
+        deviceB.appBurnsDirOverride = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-holds-appB-\(UUID().uuidString)")
+        deviceB.settings = settingsB
+        let okB = await deviceB.burnStemPart(forSong: "sng_sx", part: "vocals", origin: .explicit("stems"))
+        XCTAssertTrue(okB)
+        // A's sweep: the part is B's download now.
+        let r = deviceA.removeTemporaryAssets(songIds: ["sng_sx"])
+        XCTAssertEqual(r.songs, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: d.appendingPathComponent("stem-sng_sx-vocals.mp3").path),
+                      "another device's explicit download is never deleted by this device's sweep")
+    }
+
+    /// A hold that records file identities but not THIS file's (never recorded / unreadable) can't
+    /// prove the file is ours: released, never deleted.
+    func testPickedFolderFileWithNoRecordedIdentityIsReleased() async throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_ni": .init(key: "rips/sng_ni.mp3", source: "digital", stems: stems("sng_ni"))])
+        let (d, bookmark) = try pickedFolder("ni")
+        let settings = makeSettings()
+        settings.burnFolderBookmark = bookmark
+        let burns = try makeBurns(rips, settings: settings)
+        _ = await burns.burnStemPart(forSong: "sng_ni", part: "bass", origin: .buffer)
+        var h = try XCTUnwrap(burns.temporaryHolds["sng_ni"])
+        h.userFolderFiles = ["something-else.mp3": 1]
+        burns.injectHoldForTesting(h)
+        burns.removeTemporaryAssets(songIds: ["sng_ni"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: d.appendingPathComponent("stem-sng_ni-bass.mp3").path))
+    }
+
     /// Toggle ON ("Keep buffered files in shared/picked folders"): the old rule — buffer assets in
     /// a picked folder are pinned at creation; app storage still carries holds.
     func testKeepPickedFolderToggleOnPinsAtCreation() async throws {

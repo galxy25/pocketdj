@@ -1138,12 +1138,13 @@ final class NPMixGrowingFileTests: XCTestCase {
         XCTAssertNil(r.coord.activeBackend)
     }
 
-    /// The touch is refused across an open audio-session interruption (a call).
+    /// The touch is refused across an open audio-session interruption (a call): MusicKit is
+    /// paused by it (not by the listener) — nothing changes.
     func testAppleMusicHandOffRefusedAcrossAnInterruption() async throws {
         let data = try noise
         let r = try seqRig(["a", "b"], mixDefault: false)
         await startPlain(r, ["a", "b"])
-        let fake = putOnAppleMusic(r, "a", at: 3)
+        let fake = putOnAppleMusic(r, "a", at: 3, playing: false)
         r.seq.setMixMode(true)
         try feed(r.loader, "a", tempMP3("ai"), data, 0.95)
         r.player.handleInterruption(began: true, shouldResume: nil)
@@ -1151,6 +1152,65 @@ final class NPMixGrowingFileTests: XCTestCase {
         XCTAssertFalse(r.seq.mixEngaged)
         XCTAssertEqual(fake.releaseCount, 0)
         XCTAssertEqual(r.coord.activeBackend, .appleMusic)
+    }
+
+    /// REVIEW MUST (2026-11-02, field logs ios-3712BFDE 10-23…25): MusicKit's OWN start interrupts
+    /// our session ("AM play …" + "interruption began … external=1", never ended). With MusicKit
+    /// audibly playing that is not a call: the touch hands off, and the stale interruption is
+    /// cleared (or the growing file's hold fallback would never fire).
+    func testAppleMusicHandOffIsNotBlockedByMusicKitsOwnStaleInterruption() async throws {
+        let data = try noise
+        SetlistPlayer.growingHoldFallbackSeconds = 0.2
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        // Build the DSP graph up front, so a REFUSED hand-off fails here instead of skipping.
+        let warm = tempMP3("azw")
+        try data.write(to: warm)
+        r.dsp.engage(url: warm, startMs: nil, lengthMs: 12_000, atSeconds: 0, songId: "warm", play: false)
+        r.dsp.disengage()
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        let fake = putOnAppleMusic(r, "a", at: 3)
+        r.player.handleInterruption(began: true, shouldResume: nil)   // MusicKit's start did this
+        r.seq.setMixMode(true)
+        try feed(r.loader, "a", tempMP3("az"), data, 0.95)
+        XCTAssertTrue(r.seq.currentTrackMixable)
+        r.seq.engageMix()
+        XCTAssertTrue(r.seq.mixEngaged, "MusicKit audibly playing proves no call holds the audio")
+        XCTAssertEqual(fake.releaseCount, 1)
+        XCTAssertFalse(r.player.interruptionOpen, "the stale interruption is over")
+        // …so a hold past the frontier still falls back (5 s rule) instead of holding forever.
+        await waitUntil("rendering") { r.dsp.currentTime > 3.2 && !r.dsp.awaitingFirstAudio }
+        r.dsp.seek(toSongSeconds: 11.5)
+        XCTAssertTrue(r.dsp.isBuffering)
+        await waitUntil("fell back") { !r.seq.mixEngaged }
+        XCTAssertEqual(r.seq.growingFallbackCount, 1)
+        XCTAssertEqual(r.seq.index, 0)
+        // The growing file that failed this play is never offered for a second hand-off.
+        XCTAssertNil(r.seq.amHandOffCopyKindForTests(atSongSeconds: 4))
+    }
+
+    /// REVIEW MUST (2026-11-02): an Apple Music row left our session's interruption open; the
+    /// NEXT row starts in the DSP on its growing file (no `PlayerEngine.load` to clear it). Its
+    /// mid-song hold must still fall back after the budget — not hold forever.
+    func testGrowingStartAfterAnAppleMusicRowStillFallsBackOnALongHold() async throws {
+        let data = try noise
+        SetlistPlayer.growingHoldFallbackSeconds = 0.2
+        let r = try seqRig(["a", "b"])
+        await startPlain(r, ["a", "b"])
+        putOnAppleMusic(r, "a", at: 3)
+        r.player.handleInterruption(began: true, shouldResume: nil)   // MusicKit's start did this
+        await pause(0.1)                                     // the now-playing observers settle on a
+        try feed(r.loader, "b", tempMP3("gb"), data, 0.95)
+        r.seq.skipNext()
+        await waitUntil("b on the growing file") { r.seq.index == 1 && r.seq.mixEngaged }
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertFalse(r.player.interruptionOpen)
+        await waitUntil("rendering") { r.dsp.currentTime > 0.5 && !r.dsp.awaitingFirstAudio }
+        r.dsp.seek(toSongSeconds: 11.5)
+        XCTAssertTrue(r.dsp.isBuffering)
+        await waitUntil("fell back to the plain stream") { !r.seq.mixEngaged }
+        XCTAssertEqual(r.seq.growingFallbackCount, 1)
+        XCTAssertEqual(r.seq.index, 1, "a fallback, never a skip")
     }
 
     /// Q7, OWNER ONLY: the lane asks the rip server for the next 2 Apple-Music-only rows; a

@@ -383,6 +383,14 @@ func sweepTemporary(now: Double = Date().timeIntervalSince1970 * 1000,
   anything pinned by an explicit action on THIS device (`pin`). Settings ▸ Storage ▸ Mix Mode
   buffer ▸ **"Keep buffered files in shared/picked folders"** (`npMixKeepPickedFolderBuffers`,
   nil ⇒ off) restores the old rule: buffer assets in a picked folder are pinned at creation.
+  Review fixes (2026-11-02): an EVICTED iCloud copy (only its `.<name>.icloud` placeholder is on
+  this device — `fileExists` says no) counts as pre-existing: written over, never held; an
+  EXPLICIT action that reuses an existing picked-folder file as-is (an explicit stems download
+  returns existing parts) bumps its modification time past the ± 2 s tolerance, so another
+  device's hold on that shared file reads it as rewritten and releases it; a picked-folder file
+  whose identity can't be read at creation is pinned, and a hold that records identities but not
+  this file's releases it (a hold with no identities at all — written by a phase-1 build — keeps
+  the path-only rule).
 - **Sync:** the burn ledger is per device and is not cloud-synced, so holds are per device too. The
   playback-session snapshot IS synced; it carries only the Mix Mode flag (§4.6). Another device that
   restores the session starts its own buffer on its first ▶.
@@ -746,3 +754,25 @@ Known limits (phase 4): the AM → local seam is uncalibrated (short audible sea
 Mode never rips (same-host deferral), so AM-only rows stay "Apple Music only" there; a current AM
 row and its buffer fetch the same song twice (stream + buffer); device verification (seam by ear,
 locked phone, CarPlay card after the hand-off) is owed.
+
+### 9.4 Phase 4 review fixes (2026-11-02)
+
+- **MUST — MusicKit's own start leaves our session's interruption open.** Field logs
+  (ios-3712BFDE, 10-23…10-25): every Apple Music start after a local row logs `AM play …` and
+  `interruption began … external=1` in the same second, with no `ended`. `interruptionOpen`
+  therefore stayed true for the whole AM row, so (a) the Q1 touch hand-off was ALWAYS refused for
+  an AM row that followed a local one, and (b) a growing-file start right after an AM row (no
+  `PlayerEngine.load` to clear the flag) never ran its mid-song hold fallback — a scrub past the
+  frontier held until the bytes arrived. Fix: the hand-off is refused for an interruption only
+  while MusicKit is NOT audibly playing and was not paused by the listener on purpose (a real call
+  pauses MusicKit); a DSP start (`startOnGrowingFile`, not paused) and the hand-off clear the stale
+  interruption exactly as `load` does (`PlayerEngine.clearStaleInterruptionForStart`, which also
+  forgets the stale "was playing").
+- **MUST — picked folders:** evicted iCloud copies and another device's explicit reuse (§3.6).
+- **SHOULD (fixed):** a growing file that already fell back this play is never offered again for
+  an AM hand-off (`appleMusicLocalCopy` honours `growingRefusedUid`) — no touch-driven flapping.
+- **Open (SHOULD, not fixed):** a growing fallback that re-resolves the row (AM hand-off, phase-3
+  start) goes through `coordinator.play` again, whose `onPlay` counts a second play when it lands
+  more than 30 s after the first (pre-existing for phase 3); on macOS `serverIsThisHost` answers
+  false when the `/health` probe fails, so a rip-server Mac with a flaky probe can still send a Mix
+  Mode rip (fail-open, same as the passive rip).
