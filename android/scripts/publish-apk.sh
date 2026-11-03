@@ -13,7 +13,8 @@
 #   /android/PocketDJ.apk                        server-side copy, max-age=300 (stable "latest" URL)
 #   /android/latest.json                         max-age=60, read by the website (and later the updater)
 # then invalidates the two mutable paths on the www CloudFront distribution, and keeps the newest
-# $KEEP (default 4) versioned APKs, pruning older ones.
+# $KEEP (default 2) versioned APKs, pruning older ones (post-deploy step: runs only after the new
+# APK + latest.json are live).
 #
 # Env: POCKETDJ_ENV must be green (default). PLAY_URL: set once the Play listing is live to put it
 # in latest.json ("play"); the website's own badge state is the data-play flag in www/index.html.
@@ -40,7 +41,7 @@ POCKETDJ_ENV=green source "$REPO/scripts/lib/aws-env.sh"
   || die "unexpected www target $PDJ_WWW_BUCKET / $PDJ_CF_WWW"
 
 SITE="https://pocket-dj.com"
-KEEP="${KEEP:-4}"
+KEEP="${KEEP:-2}"
 MIN_SDK=35
 # Pinned app-signing certificate (same as release-aab.sh). Play re-signs with this key too.
 APPSIGN_SHA256="26c3cd8f7f56a28bf0f6e9479a05a97a7216bd5d768109e6805e0650dc4cd674"

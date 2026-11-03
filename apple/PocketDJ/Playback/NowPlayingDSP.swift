@@ -642,7 +642,8 @@ final class NowPlayingDSP {
         let fullEnd = w.start + w.count
         let pos = w.start + AVAudioFramePosition(max(0, at) * sr)
         guard pos < fullEnd else { return false }
-        let bps = GrowingFileSchedule.bytesPerSecond(totalFrames: f.length, sampleRate: sr, expectedBytes: s.expectedBytes)
+        let bps = GrowingFileSchedule.bytesPerSecond(totalFrames: f.length, sampleRate: sr, expectedBytes: s.expectedBytes,
+                                                     claim: s.isComplete ? .container : GrowingFileSchedule.lengthClaim(of: url))
         let frontier = GrowingFileSchedule.frontier(bytes: s.bytesReceived, complete: s.isComplete, bytesPerSecond: bps,
                                                     sampleRate: sr, start: w.start, fullEnd: fullEnd)
         return GrowingFileSchedule.canStart(position: pos, frontier: frontier, fullEnd: fullEnd,
@@ -1433,10 +1434,15 @@ final class NowPlayingDSP {
                 if s.isComplete { handleMainStreamFailure() }   // complete with nothing in the window
                 return
             }
+            let claim: GrowingFileSchedule.LengthClaim = s.isComplete ? .container : GrowingFileSchedule.lengthClaim(of: url)
             let bps = GrowingFileSchedule.bytesPerSecond(totalFrames: f.length, sampleRate: sr,
-                                                         expectedBytes: s.expectedBytes)
+                                                         expectedBytes: s.expectedBytes, claim: claim)
             if bps == nil, !s.isComplete {
-                // HEADERLESS (no Xing/Info full-length claim): this open's length is an estimate
+                // Too few bytes to find the first frame yet: undecided — sniff again on the next
+                // progress event (never marked headerless on a guess).
+                if claim == .undetermined { return }
+                // HEADERLESS (no Xing/Info/VBRI full-length claim — `GrowingFileSchedule.
+                // lengthClaim` — or one implausible at 320 kbps): this open's length is an estimate
                 // from the bytes present — never the song's window (attached here, the completed
                 // song would "end" where the partial did). Hold, unattached, until complete.
                 if !mainHeaderless {

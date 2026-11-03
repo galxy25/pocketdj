@@ -1704,12 +1704,18 @@ final class MixEngine {
                 if s.isComplete { handleStreamFailure(deck) }
                 return
             }
-            let bps = Self.streamBytesPerSecond(totalFrames: total, sampleRate: sr, expectedBytes: s.expectedBytes)
+            let claim: GrowingFileSchedule.LengthClaim = s.isComplete ? .container : GrowingFileSchedule.lengthClaim(of: url)
+            let bps = Self.streamBytesPerSecond(totalFrames: total, sampleRate: sr, expectedBytes: s.expectedBytes,
+                                                claim: claim)
             if bps == nil, !s.isComplete {
-                // HEADERLESS (no full-length claim): this open's length is an estimate from the
-                // bytes present — never the song's window (attached here, the completed song
-                // would "end" — and the auto machine advance — where the partial did). Hold,
-                // unattached, until complete (the NP DSP's `pumpMain` rule, mirrored).
+                // Too few bytes to find the first frame yet: undecided — sniff again on the
+                // next progress event (never marked headerless on a guess).
+                if claim == .undetermined { return }
+                // HEADERLESS (no Xing/Info/VBRI full-length claim — or a length implausible at
+                // 320 kbps): this open's length is an estimate from the bytes present — never
+                // the song's window (attached here, the completed song would "end" — and the
+                // auto machine advance — where the partial did). Hold, unattached, until
+                // complete (the NP DSP's `pumpMain` rule, mirrored).
                 if streamHeaderless.insert(deck).inserted {
                     DiagLog.shared.telemetry("mixstream", "deck \(deck.rawValue) \(s.songId) headerless — holds until complete")
                 }
@@ -2024,13 +2030,15 @@ final class MixEngine {
         if state(to).loaded != nil { silence(to) }
     }
 
-    /// Bytes of file per second of audio for a growing LAME mp3. Its header claims the FULL
-    /// length up front; a file whose claim couldn't cover even `expectedBytes` at the max mp3
-    /// bitrate (320 kbps ≈ 41 KB/s with framing) has no such header — nil ⇒ don't play until the
-    /// download completes (its frame→byte map is unknowable mid-flight). Pure.
+    /// Bytes of file per second of audio for a growing mp3 — trusted only when the file DECLARES
+    /// its full length (`claim`, sniffed by `GrowingFileSchedule.lengthClaim(of:)`) and that
+    /// length is plausible; nil ⇒ don't play until the download completes (its frame→byte map is
+    /// unknowable mid-flight). Pure.
     nonisolated static func streamBytesPerSecond(totalFrames: AVAudioFramePosition, sampleRate: Double,
-                                                 expectedBytes: Int64?) -> Double? {
-        GrowingFileSchedule.bytesPerSecond(totalFrames: totalFrames, sampleRate: sampleRate, expectedBytes: expectedBytes)
+                                                 expectedBytes: Int64?,
+                                                 claim: GrowingFileSchedule.LengthClaim) -> Double? {
+        GrowingFileSchedule.bytesPerSecond(totalFrames: totalFrames, sampleRate: sampleRate,
+                                           expectedBytes: expectedBytes, claim: claim)
     }
 
     /// The last FILE frame safe to schedule given `bytes` downloaded: bytes → seconds at the
