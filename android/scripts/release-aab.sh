@@ -3,6 +3,9 @@
 #
 #   android/scripts/release-aab.sh [OUT_DIR]
 #
+# For an actual Play release use android/scripts/ship-play.sh, which runs this AND publishes the
+# same build as the pocket-dj.com sideload APK (publish-apk.sh) so the website never lags Play.
+#
 # Produces, in OUT_DIR (default android/build/release-out):
 #   PocketDJ-<ver>-<code>.aab        signed with the UPLOAD key   -> Play Console upload
 #   PocketDJ-<ver>-<code>.apk        universal APK signed with the APP-SIGNING key (same signature
