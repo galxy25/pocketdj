@@ -2063,7 +2063,10 @@ final class SetlistPlayer {
     @ObservationIgnored private var growingStartPausedUid: UUID?
     @ObservationIgnored private var growingHoldTask: Task<Void, Never>?
     /// A mid-song hold this long falls back to the plain stream (the start has the watchdog).
-    static var growingHoldFallbackSeconds: Double = 20
+    /// Covers an underrun AND a scrub far past the downloaded frontier (the DSP holds at the
+    /// target). Levi 2026-11-02: 5 s (was 20) — the plain stream range-seeks at once, so a
+    /// longer wait is only dead air.
+    static var growingHoldFallbackSeconds: Double = 5
     /// Growing-file starts / fallbacks performed (diagnostics + tests).
     @ObservationIgnored private(set) var growingStartCount = 0
     @ObservationIgnored private(set) var growingFallbackCount = 0

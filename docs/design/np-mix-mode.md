@@ -369,12 +369,19 @@ func sweepTemporary(now: Double = Date().timeIntervalSince1970 * 1000,
 
 ### 3.6 Interaction with the rest
 
-- **User-picked burn folders (review, 2026-11-02):** a picked folder can be shared between
-  devices (iCloud Drive, an external drive), while the ledger is per device: another device's
-  explicit Download reuses a same-named file, so a hold there would let this device's sweep delete
-  it. Buffer assets written to a user-picked folder are therefore pinned at creation; only the
-  app's own storage carries holds. Likewise a file already at the adoption name with no ledger row
-  (a lost ledger, an orphan) never becomes temporary.
+- **User-picked burn folders (Levi, 2026-11-02 — reverses the phase-1 review's "pinned at
+  creation"):** by default the buffer lane tracks exactly what IT created in a picked folder, like
+  app storage: the hold records the folder (`userFolderPath`) and each file's identity
+  (`userFolderFiles`: name → modification time at creation), and the sweep deletes those files on
+  expiry. A picked folder may be shared with another device (iCloud Drive, an external drive) —
+  "it's up to the user to know it is shared"; the Storage footer says so. Still never deleted: a
+  file we didn't create (a file already at the adoption name with no ledger row — a lost ledger,
+  an orphan — or a stem part already on disk never becomes temporary: the `adoptStreamedFile` /
+  `burnStemPart` guards), a file REWRITTEN since we wrote it (identity mismatch ⇒ released, kept),
+  anything in a different folder than the one it was written to (folder switch ⇒ released), and
+  anything pinned by an explicit action on THIS device (`pin`). Settings ▸ Storage ▸ Mix Mode
+  buffer ▸ **"Keep buffered files in shared/picked folders"** (`npMixKeepPickedFolderBuffers`,
+  nil ⇒ off) restores the old rule: buffer assets in a picked folder are pinned at creation.
 - **Sync:** the burn ledger is per device and is not cloud-synced, so holds are per device too. The
   playback-session snapshot IS synced; it carries only the Mix Mode flag (§4.6). Another device that
   restores the session starts its own buffer on its first ▶.
@@ -675,7 +682,7 @@ removes that); the TV ignores the flag.
 | DSP growing file | `NowPlayingDSP.engageStreaming` / `pumpMain` / `holdMain` / `appendMain` / `finishMainStream` / `handleMainStreamFailure` / `seek(toSongSeconds:)` | Never scheduled past the frontier; start / underrun / seek without runway HOLD (`isBuffering`, engine kept running, playhead frozen, intent kept); resume with runway at the held point; appends from fresh opens; only a segment reaching the window's END arms the end; complete ⇒ the adopted burn under its scope (`onMainStreamFinished`); dead ⇒ `mainTruncated` (stems keep carrying, `.toFullMix` dropped; a full song plays to its last frame, then `onMainStreamFailed`). `requireRunway` probe refuses touching nothing. A file AVAudioFile can't decode by its EXTENSION is refused. `onFirstAudio` once per engage. |
 | Growing START | `SetlistPlayer.startOnGrowingFile` (cloud branch of `playCurrent`, after burned / stem-cut) | Eligible: `mixModeBuffering` (on, Mix tab idle, not device mode), a DSP, ripped, not Apple-Music-first, not an Apple Music catalog id, not an analog song WITHOUT a cut (its side streams from byte 0), not refused this play, and — for a restore-resume deeper than `growingDeepResumeMs` (15 s) — only when the buffer already covers it. Opens / joins the buffer stream (`openBufferStream` → `MixStreamLoader.open(…, origin: .buffer)`; an explicit pending Download refuses it ⇒ plain). The DSP opens paused, `beginExternalNowPlaying` idles the AVPlayer and claims the card (one writer: position / tempo / play / pause / SCRUB / the honest "stalled" state), then the DSP starts (or holds). `rips.nowPlaying` = the buffer file, same songId (one history play, our own stamp — never a jump). The Stem Lock applies as at any start. Start window + the START WATCHDOG (owed while the DSP awaits first audio) are the backstop: no audio by `startStallEscalateSeconds` ⇒ hop / advance. |
 | Touch hand-off | `SetlistPlayer.engageGrowingFromStream` (from `engageMix`) | A row on its PRESIGNED stream (Mix Mode turned on mid-song): `currentTrackMixable` is true once the buffer's estimated reach covers the playhead + 4 s (`growingTouchCovers`, re-rendered by `noteBufferStreamProgress`); the first control TOUCH moves it onto the growing file at the same song position. Phase-2 rules: refused across an open interruption / a pending start / a resolve; paused (listener pause or no play intent) stays paused; the DSP probes first. |
-| Fallbacks | `SetlistPlayer.growingFallBack` | A dead buffer stream (once its audio ran out) or a MID-SONG hold > `growingHoldFallbackSeconds` (20 s): leave the DSP and put the row on its plain stream at the same position — the presigned stream a touch hand-off left, else a fresh resolve (refused for the growing path for this row's play). No advance, no generation claimed. |
+| Fallbacks | `SetlistPlayer.growingFallBack` | A dead buffer stream (once its audio ran out) or a MID-SONG hold > `growingHoldFallbackSeconds` (5 s since 2026-11-02; was 20 s — an underrun or a scrub far past the frontier; a START hold keeps the start watchdog's budget): leave the DSP and put the row on its plain stream at the same position — the presigned stream a touch hand-off left, else a fresh resolve (refused for the growing path for this row's play). No advance, no generation claimed. |
 | Ownership | `publishDSPCard`, `PlayerEngine.beginExternalNowPlaying(seek:stalled:)`, `PlayerEngine.seek` | External sources may now scrub (`seek`) and report buffering (`stalled` ⇒ cursor frozen, ⏸ glyph). The F4 complete-file engagement uses the same card (its scrub used to do nothing). Apple Music impersonation passes no `seek`, so a card scrub there is now a no-op (it used to jump the card's clock for a second). |
 | Durable / reset / Mix tab | `resumeFromHold` → `playCurrent`; `handleMediaServicesReset`; `observeMixSessionForEngagement` | A restore resumes on the growing file at the saved position (held until ▶ — no stream opened before). A media-services reset while growing re-enters the row on the fresh graph at the same position (a partial can't go to the AVPlayer; paused stays paused). A live Mix tab tears the engagement down (F4) and suspends growing starts. |
 | UI | `NPMixMode.Indicator.holding` | Engaged + holding ⇒ chip "Buffering n%" with controls LIVE. `.buffering` (controls disabled) remains only for a presigned row whose buffer is still behind the playhead. |
@@ -685,7 +692,7 @@ Deviations from the phase-3 plan: (a) the mid-song presigned → growing move is
 than automatic — no cut nobody asked for; the phase-2 swap-on-land (AVPlayer → complete local file)
 still runs when the buffer completes untouched; (b) a dead Now Playing stream does NOT truncate the
 song and end it there (the Mix deck's rule) — it plays what arrived, then the row goes back to its
-plain stream (no audio lost, no skipped tail); (c) a mid-song hold has its own 20 s fallback (the
+plain stream (no audio lost, no skipped tail); (c) a mid-song hold has its own 5 s fallback (20 s until 2026-11-02) (the
 supervisor never acts while the DSP owns the audio); (d) deep restore-resumes and analog side-only
 songs start plain (dead-air rule); (e) the "Buffering…" of a holding DSP is a new indicator case
 (`.holding`) because its controls stay live.
@@ -701,7 +708,7 @@ start lead at the current tempo (a closer frontier faked the song's end at 2×).
 
 Known limits (phase 3): the growing path trusts the LAME/Xing full-length header and the
 Content-Length (shared with the Mix deck — a headerless file plays only once complete); a scrub far
-past the frontier holds until the bytes get there (≤ 20 s, then the plain stream at the target); an analog
+past the frontier holds until the bytes get there (≤ 5 s, then the plain stream at the target); an analog
 stream that flips from its cut to the side fallback after the start keeps the cut-time `startMs` on
 `rips.nowPlaying` until completion re-stamps it (the DSP itself attaches with the final geometry);
 the buffer stream keeps downloading after a fallback / skip (every stream completes — it adopts as a

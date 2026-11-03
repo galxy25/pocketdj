@@ -707,6 +707,54 @@ final class NPMixGrowingFileTests: XCTestCase {
         XCTAssertEqual(r.seq.index, 0)
     }
 
+    /// Levi 2026-11-02: the mid-song hold budget is 5 s (was 20).
+    func testMidSongHoldBudgetIsFiveSeconds() {
+        XCTAssertEqual(SetlistPlayer.growingHoldFallbackSeconds, 5)
+    }
+
+    /// A scrub FAR past the downloaded frontier holds, then — at the real 5 s default — falls back
+    /// to the plain stream at the scrub target (not 20 s of dead air, not before the budget).
+    func testScrubFarPastTheFrontierFallsBackAfterFiveSeconds() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"], mixDefault: false)
+        await startPlain(r, ["a", "b"])
+        let presigned = try XCTUnwrap(r.rips.nowPlaying?.url)
+        r.seq.setMixMode(true)
+        r.player.clock.currentTime = 2
+        try feed(r.loader, "a", tempMP3("s5"), data, 0.95)
+        r.seq.engageMix()
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(r.seq.mixEngaged)
+        await waitUntil("rendering") { r.dsp.currentTime > 2.2 && !r.dsp.awaitingFirstAudio }
+        let held = Date()
+        r.dsp.seek(toSongSeconds: 11)                       // far past the frontier: holds
+        XCTAssertTrue(r.dsp.isBuffering)
+        await pause(3.5)
+        XCTAssertTrue(r.seq.mixEngaged, "still inside the 5 s budget")
+        await waitUntil("fell back to the plain stream", timeout: 6) { !r.seq.mixEngaged }
+        XCTAssertGreaterThanOrEqual(Date().timeIntervalSince(held), 4.9)
+        XCTAssertEqual(r.rips.nowPlaying?.url, presigned)
+        XCTAssertEqual(r.rips.nowPlaying?.seekMs ?? 0, 11_000, accuracy: 100, "at the scrub target")
+        XCTAssertEqual(r.seq.index, 0, "a fallback, never a skip")
+    }
+
+    /// A START hold keeps the start-watchdog semantics: the short mid-song budget never applies
+    /// while the DSP still awaits its first audio.
+    func testStartHoldIsNotCutShortByTheMidSongBudget() async throws {
+        SetlistPlayer.startStallRekickSeconds = 30
+        SetlistPlayer.startStallEscalateSeconds = 30
+        SetlistPlayer.growingHoldFallbackSeconds = 0.2
+        let r = try seqRig(["a", "b"])
+        _ = r.loader.injectStreamForTesting(songId: "a", file: tempMP3("sk"), bytes: 0, expected: 400_000, origin: .buffer)
+        r.seq.play([item("a"), item("b")])
+        await waitUntil("a on the growing file") { r.seq.mixEngaged }
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(r.dsp.isBuffering)
+        await pause(1.0)
+        XCTAssertTrue(r.seq.mixEngaged, "a start hold waits for the watchdog, not the 0.2 s mid-song budget")
+        XCTAssertEqual(r.seq.growingFallbackCount, 0)
+    }
+
     /// The START WATCHDOG backstops a growing start that never gets bytes: it escalates (hop /
     /// advance through the cascade breaker) exactly as for any stalled start.
     func testStartWatchdogBackstopsAGrowingStartThatNeverGetsBytes() async throws {

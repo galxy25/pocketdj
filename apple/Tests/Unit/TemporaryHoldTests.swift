@@ -290,9 +290,7 @@ final class TemporaryHoldTests: XCTestCase {
         let settings = makeSettings()
         settings.burnFolderBookmark = bookmarkA
         let burns = try makeBurns(rips, settings: settings)
-        // Buffer assets are never CREATED as holds in a user folder any more (see
-        // `testBufferAssetsInAUserPickedFolderAreNeverTemporary`); the sweep primitive must still
-        // treat a planted one safely, so plant it.
+        // Plant the hold directly (the folder-switch rule is the primitive's, whoever created it).
         let partA = a.appendingPathComponent("stem-sng_uf-vocals.mp3")
         try Data("BUF".utf8).write(to: partA)
         var planted = hold("sng_uf", parts: ["vocals"])
@@ -331,33 +329,154 @@ final class TemporaryHoldTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: part.path))
     }
 
-    /// REVIEW MUST (2026-11-02): a user-picked burn folder can be SHARED (iCloud Drive, an external
-    /// drive between Macs) while the ledger is per device. Device B's explicit Download reuses a
-    /// file of the same name (`burnStems` returns the existing parts as-is), so a hold on device A
-    /// would let A's sweep delete B's explicit download. Buffer assets in a user folder are
-    /// therefore pinned at creation; only app storage carries holds.
-    func testBufferAssetsInAUserPickedFolderAreNeverTemporary() async throws {
-        let rips = makeRips()
-        rips.setManifest(["sng_sh": .init(key: "rips/sng_sh.mp3", source: "digital", stems: stems("sng_sh"))])
+    // MARK: Picked burn folders (Levi 2026-11-02 — reverses the phase-1 "pinned at creation")
+
+    private func pickedFolder(_ tag: String) throws -> (URL, Data) {
         let d = FileManager.default.temporaryDirectory
-            .appendingPathComponent("pdj-holds-shared-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("pdj-holds-\(tag)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: d) }
+        return (d, try XCTUnwrap(BurnStore.makeBookmark(for: d)))
+    }
+
+    private func sweepManager(_ burns: BurnStore, _ settings: SettingsStore) -> StorageManager {
+        let statsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-holds-stats-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: statsURL) }
+        return StorageManager(burns: burns, playStats: PlayStatsStore(fileURL: statsURL), settings: settings)
+    }
+
+    /// DEFAULT (toggle off): what our buffer lane wrote into a picked folder is tracked like app
+    /// storage — folder + file identity in the hold — and the expiry sweep deletes it.
+    func testPickedFolderBufferedAssetsExpireAndAreDeleted() async throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_pf": .init(key: "rips/sng_pf.mp3", source: "digital", stems: stems("sng_pf"))])
+        let (d, bookmark) = try pickedFolder("pf")
         let settings = makeSettings()
-        settings.burnFolderBookmark = try XCTUnwrap(BurnStore.makeBookmark(for: d))
+        settings.burnFolderBookmark = bookmark
+        let burns = try makeBurns(rips, settings: settings)
+        let ok = await burns.burnStemPart(forSong: "sng_pf", part: "vocals", origin: .buffer)
+        XCTAssertTrue(ok)
+        let audio = try XCTUnwrap(burns.adoptStreamedFile(songId: "sng_pf", title: "P", artist: "A",
+                                                          from: try tempFile(), origin: .buffer))
+        XCTAssertEqual(audio.deletingLastPathComponent().standardizedFileURL.path, d.standardizedFileURL.path)
+        let h = try XCTUnwrap(burns.temporaryHolds["sng_pf"], "picked-folder buffer assets are temporary")
+        XCTAssertTrue(h.audio)
+        XCTAssertEqual(h.stemParts, ["vocals"])
+        XCTAssertEqual(h.stemPartsInUserFolder, ["vocals"])
+        XCTAssertEqual(h.userFolderPath, d.standardizedFileURL.path, "folder identity recorded")
+        XCTAssertEqual(Set(h.userFolderFiles?.keys.map { $0 } ?? []),
+                       [audio.lastPathComponent, "stem-sng_pf-vocals.mp3"], "file identity recorded")
+        // Expire it: the sweep deletes both files and the row.
+        let r = await sweepManager(burns, settings).sweepTemporary(now: t0 + 49 * hourMs, reason: "test")
+        XCTAssertEqual(r?.removed, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: audio.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: d.appendingPathComponent("stem-sng_pf-vocals.mp3").path))
+        XCTAssertNil(burns.items["sng_pf"])
+        XCTAssertTrue(burns.temporaryHolds.isEmpty)
+    }
+
+    /// An EXPLICIT download of the same song on THIS device pins it (files kept through expiry).
+    func testExplicitDownloadOnThisDevicePinsAPickedFolderBuffer() async throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_pe": .init(key: "rips/sng_pe.mp3", source: "digital", stems: stems("sng_pe"))])
+        let (d, bookmark) = try pickedFolder("pe")
+        let settings = makeSettings()
+        settings.burnFolderBookmark = bookmark
+        let burns = try makeBurns(rips, settings: settings)
+        _ = await burns.burnStemPart(forSong: "sng_pe", part: "drums", origin: .buffer)
+        let audio = try XCTUnwrap(burns.adoptStreamedFile(songId: "sng_pe", title: "P", artist: "A",
+                                                          from: try tempFile(), origin: .buffer))
+        XCTAssertNotNil(burns.temporaryHolds["sng_pe"])
+        _ = await burns.burn([(id: "sng_pe", title: "P", artist: "A")])     // ⤓ Download, same name
+        XCTAssertNil(burns.temporaryHolds["sng_pe"], "an explicit action on this device pins")
+        let r = await sweepManager(burns, settings).sweepTemporary(now: t0 + 500 * hourMs, reason: "test")
+        XCTAssertEqual(r?.removed ?? 0, 0)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: d.appendingPathComponent("stem-sng_pe-drums.mp3").path))
+    }
+
+    /// A file already sitting in the picked folder (audio at the adoption name, a stem part) is
+    /// never made temporary — and survives every sweep.
+    func testPreExistingPickedFolderFilesAreUntouched() async throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_px": .init(key: "rips/sng_px.mp3", source: "digital", stems: stems("sng_px"))])
+        let (d, bookmark) = try pickedFolder("px")
+        let settings = makeSettings()
+        settings.burnFolderBookmark = bookmark
+        // Learn the adoption name, then lose the ledger (the file stays: an orphan / another
+        // device's download).
+        let probe = try makeBurns(rips, settings: settings)
+        let url = try XCTUnwrap(probe.adoptStreamedFile(songId: "sng_px", title: "X", artist: "A",
+                                                        from: try tempFile(), origin: .explicit("probe")))
+        try? FileManager.default.removeItem(at: indexURL)
+        let part = d.appendingPathComponent("stem-sng_px-bass.mp3")
+        try Data("THEIRS".utf8).write(to: part)
+        let burns = try makeBurns(rips, settings: settings)
+        XCTAssertNotNil(burns.adoptStreamedFile(songId: "sng_px", title: "X", artist: "A",
+                                                from: try tempFile(), origin: .buffer))
+        let ok = await burns.burnStemPart(forSong: "sng_px", part: "bass", origin: .buffer)
+        XCTAssertTrue(ok)
+        XCTAssertNil(burns.temporaryHolds["sng_px"], "pre-existing files never become temporary")
+        await sweepManager(burns, settings).sweepTemporary(now: t0 + 500 * hourMs, reason: "test", ignoreExpiry: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(try Data(contentsOf: part), Data("THEIRS".utf8))
+    }
+
+    /// A buffered picked-folder file REWRITTEN since we wrote it (another device's download into
+    /// the shared folder) is no longer ours: the sweep releases it instead of deleting it.
+    func testPickedFolderFileRewrittenSinceBufferedIsReleasedNotDeleted() async throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_pr": .init(key: "rips/sng_pr.mp3", source: "digital", stems: stems("sng_pr"))])
+        let (d, bookmark) = try pickedFolder("pr")
+        let settings = makeSettings()
+        settings.burnFolderBookmark = bookmark
+        let burns = try makeBurns(rips, settings: settings)
+        _ = await burns.burnStemPart(forSong: "sng_pr", part: "other", origin: .buffer)
+        let part = d.appendingPathComponent("stem-sng_pr-other.mp3")
+        try Data("REWRITTEN".utf8).write(to: part)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(3_600)], ofItemAtPath: part.path)
+        let r = burns.removeTemporaryAssets(songIds: ["sng_pr"])
+        XCTAssertEqual(r.songs, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: part.path), "released, not deleted")
+        XCTAssertTrue(burns.temporaryHolds.isEmpty)
+    }
+
+    /// Toggle ON ("Keep buffered files in shared/picked folders"): the old rule — buffer assets in
+    /// a picked folder are pinned at creation; app storage still carries holds.
+    func testKeepPickedFolderToggleOnPinsAtCreation() async throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_sh": .init(key: "rips/sng_sh.mp3", source: "digital", stems: stems("sng_sh")),
+                          "sng_ap": .init(key: "rips/sng_ap.mp3", source: "digital", stems: stems("sng_ap"))])
+        let (d, bookmark) = try pickedFolder("shared")
+        let settings = makeSettings()
+        settings.npMixKeepPickedFolderBuffers = true
+        settings.burnFolderBookmark = bookmark
         let deviceA = try makeBurns(rips, settings: settings)
-        // Device A's Stem Lock buffers the vocals part and the audio into the shared folder.
         let ok = await deviceA.burnStemPart(forSong: "sng_sh", part: "vocals", origin: .buffer)
         XCTAssertTrue(ok)
         XCTAssertNotNil(deviceA.adoptStreamedFile(songId: "sng_sh", title: "S", artist: "A",
                                                   from: try tempFile(), origin: .buffer))
-        XCTAssertTrue(deviceA.temporaryHolds.isEmpty, "nothing in a user-picked folder is temporary")
+        XCTAssertTrue(deviceA.temporaryHolds.isEmpty, "toggle on ⇒ nothing in a picked folder is temporary")
         XCTAssertFalse(deviceA.isTemporary("sng_sh"))
-        // Whatever device B does with those files, A's sweep can't touch them.
-        let r = deviceA.removeTemporaryAssets(songIds: ["sng_sh"])
-        XCTAssertEqual(r, BurnStore.TemporaryRemoval())
+        await sweepManager(deviceA, settings).sweepTemporary(now: t0 + 500 * hourMs, reason: "test", ignoreExpiry: true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: d.appendingPathComponent("stem-sng_sh-vocals.mp3").path))
         XCTAssertNotNil(deviceA.localURL(forSong: "sng_sh"))
+        // App storage is unaffected by the switch.
+        settings.burnFolderBookmark = nil
+        _ = await deviceA.burnStemPart(forSong: "sng_ap", part: "drums", origin: .buffer)
+        XCTAssertNotNil(deviceA.temporaryHolds["sng_ap"], "app storage still carries holds")
+    }
+
+    /// The setting round-trips through persistence (nil ⇒ off).
+    func testKeepPickedFolderSettingDefaultsOffAndPersists() throws {
+        let suite = "test.\(UUID().uuidString)"
+        let a = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        XCTAssertNil(a.npMixKeepPickedFolderBuffers)
+        a.npMixKeepPickedFolderBuffers = true
+        a.persist()
+        let b = SettingsStore(defaults: UserDefaults(suiteName: suite)!)
+        XCTAssertEqual(b.npMixKeepPickedFolderBuffers, true)
     }
 
     /// REVIEW MUST (2026-11-02): a file already sitting at the adoption name with NO ledger row
