@@ -25,7 +25,9 @@ struct NowPlayingPrefetchInput: Equatable {
     /// The listener has the Stems toggle ON for the playing track (cellular policy: its stems
     /// are fetched only when asked for).
     var currentStemsWanted: Bool = false
-    /// Owner install (phase 4's `.rip` steps; unused in phase 2).
+    /// Owner install (phase 4): only the catalog owner's lane asks the rip server to capture an
+    /// Apple-Music-only row (`Plan.rips`) or to separate stems (`Plan.stemify` for Mix Mode). A
+    /// hybrid / public install never enqueues server work (integrity audit; App Store 5.2.3).
     var isCatalogOwner: Bool = false
 }
 
@@ -105,7 +107,18 @@ final class NowPlayingPrefetcher {
         var steps: [Step] = []
         /// Songs to ask the cloud to separate (fire-and-forget).
         var stemify: [String] = []
+        /// Phase 4 (np-mix-mode §2.2 step 0): Apple-Music-only rows to ask the rip server to
+        /// capture — OWNER ONLY, the first `NowPlayingPrefetcher.ripAhead` such rows past the
+        /// playing one, in play order. Fire-and-forget like `stemify` (a server capture is real
+        /// time; the lane never waits on it), deduped per song id, and routed through the
+        /// playback rip gate + same-host deferral by the production seam. (The design's `.rip`
+        /// STEP became a plan list: a step would hold the one-at-a-time worker for a POST.)
+        var rips: [String] = []
     }
+
+    /// How many Apple-Music-only rows ahead Mix Mode asks the rip server for (Levi's Q7: 2 —
+    /// a capture is real time with concurrency 1, so more would only queue captures nobody hears).
+    static var ripAhead = 2
 
     /// THE STEM LOCK ORDER (unchanged since the Stem Lock shipped; Mix Mode off == exactly this).
     /// `current`: the playing track when its carried stems are wired PARTIALLY (its missing
@@ -221,7 +234,24 @@ final class NowPlayingPrefetcher {
         }
         for s in deferred { add(s) }
         for s in lock.steps { add(s) }
-        return Plan(steps: steps, stemify: lock.stemify)
+        var stemify = lock.stemify
+        var rips: [String] = []
+        if i.isCatalogOwner {
+            // Step 0: the next AM-only rows, owner only. At least `ripAhead` rows deep even on a
+            // narrow (cellular) window — a server capture costs this device no data.
+            let ripRows = i.upcoming.prefix(max(reach.ahead, Self.ripAhead))
+            rips = Array(ripRows.filter { $0.source == .appleMusicOnly && !$0.songLocal }.map(\.audioId).prefix(Self.ripAhead))
+            // Cloud separation for rows in the window whose audio is (or can be made) local but
+            // that have no stems anywhere — fire-and-forget, deduped per song id by `apply`.
+            var rows: [Track] = []
+            if let c = i.current { rows.append(c) }
+            rows += i.upcoming.prefix(reach.ahead)
+            for t in rows where (t.songLocal || t.songFetchable) && t.source != .appleMusicOnly && t.source != .catalogOnly
+                && !t.stemsRemote && t.stemsLocal.count < StemLock.partPriority.count && !stemify.contains(t.songId) {
+                stemify.append(t.songId)
+            }
+        }
+        return Plan(steps: steps, stemify: stemify, rips: rips)
     }
 
     // MARK: Disk guard (np-mix-mode §2.3)
@@ -259,6 +289,10 @@ final class NowPlayingPrefetcher {
     var fetchStemPart: (String, String) async -> Bool = { _, _ in false }
     /// Ask the cloud to separate a song (fire-and-forget; deduped here per song id).
     var requestStemify: (String) -> Void = { _ in }
+    /// Phase 4: ask the rip server to capture an Apple-Music-only row (fire-and-forget; deduped
+    /// here per song id for `ripRetrySeconds`). Production: OWNER-gated again, through the
+    /// playback rip gate (the rip-ahead window) and the same-host deferral.
+    var requestRip: (String) -> Void = { _ in }
     /// The current network class (production: `StemLockNetworkMonitor`).
     var network: () -> Network = { .unmetered }
     /// The network class CHANGED (production: the monitor's update, on the main actor) — the
@@ -283,6 +317,12 @@ final class NowPlayingPrefetcher {
     private var failedAt: [Step: Date] = [:]
     private var blockedAt: [Step: Date] = [:]
     private var stemifyRequested: Set<String> = []
+    private var ripRequestedAt: [String: Date] = [:]
+    /// A rip asked for this long ago that is STILL Apple-Music-only may be asked for again (the
+    /// server's miss / a cancelled out-of-window capture); the RipsStore guards dedup in-flight jobs.
+    static var ripRetrySeconds: TimeInterval = 600
+    /// Every rip the lane asked for, in order (test seam + diagnostics).
+    private(set) var ripLog: [String] = []
     private var lastLoggedOrder: [Step] = []
 
     var isIdle: Bool { worker == nil && pending.isEmpty }
@@ -329,10 +369,16 @@ final class NowPlayingPrefetcher {
     func apply(_ plan: Plan) {
         for id in plan.stemify where !stemifyRequested.contains(id) {
             stemifyRequested.insert(id)
-            StemLock.log("stemify request song=\(id) (next track has no stems)")
+            StemLock.log("stemify request song=\(id) (no stems yet)")
             requestStemify(id)
         }
         let now = Date()
+        for id in plan.rips where ripRequestedAt[id].map({ now.timeIntervalSince($0) >= Self.ripRetrySeconds }) ?? true {
+            ripRequestedAt[id] = now
+            ripLog.append(id)
+            NPMixMode.log("rip request song=\(id) (Apple Music only — mixable next play)")
+            requestRip(id)
+        }
         let steps = plan.steps.filter { s in
             (failedAt[s].map { now.timeIntervalSince($0) >= Self.failureCooldown } ?? true)
                 && (blockedAt[s].map { now.timeIntervalSince($0) >= Self.blockedCooldown } ?? true)
@@ -447,7 +493,34 @@ extension NowPlayingPrefetcher {
             guard isCatalogOwner(), let rips else { return }
             Task { await rips.stemify(id) }
         }
+        // OWNER ONLY, twice over (the planner already never lists a rip for a non-owner): a
+        // public / hybrid install must never POST /rip from Mix Mode (App Store 5.2.3 line).
+        // Through the rip provider's `requestAsyncRip`: the same-host deferral (a capture on
+        // THIS Mac drives Music.app and interrupts our own Apple Music stream — the 10-14 skip
+        // cascade) and `requestRipIfNeeded(playback: true)` — the rip-ahead window gate, and the
+        // session tracks + cancels it once it falls out of the window.
+        p.requestRip = { [weak rips] id in
+            guard isCatalogOwner() else {
+                DiagLog.shared.log("npmix", "rip request song=\(id) refused (not the catalog owner)")
+                return
+            }
+            guard let rips else { return }
+            Task { await Self.requestOwnerPlaybackRip(id, rips: rips) }
+        }
         return p
+    }
+
+    /// The Mix Mode rip request (same rules as the passive rip, `RipServerPlaybackProvider
+    /// .requestAsyncRip`): deferred entirely on the rip-server's own Mac (its capture drives
+    /// Music.app — it would interrupt OUR Apple Music stream, the 10-14 cascade), else a
+    /// PLAYBACK rip — gated to the rip-ahead window and tracked so the session cancels it once
+    /// the playhead leaves it. The caller has already checked ownership.
+    static func requestOwnerPlaybackRip(_ id: String, rips: RipsStore) async {
+        if await rips.serverIsThisHost() {
+            DiagLog.shared.log("npmix", "rip request song=\(id) deferred (same-host capture)")
+            return
+        }
+        await rips.requestRipIfNeeded(id, playback: true)
     }
 
     /// How long the lane waits on an explicit download before letting the step go (the

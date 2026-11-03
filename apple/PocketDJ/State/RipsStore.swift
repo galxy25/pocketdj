@@ -654,6 +654,15 @@ final class RipsStore {
     nonisolated static let prefetchTTLSeconds = 21_600
     nonisolated static let prefetchUsableSeconds: TimeInterval = 5 * 3600
 
+    #if DEBUG
+    /// Tests: plant a prefetched presigned URL (minted now).
+    func seedPrefetchedURLForTesting(_ songId: String, _ url: URL) { presignPrefetch[songId] = (url, Date()) }
+    /// Tests: stamp a rip job's phase for a song (nil clears it).
+    func setJobForTesting(_ songId: String, phase: Phase?) {
+        jobs[songId] = phase.map { Job(jobId: "job-\(songId)", songId: songId, phase: $0) }
+    }
+    #endif
+
     /// A still-fresh prefetched presigned URL for `songId`, if any.
     func prefetchedURL(_ songId: String) -> URL? {
         guard let e = presignPrefetch[songId] else { return nil }
@@ -906,10 +915,19 @@ final class RipsStore {
         return dest
     }
 
-    func setNowPlaying(_ n: NowPlaying?) {
+    /// `announce: false` re-stamps the CURRENT play's source without counting a play — the Now
+    /// Playing Mix Mode hand-off from Apple Music (np-mix-mode phase 4): the song was already
+    /// counted when Apple Music won its start (`PlaybackCoordinator.onPlay`).
+    func setNowPlaying(_ n: NowPlaying?, announce: Bool = true) {
         let prev = nowPlaying?.songId
         nowPlaying = n
-        if let id = n?.songId, id != prev { onPlay?(SongVariant.baseId(id)) }
+        if announce, let id = n?.songId, id != prev { onPlay?(SongVariant.baseId(id)) }
+    }
+
+    /// A capture of `songId` is in flight on the rip server (queued … uploading) — the Now
+    /// Playing Mix Mode chip's "Ripping — mixable next play" (owner only; the caller gates).
+    func isRipInFlight(_ songId: String) -> Bool {
+        jobs[songId].map { Self.inFlightPhases.contains($0.phase) } ?? false
     }
 
     // MARK: Analog cut export (burn-only)

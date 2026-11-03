@@ -1,5 +1,6 @@
-Status: PHASES 1–3 IMPLEMENTED on `feat/np-mix-mode` (phase 1 merged 2026-11-02 as 22025b40; phase 2
-merged as 6caf7005; phase 3 2026-11-02, not merged — §9.2; phases 4–5 are design only). Levi's defaults applied: Q2 engage on touch (the
+Status: PHASES 1–4 IMPLEMENTED on `feat/np-mix-mode` (phase 1 merged 2026-11-02 as 22025b40; phase 2
+merged as 6caf7005; phase 3 merged as d3d8ff86; phase 4 2026-11-02, not merged — §9.3; phase 5 is
+design only). Levi's defaults applied: Q2 engage on touch (the
 Stem Lock still engages at start), Q3 fixed 48 h, Q4 per session + an off-by-default "Start new
 sessions in Mix Mode", Q5 yes (Stem Lock prefetch is temporary), Q6 2 GB cap, Q8 no reordering, Q9
 no tempo/FX carry, Q10 no tvOS, Q11 Keep option offered.
@@ -714,3 +715,34 @@ stream that flips from its cut to the side fallback after the start keeps the cu
 the buffer stream keeps downloading after a fallback / skip (every stream completes — it adopts as a
 temporary burn); device verification (locked phone holding a start, CarPlay card during a hold,
 DeadAirMeter on growing starts) is still owed.
+
+## 9.3 Phase 4 as built (2026-11-02) — Apple Music rows
+
+Levi's decisions: **Q1** = an Apple-Music-streaming current track hands off to its local copy on
+the FIRST CONTROL TOUCH (otherwise it finishes on Apple Music); **Q7** = rip ahead the next 2
+Apple-Music-only rows, OWNER ONLY; public users see "Apple Music only" (App Store 5.2.3 line —
+never a rip for a non-owner).
+
+| Piece | Where | Notes |
+|---|---|---|
+| Rip ahead (step 0) | `NowPlayingPrefetcher.plan(_:)` → `Plan.rips`; `apply` → `requestRip`; `NowPlayingPrefetcher.live` → `requestOwnerPlaybackRip` | Owner only (planner `isCatalogOwner` AND the live seam re-checks `isCatalogOwner()`). The first `ripAhead` (2) Apple-Music-only, non-local upcoming rows within `max(window, 2)` rows — never the playing row (the passive rip already covers an AM start). Fire-and-forget, deduped per song id for `ripRetrySeconds` (10 min). Production: deferred entirely on the rip server's own Mac (`serverIsThisHost` — the 10-14 cascade: a capture drives Music.app and interrupts our AM stream), else `requestRipIfNeeded(playback: true)` — the rip-ahead window gate, tracked by the session and cancelled once out of the window. A landing (`RipsStore.onRipReady` → `SetlistPlayer.noteRipLanded`) re-plans so its song + stems buffer. |
+| Mix Mode stemify | `plan(_:)` → `Plan.stemify` | Owner only: the current + window rows whose audio is (or can be made) local with no stems anywhere; deduped per song id (`stemifyRequested`; the cloud fleet dedups by song id too). |
+| Prefer local | `PlaybackCoordinator.providers(for:preferLocalAudio:)`, `play(…preferLocalAudio:)`, `streamsAppleMusicFirst(…preferLocalAudio:)`; `RipServerPlaybackProvider.startsWithoutRoundTrip` | Mix Mode buffering ⇒ an AM-sourced row that is ripped AND whose presigned URL is already in hand (`RipsStore.prefetchedURL`) plays from the rip, Apple Music right behind it as the fallback. Ripped-but-no-presign, un-ripped, `am:` catalog ids: Apple Music first (no dead-air regression). The AM near-end pre-arm uses the same answer. `prefetchAppleMusic` keeps pre-resolving those rows (the fallback stays instant). A COMPLETE local copy never reaches the coordinator (burned files play directly). |
+| Growing start of an AM row | `growingStartEligible(_:resumeAtMs:)` | An AM-sourced ripped row starts on its growing buffer only when the buffer already holds the start runway at the start position (as fast as AM); otherwise AM / the presign. |
+| Current AM row buffers | `prefetchTrack` | With Mix Mode buffering, a ripped row playing on Apple Music IS fetched (its local copy is what the touch switches to). Chip "Buffering n%" meanwhile (controls shown disabled). |
+| Touch hand-off | `SetlistPlayer.handOffFromAppleMusic` (from `engageMix`), `appleMusicHandOffReady`, `appleMusicLocalCopy` | Ready (chip "Ready — tap a control to switch to the local copy", `.readyFromAppleMusic`) when: Mix Mode buffering, the provider's now-playing is this row, MusicKit confirmed audio, not in the last `amHandoffTailGuardSeconds` (3 s), and a local copy covers MusicKit's position + lead: the SAME-edition burn (`id == resolveId`), a prefetched cut, or a per-song buffer stream covering it + the 4 s resume runway. Order: DSP opened PAUSED at the target (refused ⇒ AM untouched) → `prearmHandoffSession` (mixable, no-op in the foreground) → `stopAppleMusicIfActive` (stop + `releaseMusicKit`: queue emptied ⇒ no stale CarPlay/lock-screen card, the end monitor cancelled ⇒ no stray end advance) → `rips.setNowPlaying(…, announce: false)` (no second history play; our own stamp) → `publishDSPCard` → DSP resume. Paused stays paused. Refused across an open interruption, a pending start, a resolve, a live Mix tab. Never automatic: the swap-on-land refuses AM rows, the Stem Lock never engages an AM row at its start. |
+| Stray MusicKit ▶ after a hand-off | `strayReclaimAction(…dspEngaged:)` → `.resumeDSP` | Silenced by the provider; the DSP resumes — never a restart of the row from 0:00 over it (also fixes the same latent case for phase-3 growing engagements). |
+| Drift instrumentation | `[npmix] am-handoff … amRaw= amSmoothed= lead= target=`; `DeadAirMeter` cause `npmix-am-handoff` (to `dsp-burned` / `dsp-cut` / `dsp-growing`); `touch-ready`, `rip request`, `rip landed`, `prefer-local`, `start … Apple Music row …` lines | Phase 0 could not run headless. The lead is `SetlistPlayer.amHandoffLeadMsDefault` (0) overridable with UserDefaults `pdj.npmix.amHandoffLeadMs` (no build needed to calibrate from a drive). |
+| Indicator | `NPMixMode.Indicator.readyFromAppleMusic`, `.ripping` (`IndicatorInput.ripping`, owner-gated by the caller), AM + buffering ⇒ `.buffering` | Public users: "Apple Music only" always. Buffer strip: an owner's row being ripped shows ○. |
+
+Deviations: (a) the design's `.rip` STEP is a fire-and-forget plan list (`Plan.rips`) — a step
+would hold the one-at-a-time worker for a POST and its runway; (b) "presign cached" means the
+prefetched presigned URL is in hand (`canPlayImmediately` alone still owes a presign round trip on
+the private bucket); (c) the hand-off lead defaults to 0 ms until a drive measures it (Phase 0);
+(d) the Stem Lock does not auto-engage an AM row (Q1 is touch-only).
+
+Known limits (phase 4): the AM → local seam is uncalibrated (short audible seam expected; tune
+`pdj.npmix.amHandoffLeadMs` from the `[npmix] am-handoff` lines); on the rip server's own Mac Mix
+Mode never rips (same-host deferral), so AM-only rows stay "Apple Music only" there; a current AM
+row and its buffer fetch the same song twice (stream + buffer); device verification (seam by ear,
+locked phone, CarPlay card after the hand-off) is owed.

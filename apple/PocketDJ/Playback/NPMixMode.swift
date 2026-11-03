@@ -25,8 +25,12 @@ import Foundation
 /// live from the first second; "Buffering…" while it holds for bytes) — see `SetlistPlayer`
 /// "Mix Mode phase 3".
 ///
-/// Apple Music rows are not ripped or handed off yet (phase 4): they say so honestly
-/// ("Apple Music only").
+/// Phase 4 (Apple Music rows): a ripped AM row whose rip starts instantly plays from the rip
+/// (`PlaybackCoordinator.providers(preferLocalAudio:)`); a row already ON Apple Music finishes
+/// there unless the listener touches a control once its local copy exists — the touch cuts over
+/// at MusicKit's position (`SetlistPlayer.handOffFromAppleMusic`, Levi's Q1); the OWNER's lane
+/// asks the rip server for the next 2 Apple-Music-only rows ("Ripping — mixable next play");
+/// everyone else sees "Apple Music only" (never a rip for a non-owner — App Store 5.2.3).
 struct NPMixModeState: Codable, Equatable {
     var enabled = false
 }
@@ -68,6 +72,9 @@ enum NPMixMode {
         case off
         /// The current track is a local file — every control is live.
         case ready
+        /// Phase 4: the current track plays from APPLE MUSIC and its local copy exists — the
+        /// first control touch switches to it at MusicKit's position (Q1).
+        case readyFromAppleMusic
         /// The DSP owns the audio.
         case engaged
         /// Phase 3: the DSP plays the row from its GROWING file and is holding for bytes (the
@@ -93,6 +100,7 @@ enum NPMixMode {
             switch self {
             case .off: return nil
             case .ready: return "Ready"
+            case .readyFromAppleMusic: return "Ready — tap a control to switch to the local copy"
             case .engaged: return "Mixing"
             case let .holding(f): return f.map { "Buffering \(Int(($0 * 100).rounded(.down)))%" } ?? "Buffering…"
             case let .buffering(f): return f.map { "Buffering \(Int(($0 * 100).rounded(.down)))%" } ?? "Buffering…"
@@ -107,7 +115,7 @@ enum NPMixMode {
         /// The controls are usable (the current track is, or can be swapped onto, a local file).
         var controlsLive: Bool {
             switch self {
-            case .ready, .engaged, .holding, .stemsLoading: return true
+            case .ready, .readyFromAppleMusic, .engaged, .holding, .stemsLoading: return true
             default: return false
             }
         }
@@ -117,6 +125,7 @@ enum NPMixMode {
             switch self {
             case .off: return "off"
             case .ready: return "ready"
+            case .readyFromAppleMusic: return "readyFromAppleMusic"
             case .engaged: return "engaged"
             case .holding: return "holding"
             case .buffering: return "buffering"
@@ -151,6 +160,9 @@ enum NPMixMode {
         var cellularOff: Bool = false
         /// Phase 3: the engaged DSP is holding its growing file for bytes.
         var dspHolding: Bool = false
+        /// Phase 4, OWNER ONLY (the caller folds the gate in): the current Apple-Music-only row
+        /// has a rip in flight on the server.
+        var ripping: Bool = false
     }
 
     /// THE CHIP. Order matters: "off" and "not running" first, then the session-wide states
@@ -163,8 +175,12 @@ enum NPMixMode {
             if i.dspHolding { return .holding(i.bufferFraction) }
             return i.stemsLoading ? .stemsLoading : .engaged
         }
-        if i.mixable { return .ready }
-        if i.onAppleMusic { return .unavailable("Apple Music only") }
+        if i.mixable { return i.onAppleMusic ? .readyFromAppleMusic : .ready }
+        if i.onAppleMusic {
+            // A ripped AM row whose local copy is downloading (it finishes on AM meanwhile).
+            if i.ripped, i.buffering { return .buffering(i.bufferFraction) }
+            return i.ripping ? .ripping : .unavailable("Apple Music only")
+        }
         if i.live { return .unavailable("Live capture") }
         if i.storageFull { return .unavailable("Storage full") }
         if i.failed { return .unavailable("Download failed") }

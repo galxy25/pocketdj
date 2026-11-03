@@ -107,6 +107,14 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
     /// independent — this one is about LATENCY, that one about SEEKABILITY.
     func canPlayImmediately(_ songId: String) -> Bool { rips.cachedURL(songId) != nil }
 
+    /// Ripped AND its presigned URL is already in hand (`RipsStore.prefetchPresigned`): `tryPlay`
+    /// loads it with NO network round trip — as fast as a pre-resolved Apple Music start. The
+    /// Mix Mode prefer-local rule keys off this, never off `canPlayImmediately` alone (that still
+    /// owes a presign round trip on the private bucket).
+    func startsWithoutRoundTrip(_ songId: String) -> Bool {
+        canPlayImmediately(songId) && rips.prefetchedURL(songId) != nil
+    }
+
     /// Set when `tryPlay` hit a real rip failure (no server / rip error). The coordinator
     /// reads + clears it to surface the message after the cycle ends with no winner.
     private(set) var lastError: Error?
