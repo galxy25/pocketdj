@@ -4,19 +4,24 @@ import java.util.Base64
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
 /**
  * Local sanity check of the ES256 developer JWT handed to ShazamKit (header + claims only;
- * the signature is never inspected or logged).
+ * the signature is never inspected or logged, and neither is the token).
  *
  * The token is the same one MusicKit uses (rip server `GET /musickit-token`, key 9JRN4H68X4).
  * Apple answers `api.shazam.apple.com/.../match` with a bare 401 (no body) for every rejected
  * token, whether it is malformed or validly signed by a key whose Media ID does not have the
  * ShazamKit service. This check catches the malformed cases on the device so a 401 that
- * gets past it points at the portal config (see [UNAUTHORIZED_MESSAGE]).
+ * gets past it points at the portal config (diag line, see [UNAUTHORIZED_DIAG]).
+ *
+ * Only [problems] gates recognition, and it never consults the device clock: Apple validates
+ * iat/exp against ITS clock, so a phone whose clock is wrong must not reject a good token.
+ * Clock-relative findings come from [clockNotes] and are diagnostics only.
  */
 object ShazamDeveloperToken {
     /** Apple's cap for media-services developer tokens: 6 months (15 777 000 s). */
@@ -30,21 +35,27 @@ object ShazamDeveloperToken {
         val exp: Long? get() = claims.num("exp")
     }
 
-    /** Decodes header + claims, or null when [token] is not a three-segment JWT with JSON parts. */
+    /**
+     * Decodes header + claims, or null when [token] is not a three-segment JWT with JSON-object
+     * parts. Segments may be padded or unpadded base64url; extra header fields / claims are fine.
+     */
     fun decode(token: String): Parts? {
         val seg = token.trim().split('.')
         if (seg.size != 3 || seg.any { it.isEmpty() }) return null
         return runCatching {
             val dec = Base64.getUrlDecoder()
             Parts(
-                Json.parseToJsonElement(String(dec.decode(seg[0]))).jsonObject,
-                Json.parseToJsonElement(String(dec.decode(seg[1]))).jsonObject,
+                Json.parseToJsonElement(String(dec.decode(seg[0]), Charsets.UTF_8)).jsonObject,
+                Json.parseToJsonElement(String(dec.decode(seg[1]), Charsets.UTF_8)).jsonObject,
             )
         }.getOrNull()
     }
 
-    /** Human-readable problems with [token] at [nowSec]; empty when the shape is what Apple expects. */
-    fun problems(token: String, nowSec: Long = System.currentTimeMillis() / 1000): List<String> {
+    /**
+     * Structural problems with [token] that Apple rejects on any clock; empty when the shape is
+     * what Apple expects. Never depends on the device clock (see the class doc).
+     */
+    fun problems(token: String): List<String> {
         val p = decode(token) ?: return listOf("not a JWT")
         val out = mutableListOf<String>()
         if (p.alg != "ES256") out += "alg is ${p.alg ?: "missing"}, expected ES256"
@@ -54,30 +65,58 @@ object ShazamDeveloperToken {
         val exp = p.exp
         if (iat == null) out += "iat missing"
         if (exp == null) out += "exp missing"
-        if (iat != null && iat > nowSec + CLOCK_SKEW_SEC) out += "iat is in the future"
-        if (exp != null && exp <= nowSec) out += "expired"
-        if (iat != null && exp != null && exp - iat > MAX_LIFETIME_SEC) out += "lifetime exceeds 6 months"
+        if (iat != null && exp != null) {
+            if (exp <= iat) out += "exp is not after iat"
+            else if (exp - iat > MAX_LIFETIME_SEC) out += "lifetime exceeds 6 months"
+        }
+        return out
+    }
+
+    /**
+     * Device-clock observations for the diag log only (a skewed phone clock produces these for a
+     * perfectly valid token, so they must never block recognition).
+     */
+    fun clockNotes(token: String, nowSec: Long = System.currentTimeMillis() / 1000): List<String> {
+        val p = decode(token) ?: return emptyList()
+        val out = mutableListOf<String>()
+        p.iat?.let { if (it > nowSec + CLOCK_SKEW_SEC) out += "iat ${it - nowSec}s ahead of device clock" }
+        p.exp?.let { if (it <= nowSec) out += "exp ${nowSec - it}s behind device clock" }
         return out
     }
 
     private const val CLOCK_SKEW_SEC = 300L
 
     private fun JsonObject.str(k: String) = this[k]?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
-    private fun JsonObject.num(k: String) = this[k]?.let { runCatching { it.jsonPrimitive.longOrNull }.getOrNull() }
+
+    /** NumericDate: JSON integer, or a fractional number (RFC 7519 allows it), floored. */
+    private fun JsonObject.num(k: String) = this[k]?.let {
+        runCatching { it.jsonPrimitive.let { p -> p.longOrNull ?: p.doubleOrNull?.takeIf(Double::isFinite)?.toLong() } }.getOrNull()
+    }
 }
 
 /**
- * Shown when Shazam answers UNAUTHORIZED for a token that passed [ShazamDeveloperToken.problems]:
- * the signing key is fine for Apple Music but not provisioned for ShazamKit.
+ * What a user sees whenever recognition cannot run for a reason on our side (token fetch, token
+ * shape, Shazam 401, SDK start failure). Never names keys, Media IDs or servers: the technical
+ * detail goes to the `[shazam]` diag lane only.
  */
-const val UNAUTHORIZED_MESSAGE =
-    "Shazam rejected the developer token (401). The signing key's Media ID needs the ShazamKit service enabled."
+const val RECOGNITION_UNAVAILABLE_MESSAGE = "Song recognition is temporarily unavailable."
+
+/**
+ * Diag line for UNAUTHORIZED on a token that passed [ShazamDeveloperToken.problems]: the signing
+ * key is fine for Apple Music but its Media ID is not provisioned for ShazamKit.
+ */
+const val UNAUTHORIZED_DIAG =
+    "Shazam rejected the developer token (401): the signing key's Media ID needs the ShazamKit service enabled"
 
 /** User-facing text for a ShazamKit `MatchError` (by enum name, so tests need no SDK types). */
-fun shazamMatchErrorMessage(matchError: String?, fallback: String?): String = when (matchError) {
-    "UNAUTHORIZED" -> UNAUTHORIZED_MESSAGE
+fun shazamMatchErrorMessage(matchError: String?): String = when (matchError) {
     "MATCH_ATTEMPT_FAILED" -> "Couldn’t reach Shazam. Try again."
     "INVALID_SIGNATURE", "INVALID_SIGNATURE_DURATION" -> "Couldn’t hear enough of the song. Try again closer to the speaker."
     "PROVIDED_EMPTY_AUDIO_DATA" -> "The microphone returned no audio."
-    else -> fallback?.takeIf { it.isNotBlank() } ?: "Recognition failed"
+    else -> RECOGNITION_UNAVAILABLE_MESSAGE
 }
+
+/** Diag-only detail for a ShazamKit `MatchError` (enum name + SDK message; never the token). */
+fun shazamMatchErrorDiag(matchError: String?, sdkMessage: String?): String =
+    if (matchError == "UNAUTHORIZED") "match error UNAUTHORIZED: $UNAUTHORIZED_DIAG"
+    else "match error ${matchError ?: "unknown"}: ${sdkMessage ?: "(no message)"}"

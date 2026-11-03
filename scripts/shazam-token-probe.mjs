@@ -11,7 +11,7 @@
 //
 //   node scripts/shazam-token-probe.mjs [--key ~/.config/pocketdj/AuthKey_9JRN4H68X4.p8] [--kid 9JRN4H68X4] [--team EC27UF79GL] [--out file]
 import { createPrivateKey, sign } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 const arg = (name, dflt) => {
@@ -39,5 +39,6 @@ const sz = await fetch('https://api.shazam.apple.com/v1/catalog/us/match?types=s
 console.log(`header ${JSON.stringify(header)} claims ${JSON.stringify(claims)}`);
 console.log(`MusicKit  api.music.apple.com   -> ${am.status} ${am.status === 200 ? 'accepted' : 'REJECTED'}`);
 console.log(`ShazamKit api.shazam.apple.com  -> ${sz.status} ${sz.status === 401 ? 'REJECTED (key/Media ID not provisioned for ShazamKit)' : 'accepted'}`);
-if (out) { writeFileSync(out, token, { mode: 0o600 }); console.log(`token written to ${out} (delete after use)`); }
+// mode only applies on create: chmod too so a pre-existing file is not left world-readable.
+if (out) { writeFileSync(out, token, { mode: 0o600 }); chmodSync(out, 0o600); console.log(`token written to ${out} (delete after use)`); }
 process.exit(sz.status === 401 ? 1 : 0);

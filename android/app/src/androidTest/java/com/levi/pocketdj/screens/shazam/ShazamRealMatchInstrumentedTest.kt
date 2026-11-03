@@ -27,7 +27,8 @@ import org.junit.runner.RunWith
  * the clip and the token are pushed at run time and passed as instrumentation args.
  *
  *   ffmpeg -ss 45 -t 10 -i song.mp3 -ac 1 -ar 48000 clip.wav && adb push clip.wav /data/local/tmp/shazam-clip.wav
- *   node scripts/shazam-token-probe.mjs --out tok && adb push tok /data/local/tmp/shazam-token && rm tok
+ *   tok=$(mktemp) && node scripts/shazam-token-probe.mjs --out "$tok"; adb push "$tok" /data/local/tmp/shazam-token && rm "$tok"
+ *   (keep the token file out of the repo; afterwards: adb shell rm /data/local/tmp/shazam-token)
  *   ./gradlew :app:connectedDebugAndroidTest \
  *     -Pandroid.testInstrumentationRunnerArguments.class=com.levi.pocketdj.screens.shazam.ShazamRealMatchInstrumentedTest \
  *     -Pandroid.testInstrumentationRunnerArguments.shazamClip=/data/local/tmp/shazam-clip.wav \
@@ -94,7 +95,7 @@ class ShazamRealMatchInstrumentedTest {
             }
             is MatchResult.NoMatch -> fail("no match for a well-known clip")
             is MatchResult.Error -> fail(
-                "${m.exception.matchError}: " + shazamMatchErrorMessage(m.exception.matchError.name, m.exception.message),
+                "${m.exception.matchError}: " + shazamMatchErrorDiag(m.exception.matchError.name, m.exception.message),
             )
         }
     }
