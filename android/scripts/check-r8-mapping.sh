@@ -12,8 +12,12 @@
 #   * JNI: libpdjdsp exports Java_com_levi_pocketdj_studio_audio_NativeDsp_*; libappleMusicSDK /
 #     libsigx FindClass com/apple/android/**, org/bytedeco/javacpp/**, com/shazam/recognition/**.
 #   * Tink protobuf-lite reads message fields by NAME (EncryptedSharedPreferences keysets).
+#   * Reflectively-constructed classes (seeds.txt, optional 2nd arg): WorkManager's Room database is
+#     built via WorkDatabase_Impl.<init>(); AGP 9's R8 stripped that constructor (room 2.6.1 keeps
+#     only the class) and every launch crashed in androidx.startup.
 set -euo pipefail
-MAP="${1:?usage: check-r8-mapping.sh <mapping.txt>}"
+MAP="${1:?usage: check-r8-mapping.sh <mapping.txt> [seeds.txt]}"
+SEEDS="${2:-}"
 [[ -s "$MAP" ]] || { echo "R8 mapping missing or empty: $MAP" >&2; exit 1; }
 
 fail=0
@@ -70,6 +74,16 @@ if awk '/^com\.google\.crypto\.tink\.proto\.AesGcmKey -> /{f=1;next} /^[^ #]/{f=
   echo "ok   tink AesGcmKey.keyValue_"
 else
   echo "FAIL tink AesGcmKey.keyValue_ renamed or missing"; fail=1
+fi
+
+# Constructors reached only through reflection must be R8 seeds (kept), not merely present.
+if [[ -n "$SEEDS" ]]; then
+  [[ -s "$SEEDS" ]] || { echo "FAIL R8 seeds missing or empty: $SEEDS"; fail=1; }
+  for seed in \
+    'androidx.work.impl.WorkDatabase_Impl: WorkDatabase_Impl()' \
+    ; do
+    if grep -qxF "$seed" "$SEEDS" 2>/dev/null; then echo "ok   seed $seed"; else echo "FAIL not kept: $seed"; fail=1; fi
+  done
 fi
 
 [[ $fail == 0 ]] && echo "R8 mapping gate: PASS" || { echo "R8 mapping gate: FAIL" >&2; exit 1; }

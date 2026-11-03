@@ -171,7 +171,7 @@ class DeadAirMeterTest {
 
     @Test
     fun persistedDocument_hasTheIosCodableShape_andRoundTrips() {
-        val dir = createTempDir()
+        val dir = kotlin.io.path.createTempDirectory("deadair").toFile()
         try {
             val f = File(dir, DeadAirMeter.FILE_NAME)
             val m = meter(f)
@@ -205,7 +205,7 @@ class DeadAirMeterTest {
 
     @Test
     fun loadsADocumentWrittenByIos() {
-        val dir = createTempDir()
+        val dir = kotlin.io.path.createTempDirectory("deadair").toFile()
         try {
             val f = File(dir, DeadAirMeter.FILE_NAME)
             f.writeText(
@@ -224,7 +224,7 @@ class DeadAirMeterTest {
 
     @Test
     fun corruptFile_startsFresh() {
-        val dir = createTempDir()
+        val dir = kotlin.io.path.createTempDirectory("deadair").toFile()
         try {
             val f = File(dir, DeadAirMeter.FILE_NAME)
             f.writeText("{not json")
@@ -236,7 +236,7 @@ class DeadAirMeterTest {
 
     @Test
     fun prune_keepsSixtyDays() {
-        val dir = createTempDir()
+        val dir = kotlin.io.path.createTempDirectory("deadair").toFile()
         try {
             val f = File(dir, DeadAirMeter.FILE_NAME)
             val m = meter(f)
@@ -256,7 +256,7 @@ class DeadAirMeterTest {
 
     @Test
     fun saves_areThrottledTo30Seconds_untilFlush() {
-        val dir = createTempDir()
+        val dir = kotlin.io.path.createTempDirectory("deadair").toFile()
         try {
             val f = File(dir, DeadAirMeter.FILE_NAME)
             val m = meter(f)

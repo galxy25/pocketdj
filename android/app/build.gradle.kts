@@ -1,8 +1,8 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.androidx.baselineprofile)
 }
 
 // Release signing inputs (release plan A1/A3): environment first, then Gradle properties
@@ -35,10 +35,14 @@ android {
         // -PrealShazam=true (the stub hid a release-only Shazam 401, 2026-11).
         buildConfigField("boolean", "REAL_SHAZAM", (project.findProperty("realShazam") == "true").toString())
         // Build identity for Settings ▸ Debug (SVC-5); "unknown" outside a git checkout.
+        // providers.exec (not ProcessBuilder): the configuration cache tracks its output, so a new
+        // HEAD invalidates the cached configuration instead of baking in a stale sha.
         val gitSha = runCatching {
-            val p = ProcessBuilder("git", "rev-parse", "--short", "HEAD").directory(projectDir)
-                .redirectErrorStream(true).start()
-            p.inputStream.bufferedReader().readText().trim().also { p.waitFor() }
+            providers.exec {
+                commandLine("git", "rev-parse", "--short", "HEAD")
+                workingDir = projectDir
+                isIgnoreExitValue = true
+            }.standardOutput.asText.get().trim()
         }.getOrNull()?.takeIf { it.matches(Regex("[0-9a-f]{4,40}")) } ?: "unknown"
         buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
 
@@ -101,13 +105,27 @@ android {
                 buildConfigField("boolean", "DIAG_CHANNEL", "true")
                 manifestPlaceholders["diagKeyImport"] = "true"
             }
+            // R8 full mode (AGP default) + optimized resource shrinking (AGP 9 default when
+            // isShrinkResources) + proguard-android-optimize.txt. Play "R8 optimization" checklist.
             isMinifyEnabled = true
             isShrinkResources = true
+            isDebuggable = false
+            // AGP's VCS stamp needs .git in the Gradle ROOT project (android/); the git root is the
+            // repo above it, so AGP 8 only ever wrote "NO_SUPPORTED_VCS_FOUND" and AGP 9 fails the
+            // build. The commit is stamped as BuildConfig.GIT_SHA instead (Settings ▸ Debug).
+            vcsInfo.include = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
         }
+    }
+
+    // PocketDJ ships English UI only (res/values, no translations). Library translations (appcompat,
+    // material, the musickitauth sign-in screens: ~50 locales) would otherwise make a mixed-language
+    // UI and bloat resources.arsc. Add a locale here when the app itself is translated.
+    androidResources {
+        localeFilters += listOf("en")
     }
 
     // mediaplayback + shazamkit AARs both bundle libc++_shared.so (and the app builds its own).
@@ -118,9 +136,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
+    // AGP 9 built-in Kotlin: jvmTarget follows compileOptions.targetCompatibility (17).
 
     // MIX-2: instrumented audio tests share the JVM mp3 fixtures
     sourceSets.getByName("androidTest").resources.srcDir("src/test/resources")
@@ -132,7 +148,19 @@ android {
     }
 }
 
+// Baseline + Startup Profiles (:baselineprofile generates them; see its build file). The generated
+// profiles are committed under src/release/generated/baselineProfiles, so release builds never need
+// a device. dexLayoutOptimization: R8 packs the startup-profile classes into the primary dex.
+baselineProfile {
+    automaticGenerationDuringBuild = false
+    saveInSrc = true
+    dexLayoutOptimization = true
+}
+
 dependencies {
+    baselineProfile(project(":baselineprofile"))
+    // Installs the bundled baseline profile on sideloaded APKs too (Play installs it itself).
+    implementation(libs.androidx.profileinstaller)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
     implementation(libs.androidx.core.ktx)

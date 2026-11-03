@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- pdj_* names, not ic_launcher_*: the vendored musickitauth AAR ships drawable-v24/ic_launcher_foreground
+     (the template Android robot), and on API 24+ that more specific qualifier beat our drawable/ copy,
+     so every 1.0 build showed the robot as its launcher icon. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
-    <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+    <background android:drawable="@drawable/pdj_launcher_background" />
+    <foreground android:drawable="@drawable/pdj_launcher_foreground" />
+    <monochrome android:drawable="@drawable/pdj_launcher_foreground" />
 </adaptive-icon>

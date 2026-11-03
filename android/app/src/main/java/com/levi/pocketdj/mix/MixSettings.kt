@@ -110,7 +110,7 @@ object MixSettingsPush {
 
 /** Observe the whole Mix settings snapshot (any key change re-emits; equal snapshots are dropped). */
 fun AppSettingsStore.mixSettingsFlow(): Flow<MixSettings> = combine(
-    listOf(
+    listOf<Flow<Any>>(
         flow(MixSettingsKeys.LEAD), flow(MixSettingsKeys.FADE), flow(MixSettingsKeys.SKIP_FADE),
         flow(MixSettingsKeys.GLIDE), flow(MixSettingsKeys.AUTO_HIDE_PLAYED), flow(MixSettingsKeys.CUE_CHANNEL),
         flow(MixSettingsKeys.BEAT_PULSE), flow(MixSettingsKeys.DECK_LAYOUT),

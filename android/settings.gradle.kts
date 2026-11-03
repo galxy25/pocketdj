@@ -22,3 +22,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "PocketDJ"
 include(":app")
+include(":baselineprofile")
