@@ -44,6 +44,15 @@ final class NowPlayingDSPTests: XCTestCase {
             appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider()))
     }
 
+    /// REAL decodable burns (sine WAVs, `.wav` names — AVAudioFile picks its decoder by extension)
+    /// for the tests whose sequencer must actually ENGAGE the DSP: since the 2026-11-02 review,
+    /// `engageMix` refuses (leaves the AVPlayer on the track) when the DSP can't open the file —
+    /// placeholder bytes no longer flip `mixEngaged` over dead air.
+    private func wavBurns(_ rips: RipsStore, _ ids: [String]) throws -> BurnStore {
+        rips.setManifest(Dictionary(uniqueKeysWithValues: ids.map { ($0, RipsStore.ManifestEntry(key: "rips/\($0).mp3", source: "digital")) }))
+        return try MixBurnFixture.burnStore(ids: ids, rips: rips, lengths: Dictionary(uniqueKeysWithValues: ids.map { ($0, 8.0) }))
+    }
+
     /// Actually burn `songId` so the coordinator/sequencer's burned-file path resolves an on-disk file.
     private func burn(_ rips: RipsStore, _ burns: BurnStore, songId: String) async {
         rips.setManifest([songId: .init(key: "rips/\(songId).mp3", source: "digital")])
@@ -286,19 +295,19 @@ final class NowPlayingDSPTests: XCTestCase {
     /// against the one-audio-owner rule), and `dsp.onReachedEnd` stayed armed so the old track's
     /// end fired an advance that skipped the very track the user asked to play now. Every other
     /// `fresh: false` caller stays on the same row, which is why only this one was wrong.
-    func testPlayNowTearsDownAMixEngagement() async {
-        let rips = makeRips(); let burns = makeBurns(rips)
+    func testPlayNowTearsDownAMixEngagement() async throws {
+        let rips = makeRips(); let burns = try wavBurns(rips, ["np_mix1"])
         let player = PlayerEngine()
         let coord = makeCoordinator(rips: rips, player: player)
         let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
         seq.dsp = makeDSP()
         addTeardownBlock { @MainActor in seq.stop() }
-        await burn(rips, burns, songId: "np_mix1")
 
         seq.play([.init(id: "np_mix1", title: "One", artist: "A"),
                   .init(id: "np_mix2", title: "Two", artist: "A")])
         await waitUntil("burnt file becomes now-playing") { rips.nowPlaying?.songId == "np_mix1" }
         seq.engageMix()
+        try XCTSkipUnless(seq.dsp?.isReady ?? false, "no audio device on this test host")
         XCTAssertTrue(seq.mixEngaged, "precondition: the Now Playing mix panel owns the audio")
 
         seq.playNow(.init(id: "np_mix1", title: "One", artist: "A"))
@@ -364,25 +373,20 @@ final class NowPlayingDSPTests: XCTestCase {
     // MARK: - Track-change reset (needs an audio device for the real DSP swap)
 
     func testTrackChangeTearsDownMixAndResetsControls() async throws {
-        let rips = makeRips(); let burns = makeBurns(rips)
+        let rips = makeRips(); let burns = try wavBurns(rips, ["np_t1", "np_t2"])
         let player = PlayerEngine()
         let coord = makeCoordinator(rips: rips, player: player)
         let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
         let dsp = makeDSP()
         seq.dsp = dsp
         addTeardownBlock { @MainActor in seq.stop() }
-        await burn(rips, burns, songId: "np_t1")
-        await burn(rips, burns, songId: "np_t2")
 
         seq.play([.init(id: "np_t1", title: "T1", artist: "A"),
                   .init(id: "np_t2", title: "T2", artist: "A")])
         await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "np_t1" }
 
-        // The first control touch attempts the swap (`engageMix`) and applies the control. (The
-        // burned FIXTURE is placeholder bytes, not decodable audio, so the DSP graph can't actually
-        // open it here — the real audio engage is covered by `testEngageSchedulesAndPlays` on a real
-        // WAV. What this test verifies is the SetlistPlayer-side hand-off wiring: engage flips the
-        // flag + applies the control, and a track change tears it all down + resets the controls.)
+        // The first control touch swaps the track into the DSP (`engageMix`, a real WAV burn) and
+        // applies the control; a track change tears it all down + resets the controls.
         seq.engageMix()
         try XCTSkipUnless(dsp.isReady, "no audio device on this test host")
         XCTAssertTrue(seq.mixEngaged, "the first control touch engaged the hand-off")
@@ -428,20 +432,20 @@ final class NowPlayingDSPTests: XCTestCase {
     /// down — otherwise it keeps rendering the OLD set track and two songs sound at once. Pure
     /// SetlistPlayer wiring (no audio device needed): `engageMix` sets the flag, and the nowPlaying
     /// change drives the teardown BEFORE the not-in-set early return.
-    func testNonMemberPlayTearsDownEngagedMix() async {
-        let rips = makeRips(); let burns = makeBurns(rips)
+    func testNonMemberPlayTearsDownEngagedMix() async throws {
+        let rips = makeRips(); let burns = try wavBurns(rips, ["np_guard"])
         let player = PlayerEngine()
         let coord = makeCoordinator(rips: rips, player: player)
         let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
         seq.dsp = makeDSP()
         addTeardownBlock { @MainActor in seq.stop() }
-        await burn(rips, burns, songId: "np_guard")
 
         seq.play([.init(id: "np_guard", title: "Guard", artist: "A")])
         await waitUntil("burnt file playing") { rips.nowPlaying?.songId == "np_guard" }
         XCTAssertTrue(seq.currentTrackMixable)
 
         seq.engageMix()
+        try XCTSkipUnless(seq.dsp?.isReady ?? false, "no audio device on this test host")
         XCTAssertTrue(seq.mixEngaged, "the mix engaged the current set track")
 
         // A non-member single-row play takes the audio over the AVPlayer and points nowPlaying at a

@@ -341,4 +341,43 @@ final class FXLockTests: XCTestCase {
         XCTAssertFalse(r.dsp.flangerBypassed, "the effect is on the NEW graph's AU")
         XCTAssertEqual(r.seq.index, 0)
     }
+
+    // MARK: - Adversarial review (2026-11-02)
+
+    /// A lock engage at a track start CLOSES the start bookkeeping exactly once: the start
+    /// runway is released, the dead-air meter records ONE transition (no double first audio —
+    /// the AVPlayer it idled never reports one), and nothing is left open for the next track.
+    func testLockEngageAtStartClosesTheStartWindowAndRecordsOneTransition() async throws {
+        let r = try rig(["d1", "d2"])
+        try await startEngaged(r, ["d1", "d2"])
+        r.dsp.setEffect(.reverb, enabled: true)
+        r.seq.setFXLock(true)
+        DeadAirMeter.shared.resetForTesting()
+        r.seq.skipNext()
+        await waitUntil("d2 engaged at its start") { r.dsp.loadedSongId == "d2" && r.seq.mixEngaged }
+        XCTAssertFalse(r.seq.startRunwayHeldForTesting, "the lock engage closed the start window")
+        await settle(); await settle()
+        XCTAssertEqual(DeadAirMeter.shared.day().transitions, 1, "exactly one transition — no double first audio")
+        XCTAssertFalse(r.player.firstAudioPendingForTesting, "the idled AVPlayer owes no first audio")
+    }
+
+    /// A local row the AVPlayer can play but the DSP CAN'T open (AVAudioFile refuses it — it picks
+    /// its decoder by extension, a corrupt / mislabelled burn): the FX Lock's start engage must
+    /// leave the track on the AVPlayer. It used to idle the AVPlayer and claim the card for a DSP
+    /// that never engaged — "playing" over dead air for the whole track.
+    func testDSPRefusingTheFileLeavesTheTrackOnTheAVPlayer() async throws {
+        let r = try rig(["g1", "g2"])
+        // g2's burn: bytes AVAudioFile can't read.
+        let dir = try XCTUnwrap(r.burns.appBurnsDirOverride)
+        try Data(repeating: 0x5A, count: 4096).write(to: dir.appendingPathComponent("burn-g2.wav"))
+        try await startEngaged(r, ["g1", "g2"])
+        r.dsp.setEffect(.reverb, enabled: true)
+        r.seq.setFXLock(true)
+        r.seq.skipNext()
+        await waitUntil("g2 started") { r.rips.nowPlaying?.songId == "g2" }
+        XCTAssertFalse(r.seq.mixEngaged, "the DSP refused the file — nothing may claim it engaged")
+        XCTAssertFalse(r.dsp.isEngaged)
+        XCTAssertEqual(r.seq.fxLockIndicator, .waiting, "dry, lock kept")
+        XCTAssertTrue(r.seq.fxLock.wantsFX, "the lock carries on")
+    }
 }

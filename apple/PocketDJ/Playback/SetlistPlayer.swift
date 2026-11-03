@@ -1462,6 +1462,15 @@ final class SetlistPlayer {
         //    real card duration (the DSP slice length) instead of a 0-length card with no scrubber.
         dsp.engage(url: np.url, startMs: np.startMs, lengthMs: it.lengthMs,
                    atSeconds: atSeconds, songId: it.id, play: false)
+        // The DSP REFUSED the file (AVAudioFile can't open it — it picks its decoder by extension;
+        // a corrupt / mislabelled burn; an empty slice): the AVPlayer keeps the track. Idling it
+        // below anyway left a "playing" card over dead air for the whole track (every FX Lock
+        // track start reaches here, not just a touch).
+        guard dsp.isEngaged, dsp.loadedSongId == it.id else {
+            NPLog.trace("setlist ENGAGE mix REFUSED by the DSP id=\(it.id) — stays on the AVPlayer")
+            DiagLog.shared.log("playback", "npmix engage refused song=\(it.id) (DSP can't open the file) — AVPlayer keeps it")
+            return
+        }
         // 2) Idle the AVPlayer + claim the card (beginExternalNowPlaying pauses it + replaces its item),
         //    now with the correct duration in hand — single card writer preserved.
         //    (The card's cursor moves at the DSP's tempo, and its scrubber drives the DSP.)

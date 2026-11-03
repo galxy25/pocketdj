@@ -336,7 +336,7 @@ the current playback SESSION (`SetlistPlayer.stemLock`, model in
 
 ### FX Lock — carrying the effects across tracks (Now Playing only)
 
-The 🔒 in the panel's Effects header (`np-mix-fx-lock`, left of "Effects") turns on **FX Lock**
+The 🔒 in the panel's Effects header (`np-mix-fx-lock`, upper right of the header line — placed like the Stem Lock in the Stems header) turns on **FX Lock**
 for the session (`SetlistPlayer.fxLock`, `apple/PocketDJ/Playback/FXLock.swift`; full write-up in
 `np-mix-mode.md` §10). **No topology change**; it changes PARAMETER SCHEDULING at an engage:
 

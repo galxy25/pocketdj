@@ -816,9 +816,11 @@ applied". The Stem Lock's sibling, mirroring its architecture (`Playback/FXLock.
 track, locked or not.
 
 - **UI.** The 🔒 capsule (`np-mix-fx-lock`, label "FX Lock", the Stem Lock's glyph + style) sits
-  in the Effects group's upper-LEFT corner, ON the "Effects" header line (left of the label) — no
-  new row; the capsule's 3 pt vertical padding is absorbed (`.padding(.vertical, -3)`) so the line
-  keeps its height. The panel header shows "🔒FX" while locked. The stems section is untouched.
+  on the "Effects" header line in the SAME relative place the Stem Lock holds in the Stems header
+  (Levi, review pass): upper RIGHT — `Effects · Spacer · [status] · 🔒`, as the Stems header is
+  `Stems · Spacer · [pending badge] · 🔒 · On/Off` (the Effects group has no On/Off, so its lock is
+  the trailing item). No new row; the capsule's 3 pt vertical padding is absorbed
+  (`.padding(.vertical, -3)`) so the line keeps the label's height. The panel header shows "🔒FX" while locked. The stems section is untouched.
 - **What carries.** Every effect the Effects group offers (comp / reverb / flanger / filter): its
   on/off and its strength (the knob driving its wet/dry and parameters) — `FXLockState.effects`,
   only effects moved off neutral. Captured from USER effect actions only

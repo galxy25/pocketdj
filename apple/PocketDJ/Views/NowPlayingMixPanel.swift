@@ -16,8 +16,8 @@ import SwiftUI
 /// on the FIRST touch hands the current track's audio off the `AVPlayer` into the DSP graph AT the
 /// current position; the control then applies to the truly-playing track. Control state is EPHEMERAL
 /// — `SetlistPlayer` resets it on every track change, unless the session's STEM LOCK (the 🔒 beside the
-/// Stems toggle) carries the stem set forward (see `StemLock`), or its FX LOCK (the 🔒 in the Effects
-/// group's header, left of "Effects") carries the effects forward (see `FXLock`; tempo / pitch / gain
+/// Stems toggle) carries the stem set forward (see `StemLock`), or its FX LOCK (the 🔒 at the right end of
+/// the Effects group's header, placed like the Stem Lock) carries the effects forward (see `FXLock`; tempo / pitch / gain
 /// still reset).
 ///
 /// Reuses the Mix tab's `DeckSlider` / `EffectButton` / `StepButton` / `ChipStrengthPopover`, bound to
@@ -199,20 +199,24 @@ struct NowPlayingMixPanel: View {
 
     private var effectsGrid: some View {
         VStack(alignment: .leading, spacing: 4) {
-            // FX LOCK sits in the group's upper-LEFT corner, on the header line itself (no new
-            // row): the capsule's vertical padding is absorbed so the line keeps its height.
-            HStack(spacing: 6) {
-                fxLockButton
+            // FX LOCK mirrors the Stem Lock's placement in the Stems header: on the header line
+            // itself (no new row), on the RIGHT — "Effects", then the status text, then the lock
+            // (the Effects group has no On/Off toggle, so the lock is the trailing item, where the
+            // Stems header's lock + On/Off sit). The capsule's vertical padding is absorbed so the
+            // line keeps the label's height.
+            HStack {
                 Text("Effects").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
                 Spacer(minLength: 4)
                 // The lock carries effects this track can't take yet (an Apple Music row whose
-                // local copy is ready — a control touch moves it, Q1): say so on the same line.
+                // local copy is ready — a control touch moves it, Q1): say so on the same line,
+                // where the Stems header shows its pending badge.
                 if sequencer.fxLockIndicator == .waiting {
                     Text(available ? "FX Lock · tap a control to apply" : "FX Lock · waiting for the local copy")
                         .font(.caption2).foregroundStyle(Theme.fgDim)
                         .lineLimit(1).minimumScaleFactor(0.75)
                         .accessibilityIdentifier("np-fx-lock-waiting")
                 }
+                fxLockButton
             }
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                 ForEach(MixEngine.Effect.allCases) { effect in
