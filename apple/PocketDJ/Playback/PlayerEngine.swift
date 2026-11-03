@@ -1109,7 +1109,21 @@ final class PlayerEngine {
     func handleRouteLoss() {
         routeLossAt = Date()
         listenerIntentPlaying = false
-        guard !externalActive, player.currentItem != nil else { return }
+        if externalActive {
+            // An external source WE render (the Now Playing DSP's AVAudioEngine — every Mix Mode
+            // ripped row) does NOT pause itself the way AVPlayer / MusicKit do: unplugged
+            // headphones / a CarPlay disconnect would carry on out of the phone speaker. Pause it
+            // — the same listener pause. (MusicKit has already paused: then this is a no-op.)
+            if externalIsPlaying?() == true {
+                DiagLog.shared.log("session", "route change reason=oldDeviceUnavailable engine=player external=1 → external source paused")
+                externalPause?()
+                isPlaying = false
+                clock.currentTime = externalPosition?() ?? clock.currentTime
+                updateNowPlayingInfo()
+            }
+            return
+        }
+        guard player.currentItem != nil else { return }
         pausedByListener = true
         DiagLog.shared.log("session", "route change reason=oldDeviceUnavailable engine=player → treated as listener pause")
     }

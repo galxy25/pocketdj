@@ -419,6 +419,31 @@ final class NPMixGrowingFileTests: XCTestCase {
         XCTAssertEqual(ends, 1)
     }
 
+    /// REVIEW MUST — a HEADERLESS growing mp3 (no Xing/Info full-length claim: a user's own
+    /// digital file) opens on its partial bytes with a length ESTIMATED from what is there. That
+    /// estimate must never become the song's window: it holds until complete, then plays the
+    /// WHOLE song (before: attached at ~3.6 s, so the completed song "ended" a quarter in).
+    func testHeaderlessGrowingFileHoldsUntilCompleteThenPlaysTheWholeSong() async throws {
+        let data = try noiseStem                                         // headerless (no Xing)
+        let r = try dspRig(["g11"])
+        let file = tempMP3("g11")
+        let s = try feed(r.loader, "g11", file, data, 0.3)
+        var ends = 0
+        r.dsp.onReachedEnd = { ends += 1 }
+        XCTAssertTrue(r.dsp.engageStreaming(s, lengthMs: 12_000, atSeconds: 0, songId: "g11", play: true))
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(r.dsp.isBuffering, "no full-length claim: nothing is schedulable until complete")
+        try feed(r.loader, "g11", file, data, 0.6)
+        XCTAssertTrue(r.dsp.isBuffering)
+        XCTAssertFalse(r.dsp.mainNodePlayingForTesting())
+        try feed(r.loader, "g11", file, data, 1.0, finished: true)
+        XCTAssertFalse(r.dsp.isBuffering, "complete: it plays")
+        XCTAssertEqual(r.dsp.duration, 12, accuracy: 0.2, "the whole song — not the partial open's estimate")
+        r.dsp.seek(toSongSeconds: 9)
+        await waitUntil("rendering at 9 s") { r.dsp.currentTime > 9.2 }
+        XCTAssertEqual(ends, 0)
+    }
+
     /// The hand-off probe (`requireRunway`): a stream that can't play at the position RIGHT NOW
     /// is refused with NOTHING touched (the plain player keeps sounding); one that can, engages.
     /// A growing file under a name AVAudioFile can't decode by EXTENSION is refused too.
@@ -555,6 +580,24 @@ final class NPMixGrowingFileTests: XCTestCase {
         XCTAssertFalse(r.seq.mixEngaged)
         XCTAssertEqual(r.seq.growingStartCount, 0)
         XCTAssertEqual(GrowStub.presignCount("a"), 1)
+    }
+
+    /// REVIEW: on a network where the policy lets Mix Mode download NOTHING (cellular "Off"), a
+    /// ripped row starts plain — a growing start would fetch the whole song (and keep fetching
+    /// it after a skip) against the listener's setting.
+    func testCellularOffStartsPlain() async throws {
+        let data = try noise
+        let r = try seqRig(["a", "b"])
+        r.seq.mixModeSettings = { (3, .off, true) }
+        let pf = NowPlayingPrefetcher()
+        pf.network = { .expensive }
+        r.seq.prefetcher = pf
+        try feed(r.loader, "a", tempMP3("sc"), data, 0.5)
+        r.seq.play([item("a"), item("b")])
+        await waitUntil("a streaming") { r.rips.nowPlaying?.songId == "a" && r.rips.nowPlaying?.url.isFileURL == false }
+        XCTAssertFalse(r.seq.mixEngaged)
+        XCTAssertEqual(r.seq.growingStartCount, 0)
+        XCTAssertEqual(GrowStub.presignCount("a"), 1, "the plain presigned stream")
     }
 
     /// A DEAD buffer stream never costs the row: it falls back to its plain presigned stream at

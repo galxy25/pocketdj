@@ -2081,6 +2081,11 @@ final class SetlistPlayer {
         // AVPlayer range-seeks straight to it. It plays plain (the touch moves it over once
         // the buffer covers the playhead).
         if entry.source == "analog", entry.cutKey == nil, (entry.startMs ?? 0) > 0 { return false }
+        // The network policy says Mix Mode downloads NOTHING here (cellular "Off"): the buffer
+        // stream would fetch the whole song — and keep fetching it after a skip, where the plain
+        // AVPlayer stops. Plain stream.
+        if let pf = prefetcher, NowPlayingPrefetcher.mixReach(network: pf.network(), cellular: mixModeSettings().cellular,
+                                                             window: mixModeSettings().ahead) == nil { return false }
         return !coordinator.streamsAppleMusicFirst(id: it.id, title: it.title, artist: it.artist, variant: it.variant)
     }
 

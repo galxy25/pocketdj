@@ -158,6 +158,8 @@ final class NowPlayingDSP {
     @ObservationIgnored private var mainURL: URL?
     @ObservationIgnored private var mainStreamWindowMs: Int?
     @ObservationIgnored private var mainBytesPerSecond: Double?
+    /// The growing file has no full-length header: it attaches only once complete.
+    @ObservationIgnored private var mainHeaderless = false
     /// The schedulable frontier (file frames) while growing — or the FINAL last frame of a dead
     /// stream (`mainTruncated`). nil ⇒ the whole slice is there.
     @ObservationIgnored private var mainFrontierFrame: AVAudioFramePosition?
@@ -654,6 +656,7 @@ final class NowPlayingDSP {
         mainURL = nil
         mainStreamWindowMs = nil
         mainBytesPerSecond = nil
+        mainHeaderless = false
         mainFrontierFrame = nil
         mainScheduledEnd = 0
         mainTruncated = false
@@ -1041,7 +1044,12 @@ final class NowPlayingDSP {
         settleStemFade()
         let pos = currentTime
         let was = isPlaying
-        if mainNeedsBytes(at: pos, runway: 0.1) || mainRanDry(at: pos) {
+        // (The runway covers the crossfade's start lead at this tempo: the full song is scheduled
+        // from the stems' playhead ~60 ms of HOST time out — past a frontier closer than that,
+        // `scheduleMain` would find nothing and fake the song's end.)
+        let lead = StemSync.startLead * max(1, _rate)
+        let dry = mainRanDry(at: pos + lead)
+        if mainNeedsBytes(at: pos, runway: 0.1 + lead) || dry {
             // The full song can't carry the playhead: still arriving (HOLD there — the pump
             // resumes it with runway) or its stream died before reaching it (the host takes the
             // row back). Never a "natural end" mid-song.
@@ -1049,7 +1057,7 @@ final class NowPlayingDSP {
             _stemMode = false
             _stemHandover = nil
             if !was { pausedAt = pos }
-            else if mainRanDry(at: pos) { mainRanOut(at: pos) }
+            else if dry { mainRanOut(at: pos) }
             else { holdMain(at: pos) }
             NPLog.trace("npdsp → full song @\(String(format: "%.2f", pos))s — \(isBuffering ? "held for bytes" : "unavailable")")
             refreshStemMonitor()
@@ -1410,7 +1418,9 @@ final class NowPlayingDSP {
         }
         mainURL = url
         if file == nil {
-            // FIRST ATTACH — the header (and its full-length claim) is readable now.
+            // FIRST ATTACH — the header (and its full-length claim) is readable now. A file
+            // already found HEADERLESS waits for completion without re-opening on every event.
+            if mainHeaderless, !s.isComplete { return }
             guard let f = try? AVAudioFile(forReading: url) else {
                 if s.isComplete { handleMainStreamFailure(); }
                 return
@@ -1423,14 +1433,25 @@ final class NowPlayingDSP {
                 if s.isComplete { handleMainStreamFailure() }   // complete with nothing in the window
                 return
             }
+            let bps = GrowingFileSchedule.bytesPerSecond(totalFrames: f.length, sampleRate: sr,
+                                                         expectedBytes: s.expectedBytes)
+            if bps == nil, !s.isComplete {
+                // HEADERLESS (no Xing/Info full-length claim): this open's length is an estimate
+                // from the bytes present — never the song's window (attached here, the completed
+                // song would "end" where the partial did). Hold, unattached, until complete.
+                if !mainHeaderless {
+                    mainHeaderless = true
+                    NPLog.trace("npdsp stream \(s.songId) headerless — holds until complete")
+                }
+                return
+            }
             engine.connect(player, to: inputMixer, format: f.processingFormat)
             file = f
             sampleRate = sr
             segStartFrame = w.start
             segEndFrame = w.start + w.count
             duration = Double(w.count) / sr                 // the real window replaces the catalog guess
-            mainBytesPerSecond = GrowingFileSchedule.bytesPerSecond(totalFrames: f.length, sampleRate: sr,
-                                                                     expectedBytes: s.expectedBytes)
+            mainBytesPerSecond = bps
             mainFrontierFrame = w.start
             mainScheduledEnd = w.start
             if pausedAt > duration { pausedAt = duration }

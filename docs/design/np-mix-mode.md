@@ -690,8 +690,18 @@ supervisor never acts while the DSP owns the audio); (d) deep restore-resumes an
 songs start plain (dead-air rule); (e) the "Buffering…" of a holding DSP is a new indicator case
 (`.holding`) because its controls stay live.
 
+Review fixes (phase 3): a HEADERLESS growing mp3 (no Xing/Info claim) is never attached on a
+partial open's length estimate — the Now Playing DSP holds it unattached until complete, then plays
+the whole song (it used to "end" where the partial did; the Mix deck's `pumpStream` still has that
+latent first-attach rule — follow-up); a ROUTE LOSS (headphones out / CarPlay gone) pauses a
+still-playing external source (`PlayerEngine.handleRouteLoss` — the DSP's engine, unlike AVPlayer,
+never paused itself); a network where the cellular policy lets Mix Mode download nothing starts the
+row plain (`growingStartEligible`); the stems → full-song cut needs runway past the crossfade's
+start lead at the current tempo (a closer frontier faked the song's end at 2×).
+
 Known limits (phase 3): the growing path trusts the LAME/Xing full-length header and the
-Content-Length (shared with the Mix deck — a headerless file plays only once complete); an analog
+Content-Length (shared with the Mix deck — a headerless file plays only once complete); a scrub far
+past the frontier holds until the bytes get there (≤ 20 s, then the plain stream at the target); an analog
 stream that flips from its cut to the side fallback after the start keeps the cut-time `startMs` on
 `rips.nowPlaying` until completion re-stamps it (the DSP itself attaches with the final geometry);
 the buffer stream keeps downloading after a fallback / skip (every stream completes — it adopts as a

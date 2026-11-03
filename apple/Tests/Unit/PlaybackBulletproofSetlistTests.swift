@@ -403,6 +403,23 @@ final class PlayerEngineBulletproofTests: XCTestCase {
         XCTAssertFalse(e.listenerIntentPlaying)
     }
 
+    /// REVIEW MUST (np-mix-mode phase 3): an EXTERNAL source we render (the Now Playing DSP —
+    /// every Mix Mode ripped row) doesn't pause itself on a route loss the way AVPlayer does:
+    /// headphones out / CarPlay gone must pause it, not carry on out of the phone speaker. A
+    /// source that already paused (MusicKit) is left alone.
+    func testRouteLossPausesAnExternalSourceThatIsStillPlaying() {
+        let e = PlayerEngine()
+        let p = Probe()
+        beginExternal(e, p)
+        e.handleRouteLoss()
+        XCTAssertEqual(p.pauses, 1, "the DSP is paused like the AVPlayer would be")
+        XCTAssertFalse(p.playing)
+        XCTAssertFalse(e.isPlaying)
+        XCTAssertFalse(e.listenerIntentPlaying)
+        e.handleRouteLoss()
+        XCTAssertEqual(p.pauses, 1, "already paused ⇒ untouched")
+    }
+
     // P0-6
 
     func testHoldsOwnershipAcrossTracksSkipsTheResign() {
