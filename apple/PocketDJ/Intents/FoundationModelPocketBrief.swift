@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(FoundationModels)
+#if canImport(FoundationModels) && !os(tvOS)
 import FoundationModels
 #endif
 
@@ -10,7 +10,7 @@ import FoundationModels
 enum PocketBriefModelFactory {
     @MainActor
     static func make() throws -> any PocketBriefModel {
-        #if canImport(FoundationModels)
+        #if canImport(FoundationModels) && !os(tvOS)
         guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else {
             throw PocketDJIntentError.intelligenceUnavailable(
                 "Creating pockets needs iOS 26 or macOS 26 with Apple Intelligence.")
@@ -38,7 +38,7 @@ enum PocketBriefModelFactory {
     }
 }
 
-#if canImport(FoundationModels)
+#if canImport(FoundationModels) && !os(tvOS)
 
 /// The on-device Apple Foundation model behind the Create-Pocket pipeline. Two
 /// SEPARATE sessions (parse, then curate) — each session is a fresh 4,096-token

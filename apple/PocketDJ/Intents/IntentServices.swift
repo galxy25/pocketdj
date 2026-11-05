@@ -103,6 +103,15 @@ final class IntentServices {
     /// is indistinguishable from the blank-screen bug it replaced.
     var routeMessage: String?
 
+    /// The Siri song matcher's pre-normalized catalog (`IntentServices+Siri`), keyed by the
+    /// catalog revision so a ~100k-row fold runs once per catalog, not once per request.
+    struct SongMatchCache {
+        let revision: Int
+        let count: Int
+        let rows: [IntentSongMatcher.Row]
+    }
+    @ObservationIgnored var songMatchCache: SongMatchCache?
+
     /// One-shot guard so `ensureReady()` kicks the rips-manifest refresh only once per
     /// process (RootView.task does the same on a windowed launch — both are idempotent).
     private var kickedManifestRefresh = false
@@ -115,7 +124,7 @@ final class IntentServices {
     /// `{ !onboarding.isComplete }`. nil ⇒ never veto (tests).
     @ObservationIgnored var onboardingIncomplete: (() -> Bool)?
 
-    private func vetoDuringOnboarding() throws {
+    func vetoDuringOnboarding() throws {
         if isOnboardingIncomplete { throw PocketDJIntentError.setupIncomplete }
     }
 
@@ -590,6 +599,15 @@ enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
     case setupIncomplete
     /// The Pocket Wheel found nothing playable that fits right now.
     case noPocketFits
+    /// "Add this song" / a stem / Mix Mode with nothing loaded in Now Playing (or the Mix tab).
+    case nothingPlaying
+    /// The pocket / playlist an add names no longer exists.
+    case collectionNotFound
+    /// Mix Mode isn't on this platform (tvOS, Q10).
+    case mixModeUnsupported
+    /// A Mix-tab session owns the DSP — the Now Playing mini-mix is off meanwhile.
+    case mixTabLive
+    case stemsUnavailable(String)
 
     var localizedStringResource: LocalizedStringResource {
         switch self {
@@ -616,6 +634,16 @@ enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
         case .autoMixNotPaused:
             return "The auto-mix isn't paused."
         case .intelligenceUnavailable(let why):
+            return "\(why)"
+        case .nothingPlaying:
+            return "Nothing is playing in PocketDJ right now."
+        case .collectionNotFound:
+            return "I couldn't find that pocket or playlist in PocketDJ."
+        case .mixModeUnsupported:
+            return "Mix Mode isn't available on this device."
+        case .mixTabLive:
+            return "The Mix tab is playing. Stems by voice work on Now Playing — use the Mix tab's stem pads for its decks."
+        case .stemsUnavailable(let why):
             return "\(why)"
         }
     }

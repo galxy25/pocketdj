@@ -154,6 +154,8 @@ struct NowPlayingPanel: View {
         .background(Theme.bg)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("now-playing-panel")
+        // Siri onscreen context: "add this song to …" means the song on this deck.
+        .nowPlayingSiriContext()
         // The record's song-detail sheet. Close affordance per platform (user-
         // tested): iPhone gets a BACK button in the nav bar (top-left); iPad and
         // macOS get an always-visible ✕ overlaid top-left — the sheet's toolbar

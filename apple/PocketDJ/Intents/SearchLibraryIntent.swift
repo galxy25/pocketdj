@@ -6,6 +6,10 @@ import AppIntents
 /// route a search term straight into the Browser's search field. The term rides
 /// `IntentServices.pendingBrowseQuery` (consumed by BrowseView) and
 /// `.browseSearch` lands the user on the Browser tab.
+///
+/// Not on tvOS: the tvOS 27 SDK marks the `.system` schema domain unavailable (the 26 SDK
+/// didn't), so the TV build never had a working Siri search to lose.
+#if !os(tvOS)
 @AppIntent(schema: .system.search)
 struct SearchLibraryIntent {
     static let title: LocalizedStringResource = "Search PocketDJ"
@@ -23,3 +27,4 @@ struct SearchLibraryIntent {
         return .result()
     }
 }
+#endif

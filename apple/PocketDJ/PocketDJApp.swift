@@ -2062,9 +2062,10 @@ struct PocketDJApp: App {
         }
         CollectionsSpotlight.scheduleReindex(collections)
         // The iOS/macOS 27 audio-schema layer (Siri AI natural language): only
-        // compiled when built with the Xcode 27 SDK, only active on a 27 runtime.
-        #if canImport(MediaIntents)
-        if #available(iOS 27.0, macOS 27.0, *) {
+        // compiled when built with the Xcode 27 SDK, only active on a 27 runtime. Not tvOS:
+        // MediaIntents exists there but the audio schema domain is unavailable.
+        #if canImport(MediaIntents) && !os(tvOS)
+        if #available(iOS 27.0, macOS 27.0, visionOS 27.0, *) {
             AudioSchemaBootstrap.install(services: intents)
         }
         #endif

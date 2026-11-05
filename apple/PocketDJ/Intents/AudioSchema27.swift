@@ -10,6 +10,15 @@
 // Xcode 26.x this whole file compiles OUT and the app builds exactly as before;
 // building with Xcode 27 lights it up, and `@available(iOS 27, macOS 27, *)`
 // keeps it runtime-safe on the iOS 18/macOS 15 deployment targets.
+// FIRST REAL-SDK BUILD (Xcode 27.2, 2026-11-05): it compiled in and failed only on init
+// ordering — the schema macro turns the SCHEMA properties into accessor-backed entity
+// properties, so the plain stored extras (`duration`, `songs`, `albums`, `trackCount`,
+// `totalDuration`) must be initialized before any schema setter runs; they now carry defaults.
+// The tvOS 27 SDK ships MediaIntents but marks the audio schema domain unavailable, so the gate
+// excludes tvOS; visionOS 27 needs its own `@available` entry (the old iOS/macOS-only one left
+// visionOS's call site unguarded).
+// These are SCHEMA intents, so they never get the Siri AI `ToolIntent` conformance
+// (`SiriAITools.swift`) — the schema already makes them available to Siri.
 // Shapes are ported from Apple's WWDC26 sample "Integrating your music app with
 // Apple Intelligence" (CosmoTunes) — the schema macros enforce these exact
 // property sets at compile time.
@@ -21,7 +30,7 @@
 // updateAudioAffinity (PocketDJ has no add-to-library or like/dislike model —
 // the audio domain is not all-or-nothing, partial adoption is supported).
 
-#if canImport(MediaIntents)
+#if canImport(MediaIntents) && !os(tvOS)
 
 import AppIntents
 import CoreSpotlight
@@ -31,13 +40,13 @@ import MediaIntents
 /// The named Spotlight index for SCHEMA entities — separate from the 26-era
 /// `CollectionsSpotlight.indexName` (which wipe-rewrites playlists/pockets on
 /// every collections change; sharing a name would let one layer erase the other).
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 let audioSchemaIndexName = "pocketdj-audio"
 
 // MARK: - Entities
 
 /// A catalog song. `duration` falls back to the engine's 3:30 unknown-length default.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @AppEntity(schema: .audio.song)
 struct AudioSongEntity: IndexedEntity {
     static let defaultQuery = AudioSongQuery()
@@ -51,7 +60,7 @@ struct AudioSongEntity: IndexedEntity {
     var album: AudioAlbumEntity?
     var artists: [AudioArtistEntity]
     var composers: [AudioArtistEntity]
-    var duration: TimeInterval
+    var duration: TimeInterval = 0
 
     let id: String   // IndexSong.id (stable, content-derived)
 
@@ -78,18 +87,18 @@ struct AudioSongEntity: IndexedEntity {
     }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioSongEntity: Equatable, Hashable {
     static func == (lhs: AudioSongEntity, rhs: AudioSongEntity) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 struct AudioSongQuery {
     @Dependency var services: IntentServices
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioSongQuery: EntityQuery {
     @MainActor
     func entities(for identifiers: [String]) async throws -> [AudioSongEntity] {
@@ -102,7 +111,7 @@ extension AudioSongQuery: EntityQuery {
     // songs resolve via the string query and the AudioSearch value query instead.
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioSongQuery: EntityStringQuery {
     @MainActor
     func entities(matching string: String) async throws -> [AudioSongEntity] {
@@ -112,7 +121,7 @@ extension AudioSongQuery: EntityStringQuery {
     }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioSongQuery: IndexedEntityQuery {
     /// Spotlight reindex-on-request. Songs are indexed ONLY on demand (the full
     /// catalog is ~100k rows — never bulk-indexed proactively).
@@ -128,7 +137,7 @@ extension AudioSongQuery: IndexedEntityQuery {
 }
 
 /// A catalog album.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @AppEntity(schema: .audio.album)
 struct AudioAlbumEntity: IndexedEntity {
     static let defaultQuery = AudioAlbumQuery()
@@ -136,7 +145,7 @@ struct AudioAlbumEntity: IndexedEntity {
     var title: String
     var artistName: String
     var artists: [AudioArtistEntity]
-    var songs: [AudioSongEntity]
+    var songs: [AudioSongEntity] = []
     var universalProductCode: String?
 
     let id: String   // IndexAlbum.id
@@ -173,18 +182,18 @@ struct AudioAlbumEntity: IndexedEntity {
     }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioAlbumEntity: Equatable, Hashable {
     static func == (lhs: AudioAlbumEntity, rhs: AudioAlbumEntity) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 struct AudioAlbumQuery {
     @Dependency var services: IntentServices
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioAlbumQuery: EntityQuery {
     @MainActor
     func entities(for identifiers: [String]) async throws -> [AudioAlbumEntity] {
@@ -195,7 +204,7 @@ extension AudioAlbumQuery: EntityQuery {
     }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioAlbumQuery: EntityStringQuery {
     @MainActor
     func entities(matching string: String) async throws -> [AudioAlbumEntity] {
@@ -210,7 +219,7 @@ extension AudioAlbumQuery: EntityStringQuery {
     }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioAlbumQuery: IndexedEntityQuery {
     func reindexEntities(for identifiers: [String],
                          indexDescription: CSSearchableIndexDescription) async throws {
@@ -226,14 +235,14 @@ extension AudioAlbumQuery: IndexedEntityQuery {
 
 /// An artist — identity IS the name (the catalog has no artist ids). Relations
 /// stay empty; the song/album entities carry the artist name inline.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @AppEntity(schema: .audio.artist)
 struct AudioArtistEntity {
     static let defaultQuery = AudioArtistQuery()
 
     var name: String
-    var albums: [AudioAlbumEntity]
-    var songs: [AudioSongEntity]
+    var albums: [AudioAlbumEntity] = []
+    var songs: [AudioSongEntity] = []
 
     let id: String
 
@@ -249,18 +258,18 @@ struct AudioArtistEntity {
     }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioArtistEntity: Equatable, Hashable {
     static func == (lhs: AudioArtistEntity, rhs: AudioArtistEntity) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 struct AudioArtistQuery {
     @Dependency var services: IntentServices
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioArtistQuery: EntityQuery {
     func entities(for identifiers: [String]) async throws -> [AudioArtistEntity] {
         identifiers.map(AudioArtistEntity.init(name:))
@@ -269,15 +278,15 @@ extension AudioArtistQuery: EntityQuery {
 
 /// A playlist OR a pocket — both are speakable "playlists" to Siri; the id's
 /// `pls_`/`pkt_` prefix routes resolution and playback to the right store call.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @AppEntity(schema: .audio.playlist)
 struct AudioPlaylistEntity: IndexedEntity {
     static let defaultQuery = AudioPlaylistQuery()
 
     var title: String
     var owner: AudioPlaylistOwner?
-    var trackCount: Int
-    var totalDuration: TimeInterval
+    var trackCount: Int = 0
+    var totalDuration: TimeInterval = 0
     var createdByMe: Bool?
     var curatedForMe: Bool?
 
@@ -340,25 +349,25 @@ struct AudioPlaylistEntity: IndexedEntity {
 
 /// The playlist-owner union the schema requires; PocketDJ playlists are always
 /// the user's own, so this is carried but never populated.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @UnionValue
 enum AudioPlaylistOwner {
     case curator(String)
     case person(IntentPerson)
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioPlaylistEntity: Equatable, Hashable {
     static func == (lhs: AudioPlaylistEntity, rhs: AudioPlaylistEntity) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 struct AudioPlaylistQuery {
     @Dependency var services: IntentServices
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioPlaylistQuery: EntityQuery {
     @MainActor
     func entities(for identifiers: [String]) async throws -> [AudioPlaylistEntity] {
@@ -370,7 +379,7 @@ extension AudioPlaylistQuery: EntityQuery {
     }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioPlaylistQuery: EntityStringQuery {
     @MainActor
     func entities(matching string: String) async throws -> [AudioPlaylistEntity] {
@@ -379,7 +388,7 @@ extension AudioPlaylistQuery: EntityStringQuery {
     }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension AudioPlaylistQuery: IndexedEntityQuery {
     func reindexEntities(for identifiers: [String],
                          indexDescription: CSSearchableIndexDescription) async throws {
@@ -396,7 +405,7 @@ extension AudioPlaylistQuery: IndexedEntityQuery {
 
 /// One speakable parameter that is either a song or a playlist/pocket — the shape
 /// `audio.playAudio` requires.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @UnionValue
 enum PocketDJAudioEntity {
     case song(AudioSongEntity)
@@ -410,7 +419,7 @@ enum PocketDJAudioEntity {
     }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @AppEnum(schema: .audio.playbackAttributes)
 enum AudioPlaybackAttributes: String {
     case shuffle
@@ -422,7 +431,7 @@ enum AudioPlaybackAttributes: String {
     ]
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @AppEnum(schema: .audio.queueInsertionLocation)
 enum AudioQueueInsertionLocation: String {
     case next
@@ -435,7 +444,7 @@ enum AudioQueueInsertionLocation: String {
 }
 
 /// The no-payload warmup marker the playAudio schema carries.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @AppEntity(schema: .audio.warmupAudioQueueResult)
 struct AudioWarmupQueueResult: TransientAppEntity {
     var displayRepresentation: DisplayRepresentation {
@@ -448,7 +457,7 @@ struct AudioWarmupQueueResult: TransientAppEntity {
 
 /// Siri AI's natural-language play: "play Neon", "play my warmup pocket",
 /// "play something upbeat" (via the AudioSearch value query below).
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @AppIntent(schema: .audio.playAudio)
 struct PlayAudioIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Play Audio"
@@ -480,7 +489,7 @@ struct PlayAudioIntent: AudioPlaybackIntent {
 }
 
 /// "Add this to my warmup playlist" — appends a song to a playlist OR a pocket.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @AppIntent(schema: .audio.addToPlaylist)
 struct AddToPlaylistIntent {
     static let title: LocalizedStringResource = "Add to Playlist"
@@ -495,40 +504,26 @@ struct AddToPlaylistIntent {
         guard case .song(let song) = audioEntity else {
             throw PocketDJIntentError.songOnlyAction
         }
-        await services.ensureReady()
-        guard services.app.songsById[song.id] != nil else {
-            throw PocketDJIntentError.songNotFound
-        }
-        // Route through the SAME user-facing choke point the in-app "Add to…" uses
-        // (`addSong(_:to:)`) so a Siri/Shortcuts add logs exactly one History▸Activity
-        // event AND updates the Recent quick-add MRU — the low-level add(toPocket:)/
-        // add(toPlaylist:) skipped both. There's no chapter/sequence here (Siri adds to
-        // the collection, not a specific chapter), so a bare AddTarget is correct.
-        if playlist.id.hasPrefix("pkt_") {
-            guard services.collections.pocket(playlist.id) != nil else {
-                throw PocketDJIntentError.pocketNotFound
-            }
-            services.collections.addSong(song.id, to: AddTarget(kind: .pocket, id: playlist.id))
-        } else {
-            guard services.collections.playlist(playlist.id) != nil else {
-                throw PocketDJIntentError.playlistNotFound
-            }
-            services.collections.addSong(song.id, to: AddTarget(kind: .playlist, id: playlist.id))
-        }
-        return .result(dialog: "Added \(song.title) to \(playlist.title).")
+        // ONE add path for every Siri surface: the 1.0.4 `addSongToCollection` (the Add-to sheet's
+        // `AddToActions` — Recent row, History ▸ Activity, write-back, default chapter — plus the
+        // already-a-member answer instead of a duplicate).
+        let collectionId = playlist.id.hasPrefix("pkt_")
+            ? MixSource.pocket(playlist.id).id : MixSource.playlist(playlist.id).id
+        let r = try await services.addSongToCollection(songId: song.id, collectionId: collectionId)
+        return .result(dialog: "\(r.dialog)")
     }
 }
 
 // MARK: - AudioSearch value query ("play something …")
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension PocketDJAudioEntity {
     struct AudioValueQuery {
         @Dependency var services: IntentServices
     }
 }
 
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 extension PocketDJAudioEntity.AudioValueQuery: IntentValueQuery {
     @MainActor
     func values(for input: AudioSearch) async throws -> [PocketDJAudioEntity] {
@@ -552,7 +547,7 @@ extension PocketDJAudioEntity.AudioValueQuery: IntentValueQuery {
 
 /// Tokenized catalog search shared by the song string query and the value query —
 /// each whitespace token must hit title OR artist; ranked by hit count, capped.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 enum AudioSchemaSearch {
     static let resultCap = 25
 
@@ -581,7 +576,7 @@ enum AudioSchemaSearch {
 /// dedicated named index. Hooked into CollectionsSpotlight's debounced reindex by
 /// `AudioSchemaBootstrap.install` — songs are never bulk-indexed (catalog scale);
 /// they resolve through the string/value queries.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @MainActor
 enum AudioSchemaIndexer {
     static func reindexAll(_ services: IntentServices) async {
@@ -617,7 +612,7 @@ enum AudioSchemaIndexer {
 
 /// One-call activation, invoked from `PocketDJApp.init()` (inside the same compile
 /// gate): chains the schema reindex onto the 26-era debounced collections hook.
-@available(iOS 27.0, macOS 27.0, *)
+@available(iOS 27.0, macOS 27.0, visionOS 27.0, *)
 @MainActor
 enum AudioSchemaBootstrap {
     static func install(services: IntentServices) {

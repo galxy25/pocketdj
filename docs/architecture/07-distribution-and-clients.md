@@ -962,8 +962,8 @@ at most one), reusing `MixSource.id`'s `pocket:`/`setlist:` encoding. Queries ar
 `EntityStringQuery`s (case-insensitive name match) and always filter the reserved
 Now Playing scratch setlist.
 
-**The intents** (8 App Shortcuts, under Apple's 10-cap, phrases like *"Play
-〈playlist〉 in PocketDJ"*):
+**The intents** (originally 8 App Shortcuts; 1.0.4 re-cut the 10-slot budget —
+see §7.1 — phrases like *"Play 〈playlist〉 in PocketDJ"*):
 
 - **Play / Shuffle Playlist · Play / Shuffle Pocket** — `collections.playNow` →
   the reserved Now Playing setlist → `setlistPlayer.play`, exactly the detail-view
@@ -997,7 +997,7 @@ SDK): "Search PocketDJ for boogie" parks the term on
 the Browser and BrowseView consumes the term into its search field (same
 atomic-take pattern as the open routes).
 
-**The iOS/macOS 27 audio-schema layer (`AudioSchema27.swift`, compiled-out until
+**The iOS/macOS 27 audio-schema layer (`AudioSchema27.swift`, compiled in since
 Xcode 27).** The "Siri AI" audio domain is implemented behind
 `#if canImport(MediaIntents)` (MediaIntents is new in the 27 SDK, so with
 Xcode 26.x the file compiles out and nothing changes), every type
@@ -1018,9 +1018,77 @@ chained onto CollectionsSpotlight's debounced hook via
 `AudioSchemaBootstrap.install` (songs are never bulk-indexed at ~100k — they
 resolve through the string/value queries). Deliberately not adopted:
 `addToLibrary` + `updateAudioAffinity` (no add-to-library or like/dislike model;
-audio is not an all-or-nothing domain). CAVEAT: this layer has never been
-compiled against a real 27 SDK (none installed) — expect minor fix-ups on the
-first Xcode 27 build, guided by the schema macros' compile-time shape errors.
+audio is not an all-or-nothing domain). First real-SDK build (Xcode 27.2,
+2026-11-05): the file now compiles IN with the release Xcode. The only fix-up
+was init ordering — the schema macro makes the schema properties accessor-backed,
+so the plain stored extras (`duration`, `songs`, `albums`, `trackCount`,
+`totalDuration`) carry defaults. `audio.addToPlaylist` routes through the 1.0.4
+`addSongToCollection` (below), so every Siri add path behaves identically.
+The 27 SDKs also needed fences the 26 SDKs didn't. tvOS ships MediaIntents and
+FoundationModels but marks the audio schema, the `.system` schema domain
+(`SearchLibraryIntent`) and `LanguageModelSession` unavailable. So those gates read
+`canImport(…) && !os(tvOS)`, and `SearchLibraryIntent` is `#if !os(tvOS)`.
+visionOS 27 needed its own `@available` / `#available` entry.
+
+### 7.1 Siri in 1.0.4 — collections by name, Mix Mode, stems by voice, Siri AI tools
+
+Levi's ask (2026-11-05): *"add songs to collections by name"* (the main use), plus
+*Mix Mode on/off* and *mute/unmute stems by name* (vocals / drums / bass / other).
+
+**Entities** (`SiriEntities.swift`). `CollectionEntity` folds **pocket | playlist**
+(what every "Add to…" menu targets) into one speakable parameter, id =
+`MixSource.id` encoding; its query is `EnumerableEntityQuery` + `EntityStringQuery`,
+name-matched with the Add sheet's own `FuzzyMatch` ranker cut to the best tier
+(an exact name never triggers "which one?"; "my workout playlist" → "Workout").
+`SongEntity` is a catalog song resolved by `IntentSongMatcher`: the whole phrase as
+a title AND `<title> by <artist>`, tiers exact → version-tail-stripped → prefix →
+whole-word → typo (OSA distance, only when nothing literal hit), deduplicated by
+recording (`SongDuplicateJudge.key`), top tier only, so Siri disambiguates only
+genuinely ambiguous titles. Normalized rows are cached per `catalogRevision`.
+`StemPart` (vocals/drums/bass/other, with synonyms vocal/voice, drum, instruments/
+music, …) and `MixModeSwitch` (on/off) are `AppEnum`s.
+
+**Operations** (`IntentServices+Siri.swift`, each on the in-app control's own path):
+- `addSongToCollection(songId:collectionId:)` — `songId == nil` ⇒ `currentSongId()`
+  (the audible owner: a live Mix-tab deck over a parked Now Playing set, else the
+  Now Playing track). Membership + add go through **`AddToActions`** (never a
+  second add path): already a member ⇒ "X is already in Y", nothing written, never a
+  toggle-off; playlists land in their first chapter like the sheet's row tap.
+- `setNowPlayingMixMode(_:)` — `SetlistPlayer.setMixMode` (the NP capsule).
+- `setStem(_:muted:)` — the mini-mix panel's sequence: Mix Mode on if off →
+  `mixAvailable` (else the panel's status chip, in words: buffering / Apple Music
+  only / …) → `engageMix()` → `setStemMode(true)` → `toggleStemMute`. Unmute only
+  touches a muted stem; with the Mix tab live it refuses (one DSP surface).
+
+**App Shortcuts (all 10 slots):** Add This Song to 〈collection〉 · Add a Song to
+〈collection〉 (Siri asks "Which song?") · Play / Shuffle 〈collection〉 (replacing the
+four per-kind shortcuts) · Play My Pocket · Turn 〈on/off〉 Mix Mode · Mute / Unmute
+the 〈stem〉 · Auto-Mix 〈source〉 · Create Pocket. Pause/Resume Auto-Mix left the
+list (Siri's own pause/resume reach the mix via the lock-screen remote commands);
+every older intent type still exists so saved shortcuts keep running.
+
+**Siri AI tools (`SiriAITools.swift`).** iOS/macOS/visionOS 27.3 make a custom intent a
+Siri AI tool via `ToolIntent` (`@AppIntent(.tool)`). `ToolIntent` is
+`@available(27.3)` and the macro refuses an iOS-18-deployed struct, so the
+conformances are availability-annotated extensions (the macro's only expansion).
+Compile gate: `#if canImport(AppIntents, _version: 301.2) && !os(tvOS)` — the release
+Xcode 27.2 SDK ships AppIntents 301.1.16 (no tools; the App Store build), the 27.3
+beta ships 301.2.7.2 (the internal-TestFlight build). Swift is 6.4.2 in both, and
+`SiriEvaluations` lives in the platform Developer frameworks (invisible to an app
+target's `canImport`), so neither works as a gate. Tools: add (both), Mix Mode,
+mute/unmute, play/shuffle collection, play my pocket, auto-mix start/pause/resume,
+create pocket. NOT tools: the schema intents (audio, system.search — already Siri's),
+`OpenIntent`s, and the superseded per-kind play intents. The 27.3-only
+`@Property(description:)` can't attach to iOS-18 entities, so entity meaning rides
+titles, subtitles and synonyms. Siri AI only runs dev-signed / internal TestFlight
+builds during the preview.
+
+**Context + donations.** `NowPlayingPanel` publishes an `NSUserActivity` whose
+`appEntityIdentifier` is the playing `SongEntity` (onscreen "this song"). UI
+donations: Add-to sheet/menu song adds → `AddCurrentSongToCollectionIntent`, ▶/🔀 →
+Play/Shuffle Collection, the Mix Mode capsule → `SetMixModeIntent`, stem pads →
+Mute/Unmute Stem. Siri's own adds pass `donate: false`. Tests: `IntentSongMatcherTests`,
+`SiriIntentServicesTests` (real sequencer + `NowPlayingDSP` over burned stems).
 
 ---
 

@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(FoundationModels)
+#if canImport(FoundationModels) && !os(tvOS)
 import FoundationModels
 #endif
 
@@ -10,7 +10,7 @@ import FoundationModels
 enum JukeboxPickModelFactory {
     @MainActor
     static func make() -> (any JukeboxPickModel)? {
-        #if canImport(FoundationModels)
+        #if canImport(FoundationModels) && !os(tvOS)
         guard #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) else { return nil }
         guard case .available = SystemLanguageModel.default.availability else { return nil }
         return FoundationJukeboxPickModel()
@@ -20,7 +20,7 @@ enum JukeboxPickModelFactory {
     }
 }
 
-#if canImport(FoundationModels)
+#if canImport(FoundationModels) && !os(tvOS)
 
 /// One guided-generation call per request: the numbered candidate rows + the guest's
 /// text, out comes a candidate number (0 = none of these is the requested song). Same

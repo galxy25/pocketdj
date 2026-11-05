@@ -228,7 +228,7 @@ enum SongDuplicateJudge {
     /// Borderline-pair LLM call. nil = unavailable / failed / unparseable ⇒ caller falls back.
     static func llmSaysDuplicate(name: String, artist: String,
                                  name2: String, artist2: String) async -> Bool? {
-        #if canImport(FoundationModels)
+        #if canImport(FoundationModels) && !os(tvOS)
         if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
             return await FoundationModelJudge.sameRecording(name: name, artist: artist,
                                                             name2: name2, artist2: artist2)
@@ -248,7 +248,7 @@ extension AppModel {
     }
 }
 
-#if canImport(FoundationModels)
+#if canImport(FoundationModels) && !os(tvOS)
 import FoundationModels
 
 /// The on-device Apple Intelligence tie-break. Isolated in its own availability-gated type so
