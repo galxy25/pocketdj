@@ -80,7 +80,6 @@ struct PocketDJShortcuts: AppShortcutsProvider {
                         "Mute \(\.$stem) in \(.applicationName)",
                         "Turn off the \(\.$stem) in \(.applicationName)",
                         "Kill the \(\.$stem) in \(.applicationName)",
-                        "Drop the \(\.$stem) in \(.applicationName)",
                     ],
                     shortTitle: "Mute Stem",
                     systemImageName: "speaker.slash")

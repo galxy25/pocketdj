@@ -582,10 +582,51 @@ enum AudioSchemaIndexer {
     static func reindexAll(_ services: IntentServices) async {
         MainThreadStallWatchdog.shared.marker("schema-reindex-start")
         await services.ensureReady()
-        try? await CSSearchableIndex(name: audioSchemaIndexName).deleteAllSearchableItems()
-        try? await indexPlaylists(services)
-        try? await indexAlbums(services)
+        // The ~13k-album set only changes on a catalog refresh, but this hook fires after
+        // EVERY debounced collections save. Wipe + re-write albums only when their stable
+        // fingerprint moved; otherwise just upsert playlists and delete the removed ones.
+        let albums = services.app.albums
+        let fingerprint = await Task.detached(priority: .utility) { albumFingerprint(albums) }.value
+        let defaults = UserDefaults.standard
+        let playlists = AudioPlaylistEntity.all(in: services.collections)
+        let playlistIDs = playlists.map(\.id)
+        if defaults.string(forKey: albumFingerprintKey) != fingerprint {
+            try? await CSSearchableIndex(name: audioSchemaIndexName).deleteAllSearchableItems()
+            try? await indexPlaylists(services)
+            do {
+                try await indexAlbums(services)
+                defaults.set(fingerprint, forKey: albumFingerprintKey)
+            } catch {
+                defaults.removeObject(forKey: albumFingerprintKey)
+            }
+        } else {
+            let previous = Set(defaults.stringArray(forKey: playlistIDsKey) ?? [])
+            let removed = Array(previous.subtracting(playlistIDs))
+            if !removed.isEmpty {
+                try? await CSSearchableIndex(name: audioSchemaIndexName)
+                    .deleteAppEntities(identifiedBy: removed, ofType: AudioPlaylistEntity.self)
+            }
+            if !playlists.isEmpty {
+                try? await CSSearchableIndex(name: audioSchemaIndexName).indexAppEntities(playlists)
+            }
+        }
+        defaults.set(playlistIDs, forKey: playlistIDsKey)
         MainThreadStallWatchdog.shared.marker("schema-reindex-end")
+    }
+
+    private static let albumFingerprintKey = "AudioSchemaIndexer.albumFingerprint.v1"
+    private static let playlistIDsKey = "AudioSchemaIndexer.playlistIDs.v1"
+
+    /// Stable across launches (FNV-1a over id/name/artist; `Hasher` is per-process seeded).
+    nonisolated static func albumFingerprint(_ albums: [IndexAlbum]) -> String {
+        var h: UInt64 = 0xcbf29ce484222325
+        for a in albums {
+            for s in [a.id, a.name, a.artist] {
+                for b in s.utf8 { h ^= UInt64(b); h = h &* 0x100000001b3 }
+                h ^= 0x1f; h = h &* 0x100000001b3
+            }
+        }
+        return "\(albums.count)-\(String(h, radix: 16))"
     }
 
     static func indexPlaylists(_ services: IntentServices) async throws {
