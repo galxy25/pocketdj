@@ -718,9 +718,13 @@ struct AddToActions {
     /// to that batch: the sheet's explicit per-chapter rows pass `.targetChapter`.
     @discardableResult
     func add(_ target: AddTarget, dedupe: CollectionsStore.BatchDedupe = .wholeCollection,
-             repeatCount: Int = 1) -> Bool {
+             repeatCount: Int = 1, donate: Bool = true) -> Bool {
         switch item {
-        case .song(let s): collections.addSong(s, to: target)
+        case .song(let s):
+            collections.addSong(s, to: target)
+            // A UI add teaches Siri "add this song to <collection>"; Siri's own add passes
+            // `donate: false` (the system already records intents it ran).
+            if donate { IntentDonations.addedSong(to: target, collections: collections) }
         // The batch choke point: ONE document write, deduped against current membership.
         case .songs(let ids): return collections.addSongs(ids, to: target, dedupe: dedupe) > 0
         case .album(let a): collections.addAlbum(a, to: target)

@@ -83,32 +83,60 @@ enum CollectionsSpotlight {
 /// filled; sync fire-and-forget donation (failures are non-events).
 @MainActor
 enum IntentDonations {
+    // ▶/🔀 donate the COLLECTION intents (1.0.4): they are the App Shortcuts + Siri AI tools that
+    // replaced the per-kind Play/Shuffle Playlist/Pocket shortcuts, so predictions should learn them.
     static func playedPlaylist(_ playlist: Playlist?, shuffle: Bool) {
-        guard CollectionsSpotlight.donationsEnabled, let playlist else { return }
+        guard let playlist, playlist.id != nowPlayingPlaylistId else { return }
+        playedCollection(CollectionEntity(playlist: playlist), shuffle: shuffle)
+    }
+
+    static func playedPocket(_ pocket: Pocket?, shuffle: Bool) {
+        guard let pocket else { return }
+        playedCollection(CollectionEntity(pocket: pocket), shuffle: shuffle)
+    }
+
+    private static func playedCollection(_ entity: CollectionEntity, shuffle: Bool) {
+        guard CollectionsSpotlight.donationsEnabled else { return }
         if shuffle {
-            let intent = ShufflePlaylistIntent()
-            intent.playlist = PlaylistEntity(playlist)
+            let intent = ShuffleCollectionIntent()
+            intent.collection = entity
             IntentDonationManager.shared.donate(intent: intent)
         } else {
-            let intent = PlayPlaylistIntent()
-            intent.playlist = PlaylistEntity(playlist)
+            let intent = PlayCollectionIntent()
+            intent.collection = entity
             intent.shuffle = false
             IntentDonationManager.shared.donate(intent: intent)
         }
     }
 
-    static func playedPocket(_ pocket: Pocket?, shuffle: Bool) {
-        guard CollectionsSpotlight.donationsEnabled, let pocket else { return }
-        if shuffle {
-            let intent = ShufflePocketIntent()
-            intent.pocket = PocketEntity(pocket)
-            IntentDonationManager.shared.donate(intent: intent)
-        } else {
-            let intent = PlayPocketIntent()
-            intent.pocket = PocketEntity(pocket)
-            intent.shuffle = false
-            IntentDonationManager.shared.donate(intent: intent)
+    /// The Add-to sheet / context menu added a SONG to a pocket or playlist (`AddToActions.add`).
+    /// Donated as "add this song to <collection>" — the collection is the predictive part.
+    static func addedSong(to target: AddTarget, collections: CollectionsStore) {
+        guard CollectionsSpotlight.donationsEnabled else { return }
+        let entity: CollectionEntity?
+        switch target.kind {
+        case .pocket: entity = collections.pocket(target.id).map(CollectionEntity.init(pocket:))
+        case .playlist:
+            entity = target.id == nowPlayingPlaylistId ? nil
+                : collections.playlist(target.id).map(CollectionEntity.init(playlist:))
         }
+        guard let entity else { return }
+        let intent = AddCurrentSongToCollectionIntent()
+        intent.collection = entity
+        IntentDonationManager.shared.donate(intent: intent)
+    }
+
+    /// The Now Playing Mix Mode capsule was switched.
+    static func setMixMode(_ on: Bool) {
+        guard CollectionsSpotlight.donationsEnabled else { return }
+        IntentDonationManager.shared.donate(intent: SetMixModeIntent(state: on ? .on : .off))
+    }
+
+    /// A Now Playing stem pad was tapped (`muted` = the state it landed in).
+    static func toggledStem(_ name: String, muted: Bool) {
+        guard CollectionsSpotlight.donationsEnabled, let stem = StemPart(rawValue: name) else { return }
+        if muted { IntentDonationManager.shared.donate(intent: MuteStemIntent(stem: stem)) }
+        else { IntentDonationManager.shared.donate(intent: UnmuteStemIntent(stem: stem)) }
     }
 
     static func startedAutoMix(source: MixSource, shuffle: Bool, collections: CollectionsStore) {

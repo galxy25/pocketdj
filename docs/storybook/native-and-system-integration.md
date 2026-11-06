@@ -186,24 +186,32 @@ taste stays theirs and never lands in my library, or theirs."
 
 ---
 
-## Hey Siri — App Shortcuts (play, auto-mix, create a pocket)
+## Hey Siri — App Shortcuts (add to collections, Mix Mode, stems, play, auto-mix, create a pocket)
 
 The native app's performance surface is **voice- and system-invocable** — no Shortcuts-app
 setup, live the moment the app installs. Every phrase ends **"…in PocketDJ"**:
 
+- **"Add this song to *Workout* in PocketDJ"** (new in 1.0.4, the headline) — adds the song that's
+  playing to a **pocket or playlist** by name, exactly like the ✓ in its Add-to menu. Names are
+  forgiving ("my workout playlist", a typo) and Siri answers *"Added Make Me Proud to Workout"* — or
+  *"…is already in Workout"*, and nothing changes. **"Add a song to *Workout* in PocketDJ"** asks
+  *"Which song?"*: say a title, optionally *"…by Drake"*; when two songs fit, Siri asks which.
+- **"Turn on Mix Mode in PocketDJ"** / *"…off"* — the Now Playing Mix Mode capsule.
+- **"Mute the vocals in PocketDJ"** / **"Unmute the drums"** — stems by name: vocals (vocal, voice),
+  drums, bass, other (instruments, music). Muting turns Mix Mode on first if it's off, then mutes the
+  part the same way the stem pad does; if the song can't be split yet, Siri says why ("still
+  downloading", "Apple Music only", "no stems yet").
 - **"Play *Friday Warmup* in PocketDJ"** / **"Shuffle *Friday Warmup* in PocketDJ"** — plays a
-  **playlist** exactly like tapping ▶/🔀 on its detail screen: the resolved songs snapshot into the
-  reusable **Now Playing** set list and the app-scoped player starts — even from the Home Screen,
-  the Action button, or a locked phone (playback starts in the background; the lock-screen card
-  takes over from there).
-- **"Play the pocket *Deep Funk* in PocketDJ"** — same for a **pocket** (its songs, albums, and
-  nested pockets in DAG order), with a shuffle variant.
+  **playlist or pocket** exactly like tapping ▶/🔀 on its detail screen: the resolved songs snapshot
+  into the reusable **Now Playing** set list and the app-scoped player starts — even from the Home
+  Screen, the Action button, or a locked phone (playback starts in the background; the lock-screen
+  card takes over from there). "Play the pocket *Deep Funk*" works too.
 - **"Auto-mix *Deep Funk* in PocketDJ"** — starts the **Auto-Mix** auto-DJ from a pocket **or** a
   set list, with the Settings lead/fade and your glide preferences. Auto-mix plays **burned local
   files only**, and Siri says so if the collection has none yet ("…burn it first").
-- **"Pause the auto-mix in PocketDJ" / "Resume the auto-mix in PocketDJ"** — the same suspend/resume
-  as the lock-screen ⏸/▶: the mix clock **freezes** through the pause and resumes **exactly** the
-  fade it was in — never a cold stop.
+- **Pause / Resume the auto-mix** — Siri's own "pause" / "resume" (and the Shortcuts actions) use
+  the same suspend/resume as the lock-screen ⏸/▶: the mix clock **freezes** through the pause and
+  resumes **exactly** the fade it was in — never a cold stop.
 - **"Create a pocket in PocketDJ"** — Siri asks *"What kind of pocket should I build?"* — answer in
   plain words: *"optimistic soul, funk, r&b or disco songs from 1960 to 1989."* On-device Apple
   Intelligence (iOS 26+) parses the brief; PocketDJ then searches the whole catalog — **exact** year
@@ -216,8 +224,14 @@ setup, live the moment the app installs. Every phrase ends **"…in PocketDJ"**:
 Beyond voice, the same intents surface everywhere the system composes actions: the **Shortcuts app**
 (with playlist/pocket pickers), **Spotlight** — where your playlists and pockets are **indexed by
 name**, and tapping one opens it straight in the app — and system **suggestions**, which learn from
-the real ▶/🔀/Auto-mix taps the app donates as you use it. Renaming a playlist re-teaches Siri the
-new name automatically.
+the real ▶/🔀/Auto-mix taps, Add-to ✓s, Mix Mode switches and stem-pad taps the app donates as you
+use it. Renaming a playlist re-teaches Siri the new name automatically.
+
+**Siri AI (iOS / iPadOS / macOS / visionOS 27.3, developer preview).** The same actions are Siri AI
+**tools**, so no fixed phrase is needed: *"add Make Me Proud to Workout"*, *"mute the vocals on this
+one"*, *"put this in my late-night pocket"* while Now Playing is on screen. During Apple's preview
+this works only in development and internal-TestFlight builds; App Store builds use the phrases
+above until Siri AI opens to the App Store.
 
 **User story:** "Hands on the decks — or walking out the door — I say *'Shuffle Crate Warmers in
 PocketDJ'* and it's playing; and when I only know the vibe I want, I ask Siri to *create a pocket*

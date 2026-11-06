@@ -162,6 +162,7 @@ struct NowPlayingMixPanel: View {
         let on = sequencer.mixMode.enabled
         return Button {
             withAnimation { sequencer.setMixMode(!on) }
+            IntentDonations.setMixMode(!on)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "waveform.badge.plus")
@@ -585,7 +586,10 @@ private struct NowPlayingStemPad: View {
         .foregroundStyle(muted ? Theme.fgDim : color)
         .opacity(pending ? 0.55 : 1)
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .onTapGesture { onInteract(); dsp.toggleStemMute(stem) }
+        .onTapGesture {
+            onInteract(); dsp.toggleStemMute(stem)
+            IntentDonations.toggledStem(stem, muted: dsp.isStemMuted(stem))
+        }
         .onLongPressGesture(minimumDuration: 0.4) { showPopover = true }
         .popover(isPresented: $showPopover, arrowEdge: .top) {
             ChipStrengthPopover(title: stem.capitalized, systemImage: Self.icon(stem), tint: color,

@@ -77,6 +77,7 @@
 		1229D3AC1495B2AE857A531E /* PocketsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC3F0826DF0D532E0AF9A604 /* PocketsTabView.swift */; };
 		12EFCFD9540842FFEACC66E3 /* PushRegistrationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC09231DE9985D77378914B6 /* PushRegistrationServiceTests.swift */; };
 		12F4DE84A71C1E6CEFEDBBC7 /* MainThreadStallWatchdog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF0EFE04ED52E9CA40166CDE /* MainThreadStallWatchdog.swift */; };
+		1350EB8693ACB93810C93F97 /* SiriEntities.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8665BFD84EC679CC72C4844 /* SiriEntities.swift */; };
 		14326B8322F07EF0184BBC6B /* BurnStoreStopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD27EBDBE7AE172887D49FD9 /* BurnStoreStopTests.swift */; };
 		1441817BBF3CD2048C20B9DD /* DemuxTranscriberFieldProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60A82984324AB6439E6A1FCC /* DemuxTranscriberFieldProbeTests.swift */; };
 		147107230DDD20095F9E85D1 /* PocketsCollectionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9D8E2C636B9D7CA96F8599D /* PocketsCollectionsTests.swift */; };
@@ -267,6 +268,7 @@
 		592BAB36CB0FA9FD3D904285 /* ProfileSourceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B48C493EA294E5EDA4AECE1B /* ProfileSourceStore.swift */; };
 		59684DA3AC38E0F4AE20ABD3 /* DeviceIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A15D9316DFBE82970B64CD97 /* DeviceIdentityTests.swift */; };
 		59B8F838EE5C6231018C1B93 /* ScoreModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D45F7B87012D1D02032004AD /* ScoreModel.swift */; };
+		59C32CF2CB44A28AC7D75AE8 /* SiriIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AB628EAB1BCC1ED1DE65019 /* SiriIntents.swift */; };
 		5A246A08D1BECA0A4E2BC6A6 /* PlaybackIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = F39FE614D68C453A7A6B427F /* PlaybackIntents.swift */; };
 		5BC66AB6296F4748B8E56B80 /* SourcePlaylistsCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA33C94B067D1C39433B16DD /* SourcePlaylistsCache.swift */; };
 		5BC99A33361C8ADB77ABEF72 /* InstrumentPacks.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDA17469563856CBBA220F1 /* InstrumentPacks.swift */; };
@@ -325,6 +327,7 @@
 		70D24458E304CCBFEC625245 /* PlayHistoryContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D589B67B24BB608496DCA73 /* PlayHistoryContextTests.swift */; };
 		71D45F6FEAF41DF74EBBB782 /* ForYouGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FA96085F1C8A41712C7ADB1 /* ForYouGrid.swift */; };
 		722350CBC3513EFA0C7A7617 /* ProfileSourceStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7F41C172125992A11EBB32D /* ProfileSourceStoreTests.swift */; };
+		728BA0C7C093D4BC5150DB4B /* NowPlayingSiriContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50B5BBF1E6A6F237EBCC1C0D /* NowPlayingSiriContext.swift */; };
 		72D697FBCE26315EE6560F6A /* WebAPIPlaylistWriteBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E95C368442B922AB9E69F7C3 /* WebAPIPlaylistWriteBackTests.swift */; };
 		72FF7AE28DE015E234CD53AD /* MelodyTrackerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9E0ECB5A0E7FAEB4C1A48B9 /* MelodyTrackerTests.swift */; };
 		732C2979CF058E0BB98E9D9A /* NowPlayingExpandedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E2B026C427BF5E4491C734C /* NowPlayingExpandedView.swift */; };
@@ -424,6 +427,7 @@
 		9614C2D12C9D8162AD346EF0 /* NPMixModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C2038B6E203D5E5988B3040 /* NPMixModeTests.swift */; };
 		97AA9807DA89998D23B41C7D /* MelodyTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83B4211AD0DCFC4A2D6D893F /* MelodyTracker.swift */; };
 		97C2966BC8AAD0CBA67A0FD8 /* SongRecognizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9196723C9E4ADE86ECB6058D /* SongRecognizer.swift */; };
+		97E3329430FE96E528906AF1 /* SiriAITools.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFD0AB4BC41A5087AF8F8632 /* SiriAITools.swift */; };
 		97E7E432AE84EC27E9AE3EEF /* DiagCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5480988BB263B5C0573F93D4 /* DiagCredentialStore.swift */; };
 		9852097A9EDA67BE40886E66 /* CleanOnlyPlaylistUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB997160434CBD1A83B1841A /* CleanOnlyPlaylistUITests.swift */; };
 		988FE22DEC8BC69F0A6A40F5 /* AudioSessionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B8561B212B449EEAD6D13FB /* AudioSessionPolicy.swift */; };
@@ -473,6 +477,7 @@
 		A7530A3AC46764BA5FD7E31F /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 147488908635840179E64F97 /* PrivacyInfo.xcprivacy */; };
 		A7A15BCA6E4B81B14E41B5BA /* PocketMomentEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3E11D8099D531DBA1C62BB9 /* PocketMomentEngine.swift */; };
 		A83A8F41B0B1AB43C1324DC0 /* DemuxTranscriber.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32C3C0307C77EA43758DFABF /* DemuxTranscriber.swift */; };
+		A874435C41333F55D103BFA4 /* IntentServices+Siri.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCB57814E95A38E098CDE1A4 /* IntentServices+Siri.swift */; };
 		A8EAAE4747BA7DDCA3ABD514 /* RecommendationServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A7A6DDDAA6C63BA1DD2B22 /* RecommendationServiceTests.swift */; };
 		A92E960F40771FB2C0441288 /* MusicWithFriendsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A6C1064089A6C3FC7C53BD7 /* MusicWithFriendsStore.swift */; };
 		AA0D3DC421F3606D9CB41913 /* CleanOnlyResolveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DCCD8CCBFC68293718A1BE7 /* CleanOnlyResolveTests.swift */; };
@@ -557,6 +562,7 @@
 		CB77FD1227C5BE53E0632C60 /* VariantResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D229B000FBC6B838A275C78 /* VariantResolver.swift */; };
 		CBF629B6627C900B2AA126A0 /* RecCompositionDiversityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BD69E17A5C3294D84FD7A9B /* RecCompositionDiversityTests.swift */; };
 		CCFFCD0A7FF4003F0FACC22F /* RecComposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCD374865ACBE19729F0C188 /* RecComposition.swift */; };
+		CD5EAC7996EF42C9519BE19F /* SiriIntentsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9113D3891C7914970A00F8D /* SiriIntentsTests.swift */; };
 		CDC6CEFBC7CF2C8316F49A85 /* CarPlayForYou.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7833DFD2EB2C165B35572DEA /* CarPlayForYou.swift */; };
 		CDCEEF968D93DE961A3BB073 /* ReleaseFeedTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D85CCE524AD235D0C3489E3 /* ReleaseFeedTests.swift */; };
 		CE2DB79CA7677CA460A8E199 /* ForYouTilesUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ADFCE1569FADF3754E562AB /* ForYouTilesUITests.swift */; };
@@ -623,6 +629,7 @@
 		E474D6811C5BB3427D7173DA /* MixSessionRecordingsDeleteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8FEF5D66CE6986539420ACC /* MixSessionRecordingsDeleteTests.swift */; };
 		E587A551AC47A9F28314DFEE /* CollectionCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 307B7915C1ED1521808777F9 /* CollectionCatalogTests.swift */; };
 		E5B4B9D9CF6505AC2438BCD2 /* NPMixGrowingFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D30EEADABE0A9AE21CB8CB3 /* NPMixGrowingFileTests.swift */; };
+		E5D130BB5E916D074C022744 /* IntentSongMatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45CE365E29691CBEC64A1DFE /* IntentSongMatcher.swift */; };
 		E6CFE0FCB0EC1C78CF24F171 /* SettingsCredentialsSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A4256CA2590420D9DE26E58 /* SettingsCredentialsSyncTests.swift */; };
 		E7FF5D12162F68058E4A43C0 /* ZoneEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7156CBFA273C737D3050DADC /* ZoneEngine.swift */; };
 		E877B98EE88FE5EA5604CE6F /* PlaybackSupervisorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25369B76BB7BCA2248887353 /* PlaybackSupervisorTests.swift */; };
@@ -945,6 +952,7 @@
 		44255BB1F3B38905C973201A /* BurnFilenameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BurnFilenameTests.swift; sourceTree = "<group>"; };
 		44C71134D9C5FD4134734F91 /* ListeningPocketsClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ListeningPocketsClient.swift; sourceTree = "<group>"; };
 		44D73C41BA289BDBD7312F60 /* CollectionTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionTimelineTests.swift; sourceTree = "<group>"; };
+		45CE365E29691CBEC64A1DFE /* IntentSongMatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentSongMatcher.swift; sourceTree = "<group>"; };
 		469A732C6C97D2B46EFD04AB /* MixEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixEngine.swift; sourceTree = "<group>"; };
 		47341CD32CABE6F1D9A79054 /* DemuxTranscriberChunkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxTranscriberChunkTests.swift; sourceTree = "<group>"; };
 		47F0D28B43613E57189E21F7 /* MwFModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MwFModelsTests.swift; sourceTree = "<group>"; };
@@ -980,6 +988,7 @@
 		50091CDA29D95533C2BDD21A /* JukeboxLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JukeboxLink.swift; sourceTree = "<group>"; };
 		503B9B24B1423B5CDC2B21FC /* AppleMusicProviderCandidatesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicProviderCandidatesTests.swift; sourceTree = "<group>"; };
 		505B7D8DECAC73862B21D9E5 /* BeatDetectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BeatDetectTests.swift; sourceTree = "<group>"; };
+		50B5BBF1E6A6F237EBCC1C0D /* NowPlayingSiriContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingSiriContext.swift; sourceTree = "<group>"; };
 		50DDC4AF02307C599A67FAC1 /* InThePocketScorer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InThePocketScorer.swift; sourceTree = "<group>"; };
 		515710DFD898E3333BA5E75C /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		516E189238D3FDFD66A2CDB2 /* CollectionRecsToggle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionRecsToggle.swift; sourceTree = "<group>"; };
@@ -1112,6 +1121,7 @@
 		7A4256CA2590420D9DE26E58 /* SettingsCredentialsSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsCredentialsSyncTests.swift; sourceTree = "<group>"; };
 		7A6C1064089A6C3FC7C53BD7 /* MusicWithFriendsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicWithFriendsStore.swift; sourceTree = "<group>"; };
 		7A7BC020145B106B4AB7DCF8 /* ReleaseStreaming.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseStreaming.swift; sourceTree = "<group>"; };
+		7AB628EAB1BCC1ED1DE65019 /* SiriIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriIntents.swift; sourceTree = "<group>"; };
 		7AF2006A818A5AAD956500B5 /* CollectionMixDownloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionMixDownloader.swift; sourceTree = "<group>"; };
 		7B9881CA00372DA2EDEAA888 /* PocketDJ-CarPlay.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "PocketDJ-CarPlay.entitlements"; sourceTree = "<group>"; };
 		7C09700F30D2D513305F8F3E /* FXLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FXLock.swift; sourceTree = "<group>"; };
@@ -1222,6 +1232,7 @@
 		A839ABF17F1E9D5F80461A03 /* StudioModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioModels.swift; sourceTree = "<group>"; };
 		A894EFFD5081BF8EAD90F8AC /* NowPlayingArbiterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingArbiterTests.swift; sourceTree = "<group>"; };
 		A90FD99CB5CDF4891B6AF628 /* GamesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GamesView.swift; sourceTree = "<group>"; };
+		A9113D3891C7914970A00F8D /* SiriIntentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriIntentsTests.swift; sourceTree = "<group>"; };
 		A941AAB539763A9BB963F36E /* RemoteEndpoints.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteEndpoints.swift; sourceTree = "<group>"; };
 		A94310FDEC42331710EE2749 /* PuzzleDecisionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzleDecisionStore.swift; sourceTree = "<group>"; };
 		A963FCF5CBA64C18F7B02061 /* BackupZip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupZip.swift; sourceTree = "<group>"; };
@@ -1262,6 +1273,7 @@
 		B6B0D327765BAA9E778489FD /* CollectionsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionsUITests.swift; sourceTree = "<group>"; };
 		B7C8E1150F8529B99DFAE9EC /* RecFeedbackControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecFeedbackControls.swift; sourceTree = "<group>"; };
 		B7F41C172125992A11EBB32D /* ProfileSourceStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileSourceStoreTests.swift; sourceTree = "<group>"; };
+		B8665BFD84EC679CC72C4844 /* SiriEntities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriEntities.swift; sourceTree = "<group>"; };
 		B88C20D99A146C261571A8DD /* RecSoundAdmitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecSoundAdmitTests.swift; sourceTree = "<group>"; };
 		B8AD9F97EAF7433D3F6F609C /* NowPlayingMixPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingMixPanel.swift; sourceTree = "<group>"; };
 		B925ADBC5613B9CB101B7189 /* SetlistPlayerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetlistPlayerTests.swift; sourceTree = "<group>"; };
@@ -1395,6 +1407,7 @@
 		EEF3B32E803044619C5968A1 /* SyncedStartDriftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyncedStartDriftTests.swift; sourceTree = "<group>"; };
 		EF41720B45EA427D914DFED6 /* NowPlayingGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingGateTests.swift; sourceTree = "<group>"; };
 		EF4F97865D8CB8E96122151D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		EFD0AB4BC41A5087AF8F8632 /* SiriAITools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SiriAITools.swift; sourceTree = "<group>"; };
 		F0045DD18A205628C2EA174A /* DiscoverAlbumPreviewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverAlbumPreviewUITests.swift; sourceTree = "<group>"; };
 		F0091670C0220CEFE68D11D4 /* ImportedCatalogFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportedCatalogFlowTests.swift; sourceTree = "<group>"; };
 		F013E9BDEA305AEF7DEDC0EE /* RecFeedbackStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecFeedbackStore.swift; sourceTree = "<group>"; };
@@ -1434,6 +1447,7 @@
 		FA8AA1ACBAF38396605479DB /* OwnerIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnerIdentity.swift; sourceTree = "<group>"; };
 		FB7B3CD1F520D420AB4BD00A /* RecNovelty.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecNovelty.swift; sourceTree = "<group>"; };
 		FBEE6166587CEDB60C6D788F /* StudioArpOverdubUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioArpOverdubUITests.swift; sourceTree = "<group>"; };
+		FCB57814E95A38E098CDE1A4 /* IntentServices+Siri.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IntentServices+Siri.swift"; sourceTree = "<group>"; };
 		FCD374865ACBE19729F0C188 /* RecComposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecComposition.swift; sourceTree = "<group>"; };
 		FD092F0A0E9902C7C1C595C6 /* StudioFolders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioFolders.swift; sourceTree = "<group>"; };
 		FDEC2FC4DEF4432766C7630F /* HistoryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryUITests.swift; sourceTree = "<group>"; };
@@ -1762,6 +1776,7 @@
 				CB39E73B2A9B00B34B58BBB6 /* ShazamCatalogMatchTests.swift */,
 				488C6807153DACF43E5E4586 /* SigV4Tests.swift */,
 				4CAC34669CE7397720F09076 /* SimilarityFamiliesTests.swift */,
+				A9113D3891C7914970A00F8D /* SiriIntentsTests.swift */,
 				A778FF33449B005A639E2218 /* SkipTrackerTests.swift */,
 				12D96AAD5B322D1E24EB05B1 /* SMFWriterTests.swift */,
 				93AE599136686C2F3BD29409 /* SongDuplicateJudgeReleaseTests.swift */,
@@ -2383,12 +2398,18 @@
 				A133F2F124A87A378C1FE4D0 /* CreatePocketIntent.swift */,
 				D3DD5E074598B689C0ADD443 /* FoundationModelPocketBrief.swift */,
 				908C309108D71A8E1FDC9DBD /* IntentServices.swift */,
+				FCB57814E95A38E098CDE1A4 /* IntentServices+Siri.swift */,
+				45CE365E29691CBEC64A1DFE /* IntentSongMatcher.swift */,
 				34AC6E32B68437694D18D034 /* MixIntents.swift */,
+				50B5BBF1E6A6F237EBCC1C0D /* NowPlayingSiriContext.swift */,
 				F39FE614D68C453A7A6B427F /* PlaybackIntents.swift */,
 				1C656CD5A37A796925FF3B54 /* PocketBuilder.swift */,
 				8A114DC2EBCE8E5F099E83AD /* PocketDJShortcuts.swift */,
 				32A76ADF8E8F667F503C0E80 /* PocketWheelIntents.swift */,
 				E0B9B129B58386DFDD6BC425 /* SearchLibraryIntent.swift */,
+				EFD0AB4BC41A5087AF8F8632 /* SiriAITools.swift */,
+				B8665BFD84EC679CC72C4844 /* SiriEntities.swift */,
+				7AB628EAB1BCC1ED1DE65019 /* SiriIntents.swift */,
 			);
 			path = Intents;
 			sourceTree = "<group>";
@@ -2974,6 +2995,7 @@
 				36D67E846321CAA3FEF77AD3 /* ShazamCatalogMatchTests.swift in Sources */,
 				7A7E1614DA6C284823F06878 /* SigV4Tests.swift in Sources */,
 				FFC791331BF3453BEB7E6A30 /* SimilarityFamiliesTests.swift in Sources */,
+				CD5EAC7996EF42C9519BE19F /* SiriIntentsTests.swift in Sources */,
 				9F9A0BAA2E7513B28B03BF62 /* SkipTrackerTests.swift in Sources */,
 				1F023DC9EB28D350773709FA /* SongDuplicateJudgeReleaseTests.swift in Sources */,
 				7C485E7C152ACF1473E40C72 /* SongTransferTests.swift in Sources */,
@@ -3158,7 +3180,9 @@
 				ABF4B5A7921C446E58F389C3 /* IndexModels.swift in Sources */,
 				DF415E65978064B8F159F264 /* InstrumentEngine.swift in Sources */,
 				5BC99A33361C8ADB77ABEF72 /* InstrumentPacks.swift in Sources */,
+				A874435C41333F55D103BFA4 /* IntentServices+Siri.swift in Sources */,
 				D94F04111FDA1A08CB4FCE85 /* IntentServices.swift in Sources */,
+				E5D130BB5E916D074C022744 /* IntentSongMatcher.swift in Sources */,
 				0FC9427C7F50623A832BA371 /* Interpolate.swift in Sources */,
 				4ED59E7A84025167F2AB1052 /* JukeboxClient.swift in Sources */,
 				7DCB26276F56470130254B3D /* JukeboxFoundationModel.swift in Sources */,
@@ -3223,6 +3247,7 @@
 				9DCC97376B351DA7CD092249 /* NowPlayingPanel.swift in Sources */,
 				EF1F430A66B798F47A817E87 /* NowPlayingPrefetch.swift in Sources */,
 				26D5457776CF3F8EC6E9867F /* NowPlayingResize.swift in Sources */,
+				728BA0C7C093D4BC5150DB4B /* NowPlayingSiriContext.swift in Sources */,
 				785A2283E86AF6FBB36C7E97 /* NowPlayingSnapshot.swift in Sources */,
 				080A252DED04A1AF4C0395E6 /* OnboardingStore.swift in Sources */,
 				29EF0AB4E93EEA1A3025D4D7 /* OnboardingView.swift in Sources */,
@@ -3327,6 +3352,9 @@
 				019559A9AE82F386E045D3AE /* ShazamResultSheet.swift in Sources */,
 				4A3AA6F211B418638811B976 /* SigV4.swift in Sources */,
 				CE66C58F021EA6523506B08B /* SimilarityFamilies.swift in Sources */,
+				97E3329430FE96E528906AF1 /* SiriAITools.swift in Sources */,
+				1350EB8693ACB93810C93F97 /* SiriEntities.swift in Sources */,
+				59C32CF2CB44A28AC7D75AE8 /* SiriIntents.swift in Sources */,
 				2E8E807A3AC094B04F2FD6FD /* SkipTracker.swift in Sources */,
 				18F55CE4D91B966214C24208 /* SongDetailView.swift in Sources */,
 				E41D71DC9FADA0074147CD77 /* SongDuplicateJudge.swift in Sources */,

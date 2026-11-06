@@ -7,22 +7,55 @@ import AppIntents
 /// entity/enum parameters whose values Siri pre-learns from `suggestedEntities()` —
 /// which is why `PocketDJShortcuts.updateAppShortcutParameters()` is called at launch
 /// and after every collections change (playlist/pocket renames re-teach Siri).
+///
+/// SLOT BUDGET (1.0.4, all 10 used): add-to-collection gets TWO (the playing song; a named song,
+/// which Siri then asks for — "Which song?"), Mix Mode one (on/off rides the phrase's one enum
+/// parameter), stems two (mute / unmute; the stem rides the enum). To make room, Play/Shuffle
+/// Playlist + Play/Shuffle Pocket became Play/Shuffle COLLECTION (one entity covers both kinds),
+/// and Pause/Resume Auto-Mix left the list — Siri's own "pause" / "resume" already reach the mix
+/// through the lock-screen remote commands (`MixEngine.remotePause/remotePlay`), and both intents
+/// stay in the Shortcuts app and as Siri AI tools. Every older intent TYPE still exists, so a
+/// shortcut someone saved keeps running.
 struct PocketDJShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
-        AppShortcut(intent: PlayPlaylistIntent(),
+        AppShortcut(intent: AddCurrentSongToCollectionIntent(),
                     phrases: [
-                        "Play \(\.$playlist) in \(.applicationName)",
-                        "Play the playlist \(\.$playlist) in \(.applicationName)",
+                        "Add this song to \(\.$collection) in \(.applicationName)",
+                        "Add this to \(\.$collection) in \(.applicationName)",
+                        "Add the song to \(\.$collection) in \(.applicationName)",
+                        "Put this song in \(\.$collection) in \(.applicationName)",
+                        "Save this song to \(\.$collection) in \(.applicationName)",
+                        "Add this song to a collection in \(.applicationName)",
+                    ],
+                    shortTitle: "Add This Song",
+                    systemImageName: "text.badge.plus")
+        AppShortcut(intent: AddSongToCollectionIntent(),
+                    phrases: [
+                        "Add a song to \(\.$collection) in \(.applicationName)",
+                        "Add a track to \(\.$collection) in \(.applicationName)",
+                        "Add a song to a collection in \(.applicationName)",
+                    ],
+                    shortTitle: "Add a Song",
+                    systemImageName: "music.note.list")
+        AppShortcut(intent: PlayCollectionIntent(),
+                    phrases: [
+                        "Play \(\.$collection) in \(.applicationName)",
+                        "Play the playlist \(\.$collection) in \(.applicationName)",
+                        "Play the pocket \(\.$collection) in \(.applicationName)",
+                        "Play \(\.$collection) pocket in \(.applicationName)",
                         "Play a playlist in \(.applicationName)",
+                        "Play a pocket in \(.applicationName)",
                     ],
-                    shortTitle: "Play Playlist",
+                    shortTitle: "Play Collection",
                     systemImageName: "play.circle")
-        AppShortcut(intent: ShufflePlaylistIntent(),
+        AppShortcut(intent: ShuffleCollectionIntent(),
                     phrases: [
-                        "Shuffle \(\.$playlist) in \(.applicationName)",
-                        "Shuffle the playlist \(\.$playlist) in \(.applicationName)",
+                        "Shuffle \(\.$collection) in \(.applicationName)",
+                        "Shuffle the playlist \(\.$collection) in \(.applicationName)",
+                        "Shuffle the pocket \(\.$collection) in \(.applicationName)",
+                        "Shuffle \(\.$collection) pocket in \(.applicationName)",
                     ],
-                    shortTitle: "Shuffle Playlist",
+                    shortTitle: "Shuffle Collection",
                     systemImageName: "shuffle.circle")
         AppShortcut(intent: PlayPocketForNowIntent(),
                     phrases: [
@@ -32,21 +65,33 @@ struct PocketDJShortcuts: AppShortcutsProvider {
                     ],
                     shortTitle: "Play My Pocket",
                     systemImageName: "circle.circle")
-        AppShortcut(intent: PlayPocketIntent(),
+        AppShortcut(intent: SetMixModeIntent(),
                     phrases: [
-                        "Play the pocket \(\.$pocket) in \(.applicationName)",
-                        "Play \(\.$pocket) pocket in \(.applicationName)",
-                        "Play a pocket in \(.applicationName)",
+                        "Turn \(\.$state) Mix Mode in \(.applicationName)",
+                        "Turn Mix Mode \(\.$state) in \(.applicationName)",
+                        "Switch \(\.$state) Mix Mode in \(.applicationName)",
+                        "Mix Mode \(\.$state) in \(.applicationName)",
                     ],
-                    shortTitle: "Play Pocket",
-                    systemImageName: "play.square.stack")
-        AppShortcut(intent: ShufflePocketIntent(),
+                    shortTitle: "Mix Mode",
+                    systemImageName: "waveform.badge.plus")
+        AppShortcut(intent: MuteStemIntent(),
                     phrases: [
-                        "Shuffle the pocket \(\.$pocket) in \(.applicationName)",
-                        "Shuffle \(\.$pocket) pocket in \(.applicationName)",
+                        "Mute the \(\.$stem) in \(.applicationName)",
+                        "Mute \(\.$stem) in \(.applicationName)",
+                        "Turn off the \(\.$stem) in \(.applicationName)",
+                        "Kill the \(\.$stem) in \(.applicationName)",
                     ],
-                    shortTitle: "Shuffle Pocket",
-                    systemImageName: "shuffle.circle.fill")
+                    shortTitle: "Mute Stem",
+                    systemImageName: "speaker.slash")
+        AppShortcut(intent: UnmuteStemIntent(),
+                    phrases: [
+                        "Unmute the \(\.$stem) in \(.applicationName)",
+                        "Unmute \(\.$stem) in \(.applicationName)",
+                        "Turn on the \(\.$stem) in \(.applicationName)",
+                        "Bring back the \(\.$stem) in \(.applicationName)",
+                    ],
+                    shortTitle: "Unmute Stem",
+                    systemImageName: "speaker.wave.2")
         AppShortcut(intent: StartAutoMixIntent(),
                     phrases: [
                         "Auto mix \(\.$source) in \(.applicationName)",
@@ -56,20 +101,6 @@ struct PocketDJShortcuts: AppShortcutsProvider {
                     ],
                     shortTitle: "Auto-Mix",
                     systemImageName: "slider.horizontal.3")
-        AppShortcut(intent: PauseAutoMixIntent(),
-                    phrases: [
-                        "Pause the auto mix in \(.applicationName)",
-                        "Pause the mix in \(.applicationName)",
-                    ],
-                    shortTitle: "Pause Auto-Mix",
-                    systemImageName: "pause.circle")
-        AppShortcut(intent: ResumeAutoMixIntent(),
-                    phrases: [
-                        "Resume the auto mix in \(.applicationName)",
-                        "Resume the mix in \(.applicationName)",
-                    ],
-                    shortTitle: "Resume Auto-Mix",
-                    systemImageName: "play.circle.fill")
         AppShortcut(intent: CreatePocketIntent(),
                     phrases: [
                         "Create a pocket in \(.applicationName)",
