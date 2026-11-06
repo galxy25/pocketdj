@@ -65,6 +65,23 @@ final class IntentSongMatcherTests: XCTestCase {
         XCTAssertEqual(CollectionEntity.rankByName("late nite", names, name: { $0 }).first, "Late Night")
         XCTAssertEqual(CollectionEntity.rankByName("xyzzy", names, name: { $0 }), [])
     }
+
+    /// An add WRITES, and Siri runs a lone match without asking — so a spoken name never lands
+    /// on a collection it only resembles by initials or by a typo buried in a longer name.
+    func testCollectionNameRankingNeverGuessesFromInitialsOrBuriedTypos() {
+        let names = ["Rainy Afternoon Pop", "Friday Night Mix", "Sunday Morning Workout Warmup"]
+        XCTAssertEqual(CollectionEntity.rankByName("rap", names, name: { $0 }), [],
+                       "R…a…p is a subsequence of Rainy Afternoon Pop — not a match for a spoken name")
+        XCTAssertEqual(CollectionEntity.rankByName("fnm", names, name: { $0 }), [])
+        XCTAssertEqual(CollectionEntity.rankByName("workot", names, name: { $0 }), [],
+                       "a one-letter typo of a word inside a long name is not that name")
+        XCTAssertEqual(CollectionEntity.rankByName("friday night", names, name: { $0 }), ["Friday Night Mix"],
+                       "a literal prefix still resolves")
+        XCTAssertEqual(CollectionEntity.rankByName("Workout 🏋️", ["Workout 🏋️", "Workout Warmup"], name: { $0 }),
+                       ["Workout 🏋️"], "an emoji-named collection matches exactly")
+        XCTAssertEqual(Set(CollectionEntity.rankByName("workout", ["Workout", "Workout 🏋️"], name: { $0 })),
+                       ["Workout", "Workout 🏋️"], "names equal once folded tie — Siri asks which")
+    }
 }
 
 @MainActor

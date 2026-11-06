@@ -85,12 +85,33 @@ struct CollectionEntity: AppEntity {
     /// The ranked best tier of `items` for a spoken name: exact names win outright; otherwise
     /// everything within one FuzzyMatch tier of the best hit. Leading "my"/"the" and a trailing
     /// "playlist"/"pocket"/"collection" are ignored ("my workout playlist" → "workout").
+    ///
+    /// Stricter than the Add sheet's filter field because an add WRITES and Siri runs a lone
+    /// result without asking: only literal hits (the name equals / starts with / contains the
+    /// request), else — when nothing is literal — a whole-name typo. FuzzyMatch's subsequence
+    /// pass (typed initials: "fnm" → "Friday Night Mix") is never used: a spoken "Rap" must not
+    /// land silently in "Rainy Afternoon Pop", and neither must a typo hit buried in a longer name.
     static func rankByName<T>(_ raw: String, _ items: [T], name: (T) -> String) -> [T] {
         let q = spokenName(raw)
-        guard !q.isEmpty else { return [] }
-        let scored = items.compactMap { item -> (T, Double)? in
-            FuzzyMatch.score(query: q, candidate: name(item)).map { (item, $0) }
-        }.sorted { $0.1 > $1.1 }
+        let qc = FuzzyMatch.compact(q)
+        guard !qc.isEmpty else { return [] }
+        let candidates = items.map { (item: $0, chars: FuzzyMatch.compact(name($0))) }
+        func contains(_ c: [Character]) -> Bool {
+            c.count >= qc.count && (0...(c.count - qc.count)).contains { Array(c[$0..<$0 + qc.count]) == qc }
+        }
+        var scored = candidates.compactMap { cand -> (T, Double)? in
+            guard contains(cand.chars) else { return nil }
+            return FuzzyMatch.score(query: q, candidate: name(cand.item)).map { (cand.item, $0) }
+        }
+        if scored.isEmpty {
+            let budget = FuzzyMatch.errorBudget(qc.count)
+            scored = candidates.compactMap { cand -> (T, Double)? in
+                guard budget > 0, abs(cand.chars.count - qc.count) <= budget else { return nil }
+                let d = FuzzyMatch.approximateDistance(qc, cand.chars)
+                return d <= budget ? (cand.item, 300 - Double(d) * 40) : nil
+            }
+        }
+        scored.sort { $0.1 > $1.1 }
         guard let best = scored.first?.1 else { return [] }
         let band: Double = best >= 1000 ? 0 : 60
         return scored.filter { best - $0.1 <= band }.map(\.0)
