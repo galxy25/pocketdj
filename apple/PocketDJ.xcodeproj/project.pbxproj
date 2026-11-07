@@ -273,6 +273,7 @@
 		5BC66AB6296F4748B8E56B80 /* SourcePlaylistsCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA33C94B067D1C39433B16DD /* SourcePlaylistsCache.swift */; };
 		5BC99A33361C8ADB77ABEF72 /* InstrumentPacks.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADDA17469563856CBBA220F1 /* InstrumentPacks.swift */; };
 		5C14D590E87CBA9205884313 /* OwnerMemoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60121690DBEAB151B3210431 /* OwnerMemoTests.swift */; };
+		5C709573133BAFFEB8C0855F /* AlbumFileTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F3D18771B9B7B6C75E0870D /* AlbumFileTimelineTests.swift */; };
 		5C841DEA103813226B6EEE50 /* BrowsePagingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA0529F9C326BB31EADB448D /* BrowsePagingTests.swift */; };
 		5CE092AE4750EFDE93619CDB /* PuzzleSampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F96A6B05DE187E15E99EA3C /* PuzzleSampler.swift */; };
 		5D3CEFD907348D45DBE1A00E /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = A08ED27D13AD6BC172F37930 /* ZIPFoundation */; };
@@ -523,6 +524,7 @@
 		BB3D42706EB62106059FD98F /* DemuxInstrumental.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9789FCCEFC58636A414CE158 /* DemuxInstrumental.swift */; };
 		BBFE3E2A8F6D262A6B05AFE9 /* PlaybackRipWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = B34DEE798CCDB6D0BE8BE1B1 /* PlaybackRipWindow.swift */; };
 		BC61F67B6639F106E90B6E94 /* NPLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40CC1845961FA5A883E7948 /* NPLog.swift */; };
+		BD185F5975A1C884119B4B96 /* AlbumWaveformEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0E5981B044D0E7501B0685A /* AlbumWaveformEditor.swift */; };
 		BDBBDDB012144478D91D3ED4 /* NotificationRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDA7605F5CBB3B63332561D4 /* NotificationRouter.swift */; };
 		BDDA6E3FE321B25A0E7EE15F /* ScoreCursorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEA28BE99FA549D0091F7B56 /* ScoreCursorTests.swift */; };
 		BE0A68CB35D79D19E8F3BE19 /* CollectionEntities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 062A71FEE25295D13FE6D0C5 /* CollectionEntities.swift */; };
@@ -548,6 +550,7 @@
 		C7665C77A4EF0B0D3E4FEED3 /* BurnStaleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FED504D84B028FB5886B91 /* BurnStaleTests.swift */; };
 		C77938E0B4D448FDA805196C /* DrumPatternDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E38C4DAAA5AE1961FDEF3AD6 /* DrumPatternDetectorTests.swift */; };
 		C7E782982AC72295E83586CE /* TimbreEnrollment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31E331DB2D4791F0DDA6DDF1 /* TimbreEnrollment.swift */; };
+		C81382F51DD5CB648AD941C5 /* AlbumFileTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 082EF99EB983BF58E6F67499 /* AlbumFileTimeline.swift */; };
 		C87F37411BB8374F3A58D936 /* NowPlayingGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF41720B45EA427D914DFED6 /* NowPlayingGateTests.swift */; };
 		C8A0D74635440E20699C4703 /* MixSapReproUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43C3F9993C85BB74A85A5BA9 /* MixSapReproUITests.swift */; };
 		C8E817F720036B4090DBB138 /* MixEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4AD30694DB4ECEC615800AA /* MixEngineTests.swift */; };
@@ -771,6 +774,7 @@
 		07286082F4AC73282CFB8B60 /* MixPlayOutcomeBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixPlayOutcomeBridgeTests.swift; sourceTree = "<group>"; };
 		073D08064D6E50B60357E517 /* PlayAttributionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayAttributionTests.swift; sourceTree = "<group>"; };
 		07DE40FE8E6272422D972DBC /* FavoritesSyncServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesSyncServiceTests.swift; sourceTree = "<group>"; };
+		082EF99EB983BF58E6F67499 /* AlbumFileTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumFileTimeline.swift; sourceTree = "<group>"; };
 		0885F3744213F8187192B18C /* DemuxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxTests.swift; sourceTree = "<group>"; };
 		08891E1958AB58EB754B52C9 /* DemuxInstrumentalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxInstrumentalView.swift; sourceTree = "<group>"; };
 		08A5B9D460F0C6D10D61D128 /* CarPlayForYouTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayForYouTests.swift; sourceTree = "<group>"; };
@@ -983,6 +987,7 @@
 		4EF9C49AF00F01BE28AD3F15 /* StudioBackingPlaybackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioBackingPlaybackTests.swift; sourceTree = "<group>"; };
 		4F10F478707B213AA8628B65 /* PocketBestMatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketBestMatchTests.swift; sourceTree = "<group>"; };
 		4F1635A9088C4ABB0954C692 /* NowPlayingArtworkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingArtworkTests.swift; sourceTree = "<group>"; };
+		4F3D18771B9B7B6C75E0870D /* AlbumFileTimelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumFileTimelineTests.swift; sourceTree = "<group>"; };
 		4F4B087940D9BEC2164047D1 /* PocketBestMatch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketBestMatch.swift; sourceTree = "<group>"; };
 		4F8395C1CA50A4226AB082F6 /* CollectionSongRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionSongRow.swift; sourceTree = "<group>"; };
 		50091CDA29D95533C2BDD21A /* JukeboxLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JukeboxLink.swift; sourceTree = "<group>"; };
@@ -1214,6 +1219,7 @@
 		9FA29E203999316BAEC9F0CF /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		A0213D7D5A7F30B0B4443528 /* CollectionCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionCatalog.swift; sourceTree = "<group>"; };
 		A0BD66AFA4180F2C7EC9B705 /* RecSoundAdmit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecSoundAdmit.swift; sourceTree = "<group>"; };
+		A0E5981B044D0E7501B0685A /* AlbumWaveformEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlbumWaveformEditor.swift; sourceTree = "<group>"; };
 		A0EFFE89CB2C1EAC02850618 /* PocketDJUTType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketDJUTType.swift; sourceTree = "<group>"; };
 		A133F2F124A87A378C1FE4D0 /* CreatePocketIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CreatePocketIntent.swift; sourceTree = "<group>"; };
 		A15D9316DFBE82970B64CD97 /* DeviceIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceIdentityTests.swift; sourceTree = "<group>"; };
@@ -1551,6 +1557,7 @@
 			children = (
 				75706FFC7CA680A9D849C17C /* AddToActionsTests.swift */,
 				C3F27659E00D06A1DA932E81 /* AlbumArtworkStoreTests.swift */,
+				4F3D18771B9B7B6C75E0870D /* AlbumFileTimelineTests.swift */,
 				1E22A82BD4C95BFACBFEF01F /* AlbumPreviewTests.swift */,
 				BB1ACE4683653CB0C8CD2E8C /* AMPlaylistSyncTests.swift */,
 				A481831CB941A46AA464A00D /* AppleMusicCatalogTests.swift */,
@@ -2037,6 +2044,7 @@
 				6CAB67E8E9F19F078B089CFE /* AddToPlaylistMenu.swift */,
 				2100545B470C52A2DC5DCA2F /* AlbumDetailView.swift */,
 				AD06975833ED2E08227867F8 /* AlbumPreviewView.swift */,
+				A0E5981B044D0E7501B0685A /* AlbumWaveformEditor.swift */,
 				19A543B9F396712167603010 /* AppleMusicInlinePanel.swift */,
 				5AE7E4825FAE45DFD8F5E303 /* AppleMusicSettingsView.swift */,
 				336D7CEB0A380D4301EC51D7 /* ArtistDetailView.swift */,
@@ -2170,6 +2178,7 @@
 		A39A6802EF8E49CCE85971B4 /* Playback */ = {
 			isa = PBXGroup;
 			children = (
+				082EF99EB983BF58E6F67499 /* AlbumFileTimeline.swift */,
 				CEE53668B264B16244CBCEF1 /* AppleMusicPlaybackProvider.swift */,
 				4BB6F16EE6BA20F64B6CE0BC /* DeadAirMeter.swift */,
 				7C09700F30D2D513305F8F3E /* FXLock.swift */,
@@ -2770,6 +2779,7 @@
 				D08CDC9A2237411F77AE560F /* AMPlaylistSyncTests.swift in Sources */,
 				9994B9732225EAA95BD83214 /* AddToActionsTests.swift in Sources */,
 				9158E860DF05E6C75CB9188D /* AlbumArtworkStoreTests.swift in Sources */,
+				5C709573133BAFFEB8C0855F /* AlbumFileTimelineTests.swift in Sources */,
 				11129E211C3F72DC37B82B50 /* AlbumPreviewTests.swift in Sources */,
 				9DC7458DEF6D3668B6B71B1A /* AppModelSourceTests.swift in Sources */,
 				99FBB8168E7DAC61664A3320 /* AppleMusicCatalogTests.swift in Sources */,
@@ -3057,7 +3067,9 @@
 				8FFC66074DFC3C0A255F8583 /* AddToPlaylistMenu.swift in Sources */,
 				740C0D0570C4757D57C11815 /* AlbumArtworkStore.swift in Sources */,
 				EB46236D2B3861EDC32DBC83 /* AlbumDetailView.swift in Sources */,
+				C81382F51DD5CB648AD941C5 /* AlbumFileTimeline.swift in Sources */,
 				A549DB0AFC7277B0FB230523 /* AlbumPreviewView.swift in Sources */,
+				BD185F5975A1C884119B4B96 /* AlbumWaveformEditor.swift in Sources */,
 				9A027912BB55B0E4E24857FF /* AppDelegate.swift in Sources */,
 				01D138E63D361FB1C261A2C9 /* AppModel.swift in Sources */,
 				F2FD19A3846701ECAA6783B2 /* AppleMusicAutoSync.swift in Sources */,
@@ -3716,7 +3728,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0.3;
+				MARKETING_VERSION = 1.0.4;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -3780,7 +3792,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0.3;
+				MARKETING_VERSION = 1.0.4;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

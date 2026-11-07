@@ -770,6 +770,9 @@ struct PocketDJApp: App {
         // Replays that record NOTHING (repeat-one, per-track repeat, duplicate row, same-song
         // play-now — the rip path's same-id dedupe fires no onPlay) still restart from 0:00:
         // re-zero the tracker's high-water mark or pass 1's peak shields every ⏭ in pass 2.
+        setlistPlayer.catalogNames = { [weak app] id in
+            app?.songsById[id].map { (title: $0.name, artist: $0.artist) }
+        }
         setlistPlayer.onTrackRestart = { [weak skipTracker] id in
             skipTracker?.noteTrackRestarted(songId: id)
         }

@@ -194,6 +194,9 @@ final class SetlistPlayer {
     /// without this signal the SkipTracker's high-water mark kept pass 1's peak and shielded a
     /// genuine ⏭ during the replay from ever counting as a skip.
     @ObservationIgnored var onTrackRestart: ((String) -> Void)?
+    /// The CURRENT catalog title/artist for a song id (edits applied) — an album glide retitles
+    /// the card from it, so a rename shows on the very next song. nil ⇒ the row's snapshot.
+    @ObservationIgnored var catalogNames: ((String) -> (title: String, artist: String)?)?
 
     // MARK: Durable playback session (force-quit → relaunch restore)
 
@@ -1460,7 +1463,7 @@ final class SetlistPlayer {
         //    AVPlayer is still the only voice at this instant, so no double-audio. This must precede
         //    the card publish so a per-song local track whose catalog `lengthMs` is nil still gets a
         //    real card duration (the DSP slice length) instead of a 0-length card with no scrubber.
-        dsp.engage(url: np.url, startMs: np.startMs, lengthMs: it.lengthMs,
+        dsp.engage(url: np.url, startMs: np.startMs, lengthMs: sliceLengthMs(it, startMs: np.startMs),
                    atSeconds: atSeconds, songId: it.id, play: false)
         // The DSP REFUSED the file (AVAudioFile can't open it — it picks its decoder by extension;
         // a corrupt / mislabelled burn; an empty slice): the AVPlayer keeps the track. Idling it
@@ -2425,7 +2428,8 @@ final class SetlistPlayer {
             guard let self, self.playGeneration == gen, self.growingUid == it.uid else { return }
             self.handleFirstAudio(source: "dsp-stream")
         }
-        guard dsp.engageStreaming(s, lengthMs: it.lengthMs, atSeconds: at, songId: it.id,
+        guard dsp.engageStreaming(s, lengthMs: sliceLengthMs(it, startMs: s.isCut ? nil : s.startMs),
+                                  atSeconds: at, songId: it.id,
                                   play: false, atTrackStart: true) else {
             clearGrowingCallbacks(dsp)
             NPMixMode.log("start song=\(it.id) growing file refused by the DSP → plain stream")
@@ -2634,7 +2638,8 @@ final class SetlistPlayer {
             self.handleFirstAudio(source: "dsp-stream-handoff")
         }
         // Open WITHOUT sounding (the AVPlayer is still the only voice), and only if it can play here now.
-        guard dsp.engageStreaming(s, lengthMs: it.lengthMs, atSeconds: songRel, songId: it.id, play: false,
+        guard dsp.engageStreaming(s, lengthMs: sliceLengthMs(it, startMs: s.isCut ? nil : s.startMs),
+                                  atSeconds: songRel, songId: it.id, play: false,
                                   atTrackStart: false, requireRunway: true) else {
             clearGrowingCallbacks(dsp)
             dsp.onReachedEnd = nil
@@ -2793,7 +2798,7 @@ final class SetlistPlayer {
             guard let res = burns.localURLForPlayback(forSong: it.id, decision: it.editionDecision) else { return }
             guard res.id == amHandOffTargetId(it) else { res.release?(); return }
             let start = burns.startMs(forSong: res.id)
-            dsp.engage(url: res.url, startMs: start, lengthMs: it.lengthMs, atSeconds: target, songId: it.id,
+            dsp.engage(url: res.url, startMs: start, lengthMs: sliceLengthMs(it, startMs: start), atSeconds: target, songId: it.id,
                        play: false, release: res.release)
             url = res.url; startMs = start; kind = "burned"
         case let .cut(u):
@@ -2801,7 +2806,8 @@ final class SetlistPlayer {
             url = u; startMs = nil; kind = "cut"
         case let .growing(stream):
             armGrowingCallbacks(dsp, uid: it.uid)
-            guard dsp.engageStreaming(stream, lengthMs: it.lengthMs, atSeconds: target, songId: it.id,
+            guard dsp.engageStreaming(stream, lengthMs: sliceLengthMs(it, startMs: stream.isCut ? nil : stream.startMs),
+                                      atSeconds: target, songId: it.id,
                                       play: false, atTrackStart: false, requireRunway: true) else {
                 clearGrowingCallbacks(dsp)
                 dsp.onReachedEnd = nil
@@ -2918,10 +2924,156 @@ final class SetlistPlayer {
     /// `startMs` — so a non-nil `startMs` is exactly the signal that the length boundary is
     /// needed (the natural `.AVPlayerItemDidPlayToEndTime` would otherwise only fire at the
     /// END OF THE WHOLE album file).
+    ///
+    /// When the rips manifest knows the whole side (`AlbumFileTimeline`), the song ends at its
+    /// own end on the record (edited, else detected + a fade grace, never past the next song's
+    /// start) — never at `startMs + catalog length`, which rarely matches a vinyl pressing and
+    /// cut songs off mid-phrase (Levi, 2026-11-07).
     private func sharedFileEndBoundaryMs(_ it: Item, startMs: Int?) -> Int? {
-        guard let startMs, let len = it.lengthMs, len > 0 else { return nil }
+        guard let startMs else { return nil }
+        if let tl = albumTimeline(forSong: it.id), tl.segment(for: it.id)?.startMs == startMs {
+            return tl.endMs(of: it.id)
+        }
+        guard let len = it.lengthMs, len > 0 else { return nil }
         return startMs + len
     }
+
+    /// The layout of the shared album file `songId` plays from (user boundary edits applied).
+    private func albumTimeline(forSong songId: String) -> AlbumFileTimeline? {
+        AlbumFileTimeline.forSong(SongVariant.baseId(songId), manifest: rips.manifest,
+                                  layout: SegmentOverrides.shared.snapshot)
+    }
+
+    /// The DSP's slice length for a shared-side song: up to its timeline end (the same end the
+    /// AVPlayer path's boundary uses), else the catalog length.
+    private func sliceLengthMs(_ it: Item, startMs: Int?) -> Int? {
+        if let startMs, let end = sharedFileEndBoundaryMs(it, startMs: startMs), end > startMs {
+            return end - startMs
+        }
+        return it.lengthMs
+    }
+
+    /// Where the deck is inside the shared album file it's playing (absolute ms), for the album
+    /// waveform's playhead — nil when the deck isn't on a shared side. The engaged DSP's clock
+    /// is SONG-relative, the AVPlayer's absolute-in-file.
+    func albumFilePositionMs() -> Int? {
+        guard isRunning, !isHeldForResume, coordinator.activeBackend != .appleMusic,
+              let np = rips.nowPlaying, !np.live, let start = np.startMs else { return nil }
+        if mixEngaged, let dsp { return start + Int(dsp.currentTime * 1000) }
+        return Int(player.clock.currentTime * 1000)
+    }
+
+    /// True while the AVPlayer itself plays the whole side (its duration is the FILE's length);
+    /// false while the DSP owns the audio (its duration is one song's slice).
+    var playerOwnsSideClock: Bool { !mixEngaged }
+
+    /// How far past the next song's start the playhead may sit for the boundary to GLIDE onto it
+    /// in place (the boundary fires on the ~4 Hz clock, so it lands a tick past). A playhead
+    /// further BEFORE the next start than this (a side flip / long gap after the song's end) is
+    /// skipped with an in-place seek.
+    static let glideToleranceMs = 3_000
+
+    /// ALBUM GLIDE (Levi, 2026-11-07: "when I play a vinyl album start to finish it should just
+    /// play the original album file"). The song that just ended and the one the deck advanced
+    /// onto are NEIGHBOURS in the same shared album file, and the playhead is at the new one's
+    /// start: keep the SAME player item running — no reload, no seek, no gap — and only move
+    /// the deck's identity (title, card, history, boundary) onto the new song. Any state the
+    /// in-place move can't carry (a Mix/DSP engagement, a lock wanting a local lane, a held
+    /// deck, a live capture, Apple Music) declines, and the normal reload start runs instead.
+    private func glideInSameFile() -> Bool {
+        let pos = Int(player.clock.currentTime * 1000)
+        guard index > 0, index < queue.count, !mixEngaged, !localLaneWanted, !isHeldForResume,
+              coordinator.activeBackend != .appleMusic, !player.isLive,
+              let np = rips.nowPlaying, !np.live, np.startMs != nil,
+              queue[index - 1].matches(np.songId),
+              let tl = albumTimeline(forSong: np.songId),
+              let next = tl.next(after: SongVariant.baseId(np.songId)),
+              queue[index].id == next.songId,
+              let curStart = np.startMs,
+              pos >= curStart, pos <= next.startMs + Self.glideToleranceMs
+        else { return false }
+        // A gap between this song's end and the next one's start (the record's run-out / a side
+        // flip): skip it in the SAME item. Seek BEFORE re-arming the boundary, so a clock tick
+        // still carrying the old position can't fire the new song's end.
+        if next.startMs - pos > Self.glideToleranceMs { player.seek(to: Double(next.startMs) / 1000) }
+        retargetInPlace(queue[index], startMs: next.startMs, from: np, backend: "glide")
+        return true
+    }
+
+    /// Move the deck's identity onto `it` — a song inside the file the player ALREADY has
+    /// loaded, starting at `startMs` — without touching the audio. The bookkeeping a normal
+    /// `playCurrent` start does, minus the load: claim a generation (a stale resolve can't land
+    /// over us), re-arm the skip tracker / repeat count, re-stamp now-playing (counts the play +
+    /// history; marked OURS so the jump-adopter ignores it), retitle the card, and arm the new
+    /// song's own end boundary.
+    private func retargetInPlace(_ it: Item, startMs: Int, from np: RipsStore.NowPlaying, backend: String) {
+        playTask?.cancel()
+        playGeneration &+= 1
+        coordinator.supersedePendingPlay()
+        onTrackRestart?(it.id)
+        resetTrackAudible()
+        reconcileRipWindow()
+        currentPlaysRemaining = CollectionMembership.normalizedRepeat(it.repeatCount)
+        // The CURRENT catalog title (a rename made in the waveform editor shows at once), else
+        // the row's snapshot.
+        let names = catalogNames?(it.id) ?? (it.title, it.artist)
+        var moved = np
+        moved.songId = it.id
+        moved.title = names.title
+        moved.artist = names.artist
+        moved.startMs = startMs
+        moved.seekMs = startMs
+        ownNowPlayingStamp = (np.url, it.id)
+        rips.setNowPlaying(moved)
+        player.retitleInPlace(title: names.title, artist: names.artist, songId: it.id)
+        player.setEndBoundary(ms: sharedFileEndBoundaryMs(it, startMs: startMs), songStartMs: startMs)
+        logTrackStart(it, backend: backend, resumeAtMs: nil)
+        handleFirstAudio(source: backend)
+        prefetchUpcoming()
+    }
+
+    /// ALBUM WAVEFORM SCRUB: jump to absolute position `fileMs` of the shared album file the
+    /// deck is playing — the song under that position becomes current (its title, card and
+    /// history), and the audio seeks inside the same file. Returns false when the deck isn't
+    /// on a shared album file that holds that position's song (the caller then starts the
+    /// album there instead, via `cueNextStart`).
+    @discardableResult
+    func seekAlbumFile(toFileMs fileMs: Int) -> Bool {
+        guard isRunning, index < queue.count, !isHeldForResume, !player.isLive,
+              coordinator.activeBackend != .appleMusic,
+              let np = rips.nowPlaying, !np.live, np.startMs != nil, queue[index].matches(np.songId),
+              let tl = albumTimeline(forSong: np.songId), let seg = tl.segment(atMs: fileMs)
+        else { return false }
+        let ms = max(0, fileMs)
+        DiagLog.shared.telemetry("action", "album scrub song=\(seg.songId) fileMs=\(ms)")
+        if queue[index].id == seg.songId {
+            // Same song: a plain seek. The DSP's clock (an engaged Mix) is SONG-relative.
+            player.seek(to: Double(mixEngaged ? ms - seg.startMs : ms) / 1000)
+            return true
+        }
+        guard let pos = nearestOccurrence(of: seg.songId, to: index) else { return false }
+        noteAdvanceAway()
+        noteUserTransport()
+        waitingForLive = false
+        index = pos
+        persistSession(positionMs: max(0, ms - seg.startMs))
+        if !mixEngaged, !localLaneWanted {
+            // Seek FIRST: the new song's (earlier) end boundary must never meet the old position.
+            player.seek(to: Double(ms) / 1000)
+            retargetInPlace(queue[pos], startMs: seg.startMs, from: np, backend: "album-scrub")
+        } else {
+            startPlayCurrent(fresh: true, resumeAtMs: max(0, ms - seg.startMs))
+        }
+        return true
+    }
+
+    /// One-shot cue for the NEXT fresh start: when it lands on `songId`, it starts `atMs` into
+    /// the song instead of at its top. The album waveform's scrub on an album that isn't
+    /// playing yet arms this, then starts the album from that song. Expires after 30 s.
+    func cueNextStart(songId: String, atMs: Int) {
+        pendingStartCue = (songId, atMs, Date())
+    }
+    @ObservationIgnored private var pendingStartCue: (songId: String, atMs: Int, at: Date)?
 
     /// The queue index of the occurrence of `id` NEAREST to `ref`, preferring a FORWARD
     /// occurrence on a tie (the DJ usually taps a row later in the set). A setlist may repeat a
@@ -3080,8 +3232,14 @@ final class SetlistPlayer {
             startPlayCurrent(fresh: false)
             return
         }
+        // A NATURAL end may glide onto the next song of the same album file (see
+        // `glideInSameFile`); a skip / dead source never does.
+        glideOnNextAdvance = true
         advanceToNext()
     }
+
+    /// Set only by `handleEnded` for the advance it triggers (consumed at its top).
+    @ObservationIgnored private var glideOnNextAdvance = false
 
     /// The current item FAILED mid-song (network error on a streamed mp3): a dead source —
     /// advance (no repeat), same ownership guard as `handleEnded`.
@@ -3157,6 +3315,8 @@ final class SetlistPlayer {
     enum AdvanceCause { case user, auto, unplayableHere }
 
     private func advanceToNext(_ cause: AdvanceCause = .auto) {
+        let mayGlide = glideOnNextAdvance
+        glideOnNextAdvance = false
         guard isRunning else { return }
         // Dead-air clock: an auto-advance is the between-tracks gap; a skip is listener-driven.
         DeadAirMeter.shared.transitionBegan(cause: cause == .user ? "skip" : "advance")
@@ -3204,6 +3364,7 @@ final class SetlistPlayer {
             }
         } else {
             persistSession(positionMs: 0)
+            if mayGlide, glideInSameFile() { return }
             startPlayCurrent(fresh: true)
         }
     }
@@ -3390,6 +3551,12 @@ final class SetlistPlayer {
     /// THE way to invoke `playCurrent` — every call site funnels through here so the
     /// cancel-the-previous rule can't be forgotten at one of them.
     private func startPlayCurrent(fresh: Bool = true, resumeAtMs: Int? = nil) {
+        var resumeAtMs = resumeAtMs
+        if resumeAtMs == nil, fresh, let cue = pendingStartCue {
+            pendingStartCue = nil   // one-shot: the next fresh start consumes it either way
+            if Date().timeIntervalSince(cue.at) < 30, isRunning, index < queue.count,
+               queue[index].id == cue.songId, cue.atMs > 0 { resumeAtMs = cue.atMs }
+        }
         // Every from-0:00 start announces itself to the skip tracker (a restore-resume
         // re-enters MID-song, so it must not re-zero the high-water mark). For a track change
         // this is redundant (the play hooks re-arm the tracker via `record`); for the replay

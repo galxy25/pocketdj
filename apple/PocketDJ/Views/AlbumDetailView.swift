@@ -30,6 +30,11 @@ struct AlbumDetailView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 header
+                #if !os(tvOS)
+                // The whole vinyl side as one scrubbable, editable waveform (self-hides for an
+                // album that isn't a shared-file side — digital / Discover albums).
+                AlbumWaveformEditor(album: current) { i, _ in play(fromTrack: i) }
+                #endif
                 Divider().overlay(Theme.border)
                 trackTable
                 if current.hasAudioAnalysis { audioAnalysis }
@@ -93,6 +98,20 @@ struct AlbumDetailView: View {
     private func play(shuffle: Bool) {
         collections.playNow(songIds: tracks.map(\.id), name: current.name, shuffle: shuffle, source: .album,
                             originId: current.id)
+        if !nowPlayingPushed {
+            nowPlayingPushed = true
+            path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+        }
+    }
+
+    /// ▶ from the album waveform: the album in track order from track `i` (the waveform has
+    /// already cued the start position inside that song on the sequencer).
+    private func play(fromTrack i: Int) {
+        let ids = current.trackList.filter { app.songsById[$0] != nil }
+        guard i < current.trackList.count,
+              let from = ids.firstIndex(of: current.trackList[i]) else { return }
+        collections.playNow(songIds: Array(ids[from...]), name: current.name, shuffle: false,
+                            source: .album, originId: current.id)
         if !nowPlayingPushed {
             nowPlayingPushed = true
             path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))

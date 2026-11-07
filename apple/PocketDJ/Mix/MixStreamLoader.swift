@@ -501,7 +501,7 @@ final class MixStreamLoader {
                     s.sideFallback = nil
                     s.isCut = false
                     s.adoptable = true
-                    s.startMs = rips.manifest[id]?.startMs
+                    s.startMs = rips.effectiveStartMs(id)
                     DiagLog.shared.telemetry("mixstream", "cut HTTP \(status) \(id) → side fallback")
                     Task { [weak self] in
                         let url = await fallback()

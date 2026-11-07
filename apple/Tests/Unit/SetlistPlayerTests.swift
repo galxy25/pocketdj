@@ -932,6 +932,98 @@ final class SetlistPlayerTests: XCTestCase {
         seq.stop()
     }
 
+    /// A vinyl song ends where the NEXT song on the record starts — not at `startMs + catalog
+    /// length` (Levi 2026-11-07: catalog lengths cut songs off mid-phrase). And when the playhead
+    /// is at that start, the set GLIDES onto the next song inside the SAME player item: no
+    /// reload, no re-resolve — only Now Playing moves.
+    func testAnalogSideGlidesAtTheNextSongsStartWithoutReloading() async {
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        rips.setManifest([
+            "gl_1": .init(key: "rips/sideG.mp3", source: "analog", startMs: 0),
+            "gl_2": .init(key: "rips/sideG.mp3", source: "analog", startMs: 180_000),
+        ])
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "gl_1", title: "G1", artist: "A", lengthMs: 150_000),   // catalog length too SHORT
+            .init(id: "gl_2", title: "G2", artist: "A", lengthMs: 120_000),
+        ])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "gl_1" }
+        let url = rips.nowPlaying?.url
+
+        // The catalog length (2:30) is NOT the end any more — the record's next song (3:00) is.
+        player.checkEndBoundary(atSeconds: 150.0)
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(seq.index, 0, "no cut at the catalog length")
+
+        player.clock.currentTime = 180.2
+        player.checkEndBoundary(atSeconds: 180.2)
+        XCTAssertEqual(seq.index, 1, "glided synchronously — no async re-resolve")
+        XCTAssertEqual(rips.nowPlaying?.songId, "gl_2")
+        XCTAssertEqual(rips.nowPlaying?.startMs, 180_000)
+        XCTAssertEqual(rips.nowPlaying?.url, url, "the same file keeps playing")
+        seq.stop()
+    }
+
+    /// A long gap after a song's (detected) end — a side flip / the run-out — is skipped with an
+    /// in-place seek to the next song's start, still without reloading the file.
+    func testAnalogSideGlideSkipsTheGapAfterADetectedEnd() async {
+        SegmentOverrides.shared.update(.init(detectedEndMs: ["gp_1": 150_000]))
+        defer { SegmentOverrides.shared.update(.init()) }
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        rips.setManifest([
+            "gp_1": .init(key: "rips/sideP.mp3", source: "analog", startMs: 0),
+            "gp_2": .init(key: "rips/sideP.mp3", source: "analog", startMs: 240_000),   // 90 s flip gap
+        ])
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "gp_1", title: "P1", artist: "A", lengthMs: 150_000),
+            .init(id: "gp_2", title: "P2", artist: "A", lengthMs: 120_000),
+        ])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "gp_1" }
+        let url = rips.nowPlaying?.url
+        // Ends at detected end + grace (2:45), then skips straight to 4:00 in the same file.
+        player.clock.currentTime = 165.1
+        player.checkEndBoundary(atSeconds: 165.1)
+        XCTAssertEqual(seq.index, 1)
+        XCTAssertEqual(rips.nowPlaying?.url, url)
+        XCTAssertEqual(player.clock.currentTime, 240, accuracy: 0.01, "the gap was skipped in place")
+        seq.stop()
+    }
+
+    /// The album waveform's scrub: a position inside ANOTHER song of the playing side moves the
+    /// deck onto that song in place (and an unknown position / not-a-side declines).
+    func testAlbumScrubMovesTheDeckOntoTheSongUnderThePosition() async {
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        rips.setManifest([
+            "sc_1": .init(key: "rips/sideS.mp3", source: "analog", startMs: 0),
+            "sc_2": .init(key: "rips/sideS.mp3", source: "analog", startMs: 180_000),
+            "sc_3": .init(key: "rips/sideS.mp3", source: "analog", startMs: 400_000),
+        ])
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sc_1", title: "S1", artist: "A", lengthMs: 180_000),
+            .init(id: "sc_2", title: "S2", artist: "A", lengthMs: 220_000),
+            .init(id: "sc_3", title: "S3", artist: "A", lengthMs: 200_000),
+        ])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sc_1" }
+        XCTAssertTrue(seq.seekAlbumFile(toFileMs: 450_000))
+        XCTAssertEqual(seq.index, 2)
+        XCTAssertEqual(rips.nowPlaying?.songId, "sc_3")
+        XCTAssertTrue(seq.seekAlbumFile(toFileMs: 10_000))
+        XCTAssertEqual(seq.index, 0, "scrubbing back onto an earlier song of the side")
+        seq.stop()
+        XCTAssertFalse(seq.seekAlbumFile(toFileMs: 10_000), "not running → the caller starts the album instead")
+    }
+
     // MARK: Duplicate-song disambiguation — adopt the NEAREST-FORWARD occurrence
 
     /// A setlist that repeats a song: a manual jump to a later occurrence repositions to the
