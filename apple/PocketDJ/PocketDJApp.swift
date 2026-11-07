@@ -349,6 +349,8 @@ struct PocketDJApp: App {
     /// polls guest song requests into the host's inbox. App-scoped so the party survives
     /// navigation; its session persists so it survives relaunches too.
     @State private var jukebox: JukeboxStore
+    /// APP-SCOPED SharePlay Remote session (Listen Together / Backseat) — see RemoteSessionController.
+    @State private var remote: RemoteSessionController
     /// Games tab — durable game-run scoreboard (CloudSync doc "game-scores").
     @State private var gameScores: GameScoreboardStore
     /// Games tab — the Collectors Puzzle's recommendation-readable decision log.
@@ -1518,6 +1520,17 @@ struct PocketDJApp: App {
         jukebox.loadJoinedSessions()
         _profile = State(initialValue: profile)
 
+        // ── Remote (SharePlay Listen Together + Backseat) ───────────────────────
+        // App-scoped so a session outlives tab switches: a speaker reconciles the SAME
+        // app-scoped sequencer the Now Playing panel drives (one audio owner); the controller
+        // only sends commands. Sessions are observed from launch (`observeGroupSessions`).
+        let remote = RemoteSessionController(
+            target: SetlistPlayerRemoteTarget(sequencer: setlistPlayer, coordinator: coordinator, player: player),
+            resolver: .live(app: app),
+            deviceName: RemoteDevice.name(owner: profile.name),
+            platform: RemoteDevice.kind)
+        _remote = State(initialValue: remote)
+
         // ── Games tab: scoreboard + Collectors Puzzle + Music with Friends ─────
         // Scoreboard + decision log are durable synced JSON (the PlayHistory union
         // doctrine); the puzzle engine reuses the app-scoped sequencer (one audio
@@ -2121,6 +2134,7 @@ struct PocketDJApp: App {
                 .environment(instrumentEngine)
                 .environment(instrumentPacks)
                 .environment(jukebox)
+                .environment(remote)
                 .environment(gameScores)
                 .environment(puzzleDecisions)
                 .environment(recFeedback)
@@ -2211,6 +2225,14 @@ struct PocketDJApp: App {
                 // Recommendation-engine auto-flush: idempotent, and internally a no-op while
                 // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
                 .task { recEngine.startAutoFlush() }
+                // SharePlay: every PocketDJ session (started here or offered by a peer) for the
+                // app's lifetime; the showcase seed fakes a Backseat session for screenshots.
+                .task {
+                    remote.seedShowcaseIfRequested()
+                    #if canImport(GroupActivities)
+                    await remote.observeGroupSessions()
+                    #endif
+                }
                 // Listening-pockets auto-flush: same contract (idempotent, gated inside).
                 .task { listeningPockets.startAutoFlush() }
                 // A round that was playing when the app went away keeps (or finishes) tracking.

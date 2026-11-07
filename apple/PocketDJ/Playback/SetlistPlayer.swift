@@ -108,7 +108,7 @@ final class SetlistPlayer {
         }
     }
     /// Monotonic queue identity for the off-main session-row projection (see above).
-    @ObservationIgnored private var queueGeneration = 0
+    @ObservationIgnored private(set) var queueGeneration = 0
     /// A cold session-row projection is being built off-main; further snapshots wait for it
     /// (its landing persists with the then-current position, so nothing is lost).
     @ObservationIgnored private var sessionRowsBuildInFlight = false
@@ -641,9 +641,13 @@ final class SetlistPlayer {
     /// fresh `play` replaces whatever was running — that's the ONLY thing that stops a set.
     /// `preStamped: true` ⇒ `items` already went through `prepareStamped` (the off-main
     /// edition stamp) — skip the synchronous 26k-row re-stamp. Every other caller keeps the
-    /// exact sync behavior.
-    func play(_ items: [Item], sourceSetlistId: String? = nil, preStamped: Bool = false) {
+    /// exact sync behavior. `startIndex` starts the run ON that row (rows before it land in the
+    /// played region) — the Remote session's speaker mirrors a host queue mid-set; every other
+    /// caller starts at the top.
+    func play(_ items: [Item], sourceSetlistId: String? = nil, preStamped: Bool = false,
+              startIndex: Int = 0) {
         guard !items.isEmpty else { return }
+        let startIndex = max(0, min(startIndex, items.count - 1))
         // Telemetry funnel: EVERY "start playing this set" in the app lands here (rows, intents,
         // CarPlay, widgets), so one line captures them all — and doubles as the play-signal the
         // rec engine's remote analysis reads.
@@ -653,7 +657,7 @@ final class SetlistPlayer {
         // neither does replacing the set with one that OPENS ON THE SAME SONG (replaying the
         // current set from its collection to hear this song from the top is a restart, not a
         // skip of the song the user actively chose again).
-        if isRunning, let first = items.first, !isRestartOfCurrent(first.id) { noteAdvanceAway() }
+        if isRunning, !isRestartOfCurrent(items[startIndex].id) { noteAdvanceAway() }
         // The previous session's playback rips (minus the row that was sounding and anything
         // heard) are cancelled — a fresh run has its own window.
         if isRunning { endRipWindowSession(reason: "new-session") }
@@ -665,7 +669,7 @@ final class SetlistPlayer {
         capturedHistoryContext = historyContextProvider?(sourceSetlistId)
         capturedOrigin = originProvider?(sourceSetlistId)
         queue = preStamped ? items : stampEditions(items, sourceSetlistId: sourceSetlistId)
-        index = 0
+        index = startIndex
         // Live shuffle is per-run (repeat mode is sticky). The one-shot `playNow(shuffle:)` already
         // randomized the incoming order when requested; the live toggle starts OFF for the new queue.
         shuffleEnabled = false
@@ -4118,6 +4122,12 @@ final class SetlistPlayer {
 
     /// Whether the run is audibly playing, by whichever backend owns the audio (the
     /// NowPlayingPanel routing rule). A held (restored, not yet resumed) deck is never playing.
+    /// The current song's position (ms from its own 0:00) and whether it is audibly playing —
+    /// the read side the Remote session's speaker reconciles against (same truth the durable
+    /// session snapshot records).
+    var songPositionMs: Int { sessionPositionMs() }
+    var isAudiblyPlaying: Bool { sessionIsPlaying() }
+
     private func sessionIsPlaying() -> Bool {
         if isHeldForResume { return false }
         if mixEngaged, let dsp { return dsp.isPlaying }   // F4: DSP owns the audio

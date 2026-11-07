@@ -86,6 +86,10 @@ final class PlaybackSessionStore {
         /// Pocket Wheel run provenance (`SetlistPlayer.Item.plan`). Additive-optional — the
         /// mix-deck-loop "optional fields, no schema bump" lesson.
         var plan: SetlistPlayer.PlanTag? = nil
+        /// The Apple Music store id when the catalog knows it — rides REMOTE (SharePlay) rows
+        /// only, so a device without this songId can still play the track through its own
+        /// Apple Music. Additive-optional like the fields above; never written by the session.
+        var appleMusicId: String? = nil
     }
 
     struct Snapshot: Codable, Equatable {
@@ -269,6 +273,20 @@ final class PlaybackSessionStore {
         }
     }
 
+    /// The showcase set's rows — shared with the Remote tab's `PDJ_SEED_REMOTE=showcase` seed.
+    nonisolated static let showcaseRows: [Row] = [
+        Row(songId: "sng_5", title: "Golden Hour", artist: "Aria",
+            lengthMs: 222_926, repeatCount: nil),
+        Row(songId: "sng_24", title: "Tidal", artist: "Luna Vale",
+            lengthMs: 328_706, repeatCount: nil),
+        Row(songId: "sng_23", title: "Sleepwalker's Waltz", artist: "Luna Vale",
+            lengthMs: 288_704, repeatCount: nil),
+        Row(songId: "sng_2", title: "Afterglow", artist: "Aria",
+            lengthMs: 292_964, repeatCount: nil),
+        Row(songId: "sng_21", title: "Featherweight", artist: "Luna Vale",
+            lengthMs: 162_351, repeatCount: nil),
+    ]
+
     /// App Store screenshot snapshot (`PDJ_SEED_PLAYBACK_SESSION=showcase`): a real set from the
     /// `screenshot-index` catalog, parked mid-track with two songs already played and two still to
     /// come — so the deck shows a title, a swept tonearm, "Previously played" and a populated
@@ -281,18 +299,7 @@ final class PlaybackSessionStore {
         let snap = Snapshot(
             sessionId: "pses_showcase",
             source: SourceRef(kind: "playlist", id: "pls_showcase", name: "Golden Hour Rooftop"),
-            queue: [
-                Row(songId: "sng_5", title: "Golden Hour", artist: "Aria",
-                    lengthMs: 222_926, repeatCount: nil),
-                Row(songId: "sng_24", title: "Tidal", artist: "Luna Vale",
-                    lengthMs: 328_706, repeatCount: nil),
-                Row(songId: "sng_23", title: "Sleepwalker's Waltz", artist: "Luna Vale",
-                    lengthMs: 288_704, repeatCount: nil),
-                Row(songId: "sng_2", title: "Afterglow", artist: "Aria",
-                    lengthMs: 292_964, repeatCount: nil),
-                Row(songId: "sng_21", title: "Featherweight", artist: "Luna Vale",
-                    lengthMs: 162_351, repeatCount: nil),
-            ],
+            queue: Self.showcaseRows,
             // index 0 — the set starts HERE on purpose. The expanded deck's "Previously played"
             // flank is unconditional (no toggle), and at full height its header scrolls up under
             // the floating ＋ button and visibly collides with it; with nothing played the flank
