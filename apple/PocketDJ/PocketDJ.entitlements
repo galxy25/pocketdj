@@ -53,5 +53,9 @@
        files; macOS uses the com.apple.developer.-prefixed variant. -->
   <key>aps-environment</key>
   <string>development</string>
+  <!-- SharePlay (the Remote tab: Listen Together + Backseat). Group Activities
+       capability on the App ID; same key in all four app entitlement files. -->
+  <key>com.apple.developer.group-session</key>
+  <true/>
 </dict>
 </plist>
