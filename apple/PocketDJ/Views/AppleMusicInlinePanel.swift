@@ -14,6 +14,8 @@ import SwiftUI
 /// propagates to every child on macOS and clobbers their ids), matching the rip panel.
 struct AppleMusicInlinePanel: View {
     @Environment(PlaybackCoordinator.self) private var coordinator
+    /// For the listener-transport hook only (a Backseat controller forwards ▶/⏸ to the session).
+    @Environment(PlayerEngine.self) private var player
     @State private var collapsed = false
 
     private var now: AppleMusicPlaybackProvider.NowPlaying? { coordinator.appleMusic.nowPlaying }
@@ -39,7 +41,7 @@ struct AppleMusicInlinePanel: View {
     /// `.buttonStyle(.borderless)` + stable-id rules as the rip panel.
     private func header(_ now: AppleMusicPlaybackProvider.NowPlaying) -> some View {
         HStack(spacing: 10) {
-            Button { coordinator.togglePlayPause() } label: {
+            Button { if !player.routeInAppToggle() { coordinator.togglePlayPause() } } label: {
                 Image(systemName: coordinator.isPlaying ? "pause.fill" : "play.fill").font(.body)
                     .frame(width: 30, height: 30)
                     .contentShape(Rectangle())

@@ -912,6 +912,216 @@ final class RemoteSessionTests: XCTestCase {
         q.finish()
     }
 
+    // MARK: - Re-review fixes
+
+    /// #1 (HIG) — a speaker whose own SYSTEM paused it (a call / Siri that didn't resume,
+    /// headphones unplugged) is never resumed by the session out of the phone speaker: it
+    /// follows the session silently (moves load paused), says so, and comes back only on the
+    /// listener's ▶ / Rejoin. Nothing is sent — the session never stopped.
+    func testSystemPausedSpeakerHoldsSilentUntilTheListenerRejoins() async {
+        let a = device("A"), b = device("B")
+        attachHost(a, seed: seed(["s1", "s2", "s3"]))
+        attachGuest(b)
+        await RemoteTestSupport.waitUntil { b.target.isPlaying }
+        advance(2_500)
+        b.target.simulateSystemPause()
+        for _ in 0..<6 { advance(500); b.controller.tick() }
+        XCTAssertFalse(b.target.isPlaying, "the session never resumes a system pause")
+        XCTAssertTrue(b.controller.pausedHere)
+        await barrier(b, a)
+        XCTAssertEqual(commandsSent(b), 0, "a system pause is local — nobody else stops")
+        XCTAssertTrue(a.controller.model.isPlaying)
+
+        // The session moves on: the held speaker follows SILENTLY.
+        a.controller.send(.skipNext)
+        await RemoteTestSupport.waitUntil { b.currentId == "s2" }
+        for _ in 0..<4 { advance(500); b.controller.tick() }
+        XCTAssertFalse(b.target.isPlaying, "a move while held loads paused")
+        XCTAssertTrue(b.controller.pausedHere)
+
+        // Rejoin: back in at the session's position.
+        b.controller.rejoinHere()
+        XCTAssertTrue(b.target.isPlaying)
+        XCTAssertFalse(b.controller.pausedHere)
+        XCTAssertLessThanOrEqual(abs(b.target.positionMs - a.controller.model.position(at: clock.t)),
+                                 RemoteSessionController.driftThresholdMs)
+
+        // The listener's own ▶ (Now Playing / lock screen) after another system pause works too.
+        b.target.simulateSystemPause()
+        advance(500); b.controller.tick()
+        XCTAssertTrue(b.controller.pausedHere)
+        b.target.userSetPlaying(true)
+        advance(500); b.controller.tick()
+        XCTAssertTrue(b.target.isPlaying)
+        XCTAssertFalse(b.controller.pausedHere)
+        await barrier(b, a)
+        XCTAssertEqual(commandsSent(b), 0, "resuming into a playing session sends nothing")
+    }
+
+    /// #9 — a share sheet swiped away withdraws the pending start (else the next PEER session
+    /// would be hosted by us); a sent invite keeps it for its session.
+    func testShareInviteDismissWithdrawsThePendingStart() {
+        let c = RemoteSessionController(target: nil, resolver: Self.resolver(), deviceName: "Me", platform: "t")
+        c.pendingStartMode = .backseat
+        c.shareInviteEnded(succeeded: true)
+        XCTAssertEqual(c.pendingStartMode, .backseat, "the invite went out — its session is on the way")
+        c.shareInviteEnded(succeeded: false)
+        XCTAssertNil(c.pendingStartMode, "swiped away / cancelled → no pending start")
+    }
+
+    /// #10 — a state request that gets no answer is re-sent with backoff (2, 4, 8… s), never
+    /// just once per revision.
+    func testUnansweredStateRequestIsRetriedWithBackoff() async {
+        let a = device("A"), b = device("B")
+        attachHost(a, seed: seed(["s1", "s2"]))
+        attachGuest(b)
+        await RemoteTestSupport.waitUntil { b.target.isRunning }
+        hub.drop = { env, from, _ in from == "B" && env.kind == RemoteMessageKind.stateRequest.rawValue }
+        let rev = a.controller.model.revision + 3
+        func beat() {
+            let hb = RemoteHeartbeat(revision: rev, hostId: "A", currentRid: "r-s1", positionMs: 0,
+                                     isPlaying: true, anchorSharedTime: clock.t, sessionActive: true)
+            b.link.inject(try! RemoteEnvelope.make(.heartbeat, hb), from: "A")
+        }
+        let requests = { b.link.sent.filter { $0.0.kind == RemoteMessageKind.stateRequest.rawValue }.count }
+        var times: [Double] = []
+        let t0 = clock.t
+        for _ in 0..<16 {
+            let n = requests()
+            beat()
+            await barrier(a, b)
+            if requests() > n { times.append(clock.t - t0) }
+            advance(1_000)
+        }
+        XCTAssertEqual(times, [0, 2_000, 6_000, 14_000], "re-asked after 2, 4, 8 s")
+    }
+
+    /// #4 — the send queue: an unreliable send is never stuck behind a reliable retry; queued
+    /// states coalesce (latest wins); the reliable lane is bounded.
+    func testSendQueueLanesCoalesceAndBound() async {
+        var delivered: [String] = []
+        var gate = true
+        var slowStarted = false
+        let q = RemoteSendQueue<String>(resolve: { _ in "*" }, retryDelays: [0], send: { env, _, _ in
+            let body = String(data: env.payload, encoding: .utf8) ?? ""
+            if body == "slow" {
+                slowStarted = true
+                while gate { await Task.yield() }
+            }
+            delivered.append("\(env.kind):\(body)")
+        })
+        func env(_ kind: String, _ s: String) -> RemoteEnvelope { RemoteEnvelope(v: 1, kind: kind, payload: Data(s.utf8)) }
+        q.enqueue(env("command", "slow"), to: .all, reliable: true)
+        await RemoteTestSupport.waitUntil { slowStarted }
+        q.enqueue(env("ping", "p1"), to: .all, reliable: false)
+        await RemoteTestSupport.waitUntil { delivered == ["ping:p1"] }        // not behind the stuck send
+        for i in 1...5 { q.enqueue(env("state", "s\(i)"), to: .all, reliable: true) }
+        q.enqueue(env("command", "c1"), to: .all, reliable: true)
+        XCTAssertEqual(q.pendingReliable, 2, "five queued states coalesced into the latest")
+        for i in 0..<(RemoteSendQueue<String>.reliableCap + 10) { q.enqueue(env("command", "x\(i)"), to: .all, reliable: true) }
+        XCTAssertEqual(q.pendingReliable, RemoteSendQueue<String>.reliableCap, "bounded")
+        XCTAssertGreaterThan(q.droppedCount, 0)
+        gate = false
+        await RemoteTestSupport.waitUntil { q.pendingReliable == 0 && delivered.count >= 2 + RemoteSendQueue<String>.reliableCap }
+        XCTAssertEqual(delivered[1], "command:slow")
+        XCTAssertEqual(delivered.filter { $0.hasPrefix("state:") }.count, 0, "the coalesced state was shed at the cap first")
+        q.finish()
+    }
+
+    /// #13 — a buffered participant that LEAVES before it became addressable takes its buffer
+    /// with it.
+    func testSendQueueDropsADepartedParticipantsBuffer() async {
+        var known: Set<String> = []
+        var delivered: [String] = []
+        let q = RemoteSendQueue<String>(resolve: { to in
+            if case .participant(let id) = to { return known.contains(id) ? id : nil }
+            return "*"
+        }, retryDelays: [], send: { env, to, _ in delivered.append("\(to):\(String(data: env.payload, encoding: .utf8) ?? "")") })
+        q.enqueue(RemoteEnvelope(v: 1, kind: "t", payload: Data("hi".utf8)), to: .participant("J"), reliable: true)
+        q.enqueue(RemoteEnvelope(v: 1, kind: "t", payload: Data("yo".utf8)), to: .participant("K"), reliable: true)
+        await RemoteTestSupport.waitUntil { q.buffered["J"]?.count == 1 && q.buffered["K"]?.count == 1 }
+        q.participantsChanged(departed: ["J"])
+        XCTAssertNil(q.buffered["J"], "departed → dropped")
+        known.insert("K")
+        q.participantsChanged()
+        await RemoteTestSupport.waitUntil { delivered == ["K:yo"] }
+        XCTAssertTrue(q.buffered.isEmpty)
+        q.finish()
+    }
+
+    /// #11 — the catalog index is built OFF the main actor and swapped in: a revision bump
+    /// keeps the previous tables answering (no synchronous re-scan), the new ones land after.
+    func testCatalogIndexBuildsOffMainAndServesTheOldTablesMeanwhile() async {
+        func song(_ id: String, _ name: String) -> IndexSong {
+            IndexSong(id: id, albumId: nil, artist: "Aria", name: name, trackNumber: nil, year: nil,
+                      sentimentKeywords: nil, explicit: nil, bpm: nil, key: nil, camelot: nil,
+                      length: 200_000, fileType: nil, lyricsStatus: nil, appleMusicId: "am-\(id)")
+        }
+        var songs = [song("s1", "One")]
+        var rev = 1
+        let index = RemoteCatalogIndex(songs: { songs }, revision: { rev },
+                                       songById: { id in songs.first { $0.id == id } })
+        index.prepare()
+        await index.awaitBuild()
+        XCTAssertEqual(index.byTitleArtist()[RemoteCatalogIndex.key("One", "Aria")], "s1")
+        XCTAssertEqual(index.byAppleMusicId()["am-s1"], "s1")
+        XCTAssertEqual(index.syncBuilds, 0, "prepared in the background")
+
+        songs.append(song("s2", "Two"))
+        rev = 2
+        XCTAssertNil(index.byTitleArtist()[RemoteCatalogIndex.key("Two", "Aria")], "old tables answer meanwhile")
+        XCTAssertEqual(index.byTitleArtist()[RemoteCatalogIndex.key("One", "Aria")], "s1")
+        await index.awaitBuild()
+        XCTAssertEqual(index.byTitleArtist()[RemoteCatalogIndex.key("Two", "Aria")], "s2")
+        XCTAssertEqual(index.syncBuilds, 0, "never a synchronous re-scan for a revision bump")
+
+        // A first lookup that beat any background build still answers (built once, here).
+        let cold = RemoteCatalogIndex(songs: { songs }, revision: { rev }, songById: { _ in nil })
+        XCTAssertEqual(cold.byAppleMusicId()["am-s2"], "s2")
+        XCTAssertEqual(cold.syncBuilds, 1)
+    }
+
+    /// #7 / #8 — the SetlistPlayer seams: a Remote hold over a still-loaded item reports itself
+    /// (the lock-screen ▶ then resumes the HELD row, not that stale item); a cascade halt never
+    /// leaves a cancelled start "in flight"; an in-app row toggle on a controller is forwarded.
+    func testSetlistPlayerRemoteHoldFlagAndHaltClearsTheQueuedStart() {
+        setenv("PDJ_HOLD_PLAYBACK", "1", 1)
+        defer { unsetenv("PDJ_HOLD_PLAYBACK") }
+        let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!, session: URLSession(configuration: .ephemeral))
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-rsrr-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let burns = BurnStore(rips: rips, fileURL: url)
+        let player = PlayerEngine()
+        let coord = PlaybackCoordinator(ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
+                                        appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider()))
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        let items = ["s1", "s2", "s3"].map(Self.item)
+
+        seq.play(items)
+        XCTAssertTrue(seq.isStartInFlight)
+        seq.haltCascade()
+        XCTAssertFalse(seq.isStartInFlight, "the halted (cancelled) start is not in flight")
+
+        XCTAssertEqual(player.ownerHoldsOverLoadedItem?(), false)
+        seq.applyingRemote { seq.play(items, startIndex: 1, startPaused: true) }
+        XCTAssertEqual(player.ownerHoldsOverLoadedItem?(), true, "a Remote hold over whatever the engine holds")
+        seq.stop()
+        seq.restore(from: PlaybackSessionStore.Snapshot(
+            sessionId: "pses_rr", source: .init(kind: "setlist", id: "set_rr", name: "RR"),
+            queue: ["s1"].map { .init(songId: $0, title: $0, artist: "A", lengthMs: 200_000, repeatCount: nil) },
+            index: 0, positionMs: 0, isPlaying: true, updatedAt: 0))
+        XCTAssertTrue(seq.isHeldForResume)
+        XCTAssertEqual(player.ownerHoldsOverLoadedItem?(), false, "a launch restore's hold is not a Remote hold")
+
+        var forwarded: [SetlistPlayer.RemoteRedirect] = []
+        seq.remoteControllerGate = { forwarded.append($0); return true }
+        XCTAssertTrue(player.routeInAppToggle(), "a row's ▶/⏸ on a controller goes to the session")
+        XCTAssertEqual(forwarded, [.playPause])
+        seq.remoteControllerGate = nil
+        XCTAssertFalse(player.routeInAppToggle(), "…and is the caller's to handle otherwise")
+        seq.stop()
+    }
+
     // MARK: - Showcase seed
 
     func testShowcaseSeedIsABackseatControllerWithAFakeCar() async {

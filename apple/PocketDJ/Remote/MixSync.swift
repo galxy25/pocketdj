@@ -51,6 +51,12 @@ protocol MixSyncEngine: AnyObject {
     func setAutoDJBlocked(_ reason: String?)
     /// A session is driving the decks: suspend durable-session persistence, drop a parked restore.
     func syncSessionActive(_ on: Bool)
+    /// The Remote session's controller gate (set by `MixSync`): while this device is a Backseat
+    /// CONTROLLER every deck start is refused and the system ▶/⏸ goes to the session instead.
+    var remoteControllerGate: ((SetlistPlayer.RemoteRedirect) -> Bool)? { get set }
+    /// This device just became (or still is) a Backseat CONTROLLER: silence every deck, keep
+    /// any Auto-DJ suspended. Idempotent and cheap when already silent (called every tick).
+    func syncSilenceForController()
 }
 
 /// MULTIPLAYER MIX over a SharePlay Remote session (Phase 2) — two decks, several DJs, every
@@ -137,6 +143,12 @@ final class MixSync {
     /// Coalescing: continuous surfaces at ~20 Hz, scrubs at ~4 Hz (each with a trailing send).
     static let continuousIntervalMs: Double = 50
     static let seekIntervalMs: Double = 250
+    /// The furthest ahead a scheduled start is ever placed (a skewed / bogus anchor must not
+    /// leave a deck silent for seconds) — later instants start sooner, position-corrected.
+    static let maxLeadMs: Double = 2_000
+    /// Out-of-order host events held while waiting for a gap / a snapshot. Past this the
+    /// buffer is dropped and a snapshot requested at once (a snapshot replaces it anyway).
+    static let eventBufferCap = 512
     static let autoDJBlockedReason = "Auto DJ is off while you mix together."
 
     // MARK: Observable state
@@ -189,8 +201,9 @@ final class MixSync {
     @ObservationIgnored private var reportedReady: [MixEngine.Deck: MixSyncReady] = [:]
     @ObservationIgnored private var repairQueue: Set<MixEngine.Deck> = []
     /// Decks this device's SYSTEM paused (lock screen / CarPlay / interruption): silent here, not
-    /// repaired, not heart-beaten, until the system resumes them (then they rejoin the anchor).
-    @ObservationIgnored private(set) var systemHeld: Set<MixEngine.Deck> = []
+    /// repaired, not heart-beaten, until the system resumes them, the DJ presses ▶ on any deck,
+    /// or Rejoin (`rejoin`) — then they rejoin the anchor. Observed: the banner offers Rejoin.
+    private(set) var systemHeld: Set<MixEngine.Deck> = []
     /// Owned decks whose ▶ waits for the deck to be able to SOUND before it is proposed.
     @ObservationIgnored private var deferredPlay: Set<MixEngine.Deck> = []
     /// Coalescing: controlKey → the latest queued proposal + when it may go.
@@ -232,7 +245,20 @@ final class MixSync {
         if !remote.localCaps.contains(MixCapability.deckOwner) { remote.localCaps.append(MixCapability.deckOwner) }
         #endif
         engine.gestureTap = { [weak self] g in self?.localGesture(g) }
-        if autoTick {
+        // A Backseat CONTROLLER's decks never sound: starts refused, system ▶/⏸ → the session.
+        engine.remoteControllerGate = { [weak remote] r in remote?.interceptLocalTransport(r) ?? false }
+        remote.registerControllerSilencer { [weak self] in self?.engine.syncSilenceForController() }
+        // The 4 Hz tick runs only while a Remote session is live (never from launch).
+        remote.registerSessionObserver { [weak self] live in self?.remoteSessionChanged(live) }
+        if remote.isActive { remoteSessionChanged(true) }
+    }
+
+    /// Test seam: the production tick loop is running.
+    var isTicking: Bool { tickTask != nil }
+
+    private func remoteSessionChanged(_ live: Bool) {
+        if live {
+            guard autoTick, tickTask == nil else { return }
             tickTask = Task { [weak self] in
                 while !Task.isCancelled {
                     guard let self else { return }
@@ -240,6 +266,10 @@ final class MixSync {
                     try? await Task.sleep(nanoseconds: UInt64(Self.tickInterval * 1_000_000))
                 }
             }
+        } else {
+            tick()                                    // sees the session gone → the mix ends here
+            tickTask?.cancel(); tickTask = nil
+            flushTask?.cancel(); flushTask = nil
         }
     }
 
@@ -344,6 +374,16 @@ final class MixSync {
 
     func claim(_ deck: MixEngine.Deck) { propose(MixSyncEvent(kind: MixSyncKind.claim, deck: deck.rawValue)) }
     func release(_ deck: MixEngine.Deck) { propose(MixSyncEvent(kind: MixSyncKind.release, deck: deck.rawValue)) }
+
+    /// The banner's Rejoin: every deck this device's system silenced comes back at the
+    /// session's anchor — including decks another DJ owns (whose ▶ is read-only here).
+    func rejoin() {
+        guard isActive, !systemHeld.isEmpty else { return }
+        let decks = systemHeld
+        systemHeld = []
+        DiagLog.shared.log("remote", "mix rejoin decks=\(decks.map(\.rawValue).sorted().joined())")
+        for d in decks.sorted(by: { $0.rawValue < $1.rawValue }) { reconcileDeck(d) }
+    }
 
     private func setActive(_ on: Bool) {
         guard on != isActive else { return }
@@ -534,7 +574,14 @@ final class MixSync {
                              flag: g.flag, slot: g.slot, posMs: g.posMs)
         if g.kind == MixSyncKind.crossfader { propose(e); return }
         guard let d = g.deck else { return }          // auto-DJ markers etc. — not shared
-        if systemHeld.remove(d) != nil, g.kind == MixSyncKind.play, model.deck(d).anchor?.isPlaying == true {
+        let wasHeld = systemHeld.remove(d) != nil
+        if g.kind == MixSyncKind.play, !systemHeld.isEmpty {
+            // The DJ is back: EVERY deck the system silenced here rejoins (a deck another DJ
+            // owns has a read-only ▶ — it would otherwise stay silent for good).
+            repairQueue.formUnion(systemHeld)
+            systemHeld = []
+        }
+        if wasHeld, g.kind == MixSyncKind.play, model.deck(d).anchor?.isPlaying == true {
             // ▶ on a deck the system silenced while the session kept playing: REJOIN — never
             // re-anchor everyone onto where this device stopped.
             repairQueue.insert(d)
@@ -790,15 +837,33 @@ final class MixSync {
         guard let msg = env.decode(MixSyncEventMessage.self) else { return }
         if let seq = msg.hostSeq {
             guard !isHost, from == remote.hostId else { return }
-            if awaitingSnapshotSince != nil { buffer[seq] = msg; return }
-            guard msg.epoch == model.epoch else { buffer[seq] = msg; requestSnapshot("epoch"); return }
+            if awaitingSnapshotSince != nil { bufferEvent(seq, msg); return }
+            guard msg.epoch == model.epoch else { bufferEvent(seq, msg); requestSnapshot("epoch"); return }
             guard seq >= expectedHostSeq else { return }      // duplicate
-            buffer[seq] = msg
+            bufferEvent(seq, msg)
             drain()
         } else if isHost {
             handleProposal(msg, from: from)
         }
     }
+
+    /// Hold an ordered event until its turn. BOUNDED: a buffer that grows past
+    /// `eventBufferCap` (a snapshot that never comes, a hole that never fills) is dropped and a
+    /// snapshot requested NOW — the snapshot supersedes everything it held.
+    private func bufferEvent(_ seq: Int, _ msg: MixSyncEventMessage) {
+        if buffer[seq] == nil, buffer.count >= Self.eventBufferCap {
+            DiagLog.shared.log("remote", "mix event buffer full (\(buffer.count)) → dropped, snapshot")
+            buffer = [:]
+            gapSince = nil
+            awaitingSnapshotSince = nil                 // restart the request ladder: ask at once
+            nextRequestAt = -.infinity
+            requestSnapshot("overflow")
+        }
+        buffer[seq] = msg
+    }
+
+    /// Test seam: ordered events waiting in the buffer.
+    var bufferedEventCount: Int { buffer.count }
 
     /// Apply buffered ordered events strictly in host order.
     private func drain() {
@@ -1074,7 +1139,9 @@ final class MixSync {
                 let expected = a.positionMs + Int(((t - localAt) * st.rate).rounded())
                 if abs(offsetMs(st, expected: expected)) <= threshold { return }
             }
-            let start = max(localAt, t + Self.minLeadMs)
+            // Never sooner than the minimum lead, never further out than `maxLeadMs` (a start
+            // pulled in sounds where the deck would be by then — the position follows the instant).
+            let start = min(max(localAt, t + Self.minLeadMs), t + Self.maxLeadMs)
             let pos = a.positionMs + Int(((start - localAt) * st.rate).rounded())
             if !st.looping, st.durationMs > 0, pos >= st.durationMs - 100 {
                 engine.syncPause(d, atMs: st.durationMs)   // the track already ended there
@@ -1301,6 +1368,12 @@ extension MixEngine: MixSyncEngine {
     }
 
     var syncCrossfader: Double { crossfader }
+
+    func syncSilenceForController() {
+        guard isRunning || (autoMixing && !autoPaused) else { return }
+        DiagLog.shared.log("mix", "remote controller → decks silenced")
+        silenceForRemoteController()
+    }
 }
 
 // MARK: - Production resolver

@@ -1547,6 +1547,7 @@ final class MixEngine {
         // A REAL load supersedes a parked (not-yet-materialized) restore — the user (or an
         // intent) started something new; the old mix must not rehydrate on top of it later.
         if !isRestoringMixSession { pendingMixRestore = nil }
+        notePostSessionLoad()
         ensureEngine()
         guard let player = players[deck], let inputMixer = inputMixers[deck] else { release?(); return }
         guard let file = try? AVAudioFile(forReading: url) else { release?(); return }   // unreadable / corrupt
@@ -1648,6 +1649,7 @@ final class MixEngine {
     /// playhead HELD until `pumpStream` has enough bytes. A failed open leaves the deck untouched.
     private func loadStreaming(songId: String, lengthMs: Int?, meta: LoadedTrack, on deck: Deck) {
         if !isRestoringMixSession { pendingMixRestore = nil }
+        notePostSessionLoad()
         ensureEngine()
         guard let player = players[deck], let streamer,
               let stream = streamer.open(songId, title: meta.title, artist: meta.artist) else { return }
@@ -2191,6 +2193,7 @@ final class MixEngine {
 
     func play(_ deck: Deck) {
         guard state(deck).loaded != nil else { return }   // never run an empty deck's playhead
+        if redirectedToRemote(.localStart) { return }      // a Backseat controller never sounds
         dlog("ui: play(\(deck.rawValue)) run=\(engine.isRunning ? 1 : 0) node=\((players[deck]?.isPlaying ?? false) ? 1 : 0)")
         deckGestureGeneration &+= 1
         autoEndedExhausted = false   // a manual start disarms the exhausted pickup (see `load`)
@@ -2230,6 +2233,7 @@ final class MixEngine {
     func togglePlay(_ deck: Deck) { state(deck).isPlaying ? pause(deck) : play(deck) }
 
     func playBoth() {
+        if redirectedToRemote(.localStart) { return }      // a Backseat controller never sounds
         dlog("ui: playBoth run=\(engine.isRunning ? 1 : 0)")
         deckGestureGeneration &+= 1
         autoEndedExhausted = false   // a manual start disarms the exhausted pickup (see `load`)
@@ -2355,7 +2359,10 @@ final class MixEngine {
     /// The matching lock-screen ▶ resumes both the audio and the Auto-DJ, so a pocket pause never
     /// kicks the mix back to manual mode. IDEMPOTENT: Bluetooth/AVRCP heads re-send discrete PAUSE —
     /// a duplicate while already paused must not clobber the pause memory or the resume intent.
-    func remotePause() { caused(.system) { remotePauseBody() } }   // never a shared DJ gesture
+    func remotePause() {
+        if redirectedToRemote(.setPlaying(false)) { return }          // a controller: the session pauses
+        caused(.system) { remotePauseBody() }                         // never a shared DJ gesture
+    }
 
     private func remotePauseBody() {
         guard isRunning || (remotePausedAt == nil && masterPausedDecks.isEmpty) else {
@@ -2382,7 +2389,10 @@ final class MixEngine {
     /// deck(s) (`resumeMasterPaused`), then, if the matching lock-screen ⏸ was what suspended the
     /// Auto-DJ, resume it too. An Auto-DJ the user paused IN-APP (hand-mixing) stays paused — the
     /// lock screen only undoes its own suspension.
-    func remotePlay() { caused(.system) { remotePlayBody() } }
+    func remotePlay() {
+        if redirectedToRemote(.setPlaying(true)) { return }           // a controller: the session plays
+        caused(.system) { remotePlayBody() }
+    }
 
     private func remotePlayBody() {
         DiagLog.shared.telemetry("action", "mix resume (remote seam)")
@@ -2398,7 +2408,10 @@ final class MixEngine {
     /// LOCK-SCREEN ⏭/⏮ — a skip while the Auto-DJ is suspended means "resume the mix on the next
     /// track": un-freeze, bring the audio back, lift the machine's pause, THEN fire the transition.
     /// Skipping into a suspended machine would play one track and stall in silence at its end.
-    func remoteSkip(fadeSeconds: Double) { caused(.system) { remoteSkipBody(fadeSeconds: fadeSeconds) } }
+    func remoteSkip(fadeSeconds: Double) {
+        if redirectedToRemote(.skipNext) { return }
+        caused(.system) { remoteSkipBody(fadeSeconds: fadeSeconds) }
+    }
 
     private func remoteSkipBody(fadeSeconds: Double) {
         DiagLog.shared.telemetry("action", "mix skip fade=\(Int(fadeSeconds))s")
@@ -2494,6 +2507,12 @@ final class MixEngine {
             rec(.resetDeck, deck)
         }
         tap(Gesture(kind: Gesture.eject, deck: deck))
+        // After a multiplayer session: the user emptied the session's decks — their own saved
+        // mix comes back instead of the (otherwise) cleared session.
+        if postSessionPersistHold, !isApplyingRemote, loaded(.a) == nil, loaded(.b) == nil {
+            restoreMixBeforeSession(reason: "decksEmptied")
+            return
+        }
         persistMixDeckSession()   // eject persists; BOTH decks empty (no auto) ⇒ session cleared
     }
 
@@ -2710,17 +2729,92 @@ final class MixEngine {
     /// stays exactly what it was before the session, crash or not) and refuses a parked
     /// restore (it would load the user's old decks over the session's).
     @ObservationIgnored private(set) var multiplayerSessionActive = false
+    /// The user's OWN mix as it stood when a multiplayer session took the decks (a parked
+    /// restore, else the live decks, else the file) — what the session's end gives back.
+    @ObservationIgnored private var mixBeforeSession: MixDeckSessionStore.Snapshot?
+    /// A session ended while the decks were still SOUNDING its songs: they keep playing (the
+    /// music never dies with the session), but nothing is persisted over the user's saved mix
+    /// until the user loads something of their own (or empties the decks — then the saved mix
+    /// comes back).
+    @ObservationIgnored private(set) var postSessionPersistHold = false
 
     func syncSessionActive(_ on: Bool) {
         guard on != multiplayerSessionActive else { return }
-        multiplayerSessionActive = on
         if on {
+            if sessionStore != nil {
+                mixBeforeSession = pendingMixRestore ?? mixDeckSnapshot() ?? sessionStore?.load()
+            }
+            postSessionPersistHold = false
+            multiplayerSessionActive = true
             if pendingMixRestore != nil {
                 DiagLog.shared.log("mix", "multiplayer session: parked restore discarded (disk session kept)")
             }
             pendingMixRestore = nil
             materializeWanted = false
+            return
         }
+        // The session is over: the decks hold the SESSION's songs, and the next gesture would
+        // persist them over the user's own saved mix. Give that mix back.
+        guard mixBeforeSession != nil else { multiplayerSessionActive = false; return }
+        if isRunning {
+            multiplayerSessionActive = false
+            postSessionPersistHold = true
+            DiagLog.shared.log("mix", "multiplayer session ended while playing: decks kept, saved mix protected")
+            return
+        }
+        restoreMixBeforeSession(reason: "sessionEnd")
+    }
+
+    /// Put the user's pre-session mix back: the session's decks are cleared quietly (no tap, no
+    /// log, no write — persistence is still suspended), then the saved mix is PARKED and
+    /// materialized like a launch restore (at once if a Mix surface already asked, else when it
+    /// next appears). The file on disk was never touched, so nothing needs writing.
+    private func restoreMixBeforeSession(reason: String) {
+        guard let saved = mixBeforeSession else { return }
+        mixBeforeSession = nil
+        postSessionPersistHold = false
+        multiplayerSessionActive = true                 // persistence stays off across the clear
+        applyingRemote {
+            if loaded(.a) != nil { clearDeck(.a) }
+            if loaded(.b) != nil { clearDeck(.b) }
+        }
+        multiplayerSessionActive = false
+        pendingMixRestore = saved
+        DiagLog.shared.log("mix", "multiplayer session over (\(reason)): own mix parked A=\(saved.deckA?.track.songId ?? "-") B=\(saved.deckB?.track.songId ?? "-")")
+        if materializeWanted { materializeNow(trigger: reason) }
+    }
+
+    /// A REAL load of the user's own after a session (see `postSessionPersistHold`).
+    private func notePostSessionLoad() {
+        guard postSessionPersistHold, !isApplyingRemote, !isRestoringMixSession else { return }
+        postSessionPersistHold = false
+        mixBeforeSession = nil
+    }
+
+    /// The Remote session's controller gate (wired by `MixSync`; nil / false ⇒ every transport
+    /// behaves exactly as before): while this device is a Backseat CONTROLLER it returns true —
+    /// a deck start is REFUSED (`.localStart`) and a system ▶/⏸/⏭ is forwarded to the session.
+    @ObservationIgnored var remoteControllerGate: ((SetlistPlayer.RemoteRedirect) -> Bool)?
+
+    /// True ⇒ `request` went to the Remote session (or was refused there): no local audio.
+    private func redirectedToRemote(_ request: SetlistPlayer.RemoteRedirect) -> Bool {
+        guard !isRestoringMixSession, let gate = remoteControllerGate, gate(request) else { return false }
+        DiagLog.shared.log("mix", "transport → Remote session (this device is a controller)")
+        return true
+    }
+
+    /// A Backseat CONTROLLER: every deck goes quiet (a running Auto-DJ is SUSPENDED like a
+    /// lock-screen pause, so the user's mix resumes after the session). Not gated.
+    func silenceForRemoteController() { caused(.system) { remotePauseBody() } }
+
+    /// The longest a scheduled start waits (a skewed / bogus instant must not park a deck
+    /// silent for seconds) — a later instant starts sooner at the position it implies.
+    nonisolated static let maxScheduledLead: Double = 2.0
+
+    /// The lead `play(_:fromMs:atHostTime:)` actually schedules for a requested `desired` one:
+    /// at least the stem-start lead, at most `maxScheduledLead`. Pure.
+    nonisolated static func scheduledLead(desired: Double) -> Double {
+        min(max(handoverLead, desired), max(handoverLead, maxScheduledLead))
     }
 
     /// `hostTime` for a LOCAL wall-clock instant (epoch ms), given one simultaneous reading of
@@ -2744,6 +2838,7 @@ final class MixEngine {
     /// transition, like `play`.
     func play(_ deck: Deck, fromMs: Int, atHostTime hostTime: UInt64) {
         guard state(deck).loaded != nil else { return }
+        if redirectedToRemote(.localStart) { return }
         deckGestureGeneration &+= 1
         autoEndedExhausted = false
         masterPausedDecks = []
@@ -2753,7 +2848,7 @@ final class MixEngine {
         let rate = effectiveRate(deck)
         let desiredLead = AVAudioTime.seconds(forHostTime: hostTime)
             - AVAudioTime.seconds(forHostTime: mach_absolute_time())
-        let lead = max(Self.handoverLead, desiredLead)
+        let lead = Self.scheduledLead(desired: desiredLead)
         let fromSec = min(max(0, Double(fromMs) / 1000 + (lead - desiredLead) * rate), duration(deck))
         // Where the deck must be RIGHT NOW for `fromMs` to sound at `hostTime`.
         let nowSec = Double(fromMs) / 1000 - desiredLead * rate
@@ -3747,6 +3842,7 @@ final class MixEngine {
     func startAutoMix(_ items: [AutoMixItem], shuffled: Bool, lead: Double, fade: Double,
                       label: String? = nil) {
         guard !items.isEmpty, autoDJBlockedReason == nil else { return }
+        if redirectedToRemote(.localStart) { return }      // a Backseat controller never sounds
         DiagLog.shared.telemetry("action", "auto-mix start '\(label ?? "?")' items=\(items.count) shuffled=\(shuffled)")
         if !isRestoringMixSession { hasSoundedThisProcess = true }
         ensureEngine()
@@ -3854,6 +3950,7 @@ final class MixEngine {
     /// Recorded as one `.autoResume` marker. No-op unless a mix is paused.
     func resumeAuto() {
         guard autoMixing, autoPaused, autoDJBlockedReason == nil else { return }
+        if redirectedToRemote(.localStart) { return }      // a Backseat controller never sounds
         if !isRestoringMixSession { hasSoundedThisProcess = true }
         var fromRestore = autoResumeFromRestore
         autoResumeFromRestore = false    // consume-once: only the FIRST resume after a restore
@@ -6022,6 +6119,8 @@ final class MixEngine {
     /// reset device launches quiet. Also drops a not-yet-materialized restore.
     func ejectAll() {
         pendingMixRestore = nil
+        postSessionPersistHold = false
+        mixBeforeSession = nil
         endAutoLoop()
         clearDeck(.a)
         clearDeck(.b)
@@ -6038,7 +6137,7 @@ final class MixEngine {
 
     private func persistMixDeckSession(debounced: Bool = false) {
         guard let sessionStore, !isRestoringMixSession, pendingMixRestore == nil,
-              !multiplayerSessionActive else { return }   // see `syncSessionActive`
+              !multiplayerSessionActive, !postSessionPersistHold else { return }   // see `syncSessionActive`
         persistWritesForTesting += 1
         guard let snap = mixDeckSnapshot() else { sessionStore.clear(); return }
         if debounced { sessionStore.saveDebounced(snap) } else { sessionStore.save(snap) }
@@ -6116,7 +6215,8 @@ final class MixEngine {
     /// The decks' playheads → the store's throttled position channel (immediate on a run/pause
     /// transition, ~5 s otherwise). Fed by the ~10 Hz tick and every `setPlaying` transition.
     private func persistMixPositions() {
-        guard !isRestoringMixSession, pendingMixRestore == nil, !multiplayerSessionActive else { return }
+        guard !isRestoringMixSession, pendingMixRestore == nil, !multiplayerSessionActive,
+              !postSessionPersistHold else { return }
         sessionStore?.updatePosition(aMs: persistablePositionMs(.a), bMs: persistablePositionMs(.b),
                                      isRunning: deckA.isPlaying || deckB.isPlaying)
     }
@@ -6348,6 +6448,17 @@ final class MixEngine {
                 + "verdict=\(verdict)")
         }
         guard arbiter.isActive(self) else { trace("not-owner"); return .commandFailed }
+        if remoteControllerGate != nil {
+            let redirect: SetlistPlayer.RemoteRedirect
+            switch cmd {
+            case .play: redirect = .setPlaying(true)
+            case .pause: redirect = .setPlaying(false)
+            case .toggle: redirect = .playPause
+            case .next: redirect = .skipNext
+            case .prev: redirect = .skipPrevious
+            }
+            if redirectedToRemote(redirect) { trace("remote-session"); return .success }
+        }
         guard hasSoundedThisProcess || isRunning || remotePausedAt != nil else {
             trace("restored-never-played")
             return .commandFailed

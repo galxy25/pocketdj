@@ -420,7 +420,11 @@ the deck model (`Deck { a, b }`) is unchanged.
   gestures are applied under `MixEngine.applyingRemote`, which neither taps nor records them),
   the durable deck session (SUSPENDED while a session runs — `MixEngine.syncSessionActive`: the
   file on disk stays the user's own pre-session mix, crash or not, a parked launch restore is
-  discarded and never materialized onto session decks; writes resume when the session ends), and
+  discarded and never materialized onto session decks. When the session ends the user gets that
+  mix BACK: idle decks are cleared quietly and the pre-session mix is re-parked + materialized
+  like a launch restore; decks still SOUNDING the session's songs keep playing, with writes held
+  (`postSessionPersistHold`) until the user loads something of their own — emptying the decks
+  brings the saved mix back), and
   Auto-DJ (DISABLED while a mix session is active — `MixEngine.setAutoDJBlocked`; a running one
   ends, decks keep playing; Siri / TV / pocket-run starts are refused WITH the reason; the user's
   Auto toggle comes back as it was when the session ends).
@@ -429,9 +433,17 @@ the deck model (`Deck { a, b }`) is unchanged.
   proposed. `.system` — the lock screen / AirPods / CarPlay / Siri / the TV transport seam, an
   audio-session interruption (`remotePause` / `remotePlay` / `remoteSkip` run under
   `caused(.system)`) — silences or resumes THIS device only: the deck is held (no repair, no
-  heartbeat from it, no drift fix) until the system resumes it, then it rejoins the session at
-  the anchored position. `.engine` (watchdog stops, a media-services rebuild, teardown) is
-  ignored outright.
+  heartbeat from it, no drift fix) until the system resumes it, the DJ presses ▶ on ANY deck, or
+  taps the banner's Rejoin (`MixSync.rejoin` — a deck another DJ owns has a read-only ▶), then
+  EVERY held deck rejoins the session at the anchored position. `.engine` (watchdog stops, a
+  media-services rebuild, teardown) is ignored outright.
+- **Backseat controller.** A device that is a Remote Backseat CONTROLLER never sounds its decks:
+  `MixEngine.remoteControllerGate` refuses every start (deck / master / scheduled / Auto-DJ) and
+  forwards the system ▶/⏸/⏭ to the session; the controller silences the decks on becoming one
+  and on every tick (`syncSilenceForController` — a running Auto-DJ is suspended, not ended).
+  Outside a session the gate is open and nothing changes. `MixSync`'s 4 Hz tick runs only while
+  a Remote session is attached; out-of-order events it buffers are capped (512 — overflow drops
+  them and asks for a snapshot at once).
 - **Authority + ordering.** The session host orders everything: a participant's gesture is
   applied locally at once and PROPOSED; the host checks deck ownership (only a deck's owner may
   drive it; the crossfader is shared), assigns a host sequence number and rebroadcasts; every
@@ -454,7 +466,9 @@ the deck model (`Deck { a, b }`) is unchanged.
   (`MixEngine.hostTime(forLocalMs:…)`), and starts the deck with the **scheduled start**
   `MixEngine.play(_:fromMs:atHostTime:)` — the single file, or the deck's 4 stems together on ONE
   sample frame (`StemSync.startTogether` with the wait as its lead). An instant too close / past is
-  pushed to the 60 ms stem lead with the cue moved forward by the gap × rate. Streams,
+  pushed to the 60 ms stem lead with the cue moved forward by the gap × rate; one further out
+  than **2 s** (a skewed / bogus instant) is pulled in to 2 s with the cue moved back to where
+  the deck will be then (`MixEngine.scheduledLead`, `MixSync.maxLeadMs`). Streams,
   mid-handover stems, STREAMING stems whose frontier doesn't reach the cue, and any schedule that
   comes up empty fall back to seek + play NOW from where the deck must be (never a silent
   "playing" node; `rescheduleFile` clears `fileScheduled` when it schedules nothing). A LOOPING

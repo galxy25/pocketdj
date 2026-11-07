@@ -11,6 +11,18 @@ struct MixTogetherBanner: View {
     @Environment(MixEngine.self) private var engine
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            info
+            if !sync.systemHeld.isEmpty { rejoinRow }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+            .strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1))
+    }
+
+    private var info: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Image(systemName: "person.2.wave.2.fill").foregroundStyle(Theme.accent)
@@ -28,13 +40,24 @@ struct MixTogetherBanner: View {
                 Label(msg, systemImage: "info.circle").font(.caption2).foregroundStyle(.orange)
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
-            .strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1))
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("mix-together-banner")
+    }
+
+    /// The system paused decks HERE (a call, Siri, unplugged headphones) while the mix plays on:
+    /// one tap brings every one of them back — another DJ's deck has a read-only ▶.
+    private var rejoinRow: some View {
+        HStack(spacing: 8) {
+            Label("Paused on this device", systemImage: "pause.circle")
+                .font(.caption).foregroundStyle(.orange)
+            Spacer(minLength: 6)
+            Button("Rejoin") { sync.rejoin() }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.borderedProminent).controlSize(.small)
+                .tint(Theme.accent)
+                .accessibilityIdentifier("mix-together-rejoin")
+        }
     }
 
     private var yourDeck: String {

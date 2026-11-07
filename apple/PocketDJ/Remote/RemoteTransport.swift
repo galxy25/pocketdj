@@ -138,12 +138,20 @@ final class LoopbackTransport: RemoteTransport {
 
 // MARK: - Serial send queue
 
-/// The outbound side of a real transport: ONE consumer delivering messages strictly in send
-/// order (a per-message `Task` let a later state overtake an earlier one), with
-///   • per-participant messages BUFFERED while that participant isn't resolvable yet (a reply to
-///     a joiner's hello can beat the roster update that makes the joiner addressable), flushed
-///     on `participantsChanged()` (capped per participant, oldest dropped);
-///   • reliable sends RETRIED with backoff on failure (logged each time), unreliable ones dropped.
+/// The outbound side of a real transport: TWO independent lanes, each delivering strictly in
+/// send order (a per-message `Task` let a later state overtake an earlier one):
+///   • RELIABLE (state / commands / hellos / Mix events): retried with backoff on failure
+///     (logged each time). While a send is being retried the lane waits — so it is BOUNDED
+///     (`reliableCap`, oldest superseded/plain message dropped past it) and COALESCED: an
+///     undelivered `state` to the same recipient is replaced by the newer one (latest wins —
+///     the full state is idempotent), so a stalled messenger never piles up stale windows.
+///   • UNRELIABLE (clock pings, heartbeats, Mix beats): best-effort, never retried, and never
+///     stuck behind a reliable retry; bounded (`unreliableCap`, oldest dropped), heartbeats
+///     coalesced the same way.
+/// Per-participant messages are BUFFERED while that participant isn't resolvable yet (a reply
+/// to a joiner's hello can beat the roster update that makes the joiner addressable), flushed on
+/// `participantsChanged` (capped per participant, oldest dropped; at most `bufferedPeersCap`
+/// participants; a DEPARTED participant's buffer is dropped).
 /// Generic over the transport's recipient type so it is unit-testable without GroupActivities.
 @MainActor
 final class RemoteSendQueue<Recipient> {
@@ -156,17 +164,32 @@ final class RemoteSendQueue<Recipient> {
     }
 
     static var bufferCap: Int { 32 }
+    static var bufferedPeersCap: Int { 16 }
+    static var reliableCap: Int { 256 }
+    static var unreliableCap: Int { 32 }
+    /// Kinds whose newest undelivered message to a recipient supersedes an older one.
+    static var coalescedKinds: Set<String> {
+        [RemoteMessageKind.state.rawValue, RemoteMessageKind.heartbeat.rawValue]
+    }
 
     private let resolve: (RemoteRecipient) -> Recipient?
     private let sendOne: Send
     private let retryDelays: [Double]
-    private let stream: AsyncStream<Outbound>
-    private let cont: AsyncStream<Outbound>.Continuation
-    private var consumer: Task<Void, Never>?
+    private var reliableLane: [Outbound] = []
+    private var unreliableLane: [Outbound] = []
+    private var reliableWorker: Task<Void, Never>?
+    private var unreliableWorker: Task<Void, Never>?
+    private var finished = false
     private(set) var buffered: [String: [Outbound]] = [:]
-    /// Delivered (tests) — kinds in delivery order.
+    /// Buffered participant ids, oldest first (the peers cap drops from the front).
+    private var bufferedOrder: [String] = []
+    /// Delivered / failed attempts / dropped (coalesced or over a cap) — tests + diagnostics.
     private(set) var deliveredCount = 0
     private(set) var failureCount = 0
+    private(set) var droppedCount = 0
+    /// Messages waiting in each lane (not yet handed to the messenger).
+    var pendingReliable: Int { reliableLane.count }
+    var pendingUnreliable: Int { unreliableLane.count }
 
     /// `retryDelays` (seconds): one entry per retry of a failed reliable send.
     init(resolve: @escaping (RemoteRecipient) -> Recipient?, retryDelays: [Double] = [0.25, 1.0],
@@ -174,44 +197,91 @@ final class RemoteSendQueue<Recipient> {
         self.resolve = resolve
         self.sendOne = send
         self.retryDelays = retryDelays
-        (stream, cont) = AsyncStream.makeStream(of: Outbound.self)
-        let stream = self.stream
-        consumer = Task { [weak self] in
-            for await o in stream {
-                guard let self else { return }
-                await self.deliver(o)
-            }
-        }
     }
 
     func enqueue(_ envelope: RemoteEnvelope, to: RemoteRecipient, reliable: Bool) {
-        cont.yield(Outbound(envelope: envelope, to: to, reliable: reliable))
+        guard !finished else { return }
+        push(Outbound(envelope: envelope, to: to, reliable: reliable))
+        startWorkers()
     }
 
-    /// The roster moved: buffered messages for participants that are now resolvable go out
-    /// (in their original order, behind anything already queued).
-    func participantsChanged() {
-        for (id, msgs) in buffered where resolve(.participant(id)) != nil {
-            buffered[id] = nil
-            for m in msgs { cont.yield(m) }
+    /// The roster moved: a departed participant's buffer is dropped; buffered messages for
+    /// participants that are now resolvable go out (in their original order, behind anything
+    /// already queued).
+    func participantsChanged(departed: Set<String> = []) {
+        for id in departed where buffered[id] != nil { buffered[id] = nil }
+        bufferedOrder.removeAll { departed.contains($0) }
+        for id in bufferedOrder where resolve(.participant(id)) != nil {
+            let msgs = buffered.removeValue(forKey: id) ?? []
+            for m in msgs { push(m) }
         }
+        bufferedOrder.removeAll { buffered[$0] == nil }
+        startWorkers()
     }
 
     func finish() {
-        cont.finish()
-        consumer?.cancel()
-        consumer = nil
+        finished = true
+        reliableWorker?.cancel(); reliableWorker = nil
+        unreliableWorker?.cancel(); unreliableWorker = nil
+        reliableLane = []
+        unreliableLane = []
         buffered = [:]
+        bufferedOrder = []
+    }
+
+    // MARK: Lanes
+
+    private func push(_ o: Outbound) {
+        func into(_ lane: inout [Outbound], cap: Int) {
+            if Self.coalescedKinds.contains(o.envelope.kind),
+               let i = lane.firstIndex(where: { $0.envelope.kind == o.envelope.kind && $0.to == o.to }) {
+                lane.remove(at: i)              // latest wins
+                droppedCount += 1
+            }
+            lane.append(o)
+            if lane.count > cap {
+                // Over the cap: shed a superseded-kind message first (the next one carries it),
+                // else the oldest.
+                let i = lane.firstIndex(where: { Self.coalescedKinds.contains($0.envelope.kind) }) ?? 0
+                let gone = lane.remove(at: i)
+                droppedCount += 1
+                DiagLog.shared.log("remote", "send queue full (\(cap)) — dropped \(gone.envelope.kind)")
+            }
+        }
+        if o.reliable { into(&reliableLane, cap: Self.reliableCap) } else { into(&unreliableLane, cap: Self.unreliableCap) }
+    }
+
+    private func startWorkers() {
+        guard !finished else { return }
+        if reliableWorker == nil, !reliableLane.isEmpty {
+            reliableWorker = Task { [weak self] in await self?.drain(reliable: true) }
+        }
+        if unreliableWorker == nil, !unreliableLane.isEmpty {
+            unreliableWorker = Task { [weak self] in await self?.drain(reliable: false) }
+        }
+    }
+
+    /// One lane's consumer: delivers until the lane is empty, then exits (the next enqueue
+    /// starts a new one). Main-actor isolated, so the empty check and the exit are atomic with
+    /// respect to `enqueue`.
+    private func drain(reliable: Bool) async {
+        while !Task.isCancelled, !finished {
+            let next: Outbound
+            if reliable {
+                guard !reliableLane.isEmpty else { break }
+                next = reliableLane.removeFirst()
+            } else {
+                guard !unreliableLane.isEmpty else { break }
+                next = unreliableLane.removeFirst()
+            }
+            await deliver(next)
+        }
+        if reliable { reliableWorker = nil } else { unreliableWorker = nil }
     }
 
     private func deliver(_ o: Outbound) async {
         guard let recipient = resolve(o.to) else {
-            if case .participant(let id) = o.to, o.reliable {
-                var list = buffered[id, default: []]
-                list.append(o)
-                if list.count > Self.bufferCap { list.removeFirst(list.count - Self.bufferCap) }
-                buffered[id] = list
-            }
+            if case .participant(let id) = o.to, o.reliable { bufferForLater(o, id: id) }
             return
         }
         var attempt = 0
@@ -223,11 +293,29 @@ final class RemoteSendQueue<Recipient> {
             } catch {
                 failureCount += 1
                 DiagLog.shared.log("remote", "send \(o.envelope.kind) failed (attempt \(attempt + 1)): \(error.localizedDescription)")
-                guard o.reliable, attempt < retryDelays.count, !Task.isCancelled else { return }
+                guard o.reliable, attempt < retryDelays.count, !Task.isCancelled, !finished else { return }
                 let delay = retryDelays[attempt]
                 attempt += 1
                 if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
             }
         }
+    }
+
+    private func bufferForLater(_ o: Outbound, id: String) {
+        guard !finished else { return }
+        if buffered[id] == nil {
+            bufferedOrder.append(id)
+            while bufferedOrder.count > Self.bufferedPeersCap {
+                let oldest = bufferedOrder.removeFirst()
+                droppedCount += buffered.removeValue(forKey: oldest)?.count ?? 0
+            }
+        }
+        var list = buffered[id, default: []]
+        list.append(o)
+        if list.count > Self.bufferCap {
+            droppedCount += list.count - Self.bufferCap
+            list.removeFirst(list.count - Self.bufferCap)
+        }
+        buffered[id] = list
     }
 }

@@ -23,6 +23,9 @@ protocol RemotePlaybackTarget: AnyObject {
     var isTransitioning: Bool { get }
     /// Position reads are coarse (Apple Music's clock) — drift needs a wider threshold.
     var hasCoarsePosition: Bool { get }
+    /// The device's SYSTEM silenced the audio (an interruption that didn't resume, a route loss)
+    /// and nothing has started it since — a speaker must not resume it on its own.
+    var isSystemPaused: Bool { get }
 
     /// Bumped on every current-row change / restart, with WHY (`SetlistPlayer.TransitionCause`):
     /// only `.user` transitions are the listener's intent; the rest are the player's own.
@@ -92,6 +95,7 @@ final class SetlistPlayerRemoteTarget: RemotePlaybackTarget {
     var shuffleEnabled: Bool { sequencer.shuffleEnabled }
     var isTransitioning: Bool { sequencer.isStartInFlight || player.reasonForWaitingToPlay != "-" }
     var hasCoarsePosition: Bool { coordinator.activeBackend == .appleMusic }
+    var isSystemPaused: Bool { player.systemPauseHeld }
     var transitionSeq: Int { sequencer.transitionSeq }
     var lastTransitionCause: SetlistPlayer.TransitionCause { sequencer.lastTransitionCause }
     var lastUserTransitionSeq: Int { sequencer.lastUserTransitionSeq }
@@ -174,6 +178,7 @@ final class InMemoryRemoteTarget: RemotePlaybackTarget {
     private(set) var shuffleEnabled = false
     var isTransitioning = false
     var hasCoarsePosition = false
+    private(set) var isSystemPaused = false
     private(set) var transitionSeq = 0
     private(set) var lastTransitionCause: SetlistPlayer.TransitionCause = .user
     private(set) var lastUserTransitionSeq = 0
@@ -213,6 +218,7 @@ final class InMemoryRemoteTarget: RemotePlaybackTarget {
         shuffleEnabled = false
         pendingStartWillPlay = false
         isPlaying = !startPaused
+        if !startPaused { isSystemPaused = false }
         setPosition(atMs)
         transition(.remote)
     }
@@ -220,6 +226,7 @@ final class InMemoryRemoteTarget: RemotePlaybackTarget {
     func jumpToUpcoming(uid: UUID, atMs: Int) {
         guard let i = queue.firstIndex(where: { $0.uid == uid }), i > currentIndex else { return }
         log.append(atMs > 1_000 ? "jump@\(atMs)" : "jump")
+        isSystemPaused = false                 // a jump loads (and sounds) the row
         currentIndex = i
         setPosition(atMs > 1_000 ? atMs : 0)
         transition(.remote)
@@ -254,6 +261,7 @@ final class InMemoryRemoteTarget: RemotePlaybackTarget {
         log.append(on ? "resume" : "pause")
         setPosition(positionMs)
         isPlaying = on
+        if on { isSystemPaused = false }
     }
 
     func seek(toMs ms: Int) {
@@ -285,6 +293,7 @@ final class InMemoryRemoteTarget: RemotePlaybackTarget {
         userPlayIntentSeq += 1
         lastUserPlayIntent = on
         setPosition(positionMs); isPlaying = on
+        if on { isSystemPaused = false }
     }
     func userSeek(_ ms: Int) { setPosition(ms) }
     func userAppend(_ items: [SetlistPlayer.Item]) { queue += items }
@@ -314,6 +323,14 @@ final class InMemoryRemoteTarget: RemotePlaybackTarget {
             queue = []
             currentIndex = 0
         }
+    }
+    /// The device's SYSTEM paused it (an interruption without resume / a route loss) — no
+    /// listener intent recorded.
+    func simulateSystemPause() {
+        guard isPlaying else { return }
+        setPosition(positionMs)
+        isPlaying = false
+        isSystemPaused = true
     }
     /// A start in flight: nothing sounds yet, and it WILL sound when it settles.
     func beginPendingStart() {

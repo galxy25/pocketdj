@@ -300,6 +300,7 @@ final class PlayerEngine {
         // interruption that never delivered `.ended` is over, and the first-audio hook re-arms.
         listenerIntentPlaying = true
         interruptionOpen = false
+        systemPauseHeld = false
         firstAudioPending = true
         loadedAt = Date()
         refreshArtwork(for: songId)   // async: fetches the cover, then re-pushes the card
@@ -432,7 +433,7 @@ final class PlayerEngine {
     func play() {
         // External mode: resume the streaming player, not our idle AVPlayer.
         if externalActive {
-            listenerIntentPlaying = true; interruptionOpen = false
+            listenerIntentPlaying = true; interruptionOpen = false; systemPauseHeld = false
             NPLog.trace("engine.play → external stream"); externalPlay?(); isPlaying = true
             clock.currentTime = externalPosition?() ?? clock.currentTime   // resume FROM the live position
             updateNowPlayingInfo(); return
@@ -449,6 +450,7 @@ final class PlayerEngine {
         }
         listenerIntentPlaying = true
         interruptionOpen = false
+        systemPauseHeld = false
         NowPlayingArbiter.shared.claim(self, reason: "play")
         setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
         setLikeCommandEnabled(true)             // …and heals the ♥ a Mix card interlude disabled
@@ -499,6 +501,17 @@ final class PlayerEngine {
     /// listener's intent and, while this device is a Remote-session CONTROLLER, forwards it to
     /// the session — `true` = handled there, the local engine must not act.
     @ObservationIgnored var onListenerTransport: ((ListenerTransport) -> Bool)?
+    /// True while the owner holds its set PARKED over an item this engine still has loaded (a
+    /// Remote session's paused join / controller silence — never set otherwise): a system ▶ / ⏯
+    /// then goes to the owner (`onIdlePlay` → resume the held row) instead of resuming that
+    /// stale item, which belongs to the PREVIOUS song.
+    @ObservationIgnored var ownerHoldsOverLoadedItem: (() -> Bool)?
+
+    /// An in-app ▶/⏸ outside the Now Playing panel (a song row's toggle, ⌘P, the inline
+    /// players): offered to `onListenerTransport` first. true ⇒ a Remote-session CONTROLLER
+    /// forwarded it to the session — don't touch local audio. Otherwise it only records the
+    /// listener's intent and the caller toggles exactly as before.
+    func routeInAppToggle() -> Bool { onListenerTransport?(.toggle) == true }
     /// P0-1 — a REMOTE ▶ refused because nothing (no item, no held set) could act on it — the
     /// head unit's play-on-connect landing before the launch task restored the session. The
     /// restore consumes it (within a short window) and resumes the held set.
@@ -533,6 +546,13 @@ final class PlayerEngine {
     @ObservationIgnored private(set) var listenerIntentPlaying = false
     /// An audio-session interruption (call, Siri, another app) began and has not ended.
     @ObservationIgnored private(set) var interruptionOpen = false
+    /// The SYSTEM silenced audio that was sounding — an interruption that began while playing
+    /// (and has not resumed), one that ended without `shouldResume`, a route loss (headphones /
+    /// CarPlay / Bluetooth gone) — and nothing has started audio since (`play` / `load` /
+    /// `rekick` / a resumed interruption clear it). Read-only bookkeeping: a Remote-session
+    /// speaker holds silent on it instead of resuming the session out of the phone speaker (a
+    /// system pause is undone by the LISTENER, never by the app). Nothing else reads it.
+    @ObservationIgnored private(set) var systemPauseHeld = false
     @ObservationIgnored private var wasPlayingAtInterruption = false
     @ObservationIgnored private var lastPauseCallAt: Date?
     @ObservationIgnored private var routeLossAt: Date?
@@ -567,6 +587,7 @@ final class PlayerEngine {
         configureAudioSession(by: caller)
         listenerIntentPlaying = true
         interruptionOpen = false
+        systemPauseHeld = false
         player.play()
         updateNowPlayingInfo()
     }
@@ -617,6 +638,9 @@ final class PlayerEngine {
     func handleRemotePlay() -> MPRemoteCommandHandlerStatus {
         guard NowPlayingArbiter.shared.isActive(self) else { transportLog("play", "not-owner"); return .commandFailed }
         if onListenerTransport?(.play) == true { transportLog("play", "remote-session"); return .success }
+        if hasLoadedItem, ownerHoldsOverLoadedItem?() == true, let verdict = onIdlePlay?() {
+            transportLog("play", "held→\(verdict)"); return .success
+        }
         if !hasLoadedItem {
             if let verdict = onIdlePlay?() { transportLog("play", "onIdlePlay→\(verdict)"); return .success }
             pendingRemotePlayAt = Date()
@@ -639,6 +663,9 @@ final class PlayerEngine {
     func handleRemoteToggle() -> MPRemoteCommandHandlerStatus {
         guard NowPlayingArbiter.shared.isActive(self) else { transportLog("toggle", "not-owner"); return .commandFailed }
         if onListenerTransport?(.toggle) == true { transportLog("toggle", "remote-session"); return .success }
+        if hasLoadedItem, ownerHoldsOverLoadedItem?() == true, let verdict = onIdlePlay?() {
+            transportLog("toggle", "held→\(verdict)"); return .success
+        }
         if !hasLoadedItem {
             if let verdict = onIdlePlay?() { transportLog("toggle", "onIdlePlay→\(verdict)"); return .success }
             pendingRemotePlayAt = Date()
@@ -1099,6 +1126,7 @@ final class PlayerEngine {
         if began {
             wasPlayingAtInterruption = externalActive ? (externalIsPlaying?() ?? false) : player.rate > 0
             interruptionOpen = true
+            if wasPlayingAtInterruption { systemPauseHeld = true }
             DiagLog.shared.log("session", "interruption began engine=player wasPlaying=\(wasPlayingAtInterruption ? 1 : 0) "
                                + "external=\(externalActive ? 1 : 0) owner=\(owner)")
             if !externalActive { onLocalInterruptionBegan?() }
@@ -1117,7 +1145,7 @@ final class PlayerEngine {
                 updateNowPlayingInfo()
             } else {
                 action = "hold"
-                if wasPlayingAtInterruption { listenerIntentPlaying = false }
+                if wasPlayingAtInterruption { listenerIntentPlaying = false; systemPauseHeld = true }
             }
             DiagLog.shared.log("session", "interruption ended shouldResume=\(shouldResume.map { $0 ? "1" : "0" } ?? "missing") engine=player "
                                + "external=1 pauseWasIntentional=\(intentional ? 1 : 0) wasPlaying=\(wasPlayingAtInterruption ? 1 : 0) action=\(action)")
@@ -1130,7 +1158,7 @@ final class PlayerEngine {
                 action = "hold"
                 // The system said not to resume (or nothing was playing): the set stays paused,
                 // and the supervisor must treat it as such.
-                if wasPlayingAtInterruption { listenerIntentPlaying = false }
+                if wasPlayingAtInterruption { listenerIntentPlaying = false; systemPauseHeld = true }
             }
             DiagLog.shared.log("session", "interruption ended shouldResume=\(shouldResume.map { $0 ? "1" : "0" } ?? "missing") engine=player "
                                + "external=0 pausedByListener=\(pausedByListener ? 1 : 0) wasPlaying=\(wasPlayingAtInterruption ? 1 : 0) action=\(action)")
@@ -1142,6 +1170,9 @@ final class PlayerEngine {
     /// Headphones / CarPlay / BT went away and AVPlayer paused itself: a listener pause.
     func handleRouteLoss() {
         routeLossAt = Date()
+        // The listener wanted sound until the route went away (AVPlayer has usually paused itself
+        // by now, so the rate can't tell): that's a SYSTEM pause.
+        if listenerIntentPlaying { systemPauseHeld = true }
         listenerIntentPlaying = false
         if externalActive {
             // An external source WE render (the Now Playing DSP's AVAudioEngine — every Mix Mode

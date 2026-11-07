@@ -38,6 +38,13 @@ struct TVRemoteView: View {
     @ViewBuilder private var activeBody: some View {
         Label("\(remote.mode.title) — \(remote.isHost ? "hosting" : "joined")", systemImage: "shareplay")
             .font(.title2.bold())
+        if remote.pausedHere {
+            HStack(spacing: 30) {
+                Label("Paused on this TV", systemImage: "pause.circle").foregroundStyle(Theme.fgDim)
+                Button("Rejoin") { remote.rejoinHere() }
+                    .accessibilityIdentifier("tv-remote-rejoin")
+            }
+        }
         if let cur = remote.state?.currentRow {
             VStack(alignment: .leading, spacing: 6) {
                 Text(cur.title).font(.title3.bold())

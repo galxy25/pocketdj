@@ -95,6 +95,10 @@ final class RemoteSessionController {
     static let naturalEndToleranceMs = 10_000
     /// A ▶/⏸ the reconciler applied that hasn't taken is re-issued no sooner than this.
     static let playRetryMs: Double = 2_000
+    /// A state request that got no answer is re-sent after this, doubling per attempt up to
+    /// `stateRequestMaxBackoffMs` (a lost request / answer never strands a participant).
+    static let stateRequestRetryMs: Double = 2_000
+    static let stateRequestMaxBackoffMs: Double = 16_000
     /// Encoded-state budget (the messenger's payload limit, with headroom).
     static let maxStateBytes = 60_000
     static let minWindowAhead = 10
@@ -124,6 +128,11 @@ final class RemoteSessionController {
     /// arrives is ours to host, in this mode.
     var pendingStartMode: RemoteSessionMode?
     var statusMessage: String?
+    /// This SPEAKER's audio was paused by its own system (a call / Siri interruption that didn't
+    /// resume, headphones or CarPlay unplugged) while the session plays on: it stays silent here
+    /// — the app never resumes a system pause out of the phone speaker — until the listener
+    /// presses ▶ (Now Playing, lock screen) or Rejoin (`rejoinHere`).
+    private(set) var pausedHere = false
     /// Capabilities this device advertises in its hello (extensions add theirs at init).
     @ObservationIgnored var localCaps: [String] = []
 
@@ -189,8 +198,9 @@ final class RemoteSessionController {
     @ObservationIgnored private var attachedAt: Double = 0
     @ObservationIgnored private var lastHelloAt: Double = 0
     @ObservationIgnored private var stateReceivedAt: Double = -.infinity
-    /// host → the revision we last asked it for (one request per revision).
-    @ObservationIgnored private var stateRequested: [String: Int] = [:]
+    /// host → the revision we last asked it for, when, and how many re-sends so far (an
+    /// unanswered request is retried with backoff — see `stateRequestRetryMs`).
+    @ObservationIgnored private var stateRequested: [String: (revision: Int, at: Double, attempt: Int)] = [:]
 
     // Speaker reconcile / local observation
     private struct LocalObservation: Equatable {
@@ -238,6 +248,14 @@ final class RemoteSessionController {
     /// Phase-2 extension point: handlers for message kinds this controller doesn't own
     /// (multiplayer Mix events ride the SAME session/transport under their own `kind`).
     @ObservationIgnored private var extensionHandlers: [String: (RemoteEnvelope, String) -> Void] = [:]
+    /// Extensions told when a session attaches (true) / ends (false) — Mix Together runs its
+    /// tick only while a session is live.
+    @ObservationIgnored private var sessionObservers: [(Bool) -> Void] = []
+    /// Other audio engines on this device a CONTROLLER must keep silent (the Mix decks), run
+    /// with `target.silenceForController()` — on becoming a controller and on every tick.
+    @ObservationIgnored private var controllerSilencers: [() -> Void] = []
+    /// `rejoinHere` is driving the reconcile: the system hold is lifted for this pass.
+    @ObservationIgnored private var rejoining = false
 
     init(target: RemotePlaybackTarget?, resolver: RemoteSongResolver,
          deviceName: String, platform: String, clock: SharedClock? = nil) {
@@ -278,8 +296,9 @@ final class RemoteSessionController {
         expected = nil
         heldAfterEnd = nil
         locallyFailed = []
+        resolver.prepare()              // the catalog index builds off-main before rows arrive
         if asHost { becomeHost(seed: seed) }
-        if localRole == .controller { target?.silenceForController() }
+        if localRole == .controller { silenceLocalAudio() }
         tasks.append(Task { [weak self] in
             for await msg in transport.inbound { self?.handle(msg) }
         })
@@ -299,6 +318,7 @@ final class RemoteSessionController {
         }
         sendHello()
         DiagLog.shared.telemetry("action", "remote attach mode=\(mode.rawValue) host=\(asHost)")
+        for o in sessionObservers { o(true) }
     }
 
     /// Leave the session. Speakers keep playing locally (the music never dies with the session).
@@ -329,8 +349,10 @@ final class RemoteSessionController {
         showcaseKeepAlive = []
         hub?.end()                      // the fake car leaves with us
         localRole = .speaker
+        pausedHere = false
         clock.reset(hostId: nil, isHost: false)
         DiagLog.shared.telemetry("action", "remote end leave=\(leave)")
+        for o in sessionObservers { o(false) }
     }
 
     /// Flip THIS device between speaker and controller.
@@ -340,7 +362,8 @@ final class RemoteSessionController {
         expected = nil
         heldAfterEnd = nil
         if role == .controller {
-            target?.silenceForController()
+            pausedHere = false
+            silenceLocalAudio()
         } else {
             ridByUid = [:]   // re-mirror from scratch
             locallyFailed = []
@@ -408,6 +431,41 @@ final class RemoteSessionController {
     /// An extension's "my part of the session is live" probe (see `activityProbes`).
     func registerActivityProbe(_ probe: @escaping () -> Bool) {
         activityProbes.append(probe)
+    }
+
+    /// Told `true` when a session attaches and `false` when it ends (see `sessionObservers`).
+    func registerSessionObserver(_ observer: @escaping (Bool) -> Void) {
+        sessionObservers.append(observer)
+    }
+
+    /// Another local audio engine a CONTROLLER must keep silent (see `controllerSilencers`).
+    func registerControllerSilencer(_ silence: @escaping () -> Void) {
+        controllerSilencers.append(silence)
+    }
+
+    /// This device is a controller: every local audio engine goes (and stays) quiet.
+    private func silenceLocalAudio() {
+        target?.silenceForController()
+        for s in controllerSilencers { s() }
+    }
+
+    /// The listener tapped Rejoin after a system pause (`pausedHere`): resume HERE at the
+    /// session's position — a local action, nothing is sent (the session never stopped).
+    func rejoinHere() {
+        guard isActive, localRole == .speaker, pausedHere else { return }
+        DiagLog.shared.telemetry("action", "remote rejoin after a system pause")
+        rejoining = true
+        defer { rejoining = false }
+        lastPlayApply = nil
+        reconcileLocal()
+    }
+
+    /// The share sheet (Messages / nearby invite) closed. Unless it sent an invite — whose
+    /// session is then on its way — the pending start is withdrawn: otherwise the NEXT session
+    /// that arrives (a peer's) would be taken as ours to host.
+    func shareInviteEnded(succeeded: Bool) {
+        guard !succeeded, !isActive else { return }
+        pendingStartMode = nil
     }
 
     func sendRaw(_ envelope: RemoteEnvelope, to: RemoteRecipient = .all, reliable: Bool = true) {
@@ -522,8 +580,15 @@ final class RemoteSessionController {
     }
 
     private func requestState(from host: String, revision: Int) {
-        guard stateRequested[host] != revision else { return }
-        stateRequested[host] = revision
+        let t = now
+        if let r = stateRequested[host], r.revision >= revision {
+            // Already asked for this: re-ask only once the backoff for that attempt has passed.
+            let wait = min(Self.stateRequestMaxBackoffMs, Self.stateRequestRetryMs * pow(2, Double(r.attempt)))
+            guard t - r.at >= wait else { return }
+            stateRequested[host] = (r.revision, t, r.attempt + 1)
+        } else {
+            stateRequested[host] = (revision, t, 0)
+        }
         post(.stateRequest, RemoteStateRequest(haveRevision: lastRevision), to: .participant(host))
     }
 
@@ -726,6 +791,7 @@ final class RemoteSessionController {
             // Re-assert silence: whatever started since (a stray start, a pending one that
             // landed, another surface's play) goes quiet again.
             if target.isPlaying || target.isTransitioning { target.silenceForController() }
+            for s in controllerSilencers { s() }        // idempotent — cheap when already silent
         }
     }
 
@@ -826,19 +892,24 @@ final class RemoteSessionController {
         let onSessionCurrent = desiredRid == sessionRid
         let desiredPos = onSessionCurrent ? sessionPos : 0
         let threshold = target.hasCoarsePosition ? Self.coarseDriftThresholdMs : Self.driftThresholdMs
+        // THIS device's system paused it (a call, Siri, an unplugged route) — never resumed by the
+        // app: the speaker follows the session SILENTLY (moves load paused) until the listener's
+        // own ▶ / Rejoin.
+        let systemHeld = !rejoining && target.isSystemPaused && !target.isPlaying
+        if pausedHere != (systemHeld && s.isPlaying) { pausedHere = systemHeld && s.isPlaying }
 
         var moved = false
         let localCurRid = target.currentItem.flatMap { ridByUid[$0.uid] }
         if localCurRid != desiredRid {
             let startAt = onSessionCurrent && desiredPos > 1_500 ? desiredPos : 0
-            let hit = s.isPlaying
+            let hit = s.isPlaying && !systemHeld
                 ? target.upcomingItems(limit: Self.tailLimit).first(where: { ridByUid[$0.uid] == desiredRid })
-                : nil   // a PAUSED session loads paused (a jump would sound first)
+                : nil   // a PAUSED session (or a system-held speaker) loads paused (a jump would sound first)
             if let hit {
                 target.jumpToUpcoming(uid: hit.uid, atMs: startAt)
             } else {
                 let items = available.map { Self.fresh($0.item) }
-                target.play(items, startIndex: dIdx, atMs: startAt, startPaused: !s.isPlaying)
+                target.play(items, startIndex: dIdx, atMs: startAt, startPaused: !s.isPlaying || systemHeld)
                 remap(available.map(\.rid), from: 0, expecting: items)
             }
             moved = true
@@ -854,7 +925,8 @@ final class RemoteSessionController {
 
         // ▶/⏸ — not while a start / buffering is still settling, and an apply that hasn't
         // taken yet is re-issued only after `playRetryMs`.
-        if !moved, !target.isTransitioning, target.isRunning, target.isPlaying != s.isPlaying {
+        if !moved, !target.isTransitioning, target.isRunning, target.isPlaying != s.isPlaying,
+           !(s.isPlaying && systemHeld) {
             let due = lastPlayApply.map { $0.on != s.isPlaying || t - $0.at >= Self.playRetryMs } ?? true
             if due {
                 if s.isPlaying, onSessionCurrent, abs(target.positionMs - desiredPos) > threshold {

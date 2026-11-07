@@ -102,6 +102,8 @@ struct RemoteView: View {
     @Environment(MixSync.self) private var mixSync: MixSync?
     /// The mode whose share sheet (Messages / nearby) is up.
     @State private var shareMode: RemoteSessionMode?
+    /// The share sheet sent its invite (its session is on the way — keep the pending start).
+    @State private var shareSucceeded = false
     @State private var starting: RemoteSessionMode?
     @State private var query = ""
     @State private var results: [IndexSong] = []
@@ -114,6 +116,7 @@ struct RemoteView: View {
                 Section { Label(msg, systemImage: "info.circle").foregroundStyle(Theme.fgDim) }
             }
             if remote.isActive {
+                if remote.pausedHere { pausedHereSection }
                 sessionSection
                 mixTogetherSection
                 participantsSection
@@ -129,8 +132,16 @@ struct RemoteView: View {
         .background(Theme.bg)
         .accessibilityIdentifier("remote-view")
         #if canImport(GroupActivities)
-        .sheet(item: $shareMode) { mode in
-            RemoteShareSheet(mode: mode) { shareMode = nil }
+        .sheet(item: $shareMode, onDismiss: {
+            // Swiped away (or cancelled): withdraw the pending start, else the NEXT session
+            // that arrives would be taken as ours to host.
+            remote.shareInviteEnded(succeeded: shareSucceeded)
+            shareSucceeded = false
+        }) { mode in
+            RemoteShareSheet(mode: mode) { ok in
+                shareSucceeded = ok
+                shareMode = nil
+            }
         }
         #endif
         .task(id: query) { await runSearch() }
@@ -179,11 +190,32 @@ struct RemoteView: View {
             starting = nil
             switch outcome {
             case .activated, .cancelled: break
-            case .needsShareSheet: shareMode = mode
+            case .needsShareSheet:
+                remote.pendingStartMode = mode       // set BEFORE the sheet shows (`start` did too)
+                shareSucceeded = false
+                shareMode = mode
             case .failed(let msg): remote.statusMessage = "Couldn’t start SharePlay: \(msg)"
             }
         }
         #endif
+    }
+
+    // MARK: Paused on this device (a system pause — never resumed for the listener)
+
+    @ViewBuilder private var pausedHereSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                Label("Paused on this device — tap ▶ to rejoin", systemImage: "pause.circle")
+                    .foregroundStyle(Theme.fg)
+                Spacer(minLength: 8)
+                Button("Rejoin") { remote.rejoinHere() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .accessibilityIdentifier("remote-rejoin")
+            }
+        } footer: {
+            Text("The session kept playing on the other devices.")
+        }
     }
 
     // MARK: Session
@@ -443,11 +475,13 @@ struct RemoteView: View {
 /// The system SharePlay invite UI (`GroupActivitySharingController`, AppKit flavour).
 struct RemoteShareSheet: NSViewControllerRepresentable {
     let mode: RemoteSessionMode
-    let done: () -> Void
+    /// true ⇒ the invite went out (its session is on the way).
+    let done: (Bool) -> Void
     @Environment(RemoteSessionController.self) private var remote
 
+    // `pendingStartMode` is set by the presenter BEFORE the sheet shows (a make-time write is a
+    // state change during a view update, and outlived a swiped-away sheet).
     func makeNSViewController(context: Context) -> NSViewController {
-        remote.pendingStartMode = mode
         guard let vc = try? GroupActivitySharingController(PocketDJSessionActivity(mode: mode)) else {
             // The invite UI couldn't be built: undo the pending start (else the NEXT peer session
             // would be treated as ours to host), close the sheet, and say why.
@@ -455,14 +489,14 @@ struct RemoteShareSheet: NSViewControllerRepresentable {
             Task { @MainActor in
                 remote.pendingStartMode = nil
                 remote.statusMessage = "Couldn’t open the SharePlay invite. Try again from a FaceTime call."
-                done()
+                done(false)
             }
             return NSViewController()
         }
         Task { @MainActor in
             let result = await vc.result
             if result != .success { remote.pendingStartMode = nil }
-            done()
+            done(result == .success)
         }
         return vc
     }
@@ -472,11 +506,13 @@ struct RemoteShareSheet: NSViewControllerRepresentable {
 /// The system SharePlay invite UI (`GroupActivitySharingController`, UIKit flavour).
 struct RemoteShareSheet: UIViewControllerRepresentable {
     let mode: RemoteSessionMode
-    let done: () -> Void
+    /// true ⇒ the invite went out (its session is on the way).
+    let done: (Bool) -> Void
     @Environment(RemoteSessionController.self) private var remote
 
+    // `pendingStartMode` is set by the presenter BEFORE the sheet shows (a make-time write is a
+    // state change during a view update, and outlived a swiped-away sheet).
     func makeUIViewController(context: Context) -> UIViewController {
-        remote.pendingStartMode = mode
         guard let vc = try? GroupActivitySharingController(PocketDJSessionActivity(mode: mode)) else {
             // The invite UI couldn't be built: undo the pending start (else the NEXT peer session
             // would be treated as ours to host), close the sheet, and say why.
@@ -484,14 +520,14 @@ struct RemoteShareSheet: UIViewControllerRepresentable {
             Task { @MainActor in
                 remote.pendingStartMode = nil
                 remote.statusMessage = "Couldn’t open the SharePlay invite. Try again from a FaceTime call."
-                done()
+                done(false)
             }
             return UIViewController()
         }
         Task { @MainActor in
             let result = await vc.result
             if result != .success { remote.pendingStartMode = nil }
-            done()
+            done(result == .success)
         }
         return vc
     }
