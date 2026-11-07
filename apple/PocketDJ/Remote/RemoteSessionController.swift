@@ -1094,12 +1094,35 @@ extension RemoteSessionController {
     /// be screenshotted without a second device or a FaceTime call.
     func seedShowcaseIfRequested() {
         guard ProcessInfo.processInfo.environment["PDJ_SEED_REMOTE"] == "showcase", !isActive else { return }
+        #if os(tvOS)
+        // The TV never starts a session — it JOINS one a phone offers and plays as a speaker. So
+        // on tvOS the showcase is a Listen Together session hosted by an in-memory "iPhone" that
+        // owns the set; the TV attaches as a participant and receives it over the loopback.
+        let tvHub = LoopbackHub()
+        let phoneLink = tvHub.join(id: "A-host")
+        let tvLink = tvHub.join(id: "B-tv")
+        let phone = RemoteSessionController(target: InMemoryRemoteTarget(), resolver: .acceptAll,
+                                            deviceName: "iPhone", platform: "iPhone")
+        phone.attach(phoneLink, mode: .listenTogether, asHost: true, seed: Self.showcaseSeed(clock: phone.clock))
+        attach(tvLink, mode: .listenTogether, asHost: false)
+        showcaseKeepAlive = [phone, phoneLink]
+        showcaseHub = tvHub
+        return
+        #else
         let hub = LoopbackHub()
         let me = hub.join(id: "A-host")
         let carLink = hub.join(id: "B-car")
         let car = RemoteSessionController(target: InMemoryRemoteTarget(), resolver: .acceptAll,
                                           deviceName: "Car", platform: "iPhone")
         car.attach(carLink, mode: .backseat, asHost: false)
+        attach(me, mode: .backseat, asHost: true, seed: Self.showcaseSeed(clock: clock))
+        showcaseKeepAlive = [car, carLink]
+        showcaseHub = hub
+        #endif
+    }
+
+    /// The showcase set (the playback showcase's rows), playing 1:37 into the first track.
+    private static func showcaseSeed(clock: SharedClock) -> RemoteQueueModel {
         var seed = RemoteQueueModel()
         seed.rows = PlaybackSessionStore.showcaseRows.map { RemoteRow(row: $0) }
         seed.index = 0
@@ -1108,9 +1131,7 @@ extension RemoteSessionController {
         seed.anchor = clock.localNow()
         seed.revision = 1
         seed.sourceName = "Golden Hour Rooftop"
-        attach(me, mode: .backseat, asHost: true, seed: seed)
-        showcaseKeepAlive = [car, carLink]
-        showcaseHub = hub
+        return seed
     }
 }
 

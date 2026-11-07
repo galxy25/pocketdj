@@ -64,6 +64,11 @@ final class MacScreenshotRenderTests: XCTestCase {
         let skips: SkipTracker
         let jukebox: JukeboxStore
         let rowSelection: RowSelection
+        let pocketPalette: PocketPaletteStore
+        let pocketWheel: PocketMomentCache
+        let pocketWheelController: PocketWheelController
+        let remote: RemoteSessionController
+        let mixSync: MixSync
 
         /// One injection list shared by all four shots, so a view gaining a new
         /// non-optional store dependency fails all shots identically (loudly).
@@ -94,7 +99,12 @@ final class MacScreenshotRenderTests: XCTestCase {
                 .environment(activity)
                 .environment(skips)
                 .environment(jukebox)
-                .environment(rowSelection))
+                .environment(rowSelection)
+                .environment(pocketPalette)
+                .environment(pocketWheel)
+                .environment(pocketWheelController)
+                .environment(remote)
+                .environment(mixSync))
         }
     }
 
@@ -158,6 +168,37 @@ final class MacScreenshotRenderTests: XCTestCase {
                                    defaults: UserDefaults(suiteName: "test.shots.jb.\(UUID().uuidString)")!)
         jukebox.makePickModel = { nil }
 
+        // 1.0.5 surfaces. Pocket Wheel: the deterministic three-week demo history
+        // (`PDJ_SEED_POCKET_WHEEL`), adopted through the real moment engine, landed on
+        // History ▸ Pockets ▸ Wheel with Tuesday focused (same seams as PocketWheelUITests).
+        setenv("PDJ_SEED_POCKET_WHEEL", "1", 1)
+        setenv("PDJ_HISTORY_TAB", "Pockets", 1)
+        setenv("PDJ_POCKETS_SEGMENT", "Wheel", 1)
+        setenv("PDJ_WHEEL_FOCUS_DOW", "2", 1)
+        setenv("PDJ_WHEEL_NOW", "2,8.33", 1)
+        setenv("PDJ_WHEEL_SELECT", "h08|d2|carPlay", 1)   // the card fills the wide layout's right column
+        let pocketPalette = PocketPaletteStore(fileURL: tempURL("palette"))
+        let pocketWheel = PocketMomentCache(history: history, palette: pocketPalette,
+                                            fileURL: tempURL("wheel"))
+        pocketWheel.autoRebuild = false
+        pocketWheel.seedDemoIfRequested()
+        let pocketWheelController = PocketWheelController(cache: pocketWheel, history: history)
+        if let pinned = PocketWheelDemo.pinnedNow() { pocketWheelController.now = { pinned } }
+        _ = await pocketWheelController.refresh()
+        // Remote: the `PDJ_SEED_REMOTE=showcase` Backseat session (loopback hub + an in-memory
+        // "Car" speaker) — the same seed the iOS capture launches with.
+        setenv("PDJ_SEED_REMOTE", "showcase", 1)
+        let remote = RemoteSessionController(target: InMemoryRemoteTarget(), resolver: .live(app: app),
+                                             deviceName: RemoteDevice.kind, platform: RemoteDevice.kind)
+        remote.seedShowcaseIfRequested()
+        // Let the loopback hello/roster exchange run as ordinary async work (the offscreen
+        // capture's nested run-loop pump never delivered the Car's hello — it rendered alone).
+        for _ in 0..<20 where remote.peers.count < 2 { try? await Task.sleep(nanoseconds: 100_000_000) }
+        XCTAssertEqual(remote.peers.count, 2, "showcase session should list this Mac + the Car")
+        let mixSync = MixSync(remote: remote, engine: mix,
+                              resolve: MixSync.liveResolver(app: app, collections: collections, burns: burns,
+                                                            studio: studio, engine: mix))
+
         let graph = Graph(app: app, settings: settings, collections: collections, rips: rips,
                           player: player, burns: burns, coordinator: coordinator,
                           sequencer: sequencer, mix: mix, mixSessions: mixSessions,
@@ -167,7 +208,10 @@ final class MacScreenshotRenderTests: XCTestCase {
                           demux: demux,
                           favorites: favorites, intents: intents, streaming: streaming,
                           history: history, activity: activity, skips: SkipTracker(),
-                          jukebox: jukebox, rowSelection: RowSelection())
+                          jukebox: jukebox, rowSelection: RowSelection(),
+                          pocketPalette: pocketPalette, pocketWheel: pocketWheel,
+                          pocketWheelController: pocketWheelController,
+                          remote: remote, mixSync: mixSync)
         seed(graph)
         return graph
     }
@@ -308,7 +352,7 @@ final class MacScreenshotRenderTests: XCTestCase {
     private static let pixelSize = (w: 2880, h: 1800)
 
     /// Host `view` in an offscreen window, settle layout, and capture a 2× opaque PNG.
-    private func capture(_ view: AnyView, settleSeconds: Double = 3.0) throws -> Data {
+    private func capture(_ view: AnyView, settleSeconds: Double = 3.0) async throws -> Data {
         let host = NSHostingView(rootView: view)
         // Never let SwiftUI drive the frame: with the default sizingOptions the hosting
         // view imposes NavigationSplitView's min size on the borderless window, the window
@@ -334,10 +378,15 @@ final class MacScreenshotRenderTests: XCTestCase {
 
         // SwiftUI lays out asynchronously and the surfaces run `.task` work (catalog reads,
         // engine prepare) — pump the run loop until it settles.
+        // SUSPEND between layout passes rather than spinning a nested run loop: a nested pump
+        // runs inside this main-actor job, so no OTHER main-actor work can run during it — every
+        // `await` hop back to the main actor (BrowseModel's off-main row build, the Remote
+        // loopback's hello exchange) stalled, and Browse rendered "0 albums". Awaiting frees the
+        // main actor so those pipelines complete before the capture.
         let deadline = Date().addingTimeInterval(settleSeconds)
         while Date() < deadline {
             host.layoutSubtreeIfNeeded()
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+            try? await Task.sleep(nanoseconds: 20_000_000)
         }
         // Re-assert the capture geometry after settling — belt & braces against anything
         // (AppKit or SwiftUI) having resized the window/host during the pump.
@@ -422,21 +471,21 @@ final class MacScreenshotRenderTests: XCTestCase {
         let shots: [(name: String, section: RootView.Section, settle: Double,
                      make: (Binding<NavigationPath>) -> AnyView)] = [
             // Order IS the App Store display order — Mix leads, then the Producer grid.
-            // Known limitation: the deck WAVEFORMS render empty here. Extraction is async work
-            // kicked off by the live view's appearance and it never runs in this offscreen host —
-            // a 14 s settle produced a byte-identical PNG to a 5 s one, so waiting does not fix
-            // it. Everything else is populated (both decks, real durations, the 8-pad cue bank,
-            // EQ/FX, crossfader); the iOS/visionOS captures carry the waveform.
-            ("mac-01-mix", .mix, 5.0, { _ in AnyView(MixView(path: .constant(NavigationPath()))) }),
-            ("mac-02-producer", .performance, 6.0, { _ in AnyView(PerformanceView()) }),
+            // (The deck waveforms used to render empty here: extraction hops back to the main
+            // actor, which the old nested run-loop pump never released. `capture` now suspends.)
+            // 1.0.5's new features lead: the Pocket Wheel, then the Remote tab's live session.
+            ("mac-01-pocketwheel", .history, 6.0, { AnyView(HistoryView(path: $0)) }),
+            ("mac-02-remote", .remote, 4.0, { _ in AnyView(RemoteView()) }),
+            ("mac-03-mix", .mix, 5.0, { _ in AnyView(MixView(path: .constant(NavigationPath()))) }),
+            ("mac-04-producer", .performance, 6.0, { _ in AnyView(PerformanceView()) }),
             // Browse derives its rows off-main (BrowseModel) — give it the longest settle.
-            ("mac-03-browse", .browse, 8.0, { AnyView(BrowseView(path: $0)) }),
-            ("mac-04-collections", .playlists, 5.0, { AnyView(PlaylistsView(path: $0)) }),
+            ("mac-05-browse", .browse, 8.0, { AnyView(BrowseView(path: $0)) }),
+            ("mac-06-collections", .playlists, 5.0, { AnyView(PlaylistsView(path: $0)) }),
         ]
 
         for shot in shots {
             let shell = ShotShell(selected: shot.section, content: shot.make)
-            let png = try capture(g.inject(shell), settleSeconds: shot.settle)
+            let png = try await capture(g.inject(shell), settleSeconds: shot.settle)
             let url = dir.appendingPathComponent("\(shot.name).png")
             try png.write(to: url)
 

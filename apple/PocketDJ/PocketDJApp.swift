@@ -1785,6 +1785,7 @@ struct PocketDJApp: App {
         // The centre ▶'s "now": time + day + CarPlay + motion (opt-in) + place guess (opt-in) +
         // the last 45 minutes of plays, against the wheel (§3).
         let pocketWheelController = PocketWheelController(cache: pocketWheel, history: playHistory)
+        if let pinned = PocketWheelDemo.pinnedNow() { pocketWheelController.now = { pinned } }
         #if os(iOS)
         pocketWheelController.carPlayConnected = { CarPlayController.current != nil }
         #endif
@@ -2246,13 +2247,16 @@ struct PocketDJApp: App {
                     // The wheel's features (artist/genre/BPM) need the catalog; a launch whose
                     // cache predates the current history rebuilds now.
                     if app.state == .loaded { pocketWheel.historyDidChange() }
+                    // The Remote showcase seed resolves its rows against the catalog (a speaker
+                    // flags every row it can't find), so it waits for the catalog too.
+                    if app.state == .loaded { remote.seedShowcaseIfRequested() }
                 }
                 // Recommendation-engine auto-flush: idempotent, and internally a no-op while
                 // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
                 .task { recEngine.startAutoFlush() }
                 // SharePlay: every PocketDJ session (started here or offered by a peer) for the
                 // app's lifetime; the showcase seed fakes a Backseat session for screenshots.
-                .task { remote.seedShowcaseIfRequested() }
+                .task { if app.state == .loaded { remote.seedShowcaseIfRequested() } }
                 // Listening-pockets auto-flush: same contract (idempotent, gated inside).
                 .task { listeningPockets.startAutoFlush() }
                 // A round that was playing when the app went away keeps (or finishes) tracking.

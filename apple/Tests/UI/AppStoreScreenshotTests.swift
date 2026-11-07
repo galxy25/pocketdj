@@ -49,6 +49,14 @@ final class AppStoreScreenshotTests: XCTestCase {
         #endif
     }
 
+    private var isPad: Bool {
+        #if canImport(UIKit) && !os(macOS)
+        return UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        return false
+        #endif
+    }
+
     private func launch(section: String, extra: [String: String] = [:]) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
@@ -77,8 +85,67 @@ final class AppStoreScreenshotTests: XCTestCase {
     }
 
     func testCaptureMarketingScreens() {
-        // ── 1 — MIX: two decks mid-transition, Auto-DJ live, real meters.
-        var app = launch(section: "Mix", extra: [
+        // 1.0.5's two new features LEAD the listing (Levi 2026-11-07), then the established set.
+
+        // ── 1 — POCKET WHEEL: History ▸ Pockets ▸ Wheel over the deterministic three-week demo
+        // history (`PDJ_SEED_POCKET_WHEEL`), built through the real moment engine. Tuesday is the
+        // focused (widened) ring, so the weekday commute + lunch + gym pockets read at a glance.
+        var app = launch(section: "History", extra: [
+            "PDJ_SEED_POCKET_WHEEL": "1",
+            "PDJ_HISTORY_TAB": "Pockets",
+            "PDJ_POCKETS_SEGMENT": "Wheel",
+            "PDJ_WHEEL_FOCUS_DOW": "2",
+            // Pin the centre ▶'s "now" to Tuesday 8:20 AM so the best-match caption is the
+            // commute pocket on every run (it otherwise follows the capture's wall clock).
+            "PDJ_WHEEL_NOW": "2,8.33",
+        ])
+        let wheelPlay = app.buttons["pocket-wheel-play"]
+        expect(wheelPlay, "Pocket Wheel centre play")
+        sleep(4)   // let the engine's paint settle (cells fade in)
+        // On the iPad's tall canvas the area under the legend is empty: open the Tuesday 8 AM
+        // CarPlay pocket's card (same ring geometry as PocketWheelUITests — WheelLayout: radius =
+        // side/2 − 22, hole 0.30 R, the focused ring 1.8×) so the shot shows what a pocket holds.
+        if isPad {
+            let c = CGPoint(x: wheelPlay.frame.midX, y: wheelPlay.frame.midY)
+            let R: CGFloat = 520 / 2 - 22
+            let unit = (R - 0.30 * R - 0.025 * R - 6 * 0.006 * R) / 7.8
+            let tueMid = 0.30 * R + unit + 0.006 * R + 0.9 * unit
+            let a = 8.5 / 24 * 2 * Double.pi
+            app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: c.x + tueMid * CGFloat(sin(a)), dy: c.y - tueMid * CGFloat(cos(a))))
+                .tap()
+            _ = app.staticTexts["pocket-card-title"].waitForExistence(timeout: 10)
+            sleep(2)
+        }
+        shot(app, "screen-01-pocketwheel")
+
+        // ── 2 — REMOTE: a live Backseat session (`PDJ_SEED_REMOTE=showcase` — an in-memory
+        // loopback "Car" speaker), with participants, now playing and Up Next populated.
+        app.terminate()
+        app = launch(section: "Remote", extra: [
+            "PDJ_SEED_REMOTE": "showcase",
+            "PDJ_SEED_BURNS": "showcase",
+        ])
+        expect(app.descendants(matching: .any)["remote-now-playing"], "Remote now playing row")
+        sleep(2)
+        // The Session/Mix Together rows lead the list; on a phone they push Now Playing to the
+        // bottom edge and Up Next off screen. Scroll (slow drag + hold, so no fling) until the
+        // Participants section sits at the top: roles, now playing, transport and Up Next in frame.
+        let peer = app.descendants(matching: .any)["remote-peer-A-host"]
+        let win = app.windows.firstMatch.frame
+        if !isPad, peer.exists, peer.frame.minY > win.height * 0.30 {
+            let dy = peer.frame.minY - win.height * 0.16
+            let from = app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: win.width * 0.5, dy: win.height * 0.85))
+            let to = from.withOffset(CGVector(dx: 0, dy: -dy))
+            from.press(forDuration: 0.2, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.5)
+        }
+        sleep(2)
+        shot(app, "screen-02-remote")
+
+        // ── 3 — MIX: two decks mid-transition, Auto-DJ live, real meters.
+        app.terminate()
+        app = launch(section: "Mix", extra: [
             "PDJ_SEED_BURNS": "showcase",
             "PDJ_SEED_MIX_DECK_SESSION": "showcase",
             "PDJ_MIX_DECK_LAYOUT": deckLayout,
@@ -92,9 +159,9 @@ final class AppStoreScreenshotTests: XCTestCase {
         let resume = app.buttons["mix-auto-resume"]
         if resume.waitForExistence(timeout: 5), resume.isHittable { resume.tap() }
         sleep(4)   // let audio start, meters settle, waveform playhead advance off 0
-        shot(app, "screen-01-mix")
+        shot(app, "screen-03-mix")
 
-        // ── 2 — NOW PLAYING: full-bleed deck, playing mid-track, played + up-next populated.
+        // ── 4 — NOW PLAYING: full-bleed deck, playing mid-track, played + up-next populated.
         app.terminate()
         app = launch(section: "History", extra: [
             "PDJ_SEED_BURNS": "showcase",
@@ -106,12 +173,23 @@ final class AppStoreScreenshotTests: XCTestCase {
         // The restored set is HELD at its stored position; pressing the app's own ⏯ resumes into
         // genuine playback of the seeded body, which is what spins the record and sweeps the
         // tonearm (a held deck renders a frozen platter at 0:00).
-        let playPause = app.buttons["np-playpause"]
-        if playPause.waitForExistence(timeout: 5), playPause.isHittable { playPause.tap() }
-        sleep(4)
-        shot(app, "screen-02-nowplaying")
+        // Re-check the glyph: a tap that lands while the deck is still materializing is dropped
+        // (the iPad capture once shot a held ▶ deck), so press until it reads Pause.
+        // (iPad renders TWO np-playpause buttons — the sidebar deck and the expanded one — so
+        // drive whichever is hittable.)
+        let playPauses = app.buttons.matching(identifier: "np-playpause")
+        if playPauses.firstMatch.waitForExistence(timeout: 5) {
+            for _ in 0..<4 {
+                guard let pp = playPauses.allElementsBoundByIndex.first(where: { $0.isHittable }),
+                      !pp.label.localizedCaseInsensitiveContains("pause") else { break }
+                pp.tap()
+                sleep(3)
+            }
+        }
+        sleep(2)
+        shot(app, "screen-04-nowplaying")
 
-        // ── 3 — PRODUCER: the 16-step grid with a five-lane groove programmed.
+        // ── 5 — PRODUCER: the 16-step grid with a five-lane groove programmed.
         app.terminate()
         app = launch(section: "Performance", extra: [
             "PDJ_SEED_STUDIO": "showcase",
@@ -120,9 +198,9 @@ final class AppStoreScreenshotTests: XCTestCase {
         ])
         expect(app.staticTexts["Rooftop"], "Producer showcase pattern")
         sleep(3)
-        shot(app, "screen-03-studio")
+        shot(app, "screen-05-studio")
 
-        // ── 4 — BROWSE: the catalog as the SONGS list, not the album grid. The invented fixture
+        // ── 6 — BROWSE: the catalog as the SONGS list, not the album grid. The invented fixture
         // albums deliberately carry no artwork (nothing third-party may appear in the listing), so
         // the grid shoots as four grey placeholder discs — which misrepresents the app as artless.
         // The songs list is denser and puts the per-track BPM and Camelot key on screen, which is
@@ -136,9 +214,9 @@ final class AppStoreScreenshotTests: XCTestCase {
         let songsTab = app.buttons["Songs"].firstMatch
         if songsTab.waitForExistence(timeout: 5), songsTab.isHittable { songsTab.tap() }
         sleep(4)   // let the fixture catalog build + rows settle
-        shot(app, "screen-04-browse")
+        shot(app, "screen-06-browse")
 
-        // ── 5 — COLLECTIONS: playlists and pockets.
+        // ── 7 — COLLECTIONS: playlists and pockets.
         app.terminate()
         app = launch(section: "Playlists", extra: [
             "PDJ_SEED_COLLECTIONS": "showcase",
@@ -146,7 +224,7 @@ final class AppStoreScreenshotTests: XCTestCase {
         ])
         expect(app.staticTexts["Friday Night Warmup"], "showcase playlist")
         sleep(3)
-        shot(app, "screen-05-playlists")
+        shot(app, "screen-07-playlists")
 
         app.terminate()
     }
