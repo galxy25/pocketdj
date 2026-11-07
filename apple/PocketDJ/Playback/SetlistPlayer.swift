@@ -393,6 +393,12 @@ final class SetlistPlayer {
             case .toggle: return self.routeListenerPlayPause(.playPause)
             }
         }
+        // A Remote session parked the set over an item the engine still holds (the PREVIOUS
+        // song): a system ▶ must resume the held row, not that stale item.
+        player.ownerHoldsOverLoadedItem = { [weak self] in
+            guard let self else { return false }
+            return self.isRunning && self.isHeldForResume && self.heldByRemote
+        }
         player.onIdlePlay = { [weak self] in
             guard let self, self.isRunning else { return nil }
             if self.isHeldForResume { self.resumeFromHold(); return "resumeHeld" }
@@ -444,6 +450,10 @@ final class SetlistPlayer {
     @ObservationIgnored private(set) var userPlayIntentSeq = 0
     @ObservationIgnored private(set) var lastUserPlayIntent = false
     @ObservationIgnored private var remoteApplyDepth = 0
+    /// The current HOLD was made by a Remote session (`play(startPaused:)` / controller
+    /// silence), over whatever the engine still has loaded — see `ownerHoldsOverLoadedItem`.
+    /// Only meaningful while `isHeldForResume`; a restore's hold clears it.
+    @ObservationIgnored private var heldByRemote = false
     /// Wired to the app's `RemoteSessionController`: returns true when this device is a
     /// Backseat CONTROLLER (the request was forwarded to the session and must not play here).
     /// nil / false ⇒ every transport behaves exactly as before.
@@ -734,6 +744,7 @@ final class SetlistPlayer {
             cancelStartAndSilence(reason: "start-paused")
             currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
             isHeldForResume = true
+            heldByRemote = true
             pendingResumeMs = (startAtMs ?? 0) > 0 ? startAtMs : nil
             return
         }
@@ -3068,6 +3079,7 @@ final class SetlistPlayer {
     /// song's own end boundary.
     private func retargetInPlace(_ it: Item, startMs: Int, from np: RipsStore.NowPlaying, backend: String) {
         playTask?.cancel()
+        startQueued = false                   // the cancelled start never runs `playCurrent`'s clear
         playGeneration &+= 1
         coordinator.supersedePendingPlay()
         onTrackRestart?(it.id)
@@ -4012,6 +4024,7 @@ final class SetlistPlayer {
         loadedAnyDeviceTrack = false
         waitingForLive = false
         isHeldForResume = true
+        heldByRemote = false
         isRunning = true
         // A RESTORE IS NOT A WRITE. This used to end in `persistSession()`, which re-adopted the
         // snapshot as the store's current session — and in doing so rewrote the session FILE.
@@ -4491,6 +4504,7 @@ extension SetlistPlayer {
         let pos = isHeldForResume ? (pendingResumeMs ?? 0) : sessionPositionMs()
         cancelStartAndSilence(reason: "remote-controller")
         isHeldForResume = true
+        heldByRemote = true
         pendingResumeMs = pos > 0 ? pos : nil
     }
 
@@ -4546,6 +4560,7 @@ extension SetlistPlayer {
         let backend = coordinator.activeBackend.map { "\($0)" } ?? "-"
         DiagLog.shared.log("playback", "cascade-stop song=\(row) index=\(index)/\(queue.count) quickAdvances=\(AutoAdvanceCascadeBreaker.limit) backend=\(backend) audible=\(Int(trackAudibleSeconds))s")
         playTask?.cancel(); playTask = nil
+        startQueued = false                   // the cancelled start never runs `playCurrent`'s clear
         playGeneration &+= 1                  // a resolve still in flight must not start audio now
         resolveStallTask?.cancel(); resolveStallTask = nil
         liveBackstopTask?.cancel(); liveBackstopTask = nil

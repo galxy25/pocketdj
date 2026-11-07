@@ -379,7 +379,10 @@ struct BrowseView: View {
         guard let id = focusedRowId ?? visibleSongIds.first,
               let song = app.songsById[id] else { return }
         focusedRowId = id
-        if rips.nowPlaying?.songId == id { player.toggle(); return }
+        if rips.nowPlaying?.songId == id {
+            if player.routeInAppToggle() { return }   // a Backseat controller: to the session
+            player.toggle(); return
+        }
         // OFFLINE-FIRST: prefer a BURNED local file (zero-latency, no network) before any rip —
         // mirrors the row ▶ so ⌘P also plays burned songs with no connection.
         if let res = burns.localURLForPlayback(forSong: id) {

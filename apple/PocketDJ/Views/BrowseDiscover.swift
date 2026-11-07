@@ -457,7 +457,10 @@ private struct DiscoverRow: View {
     /// discover hit is always cached, so this never falls into a live rip) and the
     /// caller owns the one-and-only `player.load` — the InlinePlayerSlot contract.
     private func play() {
-        if rips.nowPlaying?.songId == hit.songId { player.toggle(); return }
+        if rips.nowPlaying?.songId == hit.songId {
+            if player.routeInAppToggle() { return }   // a Backseat controller: to the session
+            player.toggle(); return
+        }
         let song = (id: hit.songId, title: hit.title, artist: hit.artist)
         Task {
             if let now = try? await rips.play(song) {

@@ -24,8 +24,9 @@ struct PocketDJSessionActivity: GroupActivity {
 }
 
 /// `RemoteTransport` over a live `GroupSession`: one RELIABLE messenger for state / commands /
-/// hellos and one UNRELIABLE one for clock pings (a late ping is worse than a lost one — it
-/// only ever inflates the RTT that `SharedClock` then discards).
+/// hellos and one UNRELIABLE one for clock pings + heartbeats (a late ping is worse than a lost
+/// one — it only ever inflates the RTT that `SharedClock` then discards). Each rides its own
+/// lane of the send queue, so a reliable retry never delays a ping.
 @MainActor
 final class GroupSessionTransport: RemoteTransport {
     let session: GroupSession<PocketDJSessionActivity>
@@ -71,8 +72,9 @@ final class GroupSessionTransport: RemoteTransport {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] set in
                 guard let self else { return }
+                let before = Set(self.byId.keys)
                 self.byId = Dictionary(set.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { a, _ in a })
-                self.outbound.participantsChanged()
+                self.outbound.participantsChanged(departed: before.subtracting(self.byId.keys))
                 self.rosterCont.yield(Set(self.byId.keys))
             }
             .store(in: &subscriptions)

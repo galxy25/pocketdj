@@ -42,6 +42,9 @@ struct RemoteSongResolver {
     /// Tried after everything else misses (the showcase's catalog-less fake speaker). nil in
     /// production — a miss there is genuinely unavailable.
     var lastResort: ((RemoteRow) -> SetlistPlayer.Item?)? = nil
+    /// A session is starting: warm whatever the lookups need (production: build the catalog
+    /// index OFF the main actor now, so the first resolve doesn't have to).
+    var prepare: () -> Void = {}
 
     /// Every path, the fuzzy matcher included.
     func resolve(_ row: RemoteRow) -> Resolution {
@@ -107,46 +110,106 @@ extension RemoteSongResolver {
             },
             fuzzyTitleArtist: { title, artist in index.fuzzyExact(title: title, artist: artist).map(item) },
             appleMusicAvailable: { AppleMusicCredentials.isEnabled },
-            appleMusicIdForSong: { id in app.songsById[id]?.appleMusicId })
+            appleMusicIdForSong: { id in app.songsById[id]?.appleMusicId },
+            prepare: { index.prepare() })
     }
 }
 
-/// Lazily-built lookup tables over the catalog for `RemoteSongResolver.live` (rebuilt when the
-/// catalog revision moves). Misses for the containment matcher are memoized too.
+/// Lookup tables over the catalog for `RemoteSongResolver.live`. Built OFF the main actor
+/// (`Task.detached` over a value snapshot of the song list) and swapped in when done — a
+/// catalog-revision bump (a sync, a rip landing) never stalls a speaker with a full scan; the
+/// previous tables keep answering meanwhile. Only a lookup that finds NO tables at all (the
+/// session's very first resolve beat `prepare`'s background build) builds synchronously, once.
+/// Misses for the containment matcher are memoized per tables.
 @MainActor
 final class RemoteCatalogIndex {
-    private let app: AppModel
+    struct Tables: Sendable {
+        var byAppleMusicId: [String: String] = [:]
+        var byTitleArtist: [String: String] = [:]
+    }
+
+    private let songs: () -> [IndexSong]
+    private let revision: () -> Int
+    private let songById: (String) -> IndexSong?
+    private var tables: Tables?
+    /// The catalog revision `tables` were built from.
     private var builtAt: Int = -1
-    private var amIndex: [String: String] = [:]
-    private var taIndex: [String: String] = [:]
+    /// The revision a background build is running for.
+    private var buildingFor: Int?
+    private var buildTask: Task<Void, Never>?
     private var fuzzyMemo: [String: String?] = [:]
+    /// Test seam: synchronous (main-actor) builds so far.
+    private(set) var syncBuilds = 0
 
-    init(app: AppModel) { self.app = app }
+    convenience init(app: AppModel) {
+        self.init(songs: { [weak app] in app?.songs ?? [] },
+                  revision: { [weak app] in app?.catalogRevision ?? 0 },
+                  songById: { [weak app] in app?.songsById[$0] })
+    }
 
-    static func key(_ title: String, _ artist: String) -> String {
+    init(songs: @escaping () -> [IndexSong], revision: @escaping () -> Int,
+         songById: @escaping (String) -> IndexSong?) {
+        self.songs = songs
+        self.revision = revision
+        self.songById = songById
+    }
+
+    nonisolated static func key(_ title: String, _ artist: String) -> String {
         ShazamCatalogMatch.norm(title) + "\u{1F}" + ShazamCatalogMatch.norm(artist)
     }
 
-    private func rebuildIfNeeded() {
-        let rev = app.catalogRevision
+    /// The pure table build (runs detached).
+    nonisolated static func build(_ songs: [IndexSong]) -> Tables {
+        var t = Tables()
+        for s in songs {
+            if let am = s.appleMusicId, !am.isEmpty, t.byAppleMusicId[am] == nil { t.byAppleMusicId[am] = s.id }
+            let k = key(s.name, s.artist)
+            if t.byTitleArtist[k] == nil { t.byTitleArtist[k] = s.id }
+        }
+        return t
+    }
+
+    /// Start a background build if the catalog moved since the tables were built.
+    func prepare() { refresh(allowSync: false) }
+
+    /// Wait for a background build in flight (tests).
+    func awaitBuild() async { await buildTask?.value }
+
+    private func refresh(allowSync: Bool) {
+        let rev = revision()
         guard rev != builtAt else { return }
-        builtAt = rev
-        amIndex.removeAll(); taIndex.removeAll(); fuzzyMemo.removeAll()
-        for s in app.songs {
-            if let am = s.appleMusicId, !am.isEmpty, amIndex[am] == nil { amIndex[am] = s.id }
-            let k = Self.key(s.name, s.artist)
-            if taIndex[k] == nil { taIndex[k] = s.id }
+        if tables == nil, allowSync {
+            // Nothing to answer with yet: build once, here.
+            syncBuilds += 1
+            install(Self.build(songs()), rev)
+            return
+        }
+        guard buildingFor != rev else { return }
+        buildingFor = rev
+        let snapshot = songs()                       // a value copy — the detached build reads only it
+        buildTask?.cancel()
+        buildTask = Task { [weak self] in
+            let built = await Task.detached(priority: .utility) { RemoteCatalogIndex.build(snapshot) }.value
+            guard let self, !Task.isCancelled, self.buildingFor == rev else { return }
+            self.install(built, rev)
         }
     }
 
-    func byAppleMusicId() -> [String: String] { rebuildIfNeeded(); return amIndex }
-    func byTitleArtist() -> [String: String] { rebuildIfNeeded(); return taIndex }
+    private func install(_ t: Tables, _ rev: Int) {
+        tables = t
+        builtAt = rev
+        if buildingFor == rev || (buildingFor ?? .min) < rev { buildingFor = nil }
+        fuzzyMemo.removeAll()
+    }
+
+    func byAppleMusicId() -> [String: String] { refresh(allowSync: true); return tables?.byAppleMusicId ?? [:] }
+    func byTitleArtist() -> [String: String] { refresh(allowSync: true); return tables?.byTitleArtist ?? [:] }
 
     func fuzzyExact(title: String, artist: String) -> IndexSong? {
-        rebuildIfNeeded()
+        refresh(allowSync: true)
         let k = Self.key(title, artist)
-        if let memo = fuzzyMemo[k] { return memo.flatMap { app.songsById[$0] } }
-        let hit = JukeboxMatching.exact(title: title, artist: artist, in: app.songs)
+        if let memo = fuzzyMemo[k] { return memo.flatMap { songById($0) } }
+        let hit = JukeboxMatching.exact(title: title, artist: artist, in: songs())
         fuzzyMemo[k] = .some(hit?.id)
         return hit
     }

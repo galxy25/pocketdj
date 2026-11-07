@@ -403,6 +403,7 @@ struct SetlistDetailView: View {
 
     /// Toggle play/pause on the active backend (Apple Music streaming else the rip/local engine).
     private func toggleTransport() {
+        if player.routeInAppToggle() { return }   // a Backseat controller: to the session
         if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause() }
         else { player.toggle() }
     }

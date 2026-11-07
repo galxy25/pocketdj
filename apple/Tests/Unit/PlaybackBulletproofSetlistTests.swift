@@ -120,6 +120,27 @@ final class PlaybackBulletproofSetlistTests: XCTestCase {
         r.seq.stop()
     }
 
+    /// Remote re-review #7 — a Remote session parked the set (a paused join) over the item the
+    /// engine still holds — the PREVIOUS song. The lock-screen ▶ resumes the HELD row; it must
+    /// never resume that stale item.
+    func testRemoteHoldOverALoadedItemResumesTheHeldRowNotTheStaleItem() async {
+        let r = makeRig()
+        await burn(r, ["bp_old", "bp_new"])
+        r.seq.play([SetlistPlayer.Item(id: "bp_old", title: "bp_old", artist: "A", lengthMs: 200_000)])
+        await waitUntil("the old row loaded") { r.player.hasLoadedItem && r.rips.nowPlaying?.songId == "bp_old" }
+        r.seq.applyingRemote {
+            r.seq.play([SetlistPlayer.Item(id: "bp_new", title: "bp_new", artist: "A", lengthMs: 200_000)],
+                       startIndex: 0, startPaused: true, startAtMs: 30_000)
+        }
+        XCTAssertTrue(r.seq.isHeldForResume)
+        XCTAssertTrue(r.player.hasLoadedItem, "precondition: the engine still holds the old song")
+        XCTAssertEqual(r.player.handleRemotePlay(), .success)
+        XCTAssertFalse(r.seq.isHeldForResume, "the held row resumed (was: the stale item played)")
+        await waitUntil("the NEW row started") { r.rips.nowPlaying?.songId == "bp_new" }
+        XCTAssertEqual(r.rips.nowPlaying?.seekMs, 30_000, "at the session's position")
+        r.seq.stop()
+    }
+
     /// A ▶ that lands BEFORE the launch task restored the session is latched and honoured by
     /// the restore — exactly once.
     func testRemotePlayBeforeRestoreIsLatchedAndHonouredOnce() async {
@@ -297,6 +318,30 @@ final class PlayerEngineBulletproofTests: XCTestCase {
     }
 
     private final class Probe { var plays = 0; var pauses = 0; var playing = true }
+
+    /// #1 — the production signal: an interruption that began while playing / ended without
+    /// `shouldResume`, and a route loss, mark a SYSTEM pause; any start clears it.
+    func testPlayerEngineMarksSystemPausesUntilAStart() {
+        let e = PlayerEngine()
+        let p = Probe()
+        beginExternal(e, p)
+        XCTAssertFalse(e.systemPauseHeld)
+        e.handleInterruption(began: true, shouldResume: nil)
+        XCTAssertTrue(e.systemPauseHeld, "an interruption over sounding audio")
+        p.playing = false
+        XCTAssertEqual(e.handleInterruption(began: false, shouldResume: false), "hold")
+        XCTAssertTrue(e.systemPauseHeld, "…that the system said not to resume")
+        e.play()
+        XCTAssertFalse(e.systemPauseHeld, "the listener's ▶ clears it")
+        e.handleRouteLoss()
+        XCTAssertTrue(e.systemPauseHeld, "headphones / CarPlay gone while playing")
+        e.play()
+        e.pause()
+        e.handleRouteLoss()
+        XCTAssertFalse(e.systemPauseHeld, "a route loss over a listener pause is not a system pause")
+        e.leaveExternalPlayback(reason: "test")
+    }
+
 
     private func beginExternal(_ e: PlayerEngine, _ p: Probe) {
         e.beginExternalNowPlaying(title: "AM", artist: "X", songId: "am:1", durationSeconds: 200,

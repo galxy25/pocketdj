@@ -776,7 +776,10 @@ struct RowTransport: View {
         // local file) toggles the shared `PlayerEngine` directly. A burned file has NO
         // coordinator backend (`activeBackend == nil`), so `coordinator.togglePlayPause()` would
         // no-op — the row's pause button was dead for burned songs until this split.
-        if isNowPlaying { isAppleMusic ? coordinator.togglePlayPause() : player.toggle(); return }
+        if isNowPlaying {
+            if player.routeInAppToggle() { return }   // a Backseat controller: to the session
+            isAppleMusic ? coordinator.togglePlayPause() : player.toggle(); return
+        }
         // The EDITION this tap should play — the SAME `EditionPolicy` decision the Play-All
         // sequencer stamps, so a single tap and Play-All can never play different cuts of the
         // same song. `cleanOnlyCollection` is rule 1's input (set by the collection detail
@@ -914,7 +917,7 @@ struct InlinePlayerPanel: View {
     /// — the same style the row's working ▶/⤓ transport uses — fires reliably there.
     private func header(_ now: RipsStore.NowPlaying) -> some View {
         HStack(spacing: 10) {
-            Button { player.toggle() } label: {
+            Button { if !player.routeInAppToggle() { player.toggle() } } label: {
                 Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.body)
                     .frame(width: 30, height: 30)
                     .contentShape(Rectangle())
