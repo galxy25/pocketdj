@@ -177,6 +177,12 @@ final class RipsStore {
     /// What's already ripped, keyed by songId (loaded from public S3).
     private(set) var manifest: [String: ManifestEntry] = [:]
 
+    /// A shared-side song's start inside its album file: the user's boundary edit (the album
+    /// waveform editor) wins over the manifest's detected start. nil for a per-song file.
+    func effectiveStartMs(_ songId: String) -> Int? {
+        manifest[songId]?.startMs.map { SegmentOverrides.shared.startMs(SongVariant.baseId(songId)) ?? $0 }
+    }
+
     /// BPM / key / camelot as every song surface shows them: the rip's analysis (measured from
     /// the ripped audio) wins over the catalog's values. One definition so rows and the song
     /// detail screen can never disagree.
@@ -863,7 +869,9 @@ final class RipsStore {
         try Task.checkCancellation()
         let live = url.absoluteString.contains("/hls/")
         let entry = manifest[song.id]
-        let resolvedStart = live ? nil : (startMs ?? entry?.startMs)
+        // A user's boundary edit on the vinyl side (the album waveform editor) wins over the
+        // detected start — only ever for a shared-file song (one the manifest gives a start).
+        let resolvedStart = live ? nil : (startMs ?? effectiveStartMs(song.id))
         let np = NowPlaying(
             songId: song.id, title: song.title, artist: song.artist, url: url, live: live,
             startMs: resolvedStart,

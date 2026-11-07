@@ -1400,9 +1400,11 @@ final class BurnStore {
     /// The analog seek offset (ms) within a shared album mp3 for a ready burned song, so a
     /// player seeks to the song's start inside the whole-album file. nil for digital
     /// (per-song file) burns or songs that aren't burned.
+    /// A user's boundary edit on the side (the album waveform editor) wins over the burned
+    /// start — every player that opens the burned side (set, rows, Mix decks) agrees.
     func startMs(forSong songId: String) -> Int? {
         guard let item = items[songId], item.state == .ready else { return nil }
-        return item.startMs
+        return item.startMs.map { SegmentOverrides.shared.startMs(SongVariant.baseId(songId)) ?? $0 }
     }
 
     // MARK: EDITION-KEYED resolution (clean + explicit side by side)

@@ -1521,6 +1521,14 @@ final class AppModel {
         catalogRevision &+= 1
         browseResultsCache.removeAll(keepingCapacity: true)
         browseResultsOrder.removeAll(keepingCapacity: true)
+        // Song-boundary edits on vinyl sides re-time PLAYBACK too (not just the analysis view):
+        // the playback layer reads them from the shared overrides, re-derived on every overlay.
+        let rawById = rawAlbumsById
+        SegmentOverrides.shared.update(SegmentOverrides.derive(
+            albumEdits: edits?.doc.albums ?? [:],
+            rawAlbum: { rawById[$0] },
+            orderedSongIds: { rawById[$0]?.trackList ?? [] },
+            effectiveAlbums: e.albums))
     }
 
     /// Rebuild the effective catalog by overlaying local edits onto the raw index. Called after an

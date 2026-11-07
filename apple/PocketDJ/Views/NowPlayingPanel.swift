@@ -740,7 +740,7 @@ struct NowPlayingDeckCluster: View {
 
     @ViewBuilder private var header: some View {
         VStack(spacing: 2) {
-            Text(currentItem?.title ?? "—")
+            Text(currentItem.map { app.songsById[$0.id]?.name ?? $0.title } ?? "—")
                 .font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
                 .accessibilityIdentifier("np-title")
             Text(currentItem?.artist ?? "")

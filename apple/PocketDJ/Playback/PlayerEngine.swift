@@ -660,6 +660,16 @@ final class PlayerEngine {
         player.timeControlStatus == .paused ? play() : pause()
     }
 
+    /// Re-label the CURRENTLY-loaded item as another song WITHOUT touching the audio — an album
+    /// glide moves from one song to the next inside the same shared vinyl file. The caller
+    /// re-arms the boundary / card window next (`setEndBoundary`, which re-publishes the card).
+    func retitleInPlace(title: String, artist: String, songId: String?) {
+        nowPlayingTitle = title
+        nowPlayingArtist = artist
+        nowPlayingSongId = songId
+        refreshArtwork(for: songId)
+    }
+
     /// Arm/disarm the position-based end boundary for the CURRENTLY-loaded item WITHOUT
     /// reloading it — used when the setlist sequencer ADOPTS a track that another surface
     /// (a row ▶) just started, so the adopted track still auto-advances at its known length.
