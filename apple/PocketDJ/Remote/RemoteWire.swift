@@ -205,6 +205,9 @@ struct RemoteHello: Codable, Equatable, Sendable {
     var name: String
     var role: RemoteDeviceRole
     var platform: String
+    /// What this build can do beyond Phase 1 (`MixCapability.deckOwner`…). Optional: a Phase-1
+    /// build sends none, and is never handed a deck.
+    var caps: [String]? = nil
 }
 
 /// "These rows can't play on this device" — shown on the controller surface so the driver

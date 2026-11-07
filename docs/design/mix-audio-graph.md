@@ -403,40 +403,94 @@ STATE. Audio is never streamed between devices. The 4-deck engine is a later, se
 the deck model (`Deck { a, b }`) is unchanged.
 
 - **What is synced** (wire kinds `mix.snapshot`, `mix.event`, `mix.request`, `mix.ready`,
-  `mix.beat`, `mix.reject` on the Phase-1 envelope): deck loads (song id + title/artist + Apple
-  Music id + bpm/key — each device resolves the song against ITS OWN library via `MixResolver`;
-  never a rip URL or token), eject, play / pause / seek (with an anchor), tempo, pitch, volume,
-  crossfader, EQ, every FX-rack slot event (toggle / strength / family / variety / modulation),
-  stem mode / mute / level, lead, sync, ↺ reset, loop on/off + length, deck ownership, and the
-  session on/off.
+  `mix.beat`, `mix.reject`, `mix.handover` on the Phase-1 envelope): deck loads (song id +
+  title/artist + Apple Music id + bpm/key — each device resolves the song against ITS OWN library
+  via `MixResolver`; never a rip URL or token), eject, play / pause / seek / ↺ reset (each with an
+  anchor), tempo, pitch, volume, crossfader, EQ, every FX-rack slot event (toggle / strength /
+  family / variety / modulation), stem mode / mute / level, lead, sync, loop on/off + length +
+  the EXACT window, deck ownership, and the session on/off. A session starts from the host's
+  WHOLE board (`MixEngine.syncDeckStateEvents`, built from the same `DeckSnapshot` the durable
+  deck session persists), and every reconcile (join, snapshot, a stray local change on a deck you
+  don't own, a system resume) drives the deck to EXACTLY the model: `MixEngine.syncSetControls`
+  folds the model's controls over a fresh deck's defaults and touches only what differs — an
+  unlisted control goes back to default, a joiner's own pre-session board never survives the
+  session's load.
 - **What stays local:** cue / PFL and its level (it's this device's headphones), the VU meter
   source, recording (the house-sum tap), the session log (`MixSessionStore` — a remote DJ's
   gestures are applied under `MixEngine.applyingRemote`, which neither taps nor records them),
-  the durable deck session, and Auto-DJ (DISABLED while a mix session is active —
-  `MixEngine.setAutoDJBlocked`; a running one ends, decks keep playing).
+  the durable deck session (SUSPENDED while a session runs — `MixEngine.syncSessionActive`: the
+  file on disk stays the user's own pre-session mix, crash or not, a parked launch restore is
+  discarded and never materialized onto session decks; writes resume when the session ends), and
+  Auto-DJ (DISABLED while a mix session is active — `MixEngine.setAutoDJBlocked`; a running one
+  ends, decks keep playing; Siri / TV / pocket-run starts are refused WITH the reason; the user's
+  Auto toggle comes back as it was when the session ends).
+- **System causes stay local.** Every tapped gesture carries a cause
+  (`MixEngine.Gesture.Cause`): `.user` (a hand on this device's Mix UI) is the only one ever
+  proposed. `.system` — the lock screen / AirPods / CarPlay / Siri / the TV transport seam, an
+  audio-session interruption (`remotePause` / `remotePlay` / `remoteSkip` run under
+  `caused(.system)`) — silences or resumes THIS device only: the deck is held (no repair, no
+  heartbeat from it, no drift fix) until the system resumes it, then it rejoins the session at
+  the anchored position. `.engine` (watchdog stops, a media-services rebuild, teardown) is
+  ignored outright.
 - **Authority + ordering.** The session host orders everything: a participant's gesture is
   applied locally at once and PROPOSED; the host checks deck ownership (only a deck's owner may
   drive it; the crossfader is shared), assigns a host sequence number and rebroadcasts; every
   device applies ordered events strictly in host order (holes buffered, a stale hole ⇒
   snapshot). A sender skips its own echo, and its un-echoed proposal on a control shadows another
   sender's earlier-ordered value on the same control, so simultaneous hands converge on host order.
-  Every device mirrors the authoritative model, so any device can answer a joiner or take over.
+  The host drops a proposal older than the sender's last on that control (a reordered send); an
+  un-echoed proposal older than 2 s is presumed lost — the sender stops shadowing and re-syncs
+  from a snapshot. Continuous surfaces (sliders, knobs, the crossfader) are coalesced to ~20 Hz
+  and scrubs to ~4 Hz per control, each with a trailing send of the final value; views observe
+  only `MixSync.owners`, never the hot model. Snapshot requests back off (3, 6, 12, 24 s) and stop
+  after 5 (a Phase-1 host never answers). Every device mirrors the authoritative model, so any
+  device can answer a joiner or take over — and a live mix is never ended or rolled back by a host
+  that lacks it: a snapshot from another epoch that is inactive or behind is refused and the
+  refusing device sends its mirror (`mix.handover`, anchors on its own clock); a host whose model
+  is inactive or older adopts it under its own epoch.
 - **Timing.** Transport events carry `{positionMs, atSharedTime, isPlaying}` on the host's
   `SharedClock` timeline. The host anchors a start / seek **300 ms** in the future; each device
   converts the shared instant to its own wall clock and then to a host time
   (`MixEngine.hostTime(forLocalMs:…)`), and starts the deck with the **scheduled start**
   `MixEngine.play(_:fromMs:atHostTime:)` — the single file, or the deck's 4 stems together on ONE
   sample frame (`StemSync.startTogether` with the wait as its lead). An instant too close / past is
-  pushed to the 60 ms stem lead with the cue moved forward by the gap × rate. Loops, streams and
-  mid-handover stems fall back to seek + play. A start waits for the owner's device to report the
-  deck READY (`mix.ready`), at most 4 s; late devices are position-corrected.
-- **Drift.** The deck owner sends a heartbeat (`mix.beat`, every 2 s, best-effort) with its audible
-  playhead (`truePlayhead`); another device re-seeks (a scheduled start) when off by more than
-  **40 ms**, only against a clock measured on the current host, never on a beat older than 1.5 s,
-  and at most once per 4 s (cooldown = hysteresis). Rate-nudging is not used in v1.
+  pushed to the 60 ms stem lead with the cue moved forward by the gap × rate. Streams,
+  mid-handover stems, STREAMING stems whose frontier doesn't reach the cue, and any schedule that
+  comes up empty fall back to seek + play NOW from where the deck must be (never a silent
+  "playing" node; `rescheduleFile` clears `fileScheduled` when it schedules nothing). A LOOPING
+  deck starts now at the loop phase it must have, inside its existing window
+  (`startLoopedNow` — the window is never re-derived and no lead is subtracted out of it). The
+  start instant is when the frame must be HEARD: `syncPlay` fires early by the output path's
+  latency (`outputLatencySeconds` = `AVAudioSession.outputLatency + ioBufferDuration` on
+  iOS / visionOS / tvOS, the output node's `presentationLatency` on macOS), so AirPods and a
+  wired speaker sound together. ↺ reset is anchored too: every device rewinds at one shared
+  instant. An owner proposes ▶ only once its deck can SOUND (a buffering deck's start waits for
+  its bytes, then goes out with an anchor off the moving playhead); the host still waits for the
+  owner's READY report (`mix.ready`, sent the moment a load lands in the mirror), at most 4 s;
+  late devices are position-corrected.
+- **Loops.** A `loop` event carries the owner's window (`loopStartMs` / `loopEndMs`, re-sent on
+  every length / edge change and before a scrub on a looping deck); receivers place EXACTLY that
+  window (`MixEngine.syncSetLoop`) keeping their phase inside it. A reconcile seeks to the anchor
+  FIRST, then places the window (never a loop near 0:00). Anchors and heartbeats on a looping
+  deck are folded into the window, and drift compares the PHASE inside it (the short way round).
+- **Drift.** The deck owner sends a heartbeat (`mix.beat`, every 2 s, best-effort) with its
+  AUDIBLE playhead (`audiblePlayhead`: the render clock of the file or the stems projected to now,
+  minus the output latency × rate, folded into a loop window) and its own clock uncertainty
+  (best RTT / 2). EVERY device folds the beat into its anchor for the deck (repairs and joiner
+  snapshots start from where it really is). Another device corrects only past
+  `max(40 ms, my uncertainty + the owner's + 20 ms)` — a relayed 200 ms RTT makes 40 ms pure noise
+  — seen on **2 consecutive** beats, against a clock measured on the current host, never on a beat
+  older than 1.5 s, at most once per 4 s. Under **250 ms** it NUDGES: the deck's time-stretch runs
+  ×0.99 / ×1.01 (a multiplier on the user's tempo, never a replacement — `syncNudgeRate`) for
+  exactly as long as closes the gap, then the tempo is restored exactly; above it (or on a ▶/⏸
+  mismatch) it re-seeks with a scheduled start.
 - **Unavailable songs.** A device that can't mix a deck's song (not burned / streamable there, or
   Apple-Music-only — never mixable) leaves that deck EMPTY (silent for it), shows "not available
   on this device", and reports it (`mix.ready` = unavailable) so others see who is silent.
+- **Ownership.** The host takes Deck A; Deck B goes to the first joiner that can own a deck —
+  one advertising `MixCapability.deckOwner` in its hello `caps` (a Phase-1-only build sends none;
+  an Apple TV renders the mix but has no deck board and never advertises it — its Mix controls are
+  read-only for decks it doesn't own).
 - **Hand-over.** When the host leaves, the Remote controller elects the lowest id; its mirror is
   re-anchored from the old host's timeline onto its own clock, departed owners' decks are freed,
   the sequence continues, and a fresh snapshot goes out. Everyone else keeps their deck.
@@ -508,10 +562,11 @@ the deck model (`Deck { a, b }`) is unchanged.
   alongside the deck's own stream. They run at low task priority and are cancelled once unwanted,
   but on a slow link a WANTED set still shares the pipe with the on-air full mix, whose runway can
   shrink while they download.
-- **Multiplayer Mix is two decks, state-synced, v1.** ↺ reset, loop engage/release and Sync's
-  phase-align are applied on arrival (not anchored) — each device computes its own loop window
-  from its own playhead/grid, and the owner's next heartbeat pulls position back within 40 ms.
-  Drift is corrected by re-seek only (no rate nudge). A joiner whose clock isn't measured yet
-  starts from the snapshot's anchor as-is and is corrected by the first heartbeat after its
-  clock syncs. Master ▶ is disabled while mixing together; any other local gesture on a deck you
-  don't own (the lock screen) is undone from the mirror on the next tick.
+- **Multiplayer Mix is two decks, state-synced, v1.** Sync's phase-align seek is anchored like
+  any seek, but the tempo half lands on arrival. A looping STEM deck reports its accumulator
+  playhead (its per-pass segment origin isn't tracked), so its drift reading is ~a tick coarse. A
+  joiner whose clock isn't measured yet starts from the snapshot's anchor as-is and is corrected
+  by the heartbeats after its clock syncs. A `mix.handover` maps anchors with the one-way latency
+  ignored (the next heartbeat trims it). Master ▶ is disabled while mixing together; any other
+  USER gesture on a deck you don't own is undone from the mirror on the next tick (a system
+  pause is not — it is this device's own, see "System causes stay local").

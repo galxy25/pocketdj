@@ -124,6 +124,8 @@ final class RemoteSessionController {
     /// arrives is ours to host, in this mode.
     var pendingStartMode: RemoteSessionMode?
     var statusMessage: String?
+    /// Capabilities this device advertises in its hello (extensions add theirs at init).
+    @ObservationIgnored var localCaps: [String] = []
 
     var isHost: Bool { localId != nil && localId == hostId }
 
@@ -1073,7 +1075,8 @@ final class RemoteSessionController {
 
     private func sendHello(to recipient: RemoteRecipient = .all) {
         if recipient == .all { lastHelloAt = now }
-        post(.hello, RemoteHello(name: deviceName, role: localRole, platform: platform), to: recipient)
+        post(.hello, RemoteHello(name: deviceName, role: localRole, platform: platform,
+                                 caps: localCaps.isEmpty ? nil : localCaps), to: recipient)
     }
 
     private func post<T: Encodable>(_ kind: RemoteMessageKind, _ body: T, to: RemoteRecipient,

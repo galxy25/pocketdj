@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import Observation
 @testable import PocketDJ
 
 /// Multiplayer Mix (SharePlay Phase 2) — `MixSync` over a LoopbackTransport hub of fake devices.
@@ -23,6 +24,10 @@ final class MixSyncTests: XCTestCase {
             var rate = 1.0
             var ready = true
             var controls: [String: MixSyncEvent] = [:]
+            /// The drift loop's temporary rate multiplier (1 = none).
+            var nudge = 1.0
+            /// An engaged loop window (source ms) — the playhead folds into it.
+            var loop: (start: Int, end: Int)?
         }
 
         var gestureTap: ((MixEngine.Gesture) -> Void)?
@@ -30,6 +35,8 @@ final class MixSyncTests: XCTestCase {
         var decks: [MixEngine.Deck: DeckState] = [.a: DeckState(), .b: DeckState()]
         var crossfader = 0.5
         var autoDJBlocked: String?
+        var sessionActive = false
+        var nudges: [(deck: MixEngine.Deck, factor: Double)] = []
         /// Every remote apply, in order ("load:A:s1", "play:A:10300@…", "ctl:volume:A=0.3"…).
         var applied: [String] = []
         var plays: [(deck: MixEngine.Deck, fromMs: Int, atLocalMs: Double)] = []
@@ -42,8 +49,9 @@ final class MixSyncTests: XCTestCase {
 
         func playhead(_ d: MixEngine.Deck) -> Int {
             let s = decks[d]!
-            guard s.isPlaying else { return s.posMs }
-            return s.posMs + Int(((now() - s.at) * s.rate).rounded())
+            let linear = s.isPlaying ? s.posMs + Int(((now() - s.at) * s.rate * s.nudge).rounded()) : s.posMs
+            guard let w = s.loop, w.end > w.start, linear >= w.start else { return linear }
+            return w.start + (linear - w.start) % (w.end - w.start)
         }
 
         // MixSyncEngine
@@ -51,7 +59,8 @@ final class MixSyncTests: XCTestCase {
             let s = decks[d]!
             return MixSyncDeckStatus(songId: s.songId, isPlaying: s.isPlaying, playheadMs: playhead(d),
                                      durationMs: s.songId == nil ? 0 : s.durationMs, rate: s.rate,
-                                     ready: s.songId != nil && s.ready)
+                                     ready: s.songId != nil && s.ready, looping: s.loop != nil,
+                                     loopStartMs: s.loop?.start, loopEndMs: s.loop?.end)
         }
         func syncLoad(_ item: MixLoadable, on d: MixEngine.Deck) {
             decks[d] = DeckState(songId: item.songId, at: now(), controls: decks[d]!.controls)
@@ -62,6 +71,15 @@ final class MixSyncTests: XCTestCase {
             applied.append("eject:\(d.rawValue)")
         }
         func syncPlay(_ d: MixEngine.Deck, fromMs: Int, atLocalMs: Double) {
+            if let w = decks[d]!.loop, w.end > w.start {        // a looping deck starts at its phase
+                let r = (fromMs - w.start) % (w.end - w.start)
+                decks[d]!.posMs = w.start + (r < 0 ? r + (w.end - w.start) : r)
+                decks[d]!.isPlaying = true
+                decks[d]!.at = atLocalMs
+                plays.append((d, fromMs, atLocalMs))
+                applied.append("play:\(d.rawValue):\(fromMs)")
+                return
+            }
             decks[d]!.isPlaying = true
             decks[d]!.posMs = fromMs
             decks[d]!.at = atLocalMs
@@ -85,11 +103,31 @@ final class MixSyncTests: XCTestCase {
             decks[d]!.controls[e.controlKey] = e
             applied.append("ctl:\(e.kind):\(d.rawValue)=\(e.value ?? -1)")
         }
-        func syncSeedEvents(_ deck: MixEngine.Deck) -> [MixSyncEvent] { [] }
+        func syncSetControls(_ d: MixEngine.Deck, _ controls: [MixSyncEvent]) {
+            var c: [String: MixSyncEvent] = [:]
+            for e in controls where e.kind != MixSyncKind.loop && e.kind != MixSyncKind.loopUnits { c[e.controlKey] = e }
+            rebase(d)
+            decks[d]!.rate = c["rate:\(d.rawValue)"]?.value ?? 1
+            decks[d]!.controls = c
+            applied.append("controls:\(d.rawValue):\(c.keys.sorted().joined(separator: ","))")
+        }
+        func syncSetLoop(_ d: MixEngine.Deck, on: Bool, units: Double?, startMs: Int?, endMs: Int?) {
+            rebase(d)
+            if on, let s = startMs, let e = endMs { decks[d]!.loop = (s, e) } else if !on { decks[d]!.loop = nil }
+            applied.append("loop:\(d.rawValue):\(on ? "\(startMs ?? -1)-\(endMs ?? -1)" : "off")")
+        }
+        func syncNudgeRate(_ d: MixEngine.Deck, factor: Double) {
+            rebase(d)
+            decks[d]!.nudge = factor
+            nudges.append((d, factor))
+        }
+        var seeds: [MixEngine.Deck: [MixSyncEvent]] = [:]
+        func syncSeedEvents(_ deck: MixEngine.Deck) -> [MixSyncEvent] { seeds[deck] ?? [] }
         var syncCrossfader: Double { crossfader }
         func setAutoDJBlocked(_ reason: String?) { autoDJBlocked = reason }
+        func syncSessionActive(_ on: Bool) { sessionActive = on }
 
-        private func rebase(_ d: MixEngine.Deck) {
+        func rebase(_ d: MixEngine.Deck) {
             decks[d]!.posMs = playhead(d)
             decks[d]!.at = now()
         }
@@ -126,7 +164,36 @@ final class MixSyncTests: XCTestCase {
         func value(_ kind: String, _ d: MixEngine.Deck) -> Double? {
             decks[d]!.controls[MixSyncEvent(kind: kind, deck: d.rawValue).controlKey]?.value
         }
-        private func tap(_ g: MixEngine.Gesture) {
+        /// This device's SYSTEM transport (lock screen / CarPlay / an interruption).
+        func systemPause(_ d: MixEngine.Deck) {
+            rebase(d)
+            decks[d]!.isPlaying = false
+            tap(MixEngine.Gesture(kind: "pause", deck: d, posMs: playhead(d), cause: .system))
+        }
+        func systemPlay(_ d: MixEngine.Deck) {
+            decks[d]!.isPlaying = true
+            decks[d]!.at = now()
+            tap(MixEngine.Gesture(kind: "play", deck: d, posMs: playhead(d), cause: .system))
+        }
+        /// The engine's own housekeeping stop (a watchdog).
+        func enginePause(_ d: MixEngine.Deck) {
+            rebase(d)
+            decks[d]!.isPlaying = false
+            tap(MixEngine.Gesture(kind: "pause", deck: d, posMs: playhead(d), cause: .engine))
+        }
+        func userLoop(_ d: MixEngine.Deck, _ start: Int, _ end: Int) {
+            rebase(d)
+            decks[d]!.loop = (start, end)
+            tap(MixEngine.Gesture(kind: MixEngine.Gesture.loop, deck: d, value: 2, flag: true,
+                                  posMs: playhead(d), loopStartMs: start, loopEndMs: end))
+        }
+        func userReset(_ d: MixEngine.Deck) {
+            decks[d]!.posMs = 0
+            decks[d]!.at = now()
+            decks[d]!.controls = [:]
+            tap(MixEngine.Gesture(kind: "resetDeck", deck: d))
+        }
+        func tap(_ g: MixEngine.Gesture) {
             gestures.append(g)
             gestureTap?(g)
         }
@@ -154,18 +221,36 @@ final class MixSyncTests: XCTestCase {
                            camelot: nil, key: nil, albumId: nil, lengthMs: 200_000)
     }
 
-    private func device(_ id: String, skew: Double = 0, unmixable: Set<String> = []) -> Device {
+    private func device(_ id: String, skew: Double = 0, unmixable: Set<String> = [],
+                        platform: String = "test", deckOwnerCapable: Bool = true) -> Device {
         let clock = self.clock
         let now: () -> Double = { clock.t + skew }
         let remote = RemoteSessionController(target: InMemoryRemoteTarget(now: now),
                                              resolver: RemoteSongResolver(catalogItem: { _ in nil }),
-                                             deviceName: "Device \(id)", platform: "test",
+                                             deviceName: "Device \(id)", platform: platform,
                                              clock: SharedClock(localNow: now))
         let engine = FakeMixEngine(now: now)
         let sync = MixSync(remote: remote, engine: engine, resolve: { e in
             unmixable.contains(e.songId ?? "") ? nil : Self.loadable(e)
         }, autoTick: false)
+        if !deckOwnerCapable { remote.localCaps = [] }          // an Apple TV build advertises none
         return Device(id: id, remote: remote, link: hub.join(id: id), engine: engine, sync: sync, skew: skew)
+    }
+
+    /// A PHASE-1-only build in the session: the Remote layer, no Mix layer (no caps, never
+    /// answers a mix request).
+    private func phase1Peer(_ id: String, asHost: Bool = false) -> RemoteSessionController {
+        let clock = self.clock
+        let now: () -> Double = { clock.t }
+        let r = RemoteSessionController(target: InMemoryRemoteTarget(now: now),
+                                        resolver: RemoteSongResolver(catalogItem: { _ in nil }),
+                                        deviceName: "Old \(id)", platform: "test", clock: SharedClock(localNow: now))
+        r.attach(hub.join(id: id), mode: .listenTogether, asHost: asHost, autoTick: false)
+        return r
+    }
+
+    private func lastSent<T: Decodable>(_ d: Device, kind: String, as: T.Type) -> T? {
+        sent(d, kind: kind).last.flatMap { try? JSONDecoder().decode(T.self, from: $0.payload) }
     }
 
     private func advance(_ ms: Double) { clock.t += ms }
@@ -363,16 +448,18 @@ final class MixSyncTests: XCTestCase {
         XCTAssertTrue(a.engine.plays.isEmpty, "the owner is the reference — never rescheduled")
     }
 
-    func testDriftCorrectionThresholdAndCooldown() async {
+    func testDriftNeedsTwoBeatsThenNudgesSmallAndReseeksLarge() async {
         let (a, b) = await twoDeviceMix(guestSkew: -2_500)
         a.engine.userLoad(.a, "s1")
         a.engine.userPlay(.a, fromMs: 0)
         await RemoteTestSupport.waitUntil { b.engine.plays.count == 1 }
+        XCTAssertEqual(b.sync.driftThreshold(), MixSync.driftThresholdMs, "a 2 ms RTT keeps the 40 ms floor")
 
         func beat() async {
             advance(MixSync.heartbeatMs)
             a.sync.tick()
             await barrier(a, b)
+            b.sync.tick()
         }
         await beat()
         XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 0, "in sync ⇒ no correction")
@@ -381,39 +468,89 @@ final class MixSyncTests: XCTestCase {
         await beat()
         XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 0)
 
-        b.engine.decks[.a]!.posMs += 70                      // now 100 ms off
+        b.engine.decks[.a]!.posMs += 70                      // now 100 ms AHEAD
         await beat()
-        XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 1)
+        XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 0, "one beat is not enough (a stale relay)")
+        await beat()
+        XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 1, "two consecutive beats ⇒ a correction")
+        XCTAssertEqual(b.sync.nudgeCount[.a, default: 0], 1, "small drift is NUDGED…")
+        XCTAssertEqual(b.engine.plays.count, 1, "…never stop/restarted")
+        XCTAssertEqual(b.engine.nudges.last?.factor ?? 0, 1 - MixSync.nudgeRate, accuracy: 1e-9, "ahead ⇒ 1 % slow")
+        XCTAssertEqual(b.engine.decks[.a]!.rate, 1, "the deck's own tempo is untouched")
+
+        advance(100 / MixSync.nudgeRate)                     // exactly long enough to close 100 ms
+        b.sync.tick()
+        XCTAssertEqual(b.engine.nudges.last?.factor, 1, "the nudge ends at exactly the deck's tempo")
+        XCTAssertLessThanOrEqual(abs(b.engine.playhead(.a) - a.engine.playhead(.a)), 1, "the nudge closed the gap")
+
+        b.engine.decks[.a]!.posMs += 600                     // large drift
+        await beat()
+        XCTAssertEqual(b.engine.plays.count, 1)
+        await beat()                                         // 2nd strike, ≥ cooldown after the nudge
+        XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 2)
+        XCTAssertEqual(b.sync.nudgeCount[.a, default: 0], 1, "large drift re-seeks")
         XCTAssertEqual(b.engine.plays.count, 2)
         advance(MixSync.startLeadMs)
         XCTAssertEqual(b.engine.playhead(.a), a.engine.playhead(.a), "re-seek lands on the owner's position")
 
-        b.engine.decks[.a]!.posMs += 120                     // off again, inside the cooldown
+        b.engine.decks[.a]!.posMs += 600                     // one bad beat…
         await beat()
-        XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 1, "cooldown: no chasing")
-        await beat()                                         // ≥ cooldown since the fix
-        XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 2)
+        b.engine.decks[.a]!.posMs -= 600                     // …between good ones
+        await beat()
+        b.engine.decks[.a]!.posMs += 600
+        await beat()
+        XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 2, "strikes must be CONSECUTIVE")
     }
 
-    func testHeldPlayWaitsForOwnerReadyThenTimesOut() async {
+    func testDriftThresholdWidensWithClockUncertainty() async {
+        let a = device("A"), b = device("B")
+        attachHost(a)
+        await join(b, host: a, syncedClock: false)
+        b.remote.clock.ingest(SharedClock.Sample(offsetMs: 0, rttMs: 200))   // a relayed, slow path
+        a.sync.start()
+        await RemoteTestSupport.waitUntil { b.sync.isActive && b.sync.owner(of: .b) == "B" }
+        XCTAssertEqual(b.sync.driftThreshold(), 120, "½ RTT + 20 ms margin")
+        a.engine.userLoad(.a, "s1")
+        a.engine.userPlay(.a, fromMs: 0)
+        await RemoteTestSupport.waitUntil { b.engine.plays.count == 1 }
+        advance(MixSync.startLeadMs)
+        b.engine.decks[.a]!.posMs += 100                     // measurement noise at this RTT
+        for _ in 0..<3 {
+            advance(MixSync.heartbeatMs); a.sync.tick(); await barrier(a, b)
+        }
+        XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 0, "100 ms under a 120 ms uncertainty is not drift")
+    }
+
+    func testOwnerProposesPlayOnlyOnceSoundingAndHostHoldTimesOut() async {
         let (a, b) = await twoDeviceMix()
         b.engine.loadsReady = false                          // B's deck is still buffering
         b.engine.userLoad(.b, "s2")
         await RemoteTestSupport.waitUntil { a.engine.decks[.b]?.songId == "s2" }
         b.engine.userPlay(.b, fromMs: 0)
         await barrier(b, a)
-        XCTAssertTrue(a.engine.plays.isEmpty, "the host holds a start until the owner's deck is ready")
+        XCTAssertFalse(sent(b, kind: MixWireKind.event).contains {
+            (try? JSONDecoder().decode(MixSyncEventMessage.self, from: $0.payload))?.event.kind == "play"
+        }, "a buffering owner doesn't anchor everyone to a playhead that isn't moving")
+        XCTAssertTrue(a.engine.plays.isEmpty)
 
+        advance(1_500)                                       // the bytes land 1.5 s later
+        b.engine.decks[.b]!.at = clock.t                    // the held playhead starts moving only now
         b.engine.decks[.b]!.ready = true
-        b.sync.tick()                                        // readiness report → the host releases
+        b.sync.tick()                                        // ready → the start is proposed NOW
         await RemoteTestSupport.waitUntil { a.engine.plays.count == 1 }
+        advance(MixSync.startLeadMs)
+        XCTAssertEqual(a.engine.playhead(.b), b.engine.playhead(.b), "others start where the owner really is")
 
-        // Never ready: the hold times out and everyone else starts anyway.
+        // An owner that proposes while still loading (an older build): the host holds it, then
+        // times out and everyone else starts anyway.
         b.engine.userLoad(.b, "s3")
         await RemoteTestSupport.waitUntil { a.engine.decks[.b]?.songId == "s3" }
-        b.engine.userPlay(.b, fromMs: 0)
+        await RemoteTestSupport.waitUntil { a.sync.peerReadiness["B"]?["B"]?.status == .loading }
+        a.link.inject(envelope(MixWireKind.event, MixSyncEventMessage(originSeq: 10_000, event: MixSyncEvent(
+            kind: "play", deck: "B", anchor: MixSyncAnchor(positionMs: 0, atSharedTime: clock.t, isPlaying: true)))),
+                      from: "B")
         await barrier(b, a)
-        XCTAssertEqual(a.engine.plays.count, 1)
+        XCTAssertEqual(a.engine.plays.count, 1, "held for the owner's ready report")
         advance(MixSync.readyTimeoutMs)
         a.sync.tick()
         XCTAssertEqual(a.engine.plays.count, 2)
@@ -444,11 +581,13 @@ final class MixSyncTests: XCTestCase {
         await RemoteTestSupport.waitUntil { c.sync.owner(of: .b) == "C" }
 
         // Joined unsynced (started from the anchor as-is); once its clock syncs the owner's
-        // heartbeat pulls it onto the shared timeline.
+        // heartbeats (two in a row) pull it onto the shared timeline.
         syncClock(c, to: a)
-        advance(MixSync.heartbeatMs)
-        a.sync.tick()
-        await barrier(a, c)
+        for _ in 0..<2 {
+            advance(MixSync.heartbeatMs)
+            a.sync.tick()
+            await barrier(a, c)
+        }
         advance(MixSync.startLeadMs)
         XCTAssertEqual(c.engine.playhead(.a), a.engine.playhead(.a))
     }
@@ -511,6 +650,290 @@ final class MixSyncTests: XCTestCase {
         await RemoteTestSupport.waitUntil { b.sync.owner(of: .a) == "C" && c.sync.owner(of: .a) == "C" }
         b.engine.userSet("volume", .b, 0.4)
         await RemoteTestSupport.waitUntil { c.engine.value("volume", .b) == 0.4 }
+    }
+
+    // MARK: - Phase-2 review fixes
+
+    func testSystemPauseStaysLocalHoldsAndRejoinsAtTheAnchor() async {
+        let (a, b) = await twoDeviceMix()
+        a.engine.userLoad(.a, "s1")
+        a.engine.userPlay(.a, fromMs: 0)
+        await RemoteTestSupport.waitUntil { b.engine.plays.count == 1 }
+        advance(MixSync.startLeadMs)
+
+        // B's lock screen / an interruption pauses B's copy of A's deck: this device only.
+        let eventsBefore = sent(b, kind: MixWireKind.event).count
+        b.engine.systemPause(.a)
+        b.sync.tick()
+        XCTAssertEqual(sent(b, kind: MixWireKind.event).count, eventsBefore, "a system pause is never proposed")
+        XCTAssertTrue(b.sync.systemHeld.contains(.a))
+        for _ in 0..<3 {                                    // neither the repair loop nor the drift loop restarts it
+            advance(MixSync.heartbeatMs); a.sync.tick(); await barrier(a, b); b.sync.tick()
+        }
+        XCTAssertFalse(b.engine.decks[.a]!.isPlaying, "no repair while the system holds it (mid-call)")
+        XCTAssertTrue(a.engine.decks[.a]!.isPlaying, "the owner never heard about it")
+        XCTAssertEqual(b.engine.plays.count, 1)
+
+        // The system resumes: B REJOINS at the anchored position, not where it stopped.
+        b.engine.systemPlay(.a)
+        b.sync.tick()
+        XCTAssertFalse(b.sync.systemHeld.contains(.a))
+        advance(MixSync.startLeadMs)
+        XCTAssertEqual(b.engine.playhead(.a), a.engine.playhead(.a))
+
+        // The OWNER's own system pause: local to it — others keep playing, no heartbeat goes out.
+        let beatsBefore = sent(a, kind: MixWireKind.beat).count
+        a.engine.systemPause(.a)
+        advance(MixSync.heartbeatMs)
+        a.sync.tick()
+        await barrier(a, b)
+        XCTAssertTrue(b.engine.decks[.a]!.isPlaying)
+        XCTAssertEqual(sent(a, kind: MixWireKind.beat).count, beatsBefore, "a held deck is nobody's reference")
+        XCTAssertTrue(a.sync.model.deck(.a).anchor?.isPlaying == true)
+
+        // Engine housekeeping is ignored outright (not shared, not repaired).
+        b.engine.userLoad(.b, "s2")
+        b.engine.userPlay(.b)
+        let bEvents = sent(b, kind: MixWireKind.event).count
+        b.engine.enginePause(.b)
+        b.sync.tick()
+        XCTAssertEqual(sent(b, kind: MixWireKind.event).count, bEvents)
+    }
+
+    func testLostProposalExpiresAndResyncsFromTheSnapshot() async {
+        let (a, b) = await twoDeviceMix()
+        hub.drop = { env, from, _ in from == "B" && env.kind == MixWireKind.event }
+        b.engine.userCrossfader(0.9)                        // lost on the way to the host
+        hub.drop = nil
+        a.engine.userCrossfader(0.2)
+        await barrier(a, b)
+        XCTAssertEqual(b.engine.crossfader, 0.9, "shadowed while B believes its own proposal is in flight")
+        advance(MixSync.pendingTimeoutMs)
+        b.sync.tick()                                       // presumed lost → snapshot
+        await RemoteTestSupport.waitUntil { b.engine.crossfader == 0.2 }
+        XCTAssertEqual(b.sync.model.crossfader, 0.2)
+    }
+
+    func testHostDropsStaleReorderedProposals() async {
+        let (a, b) = await twoDeviceMix()
+        b.engine.userLoad(.b, "s2")
+        await RemoteTestSupport.waitUntil { a.engine.decks[.b]?.songId == "s2" }
+        func proposal(_ seq: Int, _ v: Double) -> RemoteEnvelope {
+            envelope(MixWireKind.event, MixSyncEventMessage(originSeq: seq, event: MixSyncEvent(kind: "volume", deck: "B", value: v)))
+        }
+        a.link.inject(proposal(500, 0.8), from: "B")
+        a.link.inject(proposal(499, 0.1), from: "B")        // reordered: the older one arrives last
+        await barrier(b, a)
+        XCTAssertEqual(a.engine.value("volume", .b), 0.8, "an older proposal never undoes a newer one")
+        XCTAssertEqual(a.sync.model.deck(.b).controls.first { $0.kind == "volume" }?.value, 0.8)
+        XCTAssertEqual(a.sync.staleDropped, 1)
+        a.link.inject(proposal(501, 0.3), from: "B")        // the next newer one goes through
+        await barrier(b, a)
+        XCTAssertEqual(a.engine.value("volume", .b), 0.3)
+    }
+
+    func testSeedCarriesTheWholeBoardAndReconcileResetsUnlistedControls() async {
+        let a = device("A"), b = device("B")
+        attachHost(a)
+        await join(b, host: a)
+        a.engine.decks[.a]!.songId = "s1"
+        a.engine.seeds[.a] = [
+            MixSyncEvent(kind: "load", deck: "A", songId: "s1", title: "T-s1"),
+            MixSyncEvent(kind: "tempo", deck: "A", value: 1.05),
+            MixSyncEvent(kind: "eq", deck: "A", param: "low", value: -6),
+            MixSyncEvent(kind: "effectToggle", deck: "A", param: "reverb", flag: true, slot: 1),
+            MixSyncEvent(kind: "stemMode", deck: "A", flag: true),
+            MixSyncEvent(kind: "pause", deck: "A", anchor: MixSyncAnchor(positionMs: 4_000, atSharedTime: nil, isPlaying: false)),
+        ]
+        // B's own pre-session board on deck A must not survive the session's load.
+        b.engine.decks[.a]!.controls["eq:A:high"] = MixSyncEvent(kind: "eq", deck: "A", param: "high", value: 9)
+        a.sync.start()
+        await RemoteTestSupport.waitUntil { b.sync.isActive && b.engine.decks[.a]?.songId == "s1" }
+        await barrier(a, b)
+        XCTAssertEqual(b.engine.decks[.a]!.controls["eq:A:low"]?.value, -6)
+        XCTAssertEqual(b.engine.decks[.a]!.controls["effectToggle:A:#1"]?.flag, true)
+        XCTAssertEqual(b.engine.decks[.a]!.controls["stemMode:A:"]?.flag, true)
+        XCTAssertEqual(b.engine.decks[.a]!.rate, 1.05)
+        XCTAssertNil(b.engine.decks[.a]!.controls["eq:A:high"], "a joiner's load takes the SESSION's board")
+        XCTAssertEqual(b.engine.playhead(.a), 4_000)
+
+        // A stray local change on a deck B doesn't own (a keyboard shortcut) is fully reverted —
+        // including a control the session never set (back to its default).
+        b.engine.userSet("volume", .a, 0.1)
+        b.engine.userSet("tempo", .a, 1.3)
+        b.sync.tick()
+        XCTAssertNil(b.engine.value("volume", .a), "an unlisted control goes back to default")
+        XCTAssertEqual(b.engine.decks[.a]!.controls["rate:A"]?.value, 1.05)
+        XCTAssertEqual(b.engine.decks[.a]!.rate, 1.05, "no stray tempo left to trip the drift loop")
+    }
+
+    func testLoopSyncsTheExactWindowAndJoinersSeekBeforeLooping() async {
+        let (a, b) = await twoDeviceMix()
+        a.engine.userLoad(.a, "s1")
+        a.engine.userPlay(.a, fromMs: 10_000)
+        await RemoteTestSupport.waitUntil { b.engine.plays.count == 1 }
+        advance(MixSync.startLeadMs + 500)                  // both at 10 800
+        a.engine.userLoop(.a, 10_500, 11_500)
+        await barrier(a, b)
+        XCTAssertEqual(b.engine.decks[.a]!.loop?.start, 10_500, "the owner's window, not one around B's playhead")
+        XCTAssertEqual(b.engine.decks[.a]!.loop?.end, 11_500)
+        advance(3_333)
+        XCTAssertEqual(b.engine.playhead(.a), a.engine.playhead(.a), "same phase inside the same window")
+        for _ in 0..<3 {                                    // in phase ⇒ the drift loop leaves a looping deck alone
+            advance(MixSync.heartbeatMs); a.sync.tick(); await barrier(a, b)
+        }
+        XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 0)
+
+        // Out of phase on a looping deck IS drift (compared inside the window, the short way round).
+        b.engine.decks[.a]!.posMs += 150
+        for _ in 0..<2 { advance(MixSync.heartbeatMs); a.sync.tick(); await barrier(a, b) }
+        XCTAssertEqual(b.sync.driftFixCount[.a, default: 0], 1)
+
+        // A late joiner: anchor (seek) FIRST, then the exact window — never a loop near 0:00.
+        let c = device("C")
+        await join(c, host: a)
+        await RemoteTestSupport.waitUntil { c.engine.decks[.a]?.loop != nil }
+        let iPlay = c.engine.applied.firstIndex { $0.hasPrefix("play:A") }
+        let iLoop = c.engine.applied.firstIndex { $0 == "loop:A:10500-11500" }
+        XCTAssertNotNil(iPlay); XCTAssertNotNil(iLoop)
+        XCTAssertLessThan(iPlay ?? .max, iLoop ?? .min)
+        advance(MixSync.startLeadMs)
+        XCTAssertEqual(c.engine.playhead(.a), a.engine.playhead(.a))
+    }
+
+    func testContinuousGesturesAreCoalescedAndOwnershipObserversStayQuiet() async {
+        let (a, b) = await twoDeviceMix()
+        b.engine.userLoad(.b, "s2")
+        await RemoteTestSupport.waitUntil { a.engine.decks[.b]?.songId == "s2" }
+        let before = sent(b, kind: MixWireKind.event).count
+        for i in 1...10 { b.engine.userSet("volume", .b, Double(i) / 10) }   // one drag burst
+        XCTAssertEqual(sent(b, kind: MixWireKind.event).count, before + 1, "the first move goes at once")
+        advance(MixSync.continuousIntervalMs)
+        b.sync.tick()
+        XCTAssertEqual(sent(b, kind: MixWireKind.event).count, before + 2, "…then ONE trailing send")
+        await RemoteTestSupport.waitUntil { a.engine.value("volume", .b) == 1.0 }
+
+        // The hot model isn't observed: a control on the wire never re-renders a deck.
+        var fired = false
+        withObservationTracking {
+            _ = a.sync.canControl(.b); _ = a.sync.owner(of: .a); _ = a.sync.myDecks
+        } onChange: { fired = true }
+        advance(100)
+        b.engine.userSet("volume", .b, 0.4)
+        await RemoteTestSupport.waitUntil { a.engine.value("volume", .b) == 0.4 }
+        XCTAssertFalse(fired, "ownership observers don't fire for control traffic")
+        a.sync.release(.a)
+        XCTAssertTrue(fired, "…only when an owner changes")
+    }
+
+    func testEveryDeviceTakesTheAnchorFromTheOwnersBeat() async {
+        let (a, b) = await twoDeviceMix()
+        b.engine.userLoad(.b, "s2")
+        b.engine.userPlay(.b, fromMs: 0)
+        await RemoteTestSupport.waitUntil { a.engine.plays.count == 1 }
+        a.engine.userLoad(.a, "s1")
+        a.engine.userPlay(.a, fromMs: 0)
+        await RemoteTestSupport.waitUntil { b.engine.plays.count == 1 }
+        advance(MixSync.heartbeatMs)
+        a.sync.tick()
+        b.sync.tick()
+        await barrier(a, b)
+        await barrier(b, a)
+        let fromA = lastSent(a, kind: MixWireKind.beat, as: MixSyncBeat.self)
+        let fromB = lastSent(b, kind: MixWireKind.beat, as: MixSyncBeat.self)
+        XCTAssertEqual(fromA?.deck, "A"); XCTAssertEqual(fromB?.deck, "B")
+        XCTAssertEqual(b.sync.model.deck(.a).anchor, fromA?.anchor, "a non-host folds the owner's beat in too")
+        XCTAssertEqual(a.sync.model.deck(.b).anchor, fromB?.anchor)
+        XCTAssertEqual(fromB?.uncertaintyMs ?? -1, 1, accuracy: 1e-9, "the owner reports ½ its RTT")
+    }
+
+    func testDeckBGoesOnlyToAMixCapablePeer() async {
+        let a = device("A")
+        attachHost(a)
+        let old = phase1Peer("0")                           // lowest id — would have won before
+        await RemoteTestSupport.waitUntil { old.hostId == "A" && old.state != nil }
+        let tv = device("1", platform: "Apple TV", deckOwnerCapable: false)
+        await join(tv, host: a)
+        let b = device("B")
+        await join(b, host: a)
+        a.sync.start()
+        a.sync.tick()
+        await RemoteTestSupport.waitUntil { b.sync.owner(of: .b) == "B" }
+        XCTAssertEqual(a.sync.owner(of: .b), "B", "not the Phase-1 build, not the Apple TV")
+    }
+
+    func testRealHostNeverEndsFromAnEmptyOrOlderHostsSnapshot() async {
+        let (a, b) = await twoDeviceMix()
+        a.engine.userLoad(.a, "s1")
+        await RemoteTestSupport.waitUntil { b.engine.decks[.a]?.songId == "s1" }
+        let seq = b.sync.model.hostSeq
+        // A snapshot from a host that doesn't have the mix (another epoch, inactive) / is behind.
+        for snap in [MixSyncSnapshot(epoch: "Z", active: false, hostSeq: 0, decks: [:], crossfader: nil, assignedB: false),
+                     MixSyncSnapshot(epoch: "Z", active: true, hostSeq: seq - 1, decks: [:], crossfader: nil, assignedB: false)] {
+            b.link.inject(envelope(MixWireKind.snapshot, snap), from: "A")
+            await barrier(a, b)
+            XCTAssertTrue(b.sync.isActive, "a live mix is never ended / rolled back by an empty host")
+            XCTAssertEqual(b.engine.decks[.a]?.songId, "s1")
+        }
+        XCTAssertEqual(sent(b, kind: MixWireKind.handover).count, 2, "…it hands that host the live mix instead")
+        await barrier(b, a)
+        XCTAssertEqual(a.sync.model.epoch, "A", "a host whose own mix is live and current keeps it")
+    }
+
+    func testAHostThatNeverHadTheMixAdoptsALiveMirror() async {
+        let e = device("E"), f = device("F")
+        let hub2Model: MixSyncModel = {
+            var m = MixSyncModel()
+            m.epoch = "X"; m.active = true; m.hostSeq = 9; m.assignedB = true
+            m.apply(MixSyncEvent(kind: "owner", deck: "A", owner: "F"), sharedNow: 0)
+            m.apply(MixSyncEvent(kind: "load", deck: "A", songId: "s7", title: "T-s7"), sharedNow: 0)
+            return m
+        }()
+        attachHost(e)
+        await join(f, host: e)
+        XCTAssertFalse(e.sync.isActive)
+        e.link.inject(envelope(MixWireKind.handover, MixSyncHandover(snapshot: hub2Model.snapshot(), sentAtLocal: clock.t)),
+                      from: "F")
+        await RemoteTestSupport.waitUntil { e.sync.isActive }
+        XCTAssertEqual(e.sync.model.epoch, "E")
+        XCTAssertEqual(e.sync.owner(of: .a), "F")
+        XCTAssertEqual(e.engine.decks[.a]?.songId, "s7")
+        await RemoteTestSupport.waitUntil { f.sync.isActive && f.sync.model.epoch == "E" }
+    }
+
+    func testResetDeckRewindsEveryoneAtOneSharedInstant() async {
+        let (a, b) = await twoDeviceMix()
+        a.engine.userLoad(.a, "s1")
+        a.engine.userPlay(.a, fromMs: 20_000)
+        await RemoteTestSupport.waitUntil { b.engine.plays.count == 1 }
+        advance(2_000)
+        let t = clock.t
+        a.engine.userReset(.a)
+        await RemoteTestSupport.waitUntil { b.engine.plays.count == 2 }
+        XCTAssertEqual(b.engine.plays[1].atLocalMs, t + MixSync.startLeadMs, accuracy: 0.001, "at the shared instant…")
+        XCTAssertEqual(b.engine.plays[1].fromMs, Int(MixSync.startLeadMs), "…where the owner's rewound deck will be")
+        advance(MixSync.startLeadMs)
+        XCTAssertEqual(b.engine.playhead(.a), a.engine.playhead(.a))
+    }
+
+    func testSnapshotRequestsBackOffAndStopForAHostThatNeverAnswers() async {
+        let host = phase1Peer("H", asHost: true)
+        let b = device("B")
+        b.remote.attach(b.link, mode: .listenTogether, asHost: false, autoTick: false)
+        await RemoteTestSupport.waitUntil { b.remote.hostId == "H" && b.remote.state != nil }
+        _ = host
+        b.sync.tick()
+        XCTAssertEqual(sent(b, kind: MixWireKind.request).count, 1)
+        var times: [Double] = []
+        let t0 = clock.t
+        for _ in 0..<40 {
+            advance(MixSync.snapshotRetryMs)
+            let n = sent(b, kind: MixWireKind.request).count
+            b.sync.tick()
+            if sent(b, kind: MixWireKind.request).count > n { times.append(clock.t - t0) }
+        }
+        XCTAssertEqual(times, [3_000, 9_000, 21_000, 45_000], "3, 6, 12, 24 s apart — then it stops")
+        XCTAssertEqual(sent(b, kind: MixWireKind.request).count, MixSync.snapshotMaxAttempts)
     }
 
     // MARK: - Pure model
@@ -609,7 +1032,140 @@ final class MixSyncTests: XCTestCase {
                        shuffled: false, lead: 5, fade: 3)
         XCTAssertFalse(e.autoMixing)
         e.setAutoDJBlocked(nil)
+        XCTAssertTrue(e.autoEnabled, "the user's Auto setting comes back when the session ends")
+        e.setAutoDJBlocked(MixSync.autoDJBlockedReason)
+        e.setAutoEnabled(false)                       // an explicit OFF during the session is remembered
+        e.setAutoDJBlocked(nil)
+        XCTAssertFalse(e.autoEnabled)
         e.setAutoEnabled(true)
         XCTAssertTrue(e.autoEnabled)
+    }
+
+    func testRealEngineSystemTransportIsTaggedAndNeverAUserGesture() throws {
+        let e = MixEngine(burns: try MixBurnFixture.burnStore(lengths: ["x": 6]))
+        var taps: [MixEngine.Gesture] = []
+        e.gestureTap = { taps.append($0) }
+        e.load(songId: "x", title: "T-x", artist: "A", bpm: 120, camelot: nil, key: nil, albumId: nil, on: .a)
+        e.play(.a)
+        e.remotePause()                               // lock screen / CarPlay / an interruption
+        e.remotePlay()
+        let transport = taps.filter { $0.kind == "play" || $0.kind == "pause" }
+        XCTAssertEqual(transport.map(\.kind), ["play", "pause", "play"])
+        XCTAssertEqual(transport.map(\.cause), [.user, .system, .system])
+        e.caused(.engine) { e.pause(.a) }
+        XCTAssertEqual(taps.last?.cause, .engine)
+        e.play(.a)
+        XCTAssertEqual(taps.last?.cause, .user, "the scope ends with its body")
+        e.pause(.a)
+    }
+
+    func testRealEngineScheduledStartPastTheFileFallsBackInsteadOfASilentNode() throws {
+        let e = MixEngine(burns: try MixBurnFixture.burnStore(lengths: ["x": 6]))
+        e.load(songId: "x", title: "T-x", artist: "A", bpm: 120, camelot: nil, key: nil, albumId: nil, on: .a)
+        e.play(.a, fromMs: 1_000, atHostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.3))
+        // A start cued past the end schedules NOTHING: the engine must not trust the old schedule
+        // (the empty node used to be started as "playing").
+        e.play(.a, fromMs: 9_000, atHostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.3))
+        XCTAssertFalse(e.fileScheduledForTesting(.a), "an empty reschedule is never trusted as live")
+        XCTAssertEqual(e.position(.a), 6, accuracy: 0.05)
+        e.pause(.a)
+    }
+
+    func testRealEngineLoopWindowIsSetExactlyAndAScheduledStartKeepsIt() throws {
+        let e = MixEngine(burns: try MixBurnFixture.burnStore(lengths: ["x": 8]))
+        e.load(songId: "x", title: "T-x", artist: "A", bpm: 120, camelot: nil, key: nil, albumId: nil, on: .a)
+        e.seek(.a, toSeconds: 2.2)
+        e.syncSetLoop(.a, on: true, units: 2, startMs: 3_000, endMs: 4_000)
+        XCTAssertTrue(e.loopOn(.a))
+        XCTAssertEqual(e.loopWindowMs(.a)?.start, 3_000, "the OWNER's window — not one around this playhead")
+        XCTAssertEqual(e.loopWindowMs(.a)?.end, 4_000)
+        // A scheduled (anchored) start on a looping deck: no lead subtracted OUT of the window.
+        e.play(.a, fromMs: 3_500, atHostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.3))
+        XCTAssertTrue(e.isPlaying(.a))
+        XCTAssertEqual(e.loopWindowMs(.a)?.start, 3_000, "a start never moves the loop")
+        XCTAssertEqual(e.loopWindowMs(.a)?.end, 4_000)
+        XCTAssertEqual(e.position(.a), 3.2, accuracy: 0.05, "started now at the phase it must have")
+        // The same window again is a no-op; release works like the loop button.
+        e.syncSetLoop(.a, on: true, units: 2, startMs: 3_000, endMs: 4_000)
+        XCTAssertEqual(e.loopWindowMs(.a)?.start, 3_000)
+        e.syncSetLoop(.a, on: false, units: nil, startMs: nil, endMs: nil)
+        XCTAssertFalse(e.loopOn(.a))
+        e.pause(.a)
+        XCTAssertEqual(MixEngine.foldIntoLoop(4.25, start: 3, end: 4), 3.25, accuracy: 1e-9)
+        XCTAssertEqual(MixEngine.foldIntoLoop(2.75, start: 3, end: 4), 3.75, accuracy: 1e-9)
+    }
+
+    func testRealEngineRateNudgeMultipliesAndRestoresTheUsersTempo() throws {
+        let e = MixEngine(burns: try MixBurnFixture.burnStore())
+        e.load(songId: "x", title: "T-x", artist: "A", bpm: 120, camelot: nil, key: nil, albumId: nil, on: .a)
+        e.setRate(1.05, on: .a)
+        e.syncNudgeRate(.a, factor: 1.01)
+        XCTAssertEqual(e.rateNudgeForTesting(.a) ?? 0, 1.01, accuracy: 1e-9)
+        XCTAssertEqual(e.rate(.a), 1.05, accuracy: 1e-9, "the user's tempo is never replaced")
+        e.syncNudgeRate(.a, factor: 1.5)
+        XCTAssertEqual(e.rateNudgeForTesting(.a) ?? 0, 1.01, accuracy: 1e-9, "clamped to ±1 %")
+        e.syncNudgeRate(.a, factor: 1)
+        XCTAssertNil(e.rateNudgeForTesting(.a))
+        XCTAssertEqual(e.rate(.a), 1.05, accuracy: 1e-9)
+    }
+
+    func testRealEngineSetControlsResetsUnlistedAndSeedCarriesTheBoard() throws {
+        let e = MixEngine(burns: try MixBurnFixture.burnStore())
+        var taps: [MixEngine.Gesture] = []
+        e.load(songId: "x", title: "T-x", artist: "A", bpm: 120, camelot: nil, key: nil, albumId: nil, on: .a)
+        e.setEqGain(.low, -9, on: .a)
+        e.setSlot(2, enabled: true, on: .a)
+        e.setSlotEffect(.filter, slot: 0, on: .a)
+        e.setVolume(0.5, on: .a)
+        let seed = e.syncSeedEvents(.a)
+        XCTAssertEqual(seed.first?.kind, "load")
+        XCTAssertEqual(seed.last?.kind, "pause")
+        XCTAssertTrue(seed.contains { $0.kind == "eq" && $0.param == "low" && $0.value == -9 })
+        XCTAssertTrue(seed.contains { $0.kind == "effectSlot" && $0.slot == 0 && $0.param == "filter" })
+        XCTAssertTrue(seed.contains { $0.kind == "effectToggle" && $0.slot == 2 && $0.flag == true })
+        XCTAssertEqual(seed.filter { $0.kind == "effectSlot" }.count, MixEngine.fxSlotCount, "the whole rack")
+
+        e.gestureTap = { taps.append($0) }
+        e.syncSetControls(.a, [MixSyncEvent(kind: "volume", deck: "A", value: 0.4),
+                               MixSyncEvent(kind: "effectSlot", deck: "A", param: "reverb", slot: 3),
+                               MixSyncEvent(kind: "effectToggle", deck: "A", param: "reverb", flag: true, slot: 3)])
+        XCTAssertEqual(e.volume(.a), 0.4, accuracy: 1e-9)
+        XCTAssertEqual(e.eqGain(.low, on: .a), 0, "an unlisted control goes back to default")
+        XCTAssertEqual(e.slot(0, on: .a)?.effect, .compressor, "a local-only rack layout doesn't survive")
+        XCTAssertEqual(e.slot(2, on: .a)?.enabled, false)
+        XCTAssertEqual(e.slot(3, on: .a)?.effect, .reverb)
+        XCTAssertEqual(e.slot(3, on: .a)?.enabled, true)
+        XCTAssertTrue(taps.isEmpty, "a reconcile is a remote apply — never tapped back")
+    }
+
+    func testRealEngineSessionSuspendsPersistenceAndRefusesAParkedRestore() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-mixsync-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let burns = try MixBurnFixture.burnStore()
+        let first = MixEngine(burns: burns)
+        first.sessionStore = MixDeckSessionStore(fileURL: url)
+        first.load(songId: "x", title: "T-x", artist: "A", bpm: 120, camelot: nil, key: nil, albumId: nil, on: .a)
+        let store = MixDeckSessionStore(fileURL: url)
+        await RemoteTestSupport.waitUntil { store.load()?.deckA?.track.songId == "x" }
+
+        // While mixing together, nothing the session does is written over the user's saved mix.
+        first.syncSessionActive(true)
+        let writes = first.persistWritesForTesting
+        first.load(songId: "y", title: "T-y", artist: "A", bpm: 120, camelot: nil, key: nil, albumId: nil, on: .b)
+        first.setVolume(0.2, on: .a)
+        XCTAssertEqual(first.persistWritesForTesting, writes, "the durable session is suspended")
+        first.syncSessionActive(false)
+        first.setVolume(0.3, on: .a)
+        XCTAssertGreaterThan(first.persistWritesForTesting, writes, "…and resumes after")
+
+        // A parked launch restore never lands on the session's decks.
+        let second = MixEngine(burns: burns)
+        second.sessionStore = store
+        second.restorePersistedMixIfIdle()
+        XCTAssertTrue(second.hasParkedRestore)
+        second.syncSessionActive(true)
+        XCTAssertFalse(second.hasParkedRestore, "a session start discards the parked restore")
+        second.materializePendingRestoreIfNeeded()
+        XCTAssertNil(second.loaded(.a))
     }
 }

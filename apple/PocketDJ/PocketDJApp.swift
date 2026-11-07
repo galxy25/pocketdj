@@ -1835,6 +1835,12 @@ struct PocketDJApp: App {
         // W7: a Mix moment's run plays through Mix Auto-DJ (crossfades, decks).
         pocketRuns.playThroughMix = { [weak mix, weak app, weak burns, weak studio, weak collections, weak settings] rows, label in
             guard let mix, let app, let burns, let studio, let collections, let settings else { return 0 }
+            // Mixing together owns the decks: refuse (0 ⇒ the run plays through the set list
+            // instead) and say why, rather than "starting" an Auto-DJ the engine won't run.
+            if let why = mix.autoDJBlockedReason {
+                DiagLog.shared.log("mix", "pocket run '\(label)' not through Mix: \(why)")
+                return 0
+            }
             let resolver = MixResolver(app: app, collections: collections, burns: burns, studio: studio, streamable: mix.canStream)
             let loadables = resolver.loadables(forSongIds: rows.map(\.songId))
             let byId = Dictionary(rows.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })

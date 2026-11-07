@@ -43,6 +43,8 @@ final class LoopbackHub {
     /// Optional one-way latency injection (seconds) per (from, to) — the clock tests' asymmetric
     /// delay. nil ⇒ immediate.
     var latency: ((String, String) -> Double)?
+    /// Optional loss injection: true ⇒ the envelope from → to is dropped (a lost send).
+    var drop: ((RemoteEnvelope, String, RemoteRecipient) -> Bool)?
 
     init() {}
 
@@ -70,6 +72,7 @@ final class LoopbackHub {
     }
 
     fileprivate func deliver(_ env: RemoteEnvelope, from: String, to: RemoteRecipient) {
+        if drop?(env, from, to) == true { return }
         let targets: [LoopbackTransport]
         switch to {
         case .all: targets = peers.values.filter { $0.localParticipantId != from }

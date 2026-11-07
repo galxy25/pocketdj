@@ -849,6 +849,9 @@ struct TVGlideToggles: View {
 /// the other platforms' long-press sliders, driving the same engine setters.
 struct TVMixControlsRow: View {
     @Environment(MixEngine.self) private var engine
+    /// Mixing together (SharePlay): the TV renders both decks but owns none — every control here
+    /// is read-only for a deck another participant drives (nil outside the app scene / previews).
+    @Environment(MixSync.self) private var mixSync: MixSync?
 
     private static let stemLabels: [(String, String)] = [
         ("vocals", "Vocals"), ("drums", "Drums"), ("bass", "Bass"), ("other", "Other"),
@@ -857,6 +860,7 @@ struct TVMixControlsRow: View {
     /// The LEAD deck — every control here scopes to what the room is HEARING (owner's call:
     /// per-deck board semantics stay on the other platforms; the TV drives the live deck).
     private var deck: MixEngine.Deck { engine.nowPlayingDeck ?? .a }
+    private var readOnly: Bool { mixSync.map { !$0.canControl(deck) } ?? false }
 
     var body: some View {
         // THREE rows, not one. The FX slots and the tempo/pitch groups used to share a single
@@ -966,6 +970,7 @@ struct TVMixControlsRow: View {
         }
         .font(.callout)
         .buttonStyle(.bordered)
+        .mixReadOnly(readOnly)
     }
 }
 

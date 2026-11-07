@@ -24,6 +24,16 @@ enum MixWireKind {
     static let beat = "mix.beat"
     /// host → the sender: a proposal was refused (not the deck's owner, deck taken…).
     static let reject = "mix.reject"
+    /// participant → the (new) host: "your mix is older / empty — here is the live one I mirror"
+    /// (a host election that landed on a device that never had the mix). The host adopts it only
+    /// when its own model is inactive or behind; a live mix is never ended by an empty host.
+    static let handover = "mix.handover"
+}
+
+/// The `RemoteHello.caps` entry a device that can own a deck advertises (a Phase-1-only build
+/// sends no caps; an Apple TV renders the mix but has no deck UI, so it never advertises it).
+enum MixCapability {
+    static let deckOwner = "mix"
 }
 
 /// The sync-layer event kinds beyond the engine's gesture kinds (`MixEventKind` rawValues +
@@ -44,6 +54,11 @@ enum MixSyncKind {
     /// Transport kinds carry a full `MixSyncAnchor` (play / pause / seek are one shape:
     /// "this deck is at P at shared time T, playing or not").
     static let transport: Set<String> = [play, pause, seek]
+
+    /// Continuous surfaces (sliders / knobs / drags): proposals are COALESCED to one per
+    /// `MixSync.continuousIntervalMs` per control, with a trailing send of the final value.
+    static let continuous: Set<String> = [tempo, "pitch", "volume", "eq", "effectStrength", "stemVolume",
+                                          "effectMod", crossfader]
 }
 
 /// "Deck at `positionMs` (source ms) at shared time `atSharedTime`, playing or paused". A
@@ -84,9 +99,16 @@ struct MixSyncEvent: Codable, Equatable, Sendable {
     var posMs: Int? = nil
     var anchor: MixSyncAnchor? = nil
     var owner: String? = nil
+    /// `loop`: the exact window (source ms) the owner's deck loops — every device loops THESE
+    /// frames (nil from an older sender ⇒ the receiver derives a window around its playhead).
+    var loopStartMs: Int? = nil
+    var loopEndMs: Int? = nil
 
     var engineDeck: MixEngine.Deck? { deck.flatMap(MixEngine.Deck.init(rawValue:)) }
     var isTransport: Bool { MixSyncKind.transport.contains(kind) }
+    /// Carries a shared-clock anchor the host re-times into the future (transport, and ↺ —
+    /// which rewinds every device at ONE shared instant, not on arrival).
+    var carriesAnchor: Bool { isTransport || kind == MixSyncKind.resetDeck }
 
     /// The CONTROL this event sets — latest-wins per key (the snapshot keeps one event per key,
     /// and a sender's own un-echoed proposal on a key shadows other senders' older ones).
@@ -99,6 +121,7 @@ struct MixSyncEvent: Codable, Equatable, Sendable {
             return "transport:\(d)"
         case MixSyncKind.tempo, MixSyncKind.sync: return "rate:\(d)"
         case MixSyncKind.crossfader: return "crossfader"
+        case MixSyncKind.loop, MixSyncKind.loopUnits: return "loop:\(d)"   // one loop state per deck
         default:
             let sub = slot.map { "#\($0)" } ?? param ?? ""
             return "\(kind):\(d):\(sub)"
@@ -165,6 +188,17 @@ struct MixSyncBeat: Codable, Equatable, Sendable {
     var songId: String
     var anchor: MixSyncAnchor
     var epoch: String
+    /// The owner's own clock uncertainty (best RTT / 2 to the host, 0 on the host) — a receiver
+    /// adds it to its own before calling a difference "drift". Optional: older senders omit it.
+    var uncertaintyMs: Double? = nil
+}
+
+/// `mix.handover` body: a mirror's snapshot with every anchor re-expressed on the SENDER's local
+/// clock (`sentAtLocal` = the sender's clock when it sent) — the receiving host maps them onto
+/// its own timeline as "that long before / after now" (error ≤ one-way latency; heartbeats trim it).
+struct MixSyncHandover: Codable, Equatable, Sendable {
+    var snapshot: MixSyncSnapshot
+    var sentAtLocal: Double
 }
 
 struct MixSyncReject: Codable, Equatable, Sendable {
@@ -213,7 +247,8 @@ struct MixSyncModel: Equatable, Sendable {
 
     /// Controls a fresh LOAD returns to default (the engine's `commitLoad` resets them).
     private static let resetByLoad: Set<String> = [MixSyncKind.tempo, MixSyncKind.sync, "pitch", "stemMode",
-                                                   "stemMute", "stemVolume", MixSyncKind.loop, MixSyncKind.lead]
+                                                   "stemMute", "stemVolume", MixSyncKind.loop,
+                                                   MixSyncKind.loopUnits, MixSyncKind.lead]
     /// Controls ↺ returns to default (`resetDeck` keeps the rack LAYOUT, stem mode, lead, loop).
     private static let resetByReset: Set<String> = [MixSyncKind.tempo, MixSyncKind.sync, "pitch", "volume",
                                                     "effectToggle", "effectStrength", "eq", "stemMute", "stemVolume"]
@@ -246,9 +281,14 @@ struct MixSyncModel: Equatable, Sendable {
         case MixSyncKind.resetDeck:
             ds.rate = 1
             ds.dropControls { Self.resetByReset.contains($0.kind) }
-            // ↺ rewinds and keeps the play state.
-            let playing = ds.anchor?.isPlaying ?? false
-            ds.anchor = MixSyncAnchor(positionMs: 0, atSharedTime: sharedNow, isPlaying: playing)
+            // ↺ rewinds and keeps the play state — at the host's shared instant when it says one.
+            if var a = e.anchor {
+                if a.atSharedTime == nil { a.atSharedTime = sharedNow }
+                ds.anchor = a
+            } else {
+                let playing = ds.anchor?.isPlaying ?? false
+                ds.anchor = MixSyncAnchor(positionMs: 0, atSharedTime: sharedNow, isPlaying: playing)
+            }
         case MixSyncKind.tempo, MixSyncKind.sync:
             if let v = e.value { ds.rate = v }
             ds.setControl(e)
