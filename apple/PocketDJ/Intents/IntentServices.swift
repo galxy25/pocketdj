@@ -128,6 +128,12 @@ final class IntentServices {
         if isOnboardingIncomplete { throw PocketDJIntentError.setupIncomplete }
     }
 
+    /// An Auto-DJ start is refused while mixing together (SharePlay) — say WHY instead of
+    /// reporting a mix that never started.
+    func vetoDuringMixTogether() throws {
+        if let why = mix.autoDJBlockedReason { throw PocketDJIntentError.mixTogetherActive(why) }
+    }
+
     /// The same veto, as a QUESTION rather than a throw — for the one playback path that does not
     /// run through `playSongIds` and so cannot inherit its guard: a New-tile queue, whose ids are
     /// unowned `am:<storeID>` streams that `CollectionsStore.playNow` would drop on the floor (see
@@ -315,7 +321,8 @@ final class IntentServices {
         //    continuation, stops the lanes and hides the bar);
         //  • hand-played decks (running without Auto-DJ) pause too, not just an auto-mix.
         mixDownloader?.cancel()
-        if mix.autoMixing { mix.stopAutoMix() } else if mix.isRunning { mix.pauseBoth() }
+        // A system hand-off, not a DJ's gesture: mixing together, it silences THIS device only.
+        if mix.autoMixing { mix.stopAutoMix() } else if mix.isRunning { mix.caused(.system) { mix.pauseBoth() } }
         DiagLog.shared.log("mixdl", "fallback → Now Playing: \(set.tracks.count) tracks from \(sources.count) crate(s)")
         startNowPlaying(set)
         return set.tracks.count
@@ -341,6 +348,7 @@ final class IntentServices {
     func startAutoMix(source: MixSource, shuffle: Bool,
                       allowPendingStart: Bool = false) async throws -> (name: String, count: Int) {
         try vetoDuringOnboarding()
+        try vetoDuringMixTogether()
         await ensureReady()
         let name: String
         switch source {
@@ -408,6 +416,7 @@ final class IntentServices {
     func startAutoMix(deckA: MixSource, deckB: MixSource, shuffle: Bool,
                       allowPendingStart: Bool = false) async throws -> (name: String, count: Int) {
         try vetoDuringOnboarding()
+        try vetoDuringMixTogether()
         await ensureReady()
         func displayName(_ source: MixSource) throws -> String {
             switch source {
@@ -608,6 +617,8 @@ enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
     /// A Mix-tab session owns the DSP — the Now Playing mini-mix is off meanwhile.
     case mixTabLive
     case stemsUnavailable(String)
+    /// A multiplayer Mix (SharePlay "Mix together") owns the decks — no Auto-DJ meanwhile.
+    case mixTogetherActive(String)
 
     var localizedStringResource: LocalizedStringResource {
         switch self {
@@ -644,6 +655,8 @@ enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
         case .mixTabLive:
             return "The Mix tab is playing. Stems by voice work on Now Playing — use the Mix tab's stem pads for its decks."
         case .stemsUnavailable(let why):
+            return "\(why)"
+        case .mixTogetherActive(let why):
             return "\(why)"
         }
     }

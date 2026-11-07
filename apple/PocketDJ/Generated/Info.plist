@@ -68,6 +68,8 @@
 	<false/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSSupportsGroupActivities</key>
+	<true/>
 	<key>PocketDJAppleMusicEnabled</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>

@@ -62,6 +62,9 @@ targets:
         # question on every upload. Lands in the built Info.plist (same reason as the
         # keys above), so apple/scripts/testflight.sh uploads are submit-ready immediately.
         ITSAppUsesNonExemptEncryption: false
+        # SharePlay (the Remote tab — RemoteSessionController / PocketDJSessionActivity). Lets the
+        # system offer PocketDJ's GroupActivity in FaceTime / Messages / nearby sharing.
+        NSSupportsGroupActivities: true
         # --- CarPlay scene ---------------------------------------------------------
         # An EXPLICIT scene manifest that declares ONLY the CarPlay scene role + its
         # delegate. `UIApplicationSupportsMultipleScenes: true` lets SwiftUI keep

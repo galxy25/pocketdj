@@ -47,5 +47,9 @@
          PocketDJ.entitlements note. -->
     <key>aps-environment</key>
     <string>development</string>
+    <!-- SharePlay (the Remote tab: Listen Together + Backseat). Group Activities
+         capability on the App ID; same key in all four app entitlement files. -->
+    <key>com.apple.developer.group-session</key>
+    <true/>
 </dict>
 </plist>

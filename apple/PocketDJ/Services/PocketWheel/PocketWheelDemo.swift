@@ -60,16 +60,18 @@ enum PocketWheelDemo {
             ev("late_\((d + 5) % 12)", at(d, 21, 5), .mix, origin: "pkt_late", skipped: d % 5 == 0)
             if d % 4 == 0 { ev("late_\((d + 2) % 12)", at(d, 23, 0), .mix, origin: "pkt_late") }
         }
-        let artists = ["Drake", "Bryson Tiller", "6LACK", "dvsn", "Majid Jordan", "SZA"]
+        // Invented artists only (the `screenshot-index` fixture's names): this seed is what the App
+        // Store screenshots show, and the pocket card lists a cell's artists — no real names there.
+        let artists = ["Aria", "Nova Scout", "Kilo Frequency", "Cora Jean", "Ivory Delta", "Static Bloom"]
         var songs: [String: PocketMomentEngine.SongInfo] = [:]
         for i in 0..<24 { songs["pot_\(i)"] = .init(artist: artists[i % artists.count], genre: i % 3 == 0 ? "hip-hop" : "r&b",
                                                     bpm: Double(88 + (i % 6) * 4), year: 2012 + i % 10) }
-        for i in 0..<12 { songs["late_\(i)"] = .init(artist: ["Massive Attack", "Portishead", "Burial"][i % 3], genre: "electronic",
+        for i in 0..<12 { songs["late_\(i)"] = .init(artist: ["Velvet Meridian", "Luna Vale", "Static Bloom"][i % 3], genre: "electronic",
                                                      bpm: Double(70 + i * 2), year: 1994 + i % 8) }
-        for i in 0..<10 { songs["fav_\(i)"] = .init(artist: ["Daft Punk", "Justice"][i % 2], genre: "electronic", bpm: Double(120 + i), year: 2007) }
-        for i in 0..<10 { songs["gym_\(i)"] = .init(artist: "Run the Jewels", genre: "hip-hop", bpm: Double(140 + i), year: 2016) }
-        for i in 0..<8 { songs["road_\(i)"] = .init(artist: "Tom Petty", genre: "rock", bpm: Double(110 + i), year: 1979 + i) }
-        for i in 0..<8 { songs["lun_\(i)"] = .init(artist: "Khruangbin", genre: "electronic", bpm: Double(96 + i), year: 2018) }
+        for i in 0..<10 { songs["fav_\(i)"] = .init(artist: ["DJ Meridian West", "Kilo Frequency"][i % 2], genre: "electronic", bpm: Double(120 + i), year: 2007) }
+        for i in 0..<10 { songs["gym_\(i)"] = .init(artist: "Nova Scout", genre: "hip-hop", bpm: Double(140 + i), year: 2016) }
+        for i in 0..<8 { songs["road_\(i)"] = .init(artist: "The Paper Suns", genre: "rock", bpm: Double(110 + i), year: 1979 + i) }
+        for i in 0..<8 { songs["lun_\(i)"] = .init(artist: "Marrow & Pine", genre: "electronic", bpm: Double(96 + i), year: 2018) }
         return PocketMomentEngine.Input(
             events: events,
             collections: collections.map { .init(id: $0.id, name: $0.name, songIds: []) },
@@ -77,4 +79,20 @@ enum PocketWheelDemo {
     }
 
     static var isRequested: Bool { ProcessInfo.processInfo.environment["PDJ_SEED_POCKET_WHEEL"] != nil }
+
+    /// `PDJ_WHEEL_NOW=<dow>,<hour>` (dow 1 = Monday … 7, hour fractional local): pins the centre
+    /// ▶'s "now" to the most recent PAST such moment, so a screenshot's best-match caption is
+    /// deterministic instead of depending on when the capture ran. Only honoured with the demo seed.
+    static func pinnedNow(_ date: Date = Date(), tz: TimeZone = .current) -> Date? {
+        guard isRequested, let raw = ProcessInfo.processInfo.environment["PDJ_WHEEL_NOW"] else { return nil }
+        let parts = raw.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count == 2, (1...7).contains(Int(parts[0])), (0..<24).contains(parts[1]) else { return nil }
+        let nowMs = date.timeIntervalSince1970 * 1000
+        let tzMin = tz.secondsFromGMT(for: date) / 60
+        let local = PocketClock.local(atMs: nowMs, tzOffsetMin: tzMin)
+        let midnightMs = nowMs - local.fractionalHour * 3_600_000
+        var daysBack = (local.dow - Int(parts[0]) + 7) % 7
+        if daysBack == 0, parts[1] >= local.fractionalHour { daysBack = 7 }
+        return Date(timeIntervalSince1970: (midnightMs - Double(daysBack) * 86_400_000 + parts[1] * 3_600_000) / 1000)
+    }
 }

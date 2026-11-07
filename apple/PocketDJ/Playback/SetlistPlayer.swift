@@ -108,7 +108,7 @@ final class SetlistPlayer {
         }
     }
     /// Monotonic queue identity for the off-main session-row projection (see above).
-    @ObservationIgnored private var queueGeneration = 0
+    @ObservationIgnored private(set) var queueGeneration = 0
     /// A cold session-row projection is being built off-main; further snapshots wait for it
     /// (its landing persists with the then-current position, so nothing is lost).
     @ObservationIgnored private var sessionRowsBuildInFlight = false
@@ -383,6 +383,22 @@ final class SetlistPlayer {
         // Apple Music is left alone (macOS idles the engine while MusicKit owns the audio — a
         // restart there would replay the row from 0:00), and a start already in flight is not
         // restarted (the resolve / start watchdog own it).
+        // Remote sessions: every system ▶/⏸/⏯ is the listener's intent (recorded) and, while
+        // this device is a Backseat CONTROLLER, goes to the session instead of local audio.
+        player.onListenerTransport = { [weak self] kind in
+            guard let self else { return false }
+            switch kind {
+            case .play: return self.routeListenerPlayPause(.setPlaying(true))
+            case .pause: return self.routeListenerPlayPause(.setPlaying(false))
+            case .toggle: return self.routeListenerPlayPause(.playPause)
+            }
+        }
+        // A Remote session parked the set over an item the engine still holds (the PREVIOUS
+        // song): a system ▶ must resume the held row, not that stale item.
+        player.ownerHoldsOverLoadedItem = { [weak self] in
+            guard let self else { return false }
+            return self.isRunning && self.isHeldForResume && self.heldByRemote
+        }
         player.onIdlePlay = { [weak self] in
             guard let self, self.isRunning else { return nil }
             if self.isHeldForResume { self.resumeFromHold(); return "resumeHeld" }
@@ -421,6 +437,27 @@ final class SetlistPlayer {
         #endif
     }
     @ObservationIgnored private var mediaResetObserver: NSObjectProtocol?
+
+    // Remote session seams — see `TransitionCause` / `RemoteRedirect` (stored here: the
+    // methods live in an extension).
+    /// Bumped on every current-row change / restart, with its cause (see `TransitionCause`).
+    @ObservationIgnored private(set) var transitionSeq = 0
+    @ObservationIgnored private(set) var lastTransitionCause: TransitionCause = .user
+    /// `transitionSeq` of the last LISTENER transition (`.user`).
+    @ObservationIgnored private(set) var lastUserTransitionSeq = 0
+    /// Bumped on every ▶/⏸ the LISTENER pressed (panel, widget, lock screen, AirPods, CarPlay),
+    /// with the state they asked for — never by a cascade halt, an interruption, or a stall.
+    @ObservationIgnored private(set) var userPlayIntentSeq = 0
+    @ObservationIgnored private(set) var lastUserPlayIntent = false
+    @ObservationIgnored private var remoteApplyDepth = 0
+    /// The current HOLD was made by a Remote session (`play(startPaused:)` / controller
+    /// silence), over whatever the engine still has loaded — see `ownerHoldsOverLoadedItem`.
+    /// Only meaningful while `isHeldForResume`; a restore's hold clears it.
+    @ObservationIgnored private var heldByRemote = false
+    /// Wired to the app's `RemoteSessionController`: returns true when this device is a
+    /// Backseat CONTROLLER (the request was forwarded to the session and must not play here).
+    /// nil / false ⇒ every transport behaves exactly as before.
+    @ObservationIgnored var remoteControllerGate: ((RemoteRedirect) -> Bool)?
 
     /// What the set does after a stray MusicKit play was silenced.
     enum StrayReclaimAction: String, Equatable {
@@ -480,6 +517,10 @@ final class SetlistPlayer {
     @ObservationIgnored private var startStallTask: Task<Void, Never>?
     /// A track start is in flight (from `playCurrent` until first audio / the cap / stop).
     var isStartPending: Bool { startWindow != nil }
+    /// A start was requested (`startPlayCurrent`) and its task hasn't run yet, OR one is pending —
+    /// the one-main-actor-turn gap before `playCurrent` opens the start window included.
+    var isStartInFlight: Bool { startQueued || startWindow != nil }
+    @ObservationIgnored private var startQueued = false
 
     /// Open the start window for generation `gen`: a background runway held until the track
     /// actually renders (BOTH lanes — the local-file branch used to have none, so a locked
@@ -641,9 +682,17 @@ final class SetlistPlayer {
     /// fresh `play` replaces whatever was running — that's the ONLY thing that stops a set.
     /// `preStamped: true` ⇒ `items` already went through `prepareStamped` (the off-main
     /// edition stamp) — skip the synchronous 26k-row re-stamp. Every other caller keeps the
-    /// exact sync behavior.
-    func play(_ items: [Item], sourceSetlistId: String? = nil, preStamped: Bool = false) {
+    /// exact sync behavior. `startIndex` starts the run ON that row (rows before it land in the
+    /// played region) — the Remote session's speaker mirrors a host queue mid-set; every other
+    /// caller starts at the top. `startPaused: true` loads NOTHING: the run parks HELD on that
+    /// row at `startAtMs` (the restore discipline) and the first ▶ resumes it there — a Remote
+    /// speaker joining a PAUSED session must not sound for even a moment.
+    func play(_ items: [Item], sourceSetlistId: String? = nil, preStamped: Bool = false,
+              startIndex: Int = 0, startPaused: Bool = false, startAtMs: Int? = nil) {
         guard !items.isEmpty else { return }
+        let startIndex = max(0, min(startIndex, items.count - 1))
+        // A Backseat CONTROLLER plays nothing: the set goes to the session instead.
+        if redirectedToRemote(.play(items, startIndex: startIndex)) { return }
         // Telemetry funnel: EVERY "start playing this set" in the app lands here (rows, intents,
         // CarPlay, widgets), so one line captures them all — and doubles as the play-signal the
         // rec engine's remote analysis reads.
@@ -653,7 +702,7 @@ final class SetlistPlayer {
         // neither does replacing the set with one that OPENS ON THE SAME SONG (replaying the
         // current set from its collection to hear this song from the top is a restart, not a
         // skip of the song the user actively chose again).
-        if isRunning, let first = items.first, !isRestartOfCurrent(first.id) { noteAdvanceAway() }
+        if isRunning, !isRestartOfCurrent(items[startIndex].id) { noteAdvanceAway() }
         // The previous session's playback rips (minus the row that was sounding and anything
         // heard) are cancelled — a fresh run has its own window.
         if isRunning { endRipWindowSession(reason: "new-session") }
@@ -665,7 +714,8 @@ final class SetlistPlayer {
         capturedHistoryContext = historyContextProvider?(sourceSetlistId)
         capturedOrigin = originProvider?(sourceSetlistId)
         queue = preStamped ? items : stampEditions(items, sourceSetlistId: sourceSetlistId)
-        index = 0
+        index = startIndex
+        noteTransition(.user)
         // Live shuffle is per-run (repeat mode is sticky). The one-shot `playNow(shuffle:)` already
         // randomized the incoming order when requested; the live toggle starts OFF for the new queue.
         shuffleEnabled = false
@@ -688,6 +738,17 @@ final class SetlistPlayer {
         sessionId = "pses_" + UUID().uuidString
         persistSession(positionMs: 0)
         startPositionTicker()
+        if startPaused {
+            // Whatever the previous run was sounding (or starting) goes quiet; the new run is
+            // parked on its row — `resumeFromHold` (the first ▶) starts it at `startAtMs`.
+            cancelStartAndSilence(reason: "start-paused")
+            currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
+            isHeldForResume = true
+            heldByRemote = true
+            pendingResumeMs = (startAtMs ?? 0) > 0 ? startAtMs : nil
+            return
+        }
+        if let ms = startAtMs, ms > 0 { cueNextStart(songId: queue[index].id, atMs: ms) }
         startPlayCurrent()
     }
 
@@ -944,6 +1005,7 @@ final class SetlistPlayer {
         if isRunning { endRipWindowSession(reason: "stop") }
         cascade.reset(); pausedByCascade = false; playbackNotice = nil
         playTask?.cancel(); playTask = nil // a resolve still in flight must not load into a stopped deck
+        startQueued = false
         playGeneration &+= 1               // …and its post-await bookkeeping must stand down
         endMixEngagement()                 // F4: drop any DSP hand-off before tearing the run down
         isRunning = false
@@ -1003,6 +1065,7 @@ final class SetlistPlayer {
 
     /// Manually advance (used by the live-track "Next" affordance + lock-screen NEXT).
     func skipNext() {
+        if redirectedToRemote(.skipNext) { return }
         DiagLog.shared.telemetry("action", "skip next from=\(queue.indices.contains(index) ? queue[index].title : "?")")
         noteAdvanceAway()
         exitHoldIfNeeded()
@@ -1013,6 +1076,7 @@ final class SetlistPlayer {
     /// goes below index 0. Re-resolves + plays the (now) current track.
     func skipPrevious() {
         guard isRunning else { return }
+        if redirectedToRemote(.skipPrevious) { return }
         DiagLog.shared.telemetry("action", "skip previous")
         noteUserTransport()
         exitHoldIfNeeded()
@@ -1024,6 +1088,7 @@ final class SetlistPlayer {
         } else {
             index -= 1
         }
+        noteTransition(.user)
         persistSession(positionMs: 0)
         startPlayCurrent()
     }
@@ -1337,6 +1402,7 @@ final class SetlistPlayer {
     func jumpToUpcoming(uid: UUID) {
         guard isRunning, index + 1 < queue.count,
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
+        if redirectedToRemote(.jump(uid)) { return }
         DiagLog.shared.telemetry("action", "jump to upcoming \(queue[pos].title)")
         // Jumping onto ANOTHER OCCURRENCE of the same song is a restart, not a skip of it.
         if !isRestartOfCurrent(queue[pos].id) { noteAdvanceAway() }
@@ -1344,6 +1410,7 @@ final class SetlistPlayer {
         exitHoldIfNeeded()
         waitingForLive = false
         index = pos
+        noteTransition(.user)
         persistSession(positionMs: 0)
         startPlayCurrent()
     }
@@ -1362,6 +1429,7 @@ final class SetlistPlayer {
     /// per-instance identity in the queue, which the uid-keyed live-queue edits rely on being unique.
     func playNow(_ item: Item) {
         guard isRunning else { return }
+        if redirectedToRemote(.playNow(item)) { return }
         // Play-now of the SONG ALREADY PLAYING = "hear it from the top" — a restart the user
         // actively chose, never a skip verdict against the exact song they asked for again.
         if !isRestartOfCurrent(item.id) { noteAdvanceAway() }
@@ -1371,6 +1439,7 @@ final class SetlistPlayer {
         let at = min(index + 1, queue.count)
         queue.insert(item, at: at)
         index = at
+        noteTransition(.user)
         persistSession(positionMs: 0)
         // `fresh: true` (the default) is LOAD-BEARING here, not incidental: the index moved to a
         // different track, and `fresh` is what tears down an F4 Now Playing mix engagement. Passing
@@ -1393,12 +1462,14 @@ final class SetlistPlayer {
     func jumpToPlayed(uid: UUID) {
         guard isRunning, index > 0,
               let pos = queue[..<min(index, queue.count)].firstIndex(where: { $0.uid == uid }) else { return }
+        if redirectedToRemote(.jump(uid)) { return }
         // Rewinding onto an EARLIER OCCURRENCE of the same song is a restart, not a skip of it.
         if !isRestartOfCurrent(queue[pos].id) { noteAdvanceAway() }
         noteUserTransport()
         exitHoldIfNeeded()
         waitingForLive = false
         index = pos
+        noteTransition(.user)
         persistSession(positionMs: 0)
         startPlayCurrent()
     }
@@ -3008,6 +3079,7 @@ final class SetlistPlayer {
     /// song's own end boundary.
     private func retargetInPlace(_ it: Item, startMs: Int, from np: RipsStore.NowPlaying, backend: String) {
         playTask?.cancel()
+        startQueued = false                   // the cancelled start never runs `playCurrent`'s clear
         playGeneration &+= 1
         coordinator.supersedePendingPlay()
         onTrackRestart?(it.id)
@@ -3165,6 +3237,7 @@ final class SetlistPlayer {
         // arm the end hooks + position sampler exactly as a resume would.
         exitHoldIfNeeded()
         index = pos
+        noteTransition(.user)
         waitingForLive = false
         persistSession(positionMs: 0)
         // Jumped onto a new track (a manual member play) — arm ITS repeat count, not the
@@ -3220,6 +3293,7 @@ final class SetlistPlayer {
         // Repeat-ONE (whole-session mode) takes precedence: replay the current track from the top.
         // Only on a NATURAL end — an explicit ⏭ / dead source goes through `advanceToNext`.
         if effectiveRepeatMode == .one {
+            noteTransition(.naturalEnd)
             startPlayCurrent(fresh: true)
             return
         }
@@ -3229,17 +3303,21 @@ final class SetlistPlayer {
         // An explicit skip or a dead source does NOT go through here — it calls `advanceToNext`.
         if currentPlaysRemaining > 1 {
             currentPlaysRemaining -= 1
+            noteTransition(.naturalEnd)
             startPlayCurrent(fresh: false)
             return
         }
         // A NATURAL end may glide onto the next song of the same album file (see
         // `glideInSameFile`); a skip / dead source never does.
         glideOnNextAdvance = true
+        naturalEndAdvance = true
         advanceToNext()
     }
 
     /// Set only by `handleEnded` for the advance it triggers (consumed at its top).
     @ObservationIgnored private var glideOnNextAdvance = false
+    /// Set only by the NATURAL-end paths for the advance they trigger (the transition cause).
+    @ObservationIgnored private var naturalEndAdvance = false
 
     /// The current item FAILED mid-song (network error on a streamed mp3): a dead source —
     /// advance (no repeat), same ownership guard as `handleEnded`.
@@ -3282,14 +3360,17 @@ final class SetlistPlayer {
         }
         // Repeat-ONE (whole-session mode): replay the current AM track from the top.
         if effectiveRepeatMode == .one {
+            noteTransition(.naturalEnd)
             startPlayCurrent(fresh: true)
             return
         }
         if currentPlaysRemaining > 1 {
             currentPlaysRemaining -= 1
+            noteTransition(.naturalEnd)
             startPlayCurrent(fresh: false)
             return
         }
+        naturalEndAdvance = true
         advanceToNext()
     }
 
@@ -3317,6 +3398,8 @@ final class SetlistPlayer {
     private func advanceToNext(_ cause: AdvanceCause = .auto) {
         let mayGlide = glideOnNextAdvance
         glideOnNextAdvance = false
+        let natural = naturalEndAdvance
+        naturalEndAdvance = false
         guard isRunning else { return }
         // Dead-air clock: an auto-advance is the between-tracks gap; a skip is listener-driven.
         DeadAirMeter.shared.transitionBegan(cause: cause == .user ? "skip" : "advance")
@@ -3337,6 +3420,11 @@ final class SetlistPlayer {
         DiagLog.shared.log("playback", "advance from=\(queue.indices.contains(index) ? queue[index].id : "?") index=\(index)/\(queue.count)")
         waitingForLive = false
         index += 1
+        switch cause {
+        case .user: noteTransition(.user)
+        case .unplayableHere: noteTransition(.unplayable)
+        case .auto: noteTransition(natural ? .naturalEnd : .autoSkip)
+        }
         if index >= queue.count {
             // Repeat-ALL: wrap to the top and keep going instead of stopping. (Repeat-ONE is
             // handled on natural end in the `handle*Ended` paths, so it never reaches here; an
@@ -3519,6 +3607,7 @@ final class SetlistPlayer {
         // must NEVER start it early — it plays only when the hop target ends.
         let row = queue.remove(at: j)
         queue.insert(row, at: index)
+        noteTransition(.stallHop)
         DiagLog.shared.log("playback", "\(reason) song=\(stalled.id) → hop to \(kind) \(row.id) (deferred stalled row) abandoned=\(stallEpisodeAbandoned.count)")
         persistSession(positionMs: 0)
         startPlayCurrent(fresh: true)
@@ -3566,6 +3655,7 @@ final class SetlistPlayer {
         resetTrackAudible()
         reconcileRipWindow()     // the playhead (may have) moved: rips outside the window go
         playTask?.cancel()
+        startQueued = true
         playTask = Task { await playCurrent(fresh: fresh, resumeAtMs: resumeAtMs) }
     }
 
@@ -3575,6 +3665,7 @@ final class SetlistPlayer {
     /// branch's existing cue seam (`playLocalFile(atMs:)` / `coordinator.play(atMs:)`), so
     /// boundaries and history behave exactly like a normal start.
     private func playCurrent(fresh: Bool = true, resumeAtMs: Int? = nil) async {
+        if !Task.isCancelled { startQueued = false }
         guard isRunning, index < queue.count else { return }
         // F4: a NEW track (index moved) supersedes any Now Playing mix engagement — tear the DSP down
         // and reset controls BEFORE loading the new source (the load reclaims the card off the AVPlayer).
@@ -3933,6 +4024,7 @@ final class SetlistPlayer {
         loadedAnyDeviceTrack = false
         waitingForLive = false
         isHeldForResume = true
+        heldByRemote = false
         isRunning = true
         // A RESTORE IS NOT A WRITE. This used to end in `persistSession()`, which re-adopted the
         // snapshot as the store's current session — and in doing so rewrote the session FILE.
@@ -3970,6 +4062,7 @@ final class SetlistPlayer {
     /// (NowPlayingPanel / WidgetSync) route their play-toggle here while `isHeldForResume`.
     func resumeFromHold() {
         guard isRunning, isHeldForResume else { return }
+        if redirectedToRemote(.setPlaying(true)) { return }
         DiagLog.shared.telemetry("action", "resume held session")
         noteUserTransport()
         isHeldForResume = false
@@ -3997,6 +4090,8 @@ final class SetlistPlayer {
     @discardableResult
     func startCurrent(by caller: String = "?") -> Bool {
         guard isRunning, index < queue.count, !isHeldForResume else { return false }
+        // A Backseat controller never (re)starts audio here — refused, nothing forwarded.
+        if redirectedToRemote(.localStart) { return true }
         DiagLog.shared.log("playback", "start current by=\(caller) song=\(queue[index].id) pending=\(isStartPending ? 1 : 0)")
         noteUserTransport()
         startPlayCurrent(fresh: false)
@@ -4118,6 +4213,12 @@ final class SetlistPlayer {
 
     /// Whether the run is audibly playing, by whichever backend owns the audio (the
     /// NowPlayingPanel routing rule). A held (restored, not yet resumed) deck is never playing.
+    /// The current song's position (ms from its own 0:00) and whether it is audibly playing —
+    /// the read side the Remote session's speaker reconciles against (same truth the durable
+    /// session snapshot records).
+    var songPositionMs: Int { sessionPositionMs() }
+    var isAudiblyPlaying: Bool { sessionIsPlaying() }
+
     private func sessionIsPlaying() -> Bool {
         if isHeldForResume { return false }
         if mixEngaged, let dsp { return dsp.isPlaying }   // F4: DSP owns the audio
@@ -4312,6 +4413,136 @@ extension SetlistPlayer {
         }
     }
 
+    // MARK: Remote session seams (SharePlay Listen Together / Backseat)
+
+    /// WHY the current row changed (or restarted). A Remote session SPEAKER reads this so only
+    /// the listener's own transport becomes a session command — a stall hop, a dead-source /
+    /// cascade skip, an unplayable-here skip, or the end of a (possibly shorter) local copy
+    /// must never move the set for everyone, and the session's own applies never echo back.
+    enum TransitionCause: String, Equatable, Sendable {
+        /// The listener: ⏭/⏮, a jump, play-now, a fresh set, an adopted row ▶.
+        case user
+        /// The track played to its end here (advance, repeat-one / repeat-count restart).
+        case naturalEnd
+        /// The sequencer moved on by itself after a start attempt (dead source, never started,
+        /// start-stall escalation).
+        case autoSkip
+        /// A stalled resolve hopped to an on-device row (the stalled row deferred behind it).
+        case stallHop
+        /// A row this device can't play at all was skipped (device mode, unresolvable).
+        case unplayable
+        /// Applied BY a Remote session (`applyingRemote`) — never the listener's intent.
+        case remote
+    }
+
+
+    private func noteTransition(_ cause: TransitionCause) {
+        let c: TransitionCause = remoteApplyDepth > 0 ? .remote : cause
+        transitionSeq &+= 1
+        lastTransitionCause = c
+        if c == .user { lastUserTransitionSeq = transitionSeq }
+    }
+
+    /// Run `body` as a Remote-session APPLY: transitions inside it are tagged `.remote`, ▶/⏸
+    /// inside it are not listener intent, and the controller gate is bypassed.
+    @discardableResult
+    func applyingRemote<T>(_ body: () -> T) -> T {
+        remoteApplyDepth += 1
+        defer { remoteApplyDepth -= 1 }
+        return body()
+    }
+
+    /// The listener pressed ▶ (`playing: true`) or ⏸ — recorded for the Remote session.
+    func noteListenerPlayIntent(_ playing: Bool) {
+        guard remoteApplyDepth == 0 else { return }
+        userPlayIntentSeq &+= 1
+        lastUserPlayIntent = playing
+    }
+
+    /// A local transport a Remote-session CONTROLLER (Backseat remote) refuses and forwards to
+    /// the session instead of sounding here.
+    enum RemoteRedirect: Equatable {
+        case playPause
+        case setPlaying(Bool)
+        case skipNext
+        case skipPrevious
+        case play([Item], startIndex: Int)
+        case playNow(Item)
+        case jump(UUID)
+        /// An internal (re)start of the current row (cascade retry, stray-MusicKit reclaim):
+        /// refused while a controller, never forwarded.
+        case localStart
+    }
+
+
+    /// True ⇒ `request` went to the Remote session; the caller must not touch local audio.
+    func redirectedToRemote(_ request: RemoteRedirect) -> Bool {
+        guard remoteApplyDepth == 0, let gate = remoteControllerGate, gate(request) else { return false }
+        DiagLog.shared.log("remote", "local transport → session (this device is a controller)")
+        return true
+    }
+
+    /// The listener's ▶/⏸/⏯ from the panel / widget: forwarded to the Remote session when this
+    /// device is a controller (true = handled), else recorded as listener intent (false).
+    func routeListenerPlayPause(_ request: RemoteRedirect = .playPause) -> Bool {
+        if redirectedToRemote(request) { return true }
+        switch request {
+        case .setPlaying(let on): noteListenerPlayIntent(on)
+        default: noteListenerPlayIntent(!(isRunning && isAudiblyPlaying))
+        }
+        return false
+    }
+
+    /// A Remote session made this device a CONTROLLER: go silent and STAY silent. A start in
+    /// flight is cancelled (a plain pause raced it: the pause was a no-op while nothing sounded
+    /// yet, then the start landed audibly), whichever lane holds audio is paused, and the deck
+    /// parks HELD at its position — so every later ▶ (panel, widget, lock screen, CarPlay) goes
+    /// through `resumeFromHold` / the gate, i.e. to the session. Idempotent.
+    func holdSilentForRemote() {
+        guard isRunning else { return }
+        if isHeldForResume, !isStartInFlight, !isAudiblyPlaying { return }
+        let pos = isHeldForResume ? (pendingResumeMs ?? 0) : sessionPositionMs()
+        cancelStartAndSilence(reason: "remote-controller")
+        isHeldForResume = true
+        heldByRemote = true
+        pendingResumeMs = pos > 0 ? pos : nil
+    }
+
+    /// While HELD, move the resume point (a Remote session seeking a paused/held speaker).
+    func setHeldResumePosition(ms: Int) {
+        guard isHeldForResume else { return }
+        pendingResumeMs = ms > 0 ? ms : nil
+    }
+
+    /// Cancel any start in flight and silence every lane (no notice, no cascade flag).
+    private func cancelStartAndSilence(reason: String) {
+        playTask?.cancel(); playTask = nil
+        startQueued = false
+        playGeneration &+= 1                  // a resolve still in flight must not start audio now
+        coordinator.supersedePendingPlay()
+        resolveStallTask?.cancel(); resolveStallTask = nil
+        liveBackstopTask?.cancel(); liveBackstopTask = nil
+        startStallTask?.cancel(); startStallTask = nil
+        endStartWindow(reason: reason)
+        DeadAirMeter.shared.transitionAbandoned(reason: reason)
+        waitingForLive = false
+        endMixEngagement()
+        if coordinator.activeBackend == .appleMusic { coordinator.appleMusic.pausePlayback() }
+        player.pause()
+        player.noteListenerIntent(false)
+    }
+
+    /// Replace the first `count` upcoming rows with `items` in ONE queue mutation (rows after
+    /// them are kept) — a Remote speaker re-syncs the session's window without truncating the
+    /// rest of a long local set.
+    func replaceUpcomingSegment(count: Int, with items: [Item]) {
+        guard isRunning else { return }
+        let lo = min(index + 1, queue.count)
+        let hi = min(queue.count, lo + max(0, count))
+        queue.replaceSubrange(lo..<hi, with: items)
+        persistSession()
+    }
+
     // MARK: Cascade breaker
 
     /// The listener acted: whatever happened before is not a cascade any more.
@@ -4329,6 +4560,7 @@ extension SetlistPlayer {
         let backend = coordinator.activeBackend.map { "\($0)" } ?? "-"
         DiagLog.shared.log("playback", "cascade-stop song=\(row) index=\(index)/\(queue.count) quickAdvances=\(AutoAdvanceCascadeBreaker.limit) backend=\(backend) audible=\(Int(trackAudibleSeconds))s")
         playTask?.cancel(); playTask = nil
+        startQueued = false                   // the cancelled start never runs `playCurrent`'s clear
         playGeneration &+= 1                  // a resolve still in flight must not start audio now
         resolveStallTask?.cancel(); resolveStallTask = nil
         liveBackstopTask?.cancel(); liveBackstopTask = nil

@@ -15,7 +15,10 @@ struct PocketWheelScreen: View {
     @State private var modeFilter: PocketMode?
     @State private var focusedDow: Int = ProcessInfo.processInfo.environment["PDJ_WHEEL_FOCUS_DOW"].flatMap(Int.init)
         .map { min(7, max(1, $0)) } ?? PocketWheelScreen.todayDow()
-    @State private var selected: PocketMomentKey?
+    /// `PDJ_WHEEL_SELECT=h08|d2|carPlay` (a `PocketMomentKey.token`): open that cell's card at
+    /// launch — the screenshot seam beside `PDJ_WHEEL_FOCUS_DOW` (the offscreen Mac render can't tap).
+    @State private var selected: PocketMomentKey? = ProcessInfo.processInfo.environment["PDJ_WHEEL_SELECT"]
+        .flatMap(PocketMomentKey.init(token:))
     @State private var highlighted: String?
     @State private var memo = WheelLayoutMemo()
 

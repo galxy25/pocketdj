@@ -242,6 +242,9 @@ struct NowPlayingPanel: View {
     @MainActor
     static func togglePlayPause(sequencer: SetlistPlayer, coordinator: PlaybackCoordinator,
                                 player: PlayerEngine) {
+        // A Backseat CONTROLLER forwards ▶/⏸ to the Remote session (its own audio stays off);
+        // otherwise the press is recorded as the listener's intent and handled below.
+        if sequencer.routeListenerPlayPause() { return }
         // A RESTORED (held) deck has no audio loaded yet — the first ▶ resumes real playback
         // at the saved position (blindly toggling would hit the idle engine and be refused).
         if sequencer.isHeldForResume { sequencer.resumeFromHold(); return }

@@ -21,6 +21,7 @@ import SwiftUI
 ///   • **For You** — the same tile grid History carries elsewhere; read-only + play.
 ///   • **Jukebox** — the HOST surface: the session QR on the big screen is the whole point
 ///     of a TV jukebox (the room scans the television).
+///   • **Remote** — SharePlay: the TV joins a Listen Together / Backseat session as a speaker.
 ///   • **Settings** — profile, the iCloud sync toggle, and the synced connection
 ///     credentials — EDITABLE here (focusable rows are also what lets tvOS scroll; the
 ///     read-only LabeledContent rows were a focus trap that pinned the Form at "Sync now").
@@ -35,6 +36,7 @@ struct TVRootView: View {
         case browse = "Browse"
         case forYou = "For You"
         case jukebox = "Jukebox"
+        case remote = "Remote"
         case settings = "Settings"
         var id: String { rawValue }
         var icon: String {
@@ -44,6 +46,7 @@ struct TVRootView: View {
             case .browse:   return "music.note.list"
             case .forYou:   return "sparkles"
             case .jukebox:  return "qrcode"
+            case .remote:   return "shareplay"
             case .settings: return "gearshape"
             }
         }
@@ -77,6 +80,9 @@ struct TVRootView: View {
                 // jukebox lives on the landing page, where a real view context renders it.
                 .tabItem { Label(TVTab.jukebox.rawValue, systemImage: TVTab.jukebox.icon) }
                 .tag(TVTab.jukebox)
+            TVRemoteView()
+                .tabItem { Label(TVTab.remote.rawValue, systemImage: TVTab.remote.icon) }
+                .tag(TVTab.remote)
             TVSettingsView()
                 .tabItem { Label(TVTab.settings.rawValue, systemImage: TVTab.settings.icon) }
                 .tag(TVTab.settings)
@@ -843,6 +849,9 @@ struct TVGlideToggles: View {
 /// the other platforms' long-press sliders, driving the same engine setters.
 struct TVMixControlsRow: View {
     @Environment(MixEngine.self) private var engine
+    /// Mixing together (SharePlay): the TV renders both decks but owns none — every control here
+    /// is read-only for a deck another participant drives (nil outside the app scene / previews).
+    @Environment(MixSync.self) private var mixSync: MixSync?
 
     private static let stemLabels: [(String, String)] = [
         ("vocals", "Vocals"), ("drums", "Drums"), ("bass", "Bass"), ("other", "Other"),
@@ -851,6 +860,7 @@ struct TVMixControlsRow: View {
     /// The LEAD deck — every control here scopes to what the room is HEARING (owner's call:
     /// per-deck board semantics stay on the other platforms; the TV drives the live deck).
     private var deck: MixEngine.Deck { engine.nowPlayingDeck ?? .a }
+    private var readOnly: Bool { mixSync.map { !$0.canControl(deck) } ?? false }
 
     var body: some View {
         // THREE rows, not one. The FX slots and the tempo/pitch groups used to share a single
@@ -960,6 +970,7 @@ struct TVMixControlsRow: View {
         }
         .font(.callout)
         .buttonStyle(.bordered)
+        .mixReadOnly(readOnly)
     }
 }
 

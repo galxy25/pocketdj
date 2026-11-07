@@ -349,6 +349,10 @@ struct PocketDJApp: App {
     /// polls guest song requests into the host's inbox. App-scoped so the party survives
     /// navigation; its session persists so it survives relaunches too.
     @State private var jukebox: JukeboxStore
+    /// APP-SCOPED SharePlay Remote session (Listen Together / Backseat) — see RemoteSessionController.
+    @State private var remote: RemoteSessionController
+    /// Multiplayer Mix over the Remote session (SharePlay "Mix Together") — see MixSync.
+    @State private var mixSync: MixSync
     /// Games tab — durable game-run scoreboard (CloudSync doc "game-scores").
     @State private var gameScores: GameScoreboardStore
     /// Games tab — the Collectors Puzzle's recommendation-readable decision log.
@@ -1518,6 +1522,33 @@ struct PocketDJApp: App {
         jukebox.loadJoinedSessions()
         _profile = State(initialValue: profile)
 
+        // ── Remote (SharePlay Listen Together + Backseat) ───────────────────────
+        // App-scoped so a session outlives tab switches: a speaker reconciles the SAME
+        // app-scoped sequencer the Now Playing panel drives (one audio owner); the controller
+        // only sends commands. Sessions are observed from launch (`startObservingGroupSessions`,
+        // below — app-scoped, never tied to a window).
+        let remote = RemoteSessionController(
+            target: SetlistPlayerRemoteTarget(sequencer: setlistPlayer, coordinator: coordinator, player: player),
+            resolver: .live(app: app),
+            deviceName: RemoteDevice.name(owner: profile.name),
+            platform: RemoteDevice.kind)
+        _remote = State(initialValue: remote)
+        // A Backseat CONTROLLER plays nothing: every local transport (panel, widget, lock screen,
+        // AirPods, CarPlay, Siri, Browse ▶) is forwarded to the session instead.
+        setlistPlayer.remoteControllerGate = { [weak remote] request in
+            remote?.interceptLocalTransport(request) ?? false
+        }
+        #if canImport(GroupActivities)
+        remote.startObservingGroupSessions()
+        #endif
+        // Multiplayer Mix rides the SAME session: every device renders both decks locally from
+        // shared state (its own burned / streamable files) — never streamed audio.
+        let mixSync = MixSync(remote: remote, engine: mix,
+                              resolve: MixSync.liveResolver(app: app, collections: collections, burns: burns,
+                                                            studio: studio, engine: mix))
+        mixSync.appleMusicIdForSong = { [weak app] id in app?.songsById[id]?.appleMusicId }
+        _mixSync = State(initialValue: mixSync)
+
         // ── Games tab: scoreboard + Collectors Puzzle + Music with Friends ─────
         // Scoreboard + decision log are durable synced JSON (the PlayHistory union
         // doctrine); the puzzle engine reuses the app-scoped sequencer (one audio
@@ -1754,6 +1785,7 @@ struct PocketDJApp: App {
         // The centre ▶'s "now": time + day + CarPlay + motion (opt-in) + place guess (opt-in) +
         // the last 45 minutes of plays, against the wheel (§3).
         let pocketWheelController = PocketWheelController(cache: pocketWheel, history: playHistory)
+        if let pinned = PocketWheelDemo.pinnedNow() { pocketWheelController.now = { pinned } }
         #if os(iOS)
         pocketWheelController.carPlayConnected = { CarPlayController.current != nil }
         #endif
@@ -1804,6 +1836,12 @@ struct PocketDJApp: App {
         // W7: a Mix moment's run plays through Mix Auto-DJ (crossfades, decks).
         pocketRuns.playThroughMix = { [weak mix, weak app, weak burns, weak studio, weak collections, weak settings] rows, label in
             guard let mix, let app, let burns, let studio, let collections, let settings else { return 0 }
+            // Mixing together owns the decks: refuse (0 ⇒ the run plays through the set list
+            // instead) and say why, rather than "starting" an Auto-DJ the engine won't run.
+            if let why = mix.autoDJBlockedReason {
+                DiagLog.shared.log("mix", "pocket run '\(label)' not through Mix: \(why)")
+                return 0
+            }
             let resolver = MixResolver(app: app, collections: collections, burns: burns, studio: studio, streamable: mix.canStream)
             let loadables = resolver.loadables(forSongIds: rows.map(\.songId))
             let byId = Dictionary(rows.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
@@ -2121,6 +2159,8 @@ struct PocketDJApp: App {
                 .environment(instrumentEngine)
                 .environment(instrumentPacks)
                 .environment(jukebox)
+                .environment(remote)
+                .environment(mixSync)
                 .environment(gameScores)
                 .environment(puzzleDecisions)
                 .environment(recFeedback)
@@ -2207,10 +2247,16 @@ struct PocketDJApp: App {
                     // The wheel's features (artist/genre/BPM) need the catalog; a launch whose
                     // cache predates the current history rebuilds now.
                     if app.state == .loaded { pocketWheel.historyDidChange() }
+                    // The Remote showcase seed resolves its rows against the catalog (a speaker
+                    // flags every row it can't find), so it waits for the catalog too.
+                    if app.state == .loaded { remote.seedShowcaseIfRequested() }
                 }
                 // Recommendation-engine auto-flush: idempotent, and internally a no-op while
                 // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
                 .task { recEngine.startAutoFlush() }
+                // SharePlay: every PocketDJ session (started here or offered by a peer) for the
+                // app's lifetime; the showcase seed fakes a Backseat session for screenshots.
+                .task { if app.state == .loaded { remote.seedShowcaseIfRequested() } }
                 // Listening-pockets auto-flush: same contract (idempotent, gated inside).
                 .task { listeningPockets.startAutoFlush() }
                 // A round that was playing when the app went away keeps (or finishes) tracking.
