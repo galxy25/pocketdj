@@ -1042,9 +1042,14 @@ final class MixEngine {
     /// current playhead. The store owns the timeline (t0/tMs), coalescing, and persistence.
     private func rec(_ kind: MixEventKind, _ deck: Deck? = nil, param: String? = nil,
                      value: Double? = nil, flag: Bool? = nil, slot: Int? = nil) {
-        guard let recorder else { return }
-        let l = deck.flatMap { state($0).loaded }
         let posMs = deck.map { Int(position($0) * 1000) }
+        // Multiplayer Mix: every recorded gesture is also what the SharePlay layer broadcasts. A
+        // REMOTE event being applied is neither tapped (no echo) nor logged (it is not this DJ's
+        // gesture — the session corpus stays one person's hands).
+        tap(Gesture(kind: kind.rawValue, deck: deck, param: param, value: value, flag: flag,
+                    slot: slot, posMs: posMs))
+        guard let recorder, !isApplyingRemote else { return }
+        let l = deck.flatMap { state($0).loaded }
         recorder.logEvent(kind, deck: deck?.rawValue, songId: l?.songId, title: l?.title,
                           artist: l?.artist, bpm: nil, camelot: nil, param: param,
                           value: value, flag: flag, posMs: posMs, slot: slot)
@@ -1603,7 +1608,9 @@ final class MixEngine {
         applyRate(deck); applyPitch(deck)
         // Record the load with the track's musical attributes (bpm/camelot) so the corpus is
         // self-describing without a catalog join. tempo/pitch reset to default are implied by .load.
-        if let recorder, let l = state(deck).loaded {
+        tap(Gesture(kind: Gesture.load, deck: deck, posMs: 0, track: meta,
+                    lengthMs: durationSeconds > 0 ? Int(durationSeconds * 1000) : nil))
+        if let recorder, !isApplyingRemote, let l = state(deck).loaded {
             recorder.logEvent(.load, deck: deck.rawValue, songId: l.songId, title: l.title,
                               artist: l.artist, bpm: l.bpm, camelot: l.camelot, param: nil,
                               value: nil, flag: nil, posMs: 0, slot: nil)
@@ -2475,8 +2482,11 @@ final class MixEngine {
     /// a plain tap just resets parameters + rewinds (`resetDeck`), keeping the loaded track. One
     /// semantic `.resetDeck` event marks it in the session log (a clear is a reset that also ejects).
     func clearDeck(_ deck: Deck) {
-        ejectDeckCore(deck)
-        rec(.resetDeck, deck)
+        mutedTap {                // the multiplayer layer hears ONE `eject`, not pause + reset
+            ejectDeckCore(deck)
+            rec(.resetDeck, deck)
+        }
+        tap(Gesture(kind: Gesture.eject, deck: deck))
         persistMixDeckSession()   // eject persists; BOTH decks empty (no auto) ⇒ session cleared
     }
 
@@ -2573,6 +2583,150 @@ final class MixEngine {
         rec(.seek, deck, value: clamped)
         updateSystemNowPlaying()      // new elapsed on the lock-screen scrubber
         persistMixDeckSession(debounced: true)   // scrub surface — one write per burst
+    }
+
+    // MARK: - Multiplayer Mix (SharePlay) seams — docs/design/mix-audio-graph.md § Multiplayer Mix
+    //
+    // The engine knows nothing about sessions, owners or the wire (`Remote/MixSync.swift` does).
+    // It offers exactly four seams: a TAP that reports every local deck/mixer gesture, a GUARD
+    // under which remote events are applied through the ordinary public setters (no tap, no
+    // session-log record — so nothing echoes and the corpus stays this DJ's own hands), a
+    // SCHEDULED START so every device starts a deck on the same instant, and an Auto-DJ BLOCK.
+    // The audio graph is untouched.
+
+    /// One LOCAL gesture as the multiplayer layer hears it — the `MixSessionEvent` fields. `kind`
+    /// is a `MixEventKind` rawValue, or one of the sync-only kinds below (gestures the session
+    /// log never recorded as such).
+    struct Gesture: Equatable {
+        static let load = "load"
+        static let eject = "eject"
+        static let loop = "loop"
+        static let loopUnits = "loopUnits"
+
+        var kind: String
+        var deck: Deck?
+        var param: String? = nil
+        var value: Double? = nil
+        var flag: Bool? = nil
+        var slot: Int? = nil
+        var posMs: Int? = nil
+        /// `load` only: the track that took the deck.
+        var track: LoadedTrack? = nil
+        var lengthMs: Int? = nil
+    }
+
+    /// Every local gesture (nil ⇒ no multiplayer session listening). Never fires for a remote
+    /// apply (`applyingRemote`), a durable-session restore, or the internals of a compound gesture.
+    @ObservationIgnored var gestureTap: ((Gesture) -> Void)?
+    /// True while a REMOTE event is being applied (see `applyingRemote`).
+    @ObservationIgnored private(set) var isApplyingRemote = false
+    /// > 0 inside a compound gesture whose parts must not be tapped individually (clear = eject,
+    /// loop release = loop) — the compound taps itself once.
+    @ObservationIgnored private var gestureTapMuted = 0
+
+    /// Apply a remote participant's event: everything `body` does through the public setters is
+    /// neither tapped back to the session nor recorded in this device's session log.
+    func applyingRemote(_ body: () -> Void) {
+        let was = isApplyingRemote
+        isApplyingRemote = true
+        defer { isApplyingRemote = was }
+        body()
+    }
+
+    private func tap(_ g: Gesture) {
+        guard gestureTapMuted == 0, !isApplyingRemote, !isRestoringMixSession, let gestureTap else { return }
+        gestureTap(g)
+    }
+
+    private func mutedTap(_ body: () -> Void) {
+        gestureTapMuted += 1
+        defer { gestureTapMuted -= 1 }
+        body()
+    }
+
+    /// Why the Auto-DJ is unavailable right now (a multiplayer Mix session owns the decks), else
+    /// nil. While set: a running Auto-DJ is ended (decks keep playing), and Auto mode / a new auto
+    /// mix / a resume are refused.
+    private(set) var autoDJBlockedReason: String?
+
+    func setAutoDJBlocked(_ reason: String?) {
+        autoDJBlockedReason = reason
+        guard reason != nil else { return }
+        if autoMixing { endAutoLoop() }
+        autoEnabled = false
+    }
+
+    /// `hostTime` for a LOCAL wall-clock instant (epoch ms), given one simultaneous reading of
+    /// both clocks. Pure — the scheduled start's only clock math.
+    nonisolated static func hostTime(forLocalMs target: Double, nowLocalMs: Double, nowHost: UInt64) -> UInt64 {
+        let ahead = max(0, target - nowLocalMs) / 1000
+        return nowHost + AVAudioTime.hostTime(forSeconds: ahead)
+    }
+
+    /// SCHEDULED START: cue `deck` at `fromMs` (source ms) and start it at `hostTime`, so devices
+    /// that agreed on a shared instant all start the same audio frame then. A start too close (or
+    /// already past) is pushed out to the stem-start lead and the cue moved forward by the gap ×
+    /// the deck's rate — the deck sounds WHERE it would have been, a few ms late at worst. A
+    /// deck's stems start together on ONE sample frame (`StemSync.startTogether`). Loops, streams
+    /// and mid-handover stems fall back to a plain seek + play (the drift loop corrects them).
+    /// Records `.play` only on a transition, like `play`.
+    func play(_ deck: Deck, fromMs: Int, atHostTime hostTime: UInt64) {
+        guard state(deck).loaded != nil else { return }
+        deckGestureGeneration &+= 1
+        autoEndedExhausted = false
+        masterPausedDecks = []
+        if !isRestoringMixSession { hasSoundedThisProcess = true }
+        deckExhaustedFromRestore.remove(deck)
+        ensureEngine()
+        let rate = state(deck).rate
+        let desiredLead = AVAudioTime.seconds(forHostTime: hostTime)
+            - AVAudioTime.seconds(forHostTime: mach_absolute_time())
+        let lead = max(Self.handoverLead, desiredLead)
+        let fromSec = min(max(0, Double(fromMs) / 1000 + (lead - desiredLead) * rate), duration(deck))
+        let simple = state(deck).loopOn || deckStreams[deck] != nil || streamHeld(deck)
+            || stemHandovers[deck] != nil || !built
+        guard !simple, startEngineIfNeeded() else {
+            // Start NOW from where the deck must be at that instant minus the wait (best effort).
+            seek(deck, toSeconds: max(0, Double(fromMs) / 1000 - max(0, desiredLead) * rate))
+            play(deck)
+            return
+        }
+        settleStemFade(deck)
+        if stemActive(deck) {
+            stopStemNodes(deck)
+            guard scheduleStems(deck, fromSeconds: fromSec) else { return }
+            let nodes = Self.stemNames.compactMap { stemPlayers[deck]?[$0] }
+            StemSync.startTogether(nodes, clocks: [inputMixers[deck]], lead: lead, rate: rate)
+        } else {
+            rescheduleFile(deck, fromSeconds: fromSec)
+            guard fileScheduled[deck] == true, let player = players[deck] else { return }
+            StemSync.startTogether([player], clocks: [inputMixers[deck]], lead: lead, rate: rate)
+        }
+        // The ~10 Hz playhead accumulator advances from NOW; back it off by the wait so it reads
+        // `fromSec` exactly when the first frame sounds.
+        setPosition(deck, max(0, fromSec - lead * rate))
+        setPlaying(deck, true)
+        refreshTransport()
+        startTickIfNeeded()
+        updateSystemNowPlaying()
+    }
+
+    /// The AUDIBLE playhead (source seconds) right now: the render clock of the single file, or
+    /// — in stem mode, where `truePlayhead` has none — of the stems; the ~10 Hz accumulator only
+    /// when nothing renders. The multiplayer heartbeat + drift check compare THIS across devices
+    /// (the accumulator is up to a tick stale, which alone would trip a 40 ms threshold).
+    func audiblePlayhead(_ deck: Deck) -> Double {
+        if stemActive(deck), !state(deck).loopOn {
+            let h = mach_absolute_time()
+            if let p = stemPlayhead(deck, at: (AVAudioTime(hostTime: h), h)) { return p }
+        }
+        return truePlayhead(deck) ?? position(deck)
+    }
+
+    /// Whether `deck` holds `songId` and can sound it now (loaded and not waiting on bytes) — the
+    /// multiplayer readiness report.
+    func deckReady(_ deck: Deck, songId: String) -> Bool {
+        state(deck).loaded?.songId == songId && !isBuffering(deck)
     }
 
     // MARK: - Loop (∞) — repeat a beat/second window until released
@@ -2862,6 +3016,15 @@ final class MixEngine {
     /// carries straight on (and the auto-mix crossfade re-times against the real runway).
     func setLoop(_ deck: Deck, on: Bool) {
         guard state(deck).loaded != nil, on != state(deck).loopOn else { return }
+        // Multiplayer: ONE `loop` gesture (the release's internal re-seek is not a second one).
+        gestureTapMuted += 1
+        defer {
+            gestureTapMuted -= 1
+            if state(deck).loopOn == on {
+                tap(Gesture(kind: Gesture.loop, deck: deck, value: state(deck).loopUnits, flag: on,
+                            posMs: Int(position(deck) * 1000)))
+            }
+        }
         if on {
             if let songId = state(deck).loaded?.songId {
                 hydrateBeatGrid(deck, songId: songId, force: true)   // beats need the grid NOW
@@ -2893,6 +3056,7 @@ final class MixEngine {
         let u = min(max(units.rounded(), 1), 32)
         guard u != state(deck).loopUnits else { return }
         mutate(deck) { $0.loopUnits = u }
+        tap(Gesture(kind: Gesture.loopUnits, deck: deck, value: u))
         if state(deck).loopOn, let w = loopWindows[deck], let nw = loopBounds(deck, anchorSec: w.start) {
             // Keep playing where we are: dragging the length slider issues a re-arm per step, and
             // restarting each one from the top of the window would machine-gun the loop.
@@ -3219,6 +3383,7 @@ final class MixEngine {
     private static let autoFallbackDurationMs = 180_000
 
     func setAutoEnabled(_ on: Bool) {
+        if on, autoDJBlockedReason != nil { return }   // multiplayer Mix: no Auto-DJ (see the seam)
         autoEnabled = on
         if !on { endAutoLoop() }
     }
@@ -3246,7 +3411,7 @@ final class MixEngine {
 
     func startAutoMix(_ items: [AutoMixItem], shuffled: Bool, lead: Double, fade: Double,
                       label: String? = nil) {
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty, autoDJBlockedReason == nil else { return }
         DiagLog.shared.telemetry("action", "auto-mix start '\(label ?? "?")' items=\(items.count) shuffled=\(shuffled)")
         if !isRestoringMixSession { hasSoundedThisProcess = true }
         ensureEngine()
@@ -3353,7 +3518,7 @@ final class MixEngine {
     ///  • NEITHER playing → restart the live deck (its track, or the next unplayed) before arming.
     /// Recorded as one `.autoResume` marker. No-op unless a mix is paused.
     func resumeAuto() {
-        guard autoMixing, autoPaused else { return }
+        guard autoMixing, autoPaused, autoDJBlockedReason == nil else { return }
         if !isRestoringMixSession { hasSoundedThisProcess = true }
         var fromRestore = autoResumeFromRestore
         autoResumeFromRestore = false    // consume-once: only the FIRST resume after a restore

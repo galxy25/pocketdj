@@ -62,6 +62,8 @@ struct MixView: View {
     /// — auto (`autoSource`) OR manual (either deck's source) — starts pulling its tracks onto the
     /// device; the bottom `downloadBar` shows "N of M downloaded" + ETA while it runs.
     @Environment(CollectionMixDownloader.self) private var downloader
+    /// Multiplayer Mix (SharePlay) — nil in previews/tests; inert outside a session.
+    @Environment(MixSync.self) private var mixSync: MixSync?
 
     /// The detail NavigationStack's path (owned by RootView) — so the Sessions button can push.
     @Binding var path: NavigationPath
@@ -96,6 +98,7 @@ struct MixView: View {
         ScrollView {                                   // scrolls on iPhone-portrait; roomy on Mac/iPad
             VStack(spacing: 18) {
                 sessionHeader                           // the renamable session name (in-content)
+                if let mixSync, mixSync.isActive { MixTogetherBanner(sync: mixSync) }   // SharePlay mix
                 if recorder.isRecording { recordingIndicator }  // ● Recording m:ss + Stop (reachable on iPhone)
                 if engine.autoEnabled && !engine.autoMixing { autoSetupBar }  // pick + Play/Shuffle
                 if engine.autoMixing { autoMixBanner }  // Auto-DJ status + Stop (visible on every size)
@@ -784,7 +787,8 @@ struct MixView: View {
         .buttonStyle(.borderedProminent)
         .tint(Theme.accent)
         // Nothing loaded ⇒ no audio to drive; keep the transport from reporting "playing" silence.
-        .disabled(engine.loaded(.a) == nil && engine.loaded(.b) == nil)
+        // Mixing together: each DJ drives their OWN deck's ▶ — a both-decks button would grab theirs.
+        .disabled((engine.loaded(.a) == nil && engine.loaded(.b) == nil) || mixSync?.isActive == true)
         .accessibilityIdentifier("mix-play")
     }
 
@@ -829,6 +833,7 @@ private struct DeckView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(StudioStore.self) private var studio   // positional cue points, keyed by songId
     @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
+    @Environment(MixSync.self) private var mixSync: MixSync?
 
     let deck: MixEngine.Deck
     let engine: MixEngine
@@ -848,6 +853,9 @@ private struct DeckView: View {
     @State private var peaks: [Float] = []
 
     private var loaded: MixEngine.LoadedTrack? { engine.loaded(deck) }
+    /// Mixing together and another participant owns this deck: its controls are read-only here
+    /// (cue / PFL stays live — it's this device's headphones).
+    private var readOnly: Bool { mixSync.map { !$0.canControl(deck) } ?? false }
     private var a11y: String { "deck-\(deck.rawValue)" }      // "deck-A" / "deck-B"
     /// The loaded track has stems (⇒ show the stem-mode toggle). Server-side (rips) OR a "Pocket DJ"
     /// profile item whose 4 stems are already on disk (no burn — StemModeButton skips the burn step).
@@ -875,18 +883,19 @@ private struct DeckView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             deckLabel
-            header
-            DeckSeekSlider(engine: engine, deck: deck)   // playback position scrubber (drag to seek)
-            cueJumpRow                                   // color-coded jump-to-cue buttons (if the track has cues)
-            transportRow                                 // ↺ rewind · Sync to Lead
-            tempoSlider                                  // live time-stretch (pitch preserved)
-            pitchSlider                                  // live pitch shift (tempo preserved)
-            eqRow                                        // 3-band EQ (low/mid/high) knobs, always active
-            effectsGrid                                  // tap = toggle · long-press / right-click = strength
-            if engine.stemActive(deck) { stemGrid }      // 2×2 stem pads — only while in stem mode
+            if let mixSync { MixDeckUnavailableNote(sync: mixSync, deck: deck) }
+            header.mixReadOnly(readOnly)
+            DeckSeekSlider(engine: engine, deck: deck).mixReadOnly(readOnly)   // position scrubber (drag to seek)
+            cueJumpRow.mixReadOnly(readOnly)             // color-coded jump-to-cue buttons (if the track has cues)
+            transportRow                                 // ↺ rewind · Sync to Lead (read-only per item: cue stays live)
+            tempoSlider.mixReadOnly(readOnly)            // live time-stretch (pitch preserved)
+            pitchSlider.mixReadOnly(readOnly)            // live pitch shift (tempo preserved)
+            eqRow.mixReadOnly(readOnly)                  // 3-band EQ (low/mid/high) knobs, always active
+            effectsGrid.mixReadOnly(readOnly)            // tap = toggle · long-press / right-click = strength
+            if engine.stemActive(deck) { stemGrid.mixReadOnly(readOnly) }   // 2×2 stem pads — stem mode only
             DeckVUMeter(engine: engine, deck: deck, a11y: a11y)   // level; right-click/long-press → pre/post
-            volSlider
-            playButton
+            volSlider.mixReadOnly(readOnly)
+            playButton.mixReadOnly(readOnly)
         }
         .padding(10)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
@@ -914,6 +923,7 @@ private struct DeckView: View {
         HStack(spacing: 8) {
             Text("Deck \(deck.rawValue)")
                 .font(.headline).foregroundStyle(Theme.fg)
+            if let mixSync { MixDeckOwnerBadge(sync: mixSync, deck: deck) }   // mixing together: who drives it
             if engine.isBuffering(deck) {
                 bufferingBadge
             } else if let h = engine.stemHandover(deck) {
@@ -922,7 +932,7 @@ private struct DeckView: View {
                                   a11yId: "\(a11y)-stems-pending")
             }
             Spacer()
-            sourceMenu
+            sourceMenu.mixReadOnly(readOnly)
         }
     }
 
@@ -1034,23 +1044,24 @@ private struct DeckView: View {
     // (and best-effort aligns beats) to the Lead; Reset (↺) clears the whole deck + rewinds.
     private var transportRow: some View {
         HStack(spacing: 8) {
-            leadButton
+            leadButton.mixReadOnly(readOnly)
             Button { engine.syncToLead(deck) } label: {
                 sizedLabel("Sync", systemImage: "arrow.triangle.2.circlepath").font(.caption.weight(.medium))
             }
             .buttonStyle(.bordered)
             .tint(Theme.accent2)
-            .disabled(!engine.canSync(deck))
+            .disabled(!engine.canSync(deck) || readOnly)
             .help("Match this deck's tempo to the Lead deck (downbeat alignment is best-effort)")
             .accessibilityIdentifier("\(a11y)-sync")
             // Stem mode (between Sync and Reset) — only for a track that HAS stems.
             if stemmed {
                 StemModeButton(deck: deck, engine: engine, songId: loaded?.songId ?? "",
                                compact: compactControls, a11y: "\(a11y)-stemmode")
+                    .mixReadOnly(readOnly)
             }
             // LOOP (∞), immediately right of the stem icon — tap for a 2-unit loop off the
             // previous boundary; long-press / right-click for length + edge nudges.
-            LoopButton(engine: engine, deck: deck, enabled: loaded != nil, a11y: "\(a11y)-loop")
+            LoopButton(engine: engine, deck: deck, enabled: loaded != nil && !readOnly, a11y: "\(a11y)-loop")
             Spacer()
             // CUE / PFL — tap to monitor this deck on the cue channel (house mix untouched);
             // long-press / right-click for its cue-volume slider. Just left of Reset.
@@ -1062,7 +1073,7 @@ private struct DeckView: View {
             }
             .buttonStyle(.bordered)
             .tint(Theme.accent)
-            .disabled(loaded == nil)
+            .disabled(loaded == nil || readOnly)
             .help("Reset deck — tap: clear tempo, pitch, effects & volume, then rewind · long-press / right-click: eject the track to an empty deck")
             .accessibilityIdentifier("\(a11y)-restart")
             .contextMenu {

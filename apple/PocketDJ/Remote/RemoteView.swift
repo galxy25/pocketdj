@@ -98,6 +98,8 @@ extension RemoteSessionController {
 struct RemoteView: View {
     @Environment(RemoteSessionController.self) private var remote
     @Environment(AppModel.self) private var app
+    /// Multiplayer Mix over this session (nil in previews/tests).
+    @Environment(MixSync.self) private var mixSync: MixSync?
     /// The mode whose share sheet (Messages / nearby) is up.
     @State private var shareMode: RemoteSessionMode?
     @State private var starting: RemoteSessionMode?
@@ -113,6 +115,7 @@ struct RemoteView: View {
             }
             if remote.isActive {
                 sessionSection
+                mixTogetherSection
                 participantsSection
                 nowPlayingSection
                 upNextSection
@@ -204,6 +207,40 @@ struct RemoteView: View {
         } footer: {
             Text(remote.localRole == .speaker ? "This device plays the session’s music."
                                               : "This device plays nothing — it controls the speakers.")
+        }
+    }
+
+    // MARK: Mix together (multiplayer Mix — Phase 2)
+
+    @ViewBuilder private var mixTogetherSection: some View {
+        if let mixSync {
+            Section {
+                if mixSync.isActive {
+                    LabeledContent("DJs", value: mixSync.participantNames.joined(separator: ", "))
+                    LabeledContent("Your deck", value: mixSync.myDecks.isEmpty
+                                   ? "None — claim a free deck in Mix"
+                                   : mixSync.myDecks.map { "Deck \($0.rawValue)" }.joined(separator: " + "))
+                    if remote.isHost {
+                        Button(role: .destructive) { mixSync.end() } label: {
+                            Label("End Mix Together", systemImage: "stop.circle")
+                        }
+                        .accessibilityIdentifier("remote-mix-end")
+                    }
+                } else {
+                    Button { mixSync.start() } label: {
+                        Label("Mix Together", systemImage: "slider.horizontal.2.square")
+                    }
+                    .disabled(!mixSync.canStart)
+                    .accessibilityIdentifier("remote-mix-start")
+                }
+            } header: {
+                Text("Mix Together")
+            } footer: {
+                Text(mixSync.startBlockedReason
+                     ?? (mixSync.isActive
+                         ? "Open the Mix tab. Every device plays both decks from its own library — you drive the deck you own; anyone can move the crossfader."
+                         : "Two DJs, two decks: you take Deck A, the first person who joined takes Deck B. Each device plays the mix from its own library — no audio is sent between devices."))
+            }
         }
     }
 

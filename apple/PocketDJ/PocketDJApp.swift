@@ -351,6 +351,8 @@ struct PocketDJApp: App {
     @State private var jukebox: JukeboxStore
     /// APP-SCOPED SharePlay Remote session (Listen Together / Backseat) — see RemoteSessionController.
     @State private var remote: RemoteSessionController
+    /// Multiplayer Mix over the Remote session (SharePlay "Mix Together") — see MixSync.
+    @State private var mixSync: MixSync
     /// Games tab — durable game-run scoreboard (CloudSync doc "game-scores").
     @State private var gameScores: GameScoreboardStore
     /// Games tab — the Collectors Puzzle's recommendation-readable decision log.
@@ -1530,6 +1532,13 @@ struct PocketDJApp: App {
             deviceName: RemoteDevice.name(owner: profile.name),
             platform: RemoteDevice.kind)
         _remote = State(initialValue: remote)
+        // Multiplayer Mix rides the SAME session: every device renders both decks locally from
+        // shared state (its own burned / streamable files) — never streamed audio.
+        let mixSync = MixSync(remote: remote, engine: mix,
+                              resolve: MixSync.liveResolver(app: app, collections: collections, burns: burns,
+                                                            studio: studio, engine: mix))
+        mixSync.appleMusicIdForSong = { [weak app] id in app?.songsById[id]?.appleMusicId }
+        _mixSync = State(initialValue: mixSync)
 
         // ── Games tab: scoreboard + Collectors Puzzle + Music with Friends ─────
         // Scoreboard + decision log are durable synced JSON (the PlayHistory union
@@ -2135,6 +2144,7 @@ struct PocketDJApp: App {
                 .environment(instrumentPacks)
                 .environment(jukebox)
                 .environment(remote)
+                .environment(mixSync)
                 .environment(gameScores)
                 .environment(puzzleDecisions)
                 .environment(recFeedback)
