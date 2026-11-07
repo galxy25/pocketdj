@@ -94,6 +94,8 @@ final class WidgetSync {
     /// AVPlayer: no audible effect, a wrong `isPlaying`, and (before the engine's idle guard) a
     /// resurrected stale Now Playing card on macOS.
     private func transportToggle() {
+        // A Backseat CONTROLLER forwards the widget's ▶/⏸ to the Remote session.
+        if setlist.routeListenerPlayPause() { return }
         // A RESTORED (held) deck has no audio loaded yet — the widget's ▶ resumes it at the
         // saved position, exactly like the in-app panel's toggle.
         if setlist.isHeldForResume {

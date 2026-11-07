@@ -30,23 +30,35 @@ enum RemoteDevice {
 ///   • session role — the HOST owns the authoritative `RemoteQueueModel` (every command is applied
 ///     there, then broadcast as a `RemotePlaybackState`); everyone else is a participant. The
 ///     device that started the session hosts; if it leaves, the remaining participant with the
-///     LOWEST id takes over from the last state it saw.
+///     LOWEST id takes over from the last state it saw. Two hosts (a race) resolve by
+///     `shouldYield`: an ACTIVE session beats an empty one, then the newer revision, then the
+///     lower id — an empty self-elected host can never wipe a real one.
 ///   • device role — a SPEAKER plays the session's audio on its own player (reconciled from the
-///     host's state); a CONTROLLER plays nothing (the Backseat remote). In Listen Together every
-///     device is a speaker; in Backseat the host starts as the controller and joiners as
-///     speakers. Any device may flip its own role.
+///     host's state); a CONTROLLER plays nothing (the Backseat remote) — its player is held
+///     silent (`silenceForController`, re-asserted every tick) and every local transport on it
+///     (panel, widget, lock screen, CarPlay, Siri) is forwarded to the session through
+///     `SetlistPlayer.remoteControllerGate` → `interceptLocalTransport`.
+///
+/// WIRE. The full windowed state goes out on every revision, to a joiner, and on request; a
+/// small heartbeat (revision + position) every 2 s keeps anchors fresh and lets a receiver
+/// notice a missed revision (→ `stateRequest`). The encoded state is size-capped (the window
+/// shrinks to fit the messenger's budget).
 ///
 /// RECONCILE (a speaker, every 0.5 s tick + on every state): resolve the state's window against
-/// this device's catalog (`RemoteSongResolver` — unavailable rows are skipped locally and
-/// reported), then make the local player match with the cheapest move — tail edit, jump to an
-/// upcoming row, or a fresh `play(…startIndex:)` — and correct position only when the drift
-/// exceeds `driftThresholdMs` (never more often than `driftCooldownMs`).
+/// this device's catalog (`RemoteSongResolver` — cheap exact paths for every row, the expensive
+/// fuzzy matcher only for the current + next few), then make the local player match with the
+/// cheapest move — a tail-segment edit, a jump to an upcoming row (cued at the session
+/// position), or a fresh `play(…startIndex:startPaused:)` — and correct drift only when it
+/// persists past the threshold (wider for Apple Music's coarse clock, never while buffering).
 ///
-/// LOCAL CHANGES (a speaker whose user drives the ordinary Now Playing UI): each tick diffs the
-/// local player against what the session last left it as, and turns real changes into commands
-/// (skip/jump/advance, ▶/⏸, a scrub, queue adds/removes/reorders, a brand-new set). A guard window
-/// after every reconcile move keeps the player's own async settling from echoing back as
-/// commands — applying remote state never re-broadcasts itself.
+/// LOCAL CHANGES (a speaker whose user drives the ordinary Now Playing UI): each reconcile first
+/// diffs the local player against what the session last left it as. Only the LISTENER's own
+/// actions become commands — the player tags every row change with its cause
+/// (`SetlistPlayer.TransitionCause`) and every ▶/⏸ the listener pressed (`userPlayIntentSeq`),
+/// and the session's own applies are tagged `.remote`, so no time window is needed: a stall
+/// hop, a dead-source / cascade / unplayable skip marks that row unplayable HERE; a natural end
+/// reports `.advanced` only when the session is near that row's end too (a shorter local copy
+/// waits silently instead); a local stop never pauses everyone.
 @MainActor
 @Observable
 final class RemoteSessionController {
@@ -66,19 +78,33 @@ final class RemoteSessionController {
     static let tickInterval: Double = 500
     static let heartbeatMs: Double = 2_000
     static let driftThresholdMs = 750
+    /// Apple Music's position clock is coarse — a tighter threshold chases its own jitter.
+    static let coarseDriftThresholdMs = 2_000
+    /// Plain drift must be seen on this many consecutive ticks before it's corrected.
+    static let driftStrikesNeeded = 2
     static let driftCooldownMs: Double = 5_000
-    /// After a reconcile move, local changes are not read as user intent for this long.
-    static let applyGuardMs: Double = 2_000
     /// A local edit a participant sent holds reconcile until a newer state (or this timeout).
     static let pendingHoldMs: Double = 3_000
     /// A position jump bigger than this between ticks is a user scrub.
     static let seekDetectMs = 3_000
-    /// A local ▶/⏸ flip must persist this long before it counts (load blips don't).
-    static let playFlipHoldMs: Double = 900
-    /// No state from any host this long after joining ⇒ elect one.
+    /// No state from any host this long after joining ⇒ re-hello (or, alone, host it).
     static let electionTimeoutMs: Double = 8_000
     /// The host advances on its own when no speaker reported a track end this long past it.
     static let hostAdvanceSlackMs = 8_000
+    /// A local natural end counts as the SESSION's track end only this close to its length.
+    static let naturalEndToleranceMs = 10_000
+    /// A ▶/⏸ the reconciler applied that hasn't taken is re-issued no sooner than this.
+    static let playRetryMs: Double = 2_000
+    /// Encoded-state budget (the messenger's payload limit, with headroom).
+    static let maxStateBytes = 60_000
+    static let minWindowAhead = 10
+    /// The fuzzy title/artist matcher runs only for the current row + this many after it.
+    static let fuzzyLookahead = 3
+    /// The host refills its model from its own local set when the upcoming tail runs this low.
+    static let hostRefillBelow = 100
+    static let hostRefillChunk = 200
+    /// How many local upcoming rows a speaker inspects (≥ the session window).
+    static let tailLimit = RemoteQueueModel.windowAhead * 2
 
     // MARK: Observable state
 
@@ -97,7 +123,6 @@ final class RemoteSessionController {
     /// A start in flight (FaceTime activation / the share sheet) — the next session that
     /// arrives is ours to host, in this mode.
     var pendingStartMode: RemoteSessionMode?
-    @ObservationIgnored var isObservingSessions = false
     var statusMessage: String?
 
     var isHost: Bool { localId != nil && localId == hostId }
@@ -136,6 +161,9 @@ final class RemoteSessionController {
     @ObservationIgnored let platform: String
     @ObservationIgnored private var transport: RemoteTransport?
     @ObservationIgnored private var tasks: [Task<Void, Never>] = []
+    /// The app-scoped SharePlay `sessions()` observer (`startObservingGroupSessions`) — owned
+    /// here, started ONCE from app init, so it never dies with a window.
+    @ObservationIgnored var groupSessionsObserver: Task<Void, Never>?
     /// Identity of the CURRENT attach — a cancelled session's trailing roster-finish must never
     /// end the session that replaced it.
     @ObservationIgnored private var sessionToken = UUID()
@@ -147,11 +175,20 @@ final class RemoteSessionController {
     @ObservationIgnored private(set) var model = RemoteQueueModel()
     @ObservationIgnored private var sessionId = "rses_" + UUID().uuidString
     @ObservationIgnored private var lastBroadcastAt: Double = 0
+    /// Phase-2 extensions (Mix Together) report "my session is live" — counted as activity in
+    /// the host election even when the queue is empty.
+    @ObservationIgnored private var activityProbes: [() -> Bool] = []
 
     // Participant
     @ObservationIgnored private var lastRevision = -1
+    /// The host whose state `state` is (vs `hostId`, which an election may set provisionally).
+    @ObservationIgnored private var stateHostId: String?
     @ObservationIgnored private var lastPingAt: Double = 0
     @ObservationIgnored private var attachedAt: Double = 0
+    @ObservationIgnored private var lastHelloAt: Double = 0
+    @ObservationIgnored private var stateReceivedAt: Double = -.infinity
+    /// host → the revision we last asked it for (one request per revision).
+    @ObservationIgnored private var stateRequested: [String: Int] = [:]
 
     // Speaker reconcile / local observation
     private struct LocalObservation: Equatable {
@@ -164,17 +201,37 @@ final class RemoteSessionController {
         var at: Double
         var repeatMode: RepeatMode
         var shuffle: Bool
+        var transitionSeq: Int
+        var userTransitionSeq: Int
+        var lastCause: SetlistPlayer.TransitionCause
+        var playIntentSeq: Int
+        var playIntent: Bool
     }
     /// Local row instance → session rid.
     @ObservationIgnored private var ridByUid: [UUID: String] = [:]
+    /// DECIDED resolutions only (an undecided row is re-tried once it nears the current one).
     @ObservationIgnored private var resolutionCache: [String: RemoteSongResolver.Resolution] = [:]
     @ObservationIgnored private var expected: LocalObservation?
-    @ObservationIgnored private var guardUntil: Double = 0
     @ObservationIgnored private var pendingUntil: Double = 0
     @ObservationIgnored private var pendingBaseRevision = -1
     @ObservationIgnored private var lastDriftFixAt: Double = -.infinity
-    @ObservationIgnored private var playFlip: (playing: Bool, since: Double)?
+    @ObservationIgnored private var driftStrikes = 0
+    /// A new revision arrived: a position difference past the threshold is a session SEEK,
+    /// applied at once (no strikes / cooldown).
+    @ObservationIgnored private var seekOwed = false
+    /// The position our last seek aimed at — its (possibly late) landing is not a user scrub.
+    @ObservationIgnored private var pendingSeekMs: Int?
+    @ObservationIgnored private var lastPlayApply: (on: Bool, at: Double)?
+    /// A row that ENDED here while the session is still on it (a shorter local copy) or on the
+    /// unavailable row it stood in for: hold silent — never re-mirror it — until the session
+    /// moves (or restarts that row).
+    @ObservationIgnored private var heldAfterEnd: (rid: String, sessionRid: String?, sessionPos: Int)?
+    /// Rows this device's player could not play (auto-skipped / stall-hopped away from) —
+    /// treated as unavailable here so the reconciler never loops back onto them.
+    @ObservationIgnored private var locallyFailed: Set<String> = []
     @ObservationIgnored private var reportedUnavailable: Set<String>?
+    @ObservationIgnored private var isReconciling = false
+    @ObservationIgnored private var isObservingLocal = false
 
     /// Phase-2 extension point: handlers for message kinds this controller doesn't own
     /// (multiplayer Mix events ride the SAME session/transport under their own `kind`).
@@ -212,9 +269,15 @@ final class RemoteSessionController {
         #endif
         attachedAt = now
         lastRevision = -1
+        stateHostId = nil
+        stateRequested = [:]
+        stateReceivedAt = -.infinity
         statusMessage = nil
+        expected = nil
+        heldAfterEnd = nil
+        locallyFailed = []
         if asHost { becomeHost(seed: seed) }
-        if localRole == .controller { target?.setPlaying(false) }
+        if localRole == .controller { target?.silenceForController() }
         tasks.append(Task { [weak self] in
             for await msg in transport.inbound { self?.handle(msg) }
         })
@@ -251,12 +314,14 @@ final class RemoteSessionController {
         tasks.removeAll()
         transport = nil
         isActive = false
-        localId = nil; hostId = nil
+        localId = nil; hostId = nil; stateHostId = nil
         state = nil
         roster = []; peerInfo = [:]; unavailableByPeer = [:]; localUnavailable = []
         model = RemoteQueueModel()
         ridByUid = [:]; resolutionCache = [:]; expected = nil
+        heldAfterEnd = nil; locallyFailed = []; pendingSeekMs = nil; lastPlayApply = nil
         reportedUnavailable = nil
+        stateRequested = [:]
         let hub = showcaseHub
         showcaseHub = nil
         showcaseKeepAlive = []
@@ -270,12 +335,13 @@ final class RemoteSessionController {
     func setLocalRole(_ role: RemoteDeviceRole) {
         guard isActive, role != localRole else { return }
         localRole = role
+        expected = nil
+        heldAfterEnd = nil
         if role == .controller {
-            target?.setPlaying(false)
-            expected = nil
+            target?.silenceForController()
         } else {
-            expected = nil
             ridByUid = [:]   // re-mirror from scratch
+            locallyFailed = []
             reconcileLocal()
         }
         reportedUnavailable = nil
@@ -302,10 +368,44 @@ final class RemoteSessionController {
         items.map { RemoteRow(item: $0, rid: UUID().uuidString, appleMusicId: resolver.appleMusicIdForSong($0.id)) }
     }
 
+    /// `SetlistPlayer.remoteControllerGate`: a local transport on THIS device while it is a
+    /// CONTROLLER — refused locally (true) and forwarded to the session instead. false ⇒ not a
+    /// controller: the player handles it as usual.
+    func interceptLocalTransport(_ request: SetlistPlayer.RemoteRedirect) -> Bool {
+        guard isActive, localRole == .controller else { return false }
+        switch request {
+        case .playPause: send(.playPause)
+        case .setPlaying(let on): send(.setPlaying(on))
+        case .skipNext: send(.skipNext)
+        case .skipPrevious: send(.skipPrevious)
+        case .play(let items, let startIndex):
+            // A brand-new set started here (Browse ▶, a widget, Siri, CarPlay) becomes the
+            // session's set — windowed like a broadcast (a 26k-row set never rides one message).
+            let i = max(0, min(startIndex, items.count - 1))
+            let lo = max(0, i - RemoteQueueModel.windowBehind)
+            let hi = min(items.count, i + 1 + RemoteQueueModel.windowAhead)
+            guard lo < hi else { return true }
+            send(.play(rows: rows(for: Array(items[lo..<hi])), startIndex: i - lo))
+        case .playNow(let item):
+            let r = rows(for: [item])
+            send(state?.currentRow == nil ? .play(rows: r, startIndex: 0) : .playNow(rows: r))
+        case .jump(let uid):
+            if let rid = ridByUid[uid] { send(.jumpTo(rid: rid)) }
+        case .localStart:
+            break                       // an internal (re)start: refused, nothing to forward
+        }
+        return true
+    }
+
     // MARK: - Extension point
 
     func registerHandler(kind: String, _ handler: @escaping (RemoteEnvelope, String) -> Void) {
         extensionHandlers[kind] = handler
+    }
+
+    /// An extension's "my part of the session is live" probe (see `activityProbes`).
+    func registerActivityProbe(_ probe: @escaping () -> Bool) {
+        activityProbes.append(probe)
     }
 
     func sendRaw(_ envelope: RemoteEnvelope, to: RemoteRecipient = .all, reliable: Bool = true) {
@@ -332,6 +432,12 @@ final class RemoteSessionController {
         case .state:
             guard let s = env.decode(RemotePlaybackState.self), s.hostId == msg.from else { return }
             receiveState(s)
+        case .heartbeat:
+            guard let hb = env.decode(RemoteHeartbeat.self), hb.hostId == msg.from else { return }
+            receiveHeartbeat(hb)
+        case .stateRequest:
+            guard isHost, env.decode(RemoteStateRequest.self) != nil else { return }
+            broadcastState(to: .participant(msg.from))
         case .command:
             guard isHost, let c = env.decode(RemoteCommandMessage.self) else { return }
             applyAsHost(c.command)
@@ -347,11 +453,32 @@ final class RemoteSessionController {
         }
     }
 
+    /// Two hosts (a hand-over race / an election that ran while the real host was slow): who
+    /// yields — deterministic and SYMMETRIC (exactly one side yields). An active session beats
+    /// an empty one, then the newer revision, then the LOWER id.
+    nonisolated static func shouldYield(theirs: (active: Bool, revision: Int, id: String),
+                                        mine: (active: Bool, revision: Int, id: String)) -> Bool {
+        if theirs.active != mine.active { return theirs.active }
+        if theirs.revision != mine.revision { return theirs.revision > mine.revision }
+        return theirs.id < mine.id
+    }
+
+    private var hostIsActive: Bool { !model.rows.isEmpty || activityProbes.contains { $0() } }
+
     private func receiveState(_ s: RemotePlaybackState) {
+        stateRequested[s.hostId] = nil
         if isHost {
-            // Two hosts (a hand-over race): the LOWER id wins, deterministically on both sides.
-            guard let localId, s.hostId < localId else { return }
+            guard let localId, s.hostId != localId,
+                  Self.shouldYield(theirs: (s.isActiveSession, s.revision, s.hostId),
+                                   mine: (hostIsActive, model.revision, localId)) else { return }
             DiagLog.shared.log("remote", "yield host to \(s.hostId)")
+        } else if let cur = stateHostId, s.hostId != cur, let mine = state,
+                  mine.isActiveSession, !s.isActiveSession {
+            // An EMPTY host while the session we follow is live: never adopt its nothing.
+            if roster.contains(cur) { return }      // the real host is alive — the empty one yields to it
+            DiagLog.shared.log("remote", "empty host \(s.hostId) after \(cur) left — taking over with the set")
+            takeOverAsHost()
+            return
         }
         if s.hostId != hostId {
             hostId = s.hostId
@@ -359,13 +486,43 @@ final class RemoteSessionController {
             lastRevision = -1
             lastPingAt = 0
         }
+        if s.hostId != stateHostId { lastRevision = -1 }
         guard s.revision >= lastRevision else { return }
         let structural = s.revision > lastRevision
         lastRevision = s.revision
+        stateHostId = s.hostId
         state = s
         mode = s.mode
-        if structural { resolutionWindowChanged() }
+        stateReceivedAt = now
+        if structural {
+            resolutionWindowChanged()
+            seekOwed = true
+        }
         reconcileLocal()
+    }
+
+    private func receiveHeartbeat(_ hb: RemoteHeartbeat) {
+        if isHost {
+            // Another device thinks it hosts: get its full state so the yield rule can decide.
+            if hb.hostId != localId { requestState(from: hb.hostId, revision: hb.revision) }
+            return
+        }
+        guard hb.hostId == stateHostId, var s = state, hb.revision <= lastRevision else {
+            requestState(from: hb.hostId, revision: hb.revision)    // a missed revision / a new host
+            return
+        }
+        guard hb.revision == lastRevision else { return }
+        s.snapshot.positionMs = hb.positionMs
+        s.snapshot.isPlaying = hb.isPlaying
+        s.anchorSharedTime = hb.anchorSharedTime
+        state = s
+        reconcileLocal()
+    }
+
+    private func requestState(from host: String, revision: Int) {
+        guard stateRequested[host] != revision else { return }
+        stateRequested[host] = revision
+        post(.stateRequest, RemoteStateRequest(haveRevision: lastRevision), to: .participant(host))
     }
 
     private func rosterChanged(_ ids: Set<String>) {
@@ -383,7 +540,8 @@ final class RemoteSessionController {
         }
     }
 
-    /// The host is gone (or never showed): the lowest remaining id takes over.
+    /// The host is gone: the lowest remaining id takes over. (Only ever after a host LEFT — a
+    /// joiner that simply hasn't heard from its host yet re-hellos instead; see `tick`.)
     private func electHost() {
         guard let localId, let winner = roster.min() else { return }
         if winner == localId {
@@ -412,6 +570,7 @@ final class RemoteSessionController {
     private func becomeHost(seed: RemoteQueueModel?) {
         guard let localId else { return }
         hostId = localId
+        stateHostId = localId
         clock.reset(hostId: localId, isHost: true)
         if let seed {
             model = seed
@@ -427,6 +586,8 @@ final class RemoteSessionController {
 
     /// The host's starting model = whatever its own player is running (window around the
     /// current row; rids = the local row uids, so the host's own speaker mirrors with no reload).
+    /// Rows past the window stay in the local player and refill the model as the set advances
+    /// (`refillFromLocalSource`) — the host's own long queue is never truncated.
     private func seedModelFromLocalPlayer() {
         guard let target, target.currentItem != nil else { return }
         let lo = max(0, target.currentIndex - RemoteQueueModel.windowBehind)
@@ -434,7 +595,7 @@ final class RemoteSessionController {
         let items = (lo..<hi).map { target.item(at: $0) }
         model.rows = items.map { localRow($0) }
         model.index = target.currentIndex - lo
-        model.isPlaying = target.isPlaying
+        model.isPlaying = target.isPlaying || target.isTransitioning   // a start in flight means ▶
         model.positionMs = target.positionMs
         model.anchor = now
         model.repeatMode = target.repeatMode
@@ -458,16 +619,70 @@ final class RemoteSessionController {
         }
     }
 
+    /// The full state to `recipient` (all ⇒ also this host's own `state`). The WIRE copy is
+    /// size-capped: the window halves until the encoded envelope fits `maxStateBytes`.
     private func broadcastState(to recipient: RemoteRecipient = .all) {
         guard isHost, let localId else { return }
-        let s = model.state(hostId: localId, mode: mode, sessionId: sessionId, now: now)
+        let t = now
+        let active = hostIsActive
+        let full = model.state(hostId: localId, mode: mode, sessionId: sessionId, now: t, sessionActive: active)
         if recipient == .all {
-            let structural = state?.revision != s.revision
-            state = s
-            lastBroadcastAt = now
+            let structural = state?.revision != full.revision
+            state = full
+            lastBroadcastAt = t
             if structural { resolutionWindowChanged() }
         }
-        post(.state, s, to: recipient)
+        guard let transport, var env = try? RemoteEnvelope.make(.state, full) else { return }
+        var ahead = RemoteQueueModel.windowAhead
+        var behind = RemoteQueueModel.windowBehind
+        while Self.encodedSize(env) > Self.maxStateBytes, ahead > Self.minWindowAhead {
+            ahead = max(Self.minWindowAhead, ahead / 2)
+            behind = min(behind, max(1, ahead / 4))
+            let trimmed = model.state(hostId: localId, mode: mode, sessionId: sessionId, now: t,
+                                      behind: behind, ahead: ahead, sessionActive: active)
+            guard let e = try? RemoteEnvelope.make(.state, trimmed) else { return }
+            env = e
+        }
+        if ahead < RemoteQueueModel.windowAhead {
+            DiagLog.shared.log("remote", "state window trimmed to \(ahead) ahead (\(Self.encodedSize(env)) bytes)")
+        }
+        transport.send(env, to: recipient, reliable: true)
+    }
+
+    nonisolated static func encodedSize(_ env: RemoteEnvelope) -> Int {
+        (try? JSONEncoder().encode(env).count) ?? .max
+    }
+
+    /// The small 2 s beat (see `RemoteHeartbeat`).
+    private func sendHeartbeat() {
+        guard isHost, let localId else { return }
+        let t = now
+        lastBroadcastAt = t
+        post(.heartbeat, RemoteHeartbeat(revision: model.revision, hostId: localId,
+                                         currentRid: model.currentRow?.rid, positionMs: model.position(at: t),
+                                         isPlaying: model.isPlaying, anchorSharedTime: t,
+                                         sessionActive: hostIsActive),
+             to: .all, reliable: false)
+    }
+
+    /// The model's upcoming tail ran low: pull the next rows from the host's OWN local set (the
+    /// rows past the seeded window), so a long set keeps going for everyone.
+    private func refillFromLocalSource() {
+        guard isHost, let target, target.isRunning, model.upcoming.count < Self.hostRefillBelow,
+              let lastRid = model.rows.last?.rid else { return }
+        let lo = max(0, target.currentIndex)
+        let hi = min(target.queueCount, lo + Self.tailLimit * 4)
+        guard lo < hi, let k = (lo..<hi).last(where: { ridByUid[target.item(at: $0).uid] == lastRid }) else { return }
+        var more: [SetlistPlayer.Item] = []
+        var i = k + 1
+        while i < target.queueCount, more.count < Self.hostRefillChunk {
+            let it = target.item(at: i)
+            if ridByUid[it.uid] == nil { more.append(it) }
+            i += 1
+        }
+        guard !more.isEmpty else { return }
+        DiagLog.shared.log("remote", "host refill +\(more.count) row(s) from the local set")
+        applyAsHost(.append(rows: more.map(localRow)))
     }
 
     // MARK: - Tick
@@ -481,7 +696,8 @@ final class RemoteSessionController {
                model.position(at: t) > len + Self.hostAdvanceSlackMs {
                 applyAsHost(.advanced(fromRid: cur.rid))
             }
-            if t - lastBroadcastAt >= Self.heartbeatMs { broadcastState() }
+            refillFromLocalSource()
+            if t - lastBroadcastAt >= Self.heartbeatMs { sendHeartbeat() }
         } else {
             if let hostId {
                 let interval: Double = clock.samples.count < SharedClock.sampleCap ? 1_000 : 5_000
@@ -490,14 +706,24 @@ final class RemoteSessionController {
                     post(.ping, clock.makePing(), to: .participant(hostId), reliable: false)
                 }
             }
-            if state == nil, t - attachedAt >= Self.electionTimeoutMs, roster.count > 0,
-               hostId == nil || !roster.contains(hostId!) {
-                electHost()
+            if state == nil, t - attachedAt >= Self.electionTimeoutMs, let localId {
+                if roster == [localId] {
+                    takeOverAsHost()            // alone: there is no host to wait for
+                } else if t - lastHelloAt >= Self.electionTimeoutMs {
+                    // Never elect a host over a peer that may simply be slow (an empty self-elected
+                    // host would wipe the real one) — re-hello: a live host answers with its state.
+                    sendHello()
+                }
             }
         }
-        if localRole == .speaker, target != nil {
-            observeLocalChanges()
+        guard let target else { return }
+        switch localRole {
+        case .speaker:
             reconcileLocal()
+        case .controller:
+            // Re-assert silence: whatever started since (a stray start, a pending one that
+            // landed, another surface's play) goes quiet again.
+            if target.isPlaying || target.isTransitioning { target.silenceForController() }
         }
     }
 
@@ -508,11 +734,28 @@ final class RemoteSessionController {
         guard let s = state else { return }
         let live = Set(s.rowIds)
         resolutionCache = resolutionCache.filter { live.contains($0.key) }
+        if locallyFailed.count > 500 { locallyFailed = locallyFailed.intersection(live) }
+        pruneRidMapIfLarge()
     }
 
-    private func resolution(_ row: RemoteRow) -> RemoteSongResolver.Resolution {
+    /// `ridByUid` only grows (replaced rows leave stale uids): rebuild it from the rows still
+    /// near the playhead when it gets large.
+    private func pruneRidMapIfLarge() {
+        guard ridByUid.count > Self.tailLimit * 10, let target else { return }
+        let lo = max(0, target.currentIndex - RemoteQueueModel.windowBehind * 2)
+        let hi = min(target.queueCount, target.currentIndex + 1 + Self.tailLimit * 2)
+        var kept: [UUID: String] = [:]
+        if lo < hi {
+            for i in lo..<hi { let u = target.item(at: i).uid; if let r = ridByUid[u] { kept[u] = r } }
+        }
+        if isHost { for r in model.rows { if let u = UUID(uuidString: r.rid), ridByUid[u] != nil { kept[u] = r.rid } } }
+        ridByUid = kept
+    }
+
+    /// nil = UNDECIDED (the cheap paths missed and the fuzzy matcher wasn't allowed yet).
+    private func resolution(_ row: RemoteRow, allowFuzzy: Bool) -> RemoteSongResolver.Resolution? {
         if let r = resolutionCache[row.rid] { return r }
-        let r = resolver.resolve(row)
+        guard let r = resolver.resolve(row, allowFuzzy: allowFuzzy) else { return nil }
         resolutionCache[row.rid] = r
         return r
     }
@@ -528,84 +771,146 @@ final class RemoteSessionController {
     }
 
     func reconcileLocal() {
-        guard isActive, localRole == .speaker, let target, let s = state else { return }
+        guard !isReconciling else { return }
+        isReconciling = true
+        defer { isReconciling = false }
+        guard isActive, localRole == .speaker, let target, state != nil else { return }
+        // The listener's own action FIRST — reconciling before reading it would revert it.
+        if expected != nil { observeLocalChanges() }
+        guard isActive, localRole == .speaker, let s = state else { return }
         let t = now
         // A local edit this participant just sent is in flight: don't revert it underneath the
         // user before the host's answer lands.
         if t < pendingUntil, s.revision <= pendingBaseRevision { return }
 
         let rows = s.rows
-        var available: [(rid: String, item: SetlistPlayer.Item)] = []
-        var unavailable: [String] = []
-        for r in rows {
-            if let it = resolution(r).item { available.append((r.rid, it)) } else { unavailable.append(r.rid) }
-        }
-        reportAvailability(Set(unavailable))
-
         let curRel = s.snapshot.index
-        guard curRel >= 0, curRel < rows.count else { return }
-        // The row to sound here: the session's current row, or the next one this device can play.
-        guard let desiredRid = rows[curRel...].first(where: { r in available.contains { $0.rid == r.rid } })?.rid,
-              let dIdx = available.firstIndex(where: { $0.rid == desiredRid }) else {
-            if target.isPlaying, t >= guardUntil { target.setPlaying(false); guardUntil = t + Self.applyGuardMs }
+        var available: [(rid: String, item: SetlistPlayer.Item)] = []
+        var availIdx: [String: Int] = [:]
+        var unavailable: Set<String> = []
+        for (i, r) in rows.enumerated() {
+            if locallyFailed.contains(r.rid) { unavailable.insert(r.rid); continue }
+            // The fuzzy matcher (a catalog scan) only for the rows about to play.
+            let fuzzyOK = i >= curRel && i <= curRel + Self.fuzzyLookahead
+            guard let res = resolution(r, allowFuzzy: fuzzyOK) else { continue }   // undecided
+            if let it = res.item {
+                availIdx[r.rid] = available.count
+                available.append((r.rid, it))
+            } else {
+                unavailable.insert(r.rid)
+            }
+        }
+        reportAvailability(unavailable)
+
+        guard curRel >= 0, curRel < rows.count else { expected = observe(); return }
+        let sessionRid = rows[curRel].rid
+        let sessionPos = s.positionMs(at: clock.sharedNow ?? s.anchorSharedTime)
+        // A row that ended HERE early: hold silent until the session moves (or restarts it).
+        if let h = heldAfterEnd, sessionRid != h.sessionRid || sessionPos + 5_000 < h.sessionPos {
+            heldAfterEnd = nil
+        }
+        if heldAfterEnd != nil {
+            if target.isPlaying, !target.isTransitioning { target.setPlaying(false) }
             expected = observe()
             return
         }
-        let onSessionCurrent = desiredRid == rows[curRel].rid
-        let desiredPos = onSessionCurrent ? s.positionMs(at: clock.sharedNow ?? s.anchorSharedTime) : 0
+        // The row to sound here: the session's current row, or the next one this device can play.
+        guard let desiredRid = rows[curRel...].first(where: { availIdx[$0.rid] != nil })?.rid,
+              let dIdx = availIdx[desiredRid] else {
+            if target.isPlaying, !target.isTransitioning { target.setPlaying(false) }
+            expected = observe()
+            return
+        }
+        let onSessionCurrent = desiredRid == sessionRid
+        let desiredPos = onSessionCurrent ? sessionPos : 0
+        let threshold = target.hasCoarsePosition ? Self.coarseDriftThresholdMs : Self.driftThresholdMs
 
         var moved = false
         let localCurRid = target.currentItem.flatMap { ridByUid[$0.uid] }
         if localCurRid != desiredRid {
-            if let hit = target.upcomingItems(limit: RemoteQueueModel.windowAhead * 2)
-                .first(where: { ridByUid[$0.uid] == desiredRid }) {
-                target.jumpToUpcoming(uid: hit.uid)
-                if onSessionCurrent, desiredPos > 1_500 { target.seek(toMs: desiredPos) }
+            let startAt = onSessionCurrent && desiredPos > 1_500 ? desiredPos : 0
+            let hit = s.isPlaying
+                ? target.upcomingItems(limit: Self.tailLimit).first(where: { ridByUid[$0.uid] == desiredRid })
+                : nil   // a PAUSED session loads paused (a jump would sound first)
+            if let hit {
+                target.jumpToUpcoming(uid: hit.uid, atMs: startAt)
             } else {
                 let items = available.map { Self.fresh($0.item) }
-                target.play(items, startIndex: dIdx, atMs: onSessionCurrent ? desiredPos : 0)
+                target.play(items, startIndex: dIdx, atMs: startAt, startPaused: !s.isPlaying)
                 remap(available.map(\.rid), from: 0, expecting: items)
-                if !s.isPlaying { target.setPlaying(false) }   // a paused session loads paused
             }
             moved = true
-        }
-        // The tail after the current row.
-        let desiredTail = Array(available[(dIdx + 1)...])
-        let localTail = target.upcomingItems(limit: RemoteQueueModel.windowAhead * 2)
-        let localTailRids = localTail.map { ridByUid[$0.uid] }
-        let desiredTailRids = desiredTail.map(\.rid)
-        if localTailRids != desiredTailRids.map(Optional.some) {
-            if localTailRids.count < desiredTailRids.count,
-               Array(desiredTailRids.prefix(localTailRids.count)).map(Optional.some) == localTailRids {
-                let extra = desiredTail.dropFirst(localTailRids.count).map { Self.fresh($0.item) }
-                target.appendToQueue(extra)
-                remap(Array(desiredTailRids.dropFirst(localTailRids.count)),
-                      from: target.queueCount - extra.count, expecting: extra)
-            } else {
-                let items = desiredTail.map { Self.fresh($0.item) }
-                target.replaceUpcoming(with: items)
-                remap(desiredTailRids, from: target.currentIndex + 1, expecting: items)
-            }
+            seekOwed = false            // the start cue carries the position
+            driftStrikes = 0
+            pendingSeekMs = nil
         }
         if target.repeatMode != s.repeatMode { target.setRepeatMode(s.repeatMode) }
-        if moved { guardUntil = t + Self.applyGuardMs }
+        // Shuffle: the host re-orders; a participant mirrors the flag (its order follows from the
+        // tail sync below). The host's own long local set is never re-shuffled underneath it.
+        if !isHost, target.isRunning, target.shuffleEnabled != s.shuffleEnabled { target.setShuffle(s.shuffleEnabled) }
+        syncTail(Array(available[(dIdx + 1)...]))
 
-        // ▶/⏸ — not while a move is still settling (a toggle mid-load would be refused or, on an
-        // async backend, double-fire).
-        if t >= guardUntil, !target.isTransitioning, target.isPlaying != s.isPlaying {
-            target.setPlaying(s.isPlaying)
-            guardUntil = t + Self.applyGuardMs
+        // ▶/⏸ — not while a start / buffering is still settling, and an apply that hasn't
+        // taken yet is re-issued only after `playRetryMs`.
+        if !moved, !target.isTransitioning, target.isRunning, target.isPlaying != s.isPlaying {
+            let due = lastPlayApply.map { $0.on != s.isPlaying || t - $0.at >= Self.playRetryMs } ?? true
+            if due {
+                if s.isPlaying, onSessionCurrent, abs(target.positionMs - desiredPos) > threshold {
+                    target.seek(toMs: desiredPos)          // resume AT the session position
+                    pendingSeekMs = desiredPos
+                }
+                target.setPlaying(s.isPlaying)
+                lastPlayApply = (s.isPlaying, t)
+            }
         }
-        // Drift: only against a clock measured on THIS host, on the session's own row, and
-        // never chasing every heartbeat.
-        if !moved, onSessionCurrent, s.isPlaying, target.isPlaying, t >= guardUntil,
-           clock.isSynced, clock.hostId == s.hostId, t - lastDriftFixAt >= Self.driftCooldownMs,
-           abs(target.positionMs - desiredPos) > Self.driftThresholdMs {
-            target.seek(toMs: desiredPos)
-            lastDriftFixAt = t
-            guardUntil = t + Self.applyGuardMs
+        // Drift / session seeks — never while buffering, only on the session's own row.
+        if !moved, onSessionCurrent, s.isPlaying, target.isPlaying, !target.isTransitioning {
+            let off = abs(target.positionMs - desiredPos)
+            let synced = clock.isSynced && clock.hostId == s.hostId
+            if off > threshold {
+                // A NEW revision (a session seek, a resume) is applied at once — on a synced
+                // clock, or fresh off the wire; plain drift must persist and respects a cooldown.
+                let owed = seekOwed && (synced || t - stateReceivedAt < 1_000)
+                if synced { driftStrikes += 1 }
+                if owed || (synced && driftStrikes >= Self.driftStrikesNeeded && t - lastDriftFixAt >= Self.driftCooldownMs) {
+                    target.seek(toMs: desiredPos)
+                    pendingSeekMs = desiredPos
+                    lastDriftFixAt = t
+                    driftStrikes = 0
+                }
+            } else {
+                driftStrikes = 0
+            }
+            seekOwed = false
         }
         expected = observe()
+    }
+
+    /// Make the local upcoming tail match `desired`. The local rows that belong to the session
+    /// are the SEGMENT up to the last rid-mapped one; rows after it (the host's own set beyond
+    /// the window) are kept — only the segment is ever edited.
+    private func syncTail(_ desired: [(rid: String, item: SetlistPlayer.Item)]) {
+        guard let target, target.isRunning else { return }
+        let local = target.upcomingItems(limit: Self.tailLimit)
+        let mappedCount = (local.lastIndex(where: { ridByUid[$0.uid] != nil }) ?? -1) + 1
+        let segment = local.prefix(mappedCount).map { ridByUid[$0.uid] }
+        let want = desired.map(\.rid)
+        guard segment != want.map(Optional.some) else { return }
+        if mappedCount < want.count, Array(want.prefix(mappedCount)).map(Optional.some) == segment {
+            // The session grew: the new rows go right after the segment.
+            let extra = desired.dropFirst(mappedCount).map { Self.fresh($0.item) }
+            let at = target.currentIndex + 1 + mappedCount
+            if mappedCount < local.count {
+                target.insertUpcoming(extra, before: local[mappedCount].uid)
+            } else {
+                target.appendToQueue(extra)
+            }
+            remap(Array(want.dropFirst(mappedCount)), from: at, expecting: extra)
+        } else {
+            let items = desired.map { Self.fresh($0.item) }
+            target.replaceUpcoming(first: mappedCount, with: items)
+            remap(want, from: target.currentIndex + 1, expecting: items)
+        }
     }
 
     /// Bind session rids to the rows the local player now holds, by POSITION (a player may copy
@@ -639,62 +944,73 @@ final class RemoteSessionController {
         let cur = target.currentItem
         return LocalObservation(isRunning: target.isRunning, generation: target.queueGeneration,
                                 currentUid: cur?.uid,
-                                upcomingUids: target.upcomingItems(limit: RemoteQueueModel.windowAhead * 2).map(\.uid),
+                                upcomingUids: target.upcomingItems(limit: Self.tailLimit).map(\.uid),
                                 isPlaying: target.isPlaying, positionMs: target.positionMs, at: now,
-                                repeatMode: target.repeatMode, shuffle: target.shuffleEnabled)
+                                repeatMode: target.repeatMode, shuffle: target.shuffleEnabled,
+                                transitionSeq: target.transitionSeq,
+                                userTransitionSeq: target.lastUserTransitionSeq,
+                                lastCause: target.lastTransitionCause,
+                                playIntentSeq: target.userPlayIntentSeq,
+                                playIntent: target.lastUserPlayIntent)
     }
 
     private func observeLocalChanges() {
-        guard let target, let obs = observe() else { return }
+        guard !isObservingLocal, let target, let obs = observe() else { return }
+        isObservingLocal = true
+        defer { isObservingLocal = false }
+        guard let exp = expected else { expected = obs; return }
+        expected = obs
         let t = obs.at
-        guard let exp = expected, t >= guardUntil else { expected = obs; playFlip = nil; return }
         var cmds: [RemoteCommand] = []
+        let userMoved = obs.userTransitionSeq != exp.userTransitionSeq
+        let autoMoved = !userMoved && obs.transitionSeq != exp.transitionSeq
+        let expRid = exp.currentUid.flatMap { ridByUid[$0] }
 
-        if exp.isRunning, !obs.isRunning {
-            cmds.append(.setPlaying(false))                    // stopped locally
-        } else if obs.isRunning, let cur = obs.currentUid {
+        if autoMoved {
+            // The player moved BY ITSELF — never the listener's intent.
+            cmds += automaticTransition(obs.lastCause, fromRid: expRid)
+        } else if userMoved, obs.isRunning, let cur = obs.currentUid {
+            pendingSeekMs = nil
             if ridByUid[cur] == nil {
-                // A brand-new set started locally (Browse ▶, a widget, Siri…) → the session's set.
+                // A brand-new set the listener started here SINCE joining (Browse ▶, a widget,
+                // Siri…) → the session's set. (A set already playing when we joined never is.)
                 let lo = max(0, target.currentIndex - RemoteQueueModel.windowBehind)
                 let hi = min(target.queueCount, target.currentIndex + 1 + RemoteQueueModel.windowAhead)
                 let rows = (lo..<hi).map { localRow(target.item(at: $0)) }
                 cmds.append(.play(rows: rows, startIndex: target.currentIndex - lo))
             } else if cur != exp.currentUid {
-                let expRid = exp.currentUid.flatMap { ridByUid[$0] }
                 if let expRid, exp.upcomingUids.first == cur {
-                    cmds.append(.advanced(fromRid: expRid))       // ⏭ or a natural track end
+                    cmds.append(.advanced(fromRid: expRid))       // ⏭ (applied once, while still current)
                 } else if let rid = ridByUid[cur] {
                     cmds.append(.jumpTo(rid: rid))
                 }
             } else {
-                if obs.shuffle != exp.shuffle {
-                    cmds.append(.setShuffle(obs.shuffle))         // the host re-orders; we mirror it
-                } else if obs.generation != exp.generation {
-                    cmds += queueEditCommands(exp: exp, obs: obs)
-                }
+                cmds.append(.seek(ms: obs.positionMs))            // ⏮ restarted the same row
+            }
+        } else if obs.isRunning, exp.isRunning, obs.currentUid != nil, obs.currentUid == exp.currentUid {
+            if obs.shuffle != exp.shuffle {
+                cmds.append(.setShuffle(obs.shuffle))             // the host re-orders; we mirror it
+            } else if obs.generation != exp.generation {
+                cmds += queueEditCommands(exp: exp, obs: obs)
+            }
+            if !target.isTransitioning {
                 let predicted = exp.isPlaying ? exp.positionMs + Int(t - exp.at) : exp.positionMs
                 if abs(obs.positionMs - predicted) > Self.seekDetectMs {
-                    cmds.append(.seek(ms: obs.positionMs))
-                }
-                // ▶/⏸ — must HOLD (a load blip / stall is not the user pausing).
-                if obs.isPlaying != (state?.isPlaying ?? obs.isPlaying), !target.isTransitioning {
-                    if let f = playFlip, f.playing == obs.isPlaying {
-                        if t - f.since >= Self.playFlipHoldMs {
-                            cmds.append(.setPlaying(obs.isPlaying))
-                            playFlip = nil
-                        }
+                    if let ps = pendingSeekMs, abs(obs.positionMs - ps) <= Self.seekDetectMs {
+                        pendingSeekMs = nil                       // OUR seek landing late
                     } else {
-                        playFlip = (obs.isPlaying, t)
+                        cmds.append(.seek(ms: obs.positionMs))
                     }
-                } else {
-                    playFlip = nil
                 }
-            }
-            if obs.repeatMode != exp.repeatMode, obs.repeatMode != state?.repeatMode {
-                cmds.append(.setRepeat(obs.repeatMode))
             }
         }
-        expected = obs
+        // ▶/⏸ the listener pressed (a cascade halt / interruption / stall never counts).
+        if obs.playIntentSeq != exp.playIntentSeq, obs.isRunning, let s = state, obs.playIntent != s.isPlaying {
+            cmds.append(.setPlaying(obs.playIntent))
+        }
+        if obs.isRunning, obs.repeatMode != exp.repeatMode, obs.repeatMode != state?.repeatMode {
+            cmds.append(.setRepeat(obs.repeatMode))
+        }
         guard !cmds.isEmpty else { return }
         DiagLog.shared.log("remote", "local change → \(cmds.count) command(s)")
         if !isHost {
@@ -702,6 +1018,31 @@ final class RemoteSessionController {
             pendingBaseRevision = lastRevision
         }
         for c in cmds { send(c) }
+    }
+
+    /// The local player changed rows on its own (`cause`) away from session row `fromRid`.
+    private func automaticTransition(_ cause: SetlistPlayer.TransitionCause, fromRid: String?) -> [RemoteCommand] {
+        pendingSeekMs = nil
+        switch cause {
+        case .user, .remote:
+            return []
+        case .naturalEnd:
+            guard let fromRid, let s = state else { return [] }
+            let pos = s.positionMs(at: clock.sharedNow ?? s.anchorSharedTime)
+            let cur = s.currentRow
+            if cur?.rid == fromRid, cur?.row.lengthMs.map({ pos >= $0 - Self.naturalEndToleranceMs }) ?? true {
+                return [.advanced(fromRid: fromRid)]      // the row really ended — for everyone
+            }
+            // Our copy ended early (shorter), or the row we played in place of one we can't play
+            // ended: wait silently for the session, never re-mirror the row we just finished.
+            heldAfterEnd = (fromRid, cur?.rid, pos)
+            DiagLog.shared.log("remote", "local copy ended before the session — holding silent")
+            return []
+        case .autoSkip, .stallHop, .unplayable:
+            // This device can't play that row right now: mirror the session AROUND it.
+            if let fromRid { locallyFailed.insert(fromRid) }
+            return []
+        }
     }
 
     /// Same current row, queue moved: removals, additions (next / end), and re-orders.
@@ -713,7 +1054,7 @@ final class RemoteSessionController {
         let obsKnownSet = Set(obsKnown)
         for rid in expRids where !obsKnownSet.contains(rid) { cmds.append(.remove(rid: rid)) }
         // New local rows (no rid yet): a leading run is "play next", the rest are appends.
-        let upcoming = target.upcomingItems(limit: RemoteQueueModel.windowAhead * 2)
+        let upcoming = target.upcomingItems(limit: Self.tailLimit)
         var leading: [SetlistPlayer.Item] = [], trailing: [SetlistPlayer.Item] = []
         var seenKnown = false
         for it in upcoming {
@@ -731,6 +1072,7 @@ final class RemoteSessionController {
     // MARK: - Outbound
 
     private func sendHello(to recipient: RemoteRecipient = .all) {
+        if recipient == .all { lastHelloAt = now }
         post(.hello, RemoteHello(name: deviceName, role: localRole, platform: platform), to: recipient)
     }
 

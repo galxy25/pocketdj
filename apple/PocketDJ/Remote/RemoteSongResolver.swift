@@ -6,8 +6,10 @@ import Foundation
 ///   1. the row's songId is in this device's catalog            → that song
 ///   2. the row's Apple Music id is a catalog song here          → that song
 ///   3. the row has an Apple Music id and Apple Music is usable → `am:<id>` (the user's own AM)
-///   4. normalized title + artist match in the catalog           → that song (JukeboxMatching)
-///   5. otherwise                                                → unavailable on this device
+///   4. normalized title + artist EXACT key in the catalog       → that song (O(1) lookup)
+///   5. the containment-tolerant fuzzy matcher (JukeboxMatching) → that song — EXPENSIVE (a scan
+///      of the catalog per miss), so callers ask for it only for the rows about to play
+///   6. otherwise                                                → unavailable on this device
 /// The closures are the seams (tests feed dictionaries; production wires the live catalog).
 @MainActor
 struct RemoteSongResolver {
@@ -29,8 +31,10 @@ struct RemoteSongResolver {
     var catalogItem: (String) -> SetlistPlayer.Item?
     /// Apple Music store id → a catalog item carrying that id.
     var catalogItemForAppleMusicId: (String) -> SetlistPlayer.Item? = { _ in nil }
-    /// Normalized title + artist → a catalog item.
+    /// Normalized title + artist → a catalog item (an O(1) exact-key lookup).
     var matchTitleArtist: (String, String) -> SetlistPlayer.Item? = { _, _ in nil }
+    /// The containment-tolerant matcher — a catalog scan per call. nil ⇒ none (tests).
+    var fuzzyTitleArtist: ((String, String) -> SetlistPlayer.Item?)? = nil
     /// Can this device stream Apple Music at all (the opt-in build flag + a linked account)?
     var appleMusicAvailable: () -> Bool = { false }
     /// The Apple Music store id the local catalog knows for a songId (stamped onto OUTBOUND rows).
@@ -39,7 +43,14 @@ struct RemoteSongResolver {
     /// production — a miss there is genuinely unavailable.
     var lastResort: ((RemoteRow) -> SetlistPlayer.Item?)? = nil
 
+    /// Every path, the fuzzy matcher included.
     func resolve(_ row: RemoteRow) -> Resolution {
+        resolve(row, allowFuzzy: true) ?? .unavailable
+    }
+
+    /// `allowFuzzy: false` stops before the expensive fuzzy matcher: a row the cheap paths miss
+    /// returns nil (UNDECIDED — neither playable nor reported unavailable yet).
+    func resolve(_ row: RemoteRow, allowFuzzy: Bool) -> Resolution? {
         let r = row.row
         let variant = r.variant.flatMap(SongVariant.init(rawValue:))
         func stamped(_ base: SetlistPlayer.Item) -> SetlistPlayer.Item {
@@ -59,6 +70,10 @@ struct RemoteSongResolver {
             }
         }
         if let hit = matchTitleArtist(r.title, r.artist) { return .matched(stamped(hit)) }
+        if let fuzzy = fuzzyTitleArtist {
+            guard allowFuzzy else { return nil }
+            if let hit = fuzzy(r.title, r.artist) { return .matched(stamped(hit)) }
+        }
         if let hit = lastResort?(row) { return .matched(hit) }
         return .unavailable
     }
@@ -87,10 +102,10 @@ extension RemoteSongResolver {
             catalogItem: { id in app.songsById[id].map(item) },
             catalogItemForAppleMusicId: { am in index.byAppleMusicId()[am].flatMap { app.songsById[$0] }.map(item) },
             matchTitleArtist: { title, artist in
-                if let id = index.byTitleArtist()[RemoteCatalogIndex.key(title, artist)],
-                   let s = app.songsById[id] { return item(s) }
-                return index.fuzzyExact(title: title, artist: artist).map(item)
+                index.byTitleArtist()[RemoteCatalogIndex.key(title, artist)]
+                    .flatMap { app.songsById[$0] }.map(item)
             },
+            fuzzyTitleArtist: { title, artist in index.fuzzyExact(title: title, artist: artist).map(item) },
             appleMusicAvailable: { AppleMusicCredentials.isEnabled },
             appleMusicIdForSong: { id in app.songsById[id]?.appleMusicId })
     }

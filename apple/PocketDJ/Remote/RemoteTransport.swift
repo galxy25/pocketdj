@@ -132,3 +132,99 @@ final class LoopbackTransport: RemoteTransport {
         rosterCont.finish()
     }
 }
+
+// MARK: - Serial send queue
+
+/// The outbound side of a real transport: ONE consumer delivering messages strictly in send
+/// order (a per-message `Task` let a later state overtake an earlier one), with
+///   • per-participant messages BUFFERED while that participant isn't resolvable yet (a reply to
+///     a joiner's hello can beat the roster update that makes the joiner addressable), flushed
+///     on `participantsChanged()` (capped per participant, oldest dropped);
+///   • reliable sends RETRIED with backoff on failure (logged each time), unreliable ones dropped.
+/// Generic over the transport's recipient type so it is unit-testable without GroupActivities.
+@MainActor
+final class RemoteSendQueue<Recipient> {
+    typealias Send = (RemoteEnvelope, Recipient, Bool) async throws -> Void
+
+    struct Outbound {
+        var envelope: RemoteEnvelope
+        var to: RemoteRecipient
+        var reliable: Bool
+    }
+
+    static var bufferCap: Int { 32 }
+
+    private let resolve: (RemoteRecipient) -> Recipient?
+    private let sendOne: Send
+    private let retryDelays: [Double]
+    private let stream: AsyncStream<Outbound>
+    private let cont: AsyncStream<Outbound>.Continuation
+    private var consumer: Task<Void, Never>?
+    private(set) var buffered: [String: [Outbound]] = [:]
+    /// Delivered (tests) — kinds in delivery order.
+    private(set) var deliveredCount = 0
+    private(set) var failureCount = 0
+
+    /// `retryDelays` (seconds): one entry per retry of a failed reliable send.
+    init(resolve: @escaping (RemoteRecipient) -> Recipient?, retryDelays: [Double] = [0.25, 1.0],
+         send: @escaping Send) {
+        self.resolve = resolve
+        self.sendOne = send
+        self.retryDelays = retryDelays
+        (stream, cont) = AsyncStream.makeStream(of: Outbound.self)
+        let stream = self.stream
+        consumer = Task { [weak self] in
+            for await o in stream {
+                guard let self else { return }
+                await self.deliver(o)
+            }
+        }
+    }
+
+    func enqueue(_ envelope: RemoteEnvelope, to: RemoteRecipient, reliable: Bool) {
+        cont.yield(Outbound(envelope: envelope, to: to, reliable: reliable))
+    }
+
+    /// The roster moved: buffered messages for participants that are now resolvable go out
+    /// (in their original order, behind anything already queued).
+    func participantsChanged() {
+        for (id, msgs) in buffered where resolve(.participant(id)) != nil {
+            buffered[id] = nil
+            for m in msgs { cont.yield(m) }
+        }
+    }
+
+    func finish() {
+        cont.finish()
+        consumer?.cancel()
+        consumer = nil
+        buffered = [:]
+    }
+
+    private func deliver(_ o: Outbound) async {
+        guard let recipient = resolve(o.to) else {
+            if case .participant(let id) = o.to, o.reliable {
+                var list = buffered[id, default: []]
+                list.append(o)
+                if list.count > Self.bufferCap { list.removeFirst(list.count - Self.bufferCap) }
+                buffered[id] = list
+            }
+            return
+        }
+        var attempt = 0
+        while true {
+            do {
+                try await sendOne(o.envelope, recipient, o.reliable)
+                deliveredCount += 1
+                return
+            } catch {
+                failureCount += 1
+                DiagLog.shared.log("remote", "send \(o.envelope.kind) failed (attempt \(attempt + 1)): \(error.localizedDescription)")
+                guard o.reliable, attempt < retryDelays.count, !Task.isCancelled else { return }
+                let delay = retryDelays[attempt]
+                attempt += 1
+                if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            }
+        }
+    }
+}

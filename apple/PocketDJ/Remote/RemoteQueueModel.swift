@@ -165,10 +165,13 @@ struct RemoteQueueModel: Equatable {
 
     // MARK: Broadcast
 
-    /// The windowed wire state for revision `revision`.
-    func state(hostId: String, mode: RemoteSessionMode, sessionId: String, now: Double) -> RemotePlaybackState {
-        let lo = max(0, index - Self.windowBehind)
-        let hi = min(rows.count, index + 1 + Self.windowAhead)
+    /// The windowed wire state for revision `revision` (`behind` / `ahead` shrink the window
+    /// when the encoded state would exceed the messenger's size budget).
+    func state(hostId: String, mode: RemoteSessionMode, sessionId: String, now: Double,
+               behind: Int = Self.windowBehind, ahead: Int = Self.windowAhead,
+               sessionActive: Bool? = nil) -> RemotePlaybackState {
+        let lo = max(0, index - behind)
+        let hi = min(rows.count, index + 1 + ahead)
         let window = lo < hi ? Array(rows[lo..<hi]) : []
         let snap = PlaybackSessionStore.Snapshot(
             sessionId: sessionId,
@@ -182,7 +185,7 @@ struct RemoteQueueModel: Equatable {
             updatedAt: now)
         return RemotePlaybackState(revision: revision, hostId: hostId, mode: mode, snapshot: snap,
                                    rowIds: window.map(\.rid), windowStart: lo, totalCount: rows.count,
-                                   anchorSharedTime: now)
+                                   anchorSharedTime: now, sessionActive: sessionActive)
     }
 
     /// Adopt a received state as the starting model (a hand-over: the new host only knows the

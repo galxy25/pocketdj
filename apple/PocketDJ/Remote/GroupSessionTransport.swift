@@ -38,6 +38,8 @@ final class GroupSessionTransport: RemoteTransport {
     private var byId: [String: Participant] = [:]
     private var subscriptions: Set<AnyCancellable> = []
     private var tasks: [Task<Void, Never>] = []
+    /// Every outbound message, delivered serially (order kept, joiner sends buffered, retries).
+    private var outbound: RemoteSendQueue<Participants>!
 
     var localParticipantId: String { session.localParticipant.id.uuidString }
 
@@ -48,6 +50,15 @@ final class GroupSessionTransport: RemoteTransport {
         (inbound, inboundCont) = AsyncStream.makeStream(of: RemoteInbound.self)
         (participants, rosterCont) = AsyncStream.makeStream(of: Set<String>.self,
                                                             bufferingPolicy: .bufferingNewest(1))
+        let reliableMessenger = reliable, unreliableMessenger = unreliable
+        outbound = RemoteSendQueue(resolve: { [weak self] to in
+            switch to {
+            case .all: return Participants.all
+            case .participant(let id): return self?.byId[id].map { Participants.only($0) }
+            }
+        }, send: { env, recipients, isReliable in
+            try await (isReliable ? reliableMessenger : unreliableMessenger).send(env, to: recipients)
+        })
         for messenger in [reliable, unreliable] {
             let cont = inboundCont
             tasks.append(Task {
@@ -61,6 +72,7 @@ final class GroupSessionTransport: RemoteTransport {
             .sink { [weak self] set in
                 guard let self else { return }
                 self.byId = Dictionary(set.map { ($0.id.uuidString, $0) }, uniquingKeysWith: { a, _ in a })
+                self.outbound.participantsChanged()
                 self.rosterCont.yield(Set(self.byId.keys))
             }
             .store(in: &subscriptions)
@@ -73,20 +85,7 @@ final class GroupSessionTransport: RemoteTransport {
     }
 
     func send(_ envelope: RemoteEnvelope, to: RemoteRecipient, reliable: Bool) {
-        let messenger = reliable ? self.reliable : unreliable
-        let recipients: Participants
-        switch to {
-        case .all:
-            recipients = .all
-        case .participant(let id):
-            guard let p = byId[id] else { return }
-            recipients = .only(p)
-        }
-        Task {
-            do { try await messenger.send(envelope, to: recipients) } catch {
-                DiagLog.shared.log("remote", "send \(envelope.kind) failed: \(error.localizedDescription)")
-            }
-        }
+        outbound.enqueue(envelope, to: to, reliable: reliable)
     }
 
     func leave() {
@@ -97,6 +96,7 @@ final class GroupSessionTransport: RemoteTransport {
     private func finish() {
         for t in tasks { t.cancel() }
         tasks.removeAll()
+        outbound.finish()
         subscriptions.removeAll()
         inboundCont.finish()
         rosterCont.finish()
@@ -108,19 +108,20 @@ final class GroupSessionTransport: RemoteTransport {
 extension RemoteSessionController {
     /// App-scoped: every SharePlay session for PocketDJ (one we started, or one a FaceTime peer /
     /// nearby device offered) arrives here for the app's lifetime. A session that lands while a
-    /// start is pending is OURS to host.
-    func observeGroupSessions() async {
-        // ONE observer per process: the hook rides every window's root (multi-window ⌘N).
-        guard !isObservingSessions else { return }
-        isObservingSessions = true
-        defer { isObservingSessions = false }
-        for await session in PocketDJSessionActivity.sessions() {
-            let asHost = pendingStartMode != nil
-            pendingStartMode = nil
-            DiagLog.shared.telemetry("action", "remote session arrived mode=\(session.activity.mode.rawValue) host=\(asHost)")
-            let transport = GroupSessionTransport(session: session)
-            session.join()
-            attach(transport, mode: session.activity.mode, asHost: asHost)
+    /// start is pending is OURS to host. Started ONCE from app init and owned by the controller
+    /// (a window's `.task` died with that window — multi-window ⌘N — and took SharePlay with it).
+    func startObservingGroupSessions() {
+        guard groupSessionsObserver == nil else { return }
+        groupSessionsObserver = Task { [weak self] in
+            for await session in PocketDJSessionActivity.sessions() {
+                guard let self else { return }
+                let asHost = self.pendingStartMode != nil
+                self.pendingStartMode = nil
+                DiagLog.shared.telemetry("action", "remote session arrived mode=\(session.activity.mode.rawValue) host=\(asHost)")
+                let transport = GroupSessionTransport(session: session)
+                session.join()
+                self.attach(transport, mode: session.activity.mode, asHost: asHost)
+            }
         }
     }
 

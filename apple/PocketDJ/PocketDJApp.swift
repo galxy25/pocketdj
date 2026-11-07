@@ -1525,13 +1525,22 @@ struct PocketDJApp: App {
         // ── Remote (SharePlay Listen Together + Backseat) ───────────────────────
         // App-scoped so a session outlives tab switches: a speaker reconciles the SAME
         // app-scoped sequencer the Now Playing panel drives (one audio owner); the controller
-        // only sends commands. Sessions are observed from launch (`observeGroupSessions`).
+        // only sends commands. Sessions are observed from launch (`startObservingGroupSessions`,
+        // below — app-scoped, never tied to a window).
         let remote = RemoteSessionController(
             target: SetlistPlayerRemoteTarget(sequencer: setlistPlayer, coordinator: coordinator, player: player),
             resolver: .live(app: app),
             deviceName: RemoteDevice.name(owner: profile.name),
             platform: RemoteDevice.kind)
         _remote = State(initialValue: remote)
+        // A Backseat CONTROLLER plays nothing: every local transport (panel, widget, lock screen,
+        // AirPods, CarPlay, Siri, Browse ▶) is forwarded to the session instead.
+        setlistPlayer.remoteControllerGate = { [weak remote] request in
+            remote?.interceptLocalTransport(request) ?? false
+        }
+        #if canImport(GroupActivities)
+        remote.startObservingGroupSessions()
+        #endif
         // Multiplayer Mix rides the SAME session: every device renders both decks locally from
         // shared state (its own burned / streamable files) — never streamed audio.
         let mixSync = MixSync(remote: remote, engine: mix,
@@ -2237,12 +2246,7 @@ struct PocketDJApp: App {
                 .task { recEngine.startAutoFlush() }
                 // SharePlay: every PocketDJ session (started here or offered by a peer) for the
                 // app's lifetime; the showcase seed fakes a Backseat session for screenshots.
-                .task {
-                    remote.seedShowcaseIfRequested()
-                    #if canImport(GroupActivities)
-                    await remote.observeGroupSessions()
-                    #endif
-                }
+                .task { remote.seedShowcaseIfRequested() }
                 // Listening-pockets auto-flush: same contract (idempotent, gated inside).
                 .task { listeningPockets.startAutoFlush() }
                 // A round that was playing when the app went away keeps (or finishes) tracking.

@@ -48,7 +48,9 @@ enum RemoteDeviceRole: String, Codable, Sendable {
 /// Known message kinds. The wire carries `rawValue`; unknown strings are ignored on receipt.
 enum RemoteMessageKind: String, Sendable {
     case hello            // RemoteHello — who I am + my role (re-sent when the roster changes)
-    case state            // RemotePlaybackState — host → all (on change + 2 s heartbeat)
+    case state            // RemotePlaybackState — host → all (on every revision, a join, a request)
+    case heartbeat        // RemoteHeartbeat — host → all every 2 s (small: revision + position)
+    case stateRequest     // RemoteStateRequest — anyone → a host ("send me your full state")
     case command          // RemoteCommandMessage — anyone → host
     case ping             // RemotePing — participant → host (unreliable)
     case pong             // RemotePong — host → that participant (unreliable)
@@ -121,6 +123,13 @@ struct RemotePlaybackState: Codable, Equatable {
     /// The position was `snapshot.positionMs` at THIS shared-clock time (ms on the host's clock).
     /// While playing, position(now) = positionMs + (sharedNow − anchorSharedTime).
     var anchorSharedTime: Double
+    /// The host's session has something going (a queue, or a Phase-2 extension such as Mix
+    /// Together). Optional/additive: absent (an older build) ⇒ derived from the rows. A host
+    /// never yields to — and a participant never switches to — an INACTIVE host's state while
+    /// the one it follows is active (an empty self-elected host must not wipe a real session).
+    var sessionActive: Bool? = nil
+
+    var isActiveSession: Bool { sessionActive ?? !rowIds.isEmpty }
 
     var rows: [RemoteRow] {
         zip(rowIds, snapshot.queue).map { RemoteRow(rid: $0, row: $1) }
@@ -167,6 +176,24 @@ enum RemoteCommand: Codable, Equatable {
     /// A speaker's track ENDED and it advanced on its own. Applied only while `fromRid` is still
     /// current, so N speakers reporting the same natural advance move the set exactly once.
     case advanced(fromRid: String)
+}
+
+/// The host's small periodic beat (every `heartbeatMs`): enough for a receiver to keep its
+/// position anchor fresh and to notice a MISSED revision (→ `stateRequest`), without re-sending
+/// the whole window. The full state goes out only on a revision change, a join, or a request.
+struct RemoteHeartbeat: Codable, Equatable, Sendable {
+    var revision: Int
+    var hostId: String
+    var currentRid: String?
+    var positionMs: Int
+    var isPlaying: Bool
+    var anchorSharedTime: Double
+    var sessionActive: Bool
+}
+
+/// "Send me your full state" — the revision the requester holds (-1 ⇒ none).
+struct RemoteStateRequest: Codable, Equatable, Sendable {
+    var haveRevision: Int
 }
 
 struct RemoteCommandMessage: Codable, Equatable {

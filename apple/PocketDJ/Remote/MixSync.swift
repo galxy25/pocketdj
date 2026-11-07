@@ -151,6 +151,8 @@ final class MixSync {
         remote.registerHandler(kind: MixWireKind.ready) { [weak self] env, from in self?.receiveReady(env, from: from) }
         remote.registerHandler(kind: MixWireKind.beat) { [weak self] env, from in self?.receiveBeat(env, from: from) }
         remote.registerHandler(kind: MixWireKind.reject) { [weak self] env, from in self?.receiveReject(env, from: from) }
+        // A live Mix Together is session ACTIVITY: the host election never yields it to an empty host.
+        remote.registerActivityProbe { [weak self] in self?.isActive == true }
         engine.gestureTap = { [weak self] g in self?.localGesture(g) }
         if autoTick {
             tickTask = Task { [weak self] in

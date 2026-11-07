@@ -2,7 +2,7 @@
 import SwiftUI
 
 /// The Apple TV's Remote tab. The TV never STARTS a session (no share UI on tvOS) — it joins
-/// one a FaceTime / SharePlay peer offers (`observeGroupSessions` runs app-wide) and plays as a
+/// one a FaceTime / SharePlay peer offers (`startObservingGroupSessions` runs app-wide) and plays as a
 /// speaker. This tab shows the session, who's in it, and the session's transport.
 struct TVRemoteView: View {
     @Environment(RemoteSessionController.self) private var remote

@@ -493,6 +493,12 @@ final class PlayerEngine {
     /// it is live while held) turns it into real playback and returns the verdict it took
     /// ("resumeHeld" / "startCurrent" / "startInFlight"), or nil when it had nothing to start.
     @ObservationIgnored var onIdlePlay: (() -> String?)?
+    /// The listener's system transport (lock screen / Control Center / AirPods / CarPlay).
+    enum ListenerTransport: Equatable { case play, pause, toggle }
+    /// Offered every system ▶/⏸/⏯ FIRST (after the ownership guard): the sequencer records the
+    /// listener's intent and, while this device is a Remote-session CONTROLLER, forwards it to
+    /// the session — `true` = handled there, the local engine must not act.
+    @ObservationIgnored var onListenerTransport: ((ListenerTransport) -> Bool)?
     /// P0-1 — a REMOTE ▶ refused because nothing (no item, no held set) could act on it — the
     /// head unit's play-on-connect landing before the launch task restored the session. The
     /// restore consumes it (within a short window) and resumes the held set.
@@ -610,6 +616,7 @@ final class PlayerEngine {
     /// the press is LATCHED for a restore that may land a moment later.
     func handleRemotePlay() -> MPRemoteCommandHandlerStatus {
         guard NowPlayingArbiter.shared.isActive(self) else { transportLog("play", "not-owner"); return .commandFailed }
+        if onListenerTransport?(.play) == true { transportLog("play", "remote-session"); return .success }
         if !hasLoadedItem {
             if let verdict = onIdlePlay?() { transportLog("play", "onIdlePlay→\(verdict)"); return .success }
             pendingRemotePlayAt = Date()
@@ -623,6 +630,7 @@ final class PlayerEngine {
 
     func handleRemotePause() -> MPRemoteCommandHandlerStatus {
         guard NowPlayingArbiter.shared.isActive(self) else { transportLog("pause", "not-owner"); return .commandFailed }
+        if onListenerTransport?(.pause) == true { transportLog("pause", "remote-session"); return .success }
         transportLog("pause", hasLoadedItem ? "handled" : "refused-idle")
         pause(); return .success
     }
@@ -630,6 +638,7 @@ final class PlayerEngine {
     /// The remote ⏯ body — an idle engine has nothing to pause, so ⏯ means ▶ (same ladder).
     func handleRemoteToggle() -> MPRemoteCommandHandlerStatus {
         guard NowPlayingArbiter.shared.isActive(self) else { transportLog("toggle", "not-owner"); return .commandFailed }
+        if onListenerTransport?(.toggle) == true { transportLog("toggle", "remote-session"); return .success }
         if !hasLoadedItem {
             if let verdict = onIdlePlay?() { transportLog("toggle", "onIdlePlay→\(verdict)"); return .success }
             pendingRemotePlayAt = Date()

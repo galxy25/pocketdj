@@ -449,6 +449,14 @@ struct RemoteShareSheet: NSViewControllerRepresentable {
     func makeNSViewController(context: Context) -> NSViewController {
         remote.pendingStartMode = mode
         guard let vc = try? GroupActivitySharingController(PocketDJSessionActivity(mode: mode)) else {
+            // The invite UI couldn't be built: undo the pending start (else the NEXT peer session
+            // would be treated as ours to host), close the sheet, and say why.
+            let remote = remote
+            Task { @MainActor in
+                remote.pendingStartMode = nil
+                remote.statusMessage = "Couldn’t open the SharePlay invite. Try again from a FaceTime call."
+                done()
+            }
             return NSViewController()
         }
         Task { @MainActor in
@@ -470,6 +478,14 @@ struct RemoteShareSheet: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
         remote.pendingStartMode = mode
         guard let vc = try? GroupActivitySharingController(PocketDJSessionActivity(mode: mode)) else {
+            // The invite UI couldn't be built: undo the pending start (else the NEXT peer session
+            // would be treated as ours to host), close the sheet, and say why.
+            let remote = remote
+            Task { @MainActor in
+                remote.pendingStartMode = nil
+                remote.statusMessage = "Couldn’t open the SharePlay invite. Try again from a FaceTime call."
+                done()
+            }
             return UIViewController()
         }
         Task { @MainActor in
