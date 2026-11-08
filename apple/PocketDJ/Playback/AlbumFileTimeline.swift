@@ -78,6 +78,15 @@ struct AlbumFileTimeline: Equatable {
         return segments[i + 1]
     }
 
+    /// The segment right before `songId` on the record (nil when it's the first, or unknown).
+    func previous(before songId: String) -> Segment? {
+        guard let i = segments.firstIndex(where: { $0.songId == songId }), i > 0 else { return nil }
+        return segments[i - 1]
+    }
+
+    /// Whether `songId` is the record's last song.
+    func isLast(_ songId: String) -> Bool { segments.last?.songId == songId }
+
     /// Where `songId` ends inside the file: its edited end, else its detected end + the fade
     /// grace — never past the next song's start (and never at or before its own). With no
     /// known end it runs to the next song's start; nil = the last song with no known end (it

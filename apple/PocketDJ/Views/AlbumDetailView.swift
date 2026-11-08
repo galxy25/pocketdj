@@ -324,14 +324,28 @@ private struct AudioSegmentRow: View {
     }
 }
 
+// iPhone (compact width) stacks each track row on two lines so the TITLE always has the row's
+// full width (Levi, 2026-11-08: on iPhone portrait the BPM/key/time columns + ♥ + ▶ left the
+// title no room). iPad and Mac keep the single-line columns. Size classes are iOS-only.
+
 private struct TrackRowHeader: View {
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var compact: Bool { sizeClass == .compact }
+    #else
+    private var compact: Bool { false }
+    #endif
+
     var body: some View {
         HStack(spacing: 10) {
             Text("#").frame(width: 24, alignment: .trailing)
-            Text("Title").frame(maxWidth: .infinity, alignment: .leading)
-            Text("BPM").frame(width: 48, alignment: .trailing)
-            Text("Key").frame(width: 84, alignment: .leading)
-            Text("Time").frame(width: 48, alignment: .trailing)
+            Text(compact ? "Title · BPM · Key · Time" : "Title")
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if !compact {
+                Text("BPM").frame(width: 48, alignment: .trailing)
+                Text("Key").frame(width: 84, alignment: .leading)
+                Text("Time").frame(width: 48, alignment: .trailing)
+            }
         }
         .font(.caption2.weight(.semibold))
         .textCase(.uppercase)
@@ -348,8 +362,68 @@ private struct TrackRowHeader: View {
 private struct TrackRowInfo: View {
     let index: Int
     let song: IndexSong
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    private var compact: Bool { sizeClass == .compact }
+    #else
+    private var compact: Bool { false }
+    #endif
 
     var body: some View {
+        if compact { twoLine } else { columns }
+    }
+
+    /// iPhone: line 1 = the title (up to 2 lines); line 2 = BPM · key chip · time · keywords.
+    private var twoLine: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text("\(index)")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(Theme.fgDim)
+                .frame(width: 24, alignment: .trailing)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(song.name)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(Theme.fg)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if song.explicit == true { explicitBadge }
+                }
+                // BPM, key chip and time keep their natural size; the keywords give way first.
+                HStack(spacing: 8) {
+                    Text(Fmt.bpm(song.bpm) + " BPM")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(Theme.fg)
+                        .fixedSize()
+                    KeyChip(key: song.key, camelot: song.camelot)
+                        .fixedSize()
+                    Text(Fmt.duration(song.length))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(Theme.fgDim)
+                        .fixedSize()
+                    if let kw = song.sentimentKeywords, !kw.isEmpty {
+                        Text(kw.prefix(2).joined(separator: " · "))
+                            .font(.caption2)
+                            .foregroundStyle(Theme.fgDim)
+                            .lineLimit(1)
+                            .layoutPriority(-1)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var explicitBadge: some View {
+        Text("E")
+            .font(.system(size: 9, weight: .bold))
+            .padding(.horizontal, 3).padding(.vertical, 1)
+            .background(Theme.fgDim.opacity(0.3), in: RoundedRectangle(cornerRadius: 3))
+            .foregroundStyle(Theme.fg)
+    }
+
+    /// iPad / Mac: the single-line columns.
+    private var columns: some View {
         HStack(spacing: 10) {
             Text("\(index)")
                 .font(.callout.monospacedDigit())
@@ -362,13 +436,7 @@ private struct TrackRowInfo: View {
                         .font(.callout)
                         .foregroundStyle(Theme.fg)
                         .lineLimit(1)
-                    if song.explicit == true {
-                        Text("E")
-                            .font(.system(size: 9, weight: .bold))
-                            .padding(.horizontal, 3).padding(.vertical, 1)
-                            .background(Theme.fgDim.opacity(0.3), in: RoundedRectangle(cornerRadius: 3))
-                            .foregroundStyle(Theme.fg)
-                    }
+                    if song.explicit == true { explicitBadge }
                 }
                 if let kw = song.sentimentKeywords, !kw.isEmpty {
                     Text(kw.prefix(3).joined(separator: " · "))

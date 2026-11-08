@@ -61,8 +61,12 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
         tryPlayGeneration &+= 1
         let ticket = tryPlayGeneration
         do {
+            // One-shot (set by the set player right before this resolve): an album started from
+            // its top begins at the shared file's 0:00 — the lead-in groove.
+            let leadIn = leadInSongId == song.id && atMs == nil
+            leadInSongId = nil
             let now = try await rips.play((id: song.id, title: song.name, artist: song.artist),
-                                          startMs: nil, atMs: atMs, playback: true)
+                                          startMs: nil, atMs: atMs, playback: true, leadIn: leadIn)
             // …and a CANCELLED one (the set hopped off this row) must not load it either.
             guard ticket == tryPlayGeneration, !Task.isCancelled else {
                 DiagLog.shared.telemetry("ripreq", "tryPlay superseded song=\(song.id) cancelled=\(Task.isCancelled ? 1 : 0)")
@@ -89,6 +93,8 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
     /// before playing); this flag is the honest signal for the race where the rip went live
     /// between the check and the play.
     private(set) var lastCueDropped = false
+    /// One-shot lead-in request for the NEXT resolve of this song id (`SetlistPlayer.albumLeadIn`).
+    var leadInSongId: String?
     private var tryPlayGeneration = 0
 
     /// Can this backend seek `songId` to a cue RIGHT NOW? Only a DURABLE cached S3 mp3

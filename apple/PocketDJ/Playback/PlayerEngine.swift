@@ -1369,7 +1369,7 @@ final class PlayerEngine {
         NowPlayingCardPublisher.shared.publish(
             writer: externalActive ? "engine-ext" : "engine",
             title: nowPlayingTitle, artist: nowPlayingArtist,
-            elapsed: currentTime - cardOffsetSec, duration: cardDuration,
+            elapsed: max(0, currentTime - cardOffsetSec), duration: cardDuration,   // lead-in groove = 0:00
             advancing: isPlaying && !isStalled,
             rate: externalActive ? (externalRate?() ?? 1) : 1,
             isLive: isLive, artwork: nowPlayingArtwork,

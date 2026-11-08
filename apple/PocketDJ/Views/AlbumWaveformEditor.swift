@@ -50,6 +50,14 @@ struct AlbumWaveformEditor: View {
         i < album.trackList.count ? app.songsById[album.trackList[i]] : nil
     }
     private func name(_ i: Int) -> String { song(i)?.name ?? "Track \(i + 1)" }
+    /// Song `i`'s key color — its Camelot hue, the same color its key chip shows in the track
+    /// list (Levi, 2026-11-08: "the individual track section should match whatever the key
+    /// color is for that track"). The catalog key wins; the album analysis's per-segment key
+    /// fills in; unknown keys tint neutral grey.
+    private func keyColor(_ i: Int) -> Color {
+        let seg = album.audioTracks.flatMap { i < $0.count ? $0[i] : nil }
+        return Camelot.color(song(i)?.camelot ?? seg?.camelot)
+    }
 
     /// The shared file's manifest key, when any song of the album is ripped as a side.
     private var fileKey: String? {
@@ -191,11 +199,13 @@ struct AlbumWaveformEditor: View {
             }
             .offset(y: Self.handleBand)
             .allowsHitTesting(false)
-            // Song regions (a translucent alternating tint OVER the waveform) with their titles.
+            // Song regions — each tinted with its track's KEY color OVER the waveform, with a
+            // solid key-colored edge along the top — and their titles.
             ForEach(Array(effStarts.enumerated()), id: \.offset) { i, s in
                 let rx = x(s), rw = max(1, x(ends[i]) - x(s))
                 Rectangle()
-                    .fill(i.isMultiple(of: 2) ? Theme.accent.opacity(0.10) : Theme.accent2.opacity(0.10))
+                    .fill(keyColor(i).opacity(0.26))
+                    .overlay(alignment: .top) { Rectangle().fill(keyColor(i)).frame(height: 3) }
                     .frame(width: rw, height: Self.waveHeight)
                     .offset(x: rx, y: Self.handleBand)
                 Text(name(i))

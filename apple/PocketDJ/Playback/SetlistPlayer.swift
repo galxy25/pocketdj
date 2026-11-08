@@ -1090,6 +1090,7 @@ final class SetlistPlayer {
         }
         noteTransition(.user)
         persistSession(positionMs: 0)
+        if jumpInSameFile(backend: "album-skip") { return }
         startPlayCurrent()
     }
 
@@ -3000,13 +3001,56 @@ final class SetlistPlayer {
     /// own end on the record (edited, else detected + a fade grace, never past the next song's
     /// start) — never at `startMs + catalog length`, which rarely matches a vinyl pressing and
     /// cut songs off mid-phrase (Levi, 2026-11-07).
+    ///
+    /// ALBUM RUN (Levi, 2026-11-08: "when I play a vinyl album … it should play from the
+    /// beginning of that entire album audio file to the end unless I skip"): when the queue
+    /// plays the record IN ORDER, the file just keeps playing. A song whose next queued row is
+    /// the next song on the same file ends exactly at that song's start (no early end, no
+    /// skipped gap — the run-out between songs plays as part of the side), and the record's
+    /// last song, reached through the album, plays to the file's natural end. A song played
+    /// on its own (the next row is something else) keeps its own end on the record, so a
+    /// playlist never sits through minutes of run-out groove.
     private func sharedFileEndBoundaryMs(_ it: Item, startMs: Int?) -> Int? {
         guard let startMs else { return nil }
         if let tl = albumTimeline(forSong: it.id), tl.segment(for: it.id)?.startMs == startMs {
+            let run = albumRun(it, in: tl)
+            if let next = run.next { return next.startMs }
+            if run.fromPrevious, tl.isLast(SongVariant.baseId(it.id)) { return nil }
             return tl.endMs(of: it.id)
         }
         guard let len = it.lengthMs, len > 0 else { return nil }
         return startMs + len
+    }
+
+    /// How `it` sits in an in-order run of its record: `next` = the next song on the file when
+    /// that is also the next row to play (and `it` won't replay — repeat-one / a per-row
+    /// repeat count keep the song's own end); `fromPrevious` = the row before `it` is the
+    /// record's previous song (the album is playing through).
+    private func albumRun(_ it: Item, in tl: AlbumFileTimeline) -> (next: AlbumFileTimeline.Segment?, fromPrevious: Bool) {
+        let base = SongVariant.baseId(it.id)
+        guard let pos = queue.firstIndex(where: { $0.uid == it.uid }) ?? (queue.indices.contains(index) && queue[index].matches(it.id) ? index : nil)
+        else { return (nil, false) }
+        var next: AlbumFileTimeline.Segment?
+        let replays = effectiveRepeatMode == .one || CollectionMembership.normalizedRepeat(it.repeatCount) > 1
+        if !replays, pos + 1 < queue.count, let seg = tl.next(after: base),
+           SongVariant.baseId(queue[pos + 1].id) == seg.songId {
+            next = seg
+        }
+        let fromPrevious = pos > 0 && tl.previous(before: base).map { SongVariant.baseId(queue[pos - 1].id) == $0.songId } == true
+        return (next, fromPrevious)
+    }
+
+    /// ALBUM FROM THE TOP (Levi, 2026-11-08: "from the beginning of that entire album audio
+    /// file to the end"): the record's FIRST song, starting fresh with the album queued to
+    /// play through, starts at the file's 0:00 — the needle drop and lead-in groove before the
+    /// first detected song — instead of the detected start. The song's identity (its start for
+    /// boundary and position math) is unchanged; only where playback begins moves.
+    private func albumLeadIn(_ it: Item, startMs: Int?) -> Bool {
+        guard let startMs, startMs > 0, let tl = albumTimeline(forSong: it.id),
+              tl.segments.first?.songId == SongVariant.baseId(it.id),
+              tl.segments.first?.startMs == startMs
+        else { return false }
+        return albumRun(it, in: tl).next != nil
     }
 
     /// The layout of the shared album file `songId` plays from (user boundary edits applied).
@@ -3068,6 +3112,26 @@ final class SetlistPlayer {
         // still carrying the old position can't fire the new song's end.
         if next.startMs - pos > Self.glideToleranceMs { player.seek(to: Double(next.startMs) / 1000) }
         retargetInPlace(queue[index], startMs: next.startMs, from: np, backend: "glide")
+        return true
+    }
+
+    /// ALBUM SKIP (Levi, 2026-11-08: "I get in the middle and I need to skip to get to the
+    /// beginning of the next side … that should just work"): ⏭ / ⏮ onto a row that is a song
+    /// in the SAME shared album file the deck is playing — seek inside the loaded file to that
+    /// song's start and move the deck's identity onto it, instead of reloading the file. Run
+    /// right after `index` moved; declines (→ the normal reload start) for anything the
+    /// in-place move can't carry. A skip while paused starts playback, exactly as a reload would.
+    private func jumpInSameFile(backend: String) -> Bool {
+        guard index < queue.count, !mixEngaged, !localLaneWanted, !isHeldForResume,
+              coordinator.activeBackend != .appleMusic, !player.isLive,
+              let np = rips.nowPlaying, !np.live, np.startMs != nil,
+              let tl = albumTimeline(forSong: np.songId),
+              let seg = tl.segment(for: SongVariant.baseId(queue[index].id))
+        else { return false }
+        // Seek FIRST: the target's end boundary must never meet the old position.
+        player.seek(to: Double(seg.startMs) / 1000)
+        retargetInPlace(queue[index], startMs: seg.startMs, from: np, backend: backend)
+        if player.pausedByListener { player.play() }
         return true
     }
 
@@ -3453,6 +3517,7 @@ final class SetlistPlayer {
         } else {
             persistSession(positionMs: 0)
             if mayGlide, glideInSameFile() { return }
+            if cause == .user, jumpInSameFile(backend: "album-skip") { return }
             startPlayCurrent(fresh: true)
         }
     }
@@ -3793,7 +3858,8 @@ final class SetlistPlayer {
                 playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                               startMs: start, rips: rips, player: player,
                               endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
-                              atMs: resumeAtMs, release: res.release)
+                              atMs: resumeAtMs, release: res.release,
+                              leadIn: fresh && resumeAtMs == nil && albumLeadIn(it, startMs: start))
                 applyLocksOnTrackStart(resumeAtMs: resumeAtMs)
                 startedLocal("burned")
                 // Finite local file → the end notification (or length boundary) advances us.
@@ -3823,7 +3889,8 @@ final class SetlistPlayer {
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: start, rips: rips, player: player,
                           endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
-                          atMs: resumeAtMs, release: res.release)
+                          atMs: resumeAtMs, release: res.release,
+                          leadIn: fresh && resumeAtMs == nil && albumLeadIn(it, startMs: start))
             applyLocksOnTrackStart(resumeAtMs: resumeAtMs)
             startedLocal("burned")
         } else if localLaneWanted, let url = prefetchedCutFile?(playedResolveId(it)) {
@@ -3879,9 +3946,14 @@ final class SetlistPlayer {
             // wanted edition so the next play has it.
             let substituted = playedResolveId(it) != it.resolveId
             if substituted { lazyRipWantedEdition(it) }
+            // An album started from its top plays the record's lead-in groove too (see
+            // `albumLeadIn`); the rip provider consumes this one-shot on its next resolve.
+            coordinator.ripProvider.leadInSongId =
+                fresh && resumeAtMs == nil && albumLeadIn(it, startMs: rips.effectiveStartMs(it.id)) ? it.id : nil
             await coordinator.play(id: it.id, title: it.title, artist: it.artist,
                                    atMs: resumeAtMs, variant: substituted ? nil : it.variant,
                                    preferLocalAudio: mixModeBuffering, ripFirst: substituted)
+            coordinator.ripProvider.leadInSongId = nil   // one-shot: never outlives this resolve
             if resolvingGeneration == playGen { resolvingGeneration = nil }
             if playGen == playGeneration { resolveStallTask?.cancel(); resolveStallTask = nil }
             let ms = Int(Date().timeIntervalSince(t0) * 1000)
