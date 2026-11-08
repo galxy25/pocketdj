@@ -34,8 +34,11 @@ import Observation
 func playLocalFile(_ url: URL, songId: String, title: String, artist: String,
                    startMs: Int?, rips: RipsStore, player: PlayerEngine,
                    endBoundaryMs: Int? = nil, atMs: Int? = nil, release: (() -> Void)? = nil,
-                   deferPlayUntilSeeked: Bool = false) {
-    let seekMs = RipsStore.cueSeekMs(sharedFileStartMs: startMs, atMs: atMs, live: false)
+                   deferPlayUntilSeeked: Bool = false, leadIn: Bool = false) {
+    // `leadIn`: an album started from its top begins at the shared file's 0:00 (the lead-in
+    // groove) — never with a cue, never for a per-song file.
+    let seekMs = leadIn && atMs == nil && startMs != nil
+        ? 0 : RipsStore.cueSeekMs(sharedFileStartMs: startMs, atMs: atMs, live: false)
     let np = RipsStore.NowPlaying(songId: songId, title: title, artist: artist,
                                   url: url, live: false, startMs: startMs, seekMs: seekMs,
                                   waveform: nil)

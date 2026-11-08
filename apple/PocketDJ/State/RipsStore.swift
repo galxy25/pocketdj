@@ -856,7 +856,7 @@ final class RipsStore {
     /// cue via `live == true` (the coordinator's rip provider records `lastCueDropped`).
     @discardableResult
     func play(_ song: (id: String, title: String, artist: String), startMs: Int? = nil,
-              atMs: Int? = nil, playback: Bool = false) async throws -> NowPlaying {
+              atMs: Int? = nil, playback: Bool = false, leadIn: Bool = false) async throws -> NowPlaying {
         // BOUNDED: this is the interactive ▶ path. A queued rip must fail fast so the caller
         // can stream instead / advance honestly, never park mid-await (see the constant).
         let url = try await ensureURL(song.id, allowLive: true,
@@ -875,7 +875,9 @@ final class RipsStore {
         let np = NowPlaying(
             songId: song.id, title: song.title, artist: song.artist, url: url, live: live,
             startMs: resolvedStart,
-            seekMs: Self.cueSeekMs(sharedFileStartMs: resolvedStart, atMs: atMs, live: live),
+            // `leadIn`: an album started from its top begins at the shared file's 0:00.
+            seekMs: leadIn && atMs == nil && resolvedStart != nil
+                ? 0 : Self.cueSeekMs(sharedFileStartMs: resolvedStart, atMs: atMs, live: live),
             waveform: live ? nil : Self.waveformURL(for: entry, ripsBase: ripsBase))
         let prev = nowPlaying?.songId
         nowPlaying = np
