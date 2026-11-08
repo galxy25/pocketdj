@@ -35,8 +35,7 @@ struct TVRootView: View {
         case mix = "Mix"
         case browse = "Browse"
         case forYou = "For You"
-        case jukebox = "Jukebox"
-        case remote = "Remote"
+        case jukebox = "Jukebox"   // Jukebox Hero | Remote (SharePlay) — JukeboxHubView
         case settings = "Settings"
         var id: String { rawValue }
         var icon: String {
@@ -46,7 +45,6 @@ struct TVRootView: View {
             case .browse:   return "music.note.list"
             case .forYou:   return "sparkles"
             case .jukebox:  return "qrcode"
-            case .remote:   return "shareplay"
             case .settings: return "gearshape"
             }
         }
@@ -74,15 +72,12 @@ struct TVRootView: View {
             TVForYouView()
                 .tabItem { Label(TVTab.forYou.rawValue, systemImage: TVTab.forYou.icon) }
                 .tag(TVTab.forYou)
-            TVJukeboxView()
+            JukeboxHubView()
                 // tabItem honors only Text/Image — the custom pride-jukebox VIEW rendered as a
                 // BLANK tab (Levi, live 2026-09-02). The tab keeps the qrcode symbol; the pride
                 // jukebox lives on the landing page, where a real view context renders it.
                 .tabItem { Label(TVTab.jukebox.rawValue, systemImage: TVTab.jukebox.icon) }
                 .tag(TVTab.jukebox)
-            TVRemoteView()
-                .tabItem { Label(TVTab.remote.rawValue, systemImage: TVTab.remote.icon) }
-                .tag(TVTab.remote)
             TVSettingsView()
                 .tabItem { Label(TVTab.settings.rawValue, systemImage: TVTab.settings.icon) }
                 .tag(TVTab.settings)
@@ -98,9 +93,13 @@ struct TVRootView: View {
         // Headless-verification seam (mirrors PDJ_START_SECTION): land on a named tab at
         // launch so `simctl` can screenshot each surface without driving the focus engine.
         .onAppear {
-            if let raw = ProcessInfo.processInfo.environment["PDJ_TV_TAB"],
-               let t = TVTab(rawValue: raw) {
-                tab = t
+            if let raw = ProcessInfo.processInfo.environment["PDJ_TV_TAB"] {
+                if raw == JukeboxPanelMode.remote.rawValue {
+                    UserDefaults.standard.set(raw, forKey: JukeboxPanelMode.storageKey)
+                    tab = .jukebox
+                } else if let t = TVTab(rawValue: raw) {
+                    tab = t
+                }
             }
         }
     }

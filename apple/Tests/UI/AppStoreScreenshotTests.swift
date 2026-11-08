@@ -84,6 +84,51 @@ final class AppStoreScreenshotTests: XCTestCase {
         return ok
     }
 
+    /// Shot 2 — REMOTE: a live Backseat session (`PDJ_SEED_REMOTE=showcase` — an in-memory
+    /// loopback "Car" speaker), with participants, now playing and Up Next populated. Remote
+    /// lives in the Jukebox panel (`JukeboxHubView`); `PDJ_START_SECTION=Remote` lands on it
+    /// with the Remote half of the "Jukebox Hero | Remote" switch selected, and the shot keeps
+    /// that switch in frame so the listing shows where Remote lives.
+    @discardableResult
+    private func captureRemote() -> XCUIApplication {
+        let app = launch(section: "Remote", extra: [
+            "PDJ_SEED_REMOTE": "showcase",
+            "PDJ_SEED_BURNS": "showcase",
+        ])
+        expect(app.descendants(matching: .any)["remote-now-playing"], "Remote now playing row")
+        let modeSwitch = app.descendants(matching: .any)["jukebox-panel-mode"].firstMatch
+        expect(modeSwitch, "Jukebox Hero | Remote switch")
+        sleep(2)
+        // The Session/Mix Together rows lead the list; on a phone they push Now Playing to the
+        // bottom edge and Up Next off screen. The switch sits ABOVE the list (it doesn't
+        // scroll), so scroll the list (slow drag + hold, so no fling) until Participants sits
+        // just under the switch: switch, roles, now playing, transport and Up Next in frame.
+        let peer = app.descendants(matching: .any)["remote-peer-A-host"]
+        let win = app.windows.firstMatch.frame
+        // Participants' HEADER lands just under the switch (its first row starts ~27 pt below
+        // the header text, the Mix Together footer ends ~48 pt above it), so the footer is fully
+        // scrolled out — never half-cut under the switch.
+        let floor = modeSwitch.exists ? modeSwitch.frame.maxY + 40 : win.height * 0.16
+        // Re-measure after each drag: the first drag can be eaten by the large title collapsing.
+        for _ in 0..<6 where !isPad && peer.exists && abs(peer.frame.minY - floor) > 6 {
+            var dy = max(min(peer.frame.minY - floor, win.height * 0.4), -win.height * 0.4)
+            dy += dy > 0 ? 10 : -10   // the scroll view eats ~10 pt of touch slop per drag
+            let from = app.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: win.width * 0.5, dy: win.height * 0.75))
+            let to = from.withOffset(CGVector(dx: 0, dy: -dy))
+            from.press(forDuration: 0.2, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.5)
+            sleep(1)
+        }
+        sleep(2)
+        shot(app, "screen-02-remote")
+        return app
+    }
+
+    /// Only the Remote listing shot (re-captures 02-remote without the whole set).
+    func testCaptureRemoteScreen() {
+        captureRemote().terminate()
+    }
+
     func testCaptureMarketingScreens() {
         // 1.0.5's two new features LEAD the listing (Levi 2026-11-07), then the established set.
 
@@ -119,29 +164,9 @@ final class AppStoreScreenshotTests: XCTestCase {
         }
         shot(app, "screen-01-pocketwheel")
 
-        // ── 2 — REMOTE: a live Backseat session (`PDJ_SEED_REMOTE=showcase` — an in-memory
-        // loopback "Car" speaker), with participants, now playing and Up Next populated.
+        // ── 2 — REMOTE (Jukebox panel, Remote half).
         app.terminate()
-        app = launch(section: "Remote", extra: [
-            "PDJ_SEED_REMOTE": "showcase",
-            "PDJ_SEED_BURNS": "showcase",
-        ])
-        expect(app.descendants(matching: .any)["remote-now-playing"], "Remote now playing row")
-        sleep(2)
-        // The Session/Mix Together rows lead the list; on a phone they push Now Playing to the
-        // bottom edge and Up Next off screen. Scroll (slow drag + hold, so no fling) until the
-        // Participants section sits at the top: roles, now playing, transport and Up Next in frame.
-        let peer = app.descendants(matching: .any)["remote-peer-A-host"]
-        let win = app.windows.firstMatch.frame
-        if !isPad, peer.exists, peer.frame.minY > win.height * 0.30 {
-            let dy = peer.frame.minY - win.height * 0.16
-            let from = app.coordinate(withNormalizedOffset: .zero)
-                .withOffset(CGVector(dx: win.width * 0.5, dy: win.height * 0.85))
-            let to = from.withOffset(CGVector(dx: 0, dy: -dy))
-            from.press(forDuration: 0.2, thenDragTo: to, withVelocity: .slow, thenHoldForDuration: 0.5)
-        }
-        sleep(2)
-        shot(app, "screen-02-remote")
+        app = captureRemote()
 
         // ── 3 — MIX: two decks mid-transition, Auto-DJ live, real meters.
         app.terminate()

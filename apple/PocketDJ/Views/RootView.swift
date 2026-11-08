@@ -87,9 +87,9 @@ struct RootView: View {
         // name — never rename it (spec §0's collision table pins the string). The USER-VISIBLE
         // name is `title` ("Producer" — renamed 2026-07; the token stays "Performance" forever).
         case performance = "Performance"
+        // Jukebox Hero + Remote (SharePlay) share this one panel — see JukeboxHubView. The
+        // retired "Remote" token (saved lastSection / PDJ_START_SECTION) maps here too.
         case jukebox = "Jukebox Hero"
-        // SharePlay Listen Together + Backseat (pinned token — never rename).
-        case remote = "Remote"
         case games = "Games"          // pinned token — never rename
         case settings = "Settings"
         var id: String { rawValue }
@@ -110,7 +110,6 @@ struct RootView: View {
             case .mix:         return "slider.horizontal.3"
             case .performance: return "pianokeys"
             case .jukebox:     return "qrcode"
-            case .remote:      return "shareplay"
             case .games:       return "gamecontroller"
             case .settings:    return "gearshape"
             }
@@ -386,6 +385,9 @@ struct RootView: View {
             // Testing seam: `PDJ_START_SECTION=Settings` lands on a section headlessly.
             // Accepts either the pinned token ("Performance") or the visible title ("Producer").
             if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],
+               raw == JukeboxPanelMode.remote.rawValue {
+                openRemote()
+            } else if let raw = ProcessInfo.processInfo.environment["PDJ_START_SECTION"],
                let s = Section(rawValue: raw) ?? Section.allCases.first(where: { $0.title == raw }) {
                 section = s
             } else {
@@ -393,7 +395,9 @@ struct RootView: View {
                 // Restore the last-visited section ("open to wherever you last left
                 // off"). macOS/visionOS deliberately skip this — the @State init above
                 // already lands them on History (they carry no resume).
-                if let raw = settings.lastSection, let s = Section(rawValue: raw) {
+                if settings.lastSection == JukeboxPanelMode.remote.rawValue {
+                    openRemote()   // 1.0.5 TestFlight builds had a separate Remote tab
+                } else if let raw = settings.lastSection, let s = Section(rawValue: raw) {
                     section = s
                 } else {
                     // Nothing valid to restore ⇒ History is the default landing tab on
@@ -1018,14 +1022,22 @@ struct RootView: View {
             // ⌘J → Jukebox Hero (free key — nothing else claims J in the collision table).
             Button("Jukebox-shadow") { section = .jukebox; path = NavigationPath() }
                 .keyboardShortcut("j", modifiers: .command)
-            // ⌘R → Remote (unclaimed: the only R binding is Mix's ⇧⌘R, a different chord).
-            Button("Remote-shadow") { section = .remote; path = NavigationPath() }
+            // ⌘R → the Jukebox panel's Remote half (unclaimed: the only R binding is Mix's
+            // ⇧⌘R, a different chord).
+            Button("Remote-shadow") { openRemote() }
                 .keyboardShortcut("r", modifiers: .command)
             // ⌘G → Games (unclaimed per the collision table).
             Button("Games-shadow") { section = .games; path = NavigationPath() }
                 .keyboardShortcut("g", modifiers: .command)
         }
         .frame(width: 1, height: 1).opacity(0.01)
+    }
+
+    /// Land on the Jukebox panel with its Remote half showing.
+    private func openRemote() {
+        UserDefaults.standard.set(JukeboxPanelMode.remote.rawValue, forKey: JukeboxPanelMode.storageKey)
+        section = .jukebox
+        path = NavigationPath()
     }
 
     @ViewBuilder private var detail: some View {
@@ -1035,13 +1047,7 @@ struct RootView: View {
         case .playlists:   PlaylistsView(path: $path)
         case .mix:         MixView(path: $path)
         case .performance: PerformanceView()
-        case .jukebox:     JukeboxView()
-        case .remote:
-            #if os(tvOS)
-            TVRemoteView()   // the TV shell is TVRootView; this switch only has to compile there
-            #else
-            RemoteView()
-            #endif
+        case .jukebox:     JukeboxHubView()
         case .games:       GamesView(path: $path)
         case .settings:    SettingsView(settings: settings)
         case .none:
