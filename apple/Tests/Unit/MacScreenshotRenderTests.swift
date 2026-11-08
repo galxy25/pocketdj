@@ -473,9 +473,13 @@ final class MacScreenshotRenderTests: XCTestCase {
             // Order IS the App Store display order — Mix leads, then the Producer grid.
             // (The deck waveforms used to render empty here: extraction hops back to the main
             // actor, which the old nested run-loop pump never released. `capture` now suspends.)
-            // 1.0.5's new features lead: the Pocket Wheel, then the Remote tab's live session.
+            // 1.0.5's new features lead: the Pocket Wheel, then Remote's live session (Jukebox panel).
             ("mac-01-pocketwheel", .history, 6.0, { AnyView(HistoryView(path: $0)) }),
-            ("mac-02-remote", .remote, 4.0, { _ in AnyView(RemoteView()) }),
+            // Remote lives in the Jukebox panel (JukeboxHubView), switched to its Remote half.
+            ("mac-02-remote", .jukebox, 4.0, { _ in
+                UserDefaults.standard.set(JukeboxPanelMode.remote.rawValue, forKey: JukeboxPanelMode.storageKey)
+                return AnyView(JukeboxHubView())
+            }),
             ("mac-03-mix", .mix, 5.0, { _ in AnyView(MixView(path: .constant(NavigationPath()))) }),
             ("mac-04-producer", .performance, 6.0, { _ in AnyView(PerformanceView()) }),
             // Browse derives its rows off-main (BrowseModel) — give it the longest settle.
