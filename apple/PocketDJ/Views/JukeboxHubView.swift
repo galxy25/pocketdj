@@ -9,12 +9,6 @@ enum JukeboxPanelMode: String, CaseIterable, Identifiable {
     case hero = "Jukebox Hero"
     case remote = "Remote"
     var id: String { rawValue }
-    var icon: String {
-        switch self {
-        case .hero:   return "qrcode"
-        case .remote: return "shareplay"
-        }
-    }
     /// UserDefaults key shared by the panel's picker and the deep entries (⌘R, the retired
     /// "Remote" section token, the PDJ_START_SECTION / PDJ_TV_TAB seams).
     static let storageKey = "jukeboxPanelMode"
@@ -32,34 +26,42 @@ struct JukeboxHubView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Jukebox panel", selection: mode) {
-                ForEach(JukeboxPanelMode.allCases) { m in
-                    Label(m.rawValue, systemImage: m.icon).tag(m)
-                }
+        Group {
+            switch mode.wrappedValue {
+            case .hero:
+                #if os(tvOS)
+                TVJukeboxView()
+                #else
+                JukeboxView()
+                #endif
+            case .remote:
+                #if os(tvOS)
+                TVRemoteView()
+                #else
+                RemoteView()
+                #endif
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 420)
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .accessibilityIdentifier("jukebox-panel-mode")
-            Group {
-                switch mode.wrappedValue {
-                case .hero:
-                    #if os(tvOS)
-                    TVJukeboxView()
-                    #else
-                    JukeboxView()
-                    #endif
-                case .remote:
-                    #if os(tvOS)
-                    TVRemoteView()
-                    #else
-                    RemoteView()
-                    #endif
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The switch rides a top safe-area inset (not a VStack row above the content), so the
+        // child's scroll view stays the primary one: the large title collapses on scroll and
+        // rows slide under an opaque bar instead of being sliced at the switch's edge.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                Picker("Jukebox panel", selection: mode) {
+                    ForEach(JukeboxPanelMode.allCases) { m in
+                        Text(m.rawValue).tag(m)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 420)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .accessibilityIdentifier("jukebox-panel-mode")
+                Divider().overlay(Theme.border)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
+            .background(Theme.bg)
         }
         .background(Theme.bg)
         // A SharePlay session arriving while the panel shows Jukebox Hero flips it to Remote,
