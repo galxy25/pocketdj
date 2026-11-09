@@ -1552,6 +1552,9 @@ struct PocketDJApp: App {
         setlistPlayer.remoteControllerGate = { [weak remote] request in
             remote?.interceptLocalTransport(request) ?? false
         }
+        // DJ Mode is SUSPENDED while a Remote session is attached (np-dj-mode §9): its early
+        // fade-start advance and its re-ordering would fight the session's shared queue.
+        setlistPlayer.remoteSessionActive = { [weak remote] in remote?.isActive ?? false }
         #if canImport(GroupActivities)
         remote.startObservingGroupSessions()
         #endif

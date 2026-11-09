@@ -91,6 +91,12 @@ extension DJMode {
         case off
         /// A Mix-tab session is live: DJ Mode waits (np-dj-mode §1, like Mix Mode).
         case suspended
+        /// A Remote (SharePlay Listen Together / Backseat) session is attached: DJ Mode waits
+        /// until it ends (np-dj-mode §9).
+        case suspendedRemote
+        /// This song's end won't mix (the words say why: transitions off, repeating, an album
+        /// playing through, the set repeats, …) — the same reasons the decision declines on.
+        case noMix(String)
         /// A DJ transition is in flight (pre-roll, crossfade or post-roll).
         case mixing
         /// The next row is a complete local file — the end of this song mixes into it.
@@ -104,6 +110,8 @@ extension DJMode {
             switch self {
             case .off: return nil
             case .suspended: return "DJ — paused while the Mix tab plays"
+            case .suspendedRemote: return "DJ — paused · SharePlay session"
+            case .noMix(let why): return "DJ — \(why)"
             case .mixing: return "DJ — mixing"
             case .nextReady: return "DJ — next mixes in"
             case .bufferingNext(let f):

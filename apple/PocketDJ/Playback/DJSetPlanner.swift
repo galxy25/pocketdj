@@ -42,6 +42,10 @@ enum DJSetPlanner {
         var year: Int?
         var collections: Set<String>
         var fixed: Bool
+        /// AGING: how many earlier plans pushed this row later. Each deferral adds
+        /// `agingBonus` to its score, so a poorly fitting row can't be deferred forever in a long
+        /// queue (the caller also fixes it after `SetlistPlayer.djMaxDeferrals`).
+        var deferrals = 0
 
         init(uid: UUID = UUID(), songId: String, bpm: Double? = nil, camelot: String? = nil,
              genre: String? = nil, year: Int? = nil, collections: Set<String> = [],
@@ -166,6 +170,8 @@ enum DJSetPlanner {
     static let weightKey = 0.2
     static let weightPocket = 0.25
     static let orderBonus = 0.02
+    /// Score added per deferral (aging): ~10 deferrals outweigh a full mismatch on one part.
+    static let agingBonus = 0.03
     /// A candidate with NO known scoring part scores this (before the order bonus) — the
     /// renormalized score has no denominator, and 0 would count missing data against it.
     static let neutralScore = 0.5
@@ -198,6 +204,7 @@ enum DJSetPlanner {
 
         let n = upcoming.count
         let feats = upcoming.map(\.features)
+        let aged = upcoming.map(\.deferrals)
         var free = Set(upcoming.indices.filter { !upcoming[$0].fixed })
         var sim = committed
         var order: [UUID] = []
@@ -208,7 +215,7 @@ enum DJSetPlanner {
             if upcoming[slot].fixed {
                 pick = slot
             } else {
-                pick = best(free: free, feats: feats, n: n, prev: prev, sim: &sim, options: options)
+                pick = best(free: free, feats: feats, aged: aged, n: n, prev: prev, sim: &sim, options: options)
                 free.remove(pick)
             }
             order.append(upcoming[pick].uid)
@@ -230,7 +237,7 @@ enum DJSetPlanner {
 
     /// The best free candidate for the next slot (ties → earlier original index). May flip the
     /// simulated wave direction while resolving the target band.
-    private static func best(free: Set<Int>, feats: [Features], n: Int, prev: Features?,
+    private static func best(free: Set<Int>, feats: [Features], aged: [Int], n: Int, prev: Features?,
                              sim: inout State, options: Options) -> Int {
         let target = options.tempoWaves ? sim.resolveTarget(freeBands: free.compactMap { feats[$0].band }) : nil
 
@@ -255,7 +262,7 @@ enum DJSetPlanner {
         var bestScore = -Double.infinity
         for i in free.sorted() {
             let s = score(feats[i], index: i, n: n, prev: prev, target: target,
-                          pocket: pocketMode, options: options)
+                          pocket: pocketMode, options: options) + agingBonus * Double(max(0, aged[i]))
             if s > bestScore { bestScore = s; bestIndex = i }
         }
         return bestIndex

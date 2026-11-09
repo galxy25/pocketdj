@@ -90,6 +90,9 @@ final class PlaybackSessionStore {
         /// only, so a device without this songId can still play the track through its own
         /// Apple Music. Additive-optional like the fields above; never written by the session.
         var appleMusicId: String? = nil
+        /// DJ Mode: the listener placed this row (`SetlistPlayer.Item.djPlaced`) — the selector
+        /// keeps it where it is after a relaunch too. Additive-optional; nil = not placed.
+        var djPlaced: Bool? = nil
     }
 
     struct Snapshot: Codable, Equatable {
