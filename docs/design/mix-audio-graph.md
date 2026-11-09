@@ -199,6 +199,12 @@ Buffering…, and a Skip landed on the next buffering song (2026-10-12).
 - **Shuffled start** opens on an on-device song when the queue has one.
 - **Trace:** every wait / promote / extend / freeze / abandon / stall-skip / defer decision logs
   one `mixadvance` DiagLog line (always-on lane).
+- **Shared transition decisions.** What a transition IS — the timing plan (fade cap to the
+  runway, glide pre-roll fit with the 1.12 tempo headroom, post-roll), `glideParams` tempo/pitch
+  targets, the FX texture roll, the pre/post-roll ramps, phase-align offset and the equal-power
+  crossfade law — lives in the pure `AutoTransition` (`apple/PocketDJ/Playback/AutoTransition.swift`).
+  `MixEngine` calls it, and Now Playing DJ Mode (`docs/design/np-dj-mode.md` §2) shares it, so both
+  engines mix the same way. WHEN to transition (readiness, the rules above) stays in each engine.
 
 ## Now Playing — the same rule on one deck (`NowPlayingDSP`)
 

@@ -9,7 +9,7 @@ import AVFoundation
 ///   • Audio (samples / loops / sequences): a CHROMAGRAM (per-pitch-class magnitude via FFT) folded
 ///     from the decoded PCM.
 /// Both correlate against the Krumhansl-Kessler major/minor key profiles across all 24 keys; the
-/// best-correlating key maps to its Camelot code (so `MixEngine.glideParams` can harmonically mix
+/// best-correlating key maps to its Camelot code (so `AutoTransition.glideParams` can harmonically mix
 /// performance media). Mirrors the server's `analyze-one.py` `detect_key` (chroma → KS), ported to
 /// Accelerate/vDSP. All `nonisolated` statics + value types — run it OFF the main actor.
 enum KeyDetector {
