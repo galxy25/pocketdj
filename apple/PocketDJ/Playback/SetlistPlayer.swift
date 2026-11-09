@@ -50,10 +50,14 @@ final class SetlistPlayer {
         /// nil for every row the user added by hand. Excluded from equality like `variant`.
         /// Rows with `plan == nil` or `pinned` are NEVER replaced by a re-plan.
         var plan: PlanTag? = nil
-        /// DJ Mode: the LISTENER placed this row (insert / move / play-now / a jukebox request /
-        /// the stall hop's deferred row) — the selector never moves it. Rides the durable
-        /// snapshot (`Row.djPlaced`). Excluded from equality like `plan`.
-        var djPlaced = false
+        /// DJ Mode: the LISTENER put this row in the NEXT-UP slot (Play Next, a drag / move to
+        /// the top of Up Next, a "play next" tap, a jukebox / remote insert at next — or the stall
+        /// hop's deferred row). While it is the next row the selector never moves it nor puts
+        /// anything ahead of it; it re-anchors the set on it (Levi 2026-11-09: "respect user edits
+        /// of the queue for at least the next-up song"). Rows added / moved to the middle or the
+        /// end are ordinary planner material. Cleared when it plays or another edit takes the
+        /// slot. Rides the snapshot (`Row.djUserNext`). Excluded from equality like `plan`.
+        var djUserNext = false
         /// DJ Mode aging: how many plans pushed this row later (in-memory). At
         /// `SetlistPlayer.djMaxDeferrals` it holds its place. Excluded from equality.
         var djDeferrals = 0
@@ -1231,12 +1235,13 @@ final class SetlistPlayer {
         var tail = Array(queue[(index + 1)...])
         let src = IndexSet(fromOffsets.filter(tail.indices.contains))
         guard !src.isEmpty else { return }
-        for i in src {                                 // the listener placed it — a re-plan never moves it
-            tail[i].plan?.pinned = true
-            tail[i].djPlaced = true
-        }
+        for i in src { tail[i].plan?.pinned = true }   // the Pocket Wheel's re-plan never moves it
         tail.move(fromOffsets: src, toOffset: max(0, min(toOffset, tail.count)))
+        // DJ Mode: a row dragged to the TOP of Up Next is the listener's next-up pick (sacred);
+        // anywhere else it is planner material.
+        let toTop = max(0, min(toOffset, tail.count)) == 0
         queue.replaceSubrange((index + 1)..., with: tail)
+        setUserNext(toTop ? index + 1 : nil)
         persistSession()
     }
 
@@ -1250,6 +1255,7 @@ final class SetlistPlayer {
         var tail = Array(queue[(index + 1)...])
         tail.removeAll { uids.contains($0.uid) }
         queue.replaceSubrange((index + 1)..., with: tail)
+        setUserNext(nil, keepingCurrentPick: true)   // the row that slid into next wasn't chosen
         persistSession()
     }
 
@@ -1353,7 +1359,10 @@ final class SetlistPlayer {
 
     private func appendToQueue(_ items: [Item], listenerPlaced: Bool) {
         guard isRunning, !items.isEmpty else { return }
-        queue.append(contentsOf: listenerPlaced ? Self.djPlaced(items) : items)
+        // Added at the END: planner material (DJ Mode may re-order it) — only the next-up slot is
+        // held. (`listenerPlaced` stays for the call sites' intent.)
+        _ = listenerPlaced
+        queue.append(contentsOf: items)
         persistSession()
     }
 
@@ -1361,7 +1370,8 @@ final class SetlistPlayer {
     /// (`queue[index]`) is untouched — the insert only shifts the tail.
     func insertNextInQueue(_ items: [Item]) {
         guard isRunning, !items.isEmpty else { return }
-        queue.insert(contentsOf: Self.djPlaced(items), at: min(index + 1, queue.count))
+        queue.insert(contentsOf: items, at: min(index + 1, queue.count))
+        setUserNext(index + 1)                       // Play Next: the first of them is the pick
         persistSession()
     }
 
@@ -1376,7 +1386,9 @@ final class SetlistPlayer {
             appendToQueue(items)
             return
         }
-        queue.insert(contentsOf: Self.djPlaced(items), at: pos)
+        queue.insert(contentsOf: items, at: pos)
+        // Dropped into the next-up slot → the listener's pick; mid-queue → planner material.
+        setUserNext(pos == index + 1 ? pos : nil, keepingCurrentPick: pos != index + 1)
         persistSession()
     }
 
@@ -1388,8 +1400,10 @@ final class SetlistPlayer {
                              slot: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }) {
         guard isRunning, !items.isEmpty else { return }
         let lo = min(index + 1, queue.count)
-        // (a jukebox request keeps its slot)
-        queue.insert(contentsOf: Self.djPlaced(items), at: slot(lo...queue.count))
+        let at = slot(lo...queue.count)
+        queue.insert(contentsOf: items, at: at)
+        // A request that lands NEXT is held there; a mid-queue one the DJ may re-order.
+        setUserNext(at == index + 1 ? at : nil, keepingCurrentPick: at != index + 1)
         persistSession()
     }
 
@@ -1400,8 +1414,8 @@ final class SetlistPlayer {
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
         var item = queue.remove(at: pos)
         item.plan?.pinned = true
-        item.djPlaced = true
         queue.insert(item, at: index + 1)
+        setUserNext(index + 1)                       // "Play next": the listener's pick
         persistSession()
     }
 
@@ -1411,8 +1425,8 @@ final class SetlistPlayer {
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
         var item = queue.remove(at: pos)
         item.plan?.pinned = true
-        item.djPlaced = true
         queue.append(item)
+        setUserNext(nil, keepingCurrentPick: true)   // sent to the end: planner material
         persistSession()
     }
 
@@ -2501,10 +2515,41 @@ final class SetlistPlayer {
     /// (`DJSetPlanner.agingBonus`), so a poorly fitting row usually plays well before this.
     static let djMaxDeferrals = 12
 
-    /// The rows the listener placed (insert / move / play-now / a jukebox request / the stall
-    /// hop's deferred row) — the selector never moves them. Read off the rows themselves
-    /// (`Item.djPlaced`), so the marks ride the durable snapshot across a relaunch.
-    var djFixedUids: Set<UUID> { Set(queue.lazy.filter(\.djPlaced).map(\.uid)) }
+    /// The rows the selector must leave where they are because the LISTENER put them there: only
+    /// ever the next-up pick (`Item.djUserNext` on `index + 1` — Play Next, a drag to the top, a
+    /// jukebox / remote insert at next, the stall hop's deferred row). Rides the snapshot.
+    var djFixedUids: Set<UUID> {
+        guard index + 1 < queue.count, queue[index + 1].djUserNext else { return [] }
+        return [queue[index + 1].uid]
+    }
+
+    /// Mark the listener's NEXT-UP pick at `pos` (must be `index + 1`; nil = none) and clear the
+    /// mark everywhere else — only the next slot is ever held (`Item.djUserNext`).
+    /// `keepingCurrentPick`: an edit elsewhere keeps the existing pick if it is STILL next. A new
+    /// pick gets the smooth-as-possible treatment (`djUserNextPlaced`).
+    private func setUserNext(_ pos: Int?, keepingCurrentPick: Bool = false) {
+        let keep = keepingCurrentPick && index + 1 < queue.count && queue[index + 1].djUserNext
+        let target = keep ? index + 1 : (pos == index + 1 ? pos : nil)
+        var rows = queue
+        var changed = false
+        for i in rows.indices where i > index {
+            let want = i == target
+            if rows[i].djUserNext != want { rows[i].djUserNext = want; changed = true }
+        }
+        if changed { queue = rows }
+        if let target, !keep { djUserNextPlaced(queue[target]) }
+    }
+
+    /// A listener-chosen next row: make it as smooth as possible — re-plan the buffer lane and
+    /// the rip window now (it is the first row after the current one, so it is first in line),
+    /// and start its loudness analysis early, so it is local in time to MIX rather than cut.
+    private func djUserNextPlaced(_ it: Item) {
+        guard djMode.enabled else { return }
+        DJMode.log("user next song=\(it.id) — held next, buffering first")
+        replanPrefetch()
+        reconcileRipWindow()
+        djAnalyzeUpcoming()
+    }
 
     /// A Remote session is attached right now (DJ Mode waits).
     private var djRemoteSuspended: Bool { remoteSessionActive?() == true }
@@ -2698,6 +2743,9 @@ final class SetlistPlayer {
         // a normal end's, an album glide's, the first ▶ after a restore.
         loadDJMembership()
         djReplan(reason: "track")
+        // The listener's pick is PLAYING now — it re-anchored the plan above; its hold is spent
+        // (a repeat-all lap must not find it still held).
+        if queue[index].djUserNext { queue[index].djUserNext = false }
         if !mixEngaged {
             if djCurrentInAlbumRun() {
                 DJMode.log("track song=\(it.id) → album run (the side plays through on the record)")
@@ -3129,8 +3177,9 @@ final class SetlistPlayer {
     }
 
     /// May the selector move the row at absolute position `i`? Never:
-    ///  • a pinned / listener-placed row (`plan.pinned`, `Item.djPlaced`), or one aged out
-    ///    (deferred `djMaxDeferrals` times);
+    ///  • the listener's NEXT-UP pick (`Item.djUserNext` at `index + 1`), or a row aged out
+    ///    (deferred `djMaxDeferrals` times) — a row moved / added mid-queue is NOT held (only the
+    ///    next slot is sacred; `plan.pinned` is the Pocket Wheel's own re-plan guard);
     ///  • a row the rip server or the buffer lane is working on — a playback rip in flight
     ///    (`replaceUpcoming`'s guard: moving it out of the rip window would cancel the capture),
     ///    a lane fetch, a buffer stream still downloading;
@@ -3139,7 +3188,9 @@ final class SetlistPlayer {
     ///    the runway rule (< 30 s left of the current song, or its length unknown).
     private func djRowFixed(_ i: Int, albumLinked: Set<Int>) -> Bool {
         let it = queue[i]
-        if it.plan?.pinned == true || it.djPlaced || it.djDeferrals >= Self.djMaxDeferrals { return true }
+        // Only the listener's NEXT-UP pick is held; mid / end adds and moves are planner material.
+        if i == index + 1, it.djUserNext { return true }
+        if it.djDeferrals >= Self.djMaxDeferrals { return true }
         if albumLinked.contains(i) { return true }
         if ripInFlight(it) { return true }
         let lane = laneAudioId(it, isCurrent: false)
@@ -3164,19 +3215,15 @@ final class SetlistPlayer {
         return out
     }
 
-    private func djCandidate(_ it: Item, fixed: Bool) -> DJSetPlanner.Candidate {
+    private func djCandidate(_ it: Item, fixed: Bool, anchor: Bool = false) -> DJSetPlanner.Candidate {
         let f = djFacts(it)
         var c = DJSetPlanner.candidate(uid: it.uid, songId: it.id, bpm: f?.bpm, camelot: f?.camelot,
                                        rawGenre: f?.genre, year: f?.year,
                                        collections: djMembership.isEmpty ? [] : (djMembership[SongVariant.baseId(it.id)] ?? []),
                                        fixed: fixed)
         c.deferrals = it.djDeferrals
+        c.anchor = anchor
         return c
-    }
-
-    /// `items` marked as placed by the listener (the selector leaves them where they land).
-    private static func djPlaced(_ items: [Item]) -> [Item] {
-        items.map { var it = $0; it.djPlaced = true; return it }
     }
 
     /// Re-plan the upcoming window now: one uid-verified, pin-respecting re-order.
@@ -3186,10 +3233,13 @@ final class SetlistPlayer {
         let lo = index + 1
         let hi = min(queue.count, lo + Self.djPlanWindow)
         let state = djMode.planner ?? DJSetPlanner.State(seed: AutoTransition.fxSeed(firstSongId: queue.first?.id, count: queue.count))
-        let current = djCandidate(queue[index], fixed: true)
+        // The listener's pick re-anchors the set — while it waits next, and when it plays.
+        let current = djCandidate(queue[index], fixed: true, anchor: queue[index].djUserNext)
         let linked = djAlbumLinkedRows(upTo: hi)
         let fixed = lo < hi ? (lo..<hi).map { djRowFixed($0, albumLinked: linked) } : []
-        let rows = lo < hi ? (lo..<hi).map { djCandidate(queue[$0], fixed: fixed[$0 - lo]) } : []
+        let rows = lo < hi ? (lo..<hi).map {
+            djCandidate(queue[$0], fixed: fixed[$0 - lo], anchor: $0 == lo && queue[$0].djUserNext)
+        } : []
         let result = DJSetPlanner.plan(current: current, upcoming: rows, state: state, options: djModeSettings().plannerOptions)
         djMode.planner = result.state
         let before = rows.map(\.uid)
@@ -4530,7 +4580,7 @@ final class SetlistPlayer {
         // DJ Mode: the deferred row stays RIGHT BEHIND the hop target (FR1) — the hop target's
         // start re-plans, and the selector must not carry the skipped song away.
         if djMode.enabled, index + 1 < queue.count, queue[index + 1].uid == stalled.uid {
-            queue[index + 1].djPlaced = true
+            setUserNext(index + 1)
         }
         noteTransition(.stallHop)
         DiagLog.shared.log("playback", "\(reason) song=\(stalled.id) → hop to \(kind) \(row.id) (deferred stalled row) abandoned=\(stallEpisodeAbandoned.count)")
@@ -4896,12 +4946,16 @@ final class SetlistPlayer {
     /// saved position; everything after that is a 100% normal run. No-op mid-run.
     func restore(from snap: PlaybackSessionStore.Snapshot) {
         guard !isRunning, !snap.queue.isEmpty else { return }
-        queue = snap.queue.map {
-            Item(id: $0.songId, title: $0.title, artist: $0.artist,
-                 lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
-                 variant: $0.variant.flatMap(SongVariant.init(rawValue:)),
-                 editionLocked: $0.editionLocked ?? false, plan: $0.plan,
-                 djPlaced: $0.djPlaced ?? false)
+        // DJ Mode: only the NEXT-UP pick is held. An older snapshot's `djPlaced` marked every
+        // listener-placed row; it migrates to the pick ONLY on the row right after the current
+        // one (the rest become planner material — order unchanged, nothing dropped).
+        let nextPos = snap.index + 1
+        queue = snap.queue.enumerated().map { i, r in
+            Item(id: r.songId, title: r.title, artist: r.artist,
+                 lengthMs: r.lengthMs, repeatCount: r.repeatCount,
+                 variant: r.variant.flatMap(SongVariant.init(rawValue:)),
+                 editionLocked: r.editionLocked ?? false, plan: r.plan,
+                 djUserNext: i == nextPos && (r.djUserNext ?? r.djPlaced ?? false))
         }
         index = min(max(0, snap.index), queue.count - 1)
         // The snapshot's rows ARE the session projection — warm the memo with them (the queue
@@ -5124,7 +5178,7 @@ final class SetlistPlayer {
                                      lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
                                      variant: $0.variant?.rawValue,
                                      editionLocked: $0.editionLocked ? true : nil,
-                                     plan: $0.plan, djPlaced: $0.djPlaced ? true : nil)
+                                     plan: $0.plan, djUserNext: $0.djUserNext ? true : nil)
         }
     }
 

@@ -46,6 +46,10 @@ enum DJSetPlanner {
         /// `agingBonus` to its score, so a poorly fitting row can't be deferred forever in a long
         /// queue (the caller also fixes it after `SetlistPlayer.djMaxDeferrals`).
         var deferrals = 0
+        /// The LISTENER chose this song (the next-up slot — Levi 2026-11-09): the set re-anchors
+        /// on it (`State.reanchor`) — the songs after it ease from ITS tempo / key / pocket back
+        /// into the wave, instead of treating it as a wrong turn. Normally also `fixed`.
+        var anchor = false
 
         init(uid: UUID = UUID(), songId: String, bpm: Double? = nil, camelot: String? = nil,
              genre: String? = nil, year: Int? = nil, collections: Set<String> = [],
@@ -197,7 +201,11 @@ enum DJSetPlanner {
         var committed = state
         var prev: Features?
         if let current {
-            committed.account(current.features, uid: current.uid, options: options)
+            if current.anchor {
+                committed.reanchor(current.features, uid: current.uid, options: options)
+            } else {
+                committed.account(current.features, uid: current.uid, options: options)
+            }
             prev = current.features
         }
         guard !upcoming.isEmpty else { return ([], committed) }
@@ -219,7 +227,11 @@ enum DJSetPlanner {
                 free.remove(pick)
             }
             order.append(upcoming[pick].uid)
-            sim.account(feats[pick], uid: upcoming[pick].uid, options: options)
+            if upcoming[pick].anchor {
+                sim.reanchor(feats[pick], uid: upcoming[pick].uid, options: options)
+            } else {
+                sim.account(feats[pick], uid: upcoming[pick].uid, options: options)
+            }
             prev = carried(prev, feats[pick])
         }
         return (order, committed)
@@ -376,6 +388,31 @@ extension DJSetPlanner.State {
             } else {
                 pocketCount += 1
             }
+        }
+    }
+
+    /// A LISTENER-CHOSEN song plays (`Candidate.anchor`): the set re-anchors on it. Its band
+    /// becomes the band (a fresh visit); a jump of ≥ 2 bands from where the set was starts a new
+    /// wave heading BACK toward it (the next songs ease from the pick back into the wave rather
+    /// than racing on past it); and it anchors a fresh pocket (what follows sounds like it).
+    /// Missing parts leave that part of the state alone, as `account` does. Idempotent per uid.
+    mutating func reanchor(_ f: DJSetPlanner.Features, uid: UUID, options: DJSetPlanner.Options) {
+        if let uid0 = lastAccountedUid, uid0 == uid { return }
+        lastAccountedUid = uid
+        if let b = f.band {
+            if let was = band, abs(b - was) >= 2 * DJSetPlanner.bandWidth {
+                startWave(b > was ? .down : .up)
+            }
+            band = b
+            playedInBand = 1
+        }
+        if options.pockets, f.hasPocketData {
+            if pocketAnchor != nil {
+                pocketIndex += 1
+                pocketLength = DJSetPlanner.pocketLength(seed: seed, index: pocketIndex)
+            }
+            pocketAnchor = f
+            pocketCount = 1
         }
     }
 
