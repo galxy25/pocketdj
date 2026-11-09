@@ -185,7 +185,8 @@ final class DJModeTests: XCTestCase {
         XCTAssertEqual(d.timePitchRate, 0.95, accuracy: 1e-3, "the incoming is pinned at its glide target")
         XCTAssertEqual(d.tailRateForTesting ?? 0, 1.05, accuracy: 1e-3, "the outgoing is pinned at its target")
         XCTAssertFalse(d.filterBandBypassed, "the texture sweeps the incoming's filter")
-        XCTAssertEqual(d.levelTrimGainDb, -3, accuracy: 1e-3, "the incoming's leveling gain")
+        XCTAssertEqual(d.levelTargetDb, -3, accuracy: 1e-3, "the incoming's leveling gain")
+        await waitUntil("the incoming's gain lands in a few ms (never a step)") { abs(d.levelTrimGainDb + 3) < 1e-3 }
         await waitUntil("fade landed: the tail released") { d.djPhase != .fade }
         XCTAssertFalse(d.tailDeckActiveForTesting)
         XCTAssertEqual(d.attachedNodeCountForTesting, nodes, "every tail node detached")
@@ -298,10 +299,19 @@ final class DJModeTests: XCTestCase {
         d.onDJFadeStart = { _ in false }
         XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 0.2)))
         await waitUntil("cut back") { d.djPhase == .idle }
-        XCTAssertFalse(d.tailDeckActiveForTesting)
         XCTAssertEqual(d.loadedSongId, "A")
         XCTAssertEqual(d.rate, 1.02, accuracy: 1e-9, "the outgoing keeps the listener's controls")
-        await waitUntil("A plays on the main chain") { d.mainNodePlayingForTesting() && d.isPlaying }
+        // The HAND-BACK: the main chain picks the song up at the tail's playhead (a 60 ms cross,
+        // no gap), then the tail goes and the glide eases back to the listener's tempo.
+        await waitUntil("A plays on the main chain, the tail released") {
+            d.mainNodePlayingForTesting() && d.isPlaying && !d.tailDeckActiveForTesting && !d.djReturningForTesting
+        }
+        let t = d.currentTime
+        XCTAssertGreaterThan(t, 4.2, "the song carried on from where the tail had it (never restarted)")
+        await waitUntil("the glide eased back") { abs(d.timePitchRate - 1.02) < 1e-3 }
+        XCTAssertEqual(d.djRateOverlayForTesting, 1, accuracy: 1e-9)
+        XCTAssertTrue(d.filterBandBypassed, "the texture eased out too")
+        XCTAssertEqual(d.retiringTailCountForTesting, 0)
     }
 
     /// DECLINES touch nothing (and hand the incoming's scope back): paused, in flight, an
@@ -560,3 +570,326 @@ final class DJModeTests: XCTestCase {
 @MainActor
 @Observable
 private final class DJMixLiveFlag { var on = false }
+
+// MARK: - Review fixes (np-dj-mode §9: Remote suspension, album runs, natural ends, the
+// selector's guards, the hand-back, the analyser)
+
+extension DJModeTests {
+
+    // MARK: DSP
+
+    /// A PAUSE inside the 60 ms handover of a no-pre-roll transition lands the handover but never
+    /// starts the fade (that would advance the set inside a pause and, with the stale handover
+    /// task, stop the incoming): the fade — and the advance — wait for ▶, then run normally.
+    func testPauseInsideTheHandoverDefersTheFade() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        var advanced: [String] = []
+        d.onDJFadeStart = { advanced.append($0); return true }
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 0, fade: 0.6, postRoll: 0)))
+        d.pause()
+        XCTAssertFalse(d.isPlaying)
+        XCTAssertEqual(d.djPhase, .preRoll, "the fade waits for ▶")
+        XCTAssertTrue(advanced.isEmpty, "no advance inside a pause")
+        XCTAssertFalse(d.mainNodePlayingForTesting(), "the handover landed: the main voice stopped")
+        XCTAssertFalse(d.tailPlayingForTesting, "the tail paused")
+        d.resume()
+        await waitUntil("the fade starts once the clock runs") { advanced == ["B"] && d.djPhase != .preRoll }
+        XCTAssertEqual(d.loadedSongId, "B")
+        await waitUntil("the transition completes with the incoming SOUNDING") {
+            d.djPhase == .idle && d.mainNodePlayingForTesting() && d.isPlaying
+        }
+        XCTAssertFalse(d.tailDeckActiveForTesting)
+        XCTAssertEqual(d.mainFadeGainForTesting, 1)
+    }
+
+    /// The tail ran out in the pre-roll and the host then refused the advance: that is the
+    /// song's END (reported — the host advances), never a session parked silent at the end.
+    func testTailThatRanOutReportsTheEnd() async throws {
+        let (d, _, b) = try playingDSP(aSeconds: 8, at: 6.6)
+        await waitUntil("A rendering near its end") { d.isPlaying && d.mainNodePlayingForTesting() && d.currentTime > 6.62 }
+        var ended = 0
+        d.onReachedEnd = { ended += 1 }
+        d.onDJFadeStart = { _ in false }
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 6, outRate: 1, inRate: 1, texture: false)))
+        // (The tail's completion is "data consumed", so the refusal can land a little before the
+        // last frame: then the hand-back carries the remainder and ITS end is reported.)
+        await waitUntil("the end is reported, the tail gone", timeout: 6) { ended >= 1 && !d.tailDeckActiveForTesting }
+        XCTAssertEqual(ended, 1, "exactly one end")
+        XCTAssertEqual(d.djPhase, .idle)
+        XCTAssertFalse(d.isPlaying, "stopped AT the end — the host advances (never parked silent)")
+    }
+
+    /// A stem action in the pre-roll hands the outgoing back (no gap) — after the advance the
+    /// stems are the INCOMING's: a mute there doesn't cut the fade.
+    func testStemMuteAfterTheAdvanceDoesNotCutTheFade() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        d.onDJFadeStart = { _ in true }
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 0.2, fade: 1.5)))
+        await waitUntil("fade") { d.djPhase == .fade }
+        d.toggleStemMute("vocals")
+        XCTAssertEqual(d.djPhase, .fade, "the crossfade carries on")
+        XCTAssertTrue(d.tailDeckActiveForTesting, "the outgoing still fades on the tail")
+        await waitUntil("done") { d.djPhase == .idle }
+    }
+
+    /// An engine configuration change while PAUSED mid-transition cuts it: ▶ then restarts the
+    /// current song on the main chain from its playhead (never `play()` on flushed decks).
+    func testEngineStopWhilePausedMidTransitionCuts() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 3)))
+        await waitUntil("handover landed") { !d.mainNodePlayingForTesting() && d.tailPlayingForTesting }
+        d.pause()
+        let at = d.currentTime
+        d.simulateEngineStopForTesting()
+        XCTAssertEqual(d.djPhase, .idle)
+        XCTAssertFalse(d.tailDeckActiveForTesting)
+        d.resume()
+        await waitUntil("A plays on the main chain from its playhead") {
+            d.mainNodePlayingForTesting() && d.isPlaying && d.currentTime > at
+        }
+        XCTAssertEqual(d.loadedSongId, "A")
+        XCTAssertLessThan(d.currentTime, at + 1.5, "resumed where it paused")
+    }
+
+    // MARK: Leveling / analysis
+
+    /// One analysis per key: a second caller AWAITS the first (it never gets an instant "nothing
+    /// yet" to spin on); a failure is remembered (no retry loop); a segment of a shared file is
+    /// measured on its own.
+    func testLoudnessAnalysisIsSingleFlightRemembersFailuresAndMeasuresSegments() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-dj-loud-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let cache = LoudnessCache(fileURL: dir.appendingPathComponent("loudness.json"))
+        // A "side": 3 s loud, 3 s 12 dB quieter.
+        let side = dir.appendingPathComponent("side.wav")
+        let sr = 44_100.0
+        let fmt = AVAudioFormat(standardFormatWithSampleRate: sr, channels: 2)!
+        do {
+            let f = try AVAudioFile(forWriting: side, settings: fmt.settings)
+            let n = Int(sr * 6)
+            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(n))!
+            buf.frameLength = AVAudioFrameCount(n)
+            for c in 0..<2 {
+                for i in 0..<n {
+                    let amp: Float = i < n / 2 ? 0.5 : 0.5 * Float(pow(10, -12.0 / 20))
+                    buf.floatChannelData![c][i] = amp * Float(sin(2 * .pi * 997 * Double(i) / sr))
+                }
+            }
+            try f.write(from: buf)
+        }
+        let k1 = try XCTUnwrap(LoudnessCache.key(songId: "s1", url: side, startMs: 0, lengthMs: 3000))
+        let k2 = try XCTUnwrap(LoudnessCache.key(songId: "s2", url: side, startMs: 3000, lengthMs: 3000))
+        XCTAssertNotEqual(k1, k2, "each song on the side keys its own slice")
+        async let a = cache.analyze(k1, url: side)
+        async let b = cache.analyze(k1, url: side)
+        let (ra, rb) = await (a, b)
+        let outcomes = [ra, rb]
+        XCTAssertEqual(outcomes.filter { if case .measured = $0 { return true } else { return false } }.count, 1,
+                       "exactly one caller ran the analysis")
+        XCTAssertEqual(outcomes.filter { if case .cached = $0 { return true } else { return false } }.count, 1,
+                       "the other awaited it")
+        _ = await cache.analyze(k2, url: side)
+        let loud = try XCTUnwrap(cache.lufs(for: k1)), quiet = try XCTUnwrap(cache.lufs(for: k2))
+        XCTAssertEqual(loud - quiet, 12, accuracy: 0.3, "the segments measure their own loudness, not the side's")
+
+        let junk = dir.appendingPathComponent("junk.wav")
+        try Data(repeating: 7, count: 4096).write(to: junk)
+        let kj = try XCTUnwrap(LoudnessCache.key(songId: "j", url: junk))
+        let first = await cache.analyze(kj, url: junk)
+        XCTAssertEqual(first, .failed)
+        XCTAssertTrue(cache.hasFailed(kj))
+        XCTAssertTrue(cache.isSettledOrRunning(kj), "a failed key is never kicked again this launch")
+        let again = await cache.analyze(kj, url: junk)
+        XCTAssertEqual(again, .failed)
+    }
+
+    /// The mono-sum fast path reads identical channels exactly as the full BS.1770 sum.
+    func testMonoSumMatchesTheFullSumOnCorrelatedChannels() throws {
+        let url = try wav(3)
+        let mono = try XCTUnwrap(LoudnessAnalyzer.analyzeSync(url: url, monoSum: true))
+        let full = try XCTUnwrap(LoudnessAnalyzer.analyzeSync(url: url, monoSum: false))
+        XCTAssertEqual(mono, full, accuracy: 0.05)
+    }
+
+    // MARK: Sequencer
+
+    /// REMOTE: an attached SharePlay / Backseat session SUSPENDS DJ Mode — the chip says so, the
+    /// arm goes, nothing re-plans, and the song's end is a NORMAL advance tagged as a natural
+    /// end (the DSP end path used to tag it `.autoSkip`). The session ending resumes it.
+    func testRemoteSessionSuspendsDJModeAndResumesAfter() async throws {
+        let r = try rig(["r1", "r2", "r3"])
+        let remote = DJMixLiveFlag()
+        r.seq.remoteSessionActive = { remote.on }
+        try await startDJ(r, ["r1", "r2", "r3"])
+        XCTAssertTrue(r.dsp.djArmed)
+        remote.on = true
+        await waitUntil("suspended for the session") { r.seq.djIndicator == .suspendedRemote && !r.dsp.djArmed }
+        XCTAssertEqual(r.seq.djIndicator.chipText, "DJ — paused · SharePlay session")
+        XCTAssertFalse(r.seq.djActive)
+        XCTAssertTrue(r.seq.djMode.enabled, "DJ Mode itself stays ON")
+        r.seq.appendToQueue([item("r1")])
+        XCTAssertFalse(r.seq.djReplanPending, "no re-ordering while a session is attached")
+        let plans = r.seq.djReplanCount
+        r.dsp.seek(toSongSeconds: 6.5)
+        await waitUntil("r1 ended → a normal advance") { r.seq.index == 1 }
+        XCTAssertEqual(r.seq.djTransitionCount, 0, "no DJ transition")
+        XCTAssertFalse(r.dsp.tailDeckActiveForTesting)
+        XCTAssertEqual(r.seq.lastTransitionCause, .naturalEnd, "a song that played in full is a natural end")
+        XCTAssertEqual(r.seq.djReplanCount, plans, "no DJ re-order on the advance")
+        remote.on = false
+        await waitUntil("resumes when the session ends") {
+            r.seq.djIndicator != .suspendedRemote && r.seq.djActive && r.dsp.djArmed
+        }
+    }
+
+    /// The chip never promises a mix that won't happen: repeat-one, Transitions off and the
+    /// last song under repeat-all each say why.
+    func testIndicatorSaysWhyTheEndWontMix() async throws {
+        let r = try rig(["i1", "i2"])
+        try await startDJ(r, ["i1", "i2"])
+        XCTAssertEqual(r.seq.djIndicator, .nextReady)
+        r.seq.setRepeatMode(.one)
+        XCTAssertEqual(r.seq.djIndicator, .noMix("repeating this song"))
+        r.seq.setRepeatMode(.off)
+        var cfg = DJModeSettings.allOn
+        cfg.transitions = false
+        r.seq.djModeSettings = { cfg }
+        XCTAssertEqual(r.seq.djIndicator, .noMix("transitions off"))
+        XCTAssertEqual(DJMode.Indicator.noMix("set repeats").chipText, "DJ — set repeats")
+    }
+
+    // MARK: Vinyl album runs
+
+    /// A rig whose `side` rows are songs of ONE shared album file (`sideSeconds` long, the songs
+    /// `songSeconds` apart), plus ordinary per-song rows.
+    private func albumRig(side: [String], songSeconds: Double, singles: [String]) throws -> Rig {
+        let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!, session: URLSession(configuration: .ephemeral))
+        var manifest: [String: RipsStore.ManifestEntry] = [:]
+        for (k, id) in side.enumerated() {
+            manifest[id] = RipsStore.ManifestEntry(key: "rips/side-x.mp3", source: "vinyl", startMs: Int(Double(k) * songSeconds * 1000))
+        }
+        for id in singles { manifest[id] = RipsStore.ManifestEntry(key: "rips/\(id).mp3", source: "digital") }
+        rips.setManifest(manifest)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-dj-album-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let sideName = "burn-side.wav"
+        try MixBurnFixture.writeSineWAV(to: dir.appendingPathComponent(sideName), seconds: songSeconds * Double(side.count))
+        var items: [BurnStore.BurnItem] = []
+        for (k, id) in side.enumerated() {
+            items.append(BurnStore.BurnItem(
+                songId: id, title: id, artist: "A", audioFileName: sideName, sidecarFileName: "", source: "vinyl",
+                bpm: 150, musicalKey: nil, camelot: "8A", durationMs: Int(songSeconds * 1000),
+                startMs: Int(Double(k) * songSeconds * 1000), bytes: 0, rippedAt: nil, downloadedAt: 0,
+                state: .ready, error: nil, wasAppStorage: true))
+        }
+        for id in singles {
+            let name = "burn-\(id).wav"
+            try MixBurnFixture.writeSineWAV(to: dir.appendingPathComponent(name), seconds: 8)
+            items.append(BurnStore.BurnItem(
+                songId: id, title: id, artist: "A", audioFileName: name, sidecarFileName: "", source: "digital",
+                bpm: 100, musicalKey: nil, camelot: "8A", durationMs: 8000, startMs: nil, bytes: 0, rippedAt: nil,
+                downloadedAt: 0, state: .ready, error: nil, wasAppStorage: true))
+        }
+        let indexURL = dir.appendingPathComponent("index.json")
+        try JSONEncoder().encode(BurnStore.Document(items: items)).write(to: indexURL)
+        let burns = BurnStore(rips: rips, fileURL: indexURL)
+        burns.appBurnsDirOverride = dir
+        let player = PlayerEngine()
+        let coord = PlaybackCoordinator(ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
+                                        appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider()))
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        let dsp = NowPlayingDSP(burns: burns)
+        seq.dsp = dsp
+        seq.djTimings = { DJMode.Timings(lead: 3, fade: 0.6, glide: 0.3) }
+        let cacheURL = dir.appendingPathComponent("loud.json")
+        seq.loudnessCache = LoudnessCache(fileURL: cacheURL)
+        addTeardownBlock { @MainActor in seq.stop(); dsp.disengage() }
+        return Rig(rips: rips, burns: burns, player: player, seq: seq, dsp: dsp)
+    }
+
+    /// AN ALBUM PLAYS END TO END with DJ Mode on: a row whose next row is the record's next song
+    /// is NOT taken into the DSP (the AVPlayer keeps the one side file and GLIDES — same player
+    /// item, no reload), the chip says so, and the record's LAST queued song is engaged so its
+    /// end can mix out.
+    func testAlbumRunWithDJOnPlaysThroughOnTheGlide() async throws {
+        let r = try albumRig(side: ["v1", "v2", "v3"], songSeconds: 3, singles: ["s9"])
+        r.seq.play(["v1", "v2", "v3", "s9"].map(item))
+        await waitUntil("v1 playing on the side") { r.rips.nowPlaying?.songId == "v1" }
+        r.seq.setDJMode(true)
+        XCTAssertTrue(r.seq.djMode.enabled)
+        XCTAssertFalse(r.seq.mixEngaged, "an album-run row stays on the record (no DSP engage)")
+        XCTAssertFalse(r.dsp.djArmed)
+        XCTAssertEqual(r.seq.djIndicator, .noMix("album plays through"))
+        let item0 = try XCTUnwrap(r.player.currentItemForTesting)
+        await waitUntil("glided onto v2", timeout: 10) { r.seq.index == 1 && r.rips.nowPlaying?.songId == "v2" }
+        XCTAssertTrue(r.player.currentItemForTesting === item0, "the SAME player item — a glide, not a reload")
+        XCTAssertFalse(r.seq.mixEngaged)
+        XCTAssertEqual(r.seq.queue.map(\.id), ["v1", "v2", "v3", "s9"], "the run kept its record order")
+        await waitUntil("glided onto v3 — the record's last queued song is engaged to mix out", timeout: 10) {
+            r.seq.index == 2 && r.rips.nowPlaying?.songId == "v3" && r.seq.mixEngaged
+        }
+        XCTAssertTrue(r.player.currentItemForTesting === item0 || r.seq.mixEngaged)
+        XCTAssertTrue(r.dsp.djArmed, "armed: v3's end can mix into s9")
+    }
+
+    /// The selector treats an album run as a FIXED block: it never re-orders the record's own
+    /// rows or slips another song between them, even when every other row moves.
+    func testSelectorKeepsAnAlbumRunInRecordOrder() async throws {
+        let r = try albumRig(side: ["v1", "v2", "v3"], songSeconds: 3, singles: ["c", "u1", "u2", "u3", "u4"])
+        let bpm: [String: Double] = ["c": 100, "u1": 140, "u2": 101, "u3": 141, "u4": 102, "v1": 150, "v2": 90, "v3": 150]
+        r.seq.djSongFacts = { id in bpm[id].map { DJMode.SongFacts(bpm: $0) } }
+        let ids = ["c", "u1", "v1", "v2", "v3", "u2", "u3", "u4"]
+        r.seq.play(ids.map(item))
+        await waitUntil("c playing") { r.rips.nowPlaying?.songId == "c" }
+        r.seq.setDJMode(true)
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        let order = r.seq.queue.map(\.id)
+        XCTAssertEqual(Set(order), Set(ids), "a re-order, nothing lost")
+        let v1 = try XCTUnwrap(order.firstIndex(of: "v1"))
+        XCTAssertEqual(Array(order[v1...(v1 + 2)]), ["v1", "v2", "v3"], "the album run is one block, in record order")
+        XCTAssertEqual(v1, 2, "…and holds its place")
+        XCTAssertGreaterThanOrEqual(r.seq.djReplanCount, 1, "the free rows still re-ordered")
+    }
+
+    // MARK: Selector
+
+    /// Listener placements ride the durable snapshot: a relaunch restores the marks, so the
+    /// selector still leaves a jukebox request / Play Next row where it was put.
+    func testListenerPlacementSurvivesRestore() async throws {
+        let r = try rig(["p1", "p2", "p3"])
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-dj-session-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let store = PlaybackSessionStore(fileURL: url)
+        r.seq.sessionStore = store
+        r.seq.play([item("p1"), item("p2")])
+        await waitUntil("p1 playing") { r.rips.nowPlaying?.songId == "p1" }
+        r.seq.insertNextInQueue([item("p3")])
+        XCTAssertEqual(r.seq.djFixedUids.count, 1)
+        r.seq.setDJMode(true)
+        r.seq.flushSessionSnapshotNow(); store.flush()
+        let snap = try XCTUnwrap(store.load())
+        XCTAssertEqual(snap.queue.map { $0.djPlaced ?? false }, [false, true, false])
+        let r2 = try rig(["p1", "p2", "p3"])
+        r2.seq.restore(from: snap)
+        XCTAssertEqual(r2.seq.queue.map(\.djPlaced), [false, true, false], "the mark is back after a relaunch")
+        XCTAssertEqual(r2.seq.djFixedUids.count, 1)
+    }
+
+    /// AGING: a row the planner keeps pushing back gains score per deferral, so it can't be
+    /// deferred forever.
+    func testAgingBringsADeferredRowForward() {
+        let cur = DJSetPlanner.Candidate(songId: "c", bpm: 100)
+        var poor = DJSetPlanner.Candidate(songId: "poor", bpm: 150, camelot: "1A")
+        let good = (0..<4).map { DJSetPlanner.Candidate(songId: "g\($0)", bpm: 100 + Double($0)) }
+        let fresh = DJSetPlanner.plan(current: cur, upcoming: [poor] + good, state: .init(seed: 1), options: .allOn)
+        XCTAssertNotEqual(fresh.order.first, poor.uid, "a poor fit is deferred at first")
+        poor.deferrals = 40
+        let aged = DJSetPlanner.plan(current: cur, upcoming: [poor] + good, state: .init(seed: 1), options: .allOn)
+        XCTAssertEqual(aged.order.first, poor.uid, "a long-deferred row comes forward")
+    }
+}
