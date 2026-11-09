@@ -767,10 +767,9 @@ struct NowPlayingDeckCluster: View {
                     .font(.system(size: 34))
             }
             .accessibilityIdentifier("np-playpause")
-            Button { sequencer.skipNext() } label: {
+            NPSkipNextButton(sequencer: sequencer, identifier: "np-next") {
                 Image(systemName: "forward.fill").font(.title3)
             }
-            .accessibilityIdentifier("np-next")
         }
         .buttonStyle(.plain)
         .foregroundStyle(Theme.accent)
@@ -974,10 +973,9 @@ struct NowPlayingMiniBar: View {
                     .font(.title2)
             }
             .accessibilityIdentifier("np-mini-playpause")
-            Button { sequencer.skipNext() } label: {
+            NPSkipNextButton(sequencer: sequencer, identifier: "np-mini-next") {
                 Image(systemName: "forward.fill").font(.footnote)
             }
-            .accessibilityIdentifier("np-mini-next")
             Button(action: expand) {
                 Image(systemName: "chevron.up")
                     .font(.footnote.weight(.semibold)).foregroundStyle(Theme.fgDim)
@@ -1000,6 +998,45 @@ struct NowPlayingMiniBar: View {
         #endif
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("np-mini-bar")
+    }
+}
+
+/// ⏭ on the Now Playing transports (deck, mini-player, the set list's nav-bar cluster). With DJ
+/// Mode active it is the Mix tab's Skip (np-dj-mode §3 transport): a tap MIXES into the next song
+/// over Settings ▸ Mixing "Skip fade", a DOUBLE tap is the fast 5 s sweep. Then it's a plain
+/// tappable view, NOT a `Button` — a Button's action fires on the first tap, so a double tap
+/// would also fire the single (MixView's Skip pattern: `count: 2` first, the lone tap after the
+/// disambiguation delay). DJ off: today's Button, no delay.
+struct NPSkipNextButton<Label: View>: View {
+    let sequencer: SetlistPlayer
+    let identifier: String
+    var help: String?
+    @ViewBuilder let label: () -> Label
+
+    var body: some View {
+        #if os(tvOS)
+        plain
+        #else
+        if sequencer.djActive {
+            label()
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { sequencer.skipNext(fast: true) }   // fast 5 s sweep
+                .onTapGesture(count: 1) { sequencer.skipNext() }             // Skip fade
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { sequencer.skipNext() }
+                .accessibilityHint("Double-tap for a fast five second sweep")
+                .help(help ?? "Next track (mixed) · double-click for a fast sweep")
+                .accessibilityIdentifier(identifier)
+        } else {
+            plain
+        }
+        #endif
+    }
+
+    private var plain: some View {
+        Button { sequencer.skipNext() } label: { label() }
+            .help(help ?? "Next track")
+            .accessibilityIdentifier(identifier)
     }
 }
 

@@ -185,16 +185,26 @@ final class SettingsUITests: XCTestCase {
         #endif
     }
 
-    /// The Mix section exposes all three crossfade steppers — including the NEW manual-skip fade —
-    /// so the Skip-button feature has a configurable fade length. Asserted by accessibility id
+    /// Settings ▸ Mixing exposes the crossfade steppers — including the manual-skip fade — the
+    /// Now Playing DJ Mode toggles, and the Mix tab's deck options. Asserted by accessibility id
     /// (steppers surface differently per platform; the id matches on both).
     func testMixSectionHasCrossfadeAndSkipFadeControls() {
         let app = launch()
         XCTAssertTrue(app.buttons["settings-add-source"].waitForExistence(timeout: 15))
+        let mixing = app.buttons["settings-mixing"].firstMatch
+        XCTAssertTrue(reveal(app, mixing), "Settings must link to the Mixing pane")
+        mixing.tap()
         let skip = app.descendants(matching: .any)["settings-automix-skip-fade"]
+        XCTAssertTrue(skip.waitForExistence(timeout: 5))
         XCTAssertTrue(reveal(app, skip), "the new Skip-fade stepper must render in the Mix section")
         XCTAssertTrue(app.descendants(matching: .any)["settings-automix-lead"].exists)
         XCTAssertTrue(app.descendants(matching: .any)["settings-automix-fade"].exists)
+        #if !os(tvOS)
+        for id in ["settings-dj-transitions", "settings-dj-effects", "settings-dj-tempo", "settings-dj-key",
+                   "settings-dj-volume", "settings-dj-waves", "settings-dj-pockets"] {
+            XCTAssertTrue(reveal(app, app.switches[id]), "the DJ Mode toggle \(id) must render in Mixing")
+        }
+        #endif
         XCTAssertTrue(reveal(app, app.descendants(matching: .any)["settings-mix-cue-channel"]),
                       "the cue-output-channel picker must render in the Mix section")
         XCTAssertTrue(reveal(app, app.switches["settings-mix-beat-pulse"]),

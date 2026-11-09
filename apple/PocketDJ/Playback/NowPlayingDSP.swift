@@ -2323,6 +2323,8 @@ final class NowPlayingDSP {
     var tailRateForTesting: Float? { tail.map { $0.timePitch.rate } }
     var tailPlayingForTesting: Bool { tail?.player.isPlaying ?? false }
     var mainFadeGainForTesting: Float { djMainFade }
+    /// The in-flight transition's plan (a ⏭ hurries / replaces it).
+    var djPlanForTesting: AutoTransition.Plan? { djRun?.spec.plan }
     var attachedNodeCountForTesting: Int { engine.attachedNodes.count }
     /// A tail is still attached while it rings / ramps out.
     var retiringTailCountForTesting: Int { retiringTails.count }
@@ -2703,6 +2705,30 @@ final class NowPlayingDSP {
         case .idle:
             break
         }
+    }
+
+    /// ⏭ during the PRE-ROLL (np-dj-mode §3 transport): the skip is the advance — drop the rest of
+    /// the pre-roll and fade over `fadeSeconds` from now (the 60 ms handover still lands first;
+    /// paused, the fade starts on ▶). False when not in a pre-roll.
+    @discardableResult
+    func djSkipDuringPreRoll(fadeSeconds: Double) -> Bool {
+        guard var run = djRun, djPhase == .preRoll else { return false }
+        run.spec.plan.preRollSeconds = 0
+        run.spec.plan.fadeSeconds = max(AutoTransition.minImmediateFadeSeconds, fadeSeconds)
+        djRun = run
+        DJMode.log("skip during pre-roll song=\(run.outgoingSongId) → fade \(String(format: "%.1f", fadeSeconds))s now")
+        if run.handoverDone { djStartFade() }
+        return true
+    }
+
+    /// ⏭ during the POST-ROLL: the glide ends at once (the listener wins) so a new skip can mix
+    /// out of the song. False when not in a post-roll.
+    @discardableResult
+    func djEndPostRollForSkip() -> Bool {
+        guard djRun != nil, djPhase == .postRoll else { return false }
+        DJMode.log("skip during post-roll song=\(loadedSongId ?? "-") — glide ends")
+        djFinish(how: "skip")
+        return true
     }
 
     /// CUT the transition now (seek / a stem action / the engine stopped / the host refused).
