@@ -38,7 +38,8 @@ Topology is identical either way.
 │                                                        │                         │
 │                                                        ▼                         │
 │                                    trim (band bypassed; carries the >100%        │
-│                                          volume boost as globalGain)             │
+│                                          volume boost + Volume Glide leveling    │
+│                                          as globalGain)                          │
 │                                          ├── VU tap: PRE-fader ──→ MixDeckLevels │
 │                                     ┌────┴────┐                                  │
 │                                     ▼         ▼                                  │
@@ -75,7 +76,7 @@ Topology is identical either way.
 | **timePitch** | `AVAudioUnitTimePitch` | Tempo (0.5–2.0×, pitch preserved) and pitch (±12 st, tempo preserved). The last pre-FX point in the chain — the natural place for a pre-FX analysis tap. |
 | **slots 0–3** | 4 × `SlotNodes` | The FX rack. Each slot pre-allocates one node of every effect type — `comp` (DynamicsProcessor AU), `filter` (1-band `AVAudioUnitEQ`), `reverb` (`AVAudioUnitReverb`), `mod` (`AVAudioUnitDelay`) — wired in series with at most ONE un-bypassed. Swapping a slot's effect = bypass flips only. Duplicates across slots are legal (two filters, etc.). 16 FX nodes per deck. |
 | **eq3** | `AVAudioUnitEQ` (3 bands) | The always-active channel-strip EQ (Low shelf 320 Hz / Mid peak 1 kHz / High shelf 3.2 kHz, ±12 dB knobs under the pitch slider). Not part of the rack — never bypassed, never swapped. |
-| **trim** | `AVAudioUnitEQ` (1 band, band bypassed) | Exists purely to carry the >100% volume boost as `globalGain` (0 dB at ≤100% → +6 dB at 200%). Upstream of the main/cue split so the cue monitor's boost divide-out stays exact. Pre-rack this gain rode the filter node; the rack made that impossible (a rack may hold no filter). |
+| **trim** | `AVAudioUnitEQ` (1 band, band bypassed) | Carries the >100% volume boost as `globalGain` (0 dB at ≤100% → +6 dB at 200%) PLUS the Auto-DJ **Volume Glide** leveling dB (0 unless on — see "Volume Glide" below): `globalGain = boostDb + levelDb[deck]`, two separate values, so the listener's Vol fader is never moved. Upstream of the main/cue split so the cue monitor's boost divide-out stays exact. Pre-rack this gain rode the filter node; the rack made that impossible (a rack may hold no filter). |
 | **mainGain** | `AVAudioMixerNode` | The channel fader: deck volume (clamped ≤1.0) × the equal-power crossfade factor. What the audience hears. |
 | **cueGain** | `AVAudioMixerNode` | The PFL send: full-strength copy at the independent `cueVol`, non-zero only while the deck is cued. Divides the trim boost back out so the monitor level is exactly `cueVol`. |
 | **houseSum** | `AVAudioMixerNode` | Both decks' main sends summed — the clean stereo house mix. The recording tap lives HERE, before any cue panning, so captures are always normal stereo even mid-PFL. |
@@ -658,3 +659,28 @@ the deck model (`Deck { a, b }`) is unchanged.
   ignored (the next heartbeat trims it). Master ▶ is disabled while mixing together; any other
   USER gesture on a deck you don't own is undone from the mirror on the next tick (a system
   pause is not — it is this device's own, see "System causes stay local").
+
+## Volume Glide — Auto-DJ loudness leveling (2026-11-09, opt-in)
+
+Settings ▸ Mixing ▸ Mix tab "Volume glide (Auto-DJ)" (`SettingsStore.mixVolumeGlide`, OFF by
+default; also the "Vol Glide" pill beside FX / Mix Glide) → `MixEngine.setVolumeGlide`.
+
+- **Where:** each deck's existing `trim` node — `globalGain = 20·log10(max(vol, 1)) + levelDb[deck]`.
+  Upstream of `mainGain` (the deck volume × equal-power crossfade), so crossfades stay exactly
+  equal-power, and of the cue split (the PFL divide-out only removes the boost, so a cued deck is
+  monitored leveled — what the house will hear). No new nodes; the graph is unchanged.
+- **What:** the same leveling as Now Playing DJ Mode (`LoudnessAnalyzer` / `LoudnessCache` /
+  `LoudnessLeveling`): −14 LUFS target, clamped −12…+6 dB, per-segment keys for an analog side's
+  slice. Measured off-main on load (`levelDeck` at every `commitLoad` — the loaded deck and the
+  standby deck, which holds the next-queued song) and when a streaming deck's file completes.
+- **When:** only while `autoMixing` (decision: a HAND-mix keeps exactly what the DJ set — leveling
+  under the DJ's own fader rides would fight them; the Auto-DJ is the "keep the mix even" case).
+  Auto-DJ ending / the toggle off → back to 0 dB.
+- **How it moves:** a silent deck (stopped / faded out — the standby) takes its gain at once; a
+  sounding one ramps over 2 s in 20 ms steps. Each deck shows "Leveling +2.1 dB" / "measuring…" /
+  "unavailable" under its Vol (`deckLeveling`, published every 3rd ramp step — ~16 Hz), the same
+  `DJLevelingReadoutRow` as Now Playing.
+- **Fader automation shown:** Auto-DJ fades, skips (tap = Skip fade, double-tap = 5 s) and stall
+  hand-overs all run the one fade machine, which writes the observed `crossfader` every tick — the
+  crossfader visibly sweeps (`MixVolumeGlideTests.testCrossfaderMovesThroughASkip`). The deck Vol
+  faders don't move during an auto fade by design: the crossfade lives on the crossfader.

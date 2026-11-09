@@ -79,6 +79,10 @@ struct MixingSettingsView: View {
 
     private var mixTabSection: some View {
         Section {
+            Toggle("Volume glide (Auto-DJ)", isOn: $settings.mixVolumeGlide)
+                .accessibilityIdentifier("settings-mix-volume-glide")
+                .onChange(of: settings.mixVolumeGlide) { settings.persist() }
+
             Toggle("Auto-hide played tracks", isOn: $settings.mixAutoHidePlayed)
                 .accessibilityIdentifier("settings-mix-autohide")
                 .onChange(of: settings.mixAutoHidePlayed) { settings.persist() }
@@ -117,7 +121,7 @@ struct MixingSettingsView: View {
 
     /// The deck-layout paragraph is iOS-only (the picker is too).
     private var mixTabFooter: String {
-        var s = "A mix session records what you play until you hit Reset. When Auto-hide played tracks is on, the deck loader hides tracks you've already played this session; off, they still show with a ✓.\n\nCue output channel routes a deck's pre-fade-listen (the headphones button on each deck) to one side of the stereo output, leaving the house mix on the other — for a booth where you monitor on a separate feed.\n\nBeat pulse flashes a ring around each deck on every beat (downbeats brighter) so you can feel the groove and eyeball-align the two decks while beat-matching."
+        var s = "Volume glide (off by default) levels every song the Auto-DJ plays to one loudness (−14 LUFS, at most −12…+6 dB, ramped over 2 s) on each deck's own trim — your Vol faders are never moved — and shows the trim under each deck's Vol. Hand-mixing is never leveled.\n\nA mix session records what you play until you hit Reset. When Auto-hide played tracks is on, the deck loader hides tracks you've already played this session; off, they still show with a ✓.\n\nCue output channel routes a deck's pre-fade-listen (the headphones button on each deck) to one side of the stereo output, leaving the house mix on the other — for a booth where you monitor on a separate feed.\n\nBeat pulse flashes a ring around each deck on every beat (downbeats brighter) so you can feel the groove and eyeball-align the two decks while beat-matching."
         #if os(iOS)
         s += "\n\nDeck layout arranges the two Mix decks in portrait: Side by side (the classic two-up board), Stacked (full-width decks, one above the other), or Single (one deck at a time with ‹ › buttons on either side to flip to the other). Portrait defaults to Stacked so each deck's sliders stay finger-friendly; landscape always shows them side by side."
         #endif
