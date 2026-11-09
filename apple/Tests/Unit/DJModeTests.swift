@@ -487,7 +487,9 @@ final class DJModeTests: XCTestCase {
         XCTAssertTrue(r.dsp.djTransitioning, "the skip starts a mix, not a cut")
         XCTAssertEqual(r.dsp.djPlanForTesting?.preRollSeconds, 0)
         XCTAssertEqual(r.dsp.djPlanForTesting?.fadeSeconds, 1)
-        XCTAssertEqual(away, ["k1"], "the listen ends at the press")
+        r.seq.skipNext()                                    // a second press inside the 60 ms handover
+        XCTAssertEqual(r.dsp.djPlanForTesting?.fadeSeconds, 1, "the same skip — not re-planned")
+        XCTAssertEqual(away, ["k1"], "the listen ends at the press — reported once")
         await waitUntil("advanced at the fade start") { r.seq.index == 1 }
         XCTAssertTrue(r.dsp.tailDeckActiveForTesting, "k1 still fades out on the tail")
         XCTAssertEqual(r.seq.lastTransitionCause, .user, "a skip, not a natural end")

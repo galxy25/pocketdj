@@ -2863,6 +2863,11 @@ final class SetlistPlayer {
             DJMode.log("skip ignored — fade in flight song=\(queue[index].id)")
             return true
         case .preRoll:
+            // A skip's own mix is still landing its 60 ms handover: a second press is the same skip.
+            if djSkipPending != nil {
+                DJMode.log("skip ignored — a skip mix is starting song=\(queue[index].id)")
+                return true
+            }
             guard index + 1 < queue.count else { return false }
             noteAdvanceAway()
             djSkipPending = queue[index + 1].id
