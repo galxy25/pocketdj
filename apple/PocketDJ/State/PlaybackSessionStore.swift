@@ -120,6 +120,9 @@ final class PlaybackSessionStore {
         /// The session's FX LOCK + the effects it carries (`FXLockState`) — optional/defaulted
         /// like the Stem Lock (nil = lock off), so no schema bump.
         var fxLock: FXLockState? = nil
+        /// The session's NOW PLAYING DJ MODE (np-dj-mode §1) + the selector's wave / pocket state —
+        /// optional/defaulted like Mix Mode (nil = off), so no schema bump. Restored HELD.
+        var djMode: DJModeState? = nil
         /// Epoch ms of the last write (informational — a session never expires on its own).
         var updatedAt: Double
     }
