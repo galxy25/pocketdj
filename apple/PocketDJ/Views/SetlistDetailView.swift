@@ -339,10 +339,10 @@ struct SetlistDetailView: View {
                 Image(systemName: transportIsPlaying ? "pause.fill" : "play.fill")
             }
             .help(transportIsPlaying ? "Pause" : "Play").accessibilityIdentifier("setlist-playpause")
-            Button { sequencer.skipNext() } label: { Image(systemName: "forward.fill") }
-                .help(sequencer.waitingForLive
-                      ? "Skip to the next track (the current one is live)" : "Next track")
-                .accessibilityIdentifier("setlist-play-next")
+            NPSkipNextButton(sequencer: sequencer, identifier: "setlist-play-next",
+                             help: sequencer.waitingForLive ? "Skip to the next track (the current one is live)" : nil) {
+                Image(systemName: "forward.fill").foregroundStyle(Theme.accent)   // the DJ tap view takes no tint
+            }
         }
         .font(.title3)
         .tint(Theme.accent)

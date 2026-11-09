@@ -51,7 +51,7 @@ enum DJMode {
 // MARK: - Integration values (np-dj-mode §1 / §2 / §4 / §7)
 
 extension DJMode {
-    /// The shared Mix-tab transition lengths DJ Mode reuses (Settings ▸ Mix: lead, fade, glide —
+    /// The shared Mix-tab transition lengths DJ Mode reuses (Settings ▸ Mixing: lead, fade, skip, glide —
     /// np-dj-mode §2). The toggles mask parts off; these never change per mode.
     struct Timings: Equatable, Sendable {
         /// `autoMixLeadSeconds` — a transition may begin with this much (or less) left.
@@ -60,7 +60,13 @@ extension DJMode {
         var fade: Double = 3
         /// `mixGlideSeconds` — the glide pre-roll ceiling and the post-roll length.
         var glide: Double = 10
+        /// `skipFadeSeconds` — the crossfade a ⏭ mixes over (the Mix tab's single-tap Skip).
+        var skipFade: Double = 15
     }
+
+    /// The FAST skip's crossfade (a double-tapped ⏭, the lock-screen / CarPlay ⏭) — the Mix tab's
+    /// double-tap Skip length.
+    static let fastSkipFadeSeconds: Double = 5
 
     /// The catalog facts the selector + the transition read for one song — all optional
     /// (np-dj-mode §4 "Features, all optional"). `genre` is the RAW album genre (the planner maps

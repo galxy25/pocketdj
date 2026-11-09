@@ -67,7 +67,7 @@ final class WidgetSync {
         self.appleMusicId = appleMusicId
         // Wire the widget's transport buttons → the SAME entry points the lock screen uses.
         WidgetPlaybackController.shared.toggle = { [weak self] in self?.transportToggle() }
-        WidgetPlaybackController.shared.next = { [weak setlist] in setlist?.skipNext() }
+        WidgetPlaybackController.shared.next = { [weak setlist] in setlist?.skipNext(fast: true) }   // DJ Mode: the fast sweep (a remote ⏭)
         WidgetPlaybackController.shared.previous = { [weak setlist] in setlist?.skipPrevious() }
         // The widget's ♥ flips the CURRENT track's favorite — same store the in-app control uses.
         WidgetPlaybackController.shared.toggleFavorite = { [weak self] in self?.toggleFavoriteForCurrent() }
@@ -176,7 +176,7 @@ final class WidgetSync {
             NPLog.trace("widgetSync drain cmd=\(c.rawValue)")
             switch c {
             case .toggle:        transportToggle()
-            case .next:          setlist.skipNext()
+            case .next:          setlist.skipNext(fast: true)
             case .previous:      setlist.skipPrevious()
             case .favorite:      toggleFavoriteForCurrent()
             case .cycleRepeat:   setlist.cycleRepeatMode()

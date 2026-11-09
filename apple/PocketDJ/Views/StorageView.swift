@@ -53,9 +53,6 @@ struct StorageView: View {
             sessionFolderSection
             capSection
             mixBufferSection
-            #if !os(tvOS)
-            djModeSection
-            #endif
             deleteMusicSection
             recordingsSection
             // ViewBuilder tops out at 10 children — the studio area rides in one Group.
@@ -361,32 +358,6 @@ struct StorageView: View {
                     settings.persist()
                 })
     }
-
-    // MARK: DJ Mode (np-dj-mode §6) — which parts are on; all on by default
-
-    #if !os(tvOS)
-    private func djToggle(_ title: String, _ key: ReferenceWritableKeyPath<SettingsStore, Bool>, id: String) -> some View {
-        Toggle(title, isOn: Binding(get: { settings[keyPath: key] },
-                                    set: { settings[keyPath: key] = $0; settings.persist() }))
-            .accessibilityIdentifier(id)
-    }
-
-    private var djModeSection: some View {
-        Section {
-            djToggle("Transitions (crossfade)", \.djTransitions, id: "settings-dj-transitions")
-            djToggle("Effect sweeps", \.djEffectSweeps, id: "settings-dj-effects")
-            djToggle("Tempo match", \.djTempoMatch, id: "settings-dj-tempo")
-            djToggle("Key / pitch match", \.djKeyMatch, id: "settings-dj-key")
-            djToggle("Volume leveling", \.djVolumeLeveling, id: "settings-dj-volume")
-            djToggle("Tempo waves", \.djTempoWaves, id: "settings-dj-waves")
-            djToggle("Pockets (genre, year, collections)", \.djPockets, id: "settings-dj-pockets")
-        } header: {
-            Text("DJ Mode")
-        } footer: {
-            Text("DJ Mode (the DJ chip beside Mix Mode in Now Playing) mixes each song into the next once both are on this device, and orders what's coming up into tempo waves and genre / era / collection pockets. The lead, fade and glide lengths are the Mix tab's.")
-        }
-    }
-    #endif
 
     // MARK: Mix Mode buffer (temporary assets — np-mix-mode §3.6)
 

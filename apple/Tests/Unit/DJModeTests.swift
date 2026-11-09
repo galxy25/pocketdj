@@ -469,6 +469,125 @@ final class DJModeTests: XCTestCase {
         XCTAssertEqual(r.seq.djTransitionCount, 0)
     }
 
+    // MARK: - ⏭ with DJ Mode on = the Mix tab's Skip (np-dj-mode §3 transport)
+
+    private func skipTimings(skipFade: Double = 1, glide: Double = 0.3) -> () -> DJMode.Timings {
+        { DJMode.Timings(lead: 3, fade: 0.6, glide: glide, skipFade: skipFade) }
+    }
+
+    /// ⏭ mid-song MIXES into the next row: a transition starts at once with NO pre-roll and the
+    /// Skip-fade crossfade; the advance is the listener's skip (reported away once, tagged .user).
+    func testSkipMixesOverTheSkipFade() async throws {
+        let r = try rig(["k1", "k2", "k3"])
+        r.seq.djTimings = skipTimings(skipFade: 1)
+        var away: [String] = []
+        r.seq.onAdvanceAway = { id, _, _ in away.append(id) }
+        try await startDJ(r, ["k1", "k2", "k3"])
+        r.seq.skipNext()
+        XCTAssertTrue(r.dsp.djTransitioning, "the skip starts a mix, not a cut")
+        XCTAssertEqual(r.dsp.djPlanForTesting?.preRollSeconds, 0)
+        XCTAssertEqual(r.dsp.djPlanForTesting?.fadeSeconds, 1)
+        XCTAssertEqual(away, ["k1"], "the listen ends at the press")
+        await waitUntil("advanced at the fade start") { r.seq.index == 1 }
+        XCTAssertTrue(r.dsp.tailDeckActiveForTesting, "k1 still fades out on the tail")
+        XCTAssertEqual(r.seq.lastTransitionCause, .user, "a skip, not a natural end")
+        await waitUntil("k2 on the main chain") { r.seq.djTransitionCount == 1 && r.dsp.loadedSongId == "k2" }
+        await waitUntil("transition done") { !r.dsp.djTransitioning }
+        XCTAssertEqual(r.seq.index, 1, "exactly one advance")
+        XCTAssertEqual(away, ["k1"])
+    }
+
+    /// The fast skip (a double-tapped ⏭, the lock-screen / CarPlay ⏭) is the 5 s sweep.
+    func testFastSkipIsTheFiveSecondSweep() async throws {
+        let r = try rig(["f1", "f2"], seconds: 10)
+        r.seq.djTimings = skipTimings(skipFade: 1)
+        try await startDJ(r, ["f1", "f2"])
+        r.seq.skipNext(fast: true)
+        XCTAssertTrue(r.dsp.djTransitioning)
+        XCTAssertEqual(r.dsp.djPlanForTesting?.fadeSeconds, DJMode.fastSkipFadeSeconds)
+        XCTAssertEqual(r.dsp.djPlanForTesting?.preRollSeconds, 0)
+        await waitUntil("advanced") { r.seq.index == 1 }
+    }
+
+    /// A Skip fade longer than the outgoing has left is cut to its runway (never a sweep against silence).
+    func testSkipFadeNeverOutrunsTheOutgoing() async throws {
+        let r = try rig(["w1", "w2"])
+        r.seq.djTimings = skipTimings(skipFade: 15)
+        try await startDJ(r, ["w1", "w2"])
+        r.dsp.seek(toSongSeconds: 4)
+        r.seq.skipNext()
+        XCTAssertTrue(r.dsp.djTransitioning)
+        let fade = try XCTUnwrap(r.dsp.djPlanForTesting?.fadeSeconds)
+        XCTAssertLessThan(fade, 4, "the fade fits the ~4 s the outgoing has left")
+        XCTAssertGreaterThanOrEqual(fade, 1)
+        await waitUntil("advanced") { r.seq.index == 1 }
+    }
+
+    /// The next row isn't local: ⏭ is today's immediate advance.
+    func testSkipWithANonLocalNextIsImmediate() async throws {
+        let r = try rig(["x1"])
+        r.rips.setManifest([:])
+        try await startDJ(r, ["x1", "zz"])
+        r.seq.skipNext()
+        XCTAssertEqual(r.seq.index, 1, "advanced at once")
+        XCTAssertFalse(r.dsp.djTransitioning)
+        XCTAssertEqual(r.seq.djTransitionCount, 0)
+    }
+
+    /// DJ Mode off: ⏭ is unchanged — the immediate advance, no transition.
+    func testSkipWithDJOffIsUnchanged() async throws {
+        let r = try rig(["o1", "o2"])
+        r.seq.play([item("o1"), item("o2")])
+        await waitUntil("o1 playing") { r.rips.nowPlaying?.songId == "o1" }
+        r.seq.skipNext()
+        XCTAssertEqual(r.seq.index, 1)
+        XCTAssertFalse(r.dsp.djTransitioning)
+        await waitUntil("o2 playing") { r.rips.nowPlaying?.songId == "o2" }
+        XCTAssertEqual(r.seq.djTransitionCount, 0)
+    }
+
+    /// Repeat-one never mixes at a song's END, but an explicit ⏭ overrides it (next means next).
+    func testSkipOverridesRepeatOne() async throws {
+        let r = try rig(["r1", "r2"])
+        r.seq.djTimings = skipTimings(skipFade: 0.6)
+        try await startDJ(r, ["r1", "r2"])
+        r.seq.setRepeatMode(.one)
+        r.seq.skipNext()
+        XCTAssertTrue(r.dsp.djTransitioning, "the skip mixes despite repeat-one")
+        await waitUntil("advanced past the repeating song") { r.seq.index == 1 }
+        XCTAssertEqual(r.seq.lastTransitionCause, .user)
+    }
+
+    /// A ⏭ during the crossfade is ignored (the Mix tab's rule — a second jump would yank the fader).
+    func testSkipDuringTheFadeIsIgnored() async throws {
+        let r = try rig(["g1", "g2", "g3"])
+        r.seq.djTimings = skipTimings(skipFade: 2)
+        try await startDJ(r, ["g1", "g2", "g3"])
+        r.seq.skipNext()
+        await waitUntil("fade") { r.dsp.djPhase == .fade && r.seq.index == 1 }
+        r.seq.skipNext()
+        XCTAssertEqual(r.seq.index, 1, "ignored mid-fade")
+        XCTAssertEqual(r.dsp.djPhase, .fade, "the crossfade carries on")
+        await waitUntil("done") { !r.dsp.djTransitioning }
+        XCTAssertEqual(r.seq.index, 1)
+    }
+
+    /// A ⏭ during the end-of-song PRE-ROLL starts the fade now, over the Skip fade, as a skip.
+    func testSkipDuringThePreRollStartsTheFadeNow() async throws {
+        let r = try rig(["p1", "p2"], seconds: 10)
+        r.seq.djTimings = { DJMode.Timings(lead: 6, fade: 0.6, glide: 4, skipFade: 0.8) }
+        try await startDJ(r, ["p1", "p2"])
+        r.dsp.seek(toSongSeconds: 4.2)                      // 5.8 s left → inside the 6 s lead
+        await waitUntil("pre-roll") { r.dsp.djPhase == .preRoll }
+        XCTAssertGreaterThan(r.dsp.djPlanForTesting?.preRollSeconds ?? 0, 1, "a long pre-roll to cut short")
+        r.seq.skipNext()
+        await waitUntil("the fade started at the skip", timeout: 1) { r.dsp.djPhase == .fade && r.seq.index == 1 }
+        XCTAssertEqual(r.dsp.djPlanForTesting?.fadeSeconds, 0.8)
+        XCTAssertEqual(r.seq.lastTransitionCause, .user)
+        await waitUntil("done") { !r.dsp.djTransitioning }
+        XCTAssertEqual(r.seq.index, 1, "exactly one advance")
+    }
+
     /// The snapshot carries DJ Mode (+ the selector state) and a restore is HELD: Mix Mode on with
     /// it, nothing armed until ▶.
     func testSnapshotRoundTripRestoresHeld() async throws {
@@ -560,9 +679,10 @@ final class DJModeTests: XCTestCase {
         var cfg = DJModeSettings.allOn
         cfg.volumeLeveling = false
         r.seq.djModeSettings = { cfg }
-        r.seq.skipNext()
+        r.seq.skipNext()                                      // DJ on: the skip MIXES into l2
         await waitUntil("l2 engaged") { r.dsp.loadedSongId == "l2" && r.seq.mixEngaged }
-        XCTAssertEqual(r.dsp.levelTrimGainDb, 0)
+        // The incoming's level lands over the fade start's short ramp (never a step).
+        await waitUntil("l2 at 0 dB") { r.dsp.levelTrimGainDb == 0 && !r.dsp.levelRampInFlight }
     }
 }
 

@@ -777,13 +777,13 @@ struct PocketDJApp: App {
         setlistPlayer.catalogNames = { [weak app] id in
             app?.songsById[id].map { (title: $0.name, artist: $0.artist) }
         }
-        // NOW PLAYING DJ MODE (np-dj-mode): the Settings ▸ DJ Mode toggles, the Mix tab's shared
-        // lead / fade / glide, and the catalog facts the selector + transitions read.
+        // NOW PLAYING DJ MODE (np-dj-mode): the Settings ▸ Mixing toggles, the Mix tab's shared
+        // lead / fade / glide / skip fade, and the catalog facts the selector + transitions read.
         setlistPlayer.djModeSettings = { [weak settings] in settings?.djModeSettings ?? .allOn }
         setlistPlayer.djTimings = { [weak settings] in
             guard let settings else { return DJMode.Timings() }
             return DJMode.Timings(lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
-                                  glide: settings.mixGlideSeconds)
+                                  glide: settings.mixGlideSeconds, skipFade: settings.skipFadeSeconds)
         }
         setlistPlayer.djSongFacts = { [weak app] id in
             guard let app, let song = app.songsById[SongVariant.baseId(id)] else { return nil }

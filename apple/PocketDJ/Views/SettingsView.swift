@@ -456,95 +456,21 @@ struct SettingsView: View {
         }
     }
 
+    /// Settings ▸ Mixing — the crossfade lengths (shared by the Mix tab's Auto mode and Now
+    /// Playing DJ Mode), the DJ Mode toggles and the Mix tab's deck options, in their own pane.
     private var mixSection: some View {
         Section {
-            Stepper(value: $settings.autoMixLeadSeconds, in: 3...60, step: 1) {
-                HStack {
-                    Text("Crossfade lead")
-                    Spacer()
-                    Text("\(Int(settings.autoMixLeadSeconds)) s")
-                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                }
-            }
-            .accessibilityIdentifier("settings-automix-lead")
-            .onChange(of: settings.autoMixLeadSeconds) { settings.persist() }
-
-            Stepper(value: $settings.autoMixFadeSeconds, in: 1...12, step: 1) {
-                HStack {
-                    Text("Crossfade length")
-                    Spacer()
-                    Text("\(Int(settings.autoMixFadeSeconds)) s")
-                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                }
-            }
-            .accessibilityIdentifier("settings-automix-fade")
-            .onChange(of: settings.autoMixFadeSeconds) { settings.persist() }
-
-            Stepper(value: $settings.skipFadeSeconds, in: 1...60, step: 1) {
-                HStack {
-                    Text("Skip fade")
-                    Spacer()
-                    Text("\(Int(settings.skipFadeSeconds)) s")
-                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                }
-            }
-            .accessibilityIdentifier("settings-automix-skip-fade")
-            .onChange(of: settings.skipFadeSeconds) { settings.persist() }
-
-            Stepper(value: $settings.mixGlideSeconds, in: 1...30, step: 1) {
-                HStack {
-                    Text("Mix Glide length")
-                    Spacer()
-                    Text("\(Int(settings.mixGlideSeconds)) s")
-                        .font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-                }
-            }
-            .accessibilityIdentifier("settings-mix-glide-length")
-            .onChange(of: settings.mixGlideSeconds) { settings.persist() }
-
-            Toggle("Auto-hide played tracks", isOn: $settings.mixAutoHidePlayed)
-                .accessibilityIdentifier("settings-mix-autohide")
-                .onChange(of: settings.mixAutoHidePlayed) { settings.persist() }
-
-            Picker(selection: $settings.cueOutputChannel) {
-                ForEach(CueChannel.allCases) { ch in Text(ch.label).tag(ch) }
+            NavigationLink {
+                MixingSettingsView(settings: settings)
             } label: {
-                Text("Cue output channel")
+                Label("Mixing", systemImage: "slider.horizontal.3")
             }
-            .accessibilityIdentifier("settings-mix-cue-channel")
-            .onChange(of: settings.cueOutputChannel) { settings.persist() }
-
-            Toggle("Beat pulse", isOn: $settings.beatPulseEnabled)
-                .accessibilityIdentifier("settings-mix-beat-pulse")
-                .onChange(of: settings.beatPulseEnabled) { settings.persist() }
-
-            // iOS-only "view mode": how the two decks are arranged in the Mix tab. macOS is always
-            // side-by-side (there's room), so the picker is hidden there.
-            #if os(iOS)
-            Picker(selection: $settings.mixDeckLayout) {
-                ForEach(MixDeckLayout.allCases) { layout in
-                    Label(layout.label, systemImage: layout.systemImage).tag(layout)
-                }
-            } label: {
-                Text("Deck layout")
-            }
-            .accessibilityIdentifier("settings-mix-deck-layout")
-            .onChange(of: settings.mixDeckLayout) { settings.persist() }
-            #endif
+            .accessibilityIdentifier("settings-mixing")
         } header: {
-            Text("Mix")
+            Text("Mixing")
         } footer: {
-            Text(mixSectionFooter)
+            Text("Crossfade, skip and glide lengths for the Mix tab and Now Playing DJ Mode, which parts of a DJ Mode mix are on (tempo, key / pitch, volume, effects, pockets), and the Mix tab's deck options.")
         }
-    }
-
-    /// Copy for the Mix settings footer. The deck-layout paragraph is iOS-only (the picker is too).
-    private var mixSectionFooter: String {
-        var s = "In the Mix tab's Auto mode, the app plays a pocket or set list end-to-end, beginning each crossfade this many seconds before a track ends and sweeping the volume from one deck to the next over the fade length. Skip fade is how long the crossfade lasts when you tap the Skip button (double-tap always uses a fast 5 s sweep).\n\nA mix session records what you play until you hit Reset. When Auto-hide played tracks is on, the deck loader hides tracks you've already played this session; off, they still show with a ✓.\n\nCue output channel routes a deck's pre-fade-listen (the headphones button on each deck) to one side of the stereo output, leaving the house mix on the other — for a booth where you monitor on a separate feed.\n\nBeat pulse flashes a ring around each deck on every beat (downbeats brighter) so you can feel the groove and eyeball-align the two decks while beat-matching."
-        #if os(iOS)
-        s += "\n\nDeck layout arranges the two Mix decks in portrait: Side by side (the classic two-up board), Stacked (full-width decks, one above the other), or Single (one deck at a time with ‹ › buttons on either side to flip to the other). Portrait defaults to Stacked so each deck's sliders stay finger-friendly; landscape always shows them side by side."
-        #endif
-        return s
     }
 
     // MARK: Import server

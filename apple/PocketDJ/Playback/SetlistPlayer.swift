@@ -982,7 +982,7 @@ final class SetlistPlayer {
         // The lock screen / Control Center next/prev advance the SET.
         player.onTrackEnded = { [weak self] in self?.handleEnded() }
         player.onTrackFailed = { [weak self] in self?.handleFailed() }
-        player.onNext = { [weak self] in self?.skipNext() }
+        player.onNext = { [weak self] in self?.skipNext(fast: true) }   // lock screen / CarPlay ⏭ = the fast sweep (Mix parity)
         player.onPrevious = { [weak self] in self?.skipPrevious() }
         player.setNextPreviousEnabled(true)
         // P0-6: keep the card/remote ownership across the gap between two tracks while the set
@@ -1073,10 +1073,14 @@ final class SetlistPlayer {
         deviceUnplayableSourceId = nil
     }
 
-    /// Manually advance (used by the live-track "Next" affordance + lock-screen NEXT).
-    func skipNext() {
+    /// Manually advance (used by the live-track "Next" affordance + lock-screen NEXT). With DJ
+    /// Mode on it MIXES into the next row like the Mix tab's Skip (`djSkipMix`): over Settings ▸
+    /// Mixing "Skip fade", or the fast 5 s sweep when `fast` (a double-tapped ⏭, the lock-screen /
+    /// CarPlay / widget ⏭). Anything DJ Mode can't mix is today's immediate advance.
+    func skipNext(fast: Bool = false) {
         if redirectedToRemote(.skipNext) { return }
         DiagLog.shared.telemetry("action", "skip next from=\(queue.indices.contains(index) ? queue[index].title : "?")")
+        if djSkipMix(fast: fast) { return }
         noteAdvanceAway()
         exitHoldIfNeeded()
         advanceToNext(.user)
@@ -2478,6 +2482,9 @@ final class SetlistPlayer {
     @ObservationIgnored private var djFxPrng: UInt64 = 0
     @ObservationIgnored private var djTextureRun: (effect: MixEngine.Effect, peak: Double, left: Int)?
     @ObservationIgnored private var djLastDecline: (songId: String, reason: String)?
+    /// A ⏭ is mixing into this song id: its fade-start advance is the listener's SKIP (tagged
+    /// `.user`, repeat-one overridden), not a natural end. Cleared when the transition ends.
+    @ObservationIgnored private var djSkipPending: String?
     /// DJ transitions completed into a new song this session (diagnostics + tests).
     @ObservationIgnored private(set) var djTransitionCount = 0
     /// Re-plans applied (diagnostics + tests).
@@ -2546,6 +2553,7 @@ final class SetlistPlayer {
         djMembershipLoaded = false
         djTextureRun = nil
         djLastDecline = nil
+        djSkipPending = nil
         dsp?.disarmDJ()
     }
 
@@ -2623,11 +2631,15 @@ final class SetlistPlayer {
         }
     }
 
-    private func djEndReason() -> DJEndReason? {
+    /// `forSkip`: a ⏭ — an explicit skip overrides repeat-one / a row's repeat count (next means
+    /// next — the Mix tab's convention) and is itself the listener lifting a cascade halt.
+    private func djEndReason(forSkip: Bool = false) -> DJEndReason? {
         guard index < queue.count else { return .lastSong }
         guard djModeSettings().transitions else { return .transitionsOff }
-        guard effectiveRepeatMode != .one, currentPlaysRemaining <= 1 else { return .repeating }
-        guard !pausedByCascade else { return .halted }
+        if !forSkip {
+            guard effectiveRepeatMode != .one, currentPlaysRemaining <= 1 else { return .repeating }
+            guard !pausedByCascade else { return .halted }
+        }
         guard index + 1 < queue.count else { return effectiveRepeatMode == .all ? .setRepeats : .lastSong }
         if djCurrentInAlbumRun() { return .albumRun }
         if djRowStartsAlbumRun(index + 1) { return .albumStarts }
@@ -2720,6 +2732,7 @@ final class SetlistPlayer {
         }
         dsp?.onDJTransitionEnded = { [weak self] id, how in
             DJMode.log("transition end \(id.map { "song=\($0) " } ?? "")how=\(how)")
+            self?.djSkipPending = nil
             self?.prefetchRevision &+= 1
         }
     }
@@ -2783,12 +2796,19 @@ final class SetlistPlayer {
 
     /// The DSP's lead-window watch asks for the transition out of the current song. nil
     /// declines (logged once per song + reason) — the song ends with the normal advance.
-    private func djBuildTransition() -> NowPlayingDSP.DJTransition? {
+    private func djBuildTransition() -> NowPlayingDSP.DJTransition? { djMakeTransition(skipFade: nil) }
+
+    /// The transition out of the current row into the next: the end-of-song mix (`skipFade` nil —
+    /// `advancePlan` on the runway left) or a ⏭ (`immediatePlan`: no pre-roll, a `skipFade`
+    /// crossfade — the Mix tab's Skip). nil declines (logged once per song + reason).
+    private func djMakeTransition(skipFade: Double?) -> NowPlayingDSP.DJTransition? {
         guard djActive, isRunning, !isHeldForResume, index < queue.count, mixEngaged, let dsp else { return nil }
         let cur = queue[index]
         let cfg = djModeSettings()
-        func decline(_ r: String) -> NowPlayingDSP.DJTransition? { djDecline(cur.id, r); return nil }
-        if let reason = djEndReason() { return decline(reason.rawValue) }
+        func decline(_ r: String) -> NowPlayingDSP.DJTransition? {
+            djDecline(cur.id, skipFade == nil ? r : "skip: \(r)"); return nil
+        }
+        if let reason = djEndReason(forSkip: skipFade != nil) { return decline(reason.rawValue) }
         let next = queue[index + 1]
         guard let src = djLocalSource(next) else { return decline("next not local") }
         let t = djTimings()
@@ -2805,9 +2825,18 @@ final class SetlistPlayer {
         // `advancePlan`'s 1.12 headroom assumes the outgoing speeds up ≤ 12 %; a bigger tempo
         // meet (up to √2) eats the runway faster — plan on the runway it really has, so the
         // outgoing never runs out before the fade lands.
-        let left = dsp.djSecondsLeft * min(1, 1.12 / max(1, g.outRate))
-        let plan = AutoTransition.advancePlan(secondsLeft: left, fadeSeconds: t.fade,
+        let plan: AutoTransition.Plan
+        if let skipFade {
+            // Never fade longer than the outgoing has left to play (a 15 s skip 8 s from the end
+            // would sweep the incoming up against silence).
+            let runway = dsp.djSecondsLeft * min(1, 1.12 / max(1, g.outRate))
+            plan = AutoTransition.immediatePlan(fadeSeconds: min(skipFade, max(1, runway - 0.5)), baselineFadeSeconds: t.fade,
+                                                glideSeconds: t.glide, fxGlide: cfg.effectSweeps, mixGlide: mixGlide)
+        } else {
+            let left = dsp.djSecondsLeft * min(1, 1.12 / max(1, g.outRate))
+            plan = AutoTransition.advancePlan(secondsLeft: left, fadeSeconds: t.fade,
                                               glideSeconds: t.glide, fxGlide: cfg.effectSweeps, mixGlide: mixGlide)
+        }
         let level = cfg.volumeLeveling ? djLevelDb(next.id, url: src.url, startMs: src.startMs, lengthMs: src.lengthMs) : 0
         let incoming = NowPlayingDSP.DJIncoming(songId: next.id, url: src.url, startMs: src.startMs,
                                                 lengthMs: src.lengthMs, release: src.release, beat: bb, levelDb: level)
@@ -2817,27 +2846,78 @@ final class SetlistPlayer {
                                           outgoingBeat: ba, incoming: incoming)
     }
 
+    /// ⏭ with DJ Mode on (np-dj-mode §3 transport) — the Mix tab's Skip on the Now Playing
+    /// decks. True when the skip was taken here; false ⇒ the caller's immediate advance (DJ off or
+    /// suspended, the current row not on the DSP, the next row not a complete local file, the
+    /// last row, an album side, Transitions off …).
+    ///  • idle — a transition starts NOW: no pre-roll, a `fade`-second crossfade, the glide / FX
+    ///    exactly as at a song's end;
+    ///  • pre-roll (the end-of-song mix is ramping in, not yet advanced) — the fade starts now;
+    ///  • fade — ignored (the advance already happened; a second jump would yank the fader);
+    ///  • post-roll — the glide ends (the listener wins) and the skip mixes out of the new song.
+    private func djSkipMix(fast: Bool) -> Bool {
+        guard djActive, isRunning, !isHeldForResume, mixEngaged, let dsp, index < queue.count else { return false }
+        let fade = fast ? DJMode.fastSkipFadeSeconds : djTimings().skipFade
+        switch dsp.djPhase {
+        case .fade:
+            DJMode.log("skip ignored — fade in flight song=\(queue[index].id)")
+            return true
+        case .preRoll:
+            guard index + 1 < queue.count else { return false }
+            noteAdvanceAway()
+            djSkipPending = queue[index + 1].id
+            dsp.djSkipDuringPreRoll(fadeSeconds: min(fade, max(1, dsp.djSecondsLeft - 0.5)))
+            return true
+        case .postRoll:
+            dsp.djEndPostRollForSkip()
+        case .idle:
+            break
+        }
+        guard let spec = djMakeTransition(skipFade: fade) else { return false }
+        let from = queue[index].id
+        djSkipPending = spec.incoming.songId
+        if let reason = dsp.beginDJTransition(spec) {
+            djSkipPending = nil
+            djDecline(from, "skip: \(reason)")
+            return false
+        }
+        // The listen ends at the press (the tracker reads the outgoing's position — the advance
+        // itself lands at the fade start, ~60 ms on).
+        noteAdvanceAway()
+        DJMode.log("skip song=\(from) → \(spec.incoming.songId) mix fade=\(String(format: "%.1f", spec.plan.fadeSeconds))s\(fast ? " (fast)" : "")")
+        return true
+    }
+
     /// FADE START (np-dj-mode §3.3): the advance — the queue index, the card, DeadAirMeter and
     /// the control reset happen NOW, while the outgoing fades out on the tail deck. Refuses (the
     /// outgoing carries on) when the queue moved under the transition, or when anything the
     /// decision checked changed during the pre-roll (repeat-one / a repeat count / the cascade
     /// halt / Transitions off / DJ suspended) — the refusal cuts back cleanly.
     private func djAdvanceAtFadeStart(_ songId: String) -> Bool {
+        // A ⏭'s mix: the advance is the listener's skip (np-dj-mode §3 transport).
+        let isSkip = djSkipPending == songId
+        djSkipPending = nil
+        // A refused SKIP still skips — the cut hands the outgoing back first, then the plain advance.
+        func refuse() -> Bool {
+            if isSkip { Task { @MainActor [weak self] in self?.skipAfterRefusedMix() } }
+            return false
+        }
         guard djActive, isRunning, mixEngaged, !isHeldForResume, index + 1 < queue.count,
               queue[index + 1].matches(songId) else {
             DJMode.log("fade start → \(songId) refused (the queue moved under the transition)")
-            return false
+            return refuse()
         }
-        if let reason = djEndReason() {
+        if let reason = djEndReason(forSkip: isSkip) {
             DJMode.log("fade start → \(songId) refused (\(reason.rawValue) since the transition began)")
-            return false
+            return refuse()
         }
         let from = queue[index]
-        DeadAirMeter.shared.transitionBegan(cause: "dj")
-        DiagLog.shared.log("playback", "advance from=\(from.id) index=\(index)/\(queue.count) via=dj")
+        DeadAirMeter.shared.transitionBegan(cause: isSkip ? "skip" : "dj")
+        DiagLog.shared.log("playback", "advance from=\(from.id) index=\(index)/\(queue.count) via=\(isSkip ? "dj-skip" : "dj")")
+        if isSkip { noteUserTransport() }
         waitingForLive = false
         index += 1
-        noteTransition(.naturalEnd)
+        noteTransition(isSkip ? .user : .naturalEnd)
         let it = queue[index]
         currentPlaysRemaining = CollectionMembership.normalizedRepeat(it.repeatCount)
         // Anything still pending for the old row stands down (the start paths' discipline).
@@ -2888,6 +2968,15 @@ final class SetlistPlayer {
         prefetchUpcoming()
         // The Stem Lock (stems on the incoming) and the DJ re-plan + arm + level, as at any start.
         applyLocksOnTrackStart(resumeAtMs: nil, liveClock: true)
+    }
+
+    /// A ⏭'s mix was refused at its fade start (the queue moved, Transitions went off …): the
+    /// listener still pressed ⏭ — the immediate advance (the skip was already reported away).
+    private func skipAfterRefusedMix() {
+        guard isRunning, !isHeldForResume else { return }
+        DJMode.log("skip mix refused → immediate advance")
+        exitHoldIfNeeded()
+        advanceToNext(.user)
     }
 
     /// The DSP couldn't take the incoming after the advance: play it the plain way.

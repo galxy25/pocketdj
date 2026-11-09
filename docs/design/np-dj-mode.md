@@ -93,9 +93,31 @@ The deck is built lazily and lives only for the length of a transition.
 A listener touch on any control during post-roll ends the glide at once; the listener wins.
 Transport during a transition:
 - **Pause** pauses both decks.
-- **Skip** cuts the tail.
+- **Skip** — see "Skip = the Mix tab's Skip" below.
 - **Seek** cuts the tail.
 - **Stop** cuts everything.
+
+**Skip = the Mix tab's Skip** (Levi 2026-11-09). With DJ Mode active, ⏭ MIXES into the next row
+(`SetlistPlayer.skipNext(fast:)` → `djSkipMix`) instead of cutting:
+- A tap mixes over Settings ▸ Mixing **Skip fade** (default 15 s); a **double tap** — and the
+  lock-screen / CarPlay / widget ⏭ — is the fast **5 s** sweep (`DJMode.fastSkipFadeSeconds`),
+  exactly the Mix tab's single / double-tap Skip and its lock-screen ⏭.
+- No transition in flight: one starts NOW with `AutoTransition.immediatePlan` (no pre-roll; the
+  glide snaps on the outgoing at the fade start and eases out on the incoming over the post-roll;
+  FX / tempo / key / leveling as at a song's end). The fade is cut to the outgoing's runway
+  (≥ 1 s, 0.5 s spare) so a long Skip fade near a song's end never sweeps up against silence.
+- In the **pre-roll** of an end-of-song mix: the pre-roll is dropped and the fade starts now over
+  the skip length.
+- During the **fade**: ignored (the advance already happened — the Mix tab's rule).
+- During the **post-roll**: the glide ends (the listener wins) and the skip mixes out of the new song.
+- The advance (at the fade start, ~60 ms after the press) is the listener's skip: `noteTransition(.user)`,
+  `noteUserTransport`, DeadAirMeter `cause=skip`; the skip tracker hears it at the press. An explicit
+  skip overrides repeat-one / a repeat count and lifts a cascade halt (`djEndReason(forSkip:)`).
+- Anything DJ Mode can't mix (DJ off or suspended, the current row not on the DSP, the next row not
+  a complete local file, the last row / repeat-all wrap, an album run, Transitions off, a DSP decline)
+  is today's immediate advance. A skip mix refused at its fade start still skips (immediate advance).
+- ⏮ stays "previous track". The macOS set-list toolbar ⏭ (no double tap in a toolbar) mixes over the
+  Skip fade; the Now Playing deck, mini-bar and the iOS set-list cluster take the double tap.
 
 ## 4. The PocketDJ selector (`Playback/DJSetPlanner.swift`, pure)
 
@@ -170,9 +192,12 @@ songId + file size. Results are cached in `Application Support/loudness.json`.
 Leveling applies only while DJ Mode is on and Volume is on. The listener's volume slider sits on
 top.
 
-## 6. Settings ▸ DJ Mode
+## 6. Settings ▸ Mixing
 
-All toggles are on by default:
+Its own pane (2026-11-09; the toggles first lived under Settings ▸ Storage): **Crossfades** (lead,
+crossfade length, Skip fade, Mix Glide length — shared by the Mix tab's Auto mode and DJ Mode),
+**Now Playing DJ Mode** (the toggles below), and **Mix tab** (auto-hide played, cue channel, beat
+pulse, iOS deck layout). The DJ toggles are on by default:
 - Transitions (crossfade)
 - Effect sweeps
 - Tempo match
@@ -182,8 +207,8 @@ All toggles are on by default:
 - Pockets (genre, year, collections)
 
 They are optional `SettingsStore` fields, nil = on. The player reads them through a
-`djModeSettings` closure, like `mixModeSettings`. The Mix tab's lead, fade and glide lengths are
-shared and edited where they already are.
+`djModeSettings` closure, like `mixModeSettings`. The Mix tab's lead, fade, glide and skip-fade
+lengths are shared (`djTimings`).
 
 ## 7. UI
 
@@ -237,8 +262,12 @@ shared and edited where they already are.
 | Advance at fade start | `djAdvanceAtFadeStart` + `djIncomingEngaged` | Re-checks `djEndReason` (repeat-one / count / cascade halt / Transitions / suspension flipped during the pre-roll refuse). Index, `noteTransition(.naturalEnd)`, repeat counter, generation / start-window / stall bookkeeping, `DeadAirMeter` (`cause=dj`, first audio at once), control reset + FX Lock stamp, then `nowPlaying` (one history play), the DSP card, Stem Lock on the incoming, re-arm, re-plan. A refusal (the queue moved) puts the outgoing back on the main chain; a DSP that can't open the incoming after the advance plays it the plain way. |
 | Selector | `djReplan` / `applyDJOrder` | One uid-verified re-order of the next 40 upcoming rows on DJ on, each advance, a membership landing, and queue edits (debounced 1 s; our own re-order never re-triggers; none while a Remote session is attached). Fixed: `plan.pinned`; rows the LISTENER placed (`Item.djPlaced`: insert / add / move / jukebox Surprise Slot / the stall hop's deferred row — persisted); album-run rows (fixed blocks — never re-ordered or split); rows with a playback rip in flight, a lane fetch or a buffer stream downloading (`replaceUpcoming`'s guard — moving them out of the rip window would cancel the capture); rows deferred `djMaxDeferrals` (12) times (aging — each deferral also adds `DJSetPlanner.agingBonus` 0.03 to the row's score); and the next row when local, buffering, mid-transition, or under the 30 s runway rule (or its length unknown). One `replaceSubrange` write; duplicate uids bail (never trap). Features: catalog (`djSongFacts` — BPM, Camelot, album genre, song-else-album year) with the burned item's BPM / key filling gaps; collections from `djMembershipProvider` (the app flattens `collectionsInput` OFF-main with `ListeningPocketsCollections.flattened`, once per DJ-on — an empty answer is remembered too). |
 | Leveling | `djLevelDb` / `applyDJLeveling` / `djAnalyze`; `NowPlayingDSP.setLevel(db:ramp:seconds:)` on `levelTrim` | `LoudnessCache.shared` (tests inject one). Keyed song id + byte size + SEGMENT: a song on a shared album side is measured (and cached) as its own slice, never the whole side. ONE analysis per key (a second caller awaits it); a failure is remembered for the launch (no retry loop); only an analysis that STORED a result re-applies the gain (the old busy loop is gone); DJ off / the session ending cancels running analyses (the cancel reaches the decode through a flag). Mono-sum decode (see §5 note). A growing file isn't measured until complete (its completion re-runs it). Unknown ⇒ 0 dB; a landing mid-play ramps 2 s in 20 ms steps; the incoming's gain lands over 150 ms at the fade start; a ramp in flight at a handover carries on on the tail. |
-| UI | `NowPlayingMixPanel` (`np-dj-mode` chip left of Mix Mode; the DJ words ride the Mix Mode chip: "Mixing · DJ — next mixes in"), `DJModeMenuToggle` (record + mini-bar menus), macOS Controls ▸ DJ Mode ⌥⌘J, Settings ▸ Storage ▸ DJ Mode (the 7 toggles) | `DJMode.Indicator`: off / suspended (Mix tab) / suspendedRemote ("DJ — paused · SharePlay session") / mixing / nextReady / bufferingNext(n%) / lastTrack / noMix(why) ("DJ — repeating this song", "transitions off", "album plays through", "album side next", "set repeats", "this song ends as is"). Not on tvOS. |
+| UI | `NowPlayingMixPanel` (`np-dj-mode` chip left of Mix Mode; the DJ words ride the Mix Mode chip: "Mixing · DJ — next mixes in"), `DJModeMenuToggle` (record + mini-bar menus), macOS Controls ▸ DJ Mode ⌥⌘J, Settings ▸ Mixing (`MixingSettingsView`: the crossfades + the 7 toggles + the Mix tab options), `NPSkipNextButton` (⏭: tap = Skip fade, double tap = fast, with DJ Mode active) | `DJMode.Indicator`: off / suspended (Mix tab) / suspendedRemote ("DJ — paused · SharePlay session") / mixing / nextReady / bufferingNext(n%) / lastTrack / noMix(why) ("DJ — repeating this song", "transitions off", "album plays through", "album side next", "set repeats", "this song ends as is"). Not on tvOS. |
 | Tests | `DJModeTests` (32) | Pure (words, membership, snapshot); DSP tail (handover playhead, fade 0/1 + release, pause both, disengage cut, seek cut pre-roll + post-fade, listener touch, host refusal = seamless hand-back + ease, declines incl. muted stems, pause inside the handover defers the fade, a refusal near the end still reports the end, a stem mute after the advance doesn't cut, engine stop while paused cuts); sequencer (DJ⇒Mix / Mix off⇒DJ off / session scope, advance at fade start, non-local next + transitions off = normal advance, snapshot held restore, Mix tab suspends, Remote session suspends + natural-end tag + resumes, selector fixed rows + buffered next + debounced edit re-plan, album run plays through on the glide with DJ on, selector keeps an album run in record order, placements survive restore, honest chip words, leveling lands); analyser (single-flight, remembered failure, per-segment loudness, mono-sum = full sum on correlated channels); planner aging. |
+
+Skip mix + Settings ▸ Mixing (2026-11-09): see §3 "Skip = the Mix tab's Skip" and §6.
+`DJModeTests` +8 (skip fade cut to the runway, skip mixes over the Skip fade as a user skip, fast = 5 s, non-local next = immediate,
+DJ off unchanged, repeat-one overridden, ignored mid-fade, pre-roll hurried to the fade).
 
 Review fixes (2026-11-08, after the audio + player reviews) — decisions:
 - **Remote / SharePlay**: DJ Mode is SUSPENDED while a Remote session is attached — no DJ
