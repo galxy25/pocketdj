@@ -134,6 +134,7 @@ struct MixView: View {
             engine.setCueOnRight(settings.cueOutputChannel.onRight)   // push the cue-channel preference
             engine.setBeatPulseEnabled(settings.beatPulseEnabled)     // gate the on-load beat-grid fetch
             engine.setMixGlideSeconds(settings.mixGlideSeconds)       // glide ramp length
+            engine.setVolumeGlide(settings.mixVolumeGlide)            // Auto-DJ loudness leveling (opt-in)
             engine.setSkipFadeSeconds(settings.skipFadeSeconds)       // lock-screen ⏮ slow-skip length
             recorder.settings = settings                              // session-folder location source
             recorder.recoverOrphans()                                 // re-file any crash-interrupted takes
@@ -153,6 +154,7 @@ struct MixView: View {
             Text(recorder.writerFailureMessage ?? "")
         }
         .onChange(of: settings.mixGlideSeconds) { engine.setMixGlideSeconds(settings.mixGlideSeconds) }
+        .onChange(of: settings.mixVolumeGlide) { engine.setVolumeGlide(settings.mixVolumeGlide) }
         .onChange(of: settings.skipFadeSeconds) { engine.setSkipFadeSeconds(settings.skipFadeSeconds) }
         .onChange(of: settings.cueOutputChannel) { engine.setCueOnRight(settings.cueOutputChannel.onRight) }
         .onChange(of: settings.beatPulseEnabled) { engine.setBeatPulseEnabled(settings.beatPulseEnabled) }
@@ -562,6 +564,12 @@ struct MixView: View {
                 engine.setMixGlide(!engine.mixGlideEnabled)
             }
             .help("Glide bpm + pitch (Camelot ±1 key) with beat sync through each transition")
+            GlidePillToggle(title: "Vol Glide", systemImage: "speaker.wave.2",
+                            isOn: engine.volumeGlideEnabled, a11y: "mix-volume-glide") {
+                settings.mixVolumeGlide.toggle()       // the setting drives the engine (onChange)
+                settings.persist()
+            }
+            .help("Level each song to one loudness (−14 LUFS) so the mix glides at a steady volume")
             Spacer(minLength: 0)
         }
     }
@@ -895,6 +903,11 @@ private struct DeckView: View {
             if engine.stemActive(deck) { stemGrid.mixReadOnly(readOnly) }   // 2×2 stem pads — stem mode only
             DeckVUMeter(engine: engine, deck: deck, a11y: a11y)   // level; right-click/long-press → pre/post
             volSlider.mixReadOnly(readOnly)
+            // Volume Glide's automatic trim (Auto-DJ, opt-in) — read-only, beside (never in) Vol.
+            if let lv = engine.deckLeveling[deck], lv.status != .inactive {
+                DJLevelingReadoutRow(readout: .init(current: lv, outgoing: nil, outGain: 0, inGain: 1))
+                    .accessibilityIdentifier("\(a11y)-leveling")
+            }
             playButton.mixReadOnly(readOnly)
         }
         .padding(10)

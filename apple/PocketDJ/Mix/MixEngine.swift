@@ -416,6 +416,24 @@ final class MixEngine {
     /// capped ±1 key) so the outgoing + incoming decks bend toward a shared key, with a best-effort
     /// downbeat align (beat sync), then the incoming settles back to its natural tempo/pitch.
     private(set) var mixGlideEnabled = false
+    /// VOLUME GLIDE (Settings ▸ Mixing ▸ Mix tab, OFF by default): while the Auto-DJ runs, each
+    /// deck's song is leveled to −14 LUFS (`LoudnessLeveling`: clamped −12…+6 dB, ramped over 2 s)
+    /// on the deck's TRIM node — never the listener's Vol fader — so the mix glides at one loudness.
+    /// Auto-DJ only: a hand-mix keeps exactly what the DJ set (see mix-audio-graph.md).
+    private(set) var volumeGlideEnabled = false
+    /// Each deck's leveling as shown under its Vol fader (`.inactive` ⇒ no readout).
+    private(set) var deckLeveling: [Deck: DJAutomationDisplay.LevelSide] = [:]
+    /// The leveling gain on each deck's trim right now (dB) — added to the >unity boost.
+    @ObservationIgnored private var levelDb: [Deck: Double] = [:]
+    @ObservationIgnored private var levelRamps: [Deck: Task<Void, Never>] = [:]
+    /// The loudness cache (nil ⇒ `LoudnessCache.shared`; tests inject one).
+    @ObservationIgnored var loudnessCache: LoudnessCache?
+    /// A newly-known gain ramps over this (`LoudnessLeveling.rampSeconds`).
+    static var levelRampSeconds: Double = LoudnessLeveling.rampSeconds
+    /// Tests: the trim's leveling share right now (dB).
+    func levelDbForTesting(_ deck: Deck) -> Double { levelDb[deck] ?? 0 }
+    func trimGainDbForTesting(_ deck: Deck) -> Float? { trims[deck]?.globalGain }
+    var levelRampsSettledForTesting: Bool { levelRamps.isEmpty }
     /// The collection name an auto-mix is running over (e.g. a pocket / set list). Lives on the
     /// app-scoped engine so the source label survives a Mix-tab teardown (the view-local `autoSource`
     /// picker is forgotten on tab switch, but the running mix — and this label — are not).
@@ -1618,6 +1636,7 @@ final class MixEngine {
         }
         updateSystemNowPlaying()      // a new track on the now-playing deck → refresh the card
         persistMixDeckSession()       // deck load = structural change — the mix survives a kill
+        levelDeck(deck)               // Volume Glide: the new song's trim (0 dB / none when off)
     }
 
     // MARK: - Streaming loads
@@ -1807,6 +1826,7 @@ final class MixEngine {
         }
         DiagLog.shared.telemetry("mixstream", "deck \(deck.rawValue) complete \(s.songId)")
         clearStream(deck)
+        levelDeck(deck)                  // the whole file is here now — measure it
     }
 
     /// The stream died for good. Before any audio: the load failed — drop the track (the auto
@@ -2533,6 +2553,9 @@ final class MixEngine {
         clearLoopState(deck)                              // the loop dies with the track
         if leadDeck == deck { leadDeck = nil }     // give up the lead role if this deck held it
         mutate(deck) { $0 = DeckState() }          // empty track, every parameter back to default, cue off
+        levelRamps[deck]?.cancel(); levelRamps[deck] = nil
+        levelDb[deck] = 0                          // Volume Glide: no song, no trim (applyBoost below)
+        if deckLeveling[deck] != nil { deckLeveling[deck] = nil }
         setDuration(deck, 0); setPosition(deck, 0)
         applyRate(deck); applyPitch(deck)          // push the defaults onto the graph so nothing lingers
         for e in Effect.allCases { applyEffect(e, on: deck) }
@@ -3909,6 +3932,7 @@ final class MixEngine {
         let now = Date()
         autoDeckEndsAt[.a] = now.addingTimeInterval(Double(autoDeckDurationMs[.a] ?? Self.autoFallbackDurationMs) / 1000)
         autoMixing = true
+        refreshVolumeGlide()                     // level both loaded decks (no-op when off)
         setLockScreenSkipCommandsEnabled(true)   // lock-screen ⏭/⏮ = fast/slow auto-mix skip
         play(.a)
         startTickIfNeeded()
@@ -4115,6 +4139,7 @@ final class MixEngine {
         remotePausedAt = nil
         engineStallAt = nil     // a stale stall park must never shift the NEXT mix's fresh clocks
         autoMixing = false
+        refreshVolumeGlide()                 // the Auto-DJ's leveling goes with it (back to 0 dB)
         autoStatus = nil
         autoSourceLabel = nil
         // Recenter ONLY after a real auto-mix (it swept the fader to an extreme) — and non-recording,
@@ -6040,6 +6065,7 @@ final class MixEngine {
         autoPaused = true                    // SUSPENDED — never self-resumes
         autoResumeFromRestore = true         // first resume: restored cursor wins over the play-log
         autoMixing = true
+        refreshVolumeGlide()
         refreshAutoStatus()
     }
 
@@ -6520,8 +6546,99 @@ final class MixEngine {
     /// rack may not contain at all, the boost needed a node that is ALWAYS present.
     private func applyBoost(_ deck: Deck) {
         guard built else { return }
-        trims[deck]?.globalGain = Float(20 * log10(max(state(deck).volume, 1.0)))
+        // + Volume Glide's leveling (0 unless the Auto-DJ levels this deck) — the listener's Vol
+        // and the automatic trim stay separate values on one always-present node.
+        trims[deck]?.globalGain = Float(20 * log10(max(state(deck).volume, 1.0)) + (levelDb[deck] ?? 0))
     }
+
+    // MARK: - Volume Glide (Auto-DJ loudness leveling)
+
+    func setVolumeGlide(_ on: Bool) {
+        guard volumeGlideEnabled != on else { return }
+        volumeGlideEnabled = on
+        DiagLog.shared.telemetry("action", "volume glide \(on ? "on" : "off")")
+        refreshVolumeGlide()
+    }
+
+    /// Re-level both decks (Volume Glide flipped, the Auto-DJ started / ended).
+    private func refreshVolumeGlide() {
+        for d in Deck.allCases { levelDeck(d) }
+    }
+
+    /// Level `deck`'s song: known gain → applied (at once while the deck is silent, ramped over
+    /// 2 s while it sounds); unknown → measured off-main, ramped in when it lands. Off / not
+    /// auto-mixing → back to 0 dB and no readout. A still-streaming deck waits for its file.
+    private func levelDeck(_ deck: Deck) {
+        guard volumeGlideEnabled, autoMixing, let meta = state(deck).loaded else {
+            setDeckLevel(deck, db: 0, status: .inactive)
+            return
+        }
+        guard deckStreams[deck] == nil, let path = paths[deck], let sr = sampleRates[deck], sr > 0,
+              let start = startFrames[deck], let end = endFrames[deck] else {
+            setDeckLevel(deck, db: levelDb[deck] ?? 0, status: .measuring)
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        let startMs = state(deck).startMs
+        let lengthMs = startMs == nil ? nil : Int(Double(end - start) / sr * 1000)
+        let cache = loudnessCache ?? .shared
+        guard let key = LoudnessCache.key(songId: meta.songId, url: url, startMs: startMs, lengthMs: lengthMs) else {
+            setDeckLevel(deck, db: 0, status: .unavailable)
+            return
+        }
+        if let g = cache.gainDb(for: key) {
+            setDeckLevel(deck, db: g, status: .measured)
+            return
+        }
+        if cache.contains(key) || cache.hasFailed(key) {
+            setDeckLevel(deck, db: 0, status: .unavailable)
+            return
+        }
+        setDeckLevel(deck, db: 0, status: .measuring)
+        let songId = meta.songId
+        Task { @MainActor [weak self] in
+            let outcome = await cache.analyze(key, url: url)
+            guard let self, self.state(deck).loaded?.songId == songId, self.paths[deck] == path else { return }
+            switch outcome {
+            case .measured, .cached, .failed: self.levelDeck(deck)   // settled: no re-kick possible
+            case .cancelled: break
+            }
+        }
+    }
+
+    /// Put `db` on the deck's trim: at once while the deck is silent (stopped / faded out), else
+    /// over `levelRampSeconds` in 20 ms steps (the readout follows every 3rd step, ~16 Hz).
+    private func setDeckLevel(_ deck: Deck, db: Double, status: NowPlayingDSP.LevelingStatus) {
+        let target = min(max(db, LoudnessLeveling.minGainDb), LoudnessLeveling.maxGainDb)
+        let from = levelDb[deck] ?? 0
+        levelRamps[deck]?.cancel(); levelRamps[deck] = nil
+        let audible = state(deck).isPlaying && crossfadeFactor(deck) > 0.01
+        func publish(_ v: Double) {
+            let side = DJAutomationDisplay.LevelSide(status: status, trimDb: v)
+            if deckLeveling[deck] != side { deckLeveling[deck] = side }
+        }
+        guard audible, abs(target - from) > 0.01, Self.levelRampSeconds > 0 else {
+            levelDb[deck] = target
+            applyBoost(deck)
+            publish(target)
+            return
+        }
+        publish(from)
+        let total = Self.levelRampSeconds
+        let steps = max(1, Int((total / 0.02).rounded()))
+        levelRamps[deck] = Task { @MainActor [weak self] in
+            for i in 1...steps {
+                try? await Task.sleep(nanoseconds: UInt64(total / Double(steps) * 1_000_000_000))
+                guard let self, !Task.isCancelled else { return }
+                let v = from + (target - from) * Double(i) / Double(steps)
+                self.levelDb[deck] = v
+                self.applyBoost(deck)
+                if i % 3 == 0 || i == steps { publish(v) }
+            }
+            self?.levelRamps[deck] = nil
+        }
+    }
+
 
     /// Push one EQ band's gain onto the deck's always-active 3-band `AVAudioUnitEQ` node.
     private func applyEQ(_ band: EQBand, on deck: Deck) {

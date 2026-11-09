@@ -122,7 +122,7 @@
     <rect x="300" y="700" width="180" height="66" rx="8" fill="#16305a" stroke="#f0b429"/>
     <text x="390" y="722" fill="#eaf1ff" text-anchor="middle" font-weight="bold">trim</text>
     <text x="390" y="738" fill="#9db4de" text-anchor="middle" font-size="10">band bypassed — carries the</text>
-    <text x="390" y="752" fill="#f0b429" text-anchor="middle" font-size="10">&gt;100% boost as globalGain (+6 dB max)</text>
+    <text x="390" y="752" fill="#f0b429" text-anchor="middle" font-size="10">&gt;100% boost + Volume Glide level (globalGain)</text>
 
     <line x1="390" y1="670" x2="390" y2="700" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
 

@@ -252,6 +252,8 @@ final class SettingsStore {
     var djVolumeLeveling: Bool
     /// The PocketDJ selector's 10-BPM tempo waves.
     var djTempoWaves: Bool
+    /// Mix tab Auto-DJ VOLUME GLIDE (loudness leveling on each deck's trim) — opt-in, off by default.
+    var mixVolumeGlide: Bool
     /// The PocketDJ selector's genre / year / collection pockets.
     var djPockets: Bool
     /// Epoch ms of the last temporary-asset sweep START (stamped first — the 10-23 lesson).
@@ -590,6 +592,7 @@ final class SettingsStore {
         self.djVolumeLeveling = data.djVolumeLeveling ?? true
         self.djTempoWaves = data.djTempoWaves ?? true
         self.djPockets = data.djPockets ?? true
+        self.mixVolumeGlide = data.mixVolumeGlide ?? false
         self.lastTemporarySweepAt = data.lastTemporarySweepAt
         self.debugLoggingEnabled = data.debugLoggingEnabled ?? false
         self.remoteTelemetryEnabled = data.remoteTelemetryEnabled ?? false
@@ -835,7 +838,8 @@ final class SettingsStore {
             djKeyMatch: djKeyMatch,
             djVolumeLeveling: djVolumeLeveling,
             djTempoWaves: djTempoWaves,
-            djPockets: djPockets)
+            djPockets: djPockets,
+            mixVolumeGlide: mixVolumeGlide)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -898,6 +902,7 @@ final class SettingsStore {
         djVolumeLeveling = d.djVolumeLeveling ?? true
         djTempoWaves = d.djTempoWaves ?? true
         djPockets = d.djPockets ?? true
+        mixVolumeGlide = d.mixVolumeGlide ?? false
         lastTemporarySweepAt = d.lastTemporarySweepAt
         debugLoggingEnabled = d.debugLoggingEnabled ?? false
         // The capture buffer follows its setting on reset, exactly as DebugView's toggle does —
@@ -1126,6 +1131,8 @@ struct SettingsData: Codable {
     var djVolumeLeveling: Bool? = nil
     var djTempoWaves: Bool? = nil
     var djPockets: Bool? = nil
+    /// Optional so older blobs still decode (coalesced to false — opt-in).
+    var mixVolumeGlide: Bool? = nil
 
     static let `default` = SettingsData(
         // No shipped default catalog source — same reasoning as the blank rip/jukebox URLs

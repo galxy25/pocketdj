@@ -279,6 +279,22 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(SettingsStore(defaults: old).djModeSettings, .allOn)
     }
 
+    /// Mix tab Volume Glide is OPT-IN: off by default, off for an old blob, persists, resets off.
+    func testMixVolumeGlideDefaultsOffPersistsAndResets() throws {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertFalse(s.mixVolumeGlide)
+        s.mixVolumeGlide = true; s.persist()
+        XCTAssertTrue(SettingsStore(defaults: defaults).mixVolumeGlide)
+        s.resetEverything()
+        XCTAssertFalse(s.mixVolumeGlide)
+        var obj = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(SettingsData.default)) as? [String: Any])
+        obj["mixVolumeGlide"] = nil
+        let old = freshDefaults()
+        old.set(try JSONSerialization.data(withJSONObject: obj), forKey: "pdj.settings.v1")
+        XCTAssertFalse(SettingsStore(defaults: old).mixVolumeGlide)
+    }
+
     func testResetRestoresAutoMixDefaults() {
         let defaults = freshDefaults()
         let s = SettingsStore(defaults: defaults)
