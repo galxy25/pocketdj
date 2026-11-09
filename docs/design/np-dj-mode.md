@@ -222,6 +222,32 @@ lengths are shared (`djTimings`).
   - "DJ — next mixes in" when the next is local
   - "DJ — buffering next n%" otherwise
   - "DJ — mixing" during a transition
+- **The controls move** (Levi 2026-11-09: "just like auto dj for the mixer"). During a transition
+  the Mix panel's Tempo and Pitch sliders and the Effects buttons show what is HEARD, like the Mix
+  tab's gliding decks:
+  - pre-roll: the OUTGOING's automated values (the tail carries the current song);
+  - from the fade start: the INCOMING's (pinned at its glide targets), easing back through the
+    post-roll (and through a hand-back's ease);
+  - the DJ chip's floor fills with the out → in crossfade (0 → 1 over the fade; VoiceOver
+    "On, mixing n percent").
+  `NowPlayingDSP.djDisplay` (`DJAutomationDisplay`, `@Observable`) is published at ~16 Hz
+  (`djDisplayInterval`) only while automation runs, plus at once on phase changes, ends and
+  touches; the panel reads `displayRate` / `displayPitch` / `displayEffect`. READ-ONLY: the
+  listener's `rate` / `pitch` / effects (and so the FX Lock carry, the session snapshot and
+  Settings) never see automated values. A touch acts on what is SHOWN: a slider drag sets the
+  listener's value from the shown one (the glide ends — no jump); tapping a swept effect turns
+  it off, dragging its strength keeps it on as the listener's. Gain is the listener's level and
+  does not move (the crossfade is the chip's bar).
+- **The leveling trim is visible** (Levi 2026-11-09: "I expect to see the gain automation too").
+  Under Gain, `DJLevelingReadoutRow` ("Leveling +3.2 dB" + a −12…+6 dB meter from a 0 dB tick)
+  shows the automatic trim on the playing song, moving through the 2 s ramp; during a crossfade
+  "−4.5 dB → +3.2 dB", the outgoing's dimming / its bar thinning with the equal-power out gain as
+  the incoming's comes in. It says "measuring…" (not analysed yet / still downloading), "off"
+  (Settings ▸ Mixing "Volume leveling" off) or "unavailable" (analysis failed / unmeasurable)
+  instead of a 0 dB that was never measured, and is hidden when DJ Mode isn't leveling. The host
+  sets `NowPlayingDSP.setLevelingStatus`; the DSP publishes `djDisplay.leveling` (~16 Hz: every
+  3rd 20 ms ramp step, the DJ display loop) — read-only, never persisted, separate from the
+  listener's Gain.
 - **Menus.** `MixModeMenuToggle`'s sibling `DJModeMenuToggle` goes in the record and mini-bar menus.
   On macOS: Controls ▸ DJ Mode (⌥⌘J).
 - **Diagnostics.** A `[dj]` DiagLog lane logs plan, transition start/decline reasons and leveling
@@ -271,6 +297,8 @@ lengths are shared (`djTimings`).
 Skip mix + Settings ▸ Mixing (2026-11-09): see §3 "Skip = the Mix tab's Skip" and §6.
 `DJModeTests` +8 (skip fade cut to the runway, skip mixes over the Skip fade as a user skip, fast = 5 s, non-local next = immediate,
 DJ off unchanged, repeat-one overridden, ignored mid-fade, pre-roll hurried to the fade).
+Automation display + leveling readout (2026-11-09, `DJModeTests` +6): see §7 "The controls move".
+
 Review fixes (2026-11-09, `DJModeTests` +5): the pending skip is cleared on every start / advance /
 ⏮ and on EVERY run end (`endDJRun` — load / disengage — now reports `onDJTransitionEnded` too), so it
 can't swallow a later ⏭ or tag a later natural mix as a skip; any fade-start refusal while a skip is

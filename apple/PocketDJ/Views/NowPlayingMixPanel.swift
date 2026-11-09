@@ -202,12 +202,25 @@ struct NowPlayingMixPanel: View {
             .foregroundStyle(on ? Theme.accent : Theme.fgDim)
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(Capsule().fill(on ? Theme.accent.opacity(0.18) : Theme.bgOverlay))
+            // The out → in crossfade, filling the capsule's floor while a transition runs (the
+            // Mix tab's crossfader sweep, in the chip's own footprint — no new row).
+            .overlay(alignment: .bottom) {
+                if on, automating {
+                    Capsule().fill(Theme.accent)
+                        .frame(height: 2)
+                        .scaleEffect(x: max(0.04, dsp.djDisplay.crossfade), anchor: .leading)
+                        .padding(.horizontal, 7)
+                        .padding(.bottom, 1)
+                        .accessibilityHidden(true)
+                        .accessibilityIdentifier("np-dj-crossfade")
+                }
+            }
             .overlay(Capsule().stroke(on ? Theme.accent : Theme.border))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("DJ Mode")
-        .accessibilityValue(on ? "On" : "Off")
+        .accessibilityValue(on ? (automating ? "On, mixing \(Int((dsp.djDisplay.crossfade * 100).rounded())) percent" : "On") : "Off")
         .accessibilityHint("Mixes each song into the next with tempo, key and effect transitions, and orders the queue into tempo waves")
         .accessibilityIdentifier("np-dj-mode")
     }
@@ -216,12 +229,15 @@ struct NowPlayingMixPanel: View {
 
     @ViewBuilder private var controls: some View {
         VStack(spacing: 8) {
-            DeckSlider(title: "Tempo", display: String(format: "%.2f×", dsp.rate),
-                       value: dsp.rate, range: MixEngine.rateRange, step: 0.02,
+            // DJ Mode automation MOVES these (the Mix tab's gliding sliders): they show what is
+            // heard (`displayRate` / `displayPitch`) and a touch takes over from that value — the
+            // DSP ends the glide and the listener's value becomes the dragged one (no jump).
+            DeckSlider(title: "Tempo", display: String(format: "%.2f×", dsp.displayRate),
+                       value: dsp.displayRate, range: MixEngine.rateRange, step: 0.02,
                        a11y: "np-mix-tempo",
                        onChange: { engage(); dsp.setRate($0) })
             DeckSlider(title: "Pitch", display: pitchDisplay,
-                       value: dsp.pitch, range: MixEngine.pitchRange, step: 0.5,
+                       value: dsp.displayPitch, range: MixEngine.pitchRange, step: 0.5,
                        a11y: "np-mix-pitch",
                        onChange: { engage(); dsp.setPitch($0) })
             DeckSlider(title: "Gain", display: "\(Int((dsp.volume * 100).rounded()))%",
@@ -230,6 +246,9 @@ struct NowPlayingMixPanel: View {
                        valueColor: dsp.volume > 1.0 ? Theme.accent2 : Theme.fg,
                        accessibilityValueText: "\(Int((dsp.volume * 100).rounded())) percent",
                        onChange: { engage(); dsp.setVolume($0) })
+            // DJ Mode's automatic volume LEVELING trim — read-only, separate from Gain (the
+            // listener's own level, which it never moves).
+            DJLevelingReadoutRow(readout: dsp.djDisplay.leveling)
 
             effectsGrid
             stemSection
@@ -237,8 +256,12 @@ struct NowPlayingMixPanel: View {
     }
 
     private var pitchDisplay: String {
-        dsp.pitch == 0 ? "0 st" : String(format: "%+.1f st", dsp.pitch)
+        let p = dsp.displayPitch
+        return abs(p) < 0.05 ? "0 st" : String(format: "%+.1f st", p)
     }
+
+    /// DJ Mode automation is driving the controls (observed at ~16 Hz while it runs).
+    private var automating: Bool { dsp.djDisplay.active }
 
     private var effectsGrid: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -257,12 +280,19 @@ struct NowPlayingMixPanel: View {
             }
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                 ForEach(MixEngine.Effect.allCases) { effect in
+                    // Shows the transition's sweep too; a touch acts on what is SHOWN: a tap
+                    // flips the shown state, a strength drag on a swept effect keeps it on.
+                    let shown = dsp.displayEffect(effect)
                     EffectButton(effect: effect,
-                                 isOn: dsp.isEnabled(effect),
-                                 strength: dsp.strength(effect),
+                                 isOn: shown.on,
+                                 strength: shown.strength,
                                  a11y: "np-mix-fx-\(effect.rawValue)",
-                                 onToggle: { engage(); dsp.setEffect(effect, enabled: !dsp.isEnabled(effect)) },
-                                 onStrength: { engage(); dsp.setEffectStrength(effect, $0) })
+                                 onToggle: { engage(); dsp.setEffect(effect, enabled: !dsp.displayEffect(effect).on) },
+                                 onStrength: { v in
+                                     engage()
+                                     if dsp.displayEffect(effect).on, !dsp.isEnabled(effect) { dsp.setEffect(effect, enabled: true) }
+                                     dsp.setEffectStrength(effect, v)
+                                 })
                 }
             }
         }
@@ -647,5 +677,100 @@ private struct NowPlayingStemPad: View {
         .accessibilityValue(muted ? "Muted" : (pending ? "Loading" : "On"))
         .accessibilityIdentifier(a11y)
         .accessibilityAddTraits(.isButton)
+    }
+}
+
+// MARK: - DJ Mode leveling readout (np-dj-mode §5 / §7)
+
+/// "Leveling +3.2 dB" with a −12…+6 dB meter (0 dB tick): the automatic trim DJ Mode puts on
+/// the playing song to keep the mix at one loudness — moving through its 2 s ramp and, during a
+/// crossfade, the outgoing's trim fading out (dimming, its bar shrinking) as the incoming's
+/// comes in (equal-power). Says "measuring…" / "off" / "unavailable" instead of a 0 dB that was
+/// never measured. Hidden when DJ Mode isn't leveling (DJ off, a plain row).
+struct DJLevelingReadoutRow: View {
+    let readout: DJAutomationDisplay.LevelingReadout
+
+    var body: some View {
+        if readout.current.status != .inactive || readout.outgoing != nil {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text("Leveling").font(.caption).foregroundStyle(Theme.fgDim)
+                    Spacer(minLength: 4)
+                    if let out = readout.outgoing {
+                        Text(Self.words(out))
+                            .opacity(0.35 + 0.65 * readout.outGain)
+                        Image(systemName: "arrow.right").font(.caption2).foregroundStyle(Theme.fgDim)
+                        Text(Self.words(readout.current))
+                            .opacity(0.35 + 0.65 * readout.inGain)
+                    } else {
+                        Text(Self.words(readout.current))
+                    }
+                }
+                .font(.caption.monospacedDigit())
+                .lineLimit(1).minimumScaleFactor(0.7)
+                LevelMeter(sides: meterSides)
+                    .frame(height: 4)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Volume leveling")
+            .accessibilityValue(a11yValue)
+            .accessibilityIdentifier("np-mix-leveling")
+        }
+    }
+
+    /// The bars: the incoming / current at full height, the outgoing's shrinking with its gain.
+    private var meterSides: [(db: Double, weight: Double, live: Bool)] {
+        var out: [(Double, Double, Bool)] = []
+        if let o = readout.outgoing, o.status == .measured { out.append((o.trimDb, readout.outGain, false)) }
+        if readout.current.status == .measured {
+            out.append((readout.current.trimDb, readout.outgoing == nil ? 1 : readout.inGain, true))
+        }
+        return out
+    }
+
+    static func words(_ side: DJAutomationDisplay.LevelSide) -> String {
+        switch side.status {
+        case .measured:
+            let v = side.trimDb
+            return abs(v) < 0.05 ? "0.0 dB" : String(format: "%@%.1f dB", v > 0 ? "+" : "−", abs(v))
+        case .measuring: return "measuring…"
+        case .off: return "off"
+        case .unavailable: return "unavailable"
+        case .inactive: return "—"
+        }
+    }
+
+    private var a11yValue: String {
+        if let o = readout.outgoing {
+            return "\(Self.words(o)) fading to \(Self.words(readout.current))"
+        }
+        return Self.words(readout.current)
+    }
+}
+
+/// A −12…+6 dB trim meter: bars grow from the 0 dB tick (up = turned up, accent2; down = turned
+/// down, accent). Weight 0…1 scales a bar's thickness + opacity (the crossfade's out / in).
+private struct LevelMeter: View {
+    let sides: [(db: Double, weight: Double, live: Bool)]
+    private static let lo = LoudnessLeveling.minGainDb, hi = LoudnessLeveling.maxGainDb
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let zero = w * CGFloat(-Self.lo / (Self.hi - Self.lo))
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.bgOverlay)
+                ForEach(Array(sides.enumerated()), id: \.offset) { _, side in
+                    let x = w * CGFloat((min(max(side.db, Self.lo), Self.hi) - Self.lo) / (Self.hi - Self.lo))
+                    Rectangle()
+                        .fill(side.db >= 0 ? Theme.accent2 : Theme.accent)
+                        .frame(width: max(1, abs(x - zero)), height: geo.size.height * CGFloat(0.4 + 0.6 * side.weight))
+                        .opacity(side.live ? 1 : 0.35 + 0.65 * side.weight)
+                        .offset(x: min(x, zero))
+                }
+                Rectangle().fill(Theme.fgDim).frame(width: 1).offset(x: zero)
+            }
+        }
+        .accessibilityHidden(true)
     }
 }

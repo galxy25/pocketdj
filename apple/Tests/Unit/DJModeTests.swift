@@ -1,4 +1,5 @@
 import AVFoundation
+import Observation
 import XCTest
 @testable import PocketDJ
 
@@ -289,6 +290,141 @@ final class DJModeTests: XCTestCase {
         await waitUntil("done") { d.djPhase == .idle }
         XCTAssertEqual(d.timePitchRate, 1.1, accuracy: 1e-3)
         XCTAssertTrue(d.filterBandBypassed, "no texture left on")
+    }
+
+    // MARK: - The controls MOVE with the automation (np-dj-mode §7, Levi 2026-11-09)
+
+    /// Pre-roll: the display shows the OUTGOING's automated tempo / pitch / sweep (crossfade 0);
+    /// from the fade start the INCOMING's, the crossfade climbing; after the post-roll it lets go
+    /// (inactive, the listener's values). The listener's own values never move.
+    func testDisplayTracksTheAutomation() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        d.onDJFadeStart = { _ in true }
+        XCTAssertFalse(d.djDisplay.active, "nothing automated yet")
+        XCTAssertEqual(d.displayRate, 1)
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 1.2, fade: 1.2, postRoll: 0.8)))
+        XCTAssertTrue(d.djDisplay.active)
+        XCTAssertEqual(d.djDisplay.phase, "preRoll")
+        await waitUntil("the outgoing's glide shows mid pre-roll") {
+            d.djDisplay.phase == "preRoll" && d.displayRate > 1.02 && d.displayPitch > 0.2
+                && (d.displayEffect(.filter).on && d.displayEffect(.filter).strength > 0.2)
+        }
+        XCTAssertEqual(d.djDisplay.crossfade, 0)
+        XCTAssertEqual(d.rate, 1, "the listener's tempo is untouched")
+        XCTAssertEqual(d.pitch, 0)
+        XCTAssertFalse(d.isEnabled(.filter), "the listener's filter is still off")
+        await waitUntil("fade: the incoming's values, the crossfade moving") {
+            d.djDisplay.phase == "fade" && d.djDisplay.crossfade > 0.2 && d.djDisplay.crossfade < 0.9
+        }
+        XCTAssertEqual(d.displayRate, 0.95, accuracy: 0.01, "the incoming pinned at its glide target")
+        XCTAssertEqual(d.displayPitch, -0.5, accuracy: 0.01)
+        await waitUntil("post-roll eases back") { d.djDisplay.phase == "postRoll" && d.displayRate > 0.955 }
+        XCTAssertEqual(d.djDisplay.crossfade, 1)
+        await waitUntil("released") { !d.djDisplay.active }
+        XCTAssertEqual(d.displayRate, d.rate)
+        XCTAssertEqual(d.displayPitch, d.pitch)
+        XCTAssertFalse(d.displayEffect(.filter).on)
+    }
+
+    /// The display publishes at the throttled rate (~16 Hz), not per tick / buffer.
+    func testDisplayPublishesAtTheThrottledRate() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        d.onDJFadeStart = { _ in true }
+        var changes = 0
+        func watch() {
+            withObservationTracking { _ = d.djDisplay.rate } onChange: { Task { @MainActor in changes += 1; watch() } }
+        }
+        watch()
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 1.0, fade: 0.6, postRoll: 0.2)))
+        let start = Date()
+        await waitUntil("pre-roll over") { d.djPhase != .preRoll }
+        let secs = Date().timeIntervalSince(start)
+        XCTAssertGreaterThan(changes, 3, "the tempo visibly moves")
+        XCTAssertLessThanOrEqual(Double(changes), secs * 25 + 3, "≈16 Hz, never the 40 Hz conductor tick")
+    }
+
+    /// A touch takes over from the DISPLAYED value (no jump) and ends the automation display;
+    /// nothing automated is written to the listener's state the FX Lock / snapshot read.
+    func testTouchTakesOverFromTheDisplayedValueAndNothingPersists() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        d.onDJFadeStart = { _ in true }
+        var userFX = 0
+        d.onUserEffectChange = { userFX += 1 }
+        XCTAssertNil(d.beginDJTransition(spec(b, fade: 1.5, postRoll: 1.5)))
+        await waitUntil("fade") { d.djPhase == .fade && d.djDisplay.phase == "fade" }
+        XCTAssertTrue(d.effectSettings.isEmpty, "the sweep never reaches the FX Lock carry")
+        XCTAssertEqual(userFX, 0)
+        XCTAssertEqual(d.rate, 1, "automation never becomes the listener's tempo")
+        let shown = d.displayRate
+        d.setRate(shown)                                  // the slider's first drag value = what it showed
+        XCTAssertEqual(Double(d.timePitchRate), shown, accuracy: 1e-3, "no jump: the heard tempo stays put")
+        XCTAssertEqual(d.rate, shown, accuracy: 1e-9, "the listener owns the shown value now")
+        XCTAssertEqual(d.displayRate, shown, accuracy: 1e-3)
+        await waitUntil("done") { d.djPhase == .idle && !d.djDisplay.active }
+        XCTAssertEqual(d.displayRate, shown, accuracy: 1e-9)
+    }
+
+    // MARK: - The leveling trim is visible (Levi 2026-11-09: "I expect to see the gain automation")
+
+    /// The readout follows the 2 s leveling ramp (throttled — not every 20 ms step) and never
+    /// touches the listener's Gain.
+    func testLevelingReadoutFollowsTheRamp() async throws {
+        let (d, _, _) = try playingDSP()
+        await rendering(d)
+        XCTAssertEqual(d.djDisplay.leveling.current.status, .inactive, "no DJ leveling ⇒ no readout")
+        NowPlayingDSP.levelRampSeconds = 0.6
+        defer { NowPlayingDSP.levelRampSeconds = LoudnessLeveling.rampSeconds }
+        var changes = 0
+        func watch() {
+            withObservationTracking { _ = d.djDisplay.leveling } onChange: { Task { @MainActor in changes += 1; watch() } }
+        }
+        watch()
+        d.setLevelingStatus(.measured)
+        d.setLevel(db: 4, ramp: true)
+        await waitUntil("mid-ramp shows a partial trim") {
+            d.djDisplay.leveling.current.trimDb > 0.5 && d.djDisplay.leveling.current.trimDb < 3.5
+        }
+        await waitUntil("lands") { !d.levelRampInFlight && abs(d.djDisplay.leveling.current.trimDb - 4) < 0.05 }
+        XCTAssertEqual(DJLevelingReadoutRow.words(d.djDisplay.leveling.current), "+4.0 dB")
+        XCTAssertLessThan(changes, 30 / 3 + 4, "throttled (~every 3rd of 30 steps), not per step")
+        XCTAssertEqual(d.volume, 1, "the listener's Gain never moves")
+    }
+
+    /// Through a crossfade the outgoing's trim fades out against the incoming's coming in,
+    /// equal-power; after the fade only the incoming's remains.
+    func testLevelingReadoutCrossfadesOutToIn() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        d.onDJFadeStart = { _ in true }
+        d.setLevelingStatus(.measured)
+        d.setLevel(db: 2, ramp: false)
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 0.3, fade: 1.6, postRoll: 0.2)))   // incoming −3 dB
+        await waitUntil("pre-roll: the outgoing's trim is the shown one") {
+            d.djPhase == .preRoll && abs(d.djDisplay.leveling.current.trimDb - 2) < 0.05 && d.djDisplay.leveling.outgoing == nil
+        }
+        await waitUntil("mid-fade: out → in") {
+            guard let o = d.djDisplay.leveling.outgoing else { return false }
+            return abs(o.trimDb - 2) < 0.05 && abs(d.djDisplay.leveling.current.trimDb + 3) < 0.05
+                && d.djDisplay.leveling.outGain < 0.95 && d.djDisplay.leveling.inGain > 0.3
+        }
+        let r = d.djDisplay.leveling
+        XCTAssertEqual(r.outGain * r.outGain + r.inGain * r.inGain, 1, accuracy: 0.03, "equal-power")
+        await waitUntil("after the fade only the incoming's") { d.djPhase != .fade && d.djDisplay.leveling.outgoing == nil }
+        XCTAssertEqual(d.djDisplay.leveling.current.trimDb, -3, accuracy: 0.05)
+        XCTAssertEqual(d.volume, 1)
+    }
+
+    /// The words never pretend: measuring / off / unavailable are said, not shown as 0 dB.
+    func testLevelingWords() {
+        typealias S = DJAutomationDisplay.LevelSide
+        XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .measuring, trimDb: 0)), "measuring…")
+        XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .off, trimDb: 0)), "off")
+        XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .unavailable, trimDb: 0)), "unavailable")
+        XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .measured, trimDb: -4.46)), "−4.5 dB")
+        XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .measured, trimDb: 0.01)), "0.0 dB")
     }
 
     /// The host REFUSING the advance at the fade start (the queue moved) puts the outgoing back.
@@ -758,6 +894,9 @@ final class DJModeTests: XCTestCase {
         await waitUntil("the gain heads onto the trim") { abs(r.dsp.levelTargetDb - gain) < 0.01 }
         await waitUntil("ramp landed") { !r.dsp.levelRampInFlight }
         XCTAssertEqual(Double(r.dsp.levelTrimGainDb), r.dsp.levelTargetDb, accuracy: 0.01)
+        XCTAssertEqual(r.dsp.djDisplay.leveling.current.status, .measured, "the readout shows a MEASURED trim")
+        XCTAssertEqual(r.dsp.djDisplay.leveling.current.trimDb, gain, accuracy: 0.05)
+        XCTAssertEqual(r.dsp.volume, 1, "the listener's Gain is separate")
         // Leveling OFF ⇒ 0 dB on the next start.
         var cfg = DJModeSettings.allOn
         cfg.volumeLeveling = false
@@ -766,6 +905,9 @@ final class DJModeTests: XCTestCase {
         await waitUntil("l2 engaged") { r.dsp.loadedSongId == "l2" && r.seq.mixEngaged }
         // The incoming's level lands over the fade start's short ramp (never a step).
         await waitUntil("l2 at 0 dB") { r.dsp.levelTrimGainDb == 0 && !r.dsp.levelRampInFlight }
+        await waitUntil("the readout says off — not 0 dB") { r.dsp.djDisplay.leveling.current.status == .off }
+        r.seq.setDJMode(false)
+        XCTAssertEqual(r.dsp.djDisplay.leveling.current.status, .inactive, "DJ off ⇒ no readout")
     }
 }
 
