@@ -327,7 +327,7 @@ final class NowPlayingDSP {
 
     /// The tempo the playhead clock advances at: the TAIL deck's while it carries the current
     /// song (a DJ pre-roll), else the main chain's effective rate (listener × DJ glide).
-    private var clockRate: Double {
+    var clockRate: Double {
         if let t = tail, clockNode === t.player { return tailEffectiveRate(t) }
         return effectiveRate
     }
@@ -492,11 +492,15 @@ final class NowPlayingDSP {
     /// pinned at the canonical format, so nothing needs re-wiring). A stem handover in flight
     /// lands first; a pending one re-checks once the voices are back.
     private func handleEngineConfigurationChange() {
-        guard isEngaged, isPlaying else { return }
-        if isBuffering { _ = startEngineIfNeeded(); return }   // nothing scheduled: just keep the engine up
-        // A DJ transition doesn't survive the engine being stopped behind its back: cut the tail
-        // (the current song carries on alone on the main chain, restarted below).
+        guard isEngaged else { return }
+        // A DJ transition doesn't survive the engine being stopped behind its back — PAUSED too
+        // (the system stop may have flushed both decks' schedules, and ▶'s `djResume` only
+        // re-plays them): cut the tail; the current song carries on alone on the main chain,
+        // restarted below or by the next ▶ (`startAudio` from the playhead).
+        if djReturn != nil { settleDJReturn() }
         if djPhase != .idle { djCut(reason: "engine stopped") }
+        guard isPlaying else { return }
+        if isBuffering { _ = startEngineIfNeeded(); return }   // nothing scheduled: just keep the engine up
         let pos = currentTime
         NPLog.trace("npdsp engine config change @\(String(format: "%.2f", pos))s — restarting")
         settleStemFade()
@@ -508,6 +512,7 @@ final class NowPlayingDSP {
 
     private func handleInterruption(began: Bool, shouldResume: Bool) {
         if began {
+            if djReturn != nil { settleDJReturn() }
             if djPhase != .idle { djCut(reason: "interruption") }   // the system stopped the engine
             if isPlaying { interruptedWhilePlaying = true; pause() }
         } else {
@@ -527,6 +532,7 @@ final class NowPlayingDSP {
     /// already put the track back on the AVPlayer. Controls are kept (they re-apply on build).
     func rebuildAfterMediaReset() {
         if isEngaged { _ = disengage() }
+        flushRetiringTails()
         if let o = configChangeObserver { NotificationCenter.default.removeObserver(o); configChangeObserver = nil }
         if let o = interruptionObserver { NotificationCenter.default.removeObserver(o); interruptionObserver = nil }
         if captureTapped { inputMixer.removeTap(onBus: 0); captureTapped = false }
@@ -713,7 +719,9 @@ final class NowPlayingDSP {
     /// frontier, never from 0:00). Paused: the target is where ▶ resumes.
     func seek(toSongSeconds t: Double) {
         guard isEngaged else { return }
+        if djReturn != nil { settleDJReturn() }
         if djPhase != .idle { djCut(reason: "seek") }   // a seek cuts the tail (np-dj-mode §3)
+        settleDJEase()
         let target = min(max(0, t), max(0, duration - 0.05))
         settleStemFade()
         if isPlaying {
@@ -735,6 +743,7 @@ final class NowPlayingDSP {
         let pos = currentTime
         // DJ Mode: skip / stop / a track change cut the tail and forget the arm (np-dj-mode §3).
         endDJRun(reason: "disengage")
+        flushRetiringTails()
         disarmDJ()
         setLevel(db: 0, ramp: false)
         resetStemIntent()                       // stale-proofs any fetch/stream/fade (track change)
@@ -786,7 +795,10 @@ final class NowPlayingDSP {
         pausedAt = currentTime
         if isBuffering { setBuffering(false) }   // a held playhead just becomes a paused one
         settleStemFade()                         // never park a half-faded handover
-        if let run = djRun, !run.handoverDone { djHandoverLanded(run.id) }   // …nor the DJ one
+        if djReturn != nil { settleDJReturn() }  // …nor a DJ hand-back
+        // …nor the DJ handover — landed WITHOUT starting the fade (that would advance the set
+        // inside a pause): the conductor starts it once ▶ runs the clock again.
+        if let run = djRun, !run.handoverDone { djHandoverLanded(run.id, startFade: false) }
         player.pause()
         for n in stemNodes.values { n.pause() }
         tail?.player.pause()                     // DJ: pause pauses BOTH decks (np-dj-mode §3)
@@ -949,7 +961,10 @@ final class NowPlayingDSP {
     /// re-arm main on failure").
     @discardableResult
     func setStemMode(_ on: Bool) -> Bool {
-        if djPhase != .idle { djCut(reason: "stems toggled", restart: true) }   // the listener wins
+        // Before the advance the outgoing is still the song: hand it back (its stem handover then
+        // runs on the main chain once the hand-back lands). After it, the stems are the
+        // INCOMING's on the main chain — the fade carries on.
+        if djPhase != .idle, djRun?.incomingEngaged != true { djCut(reason: "stems toggled", restart: true) }
         let ok = applyStemMode(on)
         if ok { onUserStemChange?() }
         return ok
@@ -1042,6 +1057,9 @@ final class NowPlayingDSP {
         // would stop its outgoing voice before the incoming one renders — up to a start lead of
         // dead air. Rapid toggles therefore just move the intent; at most one fade runs at a time.
         guard let h = _stemHandover, isEngaged, built, stemFade == nil else { return }
+        // DJ: the tail carries the song (its clock isn't the stems' / main voice's) or a
+        // hand-back cross is running — `finishDJReturn` re-runs this once it lands.
+        guard !tailCarriesSong, djReturn == nil else { return }
         let pos = currentTime
         switch h {
         case .toStems:
@@ -1355,7 +1373,7 @@ final class NowPlayingDSP {
     /// air (same seconds on every part ⇒ still sample-locked), and let a pending handover re-check
     /// its runway. A failed set: a pending request drops; stems on air hand back to the full song.
     private func pumpStems() {
-        guard let set = stemStream, built, isEngaged else { return }
+        guard let set = stemStream, built, isEngaged, !tailCarriesSong else { return }
         if set.failed {
             stemStream = nil                      // the leftover frontier keeps bounding what's scheduled
             NPLog.trace("npdsp stem stream failed \(set.songId)")
@@ -1455,7 +1473,7 @@ final class NowPlayingDSP {
 
     private func stemMonitorTick() {
         guard isEngaged, isPlaying else { stemMonitor?.cancel(); stemMonitor = nil; return }
-        guard stemFade == nil else { return }
+        guard stemFade == nil, !tailCarriesSong, djReturn == nil else { return }
         if mainWatchNeeded { mainUnderrunCheck() }
         guard isEngaged, isPlaying else { stemMonitor?.cancel(); stemMonitor = nil; return }
         let pos = currentTime
@@ -1685,8 +1703,9 @@ final class NowPlayingDSP {
     }
 
     func toggleStemMute(_ name: String) {
-        if djPhase != .idle { djCut(reason: "stem mute", restart: true) }
         if _stemMuted.contains(name) { _stemMuted.remove(name) } else { _stemMuted.insert(name) }
+        // (The mute is set FIRST: a hand-back schedules the stems with it already applied.)
+        if djPhase != .idle, djRun?.incomingEngaged != true { djCut(reason: "stem mute", restart: true) }
         applyStemGains()
         onUserStemChange?()
     }
@@ -2104,7 +2123,8 @@ final class NowPlayingDSP {
     // short-lived second chain — the TAIL deck: `player → mixer(gain × fade) → timePitch → comp →
     // filter(EQ + boost/level globalGain) → reverb → flanger → mainMixerNode` (ahead of the shared
     // PeakLimiter), attached to the SAME engine when the transition starts and detached when its
-    // crossfade lands. The timeline:
+    // crossfade lands. The tail opens its OWN `AVAudioFile` on the outgoing file (two player nodes
+    // never pull from one ExtAudioFile). The timeline:
     //
     //  1. START (pre-roll start, or the fade start when there is no glide). The outgoing song moves
     //     from the main chain onto the tail deck: the same file from the frame the main voice will
@@ -2116,15 +2136,27 @@ final class NowPlayingDSP {
     //     (`AutoTransition.outgoingRamp`); the listener's controls still steer it (same song).
     //  3. FADE START. The host advances (`onDJFadeStart` — card, queue index, DeadAirMeter, the
     //     control reset + FX Lock stamp); the main chain engages the incoming file at its
-    //     phase-aligned start, gain 0, rate / pitch pinned to the incoming glide targets
-    //     (`djRateMul` / `djPitchAdd` OVER the listener's controls), texture at peak. The
-    //     equal-power fade runs: tail out, main in.
-    //  4. FADE END. The tail stops and is released (nodes detached, the outgoing scope released).
+    //     phase-aligned start (the tail's playhead read AFTER the engage, at the incoming's start
+    //     moment), gain 0, rate / pitch pinned to the incoming glide targets (`djRateMul` /
+    //     `djPitchAdd` OVER the listener's controls), texture at peak. The equal-power fade runs:
+    //     tail out, main in.
+    //  4. FADE END. The tail stops; its nodes are detached at once — or, when its reverb /
+    //     flanger is wet, after `djTailRingSeconds` so the wash rings out instead of being cut.
     //  5. POST-ROLL. The overlays ease back to the listener's settings (`incomingRamp`).
     //
-    // Transport: pause pauses both decks; skip / stop (`disengage`), seek and a stem toggle CUT
-    // the tail; a listener touch on tempo / pitch / effects during the transition ends the glide
-    // at once (the listener wins) — the crossfade itself carries on.
+    // Transport: pause pauses both decks (a pause inside the 60 ms handover lands it but never
+    // starts the fade — the conductor does once ▶ runs the clock again); skip / stop
+    // (`disengage`) and seek CUT the tail; a stem toggle / mute before the incoming engaged cuts
+    // back to the main chain (after it, the stems are the incoming's — the fade carries on); a
+    // listener touch on tempo / pitch / effects during the transition ends the glide at once (the
+    // listener wins) — the crossfade itself carries on.
+    //
+    // A cut BEFORE the advance with the song still playing (a stem action in the pre-roll, the
+    // host refusing at the fade start) hands the outgoing BACK with the forward handover's
+    // machinery mirrored (`djReturn`): the main chain is scheduled at the tail's exact playhead on
+    // a shared host time, at the tail's rate / pitch / texture, a 60 ms linear cross, then the
+    // tail goes and the glide eases back to the listener's settings (`djEaseSeconds`) — no gap,
+    // no click, no snap. A tail that already ran out reports the song's END (the host advances).
 
     /// The incoming song a DJ transition mixes into (built by the host).
     struct DJIncoming {
@@ -2181,6 +2213,12 @@ final class NowPlayingDSP {
     static var djMinSecondsLeft: Double = 0.75
     /// A declined begin is retried this often while in the lead window (the next may land).
     static var djRetrySeconds: Double = 1
+    /// A wet (reverb / flanger) tail rings out this long after the fade before it is detached.
+    static var djTailRingSeconds: Double = 2
+    /// A cut that hands the outgoing back eases the glide overlays to identity over this.
+    static var djEaseSeconds: Double = 0.5
+    /// A post-advance cut ramps the tail out over this instead of a hard (clicking) stop.
+    static var djTailCutFadeSeconds: Double = 0.04
 
     /// The listener's control state, captured for the tail.
     fileprivate struct ControlState {
@@ -2204,6 +2242,7 @@ final class NowPlayingDSP {
         let filter = AVAudioUnitEQ(numberOfBands: 1)
         let reverb = AVAudioUnitReverb()
         let flanger = AVAudioUnitDelay()
+        /// The tail's OWN open of the outgoing file (never the main chain's instance).
         let file: AVAudioFile
         let sampleRate: Double
         /// The song second its scheduled segment begins at (its render clock counts from there).
@@ -2218,8 +2257,14 @@ final class NowPlayingDSP {
         var texture: (effect: MixEngine.Effect, strength: Double)?
         var handoverGain: Float = 0
         var fadeGain: Float = 1
+        /// The outgoing's leveling gain — it carries on toward `levelTarget` at `levelRate`
+        /// (dB/s) when a leveling ramp was in flight at the handover.
         var levelDb = 0.0
+        var levelTarget = 0.0
+        var levelRate = 0.0
         var nodes: [AVAudioNode] { [player, mixer, timePitch, comp, filter, reverb, flanger] }
+        /// The reverb / flanger is wet: its wash outlives the dry signal.
+        var rings: Bool { !reverb.bypass || !flanger.bypass }
 
         init(file: AVAudioFile, sampleRate: Double, base: ControlState) {
             self.file = file; self.sampleRate = sampleRate; self.base = base
@@ -2239,10 +2284,17 @@ final class NowPlayingDSP {
     }
 
     @ObservationIgnored private var tail: TailDeck?
+    /// Tails past their job, still attached while they ring out / ramp out (detached by their
+    /// own task, or at once by `flushRetiringTails`).
+    @ObservationIgnored private var retiringTails: [TailDeck] = []
     @ObservationIgnored private var djRun: DJRun?
     @ObservationIgnored private var djRunSeq = 0
     @ObservationIgnored private var djConductor: Task<Void, Never>?
     @ObservationIgnored private var djHandoverTask: Task<Void, Never>?
+    /// The hand-BACK of a cut transition in flight (the tail → main 60 ms cross).
+    @ObservationIgnored private var djReturn: (id: Int, task: Task<Void, Never>)?
+    /// The glide overlays easing back to identity after a hand-back.
+    @ObservationIgnored private var djEase: Task<Void, Never>?
     /// The incoming's glide overlays on the main chain (identity outside a transition).
     @ObservationIgnored private var djRateMul = 1.0
     @ObservationIgnored private var djPitchAdd = 0.0
@@ -2258,6 +2310,13 @@ final class NowPlayingDSP {
     var djSecondsLeft: Double { max(0, duration - currentTime) / max(0.05, clockRate) }
     var djArmed: Bool { djArm != nil }
 
+    /// The tail deck carries the CURRENT song (the pre-roll, before the advance): the stem
+    /// machinery (which reads the clock as the stems' or the main voice's) must stand still.
+    private var tailCarriesSong: Bool {
+        guard let t = tail else { return false }
+        return clockNode === t.player
+    }
+
     // Test seams (tail-deck state; the audio itself is asserted through `captureForTesting`).
     var tailDeckActiveForTesting: Bool { tail != nil }
     var tailGainForTesting: Float? { tail.map { $0.mixer.outputVolume } }
@@ -2265,6 +2324,12 @@ final class NowPlayingDSP {
     var tailPlayingForTesting: Bool { tail?.player.isPlaying ?? false }
     var mainFadeGainForTesting: Float { djMainFade }
     var attachedNodeCountForTesting: Int { engine.attachedNodes.count }
+    /// A tail is still attached while it rings / ramps out.
+    var retiringTailCountForTesting: Int { retiringTails.count }
+    /// The tail → main hand-back of a cut transition is in flight.
+    var djReturningForTesting: Bool { djReturn != nil }
+    /// The glide overlay on the main chain's tempo (1 = none).
+    var djRateOverlayForTesting: Double { djRateMul }
     /// The tail's playhead (song seconds of the OUTGOING song) while it carries it.
     func tailPlayheadForTesting() -> Double? {
         guard let t = tail, let nt = t.player.lastRenderTime, let pt = t.player.playerTime(forNodeTime: nt),
@@ -2299,7 +2364,8 @@ final class NowPlayingDSP {
     }
 
     private func djWatchTick() {
-        guard let arm = djArm, isEngaged, isPlaying, !isBuffering, djPhase == .idle, duration > 0 else { return }
+        guard let arm = djArm, isEngaged, isPlaying, !isBuffering, djPhase == .idle, djReturn == nil,
+              duration > 0 else { return }
         let left = djSecondsLeft
         guard AutoTransition.inLeadWindow(secondsLeft: left, lead: arm.lead), left > Self.djMinSecondsLeft else { return }
         let now = Self.hostNow()
@@ -2317,7 +2383,7 @@ final class NowPlayingDSP {
     @discardableResult
     func beginDJTransition(_ spec: DJTransition) -> String? {
         func decline(_ r: String) -> String { spec.incoming.release?(); return r }
-        guard djPhase == .idle, djRun == nil else { return decline("transition in flight") }
+        guard djPhase == .idle, djRun == nil, djReturn == nil else { return decline("transition in flight") }
         guard built, isEngaged, isPlaying, !isBuffering, engine.isRunning else { return decline("not playing") }
         guard mainStream == nil, !mainTruncated else { return decline("outgoing not complete to its end") }
         guard let f = file, sampleRate > 0 else { return decline("no file") }
@@ -2325,10 +2391,18 @@ final class NowPlayingDSP {
         if _stemMode, !_stemMuted.isEmpty || _stemVol.values.contains(where: { $0 < 0.999 }) {
             return decline("stems-muted")
         }
+        // Partial (STREAMING) stems keep handing back / appending on their own clock — on the
+        // tail's pre-roll that would start a second copy of the outgoing. Mix on complete stems.
+        if _stemMode, stemStream != nil || stemFrontier != nil { return decline("stems streaming") }
         guard let inFile = try? AVAudioFile(forReading: spec.incoming.url), inFile.length > 0 else {
             return decline("incoming unreadable")
         }
         _ = inFile
+        // The tail's OWN reader of the outgoing file (the main player may still be pulling from
+        // `file` through the 120 ms lead + 60 ms cross).
+        guard let tf = try? AVAudioFile(forReading: f.url) else { return decline("outgoing unreadable") }
+        // A glide ease left over from a hand-back settles first (its overlays are the main chain's).
+        settleDJEase()
         guard let start = StemSync.sampleStart(clocks: [inputMixer], lead: Self.djHandoverLead, rate: effectiveRate) else {
             return decline("no render clock")
         }
@@ -2342,11 +2416,11 @@ final class NowPlayingDSP {
 
         djRunSeq &+= 1
         let runId = djRunSeq
-        let t = TailDeck(file: f, sampleRate: sampleRate, base: liveControls())
+        let t = TailDeck(file: tf, sampleRate: sampleRate, base: liveControls())
         let canonical = Self.canonicalFormat
         for n in t.nodes { engine.attach(n) }
         t.reverb.loadFactoryPreset(.mediumHall)
-        engine.connect(t.player, to: t.mixer, format: f.processingFormat)
+        engine.connect(t.player, to: t.mixer, format: tf.processingFormat)
         engine.connect(t.mixer, to: t.timePitch, format: canonical)
         engine.connect(t.timePitch, to: t.comp, format: canonical)
         engine.connect(t.comp, to: t.filter, format: canonical)
@@ -2355,14 +2429,17 @@ final class NowPlayingDSP {
         engine.connect(t.flanger, to: engine.mainMixerNode, fromBus: 0,
                        toBus: engine.mainMixerNode.nextAvailableInputBus, format: canonical)
         t.startSongSeconds = Double(frame - segStartFrame) / sampleRate
+        // The outgoing's level as heard now; a leveling ramp in flight carries on on the tail.
         t.levelDb = appliedLevelDb
+        t.levelTarget = levelTargetDb
+        t.levelRate = levelRamp != nil ? levelRampRateDbPerSecond : 0
         t.handoverGain = 0
         tail = t
         djRun = DJRun(id: runId, spec: spec, outgoingSongId: loadedSongId ?? "",
                       savedClock: (clockNode, clockSR, segStartSongSeconds))
         djPhase = .preRoll
         applyTail(t)
-        t.player.scheduleSegment(f, startingFrame: frame, frameCount: AVAudioFrameCount(segEndFrame - frame),
+        t.player.scheduleSegment(tf, startingFrame: frame, frameCount: AVAudioFrameCount(segEndFrame - frame),
                                  at: nil) { [weak self] in
             Task { @MainActor in self?.tailReachedEnd(runId) }
         }
@@ -2374,7 +2451,7 @@ final class NowPlayingDSP {
         playAnchor = (start.hostTime, t.startSongSeconds)
         djHandoverTask = StemSync.crossfade(
             atHostTime: start.hostTime,
-            alive: { [weak self] in self?.djRun?.id == runId },
+            alive: { [weak self] in self?.djRun?.id == runId && self?.djRun?.handoverDone == false },
             apply: { [weak self] g in
                 guard let self, let t = self.tail else { return }
                 self.setVoiceGains(main: 1 - g, stems: 1 - g)
@@ -2395,16 +2472,18 @@ final class NowPlayingDSP {
     }
 
     /// The 60 ms handover landed: the main voices stop (generation first), the tail is the song.
-    private func djHandoverLanded(_ runId: Int) {
-        guard var run = djRun, run.id == runId, let t = tail else { return }
-        djHandoverTask = nil
+    /// Idempotent (a stale or second landing is a no-op — it would stop the INCOMING). `startFade`
+    /// false (a pause landing it early): the fade waits for the conductor, i.e. for ▶.
+    private func djHandoverLanded(_ runId: Int, startFade: Bool = true) {
+        guard var run = djRun, run.id == runId, !run.handoverDone, let t = tail else { return }
+        djHandoverTask?.cancel(); djHandoverTask = nil
         stopVoices(main: true, stems: true)
         setVoiceGains(main: 1, stems: 1)
         t.handoverGain = 1
         applyTail(t)
         run.handoverDone = true
         djRun = run
-        if !run.spec.plan.hasPreRoll { djStartFade() }
+        if startFade, isPlaying, !run.spec.plan.hasPreRoll { djStartFade() }
     }
 
     /// The tail ran out (before the fade could start — a short runway): fade now.
@@ -2437,6 +2516,11 @@ final class NowPlayingDSP {
         djRun = run
         let plan = run.spec.plan
         let peak = run.spec.texture?.peak ?? 0
+        if let t = tail, t.levelRate > 0, abs(t.levelTarget - t.levelDb) > 0.001 {
+            let step = t.levelRate * dt
+            t.levelDb = t.levelTarget > t.levelDb ? min(t.levelTarget, t.levelDb + step) : max(t.levelTarget, t.levelDb - step)
+            if djPhase == .fade { applyTail(t) }   // the pre-roll applies below
+        }
         switch djPhase {
         case .idle:
             return
@@ -2448,8 +2532,8 @@ final class NowPlayingDSP {
                 t.rateMul = r.rate
                 t.pitchAdd = r.pitch
                 t.texture = run.spec.texture.map { ($0.effect, r.fxStrength) }
-                applyTail(t)
             }
+            applyTail(t)
             if p >= 1, run.handoverDone { djStartFade() }
         case .fade:
             let p = Float(min(1, run.phaseElapsed / max(0.05, plan.fadeSeconds)))
@@ -2474,8 +2558,8 @@ final class NowPlayingDSP {
     // MARK: Fade start — the host advances, the incoming engages on the main chain
 
     private func djStartFade() {
-        guard var run = djRun, let t = tail, djPhase == .preRoll, run.handoverDone else { return }
-        let tailPos = currentTime                         // the outgoing's playhead (the tail's clock)
+        guard var run = djRun, let t = tail, djPhase == .preRoll, run.handoverDone, isPlaying else { return }
+        let tailPos = currentTime                         // fallback only — re-read after the engage
         // Pin the outgoing at its glide target + texture peak, and FREEZE its controls: from here
         // the listener's controls belong to the incoming.
         t.base = liveControls()
@@ -2516,26 +2600,36 @@ final class NowPlayingDSP {
         }
         run.incomingEngaged = true
         djRun = run
-        setLevel(db: inc.levelDb, ramp: false)
-        // Beat sync: land the incoming's beat phase on the outgoing's (≤ ½ beat once steady).
-        let lead = StemSync.startLead * tailEffectiveRate(t)
-        var offset = AutoTransition.phaseAlignOffset(outgoing: run.spec.outgoingBeat, outgoingPosition: tailPos + lead,
+        // The incoming's level lands over a few ms while its gain is still ~0 (the main chain's
+        // reverb / flanger may still ring the outgoing's pre-handover audio — never a step).
+        setLevel(db: inc.levelDb, ramp: true, seconds: Self.levelFadeStartSeconds)
+        applyRate(); applyPitch(); applyVolume()
+        for e in MixEngine.Effect.allCases { applyEffect(e) }
+        // Beat sync: land the incoming's beat phase on the outgoing's (≤ ½ beat once steady). The
+        // tail's playhead is read NOW — after the host advance and the (synchronous) file open —
+        // projected to the moment the incoming starts (`StemSync.startLead` out): both positions
+        // refer to one instant.
+        let lead = StemSync.startLead
+        let startHost = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: lead)
+        let tailAt = StemSync.voicePlayhead(t.player, sampleRate: t.sampleRate, segmentStart: t.startSongSeconds,
+                                            rate: tailEffectiveRate(t), atHostTime: startHost)
+            ?? (tailPos + lead * tailEffectiveRate(t))
+        var offset = AutoTransition.phaseAlignOffset(outgoing: run.spec.outgoingBeat, outgoingPosition: tailAt,
                                                      incoming: inc.beat, incomingPosition: 0)
         // From the song's top a BACKWARD offset can't be taken — the same phase one beat later can.
         if offset < 0, let beat = AutoTransition.beatPhase(inc.beat, at: 0)?.beatSeconds { offset += beat }
         let at = min(max(0, offset), max(0, duration - 0.5))
-        applyRate(); applyPitch(); applyVolume()
-        for e in MixEngine.Effect.allCases { applyEffect(e) }
         startAudio(fromSongSeconds: at)
         DJMode.log("fade start song=\(run.outgoingSongId) → \(inc.songId) incoming@\(String(format: "%.3f", at))s "
-                   + "(phase offset \(String(format: "%+.3f", offset))s)")
+                   + "(phase offset \(String(format: "%+.3f", offset))s, outgoing@\(String(format: "%.3f", tailAt))s)")
         onDJIncomingEngaged?(inc.songId, inc.url, inc.startMs)
     }
 
-    /// The crossfade landed: the tail goes; the post-roll eases the incoming back.
+    /// The crossfade landed: the tail goes (a wet one rings out first); the post-roll eases the
+    /// incoming back.
     private func djEndFade() {
         guard var run = djRun, djPhase == .fade else { return }
-        releaseTail()
+        retireTail(fadeOut: 0, ring: tail?.rings == true ? Self.djTailRingSeconds : 0)
         djMainFade = 1
         applyVolume()
         if run.spec.plan.hasPostRoll, !run.glideDropped {
@@ -2547,13 +2641,14 @@ final class NowPlayingDSP {
         }
     }
 
-    /// The transition is over: identity overlays, the conductor stops.
+    /// The transition is over: identity overlays, the conductor stops. A tail still sounding
+    /// (a post-advance cut) ramps out over `djTailCutFadeSeconds` — never a hard, clicking stop.
     private func djFinish(how: String) {
         let run = djRun
         djRun = nil
         djConductor?.cancel(); djConductor = nil
         djHandoverTask?.cancel(); djHandoverTask = nil
-        if tail != nil { releaseTail() }
+        if tail != nil { retireTail(fadeOut: Self.djTailCutFadeSeconds, ring: 0) }
         resetDJOverlays()
         djPhase = .idle
         if built {
@@ -2572,10 +2667,11 @@ final class NowPlayingDSP {
 
     // MARK: Transport during a transition
 
-    /// ▶ mid-transition: both decks resume where they paused (the conductor's clock with them).
+    /// ▶ mid-transition: both decks resume where they paused (the conductor's clock with them —
+    /// a fade the pause held back starts on its next tick).
     private func djResume() {
         guard let t = tail else { return }
-        if djRun?.handoverDone == false { djHandoverLanded(djRun?.id ?? -1) }
+        if let run = djRun, !run.handoverDone { djHandoverLanded(run.id, startFade: false) }
         configureSession()
         guard startEngineIfNeeded() else { return }
         t.player.play()
@@ -2590,6 +2686,7 @@ final class NowPlayingDSP {
     /// A listener touch on tempo / pitch / effects mid-transition: the glide ends at once — the
     /// listener wins (np-dj-mode §3). The crossfade itself carries on.
     private func djListenerTookControl(_ what: String) {
+        if djEase != nil { settleDJEase() }       // a hand-back's ease: the listener's settings now
         guard var run = djRun, !run.glideDropped else { return }
         run.glideDropped = true
         djRun = run
@@ -2608,10 +2705,11 @@ final class NowPlayingDSP {
         }
     }
 
-    /// CUT the transition now (seek / a stem toggle / the engine stopped / the host refused).
-    /// Before the incoming engaged: the outgoing is still the current song — back onto the main
-    /// chain at the tail's playhead (`restart` re-schedules it there when playing; otherwise the
-    /// caller does). After: the tail simply goes and the incoming carries on at full gain.
+    /// CUT the transition now (seek / a stem action / the engine stopped / the host refused).
+    /// Before the incoming engaged the outgoing is still the current song: `restart` (the song
+    /// keeps playing) hands it BACK seamlessly (`beginDJReturn`); otherwise it goes back at the
+    /// tail's playhead for the caller (seek) or the next ▶ to schedule. After the advance: the
+    /// tail ramps out and the incoming carries on at full gain.
     private func djCut(reason: String, restart: Bool = false) {
         guard let run = djRun else { return }
         DJMode.log("cut \(reason) phase=\(djPhase.rawValue) song=\(loadedSongId ?? "-")")
@@ -2620,21 +2718,25 @@ final class NowPlayingDSP {
             return
         }
         let pos = currentTime
-        let base = tail?.base
         let wasFade = djPhase == .fade
         djHandoverTask?.cancel(); djHandoverTask = nil
         djConductor?.cancel(); djConductor = nil
         run.spec.incoming.release?()
-        djRun = nil
-        releaseTail()
-        setVoiceGains(main: 1, stems: 1)
-        resetDJOverlays()
-        djPhase = .idle
         // The host refused at the fade start after the controls were frozen: they're the song's.
-        if wasFade, let b = base {
+        if wasFade, let b = tail?.base {
             _rate = b.rate; _pitch = b.pitch; _volume = b.volume
             _effectOn = b.effectOn; _effectStrength = b.effectStrength
         }
+        if run.handoverDone, restart, isPlaying, beginDJReturn(run, wasFade: wasFade) {
+            onDJTransitionEnded?(nil, "cut")
+            return
+        }
+        djRun = nil
+        let ranOut = run.handoverDone && restart && isPlaying && pos >= duration - 0.05
+        retireTail(fadeOut: engine.isRunning ? Self.djTailCutFadeSeconds : 0, ring: 0)
+        setVoiceGains(main: 1, stems: 1)
+        resetDJOverlays()
+        djPhase = .idle
         if built {
             applyRate(); applyPitch(); applyVolume()
             for e in MixEngine.Effect.allCases { applyEffect(e) }
@@ -2645,6 +2747,11 @@ final class NowPlayingDSP {
             clockSR = run.savedClock.sr
             segStartSongSeconds = run.savedClock.segStart
             playAnchor = nil
+        } else if ranOut {
+            // The tail had already played the song out: that IS its end — never a silent,
+            // paused-at-the-end deck that never advances.
+            clockNode = nil
+            reportEndDeferred(true)
         } else {
             clockNode = nil
             pausedAt = pos
@@ -2657,8 +2764,127 @@ final class NowPlayingDSP {
         onDJTransitionEnded?(nil, "cut")
     }
 
+    /// HAND-BACK (a cut before the advance, the song still playing): schedule the main chain at
+    /// the tail's exact playhead on a shared host time, matched to the tail's sound (its rate /
+    /// pitch / texture as overlays, the same level), cross 60 ms linearly, release the tail, then
+    /// ease the overlays back to the listener's settings. False when it can't (no render clock,
+    /// the song is over) — the caller falls back.
+    private func beginDJReturn(_ run: DJRun, wasFade: Bool) -> Bool {
+        guard let t = tail, built, isEngaged, engine.isRunning, file != nil, sampleRate > 0 else { return false }
+        let tailRate = tailEffectiveRate(t)
+        if !wasFade { t.base = liveControls() }    // freeze what the tail plays while it hands back
+        // The main chain takes the tail's sound: its glide + texture as overlays.
+        djRateMul = (t.base.rate * t.rateMul) / max(0.01, _rate)
+        djPitchAdd = t.pitchAdd
+        djTexture = t.texture
+        djMainFade = 1
+        djRun = nil
+        djPhase = .idle
+        applyTail(t)
+        applyRate(); applyPitch(); applyVolume()
+        for e in MixEngine.Effect.allCases { applyEffect(e) }
+        guard let start = StemSync.sampleStart(clocks: [inputMixer], lead: StemSync.startLead, rate: effectiveRate),
+              let p = StemSync.voicePlayhead(t.player, sampleRate: t.sampleRate, segmentStart: t.startSongSeconds,
+                                             rate: tailRate, atHostTime: start.hostTime),
+              p < duration - 0.3 else {
+            resetDJOverlays()
+            return false
+        }
+        generation += 1                           // COMMIT: the new main segment owns the end
+        setVoiceGains(main: 0, stems: 0)
+        let scheduled = _stemMode ? scheduleStems(fromSongSeconds: p) : scheduleMain(fromSongSeconds: p)
+        guard scheduled else {
+            setVoiceGains(main: 1, stems: 1)
+            resetDJOverlays()
+            return false
+        }
+        let voices: [AVAudioPlayerNode] = _stemMode ? stemVoices() : [player]
+        for n in voices {
+            n.play(at: StemSync.onClock(n, start.when) ? start.when : AVAudioTime(hostTime: start.hostTime))
+        }
+        pausedAt = p
+        playAnchor = (start.hostTime, p)
+        let rid = run.id
+        let task = StemSync.crossfade(
+            atHostTime: start.hostTime,
+            alive: { [weak self] in self?.djReturn?.id == rid },
+            apply: { [weak self] g in
+                guard let self, let t = self.tail else { return }
+                self.setVoiceGains(main: g, stems: g)
+                t.handoverGain = 1 - g
+                self.applyTail(t)
+            },
+            done: { [weak self] in self?.finishDJReturn(rid) })
+        djReturn = (rid, task)
+        DJMode.log("hand-back song=\(loadedSongId ?? "-") @\(String(format: "%.2f", p))s (glide eases back over \(Self.djEaseSeconds)s)")
+        refreshStemMonitor()
+        return true
+    }
+
+    /// The hand-back cross landed: the tail goes; the overlays ease to identity.
+    private func finishDJReturn(_ rid: Int) {
+        guard let r = djReturn, r.id == rid else { return }
+        djReturn = nil
+        retireTail(fadeOut: 0, ring: tail?.rings == true ? Self.djTailRingSeconds : 0)
+        setVoiceGains(main: 1, stems: 1)
+        startDJEase()
+        advanceStemHandover()                     // a stem toggle made during the cut acts now
+        refreshStemMonitor()
+    }
+
+    /// Any transport during a hand-back: land it at once (main at full gain, the tail gone).
+    private func settleDJReturn() {
+        guard let r = djReturn else { return }
+        djReturn = nil
+        r.task.cancel()
+        retireTail(fadeOut: engine.isRunning ? Self.djTailCutFadeSeconds : 0, ring: 0)
+        setVoiceGains(main: 1, stems: 1)
+        settleDJEase()
+    }
+
+    private func startDJEase() {
+        djEase?.cancel()
+        let from = (rate: djRateMul, pitch: djPitchAdd, texture: djTexture)
+        guard abs(from.rate - 1) > 1e-4 || abs(from.pitch) > 1e-4 || from.texture != nil, Self.djEaseSeconds > 0 else {
+            settleDJEase()
+            return
+        }
+        djEase = Task { @MainActor [weak self] in
+            let steps = max(1, Int((Self.djEaseSeconds / 0.025).rounded()))
+            for i in 1...steps {
+                try? await Task.sleep(nanoseconds: UInt64(Self.djEaseSeconds / Double(steps) * 1_000_000_000))
+                guard let self, !Task.isCancelled else { return }
+                let k = 1 - Double(i) / Double(steps)
+                self.djRateMul = 1 + (from.rate - 1) * k
+                self.djPitchAdd = from.pitch * k
+                self.djTexture = from.texture.map { ($0.effect, $0.strength * k) }
+                self.applyRate(); self.applyPitch()
+                for e in MixEngine.Effect.allCases { self.applyEffect(e) }
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.djEase = nil
+            self.resetDJOverlays()
+            self.applyRate(); self.applyPitch()
+            for e in MixEngine.Effect.allCases { self.applyEffect(e) }
+        }
+    }
+
+    /// End a hand-back's ease NOW (identity overlays applied).
+    private func settleDJEase() {
+        let had = djEase != nil || abs(djRateMul - 1) > 1e-9 || djPitchAdd != 0 || djTexture != nil
+        djEase?.cancel(); djEase = nil
+        guard had, djPhase == .idle else { return }
+        resetDJOverlays()
+        if built {
+            applyRate(); applyPitch(); applyVolume()
+            for e in MixEngine.Effect.allCases { applyEffect(e) }
+        }
+    }
+
     /// Drop any transition WITHOUT touching the main voices (disengage / a foreign engage).
     private func endDJRun(reason: String) {
+        if djReturn != nil { settleDJReturn() }
+        settleDJEase()
         guard djRun != nil || tail != nil else { return }
         if let run = djRun {
             DJMode.log("end \(reason) phase=\(djPhase.rawValue)")
@@ -2667,20 +2893,55 @@ final class NowPlayingDSP {
         djRun = nil
         djConductor?.cancel(); djConductor = nil
         djHandoverTask?.cancel(); djHandoverTask = nil
-        releaseTail()
+        retireTail(fadeOut: 0, ring: 0)
         setVoiceGains(main: 1, stems: 1)
         resetDJOverlays()
         djPhase = .idle
     }
 
-    private func releaseTail() {
+    /// Take the tail off the air. `fadeOut`: ramp its gain to 0 first (a sounding tail — a hard
+    /// stop clicks); `ring`: leave its (wet) nodes attached that much longer so the reverb /
+    /// flanger wash rings out. Both 0 (or the engine stopped) ⇒ detached now. The outgoing's
+    /// scope is released as soon as its player stops.
+    private func retireTail(fadeOut: Double, ring: Double) {
         guard let t = tail else { return }
         tail = nil
         if clockNode === t.player { clockNode = nil }
-        t.player.stop()                                   // its completion is stale (run gone / checked)
-        for n in t.nodes.reversed() { engine.detach(n) }
-        t.release?()
-        t.release = nil
+        guard built, engine.isRunning, fadeOut > 0 || ring > 0 else { disposeTail(t); return }
+        retiringTails.append(t)
+        Task { @MainActor [weak self] in
+            if fadeOut > 0 {
+                let steps = max(1, Int((fadeOut / 0.01).rounded()))
+                let from = t.mixer.outputVolume
+                for i in 1...steps {
+                    try? await Task.sleep(nanoseconds: UInt64(fadeOut / Double(steps) * 1_000_000_000))
+                    t.mixer.outputVolume = from * Float(1 - Double(i) / Double(steps))
+                }
+            }
+            t.player.stop()                        // its completion is stale (run gone / checked)
+            t.release?(); t.release = nil
+            if ring > 0 { try? await Task.sleep(nanoseconds: UInt64(ring * 1_000_000_000)) }
+            guard let self, self.retiringTails.contains(where: { $0 === t }) else { return }
+            self.disposeTail(t)
+        }
+    }
+
+    /// Stop + DETACH a tail: outputs disconnected first (the mainMixer bus freed, nothing
+    /// auto-re-wired onto it), then the nodes detached, then its scope released.
+    private func disposeTail(_ t: TailDeck) {
+        retiringTails.removeAll { $0 === t }
+        t.player.stop()
+        if t.player.engine === engine {
+            for n in t.nodes.reversed() { engine.disconnectNodeOutput(n) }
+            for n in t.nodes { engine.detach(n) }
+        }
+        t.release?(); t.release = nil
+    }
+
+    /// Detach every ringing / ramping tail now (disengage, a graph rebuild).
+    private func flushRetiringTails() {
+        for t in retiringTails { disposeTail(t) }
+        retiringTails = []
     }
 
     private func tailEffectiveRate(_ t: TailDeck) -> Double {
@@ -2710,25 +2971,35 @@ final class NowPlayingDSP {
     @ObservationIgnored private(set) var appliedLevelDb = 0.0
     @ObservationIgnored private(set) var levelTargetDb = 0.0
     @ObservationIgnored private var levelRamp: Task<Void, Never>?
+    /// The running ramp's speed (dB/s) — a tail taking the outgoing mid-ramp carries it on.
+    @ObservationIgnored private var levelRampRateDbPerSecond = 0.0
     /// A newly-known gain ramps over this (never a step) — `LoudnessLeveling.rampSeconds`.
     static var levelRampSeconds: Double = LoudnessLeveling.rampSeconds
+    /// The incoming's gain lands over this at the fade start (its fade gain is ~0 meanwhile).
+    static var levelFadeStartSeconds: Double = 0.15
+    /// One ramp step (fine enough that an 18 dB correction never zippers).
+    static let levelRampStepSeconds: Double = 0.02
     var levelRampInFlight: Bool { levelRamp != nil }
     var levelTrimGainDb: Float { levelTrim.globalGain }
 
-    /// Set the leveling gain (clamped −12…+6 dB). `ramp`: glide there over `levelRampSeconds`
-    /// (an analysis landing mid-play); otherwise it lands at once (a track start, before audio).
-    func setLevel(db: Double, ramp: Bool) {
+    /// Set the leveling gain (clamped −12…+6 dB). `ramp`: glide there over `seconds` (default
+    /// `levelRampSeconds` — an analysis landing mid-play) in `levelRampStepSeconds` steps;
+    /// otherwise it lands at once (a track start, before audio).
+    func setLevel(db: Double, ramp: Bool, seconds: Double? = nil) {
         let target = min(max(db, LoudnessLeveling.minGainDb), LoudnessLeveling.maxGainDb)
         levelTargetDb = target
         levelRamp?.cancel(); levelRamp = nil
-        guard ramp, built, isEngaged, abs(target - appliedLevelDb) > 0.01, Self.levelRampSeconds > 0 else {
+        levelRampRateDbPerSecond = 0
+        let total = seconds ?? Self.levelRampSeconds
+        guard ramp, built, isEngaged, abs(target - appliedLevelDb) > 0.01, total > 0 else {
             appliedLevelDb = target
             if built { levelTrim.globalGain = Float(target) }
             return
         }
         let from = appliedLevelDb
-        let steps = 20
-        let stepNs = UInt64(Self.levelRampSeconds / Double(steps) * 1_000_000_000)
+        let steps = max(1, Int((total / Self.levelRampStepSeconds).rounded()))
+        let stepNs = UInt64(total / Double(steps) * 1_000_000_000)
+        levelRampRateDbPerSecond = abs(target - from) / total
         levelRamp = Task { @MainActor [weak self] in
             for i in 1...steps {
                 try? await Task.sleep(nanoseconds: stepNs)
@@ -2739,6 +3010,7 @@ final class NowPlayingDSP {
             }
             guard let self, !Task.isCancelled else { return }
             self.levelRamp = nil
+            self.levelRampRateDbPerSecond = 0
         }
     }
 
