@@ -413,45 +413,61 @@ Mix tab's Auto-DJ transitions on ONE engine. Two graph changes, both on the Now 
  player + 4 stems → inputMixer(vol × djMainFade) → timePitch(rate × djRateMul, pitch + djPitchAdd)
      → comp → filter EQ(+boost) → reverb → flanger → levelTrim(EQ, band bypassed: globalGain = leveling dB) ─┐
                                                                                                            ├→ mainMixerNode → PeakLimiter → output
- TAIL (attached at a transition's start, DETACHED when its crossfade lands)                                 │
- tailPlayer → tailMixer(vol × handover × fade) → timePitch → comp → filter EQ(+boost + outgoing level dB)   │
+ TAIL (attached at a transition's start, DETACHED when its crossfade lands — a wet one rings out first)    │
+ tailPlayer(OWN AVAudioFile) → tailMixer(vol × handover × fade) → timePitch → comp → filter EQ(+boost + outgoing level dB)   │
      → reverb → flanger ───────────────────────────────────────────────── (next free mainMixer input bus) ──┘
 ```
 
 - **Leveling trim** (`levelTrim`): an `AVAudioUnitEQ` whose band is bypassed — only `globalGain`
-  acts. `NowPlayingDSP.setLevel(db:ramp:)` puts the leveling gain there (−12…+6 dB, ramped over
-  `LoudnessLeveling.rampSeconds` when it lands mid-play), so the listener's gain slider
+  acts. `NowPlayingDSP.setLevel(db:ramp:seconds:)` puts the leveling gain there (−12…+6 dB, ramped
+  over `LoudnessLeveling.rampSeconds` in 20 ms steps when it lands mid-play, over 150 ms at a fade
+  start while the incoming's gain is still ~0 — never a step), so the listener's gain slider
   (`inputMixer` volume + the filter EQ's >100 % boost) sits on top. 0 dB outside DJ Mode / with
   Volume leveling off. Attached at build time like every other main node (graph still write-once).
 - **The tail deck** is the only node set ever attached/detached at runtime, and only on the main
   mixer's inputs: `beginDJTransition` attaches its 7 nodes, connects the flanger to
-  `mainMixerNode.nextAvailableInputBus`, schedules the OUTGOING file from the frame the main voice
+  `mainMixerNode.nextAvailableInputBus`, opens its OWN `AVAudioFile` on the outgoing file (two
+  player nodes never pull from one ExtAudioFile), schedules it from the frame the main voice
   will be at on a shared future host time (`StemSync.sampleStart` + `voicePlayhead`, 120 ms out),
   starts it there and crosses main → tail over a 60 ms linear handover (`StemSync.crossfade` —
   identical audio on identical settings, inaudible); then the main voices stop (generation bumped
-  first, so their armed end is stale) and the deck's clock (`clockNode`) rides the tail.
+  first, so their armed end is stale) and the deck's clock (`clockNode`) rides the tail. While it
+  does (`tailCarriesSong`) the stem machinery (monitor, handover, stem-stream pump) stands still.
+  The tail carries a leveling ramp that was in flight on at the same rate.
 - **Pre-roll**: the tail ramps its rate × / pitch + / texture toward the glide targets
   (`AutoTransition.outgoingRamp`) on top of the listener's LIVE controls (same song).
 - **Fade start**: the tail's controls freeze; `SetlistPlayer` advances (`onDJFadeStart` — index,
   card, DeadAirMeter, control reset + FX Lock stamp); the main chain engages the INCOMING file
   (`engage`, its scope; the outgoing scope moves to the tail) at its phase-aligned start
-  (`AutoTransition.phaseAlignOffset`, a backward offset taken one beat later), gain 0, rate / pitch
+  (`AutoTransition.phaseAlignOffset` against the tail's playhead read AFTER the engage, projected
+  to the incoming's start moment; a backward offset taken one beat later), gain 0, rate / pitch
   overlays at the incoming glide targets, texture at peak, its leveling gain set. The equal-power
   fade (`AutoTransition.equalPowerGains`) steps on a 25 ms main-actor conductor: tail gain → 0,
   `djMainFade` → 1.
-- **Fade end**: the tail stops and is DETACHED (its scope released). **Post-roll**: the overlays
-  ease back to identity (`AutoTransition.incomingRamp`).
-- **Transport**: pause pauses both decks (the conductor's clock freezes); `disengage` (skip / stop /
-  track change), a seek, a stem toggle, an interruption or an engine configuration change CUT the
-  tail (before the incoming engaged the outgoing goes back onto the main chain at the tail's
-  playhead; after, the incoming carries on at full gain). A listener touch on tempo / pitch /
-  effects ends the glide at once (the listener wins); the crossfade carries on.
+- **Fade end**: the tail stops (its scope released) and is DETACHED — outputs disconnected first
+  (the mainMixer bus freed, nothing auto-re-wired), then the nodes — at once, or after
+  `djTailRingSeconds` (2 s) when its reverb / flanger is wet so the wash rings out. **Post-roll**:
+  the overlays ease back to identity (`AutoTransition.incomingRamp`).
+- **Transport**: pause pauses both decks (the conductor's clock freezes; a pause inside the 60 ms
+  handover lands it WITHOUT starting the fade — the conductor starts it after ▶); `disengage`
+  (skip / stop / track change), a seek, an interruption or an engine configuration change (paused
+  too) CUT the tail. Before the incoming engaged, a cut whose song keeps playing (a stem toggle /
+  mute in the pre-roll, the host refusing at the fade start) HANDS IT BACK (`beginDJReturn`): the
+  main chain is scheduled at the tail's playhead on a shared host time, at the tail's rate / pitch
+  / texture as overlays, a 60 ms linear cross, the tail goes, the overlays ease to the listener's
+  settings over `djEaseSeconds` (0.5 s); a stem handover asked for meanwhile runs once it lands. A
+  tail that already played the song out reports the END. After the advance a cut ramps the tail
+  out over 40 ms (no click) and the incoming carries on at full gain; a stem action then belongs to
+  the incoming (the fade carries on). A listener touch on tempo / pitch / effects ends the glide at
+  once (the listener wins); the crossfade carries on.
 - **Declines** (no node attached, the song ends with the normal advance): not playing / holding,
   a still-growing outgoing (complete-to-its-end rule), a stem handover in flight, muted stems
-  (`[dj] declined stems-muted`), an unreadable incoming, < 0.3 s left.
+  (`[dj] declined stems-muted`), STREAMING (partial) stems on air (`stems streaming`), an
+  unreadable incoming or outgoing re-open, a hand-back still in flight, < 0.3 s left.
 - **Test seams**: `tailDeckActiveForTesting`, `tailGainForTesting`, `tailRateForTesting`,
   `tailPlayingForTesting`, `tailPlayheadForTesting`, `mainFadeGainForTesting`,
-  `attachedNodeCountForTesting`, `levelTrimGainDb` (`DJModeTests`).
+  `attachedNodeCountForTesting`, `retiringTailCountForTesting`, `djReturningForTesting`,
+  `djRateOverlayForTesting`, `levelTrimGainDb` (`DJModeTests`).
 
 ## Multiplayer Mix (SharePlay) — `Remote/MixSync.swift`
 
