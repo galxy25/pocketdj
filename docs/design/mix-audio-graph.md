@@ -210,8 +210,10 @@ Buffering…, and a Skip landed on the next buffering song (2026-10-12).
 
 The Now Playing mix mini-panel's engine (`apple/PocketDJ/Playback/NowPlayingDSP.swift`) is a
 single-deck fork of this deck chain — `player` + 4 stem nodes → `inputMixer` → TimePitch →
-comp → EQ → reverb → flanger → limiter — and its stems toggle now follows the same zero-dead-air
-handover (`advanceStemHandover` / `cutToStems` / `cutToFullMix`, built on `StemSync`):
+comp → EQ → reverb → flanger → `levelTrim` (DJ Mode leveling, 0 dB otherwise) → limiter — plus,
+only while a DJ Mode transition runs, a short-lived TAIL deck (see "Now Playing DJ Mode" below).
+Its stems toggle follows the same zero-dead-air handover (`advanceStemHandover` / `cutToStems` /
+`cutToFullMix`, built on `StemSync`):
 
 - **Intent first.** `setStemMode(true)` refuses (returns false, touches nothing) only when the
   track has no stems anywhere — not burned, not a profile item's, not in the catalog
@@ -400,6 +402,56 @@ still planned. Keep this section in step with the phases as they land.
   ```
 
   The SVG beside this file draws the Mix deck graph only, so it needs no change for any of these phases.
+
+## Now Playing DJ Mode — the TAIL deck + the leveling trim (`docs/design/np-dj-mode.md` §3, §5)
+
+DJ Mode (`SetlistPlayer.djMode`, the `np-dj-mode` chip left of Mix Mode) gives `NowPlayingDSP` the
+Mix tab's Auto-DJ transitions on ONE engine. Two graph changes, both on the Now Playing engine only:
+
+```
+ MAIN (built once, as before)
+ player + 4 stems → inputMixer(vol × djMainFade) → timePitch(rate × djRateMul, pitch + djPitchAdd)
+     → comp → filter EQ(+boost) → reverb → flanger → levelTrim(EQ, band bypassed: globalGain = leveling dB) ─┐
+                                                                                                           ├→ mainMixerNode → PeakLimiter → output
+ TAIL (attached at a transition's start, DETACHED when its crossfade lands)                                 │
+ tailPlayer → tailMixer(vol × handover × fade) → timePitch → comp → filter EQ(+boost + outgoing level dB)   │
+     → reverb → flanger ───────────────────────────────────────────────── (next free mainMixer input bus) ──┘
+```
+
+- **Leveling trim** (`levelTrim`): an `AVAudioUnitEQ` whose band is bypassed — only `globalGain`
+  acts. `NowPlayingDSP.setLevel(db:ramp:)` puts the leveling gain there (−12…+6 dB, ramped over
+  `LoudnessLeveling.rampSeconds` when it lands mid-play), so the listener's gain slider
+  (`inputMixer` volume + the filter EQ's >100 % boost) sits on top. 0 dB outside DJ Mode / with
+  Volume leveling off. Attached at build time like every other main node (graph still write-once).
+- **The tail deck** is the only node set ever attached/detached at runtime, and only on the main
+  mixer's inputs: `beginDJTransition` attaches its 7 nodes, connects the flanger to
+  `mainMixerNode.nextAvailableInputBus`, schedules the OUTGOING file from the frame the main voice
+  will be at on a shared future host time (`StemSync.sampleStart` + `voicePlayhead`, 120 ms out),
+  starts it there and crosses main → tail over a 60 ms linear handover (`StemSync.crossfade` —
+  identical audio on identical settings, inaudible); then the main voices stop (generation bumped
+  first, so their armed end is stale) and the deck's clock (`clockNode`) rides the tail.
+- **Pre-roll**: the tail ramps its rate × / pitch + / texture toward the glide targets
+  (`AutoTransition.outgoingRamp`) on top of the listener's LIVE controls (same song).
+- **Fade start**: the tail's controls freeze; `SetlistPlayer` advances (`onDJFadeStart` — index,
+  card, DeadAirMeter, control reset + FX Lock stamp); the main chain engages the INCOMING file
+  (`engage`, its scope; the outgoing scope moves to the tail) at its phase-aligned start
+  (`AutoTransition.phaseAlignOffset`, a backward offset taken one beat later), gain 0, rate / pitch
+  overlays at the incoming glide targets, texture at peak, its leveling gain set. The equal-power
+  fade (`AutoTransition.equalPowerGains`) steps on a 25 ms main-actor conductor: tail gain → 0,
+  `djMainFade` → 1.
+- **Fade end**: the tail stops and is DETACHED (its scope released). **Post-roll**: the overlays
+  ease back to identity (`AutoTransition.incomingRamp`).
+- **Transport**: pause pauses both decks (the conductor's clock freezes); `disengage` (skip / stop /
+  track change), a seek, a stem toggle, an interruption or an engine configuration change CUT the
+  tail (before the incoming engaged the outgoing goes back onto the main chain at the tail's
+  playhead; after, the incoming carries on at full gain). A listener touch on tempo / pitch /
+  effects ends the glide at once (the listener wins); the crossfade carries on.
+- **Declines** (no node attached, the song ends with the normal advance): not playing / holding,
+  a still-growing outgoing (complete-to-its-end rule), a stem handover in flight, muted stems
+  (`[dj] declined stems-muted`), an unreadable incoming, < 0.3 s left.
+- **Test seams**: `tailDeckActiveForTesting`, `tailGainForTesting`, `tailRateForTesting`,
+  `tailPlayingForTesting`, `tailPlayheadForTesting`, `mainFadeGainForTesting`,
+  `attachedNodeCountForTesting`, `levelTrimGainDb` (`DJModeTests`).
 
 ## Multiplayer Mix (SharePlay) — `Remote/MixSync.swift`
 

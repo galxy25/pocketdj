@@ -1,6 +1,7 @@
 # Now Playing DJ Mode
 
-Status: **building 2026-11-09** on `feat/dj-mode`.
+Status: **integrated 2026-11-08** on `feat/dj-mode` (building blocks + the integration: tail
+deck, conductor, selector wiring, leveling, UI, settings, tests — §9). NOT device-verified.
 
 Levi, 2026-11-09, verbatim:
 
@@ -223,3 +224,43 @@ shared and edited where they already are.
   - snapshot round-trip
   - DJ ⇒ Mix Mode
   - suspended by the Mix tab
+
+## 9. As built (2026-11-08)
+
+| Piece | Where | Notes |
+|---|---|---|
+| Session state | `SetlistPlayer` "Now Playing DJ MODE"; `DJModeState` (+ optional `planner`) | `setDJMode` / `toggleDJMode`; ON turns Mix Mode on, seeds the selector (`AutoTransition.fxSeed` over the queue), re-plans, and takes the current local row into the DSP; OFF disarms + levels to 0 dB (the playing track carries on). `setMixMode(false)` turns DJ off. Cleared by `play` / `stop`. `djActive` = supported (not tvOS) && on && Mix tab idle. |
+| Snapshot | `PlaybackSessionStore.Snapshot.djMode` | Optional, no schema bump. Restored HELD (Mix Mode forced on with it); nothing armed / planned / analysed before ▶. |
+| Track start | `applyDJOnTrackStart` (last step of `applyLocksOnTrackStart`, so every start path, the swap-on-land and the media-reset hand-back get it) | A mixable row is engaged at its start (like the FX Lock), ARMED (`NowPlayingDSP.armDJ(lead:)`), leveled, and the next 2 local rows are queued for loudness analysis. Apple Music / plain streams / live captures play as they are — their end is a normal advance. |
+| The decision | `djBuildTransition` (asked by the DSP's 10 Hz lead-window watch; retried every 1 s while declined) | Declines (logged once per song + reason): transitions off, repeat-one / repeat count, cascade halt, last song, an album playing through on one record (the side keeps playing), next not a complete local file. Then `AutoTransition.advancePlan(secondsLeft, fade, glide, fxGlide: effectSweeps, mixGlide: tempo‖key)`, `glideParams` (Camelot only with Key on, BPM only with Tempo on — grid BPM preferred, the outgoing's listener rate folded in), the texture run (`rollTexture`, held 3–5 transitions) only with Effect sweeps on, the incoming's leveling gain only with Volume on. |
+| Tail deck + conductor | `NowPlayingDSP` "DJ Mode: the TAIL deck" | §3 exactly; see `mix-audio-graph.md` "Now Playing DJ Mode". DSP-side declines: not playing / holding, growing outgoing, stem handover in flight, `stems-muted`, unreadable incoming, < 0.3 s left. |
+| Advance at fade start | `djAdvanceAtFadeStart` + `djIncomingEngaged` | Index, `noteTransition(.naturalEnd)`, repeat counter, generation / start-window / stall bookkeeping, `DeadAirMeter` (`cause=dj`, first audio at once), control reset + FX Lock stamp, then `nowPlaying` (one history play), the DSP card, Stem Lock on the incoming, re-arm, re-plan. A refusal (the queue moved) puts the outgoing back on the main chain; a DSP that can't open the incoming after the advance plays it the plain way. |
+| Selector | `djReplan` / `applyDJOrder` | One uid-verified re-order of the next 40 upcoming rows on DJ on, each advance, a membership landing, and queue edits (debounced 1 s; our own re-order never re-triggers). Fixed: `plan.pinned`, rows the LISTENER placed this session (`djFixedUids`: insert / add / move / jukebox Surprise Slot), and the next row when local, buffering, mid-transition, or under the 30 s runway rule (or its length unknown). Features: catalog (`djSongFacts` — BPM, Camelot, album genre, song-else-album year) with the burned item's BPM / key filling gaps; collections from `djMembershipProvider` (the app flattens `collectionsInput` OFF-main with `ListeningPocketsCollections.flattened`, once per DJ-on). |
+| Leveling | `djLevelDb` / `applyDJLeveling` / `djAnalyze`; `NowPlayingDSP.setLevel(db:ramp:)` on `levelTrim` | `LoudnessCache.shared` (tests inject one). A growing file isn't measured until complete (its completion re-runs it). Unknown ⇒ 0 dB; a landing mid-play ramps 2 s. |
+| UI | `NowPlayingMixPanel` (`np-dj-mode` chip left of Mix Mode; the DJ words ride the Mix Mode chip: "Mixing · DJ — next mixes in"), `DJModeMenuToggle` (record + mini-bar menus), macOS Controls ▸ DJ Mode ⌥⌘J, Settings ▸ Storage ▸ DJ Mode (the 7 toggles) | `DJMode.Indicator`: off / suspended / mixing / nextReady / bufferingNext(n%) / lastTrack. Not on tvOS. |
+| Tests | `DJModeTests` (20) | Pure (words, membership, snapshot); DSP tail (handover playhead, fade 0/1 + release, pause both, disengage cut, seek cut pre-roll + post-fade, listener touch, host refusal, declines incl. muted stems); sequencer (DJ⇒Mix / Mix off⇒DJ off / session scope, advance at fade start, non-local next + transitions off = normal advance, snapshot held restore, Mix tab suspends, selector fixed rows + buffered next + debounced edit re-plan, leveling lands). |
+
+Deviations from §1–§7, and why:
+- **Selector applies a re-order, not `replaceUpcoming`.** `replaceUpcoming` refuses every row with
+  `plan == nil` (every row of an ordinary playlist), so it could never move them. `applyDJOrder` is
+  the same discipline (uid-verified at apply time, fixed rows re-checked, one queue assignment).
+  "Hand-moved / manual" therefore means rows the listener placed in THIS session
+  (`djFixedUids`) plus `plan.pinned` — the original play order is the selector's to arrange.
+- **Next-row runway rule** is `isReplaceablePosition`'s 30 s rule without its `plan != nil`
+  requirement (same reason).
+- **Plan window**: 40 upcoming rows per plan (a 26k-row queue keeps its far tail in order).
+- **Tail chain includes the compressor** (the spec lists timePitch → filter → reverb → delay): the
+  outgoing's own compressor setting must carry or the handover would change its sound. The tail
+  gain is its input mixer (like the main chain's `inputMixer`), so it reads player → gain → … .
+- **Main leveling** sits on a dedicated `levelTrim` EQ (globalGain only) after the flanger, not the
+  filter EQ (whose globalGain is the >100 % volume boost); the tail folds its level into its filter
+  EQ's globalGain beside the boost.
+- **Listener touch** during ANY phase ends the glide (not only the post-roll); a stem toggle / mute
+  mid-transition CUTS it (the stem handover can't run on the tail).
+- **Phase align** from the incoming's top: a backward offset is taken one beat later (same phase)
+  instead of being clamped away.
+
+Not done / follow-ups: device verification (locked phone + CarPlay across a transition, the
+DeadAirMeter on DJ advances, audible handover); the planner `State` is persisted but the texture
+run isn't (a restore re-rolls); the Settings toggles apply at the next track / transition (no live
+re-level when Volume is flipped mid-song).
