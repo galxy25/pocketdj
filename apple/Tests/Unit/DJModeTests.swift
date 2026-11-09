@@ -590,6 +590,87 @@ final class DJModeTests: XCTestCase {
         XCTAssertEqual(r.seq.index, 1, "exactly one advance")
     }
 
+    // MARK: ⏭ review fixes (2026-11-09)
+
+    /// Pre-roll toward q2, then the listener moves q3 up next: the ⏭ is keyed on the RUN's
+    /// incoming, the fade start refuses (the queue moved), and the skip still lands — never swallowed.
+    func testPreRollSkipAfterTheQueueChangedStillSkips() async throws {
+        let r = try rig(["q1", "q2", "q3"], seconds: 10)
+        r.seq.djTimings = { DJMode.Timings(lead: 6, fade: 0.6, glide: 4, skipFade: 0.8) }
+        try await startDJ(r, ["q1", "q2", "q3"])
+        r.dsp.seek(toSongSeconds: 4.2)
+        await waitUntil("pre-roll") { r.dsp.djPhase == .preRoll }
+        let target = try XCTUnwrap(r.dsp.djIncomingSongId)
+        let other = try XCTUnwrap(r.seq.queue.dropFirst().first { $0.id != target })
+        r.seq.moveUpcomingNext(uid: other.uid)
+        r.seq.skipNext()
+        await waitUntil("skipped off q1") { r.seq.index == 1 }
+        XCTAssertEqual(r.seq.queue[1].id, other.id, "the row the listener put next")
+        await waitUntil("settled") { !r.dsp.djTransitioning }
+        XCTAssertEqual(r.seq.index, 1, "exactly one advance")
+    }
+
+    /// A load / disengage that ends a run (never `djFinish`) still clears the pending skip: a
+    /// later ⏭ mixes again instead of being ignored as "a skip mix is starting".
+    func testPendingSkipDoesNotOutliveItsRun() async throws {
+        let r = try rig(["e1", "e2", "e3"])
+        r.seq.djTimings = skipTimings(skipFade: 1)
+        try await startDJ(r, ["e1", "e2", "e3"])
+        r.seq.skipNext()                                    // a skip mix starts (pending)…
+        XCTAssertTrue(r.dsp.djTransitioning)
+        r.seq.skipPrevious()                                // …superseded by a restart of e1
+        await waitUntil("e1 again, re-armed") {
+            r.seq.index == 0 && !r.dsp.djTransitioning && r.seq.mixEngaged && r.dsp.djArmed
+        }
+        if !r.dsp.isPlaying { r.dsp.resume() }
+        r.seq.skipNext()
+        XCTAssertTrue(r.dsp.djTransitioning, "the new ⏭ mixes — not ignored by a stale pending skip")
+        await waitUntil("advanced") { r.seq.index == 1 }
+        XCTAssertEqual(r.seq.lastTransitionCause, .user)
+    }
+
+    /// The DSP tells the host about EVERY run end — a disengage mid-transition included.
+    func testEndingARunByDisengageReportsTheEnd() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        var ended: [String] = []
+        d.onDJTransitionEnded = { _, how in ended.append(how) }
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 3)))
+        _ = d.disengage()
+        XCTAssertEqual(ended, ["end disengage"])
+    }
+
+    /// ⏭ while PAUSED in a pre-roll: the mix is dropped and the immediate advance skips NOW.
+    func testSkipWhilePausedInThePreRollSkipsNow() async throws {
+        let r = try rig(["z1", "z2"], seconds: 10)
+        r.seq.djTimings = { DJMode.Timings(lead: 6, fade: 0.6, glide: 4, skipFade: 0.8) }
+        try await startDJ(r, ["z1", "z2"])
+        r.dsp.seek(toSongSeconds: 4.2)
+        await waitUntil("pre-roll") { r.dsp.djPhase == .preRoll }
+        r.dsp.pause()
+        r.seq.skipNext()
+        XCTAssertEqual(r.seq.index, 1, "skipped at once, not on the next ▶")
+        XCTAssertEqual(r.dsp.djPhase, .idle, "the mix was dropped")
+    }
+
+    /// The pre-roll skip's fade fits the runway at the outgoing's GLIDE tempo (pinned at the fade
+    /// start), so a big tempo meet never runs the tail out mid-fade.
+    func testPreRollSkipFadeFitsTheRunwayAtTheGlideTempo() async throws {
+        let r = try rig(["m1", "m2"], seconds: 10)
+        r.seq.djTimings = { DJMode.Timings(lead: 6, fade: 0.6, glide: 4, skipFade: 15) }
+        r.seq.djSongFacts = { $0 == "m1" ? DJMode.SongFacts(bpm: 100) : DJMode.SongFacts(bpm: 125) }
+        try await startDJ(r, ["m1", "m2"])
+        r.dsp.seek(toSongSeconds: 4.2)
+        await waitUntil("pre-roll") { r.dsp.djPhase == .preRoll }
+        let outRate = try XCTUnwrap(r.dsp.djOutRate)
+        try XCTSkipUnless(outRate > 1.05, "no tempo meet planned (\(outRate))")
+        let left = r.dsp.djSecondsLeft
+        r.seq.skipNext()
+        let fade = try XCTUnwrap(r.dsp.djPlanForTesting?.fadeSeconds)
+        XCTAssertLessThanOrEqual(fade, left / outRate - 0.4, "the fade ends before the sped-up outgoing does")
+        await waitUntil("advanced") { r.seq.index == 1 }
+    }
+
     /// The snapshot carries DJ Mode (+ the selector state) and a restore is HELD: Mix Mode on with
     /// it, nothing armed until ▶.
     func testSnapshotRoundTripRestoresHeld() async throws {

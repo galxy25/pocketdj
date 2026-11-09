@@ -107,7 +107,10 @@ Transport during a transition:
   FX / tempo / key / leveling as at a song's end). The fade is cut to the outgoing's runway
   (≥ 1 s, 0.5 s spare) so a long Skip fade near a song's end never sweeps up against silence.
 - In the **pre-roll** of an end-of-song mix: the pre-roll is dropped and the fade starts now over
-  the skip length.
+  the skip length (cut to the runway at the outgoing's glide tempo, which the fade start pins). The
+  pending skip is keyed on the RUN's incoming; if the queue moved under the pre-roll the fade start
+  refuses and the skip falls back to the immediate advance. PAUSED in a pre-roll, the mix is dropped
+  and the immediate advance skips at once (the fade couldn't start until ▶).
 - During the **fade**: ignored (the advance already happened — the Mix tab's rule).
 - During the **post-roll**: the glide ends (the listener wins) and the skip mixes out of the new song.
 - The advance (at the fade start, ~60 ms after the press) is the listener's skip: `noteTransition(.user)`,
@@ -268,6 +271,10 @@ lengths are shared (`djTimings`).
 Skip mix + Settings ▸ Mixing (2026-11-09): see §3 "Skip = the Mix tab's Skip" and §6.
 `DJModeTests` +8 (skip fade cut to the runway, skip mixes over the Skip fade as a user skip, fast = 5 s, non-local next = immediate,
 DJ off unchanged, repeat-one overridden, ignored mid-fade, pre-roll hurried to the fade).
+Review fixes (2026-11-09, `DJModeTests` +5): the pending skip is cleared on every start / advance /
+⏮ and on EVERY run end (`endDJRun` — load / disengage — now reports `onDJTransitionEnded` too), so it
+can't swallow a later ⏭ or tag a later natural mix as a skip; any fade-start refusal while a skip is
+pending still skips; the ⏭ view keeps the Button's 44 pt target and dims while pressed.
 
 Review fixes (2026-11-08, after the audio + player reviews) — decisions:
 - **Remote / SharePlay**: DJ Mode is SUSPENDED while a Remote session is attached — no DJ

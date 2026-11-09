@@ -2323,6 +2323,10 @@ final class NowPlayingDSP {
     var tailRateForTesting: Float? { tail.map { $0.timePitch.rate } }
     var tailPlayingForTesting: Bool { tail?.player.isPlaying ?? false }
     var mainFadeGainForTesting: Float { djMainFade }
+    /// The in-flight transition's incoming song id (a ⏭ in its pre-roll is a skip INTO it).
+    var djIncomingSongId: String? { djRun?.spec.incoming.songId }
+    /// The in-flight transition's outgoing tempo target (the fade start pins the tail at it).
+    var djOutRate: Double? { djRun?.spec.outRate }
     /// The in-flight transition's plan (a ⏭ hurries / replaces it).
     var djPlanForTesting: AutoTransition.Plan? { djRun?.spec.plan }
     var attachedNodeCountForTesting: Int { engine.attachedNodes.count }
@@ -2721,6 +2725,13 @@ final class NowPlayingDSP {
         return true
     }
 
+    /// ⏭ while PAUSED in a pre-roll (nothing would sound until ▶): drop the transition — the
+    /// outgoing is the song again — so the host's immediate advance can take over.
+    func djAbandonForSkip() {
+        guard djRun != nil else { return }
+        djCut(reason: "skip while paused")
+    }
+
     /// ⏭ during the POST-ROLL: the glide ends at once (the listener wins) so a new skip can mix
     /// out of the song. False when not in a post-roll.
     @discardableResult
@@ -2912,6 +2923,7 @@ final class NowPlayingDSP {
         if djReturn != nil { settleDJReturn() }
         settleDJEase()
         guard djRun != nil || tail != nil else { return }
+        let ended = djRun
         if let run = djRun {
             DJMode.log("end \(reason) phase=\(djPhase.rawValue)")
             if !run.incomingEngaged { run.spec.incoming.release?() }
@@ -2923,6 +2935,8 @@ final class NowPlayingDSP {
         setVoiceGains(main: 1, stems: 1)
         resetDJOverlays()
         djPhase = .idle
+        // The host hears every end (its per-transition state — a pending skip — must not outlive it).
+        if let ended { onDJTransitionEnded?(ended.incomingEngaged ? ended.spec.incoming.songId : nil, "end \(reason)") }
     }
 
     /// Take the tail off the air. `fadeOut`: ramp its gain to 0 first (a sounding tail — a hard

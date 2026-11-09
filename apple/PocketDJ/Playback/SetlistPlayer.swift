@@ -1092,6 +1092,7 @@ final class SetlistPlayer {
         guard isRunning else { return }
         if redirectedToRemote(.skipPrevious) { return }
         DiagLog.shared.telemetry("action", "skip previous")
+        djSkipPending = nil
         noteUserTransport()
         exitHoldIfNeeded()
         waitingForLive = false
@@ -2868,10 +2869,18 @@ final class SetlistPlayer {
                 DJMode.log("skip ignored — a skip mix is starting song=\(queue[index].id)")
                 return true
             }
-            guard index + 1 < queue.count else { return false }
+            // Paused: the fade couldn't start until ▶ — drop the mix, the immediate advance skips now.
+            guard dsp.isPlaying, let incoming = dsp.djIncomingSongId else {
+                dsp.djAbandonForSkip()
+                return false
+            }
             noteAdvanceAway()
-            djSkipPending = queue[index + 1].id
-            dsp.djSkipDuringPreRoll(fadeSeconds: min(fade, max(1, dsp.djSecondsLeft - 0.5)))
+            // Keyed on the RUN's incoming (the queue may have changed under the pre-roll — then the
+            // fade start refuses and the skip falls back to the immediate advance).
+            djSkipPending = incoming
+            // The fade start pins the outgoing at its glide tempo: plan on the runway it really has.
+            let runway = dsp.djSecondsLeft / max(1, dsp.djOutRate ?? 1)
+            dsp.djSkipDuringPreRoll(fadeSeconds: min(fade, max(1, runway - 0.5)))
             return true
         case .postRoll:
             dsp.djEndPostRollForSkip()
@@ -2900,12 +2909,18 @@ final class SetlistPlayer {
     /// halt / Transitions off / DJ suspended) — the refusal cuts back cleanly.
     private func djAdvanceAtFadeStart(_ songId: String) -> Bool {
         // A ⏭'s mix: the advance is the listener's skip (np-dj-mode §3 transport).
+        let skipPending = djSkipPending != nil
         let isSkip = djSkipPending == songId
         djSkipPending = nil
-        // A refused SKIP still skips — the cut hands the outgoing back first, then the plain advance.
+        // A refused fade start while a SKIP is pending still skips — the cut hands the outgoing
+        // back first, then the immediate advance (the outgoing was already reported skipped).
         func refuse() -> Bool {
-            if isSkip { Task { @MainActor [weak self] in self?.skipAfterRefusedMix() } }
+            if skipPending { Task { @MainActor [weak self] in self?.skipAfterRefusedMix() } }
             return false
+        }
+        guard !skipPending || isSkip else {
+            DJMode.log("fade start → \(songId) refused (a skip was pending for another row)")
+            return refuse()
         }
         guard djActive, isRunning, mixEngaged, !isHeldForResume, index + 1 < queue.count,
               queue[index + 1].matches(songId) else {
@@ -4275,6 +4290,7 @@ final class SetlistPlayer {
     enum AdvanceCause { case user, auto, unplayableHere }
 
     private func advanceToNext(_ cause: AdvanceCause = .auto) {
+        djSkipPending = nil                 // any pending skip mix is superseded by this advance
         let mayGlide = glideOnNextAdvance
         glideOnNextAdvance = false
         let natural = naturalEndAdvance
@@ -4525,6 +4541,7 @@ final class SetlistPlayer {
     /// THE way to invoke `playCurrent` — every call site funnels through here so the
     /// cancel-the-previous rule can't be forgotten at one of them.
     private func startPlayCurrent(fresh: Bool = true, resumeAtMs: Int? = nil) {
+        djSkipPending = nil                 // a (re)start supersedes any pending skip mix
         var resumeAtMs = resumeAtMs
         if resumeAtMs == nil, fresh, let cue = pendingStartCue {
             pendingStartCue = nil   // one-shot: the next fresh start consumes it either way
