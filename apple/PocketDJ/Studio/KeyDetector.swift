@@ -75,8 +75,9 @@ enum KeyDetector {
 
     /// Audio key: a chromagram from the decoded PCM (FFT magnitude folded into 12 pitch classes),
     /// then KS. nil when the audio is too short/quiet to be tonal.
-    nonisolated static func detect(audio buffer: AVAudioPCMBuffer) -> (camelot: String, strength: Double)? {
-        guard let chroma = chromagram(buffer) else { return nil }
+    nonisolated static func detect(audio buffer: AVAudioPCMBuffer, maxSeconds: Double = maxSeconds)
+        -> (camelot: String, strength: Double)? {
+        guard let chroma = chromagram(buffer, maxSeconds: maxSeconds) else { return nil }
         return detect(chroma: chroma)
     }
 
@@ -84,12 +85,12 @@ enum KeyDetector {
 
     private static let fftSize = 4096          // ~10.8 Hz bins @ 44.1 kHz — separates adjacent low notes
     private static let hop = 2048
-    private static let maxSeconds = 30.0       // tonality is stationary; the head is representative
+    static let maxSeconds = 30.0               // tonality is stationary; the head is representative
     private static let refFreq = 440.0         // A4
 
     /// Fold the FFT magnitude spectrum of `buffer` into 12 pitch-class bins across the musical range
     /// (A1…~D8). Sums |X| per bin over Hann-windowed hops. nil when unreadable/silent.
-    nonisolated static func chromagram(_ buffer: AVAudioPCMBuffer) -> [Double]? {
+    nonisolated static func chromagram(_ buffer: AVAudioPCMBuffer, maxSeconds: Double = maxSeconds) -> [Double]? {
         let sr = buffer.format.sampleRate
         guard sr > 0, let mono = monoSamples(buffer, maxSeconds: maxSeconds), mono.count >= fftSize else { return nil }
         let log2n = vDSP_Length(log2(Double(fftSize)))

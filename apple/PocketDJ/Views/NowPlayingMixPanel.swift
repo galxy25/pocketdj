@@ -721,8 +721,8 @@ struct DJLevelingReadoutRow: View {
     /// The bars: the incoming / current at full height, the outgoing's shrinking with its gain.
     private var meterSides: [(db: Double, weight: Double, live: Bool)] {
         var out: [(Double, Double, Bool)] = []
-        if let o = readout.outgoing, o.status == .measured { out.append((o.trimDb, readout.outGain, false)) }
-        if readout.current.status == .measured {
+        if let o = readout.outgoing, o.status == .measured || o.status == .estimated { out.append((o.trimDb, readout.outGain, false)) }
+        if readout.current.status == .measured || readout.current.status == .estimated {
             out.append((readout.current.trimDb, readout.outgoing == nil ? 1 : readout.inGain, true))
         }
         return out
@@ -730,9 +730,10 @@ struct DJLevelingReadoutRow: View {
 
     static func words(_ side: DJAutomationDisplay.LevelSide) -> String {
         switch side.status {
-        case .measured:
+        case .measured, .estimated:
             let v = side.trimDb
-            return abs(v) < 0.05 ? "0.0 dB" : String(format: "%@%.1f dB", v > 0 ? "+" : "−", abs(v))
+            let db = abs(v) < 0.05 ? "0.0 dB" : String(format: "%@%.1f dB", v > 0 ? "+" : "−", abs(v))
+            return side.status == .estimated ? "≈ " + db : db
         case .measuring: return "measuring…"
         case .off: return "off"
         case .unavailable: return "unavailable"

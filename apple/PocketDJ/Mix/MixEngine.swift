@@ -428,6 +428,9 @@ final class MixEngine {
     @ObservationIgnored private var levelRamps: [Deck: Task<Void, Never>] = [:]
     /// The loudness cache (nil ⇒ `LoudnessCache.shared`; tests inject one).
     @ObservationIgnored var loudnessCache: LoudnessCache?
+    /// The progressive analysis (quick ≈ hints until the full measurement — np-dj-mode §5a).
+    @ObservationIgnored var analysisScheduler: AudioAnalysisScheduler?
+    @ObservationIgnored private var analysisObserver: NSObjectProtocol?
     /// A newly-known gain ramps over this (`LoudnessLeveling.rampSeconds`).
     static var levelRampSeconds: Double = LoudnessLeveling.rampSeconds
     /// Tests: the trim's leveling share right now (dB).
@@ -6594,7 +6597,27 @@ final class MixEngine {
             setDeckLevel(deck, db: 0, status: .unavailable)
             return
         }
-        setDeckLevel(deck, db: 0, status: .measuring)
+        // Until the full measurement lands: the quick pass's ≈ hint (clamped ±4 dB), queued at
+        // the live deck's priority (the standby is next).
+        let sched = analysisScheduler ?? .shared
+        if analysisObserver == nil {
+            analysisObserver = NotificationCenter.default.addObserver(
+                forName: AudioAnalysisScheduler.resultNotification, object: nil, queue: .main) { [weak self] note in
+                guard let key = note.object as? LoudnessCache.Key else { return }
+                MainActor.assumeIsolated {
+                    guard let self, self.volumeGlideEnabled, self.autoMixing else { return }
+                    for d in Deck.allCases where self.state(d).loaded?.songId == key.songId { self.levelDeck(d) }
+                }
+            }
+        }
+        sched.enqueue(.init(key: key, open: { (url, nil) }, sliceStartSeconds: Double(startMs ?? 0) / 1000,
+                            durationSeconds: Double(end - start) / sr, complete: true,
+                            priority: state(deck).isPlaying ? .current : .next))
+        if let g = AudioAnalysis.levelGain(fullGainDb: nil, quick: sched.cache.quick(for: key)).db {
+            setDeckLevel(deck, db: g, status: .estimated)
+        } else {
+            setDeckLevel(deck, db: 0, status: .measuring)
+        }
         let songId = meta.songId
         Task { @MainActor [weak self] in
             let outcome = await cache.analyze(key, url: url)

@@ -379,6 +379,13 @@ final class SetlistPlayer {
         // Arm the now-playing observation ONCE; it self-re-arms on every change (see
         // `adoptNowPlayingIfJumped`). Single arm avoids stacking observers across play() calls.
         observeNowPlaying()
+        // DJ Mode's progressive analysis (np-dj-mode §5a): a hint / final landing re-levels the
+        // playing song and re-plans with the new tempo / key facts.
+        analysisObserver = NotificationCenter.default.addObserver(
+            forName: AudioAnalysisScheduler.resultNotification, object: nil, queue: .main) { [weak self] note in
+            guard let key = note.object as? LoudnessCache.Key else { return }
+            MainActor.assumeIsolated { self?.djAnalysisLanded(key) }
+        }
         // Durable session: play/pause flips persist the position IMMEDIATELY (the throttled
         // ticker alone would leave the paused position up to a tick stale). Same one-shot
         // self-re-arming pattern as observeNowPlaying.
@@ -2487,6 +2494,10 @@ final class SetlistPlayer {
     }
     /// The loudness cache (nil ⇒ `LoudnessCache.shared`; tests inject a temp one).
     @ObservationIgnored var loudnessCache: LoudnessCache?
+    /// The progressive BPM / key / loudness analysis (nil ⇒ the shared ones; tests inject).
+    @ObservationIgnored var analysisScheduler: AudioAnalysisScheduler?
+    private var analysis: AudioAnalysisScheduler { analysisScheduler ?? .shared }
+    @ObservationIgnored private var analysisObserver: NSObjectProtocol?
     @ObservationIgnored private var djMembership: [String: Set<String>] = [:]
     @ObservationIgnored private var djMembershipTask: Task<Void, Never>?
     /// The membership provider ran for this DJ-on (an EMPTY result — no collections — isn't
@@ -2580,6 +2591,7 @@ final class SetlistPlayer {
             (loudnessCache ?? .shared).cancelAll()
             dsp?.disarmDJ()
             dsp?.setLevelingStatus(.inactive)
+            analysis.cancelPending()
             if mixEngaged { dsp?.setLevel(db: 0, ramp: true) }
         }
         persistSession()
@@ -2803,6 +2815,14 @@ final class SetlistPlayer {
         let burned = burns.items[it.resolveId] ?? burns.items[it.id]
         if f.bpm == nil || (f.bpm ?? 0) <= 0, let b = burned?.bpm, b > 0 { f.bpm = b }
         if f.camelot == nil, let c = burned?.camelot { f.camelot = c }
+        // On-device analysis fills what the catalog / server lacks — full > a CONFIDENT quick
+        // hint > nothing; it never overrides a measured value (`AudioAnalysis.bpm` ladder).
+        if f.bpm == nil || f.camelot == nil {
+            var res = analysis.cache.results(songId: it.resolveId)
+            if res.full == nil, res.quick == nil { res = analysis.cache.results(songId: it.id) }
+            f.bpm = AudioAnalysis.bpm(measured: f.bpm, full: res.full, quick: res.quick).value
+            f.camelot = AudioAnalysis.camelot(measured: f.camelot, full: res.full, quick: res.quick).value
+        }
         return f == DJMode.SongFacts() ? nil : f
     }
 
@@ -3072,7 +3092,8 @@ final class SetlistPlayer {
         guard let key = djLoudnessKey(songId, url: url, startMs: startMs, lengthMs: lengthMs) else { return 0 }
         if let g = cache.gainDb(for: key) { return g }
         if !cache.isSettledOrRunning(key) { djAnalyze(key, url: url) }
-        return 0
+        // Until the full measurement lands: the quick hint, clamped to ±4 dB (0 when none).
+        return AudioAnalysis.levelGain(fullGainDb: nil, quick: analysis.cache.quick(for: key)).db ?? 0
     }
 
     /// The playing row's loudness slice: its shared-file start + the DSP's slice length.
@@ -3092,7 +3113,17 @@ final class SetlistPlayer {
         }
         let it = queue[index]
         // A file still DOWNLOADING isn't measured (its completion re-runs this).
-        if dsp.isStreamingMain { dsp.setLevelingStatus(.measuring); return }
+        if dsp.isStreamingMain {
+            // Still arriving: its head's quick hint (≈, ±4 dB) stands in until the file completes.
+            let hint = analysis.cache.results(songId: it.id).quick ?? analysis.cache.results(songId: it.resolveId).quick
+            if let g = AudioAnalysis.levelGain(fullGainDb: nil, quick: hint).db {
+                dsp.setLevelingStatus(.estimated)
+                if abs(g - dsp.levelTargetDb) > 0.01 { dsp.setLevel(db: g, ramp: ramp) }
+            } else {
+                dsp.setLevelingStatus(.measuring)
+            }
+            return
+        }
         let seg = djCurrentSegment(it)
         let db = djLevelDb(it.id, url: url, startMs: seg.startMs, lengthMs: seg.lengthMs)
         dsp.setLevelingStatus(djLevelingStatus(it.id, url: url, startMs: seg.startMs, lengthMs: seg.lengthMs))
@@ -3107,6 +3138,7 @@ final class SetlistPlayer {
         guard let key = djLoudnessKey(songId, url: url, startMs: startMs, lengthMs: lengthMs) else { return .unavailable }
         if cache.gainDb(for: key) != nil { return .measured }
         if cache.contains(key) || cache.hasFailed(key) { return .unavailable }   // unmeasurable / failed
+        if LoudnessLeveling.gainDb(lufs: analysis.cache.quick(for: key)?.lufs) != nil { return .estimated }
         return .measuring
     }
 
@@ -3136,6 +3168,7 @@ final class SetlistPlayer {
 
     /// Analyse the next local rows ahead of their starts (so their gain is known at the mix).
     private func djAnalyzeUpcoming() {
+        djScheduleAnalysis()
         guard djActive, djModeSettings().volumeLeveling, index + 1 < queue.count else { return }
         let cache = loudnessCache ?? .shared
         for it in queue[(index + 1)..<min(queue.count, index + 3)] {
@@ -3147,6 +3180,53 @@ final class SetlistPlayer {
             }
             djAnalyze(key, url: src.url, release: src.release)
         }
+    }
+
+    // MARK: DJ — progressive analysis (np-dj-mode §5a)
+
+    /// Queue the quick → full BPM / key / loudness passes: the CURRENT song first, then the next
+    /// up (the listener's pick ahead of a planned next), then the rest of the plan window. Files
+    /// are opened only when their pass starts (`Job.open`). A growing current file runs its head.
+    private func djScheduleAnalysis() {
+        guard djActive, isRunning, index < queue.count else { return }
+        let sched = analysis
+        // The current song (its file on the DSP / the AVPlayer; complete unless still arriving).
+        let cur = queue[index]
+        if let url = rips.nowPlaying?.url, url.isFileURL, queue[index].matches(rips.nowPlaying?.songId ?? "") {
+            let seg = djCurrentSegment(cur)
+            if let key = djLoudnessKey(cur.id, url: url, startMs: seg.startMs, lengthMs: seg.lengthMs) {
+                sched.enqueue(.init(key: key, open: { (url, nil) },
+                                    sliceStartSeconds: Double(seg.startMs ?? 0) / 1000,
+                                    durationSeconds: (seg.lengthMs ?? cur.lengthMs).map { Double($0) / 1000 },
+                                    complete: !(dsp?.isStreamingMain ?? false), priority: .current))
+            }
+        }
+        let hi = min(queue.count, index + 1 + Self.djPlanWindow)
+        guard index + 1 < hi else { return }
+        for i in (index + 1)..<hi {
+            let it = queue[i]
+            guard let src = djLocalSource(it) else { continue }
+            let key = djLoudnessKey(it.id, url: src.url, startMs: src.startMs, lengthMs: src.lengthMs)
+            src.release?()
+            guard let key else { continue }
+            let pri: AudioAnalysisScheduler.Priority = i == index + 1 ? (it.djUserNext ? .userNext : .next) : .window
+            sched.enqueue(.init(key: key, open: { [weak self] in
+                                    guard let s = self?.djLocalSource(it) else { return nil }
+                                    return (s.url, s.release)
+                                },
+                                sliceStartSeconds: Double(src.startMs ?? 0) / 1000,
+                                durationSeconds: (src.lengthMs ?? it.lengthMs).map { Double($0) / 1000 },
+                                complete: true, priority: pri))
+        }
+    }
+
+    /// A hint / final landed: the playing song re-levels (a hint at most ±4 dB; the final ramps
+    /// over 2 s — never a jump) and the plan re-reads the new tempo / key facts.
+    private func djAnalysisLanded(_ key: LoudnessCache.Key) {
+        guard djActive, isRunning, index < queue.count else { return }
+        prefetchRevision &+= 1
+        if queue[index].matches(key.songId) { applyDJLeveling(ramp: true) }
+        scheduleDJReplanOnEdit()
     }
 
     // MARK: DJ — the PocketDJ selector (np-dj-mode §4)
@@ -3481,7 +3561,10 @@ final class SetlistPlayer {
         } ?? rips.nowPlaying?.startMs
         stampGrowingNowPlaying(it, url: url, startMs: startMs)
         NPMixMode.log("growing song=\(it.id) complete → \(url.lastPathComponent)")
-        if djMode.enabled { applyDJLeveling(ramp: true) }   // complete: measurable (lands ramped)
+        if djMode.enabled {
+            applyDJLeveling(ramp: true)   // complete: measurable (lands ramped)
+            djScheduleAnalysis()          // …and the head-only hint gets its better window + full pass
+        }
         prefetchRevision &+= 1
         scheduleStemLockReplan()               // the current row is local now: its stems come next
     }

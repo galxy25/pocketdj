@@ -3132,6 +3132,8 @@ final class NowPlayingDSP {
         case unavailable
         /// Measured: `appliedLevelDb` / `levelTargetDb` carry the trim.
         case measured
+        /// A QUICK-pass hint (≈, clamped ±4 dB) until the full measurement lands.
+        case estimated
     }
     @ObservationIgnored private(set) var levelingStatus: LevelingStatus = .inactive
 
