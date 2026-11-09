@@ -202,12 +202,25 @@ struct NowPlayingMixPanel: View {
             .foregroundStyle(on ? Theme.accent : Theme.fgDim)
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(Capsule().fill(on ? Theme.accent.opacity(0.18) : Theme.bgOverlay))
+            // The out → in crossfade, filling the capsule's floor while a transition runs (the
+            // Mix tab's crossfader sweep, in the chip's own footprint — no new row).
+            .overlay(alignment: .bottom) {
+                if on, automating {
+                    Capsule().fill(Theme.accent)
+                        .frame(height: 2)
+                        .scaleEffect(x: max(0.04, dsp.djDisplay.crossfade), anchor: .leading)
+                        .padding(.horizontal, 7)
+                        .padding(.bottom, 1)
+                        .accessibilityHidden(true)
+                        .accessibilityIdentifier("np-dj-crossfade")
+                }
+            }
             .overlay(Capsule().stroke(on ? Theme.accent : Theme.border))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("DJ Mode")
-        .accessibilityValue(on ? "On" : "Off")
+        .accessibilityValue(on ? (automating ? "On, mixing \(Int((dsp.djDisplay.crossfade * 100).rounded())) percent" : "On") : "Off")
         .accessibilityHint("Mixes each song into the next with tempo, key and effect transitions, and orders the queue into tempo waves")
         .accessibilityIdentifier("np-dj-mode")
     }
@@ -216,12 +229,15 @@ struct NowPlayingMixPanel: View {
 
     @ViewBuilder private var controls: some View {
         VStack(spacing: 8) {
-            DeckSlider(title: "Tempo", display: String(format: "%.2f×", dsp.rate),
-                       value: dsp.rate, range: MixEngine.rateRange, step: 0.02,
+            // DJ Mode automation MOVES these (the Mix tab's gliding sliders): they show what is
+            // heard (`displayRate` / `displayPitch`) and a touch takes over from that value — the
+            // DSP ends the glide and the listener's value becomes the dragged one (no jump).
+            DeckSlider(title: "Tempo", display: String(format: "%.2f×", dsp.displayRate),
+                       value: dsp.displayRate, range: MixEngine.rateRange, step: 0.02,
                        a11y: "np-mix-tempo",
                        onChange: { engage(); dsp.setRate($0) })
             DeckSlider(title: "Pitch", display: pitchDisplay,
-                       value: dsp.pitch, range: MixEngine.pitchRange, step: 0.5,
+                       value: dsp.displayPitch, range: MixEngine.pitchRange, step: 0.5,
                        a11y: "np-mix-pitch",
                        onChange: { engage(); dsp.setPitch($0) })
             DeckSlider(title: "Gain", display: "\(Int((dsp.volume * 100).rounded()))%",
@@ -237,8 +253,12 @@ struct NowPlayingMixPanel: View {
     }
 
     private var pitchDisplay: String {
-        dsp.pitch == 0 ? "0 st" : String(format: "%+.1f st", dsp.pitch)
+        let p = dsp.displayPitch
+        return abs(p) < 0.05 ? "0 st" : String(format: "%+.1f st", p)
     }
+
+    /// DJ Mode automation is driving the controls (observed at ~16 Hz while it runs).
+    private var automating: Bool { dsp.djDisplay.active }
 
     private var effectsGrid: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -257,12 +277,19 @@ struct NowPlayingMixPanel: View {
             }
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                 ForEach(MixEngine.Effect.allCases) { effect in
+                    // Shows the transition's sweep too; a touch acts on what is SHOWN: a tap
+                    // flips the shown state, a strength drag on a swept effect keeps it on.
+                    let shown = dsp.displayEffect(effect)
                     EffectButton(effect: effect,
-                                 isOn: dsp.isEnabled(effect),
-                                 strength: dsp.strength(effect),
+                                 isOn: shown.on,
+                                 strength: shown.strength,
                                  a11y: "np-mix-fx-\(effect.rawValue)",
-                                 onToggle: { engage(); dsp.setEffect(effect, enabled: !dsp.isEnabled(effect)) },
-                                 onStrength: { engage(); dsp.setEffectStrength(effect, $0) })
+                                 onToggle: { engage(); dsp.setEffect(effect, enabled: !dsp.displayEffect(effect).on) },
+                                 onStrength: { v in
+                                     engage()
+                                     if dsp.displayEffect(effect).on, !dsp.isEnabled(effect) { dsp.setEffect(effect, enabled: true) }
+                                     dsp.setEffectStrength(effect, v)
+                                 })
                 }
             }
         }

@@ -222,6 +222,22 @@ lengths are shared (`djTimings`).
   - "DJ — next mixes in" when the next is local
   - "DJ — buffering next n%" otherwise
   - "DJ — mixing" during a transition
+- **The controls move** (Levi 2026-11-09: "just like auto dj for the mixer"). During a transition
+  the Mix panel's Tempo and Pitch sliders and the Effects buttons show what is HEARD, like the Mix
+  tab's gliding decks:
+  - pre-roll: the OUTGOING's automated values (the tail carries the current song);
+  - from the fade start: the INCOMING's (pinned at its glide targets), easing back through the
+    post-roll (and through a hand-back's ease);
+  - the DJ chip's floor fills with the out → in crossfade (0 → 1 over the fade; VoiceOver
+    "On, mixing n percent").
+  `NowPlayingDSP.djDisplay` (`DJAutomationDisplay`, `@Observable`) is published at ~16 Hz
+  (`djDisplayInterval`) only while automation runs, plus at once on phase changes, ends and
+  touches; the panel reads `displayRate` / `displayPitch` / `displayEffect`. READ-ONLY: the
+  listener's `rate` / `pitch` / effects (and so the FX Lock carry, the session snapshot and
+  Settings) never see automated values. A touch acts on what is SHOWN: a slider drag sets the
+  listener's value from the shown one (the glide ends — no jump); tapping a swept effect turns
+  it off, dragging its strength keeps it on as the listener's. Gain is the listener's level and
+  does not move (the crossfade is the chip's bar).
 - **Menus.** `MixModeMenuToggle`'s sibling `DJModeMenuToggle` goes in the record and mini-bar menus.
   On macOS: Controls ▸ DJ Mode (⌥⌘J).
 - **Diagnostics.** A `[dj]` DiagLog lane logs plan, transition start/decline reasons and leveling
@@ -271,6 +287,8 @@ lengths are shared (`djTimings`).
 Skip mix + Settings ▸ Mixing (2026-11-09): see §3 "Skip = the Mix tab's Skip" and §6.
 `DJModeTests` +8 (skip fade cut to the runway, skip mixes over the Skip fade as a user skip, fast = 5 s, non-local next = immediate,
 DJ off unchanged, repeat-one overridden, ignored mid-fade, pre-roll hurried to the fade).
+Automation display (2026-11-09, `DJModeTests` +3): see §7 "The controls move".
+
 Review fixes (2026-11-09, `DJModeTests` +5): the pending skip is cleared on every start / advance /
 ⏮ and on EVERY run end (`endDJRun` — load / disengage — now reports `onDJTransitionEnded` too), so it
 can't swallow a later ⏭ or tag a later natural mix as a skip; any fade-start refusal while a skip is

@@ -1,4 +1,5 @@
 import AVFoundation
+import Observation
 import XCTest
 @testable import PocketDJ
 
@@ -289,6 +290,81 @@ final class DJModeTests: XCTestCase {
         await waitUntil("done") { d.djPhase == .idle }
         XCTAssertEqual(d.timePitchRate, 1.1, accuracy: 1e-3)
         XCTAssertTrue(d.filterBandBypassed, "no texture left on")
+    }
+
+    // MARK: - The controls MOVE with the automation (np-dj-mode §7, Levi 2026-11-09)
+
+    /// Pre-roll: the display shows the OUTGOING's automated tempo / pitch / sweep (crossfade 0);
+    /// from the fade start the INCOMING's, the crossfade climbing; after the post-roll it lets go
+    /// (inactive, the listener's values). The listener's own values never move.
+    func testDisplayTracksTheAutomation() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        d.onDJFadeStart = { _ in true }
+        XCTAssertFalse(d.djDisplay.active, "nothing automated yet")
+        XCTAssertEqual(d.displayRate, 1)
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 1.2, fade: 1.2, postRoll: 0.8)))
+        XCTAssertTrue(d.djDisplay.active)
+        XCTAssertEqual(d.djDisplay.phase, "preRoll")
+        await waitUntil("the outgoing's glide shows mid pre-roll") {
+            d.djDisplay.phase == "preRoll" && d.displayRate > 1.02 && d.displayPitch > 0.2
+                && (d.displayEffect(.filter).on && d.displayEffect(.filter).strength > 0.2)
+        }
+        XCTAssertEqual(d.djDisplay.crossfade, 0)
+        XCTAssertEqual(d.rate, 1, "the listener's tempo is untouched")
+        XCTAssertEqual(d.pitch, 0)
+        XCTAssertFalse(d.isEnabled(.filter), "the listener's filter is still off")
+        await waitUntil("fade: the incoming's values, the crossfade moving") {
+            d.djDisplay.phase == "fade" && d.djDisplay.crossfade > 0.2 && d.djDisplay.crossfade < 0.9
+        }
+        XCTAssertEqual(d.displayRate, 0.95, accuracy: 0.01, "the incoming pinned at its glide target")
+        XCTAssertEqual(d.displayPitch, -0.5, accuracy: 0.01)
+        await waitUntil("post-roll eases back") { d.djDisplay.phase == "postRoll" && d.displayRate > 0.955 }
+        XCTAssertEqual(d.djDisplay.crossfade, 1)
+        await waitUntil("released") { !d.djDisplay.active }
+        XCTAssertEqual(d.displayRate, d.rate)
+        XCTAssertEqual(d.displayPitch, d.pitch)
+        XCTAssertFalse(d.displayEffect(.filter).on)
+    }
+
+    /// The display publishes at the throttled rate (~16 Hz), not per tick / buffer.
+    func testDisplayPublishesAtTheThrottledRate() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        d.onDJFadeStart = { _ in true }
+        var changes = 0
+        func watch() {
+            withObservationTracking { _ = d.djDisplay.rate } onChange: { Task { @MainActor in changes += 1; watch() } }
+        }
+        watch()
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 1.0, fade: 0.6, postRoll: 0.2)))
+        let start = Date()
+        await waitUntil("pre-roll over") { d.djPhase != .preRoll }
+        let secs = Date().timeIntervalSince(start)
+        XCTAssertGreaterThan(changes, 3, "the tempo visibly moves")
+        XCTAssertLessThanOrEqual(Double(changes), secs * 25 + 3, "≈16 Hz, never the 40 Hz conductor tick")
+    }
+
+    /// A touch takes over from the DISPLAYED value (no jump) and ends the automation display;
+    /// nothing automated is written to the listener's state the FX Lock / snapshot read.
+    func testTouchTakesOverFromTheDisplayedValueAndNothingPersists() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        d.onDJFadeStart = { _ in true }
+        var userFX = 0
+        d.onUserEffectChange = { userFX += 1 }
+        XCTAssertNil(d.beginDJTransition(spec(b, fade: 1.5, postRoll: 1.5)))
+        await waitUntil("fade") { d.djPhase == .fade && d.djDisplay.phase == "fade" }
+        XCTAssertTrue(d.effectSettings.isEmpty, "the sweep never reaches the FX Lock carry")
+        XCTAssertEqual(userFX, 0)
+        XCTAssertEqual(d.rate, 1, "automation never becomes the listener's tempo")
+        let shown = d.displayRate
+        d.setRate(shown)                                  // the slider's first drag value = what it showed
+        XCTAssertEqual(Double(d.timePitchRate), shown, accuracy: 1e-3, "no jump: the heard tempo stays put")
+        XCTAssertEqual(d.rate, shown, accuracy: 1e-9, "the listener owns the shown value now")
+        XCTAssertEqual(d.displayRate, shown, accuracy: 1e-3)
+        await waitUntil("done") { d.djPhase == .idle && !d.djDisplay.active }
+        XCTAssertEqual(d.displayRate, shown, accuracy: 1e-9)
     }
 
     /// The host REFUSING the advance at the fade start (the queue moved) puts the outgoing back.
