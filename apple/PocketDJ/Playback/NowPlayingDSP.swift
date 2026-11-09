@@ -763,6 +763,7 @@ final class NowPlayingDSP {
         endDJRun(reason: "disengage")
         flushRetiringTails()
         disarmDJ()
+        levelingStatus = .inactive              // (published by the setLevel below)
         setLevel(db: 0, ramp: false)
         resetStemIntent()                       // stale-proofs any fetch/stream/fade (track change)
         cancelEffectRamp()
@@ -2284,6 +2285,8 @@ final class NowPlayingDSP {
         var levelDb = 0.0
         var levelTarget = 0.0
         var levelRate = 0.0
+        /// The outgoing's leveling status as it was at the handover (the readout's "out" side).
+        var levelStatus: NowPlayingDSP.LevelingStatus = .inactive
         var nodes: [AVAudioNode] { [player, mixer, timePitch, comp, filter, reverb, flanger] }
         /// The reverb / flanger is wet: its wash outlives the dry signal.
         var rings: Bool { !reverb.bypass || !flanger.bypass }
@@ -2384,6 +2387,7 @@ final class NowPlayingDSP {
         guard djAutomating else {
             djDisplayTask?.cancel(); djDisplayTask = nil
             if djDisplay.active { djDisplay.clear() }
+            publishLevelReadout()
             return
         }
         let heard: (rate: Double, pitch: Double, base: ControlState, texture: (effect: MixEngine.Effect, strength: Double)?)
@@ -2411,6 +2415,7 @@ final class NowPlayingDSP {
         let pitch = min(max(heard.pitch, MixEngine.pitchRange.lowerBound), MixEngine.pitchRange.upperBound)
         djDisplay.publish(active: true, rate: heard.rate, pitch: pitch, effects: fx, crossfade: xf,
                           phase: djRun == nil ? "ease" : djPhase.rawValue)
+        publishLevelReadout()
         guard djDisplayTask == nil else { return }
         djDisplayTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -2419,6 +2424,7 @@ final class NowPlayingDSP {
                 guard self.djAutomating else {
                     self.djDisplayTask = nil
                     if self.djDisplay.active { self.djDisplay.clear() }
+                    self.publishLevelReadout()
                     return
                 }
                 self.publishDJDisplay()
@@ -2520,6 +2526,7 @@ final class NowPlayingDSP {
         t.levelDb = appliedLevelDb
         t.levelTarget = levelTargetDb
         t.levelRate = levelRamp != nil ? levelRampRateDbPerSecond : 0
+        t.levelStatus = levelingStatus
         t.handoverGain = 0
         tail = t
         djRun = DJRun(id: runId, spec: spec, outgoingSongId: loadedSongId ?? "",
@@ -3112,6 +3119,49 @@ final class NowPlayingDSP {
     var levelRampInFlight: Bool { levelRamp != nil }
     var levelTrimGainDb: Float { levelTrim.globalGain }
 
+    /// What the host knows about the current song's leveling (the readout says so instead of a
+    /// "0 dB" that was never measured).
+    enum LevelingStatus: Equatable, Sendable {
+        /// DJ Mode isn't leveling this song at all (off / suspended / not engaged) — no readout.
+        case inactive
+        /// DJ Mode is on, Settings ▸ Mixing "Volume leveling" is off.
+        case off
+        /// Not measured yet (the analysis is running / the file is still downloading).
+        case measuring
+        /// The analysis failed or found nothing to measure (0 dB applied).
+        case unavailable
+        /// Measured: `appliedLevelDb` / `levelTargetDb` carry the trim.
+        case measured
+    }
+    @ObservationIgnored private(set) var levelingStatus: LevelingStatus = .inactive
+
+    /// The host's status for the CURRENT (main-chain) song.
+    func setLevelingStatus(_ status: LevelingStatus) {
+        levelingStatus = status
+        publishLevelReadout()
+    }
+
+    /// Publish the leveling readout (the trim heard on the shown song, and during a crossfade
+    /// the outgoing's fading out against the incoming's coming in — equal-power).
+    private func publishLevelReadout() {
+        let main = DJAutomationDisplay.LevelSide(status: levelingStatus, trimDb: appliedLevelDb)
+        var r = DJAutomationDisplay.LevelingReadout(current: main, outgoing: nil, outGain: 0, inGain: 1)
+        if let t = tail, let run = djRun {
+            let side = DJAutomationDisplay.LevelSide(status: t.levelStatus, trimDb: t.levelDb)
+            switch djPhase {
+            case .preRoll:
+                r = .init(current: side, outgoing: nil, outGain: 0, inGain: 1)      // the tail IS the song
+            case .fade:
+                let p = Float(min(1, max(0, run.phaseElapsed / max(0.05, run.spec.plan.fadeSeconds))))
+                let g = AutoTransition.equalPowerGains(progress: p)
+                r = .init(current: main, outgoing: side, outGain: Double(g.outgoing), inGain: Double(g.incoming))
+            case .postRoll, .idle:
+                break
+            }
+        }
+        djDisplay.publishLeveling(r)
+    }
+
     /// Set the leveling gain (clamped −12…+6 dB). `ramp`: glide there over `seconds` (default
     /// `levelRampSeconds` — an analysis landing mid-play) in `levelRampStepSeconds` steps;
     /// otherwise it lands at once (a track start, before audio).
@@ -3124,6 +3174,7 @@ final class NowPlayingDSP {
         guard ramp, built, isEngaged, abs(target - appliedLevelDb) > 0.01, total > 0 else {
             appliedLevelDb = target
             if built { levelTrim.globalGain = Float(target) }
+            publishLevelReadout()
             return
         }
         let from = appliedLevelDb
@@ -3137,10 +3188,13 @@ final class NowPlayingDSP {
                 let v = from + (target - from) * Double(i) / Double(steps)
                 self.appliedLevelDb = v
                 self.levelTrim.globalGain = Float(v)
+                // The readout follows the ramp at ~16 Hz (every 3rd 20 ms step), not per step.
+                if i % 3 == 0 { self.publishLevelReadout() }
             }
             guard let self, !Task.isCancelled else { return }
             self.levelRamp = nil
             self.levelRampRateDbPerSecond = 0
+            self.publishLevelReadout()
         }
     }
 
@@ -3202,5 +3256,43 @@ final class DJAutomationDisplay {
 
     func clear() {
         publish(active: false, rate: 1, pitch: 0, effects: [:], crossfade: 0, phase: "idle")
+    }
+
+    // MARK: Volume leveling (the automatic trim — np-dj-mode §5 / §7)
+
+    /// One song's leveling as heard.
+    struct LevelSide: Equatable {
+        var status: NowPlayingDSP.LevelingStatus
+        /// The trim on that song right now (dB; ramps over the 2 s leveling ramp).
+        var trimDb: Double
+    }
+
+    /// The leveling readout: the shown song's trim, and during a crossfade the outgoing's
+    /// fading out (`outGain`) against the incoming's coming in (`inGain`) — equal-power.
+    struct LevelingReadout: Equatable {
+        var current: LevelSide
+        var outgoing: LevelSide?
+        var outGain: Double
+        var inGain: Double
+
+        static let none = LevelingReadout(current: .init(status: .inactive, trimDb: 0), outgoing: nil, outGain: 0, inGain: 1)
+    }
+
+    /// Published with the rest (~16 Hz while anything moves) — read-only, never persisted; the
+    /// listener's Gain is a separate control.
+    private(set) var leveling = LevelingReadout.none
+
+    func publishLeveling(_ r: LevelingReadout) {
+        // Redraw only for a change a 0.1 dB readout / the meter can show.
+        func near(_ a: LevelSide?, _ b: LevelSide?) -> Bool {
+            switch (a, b) {
+            case (nil, nil): return true
+            case let (x?, y?): return x.status == y.status && abs(x.trimDb - y.trimDb) < 0.05
+            default: return false
+            }
+        }
+        guard !(near(leveling.current, r.current) && near(leveling.outgoing, r.outgoing)
+                && abs(leveling.outGain - r.outGain) < 0.01 && abs(leveling.inGain - r.inGain) < 0.01) else { return }
+        leveling = r
     }
 }

@@ -2534,6 +2534,7 @@ final class SetlistPlayer {
             djReplanTask?.cancel(); djReplanTask = nil
             (loudnessCache ?? .shared).cancelAll()
             dsp?.disarmDJ()
+            dsp?.setLevelingStatus(.inactive)
             if mixEngaged { dsp?.setLevel(db: 0, ramp: true) }
         }
         persistSession()
@@ -2556,6 +2557,7 @@ final class SetlistPlayer {
         djLastDecline = nil
         djSkipPending = nil
         dsp?.disarmDJ()
+        dsp?.setLevelingStatus(.inactive)
     }
 
     /// Observe the Remote seam: attaching SUSPENDS DJ Mode at once (the arm and any leveling
@@ -2575,6 +2577,7 @@ final class SetlistPlayer {
                     DJMode.log("remote session attached — DJ Mode paused")
                     self.djReplanTask?.cancel(); self.djReplanTask = nil
                     self.dsp?.disarmDJ()
+                    self.dsp?.setLevelingStatus(.inactive)
                     if self.mixEngaged { self.dsp?.setLevel(db: 0, ramp: true) }
                 } else {
                     DJMode.log("remote session ended — DJ Mode resumes")
@@ -3034,17 +3037,29 @@ final class SetlistPlayer {
     private func applyDJLeveling(ramp: Bool) {
         guard let dsp, mixEngaged, isRunning, index < queue.count else { return }
         guard djActive, djModeSettings().volumeLeveling, let url = rips.nowPlaying?.url, url.isFileURL else {
+            // The readout says WHY there's no trim (never a "0 dB" that was never measured).
+            dsp.setLevelingStatus(djActive && !djModeSettings().volumeLeveling ? .off : .inactive)
             dsp.setLevel(db: 0, ramp: ramp)
             return
         }
         let it = queue[index]
         // A file still DOWNLOADING isn't measured (its completion re-runs this).
-        if dsp.isStreamingMain { return }
+        if dsp.isStreamingMain { dsp.setLevelingStatus(.measuring); return }
         let seg = djCurrentSegment(it)
         let db = djLevelDb(it.id, url: url, startMs: seg.startMs, lengthMs: seg.lengthMs)
+        dsp.setLevelingStatus(djLevelingStatus(it.id, url: url, startMs: seg.startMs, lengthMs: seg.lengthMs))
         guard abs(db - dsp.levelTargetDb) > 0.01 else { return }
         dsp.setLevel(db: db, ramp: ramp)
         DJMode.log("level song=\(it.id) gain=\(String(format: "%+.1f", db))dB\(ramp ? " (ramped)" : "")")
+    }
+
+    /// What the readout says about a local file's leveling (after `djLevelDb` kicked any analysis).
+    private func djLevelingStatus(_ songId: String, url: URL, startMs: Int?, lengthMs: Int?) -> NowPlayingDSP.LevelingStatus {
+        let cache = loudnessCache ?? .shared
+        guard let key = djLoudnessKey(songId, url: url, startMs: startMs, lengthMs: lengthMs) else { return .unavailable }
+        if cache.gainDb(for: key) != nil { return .measured }
+        if cache.contains(key) || cache.hasFailed(key) { return .unavailable }   // unmeasurable / failed
+        return .measuring
     }
 
     /// Measure `key` once (background); when THIS analysis stored a result and it belongs to
@@ -3055,10 +3070,19 @@ final class SetlistPlayer {
         Task { @MainActor [weak self] in
             let outcome = await cache.analyze(key, url: url)
             release?()
-            guard case .measured = outcome, let self, self.isRunning, self.index < self.queue.count,
+            guard let self, self.isRunning, self.index < self.queue.count,
                   self.queue[self.index].id == key.songId, self.mixEngaged,
                   self.rips.nowPlaying?.url == url else { return }
-            self.applyDJLeveling(ramp: true)
+            switch outcome {
+            case .measured:
+                self.applyDJLeveling(ramp: true)
+            case .failed:
+                // Remembered — the readout says "unavailable" instead of "measuring…" forever
+                // (status only: re-applying can't re-kick a failed key).
+                if self.djActive { self.dsp?.setLevelingStatus(.unavailable) }
+            case .cached, .cancelled:
+                break
+            }
         }
     }
 

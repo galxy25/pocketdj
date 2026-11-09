@@ -246,6 +246,9 @@ struct NowPlayingMixPanel: View {
                        valueColor: dsp.volume > 1.0 ? Theme.accent2 : Theme.fg,
                        accessibilityValueText: "\(Int((dsp.volume * 100).rounded())) percent",
                        onChange: { engage(); dsp.setVolume($0) })
+            // DJ Mode's automatic volume LEVELING trim — read-only, separate from Gain (the
+            // listener's own level, which it never moves).
+            DJLevelingReadoutRow(readout: dsp.djDisplay.leveling)
 
             effectsGrid
             stemSection
@@ -674,5 +677,100 @@ private struct NowPlayingStemPad: View {
         .accessibilityValue(muted ? "Muted" : (pending ? "Loading" : "On"))
         .accessibilityIdentifier(a11y)
         .accessibilityAddTraits(.isButton)
+    }
+}
+
+// MARK: - DJ Mode leveling readout (np-dj-mode §5 / §7)
+
+/// "Leveling +3.2 dB" with a −12…+6 dB meter (0 dB tick): the automatic trim DJ Mode puts on
+/// the playing song to keep the mix at one loudness — moving through its 2 s ramp and, during a
+/// crossfade, the outgoing's trim fading out (dimming, its bar shrinking) as the incoming's
+/// comes in (equal-power). Says "measuring…" / "off" / "unavailable" instead of a 0 dB that was
+/// never measured. Hidden when DJ Mode isn't leveling (DJ off, a plain row).
+struct DJLevelingReadoutRow: View {
+    let readout: DJAutomationDisplay.LevelingReadout
+
+    var body: some View {
+        if readout.current.status != .inactive || readout.outgoing != nil {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text("Leveling").font(.caption).foregroundStyle(Theme.fgDim)
+                    Spacer(minLength: 4)
+                    if let out = readout.outgoing {
+                        Text(Self.words(out))
+                            .opacity(0.35 + 0.65 * readout.outGain)
+                        Image(systemName: "arrow.right").font(.caption2).foregroundStyle(Theme.fgDim)
+                        Text(Self.words(readout.current))
+                            .opacity(0.35 + 0.65 * readout.inGain)
+                    } else {
+                        Text(Self.words(readout.current))
+                    }
+                }
+                .font(.caption.monospacedDigit())
+                .lineLimit(1).minimumScaleFactor(0.7)
+                LevelMeter(sides: meterSides)
+                    .frame(height: 4)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Volume leveling")
+            .accessibilityValue(a11yValue)
+            .accessibilityIdentifier("np-mix-leveling")
+        }
+    }
+
+    /// The bars: the incoming / current at full height, the outgoing's shrinking with its gain.
+    private var meterSides: [(db: Double, weight: Double, live: Bool)] {
+        var out: [(Double, Double, Bool)] = []
+        if let o = readout.outgoing, o.status == .measured { out.append((o.trimDb, readout.outGain, false)) }
+        if readout.current.status == .measured {
+            out.append((readout.current.trimDb, readout.outgoing == nil ? 1 : readout.inGain, true))
+        }
+        return out
+    }
+
+    static func words(_ side: DJAutomationDisplay.LevelSide) -> String {
+        switch side.status {
+        case .measured:
+            let v = side.trimDb
+            return abs(v) < 0.05 ? "0.0 dB" : String(format: "%@%.1f dB", v > 0 ? "+" : "−", abs(v))
+        case .measuring: return "measuring…"
+        case .off: return "off"
+        case .unavailable: return "unavailable"
+        case .inactive: return "—"
+        }
+    }
+
+    private var a11yValue: String {
+        if let o = readout.outgoing {
+            return "\(Self.words(o)) fading to \(Self.words(readout.current))"
+        }
+        return Self.words(readout.current)
+    }
+}
+
+/// A −12…+6 dB trim meter: bars grow from the 0 dB tick (up = turned up, accent2; down = turned
+/// down, accent). Weight 0…1 scales a bar's thickness + opacity (the crossfade's out / in).
+private struct LevelMeter: View {
+    let sides: [(db: Double, weight: Double, live: Bool)]
+    private static let lo = LoudnessLeveling.minGainDb, hi = LoudnessLeveling.maxGainDb
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let zero = w * CGFloat(-Self.lo / (Self.hi - Self.lo))
+            ZStack(alignment: .leading) {
+                Capsule().fill(Theme.bgOverlay)
+                ForEach(Array(sides.enumerated()), id: \.offset) { _, side in
+                    let x = w * CGFloat((min(max(side.db, Self.lo), Self.hi) - Self.lo) / (Self.hi - Self.lo))
+                    Rectangle()
+                        .fill(side.db >= 0 ? Theme.accent2 : Theme.accent)
+                        .frame(width: max(1, abs(x - zero)), height: geo.size.height * CGFloat(0.4 + 0.6 * side.weight))
+                        .opacity(side.live ? 1 : 0.35 + 0.65 * side.weight)
+                        .offset(x: min(x, zero))
+                }
+                Rectangle().fill(Theme.fgDim).frame(width: 1).offset(x: zero)
+            }
+        }
+        .accessibilityHidden(true)
     }
 }

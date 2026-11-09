@@ -367,6 +367,66 @@ final class DJModeTests: XCTestCase {
         XCTAssertEqual(d.displayRate, shown, accuracy: 1e-9)
     }
 
+    // MARK: - The leveling trim is visible (Levi 2026-11-09: "I expect to see the gain automation")
+
+    /// The readout follows the 2 s leveling ramp (throttled — not every 20 ms step) and never
+    /// touches the listener's Gain.
+    func testLevelingReadoutFollowsTheRamp() async throws {
+        let (d, _, _) = try playingDSP()
+        await rendering(d)
+        XCTAssertEqual(d.djDisplay.leveling.current.status, .inactive, "no DJ leveling ⇒ no readout")
+        NowPlayingDSP.levelRampSeconds = 0.6
+        defer { NowPlayingDSP.levelRampSeconds = LoudnessLeveling.rampSeconds }
+        var changes = 0
+        func watch() {
+            withObservationTracking { _ = d.djDisplay.leveling } onChange: { Task { @MainActor in changes += 1; watch() } }
+        }
+        watch()
+        d.setLevelingStatus(.measured)
+        d.setLevel(db: 4, ramp: true)
+        await waitUntil("mid-ramp shows a partial trim") {
+            d.djDisplay.leveling.current.trimDb > 0.5 && d.djDisplay.leveling.current.trimDb < 3.5
+        }
+        await waitUntil("lands") { !d.levelRampInFlight && abs(d.djDisplay.leveling.current.trimDb - 4) < 0.05 }
+        XCTAssertEqual(DJLevelingReadoutRow.words(d.djDisplay.leveling.current), "+4.0 dB")
+        XCTAssertLessThan(changes, 30 / 3 + 4, "throttled (~every 3rd of 30 steps), not per step")
+        XCTAssertEqual(d.volume, 1, "the listener's Gain never moves")
+    }
+
+    /// Through a crossfade the outgoing's trim fades out against the incoming's coming in,
+    /// equal-power; after the fade only the incoming's remains.
+    func testLevelingReadoutCrossfadesOutToIn() async throws {
+        let (d, _, b) = try playingDSP()
+        await rendering(d)
+        d.onDJFadeStart = { _ in true }
+        d.setLevelingStatus(.measured)
+        d.setLevel(db: 2, ramp: false)
+        XCTAssertNil(d.beginDJTransition(spec(b, preRoll: 0.3, fade: 1.6, postRoll: 0.2)))   // incoming −3 dB
+        await waitUntil("pre-roll: the outgoing's trim is the shown one") {
+            d.djPhase == .preRoll && abs(d.djDisplay.leveling.current.trimDb - 2) < 0.05 && d.djDisplay.leveling.outgoing == nil
+        }
+        await waitUntil("mid-fade: out → in") {
+            guard let o = d.djDisplay.leveling.outgoing else { return false }
+            return abs(o.trimDb - 2) < 0.05 && abs(d.djDisplay.leveling.current.trimDb + 3) < 0.05
+                && d.djDisplay.leveling.outGain < 0.95 && d.djDisplay.leveling.inGain > 0.3
+        }
+        let r = d.djDisplay.leveling
+        XCTAssertEqual(r.outGain * r.outGain + r.inGain * r.inGain, 1, accuracy: 0.03, "equal-power")
+        await waitUntil("after the fade only the incoming's") { d.djPhase != .fade && d.djDisplay.leveling.outgoing == nil }
+        XCTAssertEqual(d.djDisplay.leveling.current.trimDb, -3, accuracy: 0.05)
+        XCTAssertEqual(d.volume, 1)
+    }
+
+    /// The words never pretend: measuring / off / unavailable are said, not shown as 0 dB.
+    func testLevelingWords() {
+        typealias S = DJAutomationDisplay.LevelSide
+        XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .measuring, trimDb: 0)), "measuring…")
+        XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .off, trimDb: 0)), "off")
+        XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .unavailable, trimDb: 0)), "unavailable")
+        XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .measured, trimDb: -4.46)), "−4.5 dB")
+        XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .measured, trimDb: 0.01)), "0.0 dB")
+    }
+
     /// The host REFUSING the advance at the fade start (the queue moved) puts the outgoing back.
     func testHostRefusalAtTheFadeStartKeepsTheOutgoing() async throws {
         let (d, _, b) = try playingDSP()
@@ -834,6 +894,9 @@ final class DJModeTests: XCTestCase {
         await waitUntil("the gain heads onto the trim") { abs(r.dsp.levelTargetDb - gain) < 0.01 }
         await waitUntil("ramp landed") { !r.dsp.levelRampInFlight }
         XCTAssertEqual(Double(r.dsp.levelTrimGainDb), r.dsp.levelTargetDb, accuracy: 0.01)
+        XCTAssertEqual(r.dsp.djDisplay.leveling.current.status, .measured, "the readout shows a MEASURED trim")
+        XCTAssertEqual(r.dsp.djDisplay.leveling.current.trimDb, gain, accuracy: 0.05)
+        XCTAssertEqual(r.dsp.volume, 1, "the listener's Gain is separate")
         // Leveling OFF ⇒ 0 dB on the next start.
         var cfg = DJModeSettings.allOn
         cfg.volumeLeveling = false
@@ -842,6 +905,9 @@ final class DJModeTests: XCTestCase {
         await waitUntil("l2 engaged") { r.dsp.loadedSongId == "l2" && r.seq.mixEngaged }
         // The incoming's level lands over the fade start's short ramp (never a step).
         await waitUntil("l2 at 0 dB") { r.dsp.levelTrimGainDb == 0 && !r.dsp.levelRampInFlight }
+        await waitUntil("the readout says off — not 0 dB") { r.dsp.djDisplay.leveling.current.status == .off }
+        r.seq.setDJMode(false)
+        XCTAssertEqual(r.dsp.djDisplay.leveling.current.status, .inactive, "DJ off ⇒ no readout")
     }
 }
 

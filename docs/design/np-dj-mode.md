@@ -238,6 +238,16 @@ lengths are shared (`djTimings`).
   listener's value from the shown one (the glide ends — no jump); tapping a swept effect turns
   it off, dragging its strength keeps it on as the listener's. Gain is the listener's level and
   does not move (the crossfade is the chip's bar).
+- **The leveling trim is visible** (Levi 2026-11-09: "I expect to see the gain automation too").
+  Under Gain, `DJLevelingReadoutRow` ("Leveling +3.2 dB" + a −12…+6 dB meter from a 0 dB tick)
+  shows the automatic trim on the playing song, moving through the 2 s ramp; during a crossfade
+  "−4.5 dB → +3.2 dB", the outgoing's dimming / its bar thinning with the equal-power out gain as
+  the incoming's comes in. It says "measuring…" (not analysed yet / still downloading), "off"
+  (Settings ▸ Mixing "Volume leveling" off) or "unavailable" (analysis failed / unmeasurable)
+  instead of a 0 dB that was never measured, and is hidden when DJ Mode isn't leveling. The host
+  sets `NowPlayingDSP.setLevelingStatus`; the DSP publishes `djDisplay.leveling` (~16 Hz: every
+  3rd 20 ms ramp step, the DJ display loop) — read-only, never persisted, separate from the
+  listener's Gain.
 - **Menus.** `MixModeMenuToggle`'s sibling `DJModeMenuToggle` goes in the record and mini-bar menus.
   On macOS: Controls ▸ DJ Mode (⌥⌘J).
 - **Diagnostics.** A `[dj]` DiagLog lane logs plan, transition start/decline reasons and leveling
@@ -287,7 +297,7 @@ lengths are shared (`djTimings`).
 Skip mix + Settings ▸ Mixing (2026-11-09): see §3 "Skip = the Mix tab's Skip" and §6.
 `DJModeTests` +8 (skip fade cut to the runway, skip mixes over the Skip fade as a user skip, fast = 5 s, non-local next = immediate,
 DJ off unchanged, repeat-one overridden, ignored mid-fade, pre-roll hurried to the fade).
-Automation display (2026-11-09, `DJModeTests` +3): see §7 "The controls move".
+Automation display + leveling readout (2026-11-09, `DJModeTests` +6): see §7 "The controls move".
 
 Review fixes (2026-11-09, `DJModeTests` +5): the pending skip is cleared on every start / advance /
 ⏮ and on EVERY run end (`endDJRun` — load / disengage — now reports `onDJTransitionEnded` too), so it
