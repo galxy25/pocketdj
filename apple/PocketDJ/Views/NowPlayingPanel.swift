@@ -1007,11 +1007,17 @@ struct NowPlayingMiniBar: View {
 /// tappable view, NOT a `Button` — a Button's action fires on the first tap, so a double tap
 /// would also fire the single (MixView's Skip pattern: `count: 2` first, the lone tap after the
 /// disambiguation delay). DJ off: today's Button, no delay.
+///
+/// `djActive` is reactive: it reads `djMode` (observed) and the Mix-tab / Remote seams, whose
+/// closures read `MixEngine.isRunning` / `autoMixing` and `RemoteSessionController.isActive` —
+/// all `@Observable`, so reading them during `body` registers the dependency.
 struct NPSkipNextButton<Label: View>: View {
     let sequencer: SetlistPlayer
     let identifier: String
     var help: String?
     @ViewBuilder let label: () -> Label
+    /// Press feedback for the tap view (a Button dims itself; a tap gesture doesn't).
+    @GestureState private var pressed = false
 
     var body: some View {
         #if os(tvOS)
@@ -1019,7 +1025,11 @@ struct NPSkipNextButton<Label: View>: View {
         #else
         if sequencer.djActive {
             label()
+                // The Button's ≥44 pt hit target, kept (the glyph is unchanged).
+                .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
+                .opacity(pressed ? 0.35 : 1)
+                .simultaneousGesture(DragGesture(minimumDistance: 0).updating($pressed) { _, p, _ in p = true })
                 .onTapGesture(count: 2) { sequencer.skipNext(fast: true) }   // fast 5 s sweep
                 .onTapGesture(count: 1) { sequencer.skipNext() }             // Skip fade
                 .accessibilityAddTraits(.isButton)
