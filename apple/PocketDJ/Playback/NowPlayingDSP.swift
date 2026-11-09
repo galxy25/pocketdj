@@ -51,6 +51,10 @@ final class NowPlayingDSP {
     @ObservationIgnored private var reverb = AVAudioUnitReverb()
     @ObservationIgnored private var flanger = AVAudioUnitDelay()
     @ObservationIgnored private var masterLimiter = AVAudioUnitEffect(audioComponentDescription: NowPlayingDSP.limiterDesc)
+    /// DJ Mode volume LEVELING trim (np-dj-mode §5): `flanger → levelTrim → mainMixerNode`. Its
+    /// band is bypassed — only `globalGain` (the leveling dB) acts, so the listener's gain slider
+    /// (inputMixer volume + the filter EQ's >100 % boost) sits on top of it. 0 dB = transparent.
+    @ObservationIgnored private var levelTrim = AVAudioUnitEQ(numberOfBands: 1)
     @ObservationIgnored private var stemNodes: [String: AVAudioPlayerNode] = [:]
     @ObservationIgnored private var built = false
 
@@ -318,7 +322,20 @@ final class NowPlayingDSP {
     private func anchoredPlayhead() -> Double? {
         guard let a = playAnchor else { return nil }
         let dt = AVAudioTime.seconds(forHostTime: mach_absolute_time()) - AVAudioTime.seconds(forHostTime: a.host)
-        return a.song + max(0, dt) * _rate
+        return a.song + max(0, dt) * clockRate
+    }
+
+    /// The tempo the playhead clock advances at: the TAIL deck's while it carries the current
+    /// song (a DJ pre-roll), else the main chain's effective rate (listener × DJ glide).
+    private var clockRate: Double {
+        if let t = tail, clockNode === t.player { return tailEffectiveRate(t) }
+        return effectiveRate
+    }
+
+    /// The main chain's tempo as rendered: the listener's rate × the DJ glide overlay
+    /// (np-dj-mode §3 — the incoming eases from its glide target back to the listener's).
+    var effectiveRate: Double {
+        min(max(_rate * djRateMul, MixEngine.rateRange.lowerBound), MixEngine.rateRange.upperBound)
     }
 
     /// The live render-clock playhead (song-relative seconds), or nil when the clock node isn't
@@ -401,10 +418,12 @@ final class NowPlayingDSP {
     private func build() {
         guard !built else { return }
         let canonical = Self.canonicalFormat
-        for n in [player, inputMixer, timePitch, comp, filter, reverb, flanger, masterLimiter] as [AVAudioNode] {
+        for n in [player, inputMixer, timePitch, comp, filter, reverb, flanger, levelTrim, masterLimiter] as [AVAudioNode] {
             engine.attach(n)
         }
         reverb.loadFactoryPreset(.mediumHall)
+        levelTrim.bands.first?.bypass = true
+        levelTrim.globalGain = Float(appliedLevelDb)
         // `player → inputMixer` carries the file's real format (set per engage); the mixer converts it
         // to canonical stereo. The chain below is pinned at canonical FOR LIFE, so a mono / 48 kHz /
         // odd file never reconfigures (and crashes) a live AU.
@@ -414,7 +433,8 @@ final class NowPlayingDSP {
         engine.connect(comp, to: filter, format: canonical)
         engine.connect(filter, to: reverb, format: canonical)
         engine.connect(reverb, to: flanger, format: canonical)
-        engine.connect(flanger, to: engine.mainMixerNode, format: canonical)
+        engine.connect(flanger, to: levelTrim, format: canonical)
+        engine.connect(levelTrim, to: engine.mainMixerNode, format: canonical)
         // Master PEAK LIMITER between the mixer and the device — the >unity gain boost (up to +6 dB on
         // the EQ globalGain) plus the compressor's makeup gain can sum past 0 dBFS; the limiter catches
         // those peaks. Transparent below threshold.
@@ -474,6 +494,9 @@ final class NowPlayingDSP {
     private func handleEngineConfigurationChange() {
         guard isEngaged, isPlaying else { return }
         if isBuffering { _ = startEngineIfNeeded(); return }   // nothing scheduled: just keep the engine up
+        // A DJ transition doesn't survive the engine being stopped behind its back: cut the tail
+        // (the current song carries on alone on the main chain, restarted below).
+        if djPhase != .idle { djCut(reason: "engine stopped") }
         let pos = currentTime
         NPLog.trace("npdsp engine config change @\(String(format: "%.2f", pos))s — restarting")
         settleStemFade()
@@ -485,6 +508,7 @@ final class NowPlayingDSP {
 
     private func handleInterruption(began: Bool, shouldResume: Bool) {
         if began {
+            if djPhase != .idle { djCut(reason: "interruption") }   // the system stopped the engine
             if isPlaying { interruptedWhilePlaying = true; pause() }
         } else {
             guard interruptedWhilePlaying, shouldResume, isEngaged, !isPlaying else {
@@ -515,6 +539,7 @@ final class NowPlayingDSP {
         filter = AVAudioUnitEQ(numberOfBands: 1)
         reverb = AVAudioUnitReverb()
         flanger = AVAudioUnitDelay()
+        levelTrim = AVAudioUnitEQ(numberOfBands: 1)
         masterLimiter = AVAudioUnitEffect(audioComponentDescription: Self.limiterDesc)
         stemNodes = [:]
         built = false
@@ -548,6 +573,7 @@ final class NowPlayingDSP {
         build()
         guard built else { release?(); return }
         guard let f = try? AVAudioFile(forReading: url) else { release?(); return }   // unreadable / corrupt
+        if !djEngagingIncoming { endDJRun(reason: "engage") }   // a foreign engage supersedes a transition
         let sr = f.processingFormat.sampleRate
         let total = f.length
         let segStart = min(max(0, AVAudioFramePosition((Double(startMs ?? 0) / 1000.0) * sr)), total)
@@ -608,6 +634,7 @@ final class NowPlayingDSP {
                                                runway: GrowingFileSchedule.resumeRunway) {
             return false
         }
+        endDJRun(reason: "engage stream")
         resetStemIntent()
         _stemMode = false
         stemPartsRequired = nil
@@ -686,6 +713,7 @@ final class NowPlayingDSP {
     /// frontier, never from 0:00). Paused: the target is where ▶ resumes.
     func seek(toSongSeconds t: Double) {
         guard isEngaged else { return }
+        if djPhase != .idle { djCut(reason: "seek") }   // a seek cuts the tail (np-dj-mode §3)
         let target = min(max(0, t), max(0, duration - 0.05))
         settleStemFade()
         if isPlaying {
@@ -705,6 +733,10 @@ final class NowPlayingDSP {
     @discardableResult
     func disengage() -> Double {
         let pos = currentTime
+        // DJ Mode: skip / stop / a track change cut the tail and forget the arm (np-dj-mode §3).
+        endDJRun(reason: "disengage")
+        disarmDJ()
+        setLevel(db: 0, ramp: false)
         resetStemIntent()                       // stale-proofs any fetch/stream/fade (track change)
         cancelEffectRamp()
         stopVoices(main: true, stems: true)
@@ -754,13 +786,16 @@ final class NowPlayingDSP {
         pausedAt = currentTime
         if isBuffering { setBuffering(false) }   // a held playhead just becomes a paused one
         settleStemFade()                         // never park a half-faded handover
+        if let run = djRun, !run.handoverDone { djHandoverLanded(run.id) }   // …nor the DJ one
         player.pause()
         for n in stemNodes.values { n.pause() }
+        tail?.player.pause()                     // DJ: pause pauses BOTH decks (np-dj-mode §3)
         isPlaying = false
     }
 
     func resume() {
         guard isEngaged, !isPlaying else { return }
+        if djPhase != .idle, tail != nil { djResume(); return }
         startAudio(fromSongSeconds: currentTime >= duration ? 0 : currentTime)
         advanceStemHandover()                    // a pending handover may be ready now it plays
         refreshStemMonitor()
@@ -771,11 +806,13 @@ final class NowPlayingDSP {
     // MARK: - Controls (copied near-verbatim from MixEngine, single-deck, no record/persist)
 
     func setRate(_ rate: Double) {
+        djListenerTookControl("tempo")
         _rate = min(max(rate, MixEngine.rateRange.lowerBound), MixEngine.rateRange.upperBound)
         applyRate()
     }
 
     func setPitch(_ semitones: Double) {
+        djListenerTookControl("pitch")
         _pitch = min(max(semitones, MixEngine.pitchRange.lowerBound), MixEngine.pitchRange.upperBound)
         applyPitch()
     }
@@ -786,6 +823,7 @@ final class NowPlayingDSP {
     }
 
     func setEffect(_ effect: MixEngine.Effect, enabled: Bool) {
+        djListenerTookControl("effect")
         _effectOn[effect.rawValue] = enabled
         effectRampScale[effect.rawValue] = nil   // the listener's hand beats an FX Lock ramp-in
         applyEffect(effect)
@@ -793,6 +831,7 @@ final class NowPlayingDSP {
     }
 
     func setEffectStrength(_ effect: MixEngine.Effect, _ strength: Double) {
+        djListenerTookControl("effect")
         _effectStrength[effect.rawValue] = min(max(strength, 0), 1)
         effectRampScale[effect.rawValue] = nil
         applyEffect(effect)
@@ -910,6 +949,7 @@ final class NowPlayingDSP {
     /// re-arm main on failure").
     @discardableResult
     func setStemMode(_ on: Bool) -> Bool {
+        if djPhase != .idle { djCut(reason: "stems toggled", restart: true) }   // the listener wins
         let ok = applyStemMode(on)
         if ok { onUserStemChange?() }
         return ok
@@ -1096,9 +1136,9 @@ final class NowPlayingDSP {
         settleStemFade()
         let pos = currentTime
         if mainRendering,
-           let start = StemSync.sampleStart(clocks: stemVoices() + [inputMixer], lead: StemSync.startLead, rate: _rate),
+           let start = StemSync.sampleStart(clocks: stemVoices() + [inputMixer], lead: StemSync.startLead, rate: effectiveRate),
            let p = StemSync.voicePlayhead(player, sampleRate: sampleRate, segmentStart: mainSegStartSeconds,
-                                          rate: _rate, at: start),
+                                          rate: effectiveRate, at: start),
            stemsCanSchedule(from: p) {
             // COMMIT: the main file's armed end goes stale; the stems capture the new generation.
             generation += 1
@@ -1154,7 +1194,7 @@ final class NowPlayingDSP {
         // (The runway covers the crossfade's start lead at this tempo: the full song is scheduled
         // from the stems' playhead ~60 ms of HOST time out — past a frontier closer than that,
         // `scheduleMain` would find nothing and fake the song's end.)
-        let lead = StemSync.startLead * max(1, _rate)
+        let lead = StemSync.startLead * max(1, effectiveRate)
         let dry = mainRanDry(at: pos + lead)
         if mainNeedsBytes(at: pos, runway: 0.1 + lead) || dry {
             // The full song can't carry the playhead: still arriving (HOLD there — the pump
@@ -1171,7 +1211,7 @@ final class NowPlayingDSP {
             return
         }
         if stemsRendering,
-           let start = StemSync.sampleStart(clocks: stemVoices() + [inputMixer], lead: StemSync.startLead, rate: _rate),
+           let start = StemSync.sampleStart(clocks: stemVoices() + [inputMixer], lead: StemSync.startLead, rate: effectiveRate),
            let p = stemPlayhead(at: start), p < duration - 0.05 {
             generation += 1                       // COMMIT: the lead stem's armed end goes stale
             guard scheduleMain(fromSongSeconds: p) else { reportEndDeferred(was); return }
@@ -1209,7 +1249,7 @@ final class NowPlayingDSP {
         for name in MixEngine.stemNames {
             guard let n = stemNodes[name], n.isPlaying, let f = stemFiles[name] else { continue }
             if let p = StemSync.voicePlayhead(n, sampleRate: f.processingFormat.sampleRate,
-                                              segmentStart: stemSegStartSeconds, rate: _rate, at: start) { return p }
+                                              segmentStart: stemSegStartSeconds, rate: effectiveRate, at: start) { return p }
         }
         return nil
     }
@@ -1645,6 +1685,7 @@ final class NowPlayingDSP {
     }
 
     func toggleStemMute(_ name: String) {
+        if djPhase != .idle { djCut(reason: "stem mute", restart: true) }
         if _stemMuted.contains(name) { _stemMuted.remove(name) } else { _stemMuted.insert(name) }
         applyStemGains()
         onUserStemChange?()
@@ -1698,7 +1739,7 @@ final class NowPlayingDSP {
         guard !fresh.isEmpty else { got.release?(); return }
         if _stemMode, isPlaying {
             guard stemsRendering,
-                  let start = StemSync.sampleStart(clocks: stemVoices() + [inputMixer], lead: StemSync.startLead, rate: _rate),
+                  let start = StemSync.sampleStart(clocks: stemVoices() + [inputMixer], lead: StemSync.startLead, rate: effectiveRate),
                   let p = stemPlayhead(at: start) else {
                 got.release?(); retryJoin(songId, attempt); return
             }
@@ -1729,17 +1770,28 @@ final class NowPlayingDSP {
 
     // MARK: - Graph apply
 
-    private func applyRate() { timePitch.rate = Float(_rate) }
-    private func applyPitch() { timePitch.pitch = Float(_pitch * 100) }   // cents
+    private func applyRate() {
+        timePitch.rate = Float(effectiveRate)
+        if let t = tail, djPhase == .preRoll { applyTail(t) }   // the tail carries the listener's song
+    }
+    private func applyPitch() {
+        timePitch.pitch = Float(Self.clampPitchCents((_pitch + djPitchAdd) * 100))   // cents
+        if let t = tail, djPhase == .preRoll { applyTail(t) }
+    }
+    private static func clampPitchCents(_ c: Double) -> Double {
+        min(max(c, MixEngine.pitchRange.lowerBound * 100), MixEngine.pitchRange.upperBound * 100)
+    }
 
     /// Deck volume: the 0…1 portion on the shared `inputMixer` (applies to the file AND the 4 stems
     /// uniformly), the >unity boost (100…200% → 0…+6 dB) on the EQ `globalGain` downstream; the master
     /// limiter catches the resulting peaks. Mirrors `MixEngine.applyBoost` semantics.
     private func applyVolume() {
         guard built else { return }
-        inputMixer.outputVolume = Float(min(_volume, 1.0))
+        // × the DJ crossfade's incoming gain (1 outside a transition).
+        inputMixer.outputVolume = Float(min(_volume, 1.0)) * djMainFade
         filter.globalGain = Float(20 * log10(max(_volume, 1.0)))
         applyStemGains()
+        if let t = tail, djPhase == .preRoll { applyTail(t) }
     }
 
     private func applyStemGains() {
@@ -1753,9 +1805,23 @@ final class NowPlayingDSP {
     /// Realize an effect's enabled-state + strength onto its AU — copied from `MixEngine.applyEffect`.
     private func applyEffect(_ effect: MixEngine.Effect) {
         guard built else { return }
-        let on = isEnabled(effect)
+        var on = isEnabled(effect)
         // FX Lock ramp-in: the applied share of the strength (1 when settled).
-        let s = Float(strength(effect)) * (effectRampScale[effect.rawValue] ?? 1)
+        var s = Float(strength(effect)) * (effectRampScale[effect.rawValue] ?? 1)
+        // DJ texture sweep on the incoming (np-dj-mode §3): an effect the listener has OFF is
+        // swept by the transition; one they turned on is theirs and left alone.
+        if !on, let t = djTexture, t.effect == effect {
+            on = true
+            s = Float(t.strength)
+        }
+        Self.applyEffect(effect, on: on, strength: s, comp: comp, filter: filter, reverb: reverb, flanger: flanger)
+        if let t = tail, djPhase == .preRoll { applyTail(t) }
+    }
+
+    /// Realize one effect's on/strength onto a chain's AUs (the main chain's and the DJ tail's).
+    private static func applyEffect(_ effect: MixEngine.Effect, on: Bool, strength s: Float,
+                                    comp: AVAudioUnitEffect, filter: AVAudioUnitEQ,
+                                    reverb: AVAudioUnitReverb, flanger: AVAudioUnitDelay) {
         switch effect {
         case .reverb:
             reverb.wetDryMix = s * 100; reverb.bypass = !on
@@ -1901,7 +1967,7 @@ final class NowPlayingDSP {
         let voices: [AVAudioPlayerNode] = stemMode ? stemVoices() : [player]
         guard !voices.isEmpty else { isPlaying = false; pausedAt = min(max(0, pos), duration); return }
         // The voices sit upstream of the time-stretch: their timeline runs at the deck's rate.
-        let start = StemSync.startTogether(voices, clocks: [inputMixer], lead: StemSync.startLead, rate: _rate)
+        let start = StemSync.startTogether(voices, clocks: [inputMixer], lead: StemSync.startLead, rate: effectiveRate)
         playAnchor = (start.hostTime, pos)
         // No `playStartHost` rebase: `currentTime` now rides the node render clock (rate-scaled,
         // drift-free). `pausedAt` seeds the pre-render fallback at the segment's start position.
@@ -2030,6 +2096,650 @@ final class NowPlayingDSP {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch { /* best-effort */ }
         #endif
+    }
+
+    // MARK: - DJ Mode: the TAIL deck + the transition conductor (np-dj-mode §3)
+    //
+    // Everything the listener touches stays on the ONE main chain. A DJ transition borrows a
+    // short-lived second chain — the TAIL deck: `player → mixer(gain × fade) → timePitch → comp →
+    // filter(EQ + boost/level globalGain) → reverb → flanger → mainMixerNode` (ahead of the shared
+    // PeakLimiter), attached to the SAME engine when the transition starts and detached when its
+    // crossfade lands. The timeline:
+    //
+    //  1. START (pre-roll start, or the fade start when there is no glide). The outgoing song moves
+    //     from the main chain onto the tail deck: the same file from the frame the main voice will
+    //     be at on a shared future host time (`StemSync.sampleStart` + `voicePlayhead`), started
+    //     there, and crossed over a 60 ms linear handover — identical audio through identical
+    //     settings, so the cross is inaudible. Then the main voices stop (generation first: their
+    //     armed end goes stale). The tail carries the outgoing rate / pitch / effects / level.
+    //  2. PRE-ROLL. The tail ramps rate, pitch and the FX texture toward the glide targets
+    //     (`AutoTransition.outgoingRamp`); the listener's controls still steer it (same song).
+    //  3. FADE START. The host advances (`onDJFadeStart` — card, queue index, DeadAirMeter, the
+    //     control reset + FX Lock stamp); the main chain engages the incoming file at its
+    //     phase-aligned start, gain 0, rate / pitch pinned to the incoming glide targets
+    //     (`djRateMul` / `djPitchAdd` OVER the listener's controls), texture at peak. The
+    //     equal-power fade runs: tail out, main in.
+    //  4. FADE END. The tail stops and is released (nodes detached, the outgoing scope released).
+    //  5. POST-ROLL. The overlays ease back to the listener's settings (`incomingRamp`).
+    //
+    // Transport: pause pauses both decks; skip / stop (`disengage`), seek and a stem toggle CUT
+    // the tail; a listener touch on tempo / pitch / effects during the transition ends the glide
+    // at once (the listener wins) — the crossfade itself carries on.
+
+    /// The incoming song a DJ transition mixes into (built by the host).
+    struct DJIncoming {
+        var songId: String
+        var url: URL
+        /// The song's start within a shared analog album file (nil for a per-song file).
+        var startMs: Int?
+        var lengthMs: Int?
+        /// The incoming file's security scope — the main chain holds it once engaged; a
+        /// transition that never gets that far releases it.
+        var release: (() -> Void)?
+        var beat: AutoTransition.BeatRef
+        /// The incoming's leveling gain (dB; 0 = unknown / leveling off).
+        var levelDb: Double
+    }
+
+    /// One DJ transition, every decision already made by `AutoTransition` (np-dj-mode §2).
+    struct DJTransition {
+        var plan: AutoTransition.Plan
+        /// Glide targets — rate MULTIPLIERS / pitch semitones ADDED on top of the listener's.
+        var outRate = 1.0
+        var outPitch = 0.0
+        var inRate = 1.0
+        var inPitch = 0.0
+        /// The FX texture swept through the transition (nil = effect sweeps off).
+        var texture: (effect: MixEngine.Effect, peak: Double)?
+        var outgoingBeat: AutoTransition.BeatRef
+        var incoming: DJIncoming
+    }
+
+    enum DJPhase: String { case idle, preRoll, fade, postRoll }
+
+    /// Where the transition is (OBSERVED — the panel's "DJ — mixing").
+    private(set) var djPhase: DJPhase = .idle
+    var djTransitioning: Bool { djPhase != .idle }
+
+    /// FADE START: the host advances onto `songId` (card, queue index, DeadAirMeter, control reset
+    /// + FX Lock stamp). Returning false refuses — the outgoing goes back onto the main chain.
+    @ObservationIgnored var onDJFadeStart: ((String) -> Bool)?
+    /// The incoming is engaged on the main chain (song id, its file, its shared-file start).
+    @ObservationIgnored var onDJIncomingEngaged: ((String, URL, Int?) -> Void)?
+    /// The incoming file could not be engaged after the host advanced — play it the plain way.
+    @ObservationIgnored var onDJIncomingFailed: ((String) -> Void)?
+    /// A transition the watch tried to begin was declined here (the reason; the host logs it).
+    @ObservationIgnored var onDJDeclined: ((String) -> Void)?
+    /// A transition ended (incoming song id or nil before the advance, how: complete / listener / cut).
+    @ObservationIgnored var onDJTransitionEnded: ((String?, String) -> Void)?
+
+    /// Conductor tick (seconds) — the fade's step.
+    static var djTickSeconds: Double = 0.025
+    /// How far out (host seconds) the outgoing → tail handover is scheduled.
+    static var djHandoverLead: Double = 0.12
+    /// Below this much audio left a transition isn't begun (the song just ends).
+    static var djMinSecondsLeft: Double = 0.75
+    /// A declined begin is retried this often while in the lead window (the next may land).
+    static var djRetrySeconds: Double = 1
+
+    /// The listener's control state, captured for the tail.
+    fileprivate struct ControlState {
+        var rate = 1.0
+        var pitch = 0.0
+        var volume = 1.0
+        var effectOn: [String: Bool] = [:]
+        var effectStrength: [String: Double] = [:]
+    }
+
+    private func liveControls() -> ControlState {
+        ControlState(rate: _rate, pitch: _pitch, volume: _volume, effectOn: _effectOn, effectStrength: _effectStrength)
+    }
+
+    /// The short-lived second chain (see the MARK above).
+    fileprivate final class TailDeck {
+        let player = AVAudioPlayerNode()
+        let mixer = AVAudioMixerNode()
+        let timePitch = AVAudioUnitTimePitch()
+        let comp = AVAudioUnitEffect(audioComponentDescription: NowPlayingDSP.dynamicsDesc)
+        let filter = AVAudioUnitEQ(numberOfBands: 1)
+        let reverb = AVAudioUnitReverb()
+        let flanger = AVAudioUnitDelay()
+        let file: AVAudioFile
+        let sampleRate: Double
+        /// The song second its scheduled segment begins at (its render clock counts from there).
+        var startSongSeconds = 0.0
+        /// The outgoing file's scope, taken over at the fade start.
+        var release: (() -> Void)?
+        /// The outgoing listener's controls — LIVE during the pre-roll (same song), frozen here
+        /// at the fade start (the controls then belong to the incoming).
+        var base: ControlState
+        var rateMul = 1.0
+        var pitchAdd = 0.0
+        var texture: (effect: MixEngine.Effect, strength: Double)?
+        var handoverGain: Float = 0
+        var fadeGain: Float = 1
+        var levelDb = 0.0
+        var nodes: [AVAudioNode] { [player, mixer, timePitch, comp, filter, reverb, flanger] }
+
+        init(file: AVAudioFile, sampleRate: Double, base: ControlState) {
+            self.file = file; self.sampleRate = sampleRate; self.base = base
+        }
+    }
+
+    private struct DJRun {
+        let id: Int
+        var spec: DJTransition
+        let outgoingSongId: String
+        var phaseElapsed = 0.0
+        var handoverDone = false
+        var glideDropped = false
+        var incomingEngaged = false
+        /// The main chain's clock before the handover (restored if it's cut before landing).
+        var savedClock: (node: AVAudioPlayerNode?, sr: Double, segStart: Double)
+    }
+
+    @ObservationIgnored private var tail: TailDeck?
+    @ObservationIgnored private var djRun: DJRun?
+    @ObservationIgnored private var djRunSeq = 0
+    @ObservationIgnored private var djConductor: Task<Void, Never>?
+    @ObservationIgnored private var djHandoverTask: Task<Void, Never>?
+    /// The incoming's glide overlays on the main chain (identity outside a transition).
+    @ObservationIgnored private var djRateMul = 1.0
+    @ObservationIgnored private var djPitchAdd = 0.0
+    @ObservationIgnored private var djTexture: (effect: MixEngine.Effect, strength: Double)?
+    /// The crossfade's incoming gain on the main chain (1 outside a transition).
+    @ObservationIgnored private var djMainFade: Float = 1
+    @ObservationIgnored private var djEngagingIncoming = false
+    @ObservationIgnored private var djArm: (lead: Double, begin: () -> DJTransition?)?
+    @ObservationIgnored private var djWatch: Task<Void, Never>?
+    @ObservationIgnored private var djNextTry: Double = 0
+
+    /// Wall seconds of audio left on the current song at its rendered tempo.
+    var djSecondsLeft: Double { max(0, duration - currentTime) / max(0.05, clockRate) }
+    var djArmed: Bool { djArm != nil }
+
+    // Test seams (tail-deck state; the audio itself is asserted through `captureForTesting`).
+    var tailDeckActiveForTesting: Bool { tail != nil }
+    var tailGainForTesting: Float? { tail.map { $0.mixer.outputVolume } }
+    var tailRateForTesting: Float? { tail.map { $0.timePitch.rate } }
+    var tailPlayingForTesting: Bool { tail?.player.isPlaying ?? false }
+    var mainFadeGainForTesting: Float { djMainFade }
+    var attachedNodeCountForTesting: Int { engine.attachedNodes.count }
+    /// The tail's playhead (song seconds of the OUTGOING song) while it carries it.
+    func tailPlayheadForTesting() -> Double? {
+        guard let t = tail, let nt = t.player.lastRenderTime, let pt = t.player.playerTime(forNodeTime: nt),
+              pt.sampleTime >= 0 else { return nil }
+        return t.startSongSeconds + Double(pt.sampleTime) / t.sampleRate
+    }
+
+    private static func hostNow() -> Double { AVAudioTime.seconds(forHostTime: mach_absolute_time()) }
+
+    // MARK: Arm (the lead-window watch)
+
+    /// Arm the CURRENT engagement for a DJ transition: once the song has `lead` seconds (or fewer)
+    /// left, `begin` is asked for the transition (the host re-validates the next row then — nil
+    /// declines) and it starts. A declined attempt is retried every `djRetrySeconds` (the next
+    /// row may land meanwhile) until `djMinSecondsLeft`. `disengage` disarms.
+    func armDJ(lead: Double, begin: @escaping () -> DJTransition?) {
+        djArm = (lead, begin)
+        djNextTry = 0
+        guard djWatch == nil else { return }
+        djWatch = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                guard let self, !Task.isCancelled, self.djArm != nil else { return }
+                self.djWatchTick()
+            }
+        }
+    }
+
+    func disarmDJ() {
+        djArm = nil
+        djWatch?.cancel(); djWatch = nil
+    }
+
+    private func djWatchTick() {
+        guard let arm = djArm, isEngaged, isPlaying, !isBuffering, djPhase == .idle, duration > 0 else { return }
+        let left = djSecondsLeft
+        guard AutoTransition.inLeadWindow(secondsLeft: left, lead: arm.lead), left > Self.djMinSecondsLeft else { return }
+        let now = Self.hostNow()
+        guard now >= djNextTry else { return }
+        djNextTry = now + Self.djRetrySeconds
+        guard let spec = arm.begin() else { return }
+        if let reason = beginDJTransition(spec) { onDJDeclined?(reason) }
+    }
+
+    // MARK: Begin — the outgoing onto the tail
+
+    /// Start `spec` now. Returns nil when it began, else the decline reason (nothing touched; the
+    /// song plays on and ends with today's normal advance). The incoming's scope is released on
+    /// a decline.
+    @discardableResult
+    func beginDJTransition(_ spec: DJTransition) -> String? {
+        func decline(_ r: String) -> String { spec.incoming.release?(); return r }
+        guard djPhase == .idle, djRun == nil else { return decline("transition in flight") }
+        guard built, isEngaged, isPlaying, !isBuffering, engine.isRunning else { return decline("not playing") }
+        guard mainStream == nil, !mainTruncated else { return decline("outgoing not complete to its end") }
+        guard let f = file, sampleRate > 0 else { return decline("no file") }
+        guard _stemHandover == nil, stemFade == nil else { return decline("stem handover in flight") }
+        if _stemMode, !_stemMuted.isEmpty || _stemVol.values.contains(where: { $0 < 0.999 }) {
+            return decline("stems-muted")
+        }
+        guard let inFile = try? AVAudioFile(forReading: spec.incoming.url), inFile.length > 0 else {
+            return decline("incoming unreadable")
+        }
+        _ = inFile
+        guard let start = StemSync.sampleStart(clocks: [inputMixer], lead: Self.djHandoverLead, rate: effectiveRate) else {
+            return decline("no render clock")
+        }
+        let at: Double? = _stemMode
+            ? stemPlayhead(at: start)
+            : StemSync.voicePlayhead(player, sampleRate: sampleRate, segmentStart: mainSegStartSeconds,
+                                     rate: effectiveRate, at: start)
+        guard let pos = at, pos < duration - 0.3 else { return decline("too close to the end") }
+        let frame = min(segEndFrame, max(segStartFrame, segStartFrame + AVAudioFramePosition(pos * sampleRate)))
+        guard segEndFrame - frame > 0 else { return decline("too close to the end") }
+
+        djRunSeq &+= 1
+        let runId = djRunSeq
+        let t = TailDeck(file: f, sampleRate: sampleRate, base: liveControls())
+        let canonical = Self.canonicalFormat
+        for n in t.nodes { engine.attach(n) }
+        t.reverb.loadFactoryPreset(.mediumHall)
+        engine.connect(t.player, to: t.mixer, format: f.processingFormat)
+        engine.connect(t.mixer, to: t.timePitch, format: canonical)
+        engine.connect(t.timePitch, to: t.comp, format: canonical)
+        engine.connect(t.comp, to: t.filter, format: canonical)
+        engine.connect(t.filter, to: t.reverb, format: canonical)
+        engine.connect(t.reverb, to: t.flanger, format: canonical)
+        engine.connect(t.flanger, to: engine.mainMixerNode, fromBus: 0,
+                       toBus: engine.mainMixerNode.nextAvailableInputBus, format: canonical)
+        t.startSongSeconds = Double(frame - segStartFrame) / sampleRate
+        t.levelDb = appliedLevelDb
+        t.handoverGain = 0
+        tail = t
+        djRun = DJRun(id: runId, spec: spec, outgoingSongId: loadedSongId ?? "",
+                      savedClock: (clockNode, clockSR, segStartSongSeconds))
+        djPhase = .preRoll
+        applyTail(t)
+        t.player.scheduleSegment(f, startingFrame: frame, frameCount: AVAudioFrameCount(segEndFrame - frame),
+                                 at: nil) { [weak self] in
+            Task { @MainActor in self?.tailReachedEnd(runId) }
+        }
+        t.player.play(at: AVAudioTime(hostTime: start.hostTime))
+        // The playhead rides the tail from the handover moment on.
+        clockNode = t.player
+        clockSR = sampleRate
+        segStartSongSeconds = t.startSongSeconds
+        playAnchor = (start.hostTime, t.startSongSeconds)
+        djHandoverTask = StemSync.crossfade(
+            atHostTime: start.hostTime,
+            alive: { [weak self] in self?.djRun?.id == runId },
+            apply: { [weak self] g in
+                guard let self, let t = self.tail else { return }
+                self.setVoiceGains(main: 1 - g, stems: 1 - g)
+                t.handoverGain = g
+                self.applyTail(t)
+            },
+            done: { [weak self] in self?.djHandoverLanded(runId) })
+        startDJConductor(runId)
+        let p = spec.plan
+        DJMode.log("transition start song=\(loadedSongId ?? "-") → \(spec.incoming.songId) at=\(String(format: "%.2f", pos))s "
+                   + "preroll=\(String(format: "%.1f", p.preRollSeconds))s fade=\(String(format: "%.1f", p.fadeSeconds))s "
+                   + "postroll=\(String(format: "%.1f", p.hasPostRoll ? p.postRollSeconds : 0))s "
+                   + "rate=\(String(format: "%.3f", spec.outRate))→\(String(format: "%.3f", spec.inRate)) "
+                   + "pitch=\(String(format: "%+.2f", spec.outPitch))/\(String(format: "%+.2f", spec.inPitch)) "
+                   + "fx=\(spec.texture.map { "\($0.effect.rawValue):\(String(format: "%.2f", $0.peak))" } ?? "none") "
+                   + "level=\(String(format: "%+.1f", appliedLevelDb))→\(String(format: "%+.1f", spec.incoming.levelDb))dB")
+        return nil
+    }
+
+    /// The 60 ms handover landed: the main voices stop (generation first), the tail is the song.
+    private func djHandoverLanded(_ runId: Int) {
+        guard var run = djRun, run.id == runId, let t = tail else { return }
+        djHandoverTask = nil
+        stopVoices(main: true, stems: true)
+        setVoiceGains(main: 1, stems: 1)
+        t.handoverGain = 1
+        applyTail(t)
+        run.handoverDone = true
+        djRun = run
+        if !run.spec.plan.hasPreRoll { djStartFade() }
+    }
+
+    /// The tail ran out (before the fade could start — a short runway): fade now.
+    private func tailReachedEnd(_ runId: Int) {
+        guard djRun?.id == runId, djPhase == .preRoll else { return }
+        if djRun?.handoverDone == true { djStartFade() }
+    }
+
+    // MARK: Conductor
+
+    private func startDJConductor(_ runId: Int) {
+        djConductor?.cancel()
+        djConductor = Task { @MainActor [weak self] in
+            var last = Self.hostNow()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(max(0.005, Self.djTickSeconds) * 1_000_000_000))
+                guard !Task.isCancelled, let self, self.djRun?.id == runId else { return }
+                let now = Self.hostNow()
+                let dt = now - last
+                last = now
+                // The clock only runs while the audio does (pause freezes the transition).
+                if self.isPlaying { self.djTick(dt) }
+            }
+        }
+    }
+
+    private func djTick(_ dt: Double) {
+        guard var run = djRun else { return }
+        run.phaseElapsed += dt
+        djRun = run
+        let plan = run.spec.plan
+        let peak = run.spec.texture?.peak ?? 0
+        switch djPhase {
+        case .idle:
+            return
+        case .preRoll:
+            guard let t = tail else { return }
+            let p = plan.hasPreRoll ? min(1, run.phaseElapsed / plan.preRollSeconds) : 1
+            if !run.glideDropped {
+                let r = AutoTransition.outgoingRamp(p, outRate: run.spec.outRate, outPitch: run.spec.outPitch, fxPeak: peak)
+                t.rateMul = r.rate
+                t.pitchAdd = r.pitch
+                t.texture = run.spec.texture.map { ($0.effect, r.fxStrength) }
+                applyTail(t)
+            }
+            if p >= 1, run.handoverDone { djStartFade() }
+        case .fade:
+            let p = Float(min(1, run.phaseElapsed / max(0.05, plan.fadeSeconds)))
+            let g = AutoTransition.equalPowerGains(progress: p)
+            if let t = tail { t.fadeGain = g.outgoing; applyTail(t) }
+            djMainFade = g.incoming
+            applyVolume()
+            if p >= 1 { djEndFade() }
+        case .postRoll:
+            guard !run.glideDropped else { djFinish(how: "listener"); return }
+            let p = min(1, run.phaseElapsed / max(0.05, plan.postRollSeconds))
+            let r = AutoTransition.incomingRamp(p, inRate: run.spec.inRate, inPitch: run.spec.inPitch, fxPeak: peak)
+            djRateMul = r.rate
+            djPitchAdd = r.pitch
+            djTexture = run.spec.texture.map { ($0.effect, r.fxStrength) }
+            applyRate(); applyPitch()
+            for e in MixEngine.Effect.allCases { applyEffect(e) }
+            if p >= 1 { djFinish(how: "complete") }
+        }
+    }
+
+    // MARK: Fade start — the host advances, the incoming engages on the main chain
+
+    private func djStartFade() {
+        guard var run = djRun, let t = tail, djPhase == .preRoll, run.handoverDone else { return }
+        let tailPos = currentTime                         // the outgoing's playhead (the tail's clock)
+        // Pin the outgoing at its glide target + texture peak, and FREEZE its controls: from here
+        // the listener's controls belong to the incoming.
+        t.base = liveControls()
+        if !run.glideDropped {
+            t.rateMul = run.spec.outRate
+            t.pitchAdd = run.spec.outPitch
+            t.texture = run.spec.texture.map { ($0.effect, $0.peak) }
+        }
+        djPhase = .fade
+        run.phaseElapsed = 0
+        djRun = run
+        applyTail(t)
+        // The incoming starts SILENT at its glide targets (the overlays sit on the listener's).
+        djMainFade = 0
+        djRateMul = run.glideDropped ? 1 : run.spec.inRate
+        djPitchAdd = run.glideDropped ? 0 : run.spec.inPitch
+        djTexture = run.glideDropped ? nil : run.spec.texture.map { ($0.effect, $0.peak) }
+        let inc = run.spec.incoming
+        guard onDJFadeStart?(inc.songId) ?? true else {
+            djCut(reason: "host refused the advance", restart: true)
+            return
+        }
+        // The tail keeps the outgoing's scope; the main chain takes the incoming's.
+        t.release = fileRelease
+        fileRelease = nil
+        djEngagingIncoming = true
+        engage(url: inc.url, startMs: inc.startMs, lengthMs: inc.lengthMs, atSeconds: 0, songId: inc.songId,
+               play: false, release: inc.release)
+        djEngagingIncoming = false
+        guard isEngaged, loadedSongId == inc.songId, file != nil else {
+            // (engage released the incoming's scope.) The host already advanced: it plays the
+            // incoming the plain way, which tears this engagement — and the tail — down.
+            run.incomingEngaged = true
+            djRun = run
+            DJMode.log("fade start song=\(inc.songId) — the DSP refused the file → plain start")
+            onDJIncomingFailed?(inc.songId)
+            return
+        }
+        run.incomingEngaged = true
+        djRun = run
+        setLevel(db: inc.levelDb, ramp: false)
+        // Beat sync: land the incoming's beat phase on the outgoing's (≤ ½ beat once steady).
+        let lead = StemSync.startLead * tailEffectiveRate(t)
+        var offset = AutoTransition.phaseAlignOffset(outgoing: run.spec.outgoingBeat, outgoingPosition: tailPos + lead,
+                                                     incoming: inc.beat, incomingPosition: 0)
+        // From the song's top a BACKWARD offset can't be taken — the same phase one beat later can.
+        if offset < 0, let beat = AutoTransition.beatPhase(inc.beat, at: 0)?.beatSeconds { offset += beat }
+        let at = min(max(0, offset), max(0, duration - 0.5))
+        applyRate(); applyPitch(); applyVolume()
+        for e in MixEngine.Effect.allCases { applyEffect(e) }
+        startAudio(fromSongSeconds: at)
+        DJMode.log("fade start song=\(run.outgoingSongId) → \(inc.songId) incoming@\(String(format: "%.3f", at))s "
+                   + "(phase offset \(String(format: "%+.3f", offset))s)")
+        onDJIncomingEngaged?(inc.songId, inc.url, inc.startMs)
+    }
+
+    /// The crossfade landed: the tail goes; the post-roll eases the incoming back.
+    private func djEndFade() {
+        guard var run = djRun, djPhase == .fade else { return }
+        releaseTail()
+        djMainFade = 1
+        applyVolume()
+        if run.spec.plan.hasPostRoll, !run.glideDropped {
+            djPhase = .postRoll
+            run.phaseElapsed = 0
+            djRun = run
+        } else {
+            djFinish(how: "complete")
+        }
+    }
+
+    /// The transition is over: identity overlays, the conductor stops.
+    private func djFinish(how: String) {
+        let run = djRun
+        djRun = nil
+        djConductor?.cancel(); djConductor = nil
+        djHandoverTask?.cancel(); djHandoverTask = nil
+        if tail != nil { releaseTail() }
+        resetDJOverlays()
+        djPhase = .idle
+        if built {
+            applyRate(); applyPitch(); applyVolume()
+            for e in MixEngine.Effect.allCases { applyEffect(e) }
+        }
+        if let run { onDJTransitionEnded?(run.incomingEngaged ? run.spec.incoming.songId : nil, how) }
+    }
+
+    private func resetDJOverlays() {
+        djRateMul = 1
+        djPitchAdd = 0
+        djTexture = nil
+        djMainFade = 1
+    }
+
+    // MARK: Transport during a transition
+
+    /// ▶ mid-transition: both decks resume where they paused (the conductor's clock with them).
+    private func djResume() {
+        guard let t = tail else { return }
+        if djRun?.handoverDone == false { djHandoverLanded(djRun?.id ?? -1) }
+        configureSession()
+        guard startEngineIfNeeded() else { return }
+        t.player.play()
+        if djPhase != .preRoll {
+            if _stemMode { for n in stemVoices() { n.play() } } else { player.play() }
+        }
+        playAnchor = nil
+        isPlaying = true
+        refreshStemMonitor()
+    }
+
+    /// A listener touch on tempo / pitch / effects mid-transition: the glide ends at once — the
+    /// listener wins (np-dj-mode §3). The crossfade itself carries on.
+    private func djListenerTookControl(_ what: String) {
+        guard var run = djRun, !run.glideDropped else { return }
+        run.glideDropped = true
+        djRun = run
+        DJMode.log("listener took \(what) during \(djPhase.rawValue) — glide ends")
+        switch djPhase {
+        case .preRoll:
+            if let t = tail { t.rateMul = 1; t.pitchAdd = 0; t.texture = nil; applyTail(t) }
+        case .fade:
+            djRateMul = 1; djPitchAdd = 0; djTexture = nil
+            applyRate(); applyPitch()
+            for e in MixEngine.Effect.allCases { applyEffect(e) }
+        case .postRoll:
+            djFinish(how: "listener")
+        case .idle:
+            break
+        }
+    }
+
+    /// CUT the transition now (seek / a stem toggle / the engine stopped / the host refused).
+    /// Before the incoming engaged: the outgoing is still the current song — back onto the main
+    /// chain at the tail's playhead (`restart` re-schedules it there when playing; otherwise the
+    /// caller does). After: the tail simply goes and the incoming carries on at full gain.
+    private func djCut(reason: String, restart: Bool = false) {
+        guard let run = djRun else { return }
+        DJMode.log("cut \(reason) phase=\(djPhase.rawValue) song=\(loadedSongId ?? "-")")
+        if run.incomingEngaged {
+            djFinish(how: "cut")
+            return
+        }
+        let pos = currentTime
+        let base = tail?.base
+        let wasFade = djPhase == .fade
+        djHandoverTask?.cancel(); djHandoverTask = nil
+        djConductor?.cancel(); djConductor = nil
+        run.spec.incoming.release?()
+        djRun = nil
+        releaseTail()
+        setVoiceGains(main: 1, stems: 1)
+        resetDJOverlays()
+        djPhase = .idle
+        // The host refused at the fade start after the controls were frozen: they're the song's.
+        if wasFade, let b = base {
+            _rate = b.rate; _pitch = b.pitch; _volume = b.volume
+            _effectOn = b.effectOn; _effectStrength = b.effectStrength
+        }
+        if built {
+            applyRate(); applyPitch(); applyVolume()
+            for e in MixEngine.Effect.allCases { applyEffect(e) }
+        }
+        if !run.handoverDone {
+            // The main voices never stopped: they are the song again (the tail just went).
+            clockNode = run.savedClock.node
+            clockSR = run.savedClock.sr
+            segStartSongSeconds = run.savedClock.segStart
+            playAnchor = nil
+        } else {
+            clockNode = nil
+            pausedAt = pos
+            playAnchor = isPlaying ? (mach_absolute_time(), pos) : nil
+            if restart, isPlaying {
+                isPlaying = false
+                startAudio(fromSongSeconds: pos)
+            }
+        }
+        onDJTransitionEnded?(nil, "cut")
+    }
+
+    /// Drop any transition WITHOUT touching the main voices (disengage / a foreign engage).
+    private func endDJRun(reason: String) {
+        guard djRun != nil || tail != nil else { return }
+        if let run = djRun {
+            DJMode.log("end \(reason) phase=\(djPhase.rawValue)")
+            if !run.incomingEngaged { run.spec.incoming.release?() }
+        }
+        djRun = nil
+        djConductor?.cancel(); djConductor = nil
+        djHandoverTask?.cancel(); djHandoverTask = nil
+        releaseTail()
+        setVoiceGains(main: 1, stems: 1)
+        resetDJOverlays()
+        djPhase = .idle
+    }
+
+    private func releaseTail() {
+        guard let t = tail else { return }
+        tail = nil
+        if clockNode === t.player { clockNode = nil }
+        t.player.stop()                                   // its completion is stale (run gone / checked)
+        for n in t.nodes.reversed() { engine.detach(n) }
+        t.release?()
+        t.release = nil
+    }
+
+    private func tailEffectiveRate(_ t: TailDeck) -> Double {
+        let r = (djPhase == .preRoll ? _rate : t.base.rate) * t.rateMul
+        return min(max(r, MixEngine.rateRange.lowerBound), MixEngine.rateRange.upperBound)
+    }
+
+    /// Realize the tail's state: the outgoing listener's controls (live in the pre-roll, frozen
+    /// after) × the glide / texture overlays × the handover + crossfade gains, + its level.
+    private func applyTail(_ t: TailDeck) {
+        let c = djPhase == .preRoll ? liveControls() : t.base
+        t.timePitch.rate = Float(tailEffectiveRate(t))
+        t.timePitch.pitch = Float(Self.clampPitchCents((c.pitch + t.pitchAdd) * 100))
+        t.mixer.outputVolume = Float(min(c.volume, 1)) * t.handoverGain * t.fadeGain
+        t.filter.globalGain = Float(20 * log10(max(c.volume, 1)) + t.levelDb)
+        for e in MixEngine.Effect.allCases {
+            var on = c.effectOn[e.rawValue] ?? false
+            var s = Float(c.effectStrength[e.rawValue] ?? 0.5)
+            if !on, let x = t.texture, x.effect == e { on = true; s = Float(x.strength) }
+            Self.applyEffect(e, on: on, strength: s, comp: t.comp, filter: t.filter, reverb: t.reverb, flanger: t.flanger)
+        }
+    }
+
+    // MARK: - DJ Mode volume LEVELING (np-dj-mode §5)
+
+    /// The leveling gain on the main chain's trim right now (dB), and where it's heading.
+    @ObservationIgnored private(set) var appliedLevelDb = 0.0
+    @ObservationIgnored private(set) var levelTargetDb = 0.0
+    @ObservationIgnored private var levelRamp: Task<Void, Never>?
+    /// A newly-known gain ramps over this (never a step) — `LoudnessLeveling.rampSeconds`.
+    static var levelRampSeconds: Double = LoudnessLeveling.rampSeconds
+    var levelRampInFlight: Bool { levelRamp != nil }
+    var levelTrimGainDb: Float { levelTrim.globalGain }
+
+    /// Set the leveling gain (clamped −12…+6 dB). `ramp`: glide there over `levelRampSeconds`
+    /// (an analysis landing mid-play); otherwise it lands at once (a track start, before audio).
+    func setLevel(db: Double, ramp: Bool) {
+        let target = min(max(db, LoudnessLeveling.minGainDb), LoudnessLeveling.maxGainDb)
+        levelTargetDb = target
+        levelRamp?.cancel(); levelRamp = nil
+        guard ramp, built, isEngaged, abs(target - appliedLevelDb) > 0.01, Self.levelRampSeconds > 0 else {
+            appliedLevelDb = target
+            if built { levelTrim.globalGain = Float(target) }
+            return
+        }
+        let from = appliedLevelDb
+        let steps = 20
+        let stepNs = UInt64(Self.levelRampSeconds / Double(steps) * 1_000_000_000)
+        levelRamp = Task { @MainActor [weak self] in
+            for i in 1...steps {
+                try? await Task.sleep(nanoseconds: stepNs)
+                guard let self, !Task.isCancelled else { return }
+                let v = from + (target - from) * Double(i) / Double(steps)
+                self.appliedLevelDb = v
+                self.levelTrim.globalGain = Float(v)
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.levelRamp = nil
+        }
     }
 
     // MARK: - Component descriptions + canonical format (local copies of MixEngine's privates)
