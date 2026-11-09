@@ -562,6 +562,7 @@
 		C2A8ECC6743A39A2DDCE9D5E /* AppleMusicPlayCountCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = E38A147E32A0E45B7C7B9647 /* AppleMusicPlayCountCapture.swift */; };
 		C2ED9BFABA86D3F6F44BBA35 /* DemuxCloudLyricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 965C2BB9FBBCAB3DF71E888F /* DemuxCloudLyricsTests.swift */; };
 		C364F314CD9F381AEE6C1413 /* AMTokenDump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 211BCE23E1E0E32E4217958B /* AMTokenDump.swift */; };
+		C3CE6356C406367B0D22CBA7 /* DJModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD023825580A44E6757942D1 /* DJModeTests.swift */; };
 		C42BF2ACF2315D21DE669067 /* MacScreenshotRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06D48E99D59CBE32224C8B61 /* MacScreenshotRenderTests.swift */; };
 		C4B2E5685D8D8E489A8AA918 /* SearchQueryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EACEA867F1B6AD8B5461CCC /* SearchQueryTests.swift */; };
 		C551980B55691B322E918045 /* StudioEngineMathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A492DFF20D12B0B40DDC34A /* StudioEngineMathTests.swift */; };
@@ -1339,6 +1340,7 @@
 		BC09231DE9985D77378914B6 /* PushRegistrationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistrationServiceTests.swift; sourceTree = "<group>"; };
 		BC57985D9220C4686B904ADF /* PocketRunPlannerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketRunPlannerTests.swift; sourceTree = "<group>"; };
 		BCFCF98D27D59771095839CD /* DiagUploadPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagUploadPipelineTests.swift; sourceTree = "<group>"; };
+		BD023825580A44E6757942D1 /* DJModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DJModeTests.swift; sourceTree = "<group>"; };
 		BDA19C9A2241AAE0FA6941A6 /* screenshot-index.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "screenshot-index.json"; sourceTree = "<group>"; };
 		BDA7605F5CBB3B63332561D4 /* NotificationRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRouter.swift; sourceTree = "<group>"; };
 		BE7B549E29F1B76F09EA1985 /* MultiSelectUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiSelectUITests.swift; sourceTree = "<group>"; };
@@ -1694,6 +1696,7 @@
 				3BB31311300933AB887C3595 /* DiscoverExplicitRankingTests.swift */,
 				6089E6397D5A1A11C7910A44 /* DiscoverLibraryWriteOutcomeTests.swift */,
 				80BBD7B6AE2FDC4748D9EB44 /* DiscoverStoreTests.swift */,
+				BD023825580A44E6757942D1 /* DJModeTests.swift */,
 				5814B8574E4706AD6E967E1B /* DJSetPlannerTests.swift */,
 				E38C4DAAA5AE1961FDEF3AD6 /* DrumPatternDetectorTests.swift */,
 				34AC0175EB6BDE4AF72724A8 /* EditSchemaTests.swift */,
@@ -2909,6 +2912,7 @@
 				66F2BFCBF61DD38E7E959052 /* CollectionsTests.swift in Sources */,
 				E8B579DBFAD28B99F4948724 /* CollectorsPuzzleEngineTests.swift in Sources */,
 				9AEF31B8C7E8AEC3F66292F3 /* CuePlumbingTests.swift in Sources */,
+				C3CE6356C406367B0D22CBA7 /* DJModeTests.swift in Sources */,
 				B7FFC8E3309DE18A6764DC88 /* DJSetPlannerTests.swift in Sources */,
 				1DD67C383944BFB6DF0B5E5D /* DeadAirMeterTests.swift in Sources */,
 				8FEFB402C3584B9D9D373446 /* DebugSessionStoreTests.swift in Sources */,
