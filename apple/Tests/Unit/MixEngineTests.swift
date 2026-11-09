@@ -16,37 +16,37 @@ final class MixEngineTests: XCTestCase {
     // MARK: - Pure beat-match math
 
     func testOctaveFoldKeepsInRangeValues() {
-        XCTAssertEqual(MixEngine.octaveFolded(1.0), 1.0, accuracy: 1e-9)
-        XCTAssertEqual(MixEngine.octaveFolded(1.5), 1.5, accuracy: 1e-9)
-        XCTAssertEqual(MixEngine.octaveFolded(0.5), 0.5, accuracy: 1e-9)
-        XCTAssertEqual(MixEngine.octaveFolded(2.0), 2.0, accuracy: 1e-9)
+        XCTAssertEqual(AutoTransition.octaveFolded(1.0), 1.0, accuracy: 1e-9)
+        XCTAssertEqual(AutoTransition.octaveFolded(1.5), 1.5, accuracy: 1e-9)
+        XCTAssertEqual(AutoTransition.octaveFolded(0.5), 0.5, accuracy: 1e-9)
+        XCTAssertEqual(AutoTransition.octaveFolded(2.0), 2.0, accuracy: 1e-9)
     }
 
     func testOctaveFoldHalvesAndDoublesIntoRange() {
-        XCTAssertEqual(MixEngine.octaveFolded(2.5), 1.25, accuracy: 1e-9)   // ÷2
-        XCTAssertEqual(MixEngine.octaveFolded(4.0), 2.0, accuracy: 1e-9)    // ÷2 → 2.0 (upper bound, in range)
-        XCTAssertEqual(MixEngine.octaveFolded(4.5), 1.125, accuracy: 1e-9)  // ÷2 ÷2
-        XCTAssertEqual(MixEngine.octaveFolded(0.4), 0.8, accuracy: 1e-9)    // ×2
-        XCTAssertEqual(MixEngine.octaveFolded(0.2), 0.8, accuracy: 1e-9)    // ×2 ×2
+        XCTAssertEqual(AutoTransition.octaveFolded(2.5), 1.25, accuracy: 1e-9)   // ÷2
+        XCTAssertEqual(AutoTransition.octaveFolded(4.0), 2.0, accuracy: 1e-9)    // ÷2 → 2.0 (upper bound, in range)
+        XCTAssertEqual(AutoTransition.octaveFolded(4.5), 1.125, accuracy: 1e-9)  // ÷2 ÷2
+        XCTAssertEqual(AutoTransition.octaveFolded(0.4), 0.8, accuracy: 1e-9)    // ×2
+        XCTAssertEqual(AutoTransition.octaveFolded(0.2), 0.8, accuracy: 1e-9)    // ×2 ×2
     }
 
     func testOctaveFoldGuardsBadInput() {
-        XCTAssertEqual(MixEngine.octaveFolded(0), 1.0)
-        XCTAssertEqual(MixEngine.octaveFolded(-3), 1.0)
-        XCTAssertEqual(MixEngine.octaveFolded(.nan), 1.0)
-        XCTAssertEqual(MixEngine.octaveFolded(.infinity), 1.0)
+        XCTAssertEqual(AutoTransition.octaveFolded(0), 1.0)
+        XCTAssertEqual(AutoTransition.octaveFolded(-3), 1.0)
+        XCTAssertEqual(AutoTransition.octaveFolded(.nan), 1.0)
+        XCTAssertEqual(AutoTransition.octaveFolded(.infinity), 1.0)
     }
 
     func testSyncRateMatchesEffectiveBPM() {
-        XCTAssertEqual(MixEngine.syncRate(leadBPM: 120, leadRate: 1, followerBPM: 120), 1.0, accuracy: 1e-9)
-        XCTAssertEqual(MixEngine.syncRate(leadBPM: 120, leadRate: 1, followerBPM: 100), 1.2, accuracy: 1e-9)
+        XCTAssertEqual(AutoTransition.syncRate(leadBPM: 120, leadRate: 1, followerBPM: 120), 1.0, accuracy: 1e-9)
+        XCTAssertEqual(AutoTransition.syncRate(leadBPM: 120, leadRate: 1, followerBPM: 100), 1.2, accuracy: 1e-9)
         // Half/double-time fold: a 128 lead over a 64 follower = ×2 (in range).
-        XCTAssertEqual(MixEngine.syncRate(leadBPM: 128, leadRate: 1, followerBPM: 64), 2.0, accuracy: 1e-9)
+        XCTAssertEqual(AutoTransition.syncRate(leadBPM: 128, leadRate: 1, followerBPM: 64), 2.0, accuracy: 1e-9)
         // 174 DnB lead over an 87 follower folds to 2.0 as well.
-        XCTAssertEqual(MixEngine.syncRate(leadBPM: 174, leadRate: 1, followerBPM: 87), 2.0, accuracy: 1e-9)
+        XCTAssertEqual(AutoTransition.syncRate(leadBPM: 174, leadRate: 1, followerBPM: 87), 2.0, accuracy: 1e-9)
         // The lead's own tempo nudge carries into the match.
-        XCTAssertEqual(MixEngine.syncRate(leadBPM: 120, leadRate: 1.05, followerBPM: 120), 1.05, accuracy: 1e-9)
-        XCTAssertEqual(MixEngine.syncRate(leadBPM: 120, leadRate: 1, followerBPM: 0), 1.0)   // unknown follower BPM
+        XCTAssertEqual(AutoTransition.syncRate(leadBPM: 120, leadRate: 1.05, followerBPM: 120), 1.05, accuracy: 1e-9)
+        XCTAssertEqual(AutoTransition.syncRate(leadBPM: 120, leadRate: 1, followerBPM: 0), 1.0)   // unknown follower BPM
     }
 
     // MARK: - Clamp invariants (no audio device needed)
@@ -1311,38 +1311,38 @@ final class MixEngineTests: XCTestCase {
 
     /// Signed Camelot-hour distance wraps to the SHORTEST way round the 12-hour wheel (−6…+6).
     func testSignedCamelotSteps() {
-        XCTAssertEqual(MixEngine.signedCamelotSteps("5A", "9A"), 4)     // the spec example
-        XCTAssertEqual(MixEngine.signedCamelotSteps("9A", "5A"), -4)
-        XCTAssertEqual(MixEngine.signedCamelotSteps("5A", "5A"), 0)
-        XCTAssertEqual(MixEngine.signedCamelotSteps("1A", "12A"), -1)   // wrap: shortest is DOWN one
-        XCTAssertEqual(MixEngine.signedCamelotSteps("12A", "1A"), 1)
-        XCTAssertEqual(MixEngine.signedCamelotSteps("2A", "8A"), 6)     // exactly opposite → +6
-        XCTAssertEqual(MixEngine.signedCamelotSteps("5A", "12A"), -5)   // shortest is DOWN five
-        XCTAssertNil(MixEngine.signedCamelotSteps("nope", "9A"))
-        XCTAssertNil(MixEngine.signedCamelotSteps(nil, "9A"))
+        XCTAssertEqual(AutoTransition.signedCamelotSteps("5A", "9A"), 4)     // the spec example
+        XCTAssertEqual(AutoTransition.signedCamelotSteps("9A", "5A"), -4)
+        XCTAssertEqual(AutoTransition.signedCamelotSteps("5A", "5A"), 0)
+        XCTAssertEqual(AutoTransition.signedCamelotSteps("1A", "12A"), -1)   // wrap: shortest is DOWN one
+        XCTAssertEqual(AutoTransition.signedCamelotSteps("12A", "1A"), 1)
+        XCTAssertEqual(AutoTransition.signedCamelotSteps("2A", "8A"), 6)     // exactly opposite → +6
+        XCTAssertEqual(AutoTransition.signedCamelotSteps("5A", "12A"), -5)   // shortest is DOWN five
+        XCTAssertNil(AutoTransition.signedCamelotSteps("nope", "9A"))
+        XCTAssertNil(AutoTransition.signedCamelotSteps(nil, "9A"))
     }
 
     /// PITCH bend (A=5A, B=9A) comes from Camelot: outgoing up ~1.65 st, incoming down ~1.65 st. With
     /// no BPM there is NO tempo bend (rate stays 1.0).
     func testGlideParamsPitchFromCamelotOnly() {
-        let p = MixEngine.glideParams(fromCamelot: "5A", toCamelot: "9A", fromBPM: nil, toBPM: nil)
-        XCTAssertEqual(p.outPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
-        XCTAssertEqual(p.inPitch, -MixEngine.semitonesPerKey, accuracy: 1e-9)
+        let p = AutoTransition.glideParams(fromCamelot: "5A", toCamelot: "9A", fromBPM: nil, toBPM: nil)
+        XCTAssertEqual(p.outPitch, AutoTransition.semitonesPerKey, accuracy: 1e-9)
+        XCTAssertEqual(p.inPitch, -AutoTransition.semitonesPerKey, accuracy: 1e-9)
         XCTAssertEqual(p.outRate, 1.0, accuracy: 1e-9, "no BPM ⇒ no tempo bend")
         XCTAssertEqual(p.inRate, 1.0, accuracy: 1e-9)
     }
 
     /// Direction flips when the incoming key is LOWER (outgoing pitch bends down, incoming up).
     func testGlideParamsPitchDirectionFlips() {
-        let p = MixEngine.glideParams(fromCamelot: "9A", toCamelot: "5A", fromBPM: nil, toBPM: nil)
-        XCTAssertEqual(p.outPitch, -MixEngine.semitonesPerKey, accuracy: 1e-9)
-        XCTAssertEqual(p.inPitch, MixEngine.semitonesPerKey, accuracy: 1e-9)
+        let p = AutoTransition.glideParams(fromCamelot: "9A", toCamelot: "5A", fromBPM: nil, toBPM: nil)
+        XCTAssertEqual(p.outPitch, -AutoTransition.semitonesPerKey, accuracy: 1e-9)
+        XCTAssertEqual(p.inPitch, AutoTransition.semitonesPerKey, accuracy: 1e-9)
     }
 
     /// TEMPO is a beat-match SPLIT between the decks (both reach a common effective BPM → beats lock);
     /// no camelot ⇒ no pitch bend. Incoming rate = √(fromBPM/toBPM), outgoing = 1/that.
     func testGlideParamsTempoBeatMatchesSplit() {
-        let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 140)
+        let p = AutoTransition.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 140)
         let split = (128.0 / 140).squareRoot()
         XCTAssertEqual(p.inRate, split, accuracy: 1e-6)
         XCTAssertEqual(p.outRate, 1 / split, accuracy: 1e-6)
@@ -1353,14 +1353,14 @@ final class MixEngineTests: XCTestCase {
 
     /// Far-apart BPMs still fully beat-match (no ±10% cap) — the point is a locked beat, not a nudge.
     func testGlideParamsTempoFullyMatchesFarBPMs() {
-        let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 90)
+        let p = AutoTransition.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 90)
         XCTAssertEqual(128 * p.outRate, 90 * p.inRate, accuracy: 1e-6, "decks meet at a common effective BPM")
     }
 
     /// Half/double-time BPMs octave-fold (like Sync): 128 vs 64 folds the 2× ratio and meets in the
     /// middle rather than double-timing one deck to the other's absolute BPM.
     func testGlideParamsTempoOctaveFolds() {
-        let p = MixEngine.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 64)
+        let p = AutoTransition.glideParams(fromCamelot: nil, toCamelot: nil, fromBPM: 128, toBPM: 64)
         let split = 2.0.squareRoot()                       // octaveFolded(128/64) = 2
         XCTAssertEqual(p.inRate, split, accuracy: 1e-6)
         XCTAssertEqual(p.outRate, 1 / split, accuracy: 1e-6)
@@ -1370,7 +1370,7 @@ final class MixEngineTests: XCTestCase {
     /// the volume crossfade, no pitch/tempo bend.
     func testGlideParamsIdentityWhenNoData() {
         for c in [("5A", "5A"), (nil, "9A"), ("5A", "zz"), (nil, nil)] as [(String?, String?)] {
-            let p = MixEngine.glideParams(fromCamelot: c.0, toCamelot: c.1, fromBPM: nil, toBPM: 120)
+            let p = AutoTransition.glideParams(fromCamelot: c.0, toCamelot: c.1, fromBPM: nil, toBPM: 120)
             XCTAssertEqual(p.outRate, 1.0); XCTAssertEqual(p.inRate, 1.0)
             XCTAssertEqual(p.outPitch, 0); XCTAssertEqual(p.inPitch, 0)
         }
@@ -1378,14 +1378,14 @@ final class MixEngineTests: XCTestCase {
 
     /// A key → tempo/pitch mapping clamps to the engine's rate/pitch ranges.
     func testGlideRateAndPitchClamp() {
-        XCTAssertEqual(MixEngine.glideRate(keys: 0), 1.0, accuracy: 1e-12)
-        XCTAssertEqual(MixEngine.glideRate(keys: 1), 1.10, accuracy: 1e-12)
-        XCTAssertEqual(MixEngine.glideRate(keys: -1), 0.90, accuracy: 1e-12)
-        XCTAssertLessThanOrEqual(MixEngine.glideRate(keys: 100), MixEngine.rateRange.upperBound)
-        XCTAssertGreaterThanOrEqual(MixEngine.glideRate(keys: -100), MixEngine.rateRange.lowerBound)
-        XCTAssertEqual(MixEngine.glidePitch(keys: 1), MixEngine.semitonesPerKey, accuracy: 1e-12)
-        XCTAssertLessThanOrEqual(MixEngine.glidePitch(keys: 100), MixEngine.pitchRange.upperBound)
-        XCTAssertGreaterThanOrEqual(MixEngine.glidePitch(keys: -100), MixEngine.pitchRange.lowerBound)
+        XCTAssertEqual(AutoTransition.glideRate(keys: 0), 1.0, accuracy: 1e-12)
+        XCTAssertEqual(AutoTransition.glideRate(keys: 1), 1.10, accuracy: 1e-12)
+        XCTAssertEqual(AutoTransition.glideRate(keys: -1), 0.90, accuracy: 1e-12)
+        XCTAssertLessThanOrEqual(AutoTransition.glideRate(keys: 100), MixEngine.rateRange.upperBound)
+        XCTAssertGreaterThanOrEqual(AutoTransition.glideRate(keys: -100), MixEngine.rateRange.lowerBound)
+        XCTAssertEqual(AutoTransition.glidePitch(keys: 1), AutoTransition.semitonesPerKey, accuracy: 1e-12)
+        XCTAssertLessThanOrEqual(AutoTransition.glidePitch(keys: 100), MixEngine.pitchRange.upperBound)
+        XCTAssertGreaterThanOrEqual(AutoTransition.glidePitch(keys: -100), MixEngine.pitchRange.lowerBound)
     }
 
     // MARK: - FX Glide (texture coherence)
@@ -1395,8 +1395,8 @@ final class MixEngineTests: XCTestCase {
     func testRollTextureIsDeterministicAndBounded() {
         var s1: UInt64 = 0xABCDEF, s2: UInt64 = 0xABCDEF
         for _ in 0..<32 {
-            let a = MixEngine.rollTexture(&s1)
-            let b = MixEngine.rollTexture(&s2)
+            let a = AutoTransition.rollTexture(&s1)
+            let b = AutoTransition.rollTexture(&s2)
             XCTAssertEqual(a.effect.rawValue, b.effect.rawValue)         // reproducible
             XCTAssertEqual(a.peak, b.peak, accuracy: 1e-12)
             XCTAssertEqual(a.run, b.run)

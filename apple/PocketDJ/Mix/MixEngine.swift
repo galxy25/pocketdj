@@ -274,9 +274,9 @@ final class MixEngine {
     /// `nonisolated` so the pure, `nonisolated` tempo math (`octaveFolded` / `syncRate`) can read
     /// it without hopping the main actor — an immutable `Sendable` constant is safe from any context
     /// (and silences the Swift 6 "main-actor-isolated static referenced from nonisolated" error).
-    nonisolated static let rateRange: ClosedRange<Double> = 0.5...2.0
+    nonisolated static let rateRange: ClosedRange<Double> = AutoTransition.rateRange
     /// Pitch range in semitones (frequency shift, tempo preserved). 0 = original.
-    nonisolated static let pitchRange: ClosedRange<Double> = -12...12
+    nonisolated static let pitchRange: ClosedRange<Double> = AutoTransition.pitchRange
     /// Deck volume range. 0…1 is attenuation; 1…2 is a **gain boost** to +6 dB (200%) applied on the
     /// deck's always-present TRIM node `globalGain`. A master peak limiter catches the resulting peaks.
     nonisolated static let volumeRange: ClosedRange<Double> = 0...2.0
@@ -3594,7 +3594,7 @@ final class MixEngine {
     func syncToLead(_ follower: Deck) {
         guard let lead = leadDeck, lead != follower,
               let leadBPM = matchBPM(lead), let folBPM = matchBPM(follower) else { return }
-        setRate(Self.syncRate(leadBPM: leadBPM, leadRate: state(lead).rate, followerBPM: folBPM), on: follower)
+        setRate(AutoTransition.syncRate(leadBPM: leadBPM, leadRate: state(lead).rate, followerBPM: folBPM), on: follower)
         phaseAlign(follower: follower, lead: lead)
         // A `.sync` marker rides alongside the real `.tempo` (and the phase-align `.seek`) it caused —
         // replay applies all; consumers counting gestures dedupe on `.sync`. value = the matched rate.
@@ -4374,21 +4374,18 @@ final class MixEngine {
     /// Begin the tick-driven advance transition into the already-preloaded standby deck — the
     /// fade-cap + glide-fitting tail shared by the normal, repeat-one, and repeat-all lanes.
     private func beginAdvanceTransition(now: Date, secondsLeft: Double) {
-        // Cap the fade to the runway left: if you slid a track to (say) 2 s from its end,
-        // crossfade over ~2 s instead of the full length so it completes before it runs out.
-        if secondsLeft < autoFadeSeconds, pendingFadeRestore == nil {
-            pendingFadeRestore = autoFadeSeconds
-            autoFadeSeconds = max(0.5, secondsLeft)
-        }
-        if anyGlide {
-            // Fit the preroll into what's left after the (possibly capped) fade + a margin.
-            // Mix Glide bends the OUTGOING deck's tempo up to +10%, so it consumes audio
-            // faster than wall-clock — divide the runway by that headroom so the fading deck
-            // can't reach end-of-audio before the crossfade completes.
-            let headroom = mixGlideEnabled ? 1.12 : 1.0
-            let preroll = max(0, min(mixGlideSeconds,
-                                     secondsLeft / headroom - autoFadeSeconds - 0.3))
-            beginGlideTransition(now: now, preroll: preroll)
+        // The shared timing plan (AutoTransition — also Now Playing DJ Mode's): cap the fade to the
+        // runway left (slid to 2 s from the end ⇒ a ~2 s crossfade that completes before it runs
+        // out), then fit the glide preroll into what's left after the fade + a margin, dividing the
+        // runway by the Mix-Glide tempo headroom so the fading deck can't run out mid-crossfade.
+        let plan = AutoTransition.advancePlan(secondsLeft: secondsLeft, fadeSeconds: autoFadeSeconds,
+                                              glideSeconds: mixGlideSeconds,
+                                              fxGlide: fxGlideEnabled, mixGlide: mixGlideEnabled,
+                                              fadeOverridePending: pendingFadeRestore != nil)
+        if let restore = plan.fadeRestore { pendingFadeRestore = restore }
+        autoFadeSeconds = plan.fadeSeconds
+        if plan.isGlide {
+            beginGlideTransition(now: now, preroll: plan.preRollSeconds)
         } else {
             beginAutoCrossfade(now: now)
         }
@@ -4472,13 +4469,17 @@ final class MixEngine {
     /// Start a transition NOW (skip / stall hand-over): no preroll, a one-off fade length that
     /// the finish restores to the configured baseline.
     private func beginImmediateTransition(fade: Double) {
-        if anyGlide {
+        let plan = AutoTransition.immediatePlan(fadeSeconds: fade, baselineFadeSeconds: autoFadeSeconds,
+                                                glideSeconds: mixGlideSeconds,
+                                                fxGlide: fxGlideEnabled, mixGlide: mixGlideEnabled,
+                                                fadeOverridePending: pendingFadeRestore != nil)
+        if plan.isGlide {
             // A manual skip glides too, but with NO preroll (skip = advance now); it still applies the
             // effect / pitch offset on the incoming deck + rolls it back off in the postroll.
-            beginGlideTransition(now: Date(), preroll: 0, fade: fade)
+            beginGlideTransition(now: Date(), preroll: plan.preRollSeconds, fade: fade)
         } else {
-            if pendingFadeRestore == nil { pendingFadeRestore = autoFadeSeconds }
-            autoFadeSeconds = max(0.2, fade)
+            if let restore = plan.fadeRestore { pendingFadeRestore = restore }
+            autoFadeSeconds = plan.fadeSeconds
             beginAutoCrossfade(now: Date())
         }
     }
@@ -4670,10 +4671,10 @@ final class MixEngine {
         let tex: (effect: Effect, peak: Double) = fxOn ? currentTexture() : (.filter, 0)
         let mixOn = mixGlideEnabled
         let mp: (outRate: Double, outPitch: Double, inRate: Double, inPitch: Double) =
-            mixOn ? Self.glideParams(fromCamelot: state(from).loaded?.camelot,
-                                     toCamelot: state(to).loaded?.camelot,
-                                     fromBPM: matchBPM(from), toBPM: matchBPM(to))
-                  : (1, 0, 1, 0)
+            mixOn ? AutoTransition.glideParams(fromCamelot: state(from).loaded?.camelot,
+                                               toCamelot: state(to).loaded?.camelot,
+                                               fromBPM: matchBPM(from), toBPM: matchBPM(to))
+                  : AutoTransition.identityGlide
         // Resolve the rolled texture to a RACK SLOT per deck (each deck has its own rack), and save
         // that slot's pre-glide state so the restore paths put back exactly what the DJ had.
         let slotFrom = glideSlot(for: tex.effect, on: from)
@@ -4690,9 +4691,9 @@ final class MixEngine {
         autoTransitionIsGlide = true
         if let fade {                                   // manual skip: custom fade, restore after
             if pendingFadeRestore == nil { pendingFadeRestore = autoFadeSeconds }
-            autoFadeSeconds = max(0.2, fade)
+            autoFadeSeconds = max(AutoTransition.minImmediateFadeSeconds, fade)
         }
-        if preroll > 0.05 {
+        if preroll > AutoTransition.minRampSeconds {
             glideInSecondsActive = preroll
             autoPrerollStartedAt = now
             emitOutgoingGlideEvents(span: preroll)     // one compact .glide node per outgoing ramp
@@ -4710,10 +4711,11 @@ final class MixEngine {
     /// PRE-ROLL step (progress `p` 0→1): ramp the texture effect + tempo/pitch IN on the outgoing deck.
     private func applyOutgoingGlide(_ p: Double) {
         guard let c = glideCtx else { return }
-        if c.fxOn { setGlideSlot(c.fxSlotFrom, enabled: true, strength: p * c.fxPeak, on: c.from) }
+        let r = AutoTransition.outgoingRamp(p, outRate: c.outRate, outPitch: c.outPitch, fxPeak: c.fxPeak)
+        if c.fxOn { setGlideSlot(c.fxSlotFrom, enabled: true, strength: r.fxStrength, on: c.from) }
         if c.mixOn {
-            setGlideRate(1 + (c.outRate - 1) * p, on: c.from)
-            setGlidePitch(c.outPitch * p, on: c.from)
+            setGlideRate(r.rate, on: c.from)
+            setGlidePitch(r.pitch, on: c.from)
         }
     }
 
@@ -4739,27 +4741,22 @@ final class MixEngine {
     private func glidePhaseAlign(incoming f: Deck, outgoing l: Deck) {
         guard state(f).isPlaying, state(l).isPlaying,
               let leadBPM = matchBPM(l), let folBPM = matchBPM(f) else { return }
-        let leadBeat = 60.0 / leadBPM, folBeat = 60.0 / folBPM
-        let leadDb = Double(state(l).loaded?.firstDownbeatMs ?? 0) / 1000.0
-        let folDb = Double(state(f).loaded?.firstDownbeatMs ?? 0) / 1000.0
-        let leadPhase = ((position(l) - leadDb) / leadBeat).truncatingRemainder(dividingBy: 1)
-        let folPhase = ((position(f) - folDb) / folBeat).truncatingRemainder(dividingBy: 1)
-        var delta = leadPhase - folPhase
-        if delta > 0.5 { delta -= 1 } else if delta < -0.5 { delta += 1 }
+        let offset = phaseAlignOffset(follower: f, followerBPM: folBPM, lead: l, leadBPM: leadBPM)
         // Use the RECORDING seek so the beat-align repositioning lands in the timeline too (every
         // action is captured for faithful replay). During a transition `refreshAutoDeckEndIfLive`
         // no-ops (autoTransitioning is true), so this doesn't disturb the crossfade timing.
-        seek(f, toSeconds: max(0, position(f) + delta * folBeat))
+        seek(f, toSeconds: max(0, position(f) + offset))
     }
 
     /// POST-ROLL step (progress `p` 0→1): ease the incoming deck's effect OFF + tempo/pitch back to
     /// natural (the crossfade already fully favours it).
     private func applyIncomingGlide(_ p: Double) {
         guard let c = glideCtx else { return }
-        if c.fxOn { setGlideSlot(c.fxSlotTo, enabled: true, strength: (1 - p) * c.fxPeak, on: c.to) }
+        let r = AutoTransition.incomingRamp(p, inRate: c.inRate, inPitch: c.inPitch, fxPeak: c.fxPeak)
+        if c.fxOn { setGlideSlot(c.fxSlotTo, enabled: true, strength: r.fxStrength, on: c.to) }
         if c.mixOn {
-            setGlideRate(c.inRate + (1 - c.inRate) * p, on: c.to)
-            setGlidePitch(c.inPitch * (1 - p), on: c.to)
+            setGlideRate(r.rate, on: c.to)
+            setGlidePitch(r.pitch, on: c.to)
         }
     }
 
@@ -4779,8 +4776,8 @@ final class MixEngine {
     /// (coherent texture), then re-roll. Deterministic (seeded in `startAutoMix`).
     private func currentTexture() -> (effect: Effect, peak: Double) {
         if fxTextureRunRemaining <= 0 || fxTextureEffect == nil {
-            let t = Self.rollTexture(&fxGlidePrng)
-            fxTextureEffect = t.effect
+            let t = AutoTransition.rollTexture(&fxGlidePrng)
+            fxTextureEffect = Self.mixEffect(t.effect)
             fxTexturePeak = t.peak
             fxTextureRunRemaining = t.run
         }
@@ -4865,93 +4862,25 @@ final class MixEngine {
         }
     }
 
-    // MARK: Glide math (pure — testable)
+    // MARK: Glide math (pure — shared with Now Playing DJ Mode via `AutoTransition`)
 
-    /// The FX-Glide effect pool: sweepy effects that read as a texture across a transition (the
-    /// compressor is excluded — it's a dynamics tool, not a sweep).
-    nonisolated static let fxGlidePool: [Effect] = [.filter, .reverb, .flanger]
+    /// The FX-Glide effect pool as deck effects — `AutoTransition.texturePool`, in its roll order
+    /// (the compressor is excluded — it's a dynamics tool, not a sweep).
+    nonisolated static let fxGlidePool: [Effect] = AutoTransition.texturePool.map(mixEffect)
 
-    /// 1 Camelot "key" (wheel hour) as a pitch shift in SEMITONES, at the user's 10%-per-key
-    /// convention: a +10% frequency ratio is `12·log2(1.1)` ≈ 1.65 semitones.
-    nonisolated static let semitonesPerKey: Double = 12 * log2(1.1)
-
-    /// Signed Camelot-hour distance a→b, wrapped to the shortest way round the 12-hour wheel (−6…+6).
-    /// nil if either code is unparseable. Positive ⇒ b is "higher" (glide the outgoing deck up to it).
-    nonisolated static func signedCamelotSteps(_ a: String?, _ b: String?) -> Int? {
-        guard let pa = Camelot.parse(a), let pb = Camelot.parse(b) else { return nil }
-        var d = pb.num - pa.num
-        if d > 6 { d -= 12 } else if d < -6 { d += 12 }
-        return d
-    }
-
-    /// Tempo multiplier for a glide of `keys` (Camelot hours; 1 key = ±10%), clamped to `rateRange`.
-    nonisolated static func glideRate(keys: Double) -> Double {
-        min(max(1 + 0.10 * keys, rateRange.lowerBound), rateRange.upperBound)
-    }
-    /// Pitch shift (semitones) for a glide of `keys`, clamped to `pitchRange`.
-    nonisolated static func glidePitch(keys: Double) -> Double {
-        min(max(keys * semitonesPerKey, pitchRange.lowerBound), pitchRange.upperBound)
-    }
-
-    /// Per-deck tempo/pitch targets for a transition A(out)→B(in). Two INDEPENDENT, data-gated bends
-    /// (no default — with neither datum it's identity, i.e. just the volume crossfade):
-    ///   • PITCH — only when BOTH Camelot keys are known: harmonic bend toward each other (≤1 key each,
-    ///     1 key = ~1.65 st), so the overlap meets in the middle; the incoming then settles back.
-    ///   • TEMPO — only when BOTH BPMs are known: a real BEAT-MATCH toward the middle. Using the SAME
-    ///     octave-folded ratio the Lead/Sync buttons use (`octaveFolded`, fed the measured grid BPM via
-    ///     the caller's `matchBPM`), the full match is SPLIT between the two decks so they meet at a
-    ///     common effective BPM — their beats lock during the overlap (the caller then downbeat-aligns
-    ///     via the grid). Similar BPMs ⇒ a tiny nudge; only far-apart tempos bend much.
-    /// Combining a little pitch + a beat-matched tempo is the "subtle mix"; each is skipped if its datum
-    /// is missing for either track.
-    nonisolated static func glideParams(fromCamelot a: String?, toCamelot b: String?,
-                                        fromBPM: Double?, toBPM: Double?)
-        -> (outRate: Double, outPitch: Double, inRate: Double, inPitch: Double) {
-        var outPitch = 0.0, inPitch = 0.0, outRate = 1.0, inRate = 1.0
-        // PITCH — Camelot harmonic bend (both keys known + not identical).
-        if let d = signedCamelotSteps(a, b), abs(d) >= 1 {
-            let mag = min(1.0, Double(abs(d)) / 2.0)
-            let dir = d > 0 ? 1.0 : -1.0
-            outPitch = glidePitch(keys: dir * mag)        // outgoing bends toward incoming
-            inPitch = glidePitch(keys: -dir * mag)        // incoming starts opposite, settles back
+    /// The deck effect a shared texture sweeps (raw values match; the pool has no compressor).
+    nonisolated static func mixEffect(_ t: AutoTransition.TextureEffect) -> Effect {
+        switch t {
+        case .filter:  return .filter
+        case .reverb:  return .reverb
+        case .flanger: return .flanger
         }
-        // TEMPO — beat-match, split between the decks so they MEET (octave-folded like Sync).
-        if let ra = fromBPM, let rb = toBPM, ra > 0, rb > 0 {
-            let split = octaveFolded(ra / rb).squareRoot()   // incoming's full match to outgoing, halved
-            inRate = min(max(split, rateRange.lowerBound), rateRange.upperBound)   // incoming toward the match
-            outRate = min(max(1 / split, rateRange.lowerBound), rateRange.upperBound) // outgoing meets it
-        }
-        return (outRate, outPitch, inRate, inPitch)
     }
 
-    /// splitmix64 — a tiny deterministic PRNG so texture selection is reproducible + unit-testable.
-    nonisolated static func splitmix64(_ state: inout UInt64) -> UInt64 {
-        state = state &+ 0x9E37_79B9_7F4A_7C15
-        var z = state
-        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
-        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
-        return z ^ (z >> 31)
-    }
-
-    /// Roll the next FX-Glide texture: an effect from the pool, a peak strength (0.5…0.8), and a run
-    /// length (3…5 transitions to keep it). Pure + deterministic given `state`.
-    nonisolated static func rollTexture(_ state: inout UInt64) -> (effect: Effect, peak: Double, run: Int) {
-        let a = splitmix64(&state), b = splitmix64(&state), c = splitmix64(&state)
-        let effect = fxGlidePool[Int(a % UInt64(fxGlidePool.count))]
-        let peak = 0.5 + Double(b % 1000) / 1000.0 * 0.3
-        let run = 3 + Int(c % 3)
-        return (effect, peak, run)
-    }
-
-    /// A stable per-mix seed from the queue (FNV-1a over the first song id ⊕ count) — deterministic, so
-    /// a given track set always textures the same way, without wall-clock randomness (which the app
-    /// avoids for reproducibility).
+    /// A stable per-mix texture seed from the queue — `AutoTransition.fxSeed` over its first song id
+    /// and count (deterministic: a given track set always textures the same way).
     nonisolated static func fxSeed(from items: [AutoMixItem]) -> UInt64 {
-        var h: UInt64 = 0xcbf2_9ce4_8422_2325
-        for byte in (items.first?.loadable.songId ?? "seed").utf8 {
-            h = (h ^ UInt64(byte)) &* 0x0000_0100_0000_01B3
-        }
-        return h ^ UInt64(items.count)
+        AutoTransition.fxSeed(firstSongId: items.first?.loadable.songId, count: items.count)
     }
 
     // MARK: - Stems (per-deck stem-mode playback + grid)
@@ -6549,8 +6478,8 @@ final class MixEngine {
 
     /// The equal-power crossfade factor for a deck (0…1): full at its own end, →0 at the other.
     private func crossfadeFactor(_ deck: Deck) -> Float {
-        let v = Float(crossfader)
-        return deck == .a ? cosf(.pi / 2 * v) : cosf(.pi / 2 * (1 - v))
+        let g = AutoTransition.equalPowerGains(progress: Float(crossfader))   // A = outgoing end
+        return deck == .a ? g.outgoing : g.incoming
     }
 
     /// Route each deck onto the main + cue buses (PFL). MAIN always carries the deck at its own
@@ -6866,41 +6795,27 @@ final class MixEngine {
         high.bypass = false
     }
 
-    /// Octave-fold a tempo ratio into `rateRange` (×2 / ÷2 = half/double-time match), then clamp.
-    /// Pure + testable. A non-finite / non-positive ratio (missing BPM) folds to 1.0 (no change).
-    nonisolated static func octaveFolded(_ ratio: Double) -> Double {
-        guard ratio.isFinite, ratio > 0 else { return 1 }
-        var r = ratio
-        while r > rateRange.upperBound { r /= 2 }
-        while r < rateRange.lowerBound { r *= 2 }
-        return min(max(r, rateRange.lowerBound), rateRange.upperBound)
-    }
-
-    /// The follower tempo multiplier that matches the Lead's effective BPM (octave-folded into range).
-    /// Pure + testable.
-    nonisolated static func syncRate(leadBPM: Double, leadRate: Double, followerBPM: Double) -> Double {
-        guard followerBPM > 0 else { return 1 }
-        return octaveFolded(leadBPM * leadRate / followerBPM)
-    }
-
     /// BEST-EFFORT downbeat phase-align: nudge the follower up to ±½ beat so its beat phase matches
     /// the lead's, assuming beat-0 at each song's start (BPM only — no beat-grid yet). The grid
     /// indexer (see docs/design/mix-ondevice-tempo-pitch-beatmatch-spec.md) makes this exact.
     private func phaseAlign(follower f: Deck, lead l: Deck) {
         guard state(f).isPlaying, state(l).isPlaying,
               let leadBPM = matchBPM(l), let folBPM = matchBPM(f) else { return }
-        let leadBeat = 60.0 / leadBPM
-        let folBeat = 60.0 / folBPM
-        // Phase RELATIVE TO each song's measured first downbeat (0 when the grid is absent — the old
-        // beat-0-at-song-start assumption). Both positions are song-relative, so this aligns the
-        // decks' actual downbeats rather than an arbitrary beat-of-bar.
-        let leadDb = Double(state(l).loaded?.firstDownbeatMs ?? 0) / 1000.0
-        let folDb = Double(state(f).loaded?.firstDownbeatMs ?? 0) / 1000.0
-        let leadPhase = ((position(l) - leadDb) / leadBeat).truncatingRemainder(dividingBy: 1)
-        let folPhase = ((position(f) - folDb) / folBeat).truncatingRemainder(dividingBy: 1)
-        var delta = leadPhase - folPhase
-        if delta > 0.5 { delta -= 1 } else if delta < -0.5 { delta += 1 }
-        seek(f, toSeconds: max(0, position(f) + delta * folBeat))
+        seek(f, toSeconds: max(0, position(f) + phaseAlignOffset(follower: f, followerBPM: folBPM,
+                                                                 lead: l, leadBPM: leadBPM)))
+    }
+
+    /// The follower's phase-align offset (seconds) — `AutoTransition.phaseAlignOffset`, with phase
+    /// RELATIVE TO each song's measured first downbeat (0 when the grid is absent — the old
+    /// beat-0-at-song-start assumption). Both positions are song-relative, so this aligns the decks'
+    /// actual downbeats rather than an arbitrary beat-of-bar. BPM lattice only (no `beatsMs`), as
+    /// the Mix decks have always aligned.
+    private func phaseAlignOffset(follower f: Deck, followerBPM: Double, lead l: Deck, leadBPM: Double) -> Double {
+        AutoTransition.phaseAlignOffset(
+            outgoing: .init(bpm: leadBPM, firstDownbeatMs: state(l).loaded?.firstDownbeatMs),
+            outgoingPosition: position(l),
+            incoming: .init(bpm: followerBPM, firstDownbeatMs: state(f).loaded?.firstDownbeatMs),
+            incomingPosition: position(f))
     }
 
     // MARK: - Tick (playhead + auto-mix)
