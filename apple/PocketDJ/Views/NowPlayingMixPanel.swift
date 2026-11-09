@@ -105,10 +105,15 @@ struct NowPlayingMixPanel: View {
     @ViewBuilder private var header: some View {
         if Self.mixModeSupported {
             MixModeIndicatorReader { ind, note in
-                MixPanelHeaderLayout(chip: MixModeChipLabel.Content(indicator: ind, note: note)) {
+                MixPanelHeaderLayout(chip: MixModeChipLabel.Content(indicator: ind, note: note,
+                                                                    dj: sequencer.djIndicator.chipText)) {
                     headerToggle
                 } modeSwitch: {
-                    mixModeSwitch
+                    // DJ Mode sits LEFT of Mix Mode, the same capsule (np-dj-mode §7).
+                    HStack(spacing: 6) {
+                        djModeSwitch
+                        mixModeSwitch
+                    }
                 }
             }
         } else {
@@ -180,6 +185,31 @@ struct NowPlayingMixPanel: View {
         .accessibilityValue(on ? "On" : "Off")
         .accessibilityHint("Buffers this and the upcoming songs so the mix controls work on any track")
         .accessibilityIdentifier("np-mix-mode")
+    }
+
+    /// The DJ MODE capsule switch (`np-dj-mode`) — session state like Mix Mode (which it turns on):
+    /// transitions, tempo / key matching, effect sweeps, leveling and the PocketDJ selector.
+    private var djModeSwitch: some View {
+        let on = sequencer.djMode.enabled
+        return Button {
+            withAnimation { sequencer.setDJMode(!on) }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: on ? "dial.medium" : "music.note.list")
+                Text("DJ")
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(on ? Theme.accent : Theme.fgDim)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(on ? Theme.accent.opacity(0.18) : Theme.bgOverlay))
+            .overlay(Capsule().stroke(on ? Theme.accent : Theme.border))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("DJ Mode")
+        .accessibilityValue(on ? "On" : "Off")
+        .accessibilityHint("Mixes each song into the next with tempo, key and effect transitions, and orders the queue into tempo waves")
+        .accessibilityIdentifier("np-dj-mode")
     }
 
     // MARK: Controls
@@ -359,7 +389,14 @@ struct MixModeIndicatorReader<Content: View>: View {
                 content(i, n)
             }
         default:
-            content(ind, note)
+            if sequencer.djIndicator.isBuffering {   // "DJ — buffering next n%" moves too
+                TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                    let (i, n) = current
+                    content(i, n)
+                }
+            } else {
+                content(ind, note)
+            }
         }
     }
 }
@@ -409,17 +446,23 @@ struct MixModeChipLabel: View {
         /// Rule A: a vocals-muted substitution whose vocals were un-muted mid-track says which
         /// edition is actually playing ("Clean edition").
         let note: String?
+        /// DJ Mode's status (np-dj-mode §7: "DJ — next mixes in" / "DJ — buffering next n%" /
+        /// "DJ — mixing"), riding the same chip after Mix Mode's own word. nil = DJ off.
+        let dj: String?
 
         /// nil when the indicator has no chip (Mix Mode off).
-        init?(indicator: NPMixMode.Indicator, note: String?) {
+        init?(indicator: NPMixMode.Indicator, note: String?, dj: String? = nil) {
             guard let text = indicator.chipText else { return nil }
             self.indicator = indicator
             self.text = text
             self.note = note
+            self.dj = dj
         }
 
-        /// The chip's full words (text + note), as VoiceOver reads them.
-        var spoken: String { note.map { "\(text) · \($0)" } ?? text }
+        /// The chip's full words (text + DJ + note), as VoiceOver reads them.
+        var spoken: String {
+            [text, dj, note].compactMap { $0 }.joined(separator: " · ")
+        }
     }
 
     let content: Content
@@ -457,8 +500,10 @@ struct MixModeChipLabel: View {
 
     /// One Text so the note wraps with the status as a single centered paragraph.
     private var label: Text {
-        guard let note = content.note else { return Text(content.text) }
-        return Text(content.text) + Text(" · \(note)").foregroundStyle(Theme.fgDim)
+        var t = Text(content.text)
+        if let dj = content.dj { t = t + Text(" · \(dj)").foregroundStyle(Theme.accent) }
+        if let note = content.note { t = t + Text(" · \(note)").foregroundStyle(Theme.fgDim) }
+        return t
     }
 }
 
