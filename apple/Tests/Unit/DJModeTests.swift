@@ -861,11 +861,12 @@ final class DJModeTests: XCTestCase {
         r.seq.play(ids.map(item))
         await waitUntil("c playing") { r.rips.nowPlaying?.songId == "c" }
         let u3 = try XCTUnwrap(r.seq.queue.first { $0.id == "u3" }?.uid)
-        r.seq.insertInQueue([item("x")], before: u3)          // listener-placed at index 4
+        r.seq.insertInQueue([item("x")], before: u3)          // a MID-queue insert: planner material
         let xIndex = try XCTUnwrap(r.seq.queue.firstIndex { $0.id == "x" })
         r.seq.setDJMode(true)
         XCTAssertEqual(r.seq.queue[1].id, "n", "the buffered next holds")
-        XCTAssertEqual(r.seq.queue[xIndex].id, "x", "the listener's row holds its slot")
+        XCTAssertGreaterThan(try XCTUnwrap(r.seq.queue.firstIndex { $0.id == "x" }), xIndex,
+                             "the 150-BPM mid-queue insert is re-ordered like any row (Levi 2026-11-09)")
         XCTAssertGreaterThanOrEqual(r.seq.djReplanCount, 1)
         // The free rows were re-ordered toward the current 100-BPM band.
         XCTAssertEqual(r.seq.queue[2].id, "u2", "the closest in-band song comes next")
@@ -876,7 +877,6 @@ final class DJModeTests: XCTestCase {
         XCTAssertTrue(r.seq.djReplanPending, "an edit schedules a (debounced) re-plan")
         await waitUntil("re-planned after the edit") { !r.seq.djReplanPending }
         XCTAssertEqual(r.seq.queue[1].uid, tailUid, "the moved row holds")
-        XCTAssertEqual(r.seq.queue[xIndex + 1].id, "x", "the inserted row holds its (shifted) slot")
         XCTAssertFalse(r.seq.djReplanPending, "our own re-order never schedules another re-plan")
     }
 
@@ -1218,11 +1218,108 @@ extension DJModeTests {
         r.seq.setDJMode(true)
         r.seq.flushSessionSnapshotNow(); store.flush()
         let snap = try XCTUnwrap(store.load())
-        XCTAssertEqual(snap.queue.map { $0.djPlaced ?? false }, [false, true, false])
+        XCTAssertEqual(snap.queue.map { $0.djUserNext ?? false }, [false, true, false])
+        XCTAssertEqual(snap.queue.map { $0.djPlaced ?? false }, [false, false, false], "the legacy field is never written")
         let r2 = try rig(["p1", "p2", "p3"])
         r2.seq.restore(from: snap)
-        XCTAssertEqual(r2.seq.queue.map(\.djPlaced), [false, true, false], "the mark is back after a relaunch")
+        XCTAssertEqual(r2.seq.queue.map(\.djUserNext), [false, true, false], "the pick is back after a relaunch")
         XCTAssertEqual(r2.seq.djFixedUids.count, 1)
+    }
+
+    // MARK: Respect the listener's next-up pick (Levi 2026-11-09)
+
+    /// Play Next is SACRED: the pick stays next across every re-plan, nothing goes ahead of it,
+    /// even when the planner would rather play anything else first.
+    func testNextUpPickNeverMovesAcrossReplans() async throws {
+        let r = try rig(["c"])
+        let bpm: [String: Double] = ["c": 100, "a": 101, "b": 102, "d": 103, "far": 155]
+        r.seq.djSongFacts = { id in bpm[id].map { DJMode.SongFacts(bpm: $0) } }
+        r.seq.play(["c", "a", "b", "d"].map(item))
+        await waitUntil("c playing") { r.rips.nowPlaying?.songId == "c" }
+        r.seq.insertNextInQueue([item("far")])
+        r.seq.setDJMode(true)
+        XCTAssertEqual(r.seq.queue[1].id, "far", "held next on DJ on")
+        for k in 0..<4 {
+            r.seq.appendToQueue([item("x\(k)")])
+            r.seq.djReplan(reason: "test \(k)")
+            XCTAssertEqual(r.seq.queue[1].id, "far", "held next across re-plan \(k)")
+        }
+        XCTAssertEqual(r.seq.djFixedUids, [r.seq.queue[1].uid])
+        // Another pick takes the slot: the first is planner material from then on.
+        let a = try XCTUnwrap(r.seq.queue.first { $0.id == "a" }?.uid)
+        r.seq.moveUpcomingNext(uid: a)
+        XCTAssertEqual(r.seq.queue[1].id, "a")
+        XCTAssertEqual(r.seq.queue.filter(\.djUserNext).map(\.id), ["a"], "one pick at a time")
+    }
+
+    /// Adds at the END and moves into the MIDDLE are planner material: DJ Mode re-orders them.
+    func testMidAndEndAddsAreReordered() async throws {
+        let r = try rig(["c"], seconds: 40)               // > 30 s left: the next slot is replaceable
+        let bpm: [String: Double] = ["c": 100, "u1": 141, "u2": 142, "u3": 143, "close": 101, "mid": 102, "end2": 103]
+        r.seq.djSongFacts = { id in bpm[id].map { DJMode.SongFacts(bpm: $0) } }
+        // A 40 s current with its length known: > 30 s of runway, so the next slot is replaceable.
+        r.seq.play([SetlistPlayer.Item(id: "c", title: "c", artist: "A", lengthMs: 40_000)] + ["u1", "u2", "u3"].map(item))
+        await waitUntil("c playing") { r.rips.nowPlaying?.songId == "c" }
+        r.seq.appendToQueue([item("close"), item("end2")])         // added at the end
+        let u3 = try XCTUnwrap(r.seq.queue.first { $0.id == "u3" }?.uid)
+        r.seq.insertInQueue([item("mid")], before: u3)             // dropped mid-queue
+        XCTAssertTrue(r.seq.queue.allSatisfy { !$0.djUserNext }, "neither is a next-up pick")
+        r.seq.setDJMode(true)
+        let order = r.seq.queue.map(\.id)
+        // The 100-BPM band has 3 candidates now (the ≥3-per-band rule), so the set stays in it:
+        // the added rows come first, ahead of the 140s that were queued before them.
+        XCTAssertTrue(Set(order[1...2]).isSubset(of: ["close", "mid", "end2"]),
+                      "the in-band added rows are pulled forward (\(order))")
+        XCTAssertEqual(Set(order), Set(["c", "u1", "u2", "u3", "close", "mid", "end2"]))
+    }
+
+    /// The set RE-ANCHORS on the listener's pick: the songs after a far-off pick ease from ITS
+    /// tempo (and pocket) — not straight back to where the set was.
+    func testPlannerReanchorsOnTheListenersPick() {
+        let cur = DJSetPlanner.Candidate(songId: "c", bpm: 100, genre: "rock", year: 1990)
+        var pick = DJSetPlanner.Candidate(songId: "pick", bpm: 150, genre: "house", year: 2015, fixed: true)
+        pick.anchor = true
+        let rest = [
+            DJSetPlanner.Candidate(songId: "slow1", bpm: 101, genre: "rock", year: 1990),
+            DJSetPlanner.Candidate(songId: "slow2", bpm: 102, genre: "rock", year: 1991),
+            DJSetPlanner.Candidate(songId: "near1", bpm: 148, genre: "house", year: 2014),
+            DJSetPlanner.Candidate(songId: "near2", bpm: 145, genre: "house", year: 2016),
+        ]
+        let st = DJSetPlanner.State(seed: 7)
+        let anchored = DJSetPlanner.plan(current: cur, upcoming: [pick] + rest, state: st, options: .allOn)
+        let ids = anchored.order.map { uid in ([pick] + rest).first { $0.uid == uid }!.songId }
+        XCTAssertEqual(ids[0], "pick", "the pick holds next")
+        XCTAssertTrue(ids[1].hasPrefix("near"), "after the pick the set eases from ITS tempo / pocket (\(ids))")
+        // The state machine: a far jump starts a wave heading back toward where the set was.
+        var s = DJSetPlanner.State(seed: 7)
+        s.account(DJSetPlanner.Features(bpm: 100), uid: UUID(), options: .allOn)
+        s.reanchor(DJSetPlanner.Features(bpm: 150, genre: "house"), uid: UUID(), options: .allOn)
+        XCTAssertEqual(s.band, 150)
+        XCTAssertEqual(s.direction, .down, "heads back toward the set's tempo")
+        XCTAssertEqual(s.pocketAnchor?.genre, "house", "a fresh pocket anchored on the pick")
+        XCTAssertEqual(s.pocketCount, 1)
+    }
+
+    /// SNAPSHOT MIGRATION: an older session's `djPlaced` (any listener-placed row) restores as a
+    /// pick ONLY on the next-up row; the order and every row are kept; the new field round-trips.
+    func testLegacyDjPlacedSnapshotMigratesSafely() throws {
+        func row(_ id: String, placed: Bool?) -> PlaybackSessionStore.Row {
+            var r = PlaybackSessionStore.Row(songId: id, title: id, artist: "A", lengthMs: 200_000, repeatCount: 1)
+            r.djPlaced = placed
+            return r
+        }
+        let legacy = [row("p0", placed: nil), row("p1", placed: true), row("p2", placed: nil), row("p3", placed: true)]
+        let r = try rig(["p0", "p1", "p2", "p3"])
+        var snap = PlaybackSessionStore.Snapshot(sessionId: "s", source: .init(kind: "setlist", id: nil, name: nil),
+                                                 queue: legacy, index: 0, positionMs: 0, isPlaying: false, updatedAt: 0)
+        // Through JSON, as an old file would arrive (no `djUserNext` key at all).
+        let data = try JSONEncoder().encode(snap)
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("djUserNext"))
+        snap = try JSONDecoder().decode(PlaybackSessionStore.Snapshot.self, from: data)
+        r.seq.restore(from: snap)
+        XCTAssertEqual(r.seq.queue.map(\.id), ["p0", "p1", "p2", "p3"], "order kept, nothing lost")
+        XCTAssertEqual(r.seq.queue.map(\.djUserNext), [false, true, false, false],
+                       "only the next-up row stays held; the mid-queue one is planner material")
     }
 
     /// AGING: a row the planner keeps pushing back gains score per deferral, so it can't be
