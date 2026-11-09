@@ -50,6 +50,13 @@ final class SetlistPlayer {
         /// nil for every row the user added by hand. Excluded from equality like `variant`.
         /// Rows with `plan == nil` or `pinned` are NEVER replaced by a re-plan.
         var plan: PlanTag? = nil
+        /// DJ Mode: the LISTENER placed this row (insert / move / play-now / a jukebox request /
+        /// the stall hop's deferred row) — the selector never moves it. Rides the durable
+        /// snapshot (`Row.djPlaced`). Excluded from equality like `plan`.
+        var djPlaced = false
+        /// DJ Mode aging: how many plans pushed this row later (in-memory). At
+        /// `SetlistPlayer.djMaxDeferrals` it holds its place. Excluded from equality.
+        var djDeferrals = 0
 
         /// This row's edition decision, reassembled for the storage + rip layers.
         var editionDecision: EditionPolicy.Decision {
@@ -105,6 +112,7 @@ final class SetlistPlayer {
             sessionRowsMemo = nil; queueIdsMemo = nil; queueGeneration &+= 1
             scheduleStemLockReplan()           // a live-queue edit can change the upcoming tracks
             scheduleRipWindowReconcile()       // …and which rows are inside the rip-ahead window
+            scheduleDJReplanOnEdit()           // DJ Mode re-plans after a (debounced) edit
         }
     }
     /// Monotonic queue identity for the off-main session-row projection (see above).
@@ -733,6 +741,7 @@ final class SetlistPlayer {
         resetFXLock()                      // …and so is the FX LOCK
         // …and so is MIX MODE (Q4) — unless Settings says new sessions start in it.
         resetMixMode(to: mixModeSettings().defaultOn)
+        resetDJMode()                      // …and DJ MODE (no "default on")
         // Durable session: a fresh run gets a fresh identity + an immediate snapshot, and the
         // ~1 Hz position sampler starts feeding the store's throttled refresh.
         sessionId = "pses_" + UUID().uuidString
@@ -1049,6 +1058,7 @@ final class SetlistPlayer {
         resetStemLock()                    // the session is over — so is its Stem Lock
         resetFXLock()                      // …and its FX Lock
         resetMixMode(to: false)            // …and its Mix Mode
+        resetDJMode()                      // …and its DJ Mode
         handOffFallback = nil
         endHandOffRunway(reason: "stop")
         growingRefusedUid = nil
@@ -1216,7 +1226,10 @@ final class SetlistPlayer {
         var tail = Array(queue[(index + 1)...])
         let src = IndexSet(fromOffsets.filter(tail.indices.contains))
         guard !src.isEmpty else { return }
-        for i in src { tail[i].plan?.pinned = true }   // the listener placed it — a re-plan never moves it
+        for i in src {                                 // the listener placed it — a re-plan never moves it
+            tail[i].plan?.pinned = true
+            tail[i].djPlaced = true
+        }
         tail.move(fromOffsets: src, toOffset: max(0, min(toOffset, tail.count)))
         queue.replaceSubrange((index + 1)..., with: tail)
         persistSession()
@@ -1324,15 +1337,18 @@ final class SetlistPlayer {
     /// stamped, then appended (the run already checked it still owns the sequencer).
     func appendRunRows(_ items: [Item]) {
         guard isRunning, !items.isEmpty else { return }
-        appendToQueue(stampEditions(items, sourceSetlistId: sourceSetlistId))
+        // (A run's own rows — the DJ selector may order them like any planned row.)
+        appendToQueue(stampEditions(items, sourceSetlistId: sourceSetlistId), listenerPlaced: false)
     }
 
     /// Append tracks to the end of the running queue (the panel's add-search).
     /// No-op when idle: a stopped set has already torn down (`stop()` cleared the
     /// queue) — resurrecting it is a fresh `play(...)`, the caller's call.
-    func appendToQueue(_ items: [Item]) {
+    func appendToQueue(_ items: [Item]) { appendToQueue(items, listenerPlaced: true) }
+
+    private func appendToQueue(_ items: [Item], listenerPlaced: Bool) {
         guard isRunning, !items.isEmpty else { return }
-        queue.append(contentsOf: items)
+        queue.append(contentsOf: listenerPlaced ? Self.djPlaced(items) : items)
         persistSession()
     }
 
@@ -1340,7 +1356,7 @@ final class SetlistPlayer {
     /// (`queue[index]`) is untouched — the insert only shifts the tail.
     func insertNextInQueue(_ items: [Item]) {
         guard isRunning, !items.isEmpty else { return }
-        queue.insert(contentsOf: items, at: min(index + 1, queue.count))
+        queue.insert(contentsOf: Self.djPlaced(items), at: min(index + 1, queue.count))
         persistSession()
     }
 
@@ -1355,7 +1371,7 @@ final class SetlistPlayer {
             appendToQueue(items)
             return
         }
-        queue.insert(contentsOf: items, at: pos)
+        queue.insert(contentsOf: Self.djPlaced(items), at: pos)
         persistSession()
     }
 
@@ -1367,7 +1383,8 @@ final class SetlistPlayer {
                              slot: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }) {
         guard isRunning, !items.isEmpty else { return }
         let lo = min(index + 1, queue.count)
-        queue.insert(contentsOf: items, at: slot(lo...queue.count))
+        // (a jukebox request keeps its slot)
+        queue.insert(contentsOf: Self.djPlaced(items), at: slot(lo...queue.count))
         persistSession()
     }
 
@@ -1378,6 +1395,7 @@ final class SetlistPlayer {
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
         var item = queue.remove(at: pos)
         item.plan?.pinned = true
+        item.djPlaced = true
         queue.insert(item, at: index + 1)
         persistSession()
     }
@@ -1388,6 +1406,7 @@ final class SetlistPlayer {
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
         var item = queue.remove(at: pos)
         item.plan?.pinned = true
+        item.djPlaced = true
         queue.append(item)
         persistSession()
     }
@@ -1568,15 +1587,20 @@ final class SetlistPlayer {
         endMixEngagement()
         // Repeat-ONE: replay the current track from the top (through the AVPlayer) instead of
         // advancing. Only on a NATURAL end — an explicit ⏭ goes through `advanceToNext`.
+        // A NATURAL end, tagged exactly like `handleEnded`'s (a Remote session reads the cause:
+        // `.autoSkip` here once marked a song that played in full as "can't play here").
         if effectiveRepeatMode == .one {
+            noteTransition(.naturalEnd)
             startPlayCurrent(fresh: true)
             return
         }
         if currentPlaysRemaining > 1 {
             currentPlaysRemaining -= 1
+            noteTransition(.naturalEnd)
             startPlayCurrent(fresh: false)   // reloads the AVPlayer for the repeat
             return
         }
+        naturalEndAdvance = true
         advanceToNext()
     }
 
@@ -1612,6 +1636,11 @@ final class SetlistPlayer {
                 guard let self else { return }
                 self.observeMixSessionForEngagement()
                 if self.mixEngaged, self.mixSessionActive?() == true { self.endMixEngagement() }
+                // DJ Mode waits with Mix Mode (np-dj-mode §1); the next track start resumes it.
+                if self.djMode.enabled {
+                    DJMode.log("mix tab \(self.mixSessionActive?() == true ? "live — suspended" : "idle — resumes at the next track")")
+                    self.prefetchRevision &+= 1
+                }
                 // Mix Mode is SUSPENDED while a Mix-tab session is live (its lane pauses) and
                 // resumes on the next re-plan once it stops (np-mix-mode §4.5).
                 if self.mixMode.enabled {
@@ -1723,6 +1752,7 @@ final class SetlistPlayer {
         dsp?.onUserStemChange = { [weak self] in self?.stemControlsChangedByUser() }
         dsp?.onUserEffectChange = { [weak self] in self?.effectControlsChangedByUser() }
         dsp?.onStemsOnAir = { [weak self] songId in self?.stemsWentOnAir(songId) }
+        wireDJHooks()
     }
 
     /// The listener changed the stem state mid-track: that is what carries forward now.
@@ -1805,6 +1835,7 @@ final class SetlistPlayer {
         let wasEngaged = mixEngaged
         applyStemLockOnTrackStart(resumeAtMs: resumeAtMs, liveClock: liveClock)
         applyFXLockOnTrackStart(resumeAtMs: resumeAtMs, liveClock: liveClock)
+        applyDJOnTrackStart(resumeAtMs: resumeAtMs, liveClock: liveClock)
         // A lock took a COMPLETE local file into the DSP at this start and it is playing: the DSP
         // renders at once, and the AVPlayer it idled never reports first audio — close the start
         // bookkeeping (dead-air meter, start window, stall episode) here, exactly as the Apple
@@ -1963,6 +1994,7 @@ final class SetlistPlayer {
             guard mixEngaged, currentSongId == songId else { return }
             dsp?.stemPartsLanded(songId)
         case let .song(id, _, _):
+            if djMode.enabled { djAnalyzeUpcoming() }   // a next row landed: measure it before its mix
             guard isRunning, index < queue.count, playedResolveId(queue[index]) == id else { return }
             handOffCurrentToLocal(reason: "landed")
         }
@@ -2153,6 +2185,8 @@ final class SetlistPlayer {
         NPMixMode.log("mode \(on ? "ON" : "OFF") session=\(sessionId) song=\(currentSongId ?? "-") net=\(prefetcher?.network().rawValue ?? "-")")
         persistSession()
         if !on {
+            // DJ Mode rides on Mix Mode's buffering: Mix Mode off turns DJ off (np-dj-mode §1).
+            if djMode.enabled { setDJMode(false) }
             // Re-plan synchronously: the Mix Mode steps leave the lane NOW (the lock's stay).
             replanPrefetch()
             onMixModeOff?()
@@ -2316,8 +2350,9 @@ final class SetlistPlayer {
         handOffCount &+= 1
         NPMixMode.log("handoff song=\(it.id) stream → local at=\(songRelMs)ms start=\(target.startMs ?? 0) paused=\(paused ? 1 : 0) reason=\(reason)")
         prefetchRevision &+= 1
-        if stemLock.wantsStems || fxLock.wantsFX {
-            // A lock carries stems / effects: engage the DSP at the same position, as at a track start.
+        if stemLock.wantsStems || fxLock.wantsFX || (djMode.enabled && djActive) {
+            // A lock carries stems / effects (or DJ Mode mixes out of this song): engage the DSP
+            // at the same position, as at a track start.
             applyLocksOnTrackStart(resumeAtMs: songRelMs)
         } else {
             scheduleStemLockReplan()     // the current row is local now: its stems come next
@@ -2389,6 +2424,684 @@ final class SetlistPlayer {
         guard isRunning, index < queue.count, queue[index].uid == uid else { return }
         handOffCurrentToLocal(reason: "after-start")
     }
+
+    // MARK: - Now Playing DJ MODE (docs/design/np-dj-mode.md)
+    //
+    // Session state beside Mix Mode: DJ ⇒ Mix Mode (its buffering makes the rows local), Mix Mode
+    // off ⇒ DJ off, suspended while a Mix-tab session is live or a Remote (SharePlay) session is
+    // attached, cleared by `stop()` and a fresh `play` (no "default on"), persisted in the
+    // snapshot (`djMode`) and restored HELD. While on:
+    //  • every local row is handed to the DSP at its start (like the FX Lock) and ARMED — the
+    //    DSP's lead-window watch asks `djBuildTransition` for the transition, which re-checks the
+    //    next row is a COMPLETE local file and makes every decision through `AutoTransition`; any
+    //    failed check declines (logged) and the song simply ends with today's normal advance;
+    //  • a vinyl ALBUM RUN (this row and the next are neighbouring songs of one shared album file)
+    //    is left to the AVPlayer's glide / in-place skips: not engaged, not mixed, never re-ordered;
+    //  • the advance happens at the FADE START (`djAdvanceAtFadeStart` — card, index,
+    //    DeadAirMeter), the incoming already on the DSP (no AVPlayer reload);
+    //  • the PocketDJ selector (`DJSetPlanner`) re-orders the upcoming window on DJ on, on every
+    //    advance and on queue edits (debounced) — pins, hand-placed rows, jukebox inserts, album
+    //    runs, rows the rip server / buffer lane is working on, and a buffered / imminent next
+    //    row hold their places;
+    //  • volume leveling: `LoudnessCache` analyses each local file (its own slice of a shared
+    //    side) once; the gain lands on the DSP's trim (ramped when it lands mid-play).
+
+    /// The session's DJ Mode (+ the selector's wave / pocket state).
+    private(set) var djMode = DJModeState()
+    /// SEAM (wired at app init to `SettingsStore.djModeSettings`): the Settings ▸ DJ Mode toggles.
+    @ObservationIgnored var djModeSettings: () -> DJModeSettings = { .allOn }
+    /// SEAM: the Mix tab's lead / fade / glide lengths (shared — np-dj-mode §2).
+    @ObservationIgnored var djTimings: () -> DJMode.Timings = { DJMode.Timings() }
+    /// SEAM: catalog facts for a song id (BPM, Camelot, album genre, year). nil / missing parts
+    /// degrade gracefully (the burned item's BPM / key fill in; the planner renormalizes).
+    @ObservationIgnored var djSongFacts: ((String) -> DJMode.SongFacts?)?
+    /// SEAM: song id → collection ids (the flattened membership — computed OFF the main actor by
+    /// the app). Unwired (tests, previews) ⇒ no collection similarity: pockets lean on genre +
+    /// year, exactly the planner's "parts that are known" renormalization.
+    @ObservationIgnored var djMembershipProvider: (@MainActor () async -> [String: Set<String>])?
+    /// SEAM (wired at app init to `RemoteSessionController.isActive`): a Remote session
+    /// (SharePlay Listen Together / Backseat) is attached. DJ Mode is SUSPENDED for its whole
+    /// length — no transitions, no re-ordering, no auto-engage — and resumes when it ends
+    /// (np-dj-mode §9). Setting it arms the observation. nil ⇒ never attached.
+    @ObservationIgnored var remoteSessionActive: (() -> Bool)? {
+        didSet { observeRemoteSessionForDJ() }
+    }
+    /// The loudness cache (nil ⇒ `LoudnessCache.shared`; tests inject a temp one).
+    @ObservationIgnored var loudnessCache: LoudnessCache?
+    @ObservationIgnored private var djMembership: [String: Set<String>] = [:]
+    @ObservationIgnored private var djMembershipTask: Task<Void, Never>?
+    /// The membership provider ran for this DJ-on (an EMPTY result — no collections — isn't
+    /// asked for again at every track start).
+    @ObservationIgnored private var djMembershipLoaded = false
+    @ObservationIgnored private var applyingDJOrder = false
+    @ObservationIgnored private var djReplanTask: Task<Void, Never>?
+    @ObservationIgnored private var djFxPrng: UInt64 = 0
+    @ObservationIgnored private var djTextureRun: (effect: MixEngine.Effect, peak: Double, left: Int)?
+    @ObservationIgnored private var djLastDecline: (songId: String, reason: String)?
+    /// DJ transitions completed into a new song this session (diagnostics + tests).
+    @ObservationIgnored private(set) var djTransitionCount = 0
+    /// Re-plans applied (diagnostics + tests).
+    @ObservationIgnored private(set) var djReplanCount = 0
+    /// A debounced re-plan is waiting (tests).
+    var djReplanPending: Bool { djReplanTask != nil }
+    /// Queue edits re-plan after this quiet period (np-dj-mode §4: debounced 1 s).
+    static var djReplanDebounceSeconds: Double = 1
+    /// How many upcoming rows one plan re-orders (the rest of a huge queue keeps its order).
+    static let djPlanWindow = 40
+    /// AGING: a row the selector has pushed later this many times holds its place from then on
+    /// (it can't be deferred forever in a long queue). Each deferral also raises its score
+    /// (`DJSetPlanner.agingBonus`), so a poorly fitting row usually plays well before this.
+    static let djMaxDeferrals = 12
+
+    /// The rows the listener placed (insert / move / play-now / a jukebox request / the stall
+    /// hop's deferred row) — the selector never moves them. Read off the rows themselves
+    /// (`Item.djPlaced`), so the marks ride the durable snapshot across a relaunch.
+    var djFixedUids: Set<UUID> { Set(queue.lazy.filter(\.djPlaced).map(\.uid)) }
+
+    /// A Remote session is attached right now (DJ Mode waits).
+    private var djRemoteSuspended: Bool { remoteSessionActive?() == true }
+
+    /// DJ Mode is on AND allowed to act now (supported, not suspended by a live Mix tab or an
+    /// attached Remote session).
+    var djActive: Bool {
+        Self.mixModeSupported && djMode.enabled && mixSessionActive?() != true && !djRemoteSuspended
+    }
+
+    /// Turn the session's DJ Mode on/off. ON turns Mix Mode on (its buffering), seeds the
+    /// selector, re-plans the upcoming rows, and takes the current local row into the DSP (armed,
+    /// leveled). OFF disarms and levels back to 0 dB; the current track keeps playing as it is.
+    func setDJMode(_ on: Bool) {
+        guard isRunning, djMode.enabled != on, Self.mixModeSupported || !on else { return }
+        djMode.enabled = on
+        DJMode.log("mode \(on ? "ON" : "OFF") session=\(sessionId) song=\(currentSongId ?? "-")")
+        if on {
+            if !mixMode.enabled { setMixMode(true) }
+            if djMode.planner == nil {
+                djMode.planner = DJSetPlanner.State(seed: AutoTransition.fxSeed(firstSongId: queue.first?.id, count: queue.count))
+            }
+            djFxPrng = djMode.planner?.seed ?? 0
+            djMembershipLoaded = false
+            applyDJOnTrackStart(liveClock: true)   // membership, the first plan, engage + arm + level
+        } else {
+            djReplanTask?.cancel(); djReplanTask = nil
+            (loudnessCache ?? .shared).cancelAll()
+            dsp?.disarmDJ()
+            if mixEngaged { dsp?.setLevel(db: 0, ramp: true) }
+        }
+        persistSession()
+    }
+
+    func toggleDJMode() { setDJMode(!djMode.enabled) }
+
+    /// New session / stop: DJ Mode off, its selector state forgotten.
+    private func resetDJMode() {
+        if djMode.enabled {
+            DJMode.log("mode cleared (session ended / new session)")
+            (loudnessCache ?? .shared).cancelAll()
+        }
+        djMode = DJModeState()
+        djReplanTask?.cancel(); djReplanTask = nil
+        djMembershipTask?.cancel(); djMembershipTask = nil
+        djMembership = [:]
+        djMembershipLoaded = false
+        djTextureRun = nil
+        djLastDecline = nil
+        dsp?.disarmDJ()
+    }
+
+    /// Observe the Remote seam: attaching SUSPENDS DJ Mode at once (the arm and any leveling
+    /// go; a transition in flight finishes its cut through the host's refusal); the session
+    /// ending RESUMES it on the playing row, exactly like turning DJ Mode on.
+    @MainActor
+    private func observeRemoteSessionForDJ() {
+        withObservationTracking {
+            _ = remoteSessionActive?()
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.observeRemoteSessionForDJ()
+                guard self.djMode.enabled, self.isRunning else { return }
+                self.prefetchRevision &+= 1
+                if self.djRemoteSuspended {
+                    DJMode.log("remote session attached — DJ Mode paused")
+                    self.djReplanTask?.cancel(); self.djReplanTask = nil
+                    self.dsp?.disarmDJ()
+                    if self.mixEngaged { self.dsp?.setLevel(db: 0, ramp: true) }
+                } else {
+                    DJMode.log("remote session ended — DJ Mode resumes")
+                    self.applyDJOnTrackStart(liveClock: true)
+                }
+            }
+        }
+    }
+
+    /// What the Now Playing Mix panel's DJ status shows — the SAME predicates the transition
+    /// decision uses (`djEndReason`), so it never promises a mix that won't happen.
+    var djIndicator: DJMode.Indicator {
+        _ = prefetchRevision
+        guard djMode.enabled, isRunning, index < queue.count else { return .off }
+        if djRemoteSuspended { return .suspendedRemote }
+        guard djActive else { return .suspended }
+        if dsp?.djTransitioning == true { return .mixing }
+        if let reason = djEndReason() {
+            switch reason {
+            case .lastSong: return .lastTrack
+            case .setRepeats: return .noMix("set repeats")
+            default: return .noMix(reason.chipWords)
+            }
+        }
+        let next = queue[index + 1]
+        if rowWillPlayLocally(next) { return .nextReady }
+        return .bufferingNext(prefetchProgress?(laneAudioId(next, isCurrent: false)))
+    }
+
+    /// Why the END of the current row will NOT be a DJ transition (nil ⇒ it can, once the next
+    /// row is a complete local file). One list for the decision, the fade-start re-check and the
+    /// chip.
+    enum DJEndReason: String {
+        case transitionsOff = "transitions off"
+        case repeating = "repeat"
+        case halted = "halted"
+        case lastSong = "last song"
+        case setRepeats = "set repeats"
+        case albumRun = "album run"
+        case albumStarts = "next starts an album side"
+        case plain = "plain row"
+
+        /// The chip's words after "DJ — ".
+        var chipWords: String {
+            switch self {
+            case .transitionsOff: return "transitions off"
+            case .repeating: return "repeating this song"
+            case .halted: return "paused"
+            case .lastSong: return "last song"
+            case .setRepeats: return "set repeats"
+            case .albumRun: return "album plays through"
+            case .albumStarts: return "album side next"
+            case .plain: return "this song ends as is"
+            }
+        }
+    }
+
+    private func djEndReason() -> DJEndReason? {
+        guard index < queue.count else { return .lastSong }
+        guard djModeSettings().transitions else { return .transitionsOff }
+        guard effectiveRepeatMode != .one, currentPlaysRemaining <= 1 else { return .repeating }
+        guard !pausedByCascade else { return .halted }
+        guard index + 1 < queue.count else { return effectiveRepeatMode == .all ? .setRepeats : .lastSong }
+        if djCurrentInAlbumRun() { return .albumRun }
+        if djRowStartsAlbumRun(index + 1) { return .albumStarts }
+        guard mixEngaged else { return .plain }
+        return nil
+    }
+
+    // MARK: DJ — vinyl album runs (np-dj-mode §9: DJ never breaks end-to-end album play)
+
+    /// The CURRENT row plays from a shared album side (on the AVPlayer's file or the DSP's slice)
+    /// and the next row is the record's next song — the side glides on (`glideInSameFile`).
+    private func djCurrentInAlbumRun() -> Bool {
+        guard index < queue.count, let np = rips.nowPlaying, let start = np.startMs, queue[index].matches(np.songId)
+        else { return false }
+        let cur = queue[index]
+        guard let tl = albumTimeline(forSong: cur.id), tl.segment(for: SongVariant.baseId(cur.id))?.startMs == start
+        else { return false }
+        return albumRun(cur, in: tl).next != nil
+    }
+
+    /// Rows `i` and `i + 1` are neighbouring songs of ONE shared album file (in record order).
+    private func djAlbumLinked(_ i: Int, timelines: inout [String: AlbumFileTimeline?]) -> Bool {
+        guard i >= 0, i + 1 < queue.count else { return false }
+        let a = SongVariant.baseId(queue[i].id), b = SongVariant.baseId(queue[i + 1].id)
+        guard let ea = rips.manifest[a], ea.startMs != nil, let eb = rips.manifest[b], eb.startMs != nil,
+              ea.key == eb.key else { return false }
+        if timelines[ea.key] == nil { timelines[ea.key] = .some(albumTimeline(forSong: a)) }
+        guard let tl = timelines[ea.key] ?? nil else { return false }
+        return tl.next(after: a)?.songId == b
+    }
+
+    /// Row `i` begins an album run (it and the row after it are neighbouring songs on a side).
+    /// A DJ transition never mixes INTO one: the side starts from the record (its lead-in, then
+    /// the glide) — the one exception would cost a reload at its first song boundary.
+    private func djRowStartsAlbumRun(_ i: Int) -> Bool {
+        var tls: [String: AlbumFileTimeline?] = [:]
+        return djAlbumLinked(i, timelines: &tls)
+    }
+
+    /// A track just started (same turn as its source hand-over — see `applyLocksOnTrackStart`):
+    /// with DJ Mode on, a local row goes to the DSP at once (so its end can mix), armed and
+    /// leveled. A row the DSP can't own (Apple Music, a plain stream, a live capture) plays as it
+    /// is — its end is a normal advance. An album-run row stays on the AVPlayer (the glide).
+    private func applyDJOnTrackStart(resumeAtMs: Int? = nil, liveClock: Bool = false, rampLevel: Bool? = nil) {
+        guard djMode.enabled, isRunning, index < queue.count, !isHeldForResume else { return }
+        let it = queue[index]
+        guard djActive else {
+            DJMode.log("track song=\(it.id) → SUSPENDED (\(djRemoteSuspended ? "Remote session" : "Mix tab live"))")
+            return
+        }
+        // Every advance re-plans what comes next (np-dj-mode §4) — a DJ transition's, a skip's,
+        // a normal end's, an album glide's, the first ▶ after a restore.
+        loadDJMembership()
+        djReplan(reason: "track")
+        if !mixEngaged {
+            if djCurrentInAlbumRun() {
+                DJMode.log("track song=\(it.id) → album run (the side plays through on the record)")
+                return
+            }
+            guard dsp != nil, currentTrackMixable, coordinator.activeBackend != .appleMusic else {
+                let why = coordinator.activeBackend == .appleMusic ? "Apple Music" : (player.isLive ? "live capture" : "not a local file")
+                DJMode.log("track song=\(it.id) → plain (\(why)) — its end is a normal advance")
+                return
+            }
+            engageMix(atSeconds: liveClock ? nil : (resumeAtMs.map { Double($0) / 1000 } ?? 0),
+                      play: !player.pausedByListener)
+        }
+        guard mixEngaged else {
+            DJMode.log("track song=\(it.id) → plain (DSP refused the file)")
+            return
+        }
+        armDJ()
+        applyDJLeveling(ramp: rampLevel ?? liveClock)
+        djAnalyzeUpcoming()
+    }
+
+    private func armDJ() {
+        guard let dsp, mixEngaged, djActive else { return }
+        dsp.armDJ(lead: djTimings().lead) { [weak self] in self?.djBuildTransition() }
+    }
+
+    /// The DSP's DJ hooks (re-armed whenever the DSP seam is set).
+    private func wireDJHooks() {
+        dsp?.onDJFadeStart = { [weak self] id in self?.djAdvanceAtFadeStart(id) ?? false }
+        dsp?.onDJIncomingEngaged = { [weak self] id, url, startMs in self?.djIncomingEngaged(id, url: url, startMs: startMs) }
+        dsp?.onDJIncomingFailed = { [weak self] id in self?.djIncomingFailed(id) }
+        dsp?.onDJDeclined = { [weak self] reason in
+            guard let self, self.index < self.queue.count else { return }
+            self.djDecline(self.queue[self.index].id, reason)
+        }
+        dsp?.onDJTransitionEnded = { [weak self] id, how in
+            DJMode.log("transition end \(id.map { "song=\($0) " } ?? "")how=\(how)")
+            self?.prefetchRevision &+= 1
+        }
+    }
+
+    private func djDecline(_ songId: String, _ reason: String) {
+        guard djLastDecline?.songId != songId || djLastDecline?.reason != reason else { return }
+        djLastDecline = (songId, reason)
+        DJMode.log("declined song=\(songId) \(reason) → normal advance")
+    }
+
+    // MARK: DJ — the transition decision
+
+    /// The facts for a row: the catalog's (seam), with the burned item's BPM / Camelot filling gaps.
+    private func djFacts(_ it: Item) -> DJMode.SongFacts? {
+        var f = djSongFacts?(it.id) ?? DJMode.SongFacts()
+        let burned = burns.items[it.resolveId] ?? burns.items[it.id]
+        if f.bpm == nil || (f.bpm ?? 0) <= 0, let b = burned?.bpm, b > 0 { f.bpm = b }
+        if f.camelot == nil, let c = burned?.camelot { f.camelot = c }
+        return f == DJMode.SongFacts() ? nil : f
+    }
+
+    /// The BPM to beat-match on: the measured grid's, else the catalog's.
+    private func djBeat(_ it: Item, _ facts: DJMode.SongFacts?) -> AutoTransition.BeatRef {
+        let grid = burns.beatGrid(forSong: it.resolveId) ?? burns.beatGrid(forSong: it.id)
+        let bpm = grid?.bpm.flatMap { $0 > 0 ? $0 : nil } ?? facts?.bpm.flatMap { $0 > 0 ? $0 : nil }
+        return AutoTransition.BeatRef(bpm: bpm, firstDownbeatMs: grid?.firstDownbeatMs)
+    }
+
+    /// The COMPLETE local file `it` would play from right now (the start's own lookup — burned
+    /// edition ladder, studio / profile, the lane's finished cut), with its scope held. nil ⇒ not
+    /// local (yet) — the transition declines.
+    private func djLocalSource(_ it: Item) -> (url: URL, release: (() -> Void)?, startMs: Int?, lengthMs: Int?)? {
+        if StudioFactory.isStudioId(it.id) {
+            guard let r = studioResolve?(it.id) else { return nil }
+            return (r.url, r.release, nil, nil)
+        }
+        if ProfileSourceStore.isProfileSongId(it.id) {
+            guard let r = profileResolve?(it.id) else { return nil }
+            return (r.url, r.release, nil, nil)
+        }
+        if let res = burns.localURLForPlayback(forSong: it.id, decision: it.editionDecision) {
+            let start = burns.startMs(forSong: res.id)
+            return (res.url, res.release, start, sliceLengthMs(it, startMs: start))
+        }
+        if localLaneWanted || mixModeBuffering, let url = prefetchedCutFile?(laneAudioId(it, isCurrent: false)) {
+            return (url, nil, nil, it.lengthMs)
+        }
+        return nil
+    }
+
+    /// The FX texture for this transition — the same one held for 3–5 transitions, then re-rolled
+    /// (`AutoTransition.rollTexture`, deterministic from the session seed).
+    private func nextDJTexture() -> (effect: MixEngine.Effect, peak: Double) {
+        if djTextureRun == nil || (djTextureRun?.left ?? 0) <= 0 {
+            let t = AutoTransition.rollTexture(&djFxPrng)
+            djTextureRun = (MixEngine.mixEffect(t.effect), t.peak, t.run)
+        }
+        djTextureRun!.left -= 1
+        return (djTextureRun!.effect, djTextureRun!.peak)
+    }
+
+    /// The DSP's lead-window watch asks for the transition out of the current song. nil
+    /// declines (logged once per song + reason) — the song ends with the normal advance.
+    private func djBuildTransition() -> NowPlayingDSP.DJTransition? {
+        guard djActive, isRunning, !isHeldForResume, index < queue.count, mixEngaged, let dsp else { return nil }
+        let cur = queue[index]
+        let cfg = djModeSettings()
+        func decline(_ r: String) -> NowPlayingDSP.DJTransition? { djDecline(cur.id, r); return nil }
+        if let reason = djEndReason() { return decline(reason.rawValue) }
+        let next = queue[index + 1]
+        guard let src = djLocalSource(next) else { return decline("next not local") }
+        let t = djTimings()
+        let mixGlide = cfg.tempoMatch || cfg.keyMatch
+        let fa = djFacts(cur), fb = djFacts(next)
+        let ba = djBeat(cur, fa), bb = djBeat(next, fb)
+        // The outgoing's EFFECTIVE tempo (the listener may have moved its rate) meets the incoming's.
+        let g = mixGlide
+            ? AutoTransition.glideParams(fromCamelot: cfg.keyMatch ? fa?.camelot : nil,
+                                         toCamelot: cfg.keyMatch ? fb?.camelot : nil,
+                                         fromBPM: cfg.tempoMatch ? ba.bpm.map { $0 * dsp.rate } : nil,
+                                         toBPM: cfg.tempoMatch ? bb.bpm : nil)
+            : AutoTransition.identityGlide
+        // `advancePlan`'s 1.12 headroom assumes the outgoing speeds up ≤ 12 %; a bigger tempo
+        // meet (up to √2) eats the runway faster — plan on the runway it really has, so the
+        // outgoing never runs out before the fade lands.
+        let left = dsp.djSecondsLeft * min(1, 1.12 / max(1, g.outRate))
+        let plan = AutoTransition.advancePlan(secondsLeft: left, fadeSeconds: t.fade,
+                                              glideSeconds: t.glide, fxGlide: cfg.effectSweeps, mixGlide: mixGlide)
+        let level = cfg.volumeLeveling ? djLevelDb(next.id, url: src.url, startMs: src.startMs, lengthMs: src.lengthMs) : 0
+        let incoming = NowPlayingDSP.DJIncoming(songId: next.id, url: src.url, startMs: src.startMs,
+                                                lengthMs: src.lengthMs, release: src.release, beat: bb, levelDb: level)
+        return NowPlayingDSP.DJTransition(plan: plan, outRate: g.outRate, outPitch: g.outPitch,
+                                          inRate: g.inRate, inPitch: g.inPitch,
+                                          texture: cfg.effectSweeps ? nextDJTexture() : nil,
+                                          outgoingBeat: ba, incoming: incoming)
+    }
+
+    /// FADE START (np-dj-mode §3.3): the advance — the queue index, the card, DeadAirMeter and
+    /// the control reset happen NOW, while the outgoing fades out on the tail deck. Refuses (the
+    /// outgoing carries on) when the queue moved under the transition, or when anything the
+    /// decision checked changed during the pre-roll (repeat-one / a repeat count / the cascade
+    /// halt / Transitions off / DJ suspended) — the refusal cuts back cleanly.
+    private func djAdvanceAtFadeStart(_ songId: String) -> Bool {
+        guard djActive, isRunning, mixEngaged, !isHeldForResume, index + 1 < queue.count,
+              queue[index + 1].matches(songId) else {
+            DJMode.log("fade start → \(songId) refused (the queue moved under the transition)")
+            return false
+        }
+        if let reason = djEndReason() {
+            DJMode.log("fade start → \(songId) refused (\(reason.rawValue) since the transition began)")
+            return false
+        }
+        let from = queue[index]
+        DeadAirMeter.shared.transitionBegan(cause: "dj")
+        DiagLog.shared.log("playback", "advance from=\(from.id) index=\(index)/\(queue.count) via=dj")
+        waitingForLive = false
+        index += 1
+        noteTransition(.naturalEnd)
+        let it = queue[index]
+        currentPlaysRemaining = CollectionMembership.normalizedRepeat(it.repeatCount)
+        // Anything still pending for the old row stands down (the start paths' discipline).
+        playTask?.cancel(); playTask = nil
+        startQueued = false
+        playGeneration &+= 1
+        coordinator.supersedePendingPlay()
+        startStallTask?.cancel(); startStallTask = nil
+        resolveStallTask?.cancel(); resolveStallTask = nil
+        liveBackstopTask?.cancel(); liveBackstopTask = nil
+        resolvingGeneration = nil
+        endStartWindow(reason: "dj")
+        editionSubstitution = nil
+        growingRefusedUid = nil
+        lastTouchCovers = false
+        handOffOwedUid = nil
+        handOffFallback = nil
+        clearGrowingCallbacks(dsp)
+        growingUid = nil
+        growingLeftStream = nil
+        loadedAnyDeviceTrack = true
+        onTrackRestart?(it.id)
+        resetTrackAudible()
+        reconcileRipWindow()
+        // Tempo / pitch / gain / stems reset per track; the FX Lock's carry is the incoming's.
+        dsp?.resetControls()
+        if fxLock.enabled, let dsp {
+            applyingFXLock = true
+            dsp.applyCarriedEffects(fxLock.effects)
+            applyingFXLock = false
+        }
+        return true
+    }
+
+    /// The incoming is on the main chain: it owns `nowPlaying` (one history play — a new song),
+    /// the card, the arm; the locks apply as at any track start; the selector re-plans.
+    private func djIncomingEngaged(_ songId: String, url: URL, startMs: Int?) {
+        guard isRunning, index < queue.count, queue[index].matches(songId), let dsp else { return }
+        let it = queue[index]
+        stampGrowingNowPlaying(it, url: url, startMs: startMs)
+        publishDSPCard(it, dsp)
+        player.refreshExternalNowPlaying()
+        logTrackStart(it, backend: "dj", resumeAtMs: nil)
+        handleFirstAudio(source: "dj")
+        djTransitionCount &+= 1
+        prefetchRevision &+= 1
+        persistSession(positionMs: 0)
+        prefetchUpcoming()
+        // The Stem Lock (stems on the incoming) and the DJ re-plan + arm + level, as at any start.
+        applyLocksOnTrackStart(resumeAtMs: nil, liveClock: true)
+    }
+
+    /// The DSP couldn't take the incoming after the advance: play it the plain way.
+    private func djIncomingFailed(_ songId: String) {
+        guard isRunning, index < queue.count, queue[index].matches(songId) else { return }
+        DJMode.log("incoming song=\(songId) refused by the DSP → plain start")
+        startPlayCurrent(fresh: true)
+    }
+
+    // MARK: DJ — leveling (np-dj-mode §5)
+
+    /// The loudness key for a local file: a song on a shared album side keys (and is measured
+    /// as) its own slice `[startMs, startMs + lengthMs)`, never the whole side.
+    private func djLoudnessKey(_ songId: String, url: URL, startMs: Int?, lengthMs: Int?) -> LoudnessCache.Key? {
+        LoudnessCache.key(songId: songId, url: url, startMs: startMs, lengthMs: startMs == nil ? nil : lengthMs)
+    }
+
+    /// The leveling gain for a local file (0 dB when unknown — the analysis is kicked ONCE:
+    /// never while one is running for the key, never again after it failed).
+    private func djLevelDb(_ songId: String, url: URL, startMs: Int?, lengthMs: Int?) -> Double {
+        let cache = loudnessCache ?? .shared
+        guard let key = djLoudnessKey(songId, url: url, startMs: startMs, lengthMs: lengthMs) else { return 0 }
+        if let g = cache.gainDb(for: key) { return g }
+        if !cache.isSettledOrRunning(key) { djAnalyze(key, url: url) }
+        return 0
+    }
+
+    /// The playing row's loudness slice: its shared-file start + the DSP's slice length.
+    private func djCurrentSegment(_ it: Item) -> (startMs: Int?, lengthMs: Int?) {
+        let start = rips.nowPlaying?.startMs
+        return (start, start.flatMap { sliceLengthMs(it, startMs: $0) })
+    }
+
+    /// Apply the CURRENT row's leveling gain (DJ + Volume on), else 0 dB.
+    private func applyDJLeveling(ramp: Bool) {
+        guard let dsp, mixEngaged, isRunning, index < queue.count else { return }
+        guard djActive, djModeSettings().volumeLeveling, let url = rips.nowPlaying?.url, url.isFileURL else {
+            dsp.setLevel(db: 0, ramp: ramp)
+            return
+        }
+        let it = queue[index]
+        // A file still DOWNLOADING isn't measured (its completion re-runs this).
+        if dsp.isStreamingMain { return }
+        let seg = djCurrentSegment(it)
+        let db = djLevelDb(it.id, url: url, startMs: seg.startMs, lengthMs: seg.lengthMs)
+        guard abs(db - dsp.levelTargetDb) > 0.01 else { return }
+        dsp.setLevel(db: db, ramp: ramp)
+        DJMode.log("level song=\(it.id) gain=\(String(format: "%+.1f", db))dB\(ramp ? " (ramped)" : "")")
+    }
+
+    /// Measure `key` once (background); when THIS analysis stored a result and it belongs to
+    /// the PLAYING row, ramp its gain in. A cached / failed / cancelled outcome never re-applies
+    /// (re-applying would re-enter `djLevelDb` and could kick again — the old busy loop).
+    private func djAnalyze(_ key: LoudnessCache.Key, url: URL, release: (() -> Void)? = nil) {
+        let cache = loudnessCache ?? .shared
+        Task { @MainActor [weak self] in
+            let outcome = await cache.analyze(key, url: url)
+            release?()
+            guard case .measured = outcome, let self, self.isRunning, self.index < self.queue.count,
+                  self.queue[self.index].id == key.songId, self.mixEngaged,
+                  self.rips.nowPlaying?.url == url else { return }
+            self.applyDJLeveling(ramp: true)
+        }
+    }
+
+    /// Analyse the next local rows ahead of their starts (so their gain is known at the mix).
+    private func djAnalyzeUpcoming() {
+        guard djActive, djModeSettings().volumeLeveling, index + 1 < queue.count else { return }
+        let cache = loudnessCache ?? .shared
+        for it in queue[(index + 1)..<min(queue.count, index + 3)] {
+            guard let src = djLocalSource(it) else { continue }
+            guard let key = djLoudnessKey(it.id, url: src.url, startMs: src.startMs, lengthMs: src.lengthMs),
+                  !cache.isSettledOrRunning(key) else {
+                src.release?()
+                continue
+            }
+            djAnalyze(key, url: src.url, release: src.release)
+        }
+    }
+
+    // MARK: DJ — the PocketDJ selector (np-dj-mode §4)
+
+    private func loadDJMembership() {
+        guard let provider = djMembershipProvider, djMembershipTask == nil, !djMembershipLoaded else { return }
+        djMembershipTask = Task { @MainActor [weak self] in
+            let m = await provider()
+            guard let self, !Task.isCancelled else { return }
+            self.djMembershipTask = nil
+            self.djMembershipLoaded = true          // an empty answer (no collections) is an answer
+            self.djMembership = m
+            if self.djMode.enabled, !m.isEmpty { self.djReplan(reason: "membership") }
+        }
+    }
+
+    /// A queue edit while DJ Mode is on: re-plan once things settle (never for our own re-order).
+    private func scheduleDJReplanOnEdit() {
+        guard djMode.enabled, !applyingDJOrder, isRunning, !djRemoteSuspended else { return }
+        djReplanTask?.cancel()
+        let wait = Self.djReplanDebounceSeconds
+        djReplanTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, wait) * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.djReplanTask = nil
+            self.djReplan(reason: "edit")
+        }
+    }
+
+    /// May the selector move the row at absolute position `i`? Never:
+    ///  • a pinned / listener-placed row (`plan.pinned`, `Item.djPlaced`), or one aged out
+    ///    (deferred `djMaxDeferrals` times);
+    ///  • a row the rip server or the buffer lane is working on — a playback rip in flight
+    ///    (`replaceUpcoming`'s guard: moving it out of the rip window would cancel the capture),
+    ///    a lane fetch, a buffer stream still downloading;
+    ///  • a row of a vinyl ALBUM RUN (`albumLinked` — the side plays through in record order);
+    ///  • the NEXT row once it is local or buffering, mid-transition, or no longer replaceable by
+    ///    the runway rule (< 30 s left of the current song, or its length unknown).
+    private func djRowFixed(_ i: Int, albumLinked: Set<Int>) -> Bool {
+        let it = queue[i]
+        if it.plan?.pinned == true || it.djPlaced || it.djDeferrals >= Self.djMaxDeferrals { return true }
+        if albumLinked.contains(i) { return true }
+        if ripInFlight(it) { return true }
+        let lane = laneAudioId(it, isCurrent: false)
+        if prefetcher?.isFetchingSong(lane) == true { return true }
+        if let s = bufferStream?(playedResolveId(it)), !s.failed, !s.isComplete { return true }
+        guard i == index + 1 else { return false }
+        if dsp?.djTransitioning == true || rowWillPlayLocally(it) { return true }
+        guard let dur = currentDurationMs() else { return true }
+        return Double(dur - sessionPositionMs()) / 1000 < Self.replaceNextMinRunwaySeconds
+    }
+
+    /// The absolute positions in `index...hi` that belong to an album run (each row linked to a
+    /// neighbour that is the record's adjacent song) — fixed blocks the selector never splits.
+    private func djAlbumLinkedRows(upTo hi: Int) -> Set<Int> {
+        var out: Set<Int> = []
+        var tls: [String: AlbumFileTimeline?] = [:]
+        var i = index
+        while i + 1 < min(queue.count, hi + 1) {
+            if djAlbumLinked(i, timelines: &tls) { out.insert(i); out.insert(i + 1) }
+            i += 1
+        }
+        return out
+    }
+
+    private func djCandidate(_ it: Item, fixed: Bool) -> DJSetPlanner.Candidate {
+        let f = djFacts(it)
+        var c = DJSetPlanner.candidate(uid: it.uid, songId: it.id, bpm: f?.bpm, camelot: f?.camelot,
+                                       rawGenre: f?.genre, year: f?.year,
+                                       collections: djMembership.isEmpty ? [] : (djMembership[SongVariant.baseId(it.id)] ?? []),
+                                       fixed: fixed)
+        c.deferrals = it.djDeferrals
+        return c
+    }
+
+    /// `items` marked as placed by the listener (the selector leaves them where they land).
+    private static func djPlaced(_ items: [Item]) -> [Item] {
+        items.map { var it = $0; it.djPlaced = true; return it }
+    }
+
+    /// Re-plan the upcoming window now: one uid-verified, pin-respecting re-order.
+    func djReplan(reason: String) {
+        djReplanTask?.cancel(); djReplanTask = nil
+        guard djActive, isRunning, !isHeldForResume, index < queue.count else { return }
+        let lo = index + 1
+        let hi = min(queue.count, lo + Self.djPlanWindow)
+        let state = djMode.planner ?? DJSetPlanner.State(seed: AutoTransition.fxSeed(firstSongId: queue.first?.id, count: queue.count))
+        let current = djCandidate(queue[index], fixed: true)
+        let linked = djAlbumLinkedRows(upTo: hi)
+        let fixed = lo < hi ? (lo..<hi).map { djRowFixed($0, albumLinked: linked) } : []
+        let rows = lo < hi ? (lo..<hi).map { djCandidate(queue[$0], fixed: fixed[$0 - lo]) } : []
+        let result = DJSetPlanner.plan(current: current, upcoming: rows, state: state, options: djModeSettings().plannerOptions)
+        djMode.planner = result.state
+        let before = rows.map(\.uid)
+        guard result.order != before, applyDJOrder(result.order, window: lo..<hi, expected: before, fixed: fixed) else {
+            DJMode.log("plan \(reason) song=\(current.songId) — order kept (\(rows.count) rows, \(fixed.filter { $0 }.count) fixed)")
+            return
+        }
+        djReplanCount &+= 1
+        let ids = queue[lo..<min(hi, lo + 6)].map(\.id).joined(separator: ",")
+        DJMode.log("plan \(reason) song=\(current.songId) band=\(result.state.band.map(String.init) ?? "-") "
+                   + "dir=\(result.state.direction == .up ? "up" : "down") next=\(ids)")
+    }
+
+    /// Apply a planner order to `window` — only if the window still holds exactly the rows it was
+    /// planned from, in that order (uid-verified, no duplicate uid), and every `fixed` row stays
+    /// where it was. A row placed LATER than it was counts one deferral (aging). One queue write.
+    @discardableResult
+    private func applyDJOrder(_ order: [UUID], window: Range<Int>, expected: [UUID], fixed: [Bool]) -> Bool {
+        guard window.upperBound <= queue.count, order.count == expected.count, fixed.count == expected.count,
+              Set(expected).count == expected.count, Set(order) == Set(expected),
+              queue[window].map(\.uid) == expected else { return false }
+        for (k, uid) in expected.enumerated() where fixed[k] {
+            guard order[k] == uid else { return false }
+        }
+        let oldSlot = Dictionary(expected.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        let byUid = Dictionary(queue[window].map { ($0.uid, $0) }, uniquingKeysWith: { a, _ in a })
+        var rows: [Item] = []
+        rows.reserveCapacity(order.count)
+        for (k, uid) in order.enumerated() {
+            guard var row = byUid[uid] else { return false }
+            if let was = oldSlot[uid], k > was { row.djDeferrals += 1 }
+            rows.append(row)
+        }
+        applyingDJOrder = true
+        queue.replaceSubrange(window, with: rows)
+        applyingDJOrder = false
+        if window.lowerBound <= index + Self.prefetchAhead { prefetchUpcoming() }
+        persistSession()
+        return true
+    }
+
+    #if DEBUG
+    /// Tests: stamp DJ Mode on a HELD / unsupported state without the side effects.
+    func setDJModeForTesting(_ st: DJModeState) { djMode = st }
+    #endif
 
     // MARK: - Mix Mode phase 3: the DSP plays the GROWING file (np-mix-mode §5 phase 3)
     //
@@ -2548,7 +3261,7 @@ final class SetlistPlayer {
             durationSeconds: it.lengthMs.map { Double($0) / 1000 } ?? dsp.duration,
             position: { [weak dsp] in dsp?.currentTime ?? 0 },
             isPlaying: { [weak dsp] in dsp?.isPlaying ?? false },
-            rate: { [weak dsp] in (dsp?.isBuffering ?? false) ? 0 : (dsp?.rate ?? 1) },
+            rate: { [weak dsp] in (dsp?.isBuffering ?? false) ? 0 : (dsp?.clockRate ?? 1) },   // the TAIL's tempo in a DJ pre-roll
             seek: { [weak dsp] t in dsp?.seek(toSongSeconds: t) },
             stalled: { [weak dsp] in dsp?.isBuffering ?? false },
             play: { [weak dsp] in dsp?.resume() },
@@ -2585,6 +3298,7 @@ final class SetlistPlayer {
         } ?? rips.nowPlaying?.startMs
         stampGrowingNowPlaying(it, url: url, startMs: startMs)
         NPMixMode.log("growing song=\(it.id) complete → \(url.lastPathComponent)")
+        if djMode.enabled { applyDJLeveling(ramp: true) }   // complete: measurable (lands ramped)
         prefetchRevision &+= 1
         scheduleStemLockReplan()               // the current row is local now: its stems come next
     }
@@ -3166,6 +3880,13 @@ final class SetlistPlayer {
         logTrackStart(it, backend: backend, resumeAtMs: nil)
         handleFirstAudio(source: backend)
         prefetchUpcoming()
+        // DJ Mode: an in-place move is a track start too — re-plan, and once the side's run is
+        // over (the record's last queued song) take it into the DSP so its END can mix out.
+        // (A glide sits where the clock is; a jump's seek hasn't landed — the song's top.)
+        if djMode.enabled {
+            let rel = backend == "glide" ? max(0, Int(player.clock.currentTime * 1000) - startMs) : 0
+            applyDJOnTrackStart(resumeAtMs: rel, liveClock: false, rampLevel: true)
+        }
     }
 
     /// ALBUM WAVEFORM SCRUB: jump to absolute position `fileMs` of the shared album file the
@@ -3672,6 +4393,11 @@ final class SetlistPlayer {
         // must NEVER start it early — it plays only when the hop target ends.
         let row = queue.remove(at: j)
         queue.insert(row, at: index)
+        // DJ Mode: the deferred row stays RIGHT BEHIND the hop target (FR1) — the hop target's
+        // start re-plans, and the selector must not carry the skipped song away.
+        if djMode.enabled, index + 1 < queue.count, queue[index + 1].uid == stalled.uid {
+            queue[index + 1].djPlaced = true
+        }
         noteTransition(.stallHop)
         DiagLog.shared.log("playback", "\(reason) song=\(stalled.id) → hop to \(kind) \(row.id) (deferred stalled row) abandoned=\(stallEpisodeAbandoned.count)")
         persistSession(positionMs: 0)
@@ -4039,7 +4765,8 @@ final class SetlistPlayer {
             Item(id: $0.songId, title: $0.title, artist: $0.artist,
                  lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
                  variant: $0.variant.flatMap(SongVariant.init(rawValue:)),
-                 editionLocked: $0.editionLocked ?? false, plan: $0.plan)
+                 editionLocked: $0.editionLocked ?? false, plan: $0.plan,
+                 djPlaced: $0.djPlaced ?? false)
         }
         index = min(max(0, snap.index), queue.count - 1)
         // The snapshot's rows ARE the session projection — warm the memo with them (the queue
@@ -4088,6 +4815,12 @@ final class SetlistPlayer {
         // Mix Mode rides it too — HELD like everything else: no buffering until the first ▶
         // (`resumeFromHold` → `playCurrent` → the track-start re-plan).
         mixMode = Self.mixModeSupported ? (snap.npMixMode ?? NPMixModeState()) : NPMixModeState()
+        // DJ Mode too — HELD: nothing is planned, armed or analysed until the first ▶. DJ
+        // implies Mix Mode, so a snapshot carrying it restores Mix Mode with it.
+        djMode = Self.mixModeSupported ? (snap.djMode ?? DJModeState()) : DJModeState()
+        if djMode.enabled { mixMode.enabled = true }
+        djFxPrng = djMode.planner?.seed ?? 0
+        djTextureRun = nil
         handOffOwedUid = nil
         canonicalOrder = shuffleEnabled ? queue.map(\.uid) : nil
         currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
@@ -4256,7 +4989,7 @@ final class SetlistPlayer {
                                      lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
                                      variant: $0.variant?.rawValue,
                                      editionLocked: $0.editionLocked ? true : nil,
-                                     plan: $0.plan)
+                                     plan: $0.plan, djPlaced: $0.djPlaced ? true : nil)
         }
     }
 
@@ -4279,6 +5012,7 @@ final class SetlistPlayer {
             stemLock: stemLock.enabled ? stemLock : nil,
             npMixMode: mixMode.enabled ? mixMode : nil,
             fxLock: fxLock.enabled ? fxLock : nil,
+            djMode: djMode.enabled ? djMode : nil,
             updatedAt: Date().timeIntervalSince1970 * 1000)
         sessionStore.save(snap)
     }

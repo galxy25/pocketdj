@@ -238,8 +238,33 @@ final class SettingsStore {
     /// up to the user to know it is shared". ON ⇒ those assets are pinned at creation (the phase-1
     /// review rule). App storage is unaffected either way. nil ⇒ off.
     var npMixKeepPickedFolderBuffers: Bool?
+    // Settings ▸ DJ Mode (np-dj-mode §6): which parts of Now Playing DJ Mode are on. All default
+    // ON (a missing blob key ⇒ true). Read by the player through `djModeSettings`.
+    /// DJ transitions (the Auto-DJ crossfade orchestration). OFF ⇒ a normal advance.
+    var djTransitions: Bool
+    /// The FX texture sweep (filter / reverb / flanger) during a DJ transition.
+    var djEffectSweeps: Bool
+    /// Tempo meet-in-the-middle during a DJ transition (OFF ⇒ rate targets 1).
+    var djTempoMatch: Bool
+    /// ±1 key pitch bend during a DJ transition (OFF ⇒ pitch 0).
+    var djKeyMatch: Bool
+    /// Volume leveling toward −14 LUFS on every track the DSP plays in DJ Mode.
+    var djVolumeLeveling: Bool
+    /// The PocketDJ selector's 10-BPM tempo waves.
+    var djTempoWaves: Bool
+    /// The PocketDJ selector's genre / year / collection pockets.
+    var djPockets: Bool
     /// Epoch ms of the last temporary-asset sweep START (stamped first — the 10-23 lesson).
     var lastTemporarySweepAt: Double?
+
+    /// The DJ Mode toggles as one value (np-dj-mode §6) — what the player's `djModeSettings`
+    /// closure returns.
+    var djModeSettings: DJModeSettings {
+        DJModeSettings(transitions: djTransitions, effectSweeps: djEffectSweeps,
+                       tempoMatch: djTempoMatch, keyMatch: djKeyMatch,
+                       volumeLeveling: djVolumeLeveling, tempoWaves: djTempoWaves,
+                       pockets: djPockets)
+    }
 
     nonisolated static let npMixBufferDefaultTTLHours: Double = 48
     nonisolated static let npMixBufferDefaultCapGB: Double = 2
@@ -558,6 +583,13 @@ final class SettingsStore {
         self.npMixCellular = data.npMixCellular
         self.npMixModeDefaultOn = data.npMixModeDefaultOn
         self.npMixKeepPickedFolderBuffers = data.npMixKeepPickedFolderBuffers
+        self.djTransitions = data.djTransitions ?? true
+        self.djEffectSweeps = data.djEffectSweeps ?? true
+        self.djTempoMatch = data.djTempoMatch ?? true
+        self.djKeyMatch = data.djKeyMatch ?? true
+        self.djVolumeLeveling = data.djVolumeLeveling ?? true
+        self.djTempoWaves = data.djTempoWaves ?? true
+        self.djPockets = data.djPockets ?? true
         self.lastTemporarySweepAt = data.lastTemporarySweepAt
         self.debugLoggingEnabled = data.debugLoggingEnabled ?? false
         self.remoteTelemetryEnabled = data.remoteTelemetryEnabled ?? false
@@ -796,7 +828,14 @@ final class SettingsStore {
             npMixBufferAhead: npMixBufferAhead,
             npMixCellular: npMixCellular,
             npMixModeDefaultOn: npMixModeDefaultOn,
-            npMixKeepPickedFolderBuffers: npMixKeepPickedFolderBuffers)
+            npMixKeepPickedFolderBuffers: npMixKeepPickedFolderBuffers,
+            djTransitions: djTransitions,
+            djEffectSweeps: djEffectSweeps,
+            djTempoMatch: djTempoMatch,
+            djKeyMatch: djKeyMatch,
+            djVolumeLeveling: djVolumeLeveling,
+            djTempoWaves: djTempoWaves,
+            djPockets: djPockets)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -852,6 +891,13 @@ final class SettingsStore {
         npMixCellular = d.npMixCellular
         npMixModeDefaultOn = d.npMixModeDefaultOn
         npMixKeepPickedFolderBuffers = d.npMixKeepPickedFolderBuffers
+        djTransitions = d.djTransitions ?? true
+        djEffectSweeps = d.djEffectSweeps ?? true
+        djTempoMatch = d.djTempoMatch ?? true
+        djKeyMatch = d.djKeyMatch ?? true
+        djVolumeLeveling = d.djVolumeLeveling ?? true
+        djTempoWaves = d.djTempoWaves ?? true
+        djPockets = d.djPockets ?? true
         lastTemporarySweepAt = d.lastTemporarySweepAt
         debugLoggingEnabled = d.debugLoggingEnabled ?? false
         // The capture buffer follows its setting on reset, exactly as DebugView's toggle does —
@@ -1072,6 +1118,14 @@ struct SettingsData: Codable {
     var npMixModeDefaultOn: Bool? = nil
     /// Optional so older blobs still decode — keep buffered files in a picked folder (nil ⇒ off).
     var npMixKeepPickedFolderBuffers: Bool? = nil
+    /// Optional so older blobs still decode — the DJ Mode toggles (nil ⇒ on).
+    var djTransitions: Bool? = nil
+    var djEffectSweeps: Bool? = nil
+    var djTempoMatch: Bool? = nil
+    var djKeyMatch: Bool? = nil
+    var djVolumeLeveling: Bool? = nil
+    var djTempoWaves: Bool? = nil
+    var djPockets: Bool? = nil
 
     static let `default` = SettingsData(
         // No shipped default catalog source — same reasoning as the blank rip/jukebox URLs

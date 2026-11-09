@@ -248,6 +248,37 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(s.beatPulseEnabled, "missing beat-pulse key coalesces to off")
     }
 
+    // MARK: DJ Mode toggles (np-dj-mode §6)
+
+    func testDJModeTogglesDefaultOnPersistResetAndOldBlobsDecode() throws {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertEqual(s.djModeSettings, .allOn, "every DJ toggle defaults ON")
+        s.djTransitions = false; s.djEffectSweeps = false; s.djTempoMatch = false
+        s.djKeyMatch = false; s.djVolumeLeveling = false; s.djTempoWaves = false; s.djPockets = false
+        s.persist()
+        let again = SettingsStore(defaults: defaults)
+        XCTAssertEqual(again.djModeSettings,
+                       DJModeSettings(transitions: false, effectSweeps: false, tempoMatch: false,
+                                      keyMatch: false, volumeLeveling: false, tempoWaves: false,
+                                      pockets: false))
+        XCTAssertEqual(again.djModeSettings.plannerOptions,
+                       DJSetPlanner.Options(tempoWaves: false, pockets: false, key: false))
+        again.djPockets = true; again.persist()
+        XCTAssertTrue(SettingsStore(defaults: defaults).djPockets)
+        again.resetEverything()
+        XCTAssertEqual(again.djModeSettings, .allOn, "reset restores every toggle ON")
+
+        // A blob from before DJ Mode (no dj* keys) decodes to all-on.
+        let keys = ["djTransitions", "djEffectSweeps", "djTempoMatch", "djKeyMatch",
+                    "djVolumeLeveling", "djTempoWaves", "djPockets"]
+        var obj = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(SettingsData.default)) as? [String: Any])
+        for k in keys { obj[k] = nil }
+        let old = freshDefaults()
+        old.set(try JSONSerialization.data(withJSONObject: obj), forKey: "pdj.settings.v1")
+        XCTAssertEqual(SettingsStore(defaults: old).djModeSettings, .allOn)
+    }
+
     func testResetRestoresAutoMixDefaults() {
         let defaults = freshDefaults()
         let s = SettingsStore(defaults: defaults)

@@ -777,6 +777,20 @@ struct PocketDJApp: App {
         setlistPlayer.catalogNames = { [weak app] id in
             app?.songsById[id].map { (title: $0.name, artist: $0.artist) }
         }
+        // NOW PLAYING DJ MODE (np-dj-mode): the Settings ▸ DJ Mode toggles, the Mix tab's shared
+        // lead / fade / glide, and the catalog facts the selector + transitions read.
+        setlistPlayer.djModeSettings = { [weak settings] in settings?.djModeSettings ?? .allOn }
+        setlistPlayer.djTimings = { [weak settings] in
+            guard let settings else { return DJMode.Timings() }
+            return DJMode.Timings(lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
+                                  glide: settings.mixGlideSeconds)
+        }
+        setlistPlayer.djSongFacts = { [weak app] id in
+            guard let app, let song = app.songsById[SongVariant.baseId(id)] else { return nil }
+            let album = song.albumId.flatMap { app.albumsById[$0] }
+            return DJMode.SongFacts(bpm: song.bpm, camelot: song.camelot, genre: album?.genre,
+                                    year: song.year ?? album?.year)
+        }
         setlistPlayer.onTrackRestart = { [weak skipTracker] id in
             skipTracker?.noteTrackRestarted(songId: id)
         }
@@ -1538,6 +1552,9 @@ struct PocketDJApp: App {
         setlistPlayer.remoteControllerGate = { [weak remote] request in
             remote?.interceptLocalTransport(request) ?? false
         }
+        // DJ Mode is SUSPENDED while a Remote session is attached (np-dj-mode §9): its early
+        // fade-start advance and its re-ordering would fight the session's shared queue.
+        setlistPlayer.remoteSessionActive = { [weak remote] in remote?.isActive ?? false }
         #if canImport(GroupActivities)
         remote.startObservingGroupSessions()
         #endif
@@ -1742,6 +1759,14 @@ struct PocketDJApp: App {
         }
         inThePocket.results = { [weak listeningPockets] in listeningPockets?.results }
         inThePocket.collectionsInput = collectionsInput
+        // DJ Mode's pockets: song → collection membership, flattened OFF the main actor (the
+        // same flattening + caps the pockets upload uses), read once when DJ Mode turns on.
+        setlistPlayer.djMembershipProvider = { @MainActor in
+            let input = collectionsInput()
+            return await Task.detached(priority: .utility) {
+                DJMode.membership(ListeningPocketsCollections.flattened(input.source))
+            }.value
+        }
         inThePocket.contextGuess = { [weak listeningLocation] in
             // Only while places & trips is ON (the same toggle that lets `ctx` upload at all).
             guard let loc = listeningLocation, loc.isEnabled, let tag = loc.currentContextGuess() else { return (nil, nil) }
@@ -2491,6 +2516,11 @@ private struct NowPlayingControlCommands: Commands {
             Toggle("Mix Mode", isOn: Binding(get: { sequencer.mixMode.enabled },
                                              set: { sequencer.setMixMode($0) }))
                 .keyboardShortcut("m", modifiers: [.command, .option])
+                .disabled(!sequencer.isRunning)
+            // Controls ▸ DJ Mode (⌥⌘J) — np-dj-mode §7 (turns Mix Mode on with it).
+            Toggle("DJ Mode", isOn: Binding(get: { sequencer.djMode.enabled },
+                                            set: { sequencer.setDJMode($0) }))
+                .keyboardShortcut("j", modifiers: [.command, .option])
                 .disabled(!sequencer.isRunning)
         }
         #else

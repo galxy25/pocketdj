@@ -651,6 +651,7 @@ struct NowPlayingDeckCluster: View {
                             ShareLink(item: share) { Label("Share", systemImage: "square.and.arrow.up") }
                         }
                         #if !os(tvOS)
+                        DJModeMenuToggle()
                         MixModeMenuToggle()
                         #endif
                     }
@@ -995,7 +996,7 @@ struct NowPlayingMiniBar: View {
         .background(Theme.bgRaised)
         #if !os(tvOS)
         // Long-press / right-click the strip: Mix Mode without expanding the deck.
-        .contextMenu { if current != nil { MixModeMenuToggle() } }
+        .contextMenu { if current != nil { DJModeMenuToggle(); MixModeMenuToggle() } }
         #endif
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("np-mini-bar")
@@ -1015,6 +1016,20 @@ struct MixModeMenuToggle: View {
         }
         .disabled(!sequencer.isRunning)
         .accessibilityIdentifier("np-menu-mix-mode")
+    }
+}
+
+/// "DJ Mode" with a checkmark — `MixModeMenuToggle`'s sibling in the same menus (np-dj-mode §7).
+struct DJModeMenuToggle: View {
+    @Environment(SetlistPlayer.self) private var sequencer
+
+    var body: some View {
+        Toggle(isOn: Binding(get: { sequencer.djMode.enabled },
+                             set: { sequencer.setDJMode($0) })) {
+            Label("DJ Mode", systemImage: "dial.medium")
+        }
+        .disabled(!sequencer.isRunning)
+        .accessibilityIdentifier("np-menu-dj-mode")
     }
 }
 #endif

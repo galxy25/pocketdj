@@ -90,6 +90,9 @@ final class PlaybackSessionStore {
         /// only, so a device without this songId can still play the track through its own
         /// Apple Music. Additive-optional like the fields above; never written by the session.
         var appleMusicId: String? = nil
+        /// DJ Mode: the listener placed this row (`SetlistPlayer.Item.djPlaced`) — the selector
+        /// keeps it where it is after a relaunch too. Additive-optional; nil = not placed.
+        var djPlaced: Bool? = nil
     }
 
     struct Snapshot: Codable, Equatable {
@@ -120,6 +123,9 @@ final class PlaybackSessionStore {
         /// The session's FX LOCK + the effects it carries (`FXLockState`) — optional/defaulted
         /// like the Stem Lock (nil = lock off), so no schema bump.
         var fxLock: FXLockState? = nil
+        /// The session's NOW PLAYING DJ MODE (np-dj-mode §1) + the selector's wave / pocket state —
+        /// optional/defaulted like Mix Mode (nil = off), so no schema bump. Restored HELD.
+        var djMode: DJModeState? = nil
         /// Epoch ms of the last write (informational — a session never expires on its own).
         var updatedAt: Double
     }
