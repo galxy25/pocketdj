@@ -88,6 +88,25 @@ final class PocketRunStoreTests: XCTestCase {
         player.stop()
     }
 
+    /// Long-press ▸ Clear this pocket: the run ends (kept in past runs), its queue stops, nothing
+    /// is left "playing", and a new pocket can start right away.
+    func testClearEndsTheRunStopsItsQueueAndAllowsANewOne() async throws {
+        let (store, player, _) = makeStore()
+        await store.start(profile: PocketRunPlannerTests.profile(), seed: 5)
+        let first = try XCTUnwrap(store.active)
+        store.stop()
+        XCTAssertNil(store.active)
+        XCTAssertNil(store.progress)
+        XCTAssertFalse(player.isRunning)
+        XCTAssertEqual(store.past.last?.id, first.runId)
+        XCTAssertEqual(store.past.last?.finished, false)
+        let started = await store.start(profile: PocketRunPlannerTests.profile(), seed: 6)
+        XCTAssertTrue(started)
+        XCTAssertNotEqual(store.active?.runId, first.runId)
+        XCTAssertEqual(player.sourceSetlistId, store.active.map { PocketWheelIds.runTag($0.runId) })
+        player.stop()
+    }
+
     func testRunStopsAtOneHundredPlayedThrough() async throws {
         let (store, player, history) = makeStore()
         await store.start(profile: PocketRunPlannerTests.profile(), seed: 5)

@@ -27,7 +27,9 @@ struct PocketMomentCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityIdentifier("pocket-card-play")
+                .contextMenu { clearButton }
             }
+            if isPlaying { clearButton.buttonStyle(.bordered) }
             DisclosureGroup("Why this colour", isExpanded: $showWhy) {
                 Text(whyText).font(.caption).foregroundStyle(Theme.fgDim)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -125,6 +127,19 @@ struct PocketMomentCard: View {
                 Text(t).font(.caption2).padding(.horizontal, 8).padding(.vertical, 4)
                     .background(Theme.bgOverlay, in: Capsule()).foregroundStyle(Theme.fg)
             }
+        }
+    }
+
+    /// This cell's pocket is the one playing now.
+    private var isPlaying: Bool { actions.runProgress != nil && actions.runProgress?.key == moment.key }
+
+    /// Clear the playing pocket from playback (long-press ▶ Play this pocket, or shown while it plays).
+    @ViewBuilder private var clearButton: some View {
+        if actions.runProgress != nil, let clear = actions.clearRun {
+            Button(role: .destructive) { clear() } label: {
+                Label("Clear this pocket", systemImage: "xmark.circle").frame(maxWidth: .infinity)
+            }
+            .accessibilityIdentifier("pocket-card-clear")
         }
     }
 

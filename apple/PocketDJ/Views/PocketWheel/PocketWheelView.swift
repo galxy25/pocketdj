@@ -409,6 +409,17 @@ struct PocketWheelCanvas: View {
         .accessibilityLabel(centerA11yLabel)
         .accessibilityIdentifier("pocket-wheel-play")
         .contextMenu {
+            if actions.runProgress != nil {
+                if let clear = actions.clearRun {
+                    Button(role: .destructive) { clear() } label: {
+                        Label("Clear this pocket", systemImage: "xmark.circle")
+                    }
+                    .accessibilityIdentifier("pocket-wheel-clear")
+                }
+                if let play = actions.playBest {
+                    Button { play() } label: { Label("Start a new pocket for now", systemImage: "play.fill") }
+                }
+            }
             if !actions.alternatives.isEmpty, let alt = actions.playAlternative {
                 Section("Not this?") {
                     ForEach(actions.alternatives) { a in
