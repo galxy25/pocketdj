@@ -211,6 +211,39 @@ songId + file size. Results are cached in `Application Support/loudness.json`.
 Leveling applies only while DJ Mode is on and Volume is on. The listener's volume slider sits on
 top.
 
+## 5a. Progressive analysis — quick hints, then finals (2026-11-09)
+
+Levi: "make the audio analysis lower latency by doing it on the first 15–30 seconds of audio and
+using that as a placeholder / hint until the full audio analysis is done (detecting bpm, key and
+volume)". `Playback/AudioAnalysis.swift`:
+
+- **Quick pass** (`AudioAnalysis.quickPass`): ~20 s — from ~30 % in when the whole file is on disk
+  (an intro is often beatless / quiet: BPM fails and leveling would over-boost); a growing /
+  streaming / ripping file runs on its first 15–30 s once ≥ 15 s exist, flagged `headOnly`, and
+  re-runs on the better window when the file completes. BPM (`BeatDetect.detectGridWithConfidence`
+  — confidence = the winning lag's normalized autocorrelation), key (`KeyDetector.detect(audio:
+  maxSeconds:)` — its KS strength), loudness (`LoudnessAnalyzer.Meter`, mono-sum).
+- **Full pass**: BPM over up to 120 s, key over the middle minute; loudness stays
+  `LoudnessCache`'s whole-song measurement. Replaces the hint.
+- **Precedence** (`AudioAnalysis.bpm` / `.camelot` / `.levelGain`): server beat-grid / catalog >
+  full on-device > a CONFIDENT quick hint (BPM ≥ 0.3, key ≥ 0.7) > nothing. A low-confidence hint
+  is missing — the planner / glide degrade as before. `AudioAnalysisCache` never lets a hint
+  replace a final.
+- **Leveling**: until the full loudness lands the hint levels at most ±4 dB (status `.estimated`,
+  readouts "≈ +2.1 dB"); the final then ramps over the normal 2 s — never a jump. Same on the Mix
+  tab's Volume Glide decks.
+- **Fed to** the selector's facts (`djFacts`), the glide (`djBeat` via the facts), the leveling trim
+  and the NP / Mix readouts.
+- **Cache**: `AudioAnalysisCache` keyed like `LoudnessCache` (song id + byte size + segment), with
+  a `kind`; finals persist at `Application Support/analysis.json`, hints live for the launch.
+- **Scheduling** (`AudioAnalysisScheduler`): off-main at background QoS, one pass at a time
+  (`maxConcurrent`; the separate whole-song loudness decode can make it two), priority current →
+  the listener's next-up pick → the planned next → the rest of the 40-row window. Files are opened
+  (scope held) only while their pass runs. Nothing starts in Low Power Mode or at a serious /
+  critical thermal state; it resumes on the next enqueue / completion. A growing file's head is
+  re-checked every 5 s (≤ 24 times). DJ Mode off drops the queue (the Mix tab re-queues its decks
+  on their next level).
+
 ## 6. Settings ▸ Mixing
 
 Its own pane (2026-11-09; the toggles first lived under Settings ▸ Storage): **Crossfades** (lead,
@@ -313,6 +346,8 @@ lengths are shared (`djTimings`).
 Skip mix + Settings ▸ Mixing (2026-11-09): see §3 "Skip = the Mix tab's Skip" and §6.
 `DJModeTests` +8 (skip fade cut to the runway, skip mixes over the Skip fade as a user skip, fast = 5 s, non-local next = immediate,
 DJ off unchanged, repeat-one overridden, ignored mid-fade, pre-roll hurried to the fade).
+Progressive analysis (2026-11-09, `AudioAnalysisTests` 7 + `DJModeTests` +1): see §5a.
+
 Next-up pick (2026-11-09, `DJModeTests` +4): see §4 "Pool". The old `djPlaced` (every
 listener-placed row held) became `djUserNext` (only the next-up pick). Snapshot migration: a
 legacy `Row.djPlaced` restores as the pick ONLY on the row right after the current one; other

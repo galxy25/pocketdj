@@ -46,15 +46,24 @@ enum BeatDetect {
     /// Returns nil when the audio is too short/quiet/aperiodic to place a tempo — the caller keeps
     /// the sample grid-less (manual tap-tempo stays available).
     nonisolated static func detectGrid(_ buffer: AVAudioPCMBuffer) -> StudioGrid? {
+        detectGridWithConfidence(buffer)?.grid
+    }
+
+    /// `detectGrid` plus a 0…1 CONFIDENCE (the winning lag's normalized autocorrelation — how
+    /// strongly the onsets repeat at that period; ~0 for beatless / aperiodic audio), analysing at
+    /// most `maxSeconds` of the buffer (DJ Mode's quick pass hands a 15–30 s window).
+    nonisolated static func detectGridWithConfidence(_ buffer: AVAudioPCMBuffer,
+                                                     maxSeconds: Double = maxAnalysisSeconds)
+        -> (grid: StudioGrid, confidence: Double)? {
         let sr = buffer.format.sampleRate
-        guard sr > 0, let mono = monoSamples(buffer, maxSeconds: maxAnalysisSeconds) else { return nil }
+        guard sr > 0, let mono = monoSamples(buffer, maxSeconds: min(maxSeconds, maxAnalysisSeconds)) else { return nil }
         guard mono.count >= Int(sr * 2) else { return nil }        // < 2 s: not enough to lock a tempo
 
         let env = onsetEnvelope(mono)
         guard env.count >= 16 else { return nil }
         let frameRate = sr / Double(hop)
 
-        guard let (periodFrames, bpmRaw) = estimateTempo(env, frameRate: frameRate) else { return nil }
+        guard let (periodFrames, bpmRaw, confidence) = estimateTempo(env, frameRate: frameRate) else { return nil }
         let bpm = octaveFold(bpmRaw)
 
         // Beat phase: the offset in [0, period) whose lattice lands on the most onset energy, then
@@ -63,7 +72,7 @@ enum BeatDetect {
         let firstDownbeatFrame = firstBeatFrame + downbeatPhase * periodFrames
         let firstDownbeatMs = Int((Double(firstDownbeatFrame) * Double(hop) / sr * 1000).rounded())
 
-        return StudioGrid(bpm: (bpm * 100).rounded() / 100, firstDownbeatMs: max(0, firstDownbeatMs))
+        return (StudioGrid(bpm: (bpm * 100).rounded() / 100, firstDownbeatMs: max(0, firstDownbeatMs)), confidence)
     }
 
     /// Halve/double a BPM until it lands in [lo, hi] — identical rule to `analyze-beatgrid.py`'s
@@ -160,7 +169,8 @@ enum BeatDetect {
     /// Dominant beat period (in envelope frames) and its raw BPM. Autocorrelates the mean-removed
     /// onset envelope over the lag range spanning [70,180] BPM, weighted by a log-normal prior so a
     /// half/double-tempo harmonic doesn't win. nil when the envelope has no periodicity in-window.
-    private nonisolated static func estimateTempo(_ env: [Float], frameRate: Double) -> (period: Int, bpm: Double)? {
+    private nonisolated static func estimateTempo(_ env: [Float], frameRate: Double)
+        -> (period: Int, bpm: Double, confidence: Double)? {
         let n = env.count
         let minLag = max(1, Int((60.0 * frameRate / searchBpmHi).rounded()))
         let maxLag = Int((60.0 * frameRate / searchBpmLo).rounded())
@@ -172,8 +182,13 @@ enum BeatDetect {
 
         var bestLag = minLag
         var bestScore = -Double.greatestFiniteMagnitude
+        var bestAC = 0.0
+        var ac0 = 0.0
         e.withUnsafeBufferPointer { p in
             guard let base = p.baseAddress else { return }
+            var z0: Float = 0
+            vDSP_dotpr(base, 1, base, 1, &z0, vDSP_Length(n))   // zero lag = the envelope's energy
+            ac0 = Double(z0)
             for lag in minLag...maxLag {
                 var ac: Float = 0
                 vDSP_dotpr(base + lag, 1, base, 1, &ac, vDSP_Length(n - lag))   // Σ e[t]·e[t−lag]
@@ -181,11 +196,14 @@ enum BeatDetect {
                 let z = log2(bpm / priorCenterBpm) / priorSpread
                 let prior = exp(-0.5 * z * z)
                 let score = Double(ac) * prior
-                if score > bestScore { bestScore = score; bestLag = lag }
+                if score > bestScore { bestScore = score; bestLag = lag; bestAC = Double(ac) }
             }
         }
         guard bestScore > 0 else { return nil }                    // no in-window periodicity
-        return (bestLag, 60.0 * frameRate / Double(bestLag))
+        // Normalized autocorrelation at the winning lag (unbiased for the shorter overlap).
+        let overlap = Double(n - bestLag) / Double(n)
+        let confidence = ac0 > 0 ? min(1, max(0, bestAC / (ac0 * max(0.01, overlap)))) : 0
+        return (bestLag, 60.0 * frameRate / Double(bestLag), confidence)
     }
 
     // MARK: - Phase + downbeat

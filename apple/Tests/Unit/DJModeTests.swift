@@ -427,6 +427,50 @@ final class DJModeTests: XCTestCase {
         XCTAssertEqual(DJLevelingReadoutRow.words(S(status: .measured, trimDb: 0.01)), "0.0 dB")
     }
 
+    // MARK: - Progressive analysis: a hint stands in, the final RAMPS in (np-dj-mode §5a)
+
+    /// The quick pass's loudness hint levels the song at once (≈, clamped ±4 dB); when the full
+    /// measurement lands it ramps there over the leveling ramp — never a jump mid-song.
+    func testLoudnessHintIsReplacedByTheFinalWithARamp() async throws {
+        let r = try rig(["h1", "h2"])
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-dj-an-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let sched = AudioAnalysisScheduler(cache: AudioAnalysisCache(fileURL: url))
+        sched.mayRun = { false }                              // the cache is seeded by hand below
+        r.seq.analysisScheduler = sched
+        NowPlayingDSP.levelRampSeconds = 0.6
+        defer { NowPlayingDSP.levelRampSeconds = LoudnessLeveling.rampSeconds }
+        r.seq.play([item("h1"), item("h2")])
+        await waitUntil("h1 playing") { r.rips.nowPlaying?.songId == "h1" }
+        let file = try XCTUnwrap(r.rips.nowPlaying?.url)
+        let key = try XCTUnwrap(LoudnessCache.key(songId: "h1", url: file))
+        sched.cache.store(.init(kind: .quick, bpm: 120, bpmConfidence: 0.9, lufs: -40), for: key)   // ⇒ +26 → clamped +4
+        var seen: [DJAutomationDisplay.LevelSide] = []
+        func watch() {
+            withObservationTracking { seen.append(r.dsp.djDisplay.leveling.current) } onChange: {
+                Task { @MainActor in watch() }
+            }
+        }
+        r.seq.setDJMode(true)
+        try XCTSkipUnless(r.dsp.isReady, "no audio device on this test host")
+        watch()
+        await waitUntil("the final lands", timeout: 15) {
+            r.dsp.djDisplay.leveling.current.status == .measured && !r.dsp.levelRampInFlight
+        }
+        let est = seen.filter { $0.status == .estimated }
+        XCTAssertFalse(est.isEmpty, "the hint stood in first (≈)")
+        XCTAssertLessThanOrEqual(est.map(\.trimDb).max() ?? 99, AudioAnalysis.hintGainClampDb + 0.05, "the hint is clamped")
+        let cache = try XCTUnwrap(r.seq.loudnessCache)
+        let final = try XCTUnwrap(cache.gainDb(for: key))
+        // (The trace can miss the last step while its watch re-arms — read the settled readout.)
+        XCTAssertEqual(r.dsp.djDisplay.leveling.current.trimDb, final, accuracy: 0.06)
+        // RAMPS all the way: the hint coming in and the final taking over move the trim in small
+        // published steps (≤ 1 dB at ~16 Hz over a 0.6 s ramp) — never a jump.
+        let trims = seen.filter { $0.status == .estimated || $0.status == .measured }.map(\.trimDb)
+        let steps = zip(trims, trims.dropFirst()).map { abs($1 - $0) }
+        XCTAssertLessThanOrEqual(steps.max() ?? 0, 1.0, "ramped, not jumped (\(trims))")
+    }
+
     /// The host REFUSING the advance at the fade start (the queue moved) puts the outgoing back.
     func testHostRefusalAtTheFadeStartKeepsTheOutgoing() async throws {
         let (d, _, b) = try playingDSP()
