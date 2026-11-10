@@ -1,4 +1,5 @@
 import AVFoundation
+import Observation
 import XCTest
 @testable import PocketDJ
 
@@ -117,6 +118,30 @@ final class MixVolumeGlideTests: XCTestCase {
         XCTAssertEqual(e.deckLeveling[.a]?.status ?? .inactive, .inactive)
     }
 
+    /// The engine FOLLOWS the setting (wired at app init), no Mix tab on screen needed.
+    func testEngineFollowsTheSettingSeam() async {
+        let (e, _) = makeEngine()
+        let flag = VGFlag()
+        e.volumeGlideSetting = { flag.on }
+        XCTAssertFalse(e.volumeGlideEnabled)
+        flag.on = true
+        await waitUntil("on") { e.volumeGlideEnabled }
+        flag.on = false
+        await waitUntil("off") { !e.volumeGlideEnabled }
+    }
+
+    /// Now Playing DJ Mode turning off cancels the SHARED loudness cache — a Mix deck still
+    /// loaded with glide on measures again.
+    func testCancelledSharedAnalysisIsReKicked() async throws {
+        let (e, cache) = makeEngine()
+        e.setVolumeGlide(true)
+        try start(e, files: ["smp_c1": try sine(seconds: 30, amp: 0.7), "smp_c2": try sine(seconds: 30, amp: 0.1)])
+        cache.cancelAll()                                   // what setDJMode(false) does
+        await waitUntil("both decks measured anyway", timeout: 15) {
+            e.deckLeveling[.a]?.status == .measured && e.deckLeveling[.b]?.status == .measured
+        }
+    }
+
     /// The fader AUTOMATION is visible: a skip's crossfade (tap = Skip fade, double-tap = the fast
     /// sweep) moves the observed `crossfader` through the middle, not just the audio.
     func testCrossfaderMovesThroughASkip() async throws {
@@ -128,3 +153,5 @@ final class MixVolumeGlideTests: XCTestCase {
         await waitUntil("…and lands at the other end") { abs(e.crossfader - (1 - from)) < 0.01 }
     }
 }
+
+@MainActor @Observable private final class VGFlag { var on = false }

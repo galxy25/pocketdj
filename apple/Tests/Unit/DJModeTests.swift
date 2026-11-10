@@ -1366,6 +1366,79 @@ extension DJModeTests {
                        "only the next-up row stays held; the mid-queue one is planner material")
     }
 
+    // MARK: Batch review fixes (2026-11-09)
+
+    /// Dragging ANOTHER row mid-queue keeps the listener's next-up pick held.
+    func testDraggingAnotherRowKeepsThePick() async throws {
+        let r = try rig(["c"])
+        r.seq.play(["c", "a", "b", "d"].map(item))
+        await waitUntil("c playing") { r.rips.nowPlaying?.songId == "c" }
+        r.seq.insertNextInQueue([item("pick")])
+        XCTAssertEqual(r.seq.queue[1].id, "pick")
+        r.seq.moveUpcoming(fromOffsets: [3], toOffset: 1)           // "b" dragged mid-queue
+        XCTAssertEqual(r.seq.queue[1].id, "pick")
+        XCTAssertTrue(r.seq.queue[1].djUserNext, "the pick is still held")
+        r.seq.moveUpcoming(fromOffsets: [2], toOffset: 0)           // "a" dragged to the TOP
+        XCTAssertEqual(r.seq.queue.filter(\.djUserNext).map(\.id), ["a"], "a new pick takes the slot")
+    }
+
+    /// A jukebox / remote random request never lands ahead of a held pick; a played pick's hold
+    /// is spent at its start even with DJ Mode OFF.
+    func testRandomInsertRespectsThePickAndAPlayedPickIsCleared() async throws {
+        let r = try rig(["c", "pick"])
+        r.seq.play(["c", "a", "b"].map(item))
+        await waitUntil("c playing") { r.rips.nowPlaying?.songId == "c" }
+        r.seq.insertNextInQueue([item("pick")])
+        r.seq.setDJMode(true)
+        var range: ClosedRange<Int>?
+        r.seq.insertRandomInQueue([item("req")], slot: { range = $0; return $0.lowerBound })
+        XCTAssertEqual(range?.lowerBound, 2, "drawn from after the pick")
+        XCTAssertEqual(r.seq.queue[1].id, "pick")
+        XCTAssertEqual(r.seq.queue[2].id, "req")
+    }
+
+    /// A played pick's hold is spent at its start even with DJ Mode OFF.
+    func testPlayedPickIsClearedWithDJOff() async throws {
+        let r = try rig(["c", "pick"])
+        r.seq.play(["c", "a"].map(item))
+        await waitUntil("c playing") { r.rips.nowPlaying?.songId == "c" }
+        r.seq.insertNextInQueue([item("pick")])
+        XCTAssertTrue(r.seq.queue[1].djUserNext)
+        r.seq.skipNext()
+        await waitUntil("the pick started") { r.rips.nowPlaying?.songId == "pick" }
+        XCTAssertFalse(r.seq.queue[1].djUserNext, "its hold is spent when it starts")
+    }
+
+    /// An analysis result re-plans ONLY when a planner fact changed — and never ages rows.
+    func testAnalysisReplansOnlyOnAFactChange() async throws {
+        let r = try rig(["c"], seconds: 40)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-dj-an-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let sched = AudioAnalysisScheduler(cache: AudioAnalysisCache(fileURL: url))
+        sched.mayRun = { false }
+        r.seq.analysisScheduler = sched
+        SetlistPlayer.djReplanDebounceSeconds = 0.05
+        defer { SetlistPlayer.djReplanDebounceSeconds = 1 }
+        let bpm: [String: Double] = ["c": 100, "a": 101, "b": 141]
+        r.seq.djSongFacts = { id in bpm[id].map { DJMode.SongFacts(bpm: $0) } }
+        r.seq.play([SetlistPlayer.Item(id: "c", title: "c", artist: "A", lengthMs: 40_000)] + ["a", "b", "u"].map(item))
+        await waitUntil("c playing") { r.rips.nowPlaying?.songId == "c" }
+        r.seq.setDJMode(true)
+        let n0 = r.seq.djAnalysisReplanCount
+        let post = { (id: String) in
+            NotificationCenter.default.post(name: AudioAnalysisScheduler.resultNotification,
+                                            object: LoudnessCache.Key(songId: id, byteSize: 1))
+        }
+        post("a")                                   // nothing new about "a"
+        post("u")                                   // "u" still unknown
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(r.seq.djAnalysisReplanCount, n0, "no fact changed → no re-plan")
+        sched.cache.store(.init(kind: .quick, bpm: 102, bpmConfidence: 0.9), for: .init(songId: "u", byteSize: 1))
+        post("u")
+        await waitUntil("re-planned on the new tempo") { r.seq.djAnalysisReplanCount == n0 + 1 }
+        XCTAssertTrue(r.seq.queue.allSatisfy { $0.djDeferrals == 0 }, "analysis re-plans never age rows")
+    }
+
     /// AGING: a row the planner keeps pushing back gains score per deferral, so it can't be
     /// deferred forever.
     func testAgingBringsADeferredRowForward() {

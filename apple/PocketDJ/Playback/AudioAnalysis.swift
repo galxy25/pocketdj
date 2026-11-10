@@ -67,6 +67,25 @@ enum AudioAnalysis {
         var keyConfidence = 0.0
         var lufs: Double?
 
+        init(kind: Kind, headOnly: Bool = false, bpm: Double? = nil, bpmConfidence: Double = 0,
+             camelot: String? = nil, keyConfidence: Double = 0, lufs: Double? = nil) {
+            self.kind = kind; self.headOnly = headOnly; self.bpm = bpm; self.bpmConfidence = bpmConfidence
+            self.camelot = camelot; self.keyConfidence = keyConfidence; self.lufs = lufs
+        }
+
+        /// Tolerant: a field added / renamed later decodes to its default — a schema change never
+        /// wipes the persisted finals.
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = (try? c.decodeIfPresent(Kind.self, forKey: .kind)) ?? .full
+            headOnly = (try? c.decodeIfPresent(Bool.self, forKey: .headOnly)) ?? false
+            bpm = try? c.decodeIfPresent(Double.self, forKey: .bpm)
+            bpmConfidence = (try? c.decodeIfPresent(Double.self, forKey: .bpmConfidence)) ?? 0
+            camelot = try? c.decodeIfPresent(String.self, forKey: .camelot)
+            keyConfidence = (try? c.decodeIfPresent(Double.self, forKey: .keyConfidence)) ?? 0
+            lufs = try? c.decodeIfPresent(Double.self, forKey: .lufs)
+        }
+
         /// The BPM if confident enough to use, else nil (a low-confidence hint is MISSING).
         var usableBPM: Double? { bpmConfidence >= AudioAnalysis.minBPMConfidence ? bpm : nil }
         var usableCamelot: String? { keyConfidence >= AudioAnalysis.minKeyConfidence ? camelot : nil }
@@ -196,12 +215,24 @@ final class AudioAnalysisCache {
         return dir.appendingPathComponent("analysis.json")
     }
 
-    private struct Entry: Codable { var key: LoudnessCache.Key; var result: AudioAnalysis.Result }
+    private struct Entry: Codable {
+        var key: LoudnessCache.Key
+        var result: AudioAnalysis.Result
+        /// Last use (epoch seconds) — the LRU cap's order. Optional: older files lack it.
+        var usedAt: Double?
+    }
     private struct FileBody: Codable { var version = 1; var entries: [Entry] }
+
+    /// At most this many finals are kept (least-recently used go first).
+    static var maxEntries = 5000
+    /// Saves are debounced by this, and written off the main actor.
+    static var saveDebounceSeconds: Double = 1
 
     let fileURL: URL
     private var quick: [LoudnessCache.Key: AudioAnalysis.Result] = [:]
     private var full: [LoudnessCache.Key: AudioAnalysis.Result] = [:]
+    private var usedAt: [LoudnessCache.Key: Double] = [:]
+    private var saveTask: Task<Void, Never>?
     /// Song id → the key of its latest result (the planner looks songs up by id).
     private var latestKey: [String: LoudnessCache.Key] = [:]
     /// Bumped on every store (observers re-read).
@@ -212,6 +243,8 @@ final class AudioAnalysisCache {
         if let data = try? Data(contentsOf: fileURL), let body = try? JSONDecoder().decode(FileBody.self, from: data) {
             for e in body.entries where e.result.kind == .full {
                 full[e.key] = e.result
+                usedAt[e.key] = e.usedAt ?? 0
+                if let k = latestKey[e.key.songId], (usedAt[k] ?? 0) > (e.usedAt ?? 0) { continue }
                 latestKey[e.key.songId] = e.key
             }
         }
@@ -219,9 +252,15 @@ final class AudioAnalysisCache {
 
     func quick(for key: LoudnessCache.Key) -> AudioAnalysis.Result? { quick[key] }
     func full(for key: LoudnessCache.Key) -> AudioAnalysis.Result? { full[key] }
+    /// A hint for this song + segment under ANY byte size (a growing file re-keys as it grows).
+    func quick(songId: String, segment: LoudnessAnalyzer.Segment?) -> AudioAnalysis.Result? {
+        quick.first { $0.key.songId == songId && $0.key.segment == segment }?.value
+    }
+    var fullCountForTesting: Int { full.count }
     /// The best results known for a song id (any file / segment of it — the latest analysed).
     func results(songId: String) -> (full: AudioAnalysis.Result?, quick: AudioAnalysis.Result?) {
         guard let k = latestKey[songId] else { return (nil, nil) }
+        if full[k] != nil { usedAt[k] = Date().timeIntervalSince1970 }
         return (full[k], quick[k])
     }
 
@@ -231,19 +270,59 @@ final class AudioAnalysisCache {
             guard full[key] == nil else { return }          // a hint never overwrites a final
             quick[key] = r
         case .full:
+            // The same song + segment under another byte size is a STALE file (re-rip / re-cut,
+            // or a growing file's interim size): drop it — never two answers for one song.
+            for k in Array(full.keys) where k.songId == key.songId && k.segment == key.segment && k != key {
+                full[k] = nil; usedAt[k] = nil
+            }
+            for k in Array(quick.keys) where k.songId == key.songId && k.segment == key.segment {
+                quick[k] = nil                              // the final supersedes every hint
+            }
             full[key] = r
-            save()
+            scheduleSave()
         }
+        usedAt[key] = Date().timeIntervalSince1970
         latestKey[key.songId] = key
         revision &+= 1
     }
 
-    private func save() {
-        let entries = full.map { Entry(key: $0.key, result: $0.value) }
+    /// Debounced; the encode is on the main actor (small), the write is not.
+    private func scheduleSave() {
+        saveTask?.cancel()
+        let wait = Self.saveDebounceSeconds
+        saveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, wait) * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.saveTask = nil
+            guard let (data, url) = self.encodedForSave() else { return }
+            await Task.detached(priority: .utility) { Self.write(data, to: url) }.value
+        }
+    }
+
+    /// Write now (tests / a flush): the same pruned body, synchronously.
+    func flushForTesting() {
+        saveTask?.cancel(); saveTask = nil
+        if let (data, url) = encodedForSave() { Self.write(data, to: url) }
+    }
+
+    /// The LRU cap applied, then the body encoded.
+    private func encodedForSave() -> (Data, URL)? {
+        if full.count > Self.maxEntries {
+            let drop = full.keys.sorted { (usedAt[$0] ?? 0) < (usedAt[$1] ?? 0) }.prefix(full.count - Self.maxEntries)
+            for k in drop {
+                full[k] = nil; usedAt[k] = nil
+                if latestKey[k.songId] == k { latestKey[k.songId] = nil }
+            }
+        }
+        let entries = full.map { Entry(key: $0.key, result: $0.value, usedAt: usedAt[$0.key]) }
             .sorted { ($0.key.songId, $0.key.byteSize) < ($1.key.songId, $1.key.byteSize) }
-        guard let data = try? JSONEncoder().encode(FileBody(entries: entries)) else { return }
-        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? data.write(to: fileURL, options: .atomic)
+        guard let data = try? JSONEncoder().encode(FileBody(entries: entries)) else { return nil }
+        return (data, fileURL)
+    }
+
+    private nonisolated static func write(_ data: Data, to url: URL) {
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
     }
 }
 
@@ -274,7 +353,15 @@ final class AudioAnalysisScheduler {
         var priority: Priority
         /// Head retries so far (a growing file that never reaches `minHeadSeconds` gives up).
         var headRetries = 0
+        /// The scheduler generation it was queued in (`cancelPending` bumps it: a stale retry dies).
+        var generation = 0
+
+        /// A growing file re-keys (its byte size) every time it is looked at — its head jobs are
+        /// one job per song + segment.
+        var headID: HeadID { HeadID(songId: key.songId, segment: key.segment) }
     }
+
+    struct HeadID: Hashable { var songId: String; var segment: LoudnessAnalyzer.Segment? }
 
     /// A growing file is looked at this many times (× `headRetrySeconds`) before giving up.
     static var maxHeadRetries = 24
@@ -300,7 +387,10 @@ final class AudioAnalysisScheduler {
 
     private var pending: [Job] = []
     private var running: Set<LoudnessCache.Key> = []
-    private var deferred: [LoudnessCache.Key: Job] = [:]
+    private var runningHeads: Set<HeadID> = []
+    private var deferred: [HeadID: Job] = [:]
+    /// Bumped by `cancelPending` — a head retry from before it never comes back.
+    private(set) var generation = 0
     /// Started order (tests).
     private(set) var startedOrderForTesting: [String] = []
     /// A growing file waiting for enough head audio is re-tried after this.
@@ -311,14 +401,24 @@ final class AudioAnalysisScheduler {
     /// Queue (or re-prioritise) a file. A file already fully analysed is skipped; a head-only
     /// hint is re-run once the file is complete.
     func enqueue(_ job: Job) {
+        var job = job
+        job.generation = generation
         if cache.full(for: job.key) != nil { return }
-        // Still arriving and its head hint is in: nothing new to learn until it completes.
-        if !job.complete, cache.quick(for: job.key) != nil { return }
-        if running.contains(job.key) {
+        // Still arriving and its head hint is in (under any interim size): nothing new to learn
+        // until it completes.
+        if !job.complete, cache.quick(songId: job.key.songId, segment: job.key.segment) != nil { return }
+        if running.contains(job.key) || runningHeads.contains(job.headID) {
             // The file completed while its head pass ran: the better window + full pass follow.
-            if job.complete { deferred[job.key] = job }
+            if job.complete { deferred[job.headID] = job }
             return
         }
+        // One head job per song + segment, whatever size the file has reached.
+        if !job.complete, let i = pending.firstIndex(where: { !$0.complete && $0.headID == job.headID }) {
+            pending[i].priority = min(pending[i].priority, job.priority)
+            pump()
+            return
+        }
+        if job.complete { pending.removeAll { !$0.complete && $0.headID == job.headID } }
         if let i = pending.firstIndex(where: { $0.key == job.key }) {
             var j = pending[i]
             j.priority = min(j.priority, job.priority)
@@ -332,7 +432,7 @@ final class AudioAnalysisScheduler {
     }
 
     /// Drop queued (not running) work — DJ Mode off / the session ended.
-    func cancelPending() { pending.removeAll(); deferred.removeAll() }
+    func cancelPending() { pending.removeAll(); deferred.removeAll(); generation &+= 1 }
 
     var pendingKeysForTesting: [String] { ordered().map(\.key.songId) }
 
@@ -345,6 +445,7 @@ final class AudioAnalysisScheduler {
         while running.count < max(1, maxConcurrent), let job = ordered().first {
             pending.removeAll { $0.key == job.key }
             running.insert(job.key)
+            if !job.complete { runningHeads.insert(job.headID) }
             startedOrderForTesting.append(job.key.songId)
             run(job)
         }
@@ -393,15 +494,18 @@ final class AudioAnalysisScheduler {
     private func finished(_ job: Job, retryHead: Bool, release: (() -> Void)?) {
         release?()
         running.remove(job.key)
-        if let next = deferred.removeValue(forKey: job.key) {
+        if !job.complete { runningHeads.remove(job.headID) }
+        if let next = deferred.removeValue(forKey: job.headID) {
             enqueue(next)
-        } else if retryHead, job.headRetries < Self.maxHeadRetries {
+        } else if retryHead, job.headRetries < Self.maxHeadRetries, job.generation == generation {
             var job = job
             job.headRetries += 1
-            // Not enough of the growing file yet — look again shortly (at the back of its class).
+            let gen = generation
+            // Not enough of the growing file yet — look again shortly (unless cancelled since).
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(Self.headRetrySeconds * 1_000_000_000))
-                self?.enqueue(job)
+                guard let self, self.generation == gen else { return }
+                self.enqueue(job)
             }
         }
         pump()

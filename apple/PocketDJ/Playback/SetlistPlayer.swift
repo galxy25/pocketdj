@@ -1248,7 +1248,7 @@ final class SetlistPlayer {
         // anywhere else it is planner material.
         let toTop = max(0, min(toOffset, tail.count)) == 0
         queue.replaceSubrange((index + 1)..., with: tail)
-        setUserNext(toTop ? index + 1 : nil)
+        setUserNext(toTop ? index + 1 : nil, keepingCurrentPick: !toTop)   // a drag elsewhere keeps the pick
         persistSession()
     }
 
@@ -1406,7 +1406,10 @@ final class SetlistPlayer {
     func insertRandomInQueue(_ items: [Item],
                              slot: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }) {
         guard isRunning, !items.isEmpty else { return }
-        let lo = min(index + 1, queue.count)
+        // DJ Mode holds the listener's next-up pick: a random request never lands ahead of it.
+        // (DJ off: no hold — the Surprise Slot keeps its full right-after-current range.)
+        let pickHeld = djMode.enabled && index + 1 < queue.count && queue[index + 1].djUserNext
+        let lo = min(index + (pickHeld ? 2 : 1), queue.count)
         let at = slot(lo...queue.count)
         queue.insert(contentsOf: items, at: at)
         // A request that lands NEXT is held there; a mid-queue one the DJ may re-order.
@@ -1862,6 +1865,10 @@ final class SetlistPlayer {
         applyStemLockOnTrackStart(resumeAtMs: resumeAtMs, liveClock: liveClock)
         applyFXLockOnTrackStart(resumeAtMs: resumeAtMs, liveClock: liveClock)
         applyDJOnTrackStart(resumeAtMs: resumeAtMs, liveClock: liveClock)
+        // The listener's next-up pick is PLAYING now — DJ Mode re-anchored on it above (if on);
+        // its hold is spent at EVERY start, DJ Mode or not (a repeat-all lap, or DJ Mode turned
+        // on later, must never find a played row still held).
+        if index < queue.count, queue[index].djUserNext { queue[index].djUserNext = false }
         // A lock took a COMPLETE local file into the DSP at this start and it is playing: the DSP
         // renders at once, and the AVPlayer it idled never reports first audio — close the start
         // bookkeeping (dead-air meter, start window, stall episode) here, exactly as the Apple
@@ -2613,6 +2620,8 @@ final class SetlistPlayer {
         djTextureRun = nil
         djLastDecline = nil
         djSkipPending = nil
+        djPlannedFacts = [:]
+        djReplanPendingReason = nil
         dsp?.disarmDJ()
         dsp?.setLevelingStatus(.inactive)
     }
@@ -2755,9 +2764,6 @@ final class SetlistPlayer {
         // a normal end's, an album glide's, the first ▶ after a restore.
         loadDJMembership()
         djReplan(reason: "track")
-        // The listener's pick is PLAYING now — it re-anchored the plan above; its hold is spent
-        // (a repeat-all lap must not find it still held).
-        if queue[index].djUserNext { queue[index].djUserNext = false }
         if !mixEngaged {
             if djCurrentInAlbumRun() {
                 DJMode.log("track song=\(it.id) → album run (the side plays through on the record)")
@@ -3226,7 +3232,18 @@ final class SetlistPlayer {
         guard djActive, isRunning, index < queue.count else { return }
         prefetchRevision &+= 1
         if queue[index].matches(key.songId) { applyDJLeveling(ramp: true) }
-        scheduleDJReplanOnEdit()
+        // Re-plan ONLY when a planner fact (usable BPM / Camelot) of a row in the window actually
+        // changed — a loudness-only result, or one that confirms what was planned on, is not a
+        // reason to reshuffle (and analysis re-plans never count deferrals).
+        let hi = min(queue.count, index + 1 + Self.djPlanWindow)
+        let changed = (index..<hi).contains { i in
+            let it = queue[i]
+            guard it.matches(key.songId) else { return false }
+            let f = djFacts(it)
+            let now = DJPlannedFacts(bpm: f?.bpm, camelot: f?.camelot)
+            return djPlannedFacts[it.uid] != now
+        }
+        if changed { scheduleDJReplan(reason: .analysis) }
     }
 
     // MARK: DJ — the PocketDJ selector (np-dj-mode §4)
@@ -3244,17 +3261,33 @@ final class SetlistPlayer {
     }
 
     /// A queue edit while DJ Mode is on: re-plan once things settle (never for our own re-order).
-    private func scheduleDJReplanOnEdit() {
+    private func scheduleDJReplanOnEdit() { scheduleDJReplan(reason: .edit) }
+
+    /// Why a debounced re-plan is pending. An EDIT counts deferrals (aging); an ANALYSIS re-plan
+    /// (new tempo / key facts landed) never does. An edit pending alongside wins.
+    enum DJReplanReason: String { case edit, analysis }
+    @ObservationIgnored private var djReplanPendingReason: DJReplanReason?
+    /// The facts each row was last planned on (an analysis landing re-plans only on a change).
+    struct DJPlannedFacts: Equatable { var bpm: Double?; var camelot: String? }
+    @ObservationIgnored private var djPlannedFacts: [UUID: DJPlannedFacts] = [:]
+
+    private func scheduleDJReplan(reason: DJReplanReason) {
         guard djMode.enabled, !applyingDJOrder, isRunning, !djRemoteSuspended else { return }
         djReplanTask?.cancel()
+        djReplanPendingReason = djReplanPendingReason == .edit ? .edit : reason
         let wait = Self.djReplanDebounceSeconds
         djReplanTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(0, wait) * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
             self.djReplanTask = nil
-            self.djReplan(reason: "edit")
+            let r = self.djReplanPendingReason ?? .edit
+            self.djReplanPendingReason = nil
+            self.djReplan(reason: r.rawValue)
         }
     }
+
+    /// Analysis re-plans so far (tests).
+    @ObservationIgnored private(set) var djAnalysisReplanCount = 0
 
     /// May the selector move the row at absolute position `i`? Never:
     ///  • the listener's NEXT-UP pick (`Item.djUserNext` at `index + 1`), or a row aged out
@@ -3297,6 +3330,7 @@ final class SetlistPlayer {
 
     private func djCandidate(_ it: Item, fixed: Bool, anchor: Bool = false) -> DJSetPlanner.Candidate {
         let f = djFacts(it)
+        djPlannedFacts[it.uid] = DJPlannedFacts(bpm: f?.bpm, camelot: f?.camelot)
         var c = DJSetPlanner.candidate(uid: it.uid, songId: it.id, bpm: f?.bpm, camelot: f?.camelot,
                                        rawGenre: f?.genre, year: f?.year,
                                        collections: djMembership.isEmpty ? [] : (djMembership[SongVariant.baseId(it.id)] ?? []),
@@ -3309,6 +3343,8 @@ final class SetlistPlayer {
     /// Re-plan the upcoming window now: one uid-verified, pin-respecting re-order.
     func djReplan(reason: String) {
         djReplanTask?.cancel(); djReplanTask = nil
+        djReplanPendingReason = nil
+        if reason == DJReplanReason.analysis.rawValue { djAnalysisReplanCount &+= 1 }
         guard djActive, isRunning, !isHeldForResume, index < queue.count else { return }
         let lo = index + 1
         let hi = min(queue.count, lo + Self.djPlanWindow)
@@ -3323,7 +3359,9 @@ final class SetlistPlayer {
         let result = DJSetPlanner.plan(current: current, upcoming: rows, state: state, options: djModeSettings().plannerOptions)
         djMode.planner = result.state
         let before = rows.map(\.uid)
-        guard result.order != before, applyDJOrder(result.order, window: lo..<hi, expected: before, fixed: fixed) else {
+        guard result.order != before,
+              applyDJOrder(result.order, window: lo..<hi, expected: before, fixed: fixed,
+                           countDeferrals: reason != DJReplanReason.analysis.rawValue) else {
             DJMode.log("plan \(reason) song=\(current.songId) — order kept (\(rows.count) rows, \(fixed.filter { $0 }.count) fixed)")
             return
         }
@@ -3337,7 +3375,8 @@ final class SetlistPlayer {
     /// planned from, in that order (uid-verified, no duplicate uid), and every `fixed` row stays
     /// where it was. A row placed LATER than it was counts one deferral (aging). One queue write.
     @discardableResult
-    private func applyDJOrder(_ order: [UUID], window: Range<Int>, expected: [UUID], fixed: [Bool]) -> Bool {
+    private func applyDJOrder(_ order: [UUID], window: Range<Int>, expected: [UUID], fixed: [Bool],
+                              countDeferrals: Bool = true) -> Bool {
         guard window.upperBound <= queue.count, order.count == expected.count, fixed.count == expected.count,
               Set(expected).count == expected.count, Set(order) == Set(expected),
               queue[window].map(\.uid) == expected else { return false }
@@ -3350,7 +3389,7 @@ final class SetlistPlayer {
         rows.reserveCapacity(order.count)
         for (k, uid) in order.enumerated() {
             guard var row = byUid[uid] else { return false }
-            if let was = oldSlot[uid], k > was { row.djDeferrals += 1 }
+            if countDeferrals, let was = oldSlot[uid], k > was { row.djDeferrals += 1 }
             rows.append(row)
         }
         applyingDJOrder = true

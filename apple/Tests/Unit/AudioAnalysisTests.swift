@@ -63,7 +63,8 @@ final class AudioAnalysisTests: XCTestCase {
         c.store(quick, for: key("s"))
         XCTAssertNil(c.quick(for: key("s")))
         XCTAssertEqual(c.full(for: key("s"))?.bpm, 126)
-        // Finals persist; hints don't.
+        // Finals persist (debounced — flushed here); hints don't.
+        c.flushForTesting()
         let again = AudioAnalysisCache(fileURL: c.fileURL)
         XCTAssertEqual(again.full(for: key("s"))?.bpm, 126)
     }
@@ -159,5 +160,75 @@ final class AudioAnalysisTests: XCTestCase {
         avail = 180
         s.enqueue(job("g", .current, complete: true))       // the file completed
         await waitUntil("full pass") { c.full(for: self.key("g")) != nil }
+    }
+}
+
+// MARK: - Batch review fixes (2026-11-09)
+
+@MainActor
+final class AudioAnalysisReviewFixTests: XCTestCase {
+
+    private func waitUntil(_ message: String, timeout: TimeInterval = 8, _ predicate: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !predicate() && Date() < deadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+        XCTAssertTrue(predicate(), message)
+    }
+
+    private func tempURL() -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-analysis-rf-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    /// A growing file re-keys by size every look: its head jobs dedupe per song + segment, and a
+    /// head retry from before `cancelPending` (DJ Mode off) never comes back.
+    func testHeadJobsDedupeAcrossSizesAndRetriesDieOnCancel() async {
+        let s = AudioAnalysisScheduler(cache: AudioAnalysisCache(fileURL: tempURL()))
+        s.quickPass = { _, _, w in .init(kind: .quick, headOnly: w.headOnly, bpm: 120, bpmConfidence: 0.9) }
+        s.fullPass = { _, _, _ in nil }
+        s.available = { _, _ in 5 }                         // never enough head audio
+        var allowed = false
+        s.mayRun = { allowed }
+        func head(_ size: Int64) -> AudioAnalysisScheduler.Job {
+            .init(key: .init(songId: "g", byteSize: size), open: { (URL(fileURLWithPath: "/tmp/g"), nil) },
+                  sliceStartSeconds: 0, durationSeconds: 200, complete: false, priority: .current)
+        }
+        s.enqueue(head(100)); s.enqueue(head(250)); s.enqueue(head(400))
+        XCTAssertEqual(s.pendingKeysForTesting, ["g"], "one head job per song, whatever its size")
+        AudioAnalysisScheduler.headRetrySeconds = 0.05
+        defer { AudioAnalysisScheduler.headRetrySeconds = 5 }
+        allowed = true
+        s.enqueue(head(500))
+        await waitUntil("first look ran") { s.startedOrderForTesting.count == 1 }
+        s.cancelPending()                                   // DJ Mode off
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(s.startedOrderForTesting.count, 1, "the retry died with the generation")
+    }
+
+    /// analysis.json: tolerant decode, size-mismatch pruning, the LRU cap, debounced saves.
+    func testCacheFileIsTolerantPrunedCappedAndDebounced() throws {
+        let url = tempURL()
+        // An entry from a future / older schema missing the confidence fields still decodes.
+        let json = #"{"version":1,"entries":[{"key":{"songId":"old","byteSize":7},"result":{"kind":"full","bpm":99}}]}"#
+        try Data(json.utf8).write(to: url)
+        let c = AudioAnalysisCache(fileURL: url)
+        XCTAssertEqual(c.full(for: .init(songId: "old", byteSize: 7))?.bpm, 99, "a schema change never wipes the cache")
+        // A re-sized file replaces its stale entry.
+        c.store(.init(kind: .full, bpm: 120, bpmConfidence: 0.9), for: .init(songId: "s", byteSize: 1))
+        c.store(.init(kind: .full, bpm: 121, bpmConfidence: 0.9), for: .init(songId: "s", byteSize: 2))
+        XCTAssertNil(c.full(for: .init(songId: "s", byteSize: 1)))
+        XCTAssertEqual(c.results(songId: "s").full?.bpm, 121)
+        // Debounced: nothing new on disk yet.
+        let before = try Data(contentsOf: url)
+        XCTAssertFalse(String(decoding: before, as: UTF8.self).contains("\"s\""))
+        // The LRU cap keeps the most recently used.
+        AudioAnalysisCache.maxEntries = 3
+        defer { AudioAnalysisCache.maxEntries = 5000 }
+        for i in 0..<4 { c.store(.init(kind: .full, bpm: Double(100 + i)), for: .init(songId: "n\(i)", byteSize: 1)) }
+        c.flushForTesting()
+        let again = AudioAnalysisCache(fileURL: url)
+        XCTAssertEqual(again.fullCountForTesting, 3)
+        XCTAssertNotNil(again.full(for: .init(songId: "n3", byteSize: 1)), "the newest stays")
+        XCTAssertNil(again.full(for: .init(songId: "old", byteSize: 7)), "the least recently used goes")
     }
 }

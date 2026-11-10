@@ -348,6 +348,17 @@ Skip mix + Settings ▸ Mixing (2026-11-09): see §3 "Skip = the Mix tab's Skip"
 DJ off unchanged, repeat-one overridden, ignored mid-fade, pre-roll hurried to the fade).
 Progressive analysis (2026-11-09, `AudioAnalysisTests` 7 + `DJModeTests` +1): see §5a.
 
+Batch review fixes (2026-11-09): dragging another row mid-queue keeps the next-up pick
+(`keepingCurrentPick`); a random jukebox / remote request is drawn from after a held pick; a
+pick's hold is spent at EVERY track start, DJ Mode or not; an analysis result re-plans only when a
+row's usable BPM / Camelot changed (`djPlannedFacts`) and analysis re-plans never count deferrals;
+the Mix Volume Glide setting reaches the engine at app level (`MixEngine.volumeGlideSetting`,
+observed) and in intent-started mixes; a Mix deck whose shared loudness analysis was cancelled (DJ
+Mode off) measures again; head jobs dedupe per song + segment and a `cancelPending` generation
+kills stale head retries; `analysis.json` saves are debounced and written off-main, a re-sized file
+replaces its stale entry, an LRU cap keeps 5000 finals, and the decoder is tolerant
+(`decodeIfPresent`) so a schema change never wipes it.
+
 Next-up pick (2026-11-09, `DJModeTests` +4): see §4 "Pool". The old `djPlaced` (every
 listener-placed row held) became `djUserNext` (only the next-up pick). Snapshot migration: a
 legacy `Row.djPlaced` restores as the pick ONLY on the row right after the current one; other
