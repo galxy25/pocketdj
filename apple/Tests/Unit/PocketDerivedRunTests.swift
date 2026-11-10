@@ -121,4 +121,49 @@ final class PocketDerivedRunTests: XCTestCase {
         XCTAssertEqual(f.bpmBand, p.bpmBand)
         XCTAssertEqual(f.era, p.era)
     }
+
+    // MARK: Freshness
+
+    func testRecencyIsLinearOverFreshDays() {
+        let day = 86_400_000.0, now = 100 * day
+        let r = PocketRunPlanner.recency(lastPlayedMs: ["a": now, "b": now - 15 * day, "c": now - 31 * day], nowMs: now)
+        XCTAssertEqual(r["a"]!, 1, accuracy: 1e-9)
+        XCTAssertEqual(r["b"]!, 0.5, accuracy: 1e-9)
+        XCTAssertNil(r["c"], "older than freshDays = fresh")
+    }
+
+    /// Most of the pocket's crate was heard this week: the run still stays ≥ 60 % fresh in
+    /// every prefix, so it explores instead of replaying the week.
+    func testRunsStayFreshEvenWhenThePocketWasHeardRecently() {
+        let u = Self.universe()
+        var recency: [String: Double] = [:]
+        for i in 0..<120 { recency["hh90_\(i)"] = 0.9 }   // 120 of 150 heard in the last ~3 days
+        for i in 0..<40 { recency["boom_\(i)"] = 0.5 }
+        let d = PocketRunPlanner.derived(Self.profile(), candidates: u)
+        let plan = PocketRunPlanner.plan(.init(profile: d, candidates: u, recency: recency, seed: 9))
+        XCTAssertEqual(plan.rows.count, PocketRunPlanner.slots)
+        var fresh = 0
+        for (n, row) in plan.rows.enumerated() {
+            if recency[row.songId] == nil { fresh += 1 }
+            if n >= 4 {
+                XCTAssertGreaterThanOrEqual(Double(fresh) / Double(n + 1), PocketRunPlanner.freshFloor - 0.2,
+                                            "prefix \(n + 1) is too stale")
+            }
+        }
+        XCTAssertGreaterThanOrEqual(Double(fresh) / Double(plan.rows.count), PocketRunPlanner.freshFloor)
+    }
+
+    func testPlayingASongALotNeverLiftsItButSkippingStillSinksIt() {
+        let u = Self.universe()
+        let scorer = PocketRunPlanner.Scorer(profile: Self.profile(), tuning: .neutral,
+                                             familiarity: ["hh90_1": 0.45, "hh90_2": -0.3], pool: Array(u.values))
+        let base = scorer.score(u["hh90_3"]!)
+        XCTAssertEqual(scorer.score(u["hh90_1"]!), base, accuracy: 0.2, "familiar ≈ unfamiliar peer")
+        XCTAssertLessThanOrEqual(scorer.score(u["hh90_1"]!) - base, 0.2)
+        XCTAssertLessThan(scorer.score(u["hh90_2"]!), scorer.score(u["hh90_1"]!), "skipped sinks")
+
+        let fresh = PocketRunPlanner.Scorer(profile: Self.profile(), tuning: .neutral, familiarity: [:],
+                                            recency: ["hh90_1": 1], pool: Array(u.values))
+        XCTAssertLessThan(fresh.score(u["hh90_1"]!), fresh.score(u["hh90_9"]!), "just heard < fresh peer")
+    }
 }

@@ -29,6 +29,13 @@ enum PocketRunPlanner {
     /// Neighbour collections (§4.2 step 0): collections that sound like the pocket's own, folded
     /// into the profile at ≤ 30 % of the collection mass.
     static let neighbourMaxCount = 3
+    /// Freshness (Levi 2026-11-10: "keep music at least 50–75 % fresh … exploring my full
+    /// library vs being trapped in a self-collapsing pocket"). A song is FRESH when it hasn't
+    /// played in `freshDays`; at least `freshFloor` of every run prefix is fresh, and fresh songs
+    /// out-score recently heard ones (linear: just played = no bonus, ≥ freshDays = full bonus).
+    static let freshDays = 30.0
+    static let freshFloor = 0.6
+    static let freshWeight = 0.6
     static let neighbourShare = 0.3
     static let neighbourMinSim = 0.55
     static let neighbourMinMembers = 5
@@ -56,14 +63,19 @@ enum PocketRunPlanner {
         var candidates: [String: Candidate]
         /// Played in the last 12 h, lifetime 👎, …
         var excluded: Set<String> = []
-        /// InThePocketScorer.familiarity over history.
+        /// InThePocketScorer.familiarity over history. Only its NEGATIVE side counts here (a song
+        /// you keep skipping sinks); playing a song a lot never lifts it — that's how runs collapse.
         var familiarity: [String: Double] = [:]
+        /// songId → 0…1, how recently it played (1 = just now, 0 = ≥ freshDays / never).
+        var recency: [String: Double] = [:]
         var tuning: PocketTuning.Multipliers = .neutral
         var seed: UInt64
         var slots: Int = PocketRunPlanner.slots
         init(profile: PocketProfile, candidates: [String: Candidate], excluded: Set<String> = [],
-             familiarity: [String: Double] = [:], tuning: PocketTuning.Multipliers = .neutral,
+             familiarity: [String: Double] = [:], recency: [String: Double] = [:],
+             tuning: PocketTuning.Multipliers = .neutral,
              seed: UInt64, slots: Int = PocketRunPlanner.slots) {
+            self.recency = recency
             self.profile = profile; self.candidates = candidates; self.excluded = excluded
             self.familiarity = familiarity; self.tuning = tuning; self.seed = seed; self.slots = slots
         }
@@ -92,13 +104,15 @@ enum PocketRunPlanner {
         let profile: PocketProfile
         let tuning: PocketTuning.Multipliers
         let familiarity: [String: Double]
+        let recency: [String: Double]
         let maxSeed: Double
         let maxGenre: Double
         let timbreCal: SimilarityFamilies.TimbreCalibration?
 
         init(profile: PocketProfile, tuning: PocketTuning.Multipliers, familiarity: [String: Double],
+             recency: [String: Double] = [:],
              pool: [Candidate]) {
-            self.profile = profile; self.tuning = tuning; self.familiarity = familiarity
+            self.profile = profile; self.tuning = tuning; self.familiarity = familiarity; self.recency = recency
             maxSeed = profile.seeds.values.max() ?? 0
             maxGenre = profile.genres.values.max() ?? 0
             if let pos = profile.timbre {
@@ -127,9 +141,24 @@ enum PocketRunPlanner {
                                                         rejectionWeight: 0.5, calibration: cal)
             }
             if maxGenre > 0, let g = c.features.genre, let v = profile.genres[g] { s += 0.4 * v / maxGenre }
-            s += familiarity[c.id] ?? 0
+            s += min(0, familiarity[c.id] ?? 0)
+            s += freshWeight * (1 - (recency[c.id] ?? 0))
             return max(0, s) * tuning.factor(c.features)
         }
+    }
+
+    // MARK: Freshness
+
+    /// songId → 0…1 recency from last-played times (1 = now, 0 at ≥ freshDays). Songs absent
+    /// from the map are fresh.
+    static func recency(lastPlayedMs: [String: Double], nowMs: Double) -> [String: Double] {
+        let span = freshDays * 86_400_000
+        var out: [String: Double] = [:]
+        for (id, t) in lastPlayedMs {
+            let r = 1 - (nowMs - t) / span
+            if r > 0 { out[id] = min(1, r) }
+        }
+        return out
     }
 
     // MARK: Seed gaps (§4.2 step 0)
@@ -254,7 +283,8 @@ enum PocketRunPlanner {
             }
             if softFit(c, profile: p) >= softMinFit { soft.append(c) }
         }
-        let scorer = Scorer(profile: p, tuning: input.tuning, familiarity: input.familiarity, pool: core + soft)
+        let scorer = Scorer(profile: p, tuning: input.tuning, familiarity: input.familiarity, recency: input.recency,
+                            pool: core + soft)
         func ranked(_ a: [Candidate]) -> [Candidate] {
             a.map { ($0, scorer.score($0)) }
                 .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.id < $1.0.id }.map(\.0)
@@ -330,7 +360,8 @@ enum PocketRunPlanner {
 
     static func plan(_ input: Input) -> Plan {
         let pool = pool(input)
-        let scorer = Scorer(profile: input.profile, tuning: input.tuning, familiarity: input.familiarity, pool: pool)
+        let scorer = Scorer(profile: input.profile, tuning: input.tuning, familiarity: input.familiarity,
+                            recency: input.recency, pool: pool)
         var scored = pool.map { (c: $0, s: scorer.score($0), bucket: bucket($0, profile: input.profile)) }
         let slots = min(input.slots, scored.count)
         let quotas = quotas(profile: input.profile, slots: slots)
@@ -338,6 +369,8 @@ enum PocketRunPlanner {
         let newcomersNeeded = Int((Double(slots) * newcomerFloor).rounded(.up))
         let seedCap = max(1, Int((Double(slots) * seedSlotShare).rounded()))
         var seedsPlaced = 0
+        func isFresh(_ c: Candidate) -> Bool { (input.recency[c.id] ?? 0) <= 0 }
+        var freshPlaced = 0
         var rng = SplitMix64(seed: input.seed)
         var rows: [Row] = []
         var placed: [Candidate] = []
@@ -351,8 +384,11 @@ enum PocketRunPlanner {
             let recent = placed.suffix(artistSpacing - 1).flatMap(\.features.artistKeys)
             let remaining = slots - rows.count
             let mustNewcomer = !topArtists.isEmpty && newcomersNeeded - newcomers >= remaining
-            func eligible(_ e: (c: Candidate, s: Double, bucket: String?), strict: Bool) -> Bool {
+            // Paced, not back-loaded: every prefix of the run stays ≥ freshFloor fresh.
+            let mustFresh = Double(freshPlaced + 1) <= freshFloor * Double(slot)
+            func eligible(_ e: (c: Candidate, s: Double, bucket: String?), strict: Bool, fresh: Bool = true) -> Bool {
                 let keys = e.c.features.artistKeys
+                if fresh && mustFresh && !isFresh(e.c) { return false }
                 if keys.contains(where: { (artistCount[$0] ?? 0) >= artistCap }) { return false }
                 if keys.contains(where: { recent.contains($0) }) { return false }
                 if mustNewcomer && !isNewcomer(e.c) { return false }
@@ -366,6 +402,7 @@ enum PocketRunPlanner {
             }
             var idx = scored.indices.filter { eligible(scored[$0], strict: true) }
             if idx.isEmpty { idx = scored.indices.filter { eligible(scored[$0], strict: false) } }
+            if idx.isEmpty { idx = scored.indices.filter { eligible(scored[$0], strict: false, fresh: false) } }
             if idx.isEmpty { idx = Array(scored.indices) }   // constraints unsatisfiable: best effort
             if slot <= instantLeadSlots {
                 let instant = idx.filter { scored[$0].c.startsInstantly }
@@ -383,6 +420,7 @@ enum PocketRunPlanner {
             bucketCount[e.bucket ?? "\u{0}other", default: 0] += 1
             if isNewcomer(e.c) { newcomers += 1 }
             if input.profile.seeds[e.c.id] != nil { seedsPlaced += 1 }
+            if isFresh(e.c) { freshPlaced += 1 }
         }
         let bench = scored.sorted { $0.s != $1.s ? $0.s > $1.s : $0.c.id < $1.c.id }.prefix(benchCap)
             .map { BenchEntry(songId: $0.c.id, score: ($0.s * 1e6).rounded() / 1e6) }
@@ -436,10 +474,10 @@ enum PocketRunPlanner {
     /// 0.6 × the median placed score) with the best "similar, different artist" candidate from the
     /// bench + pool; a row with no candidate clearing `pocketFit ≥ 0.3` is removed.
     static func replan(profile: PocketProfile, candidates: [String: Candidate], tuning: PocketTuning.Multipliers,
-                       familiarity: [String: Double], live: [LiveRow], inRun: Set<String>,
+                       familiarity: [String: Double], recency: [String: Double] = [:], live: [LiveRow], inRun: Set<String>,
                        neighbours: [UUID: (prev: String?, next: String?)], excluded: Set<String> = []) -> ReplanResult {
         let pool = candidates.values.filter { !excluded.contains($0.id) }
-        let scorer = Scorer(profile: profile, tuning: tuning, familiarity: familiarity, pool: Array(pool))
+        let scorer = Scorer(profile: profile, tuning: tuning, familiarity: familiarity, recency: recency, pool: Array(pool))
         let placedScores = live.compactMap { candidates[$0.songId].map(scorer.score) }.sorted()
         let median = placedScores.isEmpty ? 0 : placedScores[placedScores.count / 2]
         let maxScore = max(pool.map(scorer.score).max() ?? 1, 1e-9)
@@ -483,11 +521,11 @@ enum PocketRunPlanner {
     /// W2 top-up: the next `count` songs to APPEND after a skip (so 100 played-through stays
     /// reachable), best-scored first, respecting bans, the artist cap and spacing after `tail`.
     static func topUp(count: Int, profile: PocketProfile, candidates: [String: Candidate],
-                      tuning: PocketTuning.Multipliers, familiarity: [String: Double],
+                      tuning: PocketTuning.Multipliers, familiarity: [String: Double], recency: [String: Double] = [:],
                       inRun: Set<String>, tail: [String], excluded: Set<String> = []) -> [BenchEntry] {
         guard count > 0 else { return [] }
         let pool = candidates.values.filter { !excluded.contains($0.id) && !inRun.contains($0.id) && !tuning.isBanned($0.features) }
-        let scorer = Scorer(profile: profile, tuning: tuning, familiarity: familiarity, pool: Array(pool))
+        let scorer = Scorer(profile: profile, tuning: tuning, familiarity: familiarity, recency: recency, pool: Array(pool))
         var artistCount: [String: Int] = [:]
         for id in inRun { for k in candidates[id]?.features.artistKeys ?? [] { artistCount[k, default: 0] += 1 } }
         var recent = Array(tail.suffix(artistSpacing - 1).flatMap { candidates[$0]?.features.artistKeys ?? [] })
