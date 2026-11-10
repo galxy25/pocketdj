@@ -167,6 +167,20 @@ final class PocketRunStore {
 
     private var nowMs: Double { now().timeIntervalSince1970 * 1000 }
 
+    /// Last play of every song in History (base ids), for the planner's freshness.
+    nonisolated static func lastPlayed(_ events: [PlayHistoryStore.PlayEvent]) -> [String: Double] {
+        var out: [String: Double] = [:]
+        for e in events {
+            let id = SongVariant.baseId(e.songId)
+            if e.playedAt > out[id] ?? 0 { out[id] = e.playedAt }
+        }
+        return out
+    }
+
+    private func recencyNow() -> [String: Double] {
+        PocketRunPlanner.recency(lastPlayedMs: Self.lastPlayed(history.events), nowMs: nowMs)
+    }
+
     // MARK: Start
 
     /// Build and start a run for `profile`. A running run is replaced (its summary is kept).
@@ -190,12 +204,13 @@ final class PocketRunStore {
                                        tzOffsetMin: $0.tzOffsetMin ?? 0, outcome: $0.outcome.rawValue, ctx: nil)
             }
             let fam = InThePocketScorer.familiarity(plays)
+            let recency = PocketRunPlanner.recency(lastPlayedMs: PocketRunStore.lastPlayed(events), nowMs: nowMs)
             let prior = PocketTuning.fold(verdicts: PocketTuning.verdicts(from: events).map(\.verdict),
                                           for: moment, nowMs: nowMs, features: { pool[$0]?.features })
             let tuning = PocketTuning.multipliers(prior, allowBans: false)
             let expanded = PocketRunPlanner.derived(profile, candidates: pool)
             let plan = PocketRunPlanner.plan(.init(profile: expanded, candidates: pool, excluded: recent.union(thumbs),
-                                                   familiarity: fam, tuning: tuning, seed: seed))
+                                                   familiarity: fam, recency: recency, tuning: tuning, seed: seed))
             return (plan, prior, expanded)
         }.value
         let (plan, prior, runProfile) = planOut
@@ -232,7 +247,9 @@ final class PocketRunStore {
             activity = ActivityTracker()
             start { [weak self] seg in self?.noteActivity(seg) }
         }
-        DiagLog.shared.log("pocketrun", "start run=\(runId.uuidString.prefix(8)) moment=\(moment?.token ?? profile.tier.rawValue) rows=\(plan.rows.count) bench=\(plan.bench.count) mix=\(state.viaMix)")
+        let recencyAtStart = recencyNow()
+        let freshRows = plan.rows.filter { (recencyAtStart[$0.songId] ?? 0) <= 0 }.count
+        DiagLog.shared.log("pocketrun", "start run=\(runId.uuidString.prefix(8)) moment=\(moment?.token ?? profile.tier.rawValue) rows=\(plan.rows.count) fresh=\(freshRows) bench=\(plan.bench.count) mix=\(state.viaMix)")
         startTicker()
         return true
     }
@@ -411,10 +428,11 @@ final class PocketRunStore {
         let inRun = Set(player.queue.map(\.id))
         let tail = player.queue.suffix(3).map(\.id)
         let pool = cachedCandidates, tuning = runTuning, profile = a.profile, thumbs = thumbsDown()
+        let recency = recencyNow()
         topUpTask = Task { [weak self] in
             let picks = await Task.detached(priority: .userInitiated) {
                 PocketRunPlanner.topUp(count: count, profile: profile, candidates: pool, tuning: tuning,
-                                       familiarity: [:], inRun: inRun, tail: tail, excluded: thumbs)
+                                       familiarity: [:], recency: recency, inRun: inRun, tail: tail, excluded: thumbs)
             }.value
             guard let self else { return }
             defer { self.topUpTask = nil }
@@ -463,8 +481,9 @@ final class PocketRunStore {
         for r in rows { neighbours[r.uid] = (r.prevSongId, r.nextSongId) }
         let inRun = Set(player.queue.map(\.id))
         let pool = cachedCandidates, tuning = runTuning, profile = a.profile, thumbs = thumbsDown()
+        let recency = recencyNow()
         let result = await Task.detached(priority: .userInitiated) {
-            PocketRunPlanner.replan(profile: profile, candidates: pool, tuning: tuning, familiarity: [:], live: live,
+            PocketRunPlanner.replan(profile: profile, candidates: pool, tuning: tuning, familiarity: [:], recency: recency, live: live,
                                     inRun: inRun, neighbours: neighbours, excluded: thumbs)
         }.value
         guard let cur = active, cur.runId == a.runId, ownsSequencer(cur) else { return }
@@ -525,9 +544,11 @@ final class PocketRunStore {
         guard !rows.isEmpty else { return }
         let inRun = Set(player.queue.prefix(player.index + 1).map(\.id))
         let pool = cachedCandidates, tuning = runTuning, thumbs = thumbsDown(), seed = UInt64(a.seed) ?? 1
+        let recency = recencyNow()
         let (plan, runProfile) = await Task.detached(priority: .userInitiated) {
             let expanded = PocketRunPlanner.derived(profile, candidates: pool)
-            return (PocketRunPlanner.plan(.init(profile: expanded, candidates: pool, excluded: inRun.union(thumbs), tuning: tuning,
+            return (PocketRunPlanner.plan(.init(profile: expanded, candidates: pool, excluded: inRun.union(thumbs),
+                                                recency: recency, tuning: tuning,
                                                 seed: seed &+ 1, slots: rows.count)), expanded)
         }.value
         guard let cur = active, cur.runId == a.runId, ownsSequencer(cur) else { return }
