@@ -22,6 +22,17 @@ enum PocketRunPlanner {
     static let instantLeadSlots = 3
     static let replanFloorShareOfMedian = 0.6
     static let minPocketFit = 0.3
+    /// A run is DERIVED from its pocket, not a replay: the songs actually played in the moment
+    /// (seeds) get a light nudge and at most a quarter of the slots.
+    static let seedWeight = 0.3
+    static let seedSlotShare = 0.25
+    /// Neighbour collections (§4.2 step 0): collections that sound like the pocket's own, folded
+    /// into the profile at ≤ 30 % of the collection mass.
+    static let neighbourMaxCount = 3
+    static let neighbourShare = 0.3
+    static let neighbourMinSim = 0.55
+    static let neighbourMinMembers = 5
+    static let neighbourMaxMembers = 1500
 
     // MARK: Input
 
@@ -100,7 +111,7 @@ enum PocketRunPlanner {
         func score(_ c: Candidate) -> Double {
             var s = 0.0
             for (cid, w) in profile.collections { s += 1.5 * w * (c.memberships[cid] ?? 0) }
-            if maxSeed > 0, let v = profile.seeds[c.id] { s += 0.8 * v / maxSeed }
+            if maxSeed > 0, let v = profile.seeds[c.id] { s += seedWeight * v / maxSeed }
             if let band = profile.bpmBand {
                 if let b = c.foldedBpm {
                     let d = band.contains(b) ? 0 : min(abs(b - band.lowerBound), abs(b - band.upperBound))
@@ -119,6 +130,114 @@ enum PocketRunPlanner {
             s += familiarity[c.id] ?? 0
             return max(0, s) * tuning.factor(c.features)
         }
+    }
+
+    // MARK: Seed gaps (§4.2 step 0)
+
+    /// Fill what the profile doesn't know from its seeds' own features: genre mix, era window,
+    /// tempo band (≥ 3 known BPMs) and sound. Never overwrites a known dimension.
+    static func fillingGapsFromSeeds(_ p: PocketProfile, candidates: [String: Candidate]) -> PocketProfile {
+        let seeds = p.seeds.keys.sorted().compactMap { candidates[$0] }
+        guard !seeds.isEmpty else { return p }
+        var out = p
+        if out.genres.isEmpty {
+            var g: [String: Double] = [:]
+            for c in seeds { if let x = c.features.genre { g[x, default: 0] += 1 } }
+            out.genres = PocketMomentEngine.topNormalized(g, 8)
+        }
+        if out.era == nil, let era = SimilarityFamilies.eraWindow(years: seeds.compactMap { $0.features.year.map(Double.init) }) {
+            out.eraLo = era.lo; out.eraHi = era.hi
+        }
+        if out.bpmBand == nil {
+            let bpms = seeds.compactMap(\.foldedBpm).sorted()
+            if bpms.count >= 3 {
+                let band = InThePocketScorer.normalizedBand(bpms[bpms.count / 4], bpms[(bpms.count * 3) / 4])
+                out.bpmLo = band.lowerBound; out.bpmHi = band.upperBound
+            }
+        }
+        if out.timbre == nil,
+           let tp = SimilarityFamilies.timbreProfile(seeds.compactMap { c in c.features.timbre.map { (vector: $0, weight: 1.0) } }) {
+            out.timbreCentroid = tp.centroid; out.timbreSpread = tp.spread; out.timbreVectors = tp.vectors
+        }
+        return out
+    }
+
+    /// Step 0 in full: seed gaps, then neighbour collections.
+    static func derived(_ p: PocketProfile, candidates: [String: Candidate]) -> PocketProfile {
+        withNeighbourCollections(fillingGapsFromSeeds(p, candidates: candidates), candidates: candidates)
+    }
+
+    // MARK: Neighbour collections (§4.2 step 0)
+
+    /// One non-profile collection's resemblance to the pocket: song overlap with the pocket's own
+    /// collections, and how its PLAYABLE members fit the pocket's genre mix, era, tempo and sound.
+    static func collectionSim(members: [Candidate], overlap: Double, profile p: PocketProfile) -> Double? {
+        var parts: [(Double, Double)] = []   // (value, weight)
+        var genreCounts: [String: Double] = [:]
+        for c in members { if let g = c.features.genre { genreCounts[g, default: 0] += 1 } }
+        if !p.genres.isEmpty, !genreCounts.isEmpty {
+            let dot = genreCounts.reduce(0.0) { $0 + $1.value * (p.genres[$1.key] ?? 0) }
+            let na = sqrt(genreCounts.values.reduce(0) { $0 + $1 * $1 })
+            let nb = sqrt(p.genres.values.reduce(0) { $0 + $1 * $1 })
+            let cos = na > 0 && nb > 0 ? dot / (na * nb) : 0
+            guard cos >= 0.5 else { return nil }   // a different genre is never a neighbour
+            parts.append((cos, 2))
+        }
+        if let era = p.era {
+            let fits = members.compactMap { c in c.features.year.flatMap { $0 > 0 ? SimilarityFamilies.eraFit(year: Double($0), window: era) : nil } }
+            if !fits.isEmpty { parts.append((fits.reduce(0, +) / Double(fits.count), 1)) }
+        }
+        if let band = p.bpmBand {
+            let fits = members.compactMap(\.foldedBpm).map { b -> Double in
+                let d = band.contains(b) ? 0 : min(abs(b - band.lowerBound), abs(b - band.upperBound))
+                return exp(-d / 8)
+            }
+            if !fits.isEmpty { parts.append((fits.reduce(0, +) / Double(fits.count), 1)) }
+        }
+        if let pos = p.timbre {
+            let fits = members.compactMap { c in c.features.timbre.flatMap { SimilarityFamilies.timbreFit($0, profile: pos) } }
+            if !fits.isEmpty { parts.append((fits.reduce(0, +) / Double(fits.count), 2)) }
+        }
+        guard !parts.isEmpty else { return nil }
+        let musical = parts.reduce(0) { $0 + $1.0 * $1.1 } / parts.reduce(0) { $0 + $1.1 }
+        return 0.75 * musical + 0.25 * overlap
+    }
+
+    /// The profile with up to `neighbourMaxCount` collections that resemble its own folded in
+    /// (≤ `neighbourShare` of the collection weight, ∝ similarity). Members of a neighbour then
+    /// join the CORE pool and get their own slot quota — "hip-hop 1990–2000" also draws from the
+    /// other boom-bap crate. Unchanged when the profile has no collections or nothing qualifies.
+    static func withNeighbourCollections(_ p: PocketProfile, candidates: [String: Candidate]) -> PocketProfile {
+        guard !p.collections.isEmpty else { return p }
+        var members: [String: [Candidate]] = [:]
+        for c in candidates.values {
+            for (cid, m) in c.memberships where m >= 0.5 { members[cid, default: []].append(c) }
+        }
+        let own: [String: Set<String>] = p.collections.keys.reduce(into: [:]) { out, cid in
+            out[cid] = Set((members[cid] ?? []).map(\.id))
+        }
+        let ownMass = p.collections.values.reduce(0, +)
+        var scored: [(String, Double)] = []
+        for (cid, ms) in members where p.collections[cid] == nil && cid != PocketWheelIds.favorites
+            && ms.count >= neighbourMinMembers && ms.count <= neighbourMaxMembers {
+            let ids = Set(ms.map(\.id))
+            var overlap = 0.0
+            for (oid, oset) in own where !oset.isEmpty {
+                let o = Double(oset.intersection(ids).count) / Double(min(oset.count, ids.count))
+                overlap += (p.collections[oid] ?? 0) / max(ownMass, 1e-9) * o
+            }
+            if let sim = collectionSim(members: ms, overlap: overlap, profile: p), sim >= neighbourMinSim {
+                scored.append((cid, sim))
+            }
+        }
+        let top = scored.sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }.prefix(neighbourMaxCount)
+        guard !top.isEmpty else { return p }
+        let simTotal = top.reduce(0) { $0 + $1.1 }
+        let share = neighbourShare * simTotal / Double(top.count)   // closer neighbours earn more
+        var out = p
+        out.collections = p.collections.mapValues { $0 / max(ownMass, 1e-9) * (1 - share) }
+        for (cid, sim) in top { out.collections[cid] = share * sim / simTotal }
+        return out
     }
 
     // MARK: Pool (§4.2 step 1)
@@ -141,8 +260,22 @@ enum PocketRunPlanner {
                 .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0.id < $1.0.id }.map(\.0)
         }
         let coreRanked = ranked(core)
+        // Every profile collection keeps its share of the core pool, so a big home crate can't
+        // crowd a lighter-weighted neighbour collection out before compose sees it.
+        var corePicked: [Candidate] = []
+        var seen = Set<String>()
+        let mass = p.collections.values.reduce(0, +)
+        if mass > 0, coreRanked.count > poolCap {
+            var byBucket: [String: [Candidate]] = [:]
+            for c in coreRanked { if let b = bucket(c, profile: p) { byBucket[b, default: []].append(c) } }
+            for (cid, w) in p.collections.sorted(by: { $0.key < $1.key }) {
+                let n = Int((w / mass * Double(poolCap)).rounded(.up))
+                for c in (byBucket[cid] ?? []).prefix(n) where seen.insert(c.id).inserted { corePicked.append(c) }
+            }
+        }
+        for c in coreRanked where corePicked.count < poolCap && seen.insert(c.id).inserted { corePicked.append(c) }
         let softQuota = max(0, Int(Double(min(poolCap, coreRanked.count + soft.count)) * softCap))
-        return Array((Array(coreRanked.prefix(poolCap)) + ranked(soft).prefix(softQuota)).prefix(poolCap))
+        return Array((Array(ranked(corePicked).prefix(poolCap)) + ranked(soft).prefix(softQuota)).prefix(poolCap))
     }
 
     /// The soft-neighbour test for a NON-member: timbre fit to the profile centroid, else the
@@ -203,6 +336,8 @@ enum PocketRunPlanner {
         let quotas = quotas(profile: input.profile, slots: slots)
         let topArtists = Set(input.profile.artists.sorted { $0.value > $1.value }.prefix(10).map(\.key))
         let newcomersNeeded = Int((Double(slots) * newcomerFloor).rounded(.up))
+        let seedCap = max(1, Int((Double(slots) * seedSlotShare).rounded()))
+        var seedsPlaced = 0
         var rng = SplitMix64(seed: input.seed)
         var rows: [Row] = []
         var placed: [Candidate] = []
@@ -221,6 +356,7 @@ enum PocketRunPlanner {
                 if keys.contains(where: { (artistCount[$0] ?? 0) >= artistCap }) { return false }
                 if keys.contains(where: { recent.contains($0) }) { return false }
                 if mustNewcomer && !isNewcomer(e.c) { return false }
+                if strict, seedsPlaced >= seedCap, input.profile.seeds[e.c.id] != nil { return false }
                 if strict, let b = e.bucket, let q = quotas[b], (bucketCount[b] ?? 0) >= q { return false }
                 if strict, e.bucket == nil, !quotas.isEmpty {
                     let quotaTotal = quotas.values.reduce(0, +)
@@ -246,6 +382,7 @@ enum PocketRunPlanner {
             for k in e.c.features.artistKeys { artistCount[k, default: 0] += 1 }
             bucketCount[e.bucket ?? "\u{0}other", default: 0] += 1
             if isNewcomer(e.c) { newcomers += 1 }
+            if input.profile.seeds[e.c.id] != nil { seedsPlaced += 1 }
         }
         let bench = scored.sorted { $0.s != $1.s ? $0.s > $1.s : $0.c.id < $1.c.id }.prefix(benchCap)
             .map { BenchEntry(songId: $0.c.id, score: ($0.s * 1e6).rounded() / 1e6) }

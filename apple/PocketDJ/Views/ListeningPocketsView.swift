@@ -330,7 +330,10 @@ struct ListeningPocketDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Environment(PlayHistoryStore.self) private var history
+    /// Play starts a derived pocket run (optional: a preview host without it replays the songs).
+    @Environment(PocketRunStore.self) private var runs: PocketRunStore?
     @State private var savedName: String?
+    @State private var runNote: String?
 
     private var title: String {
         switch subject { case .pocket(let p): return p.title; case .pattern(let p): return p.title }
@@ -374,6 +377,18 @@ struct ListeningPocketDetailView: View {
                     .disabled(songIds.isEmpty)
                     .accessibilityIdentifier("pocket-save-playlist")
                 }
+                if let runNote {
+                    Text(runNote).font(.caption).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("pocket-run-note")
+                }
+                Button {
+                    replay()
+                } label: {
+                    Label("Play the original songs", systemImage: "arrow.counterclockwise")
+                }
+                .font(.caption)
+                .disabled(songIds.isEmpty)
+                .accessibilityIdentifier("pocket-replay")
                 if let savedName {
                     Text("Saved \"\(savedName)\" to your playlists.")
                         .font(.caption).foregroundStyle(Theme.fgDim)
@@ -497,7 +512,38 @@ struct ListeningPocketDetailView: View {
 
     // MARK: Actions
 
+    /// The pocket as a run profile (its songs are seeds; see `PocketProfile.from(listening:)`).
+    private var runProfile: PocketProfile {
+        switch subject {
+        case .pocket(let p):
+            return .from(listening: p.title, features: p.features, numeric: p.numeric, membership: p.membership,
+                         songIds: p.songIds)
+        case .pattern(let p):
+            return .from(listening: p.title, features: p.features, numeric: p.numeric, membership: p.membership,
+                         candidates: p.collectionCandidates, songIds: p.songIds)
+        }
+    }
+
+    /// A fresh run DERIVED from this pocket — similar songs from its collections and the
+    /// collections that sound like them — not the captured songs again. Falls back to the exact
+    /// replay only when no run store is wired (preview hosts).
     private func play() {
+        guard let runs else { return replay() }
+        runNote = "Building a mix from this pocket…"
+        let profile = runProfile
+        Task {
+            if await runs.start(profile: profile) {
+                runNote = "Playing a fresh mix from this pocket."
+            } else if case .failed(let why) = runs.buildState {
+                runNote = why
+            } else {
+                runNote = nil
+            }
+        }
+    }
+
+    /// The pocket's exact songs, in play order.
+    private func replay() {
         collections.playNow(songIds: songIds, name: title)
         path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
     }
