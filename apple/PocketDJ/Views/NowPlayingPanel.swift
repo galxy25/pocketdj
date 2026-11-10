@@ -1016,8 +1016,11 @@ struct NPSkipNextButton<Label: View>: View {
     let identifier: String
     var help: String?
     @ViewBuilder let label: () -> Label
-    /// Press feedback for the tap view (a Button dims itself; a tap gesture doesn't).
-    @GestureState private var pressed = false
+    /// Press feedback for the tap view (a Button dims itself; a tap gesture doesn't): a brief dim
+    /// set INSIDE the tap handlers. NEVER a press-tracking gesture — a simultaneous
+    /// `DragGesture(minimumDistance: 0)` swallowed both taps (⏭ did nothing with DJ Mode on —
+    /// the 1.0.5 release blocker; `DJSkipUITests`).
+    @State private var flash = false
 
     var body: some View {
         #if os(tvOS)
@@ -1028,10 +1031,9 @@ struct NPSkipNextButton<Label: View>: View {
                 // The Button's ≥44 pt hit target, kept (the glyph is unchanged).
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
-                .opacity(pressed ? 0.35 : 1)
-                .simultaneousGesture(DragGesture(minimumDistance: 0).updating($pressed) { _, p, _ in p = true })
-                .onTapGesture(count: 2) { sequencer.skipNext(fast: true) }   // fast 5 s sweep
-                .onTapGesture(count: 1) { sequencer.skipNext() }             // Skip fade
+                .opacity(flash ? 0.35 : 1)
+                .onTapGesture(count: 2) { flashPress(); sequencer.skipNext(fast: true) }   // fast 5 s sweep
+                .onTapGesture(count: 1) { flashPress(); sequencer.skipNext() }             // Skip fade
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { sequencer.skipNext() }
                 .accessibilityHint("Double-tap for a fast five second sweep")
@@ -1041,6 +1043,11 @@ struct NPSkipNextButton<Label: View>: View {
             plain
         }
         #endif
+    }
+
+    private func flashPress() {
+        flash = true
+        withAnimation(.easeOut(duration: 0.25)) { flash = false }
     }
 
     private var plain: some View {
