@@ -474,17 +474,22 @@ final class MacScreenshotRenderTests: XCTestCase {
             // (The deck waveforms used to render empty here: extraction hops back to the main
             // actor, which the old nested run-loop pump never released. `capture` now suspends.)
             // 1.0.5's new features lead: the Pocket Wheel, then Remote's live session (Jukebox panel).
-            ("mac-01-pocketwheel", .history, 6.0, { AnyView(HistoryView(path: $0)) }),
+            // 1.0.5 (second pass): Settings ▸ Mixing — the crossfades, DJ Mode toggles and Mix tab
+            // options — leads, then Remote, the Mix board and the Pocket Wheel.
+            ("mac-01-settings-mixing", .settings, 3.0, { _ in
+                AnyView(MixingSettingsView(settings: g.settings))
+            }),
             // Remote lives in the Jukebox panel (JukeboxHubView), switched to its Remote half.
             ("mac-02-remote", .jukebox, 4.0, { _ in
                 UserDefaults.standard.set(JukeboxPanelMode.remote.rawValue, forKey: JukeboxPanelMode.storageKey)
                 return AnyView(JukeboxHubView())
             }),
             ("mac-03-mix", .mix, 5.0, { _ in AnyView(MixView(path: .constant(NavigationPath()))) }),
-            ("mac-04-producer", .performance, 6.0, { _ in AnyView(PerformanceView()) }),
+            ("mac-04-pocketwheel", .history, 6.0, { AnyView(HistoryView(path: $0)) }),
+            ("mac-05-producer", .performance, 6.0, { _ in AnyView(PerformanceView()) }),
             // Browse derives its rows off-main (BrowseModel) — give it the longest settle.
-            ("mac-05-browse", .browse, 8.0, { AnyView(BrowseView(path: $0)) }),
-            ("mac-06-collections", .playlists, 5.0, { AnyView(PlaylistsView(path: $0)) }),
+            ("mac-06-browse", .browse, 8.0, { AnyView(BrowseView(path: $0)) }),
+            ("mac-07-collections", .playlists, 5.0, { AnyView(PlaylistsView(path: $0)) }),
         ]
 
         for shot in shots {
