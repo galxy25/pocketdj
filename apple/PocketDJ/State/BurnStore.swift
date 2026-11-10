@@ -339,10 +339,14 @@ final class BurnStore {
             // Now Playing — the track on the deck.
             ("sng_5", "Golden Hour", "Aria", 124.3, "G major", "9B", 222_926, true),
             // Auto-DJ queue + Up Next rows.
-            ("sng_17", "Terrace Groove", "DJ Meridian West", 122.1, "F# minor", "11A", 205_307, false),
+            // Terrace Groove is the Auto-DJ's next load (onto the deck a Skip frees): full length so
+            // a mid-crossfade capture never shows a 0:02 blip with a solid-block waveform.
+            ("sng_17", "Terrace Groove", "DJ Meridian West", 122.1, "F# minor", "11A", 205_307, true),
             ("sng_19", "Skyline Shuffle", "DJ Meridian West", 122.0, "E minor", "9A", 297_159, false),
             ("sng_20", "Fifth Floor Funk", "DJ Meridian West", 127.2, "F# minor", "11A", 254_700, false),
-            ("sng_24", "Tidal", "Luna Vale", 101.6, "Ab minor", "1A", 328_706, false),
+            // Tidal is Now Playing's NEXT row: full length so a DJ Mode ⏭ (a 15 s skip mix) has a
+            // real incoming body to crossfade, tempo-match and level into.
+            ("sng_24", "Tidal", "Luna Vale", 101.6, "Ab minor", "1A", 328_706, true),
             ("sng_23", "Sleepwalker's Waltz", "Luna Vale", 109.9, "E major", "12B", 288_704, false),
             ("sng_2", "Afterglow", "Aria", 119.4, "B major", "1B", 292_964, false),
             ("sng_21", "Featherweight", "Luna Vale", 94.8, "Db minor", "12A", 162_351, false),
