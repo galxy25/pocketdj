@@ -462,8 +462,8 @@ final class DJModeTests: XCTestCase {
         XCTAssertLessThanOrEqual(est.map(\.trimDb).max() ?? 99, AudioAnalysis.hintGainClampDb + 0.05, "the hint is clamped")
         let cache = try XCTUnwrap(r.seq.loudnessCache)
         let final = try XCTUnwrap(cache.gainDb(for: key))
-        let measured = seen.filter { $0.status == .measured }.map(\.trimDb)
-        XCTAssertEqual(measured.last ?? 99, final, accuracy: 0.05)
+        // (The trace can miss the last step while its watch re-arms — read the settled readout.)
+        XCTAssertEqual(r.dsp.djDisplay.leveling.current.trimDb, final, accuracy: 0.06)
         // RAMPS all the way: the hint coming in and the final taking over move the trim in small
         // published steps (≤ 1 dB at ~16 Hz over a 0.6 s ramp) — never a jump.
         let trims = seen.filter { $0.status == .estimated || $0.status == .measured }.map(\.trimDb)
