@@ -688,6 +688,9 @@ struct PocketDJApp: App {
             return (settings.npMixBufferAheadEffective, settings.npMixCellularPolicy, settings.npMixModeDefaultOn ?? false)
         }
         mix.artworkURLsProvider = artworkURLsProvider
+        // Mix tab Volume Glide follows Settings ▸ Mixing wherever it is flipped (the Mix tab need
+        // not be on screen; an intent / CarPlay / lock-screen auto-mix honours it too).
+        mix.volumeGlideSetting = { [weak settings] in settings?.mixVolumeGlide ?? false }
         // F4: a Mix-tab session (deck / Auto-DJ) starting must tear down a live Now Playing mix
         // engagement — the panel hides then, so the DSP would otherwise keep rendering a hidden second
         // audio source. Setting this seam arms the sequencer's observation of `isRunning`/`autoMixing`.

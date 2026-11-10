@@ -6556,6 +6556,21 @@ final class MixEngine {
 
     // MARK: - Volume Glide (Auto-DJ loudness leveling)
 
+    /// SEAM (wired at app init to `SettingsStore.mixVolumeGlide`): the setting itself. Setting it
+    /// applies the value and OBSERVES it — a flip anywhere (Settings, the Mix pill, sync) reaches
+    /// the engine without the Mix tab on screen.
+    @ObservationIgnored var volumeGlideSetting: (() -> Bool)? {
+        didSet { observeVolumeGlideSetting() }
+    }
+
+    private func observeVolumeGlideSetting() {
+        guard let read = volumeGlideSetting else { return }
+        let on = withObservationTracking { read() } onChange: { [weak self] in
+            Task { @MainActor in self?.observeVolumeGlideSetting() }
+        }
+        setVolumeGlide(on)
+    }
+
     func setVolumeGlide(_ on: Bool) {
         guard volumeGlideEnabled != on else { return }
         volumeGlideEnabled = on
@@ -6624,7 +6639,10 @@ final class MixEngine {
             guard let self, self.state(deck).loaded?.songId == songId, self.paths[deck] == path else { return }
             switch outcome {
             case .measured, .cached, .failed: self.levelDeck(deck)   // settled: no re-kick possible
-            case .cancelled: break
+            case .cancelled:
+                // The SHARED cache was cancelled under us (Now Playing DJ Mode turning off cancels
+                // its analyses): the same song is still on the deck and glide is on — measure again.
+                if self.volumeGlideEnabled, self.autoMixing { self.levelDeck(deck) }
             }
         }
     }

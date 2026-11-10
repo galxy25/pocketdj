@@ -368,6 +368,7 @@ final class IntentServices {
         mix.setBeatPulseEnabled(settings.beatPulseEnabled)
         mix.setMixGlideSeconds(settings.mixGlideSeconds)
         mix.setSkipFadeSeconds(settings.skipFadeSeconds)
+        mix.setVolumeGlide(settings.mixVolumeGlide)
         // Kick the collection's download run (same pipeline as MixView's ▶/🔀 — idempotent per
         // source). Deliberately BEFORE the loadables guard: an all-undownloaded collection still
         // starts pulling, so a retried intent finds tracks on disk.
@@ -438,6 +439,7 @@ final class IntentServices {
         mix.setBeatPulseEnabled(settings.beatPulseEnabled)
         mix.setMixGlideSeconds(settings.mixGlideSeconds)
         mix.setSkipFadeSeconds(settings.skipFadeSeconds)
+        mix.setVolumeGlide(settings.mixVolumeGlide)
         // BEFORE the loadables guard, and registering BOTH crates: late downloads from either
         // must join the running queue (the downloader tracks the union).
         mixDownloader?.begin(sources: deckA == deckB ? [deckA] : [deckA, deckB])
