@@ -1389,14 +1389,23 @@ extension DJModeTests {
         r.seq.play(["c", "a", "b"].map(item))
         await waitUntil("c playing") { r.rips.nowPlaying?.songId == "c" }
         r.seq.insertNextInQueue([item("pick")])
+        r.seq.setDJMode(true)
         var range: ClosedRange<Int>?
         r.seq.insertRandomInQueue([item("req")], slot: { range = $0; return $0.lowerBound })
         XCTAssertEqual(range?.lowerBound, 2, "drawn from after the pick")
         XCTAssertEqual(r.seq.queue[1].id, "pick")
         XCTAssertEqual(r.seq.queue[2].id, "req")
-        r.seq.skipNext()                                            // DJ Mode off
+    }
+
+    /// A played pick's hold is spent at its start even with DJ Mode OFF.
+    func testPlayedPickIsClearedWithDJOff() async throws {
+        let r = try rig(["c", "pick"])
+        r.seq.play(["c", "a"].map(item))
+        await waitUntil("c playing") { r.rips.nowPlaying?.songId == "c" }
+        r.seq.insertNextInQueue([item("pick")])
+        XCTAssertTrue(r.seq.queue[1].djUserNext)
+        r.seq.skipNext()
         await waitUntil("the pick started") { r.rips.nowPlaying?.songId == "pick" }
-        XCTAssertEqual(r.seq.queue[1].id, "pick")
         XCTAssertFalse(r.seq.queue[1].djUserNext, "its hold is spent when it starts")
     }
 

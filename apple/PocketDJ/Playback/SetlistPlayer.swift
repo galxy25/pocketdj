@@ -1406,8 +1406,9 @@ final class SetlistPlayer {
     func insertRandomInQueue(_ items: [Item],
                              slot: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }) {
         guard isRunning, !items.isEmpty else { return }
-        // The listener's next-up pick is held: a random request never lands ahead of it.
-        let pickHeld = index + 1 < queue.count && queue[index + 1].djUserNext
+        // DJ Mode holds the listener's next-up pick: a random request never lands ahead of it.
+        // (DJ off: no hold — the Surprise Slot keeps its full right-after-current range.)
+        let pickHeld = djMode.enabled && index + 1 < queue.count && queue[index + 1].djUserNext
         let lo = min(index + (pickHeld ? 2 : 1), queue.count)
         let at = slot(lo...queue.count)
         queue.insert(contentsOf: items, at: at)
