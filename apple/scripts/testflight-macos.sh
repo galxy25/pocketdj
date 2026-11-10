@@ -60,6 +60,7 @@ fi
 
 echo "==> Regenerating project from project.yml"
 xcodegen generate
+# MARKETING_VERSION=x.y.z overrides project.yml (ship a still-in-review version after main bumped).
 
 echo "==> Archiving $SCHEME for macOS (build $BUILD_NUMBER)"
 rm -rf "$ARCHIVE" "$EXPORT_DIR"
@@ -73,6 +74,7 @@ xcodebuild \
   -destination 'generic/platform=macOS' \
   -archivePath "$ARCHIVE" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+  ${MARKETING_VERSION:+MARKETING_VERSION="$MARKETING_VERSION"} \
   -authenticationKeyPath "$ASC_KEY_PATH" \
   -authenticationKeyID "$ASC_KEY_ID" \
   -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
