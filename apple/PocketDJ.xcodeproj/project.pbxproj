@@ -716,6 +716,7 @@
 		F4F304247E7613640B28C4C8 /* AccountDeletionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 807AF80CB4565AC9344452B5 /* AccountDeletionService.swift */; };
 		F5274C56B73D14A4D351B6A4 /* NPLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40CC1845961FA5A883E7948 /* NPLog.swift */; };
 		F5F19BF690F2300C871BFCF9 /* CollectionsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E03F079CBD183396624647B /* CollectionsStore.swift */; };
+		F64E604B49DB6EFB8000DD88 /* PocketDerivedRunTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F0C05A9328B519B87FC54DE /* PocketDerivedRunTests.swift */; };
 		F6A22BFDE5BFC5C48D188C8F /* PocketWheelModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0050E0A81F60E9FCD3E46698 /* PocketWheelModels.swift */; };
 		F70ACEF6D2CC91C53764CB63 /* AudioAnalysisTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB2ECD27F918A02B50BEB255 /* AudioAnalysisTests.swift */; };
 		F7F0807994DDB805525579AB /* KeyChip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25741D198A372D9021096109 /* KeyChip.swift */; };
@@ -1220,6 +1221,7 @@
 		8E3F04618F31392F949C4BC6 /* ForYouRecsOptOutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForYouRecsOptOutTests.swift; sourceTree = "<group>"; };
 		8EAA62ECD6F524DC1F495A60 /* ImportedSongsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportedSongsStore.swift; sourceTree = "<group>"; };
 		8EE1CE6FA0258A825A8AA357 /* FeedbackDictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackDictation.swift; sourceTree = "<group>"; };
+		8F0C05A9328B519B87FC54DE /* PocketDerivedRunTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketDerivedRunTests.swift; sourceTree = "<group>"; };
 		8F55C0256CA6578A23BC5B2E /* PlaylistWriteBackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistWriteBackTests.swift; sourceTree = "<group>"; };
 		8F624323AE2A7F1A33A4BF2F /* ForYouTilesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForYouTilesTests.swift; sourceTree = "<group>"; };
 		908C309108D71A8E1FDC9DBD /* IntentServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IntentServices.swift; sourceTree = "<group>"; };
@@ -1815,6 +1817,7 @@
 				7D5980E93946D7C929149EE0 /* PlayStatsStoreTests.swift */,
 				4F10F478707B213AA8628B65 /* PocketBestMatchTests.swift */,
 				CC3B20D9DF4EBBA30146F064 /* PocketBuilderTests.swift */,
+				8F0C05A9328B519B87FC54DE /* PocketDerivedRunTests.swift */,
 				26B94BF9288FCF4BDDDE83BC /* PocketDJUTTypeTests.swift */,
 				D1B68C3549CC0733618A535A /* PocketMomentEngineTests.swift */,
 				79D266858F9ACCEF8F529A23 /* PocketPaletteStoreTests.swift */,
@@ -3056,6 +3059,7 @@
 				76A76A13D40A94AE6BEA9A82 /* PocketBestMatchTests.swift in Sources */,
 				EF63453D1A2D2B67E4402315 /* PocketBuilderTests.swift in Sources */,
 				0353926388012E0E78546B1D /* PocketDJUTTypeTests.swift in Sources */,
+				F64E604B49DB6EFB8000DD88 /* PocketDerivedRunTests.swift in Sources */,
 				FBF7986740F5853E8C3FFA39 /* PocketMomentEngineTests.swift in Sources */,
 				8245E427F1ADD456E5534483 /* PocketPaletteStoreTests.swift in Sources */,
 				5603F6B128929F6BAAB8E2E7 /* PocketRunPlannerTests.swift in Sources */,

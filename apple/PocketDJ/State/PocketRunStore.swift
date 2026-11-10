@@ -183,7 +183,7 @@ final class PocketRunStore {
         let pool = await candidates()
         cachedCandidates = pool
         let moment = profile.key
-        let planOut = await Task.detached(priority: .userInitiated) { () -> (PocketRunPlanner.Plan, PocketTuning.Evidence) in
+        let planOut = await Task.detached(priority: .userInitiated) { () -> (PocketRunPlanner.Plan, PocketTuning.Evidence, PocketProfile) in
             let recent = Set(events.filter { nowMs - $0.playedAt < 12 * 3_600_000 }.map { SongVariant.baseId($0.songId) })
             let plays = events.map {
                 InThePocketScorer.Play(songId: SongVariant.baseId($0.songId), atMs: $0.playedAt,
@@ -193,11 +193,12 @@ final class PocketRunStore {
             let prior = PocketTuning.fold(verdicts: PocketTuning.verdicts(from: events).map(\.verdict),
                                           for: moment, nowMs: nowMs, features: { pool[$0]?.features })
             let tuning = PocketTuning.multipliers(prior, allowBans: false)
-            let plan = PocketRunPlanner.plan(.init(profile: profile, candidates: pool, excluded: recent.union(thumbs),
+            let expanded = PocketRunPlanner.derived(profile, candidates: pool)
+            let plan = PocketRunPlanner.plan(.init(profile: expanded, candidates: pool, excluded: recent.union(thumbs),
                                                    familiarity: fam, tuning: tuning, seed: seed))
-            return (plan, prior)
+            return (plan, prior, expanded)
         }.value
-        let (plan, prior) = planOut
+        let (plan, prior, runProfile) = planOut
         guard !plan.rows.isEmpty else {
             buildState = .failed("Not enough playable songs fit this pocket yet. Download some, or connect Apple Music.")
             return false
@@ -205,7 +206,7 @@ final class PocketRunStore {
         priorEvidence = prior
         runTuning = PocketTuning.multipliers(prior, allowBans: false)
         let label = "Pocket · " + (moment.map { $0.shortLabel.replacingOccurrences(of: " · ", with: " ") } ?? profile.caption)
-        var state = RunState(runId: runId, momentKey: moment?.token, label: label, seed: String(seed), profile: profile,
+        var state = RunState(runId: runId, momentKey: moment?.token, label: label, seed: String(seed), profile: runProfile,
                              bench: plan.bench, startedAtMs: nowMs)
         Self.runNames[state.tag] = label
         // W7: a Mix moment plays through Mix Auto-DJ when enough of the run can load on the decks.
@@ -524,9 +525,10 @@ final class PocketRunStore {
         guard !rows.isEmpty else { return }
         let inRun = Set(player.queue.prefix(player.index + 1).map(\.id))
         let pool = cachedCandidates, tuning = runTuning, thumbs = thumbsDown(), seed = UInt64(a.seed) ?? 1
-        let plan = await Task.detached(priority: .userInitiated) {
-            PocketRunPlanner.plan(.init(profile: profile, candidates: pool, excluded: inRun.union(thumbs), tuning: tuning,
-                                        seed: seed &+ 1, slots: rows.count))
+        let (plan, runProfile) = await Task.detached(priority: .userInitiated) {
+            let expanded = PocketRunPlanner.derived(profile, candidates: pool)
+            return (PocketRunPlanner.plan(.init(profile: expanded, candidates: pool, excluded: inRun.union(thumbs), tuning: tuning,
+                                                seed: seed &+ 1, slots: rows.count)), expanded)
         }.value
         guard let cur = active, cur.runId == a.runId, ownsSequencer(cur) else { return }
         a = cur
@@ -537,7 +539,7 @@ final class PocketRunStore {
         }
         let applied = player.replaceUpcoming(items, removing: [])
         a.retargetedMode = mode
-        a.profile = profile
+        a.profile = runProfile
         a.bench = plan.bench
         active = a
         flashRetuned(Set(items.values.map(\.uid)))

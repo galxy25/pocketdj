@@ -55,6 +55,45 @@ struct PocketProfile: Codable, Equatable, Sendable {
                       timbreCentroid: m.timbreCentroid, timbreSpread: m.timbreSpread, timbreVectors: m.timbreVectors,
                       seeds: m.seeds, mode: m.key.mode)
     }
+
+    /// One cloud listening pocket / pattern (History ▸ Pockets ▸ List) as a run profile: Play
+    /// starts a DERIVED run from it — its songs are seeds, its collections / genres / artists /
+    /// tempo / era steer the pool — not a replay of the exact members. Sound and any missing
+    /// era / tempo are filled from the seeds' own features when the run starts
+    /// (`PocketRunPlanner.fillingGapsFromSeeds`).
+    static func from(listening title: String, features: [ListeningPocketFeature],
+                     numeric: [String: ListeningPocketNumeric], membership: [ListeningPocketMembershipWeight],
+                     candidates: [ListeningPocketCollectionCandidate] = [], songIds: [String]) -> PocketProfile {
+        var collections: [String: Double] = [:], artists: [String: Double] = [:], genres: [String: Double] = [:]
+        for m in membership where m.weight > 0 { collections[m.collectionId, default: 0] += m.weight }
+        for f in features where f.score > 0 {
+            switch f.kind {
+            case .collection where membership.isEmpty: collections[f.value, default: 0] += f.score
+            case .artist: artists[f.value, default: 0] += f.score
+            case .genre: genres[f.value, default: 0] += f.score
+            default: break
+            }
+        }
+        func usable(_ n: ListeningPocketNumeric?) -> ListeningPocketNumeric? {
+            guard let n, n.defining || n.coverage >= 0.6 else { return nil }
+            return n
+        }
+        let band = usable(numeric["bpm"]).map { InThePocketScorer.normalizedBand($0.lo, $0.hi) }
+        var eraLo: Double?, eraHi: Double?
+        if let y = usable(numeric["year"]) {
+            let mid = (y.lo + y.hi) / 2
+            eraLo = min(y.lo, mid - 2); eraHi = max(y.hi, mid + 2)
+        }
+        var boost: [String: Double] = [:]
+        for c in candidates where c.score > 0 { boost[c.songId, default: 0] += c.score }
+        return PocketProfile(tier: .cloud, caption: title, detail: "A fresh mix from this pocket",
+                             collections: PocketMomentEngine.topNormalized(collections, 8),
+                             artists: PocketMomentEngine.topNormalized(artists, 8),
+                             genres: PocketMomentEngine.topNormalized(genres, 8),
+                             bpmLo: band?.lowerBound, bpmHi: band?.upperBound, eraLo: eraLo, eraHi: eraHi,
+                             seeds: Dictionary(songIds.map { ($0, 1.0) }, uniquingKeysWith: { a, _ in a }),
+                             candidateBoost: boost)
+    }
 }
 
 /// The centre ▶ (§3): score every cell against NOW (time, day, mode, place, previous activity),
