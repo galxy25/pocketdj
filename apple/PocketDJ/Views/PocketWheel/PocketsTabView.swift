@@ -60,6 +60,7 @@ struct PocketsTabView: View {
             _ = runs.revision
             a.runProgress = runs.progress
             a.pauseRun = { runs.togglePause() }
+            a.clearRun = { runs.stop() }
             a.runHistory = { runs.runHistory(for: $0) }
         }
         return a

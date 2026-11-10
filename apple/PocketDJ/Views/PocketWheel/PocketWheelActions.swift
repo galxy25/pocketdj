@@ -14,6 +14,8 @@ struct PocketWheelActions {
     /// A run is playing: its progress (played-through / 100) and moment.
     var runProgress: (done: Int, total: Int, key: PocketMomentKey?)?
     var pauseRun: (() -> Void)?
+    /// Clear the playing pocket from playback (ends the run + stops its queue) so another can start.
+    var clearRun: (() -> Void)?
     /// Past runs of a moment (card's "learning" strip): (date label, songs played through, skip rate).
     var runHistory: ((PocketMomentKey) -> [PocketRunHistoryRow])?
 
