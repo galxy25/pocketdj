@@ -50,12 +50,19 @@ enum DJSetPlanner {
         /// on it (`State.reanchor`) — the songs after it ease from ITS tempo / key / pocket back
         /// into the wave, instead of treating it as a wrong turn. Normally also `fixed`.
         var anchor = false
+        /// Credited artist keys (`RecVersionIdentity.creditArtistKeys`). The selector keeps any
+        /// artist out of the `artistSpacing` slots after it played while another free row can
+        /// take the slot — pocket similarity alone chains one artist's songs back to back
+        /// (Levi's 2026-11-10 drive: GoldLink / Cousin Stizz alternating, four skips). Empty =
+        /// unknown, never blocked.
+        var artists: Set<String> = []
 
         init(uid: UUID = UUID(), songId: String, bpm: Double? = nil, camelot: String? = nil,
              genre: String? = nil, year: Int? = nil, collections: Set<String> = [],
-             fixed: Bool = false) {
+             fixed: Bool = false, artists: Set<String> = []) {
             self.uid = uid; self.songId = songId; self.bpm = bpm; self.camelot = camelot
             self.genre = genre; self.year = year; self.collections = collections; self.fixed = fixed
+            self.artists = artists
         }
 
         var features: Features { Features(self) }
@@ -71,12 +78,12 @@ enum DJSetPlanner {
     /// insert / the buffered next row.
     static func candidate(uid: UUID, songId: String, bpm: Double?, camelot: String?,
                           rawGenre: String?, year: Int?, collections: Set<String>,
-                          fixed: Bool) -> Candidate {
+                          fixed: Bool, artists: Set<String> = []) -> Candidate {
         let cat = Genre.category(rawGenre)
         return Candidate(uid: uid, songId: songId, bpm: bpm, camelot: camelot,
                          genre: cat == Genre.other ? nil : cat,
                          year: (year ?? 0) > 0 ? year : nil,
-                         collections: collections, fixed: fixed)
+                         collections: collections, fixed: fixed, artists: artists)
     }
 
     /// The normalized, all-optional features of one song.
@@ -181,6 +188,9 @@ enum DJSetPlanner {
     static let neutralScore = 0.5
     /// "Near adjacent" next-pocket anchor similarity window.
     static let nearAdjacent: ClosedRange<Double> = 0.3...0.8
+    /// No artist twice within this many slots (the playing song counts) — the same rule as
+    /// `PocketRunPlanner.artistSpacing`, so DJ Mode never undoes a pocket run's spacing.
+    static let artistSpacing = 4
 
     /// Band steps per wave (2 or 3) — deterministic per session seed + wave index.
     static func waveLength(seed: UInt64, index: Int) -> Int {
@@ -217,15 +227,31 @@ enum DJSetPlanner {
         var sim = committed
         var order: [UUID] = []
         order.reserveCapacity(n)
+        // The artists of the last `artistSpacing - 1` placed songs (the playing one first).
+        var recentArtists: [Set<String>] = current.map { [$0.artists] } ?? []
 
         for slot in 0..<n {
             let pick: Int
             if upcoming[slot].fixed {
                 pick = slot
             } else {
-                pick = best(free: free, feats: feats, aged: aged, n: n, prev: prev, sim: &sim, options: options)
+                let blocked = recentArtists.reduce(into: Set<String>()) { $0.formUnion($1) }
+                var spaced = free.filter { upcoming[$0].artists.isDisjoint(with: blocked) }
+                // Scarcity: an artist with too many rows left to space out in the free slots
+                // remaining plays as soon as spacing allows — else the greedy pass spends the
+                // other artists first and the tail collapses into one or two.
+                var left: [String: Int] = [:]
+                for i in free { for a in upcoming[i].artists { left[a, default: 0] += 1 } }
+                let urgent = spaced.filter { i in
+                    upcoming[i].artists.contains { (left[$0, default: 0] - 1) * artistSpacing + 1 >= free.count }
+                }
+                if !urgent.isEmpty { spaced = urgent }
+                pick = best(free: spaced.isEmpty ? free : spaced, feats: feats, aged: aged, n: n,
+                            prev: prev, sim: &sim, options: options)
                 free.remove(pick)
             }
+            recentArtists.append(upcoming[pick].artists)
+            if recentArtists.count > artistSpacing - 1 { recentArtists.removeFirst() }
             order.append(upcoming[pick].uid)
             if upcoming[pick].anchor {
                 sim.reanchor(feats[pick], uid: upcoming[pick].uid, options: options)

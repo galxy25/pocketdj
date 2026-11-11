@@ -291,4 +291,46 @@ final class DJSetPlannerTests: XCTestCase {
         XCTAssertEqual(pockets, [3, 4])
         XCTAssertEqual(DJSetPlanner.waveLength(seed: 77, index: 4), DJSetPlanner.waveLength(seed: 77, index: 4))
     }
+
+    // MARK: artist spacing (Levi's 2026-11-10 drive: two artists alternating → four skips)
+
+    /// Pocket similarity alone would chain the two near-identical artists back to back; the
+    /// spacing rule keeps each out of the next 3 slots while another free row can play.
+    func testArtistSpacingBreaksAPocketCollapse() {
+        func s(_ id: String, _ artist: String, bpm: Double, cols: Set<String>) -> C {
+            C(songId: id, bpm: bpm, genre: "hip-hop", year: 2017, collections: cols, artists: [artist])
+        }
+        let tight: Set<String> = ["potential", "drive"]
+        let cur = s("cur", "goldlink", bpm: 100, cols: tight)
+        let up = [
+            s("g1", "goldlink", bpm: 100, cols: tight), s("c1", "cousin stizz", bpm: 101, cols: tight),
+            s("g2", "goldlink", bpm: 101, cols: tight), s("c2", "cousin stizz", bpm: 100, cols: tight),
+            s("x1", "phonte", bpm: 104, cols: ["other"]), s("x2", "sir", bpm: 106, cols: ["other"]),
+            s("x3", "lady wray", bpm: 103, cols: ["other"]), s("x4", "kenny muney", bpm: 105, cols: ["other"]),
+        ]
+        let r = DJSetPlanner.plan(current: cur, upcoming: up, state: .init(seed: 1), options: .allOn)
+        let played = [cur] + ordered(up, r.order)
+        for (i, c) in played.enumerated() {
+            let window = played[max(0, i - DJSetPlanner.artistSpacing + 1)..<i]
+            XCTAssertFalse(window.contains { !$0.artists.isDisjoint(with: c.artists) },
+                           "\(c.songId) repeats an artist within \(DJSetPlanner.artistSpacing) slots: \(played.map(\.songId))")
+        }
+    }
+
+    /// One artist only: spacing can't be met, so the planner still places every row.
+    func testArtistSpacingYieldsWhenImpossible() {
+        let up = (0..<5).map { C(songId: "a\($0)", bpm: 100 + Double($0), artists: ["solo"]) }
+        let r = DJSetPlanner.plan(current: C(songId: "cur", bpm: 100, artists: ["solo"]), upcoming: up,
+                                  state: .init(seed: 1), options: .allOn)
+        XCTAssertEqual(Set(r.order), Set(up.map(\.uid)))
+    }
+
+    /// A featured credit counts: "x feat. goldlink" is blocked right after a GoldLink song.
+    func testArtistSpacingCountsAnySharedCredit() {
+        let cur = C(songId: "cur", bpm: 100, artists: ["goldlink"])
+        let up = [C(songId: "feat", bpm: 100, artists: ["kaytranada", "goldlink"]),
+                  C(songId: "far", bpm: 140, artists: ["sir"])]
+        let r = DJSetPlanner.plan(current: cur, upcoming: up, state: .init(seed: 1), options: tempoOnly)
+        XCTAssertEqual(ordered(up, r.order).map(\.songId), ["far", "feat"])
+    }
 }

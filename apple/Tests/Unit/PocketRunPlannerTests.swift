@@ -171,6 +171,27 @@ final class PocketRunPlannerTests: XCTestCase {
         XCTAssertTrue(r.replacements.isEmpty)
     }
 
+    /// Levi's 2026-11-10 drive: the Drake skip's replacements were the most similar artists in
+    /// the pocket, dropped beside rows by those same artists. A replacement keeps the spacing
+    /// rule against the live rows around it (and the neighbours outside the live set).
+    func testReplacementsKeepArtistSpacingWithNeighbours() {
+        var u: [String: PocketRunPlanner.Candidate] = [:]
+        u["d1"] = Self.candidate("d1", artist: "Drake", genre: "r&b", bpm: 90, year: 2016, memberships: ["pl_pot": 1])
+        u["g1"] = Self.candidate("g1", artist: "GoldLink", genre: "r&b", bpm: 90, year: 2016, memberships: ["pl_pot": 1])
+        u["g2"] = Self.candidate("g2", artist: "GoldLink", genre: "r&b", bpm: 90, year: 2016, memberships: ["pl_pot": 1])
+        u["c1"] = Self.candidate("c1", artist: "Cousin Stizz", genre: "r&b", bpm: 90, year: 2016, memberships: ["pl_pot": 1])
+        u["c2"] = Self.candidate("c2", artist: "Cousin Stizz", genre: "r&b", bpm: 90, year: 2016, memberships: ["pl_pot": 1])
+        u["x1"] = Self.candidate("x1", artist: "Phonte", genre: "r&b", bpm: 94, year: 2014, memberships: ["pl_pot": 1])
+        var t = PocketTuning.Multipliers(); t.bannedArtists = ["drake"]
+        let drake = PocketRunPlanner.LiveRow(uid: UUID(), songId: "d1", slot: 5, collectionId: "pl_pot")
+        let after = PocketRunPlanner.LiveRow(uid: UUID(), songId: "c1", slot: 7, collectionId: "pl_pot")
+        let r = PocketRunPlanner.replan(profile: Self.profile(), candidates: u, tuning: t, familiarity: [:],
+                                        live: [drake, after], inRun: ["d1", "c1", "g1"],
+                                        neighbours: [drake.uid: (prev: "g1", next: nil)])
+        let rep = try! XCTUnwrap(r.replacements.first { $0.uid == drake.uid })
+        XCTAssertEqual(rep.songId, "x1", "GoldLink is next door and Cousin Stizz two slots on")
+    }
+
     func testInFlightRipRowsTakeOnlyInstantReplacements() {
         let u = Self.universe()
         var t = PocketTuning.Multipliers(); t.bannedArtists = ["drake"]

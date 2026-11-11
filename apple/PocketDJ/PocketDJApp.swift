@@ -791,8 +791,10 @@ struct PocketDJApp: App {
         setlistPlayer.djSongFacts = { [weak app] id in
             guard let app, let song = app.songsById[SongVariant.baseId(id)] else { return nil }
             let album = song.albumId.flatMap { app.albumsById[$0] }
+            let keys = RecVersionIdentity.creditArtistKeys(song.artist)
             return DJMode.SongFacts(bpm: song.bpm, camelot: song.camelot, genre: album?.genre,
-                                    year: song.year ?? album?.year)
+                                    year: song.year ?? album?.year,
+                                    artists: Set(keys.isEmpty ? [song.artist.lowercased()] : keys))
         }
         setlistPlayer.onTrackRestart = { [weak skipTracker] id in
             skipTracker?.noteTrackRestarted(songId: id)

@@ -76,9 +76,13 @@ extension DJMode {
         var camelot: String?
         var genre: String?
         var year: Int?
+        /// Credited artist keys — the selector's artist spacing (`DJSetPlanner.artistSpacing`).
+        var artists: Set<String> = []
 
-        init(bpm: Double? = nil, camelot: String? = nil, genre: String? = nil, year: Int? = nil) {
+        init(bpm: Double? = nil, camelot: String? = nil, genre: String? = nil, year: Int? = nil,
+             artists: Set<String> = []) {
             self.bpm = bpm; self.camelot = camelot; self.genre = genre; self.year = year
+            self.artists = artists
         }
     }
 
