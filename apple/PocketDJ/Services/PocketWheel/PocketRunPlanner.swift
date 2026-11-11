@@ -486,6 +486,10 @@ enum PocketRunPlanner {
         for row in live { for k in candidates[row.songId]?.features.artistKeys ?? [] { artistCount[k, default: 0] += 1 } }
         var replacements: [Replacement] = []
         var removals: [UUID] = []
+        // Artists by slot (kept current as rows are replaced) — a replacement keeps the
+        // `artistSpacing` rule against its neighbours, not just "not the skipped artist".
+        var artistsAt: [Int: Set<String>] = [:]
+        for row in live { artistsAt[row.slot] = Set(candidates[row.songId]?.features.artistKeys ?? []) }
         for row in live.sorted(by: { $0.slot < $1.slot }) {
             guard let r = candidates[row.songId] else { continue }
             let banned = tuning.isBanned(r.features)
@@ -493,10 +497,16 @@ enum PocketRunPlanner {
             guard banned || s < replanFloorShareOfMedian * median else { continue }
             let atCap = Set(artistCount.filter { $0.value >= artistCap }.map(\.key))
             let nb = neighbours[row.uid]
+            var nearby = Set((nb?.prev).flatMap { candidates[$0]?.features.artistKeys } ?? [])
+                .union((nb?.next).flatMap { candidates[$0]?.features.artistKeys } ?? [])
+            for d in 1..<artistSpacing {
+                nearby.formUnion(artistsAt[row.slot - d] ?? []); nearby.formUnion(artistsAt[row.slot + d] ?? [])
+            }
             var best: (Candidate, Double, Double)?
             for x in pool where !used.contains(x.id) {
                 if x.features.artistKeys.contains(where: { tuning.bannedArtists.contains($0) || atCap.contains($0) }) { continue }
                 if Set(x.features.artistKeys).intersection(r.features.artistKeys).count > 0 { continue }
+                if x.features.artistKeys.contains(where: nearby.contains) { continue }
                 if row.requiresInstant && !x.startsInstantly { continue }
                 let fit = scorer.score(x) / maxScore
                 guard fit >= minPocketFit else { continue }
@@ -509,10 +519,12 @@ enum PocketRunPlanner {
             if let (x, _, xs) = best {
                 used.insert(x.id)
                 for k in x.features.artistKeys { artistCount[k, default: 0] += 1 }
+                artistsAt[row.slot] = Set(x.features.artistKeys)
                 replacements.append(Replacement(uid: row.uid, songId: x.id, slot: row.slot,
                                                 collectionId: bucket(x, profile: profile), score: (xs * 1e6).rounded() / 1e6))
             } else {
                 removals.append(row.uid)
+                artistsAt[row.slot] = nil
             }
         }
         return ReplanResult(replacements: replacements, removals: removals, banned: tuning.bannedArtists.sorted())

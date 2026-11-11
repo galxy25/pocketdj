@@ -189,6 +189,16 @@ parts present, so missing data never counts against a song:
   its own order.
 - The search is greedy, one song at a time, simulating the wave and pocket state forward.
 
+**Artist spacing** (2026-11-11, always on). No credited artist (`RecVersionIdentity.creditArtistKeys`)
+twice within `artistSpacing` = 4 slots, counting the playing song. This matches
+`PocketRunPlanner.artistSpacing`, so DJ Mode never undoes a pocket run's spacing.
+- It is a filter applied before scoring. When every free row breaks it, the slot takes the best row anyway.
+- Scarcity: if an artist has too many rows left to be spaced in the remaining slots
+  (`(left − 1)·4 + 1 ≥ free`), the slot is limited to that artist's eligible rows. This keeps the
+  greedy pass from spending every other artist first and collapsing the tail.
+- Why: on Levi's 2026-11-10 drive, pocket similarity chained GoldLink and Cousin Stizz back to
+  back. He skipped four songs in a row.
+
 **Re-plans** happen when DJ turns on, on each advance, and on any queue edit (debounced 1 s). Each
 re-plan is a single `replaceUpcoming` (uid-verified, pin-respecting), so buffering replans once.
 

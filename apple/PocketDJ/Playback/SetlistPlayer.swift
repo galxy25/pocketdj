@@ -3334,7 +3334,7 @@ final class SetlistPlayer {
         var c = DJSetPlanner.candidate(uid: it.uid, songId: it.id, bpm: f?.bpm, camelot: f?.camelot,
                                        rawGenre: f?.genre, year: f?.year,
                                        collections: djMembership.isEmpty ? [] : (djMembership[SongVariant.baseId(it.id)] ?? []),
-                                       fixed: fixed)
+                                       fixed: fixed, artists: f?.artists ?? [])
         c.deferrals = it.djDeferrals
         c.anchor = anchor
         return c
