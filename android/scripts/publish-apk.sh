@@ -78,6 +78,8 @@ fi
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 printf '%s  %s\n' "$SHA" "$FILE" > "$WORK/$FILE.sha256"
 PLAY_JSON=null
+# Play listing went live 2026-11-23; PLAY_URL= (empty) opts out.
+PLAY_URL="${PLAY_URL-https://play.google.com/store/apps/details?id=com.levi.pocketdj}"
 [[ -n "${PLAY_URL:-}" ]] && PLAY_JSON="\"$PLAY_URL\""
 NOTES_JSON="$(printf '%s' "$NOTES" | python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))')"
 cat > "$WORK/latest.json" <<JSON
