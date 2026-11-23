@@ -86,11 +86,11 @@ class SessionSnapshotPassthroughTest {
         val text = SessionSnapshot.encode(SessionSnapshot.decode(fixture)!!.copy(npMixMode = null, fxLock = null, djMode = null))
         val o = root(text)
         assertTrue("npMixMode" !in o && "fxLock" !in o && "djMode" !in o)
-        assertTrue("null" !in text.replace("\"repeatCount\"", ""))
+        assertTrue(":null" !in text.replace("null,\"s\"", ""))
     }
 
     @Test fun storeCarriesIosFieldsAcrossAnAndroidWriteOfARebuiltSnapshot() {
-        val dir = createTempDir()
+        val dir = kotlin.io.path.createTempDirectory("pdjsnap").toFile()
         try {
             val f = File(dir, PLAYBACK_SESSION_FILE).also { it.writeText(fixture) }
             val store = PlaybackSessionStore(f, clock = { 5L })
@@ -110,7 +110,7 @@ class SessionSnapshotPassthroughTest {
     }
 
     @Test fun updateExtrasCanClearAField() {
-        val dir = createTempDir()
+        val dir = kotlin.io.path.createTempDirectory("pdjsnap").toFile()
         try {
             val f = File(dir, PLAYBACK_SESSION_FILE).also { it.writeText(fixture) }
             val store = PlaybackSessionStore(f, clock = { 5L })
