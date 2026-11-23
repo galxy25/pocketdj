@@ -91,6 +91,13 @@ class PlayAttributionTest {
         assertEquals(listOf("A", "B", "A", "B"), q.items.map { it.sourceLabel })
     }
 
+    @Test fun singleCrateItemCarriesOriginWithoutLabel() {
+        val it = AutoMixPlan.item(loadable("a0"), null, "pkt_a")
+        assertNull(it.sourceLabel)
+        assertEquals("pkt_a", it.originCollectionId)
+        assertNull(AutoMixPlan.item(loadable("a0")).originCollectionId)
+    }
+
     @Test fun originLookupPrefersTheCopyNearestTheCursor() {
         val q = listOf(
             AutoMixItem(loadable("x"), 1000, "A", "pkt_a"),

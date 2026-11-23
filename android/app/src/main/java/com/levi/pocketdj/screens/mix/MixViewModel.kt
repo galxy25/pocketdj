@@ -159,7 +159,7 @@ class MixAutoStarter(
                 }
                 throw NoLoadableSongsException(nameA)
             }
-            val items = loadables.map { AutoMixPlan.item(it, nameA, a.collectionId) }
+            val items = loadables.map { AutoMixPlan.item(it, null, a.collectionId) }
             // Shuffle is applied in the engine so order/shuffle share one path.
             engine.startAutoMix(items, shuffle, lead, fade, nameA)
             downloads.noteAutoStarted(loadables.mapTo(HashSet()) { it.songId }, lead, fade, nameA, shuffle)
