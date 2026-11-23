@@ -661,6 +661,21 @@ final class ReleaseFeedService {
         return env["PDJ_REC_FIXTURE"] == "1" && env["PDJ_USE_FIXTURE"] != nil
     }
 
+    /// The fixture's "liked, never added" record — NOT in the feed (so it can only appear via the
+    /// Liked section): an `ArtistReleaseEntry` the app seeds into `LikedReleasesStore` together
+    /// with an accepted `rel:9000000004` verdict, standing in for a like from before the feature.
+    /// Nil outside fixture mode's callers (they gate on `wantsUIFixture`).
+    nonisolated static func uiFixtureLikedEntry(nowMs: Double = Date().timeIntervalSince1970 * 1000) -> ArtistReleaseEntry? {
+        ArtistReleaseEntry(artistId: 900_004, artistName: "Old Favorite",
+                           checkedAtMs: nowMs, releaseId: "9000000004",
+                           releaseName: "Liked Record", releaseAtMs: nowMs - 80 * 86_400_000,
+                           releaseArtworkUrl: nil, releaseKind: "album", trackCount: 10)
+    }
+
+    /// The transport the feed reads Apple Music through — also what hydrates liked-release
+    /// metadata, so there is ONE credential path and one backoff policy.
+    var catalogTransport: Transport? { transport }
+
     /// Two out-now releases and one pre-order — enough to render both sections, and to prove that
     /// only the out-now half is what ▶ queues.
     nonisolated static func uiFixtureEntries(nowMs: Double = Date().timeIntervalSince1970 * 1000) -> [ArtistReleaseEntry] {

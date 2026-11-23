@@ -9,6 +9,12 @@ import SwiftUI
 /// Rows push `AppleMusicAlbumRef`, which lands on the existing `AlbumPreviewView` — so ownership
 /// ticks, the "Add remaining (n)" wording, and the whole add/rip path come for free instead of
 /// being reimplemented here. That reuse is the reason this screen is short.
+///
+/// A 👍 on a row is verdict AND add (`NewReleaseLikeAdder`), and a "Liked — not added" section on
+/// top resurfaces anything he liked but that never made it into the library — Levi, verbatim:
+/// "when you like a pick it should auto add it to your library, otherwise it's training the algo
+/// which is good but not building my collection … and resurface any ones previously liked but not
+/// added so I can actually add them."
 struct NewReleasesView: View {
     @Environment(ReleaseFeedService.self) private var releaseFeed: ReleaseFeedService?
     /// The 👍/👎 log. A NEW RELEASE IS A RECOMMENDATION — the owner asked for a reject beside the
@@ -22,6 +28,13 @@ struct NewReleasesView: View {
     @Environment(RipsStore.self) private var rips
     @Environment(StreamingStore.self) private var streaming
     @Environment(SetlistPlayer.self) private var sequencer
+    /// A 👍 here ADDS the record, and anything liked but never added resurfaces in "Liked — not
+    /// added". Optional, like `releaseFeed`: a harness that doesn't inject it keeps the screen
+    /// working as the pure-feedback surface it used to be.
+    @Environment(NewReleaseLikeAdder.self) private var adder: NewReleaseLikeAdder?
+    #if os(macOS)
+    @Environment(\.openURL) private var openURL
+    #endif
     @Binding var path: NavigationPath
 
     /// An expansion is in flight. Each release is one network round trip, so the transport says so
@@ -38,17 +51,25 @@ struct NewReleasesView: View {
     var body: some View {
         // OUT NOW first: it is the part he can act on. COMING SOON is real news but nothing can
         // be played from it, so it sits underneath rather than at the top.
-        let outNow = sunkLast(offered(releaseFeed?.outNow() ?? []))
-        let soon = sunkLast(offered(releaseFeed?.comingSoon() ?? []))
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        // Pre-orders whose Apple Music write PROVED it landed stay in Coming soon (badged) instead
+        // of vanishing with the rest of the accepted rows: the record is "added" as far as Apple
+        // can say, and the PocketDJ side follows on release day.
+        let preAdded = adder.map { LikedReleaseSelection.preAdded(meta: $0.store.releases, nowMs: nowMs) } ?? []
+        let outNow = sunkLast(offered(releaseFeed?.outNow() ?? [], keeping: preAdded))
+        let soon = sunkLast(offered(releaseFeed?.comingSoon() ?? [], keeping: preAdded))
+        let liked = likedSelection(nowMs: nowMs)
         // The LIVE half, computed ONCE and used by both the rows and the transport's enabled state
         // — deriving it twice is how ▶ ended up lit over a queue ▶ itself would refuse to start.
         let liveOutNow = live(outNow)
         List {
-            if outNow.isEmpty && soon.isEmpty {
+            // The empty state means "nothing at all" — a liked-but-not-added record is something.
+            if outNow.isEmpty && soon.isEmpty && liked.rows.isEmpty {
                 emptyState.listRowBackground(Color.clear)
             } else {
-                section(ReleaseStatus.outNow, outNow)
-                section(ReleaseStatus.comingSoon, soon)
+                likedSection(liked.rows)
+                section(ReleaseStatus.outNow, outNow, preAdded: preAdded)
+                section(ReleaseStatus.comingSoon, soon, preAdded: preAdded)
             }
         }
         .listStyle(.plain)
@@ -88,6 +109,13 @@ struct NewReleasesView: View {
         // DEVICE MODE MUST NOT GO QUIETLY SILENT HERE — and this is the screen where it is most
         // likely to, because these are records he does not own. See `DeviceQueueUnplayableAlert`.
         .deviceQueueUnplayableAlert(sourceId: ReleaseStreaming.runTag)
+        // Rebuild metadata for likes this install has never seen (older likes, another device's),
+        // then retry what was waiting on a connection or a release day. Off the render path.
+        .task {
+            guard let adder, let feedback else { return }
+            await adder.hydrateMissing(accepted: feedback.acceptedInScope(scope))
+            await adder.sweep()
+        }
     }
 
     /// The ⋯ — the same place every other list screen keeps its context actions.
@@ -158,15 +186,142 @@ struct NewReleasesView: View {
         }
     }
 
-    /// Releases already thumbed up, taken off entirely. There is no add here for a 👍 to hide
-    /// behind (see the comment on the row's `RecFeedbackButtons` below) — a New release needs its
-    /// own permanent removal the same way Zone does (`RecFeedbackStore.acceptedInScope`). Applied
-    /// BEFORE `sunkLast`, so an accepted release never even reaches the sunk tail.
-    private func offered(_ items: [ReleaseFeedItem]) -> [ReleaseFeedItem] {
+    /// Releases already thumbed up, taken off these two sections. A 👍 now ADDS the record, so an
+    /// accepted release is on its way out of the feed for real (owned) — until it is, it lives in
+    /// "Liked — not added" rather than sitting in two places. Applied BEFORE `sunkLast`, so an
+    /// accepted release never even reaches the sunk tail. `keeping` exempts the pre-orders that
+    /// are already added on the Apple Music side: those stay in Coming soon, badged.
+    private func offered(_ items: [ReleaseFeedItem], keeping: Set<String> = []) -> [ReleaseFeedItem] {
         guard let feedback else { return items }
         let accepted = feedback.acceptedInScope(scope)
         guard !accepted.isEmpty else { return items }
-        return items.filter { accepted[$0.feedbackId] == nil }
+        return items.filter { accepted[$0.feedbackId] == nil || ($0.entry.releaseId.map(keeping.contains) ?? false) }
+    }
+
+    /// "Liked — not added", from the pure selection. The probes are the feed's own, so a record
+    /// owned by ANY path drops out with no extra bookkeeping.
+    private func likedSelection(nowMs: Double) -> LikedReleaseSelection.Result {
+        guard let adder, let feedback else { return .init(rows: [], needsHydration: []) }
+        let canWrite = streaming.providers.libraryContributors.first?.canAddToLibrary ?? false
+        return LikedReleaseSelection.likedNotAdded(
+            accepted: feedback.acceptedInScope(scope),
+            meta: adder.store.releases,
+            owns: { releaseFeed?.ownsRelease?($0) ?? false },
+            ownsVersion: { releaseFeed?.ownsReleaseVersion?($0, $1, $2) ?? false },
+            writeNeedsRetry: { storeId in
+                guard let e = rips.discoverAdds?.album(forAppleMusicId: storeId),
+                      AlbumLibraryWriteRetry.needsRetry(token: e.libraryWrite, canAddToLibrary: canWrite)
+                else { return nil }
+                return e.libraryWrite ?? "Added to PocketDJ — the Apple Music add isn’t confirmed"
+            },
+            inFlight: adder.inFlight.union(adder.queued),
+            nowMs: nowMs)
+    }
+
+    // MARK: Liked — not added
+
+    @ViewBuilder
+    private func likedSection(_ rows: [LikedRow]) -> some View {
+        if !rows.isEmpty, let adder {
+            let addable = rows.filter { !$0.inFlight }
+            Section {
+                ForEach(rows) { r in likedRow(r, adder: adder) }
+            } header: {
+                HStack {
+                    Text("Liked — not added").font(.caption).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("new-liked-section")
+                    Spacer()
+                    Button("Add all (\(addable.count))") {
+                        let ids = addable.map(\.id)
+                        let writeOnly = Set(addable.filter(\.retryWriteOnly).map(\.id))
+                        Task { await adder.addAll(ids, writeOnly: writeOnly) }
+                    }
+                    .font(.caption.weight(.semibold))
+                    // One at a time: disabled while anything is in flight (Add all itself too).
+                    .disabled(adder.isAddingAll || !rows.allSatisfy { !$0.inFlight } || addable.isEmpty)
+                    .accessibilityIdentifier("new-liked-add-all")
+                }
+            }
+        }
+    }
+
+    private func likedRow(_ r: LikedRow, adder: NewReleaseLikeAdder) -> some View {
+        let rel = r.release
+        let status = Self.likedStatusLine(r)
+        return HStack(spacing: 8) {
+            Button { path.append(rel.albumRef) } label: {
+                HStack(spacing: 10) {
+                    artwork(urlString: rel.artworkUrl)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(rel.title ?? "—").font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
+                        Text(rel.artistName).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                        if let status {
+                            Text(status).font(.caption2)
+                                .foregroundStyle(r.state == .failed || r.retryWriteOnly ? Theme.danger : Theme.fgDim)
+                                .lineLimit(2)
+                                .accessibilityIdentifier("new-liked-status-\(rel.storeId)")
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("new-liked-row-\(rel.storeId)")
+            likedAction(r, adder: adder)
+            // The lit 👍 stays as the undo. Un-liking never removes anything from the library.
+            RecFeedbackButtons(songId: "rel:\(rel.storeId)", scope: scope, surface: .tile)
+        }
+    }
+
+    @ViewBuilder private func likedAction(_ r: LikedRow, adder: NewReleaseLikeAdder) -> some View {
+        if r.inFlight {
+            ProgressView().controlSize(.small)
+                .accessibilityIdentifier("new-liked-add-\(r.id)")
+                .accessibilityValue(LikeAddState.adding.rawValue)
+        } else {
+            VStack(alignment: .trailing, spacing: 2) {
+                Button(Self.likedActionTitle(r)) {
+                    Task { await adder.add(storeId: r.id, writeOnly: r.retryWriteOnly) }
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("new-liked-add-\(r.id)")
+                .accessibilityValue(r.state?.rawValue ?? "idle")
+                #if os(macOS)
+                // macOS can't write the Apple Music library through MusicKit; the album page opens
+                // Music.app there. A 👍 never does (auto-opening Music on every like is hostile),
+                // so the Liked row offers it.
+                if let u = r.release.albumRef.url {
+                    Button("Open in Music") { openURL(u) }.font(.caption2).buttonStyle(.plain)
+                        .foregroundStyle(Theme.accent)
+                }
+                #endif
+            }
+        }
+    }
+
+    /// Pure copy, unit-tested without driving the UI.
+    static func likedActionTitle(_ r: LikedRow) -> String {
+        if r.retryWriteOnly { return "Retry Apple Music" }
+        switch r.state {
+        case .failed?: return "Retry"
+        default: return "Add"
+        }
+    }
+
+    static func likedStatusLine(_ r: LikedRow, nowMs: Double = Date().timeIntervalSince1970 * 1000) -> String? {
+        if r.inFlight { return "Adding…" }
+        if r.retryWriteOnly { return r.message ?? "Added to PocketDJ — the Apple Music add isn’t confirmed" }
+        switch r.state {
+        case .awaitingRelease?:
+            guard let at = r.release.releaseAtMs else { return "Will add on release day" }
+            return "Coming \(Self.relative(at, nowMs: nowMs).lowercased()) — will add on release day"
+        case .offline?: return r.message ?? NewReleaseLikeAdder.offlineMessage
+        case .failed?: return r.message
+        default: return r.message
+        }
     }
 
     /// A rejected release SINKS to the bottom of its section — the same rule every other
@@ -181,7 +336,8 @@ struct NewReleasesView: View {
     }
 
     @ViewBuilder
-    private func section(_ status: ReleaseStatus, _ items: [ReleaseFeedItem]) -> some View {
+    private func section(_ status: ReleaseStatus, _ items: [ReleaseFeedItem],
+                         preAdded: Set<String> = []) -> some View {
         if !items.isEmpty {
             Section {
                 ForEach(items) { item in
@@ -189,11 +345,19 @@ struct NewReleasesView: View {
                         Button { push(item.entry) } label: { row(item) }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("new-release-\(item.entry.artistId)")
-                        // The reject half of the pair. There is no ADD here — the row already
-                        // pushes `AlbumPreviewView`, which owns the whole add/rip path — so a 👍
-                        // is pure feedback ("more releases like this"), which is exactly what the
-                        // tuning loop wants it to be.
-                        RecFeedbackButtons(songId: item.feedbackId, scope: scope, surface: .tile)
+                        if let id = item.entry.releaseId, preAdded.contains(id) {
+                            Text("Pre-added ✓").font(.caption2.weight(.semibold))
+                                .foregroundStyle(Theme.accent2)
+                                .accessibilityIdentifier("new-release-preadded-\(id)")
+                        }
+                        // 👍 is verdict AND add: the SAME add the album page's ＋ runs, through
+                        // the app-scoped adder so leaving the screen mid-add cancels nothing.
+                        // `RecFeedbackButtons` only fires `onAccept` for a 👍 that landed as
+                        // accepted, so an undo never adds. A `relartist:` row (no release id) has
+                        // nothing to add and stays pure feedback — the one case that does.
+                        RecFeedbackButtons(songId: item.feedbackId, scope: scope, surface: .tile,
+                                           onAccept: item.entry.releaseId == nil || adder == nil ? nil
+                                               : { adder?.liked(item.entry) })
                     }
                 }
             } header: {
@@ -246,7 +410,11 @@ struct NewReleasesView: View {
     }
 
     @ViewBuilder private func artwork(_ e: ArtistReleaseEntry) -> some View {
-        let url = e.releaseArtworkUrl.flatMap { ArtworkTemplate.url($0, size: 96) }
+        artwork(urlString: e.releaseArtworkUrl)
+    }
+
+    @ViewBuilder private func artwork(urlString: String?) -> some View {
+        let url = urlString.flatMap { ArtworkTemplate.url($0, size: 96) }
         AsyncImage(url: url) { img in
             img.resizable().aspectRatio(contentMode: .fill)
         } placeholder: {

@@ -309,6 +309,11 @@ struct PocketDJApp: App {
     /// per-install and PERSONAL (derived from play history), so it never goes near the shared
     /// catalog index. Refreshes lazily off the play event only; see `ReleaseFeedService`.
     @State private var releaseFeed: ReleaseFeedService
+    /// For You ▸ New: a 👍 ADDS the record, and the "Liked — not added" section resurfaces what was
+    /// liked but never added. App-scoped (like the feed) so an add survives leaving the screen;
+    /// the metadata cache is per-install and unsynced — see `LikedReleasesStore`.
+    @State private var likedReleases: LikedReleasesStore
+    @State private var newReleaseLikeAdder: NewReleaseLikeAdder
     /// History ▸ For You — the FROZEN tile feed. Owner's rule: cache the last result and only
     /// recompute on the tab menu's Refresh, so a recommendation never moves or vanishes between
     /// glances. Durable, so a cold launch shows the same grid the last one did.
@@ -1431,6 +1436,43 @@ struct PocketDJApp: App {
         }
         _discoverAdds = State(initialValue: discoverAdds)
 
+        // ── For You ▸ New like-adds ──────────────────────────────────────────────────────────
+        // Built here (not beside `releaseFeed`) because the port needs `rips` + `streaming` and
+        // the fixture port needs `discoverAdds`. Probes are the FEED'S OWN, so "owned by any path"
+        // removes a liked row with no extra bookkeeping.
+        let likedReleases = LikedReleasesStore(fileURL: LikedReleasesStore.launchURL())
+        let likeAddPort: ReleaseAddPort = ReleaseFeedService.wantsUIFixture
+            ? FixtureReleaseAddPort(adds: discoverAdds)
+            : RipsReleaseAddPort(rips: rips, library: { [weak streaming] in
+                streaming?.providers.libraryContributors.first })
+        let likeAdder = NewReleaseLikeAdder(store: likedReleases, port: likeAddPort,
+                                            transport: releaseFeed.catalogTransport)
+        likeAdder.isOwned = { [weak releaseFeed] rel in
+            guard let releaseFeed else { return false }
+            if releaseFeed.ownsRelease?(rel.identity) == true { return true }
+            if let t = rel.title, releaseFeed.ownsReleaseVersion?(rel.artistId ?? 0, rel.artistName, t) == true {
+                return true
+            }
+            return false
+        }
+        likeAdder.acceptedProvider = { [weak recFeedback] in
+            recFeedback?.acceptedInScope(ForYouTileRoute.Kind.new.rawValue) ?? [:]
+        }
+        if ReleaseFeedService.wantsUIFixture {
+            // A like from "before this feature": accepted + cached metadata, never added. The
+            // Liked section's UI tests resurface it (`rel:9000000004`, see `uiFixtureEntries`).
+            let nowMs = Date().timeIntervalSince1970 * 1000
+            if let e = ReleaseFeedService.uiFixtureLikedEntry(nowMs: nowMs),
+               let rel = LikedRelease(entry: e, likedAtMs: nowMs - 86_400_000) {
+                likedReleases.upsert(rel)
+                recFeedback.record(songId: "rel:\(rel.storeId)",
+                                   scope: ForYouTileRoute.Kind.new.rawValue,
+                                   verdict: .accepted, surface: .tile)
+            }
+        }
+        _likedReleases = State(initialValue: likedReleases)
+        _newReleaseLikeAdder = State(initialValue: likeAdder)
+
         // ── Imported songs: provisional entries for cross-user transfers ───────
         // A portable playlist/pocket import whose songs live outside this device's
         // enabled sources materializes them as the "Imported" synthetic source — the
@@ -2177,6 +2219,8 @@ struct PocketDJApp: App {
                 .environment(amPlayBaseline)
                 .environment(playCounts)
                 .environment(releaseFeed)
+                .environment(likedReleases)
+                .environment(newReleaseLikeAdder)
                 .environment(forYouFeed)
                 .environment(playHistory)
                 .environment(skipTracker)
@@ -2374,6 +2418,9 @@ struct PocketDJApp: App {
                         // the catalog) wasn't ready yet — the seed refuses and leaves itself
                         // un-stamped in that case, so this is its second chance, not a repeat.
                         seedReleaseFeedIfReady()
+                        // Retry the For You ▸ New likes that were waiting on a connection or a
+                        // release day (throttled per item inside; at most once per 6 h each).
+                        Task { await newReleaseLikeAdder.sweep() }
                         // Cross-device freshness beyond launch (throttled inside).
                         // HELD during onboarding: .active fires at cold launch too, and a
                         // full pass would pull/push before stage 1 decides the profile mode.
