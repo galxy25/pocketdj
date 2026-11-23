@@ -5,6 +5,9 @@ import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.playback.sequencer.QueueItem
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 
 /** Version stamp on the persisted snapshot. A mismatched file simply does not restore (never migrated). */
 const val PLAYBACK_SESSION_SCHEMA_VERSION = 1
@@ -39,6 +42,16 @@ data class SessionRow(
     val resolveId: String? = null,
     /** Android-only (Q94): clean-only explicit row with no clean cut; iOS ignores it. */
     val cleanOnlySkip: Boolean? = null,
+    /** iOS Pocket Wheel run provenance (`Row.plan`); carried, not yet applied (P2-POC). */
+    val plan: SessionPlanTag? = null,
+    /** iOS: the Apple Music store id on REMOTE rows only; never written by the session. */
+    val appleMusicId: String? = null,
+    /** iOS DJ Mode: the listener's next-up pick. */
+    val djUserNext: Boolean? = null,
+    /** iOS LEGACY (1.0.5 betas), read-only: maps to the pick only on the row after current. Never newly written. */
+    val djPlaced: Boolean? = null,
+    /** Row keys this build does not model (a newer iOS build's); re-emitted verbatim on encode. */
+    @Transient val unknownKeys: JsonObject = JsonObject(emptyMap()),
 )
 
 /** iOS `StemLockState` (`stemLock` omitted when the lock is off). */
@@ -66,6 +79,14 @@ data class SessionSnapshot(
     val stemLock: SessionStemLock? = null,
     /** Epoch ms of the last write (informational). */
     val updatedAt: Double = 0.0,
+    /** iOS 1.0.4+: Now Playing Mix Mode flag (absent = off). Restored HELD. */
+    val npMixMode: SessionNpMixMode? = null,
+    /** iOS 1.0.4+: FX Lock + the effects it carries (absent = lock off). */
+    val fxLock: SessionFxLock? = null,
+    /** iOS 1.0.5+: DJ Mode + the selector's raw planner state (absent = off). Restored HELD. */
+    val djMode: SessionDjMode? = null,
+    /** Top-level keys this build does not model (a newer iOS build's); re-emitted verbatim on encode. */
+    @Transient val unknownKeys: JsonObject = JsonObject(emptyMap()),
 ) {
     /** The restorable queue with FRESH uids (a uid is per-instance identity, never durable). */
     fun toQueueItems(redecide: ((QueueItem) -> QueueItem)? = null): List<QueueItem> = queue.map {
@@ -120,7 +141,10 @@ data class SessionSnapshot(
             cleanOnlySkip = if (q.cleanOnlySkip) true else null,
         )
 
-        fun encode(s: SessionSnapshot): String = PdjJson.lenient.encodeToString(serializer(), s)
+        fun encode(s: SessionSnapshot): String {
+            val typed = PdjJson.lenient.encodeToJsonElement(serializer(), s).jsonObject
+            return PdjJson.lenient.encodeToString(JsonObject.serializer(), SnapshotCodec.merge(s, typed))
+        }
 
         /**
          * LENIENT: any decode failure, a schema-version mismatch or an empty queue -> null. Never throws,
@@ -128,7 +152,8 @@ data class SessionSnapshot(
          */
         fun decode(text: String): SessionSnapshot? {
             val snap = try {
-                PdjJson.lenient.decodeFromString(serializer(), text)
+                val root = PdjJson.lenient.parseToJsonElement(text).jsonObject
+                SnapshotCodec.attach(PdjJson.lenient.decodeFromJsonElement(serializer(), root), root)
             } catch (_: Exception) {
                 return null
             }
