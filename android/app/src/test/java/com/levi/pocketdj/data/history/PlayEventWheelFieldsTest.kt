@@ -70,7 +70,7 @@ class PlayEventWheelFieldsTest {
         assertEquals(0, s2.stampMotion(mapOf(b.id to "")))
         assertNull(s2.events.single().motion)
         // peer event is never tagged
-        val file = File(tmp.root, "h3.json"); file.writeText(iosDoc.replace(",\"motion\":\"running\"", ""))
+        val file = File(tmp.root, "h3.json"); file.writeText(iosDoc.replace(",\"motion\":\"running\"", "").replace("\"installId\":\"ios\"", "\"installId\":\"me\""))
         val s3 = store(file)
         assertEquals(0, s3.stampMotion(mapOf("e1" to "walking")))
         assertNull(s3.events.single().motion)
