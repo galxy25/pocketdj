@@ -49,12 +49,14 @@ object PlayResolver {
         songId: String,
         entry: RipManifestEntry?,
         ripServerConfigured: Boolean,
+        /** Shared-file start reader; production passes `RipsRepository::effectiveStartMs` so boundary edits apply. */
+        startOf: (String, RipManifestEntry) -> Long? = { _, e -> e.startMs },
     ): PlayAction {
         if (isStudioId(songId)) {
             return PlayAction.MetadataOnly(PlayAction.MetadataOnly.Reason.STUDIO_LOCAL_ID)
         }
         if (entry != null) {
-            val start = entry.startMs
+            val start = entry.startMs?.let { startOf(songId, entry) ?: it }
             val end = if (start != null && entry.durationMs != null) start + entry.durationMs else null
             return PlayAction.Stream(
                 url = playableUrl(entry),
@@ -80,10 +82,12 @@ object PlayResolver {
         entry: RipManifestEntry?,
         ripServerConfigured: Boolean,
         local: com.levi.pocketdj.playback.sequencer.LocalFile?,
+        startOf: (String, RipManifestEntry) -> Long? = { _, e -> e.startMs },
     ): PlayAction {
-        if (isStudioId(songId)) return resolve(songId, entry, ripServerConfigured)
+        if (isStudioId(songId)) return resolve(songId, entry, ripServerConfigured, startOf)
+        // `local` is the SHARED side file + window (BurnStore.localUrlForPlayback), never a per-song cut.
         if (local != null) return PlayAction.Stream(local.url, local.startMs, local.endMs)
-        return resolve(songId, entry, ripServerConfigured)
+        return resolve(songId, entry, ripServerConfigured, startOf)
     }
 
     /** True when a [PlayAction.Stream] points at an on-device file (never presign / re-route it). */

@@ -201,7 +201,10 @@ class AppGraph private constructor(context: Context) {
         http = httpClient,
         json = json,
         scope = appScope,
-    ).also { it.launchGate = { onboarding.waitUntilComplete() } } // SURF-3 gate seam
+    ).also {
+        it.launchGate = { onboarding.waitUntilComplete() } // SURF-3 gate seam
+        it.segmentOverrides = { catalogRepository.segmentOverrides.value } // P2-ALB-1: edited vinyl starts
+    }
 
     /** Shared rip-server config used by both the rip client and the AM dev-token
      *  client (specs/applemusic.md §5, §8) — the AM token IS minted by the rip

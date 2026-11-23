@@ -47,6 +47,18 @@ class RipsRepository(
 
     fun entry(songId: String): RipManifestEntry? = _manifest.value[songId]
 
+    /** Vinyl layout provider (CatalogRepository.segmentOverrides, wired by ServicesGraph); EMPTY until wired. */
+    @Volatile var segmentOverrides: () -> SegmentOverrides.Snapshot = { SegmentOverrides.Snapshot.EMPTY }
+
+    /**
+     * A shared-side song's start inside its album file: the user's boundary edit wins over the manifest's detected
+     * start. null for a per-song file (the override only applies when the item HAS a start).
+     */
+    fun effectiveStartMs(songId: String): Long? =
+        _manifest.value[songId]?.startMs?.let {
+            segmentOverrides().startMs[com.levi.pocketdj.data.edition.SongVariant.baseId(songId)] ?: it
+        }
+
     /** True when a public rip exists (metadata-only rows render no ▶ otherwise). */
     fun isPlayable(songId: String): Boolean =
         !PlayResolver.isStudioId(songId) && _manifest.value.containsKey(songId)

@@ -118,7 +118,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             },
             writerExecutor = VersionedJsonWriter.backgroundExecutor("pdj-burns-writer"),
             transfers = transfers,
-        )
+        ).also { it.segmentStartOverride = { id -> app.catalogRepository.segmentOverrides.value.startMs[id] } }
     }
     val burnStore: BurnStore get() = burnStoreLazy.value
 
@@ -130,7 +130,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     /** SVC-4 burned-first resolver: one instance feeds the LOCAL_FILE rung and every direct play path. */
     val burnedFirst: com.levi.pocketdj.playback.sequencer.BurnedRowResolver by lazy {
         com.levi.pocketdj.playback.sequencer.BurnedRowResolver.from(
-            preferringCut = { burnStore.localUrlPreferringCut(it) },
+            playbackFile = { burnStore.localUrlForPlayback(it) },
             startMs = { burnStore.startMs(it) },
             durationMs = { burnStore.items.value[it]?.durationMs },
         )

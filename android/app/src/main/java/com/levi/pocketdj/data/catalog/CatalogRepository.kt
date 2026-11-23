@@ -1,5 +1,6 @@
 package com.levi.pocketdj.data.catalog
 
+import com.levi.pocketdj.data.rips.SegmentOverrides
 import com.levi.pocketdj.data.settings.AppSettingsStore
 import com.levi.pocketdj.data.settings.SourceConfig
 import java.util.concurrent.atomic.AtomicBoolean
@@ -201,9 +202,25 @@ class CatalogRepository(
 
     private fun currentEdits(): CatalogEdits = runCatching { edits() }.getOrDefault(CatalogEdits.EMPTY)
 
+    private val _segmentOverrides = MutableStateFlow(SegmentOverrides.Snapshot.EMPTY)
+
+    /**
+     * The vinyl side layout (boundary edits, detected ends, album membership), re-derived on EVERY publish and
+     * `reapplyEdits` (iOS `SegmentOverrides.shared`) so the playback layer reads it without any UI.
+     */
+    val segmentOverrides: StateFlow<SegmentOverrides.Snapshot> = _segmentOverrides.asStateFlow()
+
     private fun buildCatalog(inputs: List<IndexJson>, e: CatalogEdits): MergedCatalog {
         mergeCount++
-        return e.apply(MergedCatalog.merge(inputs))
+        val raw = MergedCatalog.merge(inputs)
+        val effective = e.apply(raw)
+        _segmentOverrides.value = SegmentOverrides.derive(
+            albumEdits = e.albums,
+            rawAlbum = { raw.albumsById[it] },
+            orderedSongIds = { raw.albumsById[it]?.trackList.orEmpty() },
+            effectiveAlbums = effective.albums,
+        )
+        return effective
     }
 
     /**

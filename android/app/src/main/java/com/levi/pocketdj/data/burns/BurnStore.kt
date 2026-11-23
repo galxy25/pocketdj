@@ -199,7 +199,12 @@ class BurnStore(
 
     /** Analog seek offset inside the shared album mp3 (null for digital / not burned). */
     fun startMs(songId: String): Long? =
-        _items.value[songId]?.takeIf { it.state == BurnState.READY }?.startMs
+        _items.value[songId]?.takeIf { it.state == BurnState.READY }?.startMs?.let {
+            segmentStartOverride(SongVariant.baseId(songId)) ?: it
+        }
+
+    /** The user's edited start of a song inside its shared side (CatalogRepository.segmentOverrides); wired by ServicesGraph. */
+    @Volatile var segmentStartOverride: (String) -> Long? = { null }
 
     private fun resolveCutFileName(
         item: BurnItem,
