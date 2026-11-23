@@ -9,7 +9,7 @@ after prepare(playWhenReady). ResolveStallHop.choose(abandoned); SetlistSequence
 user transport (noteUserTransport) / stop (endRun) and logs "stall episode end reason=<first-audio|user|stop> abandoned=N".
 No eligible target keeps the current row buffering (existing behavior; deferred row stays right behind via apply).
 
-- [x] all sub-steps; testDebugUnitTest + assembleDebug green. Total JVM tests now:  (14 added: 5 + 5 + 4).
+- [x] all sub-steps; testDebugUnitTest + assembleDebug green. Total JVM tests now: 5794 (14 added: 5 + 5 + 4).
 
 Deviations: AppleMusicPlayerAdapter.kt and NPLog.kt untouched (not needed; claim prevented by stopping the SDK). New file
 AppleMusicCancelledStart.kt (pure helper so the JVM can test the cancel path). The AM test uses a fake SDK around the helper,
