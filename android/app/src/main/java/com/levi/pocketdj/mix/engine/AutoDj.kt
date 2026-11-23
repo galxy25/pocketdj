@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
 import kotlin.random.Random
-
+import com.levi.pocketdj.playback.dj.AutoTransition
 /** The Auto-DJ's observable surface for the Mix banner / queue UIs. */
 data class AutoUiState(
     val mixing: Boolean = false,
@@ -726,17 +726,15 @@ class AutoDj(
      * glide-fitting tail shared by the normal, repeat-one and repeat-all lanes.
      */
     private fun beginAdvanceTransition(t: Long, secondsLeft: Double) {
-        // Cap the fade to the runway left (a track slid to 2 s from its end crossfades over ~2 s).
-        if (secondsLeft < fadeSeconds && pendingFadeRestore == null) {
-            pendingFadeRestore = fadeSeconds
-            fadeSeconds = maxOf(0.5, secondsLeft)
-        }
+        // Cap the fade to the runway left + fit the glide pre-roll: the shared AutoTransition plan.
+        val plan = AutoTransition.advancePlan(
+            secondsLeft, fadeSeconds, glide.mixGlideSeconds, glide.fxGlideEnabled, glide.mixGlideEnabled,
+            fadeOverridePending = pendingFadeRestore != null,
+        )
+        plan.fadeRestore?.let { pendingFadeRestore = it }
+        fadeSeconds = plan.fadeSeconds
         if (glide.anyGlide) {
-            // Fit the preroll into what's left after the (possibly capped) fade + a margin. Mix Glide
-            // bends the OUTGOING tempo up to +10%, so divide the runway by that headroom.
-            val headroom = if (glide.mixGlideEnabled) 1.12 else 1.0
-            val preroll = maxOf(0.0, minOf(glide.mixGlideSeconds, secondsLeft / headroom - fadeSeconds - 0.3))
-            glide.begin(t, preroll)
+            glide.begin(t, plan.preRollSeconds)
         } else {
             beginAutoCrossfade(t)
         }
@@ -814,8 +812,12 @@ class AutoDj(
             // A manual skip glides too, but with NO preroll.
             glide.begin(now(), 0.0, fade)
         } else {
-            if (pendingFadeRestore == null) pendingFadeRestore = fadeSeconds
-            fadeSeconds = maxOf(0.2, fade)
+            val plan = AutoTransition.immediatePlan(
+                fade, fadeSeconds, glide.mixGlideSeconds, false, false,
+                fadeOverridePending = pendingFadeRestore != null,
+            )
+            plan.fadeRestore?.let { pendingFadeRestore = it }
+            fadeSeconds = plan.fadeSeconds
             beginAutoCrossfade(now())
         }
     }

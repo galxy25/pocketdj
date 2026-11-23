@@ -7,6 +7,7 @@ import com.levi.pocketdj.mix.model.Effect
 import com.levi.pocketdj.mix.model.MixMath
 import com.levi.pocketdj.mix.model.MixRanges
 import com.levi.pocketdj.mix.model.SplitMix64
+import com.levi.pocketdj.playback.dj.AutoTransition
 
 /** Per-transition glide parameters, snapshotted when a glide transition begins. */
 internal class GlideContext(
@@ -119,9 +120,9 @@ class GlideMachine internal constructor(private val dj: AutoDj) {
         transitionIsGlide = true
         if (fade != null) {                              // manual skip: custom fade, restored afterwards
             if (dj.pendingFadeRestore == null) dj.pendingFadeRestore = dj.fadeSeconds
-            dj.fadeSeconds = maxOf(0.2, fade)
+            dj.fadeSeconds = maxOf(AutoTransition.MIN_IMMEDIATE_FADE_SECONDS, fade)
         }
-        if (preroll > 0.05) {
+        if (preroll > AutoTransition.MIN_RAMP_SECONDS) {
             glideInSecondsActive = preroll
             prerollStartedAt = now
             emitOutgoing(preroll)
@@ -139,10 +140,11 @@ class GlideMachine internal constructor(private val dj: AutoDj) {
     /** PRE-ROLL step (progress 0..1): ramp the texture effect + tempo/pitch IN on the outgoing deck. */
     internal fun applyOutgoing(p: Double) {
         val c = ctx ?: return
-        if (c.fxOn) setSlot(c.fxSlotFrom, true, p * c.fxPeak, c.from)
+        if (c.fxOn) setSlot(c.fxSlotFrom, true, AutoTransition.outgoingRamp(p, c.outRate, c.outPitch, c.fxPeak).fxStrength, c.from)
         if (c.mixOn) {
-            setRate(1 + (c.outRate - 1) * p, c.from)
-            setPitch(c.outPitch * p, c.from)
+            val r = AutoTransition.outgoingRamp(p, c.outRate, c.outPitch, c.fxPeak)
+            setRate(r.rate, c.from)
+            setPitch(r.pitch, c.from)
         }
     }
 
@@ -187,10 +189,11 @@ class GlideMachine internal constructor(private val dj: AutoDj) {
     /** POST-ROLL step (progress 0..1): ease the incoming deck's effect OFF + tempo/pitch to natural. */
     internal fun applyIncoming(p: Double) {
         val c = ctx ?: return
-        if (c.fxOn) setSlot(c.fxSlotTo, true, (1 - p) * c.fxPeak, c.to)
+        if (c.fxOn) setSlot(c.fxSlotTo, true, AutoTransition.incomingRamp(p, c.inRate, c.inPitch, c.fxPeak).fxStrength, c.to)
         if (c.mixOn) {
-            setRate(c.inRate + (1 - c.inRate) * p, c.to)
-            setPitch(c.inPitch * (1 - p), c.to)
+            val r = AutoTransition.incomingRamp(p, c.inRate, c.inPitch, c.fxPeak)
+            setRate(r.rate, c.to)
+            setPitch(r.pitch, c.to)
         }
     }
 
@@ -216,7 +219,7 @@ class GlideMachine internal constructor(private val dj: AutoDj) {
     /** Hand off to the post-roll that eases the now-live incoming deck back to natural. */
     internal fun beginPostroll() {
         if (!transitionIsGlide) return
-        if (mixGlideSeconds > 0.05) {
+        if (mixGlideSeconds > AutoTransition.MIN_RAMP_SECONDS) {
             postrollStartedAt = e.nowMs()
             emitIncoming()
         } else finish()
