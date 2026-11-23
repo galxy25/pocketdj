@@ -376,6 +376,7 @@ class SetlistSequencer(
     fun abandonRun() = endRun()
 
     private fun endRun() {
+        endStallEpisode("stop")
         pendingRedecideUids = emptySet()
         if (running) {
             skipTracker?.checkpoint() // a stop / set end never advances away: still land the final fraction
@@ -1196,6 +1197,7 @@ class SetlistSequencer(
 
     private fun handleFirstAudio(source: String) {
         if (!firstAudioPending && startWindow == null) return
+        endStallEpisode("first-audio")
         firstAudioPending = false
         meter?.firstAudio(currentBackend, clockMs())
         startWatchdog.cancel()
@@ -1421,13 +1423,26 @@ class SetlistSequencer(
      */
     private fun hopToPlayableRow(reason: String): Boolean {
         if (index >= queue.size) return false
-        val choice = ResolveStallHop.choose(queue, index, rowOnDevice, rowStartsInstantly) ?: return false
         val stalled = queue[index]
+        val choice = ResolveStallHop.choose(
+            queue, index, rowOnDevice, rowStartsInstantly, abandoned = stallEpisodeAbandoned,
+        ) ?: return false
+        stallEpisodeAbandoned = stallEpisodeAbandoned + stalled.uid
         val row = ResolveStallHop.apply(queue, index, choice)
         log("[playback] $reason song=${stalled.id} \u2192 hop to ${choice.kind.label} ${row.id} (deferred stalled row)")
         queueEdited()
         startPlayCurrent()
         return true
+    }
+
+    /** Uids hopped away from since the last first audio / user transport / stop (one stall EPISODE). */
+    private var stallEpisodeAbandoned: Set<String> = emptySet()
+
+    /** First audio, any user transport, or stop ends the episode; logged only if a hop happened. */
+    private fun endStallEpisode(reason: String) {
+        if (stallEpisodeAbandoned.isEmpty()) return
+        log("[playback] stall episode end reason=$reason abandoned=${stallEpisodeAbandoned.size}")
+        stallEpisodeAbandoned = emptySet()
     }
 
     private fun armStartStall(gen: Long, songId: String) {
@@ -1542,6 +1557,7 @@ class SetlistSequencer(
 
     /** The listener acted: whatever happened before is not a cascade any more. */
     private fun noteUserTransport() {
+        endStallEpisode("user")
         breaker.reset()
         pausedByCascade = false
         notice = null

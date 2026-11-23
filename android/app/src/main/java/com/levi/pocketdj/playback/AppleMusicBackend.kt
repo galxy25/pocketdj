@@ -17,6 +17,7 @@ import com.levi.pocketdj.playback.am.AmStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -132,30 +133,40 @@ class AppleMusicBackend(
         // AppleMusicSdkLoadInstrumentedTest verified); a failure is cached and ensureController
         // below rethrows it -> false -> preview.
         if (controller == null) withContext(Dispatchers.IO) { runCatching { loadNatives() } }
-        val issued = withContext(Dispatchers.Main) {
-            try {
-                val c = ensureController()
-                current = Current(songId, title, artist, albumId, context)
-                if (!resume) startedSongId = null
-                val provider = CatalogPlaybackQueueItemProvider.Builder()
-                    .items(MediaItemType.SONG, appleMusicId)
-                    .build()
-                c.prepare(provider, /* playWhenReady = */ true)
-                true
-            } catch (t: Throwable) {
-                if (t is CancellationException) throw t
-                current = if (resume) priorCurrent else null
-                false
+        val ok = try {
+            val issued = withContext(Dispatchers.Main) {
+                try {
+                    val c = ensureController()
+                    current = Current(songId, title, artist, albumId, context)
+                    if (!resume) startedSongId = null
+                    val provider = CatalogPlaybackQueueItemProvider.Builder()
+                        .items(MediaItemType.SONG, appleMusicId)
+                        .build()
+                    c.prepare(provider, /* playWhenReady = */ true)
+                    true
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    current = if (resume) priorCurrent else null
+                    false
+                }
             }
+            if (!issued) {
+                playConfirm = null
+                return false
+            }
+            // Await the async terminal signal (PLAYING vs onPlaybackError); a timeout
+            // is a stuck-buffering backstop and counts as failure so the caller
+            // degrades to a preview rather than hanging on a dead card.
+            withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { confirm.await() } ?: false
+        } catch (e: CancellationException) {
+            // FR1: cancelled after prepare(playWhenReady=true) was issued: the SDK would still reach PLAYING and
+            // sound over the successor (or claim the session). Stop it; never swallow the cancellation.
+            withContext(NonCancellable + Dispatchers.Main) {
+                abortPendingStart(songId)
+                if (resume) current = priorCurrent
+            }
+            throw e
         }
-        if (!issued) {
-            playConfirm = null
-            return false
-        }
-        // Await the async terminal signal (PLAYING vs onPlaybackError); a timeout
-        // is a stuck-buffering backstop and counts as failure so the caller
-        // degrades to a preview rather than hanging on a dead card.
-        val ok = withTimeoutOrNull(CONFIRM_TIMEOUT_MS) { confirm.await() } ?: false
         playConfirm = null
         if (!ok) {
             // Leave no half-started AM playback behind before the caller degrades.
@@ -198,6 +209,21 @@ class AppleMusicBackend(
     fun pauseNow() { runCatching { controller?.pause() } }
     fun resumeNow() { runCatching { controller?.play() } }
     fun seekNow(positionMs: Long) { runCatching { controller?.seekToPosition(positionMs) } }
+    /**
+     * Stop an in-flight (cancelled) start of [songId] and drop its pending state. A no-op when a successor
+     * start already replaced [current] - it must not be killed by its predecessor's late cleanup.
+     * Main thread. Returns whether it stopped anything.
+     */
+    fun abortPendingStart(songId: String): Boolean {
+        if (current?.songId != songId) return false
+        playConfirm = null
+        runCatching { controller?.stop() }
+        current = null
+        startedSongId = null
+        changeListener?.invoke()
+        return true
+    }
+
     fun stopNow() {
         runCatching { controller?.stop() }
         current = null

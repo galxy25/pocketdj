@@ -30,11 +30,13 @@ object ResolveStallHop {
         onDevice: (QueueItem) -> Boolean,
         instant: (QueueItem) -> Boolean,
         lookahead: Int = LOOKAHEAD,
+        /** Uids already hopped AWAY from in this stall episode: never a target (no ping-pong). */
+        abandoned: Set<String> = emptySet(),
     ): Choice? {
         if (index < 0 || index >= queue.size) return null
         val end = minOf(queue.size, index + 1 + lookahead)
         if (index + 1 >= end) return null
-        val range = (index + 1) until end
+        val range = ((index + 1) until end).filter { queue[it].uid !in abandoned }
         range.firstOrNull { onDevice(queue[it]) }?.let { return Choice(it, Kind.ON_DEVICE) }
         range.firstOrNull { instant(queue[it]) }?.let { return Choice(it, Kind.INSTANT) }
         return null

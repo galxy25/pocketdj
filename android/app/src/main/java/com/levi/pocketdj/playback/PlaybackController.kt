@@ -994,6 +994,15 @@ class PlaybackController(
         }
     }
 
+    /** Cancelled AM start: stop the SDK, clear its pending state, restore the backend that owned the audio before. */
+    private suspend fun abortCancelledAppleMusicStart(backend: AppleMusicBackend, prior: ActiveBackend, songId: String) {
+        // Skip entirely when a successor AM start already owns the SDK (its own cleanup is its business).
+        if (!withContext(Dispatchers.Main) { backend.abortPendingStart(songId) }) return
+        amCurrentAmId = null
+        activeBackend = prior
+        NPLog.lane(NPLog.PLAYBACK, "am start cancelled: SDK stopped, backend restored=$prior")
+    }
+
     /** The sequencer's Apple Music row: SDK plays it, the adapter fronts the session, the monitor watches it. */
     private suspend fun loadAppleMusic(request: PlayRequest, src: AppleMusicSource) {
         val backend = appleMusicBackend ?: throw IllegalStateException("Apple Music engine unavailable")
@@ -1016,9 +1025,13 @@ class PlaybackController(
         val adapter = withContext(Dispatchers.Main) { ensureAmAdapter(backend).also { it.holdClaims() } }
         try {
         amCurrentAmId = src.appleMusicId
-        val started = runCatching {
-            backend.play(src.appleMusicId, item.id, song?.name ?: item.title, song?.artist ?: item.artist, song?.albumId, request.context)
-        }.getOrDefault(false)
+        // FR1: a cancelled start rethrows after stopping the SDK (see runCancellableAppleMusicStart).
+        val started = runCancellableAppleMusicStart(
+            play = {
+                backend.play(src.appleMusicId, item.id, song?.name ?: item.title, song?.artist ?: item.artist, song?.albumId, request.context)
+            },
+            abort = { abortCancelledAppleMusicStart(backend, prior, item.id) },
+        )
         if (!started) {
             activeBackend = prior
             if (prior == ActiveBackend.EXO) withController { it.play() }
