@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # P2-MM-1 Mix Mode ph1a: temporary-hold ledger, AssetOrigin, pin funnel, npMix settings keys
 
@@ -8,7 +8,11 @@ state: in-progress
 - [x] MixStreamLoader: open/openStems(origin), explicit-join upgrade + pin, StreamAdopter origin
 - [x] NpMixSettings.kt (iOS-verbatim keys/defaults)
 - [x] Tests
-- [ ] Green build (testDebugUnitTest, assembleDebug)
+- [x] Green build: :app:testDebugUnitTest :app:assembleDebug (5811 tests, 0 failed). assembleRelease not run: no manifest/gradle/proguard/library change.
+
+## Summary
+Tests: 31 new (TemporaryHoldLedgerTest 22, NpMixSettingsTest 6, 3 origin tests in MixStreamLoaderTest); suite 5780 -> 5811.
+Build ran with FIN_MIN_FREE_GB=5 because the shared machine sat at ~6-7 GB free and the default 8 GB guard deadlocked the queue.
 
 ## Notes / deviations
 - AssetOrigin has a third case Incidental (as iOS). It is the default for burnStemPart / adoptStreamed* at the

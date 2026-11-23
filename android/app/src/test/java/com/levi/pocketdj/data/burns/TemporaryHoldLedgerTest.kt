@@ -70,13 +70,15 @@ class TemporaryHoldLedgerTest {
     }
 
     @Test fun pinMatchesByBaseIdAndPinAllClears() {
+        val base = "sng_0123456789ab"
         val l = TemporaryHoldLedger()
-        l.noteCreated(TemporaryHoldLedger.Created("sng_1", audioBytes = 1), 0.0, 48.0, false)
-        l.noteCreated(TemporaryHoldLedger.Created("sng_1~ed", audioBytes = 1), 0.0, 48.0, false)
-        l.noteCreated(TemporaryHoldLedger.Created("sng_2", audioBytes = 1), 0.0, 48.0, false)
-        val dropped = l.pin(listOf("sng_1"))
-        assertEquals(setOf("sng_1", "sng_1~ed").filter { com.levi.pocketdj.data.edition.SongVariant.baseId(it) == "sng_1" }.toSet(), dropped.toSet())
-        assertTrue(l.isTemporary("sng_2"))
+        l.noteCreated(TemporaryHoldLedger.Created(base, audioBytes = 1), 0.0, 48.0, false)
+        l.noteCreated(TemporaryHoldLedger.Created(base + "_clean", audioBytes = 1), 0.0, 48.0, false)
+        l.noteCreated(TemporaryHoldLedger.Created("sng_ba9876543210", audioBytes = 1), 0.0, 48.0, false)
+        // pinning a variant row pins the base and the sibling variant hold too (over-pinning only keeps files)
+        val dropped = l.pin(listOf(base + "_explicit"))
+        assertEquals(setOf(base, base + "_clean"), dropped.toSet())
+        assertTrue(l.isTemporary("sng_ba9876543210"))
         assertEquals(1, l.pinAll()); assertTrue(l.isEmpty)
     }
 
