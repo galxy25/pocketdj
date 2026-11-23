@@ -228,6 +228,7 @@ class AppGraph private constructor(context: Context) {
         scope = appScope,
         isConfigured = { ripServerClient.isConfigured() },
         presigner = { songId, ttl -> ripServerClient.presign(songId, ttl) },
+        authHoldoff = { ripServerClient.authHoldoff() },
     )
 
     /** Keeps polling rips that outlived the interactive wait; fires onRipReady (SVC-1). */

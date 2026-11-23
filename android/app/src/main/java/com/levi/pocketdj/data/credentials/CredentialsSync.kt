@@ -105,11 +105,47 @@ class CredentialsSync(
         private const val PULL_PENDING_MS = 30_000L
 
         /**
-         * Same-URL + empty pulled secret = accidental wipe => keep local. A DIFFERENT url adopts
-         * wholesale (tokenless servers included); clearing the url clears the pair.
+         * Same-HOST + empty pulled secret = accidental wipe => keep local (iOS 1bad0e9d + dd1f190c: a device
+         * re-pointing the rip URL to another PORT of the same host, e.g. the :10000 Funnel port, must not wipe
+         * every device's token). A DIFFERENT host adopts wholesale (tokenless servers included); clearing the
+         * url clears the pair.
          */
         fun keepLocalSecret(localSecret: String, pulledSecret: String, localUrl: String, pulledUrl: String): Boolean =
-            pulledSecret.isEmpty() && localSecret.isNotEmpty() && pulledUrl.isNotEmpty() && pulledUrl == localUrl
+            pulledSecret.isEmpty() && localSecret.isNotEmpty() && pulledUrl.isNotEmpty() &&
+                sameServerHost(localUrl, pulledUrl)
+
+        /**
+         * Host-level identity of two server URLs (case-insensitive); falls back to exact (trimmed) string
+         * equality when either doesn't parse to a host.
+         */
+        fun sameServerHost(a: String, b: String): Boolean {
+            val ta = a.trim()
+            val tb = b.trim()
+            if (ta == tb) return true
+            val ha = serverHost(ta) ?: return false
+            val hb = serverHost(tb) ?: return false
+            return ha == hb
+        }
+
+        /**
+         * Lower-cased host of a typed server URL. Tolerates a missing scheme ("host:10000/rip" would otherwise
+         * read "host" as the scheme) and a trailing root dot ("a.ts.net."). Pure string parsing (JVM-testable; android.net.Uri is stubbed on the JVM).
+         */
+        fun serverHost(raw: String): String? {
+            val t = raw.trim()
+            if (t.isEmpty()) return null
+            val rest = if (t.contains("://")) t.substringAfter("://") else t
+            var authority = rest.substringBefore('/').substringBefore('?').substringBefore('#')
+            authority = authority.substringAfterLast('@')
+            var h = if (authority.startsWith("[")) {
+                authority.substringBefore(']', "") + "]" // bracketed IPv6 literal, port stripped
+            } else {
+                authority.substringBefore(':')
+            }
+            if (h == "]") return null
+            h = h.lowercase().trimEnd('.')
+            return h.ifEmpty { null }
+        }
 
         /** Pure merge: the live doc [local] after adopting [pulled] with the empty-secret guards. */
         fun merge(local: SettingsCredentialsDocument, pulled: SettingsCredentialsDocument): MergeResult {
