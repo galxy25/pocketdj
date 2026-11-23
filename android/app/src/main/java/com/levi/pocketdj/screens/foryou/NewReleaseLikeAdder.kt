@@ -178,7 +178,7 @@ class NewReleaseLikeAdder(
             // An un-thumbs-up between the tap and this hop (or a queue cleared since) cancels the add.
             val still = synchronized(lock) { id in _busy.value.queued } && stillAccepted(id)
             if (!still) { mutateBusy { it.copy(queued = it.queued - id) }; return@launch }
-            run(id, writeOnly = false)
+            runAdd(id, writeOnly = false)
         }
     }
 
@@ -191,9 +191,9 @@ class NewReleaseLikeAdder(
     // ---- row buttons ----
 
     /** Add / Retry on a Liked row. [writeOnly] = the album is recorded and only the Apple Music write is owed. */
-    suspend fun add(storeId: String, writeOnly: Boolean = false) = run(storeId, writeOnly)
+    suspend fun add(storeId: String, writeOnly: Boolean = false) = runAdd(storeId, writeOnly)
 
-    suspend fun retry(storeId: String, writeOnly: Boolean = false) = run(storeId, writeOnly)
+    suspend fun retry(storeId: String, writeOnly: Boolean = false) = runAdd(storeId, writeOnly)
 
     /**
      * "Add all (n)": one at a time - kinder to the Apple edge limiter (the feed measured 429 bursts) and it keeps
@@ -219,7 +219,7 @@ class NewReleaseLikeAdder(
                 if (id in _busy.value.inFlight || !stillAccepted(id)) continue
                 val rel = store.releases[id]
                 if (rel != null && isOwned?.invoke(rel) == true && id !in writeOnly) continue
-                run(id, id in writeOnly)
+                runAdd(id, id in writeOnly)
             }
         } finally {
             mutateBusy { it.copy(addingAll = false, queued = it.queued - storeIds.toSet()) }
@@ -228,8 +228,11 @@ class NewReleaseLikeAdder(
 
     // ---- the one add ----
 
-    private suspend fun run(storeId: String, writeOnly: Boolean) {
-        val rel = store.releases[storeId] ?: return
+    private suspend fun runAdd(storeId: String, writeOnly: Boolean) {
+        val rel = store.releases[storeId] ?: kotlin.run {
+            mutateBusy { it.copy(queued = it.queued - storeId) }
+            return
+        }
         val claimed = synchronized(lock) {
             val b = _busy.value
             if (storeId in b.inFlight) false else {
@@ -237,7 +240,12 @@ class NewReleaseLikeAdder(
                 true
             }
         }
-        if (!claimed) return
+        if (!claimed) {
+            // A second request for an add already running is redundant - and must not leave the id
+            // "queued", which would show the row busy forever.
+            mutateBusy { it.copy(queued = it.queued - storeId) }
+            return
+        }
         try {
             store.setAttempt(
                 storeId,
@@ -287,7 +295,7 @@ class NewReleaseLikeAdder(
             if (!due || nowMs - a.atMs < SWEEP_THROTTLE_MS) continue
             if (accepted != null && "rel:${rel.storeId}" !in accepted) continue
             if (isOwned?.invoke(rel) == true && a.state == LikeAddState.OFFLINE) continue
-            run(rel.storeId, writeOnly = false)
+            runAdd(rel.storeId, writeOnly = false)
             ran++
         }
         return ran

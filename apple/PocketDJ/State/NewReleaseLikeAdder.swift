@@ -115,7 +115,7 @@ final class FixtureReleaseAddPort: ReleaseAddPort {
 @Observable
 final class NewReleaseLikeAdder {
 
-    static let offlineMessage = "Will add when you’re back online"
+    nonisolated static let offlineMessage = "Will add when you’re back online"
     /// A release is retried by the sweep at most once per this window.
     nonisolated static let sweepThrottleMs: Double = 6 * 3_600_000
     nonisolated static let hydrateBatch = ReleaseFeedPolicy.idsPerRequest
@@ -253,7 +253,12 @@ final class NewReleaseLikeAdder {
     // MARK: the one add
 
     private func run(_ storeId: String, writeOnly: Bool) async {
-        guard let rel = store.releases[storeId], !inFlight.contains(storeId) else { return }
+        guard let rel = store.releases[storeId], !inFlight.contains(storeId) else {
+            // A second request for an add already running is redundant — and must not leave the id
+            // "queued", which would show the row busy forever.
+            queued.remove(storeId)
+            return
+        }
         inFlight.insert(storeId)
         queued.remove(storeId)
         store.setAttempt(LikeAddAttempt(atMs: clock(), state: .adding, message: nil,

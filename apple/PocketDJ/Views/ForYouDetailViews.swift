@@ -356,8 +356,7 @@ struct NewReleasesView: View {
                         // accepted, so an undo never adds. A `relartist:` row (no release id) has
                         // nothing to add and stays pure feedback — the one case that does.
                         RecFeedbackButtons(songId: item.feedbackId, scope: scope, surface: .tile,
-                                           onAccept: item.entry.releaseId == nil || adder == nil ? nil
-                                               : { adder?.liked(item.entry) })
+                                           onAccept: likeAction(for: item.entry))
                     }
                 }
             } header: {
@@ -365,6 +364,12 @@ struct NewReleasesView: View {
                     .accessibilityIdentifier("new-release-section-\(status.rawValue)")
             }
         }
+    }
+
+    /// What a 👍 on this row runs besides recording the verdict — nil for a row with no release id.
+    private func likeAction(for entry: ArtistReleaseEntry) -> (() -> Void)? {
+        guard entry.releaseId != nil, let adder else { return nil }
+        return { _ = adder.liked(entry) }
     }
 
     /// A release with no store id can't be previewed — the row simply doesn't navigate rather
