@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-platform="apple" data-play="review">
+<html lang="en" data-platform="apple" data-play="live">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -16,7 +16,7 @@
 <meta property="og:type" content="website">
 <!--
   GOOGLE PLAY FLAG: data-play on <html> above is the one switch for the Play listing.
-    data-play="review"  badge shows unlinked, captioned "Coming soon · in review"
+    data-play="live"  badge shows unlinked, captioned "Coming soon · in review"
     data-play="live"    badge links to the Play listing
   Screenshot platform: data-platform ("apple" default, or "android"), set before first paint below.
 -->
@@ -351,7 +351,7 @@
   a.gplay:hover{transform:translateY(-2px)}
   a.gplay:focus-visible{outline:2px solid var(--teal-lit);outline-offset:4px}
   .gplay .soon{display:block;margin-top:18px;line-height:1.2;font-size:.66rem;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
-  html[data-play="review"] .play-live,html[data-play="live"] .play-review{display:none!important}
+  html[data-play="live"] .play-live,html[data-play="live"] .play-review{display:none!important}
   .btn.live{color:var(--ink);cursor:pointer;background:var(--panel);border-color:var(--rim);box-shadow:0 0 0 1px rgba(46,230,214,.18);transition:box-shadow .2s,transform .25s cubic-bezier(.16,1,.3,1)}
   .btn.live:hover{box-shadow:0 0 0 1px var(--teal-lit);transform:translateY(-2px)}
   .btn.live:focus-visible{outline:2px solid var(--teal-lit);outline-offset:4px}
