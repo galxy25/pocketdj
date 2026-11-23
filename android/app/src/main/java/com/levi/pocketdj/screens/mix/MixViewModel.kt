@@ -94,6 +94,7 @@ object AutoMixPlan {
     fun interleave(
         a: List<MixLoadable>, b: List<MixLoadable>, nameA: String, nameB: String,
         shuffle: Boolean, random: Random,
+        originA: String? = null, originB: String? = null,
     ): Queue {
         val aIds = a.mapTo(HashSet()) { it.songId }
         var aa = a
@@ -101,14 +102,14 @@ object AutoMixPlan {
         if (shuffle) { aa = aa.shuffled(random); bb = bb.shuffled(random) }
         val out = ArrayList<AutoMixItem>(aa.size + bb.size)
         for (i in 0 until maxOf(aa.size, bb.size)) {
-            if (i < aa.size) out += item(aa[i], nameA)
-            if (i < bb.size) out += item(bb[i], nameB)
+            if (i < aa.size) out += item(aa[i], nameA, originA)
+            if (i < bb.size) out += item(bb[i], nameB, originB)
         }
         return Queue(out)
     }
 
-    fun item(l: MixLoadable, label: String? = null) =
-        AutoMixItem(l, l.lengthMs ?: DEFAULT_DURATION_MS, label)
+    fun item(l: MixLoadable, label: String? = null, origin: String? = null) =
+        AutoMixItem(l, l.lengthMs ?: DEFAULT_DURATION_MS, label, origin)
 }
 
 /** Nothing in the crate(s) is on this device and no download run can supply a first track. */
@@ -158,7 +159,7 @@ class MixAutoStarter(
                 }
                 throw NoLoadableSongsException(nameA)
             }
-            val items = loadables.map { AutoMixPlan.item(it) }
+            val items = loadables.map { AutoMixPlan.item(it, nameA, a.collectionId) }
             // Shuffle is applied in the engine so order/shuffle share one path.
             engine.startAutoMix(items, shuffle, lead, fade, nameA)
             downloads.noteAutoStarted(loadables.mapTo(HashSet()) { it.songId }, lead, fade, nameA, shuffle)
@@ -177,7 +178,7 @@ class MixAutoStarter(
             }
             throw NoLoadableSongsException(name)
         }
-        val queue = AutoMixPlan.interleave(la, lb, nameA, nameB, shuffle, random)
+        val queue = AutoMixPlan.interleave(la, lb, nameA, nameB, shuffle, random, a.collectionId, bSrc.collectionId)
         engine.startAutoMix(queue.items, false, lead, fade, name)
         downloads.noteAutoStarted(queue.items.mapTo(HashSet()) { it.loadable.songId }, lead, fade, name, shuffle)
         return MixStartOutcome(name, queue.items.size)

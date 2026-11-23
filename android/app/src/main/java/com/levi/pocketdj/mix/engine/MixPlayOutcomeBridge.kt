@@ -40,6 +40,8 @@ class MixPlayOutcomeBridge(
     private val trackInfo: (Deck) -> Pair<String, String>? = { null },
     /** The auto-mix crate label (`AutoDj.sourceLabel`); null for a hand-driven mix. */
     private val contextLabel: () -> String? = { null },
+    /** The crate collection id the starting track came from (per ROW; `AutoDj.originCollectionIdFor`). */
+    private val originOf: (songId: String) -> String? = { null },
     /** The Mix session id (iOS `mixSessions.currentId`) so History groups by session. */
     private val contextId: () -> String? = { null },
     private val nowMs: () -> Long = System::currentTimeMillis,
@@ -67,6 +69,7 @@ class MixPlayOutcomeBridge(
                 artist = info?.second,
                 context = PlayContext(PlayContext.SOURCE_MIX, contextId = contextId(), contextName = contextLabel()),
                 atMs = at,
+                originCollectionId = originOf(songId),
             ),
         )
         val attempt = { final: Boolean -> resolve(deck, entry, songId, at, final) }

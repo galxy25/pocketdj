@@ -494,6 +494,16 @@ class AutoDj(
 
     // ------------------------------------------------------------------------------ repeat preloads
 
+    /**
+     * The crate collection a just-started track came from (History's `originCollectionId` for a Mix play).
+     * Searches outward from the live cursor so a song queued twice resolves to the copy on air; null when not
+     * auto-mixing or the row carries no provenance. Port of iOS `MixEngine.autoOriginCollectionId(forSongId:)`.
+     */
+    fun originCollectionIdFor(songId: String): String? {
+        if (!isMixing) return null
+        return originCollectionIdIn(queue, livePos, songId)
+    }
+
     /** The item repeat-one replays: the live slot when it matches the on-air track, else rebuilt from the deck. */
     private fun repeatOneItem(): AutoMixItem? {
         if (livePos < queue.size && queue[livePos].loadable.songId == engine.loaded(liveDeck)?.songId) return queue[livePos]
@@ -1118,7 +1128,7 @@ class AutoDj(
         return AutoSnapshot(
             queue = queue.map {
                 val l = it.loadable
-                AutoRow(TrackRef(l.songId, l.title, l.artist, l.bpm, l.camelot, l.key, l.albumId, l.lengthMs), it.durationMs, it.sourceLabel)
+                AutoRow(TrackRef(l.songId, l.title, l.artist, l.bpm, l.camelot, l.key, l.albumId, l.lengthMs), it.durationMs, it.sourceLabel, it.originCollectionId)
             },
             livePos = livePos, nextToLoad = nextToLoad, liveDeck = liveDeck.label, sourceLabel = sourceLabel,
             leadSeconds = leadSeconds, fadeSeconds = pendingFadeRestore ?: fadeSeconds,
@@ -1134,7 +1144,7 @@ class AutoDj(
         queue.addAll(
             auto.queue.map {
                 val t = it.track
-                AutoMixItem(MixLoadable(t.songId, t.title, t.artist, t.bpm, t.camelot, t.key, t.albumId, t.lengthMs), it.durationMs, it.sourceLabel)
+                AutoMixItem(MixLoadable(t.songId, t.title, t.artist, t.bpm, t.camelot, t.key, t.albumId, t.lengthMs), it.durationMs, it.sourceLabel, it.originCollectionId)
             },
         )
         repeat = AutoRepeatMode.fromRaw(auto.repeatMode) ?: AutoRepeatMode.OFF
@@ -1175,4 +1185,16 @@ class AutoDj(
         const val START_RETRY_REST_MS = 3_000L
         const val FALLBACK_DURATION_MS = 180_000
     }
+}
+
+/** Pure core of [AutoDj.originCollectionIdFor]: nearest-to-[livePos] row holding [songId], its origin. */
+internal fun originCollectionIdIn(queue: List<AutoMixItem>, livePos: Int, songId: String): String? {
+    if (queue.isEmpty()) return null
+    val start = livePos.coerceIn(0, queue.size - 1)
+    for (offset in queue.indices) {
+        for (i in intArrayOf(start + offset, start - offset)) {
+            if (i in queue.indices && queue[i].loadable.songId == songId) return queue[i].originCollectionId
+        }
+    }
+    return null
 }

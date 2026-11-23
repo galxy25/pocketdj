@@ -149,8 +149,9 @@ class PlayHistoryStore(
                 null
             } else {
                 val installId = _state.value.installId
-                // Stamped only for the Now Playing run, whose contextId is not navigable by itself.
-                val origin = if (context.contextId == NOW_PLAYING_SETLIST_ID) originCollectionId else null
+                // Stamped for the Now Playing run (its contextId is not navigable by itself) and for Mix
+                // plays (their contextId is a Mix SESSION; the crate rides as the origin, per row).
+                val origin = if (context.contextId == NOW_PLAYING_SETLIST_ID || context.source == PlayContext.SOURCE_MIX) originCollectionId else null
                 val event = PlayEvent(
                     id = UUID.randomUUID().toString(),
                     songId = songId,
