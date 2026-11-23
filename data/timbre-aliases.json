@@ -1,10 +1,10 @@
 {
  "v": 1,
- "generatedAt": "2026-11-22T12:01:04.411Z",
+ "generatedAt": "2026-11-23T12:01:04.068Z",
  "counts": {
-  "audioBearing": 16521,
-  "candidates": 94560,
-  "aliases": 3660,
+  "audioBearing": 16528,
+  "candidates": 94553,
+  "aliases": 3661,
   "rejectedLane1": 0
  },
  "rejectedLane1": [],
@@ -131,6 +131,10 @@
   "sng_026b148543b3": {
    "to": "sng_fb23090a14fa",
    "dLenMs": 2347
+  },
+  "sng_026e5f036fbe": {
+   "to": "sng_96713e8a517f",
+   "dLenMs": 0
   },
   "sng_02762f08a6b4": {
    "to": "sng_dae9aacbcf24",
@@ -3874,6 +3878,10 @@
    "to": "sng_f9d601469503",
    "dLenMs": 46
   },
+  "sng_401e4782bc15": {
+   "to": "sng_96713e8a517f",
+   "dLenMs": 0
+  },
   "sng_406a92f98689": {
    "to": "sng_796b2ef849ba",
    "dLenMs": 0,
@@ -5578,10 +5586,6 @@
   },
   "sng_5ebfab755dac": {
    "to": "sng_7f0a3143e923",
-   "dLenMs": 0
-  },
-  "sng_5ec0c616b84f": {
-   "to": "sng_4af1db213aff",
    "dLenMs": 0
   },
   "sng_5ecca5ff3f8f": {
@@ -11803,6 +11807,10 @@
    "to": "sng_3fede898023d",
    "dLenMs": 0
   },
+  "sng_c873c764d55c": {
+   "to": "sng_b4748ac9bb41",
+   "dLenMs": 231
+  },
   "sng_c88012602b79": {
    "to": "sng_a3ae237171a0",
    "dLenMs": 0
@@ -12424,10 +12432,6 @@
   },
   "sng_d2948a84dc47": {
    "to": "sng_5a87c4d2e310",
-   "dLenMs": 0
-  },
-  "sng_d29f31f2103b": {
-   "to": "sng_a233c03f1788",
    "dLenMs": 0
   },
   "sng_d2a176eda124": {
