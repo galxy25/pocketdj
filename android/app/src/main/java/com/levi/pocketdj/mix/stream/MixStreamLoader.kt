@@ -1,5 +1,6 @@
 package com.levi.pocketdj.mix.stream
 
+import com.levi.pocketdj.data.burns.AssetOrigin
 import com.levi.pocketdj.data.burns.BurnFileNames
 import com.levi.pocketdj.data.burns.BurnStore
 import com.levi.pocketdj.data.rips.RipManifestEntry
@@ -31,9 +32,11 @@ interface MixStreamRips {
 /** Where completed streams land: the burn store. */
 interface StreamAdopter {
     /** Adopt a complete song file as a `.ready` burn; the adopted file or null. */
-    fun adoptFile(songId: String, title: String, artist: String, from: File): File?
+    fun adoptFile(songId: String, title: String, artist: String, from: File, origin: AssetOrigin = AssetOrigin.explicit("mix")): File?
     /** Move four complete stem parts into the burn folder; part -> new file, or null. */
-    fun adoptStems(songId: String, files: Map<String, File>): Map<String, File>?
+    fun adoptStems(songId: String, files: Map<String, File>, origin: AssetOrigin = AssetOrigin.explicit("mix")): Map<String, File>?
+    /** An explicit opener joined (or finished behind) a buffer stream: drop its temporary hold. */
+    fun pin(songId: String, reason: String) {}
     /** A queued/in-flight BACKGROUND burn of the same file would download it twice - stream takes over. */
     fun yieldBackgroundDownload(songId: String) {}
 }
@@ -43,10 +46,13 @@ class BurnStoreAdopter(
     private val burns: BurnStore,
     private val yieldBackground: (String) -> Unit = { burns.yieldBackgroundDownload(it) },
 ) : StreamAdopter {
-    override fun adoptFile(songId: String, title: String, artist: String, from: File) =
-        burns.adoptStreamedFile(songId, title, artist, from)
+    override fun adoptFile(songId: String, title: String, artist: String, from: File, origin: AssetOrigin) =
+        burns.adoptStreamedFile(songId, title, artist, from, origin)
 
-    override fun adoptStems(songId: String, files: Map<String, File>) = burns.adoptStreamedStems(songId, files)
+    override fun adoptStems(songId: String, files: Map<String, File>, origin: AssetOrigin) =
+        burns.adoptStreamedStems(songId, files, origin)
+
+    override fun pin(songId: String, reason: String) { burns.pin(listOf(songId), reason) }
     override fun yieldBackgroundDownload(songId: String) = yieldBackground(songId)
 }
 
@@ -104,6 +110,8 @@ class MixStreamLoader(
         /** The complete file's location: the adopted burn file, or [file] when not adopted. */
         @Volatile var finalFile: File? = null; internal set
         val adopted: Boolean get() = finalFile.let { it != null && it != file }
+        /** Who asked: explicit (default) pins the landed burn; buffer lands as a temporary hold. */
+        @Volatile var origin: AssetOrigin = AssetOrigin.explicit("mix"); internal set
         internal var adoptable = false
         internal var taskId: Int? = null
         internal var retries = 0
@@ -118,6 +126,7 @@ class MixStreamLoader(
     class StemSet internal constructor(val songId: String, val parts: Map<String, Stream>) {
         @Volatile var adopted = false; internal set
         @Volatile internal var adopting = false
+        @Volatile var origin: AssetOrigin = AssetOrigin.explicit("mix"); internal set
         val isComplete: Boolean get() = parts.isNotEmpty() && parts.values.all { it.isComplete }
         val failed: Boolean get() = parts.values.any { it.failed }
     }
@@ -265,11 +274,22 @@ class MixStreamLoader(
      * Begin (or join) the stream for [songId]. Null when it can't stream. A finished stream whose
      * file still exists is returned as-is (the deck plays it like a burn).
      */
-    fun open(songId: String, title: String, artist: String, forAuto: Boolean = false): Stream? = lock.withLock {
+    fun open(
+        songId: String, title: String, artist: String, forAuto: Boolean = false,
+        origin: AssetOrigin = AssetOrigin.explicit("mix"),
+    ): Stream? = lock.withLock {
         streamMap[songId]?.let { s ->
             if (!s.failed) {
                 val f = s.finalFile ?: s.file
-                if (!s.isComplete || f.exists()) return s
+                if (!s.isComplete || f.exists()) {
+                    // Explicit wins: an explicit opener joining a buffer stream upgrades it (and pins what already landed).
+                    val merged = s.origin.merged(origin)
+                    if (merged != s.origin) {
+                        s.origin = merged
+                        (merged as? AssetOrigin.Explicit)?.let { adopter.pin(songId, it.reason) }
+                    }
+                    return s
+                }
             }
         }
         if (!canStream(songId, forAuto)) return null
@@ -283,6 +303,7 @@ class MixStreamLoader(
         directory.mkdirs()
         file.createNewFile()
         val s = Stream(songId, file, title, artist, clock())
+        s.origin = origin
         streamMap[songId] = s
         recentFailures.remove(songId)
         val cutKey = entry.cutKey
@@ -331,12 +352,19 @@ class MixStreamLoader(
      * Begin (or join) streaming [songId]'s 4 stems, all at once. Null when it can't. [owner]
      * registers a claim; see [cancelStems].
      */
-    fun openStems(songId: String, owner: String = MIX_STEM_OWNER): StemSet? = lock.withLock {
+    fun openStems(
+        songId: String, owner: String = MIX_STEM_OWNER, origin: AssetOrigin = AssetOrigin.explicit("mix"),
+    ): StemSet? = lock.withLock {
         stemSetMap[songId]?.let { set ->
             if (!set.failed) {
                 val files = set.parts.values.map { it.finalFile ?: it.file }
                 if (!set.isComplete || set.adopting || files.all { it.exists() }) {
                     stemOwners.getOrPut(songId) { mutableSetOf() }.add(owner)
+                    val merged = set.origin.merged(origin)
+                    if (merged != set.origin) {
+                        set.origin = merged
+                        (merged as? AssetOrigin.Explicit)?.let { adopter.pin(songId, it.reason) }
+                    }
                     return set
                 }
             }
@@ -356,6 +384,7 @@ class MixStreamLoader(
             sources += s to url
         }
         val set = StemSet(songId, parts)
+        set.origin = origin
         stemSetMap[songId] = set
         stemOwners[songId] = mutableSetOf(owner)
         recentStemFailures.remove(songId)
@@ -400,7 +429,9 @@ class MixStreamLoader(
         val files = set.parts.mapValues { it.value.file }
         // The move can be a cross-filesystem copy of four files: never under the loader lock.
         scope.launch {
-            val moved = runCatching { adopter.adoptStems(base, files) }.getOrNull()
+            val moved = runCatching { adopter.adoptStems(base, files, set.origin) }.getOrNull()
+            // An explicit opener may have joined while the move ran: pin what the buffer landing wrote.
+            (set.origin as? AssetOrigin.Explicit)?.let { o -> if (moved != null) runCatching { adopter.pin(base, o.reason) } }
             lock.withLock {
                 set.adopting = false
                 if (moved == null || stemSetMap[base] !== set) return@withLock
@@ -546,7 +577,8 @@ class MixStreamLoader(
         // and the main thread. The stream reads as still-streaming (all bytes landed, file in
         // place) until the move is done, so no reader sees a half-moved path.
         scope.launch {
-            val moved = runCatching { adopter.adoptFile(s.songId, s.title, s.artist, s.file) }.getOrNull()
+            val moved = runCatching { adopter.adoptFile(s.songId, s.title, s.artist, s.file, s.origin) }.getOrNull()
+            (s.origin as? AssetOrigin.Explicit)?.let { o -> if (moved != null) runCatching { adopter.pin(s.songId, o.reason) } }
             lock.withLock { if (streamMap[s.songId] === s) finishComplete(s, moved) }
         }
     }

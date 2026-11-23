@@ -78,7 +78,10 @@ class Rig(
     val ledger = File(dir, "pocketdj-burns.json")
     val folder = AppPrivateBurnFolder(burns)
 
-    fun store() = BurnStore(ledger, folder, rips, lookup = { catalog[it] ?: (null to null) }, clock = { nowMs })
+    fun store(ttlHours: () -> Double? = { 48.0 }, keepPickedFolderBuffers: () -> Boolean = { false }) = BurnStore(
+        ledger, folder, rips, lookup = { catalog[it] ?: (null to null) }, clock = { nowMs },
+        bufferTtlHours = ttlHours, keepPickedFolderBuffers = keepPickedFolderBuffers,
+    )
     fun names(): List<String> = burns.list()?.sorted() ?: emptyList()
 }
 

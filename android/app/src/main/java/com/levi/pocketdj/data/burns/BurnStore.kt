@@ -9,6 +9,7 @@ import com.levi.pocketdj.data.store.VersionedJsonWriter
 import com.levi.pocketdj.data.transfers.TransferCoordinator
 import com.levi.pocketdj.data.transfers.TransferKind
 import com.levi.pocketdj.data.transfers.TransferRecord
+import com.levi.pocketdj.mix.nowplaying.NpMixSettings
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
@@ -57,6 +58,10 @@ class BurnStore(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** SVC-3: when set, downloads run as WorkManager jobs that survive process death (iOS `transfers`). */
     private val transfers: TransferCoordinator? = null,
+    /** TTL (hours) for NEW buffer holds; null = "Keep" (buffer assets pinned at creation). Settings-backed. */
+    private val bufferTtlHours: () -> Double? = { NpMixSettings.DEFAULT_TTL_HOURS },
+    /** "Keep buffered files in picked folders" (npMixKeepPickedFolderBuffers). */
+    private val keepPickedFolderBuffers: () -> Boolean = { false },
 ) {
     private val json = PdjJson.lenient
     private val writer = VersionedJsonWriter(ledgerFile, writerExecutor)
@@ -81,6 +86,57 @@ class BurnStore(
 
     private val runLock = Mutex()
 
+    // ---- temporary holds (ABSENCE OF A HOLD = PINNED) -----------------------------------------
+    private val holdLedger = TemporaryHoldLedger()
+    private val _holds = MutableStateFlow<Map<String, TemporaryHold>>(emptyMap())
+    /** Song id -> hold; the Storage section and the "buffered" badge observe it. */
+    val temporaryHolds: StateFlow<Map<String, TemporaryHold>> = _holds.asStateFlow()
+
+    /** Fired after a hold is created or grows (the storage manager's cap check). */
+    @Volatile
+    var onTemporaryHoldsChanged: (() -> Unit)? = null
+
+    private fun <R> mutateHolds(f: TemporaryHoldLedger.() -> R): R = synchronized(holdLedger) {
+        holdLedger.f().also { _holds.value = holdLedger.holds }
+    }
+
+    fun isTemporary(songId: String): Boolean = _holds.value[songId]?.audio == true
+    fun temporaryExpiry(songId: String): Double? = _holds.value[songId]?.expiresAtMs
+    val temporaryFootprintBytes: Long get() = _holds.value.values.sumOf { it.bytes }
+
+    /**
+     * PROMOTE (pin): drop the holds of [songIds] and keep their files. The ONE funnel every explicit
+     * Download / Mix action calls - including when the file is already there. Matches by BASE song
+     * id. Returns how many holds were dropped.
+     */
+    fun pin(songIds: Collection<String>, reason: String): Int {
+        if (_holds.value.isEmpty()) return 0
+        val hit = mutateHolds { pin(songIds) }
+        if (hit.isEmpty()) return 0
+        save()
+        return hit.size
+    }
+
+    /** Settings > Storage > "Keep all": every buffered asset becomes a normal download. */
+    fun pinAllTemporary(reason: String): Int {
+        val n = mutateHolds { pinAll() }
+        if (n > 0) save()
+        return n
+    }
+
+    /** The sweep deleted this hold's files (or released them): forget the hold. */
+    fun dropHold(songId: String): TemporaryHold? = mutateHolds { drop(songId) }?.also { save() }
+
+    private fun noteBufferCreated(c: TemporaryHoldLedger.Created) {
+        val ttl = bufferTtlHours()
+        val keep = keepPickedFolderBuffers()
+        val h = mutateHolds { noteCreated(c, clock().toDouble(), ttl, keep) } ?: return
+        save()
+        onTemporaryHoldsChanged?.invoke()
+    }
+
+    private fun userFolderPath(root: BurnRoot): String? = root.dir.absoluteFile.normalize().path
+
     /** True only while an in-process burn loop holds the run lock (NOT background transfers). */
     val loopActive: Boolean get() = runLock.isLocked
     private val localMemo = ConcurrentHashMap<String, Any>()
@@ -101,6 +157,7 @@ class BurnStore(
                 val doc = json.decodeFromString(BurnDocument.serializer(), ledgerFile.readText())
                 _items.value = LinkedHashMap<String, BurnItem>().also { m -> doc.items.forEach { m.putIfAbsent(it.songId, it) } }
                 _pending.value = LinkedHashMap<String, PendingBurn>().also { m -> (doc.pendingAfterRip ?: emptyList()).forEach { m.putIfAbsent(it.songId, it) } }
+                doc.temporaryHolds?.let { hs -> mutateHolds { load(hs) } }
             } catch (e: Exception) {
                 // Undecodable (corrupt / future schema): keep it aside so the next save() can't destroy it.
                 runCatching { ledgerFile.renameTo(File(ledgerFile.parentFile, ledgerFile.name + ".corrupt-" + clock())) }
@@ -110,20 +167,20 @@ class BurnStore(
 
     // ---- persistence --------------------------------------------------------------------------
 
+    private fun snapshotDoc() = BurnDocument(
+        items = _items.value.values.sortedBy { it.downloadedAt },
+        pendingAfterRip = _pending.value.values.sortedBy { it.requestedAtMs },
+        temporaryHolds = _holds.value.values.toList().takeIf { it.isNotEmpty() },
+    )
+
     private fun save() {
-        val doc = BurnDocument(
-            items = _items.value.values.sortedBy { it.downloadedAt },
-            pendingAfterRip = _pending.value.values.sortedBy { it.requestedAtMs },
-        )
+        val doc = snapshotDoc()
         writer.write(version.incrementAndGet()) { json.encodeToString(BurnDocument.serializer(), doc) }
     }
 
     /** Barrier write (ON_STOP): nothing queued can be lost to a process kill. */
     fun flush() {
-        val doc = BurnDocument(
-            items = _items.value.values.sortedBy { it.downloadedAt },
-            pendingAfterRip = _pending.value.values.sortedBy { it.requestedAtMs },
-        )
+        val doc = snapshotDoc()
         writer.flushNow(version.incrementAndGet()) { json.encodeToString(BurnDocument.serializer(), doc) }
     }
 
@@ -280,7 +337,11 @@ class BurnStore(
      * BURN [songs] ONE BY ONE (in-process serial path). Never blocks on a rip; per-item failures
      * are partial success; disk-full aborts the rest. Empty input is a no-op.
      */
-    suspend fun burn(songs: List<BurnSong>): BurnResult = runLock.withLock { burnLocked(songs) }
+    suspend fun burn(songs: List<BurnSong>): BurnResult {
+        // EXPLICIT download: pin BEFORE the freshness skip, so an already-buffered song converts.
+        pin(songs.map { it.id }, "burn")
+        return runLock.withLock { burnLocked(songs) }
+    }
 
     private val priorReady = ConcurrentHashMap<String, BurnItem>()
 
@@ -597,6 +658,7 @@ class BurnStore(
 
     /** BURN the 4 stems (idempotent; never triggers separation). Null if not stemmed / failed. */
     suspend fun burnStems(songId: String): Map<String, File>? {
+        pin(listOf(songId), "burn-stems")
         localStemFiles(songId)?.let { return it }
         val remote = rips.stemUrls(songId) ?: return null
         val dir = folder.activeWritable()?.dir ?: return null
@@ -620,15 +682,18 @@ class BurnStore(
     }
 
     /** BURN ONE stem part (same file name the whole-set burn / streamed adoption use). */
-    suspend fun burnStemPart(songId: String, part: String): Boolean {
+    suspend fun burnStemPart(songId: String, part: String, origin: AssetOrigin = AssetOrigin.Incidental): Boolean {
         if (part !in BurnFileNames.STEM_NAMES) return false
+        if (origin is AssetOrigin.Explicit) pin(listOf(songId), origin.reason)
         val url = rips.stemUrls(songId)?.get(part) ?: return false
-        val dir = folder.activeWritable()?.dir ?: return false
+        val root = folder.activeWritable() ?: return false
+        val dir = root.dir
         val dest = File(dir, BurnFileNames.stemFileName(songId, part))
         if (dest.exists()) return true
         return try {
             rips.download(url, dest)
             mirrorIO(dir, listOf(dest.name))
+            if (origin == AssetOrigin.Buffer) noteBufferStemPart(songId, part, root, dest)
             true
         } catch (e: CancellationException) {
             throw e
@@ -642,9 +707,11 @@ class BurnStore(
      * ALL OR NOTHING: a move failing part-way rolls the moved parts back. A part already burned
      * keeps the existing file.
      */
-    fun adoptStreamedStems(songId: String, files: Map<String, File>): Map<String, File>? {
+    fun adoptStreamedStems(songId: String, files: Map<String, File>, origin: AssetOrigin = AssetOrigin.Incidental): Map<String, File>? {
+        if (origin is AssetOrigin.Explicit) pin(listOf(songId), origin.reason)
         if (files.keys != BurnFileNames.STEM_NAMES.toSet()) return null
-        val dir = folder.activeWritable()?.dir ?: return null
+        val root = folder.activeWritable() ?: return null
+        val dir = root.dir
         val out = LinkedHashMap<String, File>()
         val moved = ArrayList<Pair<File, File>>()
         for ((name, src) in files) {
@@ -660,7 +727,24 @@ class BurnStore(
             out[name] = dest
         }
         folder.mirrorFiles(dir, moved.map { it.second.name })
+        // The buffer lane owns ONLY the parts it just moved in (a part already on disk is never temporary).
+        if (origin == AssetOrigin.Buffer) for ((_, d) in moved) {
+            val part = BurnFileNames.STEM_NAMES.firstOrNull { BurnFileNames.stemFileName(songId, it) == d.name } ?: continue
+            noteBufferStemPart(songId, part, root, d)
+        }
         return out
+    }
+
+    private fun noteBufferStemPart(songId: String, part: String, root: BurnRoot, file: File) {
+        noteBufferCreated(
+            TemporaryHoldLedger.Created(
+                songId = songId, stemPart = part, stemBytes = file.length(),
+                inUserFolder = root.isUserFolder, folderPath = userFolderPath(root).takeIf { root.isUserFolder },
+                fileName = file.name.takeIf { root.isUserFolder },
+                fileMtimeMs = file.lastModified().takeIf { root.isUserFolder && it > 0 }?.toDouble(),
+                heldAudioInUserFolder = _items.value[songId]?.wasAppStorage == false,
+            ),
+        )
     }
 
     private fun moveFile(src: File, dest: File) {
@@ -709,7 +793,9 @@ class BurnStore(
      * burn instead of downloading again. Returns the adopted audio file or null (already burned,
      * not in the manifest, no writable folder, empty file).
      */
-    fun adoptStreamedFile(songId: String, title: String, artist: String, from: File): File? {
+    fun adoptStreamedFile(songId: String, title: String, artist: String, from: File, origin: AssetOrigin = AssetOrigin.Incidental): File? {
+        // An explicit opener pins even when the file is already burned (the early return below).
+        if (origin is AssetOrigin.Explicit) pin(listOf(songId), origin.reason)
         val entry = rips.entry(songId) ?: return null
         if (_items.value[songId]?.state == BurnState.READY && localUrl(songId) != null) return null
         // A burn run is writing files right now (possibly this very audio path): don't race it.
@@ -746,6 +832,19 @@ class BurnStore(
                 ),
             )
             save()
+            // Buffer landing: a hold ONLY for what this landing created (no .ready item existed -
+            // guarded above; an analog side another song already left on disk is not ours).
+            if (origin == AssetOrigin.Buffer && !analogShared) {
+                noteBufferCreated(
+                    TemporaryHoldLedger.Created(
+                        songId = songId, audioBytes = size,
+                        inUserFolder = root.isUserFolder, folderPath = userFolderPath(root).takeIf { root.isUserFolder },
+                        fileName = audio.name.takeIf { root.isUserFolder },
+                        fileMtimeMs = audio.lastModified().takeIf { root.isUserFolder && it > 0 }?.toDouble(),
+                        heldAudioInUserFolder = prev?.wasAppStorage == false,
+                    ),
+                )
+            }
             onAnyBurnFinalized?.invoke(songId, size)
             audio
         } catch (_: Exception) {
@@ -815,6 +914,8 @@ class BurnStore(
         }
         for ((tree, names) in folderCopies) folder.deleteMirrored(tree, names)
         dropItems(goners.keys)
+        // A removed song's hold has nothing left to expire (stem files go with it via removeAuxFiles).
+        if (_holds.value.isNotEmpty()) mutateHolds { dropAll(goners.keys) }
         save()
     }
 
@@ -918,6 +1019,10 @@ class BurnStore(
 
     /** Delete every owned stem file (beat grids stay); [protecting] = songs loaded in a live player. */
     fun removeAllStems(protecting: Set<String> = emptySet()) {
+        if (_holds.value.isNotEmpty()) {
+            mutateHolds { for (id in holds.keys) if (id !in protecting) forgetStemParts(id, BurnFileNames.STEM_NAMES) }
+            save()
+        }
         for (r in folder.roots()) {
             val gone = ArrayList<String>()
             for (f in r.dir.listFiles().orEmpty()) {
@@ -930,6 +1035,10 @@ class BurnStore(
     }
 
     fun removeStems(songIds: List<String>, protecting: Set<String> = emptySet()) {
+        if (_holds.value.isNotEmpty()) {
+            mutateHolds { for (id in songIds) if (id !in protecting) forgetStemParts(id, BurnFileNames.STEM_NAMES) }
+            save()
+        }
         for (r in folder.roots()) {
             val gone = ArrayList<String>()
             for (id in songIds) {
@@ -1089,6 +1198,7 @@ class BurnStore(
 
     /** Remember the intent durably; the rip runs elsewhere and [drainPendingAfterRip] finishes it. */
     fun burnWhenRipped(songId: String, title: String, artist: String, nowMs: Double = now) {
+        pin(listOf(songId), "burn-when-ripped")
         if (_pending.value.containsKey(songId)) return
         _pending.update { it + (songId to PendingBurn(songId, title, artist, nowMs)) }
         save()
