@@ -13,6 +13,9 @@ fun releaseInput(name: String): String? =
     System.getenv(name)?.takeIf { it.isNotBlank() }
         ?: project.findProperty(name)?.toString()?.takeIf { it.isNotBlank() }
 
+// P2-SURF-12: the app module aggregates every @AppFunction into the generated app_functions*.xml the platform indexes.
+ksp { arg("appfunctions:aggregateAppFunctions", "true") }
+
 android {
     namespace = "com.levi.pocketdj"
     compileSdk = 36
