@@ -8,12 +8,13 @@ import com.levi.pocketdj.mix.store.AutoRow
 import com.levi.pocketdj.mix.store.AutoSnapshot
 import com.levi.pocketdj.mix.store.MixEventKind
 import com.levi.pocketdj.mix.store.TrackRef
+import com.levi.pocketdj.playback.dj.AutoTransition
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Locale
 import kotlin.random.Random
-import com.levi.pocketdj.playback.dj.AutoTransition
+
 /** The Auto-DJ's observable surface for the Mix banner / queue UIs. */
 data class AutoUiState(
     val mixing: Boolean = false,

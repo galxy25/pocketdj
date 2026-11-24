@@ -34,8 +34,8 @@ object MixMath {
 
     /** Equal-power crossfade factor 0..1 for a deck at crossfader position [crossfader] (0=A, 1=B). */
     fun crossfadeFactor(deck: Deck, crossfader: Float): Float {
-        val v = crossfader
-        return if (deck == Deck.A) cos((PI / 2 * v).toFloat()) else cos((PI / 2 * (1 - v)).toFloat())
+        val g = AutoTransition.equalPowerGains(crossfader)
+        return if (deck == Deck.A) g.outgoing else g.incoming
     }
 
     // Tempo

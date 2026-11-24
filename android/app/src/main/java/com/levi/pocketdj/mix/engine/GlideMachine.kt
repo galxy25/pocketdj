@@ -119,8 +119,12 @@ class GlideMachine internal constructor(private val dj: AutoDj) {
         )
         transitionIsGlide = true
         if (fade != null) {                              // manual skip: custom fade, restored afterwards
-            if (dj.pendingFadeRestore == null) dj.pendingFadeRestore = dj.fadeSeconds
-            dj.fadeSeconds = maxOf(AutoTransition.MIN_IMMEDIATE_FADE_SECONDS, fade)
+            val plan = AutoTransition.immediatePlan(
+                fade, dj.fadeSeconds, 0.0, fxOn, mixOn,
+                fadeOverridePending = dj.pendingFadeRestore != null,
+            )
+            plan.fadeRestore?.let { dj.pendingFadeRestore = it }
+            dj.fadeSeconds = plan.fadeSeconds
         }
         if (preroll > AutoTransition.MIN_RAMP_SECONDS) {
             glideInSecondsActive = preroll
