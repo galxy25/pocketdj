@@ -269,6 +269,24 @@ class MixVolumeGlideTest {
         assertEquals(2, r.calls.size)         // each song was measured once
     }
 
+    @Test fun aSameKeyReloadWhilePendingDoesNotQueueASecondAnalysis() {
+        val r = Rig { -20.0 }
+        r.glide.setEnabled(true)
+        r.load(A, "s1")
+        r.glide.deckLoaded(A)          // same song, same file, analysis still pending
+        r.settle()
+        assertEquals(1, r.calls.size)
+        assertEquals(LevelingStatus.MEASURED, r.glide.leveling.value[A].status)
+    }
+
+    @Test fun theGainIsLoggedOnlyWhenTheTargetChanges() {
+        val r = Rig { -20.0 }
+        r.glide.setEnabled(true)
+        r.load(A, "s1"); r.settle()
+        repeat(3) { r.glide.levelDeck(A) }
+        assertEquals(1, r.host.lines.count { it.startsWith("volume glide deck=A gain=") })
+    }
+
     @Test fun repeatRefreshesQueueOneAnalysisPerDeck() {
         val r = Rig { -20.0 }
         r.glide.setEnabled(true)

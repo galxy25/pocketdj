@@ -109,6 +109,14 @@ class MixVolumeGlide(
     private val awaiting = arrayOfNulls<LoudnessCache.Key>(2)
     /** A cancelled shared analysis is re-kicked once per load, never in a loop. */
     private val rekicked = BooleanArray(2)
+    /** The last gain logged per deck: the MEASURED line fires only when the target changes. */
+    private val loggedGain = DoubleArray(2) { Double.NaN }
+
+    private fun logGain(deck: Deck, target: Double) {
+        if (loggedGain[deck.ordinal] == target) return
+        loggedGain[deck.ordinal] = target
+        host.log("volume glide deck=${deck.label} gain=${String.format(Locale.US, "%.1f", target)}")
+    }
 
     /** The trim Volume Glide holds on [deck] right now (dB). */
     fun levelDb(deck: Deck): Double = level[deck.ordinal]
@@ -126,7 +134,8 @@ class MixVolumeGlide(
 
     /** A NEW song took [deck]. */
     fun deckLoaded(deck: Deck) {
-        awaiting[deck.ordinal] = null
+        // awaiting is kept: a same-key reload must not queue a second analysis (a different key still starts its own,
+        // and the stale result is dropped by the key check in levelDeck).
         rekicked[deck.ordinal] = false
         levelDeck(deck)
     }
@@ -140,6 +149,7 @@ class MixVolumeGlide(
         ramps[i]?.close(); ramps[i] = null
         awaiting[i] = null
         rekicked[i] = false
+        loggedGain[i] = Double.NaN
         if (level[i] != 0.0) { level[i] = 0.0; host.writeTrim(deck, 0.0) }
         publish(deck, LevelSide())
     }
@@ -149,6 +159,7 @@ class MixVolumeGlide(
         val songId = host.loadedSongId(deck)
         if (!enabled || !host.autoMixing || songId == null) {
             awaiting[deck.ordinal] = null
+            loggedGain[deck.ordinal] = Double.NaN
             setDeckLevel(deck, 0.0, LevelingStatus.INACTIVE)
             return
         }
@@ -197,7 +208,7 @@ class MixVolumeGlide(
         if (!VolumeGlideRules.shouldRamp(host.isAudible(deck), from, target, rampSeconds)) {
             if (from != target) { level[i] = target; host.writeTrim(deck, target) }
             publish(deck, LevelSide(status, target))
-            if (status == LevelingStatus.MEASURED) host.log("volume glide deck=${deck.label} gain=${String.format(Locale.US, "%.1f", target)}")
+            if (status == LevelingStatus.MEASURED) logGain(deck, target)
             return
         }
         publish(deck, LevelSide(status, from))
@@ -212,7 +223,7 @@ class MixVolumeGlide(
             if (n >= steps) ramps[i] = null
             n < steps
         }
-        if (status == LevelingStatus.MEASURED) host.log("volume glide deck=${deck.label} gain=${String.format(Locale.US, "%.1f", target)}")
+        if (status == LevelingStatus.MEASURED) logGain(deck, target)
     }
 
     private fun publish(deck: Deck, side: LevelSide) {

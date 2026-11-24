@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-MIX-2 - Mix tab Volume Glide + visible deck trims
 
@@ -26,3 +26,11 @@ Tests: 26 new (MixVolumeGlideTest: rules, state machine over a fake host, compos
 
 ## Questions for Levi
 None.
+
+## Review
+fixes applied
+- MixVolumeGlide.kt:120 redundant analysis on same-key reload / repeated gain log -> fixed (deckLoaded keeps `awaiting`; gain logged only when the target changes). Tests: aSameKeyReloadWhilePendingDoesNotQueueASecondAnalysis, theGainIsLoggedOnlyWhenTheTargetChanges.
+- MixVolumeGlide.kt:99 no quick-pass "estimated" hint -> accepted as documented deviation (no Android analysis scheduler).
+- MixGraph.kt:260 second LoudnessCache writer -> fixed by prominent TODO(P2-DJ-11) to reuse MixGraph.loudnessCache.
+- RenderParams.kt:135 NIT -> skipped (correct, pure function; negligible cost).
+Tests: 6853, 0 failures; assembleDebug green.

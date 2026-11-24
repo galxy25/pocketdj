@@ -256,6 +256,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     val modController: com.levi.pocketdj.mix.engine.ModController get() { mixEngine; return checkNotNull(modControllerInst) }
 
     /** Measured loudness per local file (`filesDir/loudness.json`); Volume Glide's source, shared with DJ Mode. */
+    // TODO(P2-DJ-11): DJ Mode MUST reuse this instance (one writer for loudness.json); never construct a second LoudnessCache.
     val loudnessCache: com.levi.pocketdj.playback.dj.LoudnessCache by lazy {
         com.levi.pocketdj.playback.dj.LoudnessCache(File(app.appContext.filesDir, "loudness.json"), log = { NPLog.lane(NPLog.MIX, it) })
     }
