@@ -101,6 +101,11 @@ data class PlayEvent(
     val listeningContext: com.levi.pocketdj.data.pockets.ListeningContextTag? = null,
     /** True when a car-projection session was connected at record time; null = unknown / not applicable. */
     val carPlay: Boolean? = null,
+    /** Settled motion token (iOS `motion`: running/walking/...). Write-once, own plays only; null = unsettled. */
+    val motion: String? = null,
+    /** Set only for plays started by a Pocket Wheel run. Write-once; run plays keep source=pocket. */
+    @kotlinx.serialization.Serializable(with = LenientPocketRunTagSerializer::class)
+    val pocketRun: PocketRunTag? = null,
 ) {
     /** DERIVED, never stored: skipped wins, then fraction >= 0.5 completed else partial. */
     val outcome: PlayOutcome

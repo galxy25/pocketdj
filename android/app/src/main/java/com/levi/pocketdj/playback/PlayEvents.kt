@@ -20,6 +20,8 @@ data class PlayContext(
     val contextName: String? = null,
     /** Game-run tag stamped on rows appended with `appendRows(runTag)`; null for ordinary plays. */
     val runTag: String? = null,
+    /** Pocket Wheel run tag copied onto the recorded PlayEvent; null for ordinary plays. */
+    val pocketRun: com.levi.pocketdj.data.history.PocketRunTag? = null,
 ) {
     companion object {
         const val SOURCE_BROWSER = "browser"
