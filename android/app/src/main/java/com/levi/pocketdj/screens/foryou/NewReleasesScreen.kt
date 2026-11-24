@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.ManageAccounts
@@ -33,6 +34,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -132,6 +134,16 @@ object NewReleasesPresentation {
      */
     fun live(items: List<ReleaseFeedItem>, tombstones: Map<String, Double>): List<ReleaseFeedItem> =
         if (tombstones.isEmpty()) items else items.filter { tombstones[it.feedbackId] == null }
+
+    // ---- albums / singles filter copy (iOS `NewReleasesView.kindEmptyDetail` etc.) ----
+
+    /** The filter emptied the screen: "No new albums" / "No new singles". */
+    fun kindEmptyTitle(mode: NewReleaseKindFilter): String = "No new ${NewReleaseKinds.shownNoun(mode)}"
+
+    fun kindEmptyDetail(mode: NewReleaseKindFilter, hiddenNote: String?): String {
+        val setting = "Your New filter is set to ${mode.label}."
+        return if (hiddenNote == null) setting else "${hiddenNote.replaceFirstChar { it.uppercase() }}. $setting"
+    }
 
     fun canPlay(starting: Boolean, liveOutNow: List<ReleaseFeedItem>): Boolean = !starting && liveOutNow.isNotEmpty()
 
@@ -237,11 +249,21 @@ fun NewReleasesScreen(
     // Pre-orders whose Apple Music write PROVED it landed stay in Coming soon (badged) instead of vanishing
     // with the rest of the accepted rows: added as far as Apple can say; the PocketDJ side follows on release day.
     val preAdded = remember(likedState.revision) { LikedReleaseSelection.preAdded(likedState.releases, now, accepted) }
-    val outNow = remember(rev, fbState.revision, preAdded) {
-        NewReleasesPresentation.sunkLast(NewReleasesPresentation.offered(service.outNow(now), accepted, preAdded), tombstones)
+    // Per section: offered -> arrange (the albums/singles choice, rejected sinking INSIDE each group) -> render.
+    // The filter comes AFTER `offered`, so a thumbed-up release still leaves Out now and moves to Liked.
+    val mode by remember { graph.settings.settings.map { NewReleaseKindFilter.from(it.newReleaseKind) } }
+        .collectAsState(NewReleaseKindFilter.ALL)
+    val offeredOut = remember(rev, fbState.revision, preAdded) {
+        NewReleasesPresentation.offered(service.outNow(now), accepted, preAdded)
     }
-    val soon = remember(rev, fbState.revision, preAdded) {
-        NewReleasesPresentation.sunkLast(NewReleasesPresentation.offered(service.comingSoon(now), accepted, preAdded), tombstones)
+    val offeredSoon = remember(rev, fbState.revision, preAdded) {
+        NewReleasesPresentation.offered(service.comingSoon(now), accepted, preAdded)
+    }
+    val outNowA = remember(offeredOut, mode, tombstones) {
+        NewReleaseKinds.arrange(offeredOut, mode, { it.entry.kindClass }, { NewReleasesPresentation.sunkLast(it, tombstones) })
+    }
+    val soonA = remember(offeredSoon, mode, tombstones) {
+        NewReleaseKinds.arrange(offeredSoon, mode, { it.entry.kindClass }, { NewReleasesPresentation.sunkLast(it, tombstones) })
     }
     // "Liked - not added", from the pure selection. The probes are the feed's own, so a record owned by ANY
     // path drops out with no extra bookkeeping.
@@ -260,14 +282,22 @@ fun NewReleasesScreen(
             nowMs = now,
         )
     }
+    val likedA = remember(liked, mode) { NewReleaseKinds.arrange(liked.rows, mode, { it.release.kindClass }) }
+    // Hidden counts cover every section (Liked included) and count rows that WOULD render under Everything.
+    val hiddenAlbums = outNowA.hiddenAlbums + soonA.hiddenAlbums + likedA.hiddenAlbums
+    val hiddenEPs = outNowA.hiddenEPs + soonA.hiddenEPs + likedA.hiddenEPs
+    val hiddenSingles = outNowA.hiddenSingles + soonA.hiddenSingles + likedA.hiddenSingles
+    val hiddenNote = NewReleaseKinds.hiddenNote(hiddenAlbums, hiddenEPs, hiddenSingles)
     // Rebuild metadata for likes this install has never seen (older likes, another device's), then retry what
     // was waiting on a connection or a release day. Off the render path.
     // On the ADDER's scope: this screen's own scope is cancelled on back, which would abort a half-done add.
     LaunchedEffect(adder) {
         adder?.maintain(feedback.acceptedInScope(NewReleasesPresentation.SCOPE))
     }
-    // The LIVE half, computed ONCE and used by both the rows and the transport's enabled state.
-    val liveOutNow = remember(outNow, tombstones) { NewReleasesPresentation.live(outNow, tombstones) }
+    // The LIVE half, computed ONCE and used by both the rows and the transport's enabled state. It reads the
+    // ARRANGED list, so play queues albums then singles and shuffle shuffles all of it (the 25-release cap
+    // applies after this ordering, so singles are what get cut).
+    val liveOutNow = remember(outNowA, tombstones) { NewReleasesPresentation.live(outNowA.flat, tombstones) }
     val canPlay = NewReleasesPresentation.canPlay(starting, liveOutNow)
 
     fun start(shuffle: Boolean) {
@@ -317,18 +347,60 @@ fun NewReleasesScreen(
                         onClick = { menu = false; service.recheckKnownArtists() },
                         modifier = Modifier.testTag("foryou-new-recheck"),
                     )
+                    HorizontalDivider()
+                    // Show: albums vs singles. A disabled caption heads the group (`…-kind-menu`), a check marks
+                    // the current choice, and the footnote says where EPs go.
+                    DropdownMenuItem(
+                        text = { Text("Show", style = MaterialTheme.typography.labelMedium) },
+                        enabled = false, onClick = {},
+                        modifier = Modifier.testTag("foryou-new-kind-menu"),
+                    )
+                    for (m in NewReleaseKindFilter.entries) {
+                        DropdownMenuItem(
+                            text = { Text(m.label) },
+                            trailingIcon = { if (m == mode) Icon(Icons.Filled.Check, contentDescription = "Selected") },
+                            onClick = { menu = false; scope.launch { graph.settings.setNewReleaseKind(m.raw) } },
+                            modifier = Modifier.testTag("foryou-new-kind-${m.raw}"),
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("EPs count as albums", style = MaterialTheme.typography.labelSmall) },
+                        enabled = false, onClick = {},
+                    )
                 }
             }
         }
 
-        // The empty state means "nothing at all" - a liked-but-not-added record is something.
-        if (outNow.isEmpty() && soon.isEmpty() && liked.rows.isEmpty()) {
+        // Three different empties: nothing at all (the reason-based state; the filter is not the cause),
+        // everything hidden by the filter (says so, offers Show all), or a partial hide (a footer under the
+        // rows). A liked-but-not-added record is something.
+        if (offeredOut.isEmpty() && offeredSoon.isEmpty() && liked.rows.isEmpty()) {
             EmptyState(service.emptyReason())
+        } else if (outNowA.flat.isEmpty() && soonA.flat.isEmpty() && likedA.flat.isEmpty()) {
+            KindEmptyState(mode, hiddenNote) { scope.launch { graph.settings.setNewReleaseKind(NewReleaseKindFilter.ALL.raw) } }
         } else {
             LazyColumn(Modifier.fillMaxSize().testTag("foryou-new-list")) {
-                if (adder != null) likedSection(liked.rows, now, catalog, feedback, adder)
-                section(ReleaseStatus.OUT_NOW, outNow, now, catalog, feedback, context, adder, preAdded)
-                section(ReleaseStatus.COMING_SOON, soon, now, catalog, feedback, context, adder, preAdded)
+                if (adder != null) likedSection(likedA.flat, now, catalog, feedback, adder)
+                section(ReleaseStatus.OUT_NOW, outNowA, now, catalog, feedback, context, adder, preAdded)
+                section(ReleaseStatus.COMING_SOON, soonA, now, catalog, feedback, context, adder, preAdded)
+                if (hiddenNote != null) {
+                    item(key = "kind-hidden-footer") {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                hiddenNote, style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.weight(1f).testTag("new-kind-hidden-footer"),
+                            )
+                            TextButton(
+                                onClick = { scope.launch { graph.settings.setNewReleaseKind(NewReleaseKindFilter.ALL.raw) } },
+                                modifier = Modifier.testTag("new-kind-show-all"),
+                            ) { Text("Show all") }
+                        }
+                    }
+                }
             }
         }
     }
@@ -365,7 +437,7 @@ private suspend fun expandRelease(graph: AppGraph, releaseId: String): List<Rele
 
 private fun androidx.compose.foundation.lazy.LazyListScope.section(
     status: ReleaseStatus,
-    rows: List<ReleaseFeedItem>,
+    arranged: NewReleaseKinds.Arranged<ReleaseFeedItem>,
     now: Double,
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
     feedback: com.levi.pocketdj.data.recs.RecFeedbackStore,
@@ -373,7 +445,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     adder: NewReleaseLikeAdder?,
     preAdded: Set<String>,
 ) {
-    if (rows.isEmpty()) return
+    if (arranged.flat.isEmpty()) return
     item(key = "h-${status.raw}") {
         Text(
             status.title,
@@ -382,8 +454,46 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).testTag("new-release-section-${status.raw}"),
         )
     }
-    items(rows, key = { "${status.raw}-${it.entry.artistId}" }) { item ->
-        ReleaseRow(item, now, catalog, feedback, context, adder, preAdded)
+    // Albums/Singles sub-headers only when BOTH groups exist - a lone "Albums" over the whole section is noise.
+    if (arranged.grouped && arranged.albums.isNotEmpty() && arranged.singles.isNotEmpty()) {
+        item(key = "g-albums-${status.raw}") { GroupHeader("Albums", "new-release-group-albums-${status.raw}") }
+        items(arranged.albums, key = { "${status.raw}-${it.entry.artistId}" }) { item ->
+            ReleaseRow(item, now, catalog, feedback, context, adder, preAdded)
+        }
+        item(key = "g-singles-${status.raw}") { GroupHeader("Singles", "new-release-group-singles-${status.raw}") }
+        items(arranged.singles, key = { "${status.raw}-${it.entry.artistId}" }) { item ->
+            ReleaseRow(item, now, catalog, feedback, context, adder, preAdded)
+        }
+    } else {
+        items(arranged.flat, key = { "${status.raw}-${it.entry.artistId}" }) { item ->
+            ReleaseRow(item, now, catalog, feedback, context, adder, preAdded)
+        }
+    }
+}
+
+@Composable
+private fun GroupHeader(title: String, tag: String) {
+    Text(
+        title.uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag(tag),
+    )
+}
+
+/** The filter emptied the screen and the unfiltered list has rows - "Nothing new" would be a false claim. */
+@Composable
+private fun KindEmptyState(mode: NewReleaseKindFilter, hiddenNote: String?, onShowAll: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(30.dp).testTag("new-kind-empty"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(NewReleasesPresentation.kindEmptyTitle(mode), style = MaterialTheme.typography.titleSmall)
+        Text(
+            NewReleasesPresentation.kindEmptyDetail(mode, hiddenNote), style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        OutlinedButton(onClick = onShowAll, modifier = Modifier.padding(top = 12.dp).testTag("new-kind-show-all")) { Text("Show all") }
     }
 }
 
@@ -541,9 +651,12 @@ private fun ReleaseRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    e.releaseKind?.let {
-                        Text(it.replaceFirstChar { c -> c.uppercase() }, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                    }
+                    // The CLASSIFIED kind, not Apple's raw `releaseKind` (a 2-track "album" under Singles only).
+                    val cls = e.kindClass
+                    Text(
+                        NewReleaseKinds.badge(e.releaseKind, cls), style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("new-release-kind-${e.artistId}"),
+                    )
                     e.releaseAtMs?.let {
                         Text(NewReleasesPresentation.relative(it, now), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
