@@ -34,4 +34,10 @@ object ParityFlags {
      * Debug > "Wheel preview" ignores this flag.
      */
     val POCKET_WHEEL: Boolean get() = true
+
+    /**
+     * P2-REM-7: the Remote half of the Jukebox panel (Listen Together / Backseat). `false` until P2-REM-9 (a real
+     * transport) flips it; the hub (P2-REM-8) hides the Hero | Remote switch while it is off.
+     */
+    val REMOTE: Boolean get() = false
 }
