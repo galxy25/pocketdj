@@ -88,4 +88,78 @@ class MotionTimelineStoreTest {
         assertEquals("walking", MotionTransitionReceiver.tokenForName("walking"))
         assertNull(MotionTransitionReceiver.tokenForName("flying"))
     }
+
+    @Test fun staleOpenSegmentIsCappedNotGrowing() {
+        val s = store()
+        s.onTransition("walking", true, clock - 3 * 86_400_000L)
+        val seg = s.segments(0, clock).single()
+        assertEquals(MotionTimelineStore.MAX_SEGMENT_MS, seg.endMs - seg.startMs)
+        assertTrue(s.segments(clock - 10 * min, clock).isEmpty())
+    }
+
+    @Test fun staleOpenFinalisedOnNextTransitionAndReload() {
+        val s = store()
+        s.onTransition("walking", true, clock - 3 * 86_400_000L)
+        s.onTransition("running", true, clock - min)
+        val segs = s.segments(0, clock)
+        assertEquals(MotionTimelineStore.MAX_SEGMENT_MS, segs[0].endMs - segs[0].startMs)
+        assertEquals("running", segs[1].activity)
+    }
+
+    @Test fun longGapImplicitCloseIsCapped() {
+        val s = store()
+        s.onTransition("walking", true, clock - 9 * 3_600_000L)
+        s.onTransition("stationary", true, clock - min)
+        val w = s.segments(0, clock).first { it.activity == "walking" }
+        assertEquals(MotionTimelineStore.MAX_SEGMENT_MS, w.endMs - w.startMs)
+    }
+
+    @Test fun closeOpenStopsTheSegment() {
+        val s = store()
+        s.onTransition("walking", true, clock - 10 * min)
+        s.closeOpen(clock - 4 * min)
+        clock += 60 * min
+        assertEquals(listOf(MotionSegment(clock - 70 * min, clock - 64 * min, "walking", 1)), s.segments(0, clock))
+    }
+
+    private class FakeSource : ListeningMotionStore.Source {
+        var registers = 0; var unregisters = 0
+        override fun register() { registers++ }
+        override fun unregister() { unregisters++ }
+    }
+
+    private fun listening(perm: Boolean, src: FakeSource, tl: MotionTimelineStore) =
+        ListeningMotionStore(File(tmp.root, "lm.json"), tl, { perm }, src) { clock }
+
+    @Test fun inertWithoutPermissionAndOffByDefault() {
+        val tl = store(); val src = FakeSource()
+        val m = listening(false, src, tl)
+        assertFalse(m.isEnabled)
+        m.setEnabled(true)
+        assertEquals(0, src.registers)
+        assertFalse(m.isActive)
+        tl.onTransition("walking", true, clock - min)
+        assertNull(m.currentActivity())
+        m.ensureRegistered()
+        assertEquals(0, src.registers)
+    }
+
+    @Test fun disablingAndLostPermissionCloseOpenSegment() {
+        val tl = store(); val src = FakeSource()
+        val m = listening(true, src, tl)
+        m.setEnabled(true)
+        assertEquals(1, src.registers)
+        tl.onTransition("walking", true, clock - 10 * min)
+        m.setEnabled(false)
+        assertEquals(1, src.unregisters)
+        clock += 60 * min
+        assertEquals(clock - 60 * min, tl.segments(0, clock).single().endMs)
+
+        val tl2 = MotionTimelineStore(File(tmp.root, "tl2.json")) { clock }
+        val m2 = ListeningMotionStore(File(tmp.root, "lm2.json"), tl2, { false }, src) { clock }
+        tl2.onTransition("running", true, clock - 5 * min)
+        m2.ensureRegistered()
+        clock += 60 * min
+        assertEquals(clock - 60 * min, tl2.segments(0, clock).single().endMs)
+    }
 }

@@ -24,7 +24,7 @@ class MotionTransitionReceiver : BroadcastReceiver() {
             try {
                 val graph = com.levi.pocketdj.di.AppGraph.get(context).pocketsGraph
                 val store = graph.motionStore
-                if (!store.isActive) return@Thread
+                if (!store.isActive) { graph.motionTimeline.closeOpen(); return@Thread }
                 val timeline = graph.motionTimeline
                 val nowMs = System.currentTimeMillis()
                 if (fake != null) {

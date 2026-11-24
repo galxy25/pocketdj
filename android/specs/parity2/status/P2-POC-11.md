@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-POC-11 Motion engine
 
@@ -15,3 +15,11 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+- MAJOR stale open segment -> fixed: MAX_SEGMENT_MS (2h) cap on open clip in segments(), trim() finalises stale/out-of-ring open, new closeOpen() called on setEnabled(false), ensureRegistered (boot/replace/start/permission loss) and in the receiver when inactive. Tests added.
+- MINOR settleMotion catalog early-return -> fixed: null-safe lengthOf (180s fallback like iOS).
+- MINOR long-gap implicit close -> fixed: closed() caps length at MAX_SEGMENT_MS. Test added.
+- NIT tests -> fixed: stale-open, long-gap, closeOpen, ListeningMotionStore inert-without-permission with fake Source (MotionTimelineStoreTest 8 -> 14). Receiver/boot not unit-tested (Android framework).
+
+fixes applied

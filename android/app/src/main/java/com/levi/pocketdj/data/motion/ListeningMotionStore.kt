@@ -37,10 +37,16 @@ class ListeningMotionStore(
         isEnabled = on
         persist()
         if (on && hasPermission()) source.register() else if (!on) source.unregister()
+        if (!on) timeline.closeOpen()
     }
 
     /** App start / boot / package replace: (re)register when opted in and permitted. */
-    fun ensureRegistered() { if (isActive) source.register() }
+    fun ensureRegistered() {
+        // The registration (and any EXIT we were owed) may be gone: finalise the open segment; the API re-delivers the
+        // current activity as a fresh ENTER on registration. Lost permission is closed too.
+        timeline.closeOpen()
+        if (isActive) source.register()
+    }
 
     /**
      * One settle pass over this install's unsettled plays; [stamp] is write-once ([PlayHistoryStore.stampMotion]).

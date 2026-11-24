@@ -47,16 +47,26 @@ class MotionTimelineStore(
         }
     }
 
+    /**
+     * Close the open segment now (capped at [MAX_SEGMENT_MS]). Called when the registration may have been lost or the
+     * opt-in/permission went away: Android has no retroactive query, so an unclosed segment would otherwise grow forever.
+     */
+    fun closeOpen(atMs: Long = now()) = synchronized(lock) {
+        val o = doc.open ?: return@synchronized
+        doc = trim(Document(doc.segments + closed(o, atMs), null), now())
+        save()
+    }
+
     /** Closed segments plus the open one clipped to now, overlapping [fromMs, toMs]. */
     fun segments(fromMs: Long, toMs: Long): List<MotionSegment> = synchronized(lock) {
         val all = doc.segments.map { MotionSegment(it.start, it.end, it.activity, it.confidence) } +
-            listOfNotNull(doc.open?.let { MotionSegment(it.since, maxOf(it.since, now()), it.activity, MEDIUM) })
+            listOfNotNull(doc.open?.let { MotionSegment(it.since, maxOf(it.since, minOf(now(), it.since + MAX_SEGMENT_MS)), it.activity, MEDIUM) })
         all.filter { it.endMs > fromMs && it.startMs < toMs }
     }
 
     fun clear() = synchronized(lock) { doc = Document(); runCatching { file.delete() } }
 
-    private fun closed(o: Open, endMs: Long) = Seg(o.since, maxOf(o.since, endMs), o.activity)
+    private fun closed(o: Open, endMs: Long) = Seg(o.since, maxOf(o.since, minOf(endMs, o.since + MAX_SEGMENT_MS)), o.activity)
 
     private fun load(): Document = runCatching {
         if (!file.exists()) Document() else trim(PdjJson.lenient.decodeFromString(Document.serializer(), file.readText()), now())
@@ -74,10 +84,19 @@ class MotionTimelineStore(
         const val FILE_NAME = "pocketdj-motion-timeline.json"
         const val MEDIUM = 1
         const val RING_MS = 7L * 86_400_000
+        /** No single activity (closed implicitly, or still open without a fresh transition) is credited beyond this. */
+        const val MAX_SEGMENT_MS = 2L * 3_600_000
 
         internal fun trim(d: Document, nowMs: Long): Document {
             val floor = nowMs - RING_MS
-            return Document(d.segments.filter { it.end >= floor }.sortedBy { it.start }, d.open)
+            var segs = d.segments
+            var open = d.open
+            if (open != null && (open.since < floor || nowMs - open.since > MAX_SEGMENT_MS)) {
+                // stale open (missed EXIT / lost registration): finalise it at the cap rather than let it grow
+                if (open.since >= floor) segs = segs + Seg(open.since, open.since + MAX_SEGMENT_MS, open.activity)
+                open = null
+            }
+            return Document(segs.filter { it.end >= floor }.sortedBy { it.start }, open)
         }
     }
 }

@@ -142,8 +142,8 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
             runCatching {
                 if (!motionStore.isActive) return@runCatching
                 val history = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext)
-                val songs = app.catalogRepository.state.value.catalog?.songsById ?: return@runCatching
-                motionStore.settle(history) { id -> songs[id]?.length?.toInt() }
+                val songs = app.catalogRepository.state.value.catalog?.songsById // null while loading: iOS settles with the fallback duration
+                motionStore.settle(history) { id -> songs?.get(id)?.length?.toInt() }
             }
         }
     }
