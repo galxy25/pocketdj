@@ -64,10 +64,10 @@ class DjPlannerDriverTest {
 
     @Test
     fun candidate_foldsFactsMembershipAndAging() {
-        val item = QueueItem("sng_a_clean", djDeferrals = 3)
+        val item = QueueItem("sng_0123456789ab_clean", djDeferrals = 3)
         val c = DjCandidates.candidate(
             item, DjCandidates.Facts(bpm = 60.0, camelot = "8a", genre = "Hip-Hop/Rap", year = 1999, artists = setOf("k")),
-            mapOf("sng_a" to setOf("pk1")), fixed = true, anchor = true,
+            mapOf("sng_0123456789ab" to setOf("pk1")), fixed = true, anchor = true,
         )
         assertEquals(3, c.deferrals)
         assertTrue(c.fixed && c.anchor)
@@ -174,7 +174,7 @@ class DjPlannerDriverTest {
     private fun TestScope.rig(n: Int = 14): Rig {
         val h = SequencerHarness(this, backgroundScope, (0 until n).map { "s$it" }.toSet())
         val r = Rig(h, backgroundScope)
-        for (i in 0 until n) r.bpm["s$i"] = if (i % 2 == 0) 90.0 + i else 150.0 + i
+        for (i in 0 until n) r.bpm["s$i"] = if (i % 2 == 0) 90.0 + i else 140.0 + i
         return r
     }
 
@@ -191,7 +191,8 @@ class DjPlannerDriverTest {
     fun edit_replansOnceAfterOneSecond_andReordersTheWindow() = runTest {
         val r = rig(); r.start()
         val before = r.q().map { it.uid }
-        r.h.seq.appendToQueue(listOf(QueueItem("s5", "s5")).map { it.copy(id = "s5") })
+        val added = QueueItem("s5", "s5")
+        r.h.seq.appendToQueue(listOf(added))
         runCurrent()
         assertTrue(r.driver.replanPending)
         advanceTimeBy(999); runCurrent()
@@ -201,7 +202,7 @@ class DjPlannerDriverTest {
         assertFalse(r.driver.replanPending)
         val after = r.q().map { it.uid }
         assertEquals("a pure re-order of the window plus the appended row", before.first(), after.first())
-        assertEquals((before + r.q().last().uid).toSet(), after.toSet())
+        assertEquals((before + added.uid).toSet(), after.toSet())
         assertTrue(r.logs.any { it.startsWith("replan reason=edit ") && " rows=14 moved=" in it })
     }
 
@@ -283,7 +284,7 @@ class DjPlannerDriverTest {
         val r = rig(); r.start()
         // establish the current band (s0 = 90 -> band 90) in the state
         r.driver.replan(DjPlannerDriver.Reason.ON)
-        val pick = r.q().subList(1, r.q().size).first { (r.bpm[it.id] ?: 0.0) >= 150.0 }
+        val pick = r.q().subList(1, r.q().size).first { (r.bpm[it.id] ?: 0.0) >= 140.0 }
         r.h.seq.moveUpcomingNext(pick.uid)
         r.h.seq.skipNext(); r.h.settle() // the pick plays; its hold is spent BEFORE the track-start re-plan
         assertTrue("the hold is spent", r.q().none { it.djUserNext })
@@ -433,17 +434,19 @@ class DjPlannerDriverTest {
     }
 
     @Test
-    fun stallHopMakesTheDeferredRowThePick() = runTest {
-        val r = rig(); r.start()
-        val landed = mutableListOf<String>()
-        r.h.seq.hooks.add(object : com.levi.pocketdj.playback.sequencer.SequencerListener {
-            override fun onRowLandedNext(uid: String) { landed += uid }
-        })
-        // direct: the sequencer's setUserNext path is what the hop calls; here the equivalent edit lands the row next
-        val stalled = r.q()[1]
-        r.h.seq.moveUpcomingNext(stalled.uid)
-        assertEquals(listOf(stalled.uid), landed)
-        assertTrue(r.q()[1].djUserNext)
+    fun stallHopMakesTheDeferredRowThePick_onlyWhileDjIsOn() = runTest {
+        for (djOn in listOf(true, false)) {
+            val r = rig(); r.start()
+            r.enabled = djOn
+            r.h.seq.rowOnDevice = { it.id == "s2" }
+            val stalled = r.q()[0]
+            r.h.seq.escalateStalledStart("test stall"); r.h.settle()
+            // [s0, s1, s2, ..] -> [s2, s0, s1, ..]: the deferred (stalled) row sits right behind the hop target
+            assertEquals("s2", r.q()[0].id)
+            assertEquals(stalled.uid, r.q()[1].uid)
+            if (djOn) assertTrue("the deferred row is the pick", r.q()[1].djUserNext)
+            else assertTrue(r.q().none { it.djUserNext })
+        }
     }
 
     @Test
