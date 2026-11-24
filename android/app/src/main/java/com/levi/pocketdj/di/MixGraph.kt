@@ -255,6 +255,12 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     /** MIX-17: the ~60 Hz slot-modulation tick (built with, and hooked into, [mixEngine]). */
     val modController: com.levi.pocketdj.mix.engine.ModController get() { mixEngine; return checkNotNull(modControllerInst) }
 
+    /** Measured loudness per local file (`filesDir/loudness.json`); Volume Glide's source, shared with DJ Mode. */
+    // TODO(P2-DJ-11): DJ Mode MUST reuse this instance (one writer for loudness.json); never construct a second LoudnessCache.
+    val loudnessCache: com.levi.pocketdj.playback.dj.LoudnessCache by lazy {
+        com.levi.pocketdj.playback.dj.LoudnessCache(File(app.appContext.filesDir, "loudness.json"), log = { NPLog.lane(NPLog.MIX, it) })
+    }
+
     @Volatile private var autoDjInst: com.levi.pocketdj.mix.engine.AutoDj? = null
 
     /** MIX-9: the Auto-DJ machine (built with, and hooked into, [mixEngine]). */
@@ -283,8 +289,15 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             tickDriver = CoroutineTickDriver(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)),
             deckStore = mixDeckSession,
             diagSink = { com.levi.pocketdj.mix.service.MixDiag.log(it) },
+            levelDriver = CoroutineTickDriver(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)),
+            glideScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
         ).also {
             it.recorder = mixSessions
+            // P2-MIX-2 Volume Glide: the shared loudness cache + the setting (followed even with the Mix tab off screen).
+            it.loudnessCache = loudnessCache
+            app.appScope.launch(Dispatchers.Main.immediate) {
+                app.settings.mixSettingsFlow().map { s -> s.mixVolumeGlide }.distinctUntilChanged().collect { on -> it.setVolumeGlide(on) }
+            }
             installOutcomeBridge(it)
             // SVC-6: Mix deck plays count for the LRP prune (iOS funnels MixEngine.setPlaying -> notePlayed).
             com.levi.pocketdj.data.stats.PlayStatsRecorder.attachMix(it.hooks) { id ->

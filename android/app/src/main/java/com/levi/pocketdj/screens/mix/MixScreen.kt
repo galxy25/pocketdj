@@ -1,6 +1,7 @@
 package com.levi.pocketdj.screens.mix
 
 import kotlinx.coroutines.launch
+import com.levi.pocketdj.mix.setMixVolumeGlide
 import androidx.compose.ui.unit.sp
 
 import androidx.compose.foundation.layout.size
@@ -91,6 +92,7 @@ fun MixScreen(
     val auto by vm.autoUi.collectAsState()
     val sessionName by sessions.currentNameFlow.collectAsState()
     var confirmingReset by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     // MIX-17: the slot whose modulation sheet is open (deck, slot index).
     var modTarget by remember { mutableStateOf<Pair<com.levi.pocketdj.mix.model.Deck, Int>?>(null) }
 
@@ -170,6 +172,7 @@ fun MixScreen(
                     )
                 }
                 MixRecordingControls(mix.mixRecorder)
+                VolGlidePill(on = settings.mixVolumeGlide, onToggle = { scope.launch { graph.settings.setMixVolumeGlide(false) } })
                 recordingIndicator()
                 if (st.autoEnabled && !auto.mixing) {
                     AutoSetupBar(

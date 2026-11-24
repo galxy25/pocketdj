@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -503,5 +504,42 @@ fun ChipStrengthPopover(
                     fontFamily = FontFamily.Monospace, modifier = Modifier.width(40.dp))
             }
         }
+    }
+}
+
+/**
+ * Volume Glide's automatic trim, read-only, under (never inside) Vol: "+2.1 dB" / "measuring…" / "unavailable".
+ * Composed only while the deck's status is not INACTIVE (iOS `DJLevelingReadoutRow`).
+ */
+@Composable
+fun LevelingReadout(side: com.levi.pocketdj.mix.engine.LevelSide, tag: String, modifier: Modifier = Modifier) {
+    val words = side.words
+    Row(
+        modifier.fillMaxWidth().testTag(tag).semantics(mergeDescendants = true) { contentDescription = "Volume glide trim $words" },
+        horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Vol glide", color = DeckColors.dim, fontSize = 11.sp)
+        Text(
+            words,
+            color = if (side.status == com.levi.pocketdj.mix.engine.LevelingStatus.MEASURED) DeckColors.accent else DeckColors.dim,
+            fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium,
+        )
+    }
+}
+
+/** The "Vol Glide" pill in the Mix screen while Settings > Mixing > Volume glide is on (tap turns it off, like iOS). */
+@Composable
+fun VolGlidePill(on: Boolean, onToggle: () -> Unit, modifier: Modifier = Modifier) {
+    if (!on) return
+    Row(
+        modifier
+            .background(DeckColors.accent.copy(alpha = 0.22f), CircleShape)
+            .clickable(onClick = onToggle)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+            .testTag("mix-volume-glide")
+            .semantics(mergeDescendants = true) { contentDescription = "Vol Glide on" },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Vol Glide", color = DeckColors.accent, fontSize = 12.sp, fontWeight = FontWeight.Medium)
     }
 }
