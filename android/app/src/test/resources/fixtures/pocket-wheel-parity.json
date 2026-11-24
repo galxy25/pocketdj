@@ -1,0 +1,7390 @@
+{
+  "bestMatch" : [
+    {
+      "alternatives" : [
+        {
+          "artists" : {
+            "chromeo" : 0.24999099999999999,
+            "daft punk" : 0.32452999999999999,
+            "justice" : 0.42547800000000002
+          },
+          "bpmHi" : 126,
+          "bpmLo" : 122,
+          "caption" : "Sat 8 AM · Run",
+          "collections" : {
+            "fav_songs" : 1
+          },
+          "detail" : "Favorite songs · 0 plays",
+          "dominantCollectionId" : "fav_songs",
+          "eraHi" : 2011,
+          "eraLo" : 2003,
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h08|d6|running",
+          "mode" : "running",
+          "momentKeys" : [
+            "h08|d6|running"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "khruangbin" : 0.50000900000000004,
+            "tycho" : 0.49999100000000002
+          },
+          "caption" : "Tue 10 AM · Browse",
+          "collections" : {
+            "pkt_chill" : 1
+          },
+          "detail" : "Chill Lunch · 0 plays",
+          "dominantCollectionId" : "pkt_chill",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h10|d2|browse",
+          "mode" : "browse",
+          "momentKeys" : [
+            "h10|d2|browse"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "fleetwood mac" : 0.499996,
+            "tom petty" : 0.500004
+          },
+          "caption" : "Sun 1 PM · Trip",
+          "collections" : {
+            "pls_road" : 1
+          },
+          "detail" : "Roadtrip · 0 plays",
+          "dominantCollectionId" : "pls_road",
+          "genres" : {
+            "rock" : 1
+          },
+          "key" : "h13|d7|trip",
+          "mode" : "trip",
+          "momentKeys" : [
+            "h13|d7|trip"
+          ],
+          "tier" : "rich"
+        }
+      ],
+      "name" : "tue-8:30-carplay",
+      "now" : {
+        "dow" : 2,
+        "hour" : 8.5,
+        "mode" : "carPlay",
+        "recentCollections" : {
+
+        }
+      },
+      "profile" : {
+        "artists" : {
+          "6lack" : 0.11421000000000001,
+          "bryson tiller" : 0.12684500000000001,
+          "drake" : 0.117442,
+          "dvsn" : 0.107824,
+          "frank ocean" : 0.12647700000000001,
+          "majid jordan" : 0.136293,
+          "partynextdoor" : 0.17595,
+          "sza" : 0.094959000000000002
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 92,
+        "caption" : "Tue 8 AM · CarPlay",
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "detail" : "Potential · 9 plays",
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2021,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.30388500000000002,
+          "r&b" : 0.69611500000000004
+        },
+        "key" : "h08|d2|carPlay",
+        "mode" : "carPlay",
+        "momentKeys" : [
+          "h08|d2|carPlay"
+        ],
+        "tier" : "rich"
+      },
+      "winner" : {
+        "continuity" : 0,
+        "key" : "h08|d2|carPlay",
+        "match" : 1,
+        "quality" : 0.85776095277249831,
+        "score" : 0.91465657166349901
+      }
+    },
+    {
+      "alternatives" : [
+        {
+          "artists" : {
+            "6lack" : 0.11421000000000001,
+            "bryson tiller" : 0.12684500000000001,
+            "drake" : 0.117442,
+            "dvsn" : 0.107824,
+            "frank ocean" : 0.12647700000000001,
+            "majid jordan" : 0.136293,
+            "partynextdoor" : 0.17595,
+            "sza" : 0.094959000000000002
+          },
+          "bpmHi" : 104,
+          "bpmLo" : 92,
+          "caption" : "Tue 8 AM · CarPlay",
+          "collections" : {
+            "pl_potential" : 1
+          },
+          "detail" : "Potential · 9 plays",
+          "dominantCollectionId" : "pl_potential",
+          "eraHi" : 2021,
+          "eraLo" : 2011,
+          "genres" : {
+            "hip-hop" : 0.30388500000000002,
+            "r&b" : 0.69611500000000004
+          },
+          "key" : "h08|d2|carPlay",
+          "mode" : "carPlay",
+          "momentKeys" : [
+            "h08|d2|carPlay"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "khruangbin" : 0.50000900000000004,
+            "tycho" : 0.49999100000000002
+          },
+          "caption" : "Tue 10 AM · Browse",
+          "collections" : {
+            "pkt_chill" : 1
+          },
+          "detail" : "Chill Lunch · 0 plays",
+          "dominantCollectionId" : "pkt_chill",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h10|d2|browse",
+          "mode" : "browse",
+          "momentKeys" : [
+            "h10|d2|browse"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "fleetwood mac" : 0.499996,
+            "tom petty" : 0.500004
+          },
+          "caption" : "Sun 1 PM · Trip",
+          "collections" : {
+            "pls_road" : 1
+          },
+          "detail" : "Roadtrip · 0 plays",
+          "dominantCollectionId" : "pls_road",
+          "genres" : {
+            "rock" : 1
+          },
+          "key" : "h13|d7|trip",
+          "mode" : "trip",
+          "momentKeys" : [
+            "h13|d7|trip"
+          ],
+          "tier" : "rich"
+        }
+      ],
+      "name" : "sat-9:12-running",
+      "now" : {
+        "dow" : 6,
+        "hour" : 9.1999999999999993,
+        "mode" : "running",
+        "recentCollections" : {
+
+        }
+      },
+      "profile" : {
+        "artists" : {
+          "chromeo" : 0.24999099999999999,
+          "daft punk" : 0.32452999999999999,
+          "justice" : 0.42547800000000002
+        },
+        "bpmHi" : 126,
+        "bpmLo" : 122,
+        "caption" : "Sat 9 AM · Run",
+        "collections" : {
+          "fav_songs" : 1
+        },
+        "detail" : "Favorite songs · 12 plays",
+        "dominantCollectionId" : "fav_songs",
+        "eraHi" : 2011,
+        "eraLo" : 2003,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : "h09|d6|running",
+        "mode" : "running",
+        "momentKeys" : [
+          "h09|d6|running"
+        ],
+        "tier" : "rich"
+      },
+      "winner" : {
+        "continuity" : 0,
+        "key" : "h09|d6|running",
+        "match" : 0.95599748183309974,
+        "quality" : 0.81569000188882013,
+        "score" : 0.85027754539052891
+      }
+    },
+    {
+      "alternatives" : [
+        {
+          "artists" : {
+            "fleetwood mac" : 0.499996,
+            "tom petty" : 0.500004
+          },
+          "caption" : "Sun 5 PM · Trip",
+          "collections" : {
+            "pls_road" : 1
+          },
+          "detail" : "Roadtrip · 0 plays",
+          "dominantCollectionId" : "pls_road",
+          "genres" : {
+            "rock" : 1
+          },
+          "key" : "h17|d7|trip",
+          "mode" : "trip",
+          "momentKeys" : [
+            "h17|d7|trip"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "khruangbin" : 0.50000900000000004,
+            "tycho" : 0.49999100000000002
+          },
+          "caption" : "Wed 2 PM · Browse",
+          "collections" : {
+            "pkt_chill" : 1
+          },
+          "detail" : "Chill Lunch · 0 plays",
+          "dominantCollectionId" : "pkt_chill",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h14|d3|browse",
+          "mode" : "browse",
+          "momentKeys" : [
+            "h14|d3|browse"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "6lack" : 0.110677,
+            "bryson tiller" : 0.099373000000000003,
+            "drake" : 0.099368999999999999,
+            "dvsn" : 0.110682,
+            "frank ocean" : 0.22265299999999999,
+            "majid jordan" : 0.11068699999999999,
+            "partynextdoor" : 0.123278,
+            "sza" : 0.123283
+          },
+          "caption" : "Wed 6 AM · CarPlay",
+          "collections" : {
+            "pl_potential" : 1
+          },
+          "detail" : "Potential · 0 plays",
+          "dominantCollectionId" : "pl_potential",
+          "genres" : {
+            "hip-hop" : 0.33331899999999998,
+            "r&b" : 0.66668099999999997
+          },
+          "key" : "h06|d3|carPlay",
+          "mode" : "carPlay",
+          "momentKeys" : [
+            "h06|d3|carPlay"
+          ],
+          "tier" : "rich"
+        }
+      ],
+      "name" : "wed-21:18-unknown",
+      "now" : {
+        "dow" : 3,
+        "hour" : 21.300000000000001,
+        "recentCollections" : {
+
+        }
+      },
+      "profile" : {
+        "artists" : {
+          "burial" : 0.27318999999999999,
+          "massive attack" : 0.20200399999999999,
+          "portishead" : 0.23994799999999999,
+          "tricky" : 0.28485899999999997
+        },
+        "bpmHi" : 148,
+        "bpmLo" : 84,
+        "caption" : "Wed 9 PM · Mix",
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "detail" : "Late Night · 6 plays",
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : "h21|d3|mix",
+        "mode" : "mix",
+        "momentKeys" : [
+          "h21|d3|mix"
+        ],
+        "tier" : "rich"
+      },
+      "winner" : {
+        "continuity" : 0,
+        "key" : "h21|d3|mix",
+        "match" : 0.58811920398405326,
+        "quality" : 0.72003033340833,
+        "score" : 0.48932588151070905
+      }
+    },
+    {
+      "alternatives" : [
+        {
+          "artists" : {
+            "chromeo" : 0.24999099999999999,
+            "daft punk" : 0.32452999999999999,
+            "justice" : 0.42547800000000002
+          },
+          "caption" : "Sat 11 AM · Run",
+          "collections" : {
+            "fav_songs" : 1
+          },
+          "detail" : "Favorite songs · 0 plays",
+          "dominantCollectionId" : "fav_songs",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h11|d6|running",
+          "mode" : "running",
+          "momentKeys" : [
+            "h11|d6|running"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "fleetwood mac" : 0.499996,
+            "tom petty" : 0.500004
+          },
+          "caption" : "Sun 1 PM · Trip",
+          "collections" : {
+            "pls_road" : 1
+          },
+          "detail" : "Roadtrip · 0 plays",
+          "dominantCollectionId" : "pls_road",
+          "genres" : {
+            "rock" : 1
+          },
+          "key" : "h13|d7|trip",
+          "mode" : "trip",
+          "momentKeys" : [
+            "h13|d7|trip"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "6lack" : 0.110677,
+            "bryson tiller" : 0.099373000000000003,
+            "drake" : 0.099368999999999999,
+            "dvsn" : 0.110682,
+            "frank ocean" : 0.22265299999999999,
+            "majid jordan" : 0.11068699999999999,
+            "partynextdoor" : 0.123278,
+            "sza" : 0.123283
+          },
+          "caption" : "Wed 10 AM · CarPlay",
+          "collections" : {
+            "pl_potential" : 1
+          },
+          "detail" : "Potential · 0 plays",
+          "dominantCollectionId" : "pl_potential",
+          "genres" : {
+            "hip-hop" : 0.33331899999999998,
+            "r&b" : 0.66668099999999997
+          },
+          "key" : "h10|d3|carPlay",
+          "mode" : "carPlay",
+          "momentKeys" : [
+            "h10|d3|carPlay"
+          ],
+          "tier" : "rich"
+        }
+      ],
+      "name" : "wed-12:30-unknown",
+      "now" : {
+        "dow" : 3,
+        "hour" : 12.5,
+        "recentCollections" : {
+
+        }
+      },
+      "profile" : {
+        "artists" : {
+          "khruangbin" : 0.500004,
+          "tycho" : 0.499996
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 97,
+        "caption" : "Wed 12 PM · Browse",
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "detail" : "Chill Lunch · 6 plays",
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : "h12|d3|browse",
+        "mode" : "browse",
+        "momentKeys" : [
+          "h12|d3|browse"
+        ],
+        "tier" : "rich"
+      },
+      "winner" : {
+        "continuity" : 0,
+        "key" : "h12|d3|browse",
+        "match" : 0.59999999999999998,
+        "quality" : 0.81048327504188,
+        "score" : 0.53177397901507684
+      }
+    },
+    {
+      "alternatives" : [
+        {
+          "artists" : {
+            "khruangbin" : 0.50000900000000004,
+            "tycho" : 0.49999100000000002
+          },
+          "caption" : "Tue 2 PM · Browse",
+          "collections" : {
+            "pkt_chill" : 1
+          },
+          "detail" : "Chill Lunch · 0 plays",
+          "dominantCollectionId" : "pkt_chill",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h14|d2|browse",
+          "mode" : "browse",
+          "momentKeys" : [
+            "h14|d2|browse"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "burial" : 0.22173300000000001,
+            "massive attack" : 0.221745,
+            "portishead" : 0.17872199999999999,
+            "tricky" : 0.37780000000000002
+          },
+          "caption" : "Sun 7 PM · Mix",
+          "collections" : {
+            "pkt_late" : 1
+          },
+          "detail" : "Late Night · 0 plays",
+          "dominantCollectionId" : "pkt_late",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h19|d7|mix",
+          "mode" : "mix",
+          "momentKeys" : [
+            "h19|d7|mix"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "chromeo" : 0.24999099999999999,
+            "daft punk" : 0.32452999999999999,
+            "justice" : 0.42547800000000002
+          },
+          "caption" : "Sat 11 AM · Run",
+          "collections" : {
+            "fav_songs" : 1
+          },
+          "detail" : "Favorite songs · 0 plays",
+          "dominantCollectionId" : "fav_songs",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h11|d6|running",
+          "mode" : "running",
+          "momentKeys" : [
+            "h11|d6|running"
+          ],
+          "tier" : "rich"
+        }
+      ],
+      "name" : "sun-15:30-trip-ctx",
+      "now" : {
+        "ctx" : "trip:trp_ab",
+        "dow" : 7,
+        "hour" : 15.5,
+        "mode" : "trip",
+        "recentCollections" : {
+
+        }
+      },
+      "profile" : {
+        "artists" : {
+          "fleetwood mac" : 0.499996,
+          "tom petty" : 0.500004
+        },
+        "bpmHi" : 113,
+        "bpmLo" : 112,
+        "caption" : "Sun 3 PM · Trip",
+        "collections" : {
+          "pls_road" : 1
+        },
+        "detail" : "Roadtrip · 6 plays",
+        "dominantCollectionId" : "pls_road",
+        "eraHi" : 1983,
+        "eraLo" : 1976,
+        "genres" : {
+          "rock" : 1
+        },
+        "key" : "h15|d7|trip",
+        "mode" : "trip",
+        "momentKeys" : [
+          "h15|d7|trip"
+        ],
+        "tier" : "rich"
+      },
+      "winner" : {
+        "continuity" : 0,
+        "key" : "h15|d7|trip",
+        "match" : 1,
+        "quality" : 0.57767058562204632,
+        "score" : 0.74660235137322783
+      }
+    },
+    {
+      "alternatives" : [
+        {
+          "artists" : {
+            "burial" : 0.182866,
+            "massive attack" : 0.38656200000000002,
+            "portishead" : 0.43057200000000001
+          },
+          "caption" : "Fri 11 PM · Mix",
+          "collections" : {
+            "pkt_late" : 1
+          },
+          "detail" : "Late Night · 0 plays",
+          "dominantCollectionId" : "pkt_late",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h23|d5|mix",
+          "mode" : "mix",
+          "momentKeys" : [
+            "h23|d5|mix"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "chromeo" : 0.24999099999999999,
+            "daft punk" : 0.32452999999999999,
+            "justice" : 0.42547800000000002
+          },
+          "caption" : "Sat 7 AM · Run",
+          "collections" : {
+            "fav_songs" : 1
+          },
+          "detail" : "Favorite songs · 0 plays",
+          "dominantCollectionId" : "fav_songs",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h07|d6|running",
+          "mode" : "running",
+          "momentKeys" : [
+            "h07|d6|running"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "khruangbin" : 0.50000900000000004,
+            "tycho" : 0.49999100000000002
+          },
+          "caption" : "Fri 10 AM · Browse",
+          "collections" : {
+            "pkt_chill" : 1
+          },
+          "detail" : "Chill Lunch · 0 plays",
+          "dominantCollectionId" : "pkt_chill",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h10|d5|browse",
+          "mode" : "browse",
+          "momentKeys" : [
+            "h10|d5|browse"
+          ],
+          "tier" : "rich"
+        }
+      ],
+      "name" : "fri-3:00-unknown",
+      "now" : {
+        "dow" : 5,
+        "hour" : 3,
+        "recentCollections" : {
+
+        }
+      },
+      "profile" : {
+        "artists" : {
+          "burial" : 0.105271,
+          "khruangbin" : 0.195242,
+          "majid jordan" : 0.078229999999999994,
+          "massive attack" : 0.103503,
+          "partynextdoor" : 0.078594999999999998,
+          "portishead" : 0.124767,
+          "tricky" : 0.119153,
+          "tycho" : 0.19524
+        },
+        "bpmHi" : 118,
+        "bpmLo" : 93,
+        "caption" : "Your recent favourites",
+        "collections" : {
+          "fav_songs" : 0.051914000000000002,
+          "pkt_chill" : 0.259909,
+          "pkt_late" : 0.30131799999999997,
+          "pl_potential" : 0.35927700000000001,
+          "pls_road" : 0.027581000000000001
+        },
+        "detail" : "Potential · 129 plays",
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2013.6200898891914,
+        "eraLo" : 2004.7217963855192,
+        "genres" : {
+          "electronic" : 0.61181099999999999,
+          "hip-hop" : 0.10130400000000001,
+          "pop" : 0.0021689999999999999,
+          "r&b" : 0.25719500000000001,
+          "rock" : 0.027521
+        },
+        "mode" : "carPlay",
+        "momentKeys" : [
+          "h03|d1|browse",
+          "h06|d1|carPlay",
+          "h07|d1|carPlay",
+          "h08|d1|carPlay",
+          "h08|d1|trip",
+          "h09|d1|carPlay",
+          "h10|d1|carPlay",
+          "h10|d1|browse",
+          "h11|d1|browse",
+          "h12|d1|browse",
+          "h13|d1|browse",
+          "h14|d1|browse",
+          "h19|d1|mix",
+          "h20|d1|mix",
+          "h21|d1|mix",
+          "h21|d1|collection",
+          "h22|d1|mix",
+          "h23|d1|mix",
+          "h03|d2|browse",
+          "h06|d2|carPlay",
+          "h07|d2|carPlay",
+          "h08|d2|carPlay",
+          "h08|d2|trip",
+          "h09|d2|carPlay",
+          "h10|d2|carPlay",
+          "h10|d2|browse",
+          "h11|d2|browse",
+          "h12|d2|browse",
+          "h13|d2|browse",
+          "h14|d2|browse",
+          "h19|d2|mix",
+          "h20|d2|mix",
+          "h21|d2|mix",
+          "h21|d2|collection",
+          "h22|d2|mix",
+          "h23|d2|mix",
+          "h03|d3|browse",
+          "h06|d3|carPlay",
+          "h07|d3|carPlay",
+          "h08|d3|carPlay",
+          "h08|d3|trip",
+          "h09|d3|carPlay",
+          "h10|d3|carPlay",
+          "h10|d3|browse",
+          "h11|d3|browse",
+          "h12|d3|browse",
+          "h13|d3|browse",
+          "h14|d3|browse",
+          "h19|d3|mix",
+          "h20|d3|mix",
+          "h21|d3|mix",
+          "h21|d3|collection",
+          "h22|d3|mix",
+          "h23|d3|mix",
+          "h01|d4|browse",
+          "h02|d4|browse",
+          "h03|d4|browse",
+          "h04|d4|browse",
+          "h05|d4|browse",
+          "h06|d4|carPlay",
+          "h07|d4|carPlay",
+          "h08|d4|carPlay",
+          "h08|d4|trip",
+          "h09|d4|carPlay",
+          "h10|d4|carPlay",
+          "h10|d4|browse",
+          "h11|d4|browse",
+          "h12|d4|browse",
+          "h13|d4|browse",
+          "h14|d4|browse",
+          "h19|d4|mix",
+          "h20|d4|mix",
+          "h21|d4|mix",
+          "h21|d4|collection",
+          "h22|d4|mix",
+          "h23|d4|mix",
+          "h03|d5|browse",
+          "h06|d5|carPlay",
+          "h07|d5|carPlay",
+          "h08|d5|carPlay",
+          "h08|d5|trip",
+          "h09|d5|carPlay",
+          "h10|d5|carPlay",
+          "h10|d5|browse",
+          "h11|d5|browse",
+          "h12|d5|browse",
+          "h13|d5|browse",
+          "h14|d5|browse",
+          "h19|d5|mix",
+          "h20|d5|mix",
+          "h21|d5|mix",
+          "h21|d5|collection",
+          "h22|d5|mix",
+          "h23|d5|mix",
+          "h07|d6|running",
+          "h08|d6|running",
+          "h09|d6|running",
+          "h09|d6|walking",
+          "h10|d6|running",
+          "h11|d6|running",
+          "h15|d6|trip",
+          "h19|d6|mix",
+          "h20|d6|mix",
+          "h21|d6|mix",
+          "h21|d6|collection",
+          "h22|d6|mix",
+          "h23|d6|mix",
+          "h09|d7|running",
+          "h13|d7|trip",
+          "h14|d7|trip",
+          "h15|d7|carPlay",
+          "h15|d7|trip",
+          "h16|d7|trip",
+          "h17|d7|trip",
+          "h19|d7|mix",
+          "h20|d7|mix",
+          "h21|d7|mix",
+          "h21|d7|collection",
+          "h22|d7|mix",
+          "h23|d7|mix"
+        ],
+        "tier" : "history"
+      }
+    },
+    {
+      "alternatives" : [
+        {
+          "artists" : {
+            "fleetwood mac" : 0.499996,
+            "tom petty" : 0.500004
+          },
+          "caption" : "Sun 5 PM · Trip",
+          "collections" : {
+            "pls_road" : 1
+          },
+          "detail" : "Roadtrip · 0 plays",
+          "dominantCollectionId" : "pls_road",
+          "genres" : {
+            "rock" : 1
+          },
+          "key" : "h17|d7|trip",
+          "mode" : "trip",
+          "momentKeys" : [
+            "h17|d7|trip"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "6lack" : 0.14905599999999999,
+            "bryson tiller" : 0.14904999999999999,
+            "drake" : 0.18492800000000001,
+            "frank ocean" : 0.18492,
+            "majid jordan" : 0.166019,
+            "partynextdoor" : 0.16602600000000001
+          },
+          "caption" : "Mon 6 AM · CarPlay",
+          "collections" : {
+            "pl_potential" : 1
+          },
+          "detail" : "Potential · 0 plays",
+          "dominantCollectionId" : "pl_potential",
+          "genres" : {
+            "r&b" : 1
+          },
+          "key" : "h06|d1|carPlay",
+          "mode" : "carPlay",
+          "momentKeys" : [
+            "h06|d1|carPlay"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "chromeo" : 0.24999099999999999,
+            "daft punk" : 0.32452999999999999,
+            "justice" : 0.42547800000000002
+          },
+          "caption" : "Sat 7 AM · Run",
+          "collections" : {
+            "fav_songs" : 1
+          },
+          "detail" : "Favorite songs · 0 plays",
+          "dominantCollectionId" : "fav_songs",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h07|d6|running",
+          "mode" : "running",
+          "momentKeys" : [
+            "h07|d6|running"
+          ],
+          "tier" : "rich"
+        }
+      ],
+      "name" : "mon-23:50-mix",
+      "now" : {
+        "dow" : 1,
+        "hour" : 23.829999999999998,
+        "mode" : "mix",
+        "recentCollections" : {
+
+        }
+      },
+      "profile" : {
+        "artists" : {
+          "burial" : 0.21825,
+          "massive attack" : 0.20889099999999999,
+          "portishead" : 0.30135600000000001,
+          "tricky" : 0.27150400000000002
+        },
+        "caption" : "Weekday nights",
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "detail" : "Late Night · 0 plays",
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "mode" : "mix",
+        "momentKeys" : [
+          "h23|d1|mix",
+          "h23|d3|mix",
+          "h23|d2|mix",
+          "h23|d4|mix",
+          "h23|d5|mix"
+        ],
+        "tier" : "neighbourhood"
+      },
+      "winner" : {
+        "continuity" : 0,
+        "key" : "h23|d1|mix",
+        "match" : 0.94700585796698633,
+        "quality" : 0.086444534500368972,
+        "score" : 0.42792043152344172
+      }
+    },
+    {
+      "alternatives" : [
+        {
+          "artists" : {
+            "chromeo" : 0.24999099999999999,
+            "daft punk" : 0.32452999999999999,
+            "justice" : 0.42547800000000002
+          },
+          "caption" : "Sat 11 AM · Run",
+          "collections" : {
+            "fav_songs" : 1
+          },
+          "detail" : "Favorite songs · 0 plays",
+          "dominantCollectionId" : "fav_songs",
+          "genres" : {
+            "electronic" : 1
+          },
+          "key" : "h11|d6|running",
+          "mode" : "running",
+          "momentKeys" : [
+            "h11|d6|running"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "fleetwood mac" : 0.499996,
+            "tom petty" : 0.500004
+          },
+          "caption" : "Sun 1 PM · Trip",
+          "collections" : {
+            "pls_road" : 1
+          },
+          "detail" : "Roadtrip · 0 plays",
+          "dominantCollectionId" : "pls_road",
+          "genres" : {
+            "rock" : 1
+          },
+          "key" : "h13|d7|trip",
+          "mode" : "trip",
+          "momentKeys" : [
+            "h13|d7|trip"
+          ],
+          "tier" : "rich"
+        },
+        {
+          "artists" : {
+            "6lack" : 0.110677,
+            "bryson tiller" : 0.099373000000000003,
+            "drake" : 0.099368999999999999,
+            "dvsn" : 0.110682,
+            "frank ocean" : 0.22265299999999999,
+            "majid jordan" : 0.11068699999999999,
+            "partynextdoor" : 0.123278,
+            "sza" : 0.123283
+          },
+          "caption" : "Wed 10 AM · CarPlay",
+          "collections" : {
+            "pl_potential" : 1
+          },
+          "detail" : "Potential · 0 plays",
+          "dominantCollectionId" : "pl_potential",
+          "genres" : {
+            "hip-hop" : 0.33331899999999998,
+            "r&b" : 0.66668099999999997
+          },
+          "key" : "h10|d3|carPlay",
+          "mode" : "carPlay",
+          "momentKeys" : [
+            "h10|d3|carPlay"
+          ],
+          "tier" : "rich"
+        }
+      ],
+      "name" : "continuity-skips",
+      "now" : {
+        "dow" : 3,
+        "hour" : 12.5,
+        "recentCollections" : {
+          "pkt_chill" : 1
+        },
+        "recentSkipRate" : 0.59999999999999998
+      },
+      "profile" : {
+        "artists" : {
+          "khruangbin" : 0.500004,
+          "tycho" : 0.499996
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 97,
+        "caption" : "Wed 12 PM · Browse",
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "detail" : "Chill Lunch · 6 plays",
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : "h12|d3|browse",
+        "mode" : "browse",
+        "momentKeys" : [
+          "h12|d3|browse"
+        ],
+        "tier" : "rich"
+      },
+      "winner" : {
+        "continuity" : -1,
+        "key" : "h12|d3|browse",
+        "match" : 0.59999999999999998,
+        "quality" : 0.81048327504188,
+        "score" : 0.26066514478055769
+      }
+    }
+  ],
+  "nowMs" : 1793215800000,
+  "replan" : {
+    "banned" : [
+      "drake"
+    ],
+    "bannedArtists" : [
+      "drake"
+    ],
+    "multipliers" : {
+      "album:alb_pot_1" : 0.33300000000000002,
+      "artist:drake" : 0.33300000000000002,
+      "bpm:88" : 0.66700000000000004,
+      "collection:pl_pot" : 0.80000000000000004,
+      "era:2010" : 0.66700000000000004,
+      "genre:hip-hop" : 0.66700000000000004
+    },
+    "removedSlots" : [
+
+    ],
+    "replacements" : [
+      {
+        "collectionId" : "pl_pot",
+        "score" : 3.01728,
+        "slot" : 56,
+        "songId" : "pot_27"
+      },
+      {
+        "collectionId" : "pl_pot",
+        "score" : 3.1499999999999999,
+        "slot" : 60,
+        "songId" : "pot_49"
+      },
+      {
+        "collectionId" : "pl_pot",
+        "score" : 3.0794980000000001,
+        "slot" : 61,
+        "songId" : "pot_95"
+      },
+      {
+        "collectionId" : "pl_pot",
+        "score" : 3.01728,
+        "slot" : 64,
+        "songId" : "pot_63"
+      },
+      {
+        "collectionId" : "pl_pot",
+        "score" : 3.0794980000000001,
+        "slot" : 65,
+        "songId" : "pot_59"
+      },
+      {
+        "collectionId" : "pl_pot",
+        "score" : 2.9139179999999998,
+        "slot" : 66,
+        "songId" : "pot_33"
+      },
+      {
+        "collectionId" : "pl_pot",
+        "score" : 3.1499999999999999,
+        "slot" : 69,
+        "songId" : "pot_85"
+      },
+      {
+        "collectionId" : "pl_pot",
+        "score" : 2.8001170000000002,
+        "slot" : 70,
+        "songId" : "pot_7"
+      },
+      {
+        "collectionId" : "pl_pot",
+        "score" : 3.1499999999999999,
+        "slot" : 73,
+        "songId" : "pot_94"
+      }
+    ],
+    "seed" : 42,
+    "skippedSlot" : 54,
+    "skippedSongId" : "pot_12",
+    "verdictStrength" : -1
+  },
+  "runs" : [
+    {
+      "bench" : [
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_103"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_109"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_130"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_157"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_22"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_49"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_67"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_85"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_94"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_113"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_131"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_14"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_149"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_158"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_50"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_59"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_77"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_86"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_95"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_117"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_126"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_153"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_27"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_45"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_63"
+        }
+      ],
+      "benchCount" : 201,
+      "rows" : [
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 1,
+          "songId" : "pot_91"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 2,
+          "songId" : "pot_154"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 3,
+          "songId" : "pot_21"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 4,
+          "songId" : "pot_138"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 5,
+          "songId" : "pot_101"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 6,
+          "songId" : "pot_155"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 7,
+          "songId" : "pot_118"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 8,
+          "songId" : "pot_19"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 9,
+          "songId" : "pot_145"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 10,
+          "songId" : "pot_38"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 11,
+          "songId" : "pot_147"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 12,
+          "songId" : "pot_30"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 13,
+          "songId" : "pot_29"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 14,
+          "songId" : "pot_119"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 15,
+          "songId" : "feat_1"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 16,
+          "songId" : "pot_146"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 17,
+          "songId" : "pot_1"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 18,
+          "songId" : "pot_46"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 19,
+          "songId" : "pot_11"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 20,
+          "songId" : "pot_74"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 21,
+          "songId" : "pot_73"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 22,
+          "songId" : "pot_10"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 23,
+          "songId" : "pot_55"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 24,
+          "songId" : "pot_137"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 25,
+          "songId" : "pot_102"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 26,
+          "songId" : "pot_129"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 27,
+          "songId" : "pot_111"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 28,
+          "songId" : "pot_13"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 29,
+          "songId" : "pot_58"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 30,
+          "songId" : "pot_31"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 31,
+          "songId" : "pot_75"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 32,
+          "songId" : "pot_93"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 33,
+          "songId" : "pot_66"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 34,
+          "songId" : "pot_127"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 35,
+          "songId" : "pot_110"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 36,
+          "songId" : "pot_37"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 37,
+          "songId" : "pot_82"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 38,
+          "songId" : "pot_83"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 39,
+          "songId" : "pot_57"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 40,
+          "songId" : "pot_3"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 41,
+          "songId" : "pot_139"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 42,
+          "songId" : "pot_121"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.0794980000000001,
+          "slot" : 43,
+          "songId" : "pot_122"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.0794980000000001,
+          "slot" : 44,
+          "songId" : "pot_23"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.0794980000000001,
+          "slot" : 45,
+          "songId" : "pot_5"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 46,
+          "songId" : "pot_112"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 47,
+          "songId" : "pot_39"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 48,
+          "songId" : "pot_2"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 49,
+          "songId" : "pot_128"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.01728,
+          "slot" : 50,
+          "songId" : "pot_81"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.01728,
+          "slot" : 51,
+          "songId" : "pot_18"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.01728,
+          "slot" : 52,
+          "songId" : "pot_135"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 53,
+          "songId" : "pot_47"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 54,
+          "songId" : "pot_12"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 55,
+          "songId" : "pot_65"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 56,
+          "songId" : "pot_136"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.01728,
+          "slot" : 57,
+          "songId" : "pot_54"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.01728,
+          "slot" : 58,
+          "songId" : "pot_9"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.0794980000000001,
+          "slot" : 59,
+          "songId" : "pot_41"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 60,
+          "songId" : "pot_148"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 61,
+          "songId" : "pot_156"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.8794979999999999,
+          "slot" : 62,
+          "songId" : "pot_32"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.736054,
+          "slot" : 63,
+          "songId" : "late_69"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 64,
+          "songId" : "pot_100"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 65,
+          "songId" : "pot_48"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.8794979999999999,
+          "slot" : 66,
+          "songId" : "pot_104"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.7237990000000001,
+          "slot" : 67,
+          "songId" : "late_49"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 68,
+          "songId" : "pot_64"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.8172799999999998,
+          "slot" : 69,
+          "songId" : "pot_36"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.521903,
+          "slot" : 70,
+          "songId" : "pot_116"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.7237990000000001,
+          "slot" : 71,
+          "songId" : "late_9"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 72,
+          "songId" : "pot_76"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 73,
+          "songId" : "pot_120"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.728426,
+          "slot" : 74,
+          "songId" : "late_59"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.608841,
+          "slot" : 75,
+          "songId" : "late_38"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.608841,
+          "slot" : 76,
+          "songId" : "late_78"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.748631,
+          "slot" : 77,
+          "songId" : "late_39"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.599046,
+          "slot" : 78,
+          "songId" : "late_68"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.736054,
+          "slot" : 79,
+          "songId" : "late_29"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.599046,
+          "slot" : 80,
+          "songId" : "late_28"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.748631,
+          "slot" : 81,
+          "songId" : "late_79"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.5125489999999999,
+          "slot" : 82,
+          "songId" : "late_47"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.593105,
+          "slot" : 83,
+          "songId" : "late_58"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.589502,
+          "slot" : 84,
+          "songId" : "late_48"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4999720000000001,
+          "slot" : 85,
+          "songId" : "late_37"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.593105,
+          "slot" : 86,
+          "songId" : "late_18"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4923439999999999,
+          "slot" : 87,
+          "songId" : "late_27"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4923439999999999,
+          "slot" : 88,
+          "songId" : "late_67"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4249799999999999,
+          "slot" : 89,
+          "songId" : "late_46"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4249799999999999,
+          "slot" : 90,
+          "songId" : "late_6"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4151849999999999,
+          "slot" : 91,
+          "songId" : "late_36"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.5125489999999999,
+          "slot" : 92,
+          "songId" : "late_7"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.589502,
+          "slot" : 93,
+          "songId" : "late_8"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.487717,
+          "slot" : 94,
+          "songId" : "late_57"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4092439999999999,
+          "slot" : 95,
+          "songId" : "late_66"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.728426,
+          "slot" : 96,
+          "songId" : "late_19"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4092439999999999,
+          "slot" : 97,
+          "songId" : "late_26"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.487717,
+          "slot" : 98,
+          "songId" : "late_17"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.356781,
+          "slot" : 99,
+          "songId" : "late_45"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.3693580000000001,
+          "slot" : 100,
+          "songId" : "late_55"
+        }
+      ],
+      "seed" : 42
+    },
+    {
+      "bench" : [
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_1"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_118"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_127"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_157"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_39"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_49"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_67"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_82"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_85"
+        },
+        {
+          "score" : 3.1499999999999999,
+          "songId" : "pot_94"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_122"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_14"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_149"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_158"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_23"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_41"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_5"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_59"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_86"
+        },
+        {
+          "score" : 3.0794980000000001,
+          "songId" : "pot_95"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_117"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_135"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_18"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_45"
+        },
+        {
+          "score" : 3.01728,
+          "songId" : "pot_54"
+        }
+      ],
+      "benchCount" : 201,
+      "rows" : [
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 1,
+          "songId" : "pot_21"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 2,
+          "songId" : "pot_147"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 3,
+          "songId" : "pot_112"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 4,
+          "songId" : "pot_130"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 5,
+          "songId" : "pot_93"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 6,
+          "songId" : "pot_111"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 7,
+          "songId" : "pot_2"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 8,
+          "songId" : "pot_109"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 9,
+          "songId" : "pot_10"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 10,
+          "songId" : "pot_155"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 11,
+          "songId" : "feat_1"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 12,
+          "songId" : "pot_38"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 13,
+          "songId" : "pot_73"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 14,
+          "songId" : "pot_55"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 15,
+          "songId" : "pot_138"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 16,
+          "songId" : "pot_65"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 17,
+          "songId" : "pot_74"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 18,
+          "songId" : "pot_145"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 19,
+          "songId" : "pot_19"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 20,
+          "songId" : "pot_102"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 21,
+          "songId" : "pot_3"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 22,
+          "songId" : "pot_110"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 23,
+          "songId" : "pot_101"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 24,
+          "songId" : "pot_11"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 25,
+          "songId" : "pot_58"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 26,
+          "songId" : "pot_139"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 27,
+          "songId" : "pot_30"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 28,
+          "songId" : "pot_129"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 29,
+          "songId" : "pot_154"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 30,
+          "songId" : "pot_83"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 31,
+          "songId" : "pot_37"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 32,
+          "songId" : "pot_146"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 33,
+          "songId" : "pot_137"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 34,
+          "songId" : "pot_119"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 35,
+          "songId" : "pot_22"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 36,
+          "songId" : "pot_13"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 37,
+          "songId" : "pot_103"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 38,
+          "songId" : "pot_47"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 39,
+          "songId" : "pot_46"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 40,
+          "songId" : "pot_57"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 41,
+          "songId" : "pot_121"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.0794980000000001,
+          "slot" : 42,
+          "songId" : "pot_50"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.0794980000000001,
+          "slot" : 43,
+          "songId" : "pot_113"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 44,
+          "songId" : "pot_66"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 45,
+          "songId" : "pot_31"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 46,
+          "songId" : "pot_75"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 47,
+          "songId" : "pot_40"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.0794980000000001,
+          "slot" : 48,
+          "songId" : "pot_77"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9139179999999998,
+          "slot" : 49,
+          "songId" : "pot_114"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.0794980000000001,
+          "slot" : 50,
+          "songId" : "pot_131"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 51,
+          "songId" : "pot_91"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 52,
+          "songId" : "pot_128"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.1499999999999999,
+          "slot" : 53,
+          "songId" : "pot_29"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.01728,
+          "slot" : 54,
+          "songId" : "pot_126"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.01728,
+          "slot" : 55,
+          "songId" : "pot_27"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.01728,
+          "slot" : 56,
+          "songId" : "pot_153"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 57,
+          "songId" : "pot_92"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 58,
+          "songId" : "pot_120"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 59,
+          "songId" : "pot_76"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.01728,
+          "slot" : 60,
+          "songId" : "pot_99"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 3.01728,
+          "slot" : 61,
+          "songId" : "pot_81"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.8172799999999998,
+          "slot" : 62,
+          "songId" : "pot_0"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 63,
+          "songId" : "pot_56"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 64,
+          "songId" : "pot_28"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.736054,
+          "slot" : 65,
+          "songId" : "late_29"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 66,
+          "songId" : "pot_48"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.8794979999999999,
+          "slot" : 67,
+          "songId" : "pot_68"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 68,
+          "songId" : "pot_64"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.7237990000000001,
+          "slot" : 69,
+          "songId" : "late_49"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.8172799999999998,
+          "slot" : 70,
+          "songId" : "pot_36"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.8794979999999999,
+          "slot" : 71,
+          "songId" : "pot_104"
+        },
+        {
+          "collectionId" : "pl_pot",
+          "score" : 2.9500000000000002,
+          "slot" : 72,
+          "songId" : "pot_148"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.728426,
+          "slot" : 73,
+          "songId" : "late_19"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.728426,
+          "slot" : 74,
+          "songId" : "late_59"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.608841,
+          "slot" : 75,
+          "songId" : "late_38"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.599046,
+          "slot" : 76,
+          "songId" : "late_68"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.748631,
+          "slot" : 77,
+          "songId" : "late_79"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.736054,
+          "slot" : 78,
+          "songId" : "late_69"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.593105,
+          "slot" : 79,
+          "songId" : "late_18"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.589502,
+          "slot" : 80,
+          "songId" : "late_8"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.589502,
+          "slot" : 81,
+          "songId" : "late_48"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.7237990000000001,
+          "slot" : 82,
+          "songId" : "late_9"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.5125489999999999,
+          "slot" : 83,
+          "songId" : "late_47"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.608841,
+          "slot" : 84,
+          "songId" : "late_78"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.748631,
+          "slot" : 85,
+          "songId" : "late_39"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.599046,
+          "slot" : 86,
+          "songId" : "late_28"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4999720000000001,
+          "slot" : 87,
+          "songId" : "late_77"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.5125489999999999,
+          "slot" : 88,
+          "songId" : "late_7"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4249799999999999,
+          "slot" : 89,
+          "songId" : "late_46"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4923439999999999,
+          "slot" : 90,
+          "songId" : "late_27"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4151849999999999,
+          "slot" : 91,
+          "songId" : "late_76"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4999720000000001,
+          "slot" : 92,
+          "songId" : "late_37"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.487717,
+          "slot" : 93,
+          "songId" : "late_17"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4092439999999999,
+          "slot" : 94,
+          "songId" : "late_26"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4151849999999999,
+          "slot" : 95,
+          "songId" : "late_36"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4249799999999999,
+          "slot" : 96,
+          "songId" : "late_6"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.593105,
+          "slot" : 97,
+          "songId" : "late_58"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.3693580000000001,
+          "slot" : 98,
+          "songId" : "late_55"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.4056409999999999,
+          "slot" : 99,
+          "songId" : "late_56"
+        },
+        {
+          "collectionId" : "pkt_late",
+          "score" : 1.356781,
+          "slot" : 100,
+          "songId" : "late_5"
+        }
+      ],
+      "seed" : 7
+    }
+  ],
+  "snapshot" : {
+    "builtAtMs" : 1793215800000,
+    "collectionNames" : {
+      "fav_songs" : "Favorite songs",
+      "pkt_chill" : "Chill Lunch",
+      "pkt_late" : "Late Night",
+      "pl_potential" : "Potential",
+      "pls_road" : "Roadtrip"
+    },
+    "dominanceOrder" : [
+      "pl_potential",
+      "pkt_late",
+      "pkt_chill",
+      "fav_songs",
+      "pls_road"
+    ],
+    "historyRevision" : -1,
+    "moments" : [
+      {
+        "artists" : {
+          "various" : 1
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "eraHi" : 2002,
+        "eraLo" : 1998,
+        "genres" : {
+          "pop" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 3,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.18260000000000001,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.14905599999999999,
+          "bryson tiller" : 0.14904999999999999,
+          "drake" : 0.18492800000000001,
+          "frank ocean" : 0.18492,
+          "majid jordan" : 0.166019,
+          "partynextdoor" : 0.16602600000000001
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "genres" : {
+          "r&b" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 6,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.78435900000000003,
+        "seeds" : {
+
+        },
+        "skips" : 0.392154
+      },
+      {
+        "artists" : {
+          "6lack" : 0.14905599999999999,
+          "bryson tiller" : 0.14904999999999999,
+          "drake" : 0.18492800000000001,
+          "frank ocean" : 0.18492,
+          "majid jordan" : 0.166019,
+          "partynextdoor" : 0.16602600000000001
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2022,
+        "eraLo" : 2011,
+        "genres" : {
+          "r&b" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 7,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.6145290000000001,
+        "seeds" : {
+          "pot_1" : 0.38969500000000001,
+          "pot_2" : 0.38971099999999997,
+          "pot_4" : 0.434062,
+          "pot_5" : 0.43408000000000002,
+          "pot_7" : 0.48348000000000002,
+          "pot_8" : 0.48350100000000001
+        },
+        "skips" : 1.3071809999999999
+      },
+      {
+        "artists" : {
+          "6lack" : 0.126578,
+          "bryson tiller" : 0.14124600000000001,
+          "drake" : 0.14136599999999999,
+          "dvsn" : 0.067423999999999998,
+          "frank ocean" : 0.15714900000000001,
+          "majid jordan" : 0.15153,
+          "partynextdoor" : 0.15101899999999999,
+          "sza" : 0.063687999999999995
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 6,
+        "directSkips" : 3,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2021,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.19663700000000001,
+          "r&b" : 0.80336300000000005
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 8,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 1793027580000,
+        "plays" : 12.751848000000001,
+        "seeds" : {
+          "pot_1" : 0.77939000000000003,
+          "pot_2" : 0.77942299999999998,
+          "pot_4" : 0.86812400000000001,
+          "pot_5" : 0.86816099999999996,
+          "pot_7" : 0.96696000000000004,
+          "pot_8" : 0.967001
+        },
+        "skips" : 2.6143610000000002
+      },
+      {
+        "artists" : {
+          "6lack" : 0.14905599999999999,
+          "bryson tiller" : 0.14904999999999999,
+          "drake" : 0.18492800000000001,
+          "frank ocean" : 0.18492,
+          "majid jordan" : 0.166019,
+          "partynextdoor" : 0.16602600000000001
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2022,
+        "eraLo" : 2011,
+        "genres" : {
+          "r&b" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 8,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.5687169999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0.78430800000000001
+      },
+      {
+        "artists" : {
+          "6lack" : 0.14905599999999999,
+          "bryson tiller" : 0.14904999999999999,
+          "drake" : 0.18492800000000001,
+          "frank ocean" : 0.18492,
+          "majid jordan" : 0.166019,
+          "partynextdoor" : 0.16602600000000001
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2022,
+        "eraLo" : 2011,
+        "genres" : {
+          "r&b" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 9,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.6145290000000001,
+        "seeds" : {
+          "pot_1" : 0.38969500000000001,
+          "pot_2" : 0.38971099999999997,
+          "pot_4" : 0.434062,
+          "pot_5" : 0.43408000000000002,
+          "pot_7" : 0.48348000000000002,
+          "pot_8" : 0.48350100000000001
+        },
+        "skips" : 1.3071809999999999
+      },
+      {
+        "artists" : {
+          "6lack" : 0.14905599999999999,
+          "bryson tiller" : 0.14904999999999999,
+          "drake" : 0.18492800000000001,
+          "frank ocean" : 0.18492,
+          "majid jordan" : 0.166019,
+          "partynextdoor" : 0.16602600000000001
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "genres" : {
+          "r&b" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 10,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.78435900000000003,
+        "seeds" : {
+
+        },
+        "skips" : 0.392154
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.49999100000000002,
+          "tycho" : 0.50000900000000004
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 10,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.78640900000000002,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.49999100000000002,
+          "tycho" : 0.50000900000000004
+        },
+        "bpmHi" : 100,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 11,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.621362,
+        "seeds" : {
+          "lun_0" : 0.39070100000000002,
+          "lun_1" : 0.43518200000000001,
+          "lun_2" : 0.48472799999999999,
+          "lun_3" : 0.39074300000000001,
+          "lun_4" : 0.43522899999999998,
+          "lun_5" : 0.48477999999999999
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.499998,
+          "tycho" : 0.50000199999999995
+        },
+        "bpmHi" : 101,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 6,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 12,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 1793042400000,
+        "plays" : 10.271131,
+        "seeds" : {
+          "lun_0" : 0.78140100000000001,
+          "lun_1" : 0.87036400000000003,
+          "lun_2" : 0.96945599999999998,
+          "lun_3" : 0.78148499999999999,
+          "lun_4" : 0.87045700000000004,
+          "lun_5" : 0.96955899999999995
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.49999100000000002,
+          "tycho" : 0.50000900000000004
+        },
+        "bpmHi" : 100,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 13,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.621362,
+        "seeds" : {
+          "lun_0" : 0.39070100000000002,
+          "lun_1" : 0.43518200000000001,
+          "lun_2" : 0.48472799999999999,
+          "lun_3" : 0.39074300000000001,
+          "lun_4" : 0.43522899999999998,
+          "lun_5" : 0.48477999999999999
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.49999100000000002,
+          "tycho" : 0.50000900000000004
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 14,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.78640900000000002,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.18492900000000001,
+          "massive attack" : 0.14904899999999999,
+          "portishead" : 0.31507499999999999,
+          "tricky" : 0.35094700000000001
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 19,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.79085799999999995,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.18492900000000001,
+          "massive attack" : 0.14904899999999999,
+          "portishead" : 0.31507499999999999,
+          "tricky" : 0.35094700000000001
+        },
+        "bpmHi" : 148,
+        "bpmLo" : 88,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2003,
+        "eraLo" : 1993,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 20,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.6361949999999998,
+        "seeds" : {
+          "late_2" : 0.92516299999999996,
+          "late_4" : 0.39292199999999999,
+          "late_7" : 0.48751,
+          "late_9" : 0.83059899999999998
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.20794399999999999,
+          "massive attack" : 0.18687999999999999,
+          "portishead" : 0.30480099999999999,
+          "tricky" : 0.300375
+        },
+        "bpmHi" : 148,
+        "bpmLo" : 84,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 6,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 21,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 1793073900000,
+        "plays" : 9.7122499999999992,
+        "seeds" : {
+          "late_2" : 1.8503270000000001,
+          "late_4" : 0.78584399999999999,
+          "late_7" : 0.97502,
+          "late_9" : 1.6611990000000001
+        },
+        "skips" : 0.61699999999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.18492900000000001,
+          "massive attack" : 0.14904899999999999,
+          "portishead" : 0.31507499999999999,
+          "tricky" : 0.35094700000000001
+        },
+        "bpmHi" : 148,
+        "bpmLo" : 88,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2003,
+        "eraLo" : 1993,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 21,
+          "mode" : "collection"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.581717,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.18492900000000001,
+          "massive attack" : 0.14904899999999999,
+          "portishead" : 0.31507499999999999,
+          "tricky" : 0.35094700000000001
+        },
+        "bpmHi" : 148,
+        "bpmLo" : 88,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2003,
+        "eraLo" : 1993,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 22,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.6361949999999998,
+        "seeds" : {
+          "late_2" : 0.92516299999999996,
+          "late_4" : 0.39292199999999999,
+          "late_7" : 0.48751,
+          "late_9" : 0.83059899999999998
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.18492900000000001,
+          "massive attack" : 0.14904899999999999,
+          "portishead" : 0.31507499999999999,
+          "tricky" : 0.35094700000000001
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 1,
+          "hour" : 23,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.79085799999999995,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "various" : 1
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "eraHi" : 2002,
+        "eraLo" : 1998,
+        "genres" : {
+          "pop" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 3,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.18260000000000001,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.11068699999999999,
+          "bryson tiller" : 0.110682,
+          "drake" : 0.110677,
+          "dvsn" : 0.123278,
+          "frank ocean" : 0.099373000000000003,
+          "majid jordan" : 0.123283,
+          "partynextdoor" : 0.22265299999999999,
+          "sza" : 0.099368999999999999
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 6,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.1947749999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.11068699999999999,
+          "bryson tiller" : 0.110682,
+          "drake" : 0.110677,
+          "dvsn" : 0.123278,
+          "frank ocean" : 0.099373000000000003,
+          "majid jordan" : 0.123283,
+          "partynextdoor" : 0.22265299999999999,
+          "sza" : 0.099368999999999999
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 96,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2018,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 7,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 3.9825840000000001,
+        "seeds" : {
+          "pot_0" : 0.44078099999999998,
+          "pot_1" : 0.440799,
+          "pot_2" : 0.44081799999999999,
+          "pot_3" : 0.49096400000000001,
+          "pot_4" : 0.490985,
+          "pot_5" : 0.491006,
+          "pot_21" : 0.395727,
+          "pot_22" : 0.39574399999999998,
+          "pot_23" : 0.39576099999999997
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.11421000000000001,
+          "bryson tiller" : 0.12684500000000001,
+          "drake" : 0.117442,
+          "dvsn" : 0.107824,
+          "frank ocean" : 0.12647700000000001,
+          "majid jordan" : 0.136293,
+          "partynextdoor" : 0.17595,
+          "sza" : 0.094959000000000002
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 9,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2021,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.30388500000000002,
+          "r&b" : 0.69611500000000004
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 8,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 1793113980000,
+        "plays" : 14.803931,
+        "seeds" : {
+          "pot_0" : 0.88156100000000004,
+          "pot_1" : 0.88159900000000002,
+          "pot_2" : 0.881637,
+          "pot_3" : 0.98192699999999999,
+          "pot_4" : 0.98196899999999998,
+          "pot_5" : 0.98201099999999997,
+          "pot_21" : 0.79145399999999999,
+          "pot_22" : 0.79148799999999997,
+          "pot_23" : 0.79152199999999995
+        },
+        "skips" : 0.65359
+      },
+      {
+        "artists" : {
+          "6lack" : 0.11068699999999999,
+          "bryson tiller" : 0.110682,
+          "drake" : 0.110677,
+          "dvsn" : 0.123278,
+          "frank ocean" : 0.099373000000000003,
+          "majid jordan" : 0.123283,
+          "partynextdoor" : 0.22265299999999999,
+          "sza" : 0.099368999999999999
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 96,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2018,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 8,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.389551,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.11068699999999999,
+          "bryson tiller" : 0.110682,
+          "drake" : 0.110677,
+          "dvsn" : 0.123278,
+          "frank ocean" : 0.099373000000000003,
+          "majid jordan" : 0.123283,
+          "partynextdoor" : 0.22265299999999999,
+          "sza" : 0.099368999999999999
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 96,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2018,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 9,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 3.9825840000000001,
+        "seeds" : {
+          "pot_0" : 0.44078099999999998,
+          "pot_1" : 0.440799,
+          "pot_2" : 0.44081799999999999,
+          "pot_3" : 0.49096400000000001,
+          "pot_4" : 0.490985,
+          "pot_5" : 0.491006,
+          "pot_21" : 0.395727,
+          "pot_22" : 0.39574399999999998,
+          "pot_23" : 0.39576099999999997
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.11068699999999999,
+          "bryson tiller" : 0.110682,
+          "drake" : 0.110677,
+          "dvsn" : 0.123278,
+          "frank ocean" : 0.099373000000000003,
+          "majid jordan" : 0.123283,
+          "partynextdoor" : 0.22265299999999999,
+          "sza" : 0.099368999999999999
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 10,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.1947749999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 10,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.79861599999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "bpmHi" : 100,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 11,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.6620520000000001,
+        "seeds" : {
+          "lun_0" : 0.44193700000000002,
+          "lun_1" : 0.49225200000000002,
+          "lun_2" : 0.39680799999999999,
+          "lun_3" : 0.44198500000000002,
+          "lun_4" : 0.49230499999999999,
+          "lun_7" : 0.39676499999999998
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000500000000003,
+          "tycho" : 0.49999500000000002
+        },
+        "bpmHi" : 101,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 6,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 12,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 1793128800000,
+        "plays" : 10.332167,
+        "seeds" : {
+          "lun_0" : 0.88387499999999997,
+          "lun_1" : 0.98450400000000005,
+          "lun_2" : 0.79361599999999999,
+          "lun_3" : 0.883969,
+          "lun_4" : 0.98460899999999996,
+          "lun_7" : 0.79353099999999999
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "bpmHi" : 100,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 13,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.6620520000000001,
+        "seeds" : {
+          "lun_0" : 0.44193700000000002,
+          "lun_1" : 0.49225200000000002,
+          "lun_2" : 0.39680799999999999,
+          "lun_3" : 0.44198500000000002,
+          "lun_4" : 0.49230499999999999,
+          "lun_7" : 0.39676499999999998
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 14,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.79861599999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.17515700000000001,
+          "massive attack" : 0.19509899999999999,
+          "portishead" : 0.41242099999999998,
+          "tricky" : 0.21732299999999999
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 19,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.68342199999999997,
+        "seeds" : {
+
+        },
+        "skips" : 0.119713
+      },
+      {
+        "artists" : {
+          "burial" : 0.17515700000000001,
+          "massive attack" : 0.19509899999999999,
+          "portishead" : 0.41242099999999998,
+          "tricky" : 0.21732299999999999
+        },
+        "bpmHi" : 144,
+        "bpmLo" : 86,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 20,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.2780719999999999,
+        "seeds" : {
+          "late_1" : 0.93952400000000003,
+          "late_3" : 0.39902100000000001,
+          "late_6" : 0.49507699999999999,
+          "late_8" : 0.44445000000000001
+        },
+        "skips" : 0.39904200000000001
+      },
+      {
+        "artists" : {
+          "burial" : 0.205652,
+          "massive attack" : 0.20624500000000001,
+          "portishead" : 0.34045399999999998,
+          "tricky" : 0.24764900000000001
+        },
+        "bpmHi" : 144,
+        "bpmLo" : 84,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 5,
+        "directSkips" : 1,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 21,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 1793160300000,
+        "plays" : 9.1750670000000003,
+        "seeds" : {
+          "late_1" : 1.879049,
+          "late_3" : 0.79804200000000003,
+          "late_6" : 0.99015399999999998,
+          "late_8" : 0.88890000000000002
+        },
+        "skips" : 1.2155640000000001
+      },
+      {
+        "artists" : {
+          "burial" : 0.17515700000000001,
+          "massive attack" : 0.19509899999999999,
+          "portishead" : 0.41242099999999998,
+          "tricky" : 0.21732299999999999
+        },
+        "bpmHi" : 144,
+        "bpmLo" : 86,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 21,
+          "mode" : "collection"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.366843,
+        "seeds" : {
+
+        },
+        "skips" : 0.239425
+      },
+      {
+        "artists" : {
+          "burial" : 0.17515700000000001,
+          "massive attack" : 0.19509899999999999,
+          "portishead" : 0.41242099999999998,
+          "tricky" : 0.21732299999999999
+        },
+        "bpmHi" : 144,
+        "bpmLo" : 86,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 22,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.2780719999999999,
+        "seeds" : {
+          "late_1" : 0.93952400000000003,
+          "late_3" : 0.39902100000000001,
+          "late_6" : 0.49507699999999999,
+          "late_8" : 0.44445000000000001
+        },
+        "skips" : 0.39904200000000001
+      },
+      {
+        "artists" : {
+          "burial" : 0.17515700000000001,
+          "massive attack" : 0.19509899999999999,
+          "portishead" : 0.41242099999999998,
+          "tricky" : 0.21732299999999999
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 2,
+          "hour" : 23,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.68342199999999997,
+        "seeds" : {
+
+        },
+        "skips" : 0.119713
+      },
+      {
+        "artists" : {
+          "various" : 1
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "eraHi" : 2002,
+        "eraLo" : 1998,
+        "genres" : {
+          "pop" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 3,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.18260000000000001,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.110677,
+          "bryson tiller" : 0.099373000000000003,
+          "drake" : 0.099368999999999999,
+          "dvsn" : 0.110682,
+          "frank ocean" : 0.22265299999999999,
+          "majid jordan" : 0.11068699999999999,
+          "partynextdoor" : 0.123278,
+          "sza" : 0.123283
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 6,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.0893029999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.110677,
+          "bryson tiller" : 0.099373000000000003,
+          "drake" : 0.099368999999999999,
+          "dvsn" : 0.110682,
+          "frank ocean" : 0.22265299999999999,
+          "majid jordan" : 0.11068699999999999,
+          "partynextdoor" : 0.123278,
+          "sza" : 0.123283
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 96,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2022,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 7,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 3.6310120000000001,
+        "seeds" : {
+          "pot_15" : 0.36079299999999997,
+          "pot_16" : 0.36080899999999999,
+          "pot_17" : 0.36082399999999998,
+          "pot_18" : 0.40187,
+          "pot_19" : 0.40188699999999999,
+          "pot_20" : 0.40190399999999998,
+          "pot_21" : 0.44762299999999999,
+          "pot_22" : 0.44764199999999998,
+          "pot_23" : 0.44766099999999998
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.11433699999999999,
+          "bryson tiller" : 0.123128,
+          "drake" : 0.11337800000000001,
+          "dvsn" : 0.102448,
+          "frank ocean" : 0.174509,
+          "majid jordan" : 0.131968,
+          "partynextdoor" : 0.13631299999999999,
+          "sza" : 0.103919
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 9,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2021,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.30279800000000001,
+          "r&b" : 0.69720199999999999
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 8,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 1792595580000,
+        "plays" : 14.276572,
+        "seeds" : {
+          "pot_15" : 0.72158599999999995,
+          "pot_16" : 0.72161699999999995,
+          "pot_17" : 0.72164799999999996,
+          "pot_18" : 0.80373899999999998,
+          "pot_19" : 0.80377399999999999,
+          "pot_20" : 0.80380799999999997,
+          "pot_21" : 0.89524499999999996,
+          "pot_22" : 0.89528399999999997,
+          "pot_23" : 0.89532199999999995
+        },
+        "skips" : 0.65359
+      },
+      {
+        "artists" : {
+          "6lack" : 0.110677,
+          "bryson tiller" : 0.099373000000000003,
+          "drake" : 0.099368999999999999,
+          "dvsn" : 0.110682,
+          "frank ocean" : 0.22265299999999999,
+          "majid jordan" : 0.11068699999999999,
+          "partynextdoor" : 0.123278,
+          "sza" : 0.123283
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 96,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2022,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 8,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.178607,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.110677,
+          "bryson tiller" : 0.099373000000000003,
+          "drake" : 0.099368999999999999,
+          "dvsn" : 0.110682,
+          "frank ocean" : 0.22265299999999999,
+          "majid jordan" : 0.11068699999999999,
+          "partynextdoor" : 0.123278,
+          "sza" : 0.123283
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 96,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2022,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 9,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 3.6310120000000001,
+        "seeds" : {
+          "pot_15" : 0.36079299999999997,
+          "pot_16" : 0.36080899999999999,
+          "pot_17" : 0.36082399999999998,
+          "pot_18" : 0.40187,
+          "pot_19" : 0.40188699999999999,
+          "pot_20" : 0.40190399999999998,
+          "pot_21" : 0.44762299999999999,
+          "pot_22" : 0.44764199999999998,
+          "pot_23" : 0.44766099999999998
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.110677,
+          "bryson tiller" : 0.099373000000000003,
+          "drake" : 0.099368999999999999,
+          "dvsn" : 0.110682,
+          "frank ocean" : 0.22265299999999999,
+          "majid jordan" : 0.11068699999999999,
+          "partynextdoor" : 0.123278,
+          "sza" : 0.123283
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 10,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.0893029999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 10,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.72811599999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 11,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.4270529999999999,
+        "seeds" : {
+          "lun_0" : 0.36177900000000002,
+          "lun_1" : 0.40296700000000002,
+          "lun_2" : 0.44884499999999999,
+          "lun_5" : 0.36174000000000001,
+          "lun_6" : 0.402924,
+          "lun_7" : 0.448797
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.500004,
+          "tycho" : 0.499996
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 6,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 12,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 1792610400000,
+        "plays" : 9.9796680000000002,
+        "seeds" : {
+          "lun_0" : 0.72355700000000001,
+          "lun_1" : 0.80593499999999996,
+          "lun_2" : 0.89769100000000002,
+          "lun_5" : 0.72348000000000001,
+          "lun_6" : 0.80584800000000001,
+          "lun_7" : 0.89759500000000003
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 13,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.4270529999999999,
+        "seeds" : {
+          "lun_0" : 0.36177900000000002,
+          "lun_1" : 0.40296700000000002,
+          "lun_2" : 0.44884499999999999,
+          "lun_5" : 0.36174000000000001,
+          "lun_6" : 0.402924,
+          "lun_7" : 0.448797
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 14,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.72811599999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.35094700000000001,
+          "massive attack" : 0.18492900000000001,
+          "portishead" : 0.14904899999999999,
+          "tricky" : 0.31507499999999999
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 19,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.732236,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.35094700000000001,
+          "massive attack" : 0.18492900000000001,
+          "portishead" : 0.14904899999999999,
+          "tricky" : 0.31507499999999999
+        },
+        "bpmHi" : 148,
+        "bpmLo" : 84,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2003,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 20,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.4407860000000001,
+        "seeds" : {
+          "late_0" : 0.45137300000000002,
+          "late_2" : 0.76903100000000002,
+          "late_7" : 0.85658500000000004,
+          "late_9" : 0.36379699999999998
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.27318999999999999,
+          "massive attack" : 0.20200399999999999,
+          "portishead" : 0.23994799999999999,
+          "tricky" : 0.28485899999999997
+        },
+        "bpmHi" : 148,
+        "bpmLo" : 84,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 6,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 21,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 1792641900000,
+        "plays" : 9.4191369999999992,
+        "seeds" : {
+          "late_0" : 0.90274600000000005,
+          "late_2" : 1.538062,
+          "late_7" : 1.713171,
+          "late_9" : 0.72759300000000005
+        },
+        "skips" : 0.61699999999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.35094700000000001,
+          "massive attack" : 0.18492900000000001,
+          "portishead" : 0.14904899999999999,
+          "tricky" : 0.31507499999999999
+        },
+        "bpmHi" : 148,
+        "bpmLo" : 84,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2003,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 21,
+          "mode" : "collection"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.464472,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.35094700000000001,
+          "massive attack" : 0.18492900000000001,
+          "portishead" : 0.14904899999999999,
+          "tricky" : 0.31507499999999999
+        },
+        "bpmHi" : 148,
+        "bpmLo" : 84,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2003,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 22,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.4407860000000001,
+        "seeds" : {
+          "late_0" : 0.45137300000000002,
+          "late_2" : 0.76903100000000002,
+          "late_7" : 0.85658500000000004,
+          "late_9" : 0.36379699999999998
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.35094700000000001,
+          "massive attack" : 0.18492900000000001,
+          "portishead" : 0.14904899999999999,
+          "tricky" : 0.31507499999999999
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 3,
+          "hour" : 23,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.732236,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "various" : 1
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "genres" : {
+          "pop" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 1,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.10956,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "various" : 1
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "eraHi" : 2002,
+        "eraLo" : 1998,
+        "genres" : {
+          "pop" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 2,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.36520000000000002,
+        "seeds" : {
+          "lib_0" : 0.36520000000000002
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "various" : 1
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 1,
+        "directSkips" : 0,
+        "distinctDays" : 1,
+        "eraHi" : 2002,
+        "eraLo" : 1998,
+        "genres" : {
+          "pop" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 3,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 1791453600000,
+        "plays" : 0.73040000000000005,
+        "seeds" : {
+          "lib_0" : 0.73040000000000005
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "various" : 1
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "eraHi" : 2002,
+        "eraLo" : 1998,
+        "genres" : {
+          "pop" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 4,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.36520000000000002,
+        "seeds" : {
+          "lib_0" : 0.36520000000000002
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "various" : 1
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "genres" : {
+          "pop" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 5,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.10956,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.123278,
+          "bryson tiller" : 0.11068699999999999,
+          "drake" : 0.110682,
+          "dvsn" : 0.123283,
+          "frank ocean" : 0.110677,
+          "majid jordan" : 0.22265299999999999,
+          "partynextdoor" : 0.099368999999999999,
+          "sza" : 0.099373000000000003
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 6,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.106212,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.123278,
+          "bryson tiller" : 0.11068699999999999,
+          "drake" : 0.110682,
+          "dvsn" : 0.123283,
+          "frank ocean" : 0.110677,
+          "majid jordan" : 0.22265299999999999,
+          "partynextdoor" : 0.099368999999999999,
+          "sza" : 0.099373000000000003
+        },
+        "bpmHi" : 100,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2022,
+        "eraLo" : 2012,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 7,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 3.6873740000000002,
+        "seeds" : {
+          "pot_12" : 0.366394,
+          "pot_13" : 0.36640899999999998,
+          "pot_14" : 0.366425,
+          "pot_15" : 0.40810800000000003,
+          "pot_16" : 0.40812500000000002,
+          "pot_17" : 0.40814299999999998,
+          "pot_18" : 0.454571,
+          "pot_19" : 0.45458999999999999,
+          "pot_20" : 0.45461000000000001
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.119168,
+          "bryson tiller" : 0.12734500000000001,
+          "drake" : 0.11765200000000001,
+          "dvsn" : 0.10735,
+          "frank ocean" : 0.13166600000000001,
+          "majid jordan" : 0.17496600000000001,
+          "partynextdoor" : 0.127028,
+          "sza" : 0.094824000000000006
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 9,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2021,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.30297800000000003,
+          "r&b" : 0.69702200000000003
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 8,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 1792681980000,
+        "plays" : 14.361116000000001,
+        "seeds" : {
+          "pot_12" : 0.73278699999999997,
+          "pot_13" : 0.73281799999999997,
+          "pot_14" : 0.73285,
+          "pot_15" : 0.81621500000000002,
+          "pot_16" : 0.81625000000000003,
+          "pot_17" : 0.81628500000000004,
+          "pot_18" : 0.90914200000000001,
+          "pot_19" : 0.90918100000000002,
+          "pot_20" : 0.90922000000000003
+        },
+        "skips" : 0.65359
+      },
+      {
+        "artists" : {
+          "6lack" : 0.123278,
+          "bryson tiller" : 0.11068699999999999,
+          "drake" : 0.110682,
+          "dvsn" : 0.123283,
+          "frank ocean" : 0.110677,
+          "majid jordan" : 0.22265299999999999,
+          "partynextdoor" : 0.099368999999999999,
+          "sza" : 0.099373000000000003
+        },
+        "bpmHi" : 100,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2022,
+        "eraLo" : 2012,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 8,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.2124239999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.123278,
+          "bryson tiller" : 0.11068699999999999,
+          "drake" : 0.110682,
+          "dvsn" : 0.123283,
+          "frank ocean" : 0.110677,
+          "majid jordan" : 0.22265299999999999,
+          "partynextdoor" : 0.099368999999999999,
+          "sza" : 0.099373000000000003
+        },
+        "bpmHi" : 100,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2022,
+        "eraLo" : 2012,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 9,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 3.6873740000000002,
+        "seeds" : {
+          "pot_12" : 0.366394,
+          "pot_13" : 0.36640899999999998,
+          "pot_14" : 0.366425,
+          "pot_15" : 0.40810800000000003,
+          "pot_16" : 0.40812500000000002,
+          "pot_17" : 0.40814299999999998,
+          "pot_18" : 0.454571,
+          "pot_19" : 0.45458999999999999,
+          "pot_20" : 0.45461000000000001
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.123278,
+          "bryson tiller" : 0.11068699999999999,
+          "drake" : 0.110682,
+          "dvsn" : 0.123283,
+          "frank ocean" : 0.110677,
+          "majid jordan" : 0.22265299999999999,
+          "partynextdoor" : 0.099368999999999999,
+          "sza" : 0.099373000000000003
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 10,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.106212,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.49999100000000002,
+          "tycho" : 0.50000900000000004
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 10,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.73941800000000002,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.49999100000000002,
+          "tycho" : 0.50000900000000004
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 11,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.4647260000000002,
+        "seeds" : {
+          "lun_0" : 0.40922199999999997,
+          "lun_1" : 0.45581199999999999,
+          "lun_4" : 0.36735499999999999,
+          "lun_5" : 0.40917900000000001,
+          "lun_6" : 0.455764,
+          "lun_7" : 0.367394
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.499998,
+          "tycho" : 0.50000199999999995
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 6,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 12,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 1792696800000,
+        "plays" : 10.036179000000001,
+        "seeds" : {
+          "lun_0" : 0.81844499999999998,
+          "lun_1" : 0.91162500000000002,
+          "lun_4" : 0.73470999999999997,
+          "lun_5" : 0.818357,
+          "lun_6" : 0.91152699999999998,
+          "lun_7" : 0.73478900000000003
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.49999100000000002,
+          "tycho" : 0.50000900000000004
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 13,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.4647260000000002,
+        "seeds" : {
+          "lun_0" : 0.40922199999999997,
+          "lun_1" : 0.45581199999999999,
+          "lun_4" : 0.36735499999999999,
+          "lun_5" : 0.40917900000000001,
+          "lun_6" : 0.455764,
+          "lun_7" : 0.367394
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.49999100000000002,
+          "tycho" : 0.50000900000000004
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 14,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.73941800000000002,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.21732299999999999,
+          "massive attack" : 0.17515700000000001,
+          "portishead" : 0.19509899999999999,
+          "tricky" : 0.41242099999999998
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 19,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.63276299999999996,
+        "seeds" : {
+
+        },
+        "skips" : 0.11083899999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.21732299999999999,
+          "massive attack" : 0.17515700000000001,
+          "portishead" : 0.19509899999999999,
+          "tricky" : 0.41242099999999998
+        },
+        "bpmHi" : 92,
+        "bpmLo" : 82,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 20,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.10921,
+        "seeds" : {
+          "late_1" : 0.41150500000000001,
+          "late_6" : 0.86988200000000004,
+          "late_8" : 0.36944399999999999,
+          "late_11" : 0.45837899999999998
+        },
+        "skips" : 0.36946299999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.22147,
+          "massive attack" : 0.19949,
+          "portishead" : 0.26134499999999999,
+          "tricky" : 0.31769500000000001
+        },
+        "bpmHi" : 144,
+        "bpmLo" : 82,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 5,
+        "directSkips" : 1,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 21,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 1792728300000,
+        "plays" : 8.921773,
+        "seeds" : {
+          "late_1" : 0.82301000000000002,
+          "late_6" : 1.7397640000000001,
+          "late_8" : 0.73888699999999996,
+          "late_11" : 0.91675899999999999
+        },
+        "skips" : 1.171195
+      },
+      {
+        "artists" : {
+          "burial" : 0.21732299999999999,
+          "massive attack" : 0.17515700000000001,
+          "portishead" : 0.19509899999999999,
+          "tricky" : 0.41242099999999998
+        },
+        "bpmHi" : 92,
+        "bpmLo" : 82,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 21,
+          "mode" : "collection"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.2655259999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0.22167799999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.21732299999999999,
+          "massive attack" : 0.17515700000000001,
+          "portishead" : 0.19509899999999999,
+          "tricky" : 0.41242099999999998
+        },
+        "bpmHi" : 92,
+        "bpmLo" : 82,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 22,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.10921,
+        "seeds" : {
+          "late_1" : 0.41150500000000001,
+          "late_6" : 0.86988200000000004,
+          "late_8" : 0.36944399999999999,
+          "late_11" : 0.45837899999999998
+        },
+        "skips" : 0.36946299999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.21732299999999999,
+          "massive attack" : 0.17515700000000001,
+          "portishead" : 0.19509899999999999,
+          "tricky" : 0.41242099999999998
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 4,
+          "hour" : 23,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.63276299999999996,
+        "seeds" : {
+
+        },
+        "skips" : 0.11083899999999999
+      },
+      {
+        "artists" : {
+          "various" : 1
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "eraHi" : 2002,
+        "eraLo" : 1998,
+        "genres" : {
+          "pop" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 3,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.18260000000000001,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.099368999999999999,
+          "bryson tiller" : 0.22265299999999999,
+          "drake" : 0.123283,
+          "dvsn" : 0.099373000000000003,
+          "frank ocean" : 0.123278,
+          "majid jordan" : 0.110677,
+          "partynextdoor" : 0.110682,
+          "sza" : 0.11068699999999999
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 6,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.123383,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.099368999999999999,
+          "bryson tiller" : 0.22265299999999999,
+          "drake" : 0.123283,
+          "dvsn" : 0.099373000000000003,
+          "frank ocean" : 0.123278,
+          "majid jordan" : 0.110677,
+          "partynextdoor" : 0.110682,
+          "sza" : 0.11068699999999999
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 96,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2021,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 7,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 3.7446109999999999,
+        "seeds" : {
+          "pot_9" : 0.372081,
+          "pot_10" : 0.37209700000000001,
+          "pot_11" : 0.37211300000000003,
+          "pot_12" : 0.41444199999999998,
+          "pot_13" : 0.41446,
+          "pot_14" : 0.41447800000000001,
+          "pot_15" : 0.46162700000000001,
+          "pot_16" : 0.46164699999999997,
+          "pot_17" : 0.46166600000000002
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.10989699999999999,
+          "bryson tiller" : 0.17077800000000001,
+          "drake" : 0.12250999999999999,
+          "dvsn" : 0.098147999999999999,
+          "frank ocean" : 0.13644100000000001,
+          "majid jordan" : 0.131714,
+          "partynextdoor" : 0.13126199999999999,
+          "sza" : 0.099250000000000005
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 92,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 9,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2021,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.30315799999999998,
+          "r&b" : 0.69684199999999996
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 8,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 1792768380000,
+        "plays" : 14.446972000000001,
+        "seeds" : {
+          "pot_9" : 0.74416199999999999,
+          "pot_10" : 0.74419400000000002,
+          "pot_11" : 0.74422500000000003,
+          "pot_12" : 0.82888499999999998,
+          "pot_13" : 0.82891999999999999,
+          "pot_14" : 0.82895600000000003,
+          "pot_15" : 0.92325400000000002,
+          "pot_16" : 0.92329300000000003,
+          "pot_17" : 0.92333299999999996
+        },
+        "skips" : 0.65359
+      },
+      {
+        "artists" : {
+          "6lack" : 0.099368999999999999,
+          "bryson tiller" : 0.22265299999999999,
+          "drake" : 0.123283,
+          "dvsn" : 0.099373000000000003,
+          "frank ocean" : 0.123278,
+          "majid jordan" : 0.110677,
+          "partynextdoor" : 0.110682,
+          "sza" : 0.11068699999999999
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 96,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2021,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 8,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.2467670000000002,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.099368999999999999,
+          "bryson tiller" : 0.22265299999999999,
+          "drake" : 0.123283,
+          "dvsn" : 0.099373000000000003,
+          "frank ocean" : 0.123278,
+          "majid jordan" : 0.110677,
+          "partynextdoor" : 0.110682,
+          "sza" : 0.11068699999999999
+        },
+        "bpmHi" : 104,
+        "bpmLo" : 96,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "eraHi" : 2021,
+        "eraLo" : 2011,
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 9,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 3.7446109999999999,
+        "seeds" : {
+          "pot_9" : 0.372081,
+          "pot_10" : 0.37209700000000001,
+          "pot_11" : 0.37211300000000003,
+          "pot_12" : 0.41444199999999998,
+          "pot_13" : 0.41446,
+          "pot_14" : 0.41447800000000001,
+          "pot_15" : 0.46162700000000001,
+          "pot_16" : 0.46164699999999997,
+          "pot_17" : 0.46166600000000002
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "6lack" : 0.099368999999999999,
+          "bryson tiller" : 0.22265299999999999,
+          "drake" : 0.123283,
+          "dvsn" : 0.099373000000000003,
+          "frank ocean" : 0.123278,
+          "majid jordan" : 0.110677,
+          "partynextdoor" : 0.110682,
+          "sza" : 0.11068699999999999
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pl_potential" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pl_potential",
+        "genres" : {
+          "hip-hop" : 0.33331899999999998,
+          "r&b" : 0.66668099999999997
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 10,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.123383,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 10,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.75089600000000001,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 99,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 11,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.5029849999999998,
+        "seeds" : {
+          "lun_0" : 0.46288800000000002,
+          "lun_3" : 0.37305700000000003,
+          "lun_4" : 0.41553000000000001,
+          "lun_5" : 0.46283800000000003,
+          "lun_6" : 0.37309700000000001,
+          "lun_7" : 0.415574
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.500004,
+          "tycho" : 0.499996
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 97,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 6,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 12,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 1792783200000,
+        "plays" : 10.093567,
+        "seeds" : {
+          "lun_0" : 0.92577600000000004,
+          "lun_3" : 0.74611499999999997,
+          "lun_4" : 0.83106000000000002,
+          "lun_5" : 0.92567699999999997,
+          "lun_6" : 0.74619400000000002,
+          "lun_7" : 0.83114900000000003
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "bpmHi" : 102,
+        "bpmLo" : 99,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "eraHi" : 2021,
+        "eraLo" : 2014,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 13,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.5029849999999998,
+        "seeds" : {
+          "lun_0" : 0.46288800000000002,
+          "lun_3" : 0.37305700000000003,
+          "lun_4" : 0.41553000000000001,
+          "lun_5" : 0.46283800000000003,
+          "lun_6" : 0.37309700000000001,
+          "lun_7" : 0.415574
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "khruangbin" : 0.50000900000000004,
+          "tycho" : 0.49999100000000002
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_chill" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_chill",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 14,
+          "mode" : "browse"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.75089600000000001,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.182866,
+          "massive attack" : 0.38656200000000002,
+          "portishead" : 0.43057200000000001
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 19,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.61549600000000004,
+        "seeds" : {
+
+        },
+        "skips" : 0.13964799999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.182866,
+          "massive attack" : 0.38656200000000002,
+          "portishead" : 0.43057200000000001
+        },
+        "bpmHi" : 140,
+        "bpmLo" : 80,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2003,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 20,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.0516540000000001,
+        "seeds" : {
+          "late_0" : 0.79309099999999999,
+          "late_5" : 0.88338499999999998,
+          "late_7" : 0.37517800000000001
+        },
+        "skips" : 0.46549499999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.209509,
+          "massive attack" : 0.27336199999999999,
+          "portishead" : 0.34400999999999998,
+          "tricky" : 0.17311799999999999
+        },
+        "bpmHi" : 140,
+        "bpmLo" : 82,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 5,
+        "directSkips" : 1,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 21,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 1792814700000,
+        "plays" : 8.8354389999999992,
+        "seeds" : {
+          "late_0" : 1.586182,
+          "late_5" : 1.766769,
+          "late_7" : 0.75035700000000005
+        },
+        "skips" : 1.315242
+      },
+      {
+        "artists" : {
+          "burial" : 0.182866,
+          "massive attack" : 0.38656200000000002,
+          "portishead" : 0.43057200000000001
+        },
+        "bpmHi" : 140,
+        "bpmLo" : 80,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2003,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 21,
+          "mode" : "collection"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.2309920000000001,
+        "seeds" : {
+
+        },
+        "skips" : 0.27929700000000002
+      },
+      {
+        "artists" : {
+          "burial" : 0.182866,
+          "massive attack" : 0.38656200000000002,
+          "portishead" : 0.43057200000000001
+        },
+        "bpmHi" : 140,
+        "bpmLo" : 80,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2003,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 22,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.0516540000000001,
+        "seeds" : {
+          "late_0" : 0.79309099999999999,
+          "late_5" : 0.88338499999999998,
+          "late_7" : 0.37517800000000001
+        },
+        "skips" : 0.46549499999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.182866,
+          "massive attack" : 0.38656200000000002,
+          "portishead" : 0.43057200000000001
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 5,
+          "hour" : 23,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.61549600000000004,
+        "seeds" : {
+
+        },
+        "skips" : 0.13964799999999999
+      },
+      {
+        "artists" : {
+          "chromeo" : 0.24999099999999999,
+          "daft punk" : 0.32452999999999999,
+          "justice" : 0.42547800000000002
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "fav_songs" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "fav_songs",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 7,
+          "mode" : "running"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.5220229999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "chromeo" : 0.24999099999999999,
+          "daft punk" : 0.32452999999999999,
+          "justice" : 0.42547800000000002
+        },
+        "bpmHi" : 126,
+        "bpmLo" : 122,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "fav_songs" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "fav_songs",
+        "eraHi" : 2011,
+        "eraLo" : 2003,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 8,
+          "mode" : "running"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 5.0734079999999997,
+        "seeds" : {
+          "fav_0" : 0.37811099999999997,
+          "fav_1" : 0.79925100000000004,
+          "fav_2" : 0.42114099999999999,
+          "fav_3" : 0.42115900000000001,
+          "fav_4" : 0.89024599999999998,
+          "fav_5" : 0.46908899999999998,
+          "fav_6" : 0.469109,
+          "fav_7" : 0.46912900000000002,
+          "fav_8" : 0.378079,
+          "fav_9" : 0.37809500000000001
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "chromeo" : 0.24999099999999999,
+          "daft punk" : 0.32452999999999999,
+          "justice" : 0.42547800000000002
+        },
+        "bpmHi" : 126,
+        "bpmLo" : 122,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "fav_songs" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 12,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "fav_songs",
+        "eraHi" : 2011,
+        "eraLo" : 2003,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 9,
+          "mode" : "running"
+        },
+        "lastSeenMs" : 1792858320000,
+        "plays" : 10.146817,
+        "seeds" : {
+          "fav_0" : 0.75622299999999998,
+          "fav_1" : 1.5985020000000001,
+          "fav_2" : 0.842283,
+          "fav_3" : 0.84231900000000004,
+          "fav_4" : 1.780492,
+          "fav_5" : 0.93817700000000004,
+          "fav_6" : 0.93821699999999997,
+          "fav_7" : 0.93825700000000001,
+          "fav_8" : 0.756158,
+          "fav_9" : 0.75619000000000003
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "chromeo" : 0.24999099999999999,
+          "daft punk" : 0.32452999999999999,
+          "justice" : 0.42547800000000002
+        },
+        "bpmHi" : 126,
+        "bpmLo" : 122,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "fav_songs" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "fav_songs",
+        "eraHi" : 2011,
+        "eraLo" : 2003,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 9,
+          "mode" : "walking"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 3.0440450000000001,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "chromeo" : 0.24999099999999999,
+          "daft punk" : 0.32452999999999999,
+          "justice" : 0.42547800000000002
+        },
+        "bpmHi" : 126,
+        "bpmLo" : 122,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "fav_songs" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "fav_songs",
+        "eraHi" : 2011,
+        "eraLo" : 2003,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 10,
+          "mode" : "running"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 5.0734079999999997,
+        "seeds" : {
+          "fav_0" : 0.37811099999999997,
+          "fav_1" : 0.79925100000000004,
+          "fav_2" : 0.42114099999999999,
+          "fav_3" : 0.42115900000000001,
+          "fav_4" : 0.89024599999999998,
+          "fav_5" : 0.46908899999999998,
+          "fav_6" : 0.469109,
+          "fav_7" : 0.46912900000000002,
+          "fav_8" : 0.378079,
+          "fav_9" : 0.37809500000000001
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "chromeo" : 0.24999099999999999,
+          "daft punk" : 0.32452999999999999,
+          "justice" : 0.42547800000000002
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "fav_songs" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "fav_songs",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 11,
+          "mode" : "running"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.5220229999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "fleetwood mac" : 0.499996,
+          "tom petty" : 0.500004
+        },
+        "bpmHi" : 113,
+        "bpmLo" : 112,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pls_road" : 1
+        },
+        "ctx" : {
+          "trip:trp_ab" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pls_road",
+        "eraHi" : 1983,
+        "eraLo" : 1976,
+        "genres" : {
+          "rock" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 15,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.2929539999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.31507499999999999,
+          "massive attack" : 0.35094700000000001,
+          "portishead" : 0.18492900000000001,
+          "tricky" : 0.14904899999999999
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 19,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.76686600000000005,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.31507499999999999,
+          "massive attack" : 0.35094700000000001,
+          "portishead" : 0.18492900000000001,
+          "tricky" : 0.14904899999999999
+        },
+        "bpmHi" : 156,
+        "bpmLo" : 88,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1993,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 20,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.5562209999999999,
+        "seeds" : {
+          "late_4" : 0.89709700000000003,
+          "late_6" : 0.38100200000000001,
+          "late_9" : 0.47271999999999997,
+          "late_11" : 0.80540199999999995
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.298765,
+          "massive attack" : 0.32837100000000002,
+          "portishead" : 0.18384500000000001,
+          "tricky" : 0.18901899999999999
+        },
+        "bpmHi" : 156,
+        "bpmLo" : 88,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 6,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2001,
+        "eraLo" : 1993,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 21,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 1792901100000,
+        "plays" : 6.194896,
+        "seeds" : {
+          "late_4" : 1.7941940000000001,
+          "late_6" : 0.76200400000000001,
+          "late_9" : 0.94544099999999998,
+          "late_11" : 1.610803
+        },
+        "skips" : 0.21549499999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.31507499999999999,
+          "massive attack" : 0.35094700000000001,
+          "portishead" : 0.18492900000000001,
+          "tricky" : 0.14904899999999999
+        },
+        "bpmHi" : 156,
+        "bpmLo" : 88,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1993,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 21,
+          "mode" : "collection"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.5337320000000001,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.31507499999999999,
+          "massive attack" : 0.35094700000000001,
+          "portishead" : 0.18492900000000001,
+          "tricky" : 0.14904899999999999
+        },
+        "bpmHi" : 156,
+        "bpmLo" : 88,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2002,
+        "eraLo" : 1993,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 22,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.5562209999999999,
+        "seeds" : {
+          "late_4" : 0.89709700000000003,
+          "late_6" : 0.38100200000000001,
+          "late_9" : 0.47271999999999997,
+          "late_11" : 0.80540199999999995
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.31507499999999999,
+          "massive attack" : 0.35094700000000001,
+          "portishead" : 0.18492900000000001,
+          "tricky" : 0.14904899999999999
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 6,
+          "hour" : 23,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.76686600000000005,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "chromeo" : 0.24999099999999999,
+          "daft punk" : 0.32452999999999999,
+          "justice" : 0.42547800000000002
+        },
+        "bpmHi" : 126,
+        "bpmLo" : 122,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "fav_songs" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "fav_songs",
+        "eraHi" : 2011,
+        "eraLo" : 2003,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 9,
+          "mode" : "running"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.5367039999999998,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "fleetwood mac" : 0.499996,
+          "tom petty" : 0.500004
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pls_road" : 1
+        },
+        "ctx" : {
+          "trip:trp_ab" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pls_road",
+        "genres" : {
+          "rock" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 13,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.77577300000000005,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "fleetwood mac" : 0.499996,
+          "tom petty" : 0.500004
+        },
+        "bpmHi" : 113,
+        "bpmLo" : 112,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pls_road" : 1
+        },
+        "ctx" : {
+          "trip:trp_ab" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pls_road",
+        "eraHi" : 1983,
+        "eraLo" : 1976,
+        "genres" : {
+          "rock" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 14,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.585909,
+        "seeds" : {
+          "road_1" : 0.38542900000000002,
+          "road_2" : 0.81475600000000004,
+          "road_3" : 0.90751599999999999,
+          "road_4" : 0.47820800000000002
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "fleetwood mac" : 0.499996,
+          "tom petty" : 0.500004
+        },
+        "bpmHi" : 113,
+        "bpmLo" : 112,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pls_road" : 1
+        },
+        "ctx" : {
+          "trip:trp_ab" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pls_road",
+        "eraHi" : 1983,
+        "eraLo" : 1976,
+        "genres" : {
+          "rock" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 15,
+          "mode" : "carPlay"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.551545,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "fleetwood mac" : 0.499996,
+          "tom petty" : 0.500004
+        },
+        "bpmHi" : 113,
+        "bpmLo" : 112,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pls_road" : 1
+        },
+        "ctx" : {
+          "trip:trp_ab" : 1
+        },
+        "directPlays" : 6,
+        "directSkips" : 0,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pls_road",
+        "eraHi" : 1983,
+        "eraLo" : 1976,
+        "genres" : {
+          "rock" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 15,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 1792965840000,
+        "plays" : 5.171818,
+        "seeds" : {
+          "road_1" : 0.77085800000000004,
+          "road_2" : 1.6295120000000001,
+          "road_3" : 1.815032,
+          "road_4" : 0.95641600000000004
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "fleetwood mac" : 0.499996,
+          "tom petty" : 0.500004
+        },
+        "bpmHi" : 113,
+        "bpmLo" : 112,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pls_road" : 1
+        },
+        "ctx" : {
+          "trip:trp_ab" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pls_road",
+        "eraHi" : 1983,
+        "eraLo" : 1976,
+        "genres" : {
+          "rock" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 16,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.585909,
+        "seeds" : {
+          "road_1" : 0.38542900000000002,
+          "road_2" : 0.81475600000000004,
+          "road_3" : 0.90751599999999999,
+          "road_4" : 0.47820800000000002
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "fleetwood mac" : 0.499996,
+          "tom petty" : 0.500004
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pls_road" : 1
+        },
+        "ctx" : {
+          "trip:trp_ab" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pls_road",
+        "genres" : {
+          "rock" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 17,
+          "mode" : "trip"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.77577300000000005,
+        "seeds" : {
+
+        },
+        "skips" : 0
+      },
+      {
+        "artists" : {
+          "burial" : 0.22173300000000001,
+          "massive attack" : 0.221745,
+          "portishead" : 0.17872199999999999,
+          "tricky" : 0.37780000000000002
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 19,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.64947299999999997,
+        "seeds" : {
+
+        },
+        "skips" : 0.129297
+      },
+      {
+        "artists" : {
+          "burial" : 0.22173300000000001,
+          "massive attack" : 0.221745,
+          "portishead" : 0.17872199999999999,
+          "tricky" : 0.37780000000000002
+        },
+        "bpmHi" : 90,
+        "bpmLo" : 86,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2001,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 20,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.1649099999999999,
+        "seeds" : {
+          "late_3" : 0.48003200000000001,
+          "late_5" : 0.38691599999999998,
+          "late_8" : 0.48005799999999998,
+          "late_10" : 0.81790300000000005
+        },
+        "skips" : 0.43098999999999998
+      },
+      {
+        "artists" : {
+          "burial" : 0.243007,
+          "massive attack" : 0.25119200000000003,
+          "portishead" : 0.18013599999999999,
+          "tricky" : 0.32566499999999998
+        },
+        "bpmHi" : 152,
+        "bpmLo" : 86,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 5,
+        "directSkips" : 1,
+        "distinctDays" : 3,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2001,
+        "eraLo" : 1993,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 21,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 1792987500000,
+        "plays" : 5.6079299999999996,
+        "seeds" : {
+          "late_3" : 0.96006499999999995,
+          "late_5" : 0.77383199999999996,
+          "late_8" : 0.96011599999999997,
+          "late_10" : 1.635807
+        },
+        "skips" : 0.86197900000000005
+      },
+      {
+        "artists" : {
+          "burial" : 0.22173300000000001,
+          "massive attack" : 0.221745,
+          "portishead" : 0.17872199999999999,
+          "tricky" : 0.37780000000000002
+        },
+        "bpmHi" : 90,
+        "bpmLo" : 86,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2001,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 21,
+          "mode" : "collection"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 1.2989459999999999,
+        "seeds" : {
+
+        },
+        "skips" : 0.25859399999999999
+      },
+      {
+        "artists" : {
+          "burial" : 0.22173300000000001,
+          "massive attack" : 0.221745,
+          "portishead" : 0.17872199999999999,
+          "tricky" : 0.37780000000000002
+        },
+        "bpmHi" : 90,
+        "bpmLo" : 86,
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "eraHi" : 2001,
+        "eraLo" : 1992,
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 22,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 2.1649099999999999,
+        "seeds" : {
+          "late_3" : 0.48003200000000001,
+          "late_5" : 0.38691599999999998,
+          "late_8" : 0.48005799999999998,
+          "late_10" : 0.81790300000000005
+        },
+        "skips" : 0.43098999999999998
+      },
+      {
+        "artists" : {
+          "burial" : 0.22173300000000001,
+          "massive attack" : 0.221745,
+          "portishead" : 0.17872199999999999,
+          "tricky" : 0.37780000000000002
+        },
+        "cloudPatternIds" : [
+
+        ],
+        "collections" : {
+          "pkt_late" : 1
+        },
+        "ctx" : {
+          "none" : 1
+        },
+        "directPlays" : 0,
+        "directSkips" : 0,
+        "distinctDays" : 0,
+        "dominantCollectionId" : "pkt_late",
+        "genres" : {
+          "electronic" : 1
+        },
+        "key" : {
+          "dow" : 7,
+          "hour" : 23,
+          "mode" : "mix"
+        },
+        "lastSeenMs" : 0,
+        "plays" : 0.64947299999999997,
+        "seeds" : {
+
+        },
+        "skips" : 0.129297
+      }
+    ],
+    "schemaVersion" : 1,
+    "totalDirectPlays" : 129,
+    "weekShare" : {
+      "fav_songs" : 0.078855999999999996,
+      "pkt_chill" : 0.22817299999999999,
+      "pkt_late" : 0.29947699999999999,
+      "pl_potential" : 0.34672799999999998,
+      "pls_road" : 0.040193
+    }
+  },
+  "v" : 1
+}
