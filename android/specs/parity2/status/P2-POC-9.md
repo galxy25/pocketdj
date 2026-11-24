@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-POC-9 status: Pocket wheel UI
 
