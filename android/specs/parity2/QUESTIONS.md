@@ -24,6 +24,13 @@ Format: `Q<n> [package] question — default meanwhile`. Integrators append new 
 - **P2Q16 [P2-ALB-6]** Tapping the album waveform when the side is not loaded starts the album at that track, so earlier tracks are not in the queue (iOS keeps the whole album queued). Queue the whole album and cue the tapped track instead? — *Default: current behaviour (queue from the tapped track).*
 - **P2Q17 [P2-DJ-6]** DJ Mode chip stays hidden behind ParityFlags.DJ_MODE until P2-DJ-8. The integrator added a debug-only toggle (Debug ▸ "Parity: show DJ Mode chip") so the shell can be driven before then. Fine to keep? — *Default: keep; it only exists in debug and is moot once DJ_MODE flips on.*
 
+- **P2Q18 [P2-LIB-3]** Fold a library song onto its "Apple Music (Local)" twin by appleMusicId only for the catalog OWNER (iOS gate). Android has no owner probe, so `amLibrarySupersedesOntoLocal` is OFF: library songs stay listed beside their local twins (verified: 121 rows). A real "this catalog is my own" signal is needed to turn it on (debug `-e pdj.amFold 1` verifies the fold: 120 rows). What is the owner signal on Android? - *Default: fold OFF, duplicates shown.*
+- **P2Q19 [P2-LIB-3]** Signing out of Apple Music (and "erase everything") clears the local library index; it is re-indexed on the next sign-in. Acceptable? - *Default: yes, clear.*
+- **P2Q20 [P2-LIB-4]** Discover album rows now open the store album page instead of expanding in place. Keep an in-place expand next to it? - *Default: page only.*
+- **P2Q21 [P2-MM-10]** Add the un-muted "Clean/Explicit edition" chip note and a lazy rip of the wanted edition? - *Default: no, rule A only.*
+- **P2Q22 [P2-DJ-8]** The integrator flipped `ParityFlags.DJ_MODE` to true (DJ chip visible in release) after the emulator run. Ship DJ Mode in the next release or hold it behind the flag until a device listen test (equal-power fade, no level dip)? - *Default: on; flip the getter back to false to hold.*
+- **P2Q23 [P2-DJ-8]** Starting DJ Mode runs disk reads on the main thread (StrictMode DiskReadViolation, about 130 ms: BurnStore.localUrlPreferringCut via DjModeWiring.currentMixable and NowPlayingDspHost.resolveLocal). Move to an IO dispatcher in a follow-up? - *Default: follow-up, not blocking.*
+
 ## ANSWERED
 
 (none yet)

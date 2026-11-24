@@ -247,13 +247,7 @@ class DjModeControllerTest {
         assertNull(DjChipText.mixChipNote(DjMode.Indicator.Off, null))
         assertEquals("On, mixing 50 percent", DjChipText.switchValue(true, 0.5f))
         assertEquals(0.04f, DjChipText.floorFraction(0f), 0f)
-        // The flag stays behind the debug toggle until the integrator verifies DJ transitions on the emulator.
-        val was = ParityFlags.DEBUG_FORCE_DJ_MODE
-        try {
-            ParityFlags.DEBUG_FORCE_DJ_MODE = false
-            assertFalse("DJ Mode ships hidden until the emulator steps are run", ParityFlags.DJ_MODE)
-            ParityFlags.DEBUG_FORCE_DJ_MODE = true
-            assertTrue(ParityFlags.DJ_MODE)
-        } finally { ParityFlags.DEBUG_FORCE_DJ_MODE = was }
+        // Wave 7: DJ Mode is on for everyone once the emulator steps passed (the debug toggle is moot).
+        assertTrue(ParityFlags.DJ_MODE)
     }
 }

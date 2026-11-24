@@ -21,10 +21,10 @@ object ParityFlags {
     /**
      * P2-DJ-6: the Now Playing DJ Mode chip and the DJ menu items. P2-DJ-8 built the transition engine + conductor, but the
      * flip to a constant `true` waits for the emulator verification (`adb logcat -s PocketDJ.dj`, one History play of the
-     * incoming, `deadair cause=dj` with gap near 0). Until the integrator runs those steps this follows
-     * [DEBUG_FORCE_DJ_MODE], so a release ships DJ Mode hidden. To flip: make this `true`.
+     * incoming, `deadair cause=dj` with gap near 0). Flipped to `true` by the wave-7 integrator after the
+     * emulator run (`[dj] transition`, `advance at fade start`, `deadair cause=dj gap=0.02s`). [DEBUG_FORCE_DJ_MODE] is now moot.
      */
-    val DJ_MODE: Boolean get() = DEBUG_FORCE_DJ_MODE
+    val DJ_MODE: Boolean get() = true
 
     /** Debug screen toggle ("Parity: show DJ Mode chip"): turns the DJ surface and engine on for emulator verification before [DJ_MODE] is flipped. */
     @Volatile var DEBUG_FORCE_DJ_MODE: Boolean = false

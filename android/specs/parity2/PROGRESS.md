@@ -117,3 +117,25 @@ Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave6/):
 Integrator changes: SequencerForwardingPlayer play/pause gate (+ test), ParityFlags.DJ_MODE now a getter backed by a debug toggle, DebugScreen toggle.
 
 Open: P2Q16, P2Q17 (new), plus earlier pending items. Note: the Debug section's "Show advanced" switch resets on each process start; the one-at-a-time free-memory guard stalls while the emulator runs (stop the emulator to let a build start).
+
+
+## Wave 7
+
+Packages merged: P2-DJ-8, P2-POC-16, P2-POC-9, P2-REM-5, P2-ALB-7, P2-LIB-3, P2-LIB-4, P2-MM-10 (all merges clean, no conflicts). Status files set to merged.
+
+Tests: 7259 run, 0 failures (`:app:testDebugUnitTest :app:assembleDebug :app:assembleRelease` green). One test updated: DjModeControllerTest.chipWordsAndFlag now asserts DJ_MODE is on.
+
+Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave7/; Debug section is behind Settings > Show advanced):
+- P2-DJ-8 PASS (after turning on the debug chip toggle): seed queue, DJ switch on logged `[dj] mode ON`, `transition from=A to=B plan=pre=5.3s fade=3.0s post=10.0s glide=true fx=reverb`, `advance at fade start ... (no reload; the DSP owns the audio)`, `PocketDJ.deadair gap=0.02s from=burned to=dj cause=dj`, `transition end how=complete`, the card moved to B. History shows B; the exact "one play" count could not be separated from the seeded counts (covered by DjConductorTest). Integrator flipped ParityFlags.DJ_MODE to true (the package report said it was flipped, it was not). Device-only: the equal-power fade listen.
+- P2-POC-16 PASS: Auto browse smoke dump lists `Pocket for now {pocketwheel:now}` and a `Pockets right now` folder with 5 moments; `pdj.autoPick=pocketwheel:now`, `pocketdj://pocket/now` and MEDIA_PLAY_FROM_SEARCH with query "my pocket" (explicit component) each logged `[pocketrun] start`. Note: without `-n com.levi.pocketdj/.MainActivity` adb opens the system resolver, not the app. Device-only: DHU and Assistant.
+- P2-POC-9 PASS: Debug > Wheel preview renders the wheel (chips, weekday picker, now needle, centre play, caption chips). Long-press on the centre opens the menu (Clear this pocket, Start a new pocket for now, Not this?, alternatives); Start logged a run top-up; after Clear, a centre tap logged `[pocketrun] start`.
+- P2-REM-5: engine only (UI in P2-REM-7); no emulator step; 32 JVM tests.
+- P2-ALB-7 PASS: album page rows are two-line (title, then BPM, key, length, tags); tapping the artist opens the Artist page and Back returns to the album; long-press on a track shows Play next / Play last / Add to playlist; the queue menu and a disabled Stemify (no rip server) are present.
+- P2-LIB-3 PASS: the stub library (120 songs) shows under Browse Source = Apple Music (120 songs) and Settings > Apple Music has "Index my Apple Music library". Dedupe: with the owner gate off (default, see P2Q18) a library song whose appleMusicId matches a Local song is listed (121 rows). With the new debug extra `-e pdj.amFold 1` the probe row is folded away (120 rows, search "FoldProbe" gives none).
+- P2-LIB-4 PASS (with two debug seams): there is no fake recognizer backend, so the integrator added `-e pdj.storeAlbum "<id>|<title>|<artist>"`, which opens the store album page through StoreAlbumRouter like the recognizer, New releases and Discover rows do. An unknown id shows "Add album to your library"; an id already in the library shows "In your library". Tracklist shows "No import server configured" + Retry (no dev token here). Reconnect: a python stub on `pdj.amSyncBase` returning `AM GET ... -> 401` plus `pdj.fakeMut` made "Get" fail with "Apple Music didn't allow this (HTTP 401)", cleared the token (Connected became Sign in) and showed "Reconnect Apple Music". Device-only: real ShazamKit and subscription. The recognizer edition swap is JVM-tested only.
+- P2-MM-10 NOT VERIFIABLE on the emulator for the positive path: rule A needs a preference row whose wanted edition has no rip while the BASE cut is burned with stems, and the only rips here are "My Digital" songs with no edition variants (burning Apple Music songs needs a rip server). The negative path was run: Seed clean-only playlist created, no `edition-substitute` line logged, no crash. Covered by 10 JVM tests (8 rule + 2 sequencer).
+- No FATAL EXCEPTION / ANR in logcat for com.levi.pocketdj.
+
+Integrator changes: ParityFlags.DJ_MODE = true (+ test), debug extras `pdj.amFold` and `pdj.storeAlbum` in CollectionsGraph. Machine notes: the disk was 100% full (about 140 GB of stale Chrome code-sign clones under /private/var/folders/.../X; the stale ones were deleted), and the one-at-a-time free-memory guard stalls below 8 GB free (ran with FIN_MIN_FREE_GB=4).
+
+Open: P2Q18 (fold owner gate), P2Q19-P2Q23 (new), plus earlier pending items.

@@ -354,6 +354,20 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                     app.appScope.launch { runCatching { app.settings.set(AmSyncSettings.BASE_OVERRIDE, b) } }
                 }
                 intent.getStringExtra("pdj.pocketsBase")?.let { pocketsDebugBase = it }
+                // P2-LIB-4 emulator hook: `-e pdj.storeAlbum "<storeId>|<title>|<artist>"` opens the in-app store album page
+                // exactly as the recognizer / New releases / Discover rows do (there is no fake recognizer backend).
+                intent.getStringExtra("pdj.storeAlbum")?.let { v ->
+                    val p = v.split("|")
+                    com.levi.pocketdj.screens.discover.StoreAlbumRouter.open(
+                        com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef(p[0], p.getOrElse(1) { "Store album" }, p.getOrElse(2) { "" }, null, null, null),
+                    )
+                }
+                // P2-LIB-3 emulator hook: `-e pdj.amFold 1` turns the owner gate on (the fold is otherwise off until a real
+                // "this catalog is my own" signal exists) and rebuilds the catalog so the supersede can be checked.
+                intent.getStringExtra("pdj.amFold")?.let { v ->
+                    app.servicesGraph.amLibrarySupersedesOntoLocal = v == "1"
+                    app.appScope.launch(Dispatchers.IO) { runCatching { app.servicesGraph.amLibraryStore.onChanged?.invoke() } }
+                }
                 if (intent.hasExtra("pdj.pocketsFakeCreds")) pocketsDebugCreds = true
                 intent.getStringExtra("pdj.pocketsEnable")?.let { v ->
                     app.appScope.launch(Dispatchers.IO) {
