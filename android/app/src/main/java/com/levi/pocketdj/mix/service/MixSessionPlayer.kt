@@ -278,13 +278,16 @@ class EngineMixTransportPort(
     override val canSkip get() = dj.isMixing
     override val skipFadeSeconds get() = dj.skipFadeSeconds
     override val hasSounded get() = engine.hasSoundedThisProcess
-    override fun remotePlay() {
+    // P2-REM-13: every system transport (lock screen / headset / Auto / Assistant / audio-focus loss) is a SYSTEM-caused gesture:
+    // under Mix Together it holds the deck silent on THIS device only (never proposed to the session).
+    private fun system(body: () -> Unit) = engine.caused(com.levi.pocketdj.mix.engine.Gesture.Cause.SYSTEM, body)
+    override fun remotePlay() = system {
         // Lock-screen play on a parked mix: cue the decks first, THEN resume.
-        if (engine.hasParkedRestore) engine.materializePendingRestoreIfNeeded("lockScreen") { dj.remotePlay() } else dj.remotePlay()
+        if (engine.hasParkedRestore) engine.materializePendingRestoreIfNeeded("lockScreen") { system { dj.remotePlay() } } else dj.remotePlay()
     }
-    override fun remotePause() = dj.remotePause()
-    override fun remoteSkip(fadeSeconds: Double) = dj.remoteSkip(fadeSeconds)
-    override fun pauseBoth() = engine.pauseBoth()
+    override fun remotePause() = system { dj.remotePause() }
+    override fun remoteSkip(fadeSeconds: Double) = system { dj.remoteSkip(fadeSeconds) }
+    override fun pauseBoth() = system { engine.pauseBoth() }
 }
 
 /**

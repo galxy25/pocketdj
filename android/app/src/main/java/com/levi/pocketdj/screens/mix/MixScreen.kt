@@ -160,6 +160,8 @@ fun MixScreen(
             MixBroadcastButton(graph)
             recordAction()
         }
+        // P2-REM-13: "Mixing together" banner (renders only while a Mix Together session is live).
+        MixTogetherBannerHost(graph)
         st.autoBlockedReason?.let {
             Text(it, color = DeckColors.fg, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("mix-auto-blocked"))
         }
