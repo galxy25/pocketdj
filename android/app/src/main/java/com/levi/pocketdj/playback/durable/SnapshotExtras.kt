@@ -92,7 +92,7 @@ data class SnapshotExtras(
                     }
                 },
                 appleMusicId = r.appleMusicId ?: p.appleMusicId,
-                djUserNext = r.djUserNext,
+                djUserNext = r.djUserNext ?: p.djUserNext.takeIf { it == false }, // an explicit false is preserved; a true never revives
                 djPlaced = r.djPlaced ?: p.djPlaced.takeIf { r.djUserNext == true },
                 unknownKeys = JsonObject(p.unknownKeys + r.unknownKeys),
             )
