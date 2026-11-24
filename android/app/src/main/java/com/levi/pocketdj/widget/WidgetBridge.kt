@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.request.SuccessResult
+import com.levi.pocketdj.data.recs.RecFeedbackStore
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import com.levi.pocketdj.playback.session.FavoriteCommand
@@ -17,6 +18,9 @@ import com.levi.pocketdj.shell.AppLifecycleObserver
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -44,13 +48,26 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
             WidgetCommand.Kind.PLAY_PAUSE ->
                 if (RemoteControllerGate.shared.forward(RemoteRedirect.PlayPause)) Unit
                 else if (pc.nowPlaying.value?.isPlaying == true) pc.pause() else pc.resume()
-            WidgetCommand.Kind.VERDICT_ACCEPT, WidgetCommand.Kind.VERDICT_REJECT -> Unit // no For You verdicts on Android
+            WidgetCommand.Kind.VERDICT_ACCEPT, WidgetCommand.Kind.VERDICT_REJECT -> withContext(Dispatchers.IO) {
+                // The target is the one the command carries (the snapshot the user saw), never what plays now.
+                val np = app.browseGraph.nowPlayingFeedback
+                // recordFor reads artist/genre from the catalog. Wait only while it is actually loading, and
+                // only briefly: a failed/empty catalog must not hold a goAsync broadcast or delay later commands.
+                val cs = app.catalogRepository.state.value
+                val waitMs = WidgetVerdicts.catalogWaitMs(cs.catalog != null, cs.phase, cs.error != null)
+                if (waitMs > 0) kotlinx.coroutines.withTimeoutOrNull(waitMs) {
+                    app.catalogRepository.state.first { it.catalog != null }
+                }
+                WidgetVerdicts.apply(cmd) { songId, scope, verdict ->
+                    np.recordFor(songId, scope, verdict, RecFeedbackStore.Surface.WIDGET)
+                }
+            }
         }
     }
 
     private fun drainPending() {
         app.appScope.launch(Dispatchers.Default) {
-            pending.drain().forEach { runCatching { executor.apply(it) } }
+            WidgetVerdicts.transportFirst(pending.drain()).forEach { runCatching { executor.apply(it) } }
         }
     }
 
@@ -70,11 +87,30 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
             SessionSwitchboard.shared.addListener { ownerState.value = SessionSwitchboard.shared.current?.engine }
             ownerState.value = SessionSwitchboard.shared.current?.engine // seed AFTER registering: no lost change
             val owner = ownerState.asStateFlow()
-            val inputs = combine(pc.nowPlaying, pc.sequencer.state, fav.state, app.catalogRepository.state, owner) { np0, seq, _, cat, eng ->
+            // Verdict revisions (the store is lazy: polled until recs have started, then reactive).
+            val recRev = kotlinx.coroutines.flow.flow {
+                var fb = app.browseGraph.nowPlayingFeedbackIfReady()
+                while (fb == null) {
+                    emit(-1)
+                    // A restored/playing queue must show thumbs without a screen having touched recs: build the
+                    // lazy stores here (off-main, this flow runs on Default) as soon as the sequencer is running.
+                    if (pc.sequencer.state.value.isRunning) {
+                        fb = withContext(Dispatchers.IO) { app.browseGraph.nowPlayingFeedback }
+                    } else {
+                        // React to the sequencer starting rather than waiting out a poll tick.
+                        kotlinx.coroutines.withTimeoutOrNull(3_000) { pc.sequencer.state.first { it.isRunning } }
+                        fb = app.browseGraph.nowPlayingFeedbackIfReady()
+                    }
+                }
+                emitAll(app.browseGraph.recFeedbackStore.state.map { it.revision })
+            }
+            val inputs = combine(pc.nowPlaying, pc.sequencer.state, fav.state, app.catalogRepository.state, combine(owner, recRev) { o, _ -> o }) { np0, seq, _, cat, eng ->
                 val np = if (eng == MIX_ENGINE) null else np0
                 val songId = np?.songId
                 val seam = FavoriteCommand.seam
                 val song = songId?.let { cat.catalog?.songsById?.get(it) }
+                val target = if (np != null) app.browseGraph.nowPlayingFeedbackIfReady()?.currentTarget() else null
+                val verdict = target?.let { app.browseGraph.recFeedbackStore.verdict(it.songId, it.scope) }
                 WidgetInputs(
                     songId = songId,
                     title = np?.title,
@@ -86,7 +122,10 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
                     isFavorite = FavoriteCommand.filled(seam, songId),
                     favoriteAvailable = FavoriteCommand.visible(seam, songId),
                     appleMusicId = song?.appleMusicId,
-                    repeatMode = if (seq.isRunning) seq.repeatMode.token else "off",
+                    // The EFFECTIVE mode: a forced-off repeat (album run, etc.) must not show as lit.
+                    repeatMode = if (seq.isRunning) seq.effectiveRepeatMode.token else "off",
+                    recVerdict = verdict?.takeIf { it != RecFeedbackStore.Verdict.CLEARED }?.raw.orEmpty(),
+                    recScope = if (target != null && target.songId == songId) target.scope else "",
                     shuffleEnabled = seq.isRunning && seq.shuffleEnabled,
                     artSourceReady = cat.catalog != null,
                 )
@@ -112,5 +151,37 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
 
     private companion object {
         const val MIX_ENGINE = "mix"
+            }
+}
+
+/**
+ * Applies a widget 👍/👎 to the target the command CARRIES (iOS `WidgetCommandChannel.Pending`: songId + scope
+ * + verdict, nothing resolved at drain time). A command with no song or scope (a widget from before this
+ * build, a snapshot with no recommendation scope) is dropped, never redirected at whatever is current.
+ * Returns whether it was applied.
+ */
+object WidgetVerdicts {
+    /** Longest a verdict waits for the catalog (taste weights only; the verdict itself always records). */
+    const val CATALOG_WAIT_MS = 2_000L
+
+    /** 0 when the catalog is loaded or will not load (failed / errored / ready-but-empty); else the bounded wait. */
+    fun catalogWaitMs(hasCatalog: Boolean, phase: com.levi.pocketdj.data.catalog.CatalogRepository.Phase, errored: Boolean): Long = when {
+        hasCatalog || errored -> 0L
+        phase == com.levi.pocketdj.data.catalog.CatalogRepository.Phase.Idle ||
+            phase == com.levi.pocketdj.data.catalog.CatalogRepository.Phase.Loading -> CATALOG_WAIT_MS
+        else -> 0L
+    }
+
+    /** Drain order: transport/favorite commands first (stable), verdicts last, so a slow verdict never delays ⏭. */
+    fun transportFirst(cmds: List<WidgetCommand>): List<WidgetCommand> = cmds.sortedBy { it.isVerdict }
+
+    fun apply(cmd: WidgetCommand, record: (songId: String, scope: String, verdict: RecFeedbackStore.Verdict) -> Unit): Boolean {
+        if (!cmd.isVerdict) return false
+        val songId = cmd.songId?.takeIf { it.isNotEmpty() } ?: return false
+        val scope = cmd.scope?.takeIf { it.isNotEmpty() } ?: return false
+        val verdict = if (cmd.kind == WidgetCommand.Kind.VERDICT_ACCEPT) RecFeedbackStore.Verdict.ACCEPTED
+        else RecFeedbackStore.Verdict.REJECTED
+        record(songId, scope, verdict)
+        return true
     }
 }

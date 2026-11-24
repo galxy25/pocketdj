@@ -40,6 +40,19 @@ class NowPlayingFeedbackTest {
         return r
     }
 
+    @Test fun recordForMatchesRecordToggleResults() {
+        fb.beginPlayback("col1", listOf("a", "b"))
+        val r = rig(seq("a", "b"))
+        // Same store, same toggle semantics whether the target is implicit (record) or carried (recordFor).
+        assertEquals(Verdict.ACCEPTED, r.np.record(Verdict.ACCEPTED, Surface.NOW_PLAYING))
+        assertEquals(null, r.np.recordFor("a", "col1", Verdict.ACCEPTED, Surface.WIDGET)) // second tap clears
+        assertEquals(Verdict.REJECTED, r.np.recordFor("a", "col1", Verdict.REJECTED, Surface.WIDGET))
+        assertEquals(Verdict.REJECTED, fb.verdict("a", "col1"))
+        // An explicit target need not be the current row.
+        assertEquals(Verdict.ACCEPTED, r.np.recordFor("b", "col1", Verdict.ACCEPTED, Surface.WIDGET))
+        assertEquals(Verdict.ACCEPTED, fb.verdict("b", "col1"))
+    }
+
     @Test fun targetIsCurrentRowPlusScope() {
         fb.beginPlayback("col1", listOf("a", "b", "c"))
         val r = rig(seq("a", "b", "c", index = 1))

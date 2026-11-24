@@ -56,9 +56,31 @@ enum class WidgetSizeClass {
     }
 }
 
+/** Minimum placed widths (dp), shared with the layout-budget test. */
+object WidgetSizes {
+    const val MEDIUM_W = 250; const val LARGE_W = 250
+    /** Root padding (each side), Medium's cover and gap: the layout and the budget test read these same values. */
+    const val ROOT_PAD = 10; const val MEDIUM_COVER = 56; const val MEDIUM_GAP = 10
+    const val LARGE_USABLE = LARGE_W - 2 * ROOT_PAD
+    const val MEDIUM_USABLE = MEDIUM_W - 2 * ROOT_PAD - MEDIUM_COVER - MEDIUM_GAP
+}
+
 /** What the large widget lists / the ♥ shows; pure derivations over the snapshot. */
 object WidgetModel {
     fun showHeart(s: NowPlayingSnapshot) = s.hasContent && s.favoriteAvailable && !s.songId.isNullOrEmpty()
+    fun showFeedback(s: NowPlayingSnapshot) = s.showsFeedback
+
+    /** Glyph box (dp): shrinks when the 👍/👎 pair shows so the transport row still fits. */
+    fun glyphBox(s: NowPlayingSnapshot): Int = if (showFeedback(s)) 32 else 40
+
+    /** Heart yields to the thumbs (a recommendation queue is not a favorites context); Previous never goes. */
+    fun heartVisible(s: NowPlayingSnapshot) = showHeart(s) && !showFeedback(s)
+    fun mediumHeart(s: NowPlayingSnapshot) = heartVisible(s)
+    fun largeHeart(s: NowPlayingSnapshot) = heartVisible(s)
+
+    /** Glyph counts per row, for the width-budget test. */
+    fun mediumGlyphs(s: NowPlayingSnapshot) = 3 + (if (mediumHeart(s)) 1 else 0) + (if (showFeedback(s)) 2 else 0)
+    fun largeGlyphs(s: NowPlayingSnapshot) = 5 + (if (largeHeart(s)) 1 else 0) + (if (showFeedback(s)) 2 else 0)
     fun repeatNext(s: NowPlayingSnapshot): String = when (s.repeatMode) { "off" -> "all"; "all" -> "one"; else -> "off" }
     fun rows(s: NowPlayingSnapshot) = s.upNext.take(WidgetSync.UP_NEXT_MAX)
 }
@@ -120,17 +142,22 @@ class NowPlayingWidget : GlanceAppWidget() {
 
     @Composable
     private fun Medium(ctx: Context, s: NowPlayingSnapshot, cover: Bitmap?) {
+        // With the 👍/👎 pair the row would overflow a 250dp widget: the heart yields and the glyphs
+        // shrink (five glyphs, like iOS), Previous is always kept so the layout is stable across queues.
+        val fb = WidgetModel.showFeedback(s)
+        val g = WidgetModel.glyphBox(s).dp
         Row(verticalAlignment = Alignment.CenterVertically, modifier = GlanceModifier.fillMaxWidth()) {
-            Cover(cover, 72.dp)
+            Cover(cover, if (fb) 56.dp else 72.dp)
             Spacer(GlanceModifier.width(10.dp))
             Column(GlanceModifier.defaultWeight()) {
                 TitleBlock(s)
                 Spacer(GlanceModifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Btn(R.drawable.ic_widget_previous, "Previous", cmd(ctx, WidgetCommand.Kind.PREVIOUS, s, null))
-                    Btn(playGlyph(s), "Play or pause", key(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
-                    Btn(R.drawable.ic_widget_next, "Next", cmd(ctx, WidgetCommand.Kind.NEXT, s, null))
-                    if (WidgetModel.showHeart(s)) Heart(ctx, s)
+                    Btn(R.drawable.ic_widget_previous, "Previous", cmd(ctx, WidgetCommand.Kind.PREVIOUS, s, null), box = g)
+                    Btn(playGlyph(s), "Play or pause", key(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE), box = g)
+                    Btn(R.drawable.ic_widget_next, "Next", cmd(ctx, WidgetCommand.Kind.NEXT, s, null), box = g)
+                    if (WidgetModel.mediumHeart(s)) Heart(ctx, s, g)
+                    if (fb) FeedbackPair(ctx, s, g)
                 }
             }
         }
@@ -138,6 +165,7 @@ class NowPlayingWidget : GlanceAppWidget() {
 
     @Composable
     private fun Large(ctx: Context, s: NowPlayingSnapshot, cover: Bitmap?) {
+        val g = WidgetModel.glyphBox(s).dp
         Column(GlanceModifier.fillMaxSize()) {
             Row(verticalAlignment = Alignment.CenterVertically, modifier = GlanceModifier.fillMaxWidth()) {
                 Cover(cover, 84.dp)
@@ -146,20 +174,21 @@ class NowPlayingWidget : GlanceAppWidget() {
             }
             Spacer(GlanceModifier.height(6.dp))
             Row(verticalAlignment = Alignment.CenterVertically, modifier = GlanceModifier.fillMaxWidth()) {
-                Btn(R.drawable.ic_widget_previous, "Previous", cmd(ctx, WidgetCommand.Kind.PREVIOUS, s, null))
-                Btn(playGlyph(s), "Play or pause", key(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
-                Btn(R.drawable.ic_widget_next, "Next", cmd(ctx, WidgetCommand.Kind.NEXT, s, null))
-                if (WidgetModel.showHeart(s)) Heart(ctx, s)
+                Btn(R.drawable.ic_widget_previous, "Previous", cmd(ctx, WidgetCommand.Kind.PREVIOUS, s, null), box = g)
+                Btn(playGlyph(s), "Play or pause", key(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE), box = g)
+                Btn(R.drawable.ic_widget_next, "Next", cmd(ctx, WidgetCommand.Kind.NEXT, s, null), box = g)
+                if (WidgetModel.largeHeart(s)) Heart(ctx, s, g)
+                if (WidgetModel.showFeedback(s)) FeedbackPair(ctx, s, g)
                 Btn(
                     if (s.repeatMode == "one") R.drawable.ic_widget_repeat_one else R.drawable.ic_widget_repeat,
                     "Repeat",
                     cmd(ctx, WidgetCommand.Kind.REPEAT, s, WidgetModel.repeatNext(s)),
-                    tint = if (s.repeatMode == "off") DIM else ACCENT,
+                    tint = if (s.repeatMode == "off") DIM else ACCENT, box = g,
                 )
                 Btn(
                     R.drawable.ic_widget_shuffle, "Shuffle",
                     cmd(ctx, WidgetCommand.Kind.SHUFFLE, s, if (s.shuffleEnabled) "0" else "1"),
-                    tint = if (s.shuffleEnabled) ACCENT else DIM,
+                    tint = if (s.shuffleEnabled) ACCENT else DIM, box = g,
                 )
             }
             val rows = WidgetModel.rows(s)
@@ -184,12 +213,30 @@ class NowPlayingWidget : GlanceAppWidget() {
     }
 
     @Composable
-    private fun Heart(ctx: Context, s: NowPlayingSnapshot) {
+    private fun Heart(ctx: Context, s: NowPlayingSnapshot, box: androidx.compose.ui.unit.Dp = 40.dp) {
         Btn(
             if (s.isFavorite) R.drawable.ic_widget_heart_filled else R.drawable.ic_widget_heart,
             if (s.isFavorite) "Unfavorite" else "Favorite",
             cmd(ctx, WidgetCommand.Kind.FAVORITE, s, if (s.isFavorite) "0" else "1"),
-            tint = if (s.isFavorite) ACCENT else FG,
+            tint = if (s.isFavorite) ACCENT else FG, box = box,
+        )
+    }
+
+    /**
+     * 👍 / 👎 (iOS `FeedbackPair`). The command carries the snapshot's songId + recScope, so the verdict
+     * lands on the song the user saw even if it is queued and drained after a skip. Neither touches transport.
+     */
+    @Composable
+    private fun FeedbackPair(ctx: Context, s: NowPlayingSnapshot, box: androidx.compose.ui.unit.Dp = 40.dp) {
+        val up = s.recVerdict == "accepted"
+        val down = s.recVerdict == "rejected"
+        Btn(
+            R.drawable.ic_widget_thumb_up, if (up) "Undo like" else "Like",
+            cmd(ctx, WidgetCommand.Kind.VERDICT_ACCEPT, s, null, s.recScope), tint = if (up) ACCENT else FG, box = box,
+        )
+        Btn(
+            R.drawable.ic_widget_thumb_down, if (down) "Undo dislike" else "Dislike",
+            cmd(ctx, WidgetCommand.Kind.VERDICT_REJECT, s, null, s.recScope), tint = if (down) ACCENT else FG, box = box,
         )
     }
 
@@ -203,10 +250,10 @@ class NowPlayingWidget : GlanceAppWidget() {
     }
 
     @Composable
-    private fun Btn(res: Int, desc: String, action: Action, tint: ColorProvider = FG) {
+    private fun Btn(res: Int, desc: String, action: Action, tint: ColorProvider = FG, box: androidx.compose.ui.unit.Dp = 40.dp) {
         Image(
             ImageProvider(res), desc,
-            GlanceModifier.size(40.dp).padding(8.dp).clickable(action),
+            GlanceModifier.size(box).padding(if (box < 40.dp) 6.dp else 8.dp).clickable(action),
             colorFilter = ColorFilter.tint(tint),
         )
     }
@@ -216,8 +263,8 @@ class NowPlayingWidget : GlanceAppWidget() {
     private fun key(ctx: Context, code: Int): Action =
         actionStartService(WidgetIntents.mediaButton(ctx, code), isForegroundService = true)
 
-    private fun cmd(ctx: Context, kind: WidgetCommand.Kind, s: NowPlayingSnapshot, value: String?): Action =
-        actionSendBroadcast(WidgetIntents.command(ctx, kind, s.songId, s.appleMusicId, value))
+    private fun cmd(ctx: Context, kind: WidgetCommand.Kind, s: NowPlayingSnapshot, value: String?, scope: String? = null): Action =
+        actionSendBroadcast(WidgetIntents.command(ctx, kind, s.songId, s.appleMusicId, value, scope))
 
     private fun loadCover(store: NowPlayingSnapshotStore): Bitmap? = runCatching {
         if (!store.hasCover()) return null

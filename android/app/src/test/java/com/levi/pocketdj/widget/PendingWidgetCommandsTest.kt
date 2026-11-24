@@ -26,7 +26,7 @@ class PendingWidgetCommandsTest {
         val p = q()
         p.enqueue(WidgetCommand(Kind.NEXT))
         p.enqueue(WidgetCommand(Kind.FAVORITE, songId = "a"))
-        p.enqueue(WidgetCommand(Kind.VERDICT_REJECT, songId = "a"))
+        p.enqueue(WidgetCommand(Kind.VERDICT_REJECT, songId = "a", scope = "zone"))
         now += 20_001
         assertEquals(listOf(Kind.FAVORITE, Kind.VERDICT_REJECT), p.drain().map { it.kind })
     }

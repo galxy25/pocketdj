@@ -19,6 +19,10 @@ data class WidgetInputs(
     val appleMusicId: String? = null,
     val repeatMode: String = "off",
     val shuffleEnabled: Boolean = false,
+    /** "" / "accepted" / "rejected" for the playing row; only meaningful with a non-empty [recScope]. */
+    val recVerdict: String = "",
+    /** The recommendation scope of the playing row ("" when the queue is not a recommendation). */
+    val recScope: String = "",
     /** False while the catalog (art source) has not loaded: the cover is not attempted, and retried when it lands. */
     val artSourceReady: Boolean = true,
 )
@@ -110,6 +114,8 @@ class WidgetSync(
             appleMusicId = if (has) i.appleMusicId else null,
             repeatMode = if (has) i.repeatMode else "off",
             shuffleEnabled = has && i.shuffleEnabled,
+            recVerdict = if (has && i.recScope.isNotEmpty()) i.recVerdict else "",
+            recScope = if (has) i.recScope else "",
             favoriteAvailable = i.favoriteAvailable,
         )
     }

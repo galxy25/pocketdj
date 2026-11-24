@@ -45,6 +45,7 @@ object WidgetIntents {
     private const val X_SONG = "songId"
     private const val X_AM = "appleMusicId"
     private const val X_VALUE = "value"
+    private const val X_SCOPE = "scope"
 
     /** A media-button key sent straight to the playback service (starts it when the process is dead). */
     fun mediaButton(ctx: Context, keyCode: Int): Intent =
@@ -53,20 +54,24 @@ object WidgetIntents {
             .setData(Uri.parse("pdj-widget://key/$keyCode"))
             .putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
 
-    fun command(ctx: Context, kind: WidgetCommand.Kind, songId: String?, appleMusicId: String?, value: String?): Intent =
+    fun command(
+        ctx: Context, kind: WidgetCommand.Kind, songId: String?, appleMusicId: String?, value: String?,
+        scope: String? = null,
+    ): Intent =
         Intent(ACTION_COMMAND)
             .setComponent(ComponentName(ctx, WidgetActionReceiver::class.java))
             // Distinct data => distinct PendingIntents per (kind, song, value).
-            .setData(Uri.parse("pdj-widget://cmd/${kind.name}/${Uri.encode(songId ?: "")}/${Uri.encode(value ?: "")}"))
+            .setData(Uri.parse("pdj-widget://cmd/${kind.name}/${Uri.encode(songId ?: "")}/${Uri.encode(value ?: "")}/${Uri.encode(scope ?: "")}"))
             .putExtra(X_KIND, kind.name)
             .putExtra(X_SONG, songId)
             .putExtra(X_AM, appleMusicId)
             .putExtra(X_VALUE, value)
+            .putExtra(X_SCOPE, scope)
 
     fun parse(intent: Intent, nowMs: Long): WidgetCommand? {
         val kind = runCatching { WidgetCommand.Kind.valueOf(intent.getStringExtra(X_KIND) ?: return null) }.getOrNull()
             ?: return null
-        return WidgetCommand(kind, intent.getStringExtra(X_SONG), intent.getStringExtra(X_AM), intent.getStringExtra(X_VALUE), nowMs)
+        return WidgetCommand(kind, intent.getStringExtra(X_SONG), intent.getStringExtra(X_AM), intent.getStringExtra(X_VALUE), nowMs, intent.getStringExtra(X_SCOPE))
     }
 }
 
@@ -104,6 +109,11 @@ class WidgetActionReceiver : BroadcastReceiver() {
             WidgetCommand.Kind.FAVORITE -> if (snap.songId == cmd.songId) snap.copy(isFavorite = cmd.value == "1") else snap
             WidgetCommand.Kind.REPEAT -> snap.copy(repeatMode = cmd.value ?: snap.repeatMode)
             WidgetCommand.Kind.SHUFFLE -> snap.copy(shuffleEnabled = cmd.value == "1")
+            // Only when the tap's target is still the song on screen; the queued verdict applies regardless.
+            WidgetCommand.Kind.VERDICT_ACCEPT, WidgetCommand.Kind.VERDICT_REJECT ->
+                if (snap.songId == cmd.songId && snap.recScope == cmd.scope) {
+                    snap.afterVerdictTap(cmd.kind == WidgetCommand.Kind.VERDICT_ACCEPT)
+                } else snap
             else -> snap
         }
         if (store.write(next)) refreshNowPlayingWidget(ctx)
