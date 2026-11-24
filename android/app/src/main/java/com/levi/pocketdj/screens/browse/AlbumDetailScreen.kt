@@ -176,14 +176,19 @@ fun AlbumDetailScreen(
                                         TextButton(
                                             onClick = {
                                                 retryingLibraryWrite = true
-                                                scope.launch {
-                                                    runCatching {
+                                                // appScope, not the composable scope: leaving the page mid-write must not drop it (iOS: unstructured Task).
+                                                graph.appScope.launch {
+                                                    try {
                                                         withContext(Dispatchers.IO) {
                                                             graph.browseGraph.discoverController
                                                                 .retryAlbumLibraryWrite(entry.albumId, entry.appleMusicId)
                                                         }
+                                                    } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                                                        throw e
+                                                    } catch (_: Exception) {
+                                                    } finally {
+                                                        retryingLibraryWrite = false
                                                     }
-                                                    retryingLibraryWrite = false
                                                 }
                                             },
                                             enabled = !retryingLibraryWrite,
@@ -227,7 +232,7 @@ fun AlbumDetailScreen(
                             Spacer(Modifier.height(12.dp))
                             androidx.compose.foundation.layout.FlowRow(
                                 verticalArrangement = Arrangement.spacedBy(4.dp),
-                                horizontalArrangement = Arrangement.Center,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
                             ) {
                                 if (anyPlayable) {
                                     Button(
@@ -253,7 +258,6 @@ fun AlbumDetailScreen(
                                         Spacer(Modifier.width(6.dp))
                                         Text("Play")
                                     }
-                                    Spacer(Modifier.width(8.dp))
                                 }
                                 if (onOpenSetlist != null && tracks.isNotEmpty() && anyPlayable) {
                                     OutlinedButton(
@@ -279,7 +283,6 @@ fun AlbumDetailScreen(
                                         Spacer(Modifier.width(6.dp))
                                         Text("Shuffle")
                                     }
-                                    Spacer(Modifier.width(8.dp))
                                 }
                                 // Add-to-Collection launch point (specs/playlists-ui.md §8.1).
                                 FilledTonalIconButton(
@@ -291,7 +294,6 @@ fun AlbumDetailScreen(
                                         contentDescription = "Add album to collection",
                                     )
                                 }
-                                Spacer(Modifier.width(8.dp))
                                 // Album-level Stemify (progress pill + over-cap confirm via the shared controller); per-track
                                 // Stemify stays on each row's transport. Needs a rip server.
                                 OutlinedButton(
@@ -299,7 +301,6 @@ fun AlbumDetailScreen(
                                     enabled = hasServer && tracks.isNotEmpty() && !stemState.working,
                                     modifier = Modifier.testTag("album-stemify"),
                                 ) { Text("Stemify") }
-                                Spacer(Modifier.width(8.dp))
                                 FilledTonalIconButton(
                                     onClick = { ShareText.send(context, ShareText.forAlbum(album), "${album.name} — ${album.artist}") },
                                     modifier = Modifier.testTag("album-share"),

@@ -17,3 +17,11 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR retry runs in composable scope -> fixed: launched on graph.appScope, flag reset in finally, CancellationException rethrown.
+- MINOR canAddToLibrary from settings.hasAppleMusic -> rejected: Discover's add flow (DiscoverResultsList.kt:294) and BrowseGraph's library contributor (canContribute) use the same `hasAppleMusic` source, so it matches.
+- NIT FlowRow spacers -> fixed: removed, using spacedBy(8.dp, CenterHorizontally). Stemify stays text-only (iOS parity).
+- NIT compose/emulator coverage -> not done (emulator off-limits; left for integrator).
+
+Fixes applied. Build + 7037 tests, 0 failures, assembleDebug green (no tests added; no MAJOR).
