@@ -142,4 +142,15 @@ class PocketWheelModelsTest {
         assertNull(old.key); assertNull(old.mode); assertTrue(old.momentKeys.isEmpty())
         assertEquals("Mixed · 1 play", PocketProfile.detail(null, 1, emptyMap()))
     }
+
+    @Test fun tokenIsLocaleIndependent() {
+        val old = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale("ar", "EG"))
+            val k = PocketMomentKey.of(8, 2, CAR_PLAY)
+            assertEquals("h08|d2|carPlay", k.token)
+            assertEquals(k, PocketMomentKey.fromToken(k.token))
+        } finally { java.util.Locale.setDefault(old) }
+        assertEquals(PocketMode.precedence, PocketMode.entries.toList())
+    }
 }

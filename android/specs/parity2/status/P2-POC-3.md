@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 Summary: Pure Kotlin port of the iOS pocket wheel engine in data/pockets/wheel/: PocketMode (persisted tokens, Home label,
 precedence, related pairs, derive with cycling->trip), MotionToken, PocketMomentKey (h%02d|d%d|mode token, ISO dow,
@@ -21,3 +21,9 @@ add-time scale, round6, top-N, weighted percentile), PocketProfile (@Serializabl
 
 ## Questions for Levi
 - one-at-a-time.sh default free-memory guard stalls builds here; I ran with FIN_MIN_FREE_GB=5 (same as POC-1).
+
+## Review
+- MINOR PocketMomentKey.token default-locale digits -> fixed (padStart + plain interpolation; test tokenIsLocaleIndependent under ar-EG, round-trips via fromToken).
+- NIT PocketMode.rank indexOf in hot loop -> fixed (rank = ordinal; test asserts precedence == declaration order).
+
+fixes applied

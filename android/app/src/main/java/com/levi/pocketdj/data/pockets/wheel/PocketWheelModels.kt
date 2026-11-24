@@ -40,7 +40,7 @@ enum class PocketMode(val token: String, val label: String) {
         }
 
     /** Precedence rank (0 = highest). */
-    val rank: Int get() = precedence.indexOf(this).let { if (it < 0) precedence.size else it }
+    val rank: Int get() = ordinal // declaration order == precedence order (asserted in tests)
 
     companion object {
         /** Fixed precedence order — also the sliver order inside a wheel cell. */
@@ -86,7 +86,7 @@ object MotionToken {
 data class PocketMomentKey(val hour: Int, val dow: Int, val mode: PocketMode) : Comparable<PocketMomentKey> {
 
     /** "h08|d2|carPlay" — the token a run's plays carry (`PocketRunTag.momentKey`). */
-    val token: String get() = "h%02d|d%d|".format(hour, dow) + mode.token
+    val token: String get() = "h${hour.toString().padStart(2, '0')}|d$dow|" + mode.token
 
     val isWeekend: Boolean get() = dow >= 6
 
