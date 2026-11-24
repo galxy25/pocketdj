@@ -218,9 +218,16 @@ class CatalogRepository(
     /** Call inside the publish lock, immediately before the matching `_state.update`. */
     private fun publishOverrides(b: Built) { _segmentOverrides.value = b.overrides }
 
+    /** The pre-overlay (RAW) merge behind the published catalog: what an edit's deltas are measured against (P2-ALB-6). */
+    @Volatile private var rawCatalog: MergedCatalog? = null
+
+    fun rawAlbum(id: String): IndexAlbum? = rawCatalog?.albumsById?.get(id)
+    fun rawSong(id: String): IndexSong? = rawCatalog?.songsById?.get(id)
+
     private fun buildCatalog(inputs: List<IndexJson>, e: CatalogEdits): Built {
         mergeCount++
         val raw = MergedCatalog.merge(inputs)
+        rawCatalog = raw
         val effective = e.apply(raw)
         val overrides = SegmentOverrides.derive(
             albumEdits = e.albums,
