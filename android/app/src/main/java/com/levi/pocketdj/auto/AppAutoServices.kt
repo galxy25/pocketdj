@@ -186,6 +186,7 @@ class AppAutoPlayer(private val app: AppGraph) : AutoPlayer {
                 shuffle = shuffle,
                 sourceToken = PlayContext.SOURCE_PLAYLIST,
                 // The source playlist's id rides as the play's origin (Pocket Wheel colour / pockets x collections).
+                // Catalog playlist ids resolve by id alone app-wide (CollectionsStore, as iOS): a cross-source id clash is accepted.
                 originId = ref.id,
             ) to (sp?.playlist?.name ?: "that playlist")
         }

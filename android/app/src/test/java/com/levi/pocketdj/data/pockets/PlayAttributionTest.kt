@@ -98,6 +98,15 @@ class PlayAttributionTest {
         assertNull(AutoMixPlan.item(loadable("a0")).originCollectionId)
     }
 
+    @Test fun originLookupTieGoesToTheRowOnAirNotTheNextCopy() {
+        val q = listOf(
+            AutoMixItem(loadable("x"), 1000, "A", "pkt_a"),
+            AutoMixItem(loadable("m"), 1000, "A", "pkt_a"),
+            AutoMixItem(loadable("x"), 1000, "B", "pls_b"),
+        )
+        assertEquals("pkt_a", originCollectionIdIn(q, 1, "x")) // equidistant: earlier (on-air) copy
+    }
+
     @Test fun originLookupPrefersTheCopyNearestTheCursor() {
         val q = listOf(
             AutoMixItem(loadable("x"), 1000, "A", "pkt_a"),

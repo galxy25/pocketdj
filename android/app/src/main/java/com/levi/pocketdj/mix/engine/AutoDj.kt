@@ -1192,7 +1192,7 @@ internal fun originCollectionIdIn(queue: List<AutoMixItem>, livePos: Int, songId
     if (queue.isEmpty()) return null
     val start = livePos.coerceIn(0, queue.size - 1)
     for (offset in queue.indices) {
-        for (i in intArrayOf(start + offset, start - offset)) {
+        for (i in intArrayOf(start - offset, start + offset)) { // ties go backward: the row on air, not the next copy
             if (i in queue.indices && queue[i].loadable.songId == songId) return queue[i].originCollectionId
         }
     }
