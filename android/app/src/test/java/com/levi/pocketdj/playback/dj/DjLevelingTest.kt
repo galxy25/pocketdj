@@ -271,13 +271,25 @@ class DjLevelingTest {
         r.host.target = 3.0
         r.host.dj = false
         r.leveling.levelToZero()
+        assertTrue("levelToZero alone leaves measurements running", !cancelled.get())
+        r.leveling.cancelAnalyses()
         waitUntil("cancelled") { cancelled.get() }
-        assertEquals(listOf(0.0 to false), r.host.sets)            // DJ off lands at once at 0 dB (no ramp)
+        assertEquals(listOf(0.0 to true), r.host.sets)             // DJ off RAMPS to 0 dB (never a step)
         assertEquals(DjLeveling.Status.INACTIVE, r.leveling.status.value)
         assertEquals("leveling off gain=0", r.host.logs.last())
         waitUntil("not remembered") { !r.loud.isAnalyzing(r.key()) }
         assertFalse("a cancelled analysis is not a result", r.loud.contains(r.key()))
         assertFalse("nor a failure: the next DJ-on may measure it", r.loud.hasFailed(r.key()))
+    }
+
+    @Test fun djOffAndSuspensionRampToZeroNeverStep() {
+        val r = Rig(media(5))
+        r.host.target = -12.0
+        r.leveling.levelToZero()
+        assertEquals(listOf(0.0 to true), r.host.sets)
+        r.host.target = 6.0
+        r.leveling.levelToZero()
+        assertTrue("every zeroing path ramps", r.host.sets.all { it.second })
     }
 
     @Test fun nothingMovesWhenDspIsNotEngagedOrTheSessionIsOver() {

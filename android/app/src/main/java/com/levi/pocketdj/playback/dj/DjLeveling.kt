@@ -144,11 +144,10 @@ class DjLeveling(
         }
     }
 
-    /** DJ off / session end / suspension: every running measurement stops and the trim returns to 0 dB. */
+    /** DJ off / session end / suspension: the trim ramps back to 0 dB (measurements are stopped by the DJ-off caller, not on suspension, as iOS). */
     fun levelToZero() {
-        loudness.cancelAll()
         _status.value = Status.INACTIVE
-        host.setLevel(0.0, false)
+        host.setLevel(0.0, true)   // iOS ramps every path to 0 dB: never a step
         note("leveling off gain=0")
     }
 

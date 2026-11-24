@@ -109,12 +109,19 @@ class DjModeWiring(private val app: AppGraph) {
         // Resolution touches disk (resolveLocal, the rips index): off the main thread, cached, and the engine's 1 Hz retries
         // in the lead window only ever read this map. A first-ever miss resolves inline; a stale hit refreshes in the background.
         private val localCache = java.util.concurrent.ConcurrentHashMap<String, Cached>()
+        /** A row's local source resolved for the first time (analysis window rows wait on this). */
+        @Volatile var onFirstResolved: (() -> Unit)? = null
         private val refreshing = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
         override fun prefetchLocal(item: QueueItem) {
             if (!refreshing.add(item.id)) return
             scope.launch(Dispatchers.IO) {
-                try { localCache[item.id] = Cached(android.os.SystemClock.elapsedRealtime(), resolveLocalSource(item)) }
+                try {
+                    val had = localCache[item.id]?.src != null
+                    val src = resolveLocalSource(item)
+                    localCache[item.id] = Cached(android.os.SystemClock.elapsedRealtime(), src)
+                    if (src != null && !had) scope.launch { onFirstResolved?.invoke() }   // a window row became analysable
+                }
                 finally { refreshing.remove(item.id) }
             }
         }
@@ -401,9 +408,12 @@ class DjModeWiring(private val app: AppGraph) {
                 if (controller.djActive && levelingBuilt) analysisDriver.analyzeUpcoming()
             }
         }
+        env.onFirstResolved = { if (levelingBuilt && controller.djActive) analysisDriver.scheduleAnalysis() }
         scope.launch {
-            mixSettings.map { it.dj.volumeLeveling }.distinctUntilChanged().collect {
-                if (levelingBuilt && controller.djActive) leveling.applyCurrent(ramp = true)
+            mixSettings.map { it.dj.volumeLeveling }.distinctUntilChanged().collect { on ->
+                if (!levelingBuilt || !controller.djActive) return@collect
+                if (!on) leveling.cancelAnalyses()   // Volume off: running / upcoming measurements stop
+                leveling.applyCurrent(ramp = true)
             }
         }
     }
