@@ -82,6 +82,10 @@ import com.levi.pocketdj.data.activity.CollectionActivityStore
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.history.PlaySource
 import com.levi.pocketdj.data.share.ShareText
+import com.levi.pocketdj.data.collections.SongTransfer
+import com.levi.pocketdj.ui.selection.SelectionBar
+import com.levi.pocketdj.ui.selection.SelectionScope
+import com.levi.pocketdj.ui.selection.selectionDecor
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.BrowseFilterSheet
 import com.levi.pocketdj.screens.browse.BrowseFilters
@@ -449,7 +453,23 @@ private fun PlaybackContent(
                 listState.scrollToItem(0)
             }
         }
-        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        val rowSelection = remember { graph.collectionsGraph.rowSelection }
+        val orderedEvents = remember(rows, results) {
+            rows.mapNotNull { r -> results.refOf(r)?.let { it.eventId to it.songId } }
+        }
+        SelectionScope(
+            selection = rowSelection,
+            scope = HistorySelection.SCOPE,
+            pruneKey = System.identityHashCode(rows),
+            allIds = { orderedEvents.map { it.first } },
+            payload = {
+                val ids = HistorySelection.songIds(rowSelection.state.value.ids, orderedEvents)
+                SongTransfer.make(ids, catalog.songsById)
+            },
+        )
+        Column(Modifier.fillMaxSize()) {
+        SelectionBar(rowSelection, HistorySelection.SCOPE, graph.collections)
+        LazyColumn(state = listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
             items(visible, key = { rowKey(it) }) { row ->
                 val ref = results.refOf(row) ?: return@items
                 val live = isLiveRow(ref, liveEventId, playing, seqRunning)
@@ -458,8 +478,17 @@ private fun PlaybackContent(
                         row = row,
                         ref = ref,
                         live = live,
-                        onClick = { onSongClick(ref.songId) },
-                        onLongClick = { menuEventId = ref.eventId },
+                        onClick = {
+                            com.levi.pocketdj.ui.selection.selectionTap(rowSelection, ref.eventId, HistorySelection.SCOPE) {
+                                onSongClick(ref.songId)
+                            }
+                        },
+                        onLongClick = {
+                            if (rowSelection.state.value.isSelectMode(HistorySelection.SCOPE)) {
+                                rowSelection.handleLongPress(ref.eventId, HistorySelection.SCOPE)
+                            } else menuEventId = ref.eventId
+                        },
+                        decor = Modifier.selectionDecor(rowSelection, ref.eventId, HistorySelection.SCOPE),
                     )
                     HistoryRowMenu(
                         expanded = menuEventId == ref.eventId,
@@ -475,6 +504,8 @@ private fun PlaybackContent(
                                         ?: ShareText.forTitleArtist(row.song.name, row.song.artist)
                                     ShareText.send(context, text, "${row.song.name} — ${row.song.artist}")
                                 }
+                                HistoryRowAction.SELECT ->
+                                    rowSelection.enterSelectMode(HistorySelection.SCOPE, ref.eventId)
                             }
                         },
                     )
@@ -486,6 +517,7 @@ private fun PlaybackContent(
                     Spacer(Modifier.height(48.dp))
                 }
             }
+        }
         }
     }
 
@@ -532,12 +564,14 @@ private fun PlayRow(
     live: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    decor: Modifier = Modifier,
 ) {
     Surface(
         color = if (live) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
         else MaterialTheme.colorScheme.background,
         modifier = Modifier
             .fillMaxWidth()
+            .then(decor)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .testTag("history-row-${ref.eventId}" + if (live) "-live" else ""),
     ) {

@@ -157,6 +157,7 @@ fun MixScreen(
                 label = { Text(if (st.autoEnabled) "Auto" else "Manual") },
                 modifier = Modifier.testTag("mix-auto-toggle").semantics { contentDescription = "Auto mode" },
             )
+            MixBroadcastButton(graph)
             recordAction()
         }
         st.autoBlockedReason?.let {

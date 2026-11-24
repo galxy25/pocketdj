@@ -2,6 +2,7 @@ package com.levi.pocketdj.screens.history
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircleOutline
+import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.DropdownMenu
@@ -17,6 +18,7 @@ internal enum class HistoryRowAction(val label: String) {
     REWIND("Rewind to here"),
     ADD_TO("Add to…"),
     SHARE("Share"),
+    SELECT("Select"),
 }
 
 /**
@@ -41,6 +43,7 @@ internal fun HistoryRowMenu(
                             HistoryRowAction.REWIND -> Icons.Filled.FastRewind
                             HistoryRowAction.ADD_TO -> Icons.Filled.AddCircleOutline
                             HistoryRowAction.SHARE -> Icons.Filled.Share
+                            HistoryRowAction.SELECT -> Icons.Filled.CheckCircleOutline
                         },
                         contentDescription = null,
                     )

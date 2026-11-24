@@ -65,16 +65,20 @@ class JukeboxClient(
     }
 
     /**
-     * `POST /jukebox` — create a session (jukebox.md §2.3 #2). Always
-     * `timeless:false` on Android P1; `requiresToken` is sent as intent (the
+     * `POST /jukebox` — create a session (jukebox.md §2.3 #2). `timeless` rides the body;
+     * `requiresToken` is sent as intent (the
      * server ignores it today and does not echo it back).
      */
-    suspend fun createSession(name: String, requiresToken: Boolean): JukeboxSessionInfo {
+    suspend fun createSession(
+        name: String,
+        requiresToken: Boolean,
+        timeless: Boolean = false,
+    ): JukeboxSessionInfo {
         val config = requireConfig()
         val url = JukeboxUrls.create(config.normalizedBase) ?: throw invalidUrl()
         val body = buildJsonObject {
             put("name", name)
-            put("timeless", false)
+            put("timeless", timeless)
             put("requiresToken", requiresToken)
         }.toString().toRequestBody(JSON_MEDIA_TYPE)
         val request = builder(config, bearer = config.token).url(url).post(body).build()
@@ -117,6 +121,17 @@ class JukeboxClient(
             .toString().toRequestBody(JSON_MEDIA_TYPE)
         val request = builder(config, bearer = session.hostKey).url(url).post(body).build()
         execute(shortClient, request) { }
+    }
+
+    /** `POST /jukebox/{id}/config {timeless}` — hostKey bearer; returns the lifecycle to merge locally. */
+    suspend fun configure(session: JukeboxSessionInfo, timeless: Boolean): JukeboxLifecycle {
+        val config = requireConfig()
+        val url = JukeboxUrls.config(config.normalizedBase, session.jukeboxId) ?: throw invalidUrl()
+        val request = builder(config, bearer = session.hostKey)
+            .url(url)
+            .post(configBody(timeless).toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        return execute(shortClient, request) { text -> json.decodeFromString<JukeboxLifecycle>(text) }
     }
 
     /** `POST /jukebox/{id}/end` — 30 s timeout (jukebox.md §4.1). */
@@ -195,6 +210,9 @@ class JukeboxClient(
             else -> "Jukebox server error ($code)"
         }
     }
+
+    internal fun configBody(timeless: Boolean): String =
+        buildJsonObject { put("timeless", timeless) }.toString()
 
     private companion object {
         const val SHORT_TIMEOUT_S = 12L

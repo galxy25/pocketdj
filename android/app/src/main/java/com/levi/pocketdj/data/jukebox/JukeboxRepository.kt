@@ -156,18 +156,32 @@ class JukeboxRepository(
     /** Re-adopt a persisted session at app start (§4.1 Resume). Idempotent. */
     fun bootstrap() {
         if (!bootstrapped.compareAndSet(false, true)) return
-        scope.launch {
-            val persisted = sessionStore.load() ?: return@launch
+        scope.launch { adoptPersisted() }
+    }
+
+    private val bootstrapDone = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    /** Bootstrap and WAIT for the persisted-session load, so a caller deciding "is there a session?" is not racing it. */
+    suspend fun ensureBootstrapped() {
+        if (bootstrapped.compareAndSet(false, true)) adoptPersisted()
+        bootstrapDone.await()
+    }
+
+    private suspend fun adoptPersisted() {
+        try {
+            val persisted = sessionStore.load() ?: return
             commitLock.withLock {
-                if (_state.value.session != null || _state.value.starting) return@launch
+                if (_state.value.session != null || _state.value.starting) return
                 _state.update { it.copy(session = persisted.session, hear = persisted.hear) }
                 startLoop()
             }
+        } finally {
+            bootstrapDone.complete(Unit)
         }
     }
 
     /** Start a session (§4.1). Errors land in [UiState.notice]; stay on create. */
-    fun start(name: String, requiresToken: Boolean) {
+    fun start(name: String, requiresToken: Boolean, timeless: Boolean = false) {
         if (_state.value.session != null || _state.value.starting) return
         _state.update { it.copy(starting = true, notice = null) }
         scope.launch {
@@ -175,6 +189,7 @@ class JukeboxRepository(
                 val created = client.createSession(
                     name = name.trim().ifEmpty { JukeboxSettings.defaultSessionName(pocketDjName()) },
                     requiresToken = requiresToken,
+                    timeless = timeless,
                 )
                 // Stamp the intent locally — the server doesn't echo it (§3.1).
                 val stamped = created.copy(requiresToken = requiresToken)
@@ -310,6 +325,25 @@ class JukeboxRepository(
         val stamped = session.copy(requiresToken = required)
         _state.update { it.copy(session = stamped) }
         scope.launch { sessionStore.save(stamped) }
+    }
+
+    /** Flip the live session's Timeless mode; merges `{timeless, expiresAt}` locally. Errors -> notice. */
+    fun setTimeless(timeless: Boolean) {
+        val session = _state.value.session ?: return
+        scope.launch {
+            try {
+                val reply = client.configure(session, timeless)
+                val current = _state.value.session
+                if (current == null || current.jukeboxId != session.jukeboxId) return@launch
+                val merged = current.mergeLifecycle(reply, timeless)
+                _state.update { it.copy(session = merged, transientError = null) }
+                sessionStore.save(merged)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _state.update { it.copy(transientError = error.message ?: "Couldn't change Timeless") }
+            }
+        }
     }
 
     /**
