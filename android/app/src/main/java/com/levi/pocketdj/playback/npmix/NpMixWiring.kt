@@ -187,10 +187,23 @@ class NpMixWiring(private val app: AppGraph) {
             app.appContext,
             object : BroadcastReceiver() {
                 override fun onReceive(c: Context?, i: Intent?) {
+                    // `--es playsong sng_x`: play one song alone (emulator verification of lone-song windows).
+                    i?.getStringExtra("playsong")?.let { id ->
+                        scope.launch { controller.playQueue(listOf(com.levi.pocketdj.playback.QueuePlan.QueueEntry(id))) }
+                    }
+                    // `--es palette id1,id2`: first palette assignment through the store (P2-POC-4 emulator step).
+                    i?.getStringExtra("palette")?.let { ids ->
+                        scope.launch(Dispatchers.IO) {
+                            val ok = app.servicesGraph.pocketPalette.assign(ids.split(','), nowMs = System.currentTimeMillis().toDouble())
+                            com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.PLAYBACK, "palette assign changed=$ok")
+                        }
+                    }
                     when (i?.getStringExtra("npmix")) {
                         "on" -> coordinator.setMixMode(true)
                         "off" -> coordinator.setMixMode(false)
                         "toggle" -> coordinator.toggleMixMode()
+                        // Emulator verification: presign rips from the public bucket (no rip server), then re-plan the lane.
+                        "publicrips" -> { com.levi.pocketdj.di.MixDebug.publicRips = true; coordinator.replan() }
                         else -> Unit
                     }
                 }

@@ -44,3 +44,19 @@ Open issues:
 - Device-only, not verifiable here: P2-MM-2 SAF picked folder on a real SD/USB folder; P2-MM-4 cellular vs Wi-Fi policy on a SIM phone.
 - Not wired yet by design: `scheduleCapSweepIfNeeded` (Mix Mode off, P2-MM-4/5) and `sweepForDiskGuard` / DiskGuard footprint and the production `awaitPendingDownload` binding (P2-MM-5); loudness `isComplete` predicate (P2-DJ-11/MIX-2).
 - New question P2Q9 (DJ chip wording). StrictMode disk-write on main in DeadAirMeter.save (pre-existing, debug builds only).
+
+## Wave 3
+
+Merged: P2-PB-3, P2-ALB-2, P2-ALB-3, P2-MM-5, P2-POC-3, P2-POC-4, P2-REM-1, P2-SURF-1 (one conflict: AccountDeletionService/Test key lists, edits + pocket-palette/profile-source kept). Unit tests: 6403, 0 failures; assembleDebug green.
+
+Emulator (emulator-5556, shots in pocketdj-parity2-pkgs/_shots/wave3/):
+- P2-PB-3 PASS: Up Next > Play next and a drag-reorder both log `row landed next uid=`; session file carries `djUserNext` only on the picked row and no `plan` on non-run rows (`pinned` is derived, never persisted).
+- P2-SURF-1 PASS: For You tile (In Da Zone) > Play shows np-feedback; thumbs-up wrote an `accepted`/`nowPlaying` decision to pocketdj-rec-feedback.json (reserved zone scope adds no song, per spec); a normal playlist run hides the thumbs.
+- P2-MM-5 PASS with a fix: lane steps and `hand-off row=... reason=landed` observed with PLAYING state kept through the swap (rip-server-free via new debug `npmix=publicrips`, throttled network). Bug found: a row preloaded as a stream whose file landed while it was still "next" never swapped; fixed by trying a hand-off at first audio (test added, P2Q10). `already-local`, `start-pending` (owed, retried on play: `reason=after-start`) and `no-local-file` refusals observed. The `refused reason=paused` line was NOT reproduced live (the pause never coincided with a landing in 4 tries); it is covered by SwapOnLandTest.
+- P2-ALB-2 PASS (local half): an iOS-shaped pocketdj-edits.json pushed to the app showed the renamed title in the SeedRip list and the file was byte-identical afterwards. The sync-pull half needs a live sync backend (only the in-memory debug backend exists): not verifiable here.
+- P2-ALB-3 PASS: lone analog songs log `clip start=14211 end=126224` (capped at next start, old rule gave 128558) and `start=1476766 end=1622355` (detected end + 15 s, old 1599233).
+- P2-POC-3, P2-REM-1: pure, no emulator step. P2-POC-4 PASS: debug `palette=a,b` broadcast created files/pocketdj-pocket-palette.json with two slots.
+
+Integrator changes: debug-only broadcast extras in NpMixWiring (`npmix=publicrips`, `playsong=<id>`, `palette=a,b`), a `clip` playback log line, first-audio hand-off attempt + test.
+
+Open: StrictMode disk reads on main from `NpMixWiring.replanLane` (BurnStore.localUrlPreferringCut via the lane re-plan; debug-only warning, worth moving off-main). Device-only: audible gap during swap-on-land.

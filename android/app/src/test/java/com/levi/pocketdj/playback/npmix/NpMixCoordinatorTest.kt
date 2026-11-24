@@ -266,6 +266,16 @@ class NpMixCoordinatorTest {
         assertEquals(listOf("user-play", "after-start"), hand.retries)
     }
 
+    @Test fun firstAudioTriesAHandOffSoAPreloadedStreamWhoseFileLandedEarlyStillSwaps() {
+        startSession(false)
+        mix.onFirstAudio(QueueItem("a"), "player")
+        assertTrue("off: nothing", hand.attempts.isEmpty())
+        mix.setMixMode(true)
+        hand.attempts.clear()
+        mix.onFirstAudio(QueueItem("a"), "player")
+        assertEquals(listOf("first-audio"), hand.attempts)
+    }
+
     // ---- stream pinning -----------------------------------------------------------------------------------
 
     @Test fun pinsTheCurrentAndNextAudioIdsWhileARunExists() {

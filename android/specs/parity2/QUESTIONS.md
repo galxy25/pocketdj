@@ -14,6 +14,7 @@ Format: `Q<n> [package] question — default meanwhile`. Integrators append new 
 - **P2Q7 [P2-SURF-5]** Google is winding App Actions down in favour of Gemini/AppFunctions. Still declare App Actions capabilities (harmless if ignored) next to the deep links? — *Default: Yes — declare them; deep links + launcher shortcuts are the doors that always work.*
 - **P2Q8 [P2-REL-1]** Release path for the parity-2 build: Play internal testing first, then production staged rollout? — *Default: Upload to internal testing, run the device checklist, then production at 20 % staged rollout; the Data safety form is updated in Play Console in the same submission.*
 - **P2Q9 [P2-DJ-5]** Suspended-remote DJ chip wording: iOS verbatim "DJ — paused · SharePlay session" vs design doc "Remote session" for Android. — *Default: iOS verbatim (pinned by DjModeTest); one-line change.*
+- **P2Q10 [P2-MM-5]** Integrator added a hand-off attempt at first audio (a row preloaded as a stream whose file landed while it was still "next" otherwise kept streaming). Does iOS do the same, or should the preload swap to the local file instead? — *Default: attempt at first audio (observed on emulator: `hand-off ... reason=first-audio`).*
 
 ## ANSWERED
 

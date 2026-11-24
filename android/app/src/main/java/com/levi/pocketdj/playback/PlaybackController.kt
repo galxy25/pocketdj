@@ -1409,6 +1409,9 @@ class PlaybackController(
     ): MediaItem {
         val artUri = album?.artCandidates()?.firstOrNull() ?: album?.let { artFallback(it) }
         val isLive = action.url.contains("/hls/")
+        if (action.clipStartMs != null || action.clipEndMs != null) {
+            NPLog.lane(NPLog.PLAYBACK, "clip song=${album?.id ?: "-"} start=${action.clipStartMs} end=${action.clipEndMs}")
+        }
         val extras: Bundle = bundleOf(
             PlaybackContract.EXTRA_URL to action.url,
             PlaybackContract.EXTRA_SOURCE to playContext.source,

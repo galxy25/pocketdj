@@ -259,7 +259,12 @@ class NpMixCoordinator(
 
     override fun onFirstAudio(item: QueueItem, source: String) {
         // A hand-off that came due during the start window retries now.
-        if (enabled) swap.retryOwed("after-start")
+        if (enabled) {
+            swap.retryOwed("after-start")
+            // A row preloaded as a stream whose file landed while it was still "next" never gets a step-finished
+            // event of its own: try once at first audio so it still hands off to the local copy.
+            swap.attempt("first-audio")
+        }
     }
 
     // ---- SessionExtra (durable session key `npMixMode`) -------------------------------------------------
