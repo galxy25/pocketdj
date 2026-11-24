@@ -468,6 +468,22 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     /** Album/context extras + title/artist cached at engage (the controller's now-playing loses them once npdsp owns the session). */
     @Volatile private var npMeta: NpMeta? = null
     private class NpMeta(val songId: String, val title: String?, val artist: String?, val artworkUri: String?, val extras: android.os.Bundle)
+    /** P2-MM-8: the metadata of a row the DSP is about to START on its growing file (consumed by the next engage). */
+    @Volatile private var npMetaStaged: NpMeta? = null
+
+    /** P2-MM-8: stage [item]'s card metadata + album/context extras for the growing-file engage that follows (the controller still mirrors another row). */
+    fun stageGrowingMeta(item: com.levi.pocketdj.playback.sequencer.QueueItem, context: com.levi.pocketdj.playback.PlayContext) {
+        val cat = app.catalogRepository.state.value.catalog
+        val albumId = cat?.songsById?.get(item.id)?.albumId
+        val album = albumId?.let { cat.albumsById[it] }
+        val x = android.os.Bundle().apply {
+            albumId?.let { putString(com.levi.pocketdj.playback.PlaybackContract.EXTRA_ALBUM_ID, it) }
+            putString(com.levi.pocketdj.playback.PlaybackContract.EXTRA_SOURCE, context.source)
+            context.contextId?.let { putString(com.levi.pocketdj.playback.PlaybackContract.EXTRA_CONTEXT_ID, it) }
+            context.contextName?.let { putString(com.levi.pocketdj.playback.PlaybackContract.EXTRA_CONTEXT_NAME, it) }
+        }
+        npMetaStaged = NpMeta(item.id, item.title, item.artist, album?.artCandidates()?.firstOrNull(), x)
+    }
 
     /** The session-scoped Stem Lock carry; every change re-persists the durable session's `stemLock`. */
     val stemLockSession: com.levi.pocketdj.mix.nowplaying.StemLockSession by lazy {
@@ -673,6 +689,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             override val exoPlaying: Boolean get() = controller.nowPlaying.value?.isPlaying == true
             override fun advanceAfterEnd(songId: String) { seq.handleEnded(songId) }
             override fun log(line: String) = NPLog.lane(NPLog.NP, line)
+            // P2-MM-8: Mix Mode's buffer covers the playing presigned stream -> the first touch moves it onto the growing file.
+            override fun growingTouchReady(songId: String): Boolean =
+                app.playbackGraph.npMix.growing.touchReady() && seq.state.value.current?.id == songId
+            override suspend fun engageGrowingFromStream(songId: String, play: Boolean): Boolean =
+                seq.state.value.current?.id == songId && app.playbackGraph.npMix.growing.engageFromStream(play)
         }
         com.levi.pocketdj.mix.nowplaying.NowPlayingDspHost(npDspEngine, stemLockSession, ports, replan = { replanStemLock() })
     }
@@ -755,7 +776,12 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         engine.onEngaged = {
             val np = controller.nowPlaying.value
             val id = np?.songId
-            if (np != null && id != null) {
+            val staged = npMetaStaged
+            if (staged != null) {
+                // P2-MM-8: a growing start - the controller still mirrors the PREVIOUS row (or nothing); the row's own metadata was staged.
+                npMetaStaged = null
+                npMeta = staged
+            } else if (np != null && id != null) {
                 val x = android.os.Bundle().apply {
                     np.albumId?.let { putString(com.levi.pocketdj.playback.PlaybackContract.EXTRA_ALBUM_ID, it) }
                     putString(com.levi.pocketdj.playback.PlaybackContract.EXTRA_SOURCE, np.context.source)
@@ -768,7 +794,10 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             ensureMediaService(); player.claim()
         }
         engine.onDisengaged = { npEngaged.value = false; player.released(); npFocus.onTransportIdle() }
-        engine.onAudioStarted = { ensureMediaService(); player.onAudioStarted(); npFocus.onAudioStarted() }
+        engine.onAudioStarted = {
+            ensureMediaService(); player.onAudioStarted(); npFocus.onAudioStarted()
+            app.playbackGraph.npMix.growing.onDspAudioStarted() // P2-MM-8: first sound of a growing-file start / touch hand-off
+        }
         val chained = engine.onChanged
         // Final review recheck: onAudioStarted fires once per engagement, so a resume after a user pause (which
         // abandoned the focus) must re-request it here; idle otherwise.

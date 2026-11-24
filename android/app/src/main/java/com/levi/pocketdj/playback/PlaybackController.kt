@@ -1145,6 +1145,32 @@ class PlaybackController(
         return ok
     }
 
+    /**
+     * P2-MM-8: the NP DSP is about to START the sequencer's current row on its growing file. The outgoing source goes
+     * quiet (Apple Music stops; a rip-on-demand wait ends) and the controller is the sequencer's again, exactly as a
+     * normal load leaves it - the DSP's session player takes the MediaSession when the engine engages.
+     */
+    suspend fun claimForDsp() {
+        ripWatchJob?.cancel()
+        ripWatchJob = null
+        ripSession.cancel()
+        stopAppleMusic()
+        activeBackend = ActiveBackend.EXO
+        sequencerOwnsPlayer = true
+    }
+
+    /**
+     * P2-MM-8: a touch hand-off left the presigned stream paused in ExoPlayer; the growing file could not carry the row,
+     * so resume that stream at [atMs] (song-relative). False = ExoPlayer no longer holds [songId].
+     */
+    suspend fun resumeStreamAt(songId: String, atMs: Long): Boolean = withController { c ->
+        if (c.currentMediaItem?.mediaId != songId || !sequencerOwnsPlayer || activeBackend != ActiveBackend.EXO) return@withController false
+        c.seekTo(atMs)
+        c.prepare()
+        c.play()
+        true
+    }
+
     /** Suspends until the first sound after the last [swapCurrentItem], or [timeoutMs]. */
     suspend fun awaitHandOffAudio(timeoutMs: Long): Boolean {
         val d = handOffAudio ?: return false

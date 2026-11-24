@@ -170,6 +170,8 @@ class PlaybackService : MediaLibraryService() {
                     return
                 }
                 lastPlayEventSongId = songId
+                // P2-MM-8: a row the growing DSP already recorded restarts on its plain stream: not a second History play.
+                if (suppressHistoryFor == songId) { suppressHistoryFor = null; return }
                 PlayEventBus.emit(
                     PlayStarted(
                         songId = songId,
@@ -384,6 +386,9 @@ class PlaybackService : MediaLibraryService() {
     }
 
     companion object {
+        /** P2-MM-8: the next load of this song id (a growing-file fallback restart) records no History play. One-shot. */
+        @Volatile var suppressHistoryFor: String? = null
+
         private const val BOOT_CHANNEL = "pdj_playback_boot"
         private const val MAX_SETTLE_CHECKS = 12
         private const val MAX_FGS_RETRIES = 5
