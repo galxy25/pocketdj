@@ -503,7 +503,7 @@ private fun ShellNavHost(
             }
         }
         composable(PocketDjDestination.Jukebox.route) {
-            JukeboxScreen(onOpenJoin = { id -> nav.navigate(jukeboxJoinRoute(id)) })
+            com.levi.pocketdj.screens.jukebox.JukeboxHubScreen(onOpenJoin = { id -> nav.navigate(jukeboxJoinRoute(id)) })
         }
         composable(
             route = JUKEBOX_JOIN_ROUTE,

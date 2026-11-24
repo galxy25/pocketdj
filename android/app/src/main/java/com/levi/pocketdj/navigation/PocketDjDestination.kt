@@ -49,6 +49,12 @@ enum class PocketDjDestination(
 
         /** Token → destination; unknown, blank or the old iOS home-menu "" ⇒ [default]. */
         fun fromToken(token: String?): PocketDjDestination =
-            entries.firstOrNull { it.token == token } ?: default
+            entries.firstOrNull { it.token == token }
+                ?: if (isRetiredRemoteToken(token)) Jukebox else default
+
+        /** iOS 1.0.5 merged the Remote tab into the Jukebox panel; an old persisted "Remote" token opens its Remote half. */
+        const val RETIRED_REMOTE_TOKEN = "Remote"
+
+        fun isRetiredRemoteToken(token: String?): Boolean = token == RETIRED_REMOTE_TOKEN
     }
 }
