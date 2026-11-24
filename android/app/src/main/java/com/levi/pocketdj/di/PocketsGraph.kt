@@ -59,13 +59,15 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
             snapshot = { wheelCache.snapshot.value },
             historyEvents = { history.events },
         ).also { c ->
+            // Limitation: UI_MODE_TYPE_CAR only; a phone projecting to Android Auto is not detected (needs androidx.car.app CarConnection).
+            // motionNow is intentionally unwired here: pending P2-POC-11/12 (motion timeline).
             c.carConnected = { app.collectionsGraph.carConnected() == true }
             c.contextGuess = { runCatching { app.collectionsGraph.listeningContextProvider.currentContextGuess() }.getOrNull() }
             c.cloudResults = {
                 val svc = app.collectionsGraph.listeningPockets
                 if (svc.isEnabled) svc.results.value else null
             }
-            c.emptyFallback = { emptyFallbackProfile(history.events, app.collectionsGraph.favorites.favoriteIds.isNotEmpty()) }
+            c.emptyFallback = { emptyFallbackProfile(history.events, app.collectionsGraph.favorites.favoriteIds.isNotEmpty(), wheelCache.snapshot.value.collectionNames) }
         }
     }
 
@@ -107,10 +109,11 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
         internal fun emptyFallbackProfile(
             events: List<com.levi.pocketdj.data.history.PlayEvent>,
             hasFavorites: Boolean,
+            collectionNames: Map<String, String> = emptyMap(),
         ): com.levi.pocketdj.data.pockets.wheel.PocketProfile? {
             val recent = events.asReversed().firstOrNull { it.originCollectionId != null && it.source != com.levi.pocketdj.data.history.PlaySource.GAME }
             val (id, name) = when {
-                recent != null -> recent.originCollectionId!! to (recent.contextName ?: "Your last collection")
+                recent != null -> recent.originCollectionId!! to (collectionNames[recent.originCollectionId] ?: recent.contextName ?: "Your last collection")
                 hasFavorites -> com.levi.pocketdj.data.pockets.wheel.PocketWheelIds.FAVORITES to com.levi.pocketdj.data.pockets.wheel.PocketWheelIds.FAVORITES_NAME
                 else -> return null
             }

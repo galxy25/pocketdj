@@ -62,7 +62,7 @@ class PocketWheelController(
         val tz = tzOffsetMin(nowMs)
         val local = PocketClock.local(nowMs, tz)
         val guess = contextGuess()
-        val motion = runCatching { motionNow() }.getOrNull()
+        val motion = try { motionNow() } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) { null }
         val (recentColls, recentSkips) = PocketBestMatch.recentActivity(historyEvents(), nowMs, attribute)
         val n = PocketBestMatch.Now(
             hour = local.fractionalHour,

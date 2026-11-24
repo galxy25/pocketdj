@@ -401,4 +401,10 @@ class PocketBestMatchTest {
         assertEquals(PocketWheelIds.FAVORITES, fav.dominantCollectionId)
         assertNull(PocketsGraph.emptyFallbackProfile(emptyList(), hasFavorites = false))
     }
+
+    @Test fun emptyFallbackPrefersLiveRenamedCollectionName() {
+        val ev = PlayEvent("a", "s", 1.0, PlaySource.PLAYLIST, contextName = "Old", originCollectionId = "pl_chill")
+        val p = PocketsGraph.emptyFallbackProfile(listOf(ev), true, mapOf("pl_chill" to "Renamed"))!!
+        assertEquals("Renamed", p.detail)
+    }
 }
