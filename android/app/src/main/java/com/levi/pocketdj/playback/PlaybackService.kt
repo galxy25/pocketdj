@@ -118,6 +118,7 @@ class PlaybackService : MediaLibraryService() {
     private var forwardingPlayer: SequencerForwardingPlayer? = null
     private var exoOwner: ExoOwner? = null
     private var exoPlayer: ExoPlayer? = null
+    private var albumArmer: com.levi.pocketdj.playback.album.AlbumBoundaryArmer? = null
 
     /** Id-changed gate: a same-song restart/seek must not re-fire the play hook. */
     private var lastPlayEventSongId: String? = null
@@ -145,6 +146,8 @@ class PlaybackService : MediaLibraryService() {
             .setWakeMode(C.WAKE_MODE_NETWORK) // holds CPU+wifi while buffering a long rip-on-demand wait
             .build()
         exoPlayer = player
+        albumArmer = com.levi.pocketdj.playback.album.AlbumBoundaryArmer(player, onBoundary = { id -> RunTransportBus.albumBoundaryFired?.invoke(id) })
+            .also { RunTransportBus.albumArmer = it }
 
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -170,6 +173,9 @@ class PlaybackService : MediaLibraryService() {
                     return
                 }
                 lastPlayEventSongId = songId
+                // P2-ALB-4: an album run moving onto the next song in place is not a new play here: the sequencer
+                // records the History row (advanceWithoutLoad / completeClaimedStart).
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED && albumArmer?.consumeRetarget(songId) == true) return
                 PlayEventBus.emit(
                     PlayStarted(
                         songId = songId,
@@ -406,6 +412,9 @@ class PlaybackService : MediaLibraryService() {
         RunTransportBus.stateChanged = null
         RunTransportBus.heldRestored = null
         RunTransportBus.clearInstantMetadata = null
+        RunTransportBus.albumArmer = null
+        albumArmer?.release()
+        albumArmer = null
         SessionSwitchboard.shared.onChange = {}
         exoOwner?.let { SessionSwitchboard.shared.unregister(it) }
         forwardingPlayer = null

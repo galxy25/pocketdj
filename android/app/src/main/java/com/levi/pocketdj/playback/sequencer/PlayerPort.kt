@@ -18,6 +18,12 @@ data class PlayRequest(
     val reResolve: Boolean = false,
     /** Sequencer play generation that issued this request (trace + duplicate-load guard). */
     val generation: Long = -1,
+    /**
+     * P2-ALB-4: set when this row is part of an in-order run of its shared album file. The engine then loads ONE item
+     * clipped `[plan.clipStartMs, END_OF_SOURCE)` (instead of the song's own window) and arms [PlayerPort.armBoundary]
+     * at `plan.boundaryFileMs`. Null = the row keeps its own clip window.
+     */
+    val albumRun: com.levi.pocketdj.playback.album.AlbumRun.Plan? = null,
 )
 
 /** An arbitrary stream (jukebox Tune-In). */
@@ -54,8 +60,47 @@ interface PlayerPort {
      * now matches the ask. Default: engines without a preload window do nothing.
      */
     suspend fun preloadNext(request: PlayRequest?): Boolean = false
+
+    // ---- P2-ALB-4: album runs (one engine item per vinyl side) ------------------------------------------------------
+
+    /**
+     * Arm (or, with [fileMs] null, disarm) the end-of-song boundary of the loaded run item: when the playhead reaches
+     * [fileMs] (absolute ms in the shared file) the engine reports [songId]'s natural end through
+     * [SetlistSequencer.handleEnded]. [clipStartMs] is the item's clip start (so the engine can map file time to item
+     * time). Exact (a player message) with a 250 ms poll fallback in the Media3 engine. Default: no-op.
+     */
+    fun armBoundary(songId: String, fileMs: Long?, clipStartMs: Long) {}
+
+    /** What the engine holds when it holds a run item (a shared album file played as one item); null otherwise. */
+    fun albumFileState(): AlbumFileState? = null
+
+    /**
+     * Seek the loaded run item to absolute file position [fileMs] (item time = file time - clip start). Always call this
+     * BEFORE re-arming the boundary so a tick carrying the old position can never fire the new song's end. False when
+     * the engine cannot (nothing loaded / the position lies before the item's clip start).
+     */
+    fun seekInFile(fileMs: Long): Boolean = false
+
+    /**
+     * Move the loaded run item's identity onto [item] without touching the audio (same URI + clip, new metadata and
+     * media id; title/artist from the CURRENT catalog). When [startPlayback] the deck plays afterwards (a skip while
+     * paused starts playback, exactly as a reload would). False when the engine did not retarget.
+     */
+    suspend fun retargetInPlace(item: QueueItem, startPlayback: Boolean): Boolean = false
     suspend fun pause()
     suspend fun resume()
     suspend fun seekTo(positionMs: Long)
     suspend fun stop()
 }
+
+/** The engine's view of a loaded run item (see [PlayerPort.albumFileState]). */
+data class AlbumFileState(
+    /** Media id of the loaded item (the song it is currently retitled to). */
+    val mediaId: String,
+    /** The item's clip start inside the shared file. */
+    val clipStartMs: Long,
+    /** The playhead as an absolute position in the shared file. */
+    val fileMs: Long,
+    /** The deck is audibly playing (not paused / buffering-idle). */
+    val playing: Boolean,
+)
