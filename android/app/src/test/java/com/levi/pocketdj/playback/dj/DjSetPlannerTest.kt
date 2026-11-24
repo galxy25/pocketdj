@@ -299,7 +299,7 @@ class DjSetPlannerTest {
         assertEquals(DjDirection.UP, d.direction)
         // iOS-written JSON without the optionals re-encodes without them.
         val re = d.encode()
-        assertFalse(re.contains("band")); assertFalse(re.contains("pocketAnchor")); assertFalse(re.contains("lastAccountedUid"))
+        assertFalse(re.contains("\"band\"")); assertFalse(re.contains("pocketAnchor")); assertFalse(re.contains("lastAccountedUid"))
     }
 
     @Test fun decodesAnchorDirectionAndUuid() {
