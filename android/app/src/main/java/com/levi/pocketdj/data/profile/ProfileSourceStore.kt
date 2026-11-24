@@ -20,8 +20,8 @@ import kotlinx.serialization.encodeToString
  * [Kind] files it into one of two DEFAULT albums ("Pocket DJ Samples" / "Pocket DJ Demuxes") that are synthesized (never
  * persisted) so they always exist as filing destinations.
  *
- * Persists to `pocketdj-profile-source.json` in the iOS document shape. NO cloud sync on Android (micro-decision): the
- * audio is device-local and the metadata is not mirrored. The decode is lenient (missing/corrupt doc => empty store).
+ * Persists to `pocketdj-profile-source.json` in the iOS document shape. Cloud key `profile-source` syncs the metadata (P2-POC-4); the
+ * audio is device-local. The decode is lenient (missing/corrupt doc => empty store).
  */
 class ProfileSourceStore(
     private val file: File,
@@ -105,6 +105,15 @@ class ProfileSourceStore(
             songs = next; cachedDoc = null; save()
         }
         onChanged?.invoke()
+    }
+
+    /** A sync pull rewrote the file (cloud key `profile-source`): adopt it and remerge the catalog. */
+    fun reloadFromDisk() {
+        val next = decode(file).songs.distinctBy { it.songId }
+        val changed = synchronized(lock) {
+            if (next == songs) false else { songs = next; cachedDoc = null; true }
+        }
+        if (changed) onChanged?.invoke()
     }
 
     /** Wipe every entry, the document AND the app-managed audio (originals + stems): this store owns durable media. */

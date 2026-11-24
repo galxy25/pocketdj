@@ -773,6 +773,9 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         // Final review: adopt pulled cues (building the store off the sync thread if need be); otherwise the next
         // local cue edit rewrites the mirror from stale memory and wipes the other device's cues in the cloud.
         SyncEntry("studio-cues", "pocketdj-studio.cues.json", onPulled = { studioStore.reloadCuesFromDisk() }),
+        // P2-POC-4: iOS cloud key "profile-source" (metadata only; the audio stays on the device).
+        SyncEntry("profile-source", com.levi.pocketdj.data.profile.ProfileSourceStore.FILE_NAME,
+            onPulled = { profileSource.reloadFromDisk(); false }),
     )
 
     override val deepLinkHandlers: List<DeepLinkHandler> = listOf(
