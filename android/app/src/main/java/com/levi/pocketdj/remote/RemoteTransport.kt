@@ -24,6 +24,7 @@ interface RemoteTransport {
     val localParticipantId: String
 
     /** Every message other participants send to us (or to all). Completes when the session ends or we leave. */
+    /** Single-collector contract: each message goes to exactly one collector (a second collector steals messages rather than seeing a copy). */
     val inbound: Flow<RemoteInbound>
 
     /** The ACTIVE participant set (including the local one); a new value on every join/leave, empty once ended. */

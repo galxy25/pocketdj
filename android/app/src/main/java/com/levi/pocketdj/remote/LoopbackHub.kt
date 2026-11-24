@@ -14,6 +14,10 @@ import java.util.UUID
  * An in-memory transport hub connecting any number of [LoopbackTransport]s (unit tests + the showcase seed). Delivery is
  * async (a hop through each receiver's channel), in send order per receiver.
  *
+ * Ordering contract: with latency injection, one coroutine is launched per message, so send order per receiver holds
+ * only when [scope] is single-threaded (Main, a TestScope, or `limitedParallelism(1)`); equal delays can reorder on a
+ * multi-threaded dispatcher. Immediate delivery (no latency) is always in order.
+ *
  * Injection is a pure function of its inputs, so tests are deterministic:
  *  - [latency] (seconds) per (from, to); null or <= 0 means immediate. Needs [scope] when used.
  *  - [drop] true means the envelope from -> to is lost.

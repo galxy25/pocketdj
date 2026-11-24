@@ -14,3 +14,11 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR LoopbackHub latency ordering -> fixed (class doc now states the single-threaded scope requirement; per-receiver queue judged out of scope, same as iOS)
+- MINOR single-collector `inbound` -> fixed (contract documented on RemoteTransport.inbound)
+- NIT full gradle run -> done: `:app:testDebugUnitTest :app:assembleDebug` BUILD SUCCESSFUL, 607 JVM tests, 0 failures (includes the 22 new)
+- NIT RemoteSendQueue confinement -> fixed in docs (scope MUST be Main/limitedParallelism(1)); no runtime assertion
+
+fixes applied
