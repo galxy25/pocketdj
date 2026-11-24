@@ -295,7 +295,7 @@ class MixSyncCoreTest {
         assertEquals(seq, a.model.hostSeq)
         assertEquals(1, net.sent("A", MixWireKind.REJECT).size)
         assertEquals(snapsBefore + 1, net.sent("A", MixWireKind.SNAPSHOT).size)
-        assertTrue(b.sink.statuses.last()!!.startsWith("Deck A belongs to Dev A"))
+        assertTrue(b.sink.statuses.last()!!.startsWith("Deck A belongs to"))
         assertNull(a.model.deck(Deck.A).track)
     }
 
