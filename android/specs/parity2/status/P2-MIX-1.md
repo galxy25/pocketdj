@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-MIX-1: Mix Auto Mix crate stall
 
@@ -37,3 +37,12 @@ MixStreamLoaderTest +3, CrateMenuStateTest +1 and one expectation updated). `:ap
 
 ## Questions for Levi
 - None blocking. Default chosen: the fallback plays shuffled (iOS default `shuffle: true`).
+
+## Review
+fixes applied
+
+- MAJOR (seams dead in production) -> fixed. Merged p2/P2-LIB-1 into this branch (stacked; LIB-1 must merge first/with this). `RipsMixRips` now overrides `requestRips` (coordinator `automatic = true` -> `RipBatchOutcome(refusedStatus)`), `isAuthRejected`, `authHoldoff`, `refreshAuth` (from `client.isAuthRejected()/authHoldoff()`); the `MixStreamRips` object supplies `authHoldoff/isAuthRejected` via 1 s `SeededFlag`s. Also fixed two LIB-1 breakages found on merge: `RipServerClient.rawCall` recursed infinitely (restored the OkHttp call), and `CollectionBurnBar` used the old trailing-lambda `ripCollection` signature. Test: `RipsMixRipsWiringTest` (401 batch -> refused, held, no server touch while held, token re-type clears, accepted batch not refused).
+- MINOR presign 401 attribution -> fixed. `MixStreamRips.consumePresignRejection(songId)`; the production adapter records a `RipUnauthorizedException` (derived from that request's own status, charged by LIB-1 to the token it was sent with). The loader classifies the failed presign from that, not the live `isAuthRejected()`. Tests: `presign401IsChargedToTheTokenItWasSentWith_notTheLiveOne`, `aLiveRejectionWithoutAPresign401DoesNotMislabelAnOutage`.
+- MINOR runBlocking in releaseForNowPlaying -> fixed. `MixFacade.releaseForNowPlaying` is now `suspend`, `withContext(engineContext)`; no blocking.
+- MINOR release-before-start -> fixed. `playMixCratesInNowPlaying` starts Now Playing first and releases the Mix only on success (start failure leaves the Mix running). Test: `failedNowPlayingStartLeavesTheRunningMixAlone`; existing ordering assertion updated. Background auto-start guard: downloader path already guarded; added `AutoDj.otherAudioActive` (wired in MixGraph) so a gated start RETRY abandons if Now Playing took the audio. The iOS 30 s "no loadable next" re-log throttle remains not ported (AutoDj logs once per distinct deferred set; cosmetic).
+- Tests: 5967 total, 0 failures; `:app:testDebugUnitTest :app:assembleDebug` green.

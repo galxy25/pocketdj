@@ -262,7 +262,7 @@ class ShellActions(
      * Playing, whose backends (Apple Music first) need no rip server. Returns the queued track count (0 => nothing resolvable;
      * the mix is left alone). ONE audio owner after the hand-off: the downloader is cancelled (so its start-on-landing arm can
      * never start Auto-DJ over Now Playing once the token heals) and the Mix is silenced (auto mix stopped, hand-played decks
-     * paused) via [MixFacade.releaseForNowPlaying].
+     * paused) via [MixFacade.releaseForNowPlaying] AFTER Now Playing has started successfully.
      */
     suspend fun playMixCratesInNowPlaying(sources: List<MixSource>, names: List<String>, shuffle: Boolean = true): Int {
         veto()
@@ -272,8 +272,10 @@ class ShellActions(
         val name = if (names.isEmpty()) "Mix crates" else names.joinToString(" + ")
         val set = collections.playNow(songIds = ids, name = name, shuffle = shuffle, sourceToken = PlayContext.SOURCE_MIX)
         if (set == null || set.tracks.isEmpty()) return 0
-        mixFacade?.releaseForNowPlaying()
+        // Start Now Playing FIRST: if it throws or is vetoed the running Mix is left alone (no dead air). Only a
+        // successful start releases the Mix, so there is still exactly one audio owner afterwards.
         start(set, name)
+        mixFacade?.releaseForNowPlaying()
         return set.tracks.size
     }
 

@@ -45,5 +45,5 @@ interface MixFacade {
      * The "Play in Now Playing" hand-off: ONE audio owner afterwards. Cancels the collection downloader (its start-on-landing arm
      * must never start Auto-DJ over Now Playing once a token heals), stops a running auto mix and pauses hand-played decks.
      */
-    fun releaseForNowPlaying() {}
+    suspend fun releaseForNowPlaying() {}
 }

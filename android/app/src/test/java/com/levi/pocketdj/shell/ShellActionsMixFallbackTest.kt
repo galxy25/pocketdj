@@ -35,18 +35,19 @@ class ShellActionsMixFallbackTest {
         override val autoMixing = false
         override val autoPaused = false
         var released = 0
-        /** What the sequencer had started when the Mix was released (ONE audio owner: release first, then play). */
+        /** What the sequencer had started when the Mix was released (ONE audio owner: play first, release on success). */
         var playedAtRelease = -1
         lateinit var played: () -> Int
         override suspend fun startAutoMix(source: MixSource, shuffle: Boolean, allowPendingStart: Boolean) = MixStartResult("m", 1)
         override suspend fun startAutoMix(deckA: MixSource, deckB: MixSource, shuffle: Boolean, allowPendingStart: Boolean) = MixStartResult("m", 1)
         override fun pauseAutoMix() {}
         override fun resumeAutoMix() {}
-        override fun releaseForNowPlaying() { released++; playedAtRelease = played() }
+        override suspend fun releaseForNowPlaying() { released++; playedAtRelease = played() }
     }
 
     private class Rig(val store: CollectionsStore) {
         var incomplete = false
+        var failPlay = false
         val played = mutableListOf<Pair<Setlist, PlayContext>>()
         lateinit var actions: ShellActions
     }
@@ -61,7 +62,7 @@ class ShellActionsMixFallbackTest {
                 override fun song(id: String) = merged.songsById[id]
                 override fun album(id: String) = merged.albumsById[id]
             },
-            player = ShellPlayer { set, ctx -> r.played += set to ctx; QueueOutcome.Started(set.tracks.size, 0, set.tracks.size) },
+            player = ShellPlayer { set, ctx -> if (r.failPlay) QueueOutcome.Failed("boom") else { r.played += set to ctx; QueueOutcome.Started(set.tracks.size, 0, set.tracks.size) } },
             setup = SetupGate { r.incomplete },
             readiness = object : ReadinessPort {
                 override fun kickManifestRefresh() {}
@@ -88,7 +89,20 @@ class ShellActionsMixFallbackTest {
         assertEquals(NOW_PLAYING_SETLIST_ID, set.id)
         assertEquals(PlayContext.SOURCE_MIX, ctx.source)
         assertEquals(1, mix.released)
-        assertEquals("the Mix is released BEFORE Now Playing starts", 0, mix.playedAtRelease)
+        assertEquals("the Mix is released only AFTER Now Playing started", 1, mix.playedAtRelease)
+    }
+
+    @Test fun failedNowPlayingStartLeavesTheRunningMixAlone() = runTest {
+        val r = rig()
+        val mix = FakeMix().also { it.played = { r.played.size } }
+        r.actions.mixFacade = mix
+        r.failPlay = true
+        val p = r.store.createPocket("P", listOf("s1"))
+        try {
+            r.actions.playMixCratesInNowPlaying(listOf(MixSource.Pocket(p.id)), listOf("P"))
+            org.junit.Assert.fail("expected the failed start to surface")
+        } catch (e: ShellActionException) { /* expected */ }
+        assertEquals("a failed start must not silence the Mix", 0, mix.released)
     }
 
     @Test fun nothingResolvableLeavesTheMixAlone() = runTest {

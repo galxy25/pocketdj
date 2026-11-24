@@ -40,6 +40,7 @@ class RipServerClient(
     private val json: Json = PdjJson.lenient,
     /** Pulls the live Settings values (URL/token) + install id per call. */
     private val configProvider: suspend () -> Config,
+    authLog: (String) -> Unit = {},
 ) {
     data class Config(
         val baseUrl: String,
@@ -55,7 +56,30 @@ class RipServerClient(
         val configured: Boolean get() = normalizedBase.isNotEmpty()
     }
 
-    class RipServerException(val code: Int?, message: String) : Exception(message)
+    open class RipServerException(val code: Int?, message: String) : Exception(message)
+
+    /** iOS `RipError.unauthorized`: the server rejected this device's token (401/403). */
+    class RipUnauthorizedException(code: Int) : RipServerException(code, RipAuthState.REJECTED_COPY)
+
+    /** Token-scoped, memory-only rejection state (iOS `RipsStore.rejectedToken`). */
+    val auth: RipAuthState = RipAuthState(log = authLog)
+
+    /** The server rejected the current Settings token. */
+    suspend fun isAuthRejected(): Boolean = configProvider().let { auth.isRejected(it.token, it.configured) }
+
+    /** Automatic (non-user) authed traffic should hold off right now. */
+    suspend fun authHoldoff(): Boolean = configProvider().let { auth.holdoff(it.token, it.configured) }
+
+    /** Token carried by [request] ("" when the Authorization header was omitted). */
+    private fun tokenOf(request: Request): String =
+        request.header("Authorization")?.removePrefix("Bearer ").orEmpty()
+
+    private fun noteResponse(request: Request, code: Int) = auth.noteStatus(code, tokenOf(request))
+
+    private suspend fun rawCall(request: Request): Pair<Int, String> =
+        withContext(Dispatchers.IO) {
+            shortClient.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
+        }.also { noteResponse(request, it.first) }
 
     /** 12 s doctrine: an unreachable server fails fast instead of hanging the UI. */
     private val shortClient: OkHttpClient =
@@ -87,7 +111,8 @@ class RipServerClient(
             requireConfig()
         }
         val request = builder(config, url(config, "health")).get().build()
-        return execute(request) { body -> json.decodeFromString<RipServerHealth>(body) }
+        // A typed-but-unsaved candidate token must not set or clear the saved token's rejection.
+        return execute(request, track = candidateUrl == null) { body -> json.decodeFromString<RipServerHealth>(body) }
     }
 
     /**
@@ -215,12 +240,10 @@ class RipServerClient(
                 if (config.ripFromCloud) put("ripFromCloud", true)
             }.toString().toRequestBody("application/json".toMediaType())
             val request = builder(config, url(config, "rip-collection")).post(body).build()
-            val (code, text) = withContext(Dispatchers.IO) {
-                shortClient.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
-            }
+            val (code, text) = rawCall(request)
             when {
                 code == 404 -> ripCollectionFallback(ids, isRipped)
-                code !in 200..299 -> BatchRipResult()
+                code !in 200..299 -> BatchRipResult(total = ids.size, refusedStatus = code) // refused outright: nothing queued
                 else -> {
                     val decoded = json.decodeFromString<BatchRipResponse>(text)
                     BatchRipResult(
@@ -235,7 +258,9 @@ class RipServerClient(
             }
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error
-            ripCollectionFallback(ids, isRipped)
+            // Transport/decode failure is NOT "older server": the per-song fallback would fire one POST /rip
+            // per id and report success, so callers would re-run that storm on every retry (iOS 1bad0e9d).
+            BatchRipResult(total = ids.size, refusedStatus = RipAuthState.TRANSPORT_FAILURE)
         }
     }
 
@@ -282,9 +307,7 @@ class RipServerClient(
                 put("songIds", kotlinx.serialization.json.JsonArray(ids.map(::JsonPrimitive)))
             }.toString().toRequestBody("application/json".toMediaType())
             val request = builder(config, url(config, "rip-cancel")).post(body).build()
-            val (code, text) = withContext(Dispatchers.IO) {
-                shortClient.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
-            }
+            val (code, text) = rawCall(request)
             if (code !in 200..299) return emptyList()
             runCatching { json.decodeFromString<CancelResponse>(text).results }
                 .getOrElse { ids.map { CancelItem(it, "canceled") } }
@@ -343,9 +366,7 @@ class RipServerClient(
                 if (config.ripFromCloud) put("ripFromCloud", true)
             }.toString().toRequestBody("application/json".toMediaType())
             val request = builder(config, url(config, "stemify-collection")).post(body).build()
-            val (code, text) = withContext(Dispatchers.IO) {
-                shortClient.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
-            }
+            val (code, text) = rawCall(request)
             when {
                 code == 404 -> stemifyFallback(ids, true, isStemmed, fallbackOne)
                 code !in 200..299 -> BatchStemResult()
@@ -385,9 +406,7 @@ class RipServerClient(
                 put("songIds", kotlinx.serialization.json.JsonArray(ids.map(::JsonPrimitive)))
             }.toString().toRequestBody("application/json".toMediaType())
             val request = builder(config, url(config, "stemify-cancel")).post(body).build()
-            val (code, text) = withContext(Dispatchers.IO) {
-                shortClient.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
-            }
+            val (code, text) = rawCall(request)
             if (code !in 200..299) return emptyList()
             runCatching { json.decodeFromString<CancelResponse>(text).results }
                 .getOrElse { ids.map { CancelItem(it, "canceled") } }
@@ -518,10 +537,19 @@ class RipServerClient(
         return builder
     }
 
-    private suspend fun <T> execute(request: Request, client: OkHttpClient = shortClient, decode: (String) -> T): T =
+    private suspend fun <T> execute(
+        request: Request,
+        client: OkHttpClient = shortClient,
+        track: Boolean = true,
+        decode: (String) -> T,
+    ): T =
         withContext(Dispatchers.IO) {
             client.newCall(request).execute().use { response ->
                 val text = response.body?.string().orEmpty()
+                if (track) noteResponse(request, response.code)
+                if (track && (response.code == 401 || response.code == 403)) {
+                    throw RipUnauthorizedException(response.code)
+                }
                 if (!response.isSuccessful) {
                     throw RipServerException(response.code, errorMessage(response.code, text))
                 }

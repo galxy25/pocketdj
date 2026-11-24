@@ -61,11 +61,8 @@ class MixFacadeImpl(
     override fun pauseAutoMix() = remotePause()
     override fun resumeAutoMix() = remotePlay()
 
-    override fun releaseForNowPlaying() {
-        // Engine + downloader are Main-confined: hop synchronously when called from another thread (the caller is a coroutine).
-        if (android.os.Looper.getMainLooper() == android.os.Looper.myLooper()) releaseForNowPlaying.invoke()
-        else kotlinx.coroutines.runBlocking(engineContext) { releaseForNowPlaying.invoke() }
-    }
+    // Engine + downloader are Main-confined: hop with withContext (never block a caller thread on Main).
+    override suspend fun releaseForNowPlaying() { withContext(engineContext) { releaseForNowPlaying.invoke() } }
 
     companion object {
         fun MixSource.toEngine(): EngineSource = when (this) {

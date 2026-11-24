@@ -29,6 +29,11 @@ interface MixStreamRips {
     fun authHoldoff(): Boolean = false
     /** The token is currently rejected (live; used to classify a failed presign as a credential fault). */
     fun isAuthRejected(): Boolean = false
+    /**
+     * True (and cleared) when the most recent presign for [songId] came back 401/403 for the token it was SENT with.
+     * This is what classifies a failed presign: the live [isAuthRejected] may already describe a re-typed token.
+     */
+    fun consumePresignRejection(songId: String): Boolean = false
     fun entry(songId: String): RipManifestEntry?
     /** A 6 h presigned URL for the song's durable object, or null when the server can't mint one. */
     suspend fun presignedUrl(songId: String, ttlSeconds: Int): String?
@@ -336,7 +341,7 @@ class MixStreamLoader(
                     if (url == null) {
                         // 401/403 is a credential fault, not an outage: no "server down" trip (the auth hold gates
                         // instead and clears on a token change) - and say so.
-                        if (rips.isAuthRejected()) fail(s, "presign rejected (401 - token)")
+                        if (presignRejected.remove(songId)) fail(s, "presign rejected (401 - token)")
                         else { tripServerDown("presign"); fail(s, "presign failed") }
                     } else start(s, url, 0)
                 }
@@ -346,10 +351,18 @@ class MixStreamLoader(
         s
     }
 
-    private suspend fun presignWithRetry(songId: String): String? =
-        runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()
-            // A rejected token will 401 again: don't double the rejection (one retry is for transient blips).
-            ?: if (rips.isAuthRejected()) null else runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()
+    /** Songs whose last presign was refused for the token it was sent with (see [MixStreamRips.consumePresignRejection]). */
+    private val presignRejected: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    private suspend fun presignWithRetry(songId: String): String? {
+        presignRejected.remove(songId)
+        runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()?.let { return it }
+        // A rejected token will 401 again: don't double the rejection (one retry is for transient blips).
+        if (rips.consumePresignRejection(songId)) { presignRejected.add(songId); return null }
+        val second = runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()
+        if (second == null && rips.consumePresignRejection(songId)) presignRejected.add(songId)
+        return second
+    }
 
     // ---- stems ----------------------------------------------------------------------------------
 

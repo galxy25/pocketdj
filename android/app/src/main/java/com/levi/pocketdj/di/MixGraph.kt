@@ -55,6 +55,7 @@ import com.levi.pocketdj.mix.download.CollectionMixDownloader
 import com.levi.pocketdj.mix.download.MixBurnStatus
 import com.levi.pocketdj.mix.download.MixDownloadBurns
 import com.levi.pocketdj.mix.download.MixDownloadRips
+import com.levi.pocketdj.mix.download.RipBatchOutcome
 import com.levi.pocketdj.mix.download.MixResolver
 import com.levi.pocketdj.mix.download.MixResolverSources
 import com.levi.pocketdj.mix.model.AutoMixItem
@@ -142,12 +143,32 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             read = { client.isConfigured() }, scope = ioScope,
             initial = false,   // Final review: no runBlocking on the (main) thread that first touches the Mix; refreshed below
         ).also { it.refresh() }
+        val authHoldFlag = com.levi.pocketdj.mix.stream.SeededFlag(
+            read = { client.authHoldoff() }, scope = ioScope, initial = false, minIntervalMs = 1_000,
+        ).also { it.refresh() }
+        val authRejectedFlag = com.levi.pocketdj.mix.stream.SeededFlag(
+            read = { client.isAuthRejected() }, scope = ioScope, initial = false, minIntervalMs = 1_000,
+        ).also { it.refresh() }
+        fun refreshAuthFlags() { authHoldFlag.refresh(); authRejectedFlag.refresh() }
         val rips = object : MixStreamRips {
             override fun hasServer(): Boolean = MixDebug.publicRips || flag.get()
+            override fun authHoldoff(): Boolean = authHoldFlag.get()
+            override fun isAuthRejected(): Boolean = authRejectedFlag.get()
+            private val rejectedPresigns = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+            override fun consumePresignRejection(songId: String): Boolean = rejectedPresigns.remove(songId)
             override fun entry(songId: String) = ripsRepo.entry(songId)
-            override suspend fun presignedUrl(songId: String, ttlSeconds: Int): String? =
-                if (MixDebug.publicRips) ripsRepo.entry(songId)?.let { Endpoints.ripAudioUrl(it.key) }
-                else if (client.isConfigured()) client.presign(songId, ttlSeconds) else null
+            override suspend fun presignedUrl(songId: String, ttlSeconds: Int): String? {
+                if (MixDebug.publicRips) return ripsRepo.entry(songId)?.let { Endpoints.ripAudioUrl(it.key) }
+                if (!client.isConfigured()) return null
+                return try {
+                    client.presign(songId, ttlSeconds)
+                } catch (e: com.levi.pocketdj.data.rips.RipServerClient.RipUnauthorizedException) {
+                    // The exception comes from THIS request's own status, i.e. the token it was sent with.
+                    rejectedPresigns.add(songId)
+                    refreshAuthFlags()
+                    throw e
+                }
+            }
             override fun urlForKey(key: String) = Endpoints.ripAudioUrl(key)
             override fun stemUrls(songId: String) = ripsRepo.entry(songId)?.stemUrls(Endpoints.RIPS_BASE)
         }
@@ -797,6 +818,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             d.songTitleArtist = { id -> catalog()?.songsById?.get(id)?.let { it.name to it.artist } ?: (id to "") }
             // Songs that landed while a fresh start was pending join the mix the moment it starts.
             autoDj.onDeferredStartFinished = { d.noteAutoStartFinished() }
+            autoDj.otherAudioActive = { app.playbackController.nowPlaying.value?.isPlaying == true }
             // Catalog re-resolve: members that resolved late join the lanes (and a running mix) without a re-pick.
             app.appScope.launch(Dispatchers.Main.immediate) {
                 app.catalogRepository.state.map { it.catalog }.distinctUntilChanged { x, y -> x === y }
@@ -1119,9 +1141,20 @@ class RipsMixRips(
     override fun durationMs(songId: String) = repo.entry(songId)?.durationMs
     override val manifestCount: Int get() = repo.manifest.value.size
     override suspend fun prepare() { hasServer = client.isConfigured() }
-    override suspend fun ripCollection(songIds: List<String>) {
+    override suspend fun ripCollection(songIds: List<String>) { requestRips(songIds) }
+    override suspend fun requestRips(songIds: List<String>): RipBatchOutcome {
         hasServer = client.isConfigured()
-        coordinator.ripCollection(songIds) { repo.entry(it) != null }
+        // automatic = true: the lanes are not user taps, so the rejected-token hold applies (no guaranteed-401 traffic).
+        val result = coordinator.ripCollection(songIds, { repo.entry(it) != null }, automatic = true)
+        return RipBatchOutcome(result.refusedStatus)
+    }
+    override var isAuthRejected: Boolean = false
+        private set
+    override var authHoldoff: Boolean = false
+        private set
+    override suspend fun refreshAuth() {
+        isAuthRejected = client.isAuthRejected()
+        authHoldoff = client.authHoldoff()
     }
     override suspend fun cancelCollection(songIds: List<String>) { coordinator.cancelRips(songIds) }
     override suspend fun refreshManifest() { repo.refresh() }
