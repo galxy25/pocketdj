@@ -68,6 +68,7 @@ import com.levi.pocketdj.screens.playlists.PlaylistsScreen
 import com.levi.pocketdj.screens.playlists.PocketDetailScreen
 import com.levi.pocketdj.screens.playlists.SetlistDetailScreen
 import com.levi.pocketdj.screens.playlists.SourcePlaylistDetailScreen
+import com.levi.pocketdj.screens.settings.MixingSettingsScreen
 import com.levi.pocketdj.screens.settings.SettingsScreen
 import com.levi.pocketdj.screens.settings.StorageScreen
 import kotlinx.coroutines.Dispatchers
@@ -79,6 +80,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 const val SETTINGS_ROUTE = "settings"
 const val SETTINGS_STORAGE_ROUTE = "settings/storage"
+const val SETTINGS_MIXING_ROUTE = "settings/mixing"
 const val ALBUM_ROUTE = "album/{albumId}"
 const val ARTIST_ROUTE = "artist/{artistName}"
 const val PLAYLIST_ROUTE = "playlist/{playlistId}"
@@ -287,6 +289,7 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
     val title = when (currentRoute) {
         SETTINGS_ROUTE -> "Settings"
         SETTINGS_STORAGE_ROUTE -> "Storage"
+        SETTINGS_MIXING_ROUTE -> "Mixing"
         ALBUM_ROUTE -> "Album"
         ARTIST_ROUTE -> backStackEntry?.arguments?.getString("artistName") ?: "Artist"
         PLAYLIST_ROUTE -> "Playlist"
@@ -597,10 +600,16 @@ private fun ShellNavHost(
             )
         }
         composable(SETTINGS_ROUTE) {
-            SettingsScreen(onOpenStorage = { nav.navigate(SETTINGS_STORAGE_ROUTE) })
+            SettingsScreen(
+                onOpenStorage = { nav.navigate(SETTINGS_STORAGE_ROUTE) },
+                onOpenMixing = { nav.navigate(SETTINGS_MIXING_ROUTE) },
+            )
         }
         composable(SETTINGS_STORAGE_ROUTE) {
             StorageScreen()
+        }
+        composable(SETTINGS_MIXING_ROUTE) {
+            MixingSettingsScreen()
         }
         // Area-contributed pushed routes (decision D3): no edit here per package.
         graph.features.navEntries.forEach { entry -> entry.register(this, actions) }
