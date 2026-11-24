@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 Summary: SEARCH_ACTION / MEDIA_SEARCH intent filters route to ShellRoute.BrowseSearch(query) via MediaSearchIntentHandler;
 MainActivity.onProvideAssistContent attaches schema.org MusicRecording JSON-LD + webUri while Now Playing is visible

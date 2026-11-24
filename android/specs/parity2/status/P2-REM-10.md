@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-REM-10 - Internet broker transport over the jukebox server (/remote long-poll routes)
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-SURF-12 status: Android AppFunctions for Gemini (12 actions), runtime-gated on API 36+
 - [x] Dependencies: androidx.appfunctions + appfunctions-service + appfunctions-compiler (KSP) all pinned 1.0.0-alpha08; KSP plugin 2.3.14 (new, applied in app only)

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-SOC-2 — Profile sync go-live code (dormant)
 
