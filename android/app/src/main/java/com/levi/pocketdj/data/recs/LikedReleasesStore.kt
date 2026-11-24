@@ -81,7 +81,7 @@ class LikedReleasesStore(private val file: File?) {
             // what the sweep retries, so a crash mid-add heals itself.
             val a = r.attempt
             val fixed = if (a != null && a.state == LikeAddState.ADDING) {
-                r.copy(attempt = a.copy(state = LikeAddState.OFFLINE, message = NewReleaseLikeAdder.OFFLINE_MESSAGE))
+                r.copy(attempt = a.copy(state = LikeAddState.OFFLINE, message = OFFLINE_MESSAGE))
             } else r
             r.storeId to fixed
         }
@@ -89,5 +89,7 @@ class LikedReleasesStore(private val file: File?) {
 
     companion object {
         const val FILE_NAME = "liked-releases.json"
+        /** The status line of an interrupted or offline add (the screen re-exports it as `NewReleaseLikeAdder.OFFLINE_MESSAGE`). */
+        const val OFFLINE_MESSAGE = "Will add when you’re back online"
     }
 }

@@ -325,7 +325,7 @@ class NewReleaseLikeAdder(
     data class Outcome(val state: LikeAddState, val message: String?)
 
     companion object {
-        const val OFFLINE_MESSAGE = "Will add when you’re back online"
+        const val OFFLINE_MESSAGE = LikedReleasesStore.OFFLINE_MESSAGE
         const val GENERIC_FAILURE = "Couldn’t add this record — try again."
         /** A release is retried by the sweep at most once per this window. */
         const val SWEEP_THROTTLE_MS = 6 * 3_600_000.0

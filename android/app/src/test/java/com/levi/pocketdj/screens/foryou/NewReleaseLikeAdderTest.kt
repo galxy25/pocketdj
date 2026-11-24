@@ -31,10 +31,13 @@ class NewReleaseLikeAdderTest {
         override val isOffline: Boolean get() = offline
         private var running = 0
         var maxConcurrent = 0
+        /** When set, `add` suspends until it completes - holds an add IN FLIGHT deterministically. */
+        var gate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
         override suspend fun add(release: LikedRelease): ReleaseAddReport {
             addCalls += release.storeId
             running++; maxConcurrent = maxOf(maxConcurrent, running)
             yield()
+            gate?.await()
             running--
             return next
         }
@@ -70,9 +73,15 @@ class NewReleaseLikeAdderTest {
 
     @Test fun doubleTapWhileInFlightAddsOnce() = runBlocking {
         val (adder, port, _) = make()
-        val a = adder.liked(entry("1")); val b = adder.liked(entry("1"))
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        port.gate = gate
+        val a = adder.liked(entry("1"))
+        assertTrue("the first add is running", "1" in adder.busy.value.inFlight)
+        val b = adder.liked(entry("1")) // the double tap, while the first is still in flight
+        gate.complete(Unit)
         a?.join(); b?.join()
         assertEquals(listOf("1"), port.addCalls)
+        assertTrue("no id left queued behind a redundant tap", adder.busy.value.ids.isEmpty())
     }
 
     @Test fun relartistEntryIsANoOp() {
