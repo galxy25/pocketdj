@@ -151,4 +151,12 @@ class JukeboxTimelessTest {
         assertEquals(listOf("b"), HistorySelection.songIds(setOf("e2"), events))
         assertEquals(emptyList<String>(), HistorySelection.songIds(emptySet(), events))
     }
+
+    @Test fun selectionShare_nullWhenNothingResolves() {
+        assertNull(SelectionBarSemantics.shareText(listOf("zzz"), emptyMap()))
+    }
+
+    @Test fun timelessPending_defaultsIdle() {
+        assertNull(JukeboxRepository.UiState().timelessPending)
+    }
 }

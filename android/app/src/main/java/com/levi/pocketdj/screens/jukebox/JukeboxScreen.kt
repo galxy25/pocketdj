@@ -355,8 +355,9 @@ private fun LiveView(
             ToggleRow(
                 title = "Timeless \u2014 never expires",
                 caption = "Every session runs for 24 hours and cleans itself up after 7 days.",
-                checked = session.timeless ?: false,
+                checked = state.timelessPending ?: (session.timeless ?: false),
                 onCheckedChange = repository::setTimeless,
+                enabled = state.timelessPending == null,
                 tag = "jukebox-timeless-live",
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
@@ -586,6 +587,7 @@ private fun ToggleRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     tag: String? = null,
+    enabled: Boolean = true,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.weight(1f)) {
@@ -603,6 +605,7 @@ private fun ToggleRow(
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange,
+            enabled = enabled,
             modifier = if (tag != null) Modifier.testTag(tag) else Modifier,
         )
     }

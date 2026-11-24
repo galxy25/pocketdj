@@ -460,7 +460,7 @@ private fun PlaybackContent(
         SelectionScope(
             selection = rowSelection,
             scope = HistorySelection.SCOPE,
-            pruneKey = System.identityHashCode(rows),
+            pruneKey = orderedEvents.hashCode(),
             allIds = { orderedEvents.map { it.first } },
             payload = {
                 val ids = HistorySelection.songIds(rowSelection.state.value.ids, orderedEvents)

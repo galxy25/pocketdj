@@ -116,6 +116,8 @@ class JukeboxRepository(
         val transientError: String? = null,
         /** Create-view message: start failure or "This jukebox has ended." */
         val notice: String? = null,
+        /** The Timeless value requested and still in flight (null = idle); serializes the live toggle. */
+        val timelessPending: Boolean? = null,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -330,6 +332,11 @@ class JukeboxRepository(
     /** Flip the live session's Timeless mode; merges `{timeless, expiresAt}` locally. Errors -> notice. */
     fun setTimeless(timeless: Boolean) {
         val session = _state.value.session ?: return
+        // One call at a time: a second tap while a POST is in flight is dropped, so a late reply can never
+        // overwrite a newer choice. The requested value shows optimistically via [timelessPending].
+        var claimed = false
+        _state.update { if (it.timelessPending != null) it else { claimed = true; it.copy(timelessPending = timeless) } }
+        if (!claimed) return
         scope.launch {
             try {
                 val reply = client.configure(session, timeless)
@@ -342,6 +349,8 @@ class JukeboxRepository(
                 throw error
             } catch (error: Exception) {
                 _state.update { it.copy(transientError = error.message ?: "Couldn't change Timeless") }
+            } finally {
+                _state.update { it.copy(timelessPending = null) }
             }
         }
     }

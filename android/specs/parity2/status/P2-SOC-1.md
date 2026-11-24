@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-SOC-1: Jukebox Timeless + Mix antenna + NP Share + History multi-select Share
 
@@ -21,3 +21,12 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- setTimeless no in-flight guard (MINOR) -> fixed: `UiState.timelessPending` claims a single in-flight call (second tap dropped), switch shows the requested value optimistically and is disabled while pending; cleared in finally.
+- Share reads base catalog (MINOR) -> partly rejected: `catalogRepository.state.catalog` IS the MergedCatalog History uses (same source), so no id is lost to a different catalog. Real defect fixed: Share is now enabled only when `shareText` resolves non-null.
+- Antenna fire-and-forget (MINOR) -> accepted as is (disclosed deviation; no Hero/Remote switch exists).
+- pruneKey identityHashCode (NIT) -> fixed: keyed on `orderedEvents.hashCode()` (content).
+- Tests: +2 (selectionShare_nullWhenNothingResolves, timelessPending_defaultsIdle); JukeboxTimelessTest 15 -> 17, suite 7473, 0 failures; testDebugUnitTest + assembleDebug green.
+
+fixes applied

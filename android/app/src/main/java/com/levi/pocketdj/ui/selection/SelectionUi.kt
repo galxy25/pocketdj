@@ -320,13 +320,16 @@ fun SelectionBar(
             onClick = { selection.currentPayload()?.let { writeSongTransfer(context, it) } },
             enabled = SelectionBarSemantics.copyEnabled(state),
         ) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy selected songs") }
+        val catalogSongs = com.levi.pocketdj.di.AppGraph.get(context).catalogRepository.state
+            .collectAsState().value.catalog?.songsById.orEmpty()
+        val shareResolves = SelectionBarSemantics.copyEnabled(state) &&
+            SelectionBarSemantics.shareText(selection.currentPayload()?.songIds.orEmpty(), catalogSongs) != null
         IconButton(
             onClick = {
                 val ids = selection.currentPayload()?.songIds.orEmpty()
-                val songs = com.levi.pocketdj.di.AppGraph.get(context).catalogRepository.state.value.catalog?.songsById.orEmpty()
-                SelectionBarSemantics.shareText(ids, songs)?.let { com.levi.pocketdj.data.share.ShareText.send(context, it) }
+                SelectionBarSemantics.shareText(ids, catalogSongs)?.let { com.levi.pocketdj.data.share.ShareText.send(context, it) }
             },
-            enabled = SelectionBarSemantics.copyEnabled(state),
+            enabled = shareResolves,
             modifier = Modifier.testTag("selection-share"),
         ) { Icon(Icons.Filled.Share, contentDescription = "Share selected songs") }
         IconButton(onClick = { selection.clearAndExit() }) {
