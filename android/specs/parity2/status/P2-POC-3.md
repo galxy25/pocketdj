@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 Summary: Pure Kotlin port of the iOS pocket wheel engine in data/pockets/wheel/: PocketMode (persisted tokens, Home label,
 precedence, related pairs, derive with cycling->trip), MotionToken, PocketMomentKey (h%02d|d%d|mode token, ISO dow,

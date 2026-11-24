@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-ALB-3 — shared-file start readers via SegmentOverrides + lone vinyl song end on the record
 

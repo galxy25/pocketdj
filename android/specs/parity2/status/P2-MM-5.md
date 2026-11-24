@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-MM-5 Mix Mode ph2b: session state in the sequencer, lane driving, swap-on-land hand-off, revert-once
 

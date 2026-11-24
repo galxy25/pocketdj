@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-POC-4 Pocket palette store + sync/deletion keys
 

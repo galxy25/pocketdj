@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-ALB-2 - 'edits' document cloud sync + writable EditsStore + live re-apply
 

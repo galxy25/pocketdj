@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # P2-REM-1 Remote pure core
 
