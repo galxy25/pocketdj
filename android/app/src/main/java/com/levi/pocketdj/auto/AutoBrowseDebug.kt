@@ -65,7 +65,7 @@ object AutoBrowseDebug {
 
     private suspend fun dump(b: MediaBrowser, node: MediaItem, depth: Int) {
         val m = node.mediaMetadata
-        Log.d(TAG, "  ".repeat(depth) + "- ${m.title} [${m.subtitle ?: ""}] play=${m.isPlayable} browse=${m.isBrowsable}")
+        Log.d(TAG, "  ".repeat(depth) + "- ${m.title} {${node.mediaId}} [${m.subtitle ?: ""}] play=${m.isPlayable} browse=${m.isBrowsable}")
         if (depth < 2 && m.isBrowsable == true) children(b, node.mediaId).forEach { dump(b, it, depth + 1) }
     }
 

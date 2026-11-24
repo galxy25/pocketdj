@@ -237,8 +237,8 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                 NavRequestBus.post(ShellRoute.JukeboxJoin(id))
             }
         }
-        deepLinkSeams.addToCollection = com.levi.pocketdj.shell.addLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
-        deepLinkSeams.autoMix = com.levi.pocketdj.shell.autoMixLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
+        deepLinkSeams.addToCollection = com.levi.pocketdj.shell.addLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
+        deepLinkSeams.autoMix = com.levi.pocketdj.shell.autoMixLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
         deepLinkSeams.playItem = com.levi.pocketdj.shell.playLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
         SearchPlayBridge.handler = { request ->
             app.appScope.launch { mediaSearch.handle(request) }

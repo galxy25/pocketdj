@@ -76,3 +76,23 @@ Emulator (emulator-5556, shots in pocketdj-parity2-pkgs/_shots/wave4/). Rip serv
 Integrator changes: debug buttons (Analog album run, Seek near end), mixstream `open denied` diagnostic, HistorySection wheel clear.
 
 Open: StrictMode DiskReadViolations (8 ms) on main inside the album boundary advance path (StateFlow collect in advanceToNext), debug-only. P2-POC-7 PocketTuning.kt add/add with POC-8 expected; seeded iOS equality waits for POC-14. First play after cold launch on a device without a rip server correctly falls back to plain stream.
+
+## Wave 5
+
+Packages merged: P2-ALB-5, P2-FX-1, P2-POC-6, P2-SURF-2, P2-SURF-5, P2-SURF-7, P2-MM-3, P2-MM-9 (one conflict: di/MixGraph.kt lane-plan args, kept both `fxLockSongs` and MM-9's `isRipServerConfigured = app.playbackController.ripServerConfigured`). Status files set to merged.
+
+Tests: 6825 run, 0 failures (`:app:testDebugUnitTest :app:assembleDebug` green). One load-dependent flake seen once, ReleaseFeedServiceTest.cachePersistsAcrossRelaunchAndCorruptFileIsHarmless (timing `until` wait); passes in isolation and on the full rerun.
+
+Emulator (emulator-5556, debug APK over existing data; shots in pocketdj-parity2-pkgs/_shots/wave5/):
+- P2-SURF-7 PASS: `pdj.autoDump` lists the For You tab (New / In Da Zone tiles with Play all / Shuffle all / rows); `pdj.autoPick=fy:zone` played the tile (media_session PLAYING). Integrator change: autoDump roots include "For You"; the dump now prints media ids.
+- P2-SURF-2 PARTIAL: dumpsys shows the custom actions (Favorite, Shuffle, Repeat, More like this, Less like this); the system card shows heart + shuffle; tapping heart flipped it to Unfavorite (`rc cmd=favorite`). The thumbs sit past the compact card's two custom slots, so the tap-thumb to verdict step was not reachable from the emulator UI (Q15). Android Auto DHU is device-only.
+- P2-SURF-5 PASS after a fix: `pocketdj://add?collection=playlist:<id>` added the playing song, the repeat said "already in", `pocketdj://automix/playlist/<id>` started "Auto-mixing SeedRip - 3 burned songs". BUG found: the toasts were wrapped in the "Can't open that" error framing because the seams posted through NavRequestBus.postMessage; fixed to postNotice in ShellGraph (verified: toast reads "Added Outta Time (feat. Drake) to SeedRip."). Pocket target not exercised on the emulator (no seeded pocket reachable); covered by AddToCollectionActionTest. App Actions are device-only.
+- P2-MM-3 PASS: Settings > Storage > Manage storage shows the Mix Mode buffer section (footprint, expiry, TTL, cap, picked-folders toggle, buffered row, Keep all, Clear now); TTL set to 6 h; opening the buffered song in Producer > Demuxer removed its temporaryHold from pocketdj-burns.json.
+- P2-FX-1 PASS: seed queue, Mix Mode on, Reverb on, FX Lock capsule tapped (`fxlock lock ON ... carry fx=reverb:0.50`), skip logged `fxlock carry ... engaged at start (ramp 250ms)`, reverb still on in the panel. The "exactly one dead-air transition" count was not observed (no DeadAirMeter log line); still a device check.
+- P2-POC-6 PASS: Debug > Pocket: status prints `best tier=RICH caption='Mon 11 PM - Mix' detail='SeedRip - 7 plays' alts=0`.
+- P2-ALB-5 PASS: Analog album run (3 songs of a side, 114 s first song): media_session position starts at 0 and tracks song-relative, the notification scrubber tapped at about 87% moved position to 100.6 s of the same song (remote seek mapped), and after the glide the next song's position restarted near 0.
+- P2-MM-9 NOT VERIFIABLE on the emulator: the ladder only changes for Apple-Music-sourced rows with a rip, and the AM backend cannot play here; Mix Mode on with ripped rows plays normally (`backend=burned`, no regression). Hand-off needs a real AM subscription (device-only). Covered by 31 JVM tests.
+- No FATAL EXCEPTION / ANR in logcat for com.levi.pocketdj.
+
+Open: Q14 (mp3 index seeking), Q15 (thumbs placement), plus P2Q1 and P2Q7 still pending. The Debug section sits behind Settings > Show advanced.
+
