@@ -88,6 +88,11 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
     }
     val indicator = remember(tick, mixState, seq, ui, mixTabLive, deviceMode) { NpMixIndicatorReader.read(app, deviceMode) }
     val strip = remember(tick, mixState, seq, ui, deviceMode) { NpMixBufferRows.read(app, deviceMode) }
+    val djController = app.playbackGraph.djMode.controller
+    val djState by djController.state.collectAsState()
+    val djNote = if (com.levi.pocketdj.ParityFlags.DJ_MODE) {
+        remember(tick, djState, seq, mixTabLive) { DjChipText.mixChipNote(djController.indicator(), null) }
+    } else null
     val showsHeader = seq.isRunning
     val controlsVisible = ui.available || indicator is com.levi.pocketdj.mix.nowplaying.NpMixMode.Indicator.Buffering
 
@@ -106,7 +111,12 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
                 if (ui.engaged) Text("●", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.semantics { contentDescription = "Engaged" })
                 if (ui.lock.enabled) Icon(Icons.Filled.Lock, "Stem Lock on", Modifier.size(12.dp))
             }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { NpMixModeChip(indicator) }
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { NpMixModeChip(indicator, note = djNote) }
+            // DJ Mode sits LEFT of Mix Mode, the same capsule (np-dj-mode §7); hidden until ParityFlags.DJ_MODE.
+            NpDjModeSwitch(
+                on = djState.enabled, enabled = seq.isRunning,
+                onToggle = { on -> djController.setDjMode(on); if (on) expanded = true },
+            )
             NpMixModeSwitch(
                 on = mixState.enabled, enabled = seq.isRunning,
                 onToggle = { on -> coordinator.setMixMode(on); if (on) expanded = true },
