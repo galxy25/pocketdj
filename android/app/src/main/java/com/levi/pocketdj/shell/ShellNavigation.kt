@@ -587,6 +587,7 @@ private fun ShellNavHost(
             AlbumDetailScreen(
                 albumId = entry.arguments?.getString("albumId").orEmpty(),
                 onOpenSetlist = openSetlist,
+                onOpenArtist = { name -> nav.navigate(artistRoute(name)) },
             )
         }
         composable(
