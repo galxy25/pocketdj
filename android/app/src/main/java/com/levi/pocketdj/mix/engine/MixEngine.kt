@@ -65,7 +65,7 @@ class MixEngine(
     levelDriver: TickDriver = tickDriver,
     /** Volume Glide: receives the off-main loudness result back on main (the app passes Main.immediate). */
     glideScope: kotlinx.coroutines.CoroutineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined),
-) : EngineCore {
+) : EngineCore, MixSyncEngine {
 
     // ------------------------------------------------------------------------------ state
 
@@ -78,7 +78,7 @@ class MixEngine(
         DeckController(Deck.A, graph, runner), DeckController(Deck.B, graph, runner),
     )
     private val tick = MixTick(this, tickDriver)
-    val hooks = MixRecordingHooks()
+    val hooks = MixRecordingHooks().also { it.isRestoring = { isRestoringMixSession } }
 
     // ---- Volume Glide (P2-MIX-2): Auto-DJ loudness leveling on the deck trims
 
@@ -549,6 +549,8 @@ class MixEngine(
 
     /** The shared tail of every deck load. */
     private fun commitLoad(deck: Deck, meta: LoadedTrack, startMs: Int?, durationSeconds: Double, file: java.io.File? = null, streaming: Boolean = false) {
+        notePostSessionLoad()
+        rateNudge[deck.ordinal] = 1.0   // a fresh track starts at the user's tempo; the drift loop re-nudges if it must
         // A track that played on this deck is being loaded over: its listen ends here.
         reportDeckEnded(deck, MixTrackEndReason.REPLACED)
         resetLoadCycle(deck)
@@ -568,9 +570,9 @@ class MixEngine(
         // Loading stopped this deck OUTSIDE setPlaying: keep the sticky card subject honest.
         stickyFromPlaying()
         setPosition(deck, 0.0)
-        params.setTempoPitch(deck, 1.0, 0.0)
+        applyTempoPitch(deck)
         // One .load carrying bpm/camelot; tempo/pitch reset to default are implied by it.
-        hooks.emitLoad(deck, meta)
+        hooks.emitLoad(deck, meta, if (durationSeconds > 0) (durationSeconds * 1000).toInt() else null)
         onNowPlayingChanged?.invoke()
         persist()   // a deck load is a structural change: the mix survives a kill
     }
@@ -730,8 +732,16 @@ class MixEngine(
 
     /** The "zero state": a reset that also EJECTS the track (and drops lead + cue). ONE `.resetDeck`. */
     fun clearDeck(deck: Deck) {
-        ejectDeckCore(deck)
-        rec(MixEventKind.ResetDeck, deck)
+        hooks.muted {   // the multiplayer layer hears ONE eject, not a pause + a reset
+            ejectDeckCore(deck)
+            rec(MixEventKind.ResetDeck, deck)
+        }
+        hooks.tap(Gesture(Gesture.EJECT, deck))
+        // After a multiplayer session: the user emptied the session's decks, so their own saved mix comes back.
+        if (postSessionPersistHold && !isApplyingRemote && st(Deck.A).loaded == null && st(Deck.B).loaded == null) {
+            restoreMixBeforeSession("decksEmptied")
+            return
+        }
         persist()   // both decks empty (no auto) => the session is cleared
     }
 
@@ -744,6 +754,7 @@ class MixEngine(
         controller(deck).release()
         if (leadDeck == deck) updateUi { it.copy(leadDeck = null) }
         updateDeck(deck) { DeckState() }                    // empty track, every parameter default, cue off
+        rateNudge[deck.ordinal] = 1.0
         deckFiles[deck.ordinal] = null; streamingDecks[deck.ordinal] = false
         volumeGlide.deckCleared(deck)                       // no song, no trim
         positions.set(deck, 0.0)
@@ -804,7 +815,7 @@ class MixEngine(
         params.setCued(deck, s.cued)
         params.setCueVolume(deck, s.cueVol)
         params.setEq(deck, s.eqLow, s.eqMid, s.eqHigh)
-        params.setTempoPitch(deck, s.rate, s.pitch)
+        applyTempoPitch(deck)
         params.setSlots(deck, slotParams(deck, s))
     }
 
@@ -812,14 +823,14 @@ class MixEngine(
 
     fun setRate(rate: Double, deck: Deck) {
         updateDeck(deck) { it.copy(rate = rate.coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)) }
-        params.setTempoPitch(deck, st(deck).rate, st(deck).pitch)
+        applyTempoPitch(deck)
         rec(MixEventKind.Tempo, deck, value = st(deck).rate)
         persist(debounced = true)
     }
 
     fun setPitch(semitones: Double, deck: Deck) {
         updateDeck(deck) { it.copy(pitch = semitones.coerceIn(MixRanges.pitch.start, MixRanges.pitch.endInclusive)) }
-        params.setTempoPitch(deck, st(deck).rate, st(deck).pitch)
+        applyTempoPitch(deck)
         rec(MixEventKind.Pitch, deck, value = st(deck).pitch)
         persist(debounced = true)
     }
@@ -1056,7 +1067,7 @@ class MixEngine(
         val store = sessionStore ?: return
         // A restore is not a write, and a parked snapshot IS the on-disk state: neither may be
         // clobbered or cleared by an idle-engine write.
-        if (isRestoringMixSession || pendingRestore != null) return
+        if (isRestoringMixSession || pendingRestore != null || persistSuspended) return
         val snap = mixDeckSnapshot()
         // Before the launch restore is parked/attempted an empty engine's setter must not wipe the saved mix.
         if (snap == null) { if (restoreSettled) store.clear(); return }
@@ -1077,7 +1088,7 @@ class MixEngine(
 
     /** The decks' playheads -> the store's throttled position channel (immediate on a run/pause transition). */
     internal fun persistPositions() {
-        if (isRestoringMixSession || pendingRestore != null || !restoreSettled) return
+        if (isRestoringMixSession || pendingRestore != null || !restoreSettled || persistSuspended) return
         val store = sessionStore ?: return
         val playing = st(Deck.A).isPlaying || st(Deck.B).isPlaying
         val a = (position(Deck.A) * 1000).toInt().coerceAtLeast(0)
@@ -1114,6 +1125,7 @@ class MixEngine(
      * unless a set list is live.
      */
     fun parkRestore(snap: MixDeckSnapshot?) {
+        if (multiplayerSessionActive) { restoreSettled = true; return }   // the decks are the session's: a parked solo mix never lands on them
         if (isRunning || autoMixing || st(Deck.A).loaded != null || st(Deck.B).loaded != null) { restoreSettled = true; return }
         // A read, a real load / eject, an earlier park or an in-flight materialize already settled the restore:
         // a late launch snapshot must never resurrect or duplicate it.
@@ -1140,6 +1152,7 @@ class MixEngine(
     /** Synchronous relaunch entry (debug / fallback): read the store on the CALLER and park. Production uses launchRestore. */
     fun restorePersistedMixIfIdle() {
         val store = sessionStore ?: return
+        if (multiplayerSessionActive) return
         if (isRunning || autoMixing || st(Deck.A).loaded != null || st(Deck.B).loaded != null) { restoreSettled = true; return }
         parkRestore(store.load())
     }
@@ -1203,6 +1216,7 @@ class MixEngine(
         val snap = pendingRestore ?: return
         pendingRestore = null
         if (isRunning || autoMixing || st(Deck.A).loaded != null || st(Deck.B).loaded != null) return
+        if (multiplayerSessionActive) return
         val off = restoreOffload
         if (off == null) { commitRestore(snap, trigger, null); return }
         materializing = true
@@ -1271,6 +1285,229 @@ class MixEngine(
         else if (ds.positionMs > 0) seek(deck, ds.positionMs / 1000.0)   // cue, not play
         onRestoreDeckExtras?.invoke(deck, ds)   // stem mode + loop (MIX-8) arm after the seek
         diag("restore: deck ${deck.label} pos=${ds.positionMs} len=${lenMs ?: "-"} recued=${if (deck in deckExhaustedFromRestore) 1 else 0}")
+    }
+
+    // ------------------------------------------------------------------------------ multiplayer seams (P2-REM-12)
+    //
+    // See [MixSyncEngine]. The engine knows nothing about sessions, owners or the wire (remote/mix does).
+
+    /** The sync-layer's handle on the loop / stem controllers (MIX-8); installed by [MixDeckExtras]. */
+    var syncExtras: SyncExtras? = null
+
+    /** Test / device seam: the output path's latency in seconds (default: the sink's reported [AudioSink.latencyFrames]). */
+    var outputLatencyProvider: (() -> Double)? = null
+
+    override var gestureTap: ((Gesture) -> Unit)?
+        get() = hooks.gestureTap
+        set(v) { hooks.gestureTap = v }
+
+    override val isApplyingRemote: Boolean get() = hooks.isApplyingRemote
+
+    override fun applyingRemote(body: () -> Unit) = hooks.applyingRemote(body)
+
+    override fun caused(cause: Gesture.Cause, body: () -> Unit) = hooks.caused(cause, body)
+
+    override fun tapGesture(g: Gesture) = hooks.tap(g)
+
+    override fun <T> gestureMuted(body: () -> T): T = hooks.muted(body)
+
+    override val outputLatencySeconds: Double
+        get() = outputLatencyProvider?.invoke()
+            ?: sink?.let { it.latencyFrames().coerceAtLeast(0).toDouble() / it.sampleRate }
+            ?: 0.0
+
+    // ---- drift nudge
+
+    /** A temporary playback-rate multiplier per deck (the drift loop's <= +-1 % nudge). Multiplies the user's tempo, never replaces it. */
+    private val rateNudge = DoubleArray(2) { 1.0 }
+
+    /** The rate the deck's voices actually run at: user tempo x any drift nudge. */
+    internal fun effectiveRate(deck: Deck): Double = st(deck).rate * rateNudge[deck.ordinal]
+
+    private fun applyTempoPitch(deck: Deck) = params.setTempoPitch(deck, effectiveRate(deck), st(deck).pitch)
+
+    override fun syncNudgeRate(deck: Deck, factor: Double) {
+        rateNudge[deck.ordinal] = MixSyncMath.clampNudge(factor).let { if (MixSyncMath.isNeutral(it)) 1.0 else it }
+        applyTempoPitch(deck)
+    }
+
+    fun rateNudgeForTesting(deck: Deck): Double? = rateNudge[deck.ordinal].takeIf { it != 1.0 }
+
+    // ---- scheduled start
+
+    override fun syncPlay(deck: Deck, fromMs: Int, atLocalMs: Double) = applyingRemote {
+        if (st(deck).loaded == null) return@applyingRemote
+        deckGestureGeneration++
+        autoEndedExhausted = false
+        masterPausedDecks = emptySet()
+        if (!isRestoringMixSession) hasSoundedThisProcess = true
+        deckExhaustedFromRestore.remove(deck)
+        ensureEngine()
+        val rate = effectiveRate(deck)
+        val desired = MixSyncMath.desiredLead(atLocalMs, nowMs().toDouble(), outputLatencySeconds)
+        val lead = MixSyncMath.scheduledLead(desired)
+        val loop = loopWindow(deck)
+        fun fold(sec: Double) = if (loop != null) MixSyncMath.foldIntoLoop(sec, loop.first, loop.second) else sec
+        val cue = fold(MixSyncMath.cueSeconds(fromMs, lead, desired, rate, duration(deck)))
+        val nowSec = fold(maxOf(0.0, MixSyncMath.nowSeconds(fromMs, desired, rate)))
+        val c = controller(deck)
+        val stems = c.stems?.takeIf { c.onStems }
+        // Fallbacks: never a silent "playing" deck. A stream still waiting for bytes, a sink that will not start, or stems
+        // that have not buffered start NOW from where the deck must be (the drift loop trims the rest).
+        val simple = !c.isOpen || streamHeld(deck) || !startEngineIfNeeded() || (stems != null && !stems.allReady(1))
+        if (simple) {
+            if (loop != null) { c.seekSeconds(nowSec); setPosition(deck, nowSec) } else seek(deck, nowSec)
+            play(deck)
+            return@applyingRemote
+        }
+        val frame = graph.deck(deck).inputFrameAfter(MixSyncMath.inputLeadSeconds(lead, rate))
+        c.seekSeconds(cue)
+        // The ~10 Hz accumulator advances from NOW; back it off by the wait so it reads [cue] exactly when the first frame sounds.
+        setPosition(deck, maxOf(0.0, cue - lead * rate))
+        if (loop == null) onSeeked?.invoke(deck, cue)   // (a looped deck's window is kept exactly: a seek hook would re-derive it)
+        if (stems != null) stems.startAt(frame) else c.voice?.play(frame)
+        setPlaying(deck, true)
+        refreshTransport()
+        tick.startIfNeeded()
+    }
+
+    override fun audiblePlayhead(deck: Deck): Double {
+        val true0 = truePlayhead(deck)
+        var pos = true0 ?: position(deck)
+        if (true0 != null && st(deck).isPlaying) pos -= outputLatencySeconds * effectiveRate(deck)
+        val w = loopWindow(deck)
+        if (w != null && pos >= w.first - 1) return MixSyncMath.foldIntoLoop(pos, w.first, w.second)
+        return maxOf(0.0, pos)
+    }
+
+    override fun loopWindowMs(deck: Deck): Pair<Int, Int>? =
+        loopWindow(deck)?.let { Math.round(it.first * 1000).toInt() to Math.round(it.second * 1000).toInt() }
+
+    override fun syncSetLoop(deck: Deck, on: Boolean, units: Double?, startMs: Int?, endMs: Int?) = applyingRemote {
+        if (st(deck).loaded == null) return@applyingRemote
+        syncExtras?.setLoopExact(deck, on, units, startMs, endMs)
+    }
+
+    // ---- whole-board control
+
+    override fun syncSetControls(deck: Deck, controls: List<com.levi.pocketdj.remote.mix.MixSyncEvent>) {
+        val cur = st(deck)
+        if (cur.loaded == null) return
+        val t = SyncBoardFold.fold(controls, cur.slots)
+        applyingRemote {
+            if (cur.rate != t.rate) setRate(t.rate, deck)
+            if (cur.pitch != t.pitch) setPitch(t.pitch, deck)
+            if (cur.volume != t.volume) setVolume(t.volume, deck)
+            for (b in EQBand.entries) if (cur.eqGain(b) != t.eqGain(b)) setEqGain(b, t.eqGain(b), deck)
+            if (cur.slots != t.slots) {
+                var modChanged = false
+                for (i in t.slots.indices) if (cur.slots.getOrNull(i) != t.slots[i]) {
+                    if (cur.slots.getOrNull(i)?.mod != t.slots[i].mod) modChanged = true
+                    updateDeck(deck) { s -> s.copy(slots = s.slots.mapIndexed { k, x -> if (k == i) t.slots[i] else x }) }
+                }
+                applySlot(deck)
+                onSlotsChanged?.invoke(deck, modChanged)
+            }
+            syncExtras?.let { ex ->
+                if ((stemModeOnProvider?.invoke(deck) ?: cur.stemMode) != t.stemMode) ex.setStemMode(deck, t.stemMode)
+                for (name in com.levi.pocketdj.data.burns.BurnFileNames.STEM_NAMES) {
+                    val s = st(deck)
+                    if ((name in s.stemMuted) != (name in t.stemMuted)) ex.toggleStemMute(deck, name)
+                    val want = t.stemVol[name] ?: 1.0
+                    if (Math.abs((s.stemVol[name] ?: 1.0) - want) > 1e-9) ex.setStemVolume(deck, name, want)
+                }
+            }
+            if (t.lead != isLead(deck)) setLead(deck)
+        }
+    }
+
+    override fun syncSeedEvents(deck: Deck): List<com.levi.pocketdj.remote.mix.MixSyncEvent> {
+        val ds = deckSnapshot(deck) ?: return emptyList()
+        return SyncSeed.events(deck, ds, isLead(deck), loopWindowMs(deck))
+    }
+
+    override fun deckReady(deck: Deck, songId: String): Boolean = st(deck).loaded?.songId == songId && !streamHeld(deck)
+
+    // ---- Auto-DJ block / controller silence
+
+    override fun setAutoDjBlocked(reason: String?) = com.levi.pocketdj.remote.MixTogetherBlock.set(reason)
+
+    /** A Remote CONTROLLER plays nothing here: a RUNNING Auto-DJ is SUSPENDED like a lock-screen pause (the user's mix resumes after), else the sounding decks stop. */
+    override fun silenceForRemoteController() = caused(Gesture.Cause.SYSTEM) {
+        val dj = autoDj
+        if (dj != null && dj.isMixing && !dj.isPaused) dj.remotePause()
+        else for (d in Deck.entries) if (st(d).isPlaying) silence(d)
+    }
+
+    // ---- session ownership of the durable mix
+
+    /** True while a multiplayer Mix session drives the decks: the durable deck session is suspended and a parked restore is refused. */
+    var multiplayerSessionActive = false; private set
+
+    /** A session ended while the decks were still SOUNDING its songs: they keep playing, but nothing is persisted over the user's saved mix until they load something of their own. */
+    var postSessionPersistHold = false; private set
+
+    /** The user's OWN mix as it stood when a session took the decks (a parked restore, else the live decks, else the file). */
+    private var mixBeforeSession: MixDeckSnapshot? = null
+
+    private val persistSuspended: Boolean get() = multiplayerSessionActive || postSessionPersistHold
+
+    private fun syncStoreSuspension() { sessionStore?.suspendWrites(persistSuspended) }
+
+    override fun syncSessionActive(on: Boolean) {
+        if (on == multiplayerSessionActive) return
+        if (on) {
+            mixBeforeSession = pendingRestore ?: mixDeckSnapshot() ?: sessionStore?.load()
+            postSessionPersistHold = false
+            multiplayerSessionActive = true
+            if (pendingRestore != null) diag("multiplayer session: parked restore discarded (disk session kept)")
+            pendingRestore = null
+            restoreGen++            // an in-flight materialize must not land the user's old decks over the session's
+            materializeWanted = false
+            syncStoreSuspension()
+            return
+        }
+        // The session is over: the decks hold the SESSION's songs, and the next gesture would persist them over the user's own mix.
+        if (mixBeforeSession == null) { multiplayerSessionActive = false; syncStoreSuspension(); return }
+        if (isRunning) {
+            multiplayerSessionActive = false
+            postSessionPersistHold = true
+            diag("multiplayer session ended while playing: decks kept, saved mix protected")
+            syncStoreSuspension()
+            return
+        }
+        restoreMixBeforeSession("sessionEnd")
+    }
+
+    /**
+     * Put the user's pre-session mix back: the session's decks are cleared quietly (no tap, no log, no write: persistence is
+     * still suspended), then the saved mix is PARKED and materialized like a launch restore (at once if a Mix surface already
+     * asked, else when it next appears). The file on disk was never touched, so nothing needs writing.
+     */
+    private fun restoreMixBeforeSession(reason: String) {
+        val saved = mixBeforeSession ?: return
+        mixBeforeSession = null
+        postSessionPersistHold = false
+        multiplayerSessionActive = true   // persistence stays off across the clear
+        applyingRemote {
+            if (st(Deck.A).loaded != null) clearDeck(Deck.A)
+            if (st(Deck.B).loaded != null) clearDeck(Deck.B)
+        }
+        multiplayerSessionActive = false
+        syncStoreSuspension()
+        pendingRestore = saved
+        restoreSettled = true
+        diag("multiplayer session over ($reason): own mix parked A=${saved.deckA?.track?.songId ?: "-"} B=${saved.deckB?.track?.songId ?: "-"}")
+        onNowPlayingChanged?.invoke()
+        if (materializeWanted) materializeNow(reason)
+    }
+
+    /** A REAL load of the user's own after a session (see [postSessionPersistHold]). */
+    private fun notePostSessionLoad() {
+        if (!postSessionPersistHold || isApplyingRemote || isRestoringMixSession) return
+        postSessionPersistHold = false
+        mixBeforeSession = null
+        syncStoreSuspension()
     }
 
     private companion object { const val SILENT_TAINT_MS = 3000L; const val PREPARED_CAP = 2 }

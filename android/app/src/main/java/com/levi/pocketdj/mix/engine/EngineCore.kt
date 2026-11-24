@@ -49,6 +49,12 @@ interface EngineCore {
 
     fun nowMs(): Long
     fun diag(line: String)
+
+    /** Multiplayer seam (P2-REM-12): report a sync-only gesture (loop / loopUnits) to the session. Default: nobody listens. */
+    fun tapGesture(g: Gesture) {}
+
+    /** Multiplayer seam: run a compound gesture's parts without tapping each (the compound taps itself once). */
+    fun <T> gestureMuted(body: () -> T): T = body()
 }
 
 /** The Auto-DJ machine (MIX-9) as the engine sees it. Absent = manual mixing only. */
@@ -65,6 +71,8 @@ interface AutoDjHooks {
     fun onMasterPlay() {}
     /** Resume a suspended mix (lock-screen path). */
     fun resumeAuto() {}
+    /** LOCK-SCREEN pause: SUSPEND (not end) a running mix and silence the decks (a Remote controller uses this). */
+    fun remotePause() {}
     /** A deck is stream-held this tick: its auto end clock must not burn (held seconds aren't played). */
     fun onDeckHeld(deck: Deck, dtSeconds: Double) {}
     /** The sink died under a live mix: freeze the machine's wall clocks (iOS `engineStallAt`). */

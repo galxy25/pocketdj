@@ -380,8 +380,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
      */
     fun silenceForRemoteController() {
         if (engineLazy.isInitialized()) {
-            val e = engineLazy.value
-            for (d in com.levi.pocketdj.mix.model.Deck.entries) if (e.isPlaying(d)) e.silence(d)
+            engineLazy.value.silenceForRemoteController()
         }
         if (npHostLazy.isInitialized()) {
             val dsp = npHostLazy.value.engine
