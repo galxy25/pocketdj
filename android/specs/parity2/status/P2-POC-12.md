@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-POC-12 Motion settings section + adapt pocket runs to walking & running
 
