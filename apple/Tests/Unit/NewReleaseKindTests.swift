@@ -31,12 +31,6 @@ final class NewReleaseKindTests: XCTestCase {
         XCTAssertEqual(cls(nil, nil, nil), .album, "unknown everything is an album")
     }
 
-    func testAlbumsOnlyFooterCaveat() {
-        XCTAssertEqual(NewReleaseKinds.footerCaveat(mode: .albums, hiddenSingles: 1), "A newer single can hide an artist's album.")
-        XCTAssertNil(NewReleaseKinds.footerCaveat(mode: .albums, hiddenSingles: 0))
-        XCTAssertNil(NewReleaseKinds.footerCaveat(mode: .singles, hiddenSingles: 3))
-    }
-
     func testBadgeFollowsTheClassAndKeepsCompilation() {
         XCTAssertEqual(NewReleaseKinds.badge(kind: "album", cls: .single), "Single")
         XCTAssertEqual(NewReleaseKinds.badge(kind: "album", cls: .ep), "EP")

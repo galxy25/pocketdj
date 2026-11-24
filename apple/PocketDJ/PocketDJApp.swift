@@ -834,7 +834,8 @@ struct PocketDJApp: App {
         // toolbar can be driven without a catalog request.
         if ReleaseFeedService.wantsUIFixture {
             releaseFeed.seedForTesting(ReleaseFeedService.uiFixtureEntries()
-                + (ReleaseFeedService.wantsUIKindFixtures ? ReleaseFeedService.uiFixtureKindEntries() : []))
+                + (ReleaseFeedService.wantsUIKindFixtures ? ReleaseFeedService.uiFixtureKindEntries() : [])
+                + (ReleaseFeedService.wantsUIMultiFixture ? ReleaseFeedService.uiFixtureMultiEntries() : []))
             // The albums/singles mode is set at launch (missing → everything), so a test that
             // leaves "Albums only" behind can't leak it into the next through persisted defaults.
             settings.newReleaseKindFilter = .from(ProcessInfo.processInfo.environment["PDJ_NEW_KIND"])
@@ -1462,6 +1463,15 @@ struct PocketDJApp: App {
         likeAdder.acceptedProvider = { [weak recFeedback] in
             recFeedback?.acceptedInScope(ForYouTileRoute.Kind.new.rawValue) ?? [:]
         }
+        // Which twin of a clean/explicit pair represents the record in New: the one he already
+        // gave a verdict to, then his explicit preference (see `ReleaseFeedDedupe.collapse`).
+        releaseFeed.hasVerdict = { [weak recFeedback] id in
+            let scope = ForYouTileRoute.Kind.new.rawValue
+            guard let recFeedback else { return false }
+            return recFeedback.acceptedInScope(scope)[id] != nil
+                || recFeedback.activeTombstones(scope: scope)[id] != nil
+        }
+        releaseFeed.prefersExplicit = { [weak settings] in settings?.preferExplicitVersions ?? false }
         if ReleaseFeedService.wantsUIFixture {
             // A like from "before this feature": accepted + cached metadata, never added. The
             // Liked section's UI tests resurface it (`rel:9000000004`, see `uiFixtureEntries`).

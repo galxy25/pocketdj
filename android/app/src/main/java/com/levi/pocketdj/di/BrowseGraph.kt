@@ -207,6 +207,12 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         svc.ownsRelease = com.levi.pocketdj.data.recs.ReleaseOwnershipProbes.ownership { ownedCatalogIndexOrNull() }
         svc.ownsReleaseVersion = com.levi.pocketdj.data.recs.ReleaseOwnershipProbes.version { ownedCatalogIndexOrNull() }
         svc.playsForArtist = { id -> releasePlaysForArtist(id) }
+        // Which twin of a clean/explicit pair represents the record in New (see ReleaseFeedDedupe.collapse).
+        svc.hasVerdict = { id ->
+            val scope = com.levi.pocketdj.screens.foryou.NewReleasesPresentation.SCOPE
+            recFeedbackStore.acceptedInScope(scope)[id] != null || recFeedbackStore.activeTombstones(scope)[id] != null
+        }
+        svc.prefersExplicit = { app.playbackGraph.prefersExplicitNow() }
         svc
     }
 

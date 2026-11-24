@@ -395,13 +395,6 @@ fun NewReleasesScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.testTag("new-kind-hidden-footer"),
                                 )
-                                NewReleaseKinds.footerCaveat(mode, hiddenSingles)?.let {
-                                    Text(
-                                        it, style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.testTag("new-kind-hidden-caveat"),
-                                    )
-                                }
                             }
                             TextButton(
                                 onClick = { scope.launch { graph.settings.setNewReleaseKind(NewReleaseKindFilter.ALL.raw) } },
@@ -466,15 +459,15 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     // Albums/Singles sub-headers only when BOTH groups exist - a lone "Albums" over the whole section is noise.
     if (arranged.grouped && arranged.albums.isNotEmpty() && arranged.singles.isNotEmpty()) {
         item(key = "g-albums-${status.raw}") { GroupHeader("Albums", "new-release-group-albums-${status.raw}") }
-        items(arranged.albums, key = { "${status.raw}-${it.entry.artistId}" }) { item ->
+        items(arranged.albums, key = { "${status.raw}-${it.feedbackId}" }) { item ->
             ReleaseRow(item, now, catalog, feedback, context, adder, preAdded)
         }
         item(key = "g-singles-${status.raw}") { GroupHeader("Singles", "new-release-group-singles-${status.raw}") }
-        items(arranged.singles, key = { "${status.raw}-${it.entry.artistId}" }) { item ->
+        items(arranged.singles, key = { "${status.raw}-${it.feedbackId}" }) { item ->
             ReleaseRow(item, now, catalog, feedback, context, adder, preAdded)
         }
     } else {
-        items(arranged.flat, key = { "${status.raw}-${it.entry.artistId}" }) { item ->
+        items(arranged.flat, key = { "${status.raw}-${it.feedbackId}" }) { item ->
             ReleaseRow(item, now, catalog, feedback, context, adder, preAdded)
         }
     }
@@ -639,7 +632,7 @@ private fun ReleaseRow(
             modifier = Modifier
                 .weight(1f)
                 .clickable { openRelease(context, e) }
-                .testTag("new-release-${e.artistId}"),
+                .testTag("new-release-${e.releaseId ?: "artist-${e.artistId}"}"),
         ) {
             val art = NewReleasesPresentation.artworkUrl(e.releaseArtworkUrl, 96)
             if (art != null) {
@@ -664,7 +657,7 @@ private fun ReleaseRow(
                     val cls = e.kindClass
                     Text(
                         NewReleaseKinds.badge(e.releaseKind, cls), style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("new-release-kind-${e.artistId}"),
+                        color = MaterialTheme.colorScheme.primary, modifier = Modifier.testTag("new-release-kind-${e.releaseId ?: "artist-${e.artistId}"}"),
                     )
                     e.releaseAtMs?.let {
                         Text(NewReleasesPresentation.relative(it, now), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

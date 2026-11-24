@@ -51,12 +51,6 @@ class NewReleaseKindTest {
         assertEquals(ReleaseKindClass.ALBUM, cls(null, null, null))
     }
 
-    @Test fun albumsOnlyFooterCaveat() {
-        assertEquals("A newer single can hide an artist's album.", NewReleaseKinds.footerCaveat(NewReleaseKindFilter.ALBUMS, 1))
-        assertEquals(null, NewReleaseKinds.footerCaveat(NewReleaseKindFilter.ALBUMS, 0))
-        assertEquals(null, NewReleaseKinds.footerCaveat(NewReleaseKindFilter.SINGLES, 3))
-    }
-
     @Test fun badgeFollowsTheClassAndKeepsCompilation() {
         assertEquals("Single", NewReleaseKinds.badge("album", ReleaseKindClass.SINGLE))
         assertEquals("EP", NewReleaseKinds.badge("album", ReleaseKindClass.EP))

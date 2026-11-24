@@ -94,7 +94,7 @@ class ReleaseFeedServiceTest {
 
     // ---- request shape ----------------------------------------------------------------------
 
-    @Test fun requestShapeBatchesOfFiftyWithBothViews() = runBlocking {
+    @Test fun requestShapeBatchesOfFiftyWithTheAlbumsRelationship() = runBlocking {
         val t = FakeTransport { _, url -> answerAll(url) }
         val svc = service(t)
         svc.seedForTesting((1..120).map { ArtistReleaseEntry(it, "Artist $it", now) })
@@ -105,7 +105,8 @@ class ReleaseFeedServiceTest {
         assertEquals(listOf(20, 50, 50), sizes)
         for (u in t.urls) {
             assertTrue(u, u.startsWith("https://api.music.apple.com/v1/catalog/us/artists?ids="))
-            assertTrue(u, u.endsWith("&views=latest-release,similar-artists"))
+            assertTrue(u, u.contains("&include=albums&limit%5Balbums%5D=25&sort%5Balbums%5D=-releaseDate"))
+            assertFalse(u, u.contains("views="))
         }
         assertEquals((1..120).toSet(), t.urls.flatMap { idsOf(it) }.toSet())
         assertEquals(120, svc.cachedArtistCount)
@@ -113,7 +114,9 @@ class ReleaseFeedServiceTest {
 
     @Test fun requestUrlFormat() {
         assertEquals(
-            "https://api.music.apple.com/v1/catalog/us/artists?ids=1,2,3&views=latest-release,similar-artists",
+            "https://api.music.apple.com/v1/catalog/us/artists?ids=1,2,3&include=albums&limit%5Balbums%5D=25" +
+                "&sort%5Balbums%5D=-releaseDate&fields%5Bartists%5D=name" +
+                "&fields%5Balbums%5D=name,releaseDate,artwork,trackCount,contentRating,isSingle,isCompilation,artistName",
             ReleaseFeedService.requestUrl(listOf(1, 2, 3)),
         )
     }
@@ -400,12 +403,12 @@ class ReleaseFeedServiceTest {
                 entry(7, "r7", null), // no usable date
             ),
         )
-        assertEquals("newest release date first, pre-orders included", listOf(3, 4, 2, 1), svc.feed(now).map { it.id })
-        assertEquals(listOf(2, 1), svc.outNow(now).map { it.id })
-        assertEquals("soonest first", listOf(4, 3), svc.comingSoon(now).map { it.id })
+        assertEquals("newest release date first, pre-orders included", listOf("rel:r3", "rel:r4", "rel:r2", "rel:r1"), svc.feed(now).map { it.id })
+        assertEquals(listOf("rel:r2", "rel:r1"), svc.outNow(now).map { it.id })
+        assertEquals("soonest first", listOf("rel:r4", "rel:r3"), svc.comingSoon(now).map { it.id })
         assertEquals(4, svc.newReleases(now).size)
         // Read-time aging: the same cache a week later has promoted the pre-order.
-        assertEquals(listOf(4), svc.outNow(now + 6 * day).map { it.id }.filter { it == 4 })
+        assertEquals(listOf("rel:r4"), svc.outNow(now + 6 * day).map { it.id }.filter { it == "rel:r4" })
     }
 
     @Test fun ownershipAndVersionProbesSuppressOnRead() {
@@ -415,7 +418,7 @@ class ReleaseFeedServiceTest {
         val seen = ArrayList<ReleaseIdentity>()
         svc.ownsRelease = { id -> seen += id; id.storeId == "r1" }
         svc.ownsReleaseVersion = { artistId, _, title -> artistId == 2 && title == "Deluxe Thing" }
-        assertEquals(listOf(3), svc.feed(now).map { it.id })
+        assertEquals(listOf("rel:r3"), svc.feed(now).map { it.id })
         // The probe gets EVERY identity the release carries.
         val id3 = seen.last { it.storeId == "r3" }
         assertEquals(ReleaseIdentity("r3", 3, "Artist 3", "Rel 3"), id3)

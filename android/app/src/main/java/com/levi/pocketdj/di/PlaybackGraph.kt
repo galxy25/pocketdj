@@ -174,6 +174,9 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
     @Volatile private var preferExplicitMirror: Boolean? = null
     @Volatile private var preferExplicitLoaded = false
 
+    /** "Prefer explicit versions" for readers that must not suspend (the New feed's twin pick); unset = clean. */
+    fun prefersExplicitNow(): Boolean = preferExplicitMirror == true
+
     /** Idempotent: connect the sequencer's capture seams. Called once from AppGraph init. */
     fun wire() {
         val seq = sequencer

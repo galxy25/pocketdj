@@ -371,8 +371,15 @@ final class ReleaseFeedServiceTests: XCTestCase {
         await svc.drain()
         XCTAssertEqual(stub.requestCount, 1, "three artists must ride ONE batched request")
         let url = try? XCTUnwrap(stub.requests.first?.url?.absoluteString)
-        XCTAssertTrue(url?.contains("views=latest-release,similar-artists") == true)
         XCTAssertTrue(url?.contains("/catalog/us/artists") == true)
+        let q = Dictionary(uniqueKeysWithValues: (URLComponents(string: url ?? "")?.queryItems ?? [])
+            .map { ($0.name, $0.value ?? "") })
+        XCTAssertEqual(q["include"], "albums")
+        XCTAssertEqual(q["limit[albums]"], "25")
+        XCTAssertEqual(q["sort[albums]"], "-releaseDate")
+        XCTAssertEqual(q["fields[artists]"], "name")
+        XCTAssertTrue(q["fields[albums]"]?.contains("artistName") == true)
+        XCTAssertNil(q["views"], "similar-artists left the request (504s); no views=")
     }
 
     /// Repeated plays of the same artist coalesce — a shuffle through one album must not queue
@@ -583,7 +590,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
         svc.noteArtistPlayed(artistId: 1, name: "A")
         await svc.drain()
         XCTAssertEqual(stub.requestCount, 3, "two failures then success")
-        XCTAssertEqual(svc.entries[1]?.releaseName, "Rec")
+        XCTAssertEqual(svc.entries[1]?.first?.releaseName, "Rec")
     }
 
     /// A 401/403/400 will fail identically however many times it is asked. Retrying it just
@@ -626,7 +633,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
         XCTAssertEqual(svc.pendingCountForTesting, 1, "the artist must go back on the queue")
         // And the very next play still finds it due, rather than 'fresh' for a fortnight.
         let now = Date().timeIntervalSince1970 * 1000
-        XCTAssertTrue(ReleaseFeedPolicy.isDue(lastCheckedAtMs: svc.entries[1]?.checkedAtMs,
+        XCTAssertTrue(ReleaseFeedPolicy.isDue(lastCheckedAtMs: svc.entries[1]?.first?.checkedAtMs,
                                               plays: 0, nowMs: now))
     }
 
@@ -713,7 +720,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
         svc.noteArtistPlayed(artistId: 1, name: "A")
         await svc.drain()
         let reopened = ReleaseFeedService(transport: nil, fileURL: url)
-        XCTAssertEqual(reopened.entries[1]?.releaseName, "Saved")
+        XCTAssertEqual(reopened.entries[1]?.first?.releaseName, "Saved")
     }
 
     // ── Concurrency: the cap is GLOBAL, not per-drain ────────────────────────────────────────

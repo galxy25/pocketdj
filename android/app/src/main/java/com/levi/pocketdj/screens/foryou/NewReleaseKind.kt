@@ -129,10 +129,6 @@ object NewReleaseKinds {
         return parts.joinToString(", ") + " hidden"
     }
 
-    /** Albums-only footer caveat: the feed keeps one latest release per artist, so a newer single can displace its album. */
-    fun footerCaveat(mode: NewReleaseKindFilter, hiddenSingles: Int): String? =
-        if (mode == NewReleaseKindFilter.ALBUMS && hiddenSingles > 0) "A newer single can hide an artist's album." else null
-
     /** "albums" / "singles": what a mode is looking at, for "No new albums". */
     fun shownNoun(mode: NewReleaseKindFilter): String = if (mode == NewReleaseKindFilter.SINGLES) "singles" else "albums"
 
