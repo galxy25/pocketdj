@@ -100,6 +100,10 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** P2-SURF-2: the shared target for the media-button layout; null (never builds the stores) until recs have started. */
+    fun nowPlayingFeedbackIfReady(): com.levi.pocketdj.data.recs.NowPlayingFeedback? =
+        if (recFeedbackLazy.isInitialized()) nowPlayingFeedback else null
+
     /** Install the NP rating seam. The composable resolves the store off-main when it is still cold. */
     private fun installNowPlayingRating() {
         com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.rating = { _ ->

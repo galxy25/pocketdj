@@ -55,6 +55,8 @@ class NowPlayingFeedback(
             genre = SimilarityFamilies.canonicalGenre(genre),
         )
         if (landed == RecFeedbackStore.Verdict.ACCEPTED) addAccepted(t.songId, t.scope)
+        // P2-SURF-2: a verdict from ANY surface rebuilds the notification / Auto thumbs.
+        com.levi.pocketdj.playback.RunTransportBus.stateChanged?.invoke()
         return landed
     }
 

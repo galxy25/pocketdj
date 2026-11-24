@@ -19,6 +19,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.levi.pocketdj.playback.durable.HeldQueue
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import com.levi.pocketdj.playback.session.FavoriteCommand
+import com.levi.pocketdj.playback.session.MediaButtonPrefs
 import com.levi.pocketdj.playback.session.SequencerControl
 import com.levi.pocketdj.playback.session.SequencerForwardingPlayer
 import com.levi.pocketdj.playback.session.SessionSwitchboard
@@ -233,7 +234,7 @@ class PlaybackService : MediaLibraryService() {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = refreshCustomLayout()
         })
         RunTransportBus.instantMetadata = { md -> forwarding.showInstantMetadata(md) }
-        RunTransportBus.stateChanged = { forwarding.syncGate() }
+        RunTransportBus.stateChanged = { forwarding.syncGate(); refreshOnMain() }
         RunTransportBus.heldRestored = { forwarding.onHeldRestored() }
         RunTransportBus.clearInstantMetadata = { md -> forwarding.clearInstantMetadata(md) }
         board.onChange = { o -> mediaSession?.let { s -> val p = (o ?: exo).sessionPlayer; if (s.player !== p) s.player = p }; refreshCustomLayout() }
@@ -476,12 +477,36 @@ class PlaybackService : MediaLibraryService() {
         override fun pauseForHandoff() { sessionPlayer.silently { sessionPlayer.pause() } }
     }
 
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+
+    /** `stateChanged` can fire from the sequencer or a verdict on any thread; the session player is main-only. */
+    private fun refreshOnMain() {
+        if (android.os.Looper.myLooper() === android.os.Looper.getMainLooper()) refreshCustomLayout()
+        else mainHandler.post { refreshCustomLayout() }
+    }
+
+    /** The shared 👍/👎 target, only if the rec stores are already built (never forces a store load from here). */
+    private fun recFeedback() = com.levi.pocketdj.di.AppGraph.peek()?.browseGraph?.nowPlayingFeedbackIfReady()
+
+    /** P2-SURF-2: publish the ♥ / shuffle / repeat / 👍👎 set for the current state (replaces setCustomLayout). */
     private fun refreshCustomLayout() {
         val session = mediaSession ?: return
         val songId = session.player.currentMediaItem?.mediaId
         val owner = SessionSwitchboard.shared.current
         val seam = if (owner == null || owner.engine == "exo") FavoriteCommand.seam else null
-        session.setCustomLayout(FavoriteCommand.layout(seam, songId))
+        val run = DeferredControl.isRunning && (owner == null || owner.engine == "exo")
+        val np = if (run) recFeedback() else null
+        val target = np?.currentTarget()
+        val input = MediaButtonPrefs.Input(
+            favoriteVisible = FavoriteCommand.visible(seam, songId),
+            favoriteFilled = FavoriteCommand.filled(seam, songId),
+            runActive = run,
+            repeat = DeferredControl.repeatMode,
+            shuffle = DeferredControl.shuffleEnabled,
+            hasRecTarget = target != null,
+            verdict = np?.currentVerdict(),
+        )
+        session.setMediaButtonPreferences(MediaButtonPrefs.buttons(input))
     }
 
     /**
@@ -501,6 +526,7 @@ class PlaybackService : MediaLibraryService() {
             val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().apply {
                 if (trusted) {
                     add(FavoriteCommand.sessionCommand)
+                    MediaButtonPrefs.commands.forEach { add(it) }
                     add(SessionCommand(AutoLibraryCallback.ACTION_ADD_TO, android.os.Bundle.EMPTY))
                 }
             }.build()
@@ -604,6 +630,32 @@ class PlaybackService : MediaLibraryService() {
             customCommand: SessionCommand,
             args: android.os.Bundle,
         ): ListenableFuture<SessionResult> {
+            when (customCommand.customAction) {
+                MediaButtonPrefs.ACTION_SHUFFLE, MediaButtonPrefs.ACTION_REPEAT -> {
+                    val isShuffle = customCommand.customAction == MediaButtonPrefs.ACTION_SHUFFLE
+                    val engine = SessionSwitchboard.shared.current?.engine ?: "exo"
+                    val ok = DeferredControl.isRunning && engine == "exo"
+                    if (ok) {
+                        if (isShuffle) DeferredControl.shuffleEnabled = !DeferredControl.shuffleEnabled
+                        // Effective mode in, so a pocket run (forced off) stays inert: the sequencer refuses the set.
+                        else DeferredControl.repeatMode = MediaButtonPrefs.nextRepeat(DeferredControl.repeatMode)
+                    }
+                    TransportLog.rc(
+                        if (isShuffle) TransportLog.Cmd.SHUFFLE else TransportLog.Cmd.REPEAT, engine,
+                        if (ok) TransportLog.Verdict.HANDLED else TransportLog.Verdict.NOT_RUNNING,
+                    )
+                    refreshCustomLayout()
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                MediaButtonPrefs.ACTION_REC_ACCEPT, MediaButtonPrefs.ACTION_REC_REJECT -> {
+                    // Never touches the transport (no skip, no pause, even on a thumbs-down); a lit thumb's tap clears.
+                    val verdict = MediaButtonPrefs.verdictFor(customCommand.customAction)
+                    val np = recFeedback()
+                    if (verdict != null && np != null) np.record(verdict, MediaButtonPrefs.surfaceFor(controller.packageName))
+                    refreshCustomLayout()
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+            }
             if (customCommand.customAction == FavoriteCommand.ACTION) {
                 val songId = session.player.currentMediaItem?.mediaId
                 val did = FavoriteCommand.press(FavoriteCommand.seam, songId)
