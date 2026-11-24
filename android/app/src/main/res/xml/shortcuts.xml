@@ -76,4 +76,38 @@
             <parameter android:name="id" android:key="id" android:required="true" />
         </intent>
     </capability>
+    <!-- SURF-10: Mix Mode + stems by voice, through pocketdj://np/... -->
+    <capability
+        android:name="custom.actions.intent.SET_MIX_MODE"
+        app:queryPatterns="@array/app_action_set_mix_mode_patterns">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.levi.pocketdj"
+            android:targetClass="com.levi.pocketdj.MainActivity">
+            <url-template android:value="pocketdj://np/mixmode{?on}" />
+            <parameter android:name="on" android:key="on" android:required="true" />
+        </intent>
+    </capability>
+    <capability
+        android:name="custom.actions.intent.MUTE_STEM"
+        app:queryPatterns="@array/app_action_mute_stem_patterns">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.levi.pocketdj"
+            android:targetClass="com.levi.pocketdj.MainActivity">
+            <url-template android:value="pocketdj://np/stem{/stem}?mute=1" />
+            <parameter android:name="stem" android:key="stem" android:required="true" />
+        </intent>
+    </capability>
+    <capability
+        android:name="custom.actions.intent.UNMUTE_STEM"
+        app:queryPatterns="@array/app_action_unmute_stem_patterns">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.levi.pocketdj"
+            android:targetClass="com.levi.pocketdj.MainActivity">
+            <url-template android:value="pocketdj://np/stem{/stem}?mute=0" />
+            <parameter android:name="stem" android:key="stem" android:required="true" />
+        </intent>
+    </capability>
 </shortcuts>
