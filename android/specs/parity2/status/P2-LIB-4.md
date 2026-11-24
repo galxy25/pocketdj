@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-LIB-4: In-app store album page + recognizer edition swap + rejected-MUT reconnect
 
@@ -37,3 +37,11 @@ Full `:app:testDebugUnitTest :app:assembleDebug` green: 7064 tests, 0 failures. 
 
 ## Questions for Levi
 - None blocking. Should Discover album rows keep an in-place expand alongside the new page navigation?
+
+## Review
+- MINOR NEEDS_RECONNECT never cleared -> fixed: MusicKitAuth.decodeResult and signOut() now reset the flag.
+- MINOR album page ownership flicker -> fixed: ownership is unknown (null) until computed and catalog non-null; the Add capsule stays disabled until then.
+- MINOR every 403 clears the token -> rejected: matches the roadmap text (401|403) and iOS commit 67c26bd2; clearing is once per token fingerprint, so no loop.
+- NIT Discover rows no longer expand in place -> rejected: already raised as a question for Levi.
+
+fixes applied. Build + 7064 unit tests pass, 0 failures (no new tests; both fixes are Compose/auth wiring).

@@ -194,9 +194,12 @@ fun AlbumPreviewScreen(
     val loaded = load
     val tracks = loaded?.tracks.orEmpty()
     val album = loaded?.album ?: ref
-    val owned by produceState(OwnedSets(), tracks, catalog, manifest.keys) {
+    val ownedOrNull by produceState<OwnedSets?>(null, tracks, catalog, manifest.keys) {
         value = withContext(Dispatchers.Default) { ownedSetsFor(tracks, catalog, manifest.keys) }
     }
+    // Ownership is unknown until the first computation lands AND the catalog is loaded: no add action before that.
+    val ownershipKnown = ownedOrNull != null && catalog != null
+    val owned = ownedOrNull ?: OwnedSets()
     val ownership = owned.ownershipOf(tracks)
 
     val catalogAlbumId = remember(catalog, ref.storeId) {
@@ -247,7 +250,7 @@ fun AlbumPreviewScreen(
                 Column(Modifier.fillMaxWidth().padding(top = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     when (mode) {
                         is AlbumAddMode.Add -> Capsule(
-                            enabled = !addUi.adding,
+                            enabled = !addUi.adding && ownershipKnown,
                             onClick = { controller.addAlbum(hit()) },
                             tag = "album-preview-add",
                         ) {
