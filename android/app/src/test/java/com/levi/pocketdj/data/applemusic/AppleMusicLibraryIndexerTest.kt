@@ -135,6 +135,27 @@ class AppleMusicLibraryIndexerTest {
         assertEquals(3, store.songs.size)
     }
 
+    @Test fun incrementalDropsSongsRemovedFromLibrary() = runTest {
+        songPages = listOf(page(listOf(row("i.1", "One"), row("i.2", "Two"))))
+        indexer().run()
+        songPages = listOf(page(listOf(row("i.2", "Two"), row("i.3", "Three"))))
+        val out = indexer().run() as AppleMusicLibraryIndexer.Outcome.Indexed
+        assertEquals(listOf("amlib_i.2", "amlib_i.3"), store.songs.map { it.songId })
+        assertEquals(true, out.full)
+    }
+
+    @Test fun signInDecision() {
+        val day = 24 * 3_600_000.0
+        fun d(prev: Boolean?, `in`: Boolean, empty: Boolean, last: Double, now: Double) =
+            signInIndexDecision(prev, `in`, empty, last, now)
+        assertEquals(SignInIndexDecision.NONE, d(null, true, false, 1_000.0, 2_000.0)) // fresh launch
+        assertEquals(SignInIndexDecision.AUTO, d(null, true, true, 1_000.0, 2_000.0))
+        assertEquals(SignInIndexDecision.AUTO, d(null, true, false, 0.0, 2_000.0))
+        assertEquals(SignInIndexDecision.AUTO, d(null, true, false, 1_000.0, 2 * day))
+        assertEquals(SignInIndexDecision.FULL, d(false, true, false, 1_000.0, 2_000.0))
+        assertEquals(SignInIndexDecision.NONE, d(true, false, false, 0.0, 2_000.0))
+    }
+
     @Test fun playlistsGetAmlibplIdsAndLibrarySongIdsInOrder() = runTest {
         songPages = listOf(page(listOf(row("i.1", "One"), row("i.2", "Two"))))
         playlistsBody = """{"data":[{"id":"p.A","attributes":{"name":"Road"}},{"id":"p.empty","attributes":{"name":"Empty"}}]}"""

@@ -735,9 +735,17 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
 
     /** After Apple Music sign-in (and on first launch while signed in with no index yet) enqueue one index run. */
     private suspend fun watchAmLibrarySignIn() {
+        var prev: Boolean? = null
         app.settings.settings.map { it.hasAppleMusic }.distinctUntilChanged().collect { signedIn ->
-            if (signedIn && app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.ENABLED)) {
-                com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker.enqueueNow(app.appContext)
+            val decision = com.levi.pocketdj.data.applemusic.signInIndexDecision(
+                prev, signedIn, amLibraryStore.isEmpty,
+                app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.LAST_INDEX_MS),
+                System.currentTimeMillis().toDouble())
+            prev = signedIn
+            if (decision != com.levi.pocketdj.data.applemusic.SignInIndexDecision.NONE &&
+                app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.ENABLED)) {
+                com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker.enqueueNow(
+                    app.appContext, full = decision == com.levi.pocketdj.data.applemusic.SignInIndexDecision.FULL)
             }
         }
     }

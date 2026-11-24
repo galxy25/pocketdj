@@ -112,7 +112,7 @@ class AppleMusicLibraryStore(private val file: File) {
     ) {
         synchronized(lock) {
             // supersededAddedAt describes surviving INDEXED twins, not our rows - it outlives a re-index.
-            doc = Document(songs = songs, albums = albums.ifEmpty { null }, playlists = playlists.ifEmpty { null },
+            doc = Document(songs = songs, albums = albums, playlists = playlists,
                 lastAddedMs = lastAddedMs, supersededAddedAt = doc.supersededAddedAt)
             save()
         }

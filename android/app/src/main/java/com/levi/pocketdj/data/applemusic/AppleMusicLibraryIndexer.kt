@@ -154,11 +154,15 @@ class AppleMusicLibraryIndexer(
     }
 
     suspend fun run(mode: Mode = Mode.AUTO): Outcome {
-        val full = mode == Mode.FULL || store.lastAddedMs == null || store.songs.isEmpty()
         val songs = when (val r = allSongs()) {
             is AmResult.Ok -> r.value
             else -> return r.asOutcome()
         }
+        // The whole song list is in hand every run, so reconcile removals: a stored row the library no longer
+        // lists (deleted in Music) escalates the run to a full replace. An empty listing never counts (a blip).
+        val live = songs.mapTo(HashSet()) { AppleMusicLibraryStore.SONG_PREFIX + it.libraryId }
+        val removed = songs.isNotEmpty() && store.songs.any { it.songId !in live }
+        val full = mode == Mode.FULL || store.lastAddedMs == null || store.songs.isEmpty() || removed
         val known = store.songs.associate { it.songId to it.addedAtMs }
         val now = nowMs()
         val entries = songs.map { toEntry(it, known, now) }

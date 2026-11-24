@@ -21,3 +21,12 @@ Test count: 6843 total JVM tests, 0 failures (18 new). `:app:testDebugUnitTest :
 
 ## Questions for Levi
 - Index your own Apple Music library on Android once a day after sign-in? Defaulted to YES (toggle pref `amLibraryIndexEnabled`; UI in P2-LIB-3).
+
+## Review
+- MINOR sign-in watcher enqueued on every launch -> fixed: `signInIndexDecision` (launch: only when store empty / never indexed / >24h; false->true transition: FULL; else none).
+- MINOR AUTO never reconciles removals -> fixed: a stored song absent from the full listing escalates the run to a full replace (empty listing ignored).
+- MINOR account change mixes stores -> fixed: sign-in transition enqueues FULL (replaceAll). Sign-out clearing left to P2-LIB-3.
+- NIT empty albums/playlists keys -> fixed: replaceAll keeps empty lists (iOS shape).
+- Tests added: incrementalDropsSongsRemovedFromLibrary, signInDecision.
+
+fixes applied
