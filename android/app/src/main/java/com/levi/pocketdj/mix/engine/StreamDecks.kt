@@ -9,6 +9,7 @@ import com.levi.pocketdj.mix.model.Deck
 import com.levi.pocketdj.mix.model.LoadedTrack
 import com.levi.pocketdj.mix.model.MixLoadable
 import com.levi.pocketdj.mix.model.MixMath
+import com.levi.pocketdj.mix.stream.GrowingFileSchedule
 import com.levi.pocketdj.mix.stream.MixStreamLoader
 import java.io.File
 import kotlin.math.max
@@ -45,6 +46,11 @@ interface StreamSourceFactory {
     fun open(h: StreamHandle): PcmSource?
     /** The download finished: the source's frontier is the whole file. */
     fun markComplete(src: PcmSource) {}
+    /**
+     * What the growing file's leading bytes say about its length. Default [GrowingFileSchedule.LengthClaim.Container]
+     * (trusted: the source's own length). The mp3 factory sniffs the file: a headerless partial is never attached.
+     */
+    fun lengthClaim(h: StreamHandle): GrowingFileSchedule.LengthClaim = GrowingFileSchedule.LengthClaim.Container
 }
 
 /** The Auto-DJ facts the stream machine needs (MIX-9 supplies them; absent = manual mixing). */
@@ -60,8 +66,8 @@ interface AutoStreamHooks {
 /** Pure streaming decisions (iOS `MixEngine` statics + the pump/tick conditions). */
 object StreamRules {
     /** Seconds of runway needed past the playhead to start / to resume after an underrun. */
-    const val START_RUNWAY = 2.0
-    const val RESUME_RUNWAY = 4.0
+    const val START_RUNWAY = GrowingFileSchedule.START_RUNWAY
+    const val RESUME_RUNWAY = GrowingFileSchedule.RESUME_RUNWAY
     /** Seconds of downloaded runway that make a streaming deck "ready" for a transition. */
     const val AUTO_READY_RUNWAY = 15.0
     /** With this little left of the live song and nothing able to air, the live song is replayed. */
@@ -71,7 +77,7 @@ object StreamRules {
     /** Provisional length of a streaming load that did not carry one. */
     const val FALLBACK_DURATION_MS = 180_000
     /** The tick holds a streaming deck once its playhead is this close to the frontier. */
-    const val HOLD_EPSILON = 0.05
+    const val HOLD_EPSILON = GrowingFileSchedule.UNDERRUN_LEAD
 
     fun runwayNeeded(playing: Boolean): Double = if (playing) RESUME_RUNWAY else START_RUNWAY
 
@@ -79,18 +85,15 @@ object StreamRules {
      * May a HELD deck start / resume? A complete stream always can; otherwise the frontier must be past
      * the playhead and cover the runway (capped at the window's end). Frames in file frames.
      */
-    fun canResume(complete: Boolean, frontier: Long, posFrame: Long, fullEnd: Long, sampleRate: Int, playing: Boolean): Boolean {
-        if (complete) return true
-        val need = min(fullEnd, posFrame + (runwayNeeded(playing) * sampleRate).toLong())
-        return frontier > posFrame && frontier >= need
-    }
+    fun canResume(complete: Boolean, frontier: Long, posFrame: Long, fullEnd: Long, sampleRate: Int, playing: Boolean): Boolean =
+        GrowingFileSchedule.canStart(posFrame, frontier, fullEnd, complete, runwayNeeded(playing), sampleRate.toDouble())
 
     /** Append chunk (seconds) by remaining runway: small while it is short, big once comfortable. */
-    fun appendChunk(runwaySeconds: Double): Double = if (runwaySeconds < 10) 1.0 else 15.0
+    fun appendChunk(runwaySeconds: Double): Double = GrowingFileSchedule.appendChunkSeconds(runwaySeconds)
 
     /** Has the playhead caught a still-growing frontier (the tick holds the deck)? */
     fun shouldHold(frontierSec: Double, durationSec: Double, posSec: Double): Boolean =
-        frontierSec < durationSec - HOLD_EPSILON && posSec >= frontierSec - HOLD_EPSILON
+        GrowingFileSchedule.underrun(posSec, frontierSec, durationSec)
 
     /** STRICT readiness of a streaming deck (iOS deckReadyToAir): finished, or [AUTO_READY_RUNWAY] downloaded past the playhead. */
     fun readyToAir(held: Boolean, complete: Boolean, frontierSec: Double?, posSec: Double, durationSec: Double): Boolean {
@@ -134,6 +137,7 @@ class StreamDecks(
         var source: PcmSource? = null
         var attached = false
         var heldSinceMs: Long? = null
+        var headerless = false
     }
 
     private val ds = arrayOfNulls<DeckStream>(2)
@@ -328,7 +332,7 @@ class StreamDecks(
         val complete = h.isComplete
         val frontier = if (complete) fullEnd
         else min(
-            min(fullEnd, MixMath.streamPlayableFrames(h.bytesReceived, d.bps, sr.toDouble(), start)),
+            GrowingFileSchedule.frontier(h.bytesReceived, false, d.bps, sr.toDouble(), start, fullEnd),
             // never past what the decoder can actually produce (ID3 / art bytes, VBR intros)
             d.source?.let { start + max(0L, it.availableFrames) } ?: fullEnd,
         )
@@ -350,9 +354,7 @@ class StreamDecks(
         } else if (frontier > c.endFrame) {
             // Small appends while the runway is short, big ones once it is comfortable.
             val playFrame = start + ((engine.voicePlayhead(deck) ?: engine.position(deck)) * sr).toLong()
-            val runway = (c.endFrame - playFrame).toDouble() / sr
-            val chunk = StreamRules.appendChunk(runway)
-            if (!(complete || (frontier - c.endFrame).toDouble() / sr >= chunk)) return
+            if (!GrowingFileSchedule.shouldAppend(c.endFrame, frontier, playFrame, sr.toDouble(), complete)) return
             c.growTo(frontier, final = complete && frontier >= fullEnd)
         }
         if (complete && c.endFrame == fullEnd && !d.holding) finishStream(deck, d)
@@ -366,6 +368,17 @@ class StreamDecks(
     private fun attach(deck: Deck, d: DeckStream): Boolean {
         val h = d.handle
         val c = engine.controller(deck)
+        // A PARTIAL file is attached only on a length it DECLARES (Xing/Info/VBRI): a headerless mp3's decoder
+        // length is an estimate from the bytes present, and adopted as the window the finished song would "end"
+        // where the partial did. Undecided / headerless: held unattached until complete (iOS 76dc87ed / b4d679e9).
+        val claim = if (h.isComplete) GrowingFileSchedule.LengthClaim.Container else sources.lengthClaim(h)
+        if (!GrowingFileSchedule.attachableWhilePartial(claim) && !h.isComplete) {
+            if (claim != GrowingFileSchedule.LengthClaim.Undetermined && !d.headerless) {
+                d.headerless = true
+                log("deck ${deck.label} ${h.songId} headerless - holds until complete")
+            }
+            return false
+        }
         val src = sources.open(h)
         if (src == null) {
             if (h.isComplete) handleStreamFailure(deck)   // a finished file that will not open can never play
@@ -373,6 +386,12 @@ class StreamDecks(
         }
         val sr = c.sampleRate
         val voice = Voice(src, sr, name = "deck${deck.label}")
+        val bps = GrowingFileSchedule.bytesPerSecond(voice.totalFrames, sr.toDouble(), h.expectedBytes, claim)
+        if (bps == null && !h.isComplete) {
+            // A declared length that is implausible at 320 kbps is not the song's: hold unattached until complete.
+            runCatching { voice.close() }
+            return false
+        }
         val startMs = if (h.isCut) null else h.startMs?.toInt()
         val windowMs = if (h.isCut) null else d.windowMs
         val w = LoadWindow.compute(voice.totalFrames, sr, startMs, windowMs)
@@ -386,7 +405,7 @@ class StreamDecks(
         d.source = src
         d.attached = true
         d.fullEnd = w.endFrame
-        d.bps = MixMath.streamBytesPerSecond(voice.totalFrames, sr.toDouble(), h.expectedBytes)
+        d.bps = bps
         engine.updateDeck(deck) { it.copy(startMs = startMs, durationSec = w.count.toDouble() / sr) }
         if (engine.position(deck) > engine.duration(deck)) engine.setPosition(deck, engine.duration(deck))
         return true
@@ -560,4 +579,9 @@ class Mp3StreamSourceFactory : StreamSourceFactory {
     }
 
     override fun markComplete(src: PcmSource) { (src as? Mp3Decoder)?.markComplete() }
+
+    override fun lengthClaim(h: StreamHandle): GrowingFileSchedule.LengthClaim {
+        val f = h.file ?: return GrowingFileSchedule.LengthClaim.Undetermined
+        return GrowingFileSchedule.lengthClaim(f)
+    }
 }
