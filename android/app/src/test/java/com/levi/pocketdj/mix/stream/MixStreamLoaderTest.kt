@@ -38,11 +38,20 @@ class MixStreamLoaderTest {
     private val finalized = CopyOnWriteArrayList<String>()
     private val failedIds = CopyOnWriteArrayList<String>()
 
+    @Volatile private var authHeld = false
+    @Volatile private var authRejected = false
+    private val presignCalls = java.util.concurrent.atomic.AtomicInteger()
+    /** Songs whose presign came back 401 for the token it was SENT with (independent of the live [authRejected]). */
+    private val rejectedWhenSent = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     private val fakeRips = object : MixStreamRips {
         override fun hasServer() = hasServer
+        override fun authHoldoff() = authHeld
+        override fun isAuthRejected() = authRejected
+        override fun consumePresignRejection(songId: String) = rejectedWhenSent.remove(songId)
         override fun entry(songId: String) = entries[songId]
         override suspend fun presignedUrl(songId: String, ttlSeconds: Int): String? =
-            if (songId in presignFails) null else server.url("/side/$songId.mp3").toString()
+            if (songId in presignFails.also { presignCalls.incrementAndGet() }) null else server.url("/side/$songId.mp3").toString()
         override fun urlForKey(key: String) = server.url("/" + key.removePrefix("/")).toString()
         override fun stemUrls(songId: String) = entries[songId]?.stemUrls(server.url("/").toString())
     }
@@ -318,6 +327,62 @@ class MixStreamLoaderTest {
         waitUntil(what = "failed") { failedIds.contains("s1") }
         assertTrue(s.failed)
         assertFalse(loader.canStream("s1"))
+    }
+
+    // ---- credential hold (P2-MIX-1: 401 is a token fault, not "server down") ------------------------
+
+    @Test fun authHoldRefusesNewStreamsAndReopensTheMomentTheTokenChanges() {
+        digital("a")
+        authHeld = true
+        assertFalse("held under a rejected token", loader.canStream("a"))
+        authHeld = false
+        assertTrue("a token change reopens it at once", loader.canStream("a"))
+    }
+
+    @Test fun rejectedPresignFailsTheStreamButNeverTripsServerDown() {
+        digital("a"); digital("b")
+        presignFails += "a"
+        rejectedWhenSent += "a"
+        authRejected = true
+        val s = loader.open("a", "A", "x")!!
+        waitUntil(what = "failed") { failedIds.contains("a") }
+        assertTrue(s.failed)
+        assertEquals("a rejected token is not retried (one 401, not two)", 1, presignCalls.get())
+        authRejected = false
+        assertTrue("no 60 s server-down gate for a credential fault", loader.canStream("b"))
+    }
+
+    @Test fun presign401IsChargedToTheTokenItWasSentWith_notTheLiveOne() {
+        digital("a"); digital("b")
+        presignFails += "a"
+        rejectedWhenSent += "a"
+        authRejected = false   // the user already re-typed the token: the LIVE state is clean
+        val s = loader.open("a", "A", "x")!!
+        waitUntil(what = "failed") { failedIds.contains("a") }
+        assertTrue(s.failed)
+        assertEquals("a 401 is not retried even though the live token looks fine", 1, presignCalls.get())
+        assertTrue("and it never trips the server-down gate", loader.canStream("b"))
+    }
+
+    @Test fun aLiveRejectionWithoutAPresign401DoesNotMislabelAnOutage() {
+        digital("a"); digital("b")
+        presignFails += "a"      // unreachable, NOT a 401 for this presign
+        authRejected = true      // a different, stale rejection is live
+        val s = loader.open("a", "A", "x")!!
+        waitUntil(what = "failed") { failedIds.contains("a") }
+        assertTrue(s.failed)
+        assertEquals("an outage keeps its one retry", 2, presignCalls.get())
+        assertFalse("and still trips server-down", loader.canStream("b"))
+    }
+
+    @Test fun unreachablePresignStillTripsServerDownAndRetriesOnce() {
+        digital("a"); digital("b")
+        presignFails += "a"
+        val s = loader.open("a", "A", "x")!!
+        waitUntil(what = "failed") { failedIds.contains("a") }
+        assertTrue(s.failed)
+        assertEquals("transient blips keep their one retry", 2, presignCalls.get())
+        assertFalse("a real outage pauses new streams", loader.canStream("b"))
     }
 
     // ---- Range retry --------------------------------------------------------------------------------

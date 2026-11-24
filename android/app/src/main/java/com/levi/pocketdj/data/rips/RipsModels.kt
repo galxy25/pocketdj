@@ -174,7 +174,14 @@ data class BatchRipResult(
     val inflight: Int = 0,
     val unknown: Int = 0,
     val total: Int = 0,
-)
+    /**
+     * The batch was REFUSED outright (non-2xx, not the 404 fallback): nothing was queued server-side.
+     * null = accepted (or the per-song fallback ran); [RipAuthState.TRANSPORT_FAILURE] = no HTTP answer.
+     */
+    val refusedStatus: Int? = null,
+) {
+    val unauthorized: Boolean get() = refusedStatus == 401 || refusedStatus == 403
+}
 
 /** One song's outcome from `/rip-cancel`: "canceled" | "notFound" | "alreadyDone". */
 @Serializable

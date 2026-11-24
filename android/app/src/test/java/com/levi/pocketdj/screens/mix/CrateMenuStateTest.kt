@@ -8,6 +8,7 @@ import com.levi.pocketdj.mix.download.CatalogShortfall
 import com.levi.pocketdj.mix.download.MixDownloadState
 import com.levi.pocketdj.mix.model.MixSource
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -98,9 +99,30 @@ class CrateMenuStateTest {
 
     @Test fun downloadBar_shortfallCaptionWithAndWithoutRun() {
         val sf = CatalogShortfall(declared = 20, total = 1)
-        val idle = DownloadBarModel.of(MixDownloadState(catalogShortfall = sf)) as DownloadBarModel.Ui.ShortfallOnly
+        val idle = DownloadBarModel.of(MixDownloadState(catalogShortfall = sf, catalogStillLoading = true)) as DownloadBarModel.Ui.ShortfallOnly
         assertEquals("Only 1 of 20 songs available on this device — catalog still loading", idle.caption)
-        val running = DownloadBarModel.of(MixDownloadState(isActive = true, totalCount = 5, downloadedCount = 1, catalogShortfall = sf)) as DownloadBarModel.Ui.Progress
+        val running = DownloadBarModel.of(MixDownloadState(isActive = true, totalCount = 5, downloadedCount = 1, catalogShortfall = sf, catalogStillLoading = true)) as DownloadBarModel.Ui.Progress
         assertEquals(idle.caption, running.shortfall)
+        // P2-MIX-1: "still loading" only while the catalog actually is - afterwards the honest "not in this catalog" copy.
+        val done = DownloadBarModel.of(MixDownloadState(catalogShortfall = sf)) as DownloadBarModel.Ui.ShortfallOnly
+        assertEquals("19 of 20 crate songs aren\u2019t in this device\u2019s catalog \u2014 a source may be missing or disabled", done.caption)
+    }
+
+    @Test fun downloadBar_surfacesLaneIssueAndOffersNowPlayingOnlyWhenNothingCanFetch() {
+        fun ui(issue: com.levi.pocketdj.mix.download.LaneIssue?) = DownloadBarModel.of(
+            MixDownloadState(isActive = true, totalCount = 418, downloadedCount = 404, rippingCount = 4, laneIssue = issue),
+        ) as DownloadBarModel.Ui.Progress
+        val healthy = ui(null)
+        assertEquals("\u00B7 4 ripping", healthy.ripping)
+        assertNull(healthy.issue)
+        assertFalse(healthy.offerNowPlaying)
+        val rejected = ui(com.levi.pocketdj.mix.download.LaneIssue.TokenRejected)
+        assertEquals("The import server rejected this device\u2019s token (Settings \u25B8 Import server)", rejected.issue)
+        assertEquals("\u00B7 4 can\u2019t rip \u2014 import server rejected this device\u2019s token", rejected.ripping)
+        assertTrue(rejected.offerNowPlaying)
+        assertTrue(ui(com.levi.pocketdj.mix.download.LaneIssue.NoServer).offerNowPlaying)
+        val stalled = ui(com.levi.pocketdj.mix.download.LaneIssue.RipsStalled)
+        assertFalse(stalled.offerNowPlaying)
+        assertNull(stalled.issue)
     }
 }

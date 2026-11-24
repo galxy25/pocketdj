@@ -256,6 +256,29 @@ class ShellActions(
         return mix.startAutoMix(deckA, deckB, shuffle, allowPendingStart)
     }
 
+    /**
+     * ZERO-DEAD-AIR escape hatch for a Mix that can't fetch audio (the import server rejected this device's token / no server -
+     * the 2026-10-30 iPad stall, where Auto Mix took the audio session and then aired silence): hand the crates' UNION to Now
+     * Playing, whose backends (Apple Music first) need no rip server. Returns the queued track count (0 => nothing resolvable;
+     * the mix is left alone). ONE audio owner after the hand-off: the downloader is cancelled (so its start-on-landing arm can
+     * never start Auto-DJ over Now Playing once the token heals) and the Mix is silenced (auto mix stopped, hand-played decks
+     * paused) via [MixFacade.releaseForNowPlaying] AFTER Now Playing has started successfully.
+     */
+    suspend fun playMixCratesInNowPlaying(sources: List<MixSource>, names: List<String>, shuffle: Boolean = true): Int {
+        veto()
+        ensureReady()
+        val ids = mixCrateUnion(sources, collections)
+        if (ids.isEmpty()) return 0
+        val name = if (names.isEmpty()) "Mix crates" else names.joinToString(" + ")
+        val set = collections.playNow(songIds = ids, name = name, shuffle = shuffle, sourceToken = PlayContext.SOURCE_MIX)
+        if (set == null || set.tracks.isEmpty()) return 0
+        // Start Now Playing FIRST: if it throws or is vetoed the running Mix is left alone (no dead air). Only a
+        // successful start releases the Mix, so there is still exactly one audio owner afterwards.
+        start(set, name)
+        mixFacade?.releaseForNowPlaying()
+        return set.tracks.size
+    }
+
     suspend fun pauseAutoMix() {
         veto()
         val mix = mixOrThrow()
@@ -270,4 +293,18 @@ class ShellActions(
         if (!mix.autoPaused) throw ShellActionException.AutoMixNotPaused
         mix.resumeAutoMix()
     }
+}
+
+/** The crates' playable-id UNION in first-appearance order (pure over [CollectionsStore]; a song in two crates counts once). */
+internal fun mixCrateUnion(sources: List<MixSource>, collections: CollectionsStore): List<String> {
+    val seen = LinkedHashSet<String>()
+    for (src in sources) {
+        val part = when (src) {
+            is MixSource.Pocket -> collections.playableIdsForPocket(src.id)
+            is MixSource.Playlist -> collections.playableIdsForPlaylist(src.id)
+            is MixSource.Setlist -> collections.playableIdsForSetlist(src.id)
+        }
+        seen.addAll(part)
+    }
+    return seen.toList()
 }

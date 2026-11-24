@@ -129,6 +129,8 @@ fun AutoMixBanner(
     onFxGlide: (Boolean) -> Unit,
     onMixGlide: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    /** Why the collection download can't fetch audio (e.g. the rejected-token copy), shown under the status; null when healthy. */
+    laneNote: String? = null,
 ) {
     AutoCard(modifier.testTag("mix-auto-banner")) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -142,6 +144,7 @@ fun AutoMixBanner(
                     if (buffering) MixBufferingBadge(tag = "mix-auto-buffering")
                 }
                 auto.status?.let { Text(it, color = DeckColors.dim, fontSize = 12.sp) }
+                laneNote?.let { Text(it, color = DeckColors.danger, fontSize = 12.sp, modifier = Modifier.testTag("mix-auto-lane-note")) }
             }
             if (auto.paused) OutlinedButton(onClick = onResume, modifier = Modifier.testTag("mix-auto-resume")) {
                 Icon(Icons.Filled.PlayArrow, null, Modifier.size(16.dp)); Text(" Resume")

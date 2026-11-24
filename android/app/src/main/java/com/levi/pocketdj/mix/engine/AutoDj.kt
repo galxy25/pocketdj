@@ -229,6 +229,11 @@ class AutoDj(
      * songs that landed during the pending window (it could not while [isMixing] was false).
      */
     var onDeferredStartFinished: (() -> Unit)? = null
+    /**
+     * One-audio-owner seam: true when another player (Now Playing) owns the audio. Checked when a start RETRY fires
+     * after its rest: a start that was waiting on the stream gate must not land over Now Playing that took over meanwhile.
+     */
+    var otherAudioActive: (() -> Boolean)? = null
     /** Inside [startAutoMix]'s synchronous body: a completion there is not deferred. */
     private var inStartCall = false
 
@@ -275,6 +280,7 @@ class AutoDj(
                 scheduler(START_RETRY_REST_MS) {
                     if (gen != startGen || !startPending) return@scheduler
                     if (engine.deckGestureGeneration != gesture) { abandonStart("a deck gesture took over"); return@scheduler }
+                    if (otherAudioActive?.invoke() == true) { abandonStart("Now Playing took the audio"); return@scheduler }
                     advLog("start: retry $attempt/$START_RETRY_ATTEMPTS")
                     beginStart(gen, probe = true)
                 }
