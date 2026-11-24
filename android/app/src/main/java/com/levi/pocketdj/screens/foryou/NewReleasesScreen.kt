@@ -371,12 +371,17 @@ private fun ReleaseRow(
     }
 }
 
-/** A release with no store id can't be opened - the row simply doesn't navigate. */
+/** A release with no store id can't be opened - the row simply doesn't navigate. Otherwise: the in-app store album page. */
 private fun openRelease(context: android.content.Context, e: ArtistReleaseEntry) {
     val id = e.releaseId ?: return
-    runCatching {
-        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(NewReleasesPresentation.albumUrl(id))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-    }.onFailure { Toast.makeText(context, "Couldn’t open this release", Toast.LENGTH_SHORT).show() }
+    val ref = com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef(
+        storeId = id, title = e.releaseName.orEmpty(), artist = e.artistName,
+        year = null, artworkUrl = NewReleasesPresentation.artworkUrl(e.releaseArtworkUrl, 300),
+        url = NewReleasesPresentation.albumUrl(id),
+    )
+    if (!com.levi.pocketdj.screens.discover.StoreAlbumRouter.open(ref)) {
+        Toast.makeText(context, "Couldn’t open this release", Toast.LENGTH_SHORT).show()
+    }
 }
 
 @Composable

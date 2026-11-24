@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.applemusic.MusicKitAuth
 import com.levi.pocketdj.di.AppGraph
@@ -55,6 +56,8 @@ fun AppleMusicRecognitionSection(
     info: ShazamHitInfo,
     onOpenAlbum: (albumId: String) -> Unit,
     modifier: Modifier = Modifier,
+    /** Opens the in-app store album page; the host dismisses the sheet. Default: route straight there. */
+    onOpenStoreAlbum: (com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef) -> Unit = { com.levi.pocketdj.screens.discover.StoreAlbumRouter.open(it) },
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -171,8 +174,8 @@ fun AppleMusicRecognitionSection(
 
             is AppleMusicRecognitionAction.OpenRecognizedAlbum -> {
                 InLibraryLabel()
-                // No synthesized album page on Android: hand the album to the Apple Music app.
-                TextButton(onClick = { openUrl(action.album.url) }, enabled = action.album.url != null) { Text("Open album") }
+                // The in-app store album page (cover, tracklist, ownership-aware add, Download); the sheet dismisses itself.
+                TextButton(onClick = { onOpenStoreAlbum(action.album) }, modifier = Modifier.testTag("recognizer-open-album")) { Text("Open album") }
                 BurnStatus()
             }
 
@@ -192,7 +195,13 @@ fun AppleMusicRecognitionSection(
                             val catalogId = catalog?.songsById?.values?.let {
                                 AppleMusicRecognition.indexSong(action.storeId, action.title, action.artist, it)?.id
                             }
-                            graph.browseGraph.recognitionAdds.add(action.storeId, action.title, action.artist, catalogId)
+                            graph.browseGraph.recognitionAdds.add(
+                                action.storeId, action.title, action.artist, catalogId,
+                                // The edition swap may pick a sibling store id: re-resolve its indexed song.
+                                catalogSongIdFor = { chosen ->
+                                    catalog?.songsById?.values?.let { AppleMusicRecognition.indexSong(chosen, action.title, action.artist, it)?.id }
+                                },
+                            )
                         },
                     ) { Text(if (adding) "Adding…" else "Add to Apple Music") }
                     (addState.addError ?: errorText)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }

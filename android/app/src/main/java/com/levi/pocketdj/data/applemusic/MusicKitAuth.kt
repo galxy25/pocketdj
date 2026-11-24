@@ -97,6 +97,7 @@ class MusicKitAuth(
             return AuthResult.Failed(AuthResult.Kind.UNKNOWN, "Sign-in returned no token — try again.")
         }
         settings.setMusicUserToken(token)
+        settings.set(RejectedMut.NEEDS_RECONNECT, false)
         runCatching { onSignedIn?.invoke() }
         return AuthResult.Success(token)
     }
@@ -104,6 +105,7 @@ class MusicKitAuth(
     /** Sign out — clears the Music-User-Token only (dev token is app-wide, §3.3). */
     suspend fun signOut() {
         settings.clearMusicUserToken()
+        settings.set(RejectedMut.NEEDS_RECONNECT, false)
     }
 
     companion object {

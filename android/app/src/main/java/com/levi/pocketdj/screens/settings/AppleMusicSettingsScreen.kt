@@ -33,6 +33,11 @@ import com.levi.pocketdj.data.applemusic.PlaylistAppleMusicSync
 import com.levi.pocketdj.data.applemusic.WriteBackSettings
 import com.levi.pocketdj.data.applemusic.WriteBackStatus
 import com.levi.pocketdj.shell.SettingsSection
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.levi.pocketdj.data.applemusic.MusicKitAuth
+import com.levi.pocketdj.data.applemusic.RejectedMut
+import com.levi.pocketdj.data.applemusic.needsMutReconnect
 import kotlinx.coroutines.launch
 
 /**
@@ -176,6 +181,44 @@ fun appleMusicSyncSection() = SettingsSection("appleMusicSync", 404) { host ->
     }
     fun fmt(ms: Double): String =
         java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(ms.toLong()))
+
+    // Apple rejected the stored Music-User-Token (sync error "AM <METHOD> <path> -> 401|403"): the token was cleared once
+    // and syncing is paused until the user signs in again (iOS re-mints silently; Android cannot).
+    val needsReconnect by remember(graph) { graph.settings.needsMutReconnect() }.collectAsState(initial = false)
+    var reconnecting by remember { mutableStateOf(false) }
+    var reconnectError by remember { mutableStateOf<String?>(null) }
+    val reconnectLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        host.scope.launch {
+            reconnecting = false
+            when (val decoded = graph.musicKitAuth.decodeResult(result.data)) {
+                is MusicKitAuth.AuthResult.Success -> reconnectError = null
+                is MusicKitAuth.AuthResult.Cancelled -> Unit
+                is MusicKitAuth.AuthResult.Failed -> reconnectError = decoded.message
+            }
+        }
+    }
+    if (needsReconnect) {
+        Column(Modifier.fillMaxWidth().testTag("am-reconnect"), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Button(
+                enabled = !reconnecting,
+                onClick = {
+                    host.scope.launch {
+                        reconnecting = true; reconnectError = null
+                        try {
+                            reconnectLauncher.launch(graph.musicKitAuth.signInIntent())
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            reconnecting = false; throw e
+                        } catch (e: Throwable) {
+                            reconnecting = false; reconnectError = e.message ?: "Apple Music sign-in is unavailable"
+                        }
+                    }
+                },
+                modifier = Modifier.testTag("am-reconnect-button"),
+            ) { Text(if (reconnecting) "Connecting…" else RejectedMut.RECONNECT_TITLE) }
+            Text(RejectedMut.RECONNECT_CAPTION, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            reconnectError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+        }
+    }
 
     SettingsHeader("Apple Music syncing")
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {

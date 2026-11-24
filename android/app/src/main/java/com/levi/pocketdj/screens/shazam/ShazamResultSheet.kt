@@ -33,6 +33,10 @@ fun ShazamResultSheet(
     onOpenSong: (songId: String) -> Unit,
     onOpenAlbum: (albumId: String) -> Unit,
     onDismiss: () -> Unit,
+    /** The recognized album is not in the catalog: open the in-app store album page (the sheet closes first). */
+    onOpenStoreAlbum: (com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef) -> Unit = {
+        onDismiss(); com.levi.pocketdj.screens.discover.StoreAlbumRouter.open(it)
+    },
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
@@ -64,7 +68,7 @@ fun ShazamResultSheet(
                     Text("Not in your crate", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            AppleMusicRecognitionSection(info = info, onOpenAlbum = onOpenAlbum)
+            AppleMusicRecognitionSection(info = info, onOpenAlbum = onOpenAlbum, onOpenStoreAlbum = onOpenStoreAlbum)
             TextButton(onClick = onDismiss) { Text("Done") }
         }
     }

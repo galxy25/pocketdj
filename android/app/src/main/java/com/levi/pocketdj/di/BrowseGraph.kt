@@ -581,6 +581,17 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
                 return song.copy(inLibrary = com.levi.pocketdj.screens.shazam.libraryRowsContain(rows, song.title, song.artist))
             }
 
+            /** Edition swap (G13): the preferred explicit/clean twin of the recognized id, best-effort. */
+            override suspend fun preferredEdition(storeId: String, title: String, artist: String): String =
+                com.levi.pocketdj.screens.shazam.RecognizerEdition.preferredStoreId(
+                    storeId, title, artist, com.levi.pocketdj.data.edition.EditionSettings.get(app.settings),
+                ) { term ->
+                    val r = app.appleMusicApi.searchCatalog(term, limit = 15, storefront = sf()).okOrNull()
+                    r?.songs?.items.orEmpty().map {
+                        com.levi.pocketdj.screens.shazam.EditionRow(it.id, it.title, it.artist, it.explicit, it.durationSec)
+                    }
+                }
+
             override suspend fun addSongToLibrary(storeId: String) =
                 app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.SONGS, listOf(storeId)) is
                     com.levi.pocketdj.data.applemusic.AmResult.Ok
