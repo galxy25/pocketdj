@@ -384,6 +384,7 @@ class DjTransitionEngineTest {
         r.engine.pause()
         assertEquals(DjEngineDecline.NOT_PLAYING, r.engine.dj.beginTransition(spec()))
         r.engine.play()
+        r.seconds(0.1)
         r.unreadable = setOf("next.mp3")
         assertEquals(DjEngineDecline.INCOMING_UNREADABLE, r.engine.dj.beginTransition(spec()))
         r.unreadable = emptySet()
