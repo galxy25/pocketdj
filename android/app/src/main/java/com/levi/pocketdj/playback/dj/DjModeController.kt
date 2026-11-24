@@ -232,6 +232,15 @@ class DjModeController(
         if (on) log("mode ON (held restore - arms on the first play)")
     }
 
+    /** The selector's position (durable `djMode.planner`, decoded from the raw iOS-shaped JSON); null when none yet. */
+    fun plannerState(): DjPlannerState? = (_state.value.planner as? JsonObject)?.let { DjPlannerState.fromJson(it) }
+
+    /** The re-plan wrote a new selector position: kept in the state (rides the next session persist). */
+    fun setPlannerState(st: DjPlannerState) {
+        if (!enabled) return
+        _state.value = _state.value.copy(planner = st.toJson())
+    }
+
     private fun plannerSeed(): ULong? = (_state.value.planner as? JsonObject)?.let { DjPlannerState.fromJson(it)?.seed }
 
     private fun log(line: String) = ports.log("[dj] $line")

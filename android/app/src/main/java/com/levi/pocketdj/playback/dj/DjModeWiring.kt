@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Production assembly of DJ Mode's session shell (P2-DJ-6): the [DjModeController] on the sequencer's hooks and
@@ -46,8 +47,9 @@ class DjModeWiring(private val app: AppGraph) {
     }
 
     private val delegating = object : DjEngineHooks {
-        override fun applyOnTrackStart(liveClock: Boolean) = engineHooks.applyOnTrackStart(liveClock)
-        override fun disarm() = engineHooks.disarm()
+        // The selector re-plans BEFORE the engage (iOS applyDJOnTrackStart order: membership, first plan, engage + arm + level).
+        override fun applyOnTrackStart(liveClock: Boolean) { planner.onApply(); engineHooks.applyOnTrackStart(liveClock) }
+        override fun disarm() { planner.disarm(); engineHooks.disarm() }
         override fun levelToZero() = engineHooks.levelToZero()
         override fun plannerSeeded(seed: ULong) = engineHooks.plannerSeeded(seed)
         override fun indicator() = engineHooks.indicator()
@@ -185,6 +187,73 @@ class DjModeWiring(private val app: AppGraph) {
         override fun log(line: String) { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.DJ, line) }
     }
 
+    // ---- P2-DJ-10: the PocketDJ selector driver's production host --------------------------------------------------------
+
+    private val plannerHost = object : DjPlannerDriver.Host {
+        override val enabled: Boolean get() = controller.enabled
+        override val djActive: Boolean get() = controller.djActive
+        override val remoteActive: Boolean get() = controller.remote.active
+        override fun state() = seq.state.value
+        override fun settings(): DJModeSettings = mixSettings.value.dj
+        override fun plannerState() = controller.plannerState()
+        override fun setPlannerState(st: DjPlannerState) = controller.setPlannerState(st)
+
+        override fun facts(item: QueueItem): DjCandidates.Facts? {
+            val song = catalog?.songsById?.get(com.levi.pocketdj.data.edition.SongVariant.baseId(item.id)) ?: return null
+            val album = song.albumId?.let { catalog?.albumsById?.get(it) }
+            val keys = com.levi.pocketdj.data.recs.RecVersionIdentity.creditArtistKeys(song.artist)
+            return DjCandidates.Facts(
+                bpm = song.bpm, camelot = song.camelot, genre = album?.genre, year = song.year ?: album?.year,
+                artists = (if (keys.isEmpty()) listOf(song.artist.lowercase()) else keys).toSet(),
+            )
+        }
+
+        override fun signals(item: QueueItem): DjCandidates.RowSignals {
+            val id = item.resolveId
+            val stream = mixGraph.mixStreamLoader.stream(id)
+            val complete = stream?.let { it.isComplete && !it.failed } == true
+            return DjCandidates.RowSignals(
+                ripInFlight = seq.isRipInFlight(item),
+                laneFetching = mixGraph.stemLockPrefetcher.isFetchingSong(id),
+                bufferStreaming = stream != null && !stream.failed && !stream.isComplete,
+                willPlayLocally = complete || app.servicesGraph.burnStore.isReadyInLedger(id),
+            )
+        }
+
+        override fun albumLinkedRows(hi: Int): Set<Int> {
+            val out = HashSet<Int>()
+            var i = seq.state.value.index
+            while (i + 1 < hi) { if (rowRuns(i)) { out.add(i); out.add(i + 1) }; i++ }
+            return out
+        }
+
+        override val transitioning: Boolean get() = bound && engine.dj.isTransitioning
+        override fun runwaySeconds(): Double? = seq.runwaySecondsOrNull()
+
+        override suspend fun loadMembership(): Map<String, Set<String>> {
+            val input = app.collectionsGraph.pocketsCollectionsInput() // reads app state: main thread
+            return withContext(Dispatchers.Default) {
+                val out = HashMap<String, MutableSet<String>>()
+                for (c in com.levi.pocketdj.data.pockets.ListeningPocketsCollections.flattened(input.source)) {
+                    for (id in c.songIds) out.getOrPut(id) { HashSet() }.add(c.id)
+                }
+                out
+            }
+        }
+
+        override fun applyOrder(lo: Int, expected: List<String>, order: List<String>, fixed: List<Boolean>, countDeferrals: Boolean) =
+            seq.applyDjOrder(lo, expected, order, fixed, countDeferrals)
+
+        override fun userNextPlaced(item: QueueItem) { seq.state.value.let { prefetchLocal(item) } }
+        override fun persist() = ports.persist()
+        override fun log(line: String) { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.DJ, line) }
+
+        private fun prefetchLocal(item: QueueItem) = env.prefetchLocal(item)
+    }
+
+    /** The PocketDJ selector (P2-DJ-10): re-orders the upcoming 40 rows; the next-up pick is sacred. */
+    val planner: DjPlannerDriver by lazy { DjPlannerDriver(plannerHost, scope) }
+
     /** The conductor (P2-DJ-8). Cheap to build: [env] reads the graphs lazily. */
     val conductor: DjConductor by lazy { DjConductor(env, scope) }
 
@@ -228,6 +297,7 @@ class DjModeWiring(private val app: AppGraph) {
         installed = true
         seq.hooks.add(controller)
         seq.hooks.add(trackListener)
+        seq.hooks.add(planner)
         seq.sessionExtras.register(controller)
         seq.djModeEnabled = { controller.enabled } // a random insert never lands ahead of the listener's pick
         mix.onModeSwitched = { controller.onMixModeChanged(it) } // synchronous, before the lane re-plans
