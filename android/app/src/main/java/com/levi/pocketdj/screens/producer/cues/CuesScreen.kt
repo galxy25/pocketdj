@@ -139,7 +139,11 @@ private fun SelectedPane(graph: AppGraph, song: IndexSong, modifier: Modifier) {
     val entry = manifest[song.id]
     val isBurned = burns.hasLocalFile(song.id)
     val cues = remember(doc.cues, song.id) { store.cues(song.id) }
-    val durMs = (song.length?.takeIf { it > 0 } ?: entry?.durationMs?.takeIf { it > 0 } ?: 1L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    // A shared-file song starts where the record (and any edit) says and ends at its end on the record (P2-ALB-3).
+    val effStart = remember(song.id, manifest) { rips.effectiveStartMs(song.id) }
+    val effEnd = remember(song.id, manifest, effStart) { rips.analogEndMs(song.id, effStart, entry?.durationMs ?: song.length) }
+    val windowMs = if (effStart != null && effEnd != null && effEnd > effStart) effEnd - effStart else null
+    val durMs = (windowMs ?: song.length?.takeIf { it > 0 } ?: entry?.durationMs?.takeIf { it > 0 } ?: 1L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     // Re-polled while the pane is visible: the AM engine can become ready after open (sign-in, late token).
     val amReady by produceState(false, song.id) {
         while (true) { value = song.appleMusicId != null && player.canSeekAppleMusic(); delay(3000) }
@@ -161,13 +165,13 @@ private fun SelectedPane(graph: AppGraph, song: IndexSong, modifier: Modifier) {
     val png = entry?.waveform?.let { "${Endpoints.RIPS_BASE.trimEnd('/')}/${it.removePrefix("/")}" }
     val shared = entry != null && (entry.startMs != null || entry.source == "analog")
     val peaks by produceState<FloatArray?>(null, song.id, isBurned) {
-        value = if (isBurned && (shared || png == null)) MixWaveform.peaksForSong(song.id, song.length?.toInt(), burns).takeIf { it.isNotEmpty() } else null
+        value = if (isBurned && (shared || png == null)) MixWaveform.peaksForSong(song.id, song.length?.toInt(), burns) { st -> rips.analogEndMs(song.id, st, song.length) }.takeIf { it.isNotEmpty() } else null
     }
     val wave: CueWave = when {
         peaks != null -> CueWave.Peaks(peaks!!)
         shared && png != null -> {
             val crop = CueSeek.analogCrop(
-                entry?.startMs, entry?.durationMs,
+                effStart ?: entry?.startMs, windowMs ?: entry?.durationMs,
                 manifest.values.filter { it.key == entry?.key }.mapNotNull { e -> val s = e.startMs; val d = e.durationMs; if (s != null && d != null) s + d else null },
                 album?.audioDurationSec,
             )
@@ -181,7 +185,7 @@ private fun SelectedPane(graph: AppGraph, song: IndexSong, modifier: Modifier) {
         notice = null
         if (atMs > 0 && !seekable) { notice = "Can’t jump into this track yet — it’s still ripping. Playing from the top."; scope.launch { player.play(song.id, playContext = null) }; return }
         scope.launch {
-            val plan = CueSeek.plan(entry?.startMs, entry?.durationMs ?: song.length, atMs)
+            val plan = CueSeek.plan(effStart ?: entry?.startMs, entry?.durationMs ?: song.length, atMs, effEnd)
             val out = player.play(song.id, queueAlbumContext = false, startMs = plan.clipRelativeMs)
             if (out is com.levi.pocketdj.playback.PlayOutcome.Preparing) notice = "Ripping this track first — it will be playable shortly."
             else if (plan.clipRelativeMs > 0 && !player.lastStartHonored) notice = "Cue dropped — the full track wasn’t available, so playback started from the top."

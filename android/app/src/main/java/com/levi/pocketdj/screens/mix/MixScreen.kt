@@ -124,7 +124,7 @@ fun MixScreen(
             peaksFor = { t ->
                 // Bound an analog shared-album burn to the SONG (catalog length), not to the end of the whole side.
                 val len = graph.catalogRepository.state.value.catalog?.songsById?.get(t.songId)?.length?.toInt()
-                MixWaveform.peaksForSong(t.songId, len, burns)
+                MixWaveform.peaksForSong(t.songId, len, burns) { st -> graph.ripsRepository.analogEndMs(t.songId, st, len?.toLong()) }
             },
             art = { albumId, m ->
                 AlbumArt(albumId?.let { graph.catalogRepository.state.value.catalog?.albumsById?.get(it) }, m)

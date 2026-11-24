@@ -35,6 +35,8 @@ interface MixStreamRips {
      */
     fun consumePresignRejection(songId: String): Boolean = false
     fun entry(songId: String): RipManifestEntry?
+    /** A shared-side song's start with the user's boundary edit applied (iOS `RipsStore.effectiveStartMs`); default: the manifest's. */
+    fun effectiveStartMs(songId: String): Long? = entry(songId)?.startMs
     /** A 6 h presigned URL for the song's durable object, or null when the server can't mint one. */
     suspend fun presignedUrl(songId: String, ttlSeconds: Int): String?
     /** Public (no-auth) URL of an S3 key. */
@@ -351,7 +353,7 @@ class MixStreamLoader(
             start(s, rips.urlForKey(cutKey), 0)
         } else {
             s.adoptable = true
-            s.startMs = if (entry.source == "analog") entry.startMs else null
+            s.startMs = if (entry.source == "analog") (rips.effectiveStartMs(songId) ?: entry.startMs) else null
             scope.launch {
                 val url = presignWithRetry(songId)
                 // Yield only once the stream is certain to start (adoptable + presigned), and off the lock.
@@ -567,7 +569,7 @@ class MixStreamLoader(
                         s.sideFallback = null
                         s.isCut = false
                         s.adoptable = true
-                        s.startMs = rips.entry(id)?.startMs
+                        s.startMs = rips.effectiveStartMs(id)
                         telemetry("cut HTTP ${event.status} $id -> side fallback")
                         scope.launch {
                             val url = fallback()

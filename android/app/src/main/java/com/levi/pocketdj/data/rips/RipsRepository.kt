@@ -60,6 +60,17 @@ class RipsRepository(
             segmentOverrides().startMs[com.levi.pocketdj.data.edition.SongVariant.baseId(songId)] ?: it
         }
 
+    /**
+     * Where [songId]'s analog window ends in its shared file: edited end exact, else detected end + grace capped at
+     * the next start, else [lengthMs] past [startMs] ([AnalogWindow.endMs]). null for a per-song file.
+     */
+    fun analogEndMs(songId: String, startMs: Long?, lengthMs: Long?, run: AnalogWindow.Run? = null): Long? {
+        if (startMs == null) return null
+        val base = com.levi.pocketdj.data.edition.SongVariant.baseId(songId)
+        val tl = AlbumFileTimeline.forSong(base, _manifest.value, segmentOverrides())
+        return AnalogWindow.endMs(base, startMs, tl, run, lengthMs)
+    }
+
     /** True when a public rip exists (metadata-only rows render no ▶ otherwise). */
     fun isPlayable(songId: String): Boolean =
         !PlayResolver.isStudioId(songId) && _manifest.value.containsKey(songId)

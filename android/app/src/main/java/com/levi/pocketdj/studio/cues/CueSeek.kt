@@ -38,9 +38,10 @@ object CueSeek {
      * [startMs] is the entry's offset inside a shared analog file (null/0 for digital or a per-song cut);
      * a cue past the song end is clamped to the end so a stale cue never seeks into the next song.
      */
-    fun plan(startMs: Long?, durationMs: Long?, cueMs: Int): CuePlan {
+    fun plan(startMs: Long?, durationMs: Long?, cueMs: Int, endMs: Long? = null): CuePlan {
         val start = (startMs ?: 0L).coerceAtLeast(0L)
-        val dur = durationMs?.takeIf { it > 0 }
+        // The song's end on the record (AnalogWindow.endMs: edited / detected + grace) bounds the cue, not start + catalog length.
+        val dur = if (startMs != null && endMs != null && endMs > start) endMs - start else durationMs?.takeIf { it > 0 }
         val cue = cueMs.toLong().coerceAtLeast(0L).let { if (dur != null) it.coerceAtMost(dur) else it }
         return CuePlan(start, dur, cue, cue, start + cue, dur?.let { start + it })
     }

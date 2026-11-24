@@ -80,6 +80,8 @@ class LocalFileRowResolver(
 class ManifestRowResolver(
     /** Start reader; production passes the edit-aware `RipsRepository.effectiveStartMs`. */
     private val startOf: (String, RipManifestEntry) -> Long? = { _, e -> e.startMs },
+    /** Window end reader (`RipsRepository.analogEndMs`); null = start + manifest length. */
+    private val endOf: ((String, Long, Long?) -> Long?)? = null,
     private val entry: (String) -> RipManifestEntry?,
 ) : RowSourceResolver {
     override val id: String = "manifest"
@@ -88,7 +90,7 @@ class ManifestRowResolver(
         if (PlayResolver.isStudioId(item.id)) {
             return UnplayableSource(UnplayableSource.Reason.STUDIO_LOCAL)
         }
-        val action = PlayResolver.resolve(item.resolveId, entry(item.resolveId), ripServerConfigured = false, startOf = startOf)
+        val action = PlayResolver.resolve(item.resolveId, entry(item.resolveId), ripServerConfigured = false, startOf = startOf, endOf = endOf)
         return (action as? PlayAction.Stream)?.let(::StreamSource)
     }
 }
