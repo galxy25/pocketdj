@@ -556,7 +556,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         }
 
     /** The membership snapshot input (iOS `collectionsInput`): pockets, playlists, source playlists, add log. */
-    private fun pocketsCollectionsInput(): com.levi.pocketdj.data.pockets.ListeningPocketsCollections.Input {
+    fun pocketsCollectionsInput(): com.levi.pocketdj.data.pockets.ListeningPocketsCollections.Input {
         val pockets = app.collections.pockets
         val playlists = app.collections.playlists
         val activity = app.collectionActivity.events

@@ -132,6 +132,7 @@ class AppGraph private constructor(context: Context) {
     val browseGraph: BrowseGraph by lazy { BrowseGraph(this) }
     val servicesGraph: ServicesGraph by lazy { ServicesGraph(this) }
     val shellGraph: ShellGraph by lazy { ShellGraph(this) }
+    val pocketsGraph: PocketsGraph by lazy { PocketsGraph(this) } // P2-POC-5
 
     /** Zero-to-hero first-run state (SURF-3); lives in the shell sidecar. */
     val onboarding: com.levi.pocketdj.onboarding.OnboardingStore get() = shellGraph.onboarding
@@ -155,7 +156,7 @@ class AppGraph private constructor(context: Context) {
         FeatureModuleRegistry(
             listOf(
                 playbackGraph, mixGraph, studioGraph, gamesGraph,
-                collectionsGraph, browseGraph, servicesGraph, shellGraph,
+                collectionsGraph, browseGraph, servicesGraph, shellGraph, pocketsGraph,
             ),
         )
     }
@@ -311,7 +312,7 @@ class AppGraph private constructor(context: Context) {
             activityFile = File(appContext.filesDir, CollectionActivityStore.FILE_NAME),
             artwork = CoilArtworkCache(appContext),
             clearCatalogCache = { catalogService.clearCache() },
-            clearPlayHistory = { PlayHistoryStore.get(appContext).clear() },
+            clearPlayHistory = { PlayHistoryStore.get(appContext).clear(); pocketsGraph.wheelClearLocal() }, // P2-POC-5: the wheel is derived from history
             clearActivity = { collectionActivity.clear() },
             favoritesFile = File(appContext.filesDir, com.levi.pocketdj.data.favorites.FavoritesStore.FILE_NAME),
             // SVC-2: burns/stems measure + clear (BURNS excludes stems so the total never double-counts).
@@ -446,7 +447,10 @@ class AppGraph private constructor(context: Context) {
                 }.onFailure { android.util.Log.e("PocketDJ", "[burns] reconcile failed", it) }
             }
             // MainActivity forwards every intent to IntentSink; the modules' handlers answer.
-            StartStep.INTENT_SINK -> appScope.launch { IntentSink.install(features.deepLinkHandlers) }
+            StartStep.INTENT_SINK -> {
+                appScope.launch { IntentSink.install(features.deepLinkHandlers) }
+                appScope.launch(Dispatchers.IO) { runCatching { pocketsGraph.start() } } // P2-POC-5 wheel rebuild loop
+            }
 
             StartStep.PLAYBACK_WIRE -> playbackGraph.wire() // PB-1 seams + the run-gated 1 Hz session tick
             // MIX-12: a kill mid-take leaves a playable .aac with no row; file it (off-main, streamed scan).
