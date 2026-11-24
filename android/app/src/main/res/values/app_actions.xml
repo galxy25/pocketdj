@@ -19,4 +19,24 @@
     </string-array>
     <string name="app_action_add_to_collection_label">Add this song to a collection</string>
     <string name="app_action_auto_mix_label">Auto-mix a collection</string>
+    <string-array name="app_action_set_mix_mode_patterns">
+        <item>turn $on mix mode</item>
+        <item>turn mix mode $on</item>
+        <item>switch $on mix mode</item>
+        <item>mix mode $on</item>
+    </string-array>
+    <string-array name="app_action_mute_stem_patterns">
+        <item>mute the $stem</item>
+        <item>mute $stem</item>
+        <item>turn off the $stem</item>
+        <item>kill the $stem</item>
+    </string-array>
+    <string-array name="app_action_unmute_stem_patterns">
+        <item>unmute the $stem</item>
+        <item>unmute $stem</item>
+        <item>bring back the $stem</item>
+    </string-array>
+    <string name="app_action_set_mix_mode_label">Turn Mix Mode on or off</string>
+    <string name="app_action_mute_stem_label">Mute a stem</string>
+    <string name="app_action_unmute_stem_label">Unmute a stem</string>
 </resources>

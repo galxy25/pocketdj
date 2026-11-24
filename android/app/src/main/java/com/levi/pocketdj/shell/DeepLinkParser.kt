@@ -30,6 +30,12 @@ sealed interface DeepLink {
     /** `pocketdj://automix/<pocket|playlist|setlist>/<id>[?shuffle=1]` — start an Auto-DJ mix of a source. */
     data class AutoMix(val source: MixSource, val shuffle: Boolean) : DeepLink
 
+    /** `pocketdj://np/mixmode?on=1|0` — Now Playing's Mix Mode on/off (P2-SURF-10). */
+    data class NowPlayingMixMode(val on: Boolean) : DeepLink
+
+    /** `pocketdj://np/stem/<name>?mute=1|0` — mute / unmute one stem of the playing track (P2-SURF-10). */
+    data class NowPlayingStem(val stem: StemPart, val muted: Boolean) : DeepLink
+
     /** `pocketdj://{album,artist,playlist,pocket,setlist,search}/...` — open a screen. */
     data class Navigate(val route: ShellRoute) : DeepLink
 
@@ -154,6 +160,7 @@ object DeepLinkParser {
                 }
                 DeepLink.AutoMix(source, truthy(query["shuffle"]))
             }
+            "np" -> parseNowPlaying(parts, query)
             "remote" -> when {
                 arg == null -> DeepLink.Remote(null)
                 arg.equals("join", ignoreCase = true) ->
@@ -177,6 +184,26 @@ object DeepLinkParser {
             }
             else -> DeepLink.None
         }
+    }
+
+    /** `np/mixmode?on=` and `np/stem/<name>?mute=`; a missing flag defaults to on / mute (the iOS intent defaults). */
+    private fun parseNowPlaying(parts: List<String>, query: Map<String, String>): DeepLink {
+        return when (parts.getOrNull(1)?.lowercase()) {
+            "mixmode" -> DeepLink.NowPlayingMixMode(flag(query["on"], default = true))
+            "stem" -> {
+                val raw = parts.getOrNull(2) ?: return DeepLink.None
+                val stem = StemPart.parse(raw)
+                    ?: return DeepLink.Unresolved("Couldn't tell which stem you meant — try vocals, drums, bass or other.")
+                DeepLink.NowPlayingStem(stem, flag(query["mute"], default = true))
+            }
+            else -> DeepLink.None
+        }
+    }
+
+    private fun flag(v: String?, default: Boolean): Boolean = when (v?.lowercase()) {
+        null, "" -> default
+        "0", "false", "off", "no" -> false
+        else -> true
     }
 
     private inline fun nav(arg: String?, make: (String) -> ShellRoute): DeepLink =

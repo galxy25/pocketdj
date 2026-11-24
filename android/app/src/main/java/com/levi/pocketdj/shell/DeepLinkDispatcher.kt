@@ -38,6 +38,9 @@ class DeepLinkSeams {
     @Volatile var playItem: ((PlayKind, String, Boolean) -> String?)? = null
     @Volatile var addToCollection: ((collectionId: String, songId: String?) -> Unit)? = null
     @Volatile var pocketNow: (() -> Unit)? = null
+    /** P2-SURF-10: `pocketdj://np/mixmode` / `np/stem/...` (the seams post their own snackbar) — default says not available. */
+    @Volatile var nowPlayingMixMode: ((on: Boolean) -> Unit)? = null
+    @Volatile var nowPlayingStem: ((StemPart, muted: Boolean) -> Unit)? = null
     @Volatile var autoMix: ((MixSource, shuffle: Boolean) -> Unit)? = null
     @Volatile var joinJukebox: ((id: String, guestBase: String?) -> Unit)? = null
     @Volatile var importCollection: ((uri: String) -> Unit)? = null
@@ -197,6 +200,14 @@ class DeepLinkDispatcher(
             DeepLink.PocketNow -> {
                 val pocket = seams.pocketNow
                 if (pocket != null) pocket() else postMessage("Pocket for now isn't available yet")
+            }
+            is DeepLink.NowPlayingMixMode -> {
+                val seam = seams.nowPlayingMixMode
+                if (seam != null) seam(link.on) else postMessage("Mix Mode by link isn't available yet")
+            }
+            is DeepLink.NowPlayingStem -> {
+                val seam = seams.nowPlayingStem
+                if (seam != null) seam(link.stem, link.muted) else postMessage("Stems by link aren't available yet")
             }
             is DeepLink.Unresolved -> postMessage(link.message)
             is DeepLink.Navigate -> postRoute(link.route)

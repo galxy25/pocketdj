@@ -54,6 +54,11 @@ sealed class ShellActionException(message: String) : Exception(message) {
     /** "Add this song" with nothing loaded in Now Playing or the Mix. */
     data object NothingPlaying : ShellActionException("Nothing is playing in PocketDJ right now.")
 
+    /** Stems by voice while the Mix tab is live (iOS `mixTabLive`). */
+    data object MixTabLive : ShellActionException(
+        "The Mix tab is playing. Stems by voice work on Now Playing — use the Mix tab's stem pads for its decks.",
+    )
+
     /** The pocket / playlist an add names no longer exists (or is the reserved Now Playing set). */
     data object CollectionNotFound : ShellActionException("I couldn't find that pocket or playlist in PocketDJ.")
 }
@@ -118,6 +123,9 @@ class ShellActions(
 
     /** The Pocket Wheel (P2-POC-16). A provider so the lazily built wheel is only touched when an action needs it. */
     @Volatile var pocketWheel: (() -> PocketWheelController?)? = null
+
+    /** Now Playing's mini-mix (P2-SURF-10); null ⇒ Mix Mode / stem voice actions say they aren't available. */
+    @Volatile var nowPlayingVoice: NowPlayingVoiceActions? = null
 
     private val kickedManifestRefresh = AtomicBoolean(false)
 
@@ -289,6 +297,24 @@ class ShellActions(
         return AddToCollectionAction(collections).add(id, title, collectionId)
     }
 
+    // ---- Now Playing Mix Mode + stems by voice (iOS setNowPlayingMixMode / setStem) ----
+
+    /** "Turn on Mix Mode" / "Turn off Mix Mode". Returns the sentence to say. */
+    suspend fun setNowPlayingMixMode(on: Boolean): String {
+        veto()
+        ensureReady()
+        val voice = nowPlayingVoice ?: throw ShellActionException.MixUnavailable
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { voice.setMixMode(on) } // DSP state is main-thread
+    }
+
+    /** "Mute the vocals" / "Unmute the drums". Returns the sentence to say. */
+    suspend fun setStem(stem: StemPart, muted: Boolean): String {
+        veto()
+        ensureReady()
+        val voice = nowPlayingVoice ?: throw ShellActionException.MixUnavailable
+        return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { voice.setStem(stem, muted) }
+    }
+
     // ---- navigation ----
 
     /** Raise a navigation request (consumed by the shell). Not vetoed: onboarding gates the shell itself. */
@@ -430,6 +456,26 @@ fun pocketNowLinkSeam(
     onLaunched: (Job) -> Unit = {},
 ): () -> Unit = {
     onLaunched(scope.launchAction(postMessage, "Couldn't play your pocket.") { pocketPlayingLine(actions.playPocketForNow()) })
+}
+
+/** The `pocketdj://np/mixmode?on=` seam: the spoken sentence (or the failure line) as a snackbar. */
+fun mixModeLinkSeam(
+    actions: ShellActions,
+    scope: CoroutineScope,
+    postMessage: (String) -> Unit,
+    onLaunched: (Job) -> Unit = {},
+): (Boolean) -> Unit = { on ->
+    onLaunched(scope.launchAction(postMessage, "Couldn't change Mix Mode.") { actions.setNowPlayingMixMode(on) })
+}
+
+/** The `pocketdj://np/stem/<name>?mute=` seam. Runs on the main thread (the DSP engage is main-thread state). */
+fun stemLinkSeam(
+    actions: ShellActions,
+    scope: CoroutineScope,
+    postMessage: (String) -> Unit,
+    onLaunched: (Job) -> Unit = {},
+): (StemPart, Boolean) -> Unit = { stem, muted ->
+    onLaunched(scope.launchAction(postMessage, "Couldn't change that stem.") { actions.setStem(stem, muted) })
 }
 
 /** The `pocketdj://automix/...` seam (veto + ensureReady inside [ShellActions.startAutoMix]). */
