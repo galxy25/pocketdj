@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # P2-POC-14 — pocket-wheel-parity.json goldens
 

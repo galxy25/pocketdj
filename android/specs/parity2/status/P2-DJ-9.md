@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-DJ-9: DJ skip mix: ⏭ mixes over the Skip fade; double-tap and lock-screen/Auto/headset/widget ⏭ = 5 s sweep
 

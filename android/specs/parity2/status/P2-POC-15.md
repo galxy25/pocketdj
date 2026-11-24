@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-POC-15: Mix-mode best match plays through Mix Auto-DJ
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-REM-6 - RemoteSessionController part 2 (speaker half)
 
