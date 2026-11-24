@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-ALB-7 - Album page parity
 
