@@ -255,7 +255,10 @@ class DjModeWiring(private val app: AppGraph) {
             override fun localSource(item: QueueItem) = env.localSource(item)
             override fun setLevel(db: Double, ramp: Boolean) { if (engine.isEngaged) engine.setLevelDb(db, ramp) }
             override fun log(line: String) { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.DJ, line) }
-        }, loudnessCache, analysisCache, scope)
+        }, loudnessCache, analysisCache, scope).also { l ->
+            // P2-DJ-12: the Now Playing leveling readout says what the playing song's leveling is ("measuring…", "off", ...).
+            scope.launch { l.status.collect { engine.setLevelingStatus(it) } }
+        }
     }
 
     val analysisDriver: DjAnalysisDriver by lazy {
