@@ -59,6 +59,7 @@ enum class WidgetSizeClass {
 /** What the large widget lists / the ♥ shows; pure derivations over the snapshot. */
 object WidgetModel {
     fun showHeart(s: NowPlayingSnapshot) = s.hasContent && s.favoriteAvailable && !s.songId.isNullOrEmpty()
+    fun showFeedback(s: NowPlayingSnapshot) = s.showsFeedback
     fun repeatNext(s: NowPlayingSnapshot): String = when (s.repeatMode) { "off" -> "all"; "all" -> "one"; else -> "off" }
     fun rows(s: NowPlayingSnapshot) = s.upNext.take(WidgetSync.UP_NEXT_MAX)
 }
@@ -120,17 +121,22 @@ class NowPlayingWidget : GlanceAppWidget() {
 
     @Composable
     private fun Medium(ctx: Context, s: NowPlayingSnapshot, cover: Bitmap?) {
+        // With the 👍/👎 pair the row would overflow a 250dp widget (iOS keeps Medium at five glyphs):
+        // previous is dropped and the glyphs shrink, so the pair always fits.
+        val fb = WidgetModel.showFeedback(s)
+        val g = if (fb) 34.dp else 40.dp
         Row(verticalAlignment = Alignment.CenterVertically, modifier = GlanceModifier.fillMaxWidth()) {
-            Cover(cover, 72.dp)
+            Cover(cover, if (fb) 56.dp else 72.dp)
             Spacer(GlanceModifier.width(10.dp))
             Column(GlanceModifier.defaultWeight()) {
                 TitleBlock(s)
                 Spacer(GlanceModifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Btn(R.drawable.ic_widget_previous, "Previous", cmd(ctx, WidgetCommand.Kind.PREVIOUS, s, null))
-                    Btn(playGlyph(s), "Play or pause", key(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
-                    Btn(R.drawable.ic_widget_next, "Next", cmd(ctx, WidgetCommand.Kind.NEXT, s, null))
-                    if (WidgetModel.showHeart(s)) Heart(ctx, s)
+                    if (!fb) Btn(R.drawable.ic_widget_previous, "Previous", cmd(ctx, WidgetCommand.Kind.PREVIOUS, s, null))
+                    Btn(playGlyph(s), "Play or pause", key(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE), box = g)
+                    Btn(R.drawable.ic_widget_next, "Next", cmd(ctx, WidgetCommand.Kind.NEXT, s, null), box = g)
+                    if (WidgetModel.showHeart(s)) Heart(ctx, s, g)
+                    if (fb) FeedbackPair(ctx, s, g)
                 }
             }
         }
@@ -150,6 +156,7 @@ class NowPlayingWidget : GlanceAppWidget() {
                 Btn(playGlyph(s), "Play or pause", key(ctx, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
                 Btn(R.drawable.ic_widget_next, "Next", cmd(ctx, WidgetCommand.Kind.NEXT, s, null))
                 if (WidgetModel.showHeart(s)) Heart(ctx, s)
+                if (WidgetModel.showFeedback(s)) FeedbackPair(ctx, s)
                 Btn(
                     if (s.repeatMode == "one") R.drawable.ic_widget_repeat_one else R.drawable.ic_widget_repeat,
                     "Repeat",
@@ -184,12 +191,30 @@ class NowPlayingWidget : GlanceAppWidget() {
     }
 
     @Composable
-    private fun Heart(ctx: Context, s: NowPlayingSnapshot) {
+    private fun Heart(ctx: Context, s: NowPlayingSnapshot, box: androidx.compose.ui.unit.Dp = 40.dp) {
         Btn(
             if (s.isFavorite) R.drawable.ic_widget_heart_filled else R.drawable.ic_widget_heart,
             if (s.isFavorite) "Unfavorite" else "Favorite",
             cmd(ctx, WidgetCommand.Kind.FAVORITE, s, if (s.isFavorite) "0" else "1"),
-            tint = if (s.isFavorite) ACCENT else FG,
+            tint = if (s.isFavorite) ACCENT else FG, box = box,
+        )
+    }
+
+    /**
+     * 👍 / 👎 (iOS `FeedbackPair`). The command carries the snapshot's songId + recScope, so the verdict
+     * lands on the song the user saw even if it is queued and drained after a skip. Neither touches transport.
+     */
+    @Composable
+    private fun FeedbackPair(ctx: Context, s: NowPlayingSnapshot, box: androidx.compose.ui.unit.Dp = 40.dp) {
+        val up = s.recVerdict == "accepted"
+        val down = s.recVerdict == "rejected"
+        Btn(
+            R.drawable.ic_widget_thumb_up, if (up) "Undo like" else "Like",
+            cmd(ctx, WidgetCommand.Kind.VERDICT_ACCEPT, s, null, s.recScope), tint = if (up) ACCENT else FG, box = box,
+        )
+        Btn(
+            R.drawable.ic_widget_thumb_down, if (down) "Undo dislike" else "Dislike",
+            cmd(ctx, WidgetCommand.Kind.VERDICT_REJECT, s, null, s.recScope), tint = if (down) ACCENT else FG, box = box,
         )
     }
 
@@ -203,10 +228,10 @@ class NowPlayingWidget : GlanceAppWidget() {
     }
 
     @Composable
-    private fun Btn(res: Int, desc: String, action: Action, tint: ColorProvider = FG) {
+    private fun Btn(res: Int, desc: String, action: Action, tint: ColorProvider = FG, box: androidx.compose.ui.unit.Dp = 40.dp) {
         Image(
             ImageProvider(res), desc,
-            GlanceModifier.size(40.dp).padding(8.dp).clickable(action),
+            GlanceModifier.size(box).padding(if (box < 40.dp) 6.dp else 8.dp).clickable(action),
             colorFilter = ColorFilter.tint(tint),
         )
     }
@@ -216,8 +241,8 @@ class NowPlayingWidget : GlanceAppWidget() {
     private fun key(ctx: Context, code: Int): Action =
         actionStartService(WidgetIntents.mediaButton(ctx, code), isForegroundService = true)
 
-    private fun cmd(ctx: Context, kind: WidgetCommand.Kind, s: NowPlayingSnapshot, value: String?): Action =
-        actionSendBroadcast(WidgetIntents.command(ctx, kind, s.songId, s.appleMusicId, value))
+    private fun cmd(ctx: Context, kind: WidgetCommand.Kind, s: NowPlayingSnapshot, value: String?, scope: String? = null): Action =
+        actionSendBroadcast(WidgetIntents.command(ctx, kind, s.songId, s.appleMusicId, value, scope))
 
     private fun loadCover(store: NowPlayingSnapshotStore): Bitmap? = runCatching {
         if (!store.hasCover()) return null

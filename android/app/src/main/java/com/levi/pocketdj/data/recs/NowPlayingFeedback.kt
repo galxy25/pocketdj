@@ -43,6 +43,18 @@ class NowPlayingFeedback(
      */
     fun record(verdict: RecFeedbackStore.Verdict, surface: RecFeedbackStore.Surface): RecFeedbackStore.Verdict? {
         val t = currentTarget() ?: return null
+        return recordFor(t.songId, t.scope, verdict, surface)
+    }
+
+    /**
+     * Record [verdict] against an EXPLICIT (songId, scope) rather than whatever plays now: the widget's
+     * queued verdicts carry the target the user saw (P2-SURF-3), so a drain after a skip / cold launch
+     * still lands on the right song.
+     */
+    fun recordFor(
+        songId: String, scope: String, verdict: RecFeedbackStore.Verdict, surface: RecFeedbackStore.Surface,
+    ): RecFeedbackStore.Verdict? {
+        val t = Target(songId, scope)
         val cat = catalog()
         val song = cat?.songsById?.get(t.songId)
         val genre = song?.albumId?.let { cat.albumsById[it] }?.genre

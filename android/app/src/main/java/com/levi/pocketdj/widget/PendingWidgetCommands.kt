@@ -15,7 +15,12 @@ data class WidgetCommand(
     /** Desired end state: "1"/"0" for favorite and shuffle, the repeat token for repeat. */
     val value: String? = null,
     val atMs: Long = 0,
+    /** Verdicts only: the recommendation scope the user saw (snapshot recScope). Additive; old files decode to null. */
+    val scope: String? = null,
 ) {
+    /** A verdict names its own song + scope: nothing is resolved from "what is current" at apply time. */
+    val isVerdict: Boolean get() = kind == Kind.VERDICT_ACCEPT || kind == Kind.VERDICT_REJECT
+
     @Serializable
     enum class Kind(val transport: Boolean) {
         PLAY_PAUSE(true), NEXT(true), PREVIOUS(true), REPEAT(true), SHUFFLE(true),
@@ -49,7 +54,13 @@ class PendingWidgetCommands(
         val now = clockMs()
         val all = load()
         if (all.isNotEmpty() || file.exists()) runCatching { file.delete() }
-        all.filter { !it.kind.transport || now - it.atMs <= TRANSPORT_TTL_MS }
+        all.filter {
+            when {
+                // A verdict that does not name its target is meaningless; one that does never ages out.
+                it.isVerdict -> !it.songId.isNullOrEmpty() && !it.scope.isNullOrEmpty()
+                else -> !it.kind.transport || now - it.atMs <= TRANSPORT_TTL_MS
+            }
+        }
     }
 
     private fun load(): List<WidgetCommand> =
