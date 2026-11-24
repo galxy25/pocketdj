@@ -1,0 +1,280 @@
+{
+ "_note": "Hand-derived from apple/PocketDJ/Remote/RemoteWire.swift CodingKeys + Swift synthesized enum Codable rules; NOT captured from a Swift run. Numbers are compared by value (Swift prints 5.0 as 5).",
+ "commands": {
+  "play": {
+   "play": {
+    "rows": [
+     {
+      "rid": "r1",
+      "row": {
+       "songId": "s1",
+       "title": "T s1",
+       "artist": "A",
+       "lengthMs": 200000,
+       "appleMusicId": "1440"
+      }
+     },
+     {
+      "rid": "r2",
+      "row": {
+       "songId": "s2",
+       "title": "T s2",
+       "artist": "A",
+       "lengthMs": 200000,
+       "appleMusicId": "1440"
+      }
+     }
+    ],
+    "startIndex": 1
+   }
+  },
+  "playNow": {
+   "playNow": {
+    "rows": [
+     {
+      "rid": "r1",
+      "row": {
+       "songId": "s1",
+       "title": "T s1",
+       "artist": "A",
+       "lengthMs": 200000,
+       "appleMusicId": "1440"
+      }
+     }
+    ]
+   }
+  },
+  "playPause": {
+   "playPause": {}
+  },
+  "setPlaying": {
+   "setPlaying": {
+    "_0": true
+   }
+  },
+  "seek": {
+   "seek": {
+    "ms": 1234
+   }
+  },
+  "skipNext": {
+   "skipNext": {}
+  },
+  "skipPrevious": {
+   "skipPrevious": {}
+  },
+  "jumpTo": {
+   "jumpTo": {
+    "rid": "r9"
+   }
+  },
+  "enqueueNext": {
+   "enqueueNext": {
+    "rows": [
+     {
+      "rid": "r1",
+      "row": {
+       "songId": "s1",
+       "title": "T s1",
+       "artist": "A",
+       "lengthMs": 200000,
+       "appleMusicId": "1440"
+      }
+     }
+    ]
+   }
+  },
+  "append": {
+   "append": {
+    "rows": [
+     {
+      "rid": "r1",
+      "row": {
+       "songId": "s1",
+       "title": "T s1",
+       "artist": "A",
+       "lengthMs": 200000,
+       "appleMusicId": "1440"
+      }
+     }
+    ]
+   }
+  },
+  "remove": {
+   "remove": {
+    "rid": "r3"
+   }
+  },
+  "move": {
+   "move": {
+    "rid": "r3",
+    "toUpcomingOffset": 2
+   }
+  },
+  "reorder": {
+   "reorder": {
+    "rids": [
+     "r4",
+     "r5"
+    ]
+   }
+  },
+  "setRepeat": {
+   "setRepeat": {
+    "_0": "all"
+   }
+  },
+  "setShuffle": {
+   "setShuffle": {
+    "_0": false
+   }
+  },
+  "advanced": {
+   "advanced": {
+    "fromRid": "r2"
+   }
+  }
+ },
+ "state": {
+  "revision": 7,
+  "hostId": "H",
+  "mode": "backseat",
+  "snapshot": {
+   "schemaVersion": 1,
+   "sessionId": "sess",
+   "source": {
+    "kind": "remote",
+    "name": "Golden Hour"
+   },
+   "queue": [
+    {
+     "songId": "s1",
+     "title": "T s1",
+     "artist": "A",
+     "lengthMs": 200000,
+     "appleMusicId": "1440"
+    },
+    {
+     "songId": "s2",
+     "title": "T s2",
+     "artist": "A",
+     "lengthMs": 200000,
+     "appleMusicId": "1440"
+    }
+   ],
+   "index": 1,
+   "positionMs": 5000,
+   "isPlaying": true,
+   "repeatMode": "off",
+   "shuffleEnabled": false,
+   "updatedAt": 5000000.5
+  },
+  "rowIds": [
+   "r1",
+   "r2"
+  ],
+  "windowStart": 3,
+  "totalCount": 9,
+  "anchorSharedTime": 5000000.5
+ },
+ "stateSessionActive": {
+  "revision": 7,
+  "hostId": "H",
+  "mode": "backseat",
+  "snapshot": {
+   "schemaVersion": 1,
+   "sessionId": "sess",
+   "source": {
+    "kind": "remote",
+    "name": "Golden Hour"
+   },
+   "queue": [
+    {
+     "songId": "s1",
+     "title": "T s1",
+     "artist": "A",
+     "lengthMs": 200000,
+     "appleMusicId": "1440"
+    },
+    {
+     "songId": "s2",
+     "title": "T s2",
+     "artist": "A",
+     "lengthMs": 200000,
+     "appleMusicId": "1440"
+    }
+   ],
+   "index": 1,
+   "positionMs": 5000,
+   "isPlaying": true,
+   "repeatMode": "off",
+   "shuffleEnabled": false,
+   "updatedAt": 5000000.5
+  },
+  "rowIds": [
+   "r1",
+   "r2"
+  ],
+  "windowStart": 3,
+  "totalCount": 9,
+  "anchorSharedTime": 5000000.5,
+  "sessionActive": false
+ },
+ "heartbeat": {
+  "revision": 7,
+  "hostId": "H",
+  "currentRid": "r2",
+  "positionMs": 5000,
+  "isPlaying": true,
+  "anchorSharedTime": 5000000.5,
+  "sessionActive": true
+ },
+ "heartbeatNoRid": {
+  "revision": 0,
+  "hostId": "H",
+  "positionMs": 0,
+  "isPlaying": false,
+  "anchorSharedTime": 1.0,
+  "sessionActive": false
+ },
+ "stateRequest": {
+  "haveRevision": -1
+ },
+ "commandMessage": {
+  "id": "x",
+  "command": {
+   "seek": {
+    "ms": 1234
+   }
+  }
+ },
+ "hello": {
+  "name": "Pixel",
+  "role": "speaker",
+  "platform": "android",
+  "caps": [
+   "mix"
+  ]
+ },
+ "helloNoCaps": {
+  "name": "iPhone",
+  "role": "controller",
+  "platform": "ios"
+ },
+ "availability": {
+  "unavailableRids": [
+   "r2",
+   "r4"
+  ]
+ },
+ "ping": {
+  "id": "p1",
+  "t0": 1000.5
+ },
+ "pong": {
+  "id": "p1",
+  "t0": 1000.5,
+  "t1": 2000.0,
+  "t2": 2000.25
+ }
+}
