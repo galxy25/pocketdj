@@ -30,3 +30,15 @@ Suite: 6444 tests, 0 failures (`:app:testDebugUnitTest :app:assembleDebug` green
 
 ## Questions for Levi
 - None.
+
+## Review
+- MAJOR mid-song stream death: fixed. `GrowingStart.onStreamProgress` now falls back at the playhead (`stream failed`, engine released by us) when the stream is `failed` and the DSP has already made sound, instead of feeding the engine's finish-at-frontier path. Tests: `aStreamThatDiesAfterAudioFallsBack...`, `aStreamFailureBeforeAudioIsLeftToTheEngineCallback`. (Deviation entry above superseded.)
+- MINOR hand-off fallback meter: fixed. `fallBack` opens the fallback meter only on a real restart (plain, or left-stream resume failing); resuming the left stream opens none. Test assertion added.
+- MINOR `suppressHistoryFor`: fixed. Now armed via `PlaybackService.armSuppressHistory` with a 15 s expiry, so a restart that never loads cannot swallow a later play.
+- MINOR stale `npMetaStaged`: fixed. `clearStagedGrowingMeta()` after every growing engage attempt and in `disengage`.
+- NIT awaitingFirstAudio: fixed. New engine `producedAudio` (per-engagement `grow.everStarted`) replaces the per-resume `hasStarted`.
+- NIT merge hotspots: noted, merge in dependency order.
+
+Suite: 6446 tests, 0 failures (+2). assembleDebug green.
+
+fixes applied

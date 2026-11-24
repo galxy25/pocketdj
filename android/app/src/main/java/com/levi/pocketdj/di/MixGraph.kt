@@ -485,6 +485,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         npMetaStaged = NpMeta(item.id, item.title, item.artist, album?.artCandidates()?.firstOrNull(), x)
     }
 
+    /** Drop staged growing metadata that no engage consumed (refused / superseded engage). */
+    fun clearStagedGrowingMeta() { npMetaStaged = null }
+
     /** The session-scoped Stem Lock carry; every change re-persists the durable session's `stemLock`. */
     val stemLockSession: com.levi.pocketdj.mix.nowplaying.StemLockSession by lazy {
         com.levi.pocketdj.mix.nowplaying.StemLockSession(onChanged = { persistStemLock() })

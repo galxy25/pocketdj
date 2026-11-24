@@ -436,6 +436,12 @@ class GrowingStart(
             return
         }
         val s = env.stream(audioId) ?: return
+        if (s.failed && !env.dsp.awaitingFirstAudio && env.dsp.engagedSongId != null) {
+            // The stream died AFTER the DSP made sound: the engine would end the song at the byte frontier. Fall back to the
+            // plain stream at the playhead instead (iOS growingFallBack "stream failed"). A pre-audio death is the engine's own callback.
+            fallBack(uid, growingGen, env.dsp.currentTimeSec, "stream failed", engineAlreadyReleased = false)
+            return
+        }
         env.feed(s)
         if (s.isComplete && !completeLogged) {
             completeLogged = true
@@ -531,13 +537,17 @@ class GrowingStart(
         endGrowing()
         if (!engineAlreadyReleased) env.disengage()
         env.log("growing fallback reason=$reason row=${row.id} at=${atMs}ms -> plain stream${if (left != null) " (the one it left)" else ""}")
-        env.meterBegan(GrowingRules.CAUSE_FALLBACK)
         if (left != null) {
+            // Resuming the stream the hand-off left has no first-audio event to close a dead-air meter: open it only on a real restart.
             scope.launch {
                 val ok = try { env.resumeLeftStream(row.id, atMs) } catch (e: CancellationException) { throw e } catch (_: Exception) { false }
-                if (!ok && env.currentRow()?.uid == uid) env.restartPlain(uid, atMs)
+                if (!ok && env.currentRow()?.uid == uid) {
+                    env.meterBegan(GrowingRules.CAUSE_FALLBACK)
+                    env.restartPlain(uid, atMs)
+                }
             }
         } else {
+            env.meterBegan(GrowingRules.CAUSE_FALLBACK)
             env.restartPlain(uid, atMs)
         }
     }

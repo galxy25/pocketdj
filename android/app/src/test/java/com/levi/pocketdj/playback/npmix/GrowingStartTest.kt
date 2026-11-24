@@ -376,6 +376,31 @@ class GrowingStartTest {
         assertEquals("u1", g.refusedUid)
     }
 
+    @Test fun aStreamThatDiesAfterAudioFallsBackAtThePlayheadInsteadOfEndingTheSong() = runTest {
+        val env = FakeEnv(row)
+        val g = GrowingStart(env, backgroundScope, { testScheduler.currentTime })
+        g.tryClaim(attempt(row))
+        env.dsp.awaitingFirstAudio = false
+        env.dsp.currentTimeSec = 70.0
+        env.stream = stream(failed = true)
+        g.onStreamProgress("a")
+        assertTrue(env.feeds.isEmpty()) // the engine's finish-at-frontier path is never taken
+        assertEquals(1, env.calls.count { it == "disengage" })
+        assertEquals("restart(u1,70000)", env.calls.last())
+        assertEquals(1, g.fallbackCount)
+    }
+
+    @Test fun aStreamFailureBeforeAudioIsLeftToTheEngineCallback() = runTest {
+        val env = FakeEnv(row)
+        val g = GrowingStart(env, backgroundScope, { testScheduler.currentTime })
+        g.tryClaim(attempt(row))
+        env.dsp.awaitingFirstAudio = true
+        env.stream = stream(failed = true)
+        g.onStreamProgress("a")
+        assertEquals(0, g.fallbackCount)
+        assertEquals(1, env.feeds.size)
+    }
+
     @Test fun aTouchHandOffFallsBackOntoTheStreamItLeft() = runTest {
         val env = FakeEnv(row).apply {
             touch = TouchFacts(true, false, true, false, false, false, stream(bytes = 5_000_000), 30.0, 200.0)
@@ -392,6 +417,8 @@ class GrowingStartTest {
         runCurrent()
         assertEquals("left(a,41000)", env.calls.last())
         assertFalse(env.calls.any { it.startsWith("restart") })
+        // resuming the left stream has no first-audio event: no fallback dead-air meter may be left open
+        assertFalse(env.meter.contains("began:${GrowingRules.CAUSE_FALLBACK}"))
     }
 
     @Test fun ifTheLeftStreamCannotBeResumedTheRowRestartsPlain() = runTest {

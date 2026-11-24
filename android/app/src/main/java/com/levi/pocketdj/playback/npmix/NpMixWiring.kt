@@ -142,7 +142,7 @@ class NpMixWiring(private val app: AppGraph) {
         override val dsp = object : GrowingDsp {
             override val engagedSongId: String? get() = engine.engagedSongId
             override val isBuffering: Boolean get() = engine.isBuffering
-            override val awaitingFirstAudio: Boolean get() = !engine.hasStarted
+            override val awaitingFirstAudio: Boolean get() = !engine.producedAudio
             override val currentTimeSec: Double get() = engine.currentTimeSec
         }
         override val buffering: Boolean get() = coordinator.buffering
@@ -234,6 +234,7 @@ class NpMixWiring(private val app: AppGraph) {
                 startMs = if (s.isCut) 0L else (s.startMs ?: 0L), lengthMs = windowLengthMs(item, s),
                 bytesReceived = s.bytesReceived, complete = s.isComplete,
             )
+            mixGraph.clearStagedGrowingMeta() // onEngaged fires inside engage: anything left over belongs to no engagement
             if (ok) e.bindSong(item.id)
             return ok
         }
@@ -242,6 +243,7 @@ class NpMixWiring(private val app: AppGraph) {
 
         override fun disengage(): Double? {
             val at = engine.disengage()
+            mixGraph.clearStagedGrowingMeta()
             runCatching { mixGraph.npDspHost.refresh() }
             return at
         }
@@ -255,9 +257,9 @@ class NpMixWiring(private val app: AppGraph) {
 
         override fun restartPlain(uid: String, atMs: Long): Boolean {
             // The row's History play was recorded at the growing start: its plain re-load must not record a second one.
-            seq.state.value.current?.takeIf { it.uid == uid }?.let { com.levi.pocketdj.playback.PlaybackService.suppressHistoryFor = it.id }
+            seq.state.value.current?.takeIf { it.uid == uid }?.let { com.levi.pocketdj.playback.PlaybackService.armSuppressHistory(it.id) }
             val ok = seq.restartCurrentRow(uid, atMs)
-            if (!ok) com.levi.pocketdj.playback.PlaybackService.suppressHistoryFor = null
+            if (!ok) com.levi.pocketdj.playback.PlaybackService.armSuppressHistory(null)
             return ok
         }
 

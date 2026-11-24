@@ -171,7 +171,10 @@ class PlaybackService : MediaLibraryService() {
                 }
                 lastPlayEventSongId = songId
                 // P2-MM-8: a row the growing DSP already recorded restarts on its plain stream: not a second History play.
-                if (suppressHistoryFor == songId) { suppressHistoryFor = null; return }
+                if (suppressHistoryFor == songId) {
+                    suppressHistoryFor = null
+                    if (android.os.SystemClock.elapsedRealtime() <= suppressHistoryUntilMs) return
+                }
                 PlayEventBus.emit(
                     PlayStarted(
                         songId = songId,
@@ -388,6 +391,12 @@ class PlaybackService : MediaLibraryService() {
     companion object {
         /** P2-MM-8: the next load of this song id (a growing-file fallback restart) records no History play. One-shot. */
         @Volatile var suppressHistoryFor: String? = null
+        @Volatile var suppressHistoryUntilMs: Long = 0L
+        /** Arm the one-shot with a short expiry so a restart that never loads cannot swallow a later legitimate play. */
+        fun armSuppressHistory(songId: String?) {
+            suppressHistoryFor = songId
+            suppressHistoryUntilMs = if (songId == null) 0L else android.os.SystemClock.elapsedRealtime() + 15_000L
+        }
 
         private const val BOOT_CHANNEL = "pdj_playback_boot"
         private const val MAX_SETTLE_CHECKS = 12
