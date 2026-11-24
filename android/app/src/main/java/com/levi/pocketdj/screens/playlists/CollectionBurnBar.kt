@@ -545,6 +545,16 @@ fun CollectionBurnBar(
         }
     }
 
+    CollectionBurnDialogs(controller, noun)
+}
+
+/**
+ * The over-cap Stemify confirm + the result summary dialog for [controller]. Shared by [CollectionBurnBar] and
+ * pages that start a Stemify from their own button (album page).
+ */
+@Composable
+fun CollectionBurnDialogs(controller: CollectionBurnController, noun: String = "collection") {
+    val state by controller.state.collectAsState()
     state.stemConfirm?.let { c ->
         AlertDialog(
             onDismissRequest = controller::dismissStemConfirm,
