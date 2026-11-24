@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-DJ-7: NP DSP two-deck transition engine
 
@@ -27,3 +27,12 @@ None.
 
 ## Questions for Levi
 None.
+
+## Review
+
+- cut reason lost in FADING -> fixed (cutReason field; endFade finishes with it; test aSeekDuringTheFadeReportsTheSeekReason)
+- decline order (unreadable before too-close) -> fixed (TOO_CLOSE path probes the incoming and releases it; test anUnreadableIncomingWinsOverTooClose)
+- seek in PREROLL hands back stale playhead -> fixed (no onHandBack for reason "seek"; test aSeekInThePreRollDoesNotHandBackAStalePlayhead)
+- reset() stale state (NIT) -> fixed (clears glideDropped, fadeProgress, running ease overlay)
+
+fixes applied

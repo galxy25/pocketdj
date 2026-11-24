@@ -284,7 +284,7 @@ class DjTransitionEngineTest {
         assertEquals(1f, r.engine.djCrossfaderForTest(), 0f)
         assertEquals(1, r.voices.size)
         assertEquals(Deck.B, r.engine.liveDeck)
-        assertEquals("end:s2:cut", r.events.last())
+        assertEquals("end:s2:manual", r.events.last())
         assertTrue(r.engine.isPlaying)
     }
 
@@ -419,6 +419,41 @@ class DjTransitionEngineTest {
         assertEquals(DjEngineDecline.INCOMING_UNREADABLE, DjEngineDecline.check(ok.copy(incomingReadable = false, secondsLeft = 0.1)))
         assertEquals(DjEngineDecline.TOO_CLOSE, DjEngineDecline.check(ok.copy(secondsLeft = 0.29)))
         assertNull(DjEngineDecline.check(ok.copy(secondsLeft = 0.3)))
+    }
+
+    @Test fun anUnreadableIncomingWinsOverTooClose() {
+        val r = Rig(songSeconds = 10)
+        r.engageSong(at = 9.8)
+        r.seconds(0.05)
+        r.unreadable = setOf("next.mp3")
+        assertEquals(DjEngineDecline.INCOMING_UNREADABLE, r.engine.dj.beginTransition(spec()))
+        r.unreadable = emptySet()
+        assertEquals(DjEngineDecline.TOO_CLOSE, r.engine.dj.beginTransition(spec()))
+        assertEquals("the probe leaves no voice running", 1, r.voices.size)
+    }
+
+    @Test fun aSeekDuringTheFadeReportsTheSeekReason() {
+        val r = Rig(songSeconds = 12)
+        r.engageSong()
+        r.seconds(1.0)
+        r.engine.dj.beginTransition(spec(AutoTransition.Plan(false, 0.0, 2.0, 0.0, null)))
+        r.seconds(0.5)
+        assertEquals(DjPhase.FADING, r.engine.dj.phase)
+        r.engine.seekTo(2.0)
+        r.seconds(0.3)
+        assertTrue(r.events.toString(), r.events.any { it == "end:s2:seek" })
+        assertFalse(r.events.any { it.endsWith(":cut") })
+    }
+
+    @Test fun aSeekInThePreRollDoesNotHandBackAStalePlayhead() {
+        val r = Rig(songSeconds = 12)
+        r.engageSong()
+        r.seconds(1.0)
+        r.engine.dj.beginTransition(spec(AutoTransition.Plan(true, 3.0, 1.0, 0.0, null), AutoTransition.GlideTargets(1.1, 0.0, 0.9, 0.0)))
+        r.seconds(0.5)
+        r.engine.seekTo(5.0)
+        assertFalse(r.events.toString(), r.events.contains("back"))
+        assertTrue(r.events.contains("end:null:seek"))
     }
 
     @Test fun theGenerationBumpsAtTheCommitPointBeforeTheTailIsStopped() {

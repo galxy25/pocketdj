@@ -119,6 +119,7 @@ class DjTransitionEngine internal constructor(
     private var lastClock = 0.0
     private var ease: Ease? = null
     private var cutting = false
+    private var cutReason = "cut"
     private var cutFrom = 0.0
     private var cutElapsed = 0.0
     private var ticker: Job? = null
@@ -159,14 +160,22 @@ class DjTransitionEngine internal constructor(
             mutedStems = np.djHasMutedStems, incomingReadable = true,
             secondsLeft = if (np.isEngaged) np.djSecondsLeft() else 0.0,
         )
-        DjEngineDecline.check(readyChecks)?.let { return it }
         val i = spec.incoming
+        DjEngineDecline.check(readyChecks)?.let { why ->
+            if (why != DjEngineDecline.TOO_CLOSE) return why
+            // the contract order puts an unreadable incoming ahead of too-close: probe the file, then release it
+            val probe = np.djOpenIncoming(i.songId, i.file, i.startMs, i.lengthMs, i.levelDb)
+                ?: return DjEngineDecline.INCOMING_UNREADABLE
+            np.djReleaseDeck(probe.deck, probe.voice, probe.run, null, emptyList())
+            return why
+        }
         val opened = np.djOpenIncoming(i.songId, i.file, i.startMs, i.lengthMs, i.levelDb)
             ?: return DjEngineDecline.INCOMING_UNREADABLE
         this.spec = spec
         inc = opened
         glideDropped = false
         cutting = false
+        cutReason = "cut"
         fadeProgress = 0.0
         phaseElapsed = 0.0
         lastClock = clock()
@@ -278,7 +287,7 @@ class DjTransitionEngine internal constructor(
         val sp = spec
         if (cutting) {
             startEase(np.djOverlay())
-            finish("cut")
+            finish(cutReason)
         } else if (sp != null && sp.plan.hasPostRoll && !glideDropped) {
             phase = DjPhase.POSTROLL
             phaseElapsed = 0.0
@@ -316,6 +325,7 @@ class DjTransitionEngine internal constructor(
             }
             DjPhase.FADING -> {
                 if (cutting) return
+                cutReason = reason
                 if (!np.djPlayWanted) {      // paused: nothing is sounding, so nothing clicks
                     cutting = true
                     endFade()
@@ -339,7 +349,7 @@ class DjTransitionEngine internal constructor(
         phase = DjPhase.IDLE
         glideDropped = false
         fadeProgress = 0.0
-        onHandBack?.invoke(np.djPosition())
+        if (reason != "seek") onHandBack?.invoke(np.djPosition())   // a seek supplies its own playhead
         startEase(from)
         onTransitionEnded?.invoke(null, reason)
     }
@@ -352,7 +362,9 @@ class DjTransitionEngine internal constructor(
     /** Stop / disengage / a fresh engage: cut everything without a hand-back. */
     internal fun reset(reason: String) {
         arm = null
-        ease = null
+        if (ease != null) { ease = null; np.djClearOwnOverlay() }
+        glideDropped = false
+        fadeProgress = 0.0
         ticker?.cancel(); ticker = null
         if (phase == DjPhase.IDLE && tail == null && inc == null) return
         val id = if (phase == DjPhase.FADING || phase == DjPhase.POSTROLL) spec?.incoming?.songId else null
