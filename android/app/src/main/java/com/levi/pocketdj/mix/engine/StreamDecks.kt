@@ -417,7 +417,9 @@ class StreamDecks(
         d.source?.let { sources.markComplete(it) }
         c.growTo(d.fullEnd, final = true)
         log("deck ${deck.label} complete ${d.handle.songId}")
+        val doneFile = d.handle.file
         clearStream(deck)
+        engine.streamSettled(deck, doneFile)   // Volume Glide: the whole file is on disk, measurable now
     }
 
     /**
@@ -437,6 +439,7 @@ class StreamDecks(
             d.source?.let { sources.markComplete(it) }
             clearStream(deck)
             truncated[deck.ordinal] = true
+            engine.streamSettled(deck, null)
             stems?.mainStreamDied(deck)
             engine.refreshTransport()
             return
@@ -463,6 +466,7 @@ class StreamDecks(
         }
         restampAutoEnd(deck)
         clearStream(deck)
+        engine.streamSettled(deck, null)   // a truncated song is not measured: Volume Glide reads "unavailable"
     }
 
     /**

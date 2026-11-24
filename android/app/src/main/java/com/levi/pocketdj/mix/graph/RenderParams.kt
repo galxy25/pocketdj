@@ -95,6 +95,8 @@ object Routing {
 /** Control-thread view of a deck, enough to compose [DeckParams]. */
 data class DeckInputs(
     val volume: Double = 1.0,
+    /** Volume Glide's automatic leveling (dB, 0 unless the Auto-DJ levels this deck); summed into the trim, never the fader. */
+    val levelDb: Double = 0.0,
     val cued: Boolean = false,
     val cueVol: Double = 1.0,
     val eqLowDb: Double = 0.0,
@@ -105,7 +107,7 @@ data class DeckInputs(
     val stemBalance: FloatArray = floatArrayOf(1f, 1f, 1f, 1f),
     val slots: List<SlotParams?> = emptyList(),
 ) {
-    override fun equals(other: Any?) = other is DeckInputs && volume == other.volume && cued == other.cued &&
+    override fun equals(other: Any?) = other is DeckInputs && volume == other.volume && levelDb == other.levelDb && cued == other.cued &&
         cueVol == other.cueVol && eqLowDb == other.eqLowDb && eqMidDb == other.eqMidDb && eqHighDb == other.eqHighDb &&
         speed == other.speed && pitchSemitones == other.pitchSemitones && stemBalance.contentEquals(other.stemBalance) &&
         slots == other.slots
@@ -131,6 +133,8 @@ class ParamsComposer(private val graph: MixGraph? = null) {
     fun inputs(d: Deck): DeckInputs = inputs[d.ordinal]
 
     fun setVolume(d: Deck, v: Double) { update(d) { it.copy(volume = v) }; boostWrites++; publish(trimFrom = null) }
+    /** Volume Glide: re-derives the trim as boost + [db]. Not a boost write ([boostWrites] stays put); the fader is untouched. */
+    fun setLevelDb(d: Deck, db: Double) { update(d) { it.copy(levelDb = db) }; publish(trimFrom = null) }
     fun setCued(d: Deck, on: Boolean) { update(d) { it.copy(cued = on) }; publish() }
     fun setCueVolume(d: Deck, v: Double) { update(d) { it.copy(cueVol = v) }; publish() }
     fun setCueOnRight(on: Boolean) { cueOnRight = on; publish() }
@@ -163,7 +167,7 @@ class ParamsComposer(private val graph: MixGraph? = null) {
         return DeckParams(
             mainGain = Routing.mainGain(i.volume, MixMath.crossfadeFactor(d, crossfader)),
             cueGain = Routing.cueSend(i.volume, i.cued, i.cueVol),
-            trimDb = prev?.trimDb ?: Routing.trimDb(i.volume), // crossfader path keeps the trim untouched
+            trimDb = prev?.trimDb ?: (Routing.trimDb(i.volume) + i.levelDb.toFloat()), // crossfader path keeps the trim untouched
             eqLowDb = i.eqLowDb.toFloat(), eqMidDb = i.eqMidDb.toFloat(), eqHighDb = i.eqHighDb.toFloat(),
             speed = i.speed.toFloat(), pitchSemitones = i.pitchSemitones.toFloat(),
             stemBalance = i.stemBalance, slots = i.slots,

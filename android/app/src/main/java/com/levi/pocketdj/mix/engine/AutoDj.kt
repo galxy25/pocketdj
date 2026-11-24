@@ -300,6 +300,7 @@ class AutoDj(
 
         deckEndsAt[Deck.A] = now() + (deckDurationMs[Deck.A] ?: FALLBACK_DURATION_MS).toLong()
         mixing = true
+        engine.refreshVolumeGlide()   // Volume Glide: level both decks now the Auto-DJ is on
         onSkipCommandsEnabled?.invoke(true)   // lock-screen next/previous = fast/slow auto-mix skip
         engine.play(Deck.A)
         refreshStatus()
@@ -342,6 +343,7 @@ class AutoDj(
         remotePausedAt = null
         engineStallAt = null     // a stale stall park must never shift the NEXT mix's fresh clocks
         mixing = false
+        engine.refreshVolumeGlide()   // Volume Glide: the leveling goes with the Auto-DJ (back to 0 dB)
         sourceLabel = null
         // Recenter ONLY after a real auto-mix, non-recording, so ending never injects a `.crossfader`.
         if (wasMixing) {
@@ -1180,6 +1182,7 @@ class AutoDj(
         paused = true                      // SUSPENDED
         resumeFromRestore = true           // first resume: the restored cursor wins over the play-log
         mixing = true
+        engine.refreshVolumeGlide()
         refreshStatus()
         prefetchUpcoming()
     }
