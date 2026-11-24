@@ -14,6 +14,7 @@ import com.levi.pocketdj.shell.JukeboxPanelMode
 import com.levi.pocketdj.shell.JukeboxPanelModeStore
 import com.levi.pocketdj.shell.RemotePanelRequests
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -123,5 +124,45 @@ class JukeboxHubModeTest {
             RemoteShowcaseSeed.stop()
         }
         assertFalse(RemoteShowcaseSeed.isRunning)
+    }
+
+    @get:org.junit.Rule val tmp = org.junit.rules.TemporaryFolder()
+
+    private fun store(scope: kotlinx.coroutines.CoroutineScope) = com.levi.pocketdj.data.settings.AppSettingsStore(
+        androidx.datastore.preferences.core.PreferenceDataStoreFactory.create(scope = scope) { java.io.File(tmp.root, "s.preferences_pb") },
+    )
+
+    @Test fun restoreOfTheRetiredRemoteTokenWritesRemoteMode() = kotlinx.coroutines.runBlocking {
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.Job())
+        val settings = store(scope)
+        settings.set(com.levi.pocketdj.data.settings.LegacyPrefKeys.LAST_SECTION, "Remote")
+        val dest = com.levi.pocketdj.shell.LastSectionStore(settings).restore()
+        assertEquals(PocketDjDestination.Jukebox, dest)
+        assertEquals("Remote", settings.get(JukeboxPanelModeStore.KEY))
+        scope.cancel()
+    }
+
+    @Test fun restoreOfAnOrdinaryTokenLeavesTheModeAlone() = kotlinx.coroutines.runBlocking {
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.Job())
+        val settings = store(scope)
+        settings.set(com.levi.pocketdj.data.settings.LegacyPrefKeys.LAST_SECTION, "Jukebox Hero")
+        com.levi.pocketdj.shell.LastSectionStore(settings).restore()
+        assertEquals("Jukebox Hero", settings.get(JukeboxPanelModeStore.KEY))
+        scope.cancel()
+    }
+
+    @Test fun aRemoteLinkRoutesToJukeboxAndParksARequest() = runTest {
+        val consumed = RemotePanelRequests.pending.value
+        consumed?.let(RemotePanelRequests::consume)
+        val routes = mutableListOf<com.levi.pocketdj.shell.ShellRoute>()
+        val gate = object : com.levi.pocketdj.shell.OnboardingGate {
+            override val isComplete = true
+            override suspend fun waitUntilComplete() {}
+        }
+        val d = com.levi.pocketdj.shell.DeepLinkDispatcher(backgroundScope, gate, postRoute = { routes += it }, postMessage = {})
+        assertTrue(d.handle(DeepLink.Remote("ABCD12")))
+        assertEquals(listOf<com.levi.pocketdj.shell.ShellRoute>(com.levi.pocketdj.shell.ShellRoute.Tab(PocketDjDestination.Jukebox)), routes)
+        assertEquals("ABCD12", RemotePanelRequests.pending.value?.joinCode)
+        RemotePanelRequests.consume(RemotePanelRequests.pending.value!!)
     }
 }

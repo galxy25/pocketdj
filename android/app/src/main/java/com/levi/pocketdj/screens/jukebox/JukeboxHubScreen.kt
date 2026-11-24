@@ -31,6 +31,7 @@ import com.levi.pocketdj.shell.JukeboxPanelMode
 import com.levi.pocketdj.shell.JukeboxPanelModeStore
 import com.levi.pocketdj.shell.RemotePanelRequests
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 
 /**
@@ -55,7 +56,8 @@ fun JukeboxHubScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit
     // A session arriving while the panel shows Hero flips it to Remote.
     LaunchedEffect(controller, remoteAvailable) {
         if (!remoteAvailable) return@LaunchedEffect
-        controller.isActive.collect { active ->
+        // drop(1): the StateFlow replays its current value; iOS onChange fires on transitions only, never on appear.
+        controller.isActive.drop(1).collect { active ->
             val next = JukeboxPanelModeStore.afterSessionChange(JukeboxPanelMode.fromRaw(graph.settings.get(JukeboxPanelModeStore.KEY)), active)
             if (next.raw != graph.settings.get(JukeboxPanelModeStore.KEY)) setMode(next)
         }
