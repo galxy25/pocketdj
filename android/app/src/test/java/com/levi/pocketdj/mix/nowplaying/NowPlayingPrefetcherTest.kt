@@ -57,6 +57,19 @@ class NowPlayingPrefetcherTest {
         assertEquals(emptyList<String>(), p.rips)
     }
 
+    @Test fun stemLockHardCodedGoldensPinTheLegacyPlanIndependentlyOfTheInputOverload() {
+        val up = listOf(t("a"), t("b"))
+        val muted = lock.copy(muted = listOf("bass"))
+        assertEquals(listOf("song:a", "vocals:a", "drums:a", "other:a", "song:b", "vocals:b", "drums:b", "other:b", "bass:a", "bass:b"),
+            names(NowPlayingPrefetcher.plan(null, up, muted, NetworkClass.UNMETERED, 2)))
+        assertEquals(listOf("song:a", "vocals:a", "drums:a", "other:a", "bass:a"),
+            names(NowPlayingPrefetcher.plan(null, up, muted, NetworkClass.EXPENSIVE, 2)))
+        assertEquals(listOf("song:a", "vocals:a", "drums:a", "other:a"),
+            names(NowPlayingPrefetcher.plan(null, up, muted, NetworkClass.CONSTRAINED, 2)))
+        assertEquals(emptyList<String>(), names(NowPlayingPrefetcher.plan(null, up, muted, NetworkClass.OFFLINE, 2)))
+        assertEquals(emptyList<String>(), names(NowPlayingPrefetcher.plan(null, up, off, NetworkClass.UNMETERED, 2)))
+    }
+
     // ---- Mix Mode ON goldens -----------------------------------------------------------------------
 
     private fun run(
@@ -206,6 +219,32 @@ class NowPlayingPrefetcherTest {
         clock += pf.blockedCooldownMs
         pf.apply(plan); scope.advanceUntilIdle()
         assertTrue(asked.contains("drums:n"))
+    }
+
+    @Test fun blockedSongDropsItsPendingStemPartsToo() {
+        val (scope, pf) = lane()
+        val fetched = ArrayList<String>()
+        pf.diskGuard = { s -> s.toString() != "song:n" }
+        pf.fetchSong = { fetched += it.toString(); true }
+        pf.fetchStemPart = { id, part -> fetched += "$part:$id"; true }
+        pf.apply(NowPlayingPrefetcher.plan(null, listOf(t("n"), t("m")), lock, NetworkClass.UNMETERED, 2)); scope.advanceUntilIdle()
+        assertEquals(listOf("song:m") + stemsOf("m"), fetched)
+        assertTrue(pf.startedLog.none { it is Step.StemPart && it.songId == "n" })
+    }
+
+    @Test fun replanDoesNotCancelAnExplicitDownloadingSong() {
+        val (scope, pf) = lane()
+        var state = NowPlayingPrefetcher.PendingDownload.DOWNLOADING
+        val fetched = ArrayList<String>()
+        pf.pendingDownload = { state }
+        pf.fetchSong = { fetched += it.toString(); true }
+        pf.apply(NowPlayingPrefetcher.plan(null, listOf(t("n")), lock, NetworkClass.UNMETERED, 1)); scope.runCurrent()
+        assertEquals("song:n", pf.inFlight.toString())
+        pf.apply(NowPlayingPrefetcher.Plan()) // re-plan that no longer wants it
+        assertEquals("song:n", pf.inFlight.toString())
+        state = NowPlayingPrefetcher.PendingDownload.READY
+        scope.advanceUntilIdle()
+        assertTrue("waited on the explicit download, no second fetch", fetched.isEmpty())
     }
 
     @Test fun blockedSongReadsAsStorageFullForTheCooldownOnly() {

@@ -118,6 +118,12 @@ class NowPlayingPrefetcher(
      * skipped ([blockedCooldownMs]). null = always (tests that don't exercise it).
      */
     var diskGuard: (suspend (Step) -> Boolean)? = null
+    /**
+     * Ledger lookup for an explicit Download of a [Step.Song] (BurnStore pending-download row; bound by P2-MM-5).
+     * While it reads DOWNLOADING the lane never cancels that step on a re-plan and waits (<= [PENDING_DOWNLOAD_WAIT_MS])
+     * for it instead of starting a second fetch. null = no ledger (nothing pending).
+     */
+    var pendingDownload: ((Step.Song) -> PendingDownload)? = null
     /** A step finished (`ok` = its audio is on disk). */
     var onStepFinished: ((Step, Boolean) -> Unit)? = null
 
@@ -178,7 +184,7 @@ class NowPlayingPrefetcher(
             (failedAt[s]?.let { t - it >= failureCooldownMs } ?: true) && (blockedAt[s]?.let { t - it >= blockedCooldownMs } ?: true)
         }
         val cur = inFlight
-        if (cur != null && cur in steps) {
+        if (cur != null && (cur in steps || (cur is Step.Song && pendingDownload?.invoke(cur) == PendingDownload.DOWNLOADING))) {
             pending = steps.filter { it != cur }
         } else {
             if (cur != null) StemLock.log("prefetch cancel $cur (no longer planned)")
@@ -217,6 +223,12 @@ class NowPlayingPrefetcher(
                     if (!allowed) {
                         inFlight = null
                         blockedAt[step] = now()
+                        if (step is Step.Song) {
+                            // Its stems can't play without the song on device: don't burn them either.
+                            val orphans = pending.filter { it is Step.StemPart && it.songId == step.songId }
+                            for (o in orphans) blockedAt[o] = now()
+                            pending = pending - orphans.toSet()
+                        }
                         StemLock.log("prefetch $step SKIPPED (storage: free space / buffer cap)")
                         onStepFinished?.invoke(step, false)
                         continue
@@ -226,7 +238,12 @@ class NowPlayingPrefetcher(
                 val t0 = now()
                 val ok = try {
                     when (step) {
-                        is Step.Song -> fetchSong(step)
+                        is Step.Song -> {
+                            val pd = pendingDownload
+                            if (pd != null && pd(step) == PendingDownload.DOWNLOADING &&
+                                awaitPendingDownload({ pd(step) }, nowMs = now)
+                            ) true else fetchSong(step)
+                        }
                         is Step.StemPart -> fetchStemPart(step.songId, step.part)
                     }
                 } catch (e: CancellationException) {
