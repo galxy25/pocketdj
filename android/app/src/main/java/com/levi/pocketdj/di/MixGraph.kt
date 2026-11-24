@@ -373,6 +373,8 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         }
     }
     val mixEngine: MixEngine get() = engineLazy.value
+    /** P2-SURF-9: the Mix engine exists already (Auto surfaces read live controls only then; never builds it). */
+    fun engineBuilt(): Boolean = engineLazy.isInitialized()
 
     /**
      * A Remote CONTROLLER plays nothing here (P2-REM-6): stop whatever the Mix decks and the Now Playing DSP host are
