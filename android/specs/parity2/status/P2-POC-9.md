@@ -26,3 +26,11 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+- Gesture consumes scroll (MINOR) -> fixed: down no longer consumed; moves consumed only over a cell; a consumed/cancelled pointer aborts without onSelect.
+- Double refresh on main (MINOR) -> fixed: loop uses refreshIfStale, snapshot effect skips first composition, both run on Dispatchers.Default.
+- Touch targets / reduce motion (MINOR) -> fixed: chips min 48dp; reduce-motion read each composition. Radius kept at iOS-matching layout (documented deviation).
+- Unused revision collection (NIT) -> fixed (removed).
+
+fixes applied

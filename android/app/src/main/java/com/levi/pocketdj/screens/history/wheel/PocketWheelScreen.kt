@@ -116,7 +116,9 @@ import com.levi.pocketdj.ui.theme.PdjOnSurfaceVariant
 import com.levi.pocketdj.ui.theme.PdjOutline
 import com.levi.pocketdj.ui.theme.PdjSurfaceContainerHigh
 import com.levi.pocketdj.ui.theme.PdjSurfaceVariant
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.min
@@ -164,9 +166,8 @@ internal fun modeIcon(m: PocketMode): ImageVector = when (m) {
 @Composable
 internal fun rememberReduceMotion(): Boolean {
     val ctx = LocalContext.current
-    return remember(ctx) {
-        runCatching { Settings.Global.getFloat(ctx.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }.getOrDefault(false)
-    }
+    // Read every composition so a mid-screen animator-scale change is seen on the next recomposition.
+    return runCatching { Settings.Global.getFloat(ctx.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }.getOrDefault(false)
 }
 
 private fun Color.withRgba(c: PocketWheelPaint.Rgba) = Color(c.r.toFloat(), c.g.toFloat(), c.b.toFloat(), c.a.toFloat())
@@ -200,12 +201,16 @@ fun PocketWheelHost(
     var local by remember { mutableStateOf<PocketMomentKey?>(null) }
     LaunchedEffect(graph) {
         while (true) {
-            runCatching { graph.wheelController.refresh() }
+            runCatching { withContext(Dispatchers.Default) { graph.wheelController.refreshIfStale() } }
             delay(60_000)
         }
     }
-    // A snapshot rebuild re-keys the best match too.
-    LaunchedEffect(snapshot) { runCatching { graph.wheelController.refresh() } }
+    // A snapshot rebuild re-keys the best match too (the first composition is covered by the loop above).
+    var firstSnapshot by remember { mutableStateOf(true) }
+    LaunchedEffect(snapshot) {
+        if (firstSnapshot) { firstSnapshot = false; return@LaunchedEffect }
+        runCatching { withContext(Dispatchers.Default) { graph.wheelController.refresh() } }
+    }
     val actions = rememberPocketWheelActions(graph, onPause)
     PocketWheelScreen(
         snapshot = snapshot,
@@ -321,7 +326,7 @@ private fun Chip(label: String, icon: ImageVector, on: Boolean, id: String, onCl
     val shape = RoundedCornerShape(50)
     Row(
         Modifier
-            .heightIn(min = 36.dp)
+            .heightIn(min = 48.dp)
             .clip(shape)
             .background(if (on) Accent.copy(alpha = 0.25f) else BgRaised, shape)
             .border(1.dp, if (on) Accent else Border, shape)
@@ -381,7 +386,7 @@ private fun Legend(snapshot: PocketWheelSnapshot, palette: PocketPaletteStore, h
             val shape = RoundedCornerShape(50)
             Row(
                 Modifier
-                    .heightIn(min = 36.dp)
+                    .heightIn(min = 48.dp)
                     .clip(shape)
                     .background(if (on) BgOverlay else BgRaised, shape)
                     .border(1.dp, if (on) Fg else Border, shape)
@@ -454,7 +459,7 @@ private fun PocketWheelCanvas(
                 .pointerInput(layout) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
-                        down.consume()
+                        var aborted = false
                         var last = down.position
                         fun update(p: Offset) {
                             last = p
@@ -470,12 +475,16 @@ private fun PocketWheelCanvas(
                         update(down.position)
                         while (true) {
                             val ev = awaitPointerEvent()
-                            val ch = ev.changes.firstOrNull() ?: break
+                            val ch = ev.changes.firstOrNull()
+                            // Cancelled (no change) or taken over by a parent scroll: abort without selecting.
+                            if (ch == null || ch.isConsumed) { aborted = true; break }
                             if (!ch.pressed) break
                             update(ch.position)
-                            ch.consume()
+                            // Only claim the gesture while over a cell; off-wheel drags stay scrollable.
+                            if (scrub != null) ch.consume()
                         }
                         scrub = null
+                        if (aborted) return@awaitEachGesture
                         val end = layout.hit(WheelLayout.Pt(last.x.toDouble(), last.y.toDouble()), center)
                         if (end is WheelLayout.Hit.CellHit && end.key != null) {
                             onSelect(end.key)

@@ -57,7 +57,6 @@ fun rememberPocketWheelActions(graph: PocketsGraph, onPause: (() -> Unit)? = nul
     val scope = rememberCoroutineScope()
     val result by controller.result.collectAsState()
     val active by store.active.collectAsState()
-    @Suppress("UNUSED_VARIABLE") val revision by store.revision.collectAsState()
     return remember(result, active, onPause) {
         PocketWheelActions(
             bestMatch = controller.bestSummary,
