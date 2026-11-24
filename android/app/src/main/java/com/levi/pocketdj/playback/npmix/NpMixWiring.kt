@@ -175,7 +175,7 @@ class NpMixWiring(private val app: AppGraph) {
                         appleMusicSourced = app.catalogRepository.state.value.catalog?.songsById?.get(item.id)?.appleMusicId?.isNotBlank() == true,
                         ripped = entry != null,
                         localCopyInstant = local || !app.playbackController.ripServerConfigured ||
-                            app.servicesGraph.presignCacheOrNull()?.cached(id) != null,
+                            app.presignCache.cached(id) != null,
                     ),
                 ) && controller.canPlayFullTrackWarming(),
                 analogSide = analog && entry?.cutKey == null,
