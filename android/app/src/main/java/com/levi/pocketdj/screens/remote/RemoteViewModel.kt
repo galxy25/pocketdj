@@ -94,8 +94,10 @@ object RemoteSearch {
     const val MIN_QUERY = 2
     const val DEBOUNCE_MS = 250L
 
+    private val marks = Regex("\\p{Mn}+")
+
     private fun fold(s: String): String =
-        Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "").lowercase()
+        Normalizer.normalize(s, Normalizer.Form.NFD).replace(marks, "").lowercase()
 
     /** Title/artist containment, case + diacritic insensitive, first [cap] hits in catalog order. */
     fun search(q: String, songs: List<IndexSong>, cap: Int = CAP): List<IndexSong> {
@@ -143,6 +145,19 @@ object RemoteQueueUi {
     }
 
     /** The row index a drag of [dyPx] lands on, for rows [rowPx] tall, clamped. */
+    fun dragTarget(from: Int, dyPx: Float, heights: List<Float>): Int {
+        val count = heights.size
+        if (count == 0 || from !in 0 until count) return from
+        var target = from
+        var remaining = dyPx
+        if (dyPx > 0f) {
+            while (target + 1 < count && remaining >= heights[target + 1] / 2f) { remaining -= heights[target + 1]; target++ }
+        } else if (dyPx < 0f) {
+            while (target - 1 >= 0 && -remaining >= heights[target - 1] / 2f) { remaining += heights[target - 1]; target-- }
+        }
+        return target
+    }
+
     fun dragTarget(from: Int, dyPx: Float, rowPx: Float, count: Int): Int {
         if (count <= 0 || rowPx <= 0f) return from
         val steps = Math.round(dyPx / rowPx)
@@ -176,6 +191,8 @@ class RemoteViewModel(
     private val scope: CoroutineScope,
     private val send: (RemoteCommand) -> Unit = controller::send,
     private val debounceMs: Long = RemoteSearch.DEBOUNCE_MS,
+    /** Where the library scan runs (off Main in the app; tests inherit the test dispatcher). */
+    private val searchContext: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.Default,
 ) {
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
@@ -189,6 +206,17 @@ class RemoteViewModel(
     val joining: StateFlow<Boolean> = _joining.asStateFlow()
 
     private var searchJob: Job? = null
+
+    init {
+        // Drop a stale invite whenever the session ends by any route (host ended, transport drop, leave).
+        scope.launch {
+            var was = controller.isActive.value
+            controller.isActive.collect { now ->
+                if (was && !now) starter().clearInvite()
+                was = now
+            }
+        }
+    }
 
     // ---- Transport (commands only) ----
     fun previous() = send(RemoteCommand.SkipPrevious)
@@ -217,7 +245,8 @@ class RemoteViewModel(
         if (trimmed.length < RemoteSearch.MIN_QUERY) { _results.value = emptyList(); return }
         searchJob = scope.launch {
             delay(debounceMs)
-            _results.value = RemoteSearch.search(trimmed, songs(), RemoteSearch.CAP)
+            val snapshot = songs()
+            _results.value = kotlinx.coroutines.withContext(searchContext) { RemoteSearch.search(trimmed, snapshot, RemoteSearch.CAP) }
         }
     }
 

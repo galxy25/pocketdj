@@ -69,7 +69,7 @@ class RemoteViewModelTest {
         val d = dev("A", LoopbackHub(), backgroundScope)
         d.controller.attach(d.link, RemoteSessionMode.LISTEN_TOGETHER, asHost = true, seed = seed("s1", "s2", "s3", "s4"), autoTick = false)
         val sent = ArrayList<RemoteCommand>()
-        return Triple(RemoteViewModel(d.controller, { starter }, { songs }, backgroundScope, send = { sent += it }), sent, d)
+        return Triple(RemoteViewModel(d.controller, { starter }, { songs }, backgroundScope, send = { sent += it }, searchContext = kotlin.coroutines.EmptyCoroutineContext), sent, d)
     }
 
     // ---- every control maps to the right RemoteCommand ----
@@ -125,7 +125,7 @@ class RemoteViewModelTest {
         val d = dev("A", LoopbackHub(), backgroundScope)
         d.controller.attach(d.link, RemoteSessionMode.LISTEN_TOGETHER, asHost = true, seed = RemoteQueueModel(), autoTick = false)
         val sent = ArrayList<RemoteCommand>()
-        val vm = RemoteViewModel(d.controller, { FakeStarter() }, { emptyList() }, backgroundScope, send = { sent += it })
+        val vm = RemoteViewModel(d.controller, { FakeStarter() }, { emptyList() }, backgroundScope, send = { sent += it }, searchContext = kotlin.coroutines.EmptyCoroutineContext)
         vm.add(song("x"), AddPlacement.NOW)
         val c = sent.single() as RemoteCommand.Play
         assertEquals(0, c.startIndex); assertEquals("x", c.rows.single().songId)
@@ -140,7 +140,7 @@ class RemoteViewModelTest {
         assertEquals(RemoteDeviceRole.SPEAKER, d.controller.localRole.value)
         vm.leave()
         assertFalse(d.controller.isActive.value)
-        assertEquals(1, starter.cleared)
+        assertTrue(starter.cleared >= 1)
     }
 
     // ---- never the local player; real session round trip ----
@@ -153,7 +153,7 @@ class RemoteViewModelTest {
         settle()
         // B is a controller; its remote-next goes to the host.
         b.controller.setLocalRole(RemoteDeviceRole.CONTROLLER)
-        val vm = RemoteViewModel(b.controller, { FakeStarter() }, { emptyList() }, backgroundScope)
+        val vm = RemoteViewModel(b.controller, { FakeStarter() }, { emptyList() }, backgroundScope, searchContext = kotlin.coroutines.EmptyCoroutineContext)
         val playsBefore = b.target.isPlaying
         vm.next(); settle()
         assertEquals("s2", a.controller.state.value?.currentRow?.songId)
@@ -264,5 +264,28 @@ class RemoteViewModelTest {
         val (_, _, d) = capturing()
         assertEquals(listOf("s2", "s3", "s4"), RemoteQueueUi.upcoming(d.controller.state.value).map { it.songId })
         assertTrue(RemoteQueueUi.upcoming(null).isEmpty())
+    }
+
+    @Test fun dragTargetUsesPerRowHeights() {
+        val h = listOf(100f, 60f, 100f, 60f)
+        assertEquals(0, RemoteQueueUi.dragTarget(0, 20f, h))
+        assertEquals(1, RemoteQueueUi.dragTarget(0, 40f, h))
+        assertEquals(2, RemoteQueueUi.dragTarget(0, 140f, h))
+        assertEquals(3, RemoteQueueUi.dragTarget(0, 9_999f, h))
+        assertEquals(1, RemoteQueueUi.dragTarget(2, -40f, h))
+        assertEquals(0, RemoteQueueUi.dragTarget(3, -9_999f, h))
+        assertEquals(2, RemoteQueueUi.dragTarget(2, 0f, h))
+    }
+
+    @Test fun anInviteIsClearedWhenTheSessionEndsWithoutLeave() = runTest {
+        val starter = FakeStarter()
+        val (_, _, d) = capturing(starter)
+        runCurrent()
+        assertEquals(0, starter.cleared)
+        assertTrue(d.controller.isActive.value)
+        d.controller.leave() // the controller ends (not via the VM's leave())
+        assertFalse(d.controller.isActive.value)
+        runCurrent()
+        assertEquals("session end clears the invite", 1, starter.cleared)
     }
 }

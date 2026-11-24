@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-REM-7 - Remote screen UI
 
@@ -21,3 +21,13 @@ The Remote half of the Jukebox panel, hidden behind `ParityFlags.REMOTE`. `Remot
 
 ## Questions for Levi
 - None.
+
+## Review
+- Library search on Main (MINOR) -> fixed: Regex hoisted to a val, search runs in withContext(Dispatchers.Default) (injectable `searchContext`). Pre-folded haystack cache not done (scan is off-Main now).
+- Drag-reorder height (MINOR) -> fixed: row height measured including padding, per-row heights (average fallback), new `RemoteQueueUi.dragTarget(from, dy, heights)`, neighbouring rows shift live during the drag. Test `dragTargetUsesPerRowHeights`.
+- Scan-to-join dependency (MINOR) -> not changed in code; OPEN DEPENDENCY: the `pocketdj://remote/join/<code>` intent filter is not registered by this package; REM-9/REM-8 (or the integrator) must own it. Mix Together deferred to P2-REM-12/13.
+- Stale invite (NIT) -> fixed: the VM clears the starter invite on the isActive true->false transition. Test `anInviteIsClearedWhenTheSessionEndsWithoutLeave`.
+
+Tests: 7277 -> 7279, 0 failures; assembleDebug OK.
+
+fixes applied

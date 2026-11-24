@@ -38,6 +38,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -209,14 +210,30 @@ fun RemoteUpNextList(
 ) {
     var dragIdx by remember { mutableIntStateOf(-1) }
     var dragDy by remember { mutableFloatStateOf(0f) }
-    var rowPx by remember { mutableFloatStateOf(0f) }
+    val heights = remember { mutableStateMapOf<Int, Float>() }
+    fun heightList(): List<Float> {
+        val known = heights.values.filter { it > 0f }
+        val avg = if (known.isEmpty()) 0f else known.average().toFloat()
+        return List(rows.size) { heights[it]?.takeIf { h -> h > 0f } ?: avg }
+    }
+    val target = if (dragIdx >= 0) RemoteQueueUi.dragTarget(dragIdx, dragDy, heightList()) else -1
+    val dragH = if (dragIdx >= 0) heightList()[dragIdx] else 0f
     Column(modifier.fillMaxWidth().testTag("remote-upnext")) {
         rows.forEachIndexed { i, row ->
             val dragging = dragIdx == i
             Row(
-                Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                    .onSizeChanged { if (rowPx == 0f) rowPx = it.height.toFloat() }
-                    .offset { IntOffset(0, if (dragging) dragDy.roundToInt() else 0) }
+                Modifier.fillMaxWidth()
+                    .onSizeChanged { heights[i] = it.height.toFloat() }
+                    .padding(vertical = 4.dp)
+                    .offset {
+                        val dy = when {
+                            dragging -> dragDy
+                            dragIdx in 0 until i && i <= target -> -dragH
+                            dragIdx > i && i >= target && target >= 0 -> dragH
+                            else -> 0f
+                        }
+                        IntOffset(0, dy.roundToInt())
+                    }
                     .then(if (dragging) Modifier.background(MaterialTheme.colorScheme.surfaceVariant) else Modifier)
                     .testTag("remote-upnext-${row.rid}"),
                 verticalAlignment = Alignment.CenterVertically,
@@ -234,7 +251,7 @@ fun RemoteUpNextList(
                             onDragStart = { dragIdx = i; dragDy = 0f },
                             onDrag = { change, amount -> change.consume(); dragDy += amount.y },
                             onDragEnd = {
-                                val to = RemoteQueueUi.dragTarget(i, dragDy, rowPx, rows.size)
+                                val to = RemoteQueueUi.dragTarget(i, dragDy, heightList())
                                 dragIdx = -1; dragDy = 0f
                                 if (to != i) onReorder(i, to)
                             },
