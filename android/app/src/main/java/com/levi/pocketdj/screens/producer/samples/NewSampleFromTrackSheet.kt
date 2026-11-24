@@ -179,8 +179,7 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
     fun pick(s: IndexSong) {
         selection++
         val token = selection
-        // EXPLICIT Studio use (np-mix-mode 3.3): sampling a buffered song makes it (and its stems) a download.
-        StudioPins.pin(graph, s.id, MixModeBufferState.REASON_SAMPLE)
+        // Browsing never pins (iOS): the pin happens when the stem audition starts and on carve.
         song = s; error = null; window = null; peaks = FloatArray(0)
         audition.release(); auditioningStems = false   // the previous song's stem audition dies here
         stemsDownloaded = burns.stemsBurned(s.id)
@@ -211,6 +210,8 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
         if (!on) { stemMode = false; audition.exitStems(); auditioningStems = false; return }
         if (s == null || stemBusy) { stemMode = on; return }
         stemMode = true
+        // EXPLICIT Studio use (np-mix-mode 3.3): auditioning this song's stems makes it a download (iOS).
+        StudioPins.pin(graph, s.id, MixModeBufferState.REASON_SAMPLE)
         val token = selection
         stemBusy = true; error = null
         scope.launch {

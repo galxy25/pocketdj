@@ -23,3 +23,13 @@ Tests: 12 new (MixModeBufferSectionStateTest).
 
 ## Questions for Levi
 - none
+
+## Review
+- Browse-row badge missing (MINOR) -> open gap, not fixed: BrowseComponents is not owned by this package; follow-up needed to mount a compact BufferedBadge on browse rows. Audio-only badge condition kept (the expiry clock is the audio hold's, as iOS).
+- Pin in pick() too aggressive (MINOR) -> fixed: pin removed from pick(); now pins when stem audition starts (setStemMode on) and in carve().
+- Clear now cancelled on leaving screen / null result ignored (MINOR) -> fixed: runs on graph.appScope; null shows "Busy, try again in a moment.", success and Keep all show a status line.
+- Pin reason strings differ from iOS + weak tests (MINOR) -> reasons kept (roadmap names them); added TakeRendererTest.songKeyUseHookFiresForCatalogSongKeysOnly (fires for song key, not studio/dmx_ keys). Constants test left as a stability guard.
+- Cap change sweeps existing footprint, expiry text not ticking (NIT) -> rejected: matches iOS, disclosed; roadmap text to note the deviation.
+
+Tests: 6661 run, 0 failed (+1). Fixes applied.
+state: reviewed

@@ -158,6 +158,7 @@ object StudioPins {
 fun MixModeBufferSection(graph: AppGraph, modifier: Modifier = Modifier) {
     val services = graph.servicesGraph
     val scope = rememberCoroutineScope()
+    var status by remember { mutableStateOf<String?>(null) }
     val settings by remember { graph.settings.npMixSettingsFlow() }.collectAsState(initial = NpMixSettings())
     val holdsMap by services.burnStore.temporaryHolds.collectAsState()
     val items by services.burnStore.items.collectAsState()
@@ -211,12 +212,16 @@ fun MixModeBufferSection(graph: AppGraph, modifier: Modifier = Modifier) {
         }
         if (holds.isNotEmpty()) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                TextButton({ services.burnStore.pinAllTemporary(MixModeBufferState.REASON_KEEP_ALL) },
+                TextButton({ services.burnStore.pinAllTemporary(MixModeBufferState.REASON_KEEP_ALL); status = "Kept all buffered songs." },
                     Modifier.testTag("storage-buffer-keep-all")) { Text("Keep all") }
                 TextButton({ confirmClear = true }, Modifier.testTag("storage-buffer-clear")) {
                     Text("Clear now", color = MaterialTheme.colorScheme.error)
                 }
             }
+        }
+        status?.let {
+            Text(it, Modifier.testTag("storage-buffer-status"), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary)
         }
         Text(MixModeBufferState.footer(settings.bufferTtlHours, settings.keepPickedFolderBuffers),
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -230,7 +235,11 @@ fun MixModeBufferSection(graph: AppGraph, modifier: Modifier = Modifier) {
             confirmButton = {
                 TextButton({
                     confirmClear = false
-                    scope.launch { services.storageManager.sweepTemporary(reason = "storage-clear", ignoreExpiry = true) }
+                    // Graph-level scope: leaving the screen mid-sweep must not cancel it.
+                    graph.appScope.launch {
+                        val r = services.storageManager.sweepTemporary(reason = "storage-clear", ignoreExpiry = true)
+                        status = if (r == null) "Busy, try again in a moment." else "Buffer cleared."
+                    }
                 }, Modifier.testTag("storage-buffer-clear-confirm")) { Text("Clear buffered songs") }
             },
             dismissButton = { TextButton({ confirmClear = false }) { Text("Cancel") } },
