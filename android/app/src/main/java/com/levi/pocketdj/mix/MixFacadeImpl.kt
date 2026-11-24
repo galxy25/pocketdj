@@ -33,7 +33,26 @@ class MixFacadeImpl(
     private val engineContext: CoroutineContext = Dispatchers.Main.immediate,
     /** Runs on [engineContext]: cancel the downloader, stop the auto mix / pause hand-played decks. */
     private val releaseForNowPlaying: () -> Unit = {},
+    /** Loadable (on disk or streamable) songs among the ids, in order (`MixResolver.loadables(songIds)`). */
+    private val songLoadables: (List<String>) -> List<com.levi.pocketdj.mix.model.MixLoadable> = { emptyList() },
+    /** Starts Auto-DJ over explicit items (`AutoDj.startAutoMix`); Main-confined. */
+    private val startItems: (List<com.levi.pocketdj.mix.model.AutoMixItem>, lead: Double, fade: Double, label: String) -> Unit =
+        { _, _, _, _ -> },
+    private val autoLabel: () -> String? = { null },
 ) : MixFacade {
+    override val autoMixLabel: String? get() = autoLabel()
+
+    override suspend fun startAutoMixSongs(songIds: List<String>, label: String, originCollections: Map<String, String>): Int {
+        val s = settings()
+        return withContext(engineContext) {
+            val items = com.levi.pocketdj.data.pockets.wheel.PocketRunMixPath.items(songIds, label, originCollections, songLoadables(songIds))
+            if (items.size >= com.levi.pocketdj.data.pockets.wheel.PocketRunMixPath.MIN_LOADABLE) {
+                startItems(items, s.autoMixLeadSeconds, s.autoMixFadeSeconds, label)
+            }
+            items.size
+        }
+    }
+
     override val autoMixing: Boolean get() = isAutoMixing()
     override val autoPaused: Boolean get() = isAutoPaused()
 

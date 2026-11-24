@@ -94,6 +94,14 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
             st.installId = { history.installId }
             st.currentEventId = { app.playbackGraph.skipTracker.currentEventId }
             st.candidates = { runCandidates() }
+            // W7: a Mix moment's run plays through Mix Auto-DJ when >= 10 of its songs are deck-loadable.
+            st.playThroughMix = { rows, label ->
+                app.mixGraph.mixFacade.startAutoMixSongs(
+                    com.levi.pocketdj.data.pockets.wheel.PocketRunMixPath.songIds(rows), label,
+                    com.levi.pocketdj.data.pockets.wheel.PocketRunMixPath.collections(rows),
+                )
+            }
+            st.mixOwnsRun = { label -> app.mixGraph.mixFacade.let { it.autoMixing && it.autoMixLabel == label } }
             sequencer.pocketRunTagFor = { plan -> st.tag(plan) }
             registerWheelClear { st.clearLocal() }
         }
