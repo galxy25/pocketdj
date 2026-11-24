@@ -237,13 +237,14 @@ class RemoteSongResolverTest {
     fun catalogIndex_rebuildsOnlyOnRevisionChange() {
         var rev = 1
         var songs = listOf(song("a", "One", "X"))
-        val idx = RemoteCatalogIndex({ songs }, { rev })
+        val idx = RemoteCatalogIndex({ songs }, { rev }, { it.run() })
         idx.byTitleArtist(); idx.byTitleArtist(); idx.songById("a")
         assertEquals(1, idx.builds)
         songs = songs + song("b", "Two", "Y")
         idx.byTitleArtist()
         assertEquals("a stale revision keeps the old tables", 1, idx.builds)
         rev = 2
+        idx.prepare() // inline runner: the new tables land before the next read
         assertEquals("b", idx.songById("b")?.id)
         assertEquals(2, idx.builds)
     }
@@ -253,5 +254,42 @@ class RemoteSongResolverTest {
         val t = RemoteCatalogIndex.build(listOf(song("a", "Same", "X", am = "1"), song("b", "same", "x", am = "1")))
         assertEquals("a", t.byTitleArtist[RemoteCatalogIndex.key("Same", "X")])
         assertEquals("a", t.byAppleMusicId["1"])
+    }
+
+    @Test
+    fun catalogIndex_revisionMove_answersFromOldTablesWhileBuilding_thenSwaps() {
+        var rev = 1
+        var songs = listOf(song("a", "One", "X"))
+        val pending = ArrayList<Runnable>()
+        val idx = RemoteCatalogIndex({ songs }, { rev }, { pending.add(it) })
+        assertEquals("a", idx.songById("a")?.id) // first build is synchronous
+        songs = songs + song("b", "Two", "Y"); rev = 2
+        assertNull("old tables answer until the background build lands", idx.songById("b"))
+        idx.songById("a"); idx.prepare()
+        assertEquals("single-flight: one pending build", 1, pending.size)
+        pending.removeAt(0).run()
+        assertEquals("b", idx.songById("b")?.id)
+        assertEquals(2, idx.builds)
+    }
+
+    @Test
+    fun catalogIndex_fuzzyMemoIsPerBuild() {
+        var rev = 1
+        var songs = listOf(song("c", "Hello World Extended", "Zed"))
+        val idx = RemoteCatalogIndex({ songs }, { rev }, { it.run() })
+        assertEquals("c", idx.fuzzy("Hello World", "Zed")?.id)
+        songs = emptyList(); rev = 2
+        idx.prepare()
+        assertNull("a new build must not inherit the old build's memo", idx.fuzzy("Hello World", "Zed"))
+    }
+
+    @Test
+    fun unknownVariant_isDroppedOnStamp() {
+        val base = QueueItem(id = "s1", title = "T", artist = "A")
+        val r = RemoteSongResolver(catalogItem = { if (it == "s1") base else null })
+        val known = r.resolve(row("s1", "T", "A").let { it.copy(row = it.row.copy(variant = "clean")) })
+        assertEquals("clean", known.item?.variant)
+        val unknown = r.resolve(row("s1", "T", "A").let { it.copy(row = it.row.copy(variant = "remaster9")) })
+        assertNull(unknown.item?.variant)
     }
 }

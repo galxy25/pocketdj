@@ -1,9 +1,12 @@
 package com.levi.pocketdj.remote
 
 import com.levi.pocketdj.data.catalog.IndexSong
+import com.levi.pocketdj.data.edition.SongVariant
 import com.levi.pocketdj.data.jukebox.JukeboxMatcher
 import com.levi.pocketdj.playback.durable.SessionRow
 import com.levi.pocketdj.playback.sequencer.QueueItem
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /** What a remote row became on THIS device (iOS `RemoteSongResolver.Resolution`). */
 sealed interface RemoteResolution {
@@ -65,7 +68,7 @@ class RemoteSongResolver(
             return QueueItem(
                 id = base.id, title = base.title, artist = base.artist,
                 lengthMs = base.lengthMs ?: r.lengthMs, repeatCount = r.repeatCount,
-                variant = if (own) r.variant else null,
+                variant = if (own) r.variant?.takeIf { v -> SongVariant.entries.any { it.raw == v } } else null,
                 editionLocked = own && (r.editionLocked ?: false),
             )
         }
@@ -152,35 +155,62 @@ class RemoteSongResolver(
 class RemoteCatalogIndex(
     private val songs: () -> List<IndexSong>,
     private val revision: () -> Int,
+    /** Runs a rebuild off the caller's thread (tests pass an inline runner). */
+    private val async: (Runnable) -> Unit = { r -> Thread(r, "remote-catalog-index").apply { isDaemon = true }.start() },
 ) {
     class Tables(
         val byId: Map<String, IndexSong>,
         val byAppleMusicId: Map<String, String>,
         val byTitleArtist: Map<String, String>,
         val songs: List<IndexSong>,
-    )
+    ) {
+        /** Fuzzy-rung memo, scoped to THIS build so a stale result can never leak into newer tables. */
+        internal val fuzzyMemo = HashMap<String, String?>()
+    }
 
-    @Volatile private var tables: Tables? = null
-    @Volatile private var builtAt = Int.MIN_VALUE
-    private val fuzzyMemo = HashMap<String, String?>()
+    private class Built(val tables: Tables, val rev: Int)
+
+    @Volatile private var built: Built? = null
+    private val buildLock = Any()
+    private val rebuilding = AtomicBoolean(false)
+    private val buildCount = AtomicInteger(0)
 
     /** Number of builds so far (tests). */
-    @Volatile var builds = 0
-        private set
+    val builds: Int get() = buildCount.get()
 
     /** Rebuild if the catalog moved since the tables were built. */
-    fun prepare() = refresh()
+    fun prepare() { refresh() }
 
+    private fun buildNow(rev: Int): Built {
+        val b = Built(build(songs()), rev)
+        buildCount.incrementAndGet()
+        built = b
+        return b
+    }
+
+    /**
+     * Current tables. First ever call builds synchronously (single-flight); afterwards a moved revision keeps
+     * answering from the old tables while one background build (single-flight) swaps in the new ones.
+     */
     private fun refresh(): Tables {
         val rev = revision()
-        tables?.let { if (rev == builtAt) return it }
-        val list = songs()
-        val built = build(list)
-        synchronized(fuzzyMemo) { fuzzyMemo.clear() }
-        tables = built
-        builtAt = rev
-        builds++
-        return built
+        val cur = built
+        if (cur != null) {
+            if (cur.rev != rev && rebuilding.compareAndSet(false, true)) {
+                async(Runnable {
+                    try {
+                        synchronized(buildLock) { if (built?.rev != rev) buildNow(rev) }
+                    } finally {
+                        rebuilding.set(false)
+                    }
+                })
+            }
+            return cur.tables
+        }
+        synchronized(buildLock) {
+            built?.let { return it.tables }
+            return buildNow(rev).tables
+        }
     }
 
     fun songById(id: String): IndexSong? = refresh().byId[id]
@@ -190,11 +220,11 @@ class RemoteCatalogIndex(
     fun fuzzy(title: String, artist: String): IndexSong? {
         val t = refresh()
         val k = key(title, artist)
-        synchronized(fuzzyMemo) {
-            if (fuzzyMemo.containsKey(k)) return fuzzyMemo[k]?.let { t.byId[it] }
+        synchronized(t.fuzzyMemo) {
+            if (t.fuzzyMemo.containsKey(k)) return t.fuzzyMemo[k]?.let { t.byId[it] }
         }
         val hit = JukeboxMatcher.match(title, artist, t.songs)
-        synchronized(fuzzyMemo) { fuzzyMemo[k] = hit?.id }
+        synchronized(t.fuzzyMemo) { t.fuzzyMemo[k] = hit?.id }
         return hit
     }
 

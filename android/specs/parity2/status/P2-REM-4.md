@@ -26,3 +26,12 @@ No manifest/gradle/proguard touched, so assembleRelease not run.
 
 ## Questions for Levi
 - none
+
+## Review
+- RemoteCatalogIndex rebuilds on caller thread (line 128) -> fixed: old Tables keep answering; one single-flight background build (injectable executor) swaps in; synchronous only when no tables exist.
+- Unsynchronized refresh / stale fuzzy memo (line 150) -> fixed: build is single-flight under a lock, builds counter atomic, fuzzy memo now lives on each Tables instance so it cannot leak across builds.
+- stamped() raw variant (line 71) -> fixed: variant kept only if it matches a known SongVariant raw value, else null.
+
+Tests: +3 (old-tables-while-building + single-flight, per-build memo, unknown variant dropped). 6452 total, 0 failures; assembleDebug green.
+
+fixes applied
