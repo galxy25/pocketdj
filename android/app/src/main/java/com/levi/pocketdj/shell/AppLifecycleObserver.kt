@@ -14,9 +14,8 @@ import kotlinx.coroutines.launch
 class AppLifecycleObserver(
     private val scope: CoroutineScope,
     private val onForeground: List<() -> Unit>,
-    private val flush: suspend () -> Unit,
-    /** Run on ON_STOP before the flush (cancel foreground-only tickers). */
     private val onBackground: List<() -> Unit> = emptyList(),
+    private val flush: suspend () -> Unit,
 ) : DefaultLifecycleObserver {
 
     override fun onStart(owner: LifecycleOwner) {

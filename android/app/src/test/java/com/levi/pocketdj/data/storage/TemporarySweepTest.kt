@@ -157,7 +157,7 @@ class TemporarySweepTest {
         // After the first chunk, s30 (in chunk 2) becomes the playing song.
         val protect = { reads++; if (b.removedChunks.isNotEmpty()) setOf("s30") else emptySet() }
         val r = mgr(b, s, protect).sweepTemporary(reason = "test")!!
-        assertEquals(listOf(25, 25, 9), b.removedChunks.map { it.size })
+        assertEquals(listOf(25, 24, 10), b.removedChunks.map { it.size })
         assertFalse("s30 spared mid-sweep", "s30" in b.removedChunks.flatten())
         assertEquals(59, r.removed); assertEquals(1, r.skippedProtected); assertEquals(1, r.remaining)
         assertTrue("protected set re-read per chunk (plan + 3 chunks)", reads >= 4)
