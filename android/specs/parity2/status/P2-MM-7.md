@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-MM-7: Mix Mode ph3a (shared GrowingFileSchedule, NP DSP engageStreaming, loader multi-listener + failed marking)
 
@@ -20,3 +20,12 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+- MAJOR streamFailed on attached-but-nothing-scheduled stream -> fixed (hands the row back via onStreamFailed when `!everStarted && voiceEnd <= windowStart`; test anAttachedStreamThatDiesBeforeAnyAudioHandsTheRowBack).
+- MINOR repeated length sniff / Voice probe per progress event -> fixed (Undetermined / implausible verdict cached by bytes received, re-probed only after SNIFF_REPROBE_BYTES = 16 KB of growth; test anUndeterminedClaimIsNotReSniffedOnEveryProgressEvent). Mix StreamDecks.attach left unchanged.
+- NIT complete-while-paused-holding never finishes the stream -> not fixed (optional; stem handover resumes on next play).
+
+Suite: 5935 tests (+2), 0 failures; `:app:testDebugUnitTest :app:assembleDebug` green.
+
+fixes applied

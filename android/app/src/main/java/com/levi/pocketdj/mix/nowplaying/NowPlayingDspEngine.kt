@@ -126,6 +126,8 @@ class NowPlayingDspEngine(
         var holding = true
         var attached = false
         var headerless = false
+        /** Bytes received at the last undecided sniff / implausible-length probe (-1 = none): re-probe only after real growth. */
+        var sniffedAt = -1L
         var everStarted = false
         var fullEnd = 0L
         /** Voice window end = how far the voice has been allowed to schedule (never past the byte frontier). */
@@ -338,8 +340,12 @@ class NowPlayingDspEngine(
     /** First attach: the header (and its full-length claim) is readable; install the voice over an EMPTY window. */
     private fun attachStream(g: Grow): Boolean {
         val h = g.handle
+        // An undecided / implausible verdict is cached by bytes received: progress fires per chunk and each
+        // probe is file IO (and possibly a decoder open), so re-probe only after SNIFF_REPROBE_BYTES of growth.
+        if (!h.isComplete && g.sniffedAt >= 0 && h.bytesReceived - g.sniffedAt < SNIFF_REPROBE_BYTES) return false
         val claim = if (h.isComplete) GrowingFileSchedule.LengthClaim.Container else g.sources.lengthClaim(h)
         if (!h.isComplete && !GrowingFileSchedule.attachableWhilePartial(claim)) {
+            g.sniffedAt = h.bytesReceived
             // Headerless (or undecided): the decoder's length is an estimate from the bytes present; attached,
             // the completed song would "end" where the partial did. Held unattached until complete.
             if (claim != GrowingFileSchedule.LengthClaim.Undetermined) g.headerless = true
@@ -350,7 +356,7 @@ class NowPlayingDspEngine(
         val v = Voice(src, sampleRate, name = "np-dsp")
         val sr = sampleRate.toDouble()
         val bps = GrowingFileSchedule.bytesPerSecond(v.totalFrames, sr, h.expectedBytes, claim)
-        if (bps == null && !h.isComplete) { runCatching { v.close() }; g.headerless = true; return false }
+        if (bps == null && !h.isComplete) { runCatching { v.close() }; g.headerless = true; g.sniffedAt = h.bytesReceived; return false }
         val w = GrowingFileSchedule.window(
             v.totalFrames, sr, h.startMs?.toInt(), g.lengthMs.takeIf { it > 0 }?.toInt(),
         )
@@ -381,7 +387,7 @@ class NowPlayingDspEngine(
 
     /** The download died. Before any audio: the host re-plays the row its plain way. Mid-song: the bytes we have ARE the song. */
     private fun streamFailed(g: Grow) {
-        if (!g.attached || main == null) {
+        if (!g.attached || main == null || (!g.everStarted && g.voiceEnd <= windowStart)) {
             val at = g.heldSec
             disengage()
             onStreamFailed?.invoke(at)
@@ -739,6 +745,8 @@ class NowPlayingDspEngine(
 
     companion object {
         const val RUNWAY_FRAMES = 2048
+        /** Growth in received bytes before an undecided / implausible length probe is repeated. */
+        const val SNIFF_REPROBE_BYTES = 16L * 1024
         const val MAX_RETRIES = 3
         /** Provisional length of a streaming engage that did not carry one (the Mix deck's value). */
         const val FALLBACK_DURATION_MS = 180_000L

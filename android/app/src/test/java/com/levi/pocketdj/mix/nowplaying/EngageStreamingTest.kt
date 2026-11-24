@@ -36,13 +36,14 @@ class EngageStreamingTest {
     private class Factory(val sr: Int, songSec: Int) : StreamSourceFactory {
         var claim: LengthClaim = LengthClaim.FrameCount
         var opens = 0
+        var claims = 0
         var completes = 0
         val src = SyntheticPcmSource(sr, 2, sr.toLong() * songSec, 0L) { f, _ ->
             (0.5 * Math.sin(2 * Math.PI * 220.0 * f / sr)).toFloat()
         }.also { it.forceIncomplete = true }
         override fun open(h: StreamHandle): PcmSource? { opens++; return src }
         override fun markComplete(src: PcmSource) { completes++; this.src.forceIncomplete = false }
-        override fun lengthClaim(h: StreamHandle): LengthClaim = claim
+        override fun lengthClaim(h: StreamHandle): LengthClaim { claims++; return claim }
     }
 
     private inner class Rig {
@@ -208,6 +209,29 @@ class EngageStreamingTest {
         r.engine.streamProgressed(0, failed = true)
         assertFalse(r.engine.isEngaged)
         assertEquals(3.0, r.failedAt!!, 0.0)
+    }
+
+    @Test fun anAttachedStreamThatDiesBeforeAnyAudioHandsTheRowBack() {
+        val r = Rig()
+        r.engage(at = 2.0)
+        r.download(2.0)                       // header readable (attached), frontier 0.5 s: still holding, nothing scheduled
+        assertEquals(1, r.factory.opens)
+        r.engine.streamProgressed(r.bytes, failed = true)
+        assertFalse(r.engine.isEngaged)
+        assertEquals("the host replays the row the plain way", 2.0, r.failedAt!!, 0.0)
+        assertEquals("no instant skip", 0, r.ends)
+    }
+
+    @Test fun anUndeterminedClaimIsNotReSniffedOnEveryProgressEvent() {
+        val r = Rig()
+        r.factory.claim = LengthClaim.Undetermined
+        r.engage()
+        r.engine.streamProgressed(1_000)
+        val first = r.factory.claims
+        for (i in 1..20) r.engine.streamProgressed(1_000 + i * 500L)
+        assertEquals("small growth does not re-sniff", first, r.factory.claims)
+        r.engine.streamProgressed(1_000 + NowPlayingDspEngine.SNIFF_REPROBE_BYTES + 1)
+        assertEquals("real growth re-probes", first + 1, r.factory.claims)
     }
 
     @Test fun aDeadStreamMidSongKeepsWhatArrivedAndEndsThere() {
