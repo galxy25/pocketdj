@@ -29,4 +29,13 @@ class ManifestPermissionsTest {
         val app = Regex("<application\\s[^>]*>", RegexOption.DOT_MATCHES_ALL).find(xml)!!.value
         assertTrue(app, "android:largeHeap=\"true\"" in app)
     }
+
+    @Test fun declaresMotionPermissionsAndReceivers() {
+        assertTrue(declares("ACTIVITY_RECOGNITION"))
+        assertTrue(declares("RECEIVE_BOOT_COMPLETED"))
+        val boot = Regex("<receiver\\s[^>]*MotionBootReceiver.*?</receiver>", RegexOption.DOT_MATCHES_ALL).find(xml)!!.value
+        assertTrue(boot, "android.intent.action.BOOT_COMPLETED" in boot && "android.intent.action.MY_PACKAGE_REPLACED" in boot)
+        val rx = Regex("<receiver\\s[^>]*MotionTransitionReceiver[^>]*>", RegexOption.DOT_MATCHES_ALL).find(xml)!!.value
+        assertTrue(rx, "android:exported=\"false\"" in rx)
+    }
 }

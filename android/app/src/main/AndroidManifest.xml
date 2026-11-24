@@ -18,6 +18,9 @@
     <!-- ANS-LOC-1: PlaybackService adds the location FGS type only while music plays with places & trips on. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- P2-POC-11: motion (Activity Recognition transitions) for the Pocket wheel; opt-in, prominent disclosure first. -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
 
@@ -192,6 +195,19 @@
         <receiver
             android:name=".data.location.FusedLocationReceiver"
             android:exported="false" />
+
+        <!-- P2-POC-11: Activity Recognition transition updates (PendingIntent target; debug builds export it for adb). -->
+        <receiver
+            android:name=".data.motion.MotionTransitionReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".data.motion.MotionBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".widget.WidgetActionReceiver"
