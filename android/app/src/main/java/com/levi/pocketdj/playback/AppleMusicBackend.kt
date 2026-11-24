@@ -126,6 +126,7 @@ class AppleMusicBackend(
         resume: Boolean = false,
     ): Boolean {
         val priorCurrent = current
+        var mine: Current? = null
         userTokenSnapshot = runCatching { settings.current().musicUserToken }.getOrDefault("")
         val confirm = CompletableDeferred<Boolean>()
         playConfirm = confirm
@@ -137,7 +138,8 @@ class AppleMusicBackend(
             val issued = withContext(Dispatchers.Main) {
                 try {
                     val c = ensureController()
-                    current = Current(songId, title, artist, albumId, context)
+                    mine = Current(songId, title, artist, albumId, context)
+                    current = mine
                     if (!resume) startedSongId = null
                     val provider = CatalogPlaybackQueueItemProvider.Builder()
                         .items(MediaItemType.SONG, appleMusicId)
@@ -162,8 +164,7 @@ class AppleMusicBackend(
             // FR1: cancelled after prepare(playWhenReady=true) was issued: the SDK would still reach PLAYING and
             // sound over the successor (or claim the session). Stop it; never swallow the cancellation.
             withContext(NonCancellable + Dispatchers.Main) {
-                abortPendingStart(songId)
-                if (resume) current = priorCurrent
+                if (abortPendingStart(mine) && resume) current = priorCurrent
             }
             throw e
         }
@@ -214,8 +215,9 @@ class AppleMusicBackend(
      * start already replaced [current] - it must not be killed by its predecessor's late cleanup.
      * Main thread. Returns whether it stopped anything.
      */
-    fun abortPendingStart(songId: String): Boolean {
-        if (current?.songId != songId) return false
+    private fun abortPendingStart(start: Current?): Boolean {
+        // Identity, not songId: a re-tap of the same song starts a successor with an equal songId.
+        if (start == null || current !== start) return false
         playConfirm = null
         runCatching { controller?.stop() }
         current = null

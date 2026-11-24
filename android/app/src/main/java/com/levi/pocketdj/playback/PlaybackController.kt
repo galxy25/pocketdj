@@ -159,7 +159,7 @@ class PlaybackController(
     )
 
     /** Which engine owns audio right now (single-owner rule, §6.1). */
-    private enum class ActiveBackend { EXO, APPLE_MUSIC }
+    internal enum class ActiveBackend { EXO, APPLE_MUSIC }
 
     @Volatile
     private var activeBackend: ActiveBackend = ActiveBackend.EXO
@@ -994,13 +994,19 @@ class PlaybackController(
         }
     }
 
-    /** Cancelled AM start: stop the SDK, clear its pending state, restore the backend that owned the audio before. */
-    private suspend fun abortCancelledAppleMusicStart(backend: AppleMusicBackend, prior: ActiveBackend, songId: String) {
-        // Skip entirely when a successor AM start already owns the SDK (its own cleanup is its business).
-        if (!withContext(Dispatchers.Main) { backend.abortPendingStart(songId) }) return
-        amCurrentAmId = null
-        activeBackend = prior
-        NPLog.lane(NPLog.PLAYBACK, "am start cancelled: SDK stopped, backend restored=$prior")
+    /** Monotonic id of the latest loadAppleMusic; a cancelled start only restores state if it is still the latest. */
+    private val amStartSeq = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** Cancelled AM start (the SDK was already stopped by AppleMusicBackend.play): restore the prior backend, unconditionally unless superseded. */
+    private suspend fun restoreCancelledAppleMusicStart(prior: ActiveBackend, seq: Long) {
+        restoreAfterCancelledAmStart(
+            stillOwner = amStartSeq.get() == seq,
+            prior = prior,
+            clearAmId = { amCurrentAmId = null },
+            setBackend = { activeBackend = it },
+            resumeExo = { withController { it.play() } },
+        )
+        NPLog.lane(NPLog.PLAYBACK, "am start cancelled: backend restored=$prior")
     }
 
     /** The sequencer's Apple Music row: SDK plays it, the adapter fronts the session, the monitor watches it. */
@@ -1016,6 +1022,7 @@ class PlaybackController(
         amMonitor.disarm()
         amPollJob?.cancel()
         val prior = activeBackend
+        val startSeq = amStartSeq.incrementAndGet()
         // Claim ownership first so Exo's IPC-delayed pause/stop events cannot clobber the AM card.
         activeBackend = ActiveBackend.APPLE_MUSIC
         if (prior == ActiveBackend.EXO) withController { it.pause() }
@@ -1030,7 +1037,7 @@ class PlaybackController(
             play = {
                 backend.play(src.appleMusicId, item.id, song?.name ?: item.title, song?.artist ?: item.artist, song?.albumId, request.context)
             },
-            abort = { abortCancelledAppleMusicStart(backend, prior, item.id) },
+            abort = { restoreCancelledAppleMusicStart(prior, startSeq) },
         )
         if (!started) {
             activeBackend = prior

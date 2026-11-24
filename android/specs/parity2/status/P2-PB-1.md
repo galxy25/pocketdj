@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-PB-1 Apple Music cancelled-start fix (FR1) + stall episodes
 
@@ -17,3 +17,14 @@ not the real AppleMusicBackend (Android-bound). Not run: assembleRelease (no man
 
 ## Questions for Levi
 None.
+
+## Review
+
+fixes applied
+
+- MAJOR (double abort, backend never restored) -> fixed. AppleMusicBackend.play's cancel handler does the SDK stop; the controller restore (`restoreAfterCancelledAmStart`, no longer gated on abortPendingStart's boolean) now always clears amCurrentAmId, restores activeBackend and resumes Exo if prior==EXO, unless a newer loadAppleMusic (amStartSeq) owns state. Tests: 3 `controllerRestore_*` in AppleMusicCancelledStartTest (restore with SDK abort already done; superseded start untouched; AM prior no Exo resume).
+- MINOR (abortPendingStart songId guard) -> fixed. Now private, guards on the per-start Current instance identity (`current !== start`).
+- MINOR (stall episode leaking) -> fixed. endStallEpisode also runs on any current-row audio (before the pending-window early return in handleFirstAudio) and on AUTO advance.
+- NIT (test seam) -> fixed via the extracted restore helper + tests above.
+
+Tests: 5797 JVM, 0 failures (+3). assembleDebug green. Built with FIN_MIN_FREE_GB=5 (default 8 never cleared on a quiet machine).

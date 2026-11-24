@@ -21,3 +21,20 @@ internal suspend fun runCancellableAppleMusicStart(
 } catch (e: Exception) {
     false
 }
+
+/**
+ * Controller-side restore after a cancelled AM start. Independent of whether the SDK-level abort found anything
+ * (AppleMusicBackend.play already ran it): the backend/Exo state is restored unless a newer start owns it.
+ */
+internal suspend fun restoreAfterCancelledAmStart(
+    stillOwner: Boolean,
+    prior: PlaybackController.ActiveBackend,
+    clearAmId: () -> Unit,
+    setBackend: (PlaybackController.ActiveBackend) -> Unit,
+    resumeExo: suspend () -> Unit,
+) {
+    if (!stillOwner) return
+    clearAmId()
+    setBackend(prior)
+    if (prior == PlaybackController.ActiveBackend.EXO) resumeExo()
+}

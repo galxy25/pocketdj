@@ -83,4 +83,34 @@ class AppleMusicCancelledStartTest {
         assertFalse(runCancellableAppleMusicStart(play = { false }, abort = { aborted++ }))
         assertEquals(0, aborted)
     }
+
+    @Test
+    fun controllerRestore_runsEvenWhenSdkAbortAlreadyHappened_exoPrior() = runTest {
+        var backend = PlaybackController.ActiveBackend.APPLE_MUSIC
+        var amId: String? = "am1"
+        var exoResumed = 0
+        // SDK-level abort already ran inside play(); the controller restore must not depend on it.
+        restoreAfterCancelledAmStart(true, PlaybackController.ActiveBackend.EXO, { amId = null }, { backend = it }, { exoResumed++ })
+        assertEquals(PlaybackController.ActiveBackend.EXO, backend)
+        assertEquals(null, amId)
+        assertEquals(1, exoResumed)
+    }
+
+    @Test
+    fun controllerRestore_supersededStartLeavesStateAlone() = runTest {
+        var backend = PlaybackController.ActiveBackend.APPLE_MUSIC
+        var touched = false
+        restoreAfterCancelledAmStart(false, PlaybackController.ActiveBackend.EXO, { touched = true }, { backend = it }, { touched = true })
+        assertEquals(PlaybackController.ActiveBackend.APPLE_MUSIC, backend)
+        assertFalse(touched)
+    }
+
+    @Test
+    fun controllerRestore_amPrior_noExoResume() = runTest {
+        var exoResumed = 0
+        var backend = PlaybackController.ActiveBackend.APPLE_MUSIC
+        restoreAfterCancelledAmStart(true, PlaybackController.ActiveBackend.APPLE_MUSIC, {}, { backend = it }, { exoResumed++ })
+        assertEquals(0, exoResumed)
+        assertEquals(PlaybackController.ActiveBackend.APPLE_MUSIC, backend)
+    }
 }

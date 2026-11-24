@@ -750,6 +750,7 @@ class SetlistSequencer(
             AdvanceCause.USER -> noteUserTransport()
             AdvanceCause.UNPLAYABLE_HERE -> Unit
             AdvanceCause.AUTO -> {
+                endStallEpisode("advance")
                 // Halted: nothing advances by itself until the listener acts.
                 if (pausedByCascade) return
                 if (!autoAdvanceGate()) {
@@ -1196,8 +1197,10 @@ class SetlistSequencer(
     }
 
     private fun handleFirstAudio(source: String) {
-        if (!firstAudioPending && startWindow == null) return
+        // Steady-state audio of the current row also ends the episode (a mid-song rebuffer or a hop with no
+        // start window must not leave earlier rows ineligible as hop targets for the rest of the session).
         endStallEpisode("first-audio")
+        if (!firstAudioPending && startWindow == null) return
         firstAudioPending = false
         meter?.firstAudio(currentBackend, clockMs())
         startWatchdog.cancel()
