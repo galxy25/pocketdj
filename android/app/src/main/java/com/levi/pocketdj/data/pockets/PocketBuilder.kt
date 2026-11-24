@@ -77,7 +77,10 @@ object PocketCandidateSearch {
             val genreScore = genreScore(genre, brief.genres)
             if (genreScore == MISMATCH) return@forEachIndexed
             val keywords = song.sentimentKeywords.orEmpty()
-            val score = 2 * moodScore(keywords, moods) + genreScore
+            val moodScore = moodScore(keywords, moods)
+            // Mood-only brief: a song with no mood evidence is not a match.
+            if (moods.isNotEmpty() && brief.genres.isEmpty() && !yearsGiven && moodScore <= 0.0) return@forEachIndexed
+            val score = 2 * moodScore + genreScore
             scored += Scored(
                 PocketCandidate(song.id, song.name, song.artist, genre, year, song.length, keywords),
                 score,
@@ -241,6 +244,14 @@ class PocketBuilderService(
 
             var model: PocketBriefModel = nano.runCatchingModel() ?: deterministic
             var parsed = parseWith(model, brief, vocab) ?: run { model = deterministic; deterministic.parse(brief, vocab) }
+            if (parsed.isEmptyFilter() && model !== deterministic) {
+                model = deterministic
+                parsed = deterministic.parse(brief, vocab)
+            }
+            if (parsed.isEmptyFilter()) {
+                _phase.value = Phase.Failed("I couldn't tell what kind of music you meant. Try a mood, genre or decade.")
+                return
+            }
             val minutes = (parsed.minutes ?: targetMinutes).coerceIn(5, 600)
 
             var candidates = withContext(compute) { PocketCandidateSearch.candidates(snapshot, parsed) }
@@ -281,6 +292,9 @@ class PocketBuilderService(
             _phase.value = Phase.Failed(e.message ?: "Couldn't build that pocket.")
         }
     }
+
+    private fun ParsedPocketBrief.isEmptyFilter() =
+        genres.isEmpty() && moods.isEmpty() && yearFrom == null && yearTo == null
 
     private suspend fun PocketNanoProvider.runCatchingModel(): PocketBriefModel? =
         try { model() } catch (e: CancellationException) { throw e } catch (_: Throwable) { null }

@@ -206,6 +206,22 @@ class PocketBuilderTest {
         assertEquals(0, p.calls)
     }
 
+    @Test fun briefWithNoRecognisedFiltersFailsInsteadOfDumpingTheCatalog() = runBlocking<Unit> {
+        val p = Persist()
+        val svc = PocketBuilderService(kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined), { bigCatalog() }, p::fn)
+        svc.build("Create a pocket of Prince")
+        val f = assertIs<PocketBuilderService.Phase.Failed>(svc.phase.value)
+        assertTrue(f.message.contains("couldn't tell"))
+        assertEquals(0, p.calls)
+    }
+
+    @Test fun moodOnlySearchExcludesSongsWithNoMoodEvidence() {
+        val big = bigCatalog()
+        val ids = PocketCandidateSearch.candidates(big, ParsedPocketBrief(moods = listOf("chill"))).map { it.id }
+        assertTrue(ids.isNotEmpty())
+        assertTrue(ids.all { it.removePrefix("s").toInt() % 3 == 0 }, "only mood-tagged songs: $ids")
+    }
+
     @Test fun blankBriefAndMissingCatalogFail() = runBlocking<Unit> {
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
         val blank = PocketBuilderService(scope, { bigCatalog() }, Persist()::fn)

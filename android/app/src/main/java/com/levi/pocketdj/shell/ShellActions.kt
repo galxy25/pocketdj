@@ -304,7 +304,17 @@ class ShellActions(
         val text = brief.trim()
         if (text.isEmpty()) throw ShellActionException.PlaybackFailed("Tell me what the pocket should be, like “90s chill hip hop”.")
         ensureReady()
-        if (builder.kickOff(text, minutes) == null) return "Already building a pocket. I'll add this one when it's done."
+        val job = builder.kickOff(text, minutes)
+            ?: return "Already building a pocket. I'll add this one when it's done."
+        // Doors outside the Collections tab have no banner: surface the outcome as a notice.
+        job.invokeOnCompletion { cause ->
+            if (cause != null) return@invokeOnCompletion
+            when (val ph = builder.phase.value) {
+                is PocketBuilderService.Phase.Failed -> NavRequestBus.postNotice(ph.message)
+                is PocketBuilderService.Phase.Done -> NavRequestBus.postNotice("Created pocket “${ph.name}” (${ph.songCount} songs).")
+                else -> Unit
+            }
+        }
         return "Building a pocket for “$text”. It will show up in Collections."
     }
 

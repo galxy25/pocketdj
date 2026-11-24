@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -40,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.data.pockets.PocketBriefParser
 import com.levi.pocketdj.data.pockets.PocketBuilderService
 import com.levi.pocketdj.data.pockets.PocketFitter
 
@@ -54,7 +56,8 @@ fun CreatePocketSheet(
     var brief by rememberSaveable { mutableStateOf("") }
     // The chosen length; a length spoken in the brief ("a 45 minute pocket") wins.
     var minutes by rememberSaveable { mutableIntStateOf(PocketFitter.DEFAULT_MINUTES) }
-    val submit = { if (brief.isNotBlank()) { onCreate(brief.trim(), minutes); onDismiss() } }
+    val spokenMinutes = remember(brief) { PocketBriefParser.parse(brief).minutes }
+    val submit = { if (brief.isNotBlank()) { onCreate(brief.trim(), spokenMinutes ?: minutes); onDismiss() } }
 
     val speech = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
         if (r.resultCode == Activity.RESULT_OK) {
@@ -92,8 +95,15 @@ fun CreatePocketSheet(
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(30, 60, 90, 120).forEach { m ->
-                    FilterChip(selected = minutes == m, onClick = { minutes = m }, label = { Text("$m min") })
+                    FilterChip(selected = (spokenMinutes ?: minutes) == m, enabled = spokenMinutes == null, onClick = { minutes = m }, label = { Text("$m min") })
                 }
+            }
+            if (spokenMinutes != null) {
+                Text(
+                    "Length taken from your description: $spokenMinutes min.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Button(
                 onClick = { submit() },
