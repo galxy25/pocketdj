@@ -270,10 +270,9 @@ class CollectionMixDownloaderLaneTest {
 
     @Test fun aMissUnderARejectedTokenKeepsTheSongQueuedAtTheFront() = runTest {
         val r = rig(listOf("a", "b"), ripped = setOf("a", "b"))
-        r.burns.lands = { false }
         r.rips.isAuthRejected = true // rejected, but the probe window let one burn through
-        r.d.authParkMaxMs = 1_000
-        r.d.idleWaitMs = 100_000
+        // that probe's 401 re-arms the holdoff (LIB-1 `noteAuthStatus`), so the lane parks right after it
+        r.burns.lands = { r.rips.authHoldoff = true; false }
         r.d.begin(crate)
         runCurrent()
         assertEquals(listOf("a"), r.burns.burned)
