@@ -5,12 +5,17 @@ import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.shell.DeepLink
 import com.levi.pocketdj.shell.DeepLinkParser
 import kotlinx.coroutines.runBlocking
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
-import kotlin.test.assertIs
-import kotlin.test.assertFalse
+import org.junit.Test
+
+// kotlin-test isn't on this module's classpath; thin value-first wrappers over JUnit 4.
+private fun <T> assertEquals(expected: T, actual: T, message: String? = null) = org.junit.Assert.assertEquals(message, expected, actual)
+private fun assertTrue(cond: Boolean, message: String? = null) = org.junit.Assert.assertTrue(message, cond)
+private fun assertFalse(cond: Boolean, message: String? = null) = org.junit.Assert.assertFalse(message, cond)
+private fun assertNull(v: Any?) = org.junit.Assert.assertNull(v)
+private inline fun <reified T : Any> assertIs(v: Any?): T {
+    org.junit.Assert.assertTrue("expected ${T::class.simpleName} but was $v", v is T)
+    return v as T
+}
 
 class PocketBuilderTest {
     private val vocab = PocketVocabulary(
@@ -130,7 +135,7 @@ class PocketBuilderTest {
 
     @Test fun fitSkipsOverflowButKeepsLaterShortOnes() {
         val len = mapOf("a" to 40L, "b" to 50L, "c" to 30L, "d" to 10L)
-        val out = PocketFitter.fit(listOf("a", "b", "c", "d"), { len[it] }, 90L)
+        val out = PocketFitter.fit(listOf("a", "b", "c", "d"), { len[it] }, 100L)
         assertEquals(listOf("a", "b", "d"), out)
     }
 
@@ -168,7 +173,7 @@ class PocketBuilderTest {
         fun fn(n: String, i: List<String>, d: String): String { name = n; ids = i; desc = d; calls++; return "pocket-1" }
     }
 
-    @Test fun buildsAboutNinetyMinutesAndPersists() = runBlocking {
+    @Test fun buildsAboutNinetyMinutesAndPersists() = runBlocking<Unit> {
         val p = Persist()
         val svc = PocketBuilderService(scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
             catalog = { bigCatalog() }, persist = p::fn)
@@ -185,14 +190,14 @@ class PocketBuilderTest {
         assertEquals(PocketBuilderService.Phase.Idle, svc.phase.value)
     }
 
-    @Test fun briefLengthOverridesDefault() = runBlocking {
+    @Test fun briefLengthOverridesDefault() = runBlocking<Unit> {
         val p = Persist()
         val svc = PocketBuilderService(kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined), { bigCatalog() }, p::fn)
         svc.build("a 30 minute pocket of hip hop", targetMinutes = 90)
         assertEquals(7, p.ids.size) // 7 x 4:00 = 28 min
     }
 
-    @Test fun failsHonestlyWhenNothingMatches() = runBlocking {
+    @Test fun failsHonestlyWhenNothingMatches() = runBlocking<Unit> {
         val p = Persist()
         val svc = PocketBuilderService(kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined), { bigCatalog() }, p::fn)
         svc.build("1950s opera")
@@ -201,7 +206,7 @@ class PocketBuilderTest {
         assertEquals(0, p.calls)
     }
 
-    @Test fun blankBriefAndMissingCatalogFail() = runBlocking {
+    @Test fun blankBriefAndMissingCatalogFail() = runBlocking<Unit> {
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined)
         val blank = PocketBuilderService(scope, { bigCatalog() }, Persist()::fn)
         blank.build("   ")
@@ -211,7 +216,7 @@ class PocketBuilderTest {
         assertIs<PocketBuilderService.Phase.Failed>(none.phase.value)
     }
 
-    @Test fun modelInventedIdsAreDroppedAndDuplicatesRemoved() = runBlocking {
+    @Test fun modelInventedIdsAreDroppedAndDuplicatesRemoved() = runBlocking<Unit> {
         val model = object : PocketBriefModel {
             override suspend fun parse(brief: String, vocab: PocketVocabulary) = ParsedPocketBrief(genres = listOf("hip hop"))
             override suspend fun curate(brief: String, candidates: List<PocketCandidate>, maxSongs: Int) =
@@ -225,7 +230,7 @@ class PocketBuilderTest {
         assertEquals("Hip Hop Bangers", p.name, "blank model name falls back to the brief")
     }
 
-    @Test fun nanoFailureFallsBackToDeterministic() = runBlocking {
+    @Test fun nanoFailureFallsBackToDeterministic() = runBlocking<Unit> {
         val broken = object : PocketBriefModel {
             override suspend fun parse(brief: String, vocab: PocketVocabulary): ParsedPocketBrief = error("nano down")
             override suspend fun curate(brief: String, candidates: List<PocketCandidate>, maxSongs: Int): PocketPlan = error("nano down")
@@ -238,7 +243,7 @@ class PocketBuilderTest {
         assertEquals(22, p.ids.size)
     }
 
-    @Test fun nanoReadingThatMatchesNothingFallsBackToGrammar() = runBlocking {
+    @Test fun nanoReadingThatMatchesNothingFallsBackToGrammar() = runBlocking<Unit> {
         val odd = object : PocketBriefModel {
             override suspend fun parse(brief: String, vocab: PocketVocabulary) = ParsedPocketBrief(genres = listOf("polka"))
             override suspend fun curate(brief: String, candidates: List<PocketCandidate>, maxSongs: Int) = PocketPlan("x", emptyList())
@@ -250,7 +255,7 @@ class PocketBuilderTest {
         assertIs<PocketBuilderService.Phase.Done>(svc.phase.value)
     }
 
-    @Test fun artistCapSpreadsThePocket() = runBlocking {
+    @Test fun artistCapSpreadsThePocket() = runBlocking<Unit> {
         val c = (0 until 10).map { PocketCandidate("a$it", "t", "Same", null, null, 200_000, emptyList()) } +
             (0 until 4).map { PocketCandidate("b$it", "t", "Other", null, null, 200_000, emptyList()) }
         val plan = DeterministicPocketBriefModel(maxPerArtist = 3).curate("x", c, 6)
@@ -260,7 +265,7 @@ class PocketBuilderTest {
         assertEquals(4, thin.songIds.size)
     }
 
-    @Test fun secondKickOffWhileBuildingIsRefused() = runBlocking {
+    @Test fun secondKickOffWhileBuildingIsRefused() = runBlocking<Unit> {
         val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
         val svc = PocketBuilderService(kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default),
             { gate.await(); bigCatalog() }, Persist()::fn)

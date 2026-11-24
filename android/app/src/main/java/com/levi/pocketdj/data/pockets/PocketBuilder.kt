@@ -166,7 +166,8 @@ class DeterministicPocketBriefModel(private val maxPerArtist: Int = 3) : PocketB
             if (s.isEmpty()) s = brief.trim()
             if (s.isEmpty()) return "New Pocket"
             val titled = s.split(Regex("\\s+")).joinToString(" ") { w ->
-                if (w.length > 1 && w.all { it.isLetterOrDigit() && it.isUpperCase() || it.isDigit() }) w
+                if ('&' in w) w.uppercase(Locale.ROOT)
+                else if (w.length > 1 && w.all { it.isLetterOrDigit() && it.isUpperCase() || it.isDigit() }) w
                 else w.replaceFirstChar { it.titlecase(Locale.ROOT) }
             }
             return if (titled.length > 48) titled.take(47).trimEnd() + "…" else titled

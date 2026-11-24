@@ -75,8 +75,8 @@ object PocketBriefParser {
 
     fun parse(brief: String, vocab: PocketVocabulary = PocketVocabulary()): ParsedPocketBrief {
         var s = " " + brief.lowercase(Locale.ROOT)
-            .replace('–', '-').replace('—', '-').replace('’', '\'').replace('‘', '\'')
-            .replace(" r and b ", " r&b ") + " "
+            .replace('–', '-').replace('—', '-').replace('’', '\'').replace('‘', '\'') + " "
+        s = s.replace(" r and b ", " r&b ")
 
         // 1. Length: "90 minutes", "an hour", "2 hours".
         var minutes: Int? = null
