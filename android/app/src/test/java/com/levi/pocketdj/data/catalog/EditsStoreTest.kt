@@ -160,4 +160,33 @@ class EditsStoreTest {
         r.store.reloadFromDisk()
         assertEquals(0, r.store.count)
     }
+
+    @Test fun localWritePreservesUnknownFieldsAndMeta() {
+        val r = rig()
+        r.file.writeText("""{"schemaVersion":3,"future":1,"albums":{"a1":{"name":"A","newField":{"x":1}}},
+            |"songs":{"s1":{"name":"S","futureSong":true},"bad":"not-an-object"},"meta":{"platform":"iOS"}}""".trimMargin())
+        r.store.setSongEdit("s2", SongEdit(name = "Two"))
+        r.store.setSongEdit("s1", SongEdit(name = "S2")) // touched entry keeps its unknown keys
+        val root = Json.parseToJsonElement(r.file.readText()).jsonObject
+        assertEquals("3", root["schemaVersion"].toString())
+        assertEquals("1", root["future"].toString())
+        assertEquals("""{"platform":"iOS"}""", root["meta"].toString())
+        assertEquals("""{"name":"A","newField":{"x":1}}""", root["albums"]!!.jsonObject["a1"].toString())
+        val songs = root["songs"]!!.jsonObject
+        assertEquals("""{"futureSong":true,"name":"S2"}""", songs["s1"].toString())
+        assertEquals("\"not-an-object\"", songs["bad"].toString())
+        assertEquals("Two", r.store.songEdit("s2")?.name)
+        r.store.removeSongEdit("s1")
+        assertNull(Json.parseToJsonElement(r.file.readText()).jsonObject["songs"]!!.jsonObject["s1"])
+    }
+
+    @Test fun ioWrappersWriteOffCallerThread() = kotlinx.coroutines.runBlocking {
+        val r = rig()
+        r.store.setSongEditIo("s", SongEdit(name = "io"))
+        assertEquals("io", r.store.songEdit("s")?.name)
+        r.store.removeSongEditIo("s")
+        assertEquals(0, r.store.count)
+        r.store.clearAllIo()
+        assertFalse(r.file.exists())
+    }
 }

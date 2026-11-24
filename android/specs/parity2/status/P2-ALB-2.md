@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-ALB-2 - 'edits' document cloud sync + writable EditsStore + live re-apply
 
@@ -17,3 +17,11 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR EditsStore.mutate re-encodes whole doc (drops future fields) -> fixed: patchEntry patches only the touched id in the raw JsonObject; other entries, unknown top-level keys (meta), skipped malformed entries, and unknown keys inside the touched entry are preserved. Test localWritePreservesUnknownFieldsAndMeta.
+- MINOR inline flush on caller thread -> fixed: added suspend *Io wrappers (Dispatchers.IO) for set/remove/clearAll; inline versions remain where ordering matters. Test ioWrappersWriteOffCallerThread.
+- NIT CloudSyncService-level pull test -> fixed: CloudSyncServiceTest.editsEntryPullNeverPushesBack.
+- Tests: 6177 -> 6180, 0 failures; assembleDebug green.
+
+fixes applied

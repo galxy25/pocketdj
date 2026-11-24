@@ -3,9 +3,12 @@ package com.levi.pocketdj.data.catalog
 import com.levi.pocketdj.data.store.VersionedJsonWriter
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
-import kotlinx.serialization.encodeToString
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -36,34 +39,56 @@ class EditsStore(
     fun songEdit(id: String): SongEdit? = reader.current().songs[id]
 
     /** Replace (an empty [edit] removes) the album's edit. */
-    fun setAlbumEdit(id: String, edit: AlbumEdit) = mutate { cur ->
-        CatalogEdits(
-            cur.albums.toMutableMap().also { if (edit.isEmpty) it.remove(id) else it[id] = edit },
-            cur.songs,
-        )
-    }
+    fun setAlbumEdit(id: String, edit: AlbumEdit) =
+        patchEntry("albums", id, edit.takeUnless { it.isEmpty }, { albumEdit(id) }, AlbumEdit.serializer())
 
     /** Replace (an empty [edit] removes) the song's edit. */
-    fun setSongEdit(id: String, edit: SongEdit) = mutate { cur ->
-        CatalogEdits(
-            cur.albums,
-            cur.songs.toMutableMap().also { if (edit.isEmpty) it.remove(id) else it[id] = edit },
-        )
-    }
+    fun setSongEdit(id: String, edit: SongEdit) =
+        patchEntry("songs", id, edit.takeUnless { it.isEmpty }, { songEdit(id) }, SongEdit.serializer())
 
-    fun removeAlbumEdit(id: String) = mutate { cur -> CatalogEdits(cur.albums - id, cur.songs) }
-    fun removeSongEdit(id: String) = mutate { cur -> CatalogEdits(cur.albums, cur.songs - id) }
+    fun removeAlbumEdit(id: String) = patchEntry("albums", id, null, { albumEdit(id) }, AlbumEdit.serializer())
+    fun removeSongEdit(id: String) = patchEntry("songs", id, null, { songEdit(id) }, SongEdit.serializer())
 
-    private fun mutate(change: (CatalogEdits) -> CatalogEdits) {
+    // Off-main entry points for UI callers: every mutation is a file read + encode + write.
+    suspend fun setAlbumEditIo(id: String, edit: AlbumEdit) = withContext(Dispatchers.IO) { setAlbumEdit(id, edit) }
+    suspend fun setSongEditIo(id: String, edit: SongEdit) = withContext(Dispatchers.IO) { setSongEdit(id, edit) }
+    suspend fun removeAlbumEditIo(id: String) = withContext(Dispatchers.IO) { removeAlbumEdit(id) }
+    suspend fun removeSongEditIo(id: String) = withContext(Dispatchers.IO) { removeSongEdit(id) }
+    suspend fun clearAllIo() = withContext(Dispatchers.IO) { clearAll() }
+
+    /**
+     * Patch ONLY entry [id] of [section] in the existing raw document: other entries, unknown top-level keys
+     * (`meta`) and entries the lenient decode skipped stay byte-for-byte semantically intact, so a local write
+     * never trims fields a newer iOS added. Within the touched entry, keys this model does not know are kept
+     * too; known keys are replaced by the new delta (a cleared field disappears).
+     */
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    private fun <T> patchEntry(section: String, id: String, want: T?, current: () -> T?, ser: KSerializer<T>) {
         val changed = synchronized(lock) {
-            val cur = reader.current()
-            val next = change(cur)
-            if (next.albums == cur.albums && next.songs == cur.songs) return@synchronized false
-            writeLocked(encode(next))
+            if (want == current()) return@synchronized false
+            val root = readRawRoot()
+            val sections = root.toMutableMap()
+            val entries = ((root[section] as? JsonObject) ?: JsonObject(emptyMap())).toMutableMap()
+            if (want == null) {
+                entries.remove(id)
+            } else {
+                val known = (0 until ser.descriptor.elementsCount).map { ser.descriptor.getElementName(it) }.toSet()
+                val kept = ((entries[id] as? JsonObject) ?: JsonObject(emptyMap())).filterKeys { it !in known }
+                val fresh = json.encodeToJsonElement(ser, want) as JsonObject
+                entries[id] = JsonObject(kept + fresh)
+            }
+            sections[section] = JsonObject(entries)
+            for (other in listOf("albums", "songs")) if (other !in sections) sections[other] = JsonObject(emptyMap())
+            if ("schemaVersion" !in sections) sections["schemaVersion"] = JsonPrimitive(SCHEMA_VERSION)
+            writeLocked(JsonObject(sections).toString())
             true
         }
         if (changed) onChanged()
     }
+
+    private fun readRawRoot(): JsonObject = runCatching {
+        Json.parseToJsonElement(file.readText()) as? JsonObject
+    }.getOrNull() ?: JsonObject(emptyMap())
 
     /**
      * Backup restore (`BackupEditsStore.importMerging`): the already-merged document bytes, written verbatim so

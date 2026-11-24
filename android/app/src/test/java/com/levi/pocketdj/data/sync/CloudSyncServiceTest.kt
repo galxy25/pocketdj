@@ -448,4 +448,25 @@ class CloudSyncServiceTest {
         assertEquals("queued", got)
         assertEquals("queued", seam.readText())
     }
+
+    @Test fun editsEntryPullNeverPushesBack() = runTest {
+        val dir = tmp.newFolder()
+        val file = File(dir, com.levi.pocketdj.data.catalog.CatalogEditsFile.FILE_NAME)
+        val store = com.levi.pocketdj.data.catalog.EditsStore(
+            com.levi.pocketdj.data.catalog.CatalogEditsFile(file),
+            com.levi.pocketdj.data.store.VersionedJsonWriter(file),
+        )
+        val db = InMemoryCloudDocDatabase()
+        val svc = CloudSyncService(db, { true }, File(dir, "state.json"), backgroundScope, { 0L })
+        svc.register("edits", file, reload = { store.reloadFromDisk() }, applyPayload = { store.writePulled(it) })
+        file.writeAt("""{"songs":{"old":{"name":"local"}}}""", localOld)
+        val doc = """{"schemaVersion":2,"albums":{},"songs":{"s":{"name":"cloud"}}}"""
+        db.put(CloudDoc("edits", doc.toByteArray(), (localOld + 10_000).toDouble(), "iOS"))
+        svc.syncNow()
+        assertEquals(doc, file.readText())
+        assertEquals("cloud", store.songEdit("s")?.name)
+        svc.syncNow()
+        svc.syncNow()
+        assertTrue(db.saved.isEmpty())
+    }
 }
