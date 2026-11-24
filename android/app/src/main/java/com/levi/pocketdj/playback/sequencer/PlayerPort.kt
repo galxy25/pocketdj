@@ -26,6 +26,11 @@ data class PlayRequest(
     val albumRun: com.levi.pocketdj.playback.album.AlbumRun.Plan? = null,
 )
 
+/** The row source of a [PlayerPort.adoptDsp] request: the audio is already on the DSP, nothing to resolve. */
+object DjAdoptedSource : RowSource {
+    override val backend: String get() = "dj"
+}
+
 /** An arbitrary stream (jukebox Tune-In). */
 data class UrlRequest(
     val title: String,
@@ -87,6 +92,14 @@ interface PlayerPort {
      * paused starts playback, exactly as a reload would). False when the engine did not retarget.
      */
     suspend fun retargetInPlace(item: QueueItem, startPlayback: Boolean): Boolean = false
+
+    /**
+     * P2-DJ-8: the NP DSP now OWNS [request]'s row (a DJ transition's fade start advanced the sequencer onto it without a
+     * load). The engine leaves ExoPlayer idle / cleared and becomes the sequencer's again (one audio owner: the DSP
+     * session player keeps the MediaSession through the whole transition). False = it could not. Default: nothing to adopt.
+     */
+    suspend fun adoptDsp(request: PlayRequest): Boolean = false
+
     suspend fun pause()
     suspend fun resume()
     suspend fun seekTo(positionMs: Long)

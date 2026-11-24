@@ -1670,6 +1670,37 @@ class PlaybackController(
             urls.prefetch(ahead, ripConfigured)
         }
 
+        /**
+         * P2-DJ-8: the NP DSP owns [request]'s row (a DJ fade start advanced the sequencer onto it without a load). ExoPlayer
+         * goes idle and cleared; the DSP session player keeps the MediaSession (one audio owner, one card writer); the
+         * generation bump makes any late ExoPlayer event of the outgoing item stale.
+         */
+        override suspend fun adoptDsp(request: PlayRequest): Boolean {
+            claimForDsp()
+            clearAlbumRun()
+            urlRetriedFor = null
+            val outgoingId = sequencer.state.value.queue.getOrNull(request.index - 1)?.id
+            return try {
+                withController {
+                    // Only the outgoing row is ours to stop: anything else loaded since the fade start belongs to a newer load.
+                    val loaded = it.currentMediaItem?.mediaId
+                    if (loaded == null || loaded == outgoingId) {
+                        playGeneration.incrementAndGet()
+                        it.stop()
+                        it.clearMediaItems()
+                    } else {
+                        NPLog.lane(NPLog.PLAYBACK, "[playback] adoptDsp song=${request.item.id} left ExoPlayer alone (holds $loaded)")
+                    }
+                    true
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                NPLog.lane(NPLog.PLAYBACK, "[playback] adoptDsp song=${request.item.id} failed: ${e.message}")
+                false
+            }
+        }
+
         override suspend fun loadUrl(request: UrlRequest) {
             val mi = MediaItem.Builder()
                 .setMediaId("url:" + request.url)

@@ -523,6 +523,20 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     /** Drop staged growing metadata that no engage consumed (refused / superseded engage). */
     fun clearStagedGrowingMeta() { npMetaStaged = null }
 
+    /**
+     * P2-DJ-8: a DJ fade start advances the sequencer onto [item], which the DSP already plays. The DSP session player is the
+     * ONE card writer, so its metadata + album/context extras become [item]'s NOW (the controller still mirrors the outgoing
+     * row). Returns the undo for a refused advance (the outgoing's metadata comes back before the engine reverts).
+     */
+    fun djAdoptMeta(item: com.levi.pocketdj.playback.sequencer.QueueItem, context: com.levi.pocketdj.playback.PlayContext): () -> Unit {
+        val before = npMeta
+        stageGrowingMeta(item, context)
+        npMeta = npMetaStaged
+        npMetaStaged = null
+        npDspEngine.onChanged?.invoke()
+        return { npMeta = before; npDspEngine.onChanged?.invoke() }
+    }
+
     /** The session-scoped Stem Lock carry; every change re-persists the durable session's `stemLock`. */
     val stemLockSession: com.levi.pocketdj.mix.nowplaying.StemLockSession by lazy {
         com.levi.pocketdj.mix.nowplaying.StemLockSession(onChanged = { persistStemLock() })

@@ -1002,7 +1002,7 @@ class SetlistSequencer(
         unplayableStreak = 0
     }
 
-    private class NoLoad(val path: StartPath, val backend: String, val rendering: Boolean)
+    private class NoLoad(val path: StartPath, val backend: String, val rendering: Boolean, val meterCause: String? = null)
 
     /**
      * A normal advance minus [PlayerPort.load]: the cursor moves exactly as [advanceToNext] moves it (gate, cascade
@@ -1017,6 +1017,7 @@ class SetlistSequencer(
         path: StartPath = StartPath.ALBUM_GLIDE,
         backend: String = path.name.lowercase(),
         rendering: Boolean = true,
+        meterCause: String? = null,
     ): Boolean {
         if (!running || held) return false
         val cur = queue.getOrNull(index) ?: return false
@@ -1026,9 +1027,41 @@ class SetlistSequencer(
             AdvanceCause.NATURAL_END -> noteNaturalEndOf(cur)
             else -> Unit
         }
-        advanceToNext(cause, NoLoad(path, backend, rendering))
+        advanceToNext(cause, NoLoad(path, backend, rendering, meterCause))
         return playGeneration != genBefore || !running
     }
+
+    /** Plays left of the CURRENT row (1 = the row ends after this pass); DJ Mode declines a repeating row. */
+    val currentPlaysRemaining: Int get() = playsRemaining
+
+    /**
+     * DJ Mode's FADE START (P2-DJ-8): the advance onto the row the DSP already mixes in. Exactly a natural-end
+     * [advanceWithoutLoad] (index, naturalEnd, repeat counter, generation / start-window / stall bookkeeping, ONE History
+     * play, dead-air cause `dj` with first audio at once, hooks), tagged [StartPath.DJ] and NEVER auto-skip. The engine's
+     * preload slot is forgotten (the DSP owns the audio); [PlayerPort.adoptDsp] then leaves ExoPlayer idle. Returns false
+     * when nothing advanced (halted by the gate / breaker, or no longer running): the engine puts the outgoing back.
+     */
+    fun advanceAtDjFadeStart(): Boolean {
+        if (!advanceWithoutLoad(AdvanceCause.NATURAL_END, StartPath.DJ, "dj", rendering = true, meterCause = "dj")) return false
+        preloader.noteCleared()
+        val item = queue.getOrNull(index) ?: return true
+        val request = PlayRequest(
+            item = item, source = DjAdoptedSource, context = requestContext(item), originCollectionId = originCollectionIdFor(),
+            resumeAtMs = null, index = index, count = queue.size, generation = playGeneration,
+        )
+        val adoptGen = playGeneration
+        scope.launch {
+            // The listener may have skipped or tapped another row since the fade start: a stale adopt must not touch the player.
+            if (!owns(adoptGen) || queue.getOrNull(index)?.uid != item.uid) return@launch
+            val ok = try { port.adoptDsp(request) } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
+            if (!ok) djAdoptFailed(item.uid)
+        }
+        return true
+    }
+
+    /** DJ: the engine could not take the adopted row (ExoPlayer would not go idle): called once per failed adopt. */
+    @Volatile var onDjAdoptFailed: (uid: String) -> Unit = {}
+    private fun djAdoptFailed(uid: String) { if (running && queue.getOrNull(index)?.uid == uid) onDjAdoptFailed(uid) }
 
     /**
      * An in-place engine retarget (album glide) failed after the cursor already moved: load the current row normally
@@ -1269,7 +1302,7 @@ class SetlistSequencer(
             }
         }
         // Dead-air clock: an auto-advance is the between-tracks gap; a skip is listener-driven.
-        meter?.transitionBegan(if (cause == AdvanceCause.USER) "skip" else "advance")
+        meter?.transitionBegan(noLoad?.meterCause ?: if (cause == AdvanceCause.USER) "skip" else "advance")
         waitingForLive = false
         log("[playback] advance from=${queue.getOrNull(index)?.id ?: "?"} index=$index/${queue.size} cause=$cause")
         val fromId = queue.getOrNull(index)?.id
