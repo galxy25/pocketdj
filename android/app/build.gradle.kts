@@ -191,6 +191,11 @@ dependencies {
 
     // QR generation for Jukebox Hero (jukebox.md §6.1) — pure-Java, offline.
     implementation(libs.zxing.core)
+    // P2-SOC-2: link-a-device QR scanner (CameraX preview + analysis; zxing decodes, no ML Kit).
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
 
     // Apple Music for Android SDK (specs/applemusic.md §1). Vendored AARs — not
     // on Maven — wired as file dependencies (settings.gradle.kts sets

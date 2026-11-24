@@ -54,6 +54,9 @@ sealed interface DeepLink {
     /** One of our add/automix links whose target couldn't be resolved (e.g. a spoken name): surfaces [message]. */
     data class Unresolved(val message: String) : DeepLink
 
+    /** `pocketdj://link/<code>` / `pocketdj://link?code=<code>` — fill Settings > Link a device with a (checksum-valid) [code]. */
+    data class LinkDevice(val code: String) : DeepLink
+
     /** Not ours (OAuth redirects, unrelated https URLs, garbage). */
     data object None : DeepLink
 }
@@ -162,6 +165,12 @@ object DeepLinkParser {
                     else -> return unresolved
                 }
                 DeepLink.AutoMix(source, truthy(query["shuffle"]))
+            }
+            "link" -> {
+                val raw = query["code"] ?: arg
+                val code = com.levi.pocketdj.screens.settings.LinkScan.extract("pocketdj://link" + (raw?.let { "?code=$it" } ?: ""))
+                if (raw == null) DeepLink.None
+                else code?.let { DeepLink.LinkDevice(it) } ?: DeepLink.Unresolved("That link code isn't valid. Check it and try again.")
             }
             "np" -> parseNowPlaying(parts, query)
             "create-pocket", "createpocket" ->

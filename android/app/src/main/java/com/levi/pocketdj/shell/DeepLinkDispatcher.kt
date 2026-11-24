@@ -228,6 +228,15 @@ class DeepLinkDispatcher(
                 val seam = seams.nowPlayingStem
                 if (seam != null) seam(link.stem, link.muted) else postMessage("Stems by link aren't available yet")
             }
+            is DeepLink.LinkDevice -> {
+                // Dormant until the live endpoints doc publishes profileSyncBase: nothing changes, nothing is parked.
+                if (com.levi.pocketdj.data.config.RemoteEndpoints.profileSyncBase == null) {
+                    postMessage("Device sync isn't available yet")
+                } else {
+                    com.levi.pocketdj.data.sync.LinkDeviceRequests.request(link.code)
+                    postRoute(ShellRoute.Settings)
+                }
+            }
             is DeepLink.Unresolved -> postMessage(link.message)
             is DeepLink.Navigate -> postRoute(link.route)
             is DeepLink.CollectionFile -> {

@@ -18,6 +18,9 @@ sealed interface ShellRoute {
 
     /** Land on Browse and park [query] for its search field (iOS `pendingBrowseQuery`). */
     data class BrowseSearch(val query: String) : ShellRoute
+
+    /** Push the Settings screen (link-device deep link). */
+    data object Settings : ShellRoute
 }
 
 /** What the shell must do for a route: the pure output of [ShellRouteResolver]. */
@@ -76,6 +79,7 @@ object ShellRouteResolver {
         is ShellRoute.JukeboxJoin ->
             if (lookup.jukeboxSessionJoined(route.id)) NavCommand(PocketDjDestination.Jukebox, route)
             else RouteMessage("That jukebox session isn't in your joined list.")
+        ShellRoute.Settings -> NavCommand(PocketDjDestination.default, route)
         is ShellRoute.BrowseSearch ->
             NavCommand(PocketDjDestination.Browse, pendingBrowseQuery = route.query)
     }
