@@ -131,9 +131,26 @@ internal object InlinePlayerState {
         return (x / width).coerceIn(0f, 1f).let { (it.toDouble() * durationMs).toLong() }
     }
 
-    /** The scrubber's range: the engine's duration, else the catalog length, never 0 (iOS `max(player, catalog, 0.01)`). */
-    fun scrubberDurationMs(engineMs: Long?, catalogMs: Long?): Long =
-        maxOf(engineMs ?: 0L, catalogMs ?: 0L, 10L)
+    /** Apple Music previews are 30 s clips; the scrubber range is capped to that. */
+    const val PREVIEW_CAP_MS = 30_000L
+
+    /**
+     * The scrubber's range: the engine's duration, else the catalog length, never 0 (iOS `max(player, catalog, 0.01)`).
+     * A 30 s [isPreview] clip caps the range at [PREVIEW_CAP_MS] (the catalog length is the full track's).
+     */
+    fun scrubberDurationMs(engineMs: Long?, catalogMs: Long?, isPreview: Boolean = false): Long {
+        val d = maxOf(engineMs ?: 0L, catalogMs ?: 0L, 10L)
+        return if (isPreview) minOf(d, PREVIEW_CAP_MS) else d
+    }
+
+    /**
+     * A strip seeker that reads [current] (duration, isLive) on EVERY call, so a long-lived pointer handler that never
+     * restarts still seeks against the latest engine duration (not the first composition's catalog length).
+     */
+    fun stripSeeker(current: () -> Pair<Long?, Boolean>): (x: Float, width: Float) -> Long? = { x, width ->
+        val (dur, live) = current()
+        seekMs(x, width, dur, live)
+    }
 
     /** "m:ss" like iOS `clock`. */
     fun clock(ms: Long): String {
@@ -157,14 +174,16 @@ internal fun InlinePlayerSlot(song: IndexSong, album: IndexAlbum?, modifier: Mod
     val nowPlaying by graph.playbackController.nowPlaying.collectAsState()
     val np = nowPlaying
     val show = np != null && InlinePlayerState.matches(song.id, seqState.current?.id, np.songId)
+    // Remember the last non-null np so the exit animation has content to collapse after stop() nulls it.
+    var lastInfo by remember { mutableStateOf<com.levi.pocketdj.playback.PlaybackController.NowPlayingInfo?>(null) }
+    if (np != null) lastInfo = np
     AnimatedVisibility(
         visible = show,
         enter = fadeIn() + expandVertically(),
         exit = fadeOut() + shrinkVertically(),
         modifier = modifier,
     ) {
-        // Keep the last non-null np for the exit animation.
-        val info = np ?: return@AnimatedVisibility
+        val info = np ?: lastInfo ?: return@AnimatedVisibility
         InlinePlayerPanel(song, album, info)
     }
 }
@@ -181,7 +200,8 @@ private fun InlinePlayerPanel(
     val scope = rememberCoroutineScope()
     val manifest by graph.ripsRepository.manifest.collectAsState()
     var collapsed by remember { mutableStateOf(false) }
-    val isAm = controller.isAppleMusicActive
+    // The backend flag is a plain getter: re-read whenever np re-emits (every backend swap publishes a new np).
+    val isAm = remember(np) { controller.isAppleMusicActive }
     val entry = manifest[song.id]
     val waveformUrl = entry?.waveform?.let { Endpoints.ripAudioUrl(it) }
     val body = InlinePlayerState.body(np.isLive, isAm, waveformUrl != null)
@@ -271,7 +291,7 @@ private fun InlinePlayerExpanded(
             delay(250)
         }
     }
-    val duration = InlinePlayerState.scrubberDurationMs(np.durationMs, song.length)
+    val duration = InlinePlayerState.scrubberDurationMs(np.durationMs, song.length, np.isPreview)
 
     when (body) {
         InlinePlayerState.Body.LIVE -> Row(
@@ -283,11 +303,9 @@ private fun InlinePlayerExpanded(
 
         else -> {
             if (body == InlinePlayerState.Body.WAVEFORM && waveformUrl != null) {
-                WaveformStrip(waveformUrl, crop, posMs, duration) { x, w ->
-                    InlinePlayerState.seekMs(x, w, duration, np.isLive)?.let { ms ->
-                        posMs = ms
-                        scope.launch { controller.seekTo(ms) }
-                    }
+                WaveformStrip(waveformUrl, crop, posMs, duration, np.isLive) { ms ->
+                    posMs = ms
+                    scope.launch { controller.seekTo(ms) }
                 }
             }
             Column {
@@ -315,9 +333,13 @@ private fun InlinePlayerExpanded(
 
 /** 36 dp waveform strip: the PNG (cropped to the song's window for analog), a playhead, tap/drag to seek. */
 @Composable
-private fun WaveformStrip(url: String, crop: InlinePlayerState.Crop?, posMs: Long, durationMs: Long, onSeek: (x: Float, width: Float) -> Unit) {
+private fun WaveformStrip(url: String, crop: InlinePlayerState.Crop?, posMs: Long, durationMs: Long, isLive: Boolean, onSeekMs: (Long) -> Unit) {
     val painter = rememberAsyncImagePainter(model = url)
     var width by remember { mutableStateOf(0f) }
+    // pointerInput(Unit) never restarts, so everything the gesture reads goes through updated state.
+    val latest by androidx.compose.runtime.rememberUpdatedState(durationMs to isLive)
+    val latestSeek by androidx.compose.runtime.rememberUpdatedState(onSeekMs)
+    val seeker = remember { InlinePlayerState.stripSeeker { latest.first to latest.second } }
     val playColor = MaterialTheme.colorScheme.primary
     Box(
         Modifier
@@ -340,12 +362,12 @@ private fun WaveformStrip(url: String, crop: InlinePlayerState.Crop?, posMs: Lon
             }
             .pointerInput(Unit) {
                 // Tap or horizontal drag seeks; a vertical pan is left to the page's list scroll.
-                detectTapGestures { onSeek(it.x, size.width.toFloat()) }
+                detectTapGestures { seeker(it.x, size.width.toFloat())?.let(latestSeek) }
             }
             .pointerInput(Unit) {
                 detectHorizontalDragGestures(
                     onDragEnd = {},
-                    onHorizontalDrag = { change, _ -> change.consume(); onSeek(change.position.x, size.width.toFloat()) },
+                    onHorizontalDrag = { change, _ -> change.consume(); seeker(change.position.x, size.width.toFloat())?.let(latestSeek) },
                 )
             }
             .testTag("player-wave-seek"),

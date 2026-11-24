@@ -585,6 +585,7 @@ private fun NodeRow(
                     OverflowMenu(content = menu)
                 }
             } else {
+                Column {
                 CollectionTrackRow(
                     title = song.name,
                     subtitle = if (rowNote != null) "${song.artist} · $rowNote" else song.artist,
@@ -603,6 +604,8 @@ private fun NodeRow(
                     },
                     trailing = { OverflowMenu(content = menu) },
                 )
+                    com.levi.pocketdj.screens.browse.InlinePlayerSlot(song, song.albumId?.let { catalog?.albumsById?.get(it) })
+                }
             }
         }
 

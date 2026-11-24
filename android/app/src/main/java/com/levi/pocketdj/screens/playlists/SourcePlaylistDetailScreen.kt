@@ -278,6 +278,7 @@ fun SourcePlaylistDetailScreen(
                     if (song == null || PlayResolver.isStudioId(songId)) {
                         MissingItemRow()
                     } else {
+                        androidx.compose.foundation.layout.Column {
                         CollectionTrackRow(
                             title = song.name,
                             subtitle = song.artist,
@@ -289,6 +290,8 @@ fun SourcePlaylistDetailScreen(
                             modifier = Modifier.selectableRow(rowSelection, shownKeys[index], selScope, { detailSongId = songId }, rowSongId = songId),
                             favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                         )
+                            com.levi.pocketdj.screens.browse.InlinePlayerSlot(song, song.albumId?.let { catalog.albumsById[it] })
+                        }
                     }
                 }
             }

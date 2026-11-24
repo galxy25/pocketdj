@@ -63,4 +63,22 @@ class InlinePlayerStateTest {
         assertEquals("3:05", InlinePlayerState.clock(185_999))
         assertEquals("12:00", InlinePlayerState.clock(720_000))
     }
+
+    @Test fun stripSeekerReadsLatestDurationNotTheFirstComposition() {
+        // First composition: engine duration unknown, catalog 200 s. Later the engine reports the clipped 187 s.
+        var cur: Pair<Long?, Boolean> = 200_000L to false
+        val seek = InlinePlayerState.stripSeeker { cur }
+        assertEquals(100_000L, seek(50f, 100f))
+        cur = 187_000L to false
+        assertEquals(93_500L, seek(50f, 100f))
+        cur = 187_000L to true // went live: no seeking
+        assertNull(seek(50f, 100f))
+    }
+
+    @Test fun previewCapsTheScrubberRange() {
+        assertEquals(30_000L, InlinePlayerState.scrubberDurationMs(null, 200_000, isPreview = true))
+        assertEquals(30_000L, InlinePlayerState.scrubberDurationMs(30_000, 200_000, isPreview = true))
+        assertEquals(200_000L, InlinePlayerState.scrubberDurationMs(null, 200_000))
+        assertEquals(10_000L, InlinePlayerState.scrubberDurationMs(null, null, isPreview = true).coerceAtLeast(10_000L))
+    }
 }

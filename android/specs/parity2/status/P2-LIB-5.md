@@ -19,3 +19,13 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MAJOR stale seek closure (pointerInput(Unit)) -> fixed: strip gestures go through `InlinePlayerState.stripSeeker` reading rememberUpdatedState (duration, isLive) on every call; test `stripSeekerReadsLatestDurationNotTheFirstComposition`.
+- MINOR panel only on album page -> fixed: InlinePlayerSlot now under song rows in PlaylistDetailScreen and SourcePlaylistDetailScreen (collection/playlist detail). Browse/Setlist lists remain open.
+- MINOR isAm unobserved / preview cap -> fixed: isAm re-read keyed on np (every backend swap republishes np); scrubber capped to 30 s for previews (test `previewCapsTheScrubberRange`). Row-keying on AM song is already enforced by `matches` in the slot.
+- NIT exit animation -> fixed (last non-null np remembered).
+- NIT coverage -> seek logic extracted into a pure testable function; no Compose JVM harness exists.
+
+fixes applied. Tests: 7665, 0 failures (+2).
+state: reviewed
