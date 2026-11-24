@@ -43,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
@@ -103,7 +104,7 @@ fun JukeboxScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit = 
                     state = state,
                     defaultRequireToken = loadedSettings.jukeboxTokensRequiredByDefault,
                     defaultName = JukeboxSettings.defaultSessionName(pocketDjName),
-                    onStart = graph.repository::start,
+                    onStart = { n, r, t -> graph.repository.start(n, r, t) },
                     onPickSession = { pickerOpen = true },
                     onJoinByLink = if (joined.isEmpty()) ({ joinDialog = true }) else null,
                 )
@@ -196,7 +197,7 @@ private fun CreateView(
     state: JukeboxRepository.UiState,
     defaultRequireToken: Boolean,
     defaultName: String,
-    onStart: (name: String, requiresToken: Boolean) -> Unit,
+    onStart: (name: String, requiresToken: Boolean, timeless: Boolean) -> Unit,
     modifier: Modifier = Modifier,
     onJoinByLink: (() -> Unit)? = null,
     onPickSession: () -> Unit = {},
@@ -204,6 +205,7 @@ private fun CreateView(
     var name by remember { mutableStateOf("") }
     // Seeded from the Settings default each time the create view appears (§6).
     var requireToken by remember { mutableStateOf(defaultRequireToken) }
+    var timeless by remember { mutableStateOf(false) }
     LaunchedEffect(defaultRequireToken) { requireToken = defaultRequireToken }
 
     Column(
@@ -245,8 +247,16 @@ private fun CreateView(
             checked = requireToken,
             onCheckedChange = { requireToken = it },
         )
+        ToggleRow(
+            title = "Timeless \u2014 never expires",
+            caption = "Every session runs for 24 hours and cleans itself up after 7 days. " +
+                "Timeless keeps it open until you end it.",
+            checked = timeless,
+            onCheckedChange = { timeless = it },
+            tag = "jukebox-timeless-create",
+        )
         Button(
-            onClick = { onStart(name, requireToken) },
+            onClick = { onStart(name, requireToken, timeless) },
             enabled = !state.starting,
             modifier = Modifier.fillMaxWidth(),
         ) {
@@ -340,6 +350,15 @@ private fun LiveView(
                 caption = "Saved with the session for a future guest-access gate.",
                 checked = session.requiresToken ?: false,
                 onCheckedChange = repository::setRequiresTokenIntent,
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+            ToggleRow(
+                title = "Timeless \u2014 never expires",
+                caption = "Every session runs for 24 hours and cleans itself up after 7 days.",
+                checked = state.timelessPending ?: (session.timeless ?: false),
+                onCheckedChange = repository::setTimeless,
+                enabled = state.timelessPending == null,
+                tag = "jukebox-timeless-live",
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outline)
             Text(
@@ -567,6 +586,8 @@ private fun ToggleRow(
     caption: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    tag: String? = null,
+    enabled: Boolean = true,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(modifier = Modifier.weight(1f)) {
@@ -581,11 +602,17 @@ private fun ToggleRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            modifier = if (tag != null) Modifier.testTag(tag) else Modifier,
+        )
     }
 }
 
 private fun expiryLine(session: JukeboxSessionInfo): String {
+    if (session.timeless == true) return "Timeless \u2014 never expires. Runs until you end it."
     val expiresAt = session.expiresAt?.toLong()
     return if (expiresAt != null) {
         val relative = DateUtils.getRelativeTimeSpanString(

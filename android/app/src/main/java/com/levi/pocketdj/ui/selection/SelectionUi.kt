@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -99,6 +100,12 @@ object SelectionBarSemantics {
         if (t.songIds.isEmpty()) return null
         val (text, json) = clipTexts(t)
         return if (text.length + json.length > MAX_CLIP_CHARS) null else text to json
+    }
+
+    /** Share text for the selected song ids (display order, unknown ids skipped); null when nothing resolves. */
+    fun shareText(ids: List<String>, songsById: Map<String, com.levi.pocketdj.data.catalog.IndexSong>): String? {
+        val songs = ids.mapNotNull { songsById[it] }
+        return if (songs.isEmpty()) null else com.levi.pocketdj.data.share.ShareText.forSongs(songs)
     }
 
     /** Copy-from-a-row: the whole selection when the row is part of it, else just that row. */
@@ -313,6 +320,18 @@ fun SelectionBar(
             onClick = { selection.currentPayload()?.let { writeSongTransfer(context, it) } },
             enabled = SelectionBarSemantics.copyEnabled(state),
         ) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy selected songs") }
+        val catalogSongs = com.levi.pocketdj.di.AppGraph.get(context).catalogRepository.state
+            .collectAsState().value.catalog?.songsById.orEmpty()
+        val shareResolves = SelectionBarSemantics.copyEnabled(state) &&
+            SelectionBarSemantics.shareText(selection.currentPayload()?.songIds.orEmpty(), catalogSongs) != null
+        IconButton(
+            onClick = {
+                val ids = selection.currentPayload()?.songIds.orEmpty()
+                SelectionBarSemantics.shareText(ids, catalogSongs)?.let { com.levi.pocketdj.data.share.ShareText.send(context, it) }
+            },
+            enabled = shareResolves,
+            modifier = Modifier.testTag("selection-share"),
+        ) { Icon(Icons.Filled.Share, contentDescription = "Share selected songs") }
         IconButton(onClick = { selection.clearAndExit() }) {
             Icon(Icons.Filled.Close, contentDescription = "Clear selection")
         }
