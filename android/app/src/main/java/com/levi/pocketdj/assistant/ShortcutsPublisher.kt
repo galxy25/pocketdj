@@ -166,7 +166,7 @@ class ShortcutManagerSink(private val context: Context) : ShortcutSink {
 
     companion object {
         /** Number of entries in res/xml/shortcuts.xml. */
-        const val STATIC_COUNT = 4
+        const val STATIC_COUNT = 5
 
         fun dynamicCap(context: Context): Int =
             (ShortcutManagerCompat.getMaxShortcutCountPerActivity(context) - STATIC_COUNT).coerceAtLeast(0)

@@ -17,6 +17,15 @@
         <item>start an auto mix of $source</item>
         <item>mix $source automatically</item>
     </string-array>
+    <string-array name="app_action_create_pocket_patterns">
+        <item>create a pocket of $brief</item>
+        <item>create a pocket with $brief</item>
+        <item>make a pocket of $brief</item>
+        <item>make me a pocket of $brief</item>
+        <item>build a pocket of $brief</item>
+        <item>create a pocket</item>
+    </string-array>
+    <string name="app_action_create_pocket_label">Create a pocket from a description</string>
     <string name="app_action_add_to_collection_label">Add this song to a collection</string>
     <string name="app_action_auto_mix_label">Auto-mix a collection</string>
 </resources>

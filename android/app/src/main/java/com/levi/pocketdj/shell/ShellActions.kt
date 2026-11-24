@@ -7,6 +7,8 @@ import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.collections.CollectionsStore
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.Setlist
+import com.levi.pocketdj.data.pockets.PocketBuilderService
+import com.levi.pocketdj.data.pockets.PocketFitter
 import com.levi.pocketdj.data.pockets.wheel.PocketMomentKey
 import com.levi.pocketdj.data.pockets.wheel.PocketWheelController
 import com.levi.pocketdj.playback.PlayContext
@@ -115,6 +117,9 @@ class ShellActions(
 ) : MediaPlayActions {
     /** Assigned by the Mix area; null ⇒ every Auto-Mix action says it isn't available. */
     @Volatile var mixFacade: MixFacade? = null
+
+    /** The "Create pocket" build service (P2-SURF-11); null until wired, then every create door says it isn't available. */
+    @Volatile var pocketBuilder: PocketBuilderService? = null
 
     /** The Pocket Wheel (P2-POC-16). A provider so the lazily built wheel is only touched when an action needs it. */
     @Volatile var pocketWheel: (() -> PocketWheelController?)? = null
@@ -289,6 +294,20 @@ class ShellActions(
         return AddToCollectionAction(collections).add(id, title, collectionId)
     }
 
+    /**
+     * "Create a pocket of <brief>": veto + ensureReady, then the build runs async (the pocket appears in
+     * Collections when it lands; the banner shows progress). Returns the line to speak / toast.
+     */
+    suspend fun createPocket(brief: String, minutes: Int = PocketFitter.DEFAULT_MINUTES): String {
+        veto()
+        val builder = pocketBuilder ?: throw ShellActionException.PlaybackFailed("Building pockets isn't available right now.")
+        val text = brief.trim()
+        if (text.isEmpty()) throw ShellActionException.PlaybackFailed("Tell me what the pocket should be, like “90s chill hip hop”.")
+        ensureReady()
+        if (builder.kickOff(text, minutes) == null) return "Already building a pocket. I'll add this one when it's done."
+        return "Building a pocket for “$text”. It will show up in Collections."
+    }
+
     // ---- navigation ----
 
     /** Raise a navigation request (consumed by the shell). Not vetoed: onboarding gates the shell itself. */
@@ -445,4 +464,14 @@ fun autoMixLinkSeam(
             autoMixLine(r.name, r.count, shuffle)
         },
     )
+}
+
+/** The `pocketdj://create-pocket?brief=...` seam: [ShellActions.createPocket], result (or failure) as a notice. */
+fun createPocketLinkSeam(
+    actions: ShellActions,
+    scope: CoroutineScope,
+    postMessage: (String) -> Unit,
+    onLaunched: (Job) -> Unit = {},
+): (String) -> Unit = { brief ->
+    onLaunched(scope.launchAction(postMessage, "Couldn't build that pocket.") { actions.createPocket(brief) })
 }
