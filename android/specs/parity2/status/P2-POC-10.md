@@ -26,3 +26,12 @@ All checklist items done. `:app:testDebugUnitTest :app:assembleDebug` green: 727
 
 ## Questions for Levi
 - None.
+
+## Review
+- MAJOR History wheel had no onPause -> fixed: WheelSegment builds one `wheelPauseAction` (playbackController.pause) shared by PocketWheelHost and the card actions. Test: WheelPauseWiringTest.
+- MINOR List segment shown with rec engine off -> fixed: `showsList(pocketsOn, answered, recOn)`; tests added in PocketsTabGateTest.
+- MINOR Play disabled on empty songIds -> fixed: Play always enabled; guard kept on replay/save-playlist.
+- NIT 'pdj' prefs file -> rejected (optional, harmless).
+- NIT Compose-level wiring test -> partially: pure pause-wiring and segment-gate tests added; no Compose/Robolectric harness.
+
+fixes applied

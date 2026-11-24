@@ -53,12 +53,16 @@ internal enum class PocketsSegment(val label: String) {
         const val PREF_KEY = "pdj.history.pockets.segment"
         /** Wheel is the default for a missing or unknown stored value. */
         fun parse(raw: String?): PocketsSegment = entries.firstOrNull { it.label == raw } ?: WHEEL
-        /** The List segment is hidden once the user declined cloud pockets (answered AND off): it would only re-offer the opt-in. */
-        fun showsList(pocketsOn: Boolean, answered: Boolean): Boolean = !(answered && !pocketsOn)
+        /** The List segment is also hidden while the rec engine is off (the list gate is closed, the opt-in would loop). Hidden once the user declined cloud pockets (answered AND off): it would only re-offer the opt-in. */
+        fun showsList(pocketsOn: Boolean, answered: Boolean, recOn: Boolean = true): Boolean = recOn && !(answered && !pocketsOn)
         /** What is shown: a hidden List always collapses to the wheel. */
         fun effective(stored: PocketsSegment, showsList: Boolean): PocketsSegment = if (showsList) stored else WHEEL
     }
 }
+
+/** The wheel centre button's pause: launches [pause] on [scope], swallowing failures (as the Debug host does). */
+internal fun wheelPauseAction(scope: kotlinx.coroutines.CoroutineScope, pause: suspend () -> Unit): () -> Unit =
+    { scope.launch { runCatching { pause() } } }
 
 /** Phones show the moment card as a bottom sheet; at >= 600 dp it is a side pane inside the wheel screen. */
 internal const val CARD_SIDE_PANE_DP = 600
@@ -85,7 +89,8 @@ internal fun PocketsTabScreen(onOpen: (key: String) -> Unit, modifier: Modifier 
         mutableStateOf(PocketsSegment.parse(runCatching { prefs?.getString(PocketsSegment.PREF_KEY, null) }.getOrNull()))
     }
     if (pocketsOn == null || answered == null) return
-    val showsList = PocketsSegment.showsList(pocketsOn == true, answered == true)
+    val recOn by graph.browseGraph.recEnabled.collectAsState()
+    val showsList = PocketsSegment.showsList(pocketsOn == true, answered == true, recOn)
     val segment = PocketsSegment.effective(stored, showsList)
 
     Column(modifier.fillMaxSize()) {
@@ -118,9 +123,10 @@ private fun WheelSegment(graph: AppGraph) {
     var selected by rememberSaveable { mutableStateOf<String?>(null) }
     val selectedKey = selected?.let(PocketMomentKey::fromToken)
     val snapshot by pg.wheelCache.snapshot.collectAsState()
-    val actions = rememberPocketWheelActions(pg, onPause = null)
     val active by pg.runStore.active.collectAsState()
     val scope = rememberCoroutineScope()
+    val onPause = remember(scope, graph) { wheelPauseAction(scope) { graph.playbackController.pause() } }
+    val actions = rememberPocketWheelActions(pg, onPause = onPause)
     val labelOf: (com.levi.pocketdj.data.pockets.ListeningContextTag) -> String? = remember(graph) {
         { tag -> runCatching { graph.collectionsGraph.listeningContextProvider.label(tag) }.getOrNull() }
     }
@@ -154,6 +160,7 @@ private fun WheelSegment(graph: AppGraph) {
                 graph = pg,
                 selected = selectedKey,
                 onSelect = { selected = it?.token },
+                onPause = onPause,
                 card = if (sidePane) { key ->
                     snapshot.moments.firstOrNull { it.key == key }?.let { m ->
                         PocketMomentCard(m, snapshot, pg.wheelCache.palette, actions, labelOf, onClose = { selected = null })

@@ -181,7 +181,6 @@ internal fun ListeningPocketDetailScreen(
                 Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        enabled = songIds.isNotEmpty(),
                         onClick = { play() },
                         modifier = Modifier.testTag("pocket-play"),
                     ) {

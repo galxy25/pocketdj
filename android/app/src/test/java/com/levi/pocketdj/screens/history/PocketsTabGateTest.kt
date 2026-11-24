@@ -67,6 +67,8 @@ class PocketsTabGateTest {
         assertFalse(PocketsSegment.showsList(pocketsOn = false, answered = true))   // declined
         assertTrue(PocketsSegment.showsList(pocketsOn = false, answered = false))   // never asked: List keeps the offer
         assertTrue(PocketsSegment.showsList(pocketsOn = true, answered = true))
+        assertFalse(PocketsSegment.showsList(pocketsOn = false, answered = false, recOn = false)) // rec engine off
+        assertFalse(PocketsSegment.showsList(pocketsOn = true, answered = true, recOn = false))
         assertTrue(PocketsSegment.showsList(pocketsOn = true, answered = false))
     }
 
