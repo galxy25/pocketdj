@@ -6,6 +6,6 @@
         <receiver
             android:name=".data.motion.MotionTransitionReceiver"
             android:exported="true"
-            tools:node="merge" />
+            tools:replace="android:exported" />
     </application>
 </manifest>
