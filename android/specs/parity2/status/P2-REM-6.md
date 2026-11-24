@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-REM-6 - RemoteSessionController part 2 (speaker half)
 
@@ -36,3 +36,13 @@ echoed), scrubs > 3 s (own seek landing excluded), queue edits, repeat/shuffle, 
 
 ## Questions for Levi
 - None blocking. Confirm Auto OFF should not auto-restore after a Mix Together session ends (iOS restores the prior setting).
+
+## Review
+- MAJOR (Auto Mix tab / Assistant never surface the reason) -> fixed. `AutoUiState.blockedReason` (seeded from `MixTogetherBlock`, refreshed on every block change via `AutoDj.onAutoBlocked`); `MixViewModel` mirrors it into `MixScreenState.autoBlockedReason`, `setAutoEnabled(true)` is refused with the reason (no more silent snap-back); `MixScreen` disables the Auto chip and shows the reason (`mix-auto-blocked`). The Assistant / `pocketdj://automix` / Android Auto tab already map `ShellActionException` messages, and `MixTogetherActive` carries the reason. Tests: `MixViewModelTest.mixTogetherBlock_refusesTheAutoToggleAndShowsTheReason`, `AddToCollectionActionTest.autoMixLinkSeam_whileMixingTogether_postsTheReason_andNeverStarts` (link seam toast + `ShellActions.startAutoMix` throws the reason), `AutoDjMixTogetherBlockTest` (2).
+- MINOR (endAutoLoop may cut decks; Auto not restored; global object) -> fixed/verified. `endAutoLoop` only stops the transition machine and recentres the crossfader; decks keep playing (now asserted in `AutoDjMixTogetherBlockTest`). Auto restore after Mix Together stays deferred to P2-REM-11 (open question to Levi unchanged). `MixTogetherBlock` is reset in test setup/teardown of the new tests.
+- MINOR (silencer constructs the Mix graph per tick) -> fixed. `AppGraph.mixGraphIfBuilt` (never constructs); the silencer uses it, so a controller-only user never builds Mix. Runs on the session tick (Main), same as the rest of the controller.
+- MINOR (drift only counted when synced) -> rejected: identical to iOS `reconcileLocal` (`if synced { driftStrikes += 1 }`, fix needs `synced`; an unsynced speaker only applies a fresh new revision). Pinned with `RemoteReconcilerTest.unsyncedClockNeverCorrectsPlainDrift_sameAsIos`.
+
+Suite: 7308 run (was 7303, +5), 0 failures; `:app:testDebugUnitTest :app:assembleDebug` green.
+
+fixes applied

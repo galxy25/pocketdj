@@ -331,6 +331,19 @@ class RemoteReconcilerTest {
         assertEquals("under the 2000 ms coarse threshold", 0, b.log.count { it == "seek" })
     }
 
+    @Test fun unsyncedClockNeverCorrectsPlainDrift_sameAsIos() = runTest {
+        // iOS reconcileLocal: `if synced { driftStrikes += 1 }` and the plain-drift fix needs `synced`; an unsynced speaker
+        // only applies a NEW revision (a session seek) fresh off the wire.
+        val r = rig(); val a = r.dev("A"); val b = r.dev("B")
+        a.host(listOf("s1", "s2")); b.guest(); settle()
+        advance(r, 2_000, a, b)
+        b.clock.reset("someone-else", false) // the speaker's clock is not the session host's: unsynced for reconcile
+        b.mem.userSeek(b.mem.positionMs + 1_500); b.rec.local.expected = b.rec.local.observe()
+        val seeks0 = b.log.count { it == "seek" }
+        advance(r, 6_000, a, b)
+        assertEquals("no synced clock: plain drift is left alone", seeks0, b.log.count { it == "seek" })
+    }
+
     @Test fun neverCorrectsDriftWhileBuffering() = runTest {
         val r = rig(); val a = r.dev("A"); val b = r.dev("B")
         a.host(listOf("s1", "s2")); b.guest(); settle()

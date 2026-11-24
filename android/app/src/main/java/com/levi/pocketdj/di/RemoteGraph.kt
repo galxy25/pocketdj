@@ -78,7 +78,8 @@ class RemoteGraph(private val app: AppGraph) : FeatureModule {
         // The speaker half (P2-REM-6): reconcile + drift + local-change diffing.
         RemoteReconciler.bind(controller, target, clock)
         // A controller keeps EVERY local audio engine silent (the Mix decks, the NP DSP host), re-asserted each tick.
-        controller.registerControllerSilencer { app.mixGraph.silenceForRemoteController() }
+        // Never constructs the Mix graph: a controller-only user who never opens Mix pays nothing per tick. Main thread (the tick).
+        controller.registerControllerSilencer { app.mixGraphIfBuilt?.silenceForRemoteController() }
         // Mixing together owns the decks: a running Auto-DJ ends and a new one is refused.
         MixTogetherBlock.onChanged = { app.mixGraph.autoDj.onAutoBlocked() }
     }

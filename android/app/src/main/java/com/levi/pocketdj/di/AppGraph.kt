@@ -125,7 +125,10 @@ class AppGraph private constructor(context: Context) {
     // ---- Feature modules (decision D3): the ONLY place the eight sidecars are listed ----
     // Aggregation order is area order and is stable; consumers read [features].
     val playbackGraph: PlaybackGraph by lazy { PlaybackGraph(this) }
-    val mixGraph: MixGraph by lazy { MixGraph(this) }
+    private val mixGraphLazy = lazy { MixGraph(this) }
+    val mixGraph: MixGraph get() = mixGraphLazy.value
+    /** The Mix graph only if something already built it (never constructs it): for per-tick housekeeping. */
+    val mixGraphIfBuilt: MixGraph? get() = if (mixGraphLazy.isInitialized()) mixGraphLazy.value else null
     val studioGraph: StudioGraph by lazy { StudioGraph(this) }
     val gamesGraph: GamesGraph by lazy { GamesGraph(this) }
     val collectionsGraph: CollectionsGraph by lazy { CollectionsGraph(this) }
