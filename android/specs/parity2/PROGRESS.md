@@ -101,7 +101,7 @@ Open: Q14 (mp3 index seeking), Q15 (thumbs placement), plus P2Q1 and P2Q7 still 
 
 Packages merged: P2-DJ-6, P2-DJ-7, P2-POC-8, P2-REM-3, P2-ALB-6, P2-DJ-3, P2-LIB-2, P2-MIX-2 (one conflict: mix/graph/RenderParams.kt, both DJ-7 and MIX-2 added `ParamsComposer.setLevelDb`; kept MIX-2's per-deck `DeckInputs.levelDb` and added a `levelDb(d)` getter for the DJ transition engine). Status files set to merged.
 
-Tests: see the head commit; `:app:testDebugUnitTest :app:assembleDebug` green after merge (7023 tests, 0 failures before the integration fixes).
+Tests: 7024 run, 0 failures after the integration fixes (`:app:testDebugUnitTest :app:assembleDebug` green; the +1 is the REM-3 regression test).
 
 Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave6/):
 - P2-REM-3 PASS after a fix. BUG: the debug fake-controller gate did not stop a media key: `SequencerForwardingPlayer.play()/pause()` (MediaSession, headset, notification) went straight to ExoPlayer, never through the gate. Fixed (forward Play/Pause through `RemoteControllerGate`); regression test `controllerGateForwardsMediaSessionPlayAndPauseInsteadOfSounding`. Verified: gate on -> `remote redirect pause` logged, playback keeps going; gate off -> the key pauses. Device-only: Bluetooth / Android Auto.
