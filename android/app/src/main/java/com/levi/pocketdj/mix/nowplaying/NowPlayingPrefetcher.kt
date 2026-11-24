@@ -32,7 +32,9 @@ class NowPlayingPrefetcher(
 
         /** The whole song (`id` = the id playback resolves under). */
         data class Song(val id: String, val title: String, val artist: String) : Step {
-            override val songId: String get() = id override fun toString() = "song:$id" }
+            override val songId: String get() = id
+            override fun toString() = "song:$id"
+        }
         /** One stem part of [songId]. */
         data class StemPart(override val songId: String, val part: String) : Step { override fun toString() = "$part:$songId" }
     }
@@ -93,6 +95,9 @@ class NowPlayingPrefetcher(
         /** FX Lock carrying a live effect: the window's WHOLE SONGS are made local (no stems). */
         val fxLockSongs: Boolean = false,
     )
+
+    /** State of an explicit download's ledger row. */
+    enum class PendingDownload { READY, DOWNLOADING, OTHER }
 
     /** Mix Mode's reach on a network (iOS StemPolicy). */
     enum class StemPolicy { ALL, ON_REQUEST, NONE }
@@ -376,9 +381,6 @@ class NowPlayingPrefetcher(
 
         /** How long the lane waits on an explicit download before letting the step go (the download carries on untouched). */
         const val PENDING_DOWNLOAD_WAIT_MS = 90_000L
-
-        /** State of an explicit download's ledger row. */
-        enum class PendingDownload { READY, DOWNLOADING, OTHER }
 
         /**
          * Wait (cancellably) for an explicit download to leave DOWNLOADING: true once READY, false when it

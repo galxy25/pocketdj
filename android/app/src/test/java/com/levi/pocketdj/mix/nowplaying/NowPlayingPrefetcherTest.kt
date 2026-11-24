@@ -132,7 +132,7 @@ class NowPlayingPrefetcherTest {
 
     @Test fun mutedPartsComeLastAcrossTheWholeMixWindow() {
         val muted = lock.copy(muted = listOf("drums"))
-        val p = names(run(2, carry = muted, current = curLocal))
+        val p = names(run(2, carry = muted, current = curLocal, lockWindow = 2))
         assertEquals(
             listOf("song:r1", "vocals:r1", "other:r1", "bass:r1", "song:r2", "vocals:r2", "other:r2", "bass:r2", "drums:r1", "drums:r2"),
             p,
@@ -157,9 +157,9 @@ class NowPlayingPrefetcherTest {
             t("am3", source = Source.APPLE_MUSIC_ONLY, fetchable = false))
         assertEquals(emptyList<String>(), run(5, up = up, current = curLocal).rips)
         assertEquals(listOf("am1", "am2"), run(5, up = up, current = curLocal, rip = true).rips)
-        // narrow cellular window still looks RIP_AHEAD rows deep
+        // narrow cellular window still looks RIP_AHEAD (2) rows deep: [x, am1] only
         val narrow = run(1, net = NetworkClass.EXPENSIVE, up = up, current = curLocal, rip = true)
-        assertEquals(listOf("am1", "am2"), narrow.rips)
+        assertEquals(listOf("am1"), narrow.rips)
         assertFalse(narrow.steps.any { it.songId.startsWith("am") })
         // an AM row that is already local is never ripped
         assertEquals(listOf("am2"), run(5, up = listOf(t("am1", source = Source.APPLE_MUSIC_ONLY, local = true), t("am2", source = Source.APPLE_MUSIC_ONLY, fetchable = false)), rip = true).rips)
