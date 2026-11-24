@@ -31,7 +31,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Bump when the server gains capabilities the app must detect (health.version).
 // v2: per-session played history (now-playing transitions logged; state.json `played`).
 // v3: Music with Friends (/mwf routes) + APNs.
-const VERSION = 3;
+// v4: Remote broker (/remote long-poll relay for Listen Together / Backseat / Mix Together).
+const VERSION = 4;
 
 const CFG = {
   port: parseInt(process.env.JUKEBOX_PORT || '8788', 10),
@@ -1018,6 +1019,201 @@ const tokenOk = (req) => !CFG.token || bearer(req) === CFG.token;
 const hostKeyOf = (req, url) => bearer(req) || url.searchParams.get('hostKey') || '';
 const hostOk = (s, req, url) => !!s && hostKeyOf(req, url) === s.hostKey;
 
+// ---------------- Remote broker (/remote) ----------------
+// Internet transport for Listen Together / Backseat / Mix Together (P2-REM-10). A dumb in-memory
+// RELAY: it never reads an envelope, it only stamps the sender and fans the message out. Plain HTTP
+// long-poll (funnel, Lambda and URLSession all speak it; URLSession can't talk to API Gateway WebSockets).
+//   POST /remote                    (bearer when JUKEBOX_TOKEN set) -> {roomId, joinCode, hostSecret}
+//   POST /remote/:id/join           {participantId?, name?, joinCode?}  (joinCode, or hostSecret bearer) -> {participantId, secret}
+//   POST /remote/:id/send           (participant bearer) {to:"all"|<id>, reliable, env} -> {seq}
+//   GET  /remote/:id/poll?since=N&rev=R   (participant bearer; holds up to 25 s) -> {events, roster, rev, cursor, dropped}
+//   POST /remote/:id/leave          (participant bearer)
+// roomId is the lower-cased joinCode so a joiner who only has the short code can address the room.
+const REMOTE = {
+  pollMs: parseInt(process.env.JUKEBOX_REMOTE_POLL_MS || '25000', 10),
+  participantTtlMs: parseInt(process.env.JUKEBOX_REMOTE_PARTICIPANT_TTL_MS || '60000', 10),
+  roomIdleMs: parseInt(process.env.JUKEBOX_REMOTE_ROOM_IDLE_MS || String(2 * 60 * 60 * 1000), 10),
+  maxRooms: parseInt(process.env.JUKEBOX_REMOTE_MAX_ROOMS || '64', 10),
+  maxParticipants: parseInt(process.env.JUKEBOX_REMOTE_MAX_PARTICIPANTS || '16', 10),
+  ring: parseInt(process.env.JUKEBOX_REMOTE_RING || '512', 10),
+  ringBytes: parseInt(process.env.JUKEBOX_REMOTE_RING_BYTES || String(2 * 1024 * 1024), 10),
+  sweepMs: parseInt(process.env.JUKEBOX_REMOTE_SWEEP_MS || '10000', 10),
+  joinWindowMs: parseInt(process.env.JUKEBOX_REMOTE_JOIN_WINDOW_MS || '60000', 10),
+  joinWindowMax: parseInt(process.env.JUKEBOX_REMOTE_JOIN_WINDOW_MAX || '20', 10),   // create + join per IP
+  ioWindowMax: parseInt(process.env.JUKEBOX_REMOTE_IO_WINDOW_MAX || '1500', 10),     // send + poll per IP (NAT-friendly)
+};
+const remoteRooms = new Map();
+const remoteJoinHits = new Map();
+const remoteIoHits = new Map();
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function remoteIpAllowed(map, ip, max, now = Date.now()) {
+  const hits = (map.get(ip) || []).filter((t) => now - t < REMOTE.joinWindowMs);
+  if (hits.length >= max) { map.set(ip, hits); return false; }
+  hits.push(now); map.set(ip, hits); return true;
+}
+function newJoinCode() {
+  for (;;) {
+    const b = randomBytes(8);
+    let c = '';
+    for (let i = 0; i < 8; i++) c += CODE_ALPHABET[b[i] % CODE_ALPHABET.length];
+    if (!remoteRooms.has(c.toLowerCase())) return c;
+  }
+}
+const remoteSecret = () => randomBytes(18).toString('base64url');
+const remoteRoster = (room) => [...room.participants.values()].map((p) => ({ id: p.id, name: p.name }));
+
+function remoteWake(room) {
+  const ws = room.waiters.splice(0);
+  for (const w of ws) w();
+}
+function remoteTouch(room) { room.lastActivity = Date.now(); }
+
+function createRemoteRoom(body, ip) {
+  if (!remoteIpAllowed(remoteJoinHits, ip, REMOTE.joinWindowMax)) return { status: 429, json: { error: 'slow down' } };
+  if (remoteRooms.size >= REMOTE.maxRooms) return { status: 503, json: { error: 'too many sessions right now' } };
+  const joinCode = newJoinCode();
+  const room = {
+    id: joinCode.toLowerCase(), joinCode, hostSecret: remoteSecret(), mode: typeof body.mode === 'string' ? body.mode.slice(0, 32) : null,
+    createdAt: Date.now(), lastActivity: Date.now(),
+    participants: new Map(), rev: 1, seq: 0, ring: [], ringBytes: 0, dropped: 0, waiters: [],
+  };
+  remoteRooms.set(room.id, room);
+  log(`remote room ${room.id} created`);
+  return { status: 200, json: { roomId: room.id, joinCode, hostSecret: room.hostSecret } };
+}
+
+function joinRemoteRoom(room, body, req, ip) {
+  if (!remoteIpAllowed(remoteJoinHits, ip, REMOTE.joinWindowMax)) return { status: 429, json: { error: 'slow down' } };
+  const isHost = bearer(req) === room.hostSecret;
+  const code = typeof body.joinCode === 'string' ? body.joinCode.trim().toUpperCase() : '';
+  if (!isHost && code !== room.joinCode) return { status: 401, json: { error: 'bad code' } };
+  const clean = (v, n) => (typeof v === 'string' ? v.replace(/[\u0000-\u001f]/g, '').slice(0, n) : '');
+  let id = clean(body.participantId, 64);
+  if (id && room.participants.has(id)) return { status: 409, json: { error: 'participant exists' } };
+  if (room.participants.size >= REMOTE.maxParticipants) return { status: 403, json: { error: 'session is full' } };
+  if (!id) id = randomBytes(12).toString('hex');
+  const p = { id, name: clean(body.name, 80) || 'Guest', secret: remoteSecret(), lastSeen: Date.now() };
+  room.participants.set(id, p);
+  room.rev++;
+  remoteTouch(room);
+  remoteWake(room);
+  return { status: 200, json: { participantId: id, secret: p.secret } };
+}
+
+function remoteParticipantOf(room, req) {
+  const b = bearer(req);
+  if (!b) return null;
+  for (const p of room.participants.values()) if (p.secret === b) return p;
+  return null;
+}
+
+function sendRemote(room, from, body) {
+  const to = body.to === 'all' || body.to == null ? 'all' : (typeof body.to === 'string' ? body.to : null);
+  if (to == null) return { status: 400, json: { error: 'bad recipient' } };
+  let env = body.env;
+  if (typeof env === 'string') { try { env = JSON.parse(env); } catch { env = null; } }
+  if (!env || typeof env !== 'object' || typeof env.kind !== 'string' || typeof env.payload !== 'string') return { status: 400, json: { error: 'bad envelope' } };
+  if (to !== 'all' && !room.participants.has(to)) return { status: 404, json: { error: 'unknown recipient' } };
+  const ev = { seq: ++room.seq, from: from.id, to, reliable: body.reliable !== false, env: { v: env.v, kind: env.kind, payload: env.payload } };
+  const size = env.payload.length + 64;
+  room.ring.push({ ev, size });
+  room.ringBytes += size;
+  // Ring buffer: bounded by count and bytes; evicting drops the oldest (a lagging poller learns via `dropped`).
+  while (room.ring.length > REMOTE.ring || (room.ringBytes > REMOTE.ringBytes && room.ring.length > 1)) {
+    const old = room.ring.shift();
+    room.ringBytes -= old.size;
+    room.dropped = old.ev.seq;
+  }
+  remoteTouch(room);
+  remoteWake(room);
+  return { status: 200, json: { seq: ev.seq } };
+}
+
+function remotePollView(room, p, since, rev) {
+  const events = room.ring.map((r) => r.ev).filter((e) => e.seq > since && e.from !== p.id && (e.to === 'all' || e.to === p.id));
+  return { events, roster: remoteRoster(room), rev: room.rev, cursor: room.seq, dropped: since < room.dropped };
+}
+
+function leaveRemote(room, p) {
+  if (!room.participants.delete(p.id)) return;
+  room.rev++;
+  remoteWake(room);
+  if (room.participants.size === 0) { remoteRooms.delete(room.id); log(`remote room ${room.id} closed (empty)`); }
+}
+
+async function pollRemote(room, p, url, res) {
+  const since = Math.max(0, parseInt(url.searchParams.get('since') || '0', 10) || 0);
+  const rev = parseInt(url.searchParams.get('rev') || '-1', 10);
+  p.lastSeen = Date.now();
+  const hasWork = () => room.ring.some((r) => r.ev.seq > since && r.ev.from !== p.id && (r.ev.to === 'all' || r.ev.to === p.id)) || room.rev !== rev || room.dropped > since;
+  if (!hasWork()) {
+    await new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (done) return; done = true; clearTimeout(t); const i = room.waiters.indexOf(wake); if (i >= 0) room.waiters.splice(i, 1); resolve(); };
+      const wake = () => { if (hasWork()) finish(); else room.waiters.push(wake); };
+      const t = setTimeout(finish, REMOTE.pollMs);
+      room.waiters.push(wake);
+      res.on('close', finish);
+    });
+  }
+  if (res.destroyed || res.writableEnded) return;
+  if (!room.participants.has(p.id)) return send(res, 410, { error: 'left' });
+  p.lastSeen = Date.now();
+  return send(res, 200, remotePollView(room, p, since, rev));
+}
+
+function sweepRemote(now = Date.now()) {
+  for (const room of [...remoteRooms.values()]) {
+    for (const p of [...room.participants.values()]) {
+      if (now - p.lastSeen > REMOTE.participantTtlMs) leaveRemote(room, p);
+    }
+    if (remoteRooms.get(room.id) === room && now - room.lastActivity > REMOTE.roomIdleMs) {
+      remoteRooms.delete(room.id); remoteWake(room); log(`remote room ${room.id} swept (idle)`);
+    }
+  }
+  for (const m of [remoteJoinHits, remoteIoHits]) for (const [ip, hits] of m) {
+    const live = hits.filter((t) => now - t < REMOTE.joinWindowMs);
+    if (live.length) m.set(ip, live); else m.delete(ip);
+  }
+}
+
+async function handleRemote(path, req, res, url) {
+  const ip = clientIp(req);
+  if (path === '/remote' || path === '/remote/') {
+    if (req.method !== 'POST') return send(res, 405, { error: 'method not allowed' });
+    if (!tokenOk(req)) return send(res, 401, { error: 'unauthorized' });
+    const body = await readJsonBounded(req, res);
+    if (body === null) return;
+    const r = createRemoteRoom(body, ip);
+    return send(res, r.status, r.json);
+  }
+  const m = path.match(/^\/remote\/([a-z0-9]{4,32})\/(join|send|poll|leave)$/);
+  if (!m) return send(res, 404, { error: 'not found' });
+  const room = remoteRooms.get(m[1]);
+  if (!room) return send(res, 404, { error: 'unknown session' });
+  const op = m[2];
+  const wantMethod = op === 'poll' ? 'GET' : 'POST';
+  if (req.method !== wantMethod) return send(res, 405, { error: 'method not allowed' });
+  if ((op === 'send' || op === 'poll') && !remoteIpAllowed(remoteIoHits, ip, REMOTE.ioWindowMax)) return send(res, 429, { error: 'slow down' });
+  if (op === 'join') {
+    const body = await readJsonBounded(req, res);
+    if (body === null) return;
+    const r = joinRemoteRoom(room, body, req, ip);
+    return send(res, r.status, r.json);
+  }
+  const p = remoteParticipantOf(room, req);
+  if (!p) return send(res, 401, { error: 'unauthorized' });
+  if (op === 'poll') return pollRemote(room, p, url, res);
+  if (op === 'leave') { leaveRemote(room, p); return send(res, 200, { ok: true }); }
+  const body = await readJsonBounded(req, res);
+  if (body === null) return;
+  p.lastSeen = Date.now();
+  const r = sendRemote(room, p, body);
+  return send(res, r.status, r.json);
+}
+setInterval(sweepRemote, REMOTE.sweepMs).unref?.();
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (req.method === 'OPTIONS') return send(res, 204, '');
@@ -1031,8 +1227,11 @@ const server = http.createServer(async (req, res) => {
   else if (path.startsWith('/jukebox/')) path = path.slice('/jukebox'.length);
 
   if (path === '/health') {
-    return send(res, 200, { ok: true, service: 'jukebox', version: VERSION, host: hostname(), bucket: CFG.bucket, sessions: sessions.size, auth: !!CFG.token, mwf: true, apns: apns.enabled() });
+    return send(res, 200, { ok: true, service: 'jukebox', version: VERSION, host: hostname(), bucket: CFG.bucket, sessions: sessions.size, auth: !!CFG.token, mwf: true, remote: true, apns: apns.enabled() });
   }
+
+  // ---- Remote broker: BEFORE the generic /:id matcher ("remote" fits its id pattern).
+  if (path === '/remote' || path.startsWith('/remote/')) return handleRemote(path, req, res, url);
 
   // ---- Host session list (tvOS/CarPlay "pick a session → show its QR" surfaces). Host
   // bearer only — the list carries every live session's guest URL, which admits anyone who
