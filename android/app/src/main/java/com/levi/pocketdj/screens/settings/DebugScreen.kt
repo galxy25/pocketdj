@@ -799,7 +799,14 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         OutlinedButton(onClick = {
             host.scope.launch { host.graph.gamesGraph.inThePocket.buildRound(); host.graph.gamesGraph.inThePocket.start(); pocketStatus = pocketLine() }
         }) { Text("Pocket: build+start") }
-        OutlinedButton(onClick = { pocketStatus = pocketLine() }) { Text("Pocket: status") }
+        OutlinedButton(onClick = {
+            pocketStatus = pocketLine()
+            // P2-POC-6: the centre play button's best match (caption + tier) for NOW.
+            host.scope.launch {
+                val r = runCatching { host.graph.pocketsGraph.wheelController.refresh() }.getOrNull()
+                pocketStatus = pocketLine() + (r?.let { " | best tier=${it.profile.tier} caption='${it.profile.caption}' detail='${it.profile.detail}' alts=${it.alternatives.size}" } ?: " | best=error")
+            }
+        }) { Text("Pocket: status") }
         OutlinedButton(onClick = { host.graph.gamesGraph.inThePocket.endActiveRound(); pocketStatus = pocketLine() }) { Text("Pocket: end") }
     }
     Text(pocketStatus, style = MaterialTheme.typography.bodySmall)

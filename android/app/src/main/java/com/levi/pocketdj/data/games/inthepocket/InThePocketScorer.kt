@@ -266,6 +266,10 @@ object InThePocketScorer {
         return m
     }
 
+    /** A cloud numeric dimension worth steering by: defining, or covering >= 60 % of the members. Shared with `PocketProfile.fromListening`. */
+    internal fun usableNumeric(n: ListeningPocketNumeric?): ListeningPocketNumeric? =
+        n?.takeIf { it.defining || it.coverage >= 0.6 }
+
     fun cloudProfile(input: Input): Profile? {
         val results = input.results ?: return null
         if (results.generatedAtMs == null) return null
@@ -290,8 +294,8 @@ object InThePocketScorer {
                 val cur = acc[key] ?: (InThePocketTarget(f.dim, f.value, f.label, 0.0) to 0.0)
                 acc[key] = cur.first to (cur.second + w * f.score)
             }
-            val bpm = numeric["bpm"]
-            if (bpm != null && (bpm.defining || bpm.coverage >= 0.6)) {
+            val bpm = usableNumeric(numeric["bpm"])
+            if (bpm != null) {
                 bandLo += w * bpm.lo; bandHi += w * bpm.hi; bandW += w
             }
             for ((id, n) in songIds) seeds[id] = (seeds[id] ?: 0.0) + w * n
