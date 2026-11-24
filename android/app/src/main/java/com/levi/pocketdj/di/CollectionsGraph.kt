@@ -298,6 +298,21 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         app.catalogRepository.importedSource = { real -> importedSongs.resolve(real) }
         // ANS-STU-7: the per-profile "Pocket DJ" source appends after every real source (only once the store has >=1 item, as iOS).
         app.catalogRepository.syntheticDocuments = { app.studioGraph.profileSource.syntheticDocumentsIfAny() }
+        // P2-LIB-3: the user's own Apple Music library joins the merge as source "Apple Music" (after Imported / profile).
+        val am = app.servicesGraph.amLibraryStore
+        val amSource = app.servicesGraph.amLibraryFoldSource
+        am.onChanged = { app.catalogRepository.remergeLocal() }
+        app.catalogRepository.amLibrarySource = { real -> amSource.resolve(real) }
+        // The library's own add-times carried onto a surviving indexed twin feed "Recently added".
+        com.levi.pocketdj.data.collections.RecentlyAdded.extraOverrides = { am.supersededAddedAt }
+        // Same durability order as Imported: remap collections + favorites FIRST (idempotent), THEN prune the rows.
+        app.catalogRepository.onAmLibrarySupersede = { pairs ->
+            app.appScope.launch(Dispatchers.IO) {
+                runCatching { app.collections.remapSongIds(pairs) }
+                runCatching { favorites.remapSongIds(pairs) }
+                runCatching { am.supersede(pairs) }
+            }
+        }
         // iOS applySupersede order: drop the imported rows, THEN remap collections + favorites onto the indexed twin.
         app.catalogRepository.onImportedSupersede = { pairs ->
             app.appScope.launch(Dispatchers.IO) {

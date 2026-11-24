@@ -47,6 +47,7 @@ object RecentlyAdded {
      * the entry from its add stores on remove).
      */
     fun addTimeOverrides(events: List<ActivityEvent>): Map<String, Double> {
+        val extra = extraOverrides()
         val latest = HashMap<String, ActivityEvent>()
         for (e in events) {
             if ((e.kind != ActivityKind.CATALOG_ADD && e.kind != ActivityKind.CATALOG_REMOVE) || e.at <= 0) continue
@@ -56,8 +57,17 @@ object RecentlyAdded {
         }
         val out = HashMap<String, Double>()
         for ((id, e) in latest) if (e.kind == ActivityKind.CATALOG_ADD) out[id] = e.at
+        for ((id, ms) in extra) if (ms > (out[id] ?: 0.0)) out[id] = ms
         return out
     }
+
+    /**
+     * Add-times that live OUTSIDE the activity log (iOS `addTimeOverrides` store legs): the Apple Music library's
+     * `supersededAddedAt` (the user's own library add carried onto the surviving indexed twin, P2-LIB-3). Wired by
+     * the services graph; empty by default so every existing caller and test is unchanged.
+     */
+    @Volatile
+    var extraOverrides: () -> Map<String, Double> = { emptyMap() }
 
     /**
      * Every add-time by song id: catalog dateAdded (>0), then overrides win when newer.

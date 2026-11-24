@@ -97,17 +97,31 @@ class CatalogRepository(
     @Volatile
     var onImportedSupersede: ((List<Pair<String, String>>) -> Unit)? = null
 
+    /**
+     * The user's own Apple Music library (P2-LIB-3): resolved against the REAL documents of this merge; a row an
+     * indexed "Apple Music (Local)" twin claims is dropped and returned as a (library -> indexed) pair. Appended
+     * after Imported and the synthetic sources (iOS order). Null = none.
+     */
+    @Volatile
+    var amLibrarySource: ((real: List<IndexJson>) -> com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.Resolution)? = null
+
+    /** Fired after publish with the (library -> indexed) pairs: remap collections + favorites, THEN prune the store. */
+    @Volatile
+    var onAmLibrarySupersede: ((List<Pair<String, String>>) -> Unit)? = null
+
     private class Applied(
         val prov: com.levi.pocketdj.data.discover.ProvisionalSource.Result?,
         val importedPairs: List<Pair<String, String>>,
+        val amLibraryPairs: List<Pair<String, String>> = emptyList(),
     )
 
     /** Real docs + provisional + imported + synthetic, in merge order; reports supersedes through the callbacks. */
     private fun withProvisional(real: List<IndexJson>): Pair<List<IndexJson>, Applied> {
         val prov = provisionalSources?.let { runCatching { it(real) }.getOrNull() }
         val imp = importedSource?.let { runCatching { it(real) }.getOrNull() }
-        val docs = real + prov?.documents.orEmpty() + imp?.documents.orEmpty() + syntheticDocuments()
-        return docs to Applied(prov, imp?.pairs.orEmpty())
+        val am = amLibrarySource?.let { runCatching { it(real) }.getOrNull() }
+        val docs = real + prov?.documents.orEmpty() + imp?.documents.orEmpty() + syntheticDocuments() + am?.documents.orEmpty()
+        return docs to Applied(prov, imp?.pairs.orEmpty(), am?.pairs.orEmpty())
     }
 
     private fun notifySupersede(applied: Applied?) {
@@ -120,6 +134,7 @@ class CatalogRepository(
             runCatching { onAlbumsSuperseded?.invoke(albums) }
         }
         applied?.importedPairs?.takeIf { it.isNotEmpty() }?.let { runCatching { onImportedSupersede?.invoke(it) } }
+        applied?.amLibraryPairs?.takeIf { it.isNotEmpty() }?.let { runCatching { onAmLibrarySupersede?.invoke(it) } }
     }
 
     /** Provisional ALBUM supersedes (provisional album id -> indexed album id); prune-only. */

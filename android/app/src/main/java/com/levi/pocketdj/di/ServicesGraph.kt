@@ -531,6 +531,12 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 if (r == com.levi.pocketdj.data.credentials.DiagKeySync.PullResult.ADOPTED && diag.channel) diag.log.reloadCredentials()
                 false
             }),
+        // P2-LIB-3 (iOS key "apple-music-library"): the Apple Music library index, whole-document last-writer-wins;
+        // a pull re-adopts the file and the store's onChanged rebuilds the catalog.
+        SyncEntry(com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.SYNC_KEY,
+            com.levi.pocketdj.data.applemusic.AppleMusicLibraryStore.FILE_NAME,
+            applyPayload = { amLibraryStore.writePulled(it) },
+            onPulled = { amLibraryStore.reloadFromDisk(); false }),
     )
 
     // The cloud-sync state clear and the profile-secret clear are NOT hooks any more: SVC-13's
@@ -538,6 +544,8 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     override val resetHooks: List<ResetHook> = listOf(
         // iOS AccountDeletionService: timelineCues?.clear(). Clears (and deletes the file) even if never opened.
         ResetHook { timelineCues.clear() },
+        // P2-LIB-3: erase the on-device copy of the user's Apple Music library index (and its add-time stamps).
+        ResetHook { amLibraryStore.clear() },
     )
 
     // ---- SVC-13 reset everything + account deletion ----------------------------------------------
@@ -704,6 +712,18 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             File(app.appContext.filesDir, com.levi.pocketdj.data.applemusic.AppleMusicLibraryStore.FILE_NAME))
     }
 
+    /**
+     * The fold source for the catalog (P2-LIB-3). [supersedesOntoLocal] is the owner gate (see
+     * [AppleMusicLibraryFold.Source]). Android has no owner-identity probe yet, so it defaults OFF: the fold
+     * is irreversible (remaps collections/favorites, prunes rows), so it must never run for a non-owner.
+     * Flip [amLibrarySupersedesOntoLocal] only from a real "this catalog is my own" signal.
+     */
+    @Volatile var amLibrarySupersedesOntoLocal: Boolean = false
+
+    val amLibraryFoldSource: com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.Source by lazy {
+        com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.Source(amLibraryStore) { amLibrarySupersedesOntoLocal }
+    }
+
     val amLibraryIndexer: com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer by lazy {
         com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer(app.appleMusicApi, amLibraryStore)
     }
@@ -741,6 +761,8 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 prev, signedIn, amLibraryStore.isEmpty,
                 app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.LAST_INDEX_MS),
                 System.currentTimeMillis().toDouble())
+            // Sign-out leaves the index alone: clear() only deletes the local file, so sync would re-adopt the
+            // old cloud copy anyway, and a re-sign-in is a FULL run (signInIndexDecision) that replaces it wholesale.
             prev = signedIn
             if (decision != com.levi.pocketdj.data.applemusic.SignInIndexDecision.NONE &&
                 app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.ENABLED)) {

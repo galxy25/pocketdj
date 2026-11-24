@@ -180,7 +180,10 @@ class AppleMusicLibraryStore(private val file: File) {
             val newAlbums = cur.albums.orEmpty()
                 .map { a -> a.copy(trackIds = a.trackIds.filter { it !in gone }) }
                 .filter { it.trackIds.isNotEmpty() }
+            val remap = pairs.toMap()
+            val newPlaylists = cur.playlists?.map { p -> p.copy(songIds = p.songIds.map { remap[it] ?: it }) }
             doc = cur.copy(songs = cur.songs.filter { it.songId !in gone }, albums = newAlbums.ifEmpty { null },
+                playlists = newPlaylists,
                 supersededAddedAt = carried.ifEmpty { null })
             save()
         }
@@ -208,6 +211,24 @@ class AppleMusicLibraryStore(private val file: File) {
         }
         if (changed) onChanged?.invoke()
         return changed
+    }
+
+    /**
+     * SyncEntry.applyPayload seam: write pulled bytes + re-adopt under [lock] so a concurrent indexer write
+     * cannot interleave with the pull (whole-document last-writer-wins).
+     */
+    fun writePulled(bytes: ByteArray) {
+        val changed: Boolean
+        synchronized(lock) {
+            file.parentFile?.mkdirs()
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(file)) { file.writeBytes(bytes); tmp.delete() }
+            val next = decode(file)
+            changed = next != doc
+            doc = next
+        }
+        if (changed) onChanged?.invoke()
     }
 
     private fun save() {
