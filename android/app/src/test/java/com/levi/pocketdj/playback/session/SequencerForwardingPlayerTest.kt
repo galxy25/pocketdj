@@ -21,6 +21,22 @@ class SequencerForwardingPlayerTest {
         assertEquals("rc cmd=next engine=exo verdict=handled", logs.first())
     }
 
+    @Test fun controllerGateForwardsMediaSessionPlayAndPauseInsteadOfSounding() {
+        // Regression (emulator, P2-REM-3): a media key / notification ▶⏸ reaches this player directly, not the sequencer.
+        val gate = com.levi.pocketdj.remote.RemoteControllerGate.shared
+        val forwarded = mutableListOf<String>()
+        val prevFwd = gate.forwarder
+        gate.forwarder = { forwarded += com.levi.pocketdj.remote.RemoteControllerGate.name(it) }
+        gate.fakeController = true
+        try {
+            p.play(); p.pause()
+        } finally { gate.fakeController = false; gate.forwarder = prevFwd }
+        assertEquals(listOf("play", "pause"), forwarded)
+        assertTrue(ps.calls.none { it == "play" || it == "pause" })
+        p.pause()
+        assertTrue(ps.calls.any { it == "pause" })
+    }
+
     @Test fun nextWhenNotRunningSingleItemIsLoggedAndNotForwarded() {
         p.seekToNext()
         assertTrue(ctl.calls.isEmpty())

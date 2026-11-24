@@ -258,6 +258,8 @@ class SequencerForwardingPlayer(
     }
 
     override fun play() {
+        // Backseat controller: notification / headset / Auto ▶ goes to the session, never sounds here (P2-REM-3).
+        if (com.levi.pocketdj.remote.RemoteControllerGate.shared.forward(com.levi.pocketdj.remote.RemoteRedirect.Play)) return
         // Notification / lock-screen / headset play must honour the mic-capture gate exactly like PlaybackController.play.
         if (!micGate("playback.remote")) { emit(TransportLog.Cmd.PLAY, TransportLog.Verdict.REFUSED_MIC); return }
         if (!permitted(TransportLog.Cmd.PLAY)) return
@@ -364,6 +366,7 @@ class SequencerForwardingPlayer(
     }
 
     override fun pause() {
+        if (com.levi.pocketdj.remote.RemoteControllerGate.shared.forward(com.levi.pocketdj.remote.RemoteRedirect.Pause)) return
         if (control.isRunning) control.noteUserTransport(UserTransport.PAUSE)
         pausedByListener = true
         super.pause()
