@@ -352,6 +352,7 @@ fun AlbumDetailScreen(
                     }
 
                     itemsIndexed(tracks, key = { _, song -> song.id }) { index, song ->
+                      Column {
                         AlbumTrackRow(
                             position = index + 1,
                             song = song,
@@ -366,6 +367,8 @@ fun AlbumDetailScreen(
                                 }
                             },
                         )
+                        InlinePlayerSlot(song, album)
+                      }
                     }
 
                     if (!album.audioTracks.isNullOrEmpty()) {
