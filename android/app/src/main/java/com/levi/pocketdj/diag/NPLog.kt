@@ -16,6 +16,8 @@ object NPLog {
     const val NP = "np"
     const val MIX = "mix"
     const val STUDIO = "studio"
+    /** Now Playing Mix Mode (np-mix-mode): `[npmix] lane step=…`, `[npmix] hand-off row=…`. Not in [LANES] (the report scripts read the original eleven). */
+    const val NPMIX = "npmix"
 
     val LANES = listOf(PLAYBACK, SESSION, TRANSPORT, SUPERVISOR, DEADAIR, RUNWAY, RIPREQ, ACTION, NP, MIX, STUDIO)
 

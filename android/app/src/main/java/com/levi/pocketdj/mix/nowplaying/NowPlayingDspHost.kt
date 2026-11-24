@@ -156,8 +156,25 @@ class NowPlayingDspHost(
         publish()
     }
 
+    /** The DSP owns [songId] right now (swap-on-land never reloads ExoPlayer under an engaged DSP). */
+    fun isEngagedFor(songId: String): Boolean = engine.isEngaged && engine.engagedSongId == songId
+
+    /**
+     * SWAP-ON-LAND under a Stem Lock carrying stems (P2-MM-5): the playing row's local file just landed, so the DSP
+     * engages on it directly at [atMs] (song-relative, playing) instead of an ExoPlayer reload. False = not applicable
+     * (no lock / stems off / a different row) or the DSP refused: the caller falls back to the plain reload.
+     */
+    suspend fun engageForHandOff(songId: String, atMs: Long): Boolean = engageLock.withLock {
+        val st = lock.current
+        if (ports.currentSongId != songId || !st.enabled || !st.wantsStems || !st.stemsOn || ports.heldForResume || ports.mixSessionActive) return@withLock false
+        if (isEngagedFor(songId)) return@withLock true
+        applyLockOnTrackStart(songId, atMs / 1000.0)
+        publish()
+        isEngagedFor(songId)
+    }
+
     /** iOS `applyStemLockOnTrackStart`: a locked track starts on the FULL MIX and hands over once the enabled parts are on disk. */
-    private suspend fun applyLockOnTrackStart(songId: String?) {
+    private suspend fun applyLockOnTrackStart(songId: String?, atSeconds: Double = 0.0) {
         val st = lock.current
         if (!st.enabled || songId == null || ports.heldForResume) return
         if (!st.stemsOn) { StemLock.log("carry song=$songId stems=off -> full mix"); return }
@@ -170,7 +187,7 @@ class NowPlayingDspHost(
         lock.applying = true
         try {
             // iOS applyStemLockOnTrackStart: engaged at 0 (the row just loaded), playing unless the listener paused.
-            if (!engageLocked(0.0, ports.playWanted)) {
+            if (!engageLocked(atSeconds, ports.playWanted)) {
                 lock.markUnavailable(songId)
                 StemLock.log("carry song=$songId -> UNAVAILABLE (DSP refused the file) - full mix, lock kept")
                 return

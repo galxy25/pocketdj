@@ -340,7 +340,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             }
             streamDecksRef = decks
             loader.onProgress = { id -> decks.streamProgressed(id) }
-            loader.pinnedIds = { decks.streamingSongIds }
+            loader.pinnedIds = { decks.streamingSongIds + app.playbackGraph.npMix.coordinator.pinnedStreamIds() } // P2-MM-5: NP current + next never evicted
             it.loadOffload = { work, commit ->
                 main.launch {
                     val p = withContext(Dispatchers.IO) { work() }
@@ -491,14 +491,23 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         )
 
     /**
-     * DISK GUARD for every lane step. P2-MM-5 binds the footprint/cap/sweep to `StorageManager`; until then
-     * only the 1 GB free-space floor applies (footprint 0 against an unbounded cap, no-op sweep).
+     * DISK GUARD for every lane step (np-mix-mode §2.3): >= 1 GB free after the step and the temporary footprint
+     * under the buffer cap; otherwise one `StorageManager.sweepForDiskGuard` frees temporary assets first.
      */
     private val npDiskGuard: com.levi.pocketdj.mix.nowplaying.DiskGuard by lazy {
+        val storage = app.servicesGraph.storageManager
+        val burns = app.servicesGraph.burnStore
         com.levi.pocketdj.mix.nowplaying.DiskGuard(
             freeBytes = { runCatching { app.appContext.filesDir.usableSpace }.getOrNull() },
-            footprintBytes = { 0L },
-            capBytes = { Long.MAX_VALUE / 2 },
+            footprintBytes = { burns.temporaryFootprintBytes },
+            capBytes = { app.playbackGraph.npMix.settings().bufferCapBytes },
+            sweep = { target ->
+                // A prune/sweep already running drops this pass (null): give it a moment, then ask once more.
+                if (storage.sweepForDiskGuard(target) == null) {
+                    kotlinx.coroutines.delay(1_500)
+                    storage.sweepForDiskGuard(target)
+                }
+            },
         )
     }
 
@@ -511,7 +520,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             p.fetchSong = { step ->
                 // A finished stream is adopted as an ordinary burn: the prefetch IS the download.
                 val loader = mixStreamLoader
-                val s = loader.open(step.id, step.title, step.artist)
+                val s = loader.open(step.id, step.title, step.artist, origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)
                 var ok = false
                 if (s != null) {
                     // Bounded: a stalled rip must not park the single-lane prefetcher forever.
@@ -525,34 +534,92 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 }
                 ok
             }
-            p.fetchStemPart = { id, part -> burns.burnStemPart(id, part) }
+            p.fetchStemPart = { id, part -> burns.burnStemPart(id, part, com.levi.pocketdj.data.burns.AssetOrigin.Buffer) }
+            // An explicit Download of the same song in flight is never cancelled nor duplicated by the lane (P2-MM-5).
+            p.pendingDownload = { step ->
+                when (burns.items.value[step.id]?.state) {
+                    com.levi.pocketdj.data.burns.BurnState.DOWNLOADING -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.PendingDownload.DOWNLOADING
+                    com.levi.pocketdj.data.burns.BurnState.READY -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.PendingDownload.READY
+                    else -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.PendingDownload.OTHER
+                }
+            }
             p.requestStemify = { id -> npMain.launch { runCatching { app.ripJobTracker.stemify(id) } } }
             // Posted (NOT Main.immediate): a step that finishes without suspending must never re-plan re-entrantly.
             val replanHandler = android.os.Handler(android.os.Looper.getMainLooper())
-            p.onStepFinished = { _, _ -> replanHandler.post { replanStemLock() } }
+            p.onStepFinished = { step, ok ->
+                replanHandler.post {
+                    replanStemLock()
+                    app.playbackGraph.npMix.coordinator.onStepFinished(step, ok) // P2-MM-5: the playing row's song landing hands off
+                }
+            }
         }
     }
 
-    /** Re-plan the prefetch lane from the live queue: lock on + stems carried + a running, non-held run. */
+    /**
+     * Re-plan the prefetch lane from the live queue. Mix Mode OFF (or suspended / held): the Stem Lock plan, exactly
+     * as before (lock on + stems carried + a running, non-held run). Mix Mode buffering (P2-MM-5): the generalised
+     * [com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.plan] over the window `npMixBufferAhead`.
+     */
     fun replanStemLock() {
         val pf = stemLockPrefetcher
         val seq = app.playbackGraph.sequencer
         val st = seq.state.value
         val carry = stemLockSession.current
-        if (!carry.wantsStems || !st.isRunning || st.isHeldForResume || st.current == null) { pf.cancelAll(); return }
+        val mix = app.playbackGraph.npMix
+        val buffering = mix.coordinator.buffering
+        if (!(carry.wantsStems || buffering) || !st.isRunning || st.isHeldForResume || st.current == null) { pf.cancelAll(); return }
         val burns = app.servicesGraph.burnStore
         val loader = mixStreamLoader
-        fun track(q: com.levi.pocketdj.playback.sequencer.QueueItem) = com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track(
-            songId = q.id, audioId = q.resolveId, title = q.title, artist = q.artist.orEmpty(),
-            songLocal = burns.hasLocalFile(q.resolveId) || loader.stream(q.resolveId)?.isComplete == true, songFetchable = loader.canStream(q.resolveId),
-            stemsLocal = burns.stemPartsBurned(q.id), stemsRemote = burns.stemsRemote(q.id),
-        )
-        val cur = st.current?.takeIf { npDspEngine.isEngaged && npDspEngine.engagedSongId == it.id }?.let(::track)
-        pf.apply(
-            com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.plan(
-                cur, st.upcomingPlayable.take(STEM_LOCK_WINDOW).map(::track), carry, npNetwork(), STEM_LOCK_WINDOW,
+        val net = npNetwork()
+        fun isStudioOrProfile(id: String) = com.levi.pocketdj.data.rips.PlayResolver.isStudioId(id) || com.levi.pocketdj.data.profile.ProfileSourceStore.isProfileSongId(id)
+        fun track(q: com.levi.pocketdj.playback.sequencer.QueueItem, isCurrent: Boolean = false): com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track {
+            val local = burns.hasLocalFile(q.resolveId) || loader.stream(q.resolveId)?.isComplete == true
+            // The PLAYING row is fetched only when it can hand off: a presigned rip stream (no Apple Music, no live capture).
+            val fetchable = loader.canStream(q.resolveId) && !(isCurrent && app.playbackController.isAppleMusicActive)
+            return com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track(
+                songId = q.id, audioId = q.resolveId, title = q.title, artist = q.artist.orEmpty(),
+                songLocal = local, songFetchable = fetchable,
+                stemsLocal = burns.stemPartsBurned(q.id), stemsRemote = burns.stemsRemote(q.id),
+                source = when {
+                    isStudioOrProfile(q.id) -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track.Source.STUDIO_OR_PROFILE
+                    local -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track.Source.LOCAL
+                    com.levi.pocketdj.data.jukebox.JukeboxAppleMusicMatch.storeIdOf(q.id) != null ->
+                        com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track.Source.CATALOG_ONLY
+                    loader.canStream(q.resolveId) -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track.Source.RIPPED
+                    else -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track.Source.UNAVAILABLE
+                },
+            )
+        }
+        val engaged = st.current?.takeIf { npDspEngine.isEngaged && npDspEngine.engagedSongId == it.id }
+        if (!buffering) {
+            pf.apply(
+                com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.plan(
+                    engaged?.let { track(it) }, st.upcomingPlayable.take(STEM_LOCK_WINDOW).map { track(it) }, carry, net, STEM_LOCK_WINDOW,
+                ),
+            )
+            return
+        }
+        val cfg = mix.settings()
+        val ahead = maxOf(STEM_LOCK_WINDOW, cfg.bufferAhead)
+        val cur = st.current!!
+        val plan = com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.plan(
+            com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Input(
+                current = track(cur, isCurrent = true).takeIf { !isStudioOrProfile(cur.id) },
+                upcoming = st.upcomingPlayable.filterNot { isStudioOrProfile(it.id) }.take(ahead).map { track(it) },
+                stemLock = carry,
+                mixMode = com.levi.pocketdj.mix.nowplaying.NpMixModeState(enabled = true),
+                network = net,
+                window = cfg.bufferAhead,
+                stemLockWindow = STEM_LOCK_WINDOW,
+                cellular = cfg.cellular,
+                currentStemsPartial = engaged != null,
+                currentStemsWanted = engaged != null && npDspEngine.stemMode,
+                // Cloud rips / stem separation are gated on a rip-server install that may use them (MM-9; see the questions file).
+                isRipServerConfigured = false,
             ),
         )
+        pf.apply(plan)
+        mix.coordinator.noteLanePlan(cur.id, plan.steps, net.raw)
     }
 
     /** MIX-18: the single-deck DSP engine over the shared Mix graph (its own sink; never the Mix tab's). */
