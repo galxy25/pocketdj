@@ -15,3 +15,12 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+- MixFacadeImpl skips settings push -> fixed (new `pushSettings` param, wired in MixGraph to `MixSettingsPush.pushAll`; called before startItems)
+- First song loses run tag -> fixed (PocketRunStore publishes provisional viaMix state before `playThroughMix`, rolls back on <10 or throw)
+- Fallback caption not shown / stale -> partly fixed: cleared on start/stop/dismiss/end. Rendering it is a wheel-UI concern (no consumer in this package); StateFlow `mixCaption` is the contract.
+- Tests missing -> fixed (3 store tests, 2 facade tests incl. 9 vs 10 gating and settings push)
+- NIT autoDJBlockedReason -> rejected (no Android mixing-together mode yet)
+
+fixes applied

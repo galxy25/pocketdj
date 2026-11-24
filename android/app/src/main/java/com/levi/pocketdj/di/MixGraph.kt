@@ -1227,6 +1227,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             songLoadables = { ids -> mixResolver.loadables(ids) },
             startItems = { items, lead, fade, label -> autoDj.startAutoMix(items, false, lead, fade, label) },
             autoLabel = { autoDjInst?.takeIf { it.isMixing }?.sourceLabel },
+            pushSettings = { st -> com.levi.pocketdj.mix.MixSettingsPush.pushAll(st, portsLazy.value.first) },
             releaseForNowPlaying = {
                 // Never builds the Mix just to tear it down.
                 if (downloaderLazy.isInitialized()) downloaderLazy.value.cancel()

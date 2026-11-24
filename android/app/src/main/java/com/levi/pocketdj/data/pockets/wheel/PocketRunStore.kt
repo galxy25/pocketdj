@@ -274,15 +274,25 @@ class PocketRunStore(
         _mixCaption.value = null
         val mix = playThroughMix
         if (profile.mode == PocketMode.MIX && mix != null) {
-            val loaded = mix(plan.rows, label)
+            // Publish the run BEFORE Auto-DJ starts: the first song's play can fire mixTag() while mix() is still
+            // suspended, and it must already find viaMix + the slot map. Rolled back below if too few load.
+            val before = _active.value
+            val provisional = state.copy(
+                viaMix = true,
+                mixSlots = PocketRunMixPath.slots(plan.rows),
+                mixCollections = PocketRunMixPath.collections(plan.rows),
+            )
+            _active.value = provisional
+            val loaded = try {
+                mix(plan.rows, label)
+            } catch (e: Throwable) {
+                _active.value = before
+                throw e
+            }
             if (PocketRunMixPath.shouldPlayViaMix(loaded)) {
-                state = state.copy(
-                    viaMix = true,
-                    mixSlots = PocketRunMixPath.slots(plan.rows),
-                    mixCollections = PocketRunMixPath.collections(plan.rows),
-                )
-                _mixCaption.value = null
+                state = provisional
             } else {
+                _active.value = before
                 // Too few songs load on the decks: the regular player takes the run, and says why.
                 _mixCaption.value = PocketRunMixPath.fallbackCaption(loaded)
                 log("mix path skipped: loadable=$loaded < ${PocketRunMixPath.MIN_LOADABLE}")
@@ -671,6 +681,7 @@ class PocketRunStore(
 
     /** Clear this pocket: stop the queue (if it is still this run's) and file the run into past runs. */
     fun stop() {
+        _mixCaption.value = null
         val a = _active.value ?: return
         if (!a.viaMix && player?.state()?.sourceSetlistId == a.tag) player.stop()
         endOrClearActive()
@@ -678,6 +689,7 @@ class PocketRunStore(
 
     /** End a live run; a run that already finished (card not dismissed) is only cleared, never summarised twice. */
     private fun endOrClearActive() {
+        _mixCaption.value = null
         val a = _active.value ?: return
         if (a.finished) dismissFinished() else endRun(finished = false)
     }
@@ -703,6 +715,7 @@ class PocketRunStore(
     /** Dismiss the "Pocket finished" card. */
     fun dismissFinished() {
         if (_active.value?.finished != true) return
+        _mixCaption.value = null
         _active.value = null
         bump()
         persist()

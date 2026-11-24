@@ -39,6 +39,8 @@ class MixFacadeImpl(
     private val startItems: (List<com.levi.pocketdj.mix.model.AutoMixItem>, lead: Double, fade: Double, label: String) -> Unit =
         { _, _, _, _ -> },
     private val autoLabel: () -> String? = { null },
+    /** Pushes the Mix settings (glide, skip-fade, cue channel, beat pulse) to the engine; Main-confined. */
+    private val pushSettings: (MixSettings) -> Unit = {},
 ) : MixFacade {
     override val autoMixLabel: String? get() = autoLabel()
 
@@ -47,6 +49,8 @@ class MixFacadeImpl(
         return withContext(engineContext) {
             val items = com.levi.pocketdj.data.pockets.wheel.PocketRunMixPath.items(songIds, label, originCollections, songLoadables(songIds))
             if (items.size >= com.levi.pocketdj.data.pockets.wheel.PocketRunMixPath.MIN_LOADABLE) {
+                // Headless start (Mix tab never opened): the engine still gets the user's settings, as MixAutoStarter does.
+                pushSettings(s)
                 startItems(items, s.autoMixLeadSeconds, s.autoMixFadeSeconds, label)
             }
             items.size

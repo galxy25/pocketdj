@@ -71,6 +71,9 @@ class MixFacadeImplTest {
             isAutoMixing = { mixing }, isAutoPaused = { paused },
             remotePause = { log += "remotePause" }, remotePlay = { log += "remotePlay" },
             engineContext = Dispatchers.Unconfined,
+            songLoadables = { ids -> ids.map { MixLoadable(it, "T$it", "A") } },
+            startItems = { items, lead, fade, label -> engine.startAutoMix(items, false, lead, fade, label) },
+            pushSettings = { MixSettingsPush.pushAll(it, engine) },
         )
     }
 
@@ -143,5 +146,23 @@ class MixFacadeImplTest {
         assertTrue(r.facade.autoMixing); assertTrue(r.facade.autoPaused)
         r.mixing = false; r.paused = false
         assertFalse(r.facade.autoMixing)
+    }
+
+    private fun ids(n: Int) = (0 until n).map { "s$it" }
+
+    @Test fun pocketRunStartsAutoDjOnlyAtTenLoadable() = runTest {
+        val r = Rig()
+        assertEquals(9, r.facade.startAutoMixSongs(ids(9), "Pocket", emptyMap()))
+        assertNull(r.engine.started)
+        assertTrue(r.engine.settingsPushed.isEmpty())
+        assertEquals(10, r.facade.startAutoMixSongs(ids(10), "Pocket", emptyMap()))
+        assertEquals(10, r.engine.started!!.size)
+        assertEquals("Pocket", r.engine.label)
+    }
+
+    @Test fun pocketRunPushesMixSettingsToTheEngineBeforeStarting() = runTest {
+        val r = Rig()
+        r.facade.startAutoMixSongs(ids(10), "Pocket", emptyMap())
+        assertTrue(r.engine.settingsPushed.containsAll(listOf("glide", "skipfade", "cue", "pulse")))
     }
 }
