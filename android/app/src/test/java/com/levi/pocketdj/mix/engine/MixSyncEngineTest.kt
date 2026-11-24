@@ -216,6 +216,29 @@ class MixSyncEngineTest {
         assertEquals("the session log still records the pause and the reset", listOf("pause", "resetDeck"), h.recorder.kinds().takeLast(2))
     }
 
+    @Test fun aDeckRetiringAtTheEndOfItsTrackIsTappedAsEngineHousekeeping() {
+        val h = EngineHarness()
+        h.engine.load(h.addSong("a", 1.0), A)
+        h.engine.play(A)
+        val taps = mutableListOf<Gesture>()
+        h.engine.gestureTap = { taps += it }
+        h.tick(500); h.tick(500)
+        assertFalse(h.engine.deckState(A).isPlaying)
+        val pauses = taps.filter { it.kind == MixSyncKind.PAUSE }
+        assertTrue("the retire is tapped", pauses.isNotEmpty())
+        assertTrue("and never as a DJ's own pause", pauses.all { it.cause == Gesture.Cause.ENGINE })
+    }
+
+    @Test fun aZeroLengthDeckPausedByTheTickIsEngineHousekeeping() {
+        val h = EngineHarness()
+        h.engine.load(h.addSong("z", 0.0), A)
+        h.engine.setPlaying(A, true)
+        val taps = mutableListOf<Gesture>()
+        h.engine.gestureTap = { taps += it }
+        h.tick(500)
+        assertTrue(taps.none { it.cause == Gesture.Cause.USER })
+    }
+
     @Test fun theCauseIsStampedFromTheOutermostNonUserScope() {
         val h = EngineHarness()
         h.engine.load(h.addSong("a"), A); h.engine.load(h.addSong("b"), B)

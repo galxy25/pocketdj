@@ -64,7 +64,7 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
             // mix. Positions deliberately do NOT advance: nothing is rendering. ~1 try/s.
             if (now - lastWatchdogAt >= WATCHDOG_MS) {
                 lastWatchdogAt = now
-                e.watchdogRecover()
+                e.caused(Gesture.Cause.ENGINE) { e.watchdogRecover() }
             }
         }
         e.refreshTransport()
@@ -79,7 +79,7 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
         val st = e.deckState(d)
         val dur = e.duration(d)
         if (dur <= 0) {                 // nothing / zero-length loaded: don't run the playhead forever
-            if (!e.autoMixing) { e.setPlaying(d, false); e.controller(d).pause() }
+            if (!e.autoMixing) e.caused(Gesture.Cause.ENGINE) { e.setPlaying(d, false); e.controller(d).pause() }
             return
         }
         if (e.streamHeld(d)) {          // streaming: waiting for bytes, the playhead is frozen
@@ -101,8 +101,10 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
         if (pos >= dur && !autoRunning) {
             // A SUSPENDED machine never transitions, so a deck reaching its end retires like a
             // manual deck; otherwise it "plays" at dur forever.
-            e.setPlaying(d, false)
-            e.controller(d).pause()
+            e.caused(Gesture.Cause.ENGINE) {
+                e.setPlaying(d, false)
+                e.controller(d).pause()
+            }
         }
     }
 

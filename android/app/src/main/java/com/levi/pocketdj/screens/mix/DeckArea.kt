@@ -33,7 +33,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -82,6 +85,8 @@ fun DeckArea(
     modifier: Modifier = Modifier,
     beatPulseEnabled: Boolean = false,
     sourceMenu: @Composable (Deck) -> Unit = {},
+    /** Mix Together: decks another DJ owns (iOS `mixReadOnly`): dimmed, taps swallowed. */
+    readOnlyDecks: Set<Deck> = emptySet(),
 ) {
     val effective = DeckLayoutRules.effective(layout, landscape)
     val compact = DeckLayoutRules.compactControls(landscape, androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp)
@@ -89,10 +94,20 @@ fun DeckArea(
     val shown = Deck.fromLabel(visible) ?: Deck.A
 
     @Composable
-    fun deck(d: Deck, m: Modifier = Modifier) = DeckView(
-        host = host, deck = d, onLoad = { onLoad(d) }, modifier = m,
-        beatPulseEnabled = beatPulseEnabled, compactControls = compact, sourceMenu = { sourceMenu(d) },
-    )
+    fun deck(d: Deck, m: Modifier = Modifier) {
+        val ro = d in readOnlyDecks
+        Box(m) {
+            DeckView(
+                host = host, deck = d, onLoad = { onLoad(d) },
+                modifier = if (ro) Modifier.alpha(0.5f) else Modifier,
+                beatPulseEnabled = beatPulseEnabled, compactControls = compact, sourceMenu = { sourceMenu(d) },
+            )
+            if (ro) Box(
+                Modifier.matchParentSize().testTag("deck-${d.label}-readonly")
+                    .pointerInput(Unit) { detectTapGestures { } },
+            )
+        }
+    }
 
     Box(modifier.fillMaxWidth().testTag("mix-deck-area")) {
         when (effective) {

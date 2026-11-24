@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-REM-13 Mix Together live: anchored starts, drift correction, held decks, section + banner
 
@@ -40,3 +40,10 @@ Two Android devices can now mix the same two decks together over a Remote sessio
 
 ## Questions for Levi
 - None.
+
+## Review
+- MAJOR engine-internal stops not tagged ENGINE -> fixed: `MixTick` (end-of-track retire, zero-length pause, watchdog recover) and `StreamDecks` (stream-failed drop eject) now run under `engine.caused(Gesture.Cause.ENGINE)`. Stream hold/stall pauses go through `controller.pause()` only (no `setPlaying`, so no tap). Tests: `MixSyncEngineTest` end-of-track retire and zero-length pause tap as ENGINE; driver-level ENGINE-pause-proposes-nothing already existed in `MixSyncDriftTest`. (Engine-initiated `pauseBoth`/`stopAutoMix` are user-driven here, left as USER.)
+- MINOR non-owned deck gestures only repaired on tick -> fixed: repair is posted immediately from the tap; `DeckArea` takes `readOnlyDecks` (dimmed, taps swallowed) fed from `MixSyncUi.controllable` via `rememberMixReadOnlyDecks`.
+- MINOR stale state after `onActive(false)` -> fixed: `localSong`, `lastBeatAt`, `lastDriftFixAt` cleared. Test: `endingTheMixClearsTheLocalSongAndDriftBookkeeping`. (driftFixCount/nudgeCount are public diagnostics counters, left.)
+
+fixes applied. Tests: 7871 -> 7874, all green; assembleDebug green.

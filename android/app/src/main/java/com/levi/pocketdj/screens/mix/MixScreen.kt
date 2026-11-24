@@ -207,6 +207,7 @@ fun MixScreen(
                     host = host, layout = settings.mixDeckLayout, landscape = landscape,
                     onLoad = { vm.openLoader(it) },
                     beatPulseEnabled = settings.beatPulseEnabled,
+                    readOnlyDecks = rememberMixReadOnlyDecks(graph),
                     sourceMenu = { d ->
                         val src = if (d == Deck.A) st.sourceA else st.sourceB
                         MixCrateMenu(

@@ -331,6 +331,9 @@ class MixSync(
             held.clear()
             deferredPlay.clear()
             readinessDirty.clear()
+            localSong.clear()
+            lastBeatAt.clear()
+            lastDriftFixAt.clear()
         }
         publish()
     }
@@ -433,6 +436,14 @@ class MixSync(
             val st = engine.syncStatus(d)
             if (g.kind == MixSyncKind.PAUSE && st.durationMs > 0 && st.playheadMs >= st.durationMs - 500) return
             repairQueue += d
+            // Undo it NOW (a posted hop, so the engine finishes the gesture first), not on the next 250 ms tick.
+            scope?.launch {
+                if (d in repairQueue && d !in held) {
+                    repairQueue -= d
+                    reconcileDeck(d)
+                    publish()
+                }
+            }
             return
         }
         when (g.kind) {

@@ -836,6 +836,19 @@ class MixSyncDriftTest {
         assertEquals(1.0, b.port.nudges.last().second, 0.0)
     }
 
+    @Test fun endingTheMixClearsTheLocalSongAndDriftBookkeeping() {
+        val (a, b) = twoDeviceMix()
+        loadAndPlayA(a, b)
+        beat(a, b); beat(a, b)
+        fun field(name: String): Map<*, *> =
+            b.sync.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(b.sync) as Map<*, *>
+        assertTrue(field("localSong").isNotEmpty())
+        a.sync.end(); net.pump()
+        assertTrue("a stale song id would read as loaded in the next mix", field("localSong").isEmpty())
+        assertTrue(field("lastBeatAt").isEmpty())
+        assertTrue(field("lastDriftFixAt").isEmpty())
+    }
+
     // ---------------- ui state ----------------
 
     @Test fun uiStateTracksOwnersLabelsAndTheStartGate() {

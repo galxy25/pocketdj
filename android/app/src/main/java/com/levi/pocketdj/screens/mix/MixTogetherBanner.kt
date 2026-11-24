@@ -113,3 +113,15 @@ private fun DeckOwnerRow(ui: MixSyncUi, deck: Deck, onClaim: (Deck) -> Unit, onR
         }
     }
 }
+
+/** Decks this device may not drive while mixing together (empty when no session is live). */
+@Composable
+fun rememberMixReadOnlyDecks(graph: AppGraph): Set<Deck> {
+    if (!ParityFlags.MIX_TOGETHER) return emptySet()
+    val live by graph.remoteGraph.controller.isActive.collectAsState()
+    if (!live) return emptySet()
+    val sync = remember(graph) { graph.remoteGraph.mixSync }
+    val ui by sync.ui.collectAsState()
+    if (!ui.active) return emptySet()
+    return Deck.entries.toSet() - ui.controllable
+}
