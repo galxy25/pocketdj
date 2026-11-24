@@ -38,4 +38,16 @@ class ManifestPermissionsTest {
         val rx = Regex("<receiver\\s[^>]*MotionTransitionReceiver[^>]*>", RegexOption.DOT_MATCHES_ALL).find(xml)!!.value
         assertTrue(rx, "android:exported=\"false\"" in rx)
     }
+
+    @Test fun declaresNearbyRemotePermissionsAndKeepAliveService() {
+        for (p in listOf("BLUETOOTH_SCAN", "BLUETOOTH_ADVERTISE", "BLUETOOTH_CONNECT", "NEARBY_WIFI_DEVICES", "ACCESS_WIFI_STATE", "CHANGE_WIFI_STATE", "FOREGROUND_SERVICE_CONNECTED_DEVICE")) {
+            assertTrue("missing $p", declares(p))
+        }
+        for (p in listOf("BLUETOOTH_SCAN", "NEARBY_WIFI_DEVICES")) {
+            val tag = Regex("<uses-permission\\s[^>]*android.permission.$p\"[^>]*>").find(xml)!!.value
+            assertTrue(tag, "neverForLocation" in tag)
+        }
+        val svc = Regex("<service\\s[^>]*RemoteKeepAliveService[^>]*>", RegexOption.DOT_MATCHES_ALL).find(xml)!!.value
+        assertTrue(svc, "foregroundServiceType=\"connectedDevice\"" in svc)
+    }
 }

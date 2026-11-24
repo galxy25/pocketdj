@@ -63,8 +63,8 @@ class JukeboxHubModeTest {
     @Test fun remoteLinksParse() {
         assertEquals(DeepLink.Remote(null), DeepLinkParser.parse("pocketdj://remote"))
         assertEquals(DeepLink.Remote(null), DeepLinkParser.parse("pocketdj:///remote"))
-        assertEquals(DeepLink.Remote("K7QM2X"), DeepLinkParser.parse("pocketdj://remote/join/K7QM2X"))
-        assertEquals(DeepLink.Remote("k7qm2x"), DeepLinkParser.parse("pocketdj://REMOTE/JOIN/k7qm2x"))
+        assertEquals(DeepLink.RemoteJoin("K7QM2X"), DeepLinkParser.parse("pocketdj://remote/join/K7QM2X"))
+        assertEquals(DeepLink.RemoteJoin("K7QM2X"), DeepLinkParser.parse("pocketdj://REMOTE/JOIN/k7qm2x"))
         assertEquals(DeepLink.Remote(null), DeepLinkParser.parse("pocketdj://remote/join"))
         assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://remote/join/a!"))
         assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://remote/elsewhere"))

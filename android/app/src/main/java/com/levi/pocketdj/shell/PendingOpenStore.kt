@@ -12,6 +12,7 @@ class PendingOpenStore {
     private fun kind(link: DeepLink): String = when (link) {
         is DeepLink.JukeboxJoin -> "jukebox"
         is DeepLink.Mwf -> "mwf"
+        is DeepLink.RemoteJoin -> "remote"
         is DeepLink.CollectionFile -> "file"
         else -> "open" // Play / Navigate share iOS's single pendingOpenURL
     }
