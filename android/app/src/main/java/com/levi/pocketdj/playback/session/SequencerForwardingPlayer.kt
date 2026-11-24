@@ -22,6 +22,8 @@ interface SequencerControl {
     var repeatMode: RepeatMode
     var shuffleEnabled: Boolean
     fun skipNext()
+    /** A REMOTE controller's next (lock screen, headset, Auto): DJ Mode mixes it over the 5 s sweep (P2-DJ-9). */
+    fun skipNextRemote() = skipNext()
     fun skipPrevious()
     fun resumeFromHold()
     fun startCurrent(): Boolean
@@ -44,6 +46,7 @@ class SetlistSequencerControl(private val seq: SetlistSequencer) : SequencerCont
         get() = seq.state.value.shuffleEnabled
         set(v) = seq.setShuffle(v)
     override fun skipNext() = seq.skipNext()
+    override fun skipNextRemote() = seq.skipNext(fast = true)
     override fun skipPrevious() = seq.skipPrevious()
     override fun resumeFromHold() = seq.resumeFromHold()
     override fun startCurrent() = seq.startCurrent()
@@ -197,8 +200,11 @@ class SequencerForwardingPlayer(
         }
     }
 
-    override fun seekToNext() = route(TransportLog.Cmd.NEXT, { control.skipNext() }, { super.seekToNext() })
-    override fun seekToNextMediaItem() = route(TransportLog.Cmd.NEXT, { control.skipNext() }, { super.seekToNextMediaItem() })
+    /** Our own app's calls skip over the Skip fade; a remote controller's ⏭ is the 5 s sweep (iOS `skipNext(fast: true)`). */
+    private fun nextViaSequencer() { if (callerInternal) control.skipNext() else control.skipNextRemote() }
+
+    override fun seekToNext() = route(TransportLog.Cmd.NEXT, { nextViaSequencer() }, { super.seekToNext() })
+    override fun seekToNextMediaItem() = route(TransportLog.Cmd.NEXT, { nextViaSequencer() }, { super.seekToNextMediaItem() })
     override fun seekToPrevious() = route(TransportLog.Cmd.PREV, { control.skipPrevious() }, { super.seekToPrevious() })
     override fun seekToPreviousMediaItem() = route(TransportLog.Cmd.PREV, { control.skipPrevious() }, { super.seekToPreviousMediaItem() })
 

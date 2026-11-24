@@ -645,6 +645,7 @@ class SetlistSequencer(
 
     private fun endRun(reason: SessionEndReason = SessionEndReason.STOPPED) {
         val wasRunning = running
+        djSkip?.clearPending()
         endStallEpisode("stop")
         endNotedUid = null
         sessionExtras.clearHeld()
@@ -820,6 +821,7 @@ class SetlistSequencer(
             val cue = startCue.consume(queue.getOrNull(index)?.id ?: "")
             if (cue != null && running) { resumeAtMs = cue; cued = true }
         }
+        djSkip?.clearPending() // a (re)start supersedes any pending skip mix
         if (pausedByCascade) { pausedByCascade = false; publish() }
         spendCurrentUserNext()
         if (inPlace) queue.getOrNull(index)?.let { skipTracker?.noteTrackRestarted(it.id) }
@@ -1055,12 +1057,14 @@ class SetlistSequencer(
         backend: String = path.name.lowercase(),
         rendering: Boolean = true,
         meterCause: String? = null,
+        /** A USER advance whose listen already ended at the press (the DJ skip mix reports it there): do not report it twice. */
+        awayNoted: Boolean = false,
     ): Boolean {
         if (!running || held) return false
         val cur = queue.getOrNull(index) ?: return false
         val genBefore = playGeneration
         when (cause) {
-            AdvanceCause.USER -> { noteAdvanceAway(); unplayableStreak = 0 }
+            AdvanceCause.USER -> { if (!awayNoted) noteAdvanceAway(); unplayableStreak = 0 }
             AdvanceCause.NATURAL_END -> noteNaturalEndOf(cur)
             else -> Unit
         }
@@ -1078,8 +1082,15 @@ class SetlistSequencer(
      * preload slot is forgotten (the DSP owns the audio); [PlayerPort.adoptDsp] then leaves ExoPlayer idle. Returns false
      * when nothing advanced (halted by the gate / breaker, or no longer running): the engine puts the outgoing back.
      */
-    fun advanceAtDjFadeStart(): Boolean {
-        if (!advanceWithoutLoad(AdvanceCause.NATURAL_END, StartPath.DJ, "dj", rendering = true, meterCause = "dj")) return false
+    fun advanceAtDjFadeStart(skip: Boolean = false): Boolean {
+        // A ⏭'s mix (P2-DJ-9) is the listener's skip: a USER transport (cause USER lifts the cascade halt and overrides repeat-one / a
+        // repeat count, since the cursor just moves on), dead-air cause `skip`, the listen already ended at the press.
+        val advanced = if (skip) {
+            advanceWithoutLoad(AdvanceCause.USER, StartPath.DJ, "dj", rendering = true, meterCause = "skip", awayNoted = true)
+        } else {
+            advanceWithoutLoad(AdvanceCause.NATURAL_END, StartPath.DJ, "dj", rendering = true, meterCause = "dj")
+        }
+        if (!advanced) return false
         preloader.noteCleared()
         val item = queue.getOrNull(index) ?: return true
         val request = PlayRequest(
@@ -1094,6 +1105,21 @@ class SetlistSequencer(
             if (!ok) djAdoptFailed(item.uid)
         }
         return true
+    }
+
+    /** The skip tracker's PRESS for a DJ skip mix (the listen ends when ⏭ is pressed, not when the fade lands). */
+    fun noteDjSkipPress() = noteAdvanceAway()
+
+    /**
+     * A ⏭'s mix was refused at its fade start (the queue moved, Transitions went off ...): the listener still pressed ⏭, so the
+     * immediate advance (the press was already reported away).
+     */
+    fun skipAfterRefusedDjMix() {
+        if (!running || held) return
+        log("[dj] skip mix refused -> immediate advance")
+        exitHoldIfNeeded()
+        unplayableStreak = 0
+        advanceToNext(AdvanceCause.USER)
     }
 
     /** DJ: the engine could not take the adopted row (ExoPlayer would not go idle): called once per failed adopt. */
@@ -1279,12 +1305,25 @@ class SetlistSequencer(
 
     // ---- advancing --------------------------------------------------------------------------
 
-    /** ⏭ (UI, lock screen, remote). */
-    fun skipNext() {
+    /** DJ Mode's skip mix (P2-DJ-9); null until DJ is first bound. */
+    @Volatile var djSkip: com.levi.pocketdj.playback.dj.DjSkipHooks? = null
+
+    /**
+     * ⏭ (UI, lock screen, remote). With DJ Mode on it MIXES into the next row (P2-DJ-9) over the Skip fade, or the 5 s sweep
+     * when [fast] (remote controllers, widget, Auto, headset; a second in-app tap inside the mix also upgrades to it). Anything
+     * DJ cannot mix is today's immediate advance.
+     */
+    fun skipNext(fast: Boolean = false) {
         if (!running) return
         if (redirected(TransportRedirect.SkipNext)) return
         fireUser(UserTransport.SKIP)
-        noteAdvanceAway()
+        var awayNoted = false
+        when (djSkip?.skip(fast)) {
+            com.levi.pocketdj.playback.dj.DjSkipResult.HANDLED -> return
+            com.levi.pocketdj.playback.dj.DjSkipResult.FALLBACK_AWAY_NOTED -> awayNoted = true
+            else -> Unit
+        }
+        if (!awayNoted) noteAdvanceAway()
         exitHoldIfNeeded()
         unplayableStreak = 0
         advanceToNext(AdvanceCause.USER)
@@ -1295,6 +1334,7 @@ class SetlistSequencer(
         if (!running) return
         if (redirected(TransportRedirect.SkipPrevious)) return
         val fromUid = currentUid()
+        djSkip?.clearPending()
         noteUserTransport()
         fireUser(UserTransport.PREV)
         exitHoldIfNeeded()
@@ -1319,6 +1359,7 @@ class SetlistSequencer(
 
     private fun advanceToNext(cause: AdvanceCause, noLoad: NoLoad? = null) {
         if (!running) return
+        djSkip?.clearPending() // any pending skip mix is superseded by this advance
         when (cause) {
             AdvanceCause.USER -> noteUserTransport()
             AdvanceCause.UNPLAYABLE_HERE -> Unit

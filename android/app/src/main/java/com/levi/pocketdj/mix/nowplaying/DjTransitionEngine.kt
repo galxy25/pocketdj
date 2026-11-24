@@ -105,6 +105,10 @@ class DjTransitionEngine internal constructor(
     var fadeProgress = 0.0; private set
     var glideDropped = false; private set
     val incomingSongId: String? get() = spec?.incoming?.songId
+    /** The playing outgoing's glide tempo multiplier for the transition in flight (null = none). */
+    val outRate: Double? get() = spec?.glide?.outRate
+    /** The crossfade length (seconds) of the transition in flight (null = none). */
+    val fadeSeconds: Double? get() = spec?.plan?.fadeSeconds
 
     private class Arm(val lead: Double, val begin: () -> DjTransitionSpec?)
     private class Tail(val state: NowPlayingDspEngine.LiveState, val controls: NowPlayingDspEngine.ControlSnap, var overlay: GlideOverlay)
@@ -352,6 +356,48 @@ class DjTransitionEngine internal constructor(
         if (reason != "seek") onHandBack?.invoke(np.djPosition())   // a seek supplies its own playhead
         startEase(from)
         onTransitionEnded?.invoke(null, reason)
+    }
+
+    // ================================================================ skip (P2-DJ-9; iOS djSkipDuringPreRoll / djAbandonForSkip / djEndPostRollForSkip)
+
+    /**
+     * A skip during the PRE-ROLL: the skip is the advance - drop the rest of the pre-roll and fade over [fadeSeconds] from
+     * now. False when not in a pre-roll. (No 60 ms handover on Android: the fade starts, and the host advances, at once.)
+     */
+    fun skipDuringPreRoll(fadeSeconds: Double): Boolean {
+        val sp = spec ?: return false
+        if (phase != DjPhase.PREROLL) return false
+        spec = sp.copy(plan = sp.plan.copy(preRollSeconds = 0.0, fadeSeconds = maxOf(AutoTransition.MIN_IMMEDIATE_FADE_SECONDS, fadeSeconds)))
+        fadeStart()
+        return true
+    }
+
+    /** A skip while PAUSED in a pre-roll (nothing would sound until play): drop the transition so the immediate advance takes over. */
+    fun abandonForSkip() { if (phase == DjPhase.PREROLL) cutTransition("skip while paused") }
+
+    /** A skip during the POST-ROLL: the glide ends at once (the listener wins) so the new skip can mix out of the song. */
+    fun endPostRollForSkip(): Boolean {
+        if (phase != DjPhase.POSTROLL) return false
+        glideDropped = true
+        np.djClearOwnOverlay()
+        finish("skip")
+        return true
+    }
+
+    /**
+     * A second skip press inside a skip's crossfade: finish it over [fadeSeconds] instead (the progress so far is kept, so
+     * the fader never jumps). False unless a crossfade is running that is longer than [fadeSeconds].
+     */
+    fun shortenFade(fadeSeconds: Double): Boolean {
+        val sp = spec ?: return false
+        if (phase != DjPhase.FADING || cutting) return false
+        val old = maxOf(0.05, sp.plan.fadeSeconds)
+        val target = maxOf(AutoTransition.MIN_IMMEDIATE_FADE_SECONDS, fadeSeconds)
+        if (target >= old) return false
+        val p = (phaseElapsed / old).coerceIn(0.0, 1.0)
+        spec = sp.copy(plan = sp.plan.copy(fadeSeconds = target))
+        phaseElapsed = p * target
+        return true
     }
 
     internal fun cutIfBeforeAdvance(reason: String) { if (phase == DjPhase.PREROLL) cutTransition(reason) }
