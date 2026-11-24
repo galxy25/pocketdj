@@ -37,6 +37,9 @@ object PlaybackContract {
     /** Game-run tag ([PlayContext.runTag]) of a sequencer-appended row. */
     const val EXTRA_RUN_TAG = "pdj.runTag"
 
+    /** Pocket Wheel run provenance (`PocketRunTag` JSON) of a run row, copied onto its History play. */
+    const val EXTRA_POCKET_RUN = "pdj.pocketRun"
+
     /** Origin collection id of a `set_now_playing` run (History attribution). */
     const val EXTRA_ORIGIN_COLLECTION_ID = "pdj.originCollectionId"
 

@@ -5,6 +5,7 @@ import com.levi.pocketdj.data.pockets.wheel.PocketMomentEngine
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.ResetHook
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
@@ -67,9 +68,58 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
                 val svc = app.collectionsGraph.listeningPockets
                 if (svc.isEnabled) svc.results.value else null
             }
+            c.play = { profile -> kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main.immediate) { runStore.start(profile) } }
             c.emptyFallback = { emptyFallbackProfile(history.events, app.collectionsGraph.favorites.favoriteIds.isNotEmpty(), wheelCache.snapshot.value.collectionNames) }
         }
     }
+
+    /**
+     * The adaptive pocket run store (P2-POC-8). App-scoped; runs on the main thread (it drives the main-thread
+     * sequencer) and hops to Default only for planner compute. Wires the History tag hook into the sequencer so every
+     * run row's play records its `pocketRun` provenance.
+     */
+    val runStore: com.levi.pocketdj.data.pockets.wheel.PocketRunStore by lazy {
+        val history = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext)
+        val sequencer = app.playbackGraph.sequencer
+        val scope = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate +
+                kotlinx.coroutines.CoroutineExceptionHandler { _, t -> runCatching { android.util.Log.e("PocketRunStore", "uncaught", t) } },
+        )
+        com.levi.pocketdj.data.pockets.wheel.PocketRunStore(
+            file = File(app.appContext.filesDir, com.levi.pocketdj.data.pockets.wheel.PocketRunStore.FILE_NAME),
+            player = com.levi.pocketdj.data.pockets.wheel.SequencerRunPlayer(sequencer),
+            scope = scope,
+        ).also { st ->
+            st.historyEvents = { history.events }
+            st.installId = { history.installId }
+            st.currentEventId = { app.playbackGraph.skipTracker.currentEventId }
+            st.candidates = { runCandidates() }
+            sequencer.pocketRunTagFor = { plan -> st.tag(plan) }
+            registerWheelClear { st.clearLocal() }
+        }
+    }
+
+    /** The planner's candidate universe, built OFF the main thread (every playable song with features + memberships). */
+    private suspend fun runCandidates(): Map<String, com.levi.pocketdj.data.pockets.wheel.PocketRunPlanner.Candidate> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val cat = app.catalogRepository.state.value.catalog ?: return@withContext emptyMap()
+            val burned = runCatching {
+                app.servicesGraph.burnStore.items.value.filterValues { it.state == com.levi.pocketdj.data.burns.BurnState.READY }.keys
+            }.getOrDefault(emptySet())
+            com.levi.pocketdj.data.pockets.wheel.PocketRunCandidates.build(
+                songs = cat.songsById,
+                albums = cat.albumsById,
+                availability = com.levi.pocketdj.data.games.inthepocket.InThePocketAudio(
+                    ripIds = app.ripsRepository.manifest.value.keys,
+                    burnedIds = burned,
+                    canStreamAppleMusic = runCatching { app.settings.current().hasAppleMusic }.getOrDefault(false),
+                ),
+                collections = app.collectionsGraph.pocketsCollectionsInput(),
+                favorites = app.collectionsGraph.favorites.favoriteIds,
+                timbre = app.browseGraph.timbreCatalog.vectors(),
+                nowMs = System.currentTimeMillis().toDouble(),
+            )
+        }
 
     private val clearers = CopyOnWriteArrayList<() -> Unit>()
 
@@ -90,6 +140,7 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
 
     /** First foreground: follow history revisions (one rebuild per launch, then debounced). Idempotent. */
     fun start() {
+        resumeRun()
         val history = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext)
         wheelCache.attach(
             PocketMomentCache.gatedRevisions(
@@ -97,6 +148,11 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
                 app.catalogRepository.state.map { it.catalog != null }.distinctUntilChanged(),
             ),
         )
+    }
+
+    /** Installs the run store's History-tag hook on the sequencer and resumes a relaunched mid-run (on Main). */
+    fun resumeRun() {
+        app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) { runCatching { runStore.resumeTrackingIfNeeded() } }
     }
 
     override val resetHooks: List<ResetHook> = listOf(ResetHook { wheelClearLocal() })

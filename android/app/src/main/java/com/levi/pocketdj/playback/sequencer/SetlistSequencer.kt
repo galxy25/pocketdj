@@ -1058,8 +1058,14 @@ class SetlistSequencer(
 
     private fun requestContext(item: QueueItem): PlayContext {
         val base = capturedContext ?: PlayContext(PlayContext.SOURCE_SETLIST)
-        return if (item.runTag != null) base.copy(runTag = item.runTag) else base
+        val tagged = if (item.runTag != null) base.copy(runTag = item.runTag) else base
+        // P2-POC-8: a Pocket Wheel run row records its provenance (run, moment, row collection, slot) on its History play.
+        val pocket = item.plan?.let { pocketRunTagFor?.invoke(it) }
+        return if (pocket != null) tagged.copy(pocketRun = pocket) else tagged
     }
+
+    /** P2-POC-8: maps a run row's [PlanTag] to the History tag (`PocketRunStore.tag(forPlan:)`); null = not a run row. */
+    @Volatile var pocketRunTagFor: ((PlanTag) -> com.levi.pocketdj.data.history.PocketRunTag?)? = null
 
     private fun originCollectionIdFor(): String? =
         if (sourceSetlistId == com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID) capturedOrigin?.second else null

@@ -202,6 +202,11 @@ class PlaybackService : MediaLibraryService() {
                             contextId = extras?.getString(PlaybackContract.EXTRA_CONTEXT_ID),
                             contextName = extras?.getString(PlaybackContract.EXTRA_CONTEXT_NAME),
                             runTag = extras?.getString(PlaybackContract.EXTRA_RUN_TAG),
+                            pocketRun = extras?.getString(PlaybackContract.EXTRA_POCKET_RUN)?.let { raw ->
+                                runCatching {
+                                    com.levi.pocketdj.data.history.PocketRunTagSerializer.parse(kotlinx.serialization.json.Json.parseToJsonElement(raw))
+                                }.getOrNull()
+                            },
                         ),
                         atMs = System.currentTimeMillis(),
                         originCollectionId = extras?.getString(PlaybackContract.EXTRA_ORIGIN_COLLECTION_ID),

@@ -1499,6 +1499,10 @@ class PlaybackController(
             playContext.contextName?.let { putString(PlaybackContract.EXTRA_CONTEXT_NAME, it) }
             album?.id?.let { putString(PlaybackContract.EXTRA_ALBUM_ID, it) }
             playContext.runTag?.let { putString(PlaybackContract.EXTRA_RUN_TAG, it) }
+            playContext.pocketRun?.let { pr ->
+                runCatching { kotlinx.serialization.json.Json.encodeToString(com.levi.pocketdj.data.history.PocketRunTag.serializer(), pr) }
+                    .getOrNull()?.let { putString(PlaybackContract.EXTRA_POCKET_RUN, it) }
+            }
             originCollectionId?.let { putString(PlaybackContract.EXTRA_ORIGIN_COLLECTION_ID, it) }
             if (albumRun) putBoolean(PlaybackContract.EXTRA_ALBUM_RUN, true)
         }

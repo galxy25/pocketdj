@@ -30,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -72,6 +73,9 @@ fun UpNextList(
     fun liveUids() = sequencer.state.value.upcoming.map { it.uid }
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val catalog = remember { com.levi.pocketdj.di.AppGraph.get(ctx).catalogRepository }.state.value.catalog
+    // P2-POC-8: rows a live pocket re-plan actually swapped wear "Re-tuned ✦" for ~4 s after the latest swap.
+    val retuned by remember { com.levi.pocketdj.di.AppGraph.get(ctx).pocketsGraph.runStore.retunedUids }
+        .collectAsState()
 
     Column(modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -141,6 +145,14 @@ fun UpNextList(
                             item.artist?.let {
                                 Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
+                            if (item.uid in retuned) {
+                                Text(
+                                    RETUNED_LABEL,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.testTag("np-retuned"),
+                                )
+                            }
                         }
                         // Remove = swipe left or the ⋮ menu (a separate ✕ beside ⋮ doubled the row chrome).
                         Box {
@@ -187,3 +199,6 @@ fun UpNextEmptyHint(modifier: Modifier = Modifier) {
         )
     }
 }
+
+/** The Up Next badge on rows a live pocket re-plan swapped in (iOS "Re-tuned ✦"). */
+const val RETUNED_LABEL = "Re-tuned \u2726"
