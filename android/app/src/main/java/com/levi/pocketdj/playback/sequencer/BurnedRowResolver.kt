@@ -1,6 +1,5 @@
 package com.levi.pocketdj.playback.sequencer
 
-import com.levi.pocketdj.data.burns.CutResolved
 import java.io.File
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +15,8 @@ data class BurnedHit(
     val isCut: Boolean,
     val startMs: Long?,
     val durationMs: Long?,
+    /** Timeline end (detected end + fade grace, or user-edited); null = start + durationMs. */
+    val endMs: Long? = null,
 )
 
 /** The burn store's view for one storage id; null = not burned (or the file vanished). */
@@ -41,20 +42,25 @@ class BurnedRowResolver(
 
     override fun localUrlForPlayback(item: QueueItem): LocalFile? {
         val hit = lookup.burned(item.resolveId) ?: return null
-        return burnedLocalFile(hit.file, hit.isCut, hit.startMs, hit.durationMs)
+        return burnedLocalFile(hit.file, hit.isCut, hit.startMs, hit.durationMs, hit.endMs)
     }
 
     override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? =
         withContext(io) { localUrlForPlayback(item) }?.let(::LocalFileSource)
 
     companion object {
-        /** Adapter for a `BurnStore`-shaped source. */
+        /**
+         * Adapter for a `BurnStore`-shaped source. [playbackFile] is `BurnStore.localUrlForPlayback`: the SHARED side
+         * file plus the song's window (never the per-song cut, which is a burn-export sidecar and, being cut at the
+         * catalog length, ends analog songs early). The cut-preferring lookup stays for Mix/Studio only.
+         */
         fun from(
-            preferringCut: (String) -> CutResolved?,
+            playbackFile: (String) -> File?,
             startMs: (String) -> Long?,
             durationMs: (String) -> Long?,
+            endMs: (String) -> Long? = { null },
         ): BurnedRowResolver = BurnedRowResolver { id ->
-            preferringCut(id)?.let { BurnedHit(it.file, it.isCut, startMs(id), durationMs(id)) }
+            playbackFile(id)?.let { BurnedHit(it, isCut = false, startMs = startMs(id), durationMs = durationMs(id), endMs = endMs(id)) }
         }
     }
 }

@@ -57,6 +57,8 @@ class BurnStore(
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** SVC-3: when set, downloads run as WorkManager jobs that survive process death (iOS `transfers`). */
     private val transfers: TransferCoordinator? = null,
+    /** The user's edited start of a song inside its shared side (CatalogRepository.segmentOverrides). */
+    segmentStartOverride: (String) -> Long? = { null },
 ) {
     private val json = PdjJson.lenient
     private val writer = VersionedJsonWriter(ledgerFile, writerExecutor)
@@ -199,7 +201,11 @@ class BurnStore(
 
     /** Analog seek offset inside the shared album mp3 (null for digital / not burned). */
     fun startMs(songId: String): Long? =
-        _items.value[songId]?.takeIf { it.state == BurnState.READY }?.startMs
+        _items.value[songId]?.takeIf { it.state == BurnState.READY }?.startMs?.let {
+            segmentStartOverride(SongVariant.baseId(songId)) ?: it
+        }
+
+    @Volatile var segmentStartOverride: (String) -> Long? = segmentStartOverride
 
     private fun resolveCutFileName(
         item: BurnItem,
