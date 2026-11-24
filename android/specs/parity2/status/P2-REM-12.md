@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-REM-12 MixEngine sync seams for Mix Together
 
@@ -26,3 +26,11 @@ Tests: `MixSyncEngineTest` 52 new tests (full suite 7707 green, 0 failures; `:ap
 
 ## Questions for Levi
 - None.
+
+## Review
+- MINOR silenceForRemoteController diverged from iOS remotePauseBody -> fixed: now always routes through AutoDj.remotePause (dup guard, freeze bookkeeping, pauseBoth with masterPausedDecks), plain pauseBoth when no AutoDj. Test: silencingForAControllerRemembersTheManualDecksForTheLockScreenResume.
+- MINOR syncPlay on a looping deck unverified re-arm -> fixed: window re-applied to the voices (stems included) before the scheduled seek/start. Test: aPausedLoopingDeckKeepsWrappingAfterAScheduledStart (renders past the loop end).
+- NIT caused() KDoc -> fixed ("outermost non-user wins").
+- NIT syncSessionActive sync load -> rejected (optional; small file, same as iOS, main-thread-only engine).
+
+Fixes applied. Suite: 7709 tests, 0 failures (was 7707); assembleDebug green.

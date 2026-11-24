@@ -1361,6 +1361,8 @@ class MixEngine(
             return@applyingRemote
         }
         val frame = graph.deck(deck).inputFrameAfter(MixSyncMath.inputLeadSeconds(lead, rate))
+        // A looping deck re-arms its window on the voices (stems too) before the scheduled start, as iOS startLoopedNow does.
+        if (loop != null) c.setLoopSeconds(loop, includeStems = stems != null)
         c.seekSeconds(cue)
         // The ~10 Hz accumulator advances from NOW; back it off by the wait so it reads [cue] exactly when the first frame sounds.
         setPosition(deck, maxOf(0.0, cue - lead * rate))
@@ -1435,8 +1437,8 @@ class MixEngine(
     /** A Remote CONTROLLER plays nothing here: a RUNNING Auto-DJ is SUSPENDED like a lock-screen pause (the user's mix resumes after), else the sounding decks stop. */
     override fun silenceForRemoteController() = caused(Gesture.Cause.SYSTEM) {
         val dj = autoDj
-        if (dj != null && dj.isMixing && !dj.isPaused) dj.remotePause()
-        else for (d in Deck.entries) if (st(d).isPlaying) silence(d)
+        // The shared remotePause body (dup guard, freeze bookkeeping, pauseBoth WITH masterPausedDecks memory) also covers manual decks.
+        if (dj != null) dj.remotePause() else pauseBoth()
     }
 
     // ---- session ownership of the durable mix

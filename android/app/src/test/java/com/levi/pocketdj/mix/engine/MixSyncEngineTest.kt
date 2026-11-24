@@ -590,6 +590,29 @@ class MixSyncEngineTest {
         assertTrue("idempotent: nothing left to stop", taps.isEmpty())
     }
 
+    @Test fun silencingForAControllerRemembersTheManualDecksForTheLockScreenResume() {
+        val h = EngineHarness()
+        h.engine.load(h.addSong("a"), A); h.engine.load(h.addSong("b"), B)
+        h.engine.play(A)
+        h.engine.silenceForRemoteController()
+        assertFalse(h.engine.isPlaying(A))
+        h.engine.resumeMasterPaused()
+        assertTrue("the deck that was sounding resumes (iOS remotePauseBody)", h.engine.isPlaying(A))
+        assertFalse(h.engine.isPlaying(B))
+    }
+
+    @Test fun aPausedLoopingDeckKeepsWrappingAfterAScheduledStart() {
+        val r = StemRig(seconds = 30.0)
+        r.load()
+        r.engine.syncSetLoop(A, true, 2.0, 1_000, 3_000)
+        r.engine.pause(A)
+        r.engine.syncPlay(A, 1_000, r.h.nowMs + 300.0)
+        r.h.render(r.h.seconds(6.0))   // well past the window end, twice over
+        assertTrue(r.engine.isPlaying(A))
+        assertEquals(1_000 to 3_000, r.engine.loopWindowMs(A))
+        assertTrue("wrapped inside the window, not run on", r.engine.position(A) in 0.5..3.2)
+    }
+
     @Test fun silencingForAControllerSuspendsARunningAutoMixInsteadOfEndingIt() {
         val r = AutoRig()
         r.start()

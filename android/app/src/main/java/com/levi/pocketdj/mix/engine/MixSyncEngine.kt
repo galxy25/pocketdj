@@ -73,7 +73,7 @@ interface MixSyncEngine {
     /** Apply a remote participant's event: everything [body] does through the public setters is neither tapped nor session-logged. */
     fun applyingRemote(body: () -> Unit)
 
-    /** Run [body] as a NON-user cause: every transport it drives taps with [cause] (innermost non-user wins). */
+    /** Run [body] as a NON-user cause: every transport it drives taps with [cause] (outermost non-user wins). */
     fun caused(cause: Gesture.Cause, body: () -> Unit)
 
     /**
