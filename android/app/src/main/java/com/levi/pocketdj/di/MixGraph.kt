@@ -485,17 +485,21 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     fun stemLockForSession(): com.levi.pocketdj.playback.durable.SessionStemLock? =
         if (npInstalled) stemLockSession.current.toSession() else null
 
-    private fun npNetwork(): com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Network {
-        val cm = app.appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
-            ?: return com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Network.UNMETERED
-        val net = cm.activeNetwork
-        return when {
-            net == null -> com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Network.OFFLINE
-            cm.restrictBackgroundStatus == android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED && cm.isActiveNetworkMetered ->
-                com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Network.CONSTRAINED
-            cm.isActiveNetworkMetered -> com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Network.EXPENSIVE
-            else -> com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Network.UNMETERED
-        }
+    private fun npNetwork(): com.levi.pocketdj.mix.nowplaying.NetworkClass =
+        com.levi.pocketdj.mix.nowplaying.NetworkClass.current(
+            app.appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager,
+        )
+
+    /**
+     * DISK GUARD for every lane step. P2-MM-5 binds the footprint/cap/sweep to `StorageManager`; until then
+     * only the 1 GB free-space floor applies (footprint 0 against an unbounded cap, no-op sweep).
+     */
+    private val npDiskGuard: com.levi.pocketdj.mix.nowplaying.DiskGuard by lazy {
+        com.levi.pocketdj.mix.nowplaying.DiskGuard(
+            freeBytes = { runCatching { app.appContext.filesDir.usableSpace }.getOrNull() },
+            footprintBytes = { 0L },
+            capBytes = { Long.MAX_VALUE / 2 },
+        )
     }
 
     /** MIX-18: song-then-stems (V>D>O>B) prefetch lane over the shared stream loader + BurnStore. */
@@ -503,6 +507,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val burns = app.servicesGraph.burnStore
         com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher(npMain).also { p ->
             p.network = { npNetwork() }
+            p.diskGuard = { npDiskGuard.admit() }
             p.fetchSong = { step ->
                 // A finished stream is adopted as an ordinary burn: the prefetch IS the download.
                 val loader = mixStreamLoader
@@ -537,7 +542,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         if (!carry.wantsStems || !st.isRunning || st.isHeldForResume || st.current == null) { pf.cancelAll(); return }
         val burns = app.servicesGraph.burnStore
         val loader = mixStreamLoader
-        fun track(q: com.levi.pocketdj.playback.sequencer.QueueItem) = com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Track(
+        fun track(q: com.levi.pocketdj.playback.sequencer.QueueItem) = com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track(
             songId = q.id, audioId = q.resolveId, title = q.title, artist = q.artist.orEmpty(),
             songLocal = burns.hasLocalFile(q.resolveId) || loader.stream(q.resolveId)?.isComplete == true, songFetchable = loader.canStream(q.resolveId),
             stemsLocal = burns.stemPartsBurned(q.id), stemsRemote = burns.stemsRemote(q.id),

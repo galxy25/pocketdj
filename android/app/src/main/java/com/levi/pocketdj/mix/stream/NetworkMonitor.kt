@@ -12,6 +12,11 @@ import android.net.NetworkCapabilities
  */
 interface NetworkMonitor {
     val available: Boolean
+
+    /** The path's cost class for the Now Playing prefetch plan (P2-MM-4); default derives from [available]. */
+    val networkClass: com.levi.pocketdj.mix.nowplaying.NetworkClass
+        get() = if (available) com.levi.pocketdj.mix.nowplaying.NetworkClass.UNMETERED
+        else com.levi.pocketdj.mix.nowplaying.NetworkClass.OFFLINE
 }
 
 /** Fixed/test monitor and the state holder behind [ConnectivityNetworkMonitor]. */
@@ -49,6 +54,8 @@ class ConnectivityNetworkMonitor(context: Context) : NetworkMonitor {
 
     private val unknown = cm == null
     override val available: Boolean get() = unknown || tracker.available
+    override val networkClass: com.levi.pocketdj.mix.nowplaying.NetworkClass
+        get() = com.levi.pocketdj.mix.nowplaying.NetworkClass.current(cm)
 
     private val callback = object : ConnectivityManager.NetworkCallback() {
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
