@@ -120,6 +120,10 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     ToggleRow("Remote telemetry", telemetry) {
         telemetry = it; diag.settings.telemetryEnabled = it; diag.log.telemetryEnabled = it
     }
+    var fakeController by remember { mutableStateOf(com.levi.pocketdj.remote.RemoteControllerGate.shared.fakeController) }
+    ToggleRow("Remote: fake controller gate", fakeController) {
+        fakeController = it; com.levi.pocketdj.remote.RemoteControllerGate.shared.fakeController = it
+    }
     SettingsCaption("Telemetry streams every action and screen (with titles) near-live. Owner opt-in; uploads need a key.")
 
     OutlinedTextField(

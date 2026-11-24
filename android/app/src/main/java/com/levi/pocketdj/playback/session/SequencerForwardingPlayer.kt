@@ -350,12 +350,14 @@ class SequencerForwardingPlayer(
     }
 
     override fun seekTo(positionMs: Long) {
+        if (com.levi.pocketdj.remote.RemoteControllerGate.shared.forward(com.levi.pocketdj.remote.RemoteRedirect.Seek(positionMs))) return
         noteSeek()
         val c = if (rekicking) null else runClock.current()
         super.seekTo(if (c != null) toItem(positionMs, c) else positionMs)
     }
 
     override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
+        if (com.levi.pocketdj.remote.RemoteControllerGate.shared.forward(com.levi.pocketdj.remote.RemoteRedirect.Seek(positionMs))) return
         noteSeek()
         val c = if (rekicking) null else runClock.current()
         super.seekTo(mediaItemIndex, if (c != null && mediaItemIndex == currentMediaItemIndex) toItem(positionMs, c) else positionMs)

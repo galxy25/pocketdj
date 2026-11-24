@@ -246,6 +246,13 @@ class PlaybackService : MediaLibraryService() {
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = refreshCustomLayout()
+
+            // P2-REM-3: classify system pauses (noisy / focus loss) for the Remote session's pausedHere.
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) =
+                com.levi.pocketdj.remote.SystemPauseState.onPlayWhenReadyChanged(playWhenReady, reason)
+
+            override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) =
+                com.levi.pocketdj.remote.SystemPauseState.onSuppressionChanged(playbackSuppressionReason)
         })
         RunTransportBus.instantMetadata = { md -> forwarding.showInstantMetadata(md) }
         RunTransportBus.stateChanged = { forwarding.syncGate(); refreshOnMain() }
