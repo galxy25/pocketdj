@@ -560,6 +560,8 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             deviceId = { pocketsDeviceId },
         ).also { svc ->
             svc.collectionsProvider = ::pocketsCollectionsInput
+            // Phase 6: `mode` rides uploads only when the user opted into motion notice (and holds the permission).
+            svc.motionOptedIn = { app.pocketsGraph.motionStore.isActive }
             svc.onDisabled = {
                 app.appScope.launch(Dispatchers.IO) {
                     // Pockets closed: places & trips goes off with it, and its data is erased (opt-out always works).

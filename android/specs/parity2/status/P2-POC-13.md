@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-POC-13 — Listening-pockets upload Phase 6
 - [x] ListeningPocketsUploadResponse.caps parsed
@@ -17,3 +17,9 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR motionOptedIn never wired -> fixed: CollectionsGraph sets `svc.motionOptedIn = { app.pocketsGraph.motionStore.isActive }` (opt-in AND permission), next to the other svc seams. Existing Phase6 tests cover the gate via the seam.
+- NIT serverCaps kept across profile rebind -> rejected (server capability is not per-profile; deliberate deviation, first response corrects caps).
+
+fixes applied
