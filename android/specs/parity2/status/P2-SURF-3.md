@@ -8,7 +8,7 @@ Glance widget 👍/👎 pair + self-contained verdict commands + effective repea
 - [x] 👍/👎 in Medium/Large (ic_widget_thumb_up/down); Medium drops Previous + shrinks glyphs to fit
 - [x] repeat glyph uses effectiveRepeatMode
 - [x] optimistic snapshot update on offline verdict tap (NowPlayingSnapshot.afterVerdictTap)
-- [x] tests: WidgetVerdictTest (9 new); :app:testDebugUnitTest + assembleDebug + assembleRelease green; 7466 tests, 0 failures
+- [x] tests: WidgetVerdictTest (9 new); :app:testDebugUnitTest + assembleDebug + assembleRelease green; 7468 tests, 0 failures
 
 ## Files touched outside owned set
 - data/recs/NowPlayingFeedback.kt: additive `recordFor(songId, scope, verdict, surface)`; `record` delegates to it.
@@ -17,7 +17,8 @@ Glance widget 👍/👎 pair + self-contained verdict commands + effective repea
 
 ## Deviations
 - one-at-a-time.sh refused with --no-quiesce-fin (LM Studio models loaded); ran with default quiesce.
-- Medium omits Previous when thumbs show (iOS keeps five glyphs); width would overflow otherwise.
+- Medium keeps Previous; with thumbs the heart yields and glyphs shrink to 32dp (five glyphs like iOS).
+- Bridge waits up to 10s for the catalog before recording a queued verdict (taste weights).
 
 ## Questions for Levi
 None.

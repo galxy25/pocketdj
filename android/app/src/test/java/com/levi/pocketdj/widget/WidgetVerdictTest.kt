@@ -82,6 +82,19 @@ class WidgetVerdictTest {
         assertFalse(NowPlayingSnapshot(recScope = "zone").showsFeedback) // nothing playing
     }
 
+    @Test fun transportRowsFitTheMinimumSizesAndKeepPreviousStable() {
+        val plain = NowPlayingSnapshot(hasContent = true, songId = "A", favoriteAvailable = true)
+        val rec = plain.copy(recScope = "zone")
+        // Usable width = widget width - 2*10dp root padding; Medium also loses cover (56) + gap (10) at fb.
+        val largeW = WidgetSizes.LARGE_W - 20
+        val mediumW = WidgetSizes.MEDIUM_W - 20 - 56 - 10
+        assertTrue(WidgetModel.largeGlyphs(rec) * WidgetModel.glyphBox(rec) <= largeW)
+        assertTrue(WidgetModel.mediumGlyphs(rec) * WidgetModel.glyphBox(rec) <= mediumW)
+        // Heart yields to the thumbs; Previous (counted in the base 3 / 5) is never dropped.
+        assertFalse(WidgetModel.mediumHeart(rec)); assertFalse(WidgetModel.largeHeart(rec))
+        assertTrue(WidgetModel.mediumHeart(plain)); assertTrue(WidgetModel.largeHeart(plain))
+    }
+
     @Test fun optimisticTapTogglesLikeTheStore() {
         val s = NowPlayingSnapshot(hasContent = true, songId = "A", recScope = "zone")
         val up = s.afterVerdictTap(accept = true)

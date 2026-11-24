@@ -19,6 +19,7 @@ import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -50,6 +51,11 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
             WidgetCommand.Kind.VERDICT_ACCEPT, WidgetCommand.Kind.VERDICT_REJECT -> withContext(Dispatchers.IO) {
                 // The target is the one the command carries (the snapshot the user saw), never what plays now.
                 val np = app.browseGraph.nowPlayingFeedback
+                // Cold-start drain: the catalog may not be loaded yet, and recordFor reads artist/genre from it.
+                // Wait (bounded) so a queued verdict keeps its taste weights; on timeout it still records.
+                kotlinx.coroutines.withTimeoutOrNull(CATALOG_WAIT_MS) {
+                    app.catalogRepository.state.first { it.catalog != null }
+                }
                 WidgetVerdicts.apply(cmd) { songId, scope, verdict ->
                     np.recordFor(songId, scope, verdict, RecFeedbackStore.Surface.WIDGET)
                 }
@@ -132,6 +138,7 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
 
     private companion object {
         const val MIX_ENGINE = "mix"
+        const val CATALOG_WAIT_MS = 10_000L
     }
 }
 
