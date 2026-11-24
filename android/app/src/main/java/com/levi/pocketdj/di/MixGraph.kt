@@ -596,6 +596,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                     else -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.PendingDownload.OTHER
                 }
             }
+            p.requestRip = { id -> requestRipAhead(id) }
             p.requestStemify = { id -> npMain.launch { runCatching { app.ripJobTracker.stemify(id) } } }
             // Posted (NOT Main.immediate): a step that finishes without suspending must never re-plan re-entrantly.
             val replanHandler = android.os.Handler(android.os.Looper.getMainLooper())
@@ -603,7 +604,34 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 replanHandler.post {
                     replanStemLock()
                     app.playbackGraph.npMix.coordinator.onStepFinished(step, ok) // P2-MM-5: the playing row's song landing hands off
+                    app.playbackGraph.npMix.refreshAppleMusicHandOff() // P2-MM-9: an Apple Music row's local copy may have landed
                 }
+            }
+        }
+    }
+
+    /** The Apple Music catalog id of [songId] (null = no Apple Music identity; off-catalog `amrec_` rows are CATALOG_ONLY, not here). */
+    private fun appleMusicIdOf(songId: String): String? =
+        app.catalogRepository.state.value.catalog?.songsById?.get(songId)?.appleMusicId?.takeIf { it.isNotBlank() }
+
+    /**
+     * P2-MM-9 rip-ahead: ask the user's rip server to capture an Apple-Music-only row (fire-and-forget; the plan
+     * already limits it to the next [com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.RIP_AHEAD] rows). Never for
+     * the playing row and never outside the playback rip window; the queued job is tracked in the window so a skip
+     * cancels it ([com.levi.pocketdj.playback.sequencer.SetlistSequencer.notePlaybackRipQueued]).
+     */
+    private fun requestRipAhead(songId: String) {
+        val seq = app.playbackGraph.sequencer
+        val st = seq.state.value
+        val rows = st.queue.map { com.levi.pocketdj.playback.health.PlaybackRipWindow.Row(it.id, it.resolveId) }
+        if (!st.isRunning || !com.levi.pocketdj.playback.health.PlaybackRipWindow.allowsAhead(songId, rows, st.index)) return
+        if (!app.playbackController.ripServerConfigured) return
+        val row = st.queue.firstOrNull { it.id == songId || it.resolveId == songId } ?: return
+        val amId = appleMusicIdOf(row.id) ?: return
+        npMain.launch {
+            runCatching {
+                app.ripServerClient.requestRip(songId, row.title, row.artist.orEmpty(), amId, row.lengthMs?.toInt())
+                seq.notePlaybackRipQueued(songId)
             }
         }
     }
@@ -617,6 +645,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val pf = stemLockPrefetcher
         val seq = app.playbackGraph.sequencer
         val st = seq.state.value
+        app.playbackGraph.npMix.refreshAppleMusicHandOff() // P2-MM-9: the row's backend / local copy may have changed
         val carry = stemLockSession.current
         val mix = app.playbackGraph.npMix
         val buffering = mix.coordinator.buffering
@@ -628,8 +657,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         fun isStudioOrProfile(id: String) = com.levi.pocketdj.data.rips.PlayResolver.isStudioId(id) || com.levi.pocketdj.data.profile.ProfileSourceStore.isProfileSongId(id)
         fun track(q: com.levi.pocketdj.playback.sequencer.QueueItem, isCurrent: Boolean = false): com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track {
             val local = burns.hasLocalFile(q.resolveId) || loader.stream(q.resolveId)?.isComplete == true
-            // The PLAYING row is fetched only when it can hand off: a presigned rip stream (no Apple Music, no live capture).
-            val fetchable = loader.canStream(q.resolveId) && !(isCurrent && app.playbackController.isAppleMusicActive)
+            // The PLAYING row is fetched when it can hand off: a presigned rip stream (no live capture). P2-MM-9: an Apple
+            // Music row that is ripped fetches too - its local copy is what the first control touch hands off to.
+            val fetchable = loader.canStream(q.resolveId)
             return com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track(
                 songId = q.id, audioId = q.resolveId, title = q.title, artist = q.artist.orEmpty(),
                 songLocal = local, songFetchable = fetchable,
@@ -640,6 +670,8 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                     com.levi.pocketdj.data.jukebox.JukeboxAppleMusicMatch.storeIdOf(q.id) != null ->
                         com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track.Source.CATALOG_ONLY
                     loader.canStream(q.resolveId) -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track.Source.RIPPED
+                    // P2-MM-9: an Apple-Music-only row (an AM identity, no rip yet): rip-ahead asks the user's rip server for it.
+                    appleMusicIdOf(q.id) != null -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track.Source.APPLE_MUSIC_ONLY
                     else -> com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track.Source.UNAVAILABLE
                 },
             )
@@ -675,8 +707,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 currentStemsPartial = engaged != null,
                 currentStemsWanted = engaged != null && npDspEngine.stemMode,
                 fxLockSongs = fxWants,
-                // Cloud rips / stem separation are gated on a rip-server install that may use them (MM-9; see the questions file).
-                isRipServerConfigured = false,
+                // P2-MM-9: Android has no catalog-owner identity - rip-ahead / cloud stem requests are gated on "a rip server
+                // is configured" (each user runs their own rip server; Settings > Import server has a URL + token).
+                isRipServerConfigured = app.playbackController.ripServerConfigured,
             ),
         )
         pf.apply(plan)
@@ -738,6 +771,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 app.playbackGraph.npMix.growing.touchReady() && seq.state.value.current?.id == songId
             override suspend fun engageGrowingFromStream(songId: String, play: Boolean): Boolean =
                 seq.state.value.current?.id == songId && app.playbackGraph.npMix.growing.engageFromStream(play)
+            // P2-MM-9: an Apple Music row with a local copy hands off to the DSP on the first control touch.
+            override fun appleMusicHandOffReady(songId: String): Boolean =
+                app.playbackGraph.npMix.appleMusicHandOff.ready() && seq.state.value.current?.id == songId
+            override suspend fun handOffFromAppleMusic(songId: String, play: Boolean): Boolean =
+                seq.state.value.current?.id == songId && app.playbackGraph.npMix.appleMusicHandOff.handOff(play)
         }
         com.levi.pocketdj.mix.nowplaying.NowPlayingDspHost(npDspEngine, stemLockSession, ports, replan = { replanStemLock() }, fxLock = fxLockSession)
     }
@@ -842,6 +880,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         engine.onAudioStarted = {
             ensureMediaService(); player.onAudioStarted(); npFocus.onAudioStarted()
             app.playbackGraph.npMix.growing.onDspAudioStarted() // P2-MM-8: first sound of a growing-file start / touch hand-off
+            app.playbackGraph.npMix.appleMusicHandOff.onDspAudioStarted() // P2-MM-9: closes the Apple Music hand-off's dead-air transition
         }
         val chained = engine.onChanged
         // Final review recheck: onAudioStarted fires once per engagement, so a resume after a user pause (which

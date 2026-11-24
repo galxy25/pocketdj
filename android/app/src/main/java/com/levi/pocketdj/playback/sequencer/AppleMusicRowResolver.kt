@@ -13,6 +13,10 @@ data class AppleMusicSource(val appleMusicId: String, val songId: String) : RowS
  *
  * iOS `ripStartsNow`: when a manifest rip makes the row start instantly, an Apple Music rung defers
  * unless the row is Apple-Music-sourced ([isAppleMusicSourced]).
+ *
+ * P2-MM-9: with Mix Mode buffering ([ResolveContext.preferLocalAudio]) the rip wins whenever its copy is instant
+ * ([ResolveContext.localCopyInstant]); [RowResolverRegistry] puts this rung FIRST ([ResolveContext.appleMusicFirst])
+ * only when the rip would cost a slow presign - an instant Apple Music start is never traded for one.
  */
 class AppleMusicRowResolver(
     private val appleMusicIdFor: (QueueItem) -> String?,
@@ -27,7 +31,9 @@ class AppleMusicRowResolver(
         // (emulator / signed out) this returns null and the row falls to GamePreviewRowResolver (Rung.FALLBACK).
         // Game rows never reach the rip-on-demand rung (CloudRowResolver refuses runTag rows).
         val amId = appleMusicIdFor(item)?.takeIf { it.isNotBlank() } ?: return null
-        if (ctx.ripStartsNow && !isAppleMusicSourced(item)) return null
+        if (ctx.ripStartsNow && !isAppleMusicSourced(item) && !ctx.appleMusicFirst) return null
+        // P2-MM-9 preferLocalAudio: an INSTANT local copy of a ripped row beats Apple Music (which stays the fallback behind it).
+        if (ctx.preferLocalAudio && ctx.ripStartsNow && ctx.localCopyInstant) return null
         if (!canPlayFullTrack()) return null
         return AppleMusicSource(amId, item.id)
     }

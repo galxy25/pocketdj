@@ -885,7 +885,7 @@ class SetlistSequencer(
 
         val mode = modeProvider()
         val source = try {
-            registry.resolve(item, mode)
+            registry.resolve(item, mode, reResolve)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
