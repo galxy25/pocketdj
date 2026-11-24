@@ -102,6 +102,9 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
     /** P2-MM-5: Now Playing Mix Mode (session state, lane driving, swap-on-land hand-off). Installed by [wire]. */
     val npMix: com.levi.pocketdj.playback.npmix.NpMixWiring by lazy { com.levi.pocketdj.playback.npmix.NpMixWiring(app) }
 
+    /** P2-DJ-6: DJ Mode's session shell (controller, suspensions). Installed by [wire] right after Mix Mode. */
+    val djMode: com.levi.pocketdj.playback.dj.DjModeWiring by lazy { com.levi.pocketdj.playback.dj.DjModeWiring(app) }
+
     /** Held restore at launch (and for the system's playback-resumption request). */
     val sessionRestorer: SessionRestorer by lazy {
         SessionRestorer(
@@ -223,7 +226,7 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
             }
         }
         // P2-MM-5: Mix Mode registers on the sequencer BEFORE the held restore below delivers its stored `npMixMode`.
-        app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) { runCatching { npMix.install() } }
+        app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) { runCatching { npMix.install() }; runCatching { djMode.install() } }
         // PB-4: held restore FIRST (before the writer observes: a restore is not a write), then the
         // real-time writer + 1 Hz position tick.
         app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) {

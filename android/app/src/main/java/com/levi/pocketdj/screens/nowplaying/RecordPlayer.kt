@@ -88,6 +88,7 @@ fun RecordPlayer(
                     )
                 }
                 NpMixModeMenuItem(menuApp) { menuOpen = false }
+                NpDjModeMenuItem(menuApp) { menuOpen = false }
             }
         }
         val side = if (maxWidth < maxHeight) maxWidth else maxHeight

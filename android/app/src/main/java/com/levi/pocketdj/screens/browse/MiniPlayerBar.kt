@@ -91,6 +91,7 @@ fun MiniPlayerBar(
         // Long-press menu (np-mix-mode §1.1): the Mix Mode toggle, like the Now Playing record's.
         androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
             com.levi.pocketdj.screens.nowplaying.NpMixModeMenuItem(graph) { menuOpen = false }
+            com.levi.pocketdj.screens.nowplaying.NpDjModeMenuItem(graph) { menuOpen = false }
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
