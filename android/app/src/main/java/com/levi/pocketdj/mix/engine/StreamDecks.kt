@@ -448,7 +448,7 @@ class StreamDecks(
             val wasLive = autoHooks?.isLiveDeck(deck) == true && (engine.deckState(deck).isPlaying || d.holding)
             logError("deck ${deck.label} drop $songId - stream failed before audio")
             engine.reportDeckEnded(deck, MixTrackEndReason.STOPPED)   // a dead stream is not the listener skipping it
-            engine.ejectDeckCore(deck)
+            engine.caused(Gesture.Cause.ENGINE) { engine.ejectDeckCore(deck) }
             engine.persist()
             if (wasLive && autoHooks?.isTransitioning != true) autoHooks?.skipToNext(0.5)
             return

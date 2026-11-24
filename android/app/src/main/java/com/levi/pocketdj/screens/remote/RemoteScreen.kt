@@ -113,7 +113,7 @@ fun RemoteScreen(modifier: Modifier = Modifier) {
             dismissButton = { TextButton({ showRationale = false; ask = null }) { Text("Not now") } },
         )
     }
-    RemoteContent(controller, vm, modifier, guard, canScan = scanOk, onScanPermitted = { scanOk = scanPermitted() })
+    RemoteContent(controller, vm, modifier, guard, canScan = scanOk, onScanPermitted = { scanOk = scanPermitted() }, mixTogether = { MixTogetherSectionHost(graph) })
 }
 
 @Composable
@@ -124,6 +124,8 @@ fun RemoteContent(
     /** False until the scan permissions are held: the Nearby list stays off and offers "Find nearby sessions". */
     canScan: Boolean = true,
     onScanPermitted: () -> Unit = {},
+    /** P2-REM-13: the Mix Together section (needs the app graph; empty in previews / pure tests). */
+    mixTogether: @Composable () -> Unit = {},
 ) {
     val active by controller.isActive.collectAsState()
     val status by controller.statusMessage.collectAsState()
@@ -136,7 +138,7 @@ fun RemoteContent(
                 Text(it, Modifier.padding(12.dp).testTag("remote-status"), style = MaterialTheme.typography.bodyMedium)
             }
         }
-        if (active) ActiveSession(controller, vm) else StartSection(vm, guard, canScan, onScanPermitted)
+        if (active) ActiveSession(controller, vm, mixTogether) else StartSection(vm, guard, canScan, onScanPermitted)
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -223,13 +225,14 @@ private fun JoinSection(vm: RemoteViewModel, enabled: Boolean, guard: (Boolean, 
 // ---- Active session ----
 
 @Composable
-private fun ActiveSession(controller: RemoteSessionController, vm: RemoteViewModel) {
+private fun ActiveSession(controller: RemoteSessionController, vm: RemoteViewModel, mixTogether: @Composable () -> Unit = {}) {
     val pausedHere by controller.pausedHere.collectAsState()
     val invite by RemoteStarters.current.invite.collectAsState()
     if (pausedHere) PausedHereCard(vm)
     if (controller.isHost) JoinApprovals()
     if (controller.isHost && invite != null) InviteCard(invite!!, (RemoteStarters.current as? NearbyRemoteStarter)?.authDigits)
     SessionSection(controller, vm)
+    mixTogether()
     ParticipantsSection(controller)
     NowPlayingSection(controller, vm)
     UpNextSection(controller, vm)

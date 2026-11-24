@@ -40,4 +40,10 @@ object ParityFlags {
      * Connections transport); the hub (P2-REM-8) hides the Hero | Remote switch while it is off.
      */
     val REMOTE: Boolean get() = true
+
+    /**
+     * P2-REM-13: Mix Together over a Remote session (two devices mix the same two decks in sync). Added AND flipped by
+     * P2-REM-13: the hello advertises `caps:["mix"]` and the Remote "Mix Together" section + Mix banner show only while true.
+     */
+    val MIX_TOGETHER: Boolean get() = true
 }

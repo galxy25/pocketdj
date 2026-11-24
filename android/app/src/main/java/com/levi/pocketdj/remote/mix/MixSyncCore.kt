@@ -701,6 +701,11 @@ class MixSyncCore(
         post(MixWireKind.REQUEST, MixSyncRequest.serializer(), MixSyncRequest(reason), RemoteRecipient.Participant(host))
     }
 
+    /** The local owner's own heartbeat anchor folded into the mirror (iOS mutates `model.decks[d].anchor` on send), so snapshots stay fresh. */
+    fun noteLocalAnchor(deck: Deck, anchor: MixSyncAnchor) {
+        model = model.copy(decks = model.decks + (deck to model.deck(deck).copy(anchor = anchor)))
+    }
+
     /** Broadcast this device's deck readiness (`mix.ready`). */
     fun sendReady(r: MixSyncReady) = post(MixWireKind.READY, MixSyncReady.serializer(), r, RemoteRecipient.All)
 
