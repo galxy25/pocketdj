@@ -94,6 +94,12 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
             },
             seams = deepLinkSeams,
             displayName = DeepLinkDispatcher.contentDisplayName(app.appContext.contentResolver),
+            wantsRemoteShowcase = { intent ->
+                com.levi.pocketdj.remote.RemoteShowcaseSeed.wanted(
+                    intent.getStringExtra(com.levi.pocketdj.remote.RemoteShowcaseSeed.EXTRA),
+                    (app.appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+                )
+            },
         )
     }
 

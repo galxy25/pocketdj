@@ -58,6 +58,8 @@ class DeepLinkDispatcher(
     private val postMessage: (String) -> Unit = NavRequestBus::postMessage,
     private val displayName: (Intent) -> String? = { null },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /** DEBUG-only: true for a launch intent carrying `pdj.seedRemote=showcase` (store screenshots). */
+    private val wantsRemoteShowcase: (Intent) -> Boolean = { false },
 ) {
     private val _pendingMwf = MutableStateFlow<DeepLink.Mwf?>(null)
 
@@ -77,6 +79,11 @@ class DeepLinkDispatcher(
     val intentHandler = DeepLinkHandler { intent -> handle(intent) }
 
     fun handle(intent: Intent): Boolean {
+        if (wantsRemoteShowcase(intent)) {
+            RemotePanelRequests.request(showcase = true)
+            postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
+            if (intent.action != Intent.ACTION_VIEW) return true
+        }
         if (intent.action != Intent.ACTION_VIEW) return false
         val data = intent.data?.toString() ?: return false
         if (intent.data?.scheme == "content") {
@@ -118,6 +125,10 @@ class DeepLinkDispatcher(
                     postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
                     postMessage("Joining jukeboxes is coming soon")
                 }
+            }
+            is DeepLink.Remote -> {
+                RemotePanelRequests.request(joinCode = link.code)
+                postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
             }
             is DeepLink.Mwf -> {
                 val consumer = seams.mwf

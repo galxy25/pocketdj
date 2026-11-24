@@ -18,6 +18,9 @@ sealed interface DeepLink {
     /** `pocketdj://play/<kind>/<id>[?shuffle=1]` — start playback of a collection item. */
     data class Play(val kind: PlayKind, val id: String, val shuffle: Boolean) : DeepLink
 
+    /** `pocketdj://remote` / `pocketdj://remote/join/<code>` — the Jukebox panel's Remote half, optionally joining [code]. */
+    data class Remote(val code: String?) : DeepLink
+
     /** `pocketdj://pocket/now` — play the Pocket Wheel's best match for right now (P2-POC-16). */
     data object PocketNow : DeepLink
 
@@ -78,6 +81,9 @@ object DeepLinkParser {
 
     /** The server's session-id shape (`genId`, jukebox-server.mjs): base32, 4–32 chars. */
     private val ID_RE = Regex("^[a-z2-7]{4,32}$")
+
+    /** A Remote join code: the short invite code or the long token (mirrors `RemoteJoinCode`). */
+    private val REMOTE_CODE_RE = Regex("^[A-Za-z0-9_-]{4,64}$")
 
     fun isValidId(s: String): Boolean = ID_RE.matches(s)
 
@@ -144,6 +150,15 @@ object DeepLinkParser {
                     else -> return unresolved
                 }
                 DeepLink.AutoMix(source, truthy(query["shuffle"]))
+            }
+            "remote" -> when {
+                arg == null -> DeepLink.Remote(null)
+                arg.equals("join", ignoreCase = true) -> {
+                    val code = parts.getOrNull(2)
+                    if (code == null) DeepLink.Remote(null)
+                    else if (REMOTE_CODE_RE.matches(code)) DeepLink.Remote(code) else DeepLink.None
+                }
+                else -> DeepLink.None
             }
             "games" -> when {
                 arg.isNullOrBlank() -> DeepLink.Navigate(ShellRoute.Tab(PocketDjDestination.Games))
