@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 - [x] CollectionsStore.onPlaybackReplaced + addAcceptedSong
 - [x] NowPlayingFeedback (shared rec target)
