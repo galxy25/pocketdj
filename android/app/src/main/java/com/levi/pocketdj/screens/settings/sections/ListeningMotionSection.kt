@@ -139,10 +139,15 @@ internal fun listeningMotionSection() = SettingsSection(ListeningMotionCopy.ID, 
     // Returning from system Settings may have granted it: register now.
     val owner = LocalLifecycleOwner.current
     DisposableEffect(owner) {
+        var hadPermission = ActivityTransitionSource.hasPermission(ctx)
         val obs = LifecycleEventObserver { _, e ->
             if (e == Lifecycle.Event.ON_RESUME) {
-                if (store.isEnabled && ActivityTransitionSource.hasPermission(ctx)) {
-                    host.scope.launch(Dispatchers.IO) { store.setEnabled(true); withContext(Dispatchers.Main) { refreshState() } }
+                val has = ActivityTransitionSource.hasPermission(ctx)
+                val newlyGranted = has && !hadPermission
+                hadPermission = has
+                // Register only when the permission has just flipped to granted (a re-register re-delivers a fresh ENTER).
+                if (store.isEnabled && newlyGranted) {
+                    host.scope.launch(Dispatchers.IO) { store.ensureRegistered(); withContext(Dispatchers.Main) { refreshState() } }
                 } else refreshState()
             }
         }

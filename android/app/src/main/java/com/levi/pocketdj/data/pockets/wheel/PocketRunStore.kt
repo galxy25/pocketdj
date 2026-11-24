@@ -193,11 +193,12 @@ class PocketRunStore(
     /** "Adapt pocket runs to walking & running" (Settings; default off). */
     var adaptToActivity: () -> Boolean = { false }
     /** Begin live activity updates (the callback may be invoked from any thread; it is marshalled onto the store thread). */
-    var startActivityUpdates: ((onSample: (com.levi.pocketdj.data.motion.MotionSegment) -> Unit) -> Unit)? = null
+    var startActivityUpdates: ((onSample: (com.levi.pocketdj.data.motion.MotionSegment) -> Unit, onExit: (String) -> Unit) -> Unit)? = null
     var stopActivityUpdates: () -> Unit = {}
     /** The best pocket for NOW in a given mode (the wheel's best match with the mode forced). */
     var profileForMode: suspend (PocketMode) -> PocketProfile? = { null }
     private var activity = ActivityTracker()
+    private var activityFeedOn = false
     private var retargetJob: Job? = null
     private var retargetBackoffUntilMs = 0.0
 
@@ -381,8 +382,24 @@ class PocketRunStore(
         if (a.viaMix || !adaptToActivity()) return
         activity = ActivityTracker()
         val runId = a.runId
-        start { seg -> scope.launch { if (_active.value?.runId == runId) noteActivity(seg) } }
+        activityFeedOn = true
+        start(
+            { seg -> scope.launch { if (_active.value?.runId == runId) noteActivity(seg) } },
+            { act -> scope.launch { if (_active.value?.runId == runId) activity.ended(act) } },
+        )
     }
+
+    /** Ticker: follow the adapt toggle mid-run (start the feed when turned on, stop it when turned off). */
+    private fun syncActivityFeed() {
+        val a = _active.value ?: return
+        if (a.finished || a.viaMix || startActivityUpdates == null) return
+        val want = adaptToActivity()
+        if (want && !activityFeedOn) beginActivityUpdates(a)
+        else if (!want && activityFeedOn) { stopActivityUpdates(); activityFeedOn = false }
+    }
+
+    /** An EXIT for [act] (test seam + the feed's callback body). */
+    fun noteActivityEnded(act: String) { activity.ended(act) }
 
     /**
      * A live motion sample. A SUSTAINED change (>= 180 s) into a body mode the run isn't for re-targets the run's
@@ -435,6 +452,7 @@ class PocketRunStore(
             try {
                 while (isActive && isRunning) {
                     evaluate()
+                    syncActivityFeed()
                     checkSustainedActivity()
                     delay(TICK_MS)
                 }
@@ -752,6 +770,7 @@ class PocketRunStore(
 
     private fun endRun(finished: Boolean) {
         val a = _active.value ?: return
+        activityFeedOn = false
         stopActivityUpdates()
         retargetJob?.cancel(); retargetJob = null
         tickerJob?.cancel(); tickerJob = null
@@ -788,7 +807,7 @@ class PocketRunStore(
 
     /** Delete-history / account-deletion wipe (registered with `PocketsGraph.registerWheelClear`). */
     fun clearLocal() {
-        if (_active.value != null) stopActivityUpdates()
+        if (_active.value != null) { activityFeedOn = false; stopActivityUpdates() }
         retargetJob?.cancel(); retargetJob = null
         tickerJob?.cancel(); tickerJob = null
         replanJob?.cancel(); replanJob = null

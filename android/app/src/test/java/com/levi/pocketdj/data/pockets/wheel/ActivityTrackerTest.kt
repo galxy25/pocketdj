@@ -98,4 +98,25 @@ class ActivityTrackerTest {
         assertTrue(ListeningMotionCopy.DISCLOSURE.contains("closed or not in use"))
         assertTrue(ListeningMotionCopy.DISCLOSURE.contains("activity recognition"))
     }
+
+    @Test fun endedClearsOnlyTheMatchingActivity() {
+        val t = ActivityTracker()
+        t.note(seg(MotionToken.WALKING, 0))
+        t.ended(MotionToken.RUNNING)
+        assertEquals(MotionToken.WALKING, t.activity)
+        t.ended(MotionToken.WALKING)
+        assertNull(t.activity)
+        assertNull(t.sustainedMode(1_000_000))
+    }
+
+    @Test fun timelineExitFeedsOnExitOnlyWhenItClosedASegment() {
+        val tl = MotionTimelineStore(tmp.newFile("tl2.json"), now = { 1_000_000L })
+        val exits = mutableListOf<String>()
+        tl.onExit = { exits += it }
+        tl.onTransition(MotionToken.WALKING, true, 1_000)
+        tl.onTransition(MotionToken.RUNNING, false, 2_000)   // not the open one
+        assertTrue(exits.isEmpty())
+        tl.onTransition(MotionToken.WALKING, false, 3_000)
+        assertEquals(listOf(MotionToken.WALKING), exits)
+    }
 }

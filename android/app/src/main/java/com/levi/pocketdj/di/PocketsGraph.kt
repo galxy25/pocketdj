@@ -105,14 +105,15 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
             st.adaptToActivity = {
                 motionStore.isActive && com.levi.pocketdj.screens.settings.sections.MotionPrefs.adaptToActivity(app.appContext)
             }
-            st.startActivityUpdates = { onSample ->
+            st.startActivityUpdates = { onSample, onExit ->
                 motionTimeline.onEnter = onSample
+                motionTimeline.onExit = onExit
                 // Seed with the activity already under way, its clock starting at run start (never an instant re-target on play).
                 val n = System.currentTimeMillis()
                 runCatching { motionTimeline.segments(n - 2 * 3_600_000L, n + 1).filter { it.endMs >= n - 1_000 }.maxByOrNull { it.endMs } }
                     .getOrNull()?.let { onSample(it.copy(startMs = maxOf(it.startMs, n))) }
             }
-            st.stopActivityUpdates = { motionTimeline.onEnter = null }
+            st.stopActivityUpdates = { motionTimeline.onEnter = null; motionTimeline.onExit = null }
             st.profileForMode = { mode -> wheelController.profileForMode(mode) }
             st.mixOwnsRun = { label -> app.mixGraph.mixFacade.let { it.autoMixing && it.autoMixLabel == label } }
             sequencer.pocketRunTagFor = { plan -> st.tag(plan) }

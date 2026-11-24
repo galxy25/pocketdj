@@ -22,6 +22,11 @@ class ActivityTracker {
         }
     }
 
+    /** The activity ended (an EXIT): forget it unless a different one has since begun. */
+    fun ended(activity: String) {
+        if (this.activity == activity) { this.activity = null; sinceMs = null }
+    }
+
     /** The run mode a sustained activity implies (running / walking / trip), or null. */
     fun sustainedMode(nowMs: Long): PocketMode? {
         val a = activity ?: return null

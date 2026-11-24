@@ -704,4 +704,72 @@ class PocketRunStoreTest {
         assertEquals("held: no per-tick work", 0, h.player.replaceCalls)
         assertNotNull(re.active.value)
     }
+
+    // ---- P2-POC-12 adapt-to-activity wiring ---------------------------------------------------
+
+    private class Feed {
+        var onSample: ((com.levi.pocketdj.data.motion.MotionSegment) -> Unit)? = null
+        var onExit: ((String) -> Unit)? = null
+        var starts = 0
+        var stops = 0
+    }
+
+    private fun H.wireAdapt(adapt: BooleanArray): Feed {
+        val f = Feed()
+        store.adaptToActivity = { adapt[0] }
+        store.startActivityUpdates = { s, e -> f.starts++; f.onSample = s; f.onExit = e }
+        store.stopActivityUpdates = { f.stops++ }
+        store.profileForMode = { m -> profile.copy(mode = m) }
+        return f
+    }
+
+    private fun walking(at: Double) = com.levi.pocketdj.data.motion.MotionSegment(at.toLong(), at.toLong(), MotionToken.WALKING, 1)
+
+    @Test fun sustainedWalkingRetargetsTheRunOnce() = runTest {
+        val h = harness()
+        val f = h.wireAdapt(booleanArrayOf(true))
+        assertTrue(h.store.start(profile, seed = 42uL))
+        assertEquals(1, f.starts)
+        h.store.noteActivity(walking(h.clock[0]))
+        runCurrent()
+        assertNull(h.store.active.value!!.retargetedMode)
+        h.clock[0] += 180_000
+        h.store.noteActivity(walking(h.clock[0]))
+        runCurrent()
+        assertEquals(PocketMode.WALKING, h.store.active.value!!.retargetedMode)
+    }
+
+    @Test fun exitWithoutNewEnterStopsTheSustainClock() = runTest {
+        val h = harness()
+        val f = h.wireAdapt(booleanArrayOf(true))
+        assertTrue(h.store.start(profile, seed = 42uL))
+        h.store.noteActivity(walking(h.clock[0]))
+        f.onExit!!.invoke(MotionToken.WALKING)
+        runCurrent()
+        h.clock[0] += 200_000
+        // any later (low-confidence, ignored) sample triggers the check; nothing is being walked, so no retarget
+        h.store.noteActivity(com.levi.pocketdj.data.motion.MotionSegment(0, 0, MotionToken.WALKING, 0))
+        runCurrent()
+        assertNull(h.store.active.value!!.retargetedMode)
+    }
+
+    @Test fun togglingAdaptOnMidRunStartsTheFeed() = runTest {
+        val h = harness(tick = true)
+        val adapt = booleanArrayOf(false)
+        val f = h.wireAdapt(adapt)
+        assertTrue(h.store.start(profile, seed = 42uL))
+        runCurrent()
+        assertEquals(0, f.starts)
+        adapt[0] = true
+        advanceTimeBy(PocketRunStore.TICK_MS + 1)
+        runCurrent()
+        assertEquals(1, f.starts)
+        adapt[0] = false
+        advanceTimeBy(PocketRunStore.TICK_MS + 1)
+        runCurrent()
+        assertEquals(1, f.stops)
+        h.store.stop()
+        advanceTimeBy(5_000); runCurrent()
+        assertNull(h.store.active.value)
+    }
 }
