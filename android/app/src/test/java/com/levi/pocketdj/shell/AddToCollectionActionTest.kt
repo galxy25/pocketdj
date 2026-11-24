@@ -247,6 +247,37 @@ class AddToCollectionActionTest {
     }
 
     @Test
+    fun autoMixLinkSeam_whileMixingTogether_postsTheReason_andNeverStarts() = runTest {
+        val s = store()
+        val p = s.createPocket("Warmup", listOf("s1"))
+        val a = actions(s, audible = "s1")
+        var started = 0
+        a.mixFacade = object : MixFacade {
+            override val autoMixing = false
+            override val autoPaused = false
+            override suspend fun startAutoMix(source: MixSource, shuffle: Boolean, allowPendingStart: Boolean): MixStartResult { started++; return MixStartResult("x", 1) }
+            override suspend fun startAutoMix(deckA: MixSource, deckB: MixSource, shuffle: Boolean, allowPendingStart: Boolean): MixStartResult { started++; return MixStartResult("x", 1) }
+            override fun pauseAutoMix() {}
+            override fun resumeAutoMix() {}
+        }
+        com.levi.pocketdj.remote.MixTogetherBlock.set(com.levi.pocketdj.remote.MixTogetherBlock.REASON)
+        try {
+            val toasts = mutableListOf<String>()
+            val jobs = mutableListOf<kotlinx.coroutines.Job>()
+            autoMixLinkSeam(a, this, { toasts += it }, { jobs += it })(MixSource.Pocket(p.id), false)
+            jobs.forEach { it.join() }
+            assertEquals(listOf("Auto DJ is off while you mix together."), toasts)
+            assertEquals(0, started)
+            // The Assistant / Auto tab catch ShellActionException and speak its message: it carries the reason.
+            val e = try { a.startAutoMix(MixSource.Pocket(p.id), false); null } catch (e: ShellActionException) { e }
+            assertTrue(e is ShellActionException.MixTogetherActive)
+            assertEquals("Auto DJ is off while you mix together.", e!!.message)
+        } finally {
+            com.levi.pocketdj.remote.MixTogetherBlock.set(null)
+        }
+    }
+
+    @Test
     fun autoMixLinkSeam_startsTheMix_andReportsBurnedCount() = runTest {
         val s = store()
         val p = s.createPocket("Warmup", listOf("s1"))

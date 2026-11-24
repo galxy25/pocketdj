@@ -152,11 +152,15 @@ fun MixScreen(
             // The shell top bar already titles this tab "Mix" (a second "Mix" here duplicated it).
             Spacer(Modifier.weight(1f))
             FilterChip(
-                selected = st.autoEnabled, onClick = { vm.setAutoEnabled(!st.autoEnabled) },
+                selected = st.autoEnabled, enabled = st.autoBlockedReason == null || st.autoEnabled,
+                onClick = { vm.setAutoEnabled(!st.autoEnabled) },
                 label = { Text(if (st.autoEnabled) "Auto" else "Manual") },
                 modifier = Modifier.testTag("mix-auto-toggle").semantics { contentDescription = "Auto mode" },
             )
             recordAction()
+        }
+        st.autoBlockedReason?.let {
+            Text(it, color = DeckColors.fg, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("mix-auto-blocked"))
         }
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
             Column(

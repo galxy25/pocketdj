@@ -374,6 +374,21 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     }
     val mixEngine: MixEngine get() = engineLazy.value
 
+    /**
+     * A Remote CONTROLLER plays nothing here (P2-REM-6): stop whatever the Mix decks and the Now Playing DSP host are
+     * sounding. Idempotent and cheap when already silent (re-run every session tick); never builds an unbuilt engine.
+     */
+    fun silenceForRemoteController() {
+        if (engineLazy.isInitialized()) {
+            val e = engineLazy.value
+            for (d in com.levi.pocketdj.mix.model.Deck.entries) if (e.isPlaying(d)) e.silence(d)
+        }
+        if (npHostLazy.isInitialized()) {
+            val dsp = npHostLazy.value.engine
+            if (dsp.isPlaying) dsp.pause()
+        }
+    }
+
     /** SURF-5 "this song": whether the Mix owns a running deck / auto mix, and the live deck's song. Never builds the engine. */
     class MixLiveSong(val active: Boolean, val songId: String?, val title: String?)
 

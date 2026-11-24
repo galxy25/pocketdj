@@ -202,6 +202,8 @@ data class MixScreenState(
     val autoStartError: String? = null,
     /** Auto/Manual toggle (top bar). */
     val autoEnabled: Boolean = false,
+    /** Mix Together owns the decks: Auto is unavailable; the top bar disables the toggle and shows this. */
+    val autoBlockedReason: String? = null,
     /** Which deck's track-loader sheet is open. */
     val loaderDeck: Deck? = null,
 ) {
@@ -240,6 +242,9 @@ class MixViewModel(
         scope.launch { settingsFlow.collect { _settings.value = it } }
         // The engine owns Auto/Manual (restore + non-screen starts flip it); mirror it live.
         scope.launch { engine.autoUi.map { it.enabled }.distinctUntilChanged().collect { adoptEngineEnabled(it) } }
+        scope.launch {
+            engine.autoUi.map { it.blockedReason }.distinctUntilChanged().collect { why -> _state.update { it.copy(autoBlockedReason = why) } }
+        }
     }
 
     // ---- first composition / settings pushes -------------------------------------------------
@@ -288,6 +293,12 @@ class MixViewModel(
     }
 
     fun setAutoEnabled(on: Boolean) {
+        // Mix Together owns the decks: refuse (the engine would too) and say why instead of letting the toggle snap back.
+        val blocked = engine.autoUi.value.blockedReason
+        if (on && blocked != null) {
+            _state.update { it.copy(autoEnabled = false, autoBlockedReason = blocked, autoStartError = blocked) }
+            return
+        }
         engine.autoEnabled = on
         _state.update { it.copy(autoEnabled = on) }
         syncDeckSourcesToAuto()

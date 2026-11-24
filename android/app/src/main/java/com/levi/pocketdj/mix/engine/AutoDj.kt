@@ -30,6 +30,8 @@ data class AutoUiState(
     val sourceLabel: String? = null,
     /** Auto/Manual toggle (engine is the source of truth; the Mix screen mirrors it). */
     val enabled: Boolean = false,
+    /** Why Auto-DJ is unavailable (Mix Together owns the decks), else null: the Auto toggle disables and says why. */
+    val blockedReason: String? = null,
 )
 
 /**
@@ -103,7 +105,7 @@ class AutoDj(
     /** Lock-screen next/previous enablement (MIX-11 wires this to the media session). */
     var onSkipCommandsEnabled: ((Boolean) -> Unit)? = null
 
-    private val _ui = MutableStateFlow(AutoUiState())
+    private val _ui = MutableStateFlow(AutoUiState(blockedReason = com.levi.pocketdj.remote.MixTogetherBlock.reason))
     val ui: StateFlow<AutoUiState> = _ui.asStateFlow()
     val autoStatus: String? get() = _ui.value.status
 
@@ -124,7 +126,28 @@ class AutoDj(
 
     // ------------------------------------------------------------------------------ toggles
 
+    /**
+     * Why Auto-DJ is unavailable right now (a multiplayer Mix session owns the decks, iOS `autoDJBlockedReason`), else
+     * null. While set: Auto mode, a new auto mix and a resume are refused.
+     */
+    val blockedReason: String? get() = com.levi.pocketdj.remote.MixTogetherBlock.reason
+
+    /**
+     * [MixTogetherBlock] changed. Blocked: Auto mode goes off and a running auto mix ends (`endAutoLoop` only stops the
+     * transition machine and recentres the crossfader; the decks keep playing, they are the session's now). Either way
+     * the UI state is refreshed so the Auto toggle enables / disables with its reason. Auto is NOT restored afterwards
+     * (iOS does; left to P2-REM-11, see the status file).
+     */
+    fun onAutoBlocked() {
+        if (blockedReason != null) {
+            enabled = false
+            if (mixing) endAutoLoop()
+        }
+        refreshStatus()
+    }
+
     fun setAutoEnabled(on: Boolean) {
+        if (on && blockedReason != null) return // mixing together: no Auto-DJ (an explicit OFF still goes through)
         enabled = on
         if (!on) endAutoLoop()
         refreshStatus()
@@ -154,7 +177,7 @@ class AutoDj(
     // ------------------------------------------------------------------------------ start / stop
 
     fun startAutoMix(items: List<AutoMixItem>, shuffled: Boolean, lead: Double, fade: Double, label: String? = null) {
-        if (items.isEmpty()) return
+        if (items.isEmpty() || blockedReason != null) return
         engine.noteSounded()
         engine.ensureEngine()
         endAutoLoop()
@@ -375,7 +398,7 @@ class AutoDj(
      *  - NEITHER: restart the live deck (its track, or the next unplayed) before arming.
      */
     override fun resumeAuto() {
-        if (!mixing || !paused) return
+        if (!mixing || !paused || blockedReason != null) return
         engine.noteSounded()
         var fromRestore = resumeFromRestore
         resumeFromRestore = false    // consume-once: only the FIRST resume after a restore
@@ -1129,7 +1152,7 @@ class AutoDj(
         } else null
         val next = AutoUiState(
             mixing, paused, transitioning, s, livePos, queue.size, liveDeck, repeat,
-            glide.fxGlideEnabled, glide.mixGlideEnabled, sourceLabel, enabled,
+            glide.fxGlideEnabled, glide.mixGlideEnabled, sourceLabel, enabled, blockedReason,
         )
         if (next != _ui.value) _ui.value = next
     }
