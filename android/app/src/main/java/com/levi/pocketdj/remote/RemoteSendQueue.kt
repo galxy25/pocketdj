@@ -9,6 +9,7 @@ import kotlinx.coroutines.CancellationException
 
 /**
  * The outbound side of a real transport: TWO independent lanes, each delivering strictly in send order
+ * Threading: the scope MUST be single-threaded (Main or limitedParallelism(1)); state is confined to it, not locked.
  * (ONE worker coroutine per lane, never a coroutine per message: that let a later state overtake an earlier one on iOS).
  *  - RELIABLE (state / commands / hellos): retried with backoff on failure while the lane waits. Bounded
  *    ([RELIABLE_CAP]; coalescible kinds are shed first, else the oldest) and COALESCED: an undelivered
