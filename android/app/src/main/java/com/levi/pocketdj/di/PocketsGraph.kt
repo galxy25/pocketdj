@@ -61,7 +61,7 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
             historyEvents = { history.events },
         ).also { c ->
             // Limitation: UI_MODE_TYPE_CAR only; a phone projecting to Android Auto is not detected (needs androidx.car.app CarConnection).
-            // motionNow is intentionally unwired here: pending P2-POC-11/12 (motion timeline).
+            c.motionNow = { kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { motionStore.currentActivity() } }
             c.carConnected = { app.collectionsGraph.carConnected() == true }
             c.contextGuess = { runCatching { app.collectionsGraph.listeningContextProvider.currentContextGuess() }.getOrNull() }
             c.cloudResults = {
@@ -121,7 +121,34 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
             )
         }
 
-    private val clearers = CopyOnWriteArrayList<() -> Unit>()
+    /** P2-POC-11: device-local 7-day motion timeline (never synced). */
+    val motionTimeline: com.levi.pocketdj.data.motion.MotionTimelineStore by lazy {
+        com.levi.pocketdj.data.motion.MotionTimelineStore(File(app.appContext.filesDir, com.levi.pocketdj.data.motion.MotionTimelineStore.FILE_NAME))
+    }
+
+    /** P2-POC-11: the per-device motion opt-in + settle pass. Default OFF; inert without ACTIVITY_RECOGNITION. */
+    val motionStore: com.levi.pocketdj.data.motion.ListeningMotionStore by lazy {
+        com.levi.pocketdj.data.motion.ListeningMotionStore(
+            file = File(app.appContext.filesDir, com.levi.pocketdj.data.motion.ListeningMotionStore.FILE_NAME),
+            timeline = motionTimeline,
+            hasPermission = { com.levi.pocketdj.data.motion.ActivityTransitionSource.hasPermission(app.appContext) },
+            source = com.levi.pocketdj.data.motion.ActivityTransitionSource(app.appContext),
+        )
+    }
+
+    /** One motion settle pass over this install's plays (off-main). */
+    fun settleMotion() {
+        app.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                if (!motionStore.isActive) return@runCatching
+                val history = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext)
+                val songs = app.catalogRepository.state.value.catalog?.songsById ?: return@runCatching
+                motionStore.settle(history) { id -> songs[id]?.length?.toInt() }
+            }
+        }
+    }
+
+    private val clearers = CopyOnWriteArrayList<() -> Unit>().apply { add { motionStore.clearLocal() } }
 
     /** Extra device-local wheel state (pocket run store, motion timeline + opt-in) that [wheelClearLocal] must wipe. */
     fun registerWheelClear(clear: () -> Unit) { clearers += clear }
@@ -140,6 +167,9 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
 
     /** First foreground: follow history revisions (one rebuild per launch, then debounced). Idempotent. */
     fun start() {
+        com.levi.pocketdj.shell.AppLifecycleObserver.motionSettle = { settleMotion() }
+        runCatching { motionStore.ensureRegistered() } // registrations don't survive reboot/update
+        settleMotion()
         resumeRun()
         val history = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext)
         wheelCache.attach(

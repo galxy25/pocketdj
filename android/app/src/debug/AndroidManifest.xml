@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application android:networkSecurityConfig="@xml/network_security_config" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application android:networkSecurityConfig="@xml/network_security_config">
+        <!-- P2-POC-11: adb can inject fake transitions (pdj.motionFake=WALKING); release keeps this receiver unexported. -->
+        <receiver
+            android:name=".data.motion.MotionTransitionReceiver"
+            android:exported="true"
+            tools:node="merge" />
+    </application>
 </manifest>
