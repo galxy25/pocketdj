@@ -73,7 +73,7 @@ fun NowPlayingRecord(
 ) {
     Surface(
         color = Color.Transparent,
-        modifier = modifier.combinedClickable(onClick = {}, onLongClick = onLongPress),
+        modifier = modifier,
     ) {
         val ctx = androidx.compose.ui.platform.LocalContext.current
         val album = androidx.compose.runtime.remember(state.albumId) {
@@ -82,6 +82,7 @@ fun NowPlayingRecord(
         RecordPlayer(
             spinning = state.spinning, bpm = state.bpm, progress = progress,
             album = album, hasTrack = state.hasTrack,
+            onDetails = onLongPress.takeIf { state.hasTrack }, showMixModeMenu = true,
         )
     }
 }

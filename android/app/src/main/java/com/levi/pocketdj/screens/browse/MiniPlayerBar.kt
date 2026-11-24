@@ -1,6 +1,9 @@
 package com.levi.pocketdj.screens.browse
 
-import androidx.compose.foundation.clickable
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,6 +49,7 @@ import kotlinx.coroutines.launch
  * Deliberately position-free: no scrubber, no hot position flow
  * (specs/playback.md §5.5) — [onTap] can open a fuller now-playing surface later.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MiniPlayerBar(
     modifier: Modifier = Modifier,
@@ -57,6 +62,7 @@ fun MiniPlayerBar(
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     val scope = rememberCoroutineScope()
+    var menuOpen by remember { androidx.compose.runtime.mutableStateOf(false) }
     val vm = remember { NowPlayingViewModel(graph, scope) }
 
     val nowPlaying by graph.playbackController.nowPlaying.collectAsState()
@@ -82,10 +88,17 @@ fun MiniPlayerBar(
         tonalElevation = 3.dp,
         modifier = modifier.fillMaxWidth(),
     ) {
+        // Long-press menu (np-mix-mode §1.1): the Mix Mode toggle, like the Now Playing record's.
+        androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            com.levi.pocketdj.screens.nowplaying.NpMixModeMenuItem(graph) { menuOpen = false }
+        }
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .let { base -> if (tap != null) base.clickable(onClick = tap) else base }
+                .combinedClickable(onClick = { tap?.invoke() }, onLongClick = { menuOpen = true })
+                .semantics {
+                    customActions = listOf(androidx.compose.ui.semantics.CustomAccessibilityAction("Mix Mode") { menuOpen = true; true })
+                }
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {
             when {

@@ -2,6 +2,10 @@ package com.levi.pocketdj.screens.nowplaying
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -56,8 +60,9 @@ object DspPanelText {
 /**
  * F4 - the collapsible Mix mini-panel docked on the Now Playing deck (installed into
  * [NowPlayingSeams.dspSlot]). Tempo / pitch / gain / effects / stems for the CURRENTLY PLAYING local track.
- * Hidden - never greyed - for a non-local row or while a Mix session runs; a lock-only status row remains so a
- * locked session can say why a track plays the full mix. Every control first calls [NowPlayingDspHost.engage]
+ * The HEADER (chevron, "Mix", status chip, Mix Mode switch) shows whenever a session runs; the controls show when
+ * the row is mixable - or, with Mix Mode on, DISABLED while its local copy buffers - and a non-mixable row keeps
+ * the "hide, don't grey" rule. Every control first calls [NowPlayingDspHost.engage]
  * (idempotent: the first touch swaps ExoPlayer -> DSP at the current position).
  */
 @Composable
@@ -67,22 +72,51 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     fun touch(block: (com.levi.pocketdj.mix.nowplaying.NowPlayingDspEngine) -> Unit) { scope.launch { host.withEngaged(block) } }
 
-    if (!ui.available) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val app = remember { com.levi.pocketdj.di.AppGraph.get(ctx) }
+    val coordinator = app.playbackGraph.npMix.coordinator
+    val mixState by coordinator.state.collectAsState()
+    val seq by app.playbackGraph.sequencer.state.collectAsState()
+    val mixTabLive by NowPlayingSeams.mixSessionActiveFlow.collectAsState()
+    val modeToken by remember { app.settings.flow(com.levi.pocketdj.playback.PlaybackPrefKeys.PLAYBACK_MODE) }
+        .collectAsState(initial = com.levi.pocketdj.playback.PlaybackMode.CLOUD.token)
+    val deviceMode = com.levi.pocketdj.playback.PlaybackMode.fromToken(modeToken) == com.levi.pocketdj.playback.PlaybackMode.DEVICE
+    // The byte progress and the lane's state are not observable: re-read twice a second while Mix Mode is on.
+    var tick by remember { mutableStateOf(0) }
+    androidx.compose.runtime.LaunchedEffect(mixState.enabled) {
+        while (mixState.enabled) { kotlinx.coroutines.delay(500); tick++ }
+    }
+    val indicator = remember(tick, mixState, seq, ui, mixTabLive, deviceMode) { NpMixIndicatorReader.read(app, deviceMode) }
+    val strip = remember(tick, mixState, seq, ui, deviceMode) { NpMixBufferRows.read(app, deviceMode) }
+    val showsHeader = seq.isRunning
+    val controlsVisible = ui.available || indicator is com.levi.pocketdj.mix.nowplaying.NpMixMode.Indicator.Buffering
+
+    if (!showsHeader) {
         if (ui.lock.enabled) StemLockIndicator(ui.indicator, modifier.padding(horizontal = 12.dp, vertical = 4.dp))
         return
     }
-    Column(modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp).testTag("np-mix-panel"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            Modifier.fillMaxWidth().clickable { expanded = !expanded }.testTag("np-mix-toggle"),
-            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Text(if (expanded) "▾" else "▸", fontSize = 12.sp)
-            Text("Mix", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            if (ui.engaged) Text("●", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.semantics { contentDescription = "Engaged" })
-            if (ui.lock.enabled) Icon(Icons.Filled.Lock, "Stem Lock on", Modifier.size(12.dp))
+    Column(modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("np-mix-panel"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                Modifier.clickable { expanded = !expanded }.testTag("np-mix-toggle"),
+                verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(if (expanded) "▾" else "▸", fontSize = 12.sp)
+                Text("Mix", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                if (ui.engaged) Text("●", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.semantics { contentDescription = "Engaged" })
+                if (ui.lock.enabled) Icon(Icons.Filled.Lock, "Stem Lock on", Modifier.size(12.dp))
+            }
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { NpMixModeChip(indicator) }
+            NpMixModeSwitch(
+                on = mixState.enabled, enabled = seq.isRunning,
+                onToggle = { on -> coordinator.setMixMode(on); if (on) expanded = true },
+            )
         }
         if (ui.lock.enabled) StemLockIndicator(ui.indicator)
-        if (expanded) {
+        if (expanded && controlsVisible) Box(
+            Modifier.then(if (ui.available) Modifier else Modifier.alpha(0.45f).blockTouches()),
+        ) { Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        run {
             DspSlider("Tempo", DspPanelText.tempo(ui.rate), ui.rate, MixRanges.rate, "np-mix-tempo") { v -> touch { it.setRate(v) } }
             DspSlider("Pitch", DspPanelText.pitch(ui.pitch), ui.pitch, MixRanges.pitch, "np-mix-pitch") { v -> touch { it.setPitch(v) } }
             DspSlider("Gain", DspPanelText.gain(ui.volume), ui.volume, MixRanges.volume, "np-mix-gain") { v -> touch { it.setVolume(v) } }
@@ -138,6 +172,15 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
                 }
             }
         }
+        } }
+        if (mixState.enabled) NpMixBufferStrip(strip)
+    }
+}
+
+/** Swallows every touch on the controls (the Mix Mode panel shows them DISABLED while the track buffers). */
+private fun Modifier.blockTouches(): Modifier = pointerInput(Unit) {
+    awaitPointerEventScope {
+        while (true) awaitPointerEvent(PointerEventPass.Initial).changes.forEach { it.consume() }
     }
 }
 
