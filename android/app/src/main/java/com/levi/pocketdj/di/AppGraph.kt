@@ -133,6 +133,7 @@ class AppGraph private constructor(context: Context) {
     val servicesGraph: ServicesGraph by lazy { ServicesGraph(this) }
     val shellGraph: ShellGraph by lazy { ShellGraph(this) }
     val pocketsGraph: PocketsGraph by lazy { PocketsGraph(this) } // P2-POC-5
+    val remoteGraph: RemoteGraph by lazy { RemoteGraph(this) } // P2-REM-5
 
     /** Zero-to-hero first-run state (SURF-3); lives in the shell sidecar. */
     val onboarding: com.levi.pocketdj.onboarding.OnboardingStore get() = shellGraph.onboarding
@@ -156,7 +157,7 @@ class AppGraph private constructor(context: Context) {
         FeatureModuleRegistry(
             listOf(
                 playbackGraph, mixGraph, studioGraph, gamesGraph,
-                collectionsGraph, browseGraph, servicesGraph, shellGraph, pocketsGraph,
+                collectionsGraph, browseGraph, servicesGraph, shellGraph, pocketsGraph, remoteGraph,
             ),
         )
     }
@@ -452,7 +453,10 @@ class AppGraph private constructor(context: Context) {
                 appScope.launch(Dispatchers.IO) { runCatching { pocketsGraph.start() } } // P2-POC-5 wheel rebuild loop
             }
 
-            StartStep.PLAYBACK_WIRE -> playbackGraph.wire() // PB-1 seams + the run-gated 1 Hz session tick
+            StartStep.PLAYBACK_WIRE -> {
+                playbackGraph.wire() // PB-1 seams + the run-gated 1 Hz session tick
+                appScope.launch(Dispatchers.Main) { runCatching { remoteGraph.wire() } } // P2-REM-5: gate + DJ probe (Main, after djMode.install is queued)
+            }
             // MIX-12: a kill mid-take leaves a playable .aac with no row; file it (off-main, streamed scan).
             StartStep.MIX_ORPHANS -> appScope.launch(Dispatchers.IO) { runCatching { mixGraph.mixRecorder.recoverOrphans() } }
             // MIX-18: Now Playing DSP panel + Stem Lock observers (after the sequencer exists).
