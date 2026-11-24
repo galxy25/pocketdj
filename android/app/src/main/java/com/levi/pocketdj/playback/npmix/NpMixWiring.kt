@@ -299,14 +299,16 @@ class NpMixWiring(private val app: AppGraph) {
                 dspEngaged = mixGraph.npDspEngine.isEngaged,
                 mixTabActive = NowPlayingSeams.mixSessionActive,
                 deviceMode = deviceModeMirror,
-                localCopyComplete = mixGraph.npDspHost.hasLocalCopy(item.id),
+                localCopyComplete = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { mixGraph.npDspHost.hasLocalCopy(item.id) }, // reads burn/beat-grid JSON: off Main
                 interruptionOpen = seq.discriminator.interruptionOpen,
+                appleMusicPlaying = controller.appleMusicAudiblyPlaying,
+                pauseIntentional = seq.discriminator.pausedByListener,
                 startPending = seq.isStartPending,
                 lengthMs = item.lengthMs,
             )
         }
 
-        override suspend fun appleMusicPositionMs(): Long? = runCatching { controller.currentPositionMs() }.getOrNull()
+        override suspend fun appleMusicPositionMs(): Long? = runCatching { controller.appleMusicPositionMsOrNull() }.getOrNull()
 
         override suspend fun engagePaused(atSeconds: Double): Boolean {
             val id = seq.state.value.current?.id ?: return false
@@ -321,6 +323,7 @@ class NpMixWiring(private val app: AppGraph) {
         override fun meterBegan(cause: String) { seq.meter?.transitionBegan(cause) }
         override fun meterTrackStarting(backend: String) { seq.meter?.trackStarting(backend) }
         override fun meterFirstAudio(backend: String) { seq.meter?.firstAudio(backend) }
+        override fun meterAbandoned(reason: String) { seq.meter?.transitionAbandoned(reason) }
         override fun log(line: String) = SwapOnLand.laneLog(line)
     }
 

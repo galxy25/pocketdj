@@ -58,6 +58,22 @@ class PreferLocalAudioTest {
         assertEquals("rip", registry(prefer = true, instant = false, canPlayAm = false).backend())
     }
 
+    @Test fun aRipFirstRowWhoseRipDidNotSound_reResolvesToAppleMusic() = runTest {
+        val r = registry(prefer = true, instant = true)
+        assertEquals("rip", r.resolve(item, PlaybackMode.CLOUD).backend)
+        assertEquals("rip", r.resolve(item, PlaybackMode.CLOUD, reResolve = false).backend)
+        assertEquals("appleMusic", r.resolve(item, PlaybackMode.CLOUD, reResolve = true).backend)
+    }
+
+    @Test fun reResolveNeverReordersARowThatIsNotAppleMusicSourcedOrMixOff() = runTest {
+        val a = registry(prefer = true, sourced = false, instant = true)
+        a.resolve(item, PlaybackMode.CLOUD)
+        assertEquals("rip", a.resolve(item, PlaybackMode.CLOUD, reResolve = true).backend)
+        val b = registry(prefer = false)
+        b.resolve(item, PlaybackMode.CLOUD)
+        assertEquals("rip", b.resolve(item, PlaybackMode.CLOUD, reResolve = true).backend)
+    }
+
     @Test fun notAppleMusicSourced_isNeverReordered() = runTest {
         assertEquals("rip", registry(prefer = true, sourced = false, instant = false).backend())
     }

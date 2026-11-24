@@ -9,7 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 private fun facts(f: Facts.() -> Facts = { this }) = Facts(
-    buffering = true, appleMusicActive = true, dspEngaged = false, mixTabActive = false, localCopyComplete = true,
+    buffering = true, appleMusicActive = true, dspEngaged = false, mixTabActive = false, localCopyComplete = true, appleMusicPlaying = true,
     lengthMs = 200_000, positionMs = 60_000,
 ).f()
 
@@ -27,8 +27,13 @@ class AppleMusicHandOffRulesTest {
         assertEquals("mix-tab", reason(facts { copy(mixTabActive = true) }))
         assertEquals("refused", reason(facts { copy(refused = true) }))
         assertEquals("no-local-copy", reason(facts { copy(localCopyComplete = false) }))
-        assertEquals("interruption", reason(facts { copy(interruptionOpen = true) }))
+        assertEquals("interruption", reason(facts { copy(interruptionOpen = true, appleMusicPlaying = false) }))
         assertEquals("start-pending", reason(facts { copy(startPending = true) }))
+    }
+
+    @Test fun aMusicKitOwnedInterruptionFlagDoesNotHoldWhileAppleMusicSoundsOrThePauseIsIntentional() {
+        assertEquals(Verdict.Go, AppleMusicHandOffRules.verdict(facts { copy(interruptionOpen = true, appleMusicPlaying = true) }))
+        assertEquals(Verdict.Go, AppleMusicHandOffRules.verdict(facts { copy(interruptionOpen = true, appleMusicPlaying = false, pauseIntentional = true) }))
     }
 
     @Test fun tailGuardIs3sOfTheEnd() {
@@ -153,6 +158,37 @@ class AppleMusicHandOffTest {
         })
         assertFalse(h.handOff(true))
         assertEquals(listOf("disengage"), env.calls)
+        assertTrue(env.meter.isEmpty())
+    }
+
+    @Test fun anUnreadablePositionRefusesAndLeavesAppleMusicPlaying_neverRestartsAtZero() = runTest {
+        val env = FakeEnv().also { it.position = null }
+        val h = AppleMusicHandOff(env)
+        assertFalse(h.handOff(true))
+        assertTrue(env.calls.isEmpty())
+        assertTrue(env.meter.isEmpty())
+        assertEquals(0, h.handOffCount)
+    }
+
+    @Test fun aFailedAppleMusicStopRollsTheDspBackAndAbandonsTheMeter() = runTest {
+        val env = FakeEnv()
+        val h = AppleMusicHandOff(object : AppleMusicHandOffEnv by env {
+            override suspend fun stopAppleMusic() { env.calls += "stopAm"; throw IllegalStateException("boom") }
+            override fun meterAbandoned(reason: String) { env.meter += "abandoned" }
+        })
+        assertFalse(h.handOff(true))
+        assertEquals(listOf("engagePaused(60.0)", "stopAm", "disengage"), env.calls)
+        assertEquals("abandoned", env.meter.last())
+        assertEquals(0, h.handOffCount)
+        assertFalse(h.handOff(true)) // refused for this row; no second attempt
+        assertEquals(3, env.calls.size)
+    }
+
+    @Test fun theDspOnlySoundsWhenAppleMusicWasSounding() = runTest {
+        val env = FakeEnv().also { it.facts = facts { copy(positionMs = null, appleMusicPlaying = false) } }
+        val h = AppleMusicHandOff(env)
+        assertTrue(h.handOff(true)) // listener wishes play, Apple Music was paused
+        assertEquals(listOf("engagePaused(60.0)", "stopAm"), env.calls)
         assertTrue(env.meter.isEmpty())
     }
 

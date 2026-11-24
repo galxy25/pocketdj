@@ -44,6 +44,10 @@ object AppleMusicHandOffRules {
         /** The row has a COMPLETE local copy the DSP can open. */
         val localCopyComplete: Boolean,
         val interruptionOpen: Boolean = false,
+        /** Apple Music is audibly playing (iOS `am.isPlaying`): a MusicKit-owned interruption flag does not hold the hand-off. */
+        val appleMusicPlaying: Boolean = false,
+        /** The listener paused on purpose (iOS pausedByListener): also exempts the interruption flag. */
+        val pauseIntentional: Boolean = false,
         val startPending: Boolean = false,
         /** A hand-off of this row already failed this play. */
         val refused: Boolean = false,
@@ -66,7 +70,8 @@ object AppleMusicHandOffRules {
         if (f.mixTabActive) return Verdict.Refuse("mix-tab")
         if (f.refused) return Verdict.Refuse("refused")
         if (!f.localCopyComplete) return Verdict.Refuse("no-local-copy")
-        if (f.interruptionOpen) return Verdict.Refuse("interruption")
+        // iOS interruptionHolds: a real interruption holds the swap, but not while Apple Music sounds or the pause is the listener's.
+        if (f.interruptionOpen && !f.appleMusicPlaying && !f.pauseIntentional) return Verdict.Refuse("interruption")
         if (f.startPending) return Verdict.Refuse("start-pending")
         if (inTail(f.positionMs, f.lengthMs)) return Verdict.Refuse("tail-guard")
         return Verdict.Go
@@ -114,6 +119,8 @@ interface AppleMusicHandOffEnv {
     fun meterBegan(cause: String)
     fun meterTrackStarting(backend: String)
     fun meterFirstAudio(backend: String)
+    /** The hand-off's open dead-air transition ends without sound (a failed Apple Music stop). */
+    fun meterAbandoned(reason: String) {}
     fun log(line: String)
 }
 
@@ -167,12 +174,19 @@ class AppleMusicHandOff(
             val pos = env.appleMusicPositionMs()
             val facts = env.facts()?.copy(refused = refusedUid == uid, positionMs = pos)
             if (facts == null) return false
+            if (pos == null) {
+                // Never guess 0: the swap would restart the song. Apple Music plays on.
+                env.log("am-handoff row=$id refused reason=no-position")
+                return false
+            }
+            // iOS keys on `wasPlaying = am.isPlaying`: the DSP only sounds if Apple Music was sounding.
+            val sound = play && facts.appleMusicPlaying
             val v = AppleMusicHandOffRules.verdict(facts)
             if (v is AppleMusicHandOffRules.Verdict.Refuse) {
                 env.log("am-handoff row=$id refused reason=${v.reason}")
                 return false
             }
-            val at = AppleMusicHandOffRules.targetMs(pos ?: 0L, facts.lengthMs, leadMs)
+            val at = AppleMusicHandOffRules.targetMs(pos, facts.lengthMs, leadMs)
             if (!env.engagePaused(at / 1000.0)) {
                 refusedUid = uid
                 readyCached = false
@@ -187,21 +201,40 @@ class AppleMusicHandOff(
                 return false
             }
             // ONE dead-air transition for the whole swap: opened before Apple Music goes quiet, closed at the DSP's first sound.
-            if (play) {
+            if (sound) {
                 env.meterBegan(AppleMusicHandOffRules.CAUSE)
                 env.meterTrackStarting(AppleMusicHandOffRules.BACKEND)
                 meterOpen = true
             }
-            env.stopAppleMusic()
+            try {
+                env.stopAppleMusic()
+            } catch (e: CancellationException) {
+                rollback(uid, id)
+                throw e
+            } catch (e: Exception) {
+                rollback(uid, id)
+                env.log("am-handoff row=$id refused reason=stop-failed (${e.message}); Apple Music plays on")
+                return false
+            }
             handOffCount++
             readyCached = false
-            if (play) env.resume()
-            env.log("am-handoff row=$id apple-music -> DSP local copy at=${at}ms paused=${if (play) 0 else 1}")
+            if (sound) env.resume()
+            env.log("am-handoff row=$id apple-music -> DSP local copy at=${at}ms paused=${if (sound) 0 else 1}")
             env.readyChanged()
             return true
         } finally {
             running = false
         }
+    }
+
+    /** The stop failed after the DSP engaged paused: release it so Apple Music stays the only owner. */
+    private fun rollback(uid: String, id: String?) {
+        env.disengage()
+        refusedUid = uid
+        if (meterOpen) env.meterAbandoned("am-handoff-failed")
+        meterOpen = false
+        readyCached = false
+        env.readyChanged()
     }
 
     /** The DSP's first sound: closes the hand-off's dead-air transition (once). */

@@ -49,12 +49,20 @@ class RowResolverRegistry(
         return am + rest
     }
 
-    suspend fun resolve(item: QueueItem, mode: PlaybackMode): RowSource {
+    /** The backend each row was last resolved to (resolveId -> backend): a re-resolve of a rip that did not sound walks Apple Music next. */
+    private val lastBackend = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /**
+     * [reResolve] = the supervisor's retry of a row that was already resolved. For an Apple-Music-sourced row whose last pick
+     * was the rip (expired presign / 403 / stall), the retry walks the Apple Music rung FIRST: the rip-first ladder's real fallback.
+     */
+    suspend fun resolve(item: QueueItem, mode: PlaybackMode, reResolve: Boolean = false): RowSource {
         val ripStartsNow = manifestHit(item.resolveId)
         val prefer = preferLocalAudio()
         val sourced = prefer && ripStartsNow && isAppleMusicSourced(item)
         val instant = if (sourced) localCopyInstant(item) else false
-        val amFirst = PreferLocalAudio.appleMusicFirst(
+        val ripFailedOnce = reResolve && sourced && lastBackend[item.resolveId] == "rip"
+        val amFirst = ripFailedOnce || PreferLocalAudio.appleMusicFirst(
             PreferLocalAudio.Facts(preferLocalAudio = prefer, appleMusicSourced = sourced, ripped = ripStartsNow, localCopyInstant = instant),
         )
         val ctx = ResolveContext(
@@ -62,7 +70,7 @@ class RowResolverRegistry(
             ripServerConfigured = ripServerConfigured(),
             ripStartsNow = ripStartsNow,
             preferLocalAudio = prefer,
-            localCopyInstant = instant,
+            localCopyInstant = instant && !ripFailedOnce, // a rip that did not sound is no longer 'instant'
             appleMusicFirst = amFirst,
         )
         for (r in ladderFor(amFirst)) {
@@ -74,7 +82,7 @@ class RowResolverRegistry(
             } catch (_: Exception) {
                 null // a broken rung passes the row down the ladder, never crashes the set
             }
-            if (hit != null) return hit
+            if (hit != null) { lastBackend[item.resolveId] = hit.backend; return hit }
         }
         return UnplayableSource(
             if (mode == PlaybackMode.DEVICE) UnplayableSource.Reason.NOT_ON_DEVICE

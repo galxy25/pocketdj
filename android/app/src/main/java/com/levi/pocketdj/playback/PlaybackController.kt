@@ -1222,6 +1222,15 @@ class PlaybackController(
         return heard
     }
 
+    /** P2-MM-9: Apple Music is the active backend AND audibly playing (the hand-off's `wasPlaying`). */
+    val appleMusicAudiblyPlaying: Boolean
+        get() = activeBackend == ActiveBackend.APPLE_MUSIC &&
+            appleMusicBackend?.snapshot()?.status == com.levi.pocketdj.playback.am.AmStatus.PLAYING
+
+    /** P2-MM-9: the Apple Music engine's position, or null when it cannot be read (never a 0 stand-in). */
+    fun appleMusicPositionMsOrNull(): Long? =
+        if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.snapshot()?.positionMs else null
+
     suspend fun currentPositionMs(): Long =
         if (activeBackend == ActiveBackend.APPLE_MUSIC) {
             appleMusicBackend?.currentPositionMs() ?: 0L

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-MM-9: Mix Mode ph4 - Apple Music rows (prefer local rip, AM->local touch hand-off, rip-ahead)
 
@@ -28,3 +28,14 @@ Tests: 31 new JVM tests (PreferLocalAudioTest 15, AppleMusicHandOffRulesTest 6, 
 ## Questions for Levi
 - Rip-ahead gate: shipped default = rip server configured (Settings > Import server URL+token); otherwise rows show "Apple Music only".
 - Emulator/device not exercised (shared emulator is the integrator's): real-AM hand-off needs the device check in the roadmap.
+
+## Review
+- MAJOR AppleMusicHandOff pos==null treated as 0 -> fixed: handOff refuses `no-position` (Apple Music plays on); appleMusicPositionMs now reads a nullable snapshot position (PlaybackController.appleMusicPositionMsOrNull) instead of the 0L stand-in. Test: anUnreadablePositionRefusesAndLeavesAppleMusicPlaying_neverRestartsAtZero.
+- MINOR stopAppleMusic unguarded -> fixed: try/catch (CancellationException rethrown) rolls back via env.disengage(), sets refusedUid, abandons the open dead-air transition (new env.meterAbandoned). Test: aFailedAppleMusicStopRollsTheDspBackAndAbandonsTheMeter.
+- MINOR play/interruption semantics -> fixed: Facts.appleMusicPlaying + pauseIntentional; interruption refuses only when neither holds (iOS interruptionHolds); DSP sounds only if Apple Music was audibly playing (wasPlaying). Tests: aMusicKitOwnedInterruptionFlag..., theDspOnlySoundsWhenAppleMusicWasSounding.
+- MINOR rip-first AM fallback -> fixed with a code path: RowResolverRegistry.resolve(reResolve) remembers the last backend per row; the supervisor's re-resolve of an AM-sourced row whose rip was picked walks Apple Music first (rip no longer "instant"). Tests: aRipFirstRowWhoseRipDidNotSound_reResolvesToAppleMusic, reResolveNeverReorders...
+- NIT main-thread JSON reads -> fixed: hasLocalCopy runs on Dispatchers.IO inside facts().
+
+Tests: 6685 run, 0 failures (was 6679; +6). `:app:testDebugUnitTest :app:assembleDebug` green.
+
+fixes applied
