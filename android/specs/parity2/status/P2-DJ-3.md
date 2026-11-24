@@ -19,3 +19,12 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MAJOR availableSeconds = declared duration -> fixed: PassSource.availableSeconds(path, complete); for a growing file Platform uses bytes-on-disk / bitrate (KEY_BIT_RATE, fallback 128 kbps) capped by the declared duration (AudioAnalysis.estimateAvailable). quickPass also rejects a head window that decodes < MIN_HEAD_SECONDS, and the scheduler now retries the head (waitForHead) when a head pass yields nothing (previously only when no window). Tests: headPassOverASliverOfAudioIsRejected, estimateAvailableUsesBytesOverBitrateCappedByDeclared, growingFileWhoseDecodeYieldsASliverStoresNoHeadHintAndRetries.
+- MINOR slice start ignored -> fixed: scheduler uses max(0, available - sliceStart). Test: sliceStartIsSubtractedFromTheSharedSidesAvailableSeconds.
+- MINOR no power/thermal re-pump -> fixed: AudioAnalysisScheduler.registerGateListeners(context, scheduler) (thermal listener + ACTION_POWER_SAVE_MODE_CHANGED receiver -> resume(), returns unregister). P2-DJ-11 must call it when constructing the scheduler.
+- MINOR 120 s full pass memory -> fixed: Platform.decode streams via AudioDecoder.decodeChunks into AudioAnalysis.StreamingMono (mono 22.05 kHz, linear resample, state across chunks); no native-rate accumulation. Test: streamingMonoResamplesChunkedInputLikeOneShot.
+- NIT concurrent writeNow -> fixed: writes serialized under a write lock.
+
+fixes applied. Tests: 6863 run (was 6858, +5), 0 failures; assembleDebug green.

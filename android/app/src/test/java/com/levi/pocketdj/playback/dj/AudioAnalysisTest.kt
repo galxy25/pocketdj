@@ -164,7 +164,7 @@ class AudioAnalysisTest {
     private class FakeSource(val pcm: PcmBuffer, val avail: Double) : AudioAnalysis.PassSource {
         val decodes = ArrayList<Pair<Double, Double>>()
         override fun decode(path: String, startSeconds: Double, lengthSeconds: Double): PcmBuffer? { decodes += startSeconds to lengthSeconds; return pcm }
-        override fun availableSeconds(path: String) = avail
+        override fun availableSeconds(path: String, complete: Boolean) = avail
     }
 
     @Test fun quickPassDecodesTheSliceOffsetWindowAndFullPassTheTopAndMiddle() {
@@ -176,6 +176,41 @@ class AudioAnalysisTest {
         assertEquals(AudioAnalysis.Kind.full, f.kind); assertNull(f.lufs)
         assertEquals(listOf(0.0 to 120.0, 70.0 to 60.0), src.decodes)      // BPM top 120 s; key = middle minute
         assertNull(AudioAnalysis.fullPass(src, "p", 0.0, 2.0))
+    }
+
+    @Test fun headPassOverASliverOfAudioIsRejected() {
+        val src = FakeSource(clicks(120.0, 3.0), 200.0)           // header claims 200 s, 3 s decode
+        assertNull(AudioAnalysis.quickPass(src, "p", 0.0, AudioAnalysis.Window(0.0, 30.0, true)))
+        val ok = FakeSource(clicks(120.0, 20.0), 200.0)
+        assertNotNull(AudioAnalysis.quickPass(ok, "p", 0.0, AudioAnalysis.Window(0.0, 30.0, true)))
+        assertNotNull(AudioAnalysis.quickPass(src, "p", 0.0, AudioAnalysis.Window(0.0, 3.0, false)))  // non-head windows unaffected
+    }
+
+    @Test fun estimateAvailableUsesBytesOverBitrateCappedByDeclared() {
+        assertEquals(30.0, AudioAnalysis.estimateAvailable(480_000, 128_000, 0.0), 1e-9)       // no header duration
+        assertEquals(30.0, AudioAnalysis.estimateAvailable(480_000, 128_000, 200.0), 1e-9)     // header says final 200 s
+        assertEquals(10.0, AudioAnalysis.estimateAvailable(480_000, 128_000, 10.0), 1e-9)
+        assertEquals(30.0, AudioAnalysis.estimateAvailable(480_000, 0, 0.0), 1e-9)             // fallback 128 kbps
+        assertEquals(0.0, AudioAnalysis.estimateAvailable(0, 128_000, 200.0), 1e-9)
+    }
+
+    @Test fun streamingMonoResamplesChunkedInputLikeOneShot() {
+        val sr = 44_100
+        val x = FloatArray(sr * 2 * 2) { i -> sin(2 * PI * 440.0 * (i / 2) / sr).toFloat() }   // 2 s stereo
+        val rs = AudioAnalysis.StreamingMono(22_050)
+        var off = 0
+        for (chunk in listOf(1000, 4097, 33, 50_000, 100_000)) {
+            val frames = minOf(chunk, x.size / 2 - off)
+            if (frames <= 0) break
+            rs.feed(x.copyOfRange(off * 2, (off + frames) * 2), frames, 2, sr); off += frames
+        }
+        rs.feed(x.copyOfRange(off * 2, x.size), x.size / 2 - off, 2, sr)
+        val out = rs.finish()
+        assertEquals(1, out.channels); assertEquals(22_050, out.sampleRate)
+        assertEquals(44_100.0, out.frames.toDouble(), 2.0)
+        for (i in 100 until out.frames - 100 step 997) {
+            assertEquals(sin(2 * PI * 440.0 * (i * 2) / sr), out.samples[i].toDouble(), 0.05)
+        }
     }
 
     // ---- result JSON ----

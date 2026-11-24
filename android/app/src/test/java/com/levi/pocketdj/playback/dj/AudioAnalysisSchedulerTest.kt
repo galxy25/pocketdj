@@ -22,13 +22,13 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class AudioAnalysisSchedulerTest {
     /** A fake decode seam: records what each pass asked for; the PCM is a (pitched, beatless) tone. */
-    private class Src(var avail: Double = 100.0, var fixed: PcmBuffer? = null) : AudioAnalysis.PassSource {
+    private class Src(var avail: Double = 100.0, var fixed: PcmBuffer? = null, var maxSeconds: Double = 3.0) : AudioAnalysis.PassSource {
         val decodes = ArrayList<Triple<String, Double, Double>>()
         override fun decode(path: String, startSeconds: Double, lengthSeconds: Double): PcmBuffer? {
             decodes += Triple(path, startSeconds, lengthSeconds)
-            return fixed ?: PcmBuffer(8000, 1, FloatArray((8000 * lengthSeconds.coerceAtMost(3.0)).toInt()) { 0.01f })
+            return fixed ?: PcmBuffer(8000, 1, FloatArray((8000 * lengthSeconds.coerceAtMost(maxSeconds)).toInt()) { 0.01f })
         }
-        override fun availableSeconds(path: String) = avail
+        override fun availableSeconds(path: String, complete: Boolean) = avail
     }
 
     private class Rig(val src: Src = Src(), val gate: AtomicBoolean = AtomicBoolean(true), maxHeadRetries: Int = 24) {
@@ -125,6 +125,7 @@ class AudioAnalysisSchedulerTest {
         r.test.testScheduler.runCurrent()
         assertTrue(r.landed.isEmpty())
         r.src.avail = 20.0                                       // 15 s+ have landed by the next look
+        r.src.maxSeconds = 20.0
         r.test.testScheduler.advanceTimeBy(5_001); r.test.testScheduler.runCurrent(); r.settle()
         assertEquals(listOf("g" to AudioAnalysis.Kind.quick), r.landed.map { it.first to it.second })
         assertTrue(r.cache.quick("g", null)!!.headOnly)
@@ -132,6 +133,27 @@ class AudioAnalysisSchedulerTest {
         // The file completes: the better window + the full pass follow.
         r.sched.enqueue(r.job("g", Priority.CURRENT, complete = true, size = 9)); r.settle()
         assertEquals(AudioAnalysis.Kind.full, r.landed.last().second)
+    }
+
+    @Test fun growingFileWhoseDecodeYieldsASliverStoresNoHeadHintAndRetries() {
+        // The header over-claims (avail 200 s) but only 3 s of audio decode: no head hint, a retry instead.
+        val r = Rig(Src(avail = 200.0, maxSeconds = 3.0), maxHeadRetries = 2)
+        r.sched.enqueue(r.job("g", Priority.CURRENT, complete = false, dur = null))
+        r.test.testScheduler.advanceTimeBy(5_000L * 5); r.settle()
+        assertTrue(r.landed.isEmpty())
+        assertNull(r.cache.quick("g", null))
+        assertEquals(3, r.sched.startedOrder.size)               // first look + 2 retries
+        r.src.maxSeconds = 30.0                                  // the audio lands; a later look would now succeed
+    }
+
+    @Test fun sliceStartIsSubtractedFromTheSharedSidesAvailableSeconds() {
+        val r = Rig(Src(avail = 100.0))
+        val j = AudioAnalysisScheduler.Job(LoudnessCache.Key("s", 1, null), open = { AudioAnalysisScheduler.Opened("/s") },
+            sliceStartSeconds = 50.0, durationSeconds = null, complete = true, priority = Priority.CURRENT)
+        r.sched.enqueue(j); r.settle()
+        // song length = 100 - 50 = 50 s: quick at 30 % (15 s) into the song = 65 s into the side; full spans 50 s, not 100.
+        assertEquals(Triple("/s", 65.0, 20.0), r.src.decodes.first())
+        assertEquals(Triple("/s", 50.0, 50.0), r.src.decodes[1])
     }
 
     @Test fun headRetriesStopAfterTheCap() {

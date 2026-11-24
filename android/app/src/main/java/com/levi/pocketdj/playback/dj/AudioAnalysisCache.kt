@@ -120,8 +120,10 @@ class AudioAnalysisCache(
         writeNow()
     }
 
-    private fun writeNow() {
-        val f = file ?: return
+    private val writeLock = Any()
+
+    private fun writeNow() = synchronized(writeLock) {
+        val f = file ?: return@synchronized
         val entries = synchronized(lock) {
             if (full.size > maxEntries) {
                 val drop = full.keys.sortedBy { usedAt[it] ?: 0.0 }.take(full.size - maxEntries)

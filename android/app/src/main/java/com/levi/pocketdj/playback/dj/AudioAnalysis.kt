@@ -117,16 +117,34 @@ object AudioAnalysis {
     /** Platform seam: decode [lengthSeconds] of [path] from [startSeconds]; seconds decodable right now. */
     interface PassSource {
         fun decode(path: String, startSeconds: Double, lengthSeconds: Double): PcmBuffer?
-        fun availableSeconds(path: String): Double
+        /** Seconds of audio decodable NOW from the file start ([complete] = the whole file is on disk). */
+        fun availableSeconds(path: String, complete: Boolean): Double
     }
 
-    /** MediaCodec-backed decode (the container's declared duration bounds "available"). */
-    object Platform : PassSource {
-        override fun decode(path: String, startSeconds: Double, lengthSeconds: Double): PcmBuffer? =
-            runCatching { AudioDecoder.decode(path, ANALYSIS_RATE, lengthSeconds, startSeconds) }.getOrNull()
-                ?.takeIf { it.frames > 0 }
+    /** Fallback bitrate (bits/s) when a growing file's container declares none. */
+    const val FALLBACK_BITRATE = 128_000L
 
-        override fun availableSeconds(path: String): Double = runCatching {
+    /**
+     * Audio seconds that have landed in a file still arriving: bytes on disk over the bitrate, capped by the
+     * declared duration when the header has one (a header may already declare the FINAL length).
+     */
+    fun estimateAvailable(bytesOnDisk: Long, bitrate: Long, declaredSeconds: Double): Double {
+        val br = if (bitrate > 0) bitrate else FALLBACK_BITRATE
+        val est = max(0L, bytesOnDisk) * 8.0 / br
+        return if (declaredSeconds > 0) min(est, declaredSeconds) else est
+    }
+
+    /** MediaCodec-backed decode, streamed + downsampled to mono [ANALYSIS_RATE] (bounded peak memory). */
+    object Platform : PassSource {
+        override fun decode(path: String, startSeconds: Double, lengthSeconds: Double): PcmBuffer? = runCatching {
+            val rs = StreamingMono(ANALYSIS_RATE)
+            val ok = AudioDecoder.decodeChunks(path, startSeconds, lengthSeconds) { samples, frames, ch, sr ->
+                rs.feed(samples, frames, ch, sr)
+            }
+            if (ok) rs.finish() else null
+        }.getOrNull()?.takeIf { it.frames > 0 }
+
+        override fun availableSeconds(path: String, complete: Boolean): Double = runCatching {
             val ex = android.media.MediaExtractor()
             try {
                 ex.setDataSource(path)
@@ -134,9 +152,51 @@ object AudioAnalysis {
                     ex.getTrackFormat(it).getString(android.media.MediaFormat.KEY_MIME)?.startsWith("audio/") == true
                 } ?: return@runCatching 0.0
                 val f = ex.getTrackFormat(idx)
-                if (f.containsKey(android.media.MediaFormat.KEY_DURATION)) f.getLong(android.media.MediaFormat.KEY_DURATION) / 1_000_000.0 else 0.0
+                val declared = if (f.containsKey(android.media.MediaFormat.KEY_DURATION)) f.getLong(android.media.MediaFormat.KEY_DURATION) / 1_000_000.0 else 0.0
+                if (complete) declared
+                else estimateAvailable(
+                    java.io.File(path).length(),
+                    if (f.containsKey(android.media.MediaFormat.KEY_BIT_RATE)) f.getInteger(android.media.MediaFormat.KEY_BIT_RATE).toLong() else 0L,
+                    declared,
+                )
             } finally { ex.release() }
         }.getOrDefault(0.0)
+    }
+
+    /** Streams interleaved chunks into one mono buffer at [outRate] (linear resample, state carried across chunks). */
+    class StreamingMono(private val outRate: Int) {
+        private var acc = FloatArray(1 shl 16)
+        private var n = 0
+        private var inRate = 0
+        private var nextPos = 0.0      // next output sample position, in input-frame units (global)
+        private var consumed = 0L      // input frames seen before the current chunk
+        private var prev = 0f          // last input sample of the previous chunk (global index consumed-1)
+        private var havePrev = false
+
+        private fun push(v: Float) {
+            if (n == acc.size) acc = acc.copyOf(acc.size * 2)
+            acc[n++] = v
+        }
+
+        fun feed(samples: FloatArray, frames: Int, ch: Int, sr: Int) {
+            if (inRate == 0) inRate = sr
+            val step = inRate.toDouble() / outRate
+            fun mono(i: Int): Float { var s = 0f; for (c in 0 until ch) s += samples[i * ch + c]; return s / ch }
+            while (true) {
+                val i0 = Math.floor(nextPos).toLong()
+                val i1 = i0 + 1
+                if (i1 >= consumed + frames) break
+                val frac = (nextPos - i0).toFloat()
+                val a = if (i0 >= consumed) mono((i0 - consumed).toInt()) else if (havePrev) prev else mono(0)
+                val b = mono((i1 - consumed).toInt())
+                push(a + (b - a) * frac)
+                nextPos += step
+            }
+            if (frames > 0) { prev = mono(frames - 1); havePrev = true }
+            consumed += frames
+        }
+
+        fun finish(): PcmBuffer = PcmBuffer(outRate, 1, acc.copyOf(n))
     }
 
     /** BPM / key / loudness of one decoded window. */
@@ -157,6 +217,8 @@ object AudioAnalysis {
     /** The QUICK pass over [window]. */
     fun quickPass(src: PassSource, path: String, sliceStartSeconds: Double, window: Window): Result? {
         val pcm = src.decode(path, sliceStartSeconds + window.startSeconds, window.lengthSeconds) ?: return null
+        // A head window must really hold MIN_HEAD_SECONDS of audio (the file may be shorter than estimated).
+        if (window.headOnly && pcm.seconds < MIN_HEAD_SECONDS) return null
         return measure(pcm, Kind.quick, window.headOnly, window.lengthSeconds, window.lengthSeconds, loudness = true)
     }
 

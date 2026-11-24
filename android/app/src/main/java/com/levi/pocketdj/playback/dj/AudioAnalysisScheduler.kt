@@ -121,14 +121,15 @@ class AudioAnalysisScheduler(
         var waitForHead = false
         try {
             val slice = job.sliceStartSeconds
-            val avail = source.availableSeconds(opened.path)
+            // Audio of THIS song: a slice on a shared side starts [slice] seconds in.
+            val avail = maxOf(0.0, source.availableSeconds(opened.path, job.complete) - slice)
             val dur = job.durationSeconds?.let { minOf(it, avail) } ?: avail
             val hadFinalHint = cache.quick(job.key)?.let { !it.headOnly } ?: false
             // QUICK: on a better window unless a non-head hint already exists.
             if (!hadFinalHint) {
                 val w = AudioAnalysis.quickWindow(job.durationSeconds, avail, job.complete)
-                if (w != null) AudioAnalysis.quickPass(source, opened.path, slice, w)?.let { landed(job.key, it) }
-                else if (!job.complete) waitForHead = true
+                val q = w?.let { AudioAnalysis.quickPass(source, opened.path, slice, it) }
+                if (q != null) landed(job.key, q) else if (!job.complete) waitForHead = true
             }
             // FULL: only once the whole file is here.
             if (job.complete && dur > 2) AudioAnalysis.fullPass(source, opened.path, slice, dur)?.let { landed(job.key, it) }
@@ -179,6 +180,25 @@ class AudioAnalysisScheduler(
 
         /** Pure gate: analysis may run unless power-save is on or the thermal status is SEVERE or worse. */
         fun deviceMayRun(powerSave: Boolean, thermalStatus: Int): Boolean = !powerSave && thermalStatus < THERMAL_SEVERE
+
+        /**
+         * Re-pump when power-save or thermal state changes (a paused queue would otherwise wait for an enqueue).
+         * Returns an unregister function.
+         */
+        fun registerGateListeners(context: Context, scheduler: AudioAnalysisScheduler): () -> Unit {
+            val app = context.applicationContext
+            val pm = app.getSystemService(Context.POWER_SERVICE) as PowerManager
+            val thermal = PowerManager.OnThermalStatusChangedListener { scheduler.resume() }
+            pm.addThermalStatusListener(thermal)
+            val rx = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: android.content.Intent?) { scheduler.resume() }
+            }
+            app.registerReceiver(rx, android.content.IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED))
+            return {
+                runCatching { pm.removeThermalStatusListener(thermal) }
+                runCatching { app.unregisterReceiver(rx) }
+            }
+        }
 
         /** The Android mapping of iOS Low Power Mode / serious thermal state. */
         fun powerGate(context: Context): () -> Boolean {
