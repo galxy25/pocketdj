@@ -90,4 +90,100 @@ object AudioDecoder {
         val end = if (maxSeconds > 0) minOf(len, from + (maxSeconds * sr).toInt() * ch) else len
         return PcmBuffer(sr, ch, acc.copyOfRange(from, end)).toCanonical(rate)
     }
+
+    /**
+     * Streaming decode for analysis (no whole-file buffer, native rate/channels): feeds [sink] one
+     * decoded chunk at a time (interleaved floats). Starts at [startSeconds] (ranged, sample-trimmed)
+     * and stops after [maxSeconds] (0 = to the end). [isCancelled] is polled every loop turn; returns
+     * false when cancelled or there is no audio track, true when it ran to its end.
+     */
+    fun decodeChunks(
+        path: String,
+        startSeconds: Double = 0.0,
+        maxSeconds: Double = 0.0,
+        isCancelled: () -> Boolean = { false },
+        sink: (samples: FloatArray, frames: Int, channels: Int, sampleRate: Int) -> Unit,
+    ): Boolean {
+        val ex = MediaExtractor()
+        try {
+            ex.setDataSource(path)
+            val idx = (0 until ex.trackCount).firstOrNull {
+                ex.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
+            } ?: return false
+            ex.selectTrack(idx)
+            if (startSeconds > 0) ex.seekTo((startSeconds * 1_000_000).toLong(), MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+            val fmt = ex.getTrackFormat(idx)
+            val codec = MediaCodec.createDecoderByType(fmt.getString(MediaFormat.KEY_MIME)!!)
+            codec.configure(fmt, null, null, 0)
+            codec.start()
+            try {
+                var ch = fmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                var sr = fmt.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                var floatOut = false
+                val startUs = (startSeconds * 1_000_000).toLong()
+                var firstPtsUs = -1L
+                var toDrop = -1L // frames still to drop at the head (computed from the first pts)
+                var emitted = 0L
+                var scratch = FloatArray(0)
+                val info = MediaCodec.BufferInfo()
+                var inEos = false
+                var outEos = false
+                while (!outEos) {
+                    if (isCancelled()) return false
+                    if (!inEos) {
+                        val ii = codec.dequeueInputBuffer(5_000)
+                        if (ii >= 0) {
+                            val buf = codec.getInputBuffer(ii)!!
+                            val n = ex.readSampleData(buf, 0)
+                            if (n < 0) { codec.queueInputBuffer(ii, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM); inEos = true }
+                            else { codec.queueInputBuffer(ii, 0, n, ex.sampleTime, 0); ex.advance() }
+                        }
+                    }
+                    val oi = codec.dequeueOutputBuffer(info, 5_000)
+                    if (oi >= 0) {
+                        if (info.size > 0) {
+                            if (firstPtsUs < 0) {
+                                firstPtsUs = info.presentationTimeUs
+                                toDrop = if (startUs > 0) max(0L, startUs - firstPtsUs) * sr / 1_000_000L else 0L
+                            }
+                            val out = codec.getOutputBuffer(oi)!!
+                            out.position(info.offset).limit(info.offset + info.size)
+                            out.order(ByteOrder.nativeOrder())
+                            val n = if (floatOut) info.size / 4 else info.size / 2
+                            if (scratch.size < n) scratch = FloatArray(n)
+                            if (floatOut) out.asFloatBuffer().get(scratch, 0, n)
+                            else { val sb = out.asShortBuffer(); for (i in 0 until n) scratch[i] = sb.get() / 32768f }
+                            var frames = n / ch
+                            var off = 0
+                            if (toDrop > 0) {
+                                val d = minOf(toDrop, frames.toLong()).toInt()
+                                toDrop -= d; frames -= d; off = d * ch
+                            }
+                            if (maxSeconds > 0) {
+                                val left = (maxSeconds * sr).toLong() - emitted
+                                if (frames >= left) { frames = max(0L, left).toInt(); outEos = true }
+                            }
+                            if (frames > 0) {
+                                sink(if (off == 0) scratch else scratch.copyOfRange(off, off + frames * ch), frames, ch, sr)
+                                emitted += frames
+                            }
+                        }
+                        codec.releaseOutputBuffer(oi, false)
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outEos = true
+                    } else if (oi == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val f = codec.outputFormat
+                        ch = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                        sr = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        floatOut = f.containsKey(MediaFormat.KEY_PCM_ENCODING) &&
+                            f.getInteger(MediaFormat.KEY_PCM_ENCODING) == android.media.AudioFormat.ENCODING_PCM_FLOAT
+                    }
+                }
+                return true
+            } finally {
+                runCatching { codec.stop() }; runCatching { codec.release() }
+            }
+        } finally {
+            ex.release()
+        }
+    }
 }
