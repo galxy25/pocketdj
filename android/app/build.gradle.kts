@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.androidx.baselineprofile)
+    alias(libs.plugins.ksp)
 }
 
 // Release signing inputs (release plan A1/A3): environment first, then Gradle properties
@@ -226,6 +227,11 @@ dependencies {
 
     // STU-2: Oboe low-latency output (prefab; linked from cpp/pdjdsp).
     implementation(libs.oboe)
+
+    // P2-SURF-12: AppFunctions (Gemini tools), runtime-gated on API 36+ (minSdk stays 35). The compiler is KSP.
+    implementation(libs.androidx.appfunctions)
+    implementation(libs.androidx.appfunctions.service)
+    ksp(libs.androidx.appfunctions.compiler)
 
     debugImplementation(libs.androidx.ui.tooling)
     androidTestImplementation(platform(libs.androidx.compose.bom))

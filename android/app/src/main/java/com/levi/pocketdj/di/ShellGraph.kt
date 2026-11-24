@@ -221,6 +221,14 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** P2-SURF-12: the Gemini AppFunctions' adapter over [shellActions] (built on first Gemini call, API 36+). */
+    fun appFunctionsAdapter(): com.levi.pocketdj.assistant.AppFunctionsAdapter =
+        com.levi.pocketdj.assistant.AppFunctionsAdapter(
+            target = com.levi.pocketdj.assistant.ShellActionsTarget(shellActions),
+            candidates = ::mediaCandidates,
+            songRows = ::songRows,
+        )
+
     /** Tie-break for voice song matches: the audible song, or one already filed in a pocket / playlist. */
     private fun preferSong(songId: String): Boolean {
         val st = app.playbackGraph.sequencer.state.value
