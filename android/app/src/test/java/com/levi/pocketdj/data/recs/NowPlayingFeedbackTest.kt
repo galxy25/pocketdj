@@ -101,6 +101,22 @@ class NowPlayingFeedbackTest {
         assertFalse(store.addAcceptedSong("a", "dead-id"))
     }
 
+    @Test fun repeatAcceptNeverDuplicatesMembership() {
+        val f = File(tmp, CollectionsStore.FILE_NAME)
+        val store = CollectionsStore(f, now = { 1_750_000_000_000.0 }, writer = VersionedJsonWriter(f))
+        val pl = store.createPlaylist("PL")
+        assertTrue(store.addAcceptedSong("a", pl.id))
+        assertFalse(store.addAcceptedSong("a", pl.id))
+        fun cnt(ns: List<com.levi.pocketdj.data.collections.PlaylistNode>): Int =
+            ns.sumOf { (if (it.songId == "a") 1 else 0) + cnt(it.children ?: emptyList()) }
+        assertEquals(1, cnt(store.playlist(pl.id)!!.sequences))
+        val pocket = store.createPocket("Crate", listOf("z"))
+        assertTrue(store.addAcceptedSong("a", pocket.id))
+        assertFalse(store.addAcceptedSong("a", pocket.id))
+        assertEquals(1, store.pocket(pocket.id)!!.songIds.count { it == "a" })
+        assertFalse(store.addAcceptedSong("z", pocket.id)) // pre-existing member
+    }
+
     @Test fun zoneScopeRecordsFeedbackButAddsNothingInStore() {
         val f = File(tmp, CollectionsStore.FILE_NAME)
         val store = CollectionsStore(f, now = { 1_750_000_000_000.0 }, writer = VersionedJsonWriter(f))

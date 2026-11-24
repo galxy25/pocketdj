@@ -16,3 +16,10 @@ NowPlayingFeedback (data/recs) is the shared rec target: sequencer row + RecFeed
 
 ## Questions for Levi
 None.
+
+## Review
+- MAJOR addAcceptedSong membership check -> fixed (membership guard under the store lock, resolved + raw ids; returns false for existing members; test repeatAcceptNeverDuplicatesMembership covers playlist + pocket).
+- MINOR onPlaybackReplaced hook race -> fixed (hook installed synchronously in AppGraph.collections lazy block; endRecPlaybackScope always resolves the store; pending flag removed).
+- MINOR thumbs placement / recorder param -> rejected as a code change: documented deviation (thumbs sit in the deck-cluster rating slot; the recorder param is a small additive optional). produceState hop kept (avoids main-thread file read).
+
+fixes applied

@@ -75,21 +75,18 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
             file = java.io.File(app.appContext.filesDir, REC_FEEDBACK_FILE),
             scope = app.appScope,
             identityFile = java.io.File(app.appContext.filesDir, "pocketdj-rec-feedback-install-id"),
-        ).also { if (playbackScopeRetirePending.getAndSet(false)) it.endPlaybackScope() }
+        )
     }
     val recFeedbackStore: com.levi.pocketdj.data.recs.RecFeedbackStore by recFeedbackLazy
 
-    /** True when a queue replace fired before the store existed: its stale scope is retired on first touch. */
-    private val playbackScopeRetirePending = java.util.concurrent.atomic.AtomicBoolean(false)
-
     /**
-     * P2-SURF-1: `CollectionsStore.onPlaybackReplaced` target. Synchronous (ordering vs the tile's
-     * post-playNow `beginPlayback` matters); if the store has not been touched yet there is nothing live
-     * to retire off-main, so it is retired the moment the store is first built.
+     * P2-SURF-1: `CollectionsStore.onPlaybackReplaced` target (installed synchronously when the collections
+     * store is built, so no play can precede the hook). Synchronous (ordering vs the tile's post-playNow
+     * `beginPlayback` matters). Always resolves the store (lazy, thread-safe; its file read is off-main safe
+     * for this caller), so there is no check-then-act window where a retire could be lost.
      */
     fun endRecPlaybackScope() {
-        if (recFeedbackLazy.isInitialized()) recFeedbackStore.endPlaybackScope()
-        else playbackScopeRetirePending.set(true)
+        recFeedbackStore.endPlaybackScope()
     }
 
     /** The shared 👍/👎 target for NP / notification / widget / Auto (P2-SURF-1). */
@@ -203,8 +200,6 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
      */
     fun startRecs() {
         installNowPlayingRating()
-        // Off-main: the collections store reads its document on first touch.
-        app.appScope.launch(Dispatchers.IO) { app.collections.onPlaybackReplaced = { endRecPlaybackScope() } }
         startReleaseFeed()
         // Final review: the Add-to sheet / context submenu "Suggested" rows read this seam (it was never assigned).
         // Non-blocking cache read; a miss starts one fetch and the revision bump re-renders.

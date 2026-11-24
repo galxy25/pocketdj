@@ -1934,16 +1934,23 @@ class CollectionsStore(
      * nothing. Returns true when an add ran.
      */
     fun addAcceptedSong(songId: String, scopedTo: String): Boolean {
-        val target = synchronized(lock) {
-            when {
+        // iOS: membership check + add under one lock, so a repeat accept (toggle on/off/on) never duplicates.
+        return synchronized(lock) {
+            val target = when {
                 scopedTo == "zone" || scopedTo == "new" -> null
                 playlist(scopedTo) != null -> AddTarget(AddTarget.Kind.PLAYLIST, scopedTo)
                 pocket(scopedTo) != null -> AddTarget(AddTarget.Kind.POCKET, scopedTo)
                 else -> null
+            } ?: return@synchronized false
+            val members: Set<String> = if (target.kind == AddTarget.Kind.PLAYLIST) {
+                playableIdsForPlaylist(scopedTo).toSet() + songIdsInNodes(playlist(scopedTo)!!.sequences)
+            } else {
+                playableIdsForPocket(scopedTo).toSet() + pocket(scopedTo)!!.songIds
             }
-        } ?: return false
-        addSong(songId, target)
-        return true
+            if (songId in members) return@synchronized false
+            addSong(songId, target)
+            true
+        }
     }
 
     /** One live-queue row for [materializeNowPlayingSetlist]. */
