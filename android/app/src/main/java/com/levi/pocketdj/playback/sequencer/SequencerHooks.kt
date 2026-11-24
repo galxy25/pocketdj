@@ -42,6 +42,12 @@ interface SequencerListener {
     fun onFirstAudio(item: QueueItem, source: String) {}
     fun onHeld() {}
     fun onResumedFromHold() {}
+
+    /**
+     * A queue edit just landed the row [uid] at `index + 1` (Play Next, move-to-next, a drag to the top, a drop
+     * before the next row, a jukebox / remote insert at next). DJ Mode uses it to set the listener's pick.
+     */
+    fun onRowLandedNext(uid: String) {}
 }
 
 /**

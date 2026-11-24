@@ -80,10 +80,20 @@ data class SnapshotExtras(
         val queue = snap.queue.map { r ->
             val p = prev[r.songId]?.removeFirstOrNull() ?: return@map r
             r.copy(
-                plan = r.plan ?: p.plan,
+                // P2-PB-3: the sequencer now models plan + djUserNext, so the row's own value is AUTHORITATIVE (an
+                // absent plan means the row has none - it must not be revived from a previous row of the same
+                // song). Only the plan's unknown keys, and the legacy read-only djPlaced while the pick is still
+                // held, are carried over.
+                plan = r.plan?.let { rp ->
+                    if (p.plan != null && p.plan.runId == rp.runId && p.plan.slot == rp.slot) {
+                        rp.copy(unknownKeys = JsonObject(p.plan.unknownKeys + rp.unknownKeys))
+                    } else {
+                        rp
+                    }
+                },
                 appleMusicId = r.appleMusicId ?: p.appleMusicId,
-                djUserNext = r.djUserNext ?: p.djUserNext,
-                djPlaced = r.djPlaced ?: p.djPlaced,
+                djUserNext = r.djUserNext ?: p.djUserNext.takeIf { it == false }, // an explicit false is preserved; a true never revives
+                djPlaced = r.djPlaced ?: p.djPlaced.takeIf { r.djUserNext == true },
                 unknownKeys = JsonObject(p.unknownKeys + r.unknownKeys),
             )
         }

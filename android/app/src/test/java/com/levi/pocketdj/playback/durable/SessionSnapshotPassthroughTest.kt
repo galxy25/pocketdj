@@ -184,7 +184,7 @@ class SessionSnapshotPassthroughTest {
                 queue = loaded.toQueueItems().map { SessionSnapshot.row(it) },
                 npMixMode = null, fxLock = null, djMode = null, positionMs = 3,
             )
-            assertNull(rebuilt.queue[0].plan)
+            assertNotNull(rebuilt.queue[0].plan) // P2-PB-3: the sequencer now carries plan through QueueItem
             store.save(rebuilt)
             store.awaitWrites()
             val out = root(f.readText())

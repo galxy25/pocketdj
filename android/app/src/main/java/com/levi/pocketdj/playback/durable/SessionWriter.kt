@@ -101,7 +101,8 @@ class SessionWriter(
         if (positionValid()) position() else store.currentSnapshot?.positionMs ?: 0L
 
     private fun structurallyChanged(a: SequencerState, b: SequencerState): Boolean =
-        a.queue != b.queue || a.repeatMode != b.repeatMode || a.shuffleEnabled != b.shuffleEnabled ||
+        a.queue != b.queue || a.queue.map { it.plan to it.djUserNext } != b.queue.map { it.plan to it.djUserNext } ||
+            a.repeatMode != b.repeatMode || a.shuffleEnabled != b.shuffleEnabled ||
             a.sourceSetlistId != b.sourceSetlistId
 
     private fun save(st: SequencerState, positionMs: Long) {

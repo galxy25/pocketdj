@@ -17,6 +17,8 @@ data class SequencerState(
     val capturedOrigin: Pair<String, String>? = null,
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val shuffleEnabled: Boolean = false,
+    /** P2-PB-3: a Pocket Wheel run owns the sequencer, so playback ignores [repeatMode] (it is exactly N songs). */
+    val repeatForcedOff: Boolean = false,
     /** User-visible one-shot message (e.g. device queue unplayable). */
     val playbackNotice: String? = null,
     /** The current row is a live capture with no natural end (scrubber disabled, "Next" offered). */
@@ -32,6 +34,9 @@ data class SequencerState(
     /** P2-PB-2: bumps on every current-row change. */
     val transitionSeq: Long = 0,
 ) {
+    /** The repeat mode playback actually obeys (and every repeat surface must show): OFF while forced off. */
+    val effectiveRepeatMode: RepeatMode get() = if (repeatForcedOff) RepeatMode.OFF else repeatMode
+
     val current: QueueItem? get() = if (isRunning) queue.getOrNull(index) else null
 
     /** `queue[index].id` while running, else null. */
