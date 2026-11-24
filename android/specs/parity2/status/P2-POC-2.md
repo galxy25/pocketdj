@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # P2-POC-2 Play attribution phase 0
 
@@ -18,3 +18,7 @@ MixViewModel.kt (AutoMixPlan origin params), AutoDj.kt (originCollectionIdFor, s
 
 ## Questions for Levi
 None.
+
+## Result
+Tests: 5791 total, 0 failed (was 5790 before; PlayAttributionTest adds 11). testDebugUnitTest + assembleDebug green. assembleRelease not run: no manifest/gradle/proguard/library change.
+Build note: the machine sat at ~6 GB free for hours, so one-at-a-time's 8 GB gate never opened; the final build ran with FIN_MIN_FREE_GB=5 (the wrapper's documented knob, still serialized).
