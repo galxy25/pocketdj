@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-MM-4 Mix Mode ph2a: Mix Mode state + NowPlayingPrefetcher, network policy, disk guard
 
@@ -25,3 +25,14 @@ sweep over windows x networks x carries x cellular policies. Build ran with FIN_
 
 ## Questions for Levi
 - None blocking. Default for rips/cloud stem separation: gated on rip-server-configured (iOS gates on catalog owner); confirm who may trigger rips on Android.
+
+## Review
+- DiskGuard footprint/cap/sweep unwired (MINOR) -> accepted as known gap; MM-5 acceptance must bind footprint, cap and sweep to StorageManager. "Before EVERY step" is only delivered for the 1 GB free floor here.
+- awaitPendingDownload unused (MINOR) -> fixed: new `pendingDownload` seam on the lane; a DOWNLOADING Song is not cancelled by a re-plan and is awaited (<= 90 s) instead of re-fetched. Production binding (BurnStore ledger lookup) is MM-5. Test: replanDoesNotCancelAnExplicitDownloadingSong.
+- Blocked Song leaves its stems (MINOR) -> fixed: pending StemPart steps of a blocked song are dropped and cooldown-blocked. Test: blockedSongDropsItsPendingStemPartsToo.
+- Tautological Mix-off sweep (MINOR) -> fixed: hard-coded legacy Stem Lock goldens across networks (stemLockHardCodedGoldensPin...).
+- NetworkClass CONSTRAINED/VALIDATED (NIT) -> recorded deviation: Android CONSTRAINED = metered + Data Saver (iOS Low Data Mode also applies on Wi-Fi). Captive portals read as online (no VALIDATED check). Not changed.
+
+Suite 5944 tests, 0 failures (+3). assembleDebug OK.
+
+fixes applied
