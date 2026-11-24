@@ -380,6 +380,7 @@ class PocketRunStore(
     private fun beginActivityUpdates(a: RunState) {
         val start = startActivityUpdates ?: return
         if (a.viaMix || !adaptToActivity()) return
+        if (activityFeedOn) return   // already feeding this run: keep the tracker and its sustain clock
         activity = ActivityTracker()
         val runId = a.runId
         activityFeedOn = true

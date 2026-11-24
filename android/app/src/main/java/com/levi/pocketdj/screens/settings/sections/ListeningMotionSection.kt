@@ -155,7 +155,8 @@ internal fun listeningMotionSection() = SettingsSection(ListeningMotionCopy.ID, 
         onDispose { owner.lifecycle.removeObserver(obs) }
     }
 
-    if (!recEngineOn) return@SettingsSection
+    // Hidden with the engine off only when the opt-in is also off: an enabled registration must stay controllable.
+    if (!recEngineOn && !enabled) return@SettingsSection
     @Suppress("UNUSED_EXPRESSION") tick
 
     Row(

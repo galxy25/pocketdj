@@ -18,3 +18,11 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+- beginActivityUpdates double-call (PocketRunStore) -> fixed: returns early when the feed is already on; test beginningTheFeedTwiceKeepsTheSustainClock
+- Single-slot MotionTimelineStore hooks (PocketsGraph) -> fixed: stop only clears callbacks this graph installed (identity check)
+- Motion toggle hidden when rec engine off while opt-in stays on (ListeningMotionSection) -> fixed: section stays visible while the opt-in is enabled. ON_RESUME already refreshes the status.
+- NIT isEnabled volatility -> rejected: ListeningMotionStore.isEnabled is already @Volatile
+
+fixes applied. Tests: 7470, 0 failures; assembleDebug green.

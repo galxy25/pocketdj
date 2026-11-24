@@ -772,4 +772,19 @@ class PocketRunStoreTest {
         advanceTimeBy(5_000); runCurrent()
         assertNull(h.store.active.value)
     }
+
+    @Test fun beginningTheFeedTwiceKeepsTheSustainClock() = runTest {
+        val h = harness()
+        val f = h.wireAdapt(booleanArrayOf(true))
+        assertTrue(h.store.start(profile, seed = 42uL))
+        h.store.noteActivity(walking(h.clock[0]))
+        h.clock[0] += 100_000
+        h.store.resumeTrackingIfNeeded()
+        runCurrent()
+        assertEquals("a second begin must not re-register the feed", 1, f.starts)
+        h.clock[0] += 80_000
+        h.store.noteActivity(walking(h.clock[0]))
+        runCurrent()
+        assertEquals("the 180 s clock survived the second begin", PocketMode.WALKING, h.store.active.value!!.retargetedMode)
+    }
 }
