@@ -80,7 +80,8 @@ class SetlistSequencer(
     @Volatile var editionSubstituter: ((QueueItem, Boolean) -> String?)? = null
 
     /** Rows (uids) whose play took the rule-A substitution: they resolve rip-first. */
-    private val substitutedUids = HashSet<String>()
+    /** uid -> the row's original resolveId (restored when the row is freshly re-entered). */
+    private val substitutedUids = HashMap<String, String>()
 
     /** Fan-out target for natural-end / skip outcomes. */
     @Volatile var outcomes: PlayOutcomeRegistry? = null
@@ -835,6 +836,28 @@ class SetlistSequencer(
         job.start()
     }
 
+    /**
+     * P2-MM-10 rule A for the row at [at]. [restoreFirst] (a fresh entry / replay) puts the original resolveId back and
+     * re-evaluates, so the substitution lasts one play, as on iOS; retries and preloads keep it.
+     */
+    private fun applyEditionSubstitution(at: Int, row: QueueItem, restoreFirst: Boolean): QueueItem {
+        var item = row
+        if (restoreFirst) {
+            val orig = substitutedUids.remove(item.uid)
+            if (orig != null) { item = item.copy(resolveId = orig); queue[at] = item; memberIds = null }
+        }
+        if (!item.cleanOnlySkip && !item.editionLocked && item.uid !in substitutedUids) {
+            val sub = try { editionSubstituter?.invoke(item, cleanOnlyProvider(sourceSetlistId)) } catch (e: Exception) { null }
+            if (sub != null && sub != item.resolveId) {
+                substitutedUids[item.uid] = item.resolveId
+                item = item.copy(resolveId = sub)
+                queue[at] = item
+                memberIds = null
+            }
+        }
+        return item
+    }
+
     private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?, inPlace: Boolean, reResolve: Boolean, cued: Boolean = false) {
         if (!running || index >= queue.size) return
         // A job cancelled BEFORE it ran must do nothing - above all it must not claim a generation.
@@ -845,15 +868,7 @@ class SetlistSequencer(
         var item = queue[index]
         val at = index
         // P2-MM-10 rule A (never for locked / clean-only-skip rows): decided at the start, written into the row, sticky.
-        if (!item.cleanOnlySkip && !item.editionLocked && item.uid !in substitutedUids) {
-            val sub = try { editionSubstituter?.invoke(item, cleanOnlyProvider(sourceSetlistId)) } catch (e: Exception) { null }
-            if (sub != null && sub != item.resolveId) {
-                item = item.copy(resolveId = sub)
-                queue[at] = item
-                substitutedUids += item.uid
-                memberIds = null
-            }
-        }
+        item = applyEditionSubstitution(at, item, restoreFirst = fresh)
         // A new generation retires the previous start's timers; the start window + resolve stall guard this one.
         cancelHealthTimers()
         if (item.cleanOnlySkip) {
@@ -2091,8 +2106,12 @@ class SetlistSequencer(
             }
             if (target == null) return@launch
             if (preloader.slot?.uid == target.item.uid) return@launch // already the next row
+            val row = if (target.index in queue.indices && queue[target.index].uid == target.item.uid) {
+                val before = queue[target.index]
+                applyEditionSubstitution(target.index, before, restoreFirst = false).also { if (it !== before) publish() }
+            } else target.item
             val source = try {
-                registry.resolve(target.item, modeProvider())
+                registry.resolve(row, modeProvider(), ripFirst = row.uid in substitutedUids)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -2108,7 +2127,7 @@ class SetlistSequencer(
                 return@launch
             }
             val request = PlayRequest(
-                item = target.item,
+                item = row,
                 source = source!!,
                 context = requestContext(target.item),
                 originCollectionId = originCollectionIdFor(),
