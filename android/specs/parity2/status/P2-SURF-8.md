@@ -18,3 +18,11 @@ Android Auto gets an "Up Next" node listing the sequencer's unplayed rows keyed 
 
 ## Questions for Levi
 - Root placement of Up Next on hosts with a 4-item root limit (folds into Playlists); acceptable?
+
+## Review
+- MINOR PlaybackService listener leak -> fixed (listener kept, hooks.remove in onDestroy).
+- MINOR root/Playlists count stale, 100-row signature cap -> fixed (signature includes total count; count change re-notifies root+tabs via notifyLibraryChanged). Tests: countChange_pastTheRowCap_stillNotifies, updated queueChange tests.
+- NIT notifiedReady guard -> fixed (whole notify path guarded; test beforeCatalogReady_queueEditsDoNotNotify).
+- NIT Now Playing header / icon / emulator smoke -> not changed; emulator smoke is device-only (integrator owns emulator).
+
+fixes applied

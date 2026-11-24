@@ -108,12 +108,14 @@ class PlaybackService : MediaLibraryService() {
         )
         data.onLibraryChanged = { main.post { cb.notifyLibraryChanged() } }
         // SURF-8: every queue edit / advance re-notifies `upnext` (signature-filtered inside the callback).
-        app.playbackController.sequencer.hooks.add(object : com.levi.pocketdj.playback.sequencer.SequencerListener {
+        val upNextListener = object : com.levi.pocketdj.playback.sequencer.SequencerListener {
             override fun onQueueChanged(generation: Long) = cb.onUpNextChanged()
             override fun onTransition(t: com.levi.pocketdj.playback.sequencer.Transition) = cb.onUpNextChanged()
             override fun onSessionStarted(sessionId: String, source: com.levi.pocketdj.playback.sequencer.SourceRef) = cb.onUpNextChanged()
             override fun onSessionEnded(reason: com.levi.pocketdj.playback.sequencer.SessionEndReason) = cb.onUpNextChanged()
-        })
+        }
+        app.playbackController.sequencer.hooks.add(upNextListener)
+        this.upNextListener = upNextListener
         // A phone-side refresh/commit of the cached feed re-notifies the open lists (the car itself never refreshes).
         // Feed commits, thumbs and the release feed all change the tiles/rows; open fy:<tile> drill-ins are re-notified
         // by the callback itself. Posted to main like every other library notification.
@@ -465,7 +467,11 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    private var upNextListener: com.levi.pocketdj.playback.sequencer.SequencerListener? = null
+
     override fun onDestroy() {
+        upNextListener?.let { l -> runCatching { com.levi.pocketdj.di.AppGraph.get(applicationContext).playbackController.sequencer.hooks.remove(l) } }
+        upNextListener = null
         placesRevisionJob?.cancel()
         fgsHandler.removeCallbacksAndMessages(null)
         runCatching { resumeExecutor.shutdown() }

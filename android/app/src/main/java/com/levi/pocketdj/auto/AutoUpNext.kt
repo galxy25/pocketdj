@@ -32,7 +32,14 @@ class AutoUpNext(
     val hasRows: Boolean get() = source.upcoming().isNotEmpty()
 
     /** Identity + order of the rows: the notify filter (an unchanged list is never re-notified). */
-    fun signature(): String = rows().joinToString(",") { it.uid }
+    fun signature(): String {
+        val all = source.upcoming()
+        if (all.isEmpty()) return ""
+        return "${all.size}|" + all.take(maxRows).joinToString(",") { it.uid }
+    }
+
+    /** Total upcoming rows (uncapped): what the root / Playlists subtitle and childCount show. */
+    fun count(): Int = source.upcoming().size
 
     fun tabNode(): AutoNode {
         val n = source.upcoming().size

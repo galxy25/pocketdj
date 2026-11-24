@@ -169,6 +169,7 @@ class AutoLibraryCallback(
     }
 
     private var upNextSignature: String? = null
+    private var upNextCount = 0
     private var upNextShown: Boolean? = null // null = never evaluated (treated as hidden)
 
     /**
@@ -182,10 +183,14 @@ class AutoLibraryCallback(
         if (sig == upNextSignature) return
         upNextSignature = sig
         val shown = sig.isNotEmpty()
+        val countChanged = upNextCount != up.count()
+        upNextCount = up.count()
         val flipped = (upNextShown ?: false) != shown
         upNextShown = shown
-        if (flipped) notifyLibraryChanged(AutoId.UpNext.encoded)
-        else if (notifiedReady || shown) notifyChildrenChanged(AutoId.UpNext.encoded, up.rows().size)
+        if (!notifiedReady) return
+        // Appeared/vanished or the count changed: the root/Playlists subtitle + childCount are stale too.
+        if (flipped || countChanged) notifyLibraryChanged(AutoId.UpNext.encoded)
+        else notifyChildrenChanged(AutoId.UpNext.encoded, up.rows().size)
     }
 
     /** A per-row Up Next command button. Returns false when it is not ours / the row is gone (the host shows an error). */

@@ -154,7 +154,27 @@ class AutoUpNextTest {
         r.notified.clear()
         r.source.rows = listOf(row("u2")) // one played/removed
         r.cb.onUpNextChanged()
-        assertEquals(listOf("upnext" to 1), r.notified)
+        assertTrue(r.notified.contains("upnext" to 1))
+        assertTrue(r.notified.any { it.first == "root" }) // count changed: root subtitle refreshed too
+    }
+
+    @Test fun countChange_pastTheRowCap_stillNotifies() {
+        val many = (1..150).map { row("u$it") }
+        val r = Rig(many)
+        r.cb.onCatalogReady(); r.cb.onUpNextChanged(); r.notified.clear()
+        r.source.rows = many.drop(1) // 149 left, visible 100 rows' uids identical shifted -> still differs; drop tail instead
+        r.cb.onUpNextChanged(); r.notified.clear()
+        r.source.rows = many.drop(1).dropLast(1) // first 100 uids unchanged, total 148
+        r.cb.onUpNextChanged()
+        assertTrue(r.notified.any { it.first == "root" })
+    }
+
+    @Test fun beforeCatalogReady_queueEditsDoNotNotify() {
+        val r = Rig(listOf(row("u1")))
+        r.cb.onUpNextChanged()
+        r.source.rows = listOf(row("u1"), row("u2"))
+        r.cb.onUpNextChanged()
+        assertTrue(r.notified.isEmpty())
     }
 
     @Test fun queueEmptying_notifiesRootSoTheTabVanishes() {
@@ -170,7 +190,7 @@ class AutoUpNextTest {
         val r = Rig(listOf(row("u1"), row("u2")))
         r.cb.onCatalogReady(); r.cb.onUpNextChanged(); r.notified.clear()
         r.cb.upNextCommand(AutoUpNext.ACTION_REMOVE, "upnext:u1")
-        assertEquals(listOf("upnext" to 1), r.notified)
+        assertTrue(r.notified.contains("upnext" to 1))
     }
 
     @Test fun item_resolvesRowAndRoot_andNothingElse() {
