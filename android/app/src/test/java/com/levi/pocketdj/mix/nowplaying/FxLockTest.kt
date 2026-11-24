@@ -44,6 +44,12 @@ class FxLockTest {
         assertFalse("an effect only a newer build knows cannot be applied", FxLockState(true, mapOf("echoPlus" to on())).wantsFX)
     }
 
+    @Test fun knownEffectsDropsUnknownKeysSoEngageComparisonCanMatch() {
+        val st = FxLockState(true, mapOf("reverb" to on(0.7), "echoPlus" to on()))
+        assertEquals(mapOf("reverb" to on(0.7)), st.knownEffects)
+        assertEquals(setOf("reverb"), st.knownEffects.keys)
+    }
+
     @Test fun logSummaryListsOnEffectsSorted() {
         assertEquals("fx=none", FxLockState(true, mapOf("reverb" to off())).logSummary)
         assertEquals("fx=filter:0.30,reverb:0.70", FxLockState(true, mapOf("reverb" to on(0.7), "filter" to on(0.3), "flanger" to off())).logSummary)

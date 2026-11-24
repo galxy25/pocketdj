@@ -225,7 +225,7 @@ class NowPlayingDspHost(
                 return
             }
             // The engage ramped the stamped effects in; if anything moved the control state in between, the carry wins.
-            if (engine.effectSettings() != st.effects) engine.applyCarriedEffects(st.effects)
+            if (engine.effectSettings() != st.knownEffects) engine.applyCarriedEffects(st.effects)
             FxLock.log("carry song=$songId ${st.logSummary} -> engaged at start (ramp ${(engine.fxRampSeconds * 1000).toInt()}ms)")
         } finally { fxLock.applying = false }
     }

@@ -66,6 +66,9 @@ data class FxLockState(
     val unknownKeys: JsonObject = JsonObject(emptyMap()),
 ) {
     /** Lock on AND at least one KNOWN carried effect ON: the only state that changes playback or downloads. */
+    /** [effects] restricted to the keys this build can apply (what `effectSettings()` can ever report). */
+    val knownEffects: Map<String, SessionFxSetting> get() = effects.filterKeys { it in FxLock.knownKeys }
+
     val wantsFX: Boolean get() = enabled && effects.any { (k, v) -> v.on && k in FxLock.knownKeys }
 
     /** One-line summary for the trace (`fx=reverb:0.70,filter:0.30` - ON effects only, sorted). */
