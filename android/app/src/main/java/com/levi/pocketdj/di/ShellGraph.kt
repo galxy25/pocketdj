@@ -1,5 +1,6 @@
 package com.levi.pocketdj.di
 
+import com.levi.pocketdj.assistant.IntentSongMatcher
 import com.levi.pocketdj.assistant.MediaCandidate
 import com.levi.pocketdj.assistant.MediaSearchHandler
 import com.levi.pocketdj.assistant.MediaSearchIntentHandler
@@ -153,13 +154,36 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
         return out
     }
 
+    /** Pre-normalized song rows, cached per catalog identity (one rebuild per catalog revision). */
+    @Volatile private var songRowCache: Pair<Any, List<IntentSongMatcher.Row>>? = null
+
+    private fun songRows(): List<IntentSongMatcher.Row> {
+        val catalog = app.catalogRepository.state.value.catalog ?: return emptyList()
+        songRowCache?.let { if (it.first === catalog) return it.second }
+        val rows = catalog.songsById.values.map { IntentSongMatcher.Row(it.id, it.name, it.artist) }
+        songRowCache = catalog to rows
+        return rows
+    }
+
     private val mediaSearch: MediaSearchHandler by lazy {
         MediaSearchHandler(
             actions = shellActions,
             candidates = ::mediaCandidates,
             openRoute = NavRequestBus::post,
             message = NavRequestBus::postMessage,
+            songRows = ::songRows,
+            preferSong = ::preferSong,
         )
+    }
+
+    /** Tie-break for voice song matches: the audible song, or one already filed in a pocket / playlist. */
+    private fun preferSong(songId: String): Boolean {
+        val st = app.playbackGraph.sequencer.state.value
+        if (st.isRunning && st.currentSongId == songId) return true
+        if (app.collections.pockets.any { songId in it.songIds }) return true
+        fun inNodes(nodes: List<com.levi.pocketdj.data.collections.PlaylistNode>): Boolean =
+            nodes.any { it.songId == songId || (it.children?.let(::inNodes) ?: false) }
+        return app.collections.playlists.any { it.id != NOW_PLAYING_PLAYLIST_ID && inNodes(it.sequences) }
     }
 
     /** Dynamic launcher shortcuts: most recently played playlists/pockets (iOS donations analogue). */

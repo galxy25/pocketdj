@@ -97,8 +97,8 @@ class MediaSearchHandlerTest {
     fun noMatch_landsOnBrowseWithTheQuery() {
         val r = resolve("  something else ", pool = listOf(pk("pk", "Warmup")))
         assertEquals(MediaSearchResult.Browse("something else"), r)
-        // A partial token ("warm") is NOT coverage of "warmup".
-        assertEquals(MediaSearchResult.Browse("warm"), resolve("warm", pool = listOf(pk("pk", "Warmup"))))
+        // Initials / subsequence never match (922ea73c).
+        assertEquals(MediaSearchResult.Browse("wu"), resolve("wu", pool = listOf(pk("pk", "Warmup"))))
     }
 
     @Test
@@ -164,5 +164,39 @@ class MediaSearchHandlerTest {
         actions.fail = ShellActionException.SetupIncomplete
         assertNull(h.handle(MediaSearchRequest("warmup")))
         assertEquals(listOf("Finish setting up PocketDJ in the app first."), messages)
+    }
+
+    private fun songResolve(q: String, rows: List<IntentSongMatcher.Row>, prefer: (String) -> Boolean = { false }) =
+        MediaSearchResolver.resolve(MediaSearchRequest(q, MediaFocus.Any), { rows }, prefer) { emptyList() }
+
+    @Test
+    fun titleStartingWithFillerWord_exactTitleWinsOverStripped() {
+        val rows = listOf(
+            IntentSongMatcher.Row("pm", "Please Mr. Postman", "The Marvelettes"),
+            IntentSongMatcher.Row("other", "Mr. Postman", "The Beatles"),
+        )
+        val r = songResolve("Please Mr. Postman", rows) as MediaSearchResult.Play
+        assertEquals("pm", r.candidate.id)
+        val pd = songResolve("Play Date", listOf(IntentSongMatcher.Row("pd", "Play Date", "Melanie Martinez"), IntentSongMatcher.Row("d", "Date", "X"))) as MediaSearchResult.Play
+        assertEquals("pd", pd.candidate.id)
+    }
+
+    @Test
+    fun fillerStillStrippedWhenTitleHasNone() {
+        val r = songResolve("play Warmup please", listOf(IntentSongMatcher.Row("w", "Warmup", "A"))) as MediaSearchResult.Play
+        assertEquals("w", r.candidate.id)
+    }
+
+    @Test
+    fun equalScoreSongTie_preferredSongWins_elseBrowse() {
+        val rows = listOf(IntentSongMatcher.Row("a", "Echo", "One"), IntentSongMatcher.Row("b", "Echo", "Two"))
+        assertTrue(songResolve("Echo", rows) is MediaSearchResult.Browse)
+        assertEquals("b", ((songResolve("Echo", rows) { it == "b" }) as MediaSearchResult.Play).candidate.id)
+    }
+
+    @Test
+    fun collectionNameTie_picksMostRecentlyPlayed_pinned() {
+        val pool = listOf(pl("a", "Chill", 1.0), pk("b", "Chill", 5.0))
+        assertEquals("b", (resolve("Chill", MediaFocus.Any, pool) as MediaSearchResult.Play).candidate.id)
     }
 }
