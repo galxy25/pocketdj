@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-SURF-9 Auto Mix tab live controls + jukebox QR artwork
 
@@ -21,3 +21,11 @@ Live rows (after Stop): shortfall, FX Glide, Audio Glide (= Android mixGlide), o
 
 ## Questions for Levi
 - None blocking. DHU check needed: QR artwork size/readability and whether the host can read the content:// URI.
+
+## Review
+- Catalog shortfall hidden pre-engine (AppAutoServices.setupControls) → fixed: shortfall returned whenever downloadStateIfBuilt() has one; new AutoMixControls.glideKnown=false hides (and un-taps) only the glide rows until the engine exists. Test setupShortfall_showsWithoutGlideRows_whenEngineNotBuilt (7673 → 7674 tests).
+- notifyMix before async mutation → rejected: the `main` scope is already Dispatchers.Main.immediate, so launch from the main thread runs the setter synchronously before notifyMix(); no lag on the main-thread path.
+- Stale cached lead deck → fixed: leadDeck() now reads AutoDj.liveDeck (live internal var) instead of ui.value.liveDeck.
+- NIT hostKey denylist → rejected: the broker hostKey is a Bearer header (JukeboxClient), never in a guest URL; listSessions URLs carry none. The strip stays as defense in depth.
+
+fixes applied

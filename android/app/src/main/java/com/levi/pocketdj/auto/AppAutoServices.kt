@@ -418,14 +418,15 @@ class AppAutoMixExtras(
 
     // ---- Lead-deck live controls (iOS CarPlayModel.mixLeadDeck = the now-playing / live deck) ----
 
-    private fun leadDeck() = app.mixGraph.autoDj.ui.value.liveDeck
+    /** The lead deck read live from the engine (not the cached ui snapshot, which lags a crossfade). */
+    private fun leadDeck() = app.mixGraph.autoDj.liveDeck
 
     override fun setupControls(): AutoMixControls? {
         val sf = app.mixGraph.downloadStateIfBuilt()?.catalogShortfall?.let { it.declared to it.total }
-        // Reading the glide flags would build the engine; before Start only the defaults are honest, so show the persisted-free defaults.
+        // Reading the glide flags would build the engine: only read them once it exists; the shortfall never needs it.
         return if (app.mixGraph.engineBuilt()) AutoMixControls(
             fxGlide = app.mixGraph.autoDj.fxGlideEnabled, audioGlide = app.mixGraph.autoDj.mixGlideEnabled, shortfall = sf,
-        ) else null
+        ) else if (sf != null) AutoMixControls(shortfall = sf, glideKnown = false) else null
     }
 
     override fun controls(): AutoMixControls? {

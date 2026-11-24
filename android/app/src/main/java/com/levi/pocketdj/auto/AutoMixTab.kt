@@ -108,6 +108,8 @@ data class AutoMixControls(
     val stemsLoading: Boolean = false,
     val mutedStems: Set<String> = emptySet(),
     val shortfall: Pair<Int, Int>? = null,
+    /** False when the engine is not built yet: glide values are unknown, so the glide rows are hidden (shortfall still shows). */
+    val glideKnown: Boolean = true,
 )
 
 data class AutoJukeSession(val id: String, val name: String, val timeless: Boolean, val url: String)
@@ -249,7 +251,7 @@ class AutoMixTab(
             browsable = true, childBrowsableStyle = AutoStyle.LIST, childPlayableStyle = AutoStyle.LIST,
         )
         val c = extras.setupControls()
-        if (c != null) out += glideRows(c)
+        if (c != null && c.glideKnown) out += glideRows(c)
         out += AutoNode(
             mix(AutoMixKind.START), "▶ Start Mix",
             subtitle = if (a == null) "Pick Deck A first" else "Shuffled auto-mix",
@@ -447,8 +449,8 @@ class AutoMixTab(
             }
             AutoMixKind.SKIP_FAST -> if (facade.autoMixing) extras.skipFast()
             AutoMixKind.SKIP_SLOW -> if (facade.autoMixing) extras.skipSlow()
-            AutoMixKind.FX_GLIDE -> { val c = extras.setupControls() ?: extras.controls() ?: return null; extras.setFxGlide(!c.fxGlide) }
-            AutoMixKind.AUDIO_GLIDE -> { val c = extras.setupControls() ?: extras.controls() ?: return null; extras.setAudioGlide(!c.audioGlide) }
+            AutoMixKind.FX_GLIDE -> { val c = (extras.setupControls()?.takeIf { it.glideKnown }) ?: extras.controls() ?: return null; extras.setFxGlide(!c.fxGlide) }
+            AutoMixKind.AUDIO_GLIDE -> { val c = (extras.setupControls()?.takeIf { it.glideKnown }) ?: extras.controls() ?: return null; extras.setAudioGlide(!c.audioGlide) }
             AutoMixKind.FX_SLOT -> {
                 val c = liveControls() ?: return null
                 val i = id.a.toIntOrNull() ?: return null

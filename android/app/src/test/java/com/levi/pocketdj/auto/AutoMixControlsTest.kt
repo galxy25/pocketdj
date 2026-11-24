@@ -156,6 +156,16 @@ class AutoMixControlsTest {
         assertTrue(kids().any { it.title == "FX Glide" })
     }
 
+    @Test fun setupShortfall_showsWithoutGlideRows_whenEngineNotBuilt() {
+        facade.autoMixing = false
+        extras.ctl = null
+        extras.setup = AutoMixControls(shortfall = 40 to 25, glideKnown = false)
+        assertNotNull(kids().firstOrNull { it.id == AutoId.Mix(AutoMixKind.SHORTFALL).encoded })
+        assertTrue(kids().none { it.title == "FX Glide" || it.title == "Audio Glide" })
+        assertNull(sel(AutoMixKind.FX_GLIDE))
+        assertTrue(extras.calls.isEmpty())
+    }
+
     @Test fun setupWithoutControls_hasNoGlideOrShortfall() {
         facade.autoMixing = false
         assertTrue(kids().none { it.title == "FX Glide" || it.id.contains("short") })
