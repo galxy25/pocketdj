@@ -1,6 +1,10 @@
 package com.levi.pocketdj.screens.foryou
 
 import com.levi.pocketdj.data.recs.ArtistReleaseEntry
+import com.levi.pocketdj.data.settings.AppSettings
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import com.levi.pocketdj.data.recs.ForYouRelease
 import com.levi.pocketdj.data.recs.ForYouReleaseSource
 import com.levi.pocketdj.data.recs.LikedRelease
@@ -33,6 +37,10 @@ enum class NewReleaseKindFilter(val raw: String, val label: String) {
     ALBUMS_FIRST("albumsFirst", "Albums, then singles");
 
     companion object {
+        /** The persisted mode, read once BEFORE first composition so a saved choice never flashes as Everything. */
+        fun initial(settings: Flow<AppSettings>): NewReleaseKindFilter =
+            runBlocking { from(settings.first().newReleaseKind) }
+
         /** Missing or unknown raw → ALL (upgrade-safe). */
         fun from(raw: String?): NewReleaseKindFilter = entries.firstOrNull { it.raw == raw } ?: ALL
     }
@@ -52,6 +60,8 @@ object NewReleaseKinds {
         when (kind?.lowercase()) {
             "single" -> return ReleaseKindClass.SINGLE
             "ep" -> return ReleaseKindClass.EP
+            // The declared kind wins over the track-count guess (classical works, lead-track pre-orders, compilations).
+            "album", "compilation" -> return ReleaseKindClass.ALBUM
         }
         if (trackCount != null) {
             if (trackCount in 1..3) return ReleaseKindClass.SINGLE
@@ -118,6 +128,10 @@ object NewReleaseKinds {
         if (parts.isEmpty()) return null
         return parts.joinToString(", ") + " hidden"
     }
+
+    /** Albums-only footer caveat: the feed keeps one latest release per artist, so a newer single can displace its album. */
+    fun footerCaveat(mode: NewReleaseKindFilter, hiddenSingles: Int): String? =
+        if (mode == NewReleaseKindFilter.ALBUMS && hiddenSingles > 0) "A newer single can hide an artist's album." else null
 
     /** "albums" / "singles": what a mode is looking at, for "No new albums". */
     fun shownNoun(mode: NewReleaseKindFilter): String = if (mode == NewReleaseKindFilter.SINGLES) "singles" else "albums"

@@ -92,7 +92,8 @@ struct NewReleasesView: View {
                 section(ReleaseStatus.outNow, outNowA, preAdded: preAdded)
                 section(ReleaseStatus.comingSoon, soonA, preAdded: preAdded)
                 if let hiddenNote {
-                    hiddenFooter(note: hiddenNote, count: hiddenAlbums + hiddenSingles)
+                    hiddenFooter(note: hiddenNote, count: hiddenAlbums + hiddenSingles,
+                                 caveat: NewReleaseKinds.footerCaveat(mode: mode, hiddenSingles: hiddenSingles))
                 }
             }
         }
@@ -200,11 +201,17 @@ struct NewReleasesView: View {
 
     /// "3 singles hidden · Show all" — so the filter can never hide things silently. The value is
     /// the hidden count; it counts rows that WOULD render under Everything (👎'd ones included).
-    private func hiddenFooter(note: String, count: Int) -> some View {
+    private func hiddenFooter(note: String, count: Int, caveat: String? = nil) -> some View {
         HStack {
-            Text(note).font(.caption).foregroundStyle(Theme.fgDim)
-                .accessibilityIdentifier("new-kind-hidden-footer")
-                .accessibilityValue("\(count)")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(note).font(.caption).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("new-kind-hidden-footer")
+                    .accessibilityValue("\(count)")
+                if let caveat {
+                    Text(caveat).font(.caption2).foregroundStyle(Theme.fgDim)
+                        .accessibilityIdentifier("new-kind-hidden-caveat")
+                }
+            }
             Spacer()
             Button("Show all") { showAll() }
                 .font(.caption.weight(.semibold))

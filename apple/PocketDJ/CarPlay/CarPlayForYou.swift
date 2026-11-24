@@ -155,6 +155,12 @@ extension CarPlayModel {
         let accepted = feedback?.acceptedInScope(scope) ?? [:]
         let offered = (services.releaseFeed?.outNow(nowMs: nowMs) ?? []).filter { accepted[$0.feedbackId] == nil }
         let a = NewReleaseKinds.arrange(offered, mode: mode, cls: { $0.entry.kindClass })
+        // Only blame the filter if it hides something LIVE: when the visible kind is all 👎'd the
+        // list is empty for that reason, not this one (iOS ForYouGrid guards the same way).
+        let sunk = feedback?.activeTombstones(scope: scope, nowMs: nowMs) ?? [:]
+        let hiddenKind = offered.filter { (mode == .albums) ? $0.entry.kindClass == .single
+                                                           : $0.entry.kindClass.isAlbumBucket }
+        guard hiddenKind.contains(where: { sunk[$0.feedbackId] == nil }) else { return nil }
         guard let hidden = NewReleaseKinds.hiddenNote(albums: a.hiddenAlbums, eps: a.hiddenEPs,
                                                       singles: a.hiddenSingles) else { return nil }
         return NewReleaseKinds.emptyNote(mode: mode, hidden: hidden)

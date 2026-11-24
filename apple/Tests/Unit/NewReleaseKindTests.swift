@@ -19,11 +19,22 @@ final class NewReleaseKindTests: XCTestCase {
         XCTAssertEqual(cls("album", "  Thing - SINGLE  ", nil), .single, "trimmed, case-insensitive")
         XCTAssertEqual(cls("single", "Remix Bundle", 8), .single, "a remix-bundle single stays a single")
         XCTAssertEqual(cls("ep", "Thing", 12), .ep)
-        XCTAssertEqual(cls("album", "Midnight Edit", 2), .single, "a 2-track 'album' is a single")
-        XCTAssertEqual(cls("album", "Thing", 5), .ep)
+        XCTAssertEqual(cls(nil, "Midnight Edit", 2), .single, "no declared kind: count guesses")
+        XCTAssertEqual(cls(nil, "Thing", 5), .ep)
+        // Review fix: a DECLARED album/compilation is trusted over the track count.
+        XCTAssertEqual(cls("album", "Short Classical Work", 2), .album)
+        XCTAssertEqual(cls("album", "Lead Tracks Pre-order", 3), .album)
+        XCTAssertEqual(cls("compilation", "Hits", 5), .album)
+        XCTAssertEqual(NewReleaseKinds.badge(kind: "compilation", cls: cls("compilation", "Hits", 2)), "Compilation")
         XCTAssertEqual(cls("album", "Thing", 12), .album)
         XCTAssertEqual(cls("compilation", "Hits", 20), .album)
         XCTAssertEqual(cls(nil, nil, nil), .album, "unknown everything is an album")
+    }
+
+    func testAlbumsOnlyFooterCaveat() {
+        XCTAssertEqual(NewReleaseKinds.footerCaveat(mode: .albums, hiddenSingles: 1), "A newer single can hide an artist's album.")
+        XCTAssertNil(NewReleaseKinds.footerCaveat(mode: .albums, hiddenSingles: 0))
+        XCTAssertNil(NewReleaseKinds.footerCaveat(mode: .singles, hiddenSingles: 3))
     }
 
     func testBadgeFollowsTheClassAndKeepsCompilation() {

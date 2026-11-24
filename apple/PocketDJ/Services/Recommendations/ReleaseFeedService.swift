@@ -689,7 +689,7 @@ final class ReleaseFeedService {
             ArtistReleaseEntry(artistId: 900_006, artistName: "Midnight Radio",
                                checkedAtMs: nowMs, releaseId: "9000000006",
                                releaseName: "Midnight Edit", releaseAtMs: nowMs - 3 * day,
-                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 1),
+                               releaseArtworkUrl: nil, releaseKind: nil, trackCount: 1),
         ]
     }
 

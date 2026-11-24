@@ -39,11 +39,22 @@ class NewReleaseKindTest {
         assertEquals(ReleaseKindClass.SINGLE, cls("album", "  Thing - SINGLE  ", null))
         assertEquals(ReleaseKindClass.SINGLE, cls("single", "Remix Bundle", 8))
         assertEquals(ReleaseKindClass.EP, cls("ep", "Thing", 12))
-        assertEquals(ReleaseKindClass.SINGLE, cls("album", "Midnight Edit", 2))
-        assertEquals(ReleaseKindClass.EP, cls("album", "Thing", 5))
+        assertEquals("no declared kind: count guesses", ReleaseKindClass.SINGLE, cls(null, "Midnight Edit", 2))
+        assertEquals(ReleaseKindClass.EP, cls(null, "Thing", 5))
+        // Review fix: a DECLARED album/compilation is trusted over the track count.
+        assertEquals(ReleaseKindClass.ALBUM, cls("album", "Short Classical Work", 2))
+        assertEquals(ReleaseKindClass.ALBUM, cls("album", "Lead Tracks Pre-order", 3))
+        assertEquals(ReleaseKindClass.ALBUM, cls("compilation", "Hits", 5))
+        assertEquals("Compilation", NewReleaseKinds.badge("compilation", cls("compilation", "Hits", 2)))
         assertEquals(ReleaseKindClass.ALBUM, cls("album", "Thing", 12))
         assertEquals(ReleaseKindClass.ALBUM, cls("compilation", "Hits", 20))
         assertEquals(ReleaseKindClass.ALBUM, cls(null, null, null))
+    }
+
+    @Test fun albumsOnlyFooterCaveat() {
+        assertEquals("A newer single can hide an artist's album.", NewReleaseKinds.footerCaveat(NewReleaseKindFilter.ALBUMS, 1))
+        assertEquals(null, NewReleaseKinds.footerCaveat(NewReleaseKindFilter.ALBUMS, 0))
+        assertEquals(null, NewReleaseKinds.footerCaveat(NewReleaseKindFilter.SINGLES, 3))
     }
 
     @Test fun badgeFollowsTheClassAndKeepsCompilation() {
@@ -130,7 +141,7 @@ class NewReleaseKindTest {
         e(900_002, "Late Cut", "single", 2, now - 9 * day),
         e(900_003, "Preorder EP", "ep", 5, now + 6 * day),
         e(900_005, "Fresh Cut - Single", "single", 1, now - 1 * day),
-        e(900_006, "Midnight Edit", "album", 1, now - 3 * day),
+        e(900_006, "Midnight Edit", null, 1, now - 3 * day),
     )
 
     private fun service(list: List<ArtistReleaseEntry>): ReleaseFeedService =

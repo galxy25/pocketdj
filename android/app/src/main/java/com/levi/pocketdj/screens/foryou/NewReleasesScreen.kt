@@ -252,7 +252,7 @@ fun NewReleasesScreen(
     // Per section: offered -> arrange (the albums/singles choice, rejected sinking INSIDE each group) -> render.
     // The filter comes AFTER `offered`, so a thumbed-up release still leaves Out now and moves to Liked.
     val mode by remember { graph.settings.settings.map { NewReleaseKindFilter.from(it.newReleaseKind) } }
-        .collectAsState(NewReleaseKindFilter.ALL)
+        .collectAsState(remember { NewReleaseKindFilter.initial(graph.settings.settings) })
     val offeredOut = remember(rev, fbState.revision, preAdded) {
         NewReleasesPresentation.offered(service.outNow(now), accepted, preAdded)
     }
@@ -297,7 +297,7 @@ fun NewReleasesScreen(
     // The LIVE half, computed ONCE and used by both the rows and the transport's enabled state. It reads the
     // ARRANGED list, so play queues albums then singles and shuffle shuffles all of it (the 25-release cap
     // applies after this ordering, so singles are what get cut).
-    val liveOutNow = remember(outNowA, tombstones) { NewReleasesPresentation.live(outNowA.flat, tombstones) }
+    val liveOutNow = remember(offeredOut, mode, tombstones) { NewReleaseKinds.liveOutNow(offeredOut, mode, tombstones) }
     val canPlay = NewReleasesPresentation.canPlay(starting, liveOutNow)
 
     fun start(shuffle: Boolean) {
@@ -389,11 +389,20 @@ fun NewReleasesScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                         ) {
-                            Text(
-                                hiddenNote, style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.weight(1f).testTag("new-kind-hidden-footer"),
-                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    hiddenNote, style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.testTag("new-kind-hidden-footer"),
+                                )
+                                NewReleaseKinds.footerCaveat(mode, hiddenSingles)?.let {
+                                    Text(
+                                        it, style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.testTag("new-kind-hidden-caveat"),
+                                    )
+                                }
+                            }
                             TextButton(
                                 onClick = { scope.launch { graph.settings.setNewReleaseKind(NewReleaseKindFilter.ALL.raw) } },
                                 modifier = Modifier.testTag("new-kind-show-all"),

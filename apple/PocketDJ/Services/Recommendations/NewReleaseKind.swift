@@ -59,7 +59,7 @@ enum NewReleaseKinds {
 
     /// First match wins. Apple suffixes catalog names with " - Single" / " - EP", so the NAME is the
     /// most trustworthy signal (`AppModel`'s mapping never yields "ep" and calls every non-single
-    /// "album"); the flag comes next; the track count only guesses (Apple's own rule: 1–3 tracks
+    /// "album"); the flag comes next; the track count only guesses WHEN THERE IS NO FLAG (Apple's own rule: 1–3 tracks
     /// single, 4–6 EP). An Apple-declared single with many tracks (a remix bundle) stays a single.
     static func classify(kind: String?, name: String?, trackCount: Int?) -> ReleaseKindClass {
         let n = (name ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -68,6 +68,11 @@ enum NewReleaseKinds {
         switch kind?.lowercased() {
         case "single"?: return .single
         case "ep"?:     return .ep
+        case "album"?, "compilation"?:
+            // Apple's (or the feed's) own word wins over the track-count guess: a 2-track classical
+            // work or a pre-order announced with its lead tracks is still an album, and a
+            // 5-track compilation is still a compilation.
+            return .album
         default:        break
         }
         if let t = trackCount {
@@ -147,6 +152,12 @@ enum NewReleaseKinds {
         if singles > 0 { parts.append("\(singles) \(singles == 1 ? "single" : "singles")") }
         guard !parts.isEmpty else { return nil }
         return parts.joined(separator: ", ") + " hidden"
+    }
+
+    /// The Albums-only footer caveat: the feed keeps ONE latest release per artist, so a newer
+    /// single can displace that artist's album. Nil outside `.albums` or when no single is hidden.
+    static func footerCaveat(mode: NewReleaseKindFilter, hiddenSingles: Int) -> String? {
+        mode == .albums && hiddenSingles > 0 ? "A newer single can hide an artist's album." : nil
     }
 
     /// The word for what a mode is looking at, for "No new albums" / "No new singles".
