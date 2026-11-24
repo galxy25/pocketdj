@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -144,6 +145,17 @@ fun PlaylistsScreen(
 
     // Dialog state.
     var createDialog by remember { mutableStateOf<CreateKind?>(null) }
+    // P2-SURF-11: "Create pocket…" (typed / dictated brief) + the async build's banner.
+    val pocketBuilder = remember { graph.shellGraph.pocketBuilder }
+    val buildPhase by pocketBuilder.phase.collectAsState()
+    var createPocketSheet by remember { mutableStateOf(false) }
+    val sheetRequested by com.levi.pocketdj.data.pockets.CreatePocketRequests.open.collectAsState()
+    LaunchedEffect(sheetRequested) {
+        if (sheetRequested) {
+            createPocketSheet = true
+            com.levi.pocketdj.data.pockets.CreatePocketRequests.consume()
+        }
+    }
     var renameItem by remember { mutableStateOf<RowRef?>(null) }
     var deleteItem by remember { mutableStateOf<RowRef?>(null) }
     var moveItem by remember { mutableStateOf<RowRef?>(null) }
@@ -201,10 +213,19 @@ fun PlaylistsScreen(
             IconButton(onClick = { createDialog = CreateKind.POCKET }) {
                 Icon(Icons.Filled.Layers, contentDescription = "New pocket")
             }
+            IconButton(onClick = { createPocketSheet = true }, modifier = Modifier.testTag("collections-create-pocket")) {
+                Icon(Icons.Filled.AutoAwesome, contentDescription = "Create pocket from a description")
+            }
             IconButton(onClick = { createDialog = CreateKind.PLAYLIST }) {
                 Icon(Icons.Filled.Add, contentDescription = "New playlist")
             }
         }
+
+        com.levi.pocketdj.screens.collections.CreatePocketBanner(
+            phase = buildPhase,
+            onOpen = onOpenPocket,
+            onAcknowledge = pocketBuilder::acknowledge,
+        )
 
         // Search — scoped to the active tab (§2.2).
         OutlinedTextField(
@@ -274,6 +295,19 @@ fun PlaylistsScreen(
     }
 
     // ---- dialogs -----------------------------------------------------------
+
+    if (createPocketSheet) {
+        com.levi.pocketdj.screens.collections.CreatePocketSheet(
+            onDismiss = { createPocketSheet = false },
+            onCreate = { brief, minutes ->
+                scope.launch {
+                    runCatching { graph.shellGraph.shellActions.createPocket(brief, minutes) }
+                        .onSuccess { com.levi.pocketdj.shell.NavRequestBus.postNotice(it) }
+                        .onFailure { com.levi.pocketdj.shell.NavRequestBus.postNotice(it.message ?: "Couldn't build that pocket.") }
+                }
+            },
+        )
+    }
 
     createDialog?.let { kind ->
         NameDialog(

@@ -41,6 +41,8 @@ class DeepLinkSeams {
     /** P2-SURF-10: `pocketdj://np/mixmode` / `np/stem/...` (the seams post their own snackbar) — default says not available. */
     @Volatile var nowPlayingMixMode: ((on: Boolean) -> Unit)? = null
     @Volatile var nowPlayingStem: ((StemPart, muted: Boolean) -> Unit)? = null
+    /** P2-SURF-11: `pocketdj://create-pocket?brief=` — default says it isn't available (never a silent drop). */
+    @Volatile var createPocket: ((brief: String) -> Unit)? = null
     @Volatile var autoMix: ((MixSource, shuffle: Boolean) -> Unit)? = null
     @Volatile var joinJukebox: ((id: String, guestBase: String?) -> Unit)? = null
     @Volatile var importCollection: ((uri: String) -> Unit)? = null
@@ -196,6 +198,16 @@ class DeepLinkDispatcher(
             is DeepLink.AutoMix -> {
                 val mix = seams.autoMix
                 if (mix != null) mix(link.source, link.shuffle) else postMessage("Auto-Mix isn't available yet")
+            }
+            is DeepLink.CreatePocket -> {
+                if (link.brief == null) {
+                    // No brief: land on Collections with the Create pocket sheet open.
+                    com.levi.pocketdj.data.pockets.CreatePocketRequests.request()
+                    postRoute(ShellRoute.Tab(PocketDjDestination.Playlists))
+                } else {
+                    val create = seams.createPocket
+                    if (create != null) create(link.brief) else postMessage("Creating pockets isn't available yet")
+                }
             }
             DeepLink.PocketNow -> {
                 val pocket = seams.pocketNow
