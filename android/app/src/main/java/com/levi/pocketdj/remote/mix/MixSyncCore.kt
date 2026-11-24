@@ -42,6 +42,13 @@ interface MixSyncSink {
     /** An ORDERED, non-echo event to render locally (the host-order apply; never fired for the sender's own echo). */
     fun onApply(e: MixSyncEvent) {}
 
+    /**
+     * The mirror's deck content changed through an ORDERED LOAD or EJECT (kind = MixSyncKind.LOAD / EJECT), fired for
+     * every such event on every device, including the sender's own echo and events shadowed by a pending proposal.
+     * The driver reports deck readiness from here (iOS reportReadiness). Core callbacks must arrive on one thread (Main).
+     */
+    fun onMirrorChanged(deck: Deck, kind: String) {}
+
     /** The whole mirror was replaced (snapshot / handover): reconcile every deck + the crossfader. */
     fun onSnapshotAdopted(model: MixSyncModel) {}
 
@@ -104,7 +111,8 @@ class MixSyncCore(
         private set
 
     /** Each peer's per-deck readiness (`mix.ready`): peer id -> deck label. */
-    val peerReadiness = HashMap<String, HashMap<String, MixSyncReady>>()
+    private val peerReadinessMap = HashMap<String, HashMap<String, MixSyncReady>>()
+    val peerReadiness: Map<String, Map<String, MixSyncReady>> get() = peerReadinessMap
 
     private var nextOriginSeq = 1
     private val pending = HashMap<String, Pending>()
@@ -196,7 +204,7 @@ class MixSyncCore(
         if (on) {
             statusMessage = null
         } else {
-            peerReadiness.clear()
+            peerReadinessMap.clear()
             held.clear(); pending.clear(); outbox.clear()
         }
     }
@@ -225,7 +233,10 @@ class MixSyncCore(
         if (!session.isSessionActive) return
         val t = now
         if (!isHost) {
-            gapSince?.let { if (t - it >= MixSyncTunables.GAP_TIMEOUT_MS) requestSnapshot("gap") }
+            gapSince?.let {
+                val exhausted = awaitingSnapshotSince != null && snapshotAttempts >= MixSyncTunables.SNAPSHOT_MAX_ATTEMPTS
+                if (!exhausted && t - it >= MixSyncTunables.GAP_TIMEOUT_MS) requestSnapshot("gap")
+            }
             if (awaitingSnapshotSince != null && snapshotAttempts < MixSyncTunables.SNAPSHOT_MAX_ATTEMPTS &&
                 t >= nextRequestAt
             ) requestSnapshot("retry")
@@ -270,7 +281,7 @@ class MixSyncCore(
             val gone = lastRoster - roster
             lastRoster = roster
             for (g in gone) {
-                peerReadiness.remove(g)
+                peerReadinessMap.remove(g)
                 lastProposalSeq.keys.removeAll { it.startsWith("$g|") }
             }
             if (isHost && model.active) {
@@ -616,7 +627,7 @@ class MixSyncCore(
     }
 
     private fun receiveReady(r: MixSyncReady, from: String) {
-        val m = peerReadiness.getOrPut(from) { HashMap() }
+        val m = peerReadinessMap.getOrPut(from) { HashMap() }
         if (m[r.deck] != r) m[r.deck] = r
         val d = Deck.fromLabel(r.deck)
         if (isHost && d != null && held[d] != null && ownerReady(d)) releaseHeld(d)
@@ -655,6 +666,7 @@ class MixSyncCore(
             MixSyncKind.OWNER -> return // the model already moved; the UI follows it
         }
         if (!isActive) return
+        if (e.kind == MixSyncKind.LOAD || e.kind == MixSyncKind.EJECT) e.engineDeck?.let { sink.onMirrorChanged(it, e.kind) }
         val key = e.controlKey
         if (msg.origin == localId) {
             if (isHost) return // the host's own gesture, applied when made

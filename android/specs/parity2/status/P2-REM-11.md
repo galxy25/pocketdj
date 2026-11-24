@@ -18,3 +18,13 @@ Tests: MixSyncCoreTest 59; full suite green, assembleDebug green. Manifest/gradl
 
 ## Questions for Levi
 - None.
+
+## Review
+- MINOR snapshot ladder (gap branch ignored the 5-attempt cap) -> fixed: gap request skipped once attempts >= SNAPSHOT_MAX_ATTEMPTS while awaiting; test gapPathStopsAfterFiveSnapshotRequestsToo.
+- MINOR no readiness hook -> fixed: MixSyncSink.onMirrorChanged(deck, kind) fires from applyOrdered for every ordered LOAD/EJECT (own echo and pending-shadowed included, host included); test mirrorChangedFiresForOwnEchoLoadAndEject.
+- NIT peerReadiness mutable -> fixed: exposed as read-only Map; single-thread (Main) requirement documented on the sink hook.
+- NIT loopback / install() untested -> rejected for now: setup is not cheap; deviation stays recorded, P2-REM-12 must exercise install().
+
+Tests: MixSyncCoreTest 59 -> 61; full suite green (7517 total), assembleDebug green.
+
+fixes applied

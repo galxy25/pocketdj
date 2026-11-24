@@ -54,6 +54,8 @@ class MixSyncCoreTest {
 
     private class Sink : MixSyncSink {
         val applied = ArrayList<MixSyncEvent>()
+        val mirrorChanges = ArrayList<Pair<Deck, String>>()
+        override fun onMirrorChanged(deck: Deck, kind: String) { mirrorChanges += deck to kind }
         val repairs = ArrayList<Deck>()
         val statuses = ArrayList<String?>()
         val active = ArrayList<Boolean>()
@@ -614,6 +616,29 @@ class MixSyncCoreTest {
         assertEquals(5, b.core.snapshotAttempts)
         advance(48_000.0 + 10_000.0); b.core.tick(); b.core.tick()
         assertEquals("stops after 5 attempts", 5, requests())
+    }
+
+    @Test fun gapPathStopsAfterFiveSnapshotRequestsToo() {
+        val (a, b) = twoDeviceMix()
+        net.drop = { kind, _, to -> kind == MixWireKind.EVENT && to == "B" }
+        a.core.propose(vol(Deck.A, 0.1)); net.pump()
+        net.drop = { kind, _, _ -> kind == MixWireKind.REQUEST }
+        advance(100.0)
+        a.core.propose(vol(Deck.A, 0.2)); net.pump()          // hole at B
+        fun requests() = net.sent("B", MixWireKind.REQUEST).size
+        val base = requests()
+        repeat(60) { advance(5_000.0); b.core.tick() }        // 300 s: well past the 3/6/12/24/48 s ladder
+        assertEquals(5, requests() - base)
+        assertEquals(5, b.core.snapshotAttempts)
+    }
+
+    @Test fun mirrorChangedFiresForOwnEchoLoadAndEject() {
+        val (a, b) = twoDeviceMix()
+        b.core.propose(load(Deck.B, "s1")); net.pump()        // b's own echo skips onApply
+        assertTrue(b.sink.mirrorChanges.contains(Deck.B to MixSyncKind.LOAD))
+        assertTrue(a.sink.mirrorChanges.contains(Deck.B to MixSyncKind.LOAD))
+        b.core.propose(MixSyncEvent(MixSyncKind.EJECT, deck = Deck.B.label)); net.pump()
+        assertTrue(b.sink.mirrorChanges.contains(Deck.B to MixSyncKind.EJECT))
     }
 
     @Test fun eventBufferIsCappedAndOverflowRequestsASnapshotAtOnce() {
