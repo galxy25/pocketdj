@@ -22,11 +22,12 @@ class NowPlayingVoiceActionsTest {
         override var stemMode = false
         override var stemsLoading = false
         var engageWorks = true
+        var switchWorks = true
         var stemModeWorks = true
         var stemsLoadingAfterOn = false
         val muted = mutableSetOf<String>()
 
-        override fun setMixMode(on: Boolean) { calls += "mixMode($on)"; mixModeEnabled = on }
+        override fun setMixMode(on: Boolean) { calls += "mixMode($on)"; if (switchWorks) mixModeEnabled = on }
         override suspend fun engageMix() { calls += "engage"; if (engageWorks) mixEngaged = true }
         override fun isStemMuted(stemName: String) = stemName in muted
         override fun setStemMode(on: Boolean): Boolean {
@@ -150,6 +151,26 @@ class NowPlayingVoiceActionsTest {
         assertEquals("Mix Mode is already on.", a.setMixMode(true))
         assertEquals("Mix Mode is off.", a.setMixMode(false))
         assertEquals(listOf("mixMode(true)", "mixMode(false)"), p.calls)
+    }
+
+    @Test fun mixMode_noOpSwitch_isNotReportedAsOn() {
+        val p = FakePort().apply { switchWorks = false }
+        assertEquals("Mix Mode isn't available right now.", runBlocking { NowPlayingVoiceActions(p).setMixMode(true) })
+    }
+
+    @Test fun mute_noOpSwitch_isNotReportedAsTurnedOn() {
+        val p = FakePort().apply { switchWorks = false }
+        val said = run(p, StemPart.Vocals, true)
+        assertTrue(said, said.contains("isn't available"))
+        assertFalse("engage" in p.calls)
+    }
+
+    @Test fun deepLinks_offSynonymsTurnOff_andGarbageIsNotOn() {
+        for (v in listOf("disable", "stop", "off")) {
+            assertEquals(DeepLink.NowPlayingMixMode(false), DeepLinkParser.parse("pocketdj://np/mixmode?on=$v"))
+        }
+        assertEquals(DeepLink.NowPlayingMixMode(true), DeepLinkParser.parse("pocketdj://np/mixmode?on=enable"))
+        assertTrue(DeepLinkParser.parse("pocketdj://np/mixmode?on=banana") is DeepLink.Unresolved)
     }
 
     @Test fun mixMode_onWithMixTabLive_saysItWaits() {

@@ -189,21 +189,28 @@ object DeepLinkParser {
     /** `np/mixmode?on=` and `np/stem/<name>?mute=`; a missing flag defaults to on / mute (the iOS intent defaults). */
     private fun parseNowPlaying(parts: List<String>, query: Map<String, String>): DeepLink {
         return when (parts.getOrNull(1)?.lowercase()) {
-            "mixmode" -> DeepLink.NowPlayingMixMode(flag(query["on"], default = true))
+            "mixmode" -> DeepLink.NowPlayingMixMode(
+                flag(query["on"], default = true) ?: return DeepLink.Unresolved("Couldn't tell whether to turn Mix Mode on or off."),
+            )
             "stem" -> {
                 val raw = parts.getOrNull(2) ?: return DeepLink.None
                 val stem = StemPart.parse(raw)
                     ?: return DeepLink.Unresolved("Couldn't tell which stem you meant — try vocals, drums, bass or other.")
-                DeepLink.NowPlayingStem(stem, flag(query["mute"], default = true))
+                DeepLink.NowPlayingStem(
+                    stem,
+                    flag(query["mute"], default = true) ?: return DeepLink.Unresolved("Couldn't tell whether to mute or unmute."),
+                )
             }
             else -> DeepLink.None
         }
     }
 
-    private fun flag(v: String?, default: Boolean): Boolean = when (v?.lowercase()) {
+    /** Explicit on/off synonyms only; anything unrecognized is null (never silently "on"). */
+    private fun flag(v: String?, default: Boolean): Boolean? = when (v?.trim()?.lowercase()) {
         null, "" -> default
-        "0", "false", "off", "no" -> false
-        else -> true
+        "0", "false", "off", "no", "disable", "disabled", "stop", "unmute" -> false
+        "1", "true", "on", "yes", "enable", "enabled", "start", "mute" -> true
+        else -> null
     }
 
     private inline fun nav(arg: String?, make: (String) -> ShellRoute): DeepLink =

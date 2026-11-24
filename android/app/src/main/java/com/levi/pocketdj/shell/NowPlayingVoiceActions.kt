@@ -74,6 +74,7 @@ class NowPlayingVoiceActions(private val port: NowPlayingVoicePort) {
         if (!port.running) throw ShellActionException.NothingPlaying
         if (port.mixModeEnabled == on) return if (on) "Mix Mode is already on." else "Mix Mode is already off."
         port.setMixMode(on)
+        if (port.mixModeEnabled != on) return "Mix Mode isn't available right now."
         if (!on) return "Mix Mode is off."
         if (port.mixTabLive) return "Mix Mode is on. It starts buffering once the Mix tab stops."
         return "Mix Mode is on — buffering this song and the next ones so stems and effects work on them."
@@ -103,6 +104,7 @@ class NowPlayingVoiceActions(private val port: NowPlayingVoicePort) {
         var turnedOn = false
         if (!port.mixModeEnabled) {
             port.setMixMode(true) // the NP switch: buffers this + upcoming
+            if (!port.mixModeEnabled) return "Mix Mode isn't available right now, so I can't mute $said."
             turnedOn = true
         }
         val lead = if (turnedOn) "Mix Mode is on, but " else ""

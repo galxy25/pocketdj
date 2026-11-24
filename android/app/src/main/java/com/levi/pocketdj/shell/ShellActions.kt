@@ -39,6 +39,7 @@ sealed class ShellActionException(message: String) : Exception(message) {
     /** Mix Together owns the decks (`MixTogetherBlock.REASON`). */
     class MixTogetherActive(why: String) : ShellActionException(why)
     data object MixUnavailable : ShellActionException("Auto-Mix isn't available yet")
+    data object MixModeUnavailable : ShellActionException("Mix Mode and stems aren't available yet")
 
     /** The queue started nothing (every row unplayable on this device). */
     class NothingPlayable(val name: String) :
@@ -303,7 +304,7 @@ class ShellActions(
     suspend fun setNowPlayingMixMode(on: Boolean): String {
         veto()
         ensureReady()
-        val voice = nowPlayingVoice ?: throw ShellActionException.MixUnavailable
+        val voice = nowPlayingVoice ?: throw ShellActionException.MixModeUnavailable
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { voice.setMixMode(on) } // DSP state is main-thread
     }
 
@@ -311,7 +312,7 @@ class ShellActions(
     suspend fun setStem(stem: StemPart, muted: Boolean): String {
         veto()
         ensureReady()
-        val voice = nowPlayingVoice ?: throw ShellActionException.MixUnavailable
+        val voice = nowPlayingVoice ?: throw ShellActionException.MixModeUnavailable
         return kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) { voice.setStem(stem, muted) }
     }
 

@@ -16,3 +16,10 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR DeepLinkParser.flag defaulting unknown to on -> fixed (explicit on/off synonym sets incl. disable/stop; unrecognized returns Unresolved)
+- MINOR silent no-op setMixMode reported as on -> fixed (re-reads mixModeEnabled; says "isn't available right now"; setStem only sets turnedOn when flipped)
+- NIT wrong exception wording -> fixed (new MixModeUnavailable)
+
+fixes applied
