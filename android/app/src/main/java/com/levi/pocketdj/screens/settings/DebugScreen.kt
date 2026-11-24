@@ -582,6 +582,42 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 }
             }
         }) { Text("Mix stream open") }
+        OutlinedButton(onClick = {
+            // P2-MM-1: BUFFER-origin stream (expect a temporaryHolds entry); the 6th-longest ripped digital song (NOT burned) through MixStreamLoader and poll it.
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val store = host.graph.servicesGraph.burnStore
+                val id = songs.keys.filter { manifest[it]?.source == "digital" && !store.hasLocalFile(it) }
+                    .sortedByDescending { manifest[it]?.durationMs ?: 0L }.firstOrNull()
+                if (id == null) { ripStatus = "Mix stream: no candidate"; return@launch }
+                com.levi.pocketdj.di.MixDebug.publicRips = true
+                val loader = host.graph.mixGraph.mixStreamLoader
+                val s = loader.open(id, songs[id]?.name ?: id, songs[id]?.artist ?: "", origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)
+                android.util.Log.d("PdjVerify", "mixstream BUFFER debug open $id can=${loader.canStream(id)} stream=${s != null}")
+                repeat(40) {
+                    kotlinx.coroutines.delay(1000)
+                    val st = loader.stream(id)
+                    android.util.Log.d("PdjVerify", "mixstream poll $id bytes=${st?.bytesReceived} expected=${st?.expectedBytes} complete=${st?.isComplete} failed=${st?.failed} adopted=${st?.adopted} burned=${store.hasLocalFile(id)}")
+                    ripStatus = "Mix stream $id bytes=${st?.bytesReceived} burned=${store.hasLocalFile(id)}"
+                    if (st == null || st.isComplete || st.failed) return@launch
+                }
+            }
+        }) { Text("Mix stream buffer") }
+        OutlinedButton(onClick = {
+            // P2-ALB-1: burn ONE analog song (shared side file) and play it; resolve line must show the side file + clip start.
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val id = manifest.entries.filter { it.value.source == "analog" && it.value.startMs != null && songs.containsKey(it.key) }
+                    .minByOrNull { it.value.durationMs ?: Long.MAX_VALUE }?.key
+                if (id == null) { ripStatus = "Analog: no candidate"; return@launch }
+                val r = host.graph.servicesGraph.burnStore.burn(listOf(com.levi.pocketdj.data.burns.BurnSong(id, songs[id]?.name ?: id, songs[id]?.artist ?: "")))
+                val out = host.graph.playbackController.playQueue(listOf(com.levi.pocketdj.playback.QueuePlan.QueueEntry(id)))
+                ripStatus = "Analog $id burn=$r play=$out start=${manifest[id]?.startMs}"
+                android.util.Log.d("PdjVerify", ripStatus)
+            }
+        }) { Text("Burn+play analog") }
         OutlinedButton(onClick = { burn5(false) }) { Text("Burn 5 long") }
         OutlinedButton(onClick = { burn5(true) }) { Text("Burn 5 (HTTP 400)") }
     }
