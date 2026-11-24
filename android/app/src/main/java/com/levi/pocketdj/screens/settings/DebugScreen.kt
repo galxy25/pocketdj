@@ -468,6 +468,36 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 android.util.Log.d("PdjVerify", ripStatus)
             }
         }) { Text("Burn first 3") }
+        // Wave-8 seed (P2-DJ-10): a 60-row queue, ripped songs first, so DJ Mode's replan window (40 rows) is full.
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = withContext(Dispatchers.IO) {
+                    val songs = host.graph.catalogRepository.catalogFlow.first()?.songs ?: emptyList()
+                    val manifest = host.graph.ripsRepository.manifest.value
+                    val (ripped, rest) = songs.partition { manifest[it.id]?.source == "digital" }
+                    (ripped + rest).take(60).map { it.id }
+                }
+                val out = host.graph.playbackController.playQueue(ids.map { com.levi.pocketdj.playback.QueuePlan.QueueEntry(it) })
+                ripStatus = "Rip seed: play60 ${ids.size} -> $out"
+            }
+        }) { Text("Play 60 queue") }
+        // Wave-8 seed (P2-POC-15): burn every ripped seed song (12) so a Mix-mode pocket run clears the 10-loadable threshold.
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = seedIds.ifEmpty { pickSeed().also { seedIds = it } }
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val r = host.graph.servicesGraph.burnStore.burn(ids.map { com.levi.pocketdj.data.burns.BurnSong(it, songs[it]?.name ?: it, songs[it]?.artist ?: "") })
+                ripStatus = "Rip seed: burn all ${ids.size} -> $r"
+                android.util.Log.d("PdjVerify", ripStatus)
+            }
+        }) { Text("Burn all seed") }
+        // Wave-8 seed (P2-REM-7): the Remote screen over an in-memory two-device session.
+        var showRemoteLoopback by remember { mutableStateOf(false) }
+        OutlinedButton(onClick = { showRemoteLoopback = true }) { Text("Remote loopback") }
+        if (showRemoteLoopback) {
+            val songs = remember { host.graph.catalogRepository.state.value.catalog?.songsById?.values?.toList().orEmpty() }
+            RemoteLoopbackDialog(songs = songs.take(20), onDismiss = { showRemoteLoopback = false })
+        }
     }
     // Wave-6 verify seeds: stemmed burn fixture, profile-source demux ingest, soft-cap-below-usage.
     var w6Status by remember { mutableStateOf("W6 seed: idle") }

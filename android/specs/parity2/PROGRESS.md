@@ -139,3 +139,22 @@ Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave7/; Debug sec
 Integrator changes: ParityFlags.DJ_MODE = true (+ test), debug extras `pdj.amFold` and `pdj.storeAlbum` in CollectionsGraph. Machine notes: the disk was 100% full (about 140 GB of stale Chrome code-sign clones under /private/var/folders/.../X; the stale ones were deleted), and the one-at-a-time free-memory guard stalls below 8 GB free (ran with FIN_MIN_FREE_GB=4).
 
 Open: P2Q18 (fold owner gate), P2Q19-P2Q23 (new), plus earlier pending items.
+
+## Wave 8
+
+Packages merged: P2-DJ-10, P2-DJ-9, P2-POC-10, P2-REM-6, P2-REM-7, P2-POC-11, P2-POC-14, P2-POC-15. One conflict (ParityFlags.kt: POCKET_WHEEL=true from POC-10 kept, REMOTE=false from REM-7 added). Status files set to merged.
+
+Tests: 7456 run, 0 failures, 0 skipped (672 result files). `:app:testDebugUnitTest :app:assembleDebug` green. Note: one-at-a-time.sh refused `--no-quiesce-fin` mid-session (7 GB model resident), so later builds ran with the default quiesce, which restored fin-agentd and the model afterwards.
+
+Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave8/). New debug seeds in Settings > Debug (needs Show advanced): "Play 60 queue", "Burn all seed", "Remote loopback".
+- P2-DJ-10 PASS: DJ on over the 60-row queue logged `replan reason=on rows=40 moved=39 ... band=150`, then membership replan; Up Next > Play next on a far row logged `user next ... held next, buffering first`, and the edit replan `pick=<uid>` put it first (`next=sng_587a6f163ca0`).
+- P2-DJ-9 PASS: tapping Next logged `skip ... mix fade=15.0s`; KEYCODE_MEDIA_NEXT logged `mix fade=5.0s (fast)`; two quick taps logged `skip upgraded to fast - fade now 5.0s`.
+- P2-POC-10 PASS: History > Pockets shows the Wheel by default (Wheel|List segment appears once Recommendations is on); tapping a ring cell opens the moment card sheet (collection bars, artists, genres, era, stats, Play this pocket, Why this colour, Past runs). List > pocket > Play logged `[pocketrun] start ... moment=cloud rows=100`; "Play the original songs" started the exact 9-song list (`set start count=9`).
+- P2-POC-11 PASS: opt-in file, `pm grant ACTIVITY_RECOGNITION`, `am broadcast` to the receiver with `pdj.motionFake=WALKING` (open walking segment), then `STILL` closed it; on foreground the plays overlapping the segment were stamped `motion: walking` in pocketdj-play-history.json. Device-only: real transitions, reboot re-registration.
+- P2-POC-15 PASS: with the 12 ripped seed songs burned and a Mix-mode history, the wheel centre play logged `start ... moment=h04|d2|mix rows=15 mix=true`, Mix Auto-DJ rendered and the session was PLAYING. The negative path (history songs not burned) logged `mix path skipped: loadable=0 < 10` and fell back to the normal player.
+- P2-REM-7 PASS (debug loopback, new): Remote screen shows Session, Listen Together, 2 participants, Now Playing, transport, Up Next; tapping Next advanced the speaker (`rev=2 log=[play, jump]`). REM-6 (engine) exercised by the same rig (RemoteReconciler drives the in-memory speaker).
+- P2-POC-14: tests only. No FATAL EXCEPTION / ANR in logcat for com.levi.pocketdj.
+
+Integrator changes: debug-only seeds in DebugScreen.kt and new screens/settings/RemoteLoopbackDebug.kt.
+
+Open: P2Q24-P2Q27; StrictMode disk reads on main (DJ skip path, MotionBootReceiver) join P2Q23.

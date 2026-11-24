@@ -30,6 +30,10 @@ Format: `Q<n> [package] question — default meanwhile`. Integrators append new 
 - **P2Q21 [P2-MM-10]** Add the un-muted "Clean/Explicit edition" chip note and a lazy rip of the wanted edition? - *Default: no, rule A only.*
 - **P2Q22 [P2-DJ-8]** The integrator flipped `ParityFlags.DJ_MODE` to true (DJ chip visible in release) after the emulator run. Ship DJ Mode in the next release or hold it behind the flag until a device listen test (equal-power fade, no level dip)? - *Default: on; flip the getter back to false to hold.*
 - **P2Q23 [P2-DJ-8]** Starting DJ Mode runs disk reads on the main thread (StrictMode DiskReadViolation, about 130 ms: BurnStore.localUrlPreferringCut via DjModeWiring.currentMixable and NowPlayingDspHost.resolveLocal). Move to an IO dispatcher in a follow-up? - *Default: follow-up, not blocking.*
+- **P2Q24 [P2-POC-11]** Motion opt-in has no Settings UI or prominent-disclosure dialog yet (the package's owned files excluded it); the opt-in is only reachable through the file/seam. Which package owns the Settings row + disclosure? — *Default: follow-up before release; motion stays off for everyone until then.*
+- **P2Q25 [P2-POC-15]** The Mix-fallback caption (`PocketRunStore.mixCaption`, "fewer than 10 deck-loadable songs") is not rendered anywhere. Show it under the wheel centre? — *Default: not shown; the run falls back to the normal player silently (log `mix path skipped`).*
+- **P2Q26 [P2-DJ-10]** DJ planner facts come from the catalog only (iOS also uses burned-item and on-device analysis facts). Leave to P2-DJ-11 (`driver.onAnalysisLanded`)? — *Default: yes.*
+- **P2Q27 [P2-REM-7]** `ParityFlags.REMOTE` stays false and `RemoteStarters.current` is `None` until P2-REM-9 (Nearby transport); the Remote screen was verified only through a debug loopback dialog (Settings > Debug > "Remote loopback"). Scan-to-join (`pocketdj://remote/join`) belongs to REM-8/9. OK? — *Default: yes.*
 
 ## ANSWERED
 
