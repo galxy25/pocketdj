@@ -427,7 +427,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 com.levi.pocketdj.auto.AutoBrowseDebug.run(
                     app.appContext, app.appScope,
                     picks = intent.getStringExtra("pdj.autoPick").orEmpty().split("|").filter { it.isNotBlank() },
-                    roots = listOf("Mix", "Jukebox", "For You"),
+                    roots = listOf("Mix", "Jukebox", "For You", "Up Next"),
                 )
             }
             false // never consumes the intent

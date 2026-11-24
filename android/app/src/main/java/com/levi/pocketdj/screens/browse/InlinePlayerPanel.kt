@@ -105,6 +105,13 @@ internal object InlinePlayerState {
         return SongVariant.baseId(key) == SongVariant.baseId(rowSongId)
     }
 
+    /**
+     * The sequencer's current id counts only while the sequencer is running: after a stop / a single Apple Music
+     * preview played outside it, its stale `current` would otherwise win and put the panel (showing the audible
+     * song) under the wrong row.
+     */
+    fun liveSequencerId(currentId: String?, isRunning: Boolean): String? = currentId.takeIf { isRunning }
+
     /** Fractions [from, to] of the album PNG that make up one song's window. */
     data class Crop(val from: Float, val to: Float) {
         val span: Float get() = to - from
@@ -173,7 +180,7 @@ internal fun InlinePlayerSlot(song: IndexSong, album: IndexAlbum?, modifier: Mod
     val seqState by graph.playbackGraph.sequencer.state.collectAsState()
     val nowPlaying by graph.playbackController.nowPlaying.collectAsState()
     val np = nowPlaying
-    val show = np != null && InlinePlayerState.matches(song.id, seqState.current?.id, np.songId)
+    val show = np != null && InlinePlayerState.matches(song.id, InlinePlayerState.liveSequencerId(seqState.current?.id, seqState.isRunning), np.songId)
     // Remember the last non-null np so the exit animation has content to collapse after stop() nulls it.
     var lastInfo by remember { mutableStateOf<com.levi.pocketdj.playback.PlaybackController.NowPlayingInfo?>(null) }
     if (np != null) lastInfo = np

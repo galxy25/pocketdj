@@ -54,10 +54,19 @@ object AutoBrowseDebug {
                     if (target == null) { Log.d(TAG, "PICK '$p' not found"); continue }
                     Log.d(TAG, "PICK '$p' -> ${target.mediaId}")
                     Log.d(TAG, "cmdSetItem=${browser.isCommandAvailable(androidx.media3.common.Player.COMMAND_SET_MEDIA_ITEM)} cmdPrepare=${browser.isCommandAvailable(androidx.media3.common.Player.COMMAND_PREPARE)} state=${browser.playbackState}")
-                    runCatching { browser.setMediaItem(target); browser.prepare() }
+                    // Mix rows are handled by the shell and refused to the controller (the player is untouched); on media3 1.6.1 that
+                    // refusal can crash this in-process controller (PlayerInfo.build), so run the same select directly.
+                    val direct = PlaybackService.debugSelect
+                    if (direct != null && AutoId.decode(target.mediaId) != null) direct(target.mediaId)
+                    else runCatching { browser.setMediaItem(target); browser.prepare() }
                     kotlinx.coroutines.delay(1500)
                     mix.let { dump(browser, it, 0) }
                 }
+                // A refused setMediaItem (the shell owns the start) leaves this controller's optimistic timeline
+                // out of step with the session; media3 1.6.1's controller then throws in PlayerInfo.build on a
+                // later update and kills the app process (a real car host uses the legacy browser and is unaffected).
+                // The stand-in is only needed for the duration of a pick, so drop it afterwards.
+                if (picks.isNotEmpty()) { runCatching { browser.release() }; held = null }
             }.onFailure { Log.d(TAG, "failed: $it") }
         }
     }

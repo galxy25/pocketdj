@@ -107,6 +107,7 @@ class PlaybackService : MediaLibraryService() {
             refreshPockets = { pocketsSource.refresh() },
         )
         data.onLibraryChanged = { main.post { cb.notifyLibraryChanged() } }
+        if (com.levi.pocketdj.BuildConfig.DEBUG) debugSelect = { id -> main.post { cb.select(id) } }
         // SURF-8: every queue edit / advance re-notifies `upnext` (signature-filtered inside the callback).
         val upNextListener = object : com.levi.pocketdj.playback.sequencer.SequencerListener {
             override fun onQueueChanged(generation: Long) = cb.onUpNextChanged()
@@ -444,6 +445,8 @@ class PlaybackService : MediaLibraryService() {
     }
 
     companion object {
+        /** DEBUG only: the emulator's Auto stand-in picks a row through the shell directly (see AutoBrowseDebug). */
+        @Volatile var debugSelect: ((String) -> Unit)? = null
         /** P2-MM-8: the next load of this song id (a growing-file fallback restart) records no History play. One-shot. */
         @Volatile var suppressHistoryFor: String? = null
         @Volatile var suppressHistoryUntilMs: Long = 0L

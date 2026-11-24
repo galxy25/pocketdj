@@ -693,6 +693,14 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             "${d.label}:${e.loaded(d)?.songId?.takeLast(4) ?: "-"} play=${e.isPlaying(d)} pos=${"%.1f".format(e.position(d))}/${"%.1f".format(e.duration(d))} rate=${e.rate(d)} vol=${e.volume(d)}"
         }
     }
+    // P2-REM-12 emulator seam: nothing consumes `gestureTap` until Mix Together lands (REM-13), so log every tap to PocketDJ.mix.
+    var logTaps by remember { mutableStateOf(host.graph.mixGraph.mixEngine.gestureTap != null) }
+    ToggleRow("Mix: log gesture taps", logTaps) { on ->
+        logTaps = on
+        host.graph.mixGraph.mixEngine.gestureTap = if (on) { g ->
+            com.levi.pocketdj.diag.NPLog.lane("mix", "gesture tap kind=${g.kind} deck=${g.deck?.label} param=${g.param} value=${g.value} flag=${g.flag} cause=${g.cause}")
+        } else null
+    }
     // Wraps: a Row of 3-4 buttons squeezed labels into one-letter-per-line stacks ("Aut/oDJ/:").
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = {

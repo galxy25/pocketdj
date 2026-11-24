@@ -41,6 +41,10 @@ class InlinePlayerStateTest {
         assertTrue(InlinePlayerState.matches("b", null, "b"))      // a Browse single: audible
         assertFalse(InlinePlayerState.matches("a", null, null))
         assertTrue(InlinePlayerState.matches("sng_0123456789ab", "sng_0123456789ab_clean", null)) // variant maps to base
+        // A stopped sequencer's stale current must not claim the panel from the audible song (emulator-found, wave 10).
+        assertFalse(InlinePlayerState.matches("stale", InlinePlayerState.liveSequencerId("stale", false), "audible"))
+        assertTrue(InlinePlayerState.matches("audible", InlinePlayerState.liveSequencerId("stale", false), "audible"))
+        assertTrue(InlinePlayerState.matches("a", InlinePlayerState.liveSequencerId("a", true), "b"))
     }
 
     @Test fun seekFractionMapsToSongTimeAndRefusesWhenLive() {
