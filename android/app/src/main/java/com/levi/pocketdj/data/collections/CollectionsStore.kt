@@ -1919,7 +1919,38 @@ class CollectionsStore(
             )
         }
         save()
+        // P2-SURF-1: a recommendation scope never outlives its queue. Fires on EVERY replace; a For You
+        // tile play re-stamps its scope AFTER playNow returns (iOS order), so this retire cannot eat it.
+        runCatching { onPlaybackReplaced?.invoke() }
         return set
+    }
+
+    /** Fired (under the store lock, after the save) whenever the reserved Now Playing set is replaced. */
+    @Volatile var onPlaybackReplaced: (() -> Unit)? = null
+
+    /**
+     * iOS `addAcceptedSong(_:scopedTo:)`: a thumbs-up that landed accepted while playing a COLLECTION
+     * recommendation also adds the song to that collection. Reserved scopes (zone/new) and dead ids add
+     * nothing. Returns true when an add ran.
+     */
+    fun addAcceptedSong(songId: String, scopedTo: String): Boolean {
+        // iOS: membership check + add under one lock, so a repeat accept (toggle on/off/on) never duplicates.
+        return synchronized(lock) {
+            val target = when {
+                scopedTo == "zone" || scopedTo == "new" -> null
+                playlist(scopedTo) != null -> AddTarget(AddTarget.Kind.PLAYLIST, scopedTo)
+                pocket(scopedTo) != null -> AddTarget(AddTarget.Kind.POCKET, scopedTo)
+                else -> null
+            } ?: return@synchronized false
+            val members: Set<String> = if (target.kind == AddTarget.Kind.PLAYLIST) {
+                playableIdsForPlaylist(scopedTo).toSet() + songIdsInNodes(playlist(scopedTo)!!.sequences)
+            } else {
+                playableIdsForPocket(scopedTo).toSet() + pocket(scopedTo)!!.songIds
+            }
+            if (songId in members) return@synchronized false
+            addSong(songId, target)
+            true
+        }
     }
 
     /** One live-queue row for [materializeNowPlayingSetlist]. */
