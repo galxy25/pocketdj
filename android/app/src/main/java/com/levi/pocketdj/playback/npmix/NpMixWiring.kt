@@ -21,7 +21,6 @@ import com.levi.pocketdj.screens.nowplaying.NowPlayingSeams
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -160,7 +159,7 @@ class NpMixWiring(private val app: AppGraph) {
         }
         // Mix Mode is SUSPENDED while the Mix tab runs and retries an owed hand-off when it goes idle again.
         scope.launch {
-            NowPlayingSeams.mixSessionActiveFlow.distinctUntilChanged().collect { coordinator.onMixTabChanged(it) }
+            NowPlayingSeams.mixSessionActiveFlow.collect { coordinator.onMixTabChanged(it) }
         }
         runCatching { registerNetworkWatch() }
         if (com.levi.pocketdj.BuildConfig.DEBUG) runCatching { registerDebugReceiver() }

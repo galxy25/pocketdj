@@ -29,7 +29,7 @@ private fun playing(
     isFile: Boolean = false, live: Boolean = false, loaded: Boolean = true, ended: Boolean = false,
 ) = Playing(songId, url, clipStart, clipEnd, pos, dur, isFile, live, loaded, ended, rel)
 
-private fun facts(
+private fun mkFacts(
     playing: Playing? = playing(),
     target: Target? = Target(LOCAL, null, null, "a"),
     mix: Boolean = true, running: Boolean = true, held: Boolean = false, dsp: Boolean = false, mixTab: Boolean = false,
@@ -48,7 +48,7 @@ private fun decide(f: Facts) = SwapOnLand.decide(f)
 
 class SwapOnLandDecisionTest {
     @Test fun goesWhenPlayingTheStreamAndTheFileLanded() {
-        val d = decide(facts()) as Decision.Go
+        val d = decide(mkFacts()) as Decision.Go
         assertEquals(42_000L, d.atMs)
         assertEquals(42_000L, d.localSeekMs)
         assertEquals(LOCAL, d.target.url)
@@ -56,73 +56,73 @@ class SwapOnLandDecisionTest {
     }
 
     @Test fun pausedByTheListenerIsRefusedAndOwed() {
-        val r = refusal(facts(paused = true))
+        val r = refusal(mkFacts(paused = true))
         assertEquals("paused", r.reason)
         assertTrue("a paused refusal is retried on the next play", r.owe)
     }
 
     @Test fun anEngineThatNoLongerIntendsToPlayIsRefused() {
-        assertEquals("paused", refusal(facts(intent = false)).reason)
-        assertEquals("paused", refusal(facts(pwr = false)).reason)
+        assertEquals("paused", refusal(mkFacts(intent = false)).reason)
+        assertEquals("paused", refusal(mkFacts(pwr = false)).reason)
     }
 
     @Test fun focusLostOrTransientIsRefusedAndOwed() {
-        val r = refusal(facts(interruption = true))
+        val r = refusal(mkFacts(interruption = true))
         assertEquals("focus", r.reason)
         assertTrue(r.owe)
     }
 
     @Test fun startWindowStillOpenIsDeferredNotDropped() {
-        val r = refusal(facts(startPending = true))
+        val r = refusal(mkFacts(startPending = true))
         assertEquals("start-pending", r.reason)
         assertTrue(r.owe)
     }
 
     @Test fun mixTabLiveSuspendsAndIsOwed() {
-        val r = refusal(facts(mixTab = true))
+        val r = refusal(mkFacts(mixTab = true))
         assertEquals("mix-tab", r.reason)
         assertTrue(r.owe)
     }
 
     @Test fun sessionWideGuards() {
-        assertEquals("mix-off", refusal(facts(mix = false)).reason)
-        assertEquals("not-running", refusal(facts(running = false)).reason)
-        assertEquals("held", refusal(facts(held = true)).reason)
-        assertEquals("engaged", refusal(facts(dsp = true)).reason)
-        assertEquals("cascade", refusal(facts(cascade = true)).reason)
-        assertEquals("apple-music", refusal(facts(am = true)).reason)
+        assertEquals("mix-off", refusal(mkFacts(mix = false)).reason)
+        assertEquals("not-running", refusal(mkFacts(running = false)).reason)
+        assertEquals("held", refusal(mkFacts(held = true)).reason)
+        assertEquals("engaged", refusal(mkFacts(dsp = true)).reason)
+        assertEquals("cascade", refusal(mkFacts(cascade = true)).reason)
+        assertEquals("apple-music", refusal(mkFacts(am = true)).reason)
     }
 
     @Test fun onlyAPresignedStreamOfTheSameRowHandsOff() {
-        assertEquals("no-engine-item", refusal(facts(playing = null)).reason)
-        assertEquals("live", refusal(facts(playing = playing(live = true))).reason)
-        assertEquals("not-current", refusal(facts(playing = playing(songId = "zzz"))).reason)
-        assertEquals("already-local", refusal(facts(playing = playing(url = LOCAL, isFile = true))).reason)
-        assertEquals("not-loaded", refusal(facts(playing = playing(loaded = false))).reason)
-        assertEquals("track-ended", refusal(facts(playing = playing(ended = true))).reason)
+        assertEquals("no-engine-item", refusal(mkFacts(playing = null)).reason)
+        assertEquals("live", refusal(mkFacts(playing = playing(live = true))).reason)
+        assertEquals("not-current", refusal(mkFacts(playing = playing(songId = "zzz"))).reason)
+        assertEquals("already-local", refusal(mkFacts(playing = playing(url = LOCAL, isFile = true))).reason)
+        assertEquals("not-loaded", refusal(mkFacts(playing = playing(loaded = false))).reason)
+        assertEquals("track-ended", refusal(mkFacts(playing = playing(ended = true))).reason)
     }
 
     @Test fun theEditionSubstituteRowIsMatchedByItsResolveIdToo() {
-        val f = facts(playing = playing(songId = "a_clean"), target = Target(LOCAL, null, null, "a_clean"), resolveId = "a_clean")
+        val f = mkFacts(playing = playing(songId = "a_clean"), target = Target(LOCAL, null, null, "a_clean"), resolveId = "a_clean")
         assertTrue(decide(f) is Decision.Go)
     }
 
     @Test fun sameBytesOnly() {
-        assertEquals("no-local-file", refusal(facts(target = null)).reason)
-        assertEquals("other-edition", refusal(facts(target = Target(LOCAL, null, null, "a_explicit"))).reason)
+        assertEquals("no-local-file", refusal(mkFacts(target = null)).reason)
+        assertEquals("other-edition", refusal(mkFacts(target = Target(LOCAL, null, null, "a_explicit"))).reason)
     }
 
     @Test fun neverCutsIntoTheLastMoments() {
-        assertEquals("near-end", refusal(facts(playing = playing(pos = 198_000))).reason)
-        assertTrue(decide(facts(playing = playing(pos = 190_000))) is Decision.Go)
+        assertEquals("near-end", refusal(mkFacts(playing = playing(pos = 198_000))).reason)
+        assertTrue(decide(mkFacts(playing = playing(pos = 190_000))) is Decision.Go)
         // The row's length is the queue's clipped length; the engine duration is the fallback.
-        assertEquals("near-end", refusal(facts(len = null, playing = playing(pos = 198_000, dur = 200_000))).reason)
+        assertEquals("near-end", refusal(mkFacts(len = null, playing = playing(pos = 198_000, dur = 200_000))).reason)
     }
 
     @Test fun nearEndUsesTheSongLengthNotTheFileWhenTheEngineIsFileAbsolute() {
         // A side file: the song window is 60 s..120 s; the engine's duration is the whole side (300 s).
         val p = playing(pos = 118_000, dur = 300_000, clipStart = 60_000, clipEnd = 120_000, rel = false)
-        assertEquals("near-end", refusal(facts(len = null, playing = p)).reason)
+        assertEquals("near-end", refusal(mkFacts(len = null, playing = p)).reason)
     }
 }
 
@@ -154,7 +154,7 @@ class SwapOnLandPositionTest {
 
     @Test fun decisionCarriesTheRebasedSeek() {
         val p = playing(pos = 65_000, clipStart = 60_000, rel = false)
-        val d = decide(facts(playing = p, target = Target(LOCAL, 120_000, 180_000, "a"))) as Decision.Go
+        val d = decide(mkFacts(playing = p, target = Target(LOCAL, 120_000, 180_000, "a"))) as Decision.Go
         assertEquals(5_000L, d.atMs)
         assertEquals(125_000L, d.localSeekMs)
         assertEquals(60_000L, d.stream.clipStartMs)
@@ -235,14 +235,14 @@ class SwapOnLandRunnerTest {
     }
 
     private class FakeEnv : SwapOnLand.Env {
-        var next: Facts? = facts()
+        var next: Facts? = mkFacts()
         var sequence: ArrayDeque<Facts?>? = null
         override var lockCarriesStems = false
         var dspResult = true
         val dspCalls = mutableListOf<Pair<String, Long>>()
         var replans = 0
         val lines = mutableListOf<String>()
-        override suspend fun facts(): Facts? = sequence?.let { if (it.size > 1) it.removeFirst() else it.first() } ?: next
+        override suspend fun facts(): Facts? { val q = sequence; return if (q != null) (if (q.size > 1) q.removeFirst() else q.first()) else next }
         override suspend fun engageDsp(songId: String, atMs: Long): Boolean { dspCalls += songId to atMs; return dspResult }
         override fun replan() { replans++ }
         override val runwayLock: RunwayLock? = null
@@ -282,7 +282,7 @@ class SwapOnLandRunnerTest {
 
     @Test fun neverStartsAudioWhilePausedAndRetriesWhenTheListenerPlaysAgain() = runTest {
         val env = FakeEnv(); val eng = FakeEngine()
-        env.next = facts(paused = true)
+        env.next = mkFacts(paused = true)
         val r = SwapOnLand.Runner(env, eng, backgroundScope, newRunway = ::newRunway)
         assertFalse(r.attempt("landed"))
         assertTrue(eng.reloads.isEmpty())
@@ -292,7 +292,7 @@ class SwapOnLandRunnerTest {
         r.retryOwed("user-play", "u1")
         assertTrue(eng.reloads.isEmpty())
         // The listener resumed: the retry hands off.
-        env.next = facts(paused = false)
+        env.next = mkFacts(paused = false)
         r.retryOwed("user-play", "u1")
         assertEquals(1, eng.reloads.size)
         assertNull(r.ledger.owedUid)
@@ -300,18 +300,18 @@ class SwapOnLandRunnerTest {
 
     @Test fun anOwedHandOffForAnotherRowIsDropped() = runTest {
         val env = FakeEnv(); val eng = FakeEngine()
-        env.next = facts(startPending = true)
+        env.next = mkFacts(startPending = true)
         val r = SwapOnLand.Runner(env, eng, backgroundScope, newRunway = ::newRunway)
         r.attempt("landed")
         assertEquals("u1", r.ledger.owedUid)
-        env.next = facts(uid = "u2")
+        env.next = mkFacts(uid = "u2")
         r.retryOwed("after-start", "u2")
         assertTrue(eng.reloads.isEmpty())
     }
 
     @Test fun aSkipRacingTheFactsReadSupersedesTheHandOff() = runTest {
         val env = FakeEnv(); val eng = FakeEngine()
-        env.sequence = ArrayDeque(listOf(facts(uid = "u1", gen = 1), facts(uid = "u2", gen = 2)))
+        env.sequence = ArrayDeque(listOf(mkFacts(uid = "u1", gen = 1), mkFacts(uid = "u2", gen = 2)))
         val r = SwapOnLand.Runner(env, eng, backgroundScope, newRunway = ::newRunway)
         assertFalse(r.attempt("landed"))
         assertTrue(eng.reloads.isEmpty())
@@ -320,7 +320,7 @@ class SwapOnLandRunnerTest {
 
     @Test fun aPauseBetweenTheTwoReadsIsHonoured() = runTest {
         val env = FakeEnv(); val eng = FakeEngine()
-        env.sequence = ArrayDeque(listOf(facts(), facts(paused = true)))
+        env.sequence = ArrayDeque(listOf(mkFacts(), mkFacts(paused = true)))
         val r = SwapOnLand.Runner(env, eng, backgroundScope, newRunway = ::newRunway)
         assertFalse(r.attempt("landed"))
         assertTrue(eng.reloads.isEmpty())
