@@ -492,6 +492,7 @@ class PlaybackController(
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (!isPlaying || activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer || !exoFronts()) return
+            handOffAudio?.complete(true) // P2-MM-5: sound after a swap-on-land reload
             // First proof of sound for the row the sequencer loaded: closes the start window + dead-air gap.
             sequencer.onFirstAudio(controller?.currentMediaItem?.mediaId)
         }
@@ -510,6 +511,10 @@ class PlaybackController(
             val item = c.currentMediaItem ?: return
             val id = item.mediaId
             if (activeBackend != ActiveBackend.EXO) return
+            // P2-MM-5: a swap-on-land local file that fails reverts ONCE onto the presigned stream (own stamp = URL + song).
+            if (sequencerOwnsPlayer &&
+                handOffFailed?.invoke(id, item.requestMetadata.extras?.getString(PlaybackContract.EXTRA_URL), c.currentPosition) == true
+            ) return
             // A rip-on-demand placeholder that failed to resolve: there is no presigned url to retry with.
             if (item.requestMetadata.extras?.getString(PlaybackContract.EXTRA_URL)
                     ?.startsWith(RipOnDemandSource.SCHEME + "://") == true
@@ -1070,6 +1075,84 @@ class PlaybackController(
      * not a hot StateFlow so ~4 Hz position ticks don't recompose the world
      * (specs/playback.md §5.5).
      */
+    // ---- P2-MM-5: swap-on-land (np-mix-mode §4.2) ----------------------------------------------------
+
+    /** Set by [com.levi.pocketdj.playback.npmix.NpMixWiring]: a failed hand-off file may revert once. True = handled. */
+    @Volatile var handOffFailed: ((songId: String, url: String?, livePositionMs: Long) -> Boolean)? = null
+
+    /** Completed by the first sound after a swap-on-land reload. */
+    @Volatile private var handOffAudio: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+
+    /** The engine's current item for the hand-off decision (null = nothing loaded / another backend). */
+    suspend fun handOffPlaying(): com.levi.pocketdj.playback.npmix.SwapOnLand.Playing? = withContext(Dispatchers.Main) {
+        if (activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer || !exoFronts()) return@withContext null
+        val c = obtainController()
+        val item = c.currentMediaItem ?: return@withContext null
+        val extras = item.requestMetadata.extras
+        val url = extras?.getString(PlaybackContract.EXTRA_URL) ?: item.requestMetadata.mediaUri?.toString() ?: return@withContext null
+        val clipStart = extras?.getLong(PlaybackContract.EXTRA_CLIP_START_MS, -1L)?.takeIf { it >= 0 }
+        val clipEnd = extras?.getLong(PlaybackContract.EXTRA_CLIP_END_MS, -1L)?.takeIf { it >= 0 }
+        com.levi.pocketdj.playback.npmix.SwapOnLand.Playing(
+            songId = item.mediaId,
+            url = url,
+            clipStartMs = clipStart,
+            clipEndMs = clipEnd,
+            positionMs = c.currentPosition,
+            durationMs = c.duration.takeIf { it != androidx.media3.common.C.TIME_UNSET },
+            isFile = url.startsWith("file:") || url.startsWith("content:") || url.startsWith("/"),
+            live = extras?.getBoolean(PlaybackContract.EXTRA_IS_LIVE, false) == true || url.contains("/hls/"),
+            hasLoadedItem = c.mediaItemCount > 0,
+            trackEnded = c.playbackState == Player.STATE_ENDED,
+        )
+    }
+
+    /** The engine is rendering or about to (playWhenReady): a hand-off may only continue sound, never start it. */
+    suspend fun enginePlayWhenReady(): Boolean = withController { it.playWhenReady }
+
+    /**
+     * Replace the CURRENT item of [songId] with [url] (a clip per [clipStartMs]/[clipEndMs]) and resume at [atMs]
+     * song-relative. playWhenReady is never touched (no pause event, so the discriminator never reads a listener
+     * pause); replace + seek is queued in order on the player, so the top of the file never sounds. The preloaded
+     * next row stays in the window. False = the engine no longer holds that row.
+     */
+    suspend fun swapCurrentItem(songId: String, url: String, clipStartMs: Long?, clipEndMs: Long?, atMs: Long): Boolean {
+        val t0 = android.os.SystemClock.elapsedRealtime()
+        val ok = withController { c ->
+            val idx = c.currentMediaItemIndex
+            val cur = c.currentMediaItem
+            if (cur == null || cur.mediaId != songId || !sequencerOwnsPlayer || activeBackend != ActiveBackend.EXO) return@withController false
+            val extras = Bundle(cur.requestMetadata.extras ?: Bundle()).apply {
+                putString(PlaybackContract.EXTRA_URL, url)
+                remove(PlaybackContract.EXTRA_CLIP_START_MS)
+                remove(PlaybackContract.EXTRA_CLIP_END_MS)
+                clipStartMs?.let { putLong(PlaybackContract.EXTRA_CLIP_START_MS, it) }
+                clipEndMs?.let { putLong(PlaybackContract.EXTRA_CLIP_END_MS, it) }
+            }
+            val next = cur.buildUpon()
+                .setUri(url)
+                .setClippingConfiguration(MediaItem.ClippingConfiguration.UNSET)
+                .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(Uri.parse(url)).setExtras(extras).build())
+                .build()
+            handOffAudio = kotlinx.coroutines.CompletableDeferred()
+            c.replaceMediaItem(idx, next)
+            // The hop onto the main thread took time while the stream kept playing: resume where it is NOW.
+            val elapsed = if (c.playWhenReady) (android.os.SystemClock.elapsedRealtime() - t0).coerceAtLeast(0L) else 0L
+            c.seekTo(idx, atMs + elapsed)
+            c.prepare()
+            true
+        }
+        if (!ok) handOffAudio = null
+        return ok
+    }
+
+    /** Suspends until the first sound after the last [swapCurrentItem], or [timeoutMs]. */
+    suspend fun awaitHandOffAudio(timeoutMs: Long): Boolean {
+        val d = handOffAudio ?: return false
+        val heard = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { d.await() } ?: false
+        if (handOffAudio === d) handOffAudio = null // never hand a completed/expired signal to the next hand-off
+        return heard
+    }
+
     suspend fun currentPositionMs(): Long =
         if (activeBackend == ActiveBackend.APPLE_MUSIC) {
             appleMusicBackend?.currentPositionMs() ?: 0L
