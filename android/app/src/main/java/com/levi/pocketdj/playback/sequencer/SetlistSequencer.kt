@@ -720,6 +720,65 @@ class SetlistSequencer(
         publish()
     }
 
+    // ---- P2-ALB-5: album scrub APIs ------------------------------------------------------
+
+    private val startCue = com.levi.pocketdj.playback.album.AlbumSeek.StartCue()
+
+    /**
+     * One-shot cue for the NEXT fresh start: when it lands on [songId] it starts [atMs] into the song instead of at its
+     * top (the album waveform's scrub on an album that is not playing yet). Expires after 30 s.
+     */
+    fun cueNextStart(songId: String, atMs: Long) = startCue.arm(songId, atMs)
+
+    /** A pending in-file scrub target (absolute file ms) for [songId]'s next start; the album engine glue claims it. */
+    private var albumScrubSongId: String? = null
+    private var albumScrubFileMs: Long = 0
+    private var albumScrubAtMs: Long = 0
+
+    /** One-shot: the file position the in-flight [seekAlbumFile] start of [songId] must land on (null = not a scrub). */
+    fun takeAlbumScrub(songId: String): Long? {
+        val id = albumScrubSongId ?: return null
+        albumScrubSongId = null
+        if (System.currentTimeMillis() - albumScrubAtMs > 5_000) return null // a stale unclaimed scrub never leaks
+        return albumScrubFileMs.takeIf { com.levi.pocketdj.data.edition.SongVariant.baseId(id) == com.levi.pocketdj.data.edition.SongVariant.baseId(songId) }
+    }
+
+    /**
+     * ALBUM WAVEFORM SCRUB (iOS `seekAlbumFile`): jump to absolute position [fileMs] of the shared album file the deck is
+     * playing. The song under that position becomes current (title, card, History) and the audio seeks inside the same
+     * file. False when the deck is not on a shared album file that holds that song (the caller then starts the album there
+     * with [cueNextStart]).
+     */
+    fun seekAlbumFile(fileMs: Long): Boolean {
+        if (!running || index >= queue.size || held || waitingForLive) return false
+        val st = port.albumFileState() ?: return false
+        val cur = queue[index]
+        if (!cur.matches(st.mediaId) && com.levi.pocketdj.data.edition.SongVariant.baseId(cur.id) != com.levi.pocketdj.data.edition.SongVariant.baseId(st.mediaId)) return false
+        val tl = albumTimelines?.timeline(st.mediaId) ?: return false
+        val seg = tl.segmentAt(fileMs) ?: return false
+        val ms = fileMs.coerceAtLeast(0L)
+        log("[playback] album scrub song=${seg.songId} fileMs=$ms")
+        val base = com.levi.pocketdj.data.edition.SongVariant.baseId(cur.id)
+        if (base == seg.songId) return port.seekInFile(ms) // same song: a plain seek
+        val pos = com.levi.pocketdj.playback.album.AlbumSeek.nearestOccurrence(queue.map { it.id }, seg.songId, index) ?: return false
+        val fromUid = currentUid()
+        noteAdvanceAway()
+        noteUserTransport()
+        fireUser(UserTransport.JUMP)
+        waitingForLive = false
+        index = pos
+        publish() // the session writer persists the new row at its song-relative position
+        noteTransition(fromUid, TransitionCause.USER)
+        val rel = (ms - seg.startMs).coerceAtLeast(0L)
+        // The engine glue seeks FIRST (the new song's end boundary must never meet the old position) then retargets;
+        // when it declines (a DSP engaged, a held deck...) the normal load starts the song at [rel].
+        albumScrubSongId = seg.songId
+        albumScrubFileMs = ms
+        albumScrubAtMs = System.currentTimeMillis()
+        startPlayCurrent(fresh = true, resumeAtMs = rel.takeIf { it > 0 }, cued = rel > 0)
+        return true
+    }
+
     // ---- the ONE start funnel -----------------------------------------------------------
 
     private fun startPlayCurrent(
@@ -730,6 +789,13 @@ class SetlistSequencer(
         /** [resumeAtMs] is a start CUE of a new track (external driver), not a mid-song resume. */
         cued: Boolean = false,
     ) {
+        // P2-ALB-5 (iOS pendingStartCue): the next FRESH start consumes the one-shot cue either way.
+        var resumeAtMs = resumeAtMs
+        var cued = cued
+        if (resumeAtMs == null && fresh) {
+            val cue = startCue.consume(queue.getOrNull(index)?.id ?: "")
+            if (cue != null && running) { resumeAtMs = cue; cued = true }
+        }
         if (pausedByCascade) { pausedByCascade = false; publish() }
         spendCurrentUserNext()
         if (inPlace) queue.getOrNull(index)?.let { skipTracker?.noteTrackRestarted(it.id) }

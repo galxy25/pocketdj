@@ -235,6 +235,8 @@ class PlaybackService : MediaLibraryService() {
         RunTransportBus.instantMetadata = { md -> forwarding.showInstantMetadata(md) }
         RunTransportBus.stateChanged = { forwarding.syncGate() }
         RunTransportBus.heldRestored = { forwarding.onHeldRestored() }
+        RunTransportBus.rawPlayer = player
+        RunTransportBus.clockChanged = { forwarding.notifyClockChanged() }
         RunTransportBus.clearInstantMetadata = { md -> forwarding.clearInstantMetadata(md) }
         board.onChange = { o -> mediaSession?.let { s -> val p = (o ?: exo).sessionPlayer; if (s.player !== p) s.player = p }; refreshCustomLayout() }
 
@@ -427,6 +429,8 @@ class PlaybackService : MediaLibraryService() {
         RunTransportBus.heldRestored = null
         RunTransportBus.clearInstantMetadata = null
         RunTransportBus.albumArmer = null
+        RunTransportBus.rawPlayer = null
+        RunTransportBus.clockChanged = null
         albumArmer?.release()
         albumArmer = null
         SessionSwitchboard.shared.onChange = {}

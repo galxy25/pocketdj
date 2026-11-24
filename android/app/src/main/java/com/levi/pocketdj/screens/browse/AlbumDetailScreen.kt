@@ -53,7 +53,6 @@ import com.levi.pocketdj.data.share.ShareText
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.ui.FavoriteToggle
-import com.levi.pocketdj.playback.PlayOutcome
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
 import com.levi.pocketdj.screens.collections.AddToItem
 import kotlinx.coroutines.launch
@@ -147,16 +146,22 @@ fun AlbumDetailScreen(
                                 if (anyPlayable) {
                                     Button(
                                         onClick = {
-                                            scope.launch {
-                                                when (val outcome = graph.playbackController.playAlbum(album.id)) {
-                                                    is PlayOutcome.Failed ->
-                                                        snackbar.showSnackbar(outcome.message)
-                                                    is PlayOutcome.NotPlayable ->
-                                                        snackbar.showSnackbar(Fmt.NO_IMPORT_SERVER)
-                                                    else -> Unit
-                                                }
+                                            // Same path as Shuffle (iOS play(shuffle: false)): the album in track order through the
+                                            // sequencer, so an in-order vinyl side plays as ONE engine item (album run).
+                                            val set = graph.collections.playNow(
+                                                songIds = tracks.map { it.id },
+                                                name = album.name,
+                                                shuffle = false,
+                                                sourceToken = PlayContext.SOURCE_ALBUM,
+                                                originId = album.id,
+                                            )
+                                            if (set != null) {
+                                                onOpenSetlist?.invoke(NOW_PLAYING_SETLIST_ID, true)
+                                            } else {
+                                                scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
                                             }
                                         },
+                                        modifier = Modifier.testTag("album-play"),
                                     ) {
                                         Icon(Icons.Filled.PlayArrow, contentDescription = null)
                                         Spacer(Modifier.width(6.dp))

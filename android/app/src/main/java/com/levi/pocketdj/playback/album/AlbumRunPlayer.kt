@@ -84,23 +84,33 @@ class AlbumRunPlayer(
     // ---- listener ⏭ / ⏮ -> in-place jump ----------------------------------------------------------------------
 
     override suspend fun tryClaim(attempt: StartAttempt): Boolean {
-        // Only a fresh listener-driven start: never a resume, a cue, a repeat pass, or a natural advance.
-        if (!attempt.fresh || attempt.resumeAtMs != null || attempt.inPlace) return false
-        val cause = seq.lastTransitionCause
-        if (cause != TransitionCause.USER && cause != TransitionCause.REMOTE) return false
+        if (!attempt.fresh || attempt.inPlace) return false
+        // P2-ALB-5: an album-waveform scrub (seekAlbumFile) rides this same claim with an explicit file position. The
+        // one-shot is taken first so a declined claim never leaves it armed for a later start.
+        val scrub = seq.takeAlbumScrub(attempt.item.id)
+        if (scrub == null) {
+            // Only a fresh listener-driven start: never a resume, a cue, a repeat pass, or a natural advance.
+            if (attempt.resumeAtMs != null) return false
+            val cause = seq.lastTransitionCause
+            if (cause != TransitionCause.USER && cause != TransitionCause.REMOTE) return false
+        }
         if (attempt.item.cleanOnlySkip || !usable()) return false
         val st = port.albumFileState() ?: return false
         val tl = timelines.timeline(attempt.item.id) ?: return false
         val loadedTl = timelines.timeline(st.mediaId) ?: return false
         if (loadedTl.key != tl.key) return false
-        val target = AlbumRun.jumpTargetMs(attempt.item.id, tl, st.clipStartMs) ?: return false
+        val segStart = tl.segment(SongVariant.baseId(attempt.item.id))?.startMs ?: return false
+        val target = if (scrub != null) scrub.takeIf { it >= st.clipStartMs } else AlbumRun.jumpTargetMs(attempt.item.id, tl, st.clipStartMs)
+        if (target == null) return false
+        // A scrub may land beyond the OLD song's armed end: disarm first so a tick can't fire it mid-seek.
+        if (scrub != null) port.armBoundary("", null, 0L)
         // Seek FIRST: the target's end boundary must never meet the old position.
         if (!port.seekInFile(target)) return false
         val queue = seq.state.value.queue
-        arm(queue, attempt.index, tl, target, st.clipStartMs)
+        arm(queue, attempt.index, tl, segStart, st.clipStartMs)
         val retargeted = retarget(attempt.item, startPlayback = !st.playing)
         if (!retargeted) return false
-        if (!seq.completeClaimedStart(attempt.gen, StartPath.ALBUM_GLIDE, backend = "album-skip")) return true // superseded: its own start re-arms
+        if (!seq.completeClaimedStart(attempt.gen, StartPath.ALBUM_GLIDE, backend = if (scrub != null) "album-scrub" else "album-skip")) return true // superseded: its own start re-arms
         log("[playback] album jump in-place to=${attempt.item.id} index=${attempt.index + 1}/${queue.size} file=$target")
         // The engine is already sounding (or ▶ was just issued and its first-audio event will close the window).
         if (st.playing) seq.onFirstAudio(attempt.item.id, "album-skip")

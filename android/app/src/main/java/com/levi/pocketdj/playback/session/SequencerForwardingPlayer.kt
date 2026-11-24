@@ -1,5 +1,6 @@
 package com.levi.pocketdj.playback.session
 
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -65,6 +66,8 @@ class SequencerForwardingPlayer(
     /** SessionRestorer.restore for the armed resumption set (idempotent; a live run stays untouched). */
     private val restoreForResumption: (HeldQueue) -> Unit = {},
     private val clockMs: () -> Long = System::currentTimeMillis,
+    /** P2-ALB-5: the loaded album run's clock; null = the engine's own clock is already song-relative. */
+    private val runClock: com.levi.pocketdj.playback.album.RunClockSource = com.levi.pocketdj.playback.album.RunClockSource { com.levi.pocketdj.playback.RunTransportBus.runClock?.current() },
 ) : SetGatedPlayer(player) {
 
     @Volatile private var armedResumption: HeldQueue? = null
@@ -243,7 +246,7 @@ class SequencerForwardingPlayer(
     /** A real re-kick: re-request the load from the current position (prepare/play are no-ops here). */
     fun rekick() {
         rekicking = true
-        try { seekTo(currentPosition) } finally { rekicking = false }
+        try { seekTo(super.getCurrentPosition()) } finally { rekicking = false }
         emit(TransportLog.Cmd.PLAY, TransportLog.Verdict.REKICK_BUFFERING)
     }
 
@@ -300,8 +303,63 @@ class SequencerForwardingPlayer(
 
     private fun noteSeek() { if (!rekicking && control.isRunning) control.noteUserTransport(UserTransport.SEEK) }
 
-    override fun seekTo(positionMs: Long) { noteSeek(); super.seekTo(positionMs) }
-    override fun seekTo(mediaItemIndex: Int, positionMs: Long) { noteSeek(); super.seekTo(mediaItemIndex, positionMs) }
+    // ---- P2-ALB-5: song-relative clocks. One engine item plays a whole vinyl side, so the engine's position/duration are
+    // file-relative; the lock screen, Auto, widget, skip tracker and snapshot all read THIS player (directly or through the
+    // session controller) and want the current song's clock. Remote seeks are mapped back to the item.
+
+    private fun fromItem(itemMs: Long, c: com.levi.pocketdj.playback.album.RunClock): Long =
+        if (itemMs == C.TIME_UNSET) itemMs else com.levi.pocketdj.playback.album.AlbumSeek.relativePosition(itemMs, c.clipStartMs, c.span)
+
+    private fun toItem(relMs: Long, c: com.levi.pocketdj.playback.album.RunClock): Long =
+        com.levi.pocketdj.playback.album.AlbumSeek.toItemPosition(relMs, c.clipStartMs, c.span)
+
+    override fun getCurrentPosition(): Long {
+        val raw = super.getCurrentPosition()
+        return runClock.current()?.let { fromItem(raw, it) } ?: raw
+    }
+
+    override fun getContentPosition(): Long {
+        val raw = super.getContentPosition()
+        return runClock.current()?.let { fromItem(raw, it) } ?: raw
+    }
+
+    override fun getBufferedPosition(): Long {
+        val raw = super.getBufferedPosition()
+        return runClock.current()?.let { fromItem(raw, it) } ?: raw
+    }
+
+    override fun getContentBufferedPosition(): Long {
+        val raw = super.getContentBufferedPosition()
+        return runClock.current()?.let { fromItem(raw, it) } ?: raw
+    }
+
+    private fun relDuration(raw: Long): Long {
+        val c = runClock.current() ?: return raw
+        return com.levi.pocketdj.playback.album.AlbumSeek.relativeDuration(raw.takeIf { it != C.TIME_UNSET }, c.clipStartMs, c.span) ?: C.TIME_UNSET
+    }
+
+    override fun getDuration(): Long = relDuration(super.getDuration())
+    override fun getContentDuration(): Long = relDuration(super.getContentDuration())
+
+    /** The song under the playhead changed in place (glide / jump / scrub): tell the session its clock jumped. */
+    fun notifyClockChanged() {
+        val item = currentMediaItem
+        val pos = currentPosition
+        val info = Player.PositionInfo(null, currentMediaItemIndex, item, null, currentPeriodIndex, pos, pos, -1, -1)
+        notifyListeners { it.onPositionDiscontinuity(info, info, Player.DISCONTINUITY_REASON_INTERNAL) }
+    }
+
+    override fun seekTo(positionMs: Long) {
+        noteSeek()
+        val c = if (rekicking) null else runClock.current()
+        super.seekTo(if (c != null) toItem(positionMs, c) else positionMs)
+    }
+
+    override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
+        noteSeek()
+        val c = if (rekicking) null else runClock.current()
+        super.seekTo(mediaItemIndex, if (c != null && mediaItemIndex == currentMediaItemIndex) toItem(positionMs, c) else positionMs)
+    }
 
     override fun pause() {
         if (control.isRunning) control.noteUserTransport(UserTransport.PAUSE)
