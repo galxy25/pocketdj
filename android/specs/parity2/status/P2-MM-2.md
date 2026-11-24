@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-MM-2 Mix Mode ph1b: expiry sweep, soft-cap eviction order, triggers, SAF picked-folder identity
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-MM-4 Mix Mode ph2a: Mix Mode state + NowPlayingPrefetcher, network policy, disk guard
 

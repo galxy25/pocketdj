@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # P2-DJ-4 DjSetPlanner (PocketDJ selector)
 

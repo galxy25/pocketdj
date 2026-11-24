@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-PB-2 Sequencer extension seams I
 

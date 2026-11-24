@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 Summary: DjMode.kt (DJModeState with opaque planner JsonElement, DJModeSettings, Timings, fastSkip 5s, Indicator + chipText, DjEndReason decline words); MixSettings gains 7 dj* keys (missing => true) + mixVolumeGlide (missing => false) exposed as MixSettings.dj / .mixVolumeGlide; MixSection is now one "Mixing" row opening MixingSettingsScreen (route settings/mixing) with Crossfades / Now Playing DJ Mode / Mix tab groups and tags settings-dj-*.
 

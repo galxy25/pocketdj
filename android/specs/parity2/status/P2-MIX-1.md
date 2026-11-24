@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-MIX-1: Mix Auto Mix crate stall
 
