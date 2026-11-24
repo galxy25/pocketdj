@@ -134,7 +134,8 @@ enum ForYouTiles {
                       zone: [String],
                       zoneSource: ForYouTileSource = .onDevice,
                       collections: [(id: String, kind: String, name: String, suggestions: [String])],
-                      newEmptyNote: String? = nil
+                      newEmptyNote: String? = nil,
+                      newKind: NewReleaseKindFilter = .all
     ) -> [ForYouTile] {
         var out: [ForYouTile] = []
 
@@ -155,7 +156,7 @@ enum ForYouTiles {
             id: "new",
             title: "New",
             subtitle: newReleaseSubtitle(outNow: outNowCount, comingSoon: comingSoonCount,
-                                         emptyNote: newEmptyNote),
+                                         emptyNote: newEmptyNote, kind: newKind),
             symbol: "sparkles",
             count: newReleaseCount,
             route: ForYouTileRoute(kind: .new, title: "New"),
@@ -225,13 +226,17 @@ enum ForYouTiles {
     /// and it is a false one while the feed is still seeding, unauthorized or offline. Saying
     /// nothing came out when nothing was ever asked is the specific way this tile lied.
     static func newReleaseSubtitle(outNow: Int, comingSoon: Int,
-                                   emptyNote: String? = nil) -> String {
+                                   emptyNote: String? = nil,
+                                   kind: NewReleaseKindFilter = .all) -> String {
         if outNow == 0, comingSoon == 0, let note = emptyNote, !note.isEmpty { return note }
+        // "Albums only" / "Singles only" say so on the card; Everything and Albums-then-singles
+        // show the whole set and keep the original wording.
+        let lead = kind == .albums ? "Albums from" : kind == .singles ? "Singles from" : "From"
         switch (outNow, comingSoon) {
         case (0, 0):  return "No releases in the last 30 days"
-        case (0, _):  return "From artists you play · upcoming"
-        case (_, 0):  return "From artists you play · last 30 days"
-        default:      return "From artists you play · last 30 days + upcoming"
+        case (0, _):  return "\(lead) artists you play · upcoming"
+        case (_, 0):  return "\(lead) artists you play · last 30 days"
+        default:      return "\(lead) artists you play · last 30 days + upcoming"
         }
     }
 }

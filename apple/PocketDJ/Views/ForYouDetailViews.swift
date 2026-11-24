@@ -32,6 +32,9 @@ struct NewReleasesView: View {
     /// added". Optional, like `releaseFeed`: a harness that doesn't inject it keeps the screen
     /// working as the pure-feedback surface it used to be.
     @Environment(NewReleaseLikeAdder.self) private var adder: NewReleaseLikeAdder?
+    /// The albums/singles choice (`NewReleaseKindFilter`) — view-only: the 👍 auto-add, sweep,
+    /// hydration and feed fetch never read it.
+    @Environment(SettingsStore.self) private var settings
     #if os(macOS)
     @Environment(\.openURL) private var openURL
     #endif
@@ -57,20 +60,40 @@ struct NewReleasesView: View {
         // can say, and the PocketDJ side follows on release day.
         let preAdded = adder.map { LikedReleaseSelection.preAdded(meta: $0.store.releases, nowMs: nowMs,
                                                                           accepted: feedback?.acceptedInScope(scope)) } ?? []
-        let outNow = sunkLast(offered(releaseFeed?.outNow() ?? [], keeping: preAdded))
-        let soon = sunkLast(offered(releaseFeed?.comingSoon() ?? [], keeping: preAdded))
+        // Per section: offered → arrange (the albums/singles choice, with 👎 sinking inside each
+        // group) → render. The filter comes AFTER `offered`, so a 👍'd release still leaves Out
+        // now and moves to Liked.
+        let mode = settings.newReleaseKindFilter
+        let offeredOut = offered(releaseFeed?.outNow() ?? [], keeping: preAdded)
+        let offeredSoon = offered(releaseFeed?.comingSoon() ?? [], keeping: preAdded)
+        let outNowA = NewReleaseKinds.arrange(offeredOut, mode: mode, cls: { $0.entry.kindClass }, sink: sunkLast)
+        let soonA = NewReleaseKinds.arrange(offeredSoon, mode: mode, cls: { $0.entry.kindClass }, sink: sunkLast)
         let liked = likedSelection(nowMs: nowMs)
+        let likedA = NewReleaseKinds.arrange(liked.rows, mode: mode, cls: { $0.release.kindClass })
+        let hiddenAlbums = outNowA.hiddenAlbums + soonA.hiddenAlbums + likedA.hiddenAlbums
+        let hiddenEPs = outNowA.hiddenEPs + soonA.hiddenEPs + likedA.hiddenEPs
+        let hiddenSingles = outNowA.hiddenSingles + soonA.hiddenSingles + likedA.hiddenSingles
+        let hiddenNote = NewReleaseKinds.hiddenNote(albums: hiddenAlbums, eps: hiddenEPs, singles: hiddenSingles)
         // The LIVE half, computed ONCE and used by both the rows and the transport's enabled state
         // — deriving it twice is how ▶ ended up lit over a queue ▶ itself would refuse to start.
-        let liveOutNow = live(outNow)
+        // It reads the ARRANGED list, so ▶ plays albums then singles and 🔀 shuffles all of it;
+        // `ReleaseStreaming.maxReleases` caps after this ordering, so singles are what get cut.
+        let liveOutNow = live(outNowA.flat)
         List {
-            // The empty state means "nothing at all" — a liked-but-not-added record is something.
-            if outNow.isEmpty && soon.isEmpty && liked.rows.isEmpty {
+            // Three different empties: nothing at all (the reason-based state, the filter is not
+            // the cause), everything hidden by the filter (says so, offers Show all), or a
+            // partial hide (a footer under the rows). A liked-but-not-added record is something.
+            if offeredOut.isEmpty && offeredSoon.isEmpty && liked.rows.isEmpty {
                 emptyState.listRowBackground(Color.clear)
+            } else if outNowA.flat.isEmpty && soonA.flat.isEmpty && likedA.flat.isEmpty {
+                kindEmptyState(mode: mode, hiddenNote: hiddenNote).listRowBackground(Color.clear)
             } else {
-                likedSection(liked.rows)
-                section(ReleaseStatus.outNow, outNow, preAdded: preAdded)
-                section(ReleaseStatus.comingSoon, soon, preAdded: preAdded)
+                likedSection(likedA.flat)
+                section(ReleaseStatus.outNow, outNowA, preAdded: preAdded)
+                section(ReleaseStatus.comingSoon, soonA, preAdded: preAdded)
+                if let hiddenNote {
+                    hiddenFooter(note: hiddenNote, count: hiddenAlbums + hiddenSingles)
+                }
             }
         }
         .listStyle(.plain)
@@ -137,6 +160,83 @@ struct NewReleasesView: View {
         }
         .disabled(releaseFeed?.canRecheck != true)
         .accessibilityIdentifier("foryou-new-recheck")
+        // Show: albums vs singles. On the screen it affects, beside the only other screen-level
+        // action; the footer under the list says when it is hiding something.
+        // Plain items after a Divider rather than a `Section`: an accessibility id on an item
+        // inside a Menu `Section` never reaches the rendered menu (measured), and the UI tests
+        // find these by id. The disabled "Show" row is the section title, `…-menu` its id.
+        Divider()
+        Button {} label: { Text("Show") }
+            .disabled(true)
+            .accessibilityIdentifier("foryou-new-kind-menu")
+        kindButton(.all)
+        kindButton(.albums)
+        kindButton(.singles)
+        kindButton(.albumsFirst)
+        Button {} label: { Text("EPs count as albums") }.disabled(true)
+    }
+
+    private func kindButton(_ m: NewReleaseKindFilter) -> some View {
+        let selected = settings.newReleaseKindFilter == m
+        return Button {
+            kindSelection.wrappedValue = m
+        } label: {
+            Label(m.label, systemImage: selected ? "checkmark" : m.systemImage)
+        }
+        .accessibilityValue(selected ? "selected" : "")
+        .accessibilityIdentifier("foryou-new-kind-\(m.rawValue)")
+    }
+
+    /// Writes go through `persist()` — the `collectionSort` pattern.
+    private var kindSelection: Binding<NewReleaseKindFilter> {
+        Binding(get: { settings.newReleaseKindFilter },
+                set: { settings.newReleaseKindFilter = $0; settings.persist() })
+    }
+
+    private func showAll() {
+        settings.newReleaseKindFilter = .all
+        settings.persist()
+    }
+
+    /// "3 singles hidden · Show all" — so the filter can never hide things silently. The value is
+    /// the hidden count; it counts rows that WOULD render under Everything (👎'd ones included).
+    private func hiddenFooter(note: String, count: Int) -> some View {
+        HStack {
+            Text(note).font(.caption).foregroundStyle(Theme.fgDim)
+                .accessibilityIdentifier("new-kind-hidden-footer")
+                .accessibilityValue("\(count)")
+            Spacer()
+            Button("Show all") { showAll() }
+                .font(.caption.weight(.semibold))
+                .accessibilityIdentifier("new-kind-show-all")
+        }
+        .listRowBackground(Color.clear)
+    }
+
+    /// The filter emptied the screen — and the unfiltered list has rows, so the reason-based empty
+    /// state ("Nothing new in the last 30 days") would be a false claim.
+    private func kindEmptyState(mode: NewReleaseKindFilter, hiddenNote: String?) -> some View {
+        let title = "No new \(NewReleaseKinds.shownNoun(mode))"
+        return VStack(spacing: 8) {
+            Image(systemName: mode.systemImage).font(.system(size: 34)).foregroundStyle(Theme.fgDim)
+            Text(title).font(.subheadline).foregroundStyle(Theme.fg)
+            Text(Self.kindEmptyDetail(mode: mode, hiddenNote: hiddenNote))
+                .font(.caption).foregroundStyle(Theme.fgDim).multilineTextAlignment(.center)
+            Button("Show all") { showAll() }
+                .buttonStyle(.bordered).controlSize(.small)
+                .accessibilityIdentifier("new-kind-show-all")
+        }
+        .frame(maxWidth: .infinity).padding(30)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("new-kind-empty")
+        .accessibilityValue(title)
+    }
+
+    /// Pure copy, unit-tested without driving the UI.
+    static func kindEmptyDetail(mode: NewReleaseKindFilter, hiddenNote: String?) -> String {
+        let setting = "Your New filter is set to \(mode.label)."
+        guard let hiddenNote else { return setting }
+        return "\(hiddenNote.prefix(1).uppercased())\(hiddenNote.dropFirst()). \(setting)"
     }
 
     private var startErrorShowing: Binding<Bool> {
@@ -336,33 +436,51 @@ struct NewReleasesView: View {
     }
 
     @ViewBuilder
-    private func section(_ status: ReleaseStatus, _ items: [ReleaseFeedItem],
+    private func section(_ status: ReleaseStatus, _ a: NewReleaseKinds.Arranged<ReleaseFeedItem>,
                          preAdded: Set<String> = []) -> some View {
-        if !items.isEmpty {
+        if !a.flat.isEmpty {
             Section {
-                ForEach(items) { item in
-                    HStack(spacing: 8) {
-                        Button { push(item.entry) } label: { row(item) }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("new-release-\(item.entry.artistId)")
-                        if let id = item.entry.releaseId, preAdded.contains(id) {
-                            Text("Pre-added ✓").font(.caption2.weight(.semibold))
-                                .foregroundStyle(Theme.accent2)
-                                .accessibilityIdentifier("new-release-preadded-\(id)")
-                        }
-                        // 👍 is verdict AND add: the SAME add the album page's ＋ runs, through
-                        // the app-scoped adder so leaving the screen mid-add cancels nothing.
-                        // `RecFeedbackButtons` only fires `onAccept` for a 👍 that landed as
-                        // accepted, so an undo never adds. A `relartist:` row (no release id) has
-                        // nothing to add and stays pure feedback — the one case that does.
-                        RecFeedbackButtons(songId: item.feedbackId, scope: scope, surface: .tile,
-                                           onAccept: likeAction(for: item.entry))
-                    }
+                // Albums/Singles sub-headers only when BOTH groups exist — a lone "Albums" header
+                // over the whole section is noise.
+                if a.grouped, !a.albums.isEmpty, !a.singles.isEmpty {
+                    groupHeader("Albums", id: "new-release-group-albums-\(status.rawValue)")
+                    ForEach(a.albums) { releaseRow($0, preAdded: preAdded) }
+                    groupHeader("Singles", id: "new-release-group-singles-\(status.rawValue)")
+                    ForEach(a.singles) { releaseRow($0, preAdded: preAdded) }
+                } else {
+                    ForEach(a.flat) { releaseRow($0, preAdded: preAdded) }
                 }
             } header: {
                 Text(status.title).font(.caption).foregroundStyle(Theme.fgDim)
                     .accessibilityIdentifier("new-release-section-\(status.rawValue)")
             }
+        }
+    }
+
+    private func groupHeader(_ title: String, id: String) -> some View {
+        Text(title.uppercased()).font(.caption2.weight(.semibold)).foregroundStyle(Theme.accent)
+            .accessibilityIdentifier(id)
+            .listRowSeparator(.hidden)
+    }
+
+    @ViewBuilder
+    private func releaseRow(_ item: ReleaseFeedItem, preAdded: Set<String>) -> some View {
+        HStack(spacing: 8) {
+            Button { push(item.entry) } label: { row(item) }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("new-release-\(item.entry.artistId)")
+            if let id = item.entry.releaseId, preAdded.contains(id) {
+                Text("Pre-added ✓").font(.caption2.weight(.semibold))
+                    .foregroundStyle(Theme.accent2)
+                    .accessibilityIdentifier("new-release-preadded-\(id)")
+            }
+            // 👍 is verdict AND add: the SAME add the album page's ＋ runs, through
+            // the app-scoped adder so leaving the screen mid-add cancels nothing.
+            // `RecFeedbackButtons` only fires `onAccept` for a 👍 that landed as
+            // accepted, so an undo never adds. A `relartist:` row (no release id) has
+            // nothing to add and stays pure feedback — the one case that does.
+            RecFeedbackButtons(songId: item.feedbackId, scope: scope, surface: .tile,
+                               onAccept: likeAction(for: item.entry))
         }
     }
 
@@ -393,9 +511,13 @@ struct NewReleasesView: View {
                 Text(e.releaseName ?? "—").font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
                 Text(e.artistName).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
                 HStack(spacing: 6) {
-                    if let kind = e.releaseKind {
-                        Text(kind.capitalized).font(.caption2).foregroundStyle(Theme.accent)
-                    }
+                    // The CLASSIFIED kind, not Apple's raw `releaseKind`: otherwise a 2-track "album"
+                    // would sit under Singles only wearing an "Album" badge.
+                    let cls = e.kindClass
+                    Text(NewReleaseKinds.badge(kind: e.releaseKind, cls: cls))
+                        .font(.caption2).foregroundStyle(Theme.accent)
+                        .accessibilityIdentifier("new-release-kind-\(e.artistId)")
+                        .accessibilityValue(cls.rawValue)
                     if let at = e.releaseAtMs {
                         Text(Self.relative(at)).font(.caption2).foregroundStyle(Theme.fgDim)
                     }
