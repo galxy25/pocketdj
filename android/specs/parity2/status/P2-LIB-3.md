@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-LIB-3: Apple Music library source, part 2 (fold, supersede, sync, Settings)
 

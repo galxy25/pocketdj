@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-REM-5 - RemoteSessionController part 1 (host/session half) + RemoteGraph
 

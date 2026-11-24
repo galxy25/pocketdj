@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-POC-9 status: Pocket wheel UI
 

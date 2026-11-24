@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-LIB-4: In-app store album page + recognizer edition swap + rejected-MUT reconnect
 

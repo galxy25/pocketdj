@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-POC-16 Pocket surfaces (Android Auto, shortcut, deep link, Assistant phrase)
 

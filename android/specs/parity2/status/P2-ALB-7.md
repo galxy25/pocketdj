@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-ALB-7 - Album page parity
 

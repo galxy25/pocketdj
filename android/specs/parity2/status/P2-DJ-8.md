@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-DJ-8: DJ conductor: decide/decline at track start, advance at fade start (no reload), adoptDsp, hand-back
 
