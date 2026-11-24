@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.sequencer.RepeatMode
+import com.levi.pocketdj.remote.BrokerRemoteStarter
 import com.levi.pocketdj.remote.NearbyRemoteStarter
 import com.levi.pocketdj.remote.RemoteDeviceRole
 import com.levi.pocketdj.remote.RemotePermissions
@@ -93,8 +94,17 @@ fun RemoteScreen(modifier: Modifier = Modifier) {
             else controller.setStatus(RemotePermissions.DENIED_MESSAGE)
         }
     }
+    // P2-REM-10: "Over the internet" runs on the jukebox server's relay: no Nearby permissions, no proximity.
+    val brokerServer by graph.remoteGraph.brokerServer.collectAsState()
+    val serverSet = brokerServer.first.isNotBlank()
+    var viaInternet by remember { mutableStateOf(RemoteStarters.current is BrokerRemoteStarter) }
+    LaunchedEffect(serverSet, viaInternet) {
+        val want = viaInternet && serverSet
+        if (viaInternet != want) viaInternet = want
+        RemoteStarters.current = if (want) graph.remoteGraph.brokerStarter else graph.remoteGraph.nearbyStarter
+    }
     val guard: (Boolean, () -> Unit) -> Unit = { hosting, action ->
-        if (RemotePermissions.missing(hosting, ::granted).isEmpty()) action() else { ask = hosting to action; showRationale = true }
+        if (viaInternet || RemotePermissions.missing(hosting, ::granted).isEmpty()) action() else { ask = hosting to action; showRationale = true }
     }
     // A scanned invite (pocketdj://remote/join/<token>) joins once the permissions are in.
     val pendingJoin by graph.shellGraph.deepLinks.pendingRemoteJoin.collectAsState()
@@ -113,7 +123,10 @@ fun RemoteScreen(modifier: Modifier = Modifier) {
             dismissButton = { TextButton({ showRationale = false; ask = null }) { Text("Not now") } },
         )
     }
-    RemoteContent(controller, vm, modifier, guard, canScan = scanOk, onScanPermitted = { scanOk = scanPermitted() })
+    RemoteContent(
+        controller, vm, modifier, guard, canScan = scanOk || viaInternet, onScanPermitted = { scanOk = scanPermitted() },
+        internetOption = if (serverSet) viaInternet else null, onInternetChange = { viaInternet = it },
+    )
 }
 
 @Composable
@@ -124,6 +137,9 @@ fun RemoteContent(
     /** False until the scan permissions are held: the Nearby list stays off and offers "Find nearby sessions". */
     canScan: Boolean = true,
     onScanPermitted: () -> Unit = {},
+    /** null = no jukebox server configured (the option is hidden); else whether sessions run over the internet relay. */
+    internetOption: Boolean? = null,
+    onInternetChange: (Boolean) -> Unit = {},
 ) {
     val active by controller.isActive.collectAsState()
     val status by controller.statusMessage.collectAsState()
@@ -136,7 +152,7 @@ fun RemoteContent(
                 Text(it, Modifier.padding(12.dp).testTag("remote-status"), style = MaterialTheme.typography.bodyMedium)
             }
         }
-        if (active) ActiveSession(controller, vm) else StartSection(vm, guard, canScan, onScanPermitted)
+        if (active) ActiveSession(controller, vm) else StartSection(vm, guard, canScan, onScanPermitted, internetOption, onInternetChange)
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -144,11 +160,15 @@ fun RemoteContent(
 // ---- Start + Join ----
 
 @Composable
-private fun StartSection(vm: RemoteViewModel, guard: (Boolean, () -> Unit) -> Unit, canScan: Boolean, onScanPermitted: () -> Unit) {
+private fun StartSection(
+    vm: RemoteViewModel, guard: (Boolean, () -> Unit) -> Unit, canScan: Boolean, onScanPermitted: () -> Unit,
+    internetOption: Boolean?, onInternetChange: (Boolean) -> Unit,
+) {
     val starter = RemoteStarters.current
     val starting by vm.starting.collectAsState()
     val joining by vm.joining.collectAsState()
     val enabled = starter.available && starting == null && !joining
+    if (internetOption != null) InternetRow(internetOption, starting == null && !joining, onInternetChange)
     RemoteSectionHeader("Start a session")
     RemoteStartCard(
         RemoteSessionMode.LISTEN_TOGETHER, "Everyone plays the same music in sync — anyone in the session can change it.",
@@ -395,6 +415,22 @@ private fun AddSection(vm: RemoteViewModel) {
         RemoteSearchRow(
             song,
             onNow = { vm.add(song, AddPlacement.NOW) }, onNext = { vm.add(song, AddPlacement.NEXT) }, onEnd = { vm.add(song, AddPlacement.END) },
+        )
+    }
+}
+
+/** The "Over the internet" switch (P2-REM-10), shown only when a jukebox server is configured. */
+@Composable
+private fun InternetRow(checked: Boolean, enabled: Boolean, onChange: (Boolean) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp).testTag("remote-internet-row")) {
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text("Over the internet", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+            androidx.compose.material3.Switch(checked, onChange, enabled = enabled, modifier = Modifier.testTag("remote-internet-switch"))
+        }
+        Text(
+            if (checked) "Sessions run through your jukebox server and work from anywhere, with the session code. Mix Together sounds best when everyone is on the same Wi-Fi."
+            else "Use your jukebox server to hold a session with people who aren’t nearby.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

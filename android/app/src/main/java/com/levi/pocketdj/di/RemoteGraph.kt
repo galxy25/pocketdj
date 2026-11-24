@@ -14,7 +14,10 @@ import com.levi.pocketdj.shell.FeatureModule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 
 /**
  * Sidecar graph for the Remote area (P2-REM-5): the app-scoped [RemoteSessionController] and its collaborators.
@@ -60,6 +63,21 @@ class RemoteGraph(private val app: AppGraph) : FeatureModule {
     /** P2-REM-9: the Nearby Connections starter the Remote screen drives. */
     val nearbyStarter: com.levi.pocketdj.remote.NearbyRemoteStarter by lazy {
         com.levi.pocketdj.remote.NearbyRemoteStarter(app.appContext, controller, mainScope, ::deviceName)
+    }
+
+    /** The configured jukebox server (url, account token), kept hot so the broker starter can answer `available` synchronously. */
+    val brokerServer: StateFlow<Pair<String, String>> by lazy {
+        app.settings.settings.map { it.jukeboxServerUrl.trim() to it.jukeboxToken }
+            .stateIn(mainScope, SharingStarted.Eagerly, "" to "")
+    }
+
+    /** P2-REM-10: the optional "Over the internet" starter (jukebox server `/remote` relay); offered only when a server URL is set. */
+    val brokerStarter: com.levi.pocketdj.remote.BrokerRemoteStarter by lazy {
+        com.levi.pocketdj.remote.BrokerRemoteStarter(
+            controller, mainScope,
+            com.levi.pocketdj.remote.BrokerApi(app.httpClient, { brokerServer.value.first }, { brokerServer.value.second }),
+            serverConfigured = { brokerServer.value.first.isNotBlank() }, deviceName = ::deviceName,
+        )
     }
 
     /** DJ Mode's suspension input: a session is attached. */

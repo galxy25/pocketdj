@@ -1098,7 +1098,7 @@ function joinRemoteRoom(room, body, req, ip) {
   room.rev++;
   remoteTouch(room);
   remoteWake(room);
-  return { status: 200, json: { participantId: id, secret: p.secret } };
+  return { status: 200, json: { participantId: id, secret: p.secret, mode: room.mode } };
 }
 
 function remoteParticipantOf(room, req) {
