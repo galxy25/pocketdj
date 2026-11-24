@@ -437,6 +437,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> by lazy {
         listOf(
             com.levi.pocketdj.screens.settings.sections.backupSection(),
+            com.levi.pocketdj.screens.settings.sections.editsSection(),
             com.levi.pocketdj.screens.settings.sections.collectionsSyncSection(),
             com.levi.pocketdj.screens.settings.appleMusicSyncSection(),
             com.levi.pocketdj.screens.settings.appleMusicWriteBackSection(),
