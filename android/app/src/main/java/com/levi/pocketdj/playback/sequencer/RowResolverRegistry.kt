@@ -49,6 +49,12 @@ class RowResolverRegistry(
         return am + rest
     }
 
+    /** P2-MM-10 rule A: the ladder with Apple Music LAST - a vocals-muted substitution must never sound the muted vocals first. */
+    fun ripFirstLadder(): List<RowSourceResolver> {
+        val (am, rest) = ladder().partition { it.rung == Rung.APPLE_MUSIC }
+        return rest + am
+    }
+
     /** The backend each row was last resolved to (resolveId -> backend): a re-resolve of a rip that did not sound walks Apple Music next. */
     private val lastBackend = java.util.concurrent.ConcurrentHashMap<String, String>()
 
@@ -56,7 +62,7 @@ class RowResolverRegistry(
      * [reResolve] = the supervisor's retry of a row that was already resolved. For an Apple-Music-sourced row whose last pick
      * was the rip (expired presign / 403 / stall), the retry walks the Apple Music rung FIRST: the rip-first ladder's real fallback.
      */
-    suspend fun resolve(item: QueueItem, mode: PlaybackMode, reResolve: Boolean = false): RowSource {
+    suspend fun resolve(item: QueueItem, mode: PlaybackMode, reResolve: Boolean = false, ripFirst: Boolean = false): RowSource {
         val ripStartsNow = manifestHit(item.resolveId)
         val prefer = preferLocalAudio()
         val sourced = prefer && ripStartsNow && isAppleMusicSourced(item)
@@ -73,7 +79,7 @@ class RowResolverRegistry(
             localCopyInstant = instant && !ripFailedOnce, // a rip that did not sound is no longer 'instant'
             appleMusicFirst = amFirst,
         )
-        for (r in ladderFor(amFirst)) {
+        for (r in if (ripFirst) ripFirstLadder() else ladderFor(amFirst)) {
             if (mode == PlaybackMode.DEVICE && r.rung != Rung.LOCAL_FILE && r.rung != Rung.STUDIO_LOCAL) continue
             val hit = try {
                 r.resolve(item, ctx)
