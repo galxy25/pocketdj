@@ -610,8 +610,8 @@ class MixSyncEngineTest {
         val h = EngineHarness(store)
         fun savedA(): String? { store.awaitWrites(); return store.load()?.deckA?.track?.songId }
         init {
-            h.engine.load(h.addSong("own"), A)
-            h.engine.setVolume(1.3, A)
+            h.engine.load(h.addSong("own"), Deck.A)
+            h.engine.setVolume(1.3, Deck.A)
             h.engine.persist(); store.flush(); store.awaitWrites()
         }
     }
@@ -699,7 +699,8 @@ class MixSyncEngineTest {
         h2.engine.materializePendingRestoreIfNeeded()
         assertNull(h2.engine.loaded(A))
         h2.engine.syncSessionActive(false)
-        assertTrue("the file's mix is still the user's: given back at the end", h2.engine.hasParkedRestore)
+        // the Mix tab already asked while the session ran, so the user's mix (still on disk) lands on the decks at the end
+        assertEquals("own", h2.engine.loaded(A)?.songId)
     }
 
     @Test fun theStoreIgnoresEveryWriteWhileSuspendedAndLandsAPendingDebounceFirst() {
