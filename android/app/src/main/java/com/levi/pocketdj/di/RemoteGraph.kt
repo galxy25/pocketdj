@@ -45,7 +45,7 @@ class RemoteGraph(private val app: AppGraph) : FeatureModule {
     val controller: RemoteSessionController by lazy {
         RemoteSessionController(
             target = target, resolver = resolver,
-            deviceName = deviceName(), platform = "android",
+            deviceName = ::deviceName, platform = "android",
             clock = clock, scope = mainScope,
         )
     }

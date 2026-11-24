@@ -68,7 +68,8 @@ object RemoteDevice {
 class RemoteSessionController(
     private val target: RemotePlaybackTarget?,
     val resolver: RemoteSongResolver,
-    val deviceName: String,
+    /** Re-read on every hello so a profile rename shows up without a restart. */
+    val deviceName: () -> String,
     val platform: String = "android",
     val clock: SharedClock = SharedClock(),
     private val scope: CoroutineScope,
@@ -139,7 +140,7 @@ class RemoteSessionController(
                 val hello = _peerInfo.value[id]
                 Peer(
                     id = id,
-                    name = if (isLocal) deviceName else (hello?.name ?: "Joining…"),
+                    name = if (isLocal) deviceName() else (hello?.name ?: "Joining…"),
                     role = if (isLocal) _localRole.value else (hello?.role ?: RemoteDeviceRole.SPEAKER),
                     isHost = id == _hostId.value,
                     isLocal = isLocal,
@@ -225,18 +226,20 @@ class RemoteSessionController(
         speaker.onAttach()
         if (asHost) becomeHost(seed)
         if (_localRole.value == RemoteDeviceRole.CONTROLLER) silenceLocalAudio()
-        jobs += scope.launch { transport.inbound.collect { handle(it) } }
+        jobs += scope.launch { transport.inbound.collect { guarded("handle") { handle(it) } } }
         jobs += scope.launch {
             var seen = false
             transport.participants.collect { ids ->
-                if (ids.isNotEmpty()) { seen = true; rosterChanged(ids) }
-                else if (seen) { sessionEnded(token) }
+                guarded("roster") {
+                    if (ids.isNotEmpty()) { seen = true; rosterChanged(ids) }
+                    else if (seen) { sessionEnded(token) }
+                }
             }
         }
         if (autoTick) {
             jobs += scope.launch {
                 while (true) {
-                    tick()
+                    guarded("tick") { tick() }
                     delay(RemoteTuning.TICK_INTERVAL_MS)
                 }
             }
@@ -244,6 +247,13 @@ class RemoteSessionController(
         sendHello()
         log("attach mode=${mode.name} host=$asHost")
         for (o in sessionObservers.toList()) o(true)
+    }
+
+    /** Run one loop iteration; a throw (a speaker hook, a bad row) is logged, never fatal to the session. */
+    internal inline fun guarded(what: String, block: () -> Unit) {
+        try { block() } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Throwable) {
+            log("$what failed: ${e::class.simpleName}: ${e.message}")
+        }
     }
 
     /** Leave the session. Speakers keep playing locally (the music never dies with the session). */
@@ -699,7 +709,7 @@ class RemoteSessionController(
         }
         when (_localRole.value) {
             RemoteDeviceRole.SPEAKER -> if (target != null) speaker.reconcile()
-            RemoteDeviceRole.CONTROLLER -> {
+            RemoteDeviceRole.CONTROLLER -> if (target != null) {
                 // Re-assert silence: whatever started since goes quiet again.
                 val tg = target
                 if (tg != null && (tg.isPlaying || tg.isTransitioning)) tg.silenceForController()
@@ -718,7 +728,7 @@ class RemoteSessionController(
         if (to == RemoteRecipient.All) lastHelloAt = now
         post(
             RemoteMessageKind.HELLO, RemoteHello.serializer(),
-            RemoteHello(deviceName, _localRole.value, platform, localCaps.ifEmpty { null }), to,
+            RemoteHello(deviceName(), _localRole.value, platform, localCaps.ifEmpty { null }), to,
         )
     }
 

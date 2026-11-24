@@ -5,6 +5,7 @@ import com.levi.pocketdj.playback.sequencer.QueueItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -30,7 +31,7 @@ class RemoteSessionHostTest {
         val target = InMemoryRemoteTarget { clk.t }
         val controller = RemoteSessionController(
             target = target, resolver = RemoteSongResolver(catalogItem = { QueueItem(id = it) }),
-            deviceName = "Dev $id", platform = "test", clock = SharedClock { clk.t }, scope = scope,
+            deviceName = { "Dev $id" }, platform = "test", clock = SharedClock { clk.t }, scope = scope,
         )
         fun host(mode: RemoteSessionMode = RemoteSessionMode.LISTEN_TOGETHER, seed: RemoteQueueModel? = null) =
             controller.attach(link, mode, asHost = true, seed = seed, autoTick = false)
@@ -447,5 +448,33 @@ class RemoteSessionHostTest {
         assertEquals(listOf("mix"), hello.caps)
         assertEquals(listOf("mix"), a.controller.peerInfo.value["B"]?.caps)
         assertEquals(RemoteDeviceRole.SPEAKER, hello.role)
+    }
+
+    @Test fun throwingSpeakerHookDoesNotKillTheTickLoop() = runTest {
+        val r = rig(); val a = r.dev("A")
+        var calls = 0; var armed = false
+        a.controller.speaker = object : RemoteSpeakerHooks { override fun reconcile() { if (armed) { calls++; error("boom") } } }
+        a.controller.attach(a.link, RemoteSessionMode.LISTEN_TOGETHER, asHost = true, seed = seed(listOf("s1")))
+        runCurrent(); armed = true
+        advanceTimeBy(RemoteTuning.TICK_INTERVAL_MS * 3 + 1)
+        runCurrent()
+        assertTrue("tick loop survived the throw ($calls)", calls >= 3)
+        assertTrue(a.controller.isActive.value)
+        a.controller.leave()
+    }
+
+    @Test fun helloRereadsTheDeviceNameOnEachSend() = runTest {
+        val r = rig()
+        var name = "Old"
+        val link = r.hub.join("A", LoopbackHub.DEFAULT_MAX_STATE_BYTES)
+        val c = RemoteSessionController(
+            target = InMemoryRemoteTarget { r.clk.t }, resolver = RemoteSongResolver(catalogItem = { QueueItem(id = it) }),
+            deviceName = { name }, platform = "test", clock = SharedClock { r.clk.t }, scope = backgroundScope,
+        )
+        c.attach(link, RemoteSessionMode.LISTEN_TOGETHER, asHost = true, seed = seed(listOf("s1")), autoTick = false)
+        name = "New"
+        c.sendHello()
+        val last = link.sent.filter { it.first.kind == RemoteMessageKind.HELLO.wire }.last().first.decode(RemoteHello.serializer())
+        assertEquals("New", last!!.name)
     }
 }

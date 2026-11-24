@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-REM-5 - RemoteSessionController part 1 (host/session half) + RemoteGraph
 
@@ -21,3 +21,12 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+- MINOR RemoteSessionController loops uncaught exceptions -> fixed: `guarded()` wraps inbound handle, roster collector and tick (CancellationException rethrown, others logged to NPLog.REMOTE); test throwingSpeakerHookDoesNotKillTheTickLoop
+- MINOR RemoteGraph deviceName stale -> fixed: controller takes `deviceName: () -> String`, re-read on every hello and roster row; test helloRereadsTheDeviceNameOnEachSend
+- NIT silencers without target -> fixed: controller branch gated on target != null (parity with iOS guard)
+
+Suite: 7058 tests, 0 failures (+2). assembleDebug OK.
+
+fixes applied
