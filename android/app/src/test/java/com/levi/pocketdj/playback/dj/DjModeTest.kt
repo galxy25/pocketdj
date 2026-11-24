@@ -78,7 +78,7 @@ class DjModeTest {
         val back = json.encodeToString(json.decodeFromString<DJModeState>(raw))
         assertEquals(json.parseToJsonElement(raw), json.parseToJsonElement(back))
         // explicitNulls default would write "planner":null; iOS omits nil optionals.
-        val enc = Json { explicitNulls = false }.encodeToString(DJModeState(enabled = false))
+        val enc = Json { explicitNulls = false; encodeDefaults = true }.encodeToString(DJModeState(enabled = false))
         assertEquals("""{"enabled":false}""", enc)
     }
 }
