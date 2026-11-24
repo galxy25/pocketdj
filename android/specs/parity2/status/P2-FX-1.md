@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # P2-FX-1: FX Lock
 

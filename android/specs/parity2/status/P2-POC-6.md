@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 ## Summary
 - `PocketBestMatch` (data/pockets/wheel): kernels (kt/kd/km/kl), quality, continuity (negated when recent skip rate > 0.5), cloudBoost 1.15, tiers rich / neighbourhood / cloud / history(cold) / empty, best + up to 3 alternatives with distinct dominant collections, `blend`, `modeNow`, `recentActivity`, `cloudProfile`. Constants per design.

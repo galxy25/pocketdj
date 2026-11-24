@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-SURF-5 status
 - [x] AddToCollectionAction.kt: CollectionRef (pocket:/playlist: ids), AddToCollectionResult (iOS dialog strings), AudibleOwner, AddToCollectionAction (pocket -> membership, playlist -> FIRST chapter, member never toggled off, reserved Now Playing refused; goes through AddToActions so Recent / Activity / AM write-back fire)

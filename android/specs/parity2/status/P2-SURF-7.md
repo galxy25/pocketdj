@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 - [x] AutoForYou (tiles via ForYouGrid.tiles on the cached snapshot, rel: release rows, cold-cache note, play plans)
 - [x] AutoId: tab:foryou, fy:<tile>, fyall/fyshuf, fyrow, fynote; tree wiring + ROOT_CHILDREN_LIMIT folding (Continue -> top of Playlists)

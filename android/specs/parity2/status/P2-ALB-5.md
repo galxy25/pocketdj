@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-ALB-5 - Album run clocks (song-relative everywhere), album play through the sequencer, seekAlbumFile/cueNextStart
 

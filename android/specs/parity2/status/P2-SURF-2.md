@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 - [x] MediaButtonPrefs (pure specs + CommandButton mapping, trusted pdj.shuffle/repeat/rec.accept/rec.reject commands)
 - [x] PlaybackService: setMediaButtonPreferences replaces setCustomLayout; commands added in onConnect; handlers in onCustomCommand; rebuilt via RunTransportBus.stateChanged (main-thread hop)

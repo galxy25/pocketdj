@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # P2-MM-3 Mix Mode ph1c: Storage buffer section, Buffered badge, Studio explicit-use pins
 
@@ -32,4 +32,4 @@ Tests: 12 new (MixModeBufferSectionStateTest).
 - Cap change sweeps existing footprint, expiry text not ticking (NIT) -> rejected: matches iOS, disclosed; roadmap text to note the deviation.
 
 Tests: 6661 run, 0 failed (+1). Fixes applied.
-state: reviewed
+state: merged
