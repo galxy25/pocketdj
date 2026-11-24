@@ -16,3 +16,5 @@ state: reviewed
 
 ## Questions for Levi
 - None.
+
+Summary: implemented; JVM suite 7467 tests (11 new in JukeboxHubModeTest), 0 failures.
