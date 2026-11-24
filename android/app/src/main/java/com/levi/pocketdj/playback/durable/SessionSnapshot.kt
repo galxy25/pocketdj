@@ -2,6 +2,7 @@ package com.levi.pocketdj.playback.durable
 
 import com.levi.pocketdj.data.PdjJson
 import com.levi.pocketdj.playback.PlayContext
+import com.levi.pocketdj.playback.sequencer.PlanTag
 import com.levi.pocketdj.playback.sequencer.QueueItem
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import kotlinx.serialization.Serializable
@@ -91,7 +92,7 @@ data class SessionSnapshot(
     @Transient val unknownKeys: JsonObject = JsonObject(emptyMap()),
 ) {
     /** The restorable queue with FRESH uids (a uid is per-instance identity, never durable). */
-    fun toQueueItems(redecide: ((QueueItem) -> QueueItem)? = null): List<QueueItem> = queue.map {
+    fun toQueueItems(redecide: ((QueueItem) -> QueueItem)? = null): List<QueueItem> = queue.mapIndexed { i, it ->
         val locked = it.editionLocked ?: false
         val item = QueueItem(
             id = it.songId,
@@ -105,6 +106,9 @@ data class SessionSnapshot(
             // never touches it) keeps the iOS id convention; any other row is re-decided below.
             resolveId = it.resolveId ?: if (it.variant != null && (locked || redecide == null)) variantStorageId(it.songId, it.variant) else it.songId,
             cleanOnlySkip = it.cleanOnlySkip ?: false,
+            plan = it.plan?.let { p -> PlanTag(p.runId, p.slot, p.collectionId, p.score, p.pinned) },
+            // iOS parity: the next-up pick is only ever the row right after the current one (the legacy djPlaced maps the same way).
+            djUserNext = i == index + 1 && (it.djUserNext ?: it.djPlaced ?: false),
         )
         if (it.resolveId == null && !locked && redecide != null) {
             // Old / iOS file: forget the (unreliable) variant and let the decider say what plays now.
@@ -141,6 +145,8 @@ data class SessionSnapshot(
             editionLocked = if (q.editionLocked) true else null,
             resolveId = q.resolveId,
             cleanOnlySkip = if (q.cleanOnlySkip) true else null,
+            plan = q.plan?.let { SessionPlanTag(it.runId, it.slot, it.collectionId, it.score, it.pinned) },
+            djUserNext = if (q.djUserNext) true else null,
         )
 
         fun encode(s: SessionSnapshot): String {

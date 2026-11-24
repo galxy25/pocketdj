@@ -36,7 +36,8 @@ class SetlistSequencerControl(private val seq: SetlistSequencer) : SequencerCont
     override val currentNeverSounded get() = seq.currentNeverSounded
     override val hasRun get() = seq.isRunning
     override var repeatMode: RepeatMode
-        get() = seq.state.value.repeatMode
+        // The EFFECTIVE mode (a pocket run forces repeat off); the setter is inert while forced off.
+        get() = seq.effectiveRepeatMode
         set(v) = seq.setRepeatMode(v)
     override var shuffleEnabled: Boolean
         get() = seq.state.value.shuffleEnabled
@@ -203,7 +204,10 @@ class SequencerForwardingPlayer(
 
     override fun setRepeatMode(repeatMode: Int) {
         if (control.isRunning) {
-            control.repeatMode = fromExo(repeatMode)
+            val asked = fromExo(repeatMode)
+            control.repeatMode = asked
+            // Refused (repeat forced off): re-assert the effective mode to the platform session / AVRCP.
+            if (control.repeatMode != asked) pushedRepeat = -1
             emit(TransportLog.Cmd.REPEAT, TransportLog.Verdict.HANDLED)
             syncModes()
         } else {
