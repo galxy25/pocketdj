@@ -714,10 +714,14 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
 
     /**
      * The fold source for the catalog (P2-LIB-3). [supersedesOntoLocal] is the owner gate (see
-     * [AppleMusicLibraryFold.Source]); Android defaults it ON until an owner-identity probe exists.
+     * [AppleMusicLibraryFold.Source]). Android has no owner-identity probe yet, so it defaults OFF: the fold
+     * is irreversible (remaps collections/favorites, prunes rows), so it must never run for a non-owner.
+     * Flip [amLibrarySupersedesOntoLocal] only from a real "this catalog is my own" signal.
      */
+    @Volatile var amLibrarySupersedesOntoLocal: Boolean = false
+
     val amLibraryFoldSource: com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.Source by lazy {
-        com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.Source(amLibraryStore) { true }
+        com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.Source(amLibraryStore) { amLibrarySupersedesOntoLocal }
     }
 
     val amLibraryIndexer: com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer by lazy {
@@ -757,8 +761,8 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 prev, signedIn, amLibraryStore.isEmpty,
                 app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.LAST_INDEX_MS),
                 System.currentTimeMillis().toDouble())
-            // Signing out erases the local copy of the library (a different account must never inherit it).
-            if (prev == true && !signedIn) runCatching { amLibraryStore.clear() }
+            // Sign-out leaves the index alone: clear() only deletes the local file, so sync would re-adopt the
+            // old cloud copy anyway, and a re-sign-in is a FULL run (signInIndexDecision) that replaces it wholesale.
             prev = signedIn
             if (decision != com.levi.pocketdj.data.applemusic.SignInIndexDecision.NONE &&
                 app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.ENABLED)) {

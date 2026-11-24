@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-LIB-3: Apple Music library source, part 2 (fold, supersede, sync, Settings)
 
@@ -20,3 +20,12 @@ Test count: 7040 total JVM tests, 0 failures (15 new). `:app:testDebugUnitTest :
 ## Questions for Levi
 - Should a library song supersede onto the "Apple Music (Local)" twin for EVERY user (current default) or only when the catalog is provably the user's own (iOS owner gate)? Android has no owner probe yet; a hybrid user pointed at a curator's shared catalog would see their library rows fold into the curator's twins.
 - Signing out of Apple Music now erases the local library index (re-indexed on next sign-in). OK?
+
+## Review
+- MAJOR owner gate hard-wired true -> fixed: gate now `ServicesGraph.amLibrarySupersedesOntoLocal`, default OFF (no owner probe exists); test `gateOffNeverSupersedesGateOnDoes`. Library rows stay under source "Apple Music" until a real owner signal flips it.
+- MINOR supersede() left dangling playlist ids -> fixed: supersede() remaps stored playlist songIds; test `foldThenSupersedeThenFoldKeepsPlaylistsResolvable`.
+- MINOR sign-out clear() re-adopted from cloud -> fixed: sign-out no longer clears; re-sign-in is a FULL run that replaces the index wholesale (signInIndexDecision), so no cross-account inheritance.
+- NIT extraOverrides leak -> rejected (already reset in @After of AppleMusicLibraryFoldTest); wiring tests not added.
+- Tests: 7042 total, 0 failures (+2). Note: the wrapper refused `--no-quiesce-fin` (7GB LM Studio models resident), so builds ran with default quiesce.
+
+fixes applied

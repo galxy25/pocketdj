@@ -180,7 +180,10 @@ class AppleMusicLibraryStore(private val file: File) {
             val newAlbums = cur.albums.orEmpty()
                 .map { a -> a.copy(trackIds = a.trackIds.filter { it !in gone }) }
                 .filter { it.trackIds.isNotEmpty() }
+            val remap = pairs.toMap()
+            val newPlaylists = cur.playlists?.map { p -> p.copy(songIds = p.songIds.map { remap[it] ?: it }) }
             doc = cur.copy(songs = cur.songs.filter { it.songId !in gone }, albums = newAlbums.ifEmpty { null },
+                playlists = newPlaylists,
                 supersededAddedAt = carried.ifEmpty { null })
             save()
         }

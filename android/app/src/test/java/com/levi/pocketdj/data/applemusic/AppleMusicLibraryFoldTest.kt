@@ -83,6 +83,29 @@ class AppleMusicLibraryFoldTest {
         assertEquals(1, r.documents.single().songs.size)
     }
 
+    @Test fun foldThenSupersedeThenFoldKeepsPlaylistsResolvable() {
+        val store = AppleMusicLibraryStore(File(tmp.root, "f.json"))
+        store.applyIncremental(listOf(lib("1", "900"), lib("2", "800")), emptyList(),
+            listOf(AppleMusicLibraryStore.PlaylistEntry(id = "amlibpl_p", name = "P", songIds = listOf("amlib_1", "amlib_2"))), 1000.0)
+        val real = listOf(local(idx("sng_9", "900")))
+        val r1 = AppleMusicLibraryFold.fold(store.songs, store.albums, store.playlists, real, true)
+        assertEquals(listOf("amlib_1" to "sng_9"), r1.pairs)
+        store.supersede(r1.pairs)
+        val r2 = AppleMusicLibraryFold.fold(store.songs, store.albums, store.playlists, real, true)
+        assertEquals(listOf("sng_9", "amlib_2"), r2.documents.single().playlists!!.single().songIds)
+    }
+
+    @Test fun gateOffNeverSupersedesGateOnDoes() {
+        val real = listOf(local(idx("sng_9", "900")))
+        val store = AppleMusicLibraryStore(File(tmp.root, "g.json"))
+        store.applyIncremental(listOf(lib("1", "900")), emptyList(), null, 1000.0)
+        var gate = false
+        val src = AppleMusicLibraryFold.Source(store) { gate }
+        assertTrue(src.resolve(real).pairs.isEmpty())
+        gate = true
+        assertEquals(1, src.resolve(real).pairs.size)
+    }
+
     @Test fun sameIdTwinIsNotASupersede() {
         val real = listOf(local(idx("amlib_1", "900")))
         val sp = AppleMusicLibraryFold.split(listOf(lib("1", "900")), AppleMusicLibraryFold.ownIndexedByAppleMusicId(real))
