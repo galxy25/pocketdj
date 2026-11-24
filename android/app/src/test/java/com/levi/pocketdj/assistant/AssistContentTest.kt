@@ -28,8 +28,8 @@ class AssistContentTest {
     }
 
     @Test fun jsonLdEscapes() {
-        val j = AssistContent.musicRecordingJsonLd("He said \"hi\"\\\n", "A\tB")!!
-        assertTrue(j.contains("\"name\":\"He said \\\"hi\\\"\\\\\\n\""))
+        val j = AssistContent.musicRecordingJsonLd("say \"hi\" \\ end\nx", "A\tB")!!
+        assertTrue(j, j.contains("""say \"hi\" \\ end\nx""""))
         assertTrue(j.contains("A\\tB"))
         assertEquals("\"\\u0001\"", AssistContent.quote("\u0001"))
     }
