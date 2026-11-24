@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-DJ-6: DJ Mode session shell
 
@@ -20,3 +20,12 @@ Tests: 6842 total, 0 failures; DjModeControllerTest adds 17.
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR DjModeController.setDjMode engaged while held -> fixed (applyOnTrackStart only when not suspended and !held; onResumedFromHold engages). Test toggleOnWhileHeldDoesNotEngageUntilResume.
+- MINOR Mix Mode off ordering / restored DJ-on+Mix-off -> fixed (NpMixCoordinator.onModeSwitched hook fires before the re-plan and wiring calls onMixModeChanged; onResumedFromHold clears DJ if Mix Mode is off; flow collector kept as backstop). Test heldRestoreDjOnWithMixOffTurnsDjOffOnFirstPlay.
+- NIT Remote probe captured at install -> fixed (DjModeWiring.bindRemote re-launches the collector and re-evaluates suspension).
+
+Tests: 6844 total, 0 failures (+2).
+
+fixes applied

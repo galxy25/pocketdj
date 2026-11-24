@@ -158,6 +158,7 @@ class DjModeControllerTest {
     @Test fun heldRestoreComesBackHeldAndArmsOnFirstPlay() {
         val stored = JsonObject(mapOf("seed" to JsonPrimitive(7)))
         ports.held = true
+        ports.mixModeEnabled = true
         c.restoreHeld(SessionDjMode(enabled = true, planner = stored))
         assertTrue(c.enabled)
         assertTrue(engine.calls.isEmpty())
@@ -167,6 +168,26 @@ class DjModeControllerTest {
         c.onResumedFromHold()
         assertEquals(7uL, engine.seed)
         assertEquals("apply", engine.calls.last())
+    }
+
+    @Test fun toggleOnWhileHeldDoesNotEngageUntilResume() {
+        ports.held = true
+        c.setDjMode(true)
+        assertTrue(c.enabled)
+        assertFalse("apply" in engine.calls)
+        ports.held = false
+        c.onResumedFromHold()
+        assertEquals("apply", engine.calls.last())
+    }
+
+    @Test fun heldRestoreDjOnWithMixOffTurnsDjOffOnFirstPlay() {
+        ports.held = true
+        ports.mixModeEnabled = false
+        c.restoreHeld(SessionDjMode(enabled = true, planner = JsonObject(mapOf("seed" to JsonPrimitive(7)))))
+        ports.held = false
+        c.onResumedFromHold()
+        assertFalse(c.enabled)
+        assertFalse("apply" in engine.calls)
     }
 
     @Test fun heldWithoutStoredKeyReadsOff() {
@@ -202,6 +223,7 @@ class DjModeControllerTest {
         val json = DjPlannerState(seed).toJson()
         val text = Json.encodeToString(JsonObject.serializer(), json)
         assertTrue(text.contains(seed.toString()))
+        ports.mixModeEnabled = true
         c.restoreHeld(SessionDjMode(enabled = true, planner = json))
         c.onResumedFromHold()
         assertEquals(seed, engine.seed)

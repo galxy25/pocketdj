@@ -136,7 +136,7 @@ class DjModeController(
             lastSuspension = suspension
             plannerSeed()?.let { engine.plannerSeeded(it) }
             // Suspended (Mix tab / Remote): switched on but nothing arms until the suspension ends.
-            if (lastSuspension == DjSuspension.NONE) engine.applyOnTrackStart(liveClock = true)
+            if (lastSuspension == DjSuspension.NONE && !ports.held) engine.applyOnTrackStart(liveClock = true)
         } else {
             lastSuspension = DjSuspension.NONE
             engine.disarm()
@@ -203,6 +203,7 @@ class DjModeController(
 
     override fun onResumedFromHold() {
         // First play of a restored deck: DJ arms now (unless suspended).
+        if (enabled && !ports.mixModeEnabled) { setDjMode(false); return } // DJ implies Mix Mode (restored DJ-on / Mix-off)
         if (enabled) {
             lastSuspension = suspension
             plannerSeed()?.let { engine.plannerSeeded(it) }

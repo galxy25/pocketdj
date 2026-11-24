@@ -47,6 +47,14 @@ class DjModeWiring(private val app: AppGraph) {
     val controller: DjModeController by lazy { DjModeController(ports, delegating) }
 
     private var installed = false
+    private var remoteJob: kotlinx.coroutines.Job? = null
+
+    /** Point DJ at a (new) Remote probe: re-launches the collector and re-evaluates the suspension. Main thread. */
+    fun bindRemote(probe: RemoteSessionProbe) {
+        controller.remote = probe
+        remoteJob?.cancel()
+        remoteJob = scope.launch { probe.activeFlow.collect { controller.onSuspensionInputsChanged() } }
+    }
 
     /** Register on the sequencer and observe Mix Mode / the Mix tab / Remote. Idempotent; main thread. */
     fun install() {
@@ -55,8 +63,9 @@ class DjModeWiring(private val app: AppGraph) {
         seq.hooks.add(controller)
         seq.sessionExtras.register(controller)
         seq.djModeEnabled = { controller.enabled } // a random insert never lands ahead of the listener's pick
-        scope.launch { mix.state.map { it.enabled }.distinctUntilChanged().collect { controller.onMixModeChanged(it) } }
+        mix.onModeSwitched = { controller.onMixModeChanged(it) } // synchronous, before the lane re-plans
+        scope.launch { mix.state.map { it.enabled }.distinctUntilChanged().collect { controller.onMixModeChanged(it) } } // backstop
         scope.launch { NowPlayingSeams.mixSessionActiveFlow.collect { controller.onSuspensionInputsChanged() } }
-        scope.launch { controller.remote.activeFlow.collect { controller.onSuspensionInputsChanged() } }
+        bindRemote(controller.remote)
     }
 }

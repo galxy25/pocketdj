@@ -120,9 +120,13 @@ class NpMixCoordinator(
      * OFF: buffering stops (the Stem Lock's own plan, if any, carries on); the current track keeps whatever it
      * is playing; buffered files stay temporary and expire on schedule.
      */
+    /** Called right after the switch flips, BEFORE the lane re-plans (DJ Mode turns itself off here). */
+    var onModeSwitched: ((Boolean) -> Unit)? = null
+
     fun setMixMode(on: Boolean) {
         if (!ports.running || enabled == on || (on && !ports.supported)) return
         _state.value = NpMixModeState(enabled = on)
+        onModeSwitched?.invoke(on)
         lastLaneLine = ""
         log("mode ${if (on) "ON" else "OFF"} session=${ports.sessionId ?: "-"} song=${ports.currentSongId ?: "-"}")
         ports.persist()
