@@ -35,21 +35,32 @@ object BeatDetect {
         return b
     }
 
+    /** A detected grid plus a 0..1 confidence (how strongly the onsets repeat at the winning period). */
+    data class GridResult(val grid: StudioGrid, val confidence: Double)
+
     /** Detect a constant grid from decoded PCM; null when too short (<2 s), quiet or aperiodic. */
-    fun detectGrid(pcm: PcmBuffer): StudioGrid? {
+    fun detectGrid(pcm: PcmBuffer): StudioGrid? = detectGridWithConfidence(pcm)?.grid
+
+    /**
+     * [detectGrid] plus a confidence, analysing at most [maxSeconds] of the buffer (the DJ quick pass hands a
+     * 15-30 s window). ~0 confidence for beatless / aperiodic audio.
+     */
+    fun detectGridWithConfidence(pcm: PcmBuffer, maxSeconds: Double = MAX_ANALYSIS_SECONDS): GridResult? {
         val sr = pcm.sampleRate.toDouble()
         if (sr <= 0) return null
-        val mono = mono(pcm, MAX_ANALYSIS_SECONDS) ?: return null
+        val mono = mono(pcm, minOf(maxSeconds, MAX_ANALYSIS_SECONDS)) ?: return null
         if (mono.size < (sr * 2).toInt()) return null
         val env = onsetEnvelope(mono)
         if (env.size < 16) return null
         val frameRate = sr / HOP
-        val (period, bpmRaw) = estimateTempo(env, frameRate) ?: return null
+        val tempo = estimateTempoWithConfidence(env, frameRate) ?: return null
+        val period = tempo.period
+        val bpmRaw = tempo.bpm
         val bpm = octaveFold(bpmRaw)
         val (firstBeat, downPhase) = estimatePhase(env, period)
         val firstDownFrame = firstBeat + downPhase * period.toDouble()
         val ms = Math.round(firstDownFrame * HOP / sr * 1000).toInt()
-        return StudioGrid(bpm = Math.round(bpm * 100) / 100.0, firstDownbeatMs = maxOf(0, ms))
+        return GridResult(StudioGrid(bpm = Math.round(bpm * 100) / 100.0, firstDownbeatMs = maxOf(0, ms)), tempo.confidence)
     }
 
     internal fun mono(pcm: PcmBuffer, maxSeconds: Double): FloatArray? {
@@ -126,7 +137,13 @@ object BeatDetect {
     }
 
     /** Dominant beat period (envelope frames) + raw BPM via prior-weighted autocorrelation; null if aperiodic. */
-    internal fun estimateTempo(env: FloatArray, frameRate: Double): Pair<Int, Double>? {
+    internal fun estimateTempo(env: FloatArray, frameRate: Double): Pair<Int, Double>? =
+        estimateTempoWithConfidence(env, frameRate)?.let { it.period to it.bpm }
+
+    internal data class Tempo(val period: Int, val bpm: Double, val confidence: Double)
+
+    /** [estimateTempo] + the winning lag's normalized autocorrelation (0..1, unbiased for the shorter overlap). */
+    internal fun estimateTempoWithConfidence(env: FloatArray, frameRate: Double): Tempo? {
         val n = env.size
         val minLag = maxOf(1, Math.round(60.0 * frameRate / SEARCH_BPM_HI).toInt())
         val maxLag = Math.round(60.0 * frameRate / SEARCH_BPM_LO).toInt()
@@ -159,7 +176,13 @@ object BeatDetect {
             val den = y0 + y1 + y2
             if (den > 0) delta = ((y2 - y0) / den).coerceIn(-0.5, 0.5)
         }
-        return bestLag to (60.0 * frameRate / (bestLag + delta))
+        var ac0 = 0.0
+        for (v in e) ac0 += v.toDouble() * v
+        // A fractional period splits its spike over neighbouring integer lags: take the strongest of the three.
+        val peak = maxOf(ac[bestLag], ac[maxOf(bestLag - 1, 0)], ac[bestLag + 1])
+        val overlap = (n - bestLag).toDouble() / n
+        val confidence = if (ac0 > 0) (peak / (ac0 * maxOf(0.01, overlap))).coerceIn(0.0, 1.0) else 0.0
+        return Tempo(bestLag, 60.0 * frameRate / (bestLag + delta), confidence)
     }
 
     /** Beat phase (frame offset of beat 1) + the bar phase (0..3) carrying the most onset energy. */
