@@ -18,7 +18,18 @@ import kotlinx.coroutines.launch
  * builds only what the worker touches, and the UI paths (first ON_START / MainActivity) build
  * the full graph, so a background wake does not pay for a launch plus a forced endpoint fetch.
  */
-class PocketDjApplication : Application() {
+class PocketDjApplication : Application(), androidx.appfunctions.service.AppFunctionConfiguration.Provider {
+    /**
+     * P2-SURF-12: how the AppFunctions library builds [com.levi.pocketdj.assistant.PocketDjAppFunctions]. Only the
+     * library's API-36 service ever asks (minSdk stays 35); the graph is built lazily on the first Gemini call.
+     */
+    override val appFunctionConfiguration: androidx.appfunctions.service.AppFunctionConfiguration
+        get() = androidx.appfunctions.service.AppFunctionConfiguration.Builder()
+            .addEnclosingClassFactory(com.levi.pocketdj.assistant.PocketDjAppFunctions::class.java) {
+                com.levi.pocketdj.assistant.PocketDjAppFunctions(AppGraph.get(this).shellGraph.appFunctionsAdapter())
+            }
+            .build()
+
     override fun onCreate() {
         super.onCreate()
         if (BuildConfig.DEBUG) {

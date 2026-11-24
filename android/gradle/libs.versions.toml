@@ -30,7 +30,7 @@ baselineprofile = "1.5.0"
 benchmarkMacro = "1.5.0"
 uiautomator = "2.3.0"
 profileinstaller = "1.4.1"
-appfunctions = "1.0.0-alpha09"
+appfunctions = "1.0.0-alpha08"
 ksp = "2.3.14"
 
 [libraries]
