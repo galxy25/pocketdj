@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-MM-6 Mix Mode ph2c: header toggle + chip + buffer strip, menus, Settings rows
 
