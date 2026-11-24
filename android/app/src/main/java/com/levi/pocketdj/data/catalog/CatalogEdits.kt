@@ -183,11 +183,15 @@ fun IndexSong.applying(e: SongEdit?): IndexSong {
 }
 
 /**
- * The on-device edits document (`filesDir/backup-edits.json`, written by the backup restore's
- * [com.levi.pocketdj.data.backup.BackupEditsStore]) decoded for the overlay. Cached by (mtime, size) so every catalog
+ * The on-device edits document (`filesDir/pocketdj-edits.json`, written by [EditsStore]) decoded for the overlay. Cached by (mtime, size) so every catalog
  * merge reuses ONE [CatalogEdits] instance until the file changes (the repository compares by identity).
  */
 class CatalogEditsFile(val file: java.io.File) {
+    init {
+        // P2-ALB-2: one-time move of the pre-sync `backup-edits.json` to the iOS-named, synced `pocketdj-edits.json`.
+        runCatching { EditsStore.migrateLegacy(file) }
+    }
+
     private data class Stamp(val modified: Long, val length: Long)
 
     @Volatile private var cached: Pair<Stamp, CatalogEdits>? = null
@@ -207,6 +211,12 @@ class CatalogEditsFile(val file: java.io.File) {
     }
 
     companion object {
-        const val FILE_NAME = "backup-edits.json"
+        /** The iOS file name (`EditsStore.defaultURL()`), synced under key "edits". */
+        const val FILE_NAME = "pocketdj-edits.json"
+
+        /** The pre-P2-ALB-2 on-device name; migrated once by [EditsStore.migrateLegacy]. */
+        const val LEGACY_FILE_NAME = "backup-edits.json"
+
+        const val SYNC_KEY = "edits"
     }
 }

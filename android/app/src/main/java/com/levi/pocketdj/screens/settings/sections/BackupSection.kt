@@ -45,7 +45,7 @@ internal object BackupCoordinator {
     }
 
     private fun editsStore(g: com.levi.pocketdj.di.AppGraph) =
-        com.levi.pocketdj.data.backup.BackupEditsStore(g.catalogEdits.file)
+        com.levi.pocketdj.data.backup.BackupEditsStore(g.catalogEdits.file, write = g.collectionsGraph.editsStore::replaceRaw)
 
     suspend fun restore(host: SettingsHost, data: ByteArray): String = restore(host.graph, data)
 

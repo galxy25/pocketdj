@@ -430,7 +430,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 com.levi.pocketdj.data.applemusic.PlaylistAppleMusicSync.LOOKUPS_FILE,
             )) runCatching { File(files, n).delete() }
             // Q115: restored catalog edits are APPLIED now, so a reset / account deletion must drop them too.
-            runCatching { app.catalogEdits.file.delete(); app.catalogEdits.invalidate(); app.catalogRepository.reapplyEdits() }
+            runCatching { editsStore.clearAll() }
             runCatching { app.appContext.getSharedPreferences("pdj-amsync", android.content.Context.MODE_PRIVATE).edit().clear().apply() }
         },
     )
@@ -443,6 +443,15 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         },
     )
 
+    /** P2-ALB-2: the writable edits document (iOS `EditsStore`); every write/pull re-applies the overlay live. */
+    val editsStore: com.levi.pocketdj.data.catalog.EditsStore by lazy {
+        com.levi.pocketdj.data.catalog.EditsStore(
+            reader = app.catalogEdits,
+            writer = VersionedJsonWriter(app.catalogEdits.file, VersionedJsonWriter.backgroundExecutor("pdj-edits-writer")),
+            onChanged = { app.catalogRepository.reapplyEdits() },
+        )
+    }
+
     /** Final review: hearts sync across devices (iOS key "favorites"); a pull re-adopts the file. */
     override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = listOf(
         com.levi.pocketdj.shell.SyncEntry("favorites", com.levi.pocketdj.data.favorites.FavoritesStore.FILE_NAME,
@@ -450,6 +459,9 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         // Q75(b): imports follow the profile (iOS key "imported-songs"); a pull re-adopts the file + refreshes the catalog.
         com.levi.pocketdj.shell.SyncEntry(com.levi.pocketdj.data.catalog.ImportedSongsStore.SYNC_KEY, com.levi.pocketdj.data.catalog.ImportedSongsStore.FILE_NAME,
             applyPayload = { importedSongs.writePulled(it) }, onPulled = { importedSongs.reloadFromDisk() }),
+        // P2-ALB-2 (iOS key "edits"): boundary edits + renames; a pull re-times/re-titles playback and never pushes back.
+        com.levi.pocketdj.shell.SyncEntry(com.levi.pocketdj.data.catalog.CatalogEditsFile.SYNC_KEY, com.levi.pocketdj.data.catalog.CatalogEditsFile.FILE_NAME,
+            applyPayload = { editsStore.writePulled(it) }, onPulled = { editsStore.reloadFromDisk() }),
     )
 
 
