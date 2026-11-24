@@ -88,7 +88,6 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
     }
     val indicator = remember(tick, mixState, seq, ui, mixTabLive, deviceMode) { NpMixIndicatorReader.read(app, deviceMode) }
     val strip = remember(tick, mixState, seq, ui, deviceMode) { NpMixBufferRows.read(app, deviceMode) }
-    val note = null as String?
     val showsHeader = seq.isRunning
     val controlsVisible = ui.available || indicator is com.levi.pocketdj.mix.nowplaying.NpMixMode.Indicator.Buffering
 
@@ -107,7 +106,7 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
                 if (ui.engaged) Text("●", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.semantics { contentDescription = "Engaged" })
                 if (ui.lock.enabled) Icon(Icons.Filled.Lock, "Stem Lock on", Modifier.size(12.dp))
             }
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { NpMixModeChip(indicator, note = note) }
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { NpMixModeChip(indicator) }
             NpMixModeSwitch(
                 on = mixState.enabled, enabled = seq.isRunning,
                 onToggle = { on -> coordinator.setMixMode(on); if (on) expanded = true },
@@ -174,7 +173,7 @@ fun NowPlayingDspPanel(host: NowPlayingDspHost, modifier: Modifier = Modifier) {
             }
         }
         } }
-        if (expanded && mixState.enabled) NpMixBufferStrip(strip)
+        if (mixState.enabled) NpMixBufferStrip(strip)
     }
 }
 

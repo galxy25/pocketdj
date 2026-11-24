@@ -21,3 +21,13 @@ Mix Mode is one tap from Now Playing; chip shows the iOS words (Ready, Mixing, B
 
 ## Questions for Levi
 - None new (rip-server gate from MM-5 still open).
+
+## Review
+- Chip note hard-coded null -> fixed: dead local removed; the edition note is not plumbed (iOS rule-A note has no Android source yet). Recorded as a deviation; the chip/state keep an optional note param.
+- Buffer strip hidden until panel expanded -> fixed: strip now shows in the header area whenever Mix Mode is on (so menu toggles show it); `expanded` persistence no longer matters.
+- Record long-press: dead outer combinedClickable / Song details with no track -> fixed: outer clickable removed; "Song details" offered only when a track is loaded.
+- Mini bar a11y (NIT) -> fixed: added a TalkBack custom action "Mix Mode" opening the menu (combinedClickable kept, needed for long-press).
+
+Build: testDebugUnitTest + assembleDebug green, 6413 tests, 0 failures (no tests added; UI-only changes, no MAJOR).
+
+fixes applied

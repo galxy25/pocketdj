@@ -1,5 +1,7 @@
 package com.levi.pocketdj.screens.browse
 
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
@@ -94,6 +96,9 @@ fun MiniPlayerBar(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .combinedClickable(onClick = { tap?.invoke() }, onLongClick = { menuOpen = true })
+                .semantics {
+                    customActions = listOf(androidx.compose.ui.semantics.CustomAccessibilityAction("Mix Mode") { menuOpen = true; true })
+                }
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         ) {
             when {
