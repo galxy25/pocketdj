@@ -118,6 +118,8 @@ class MixEngine(
     var onStemsReset: ((Deck) -> Unit)? = null
     /** Not-on-disk loads: MIX-10 may open a growing-file stream instead. True = handled. */
     var streamLoad: ((MixLoadable, Deck) -> Boolean)? = null
+    /** Explicit deck load (file or stream): promotes a temporary buffer hold (iOS `pin(_, "mix-deck")`). */
+    var onExplicitLoad: ((songId: String) -> Unit)? = null
     /** Restore extras for a deck (stem mode + loop need the MIX-8 controllers). */
     var onRestoreDeckExtras: ((Deck, DeckSnapshot) -> Unit)? = null
     /** A Mix deck started sounding (the audio-owner arbiter claims the system card). */
@@ -278,6 +280,7 @@ class MixEngine(
 
     /** Load a catalog song onto [deck] through the resolver (cut preferred, analog window bounded). */
     fun load(item: MixLoadable, deck: Deck) {
+        onExplicitLoad?.invoke(item.songId)
         deckGestureGeneration++
         // A manual load disarms an exhausted-ended auto pickup: a landing download must never
         // eject these decks mid-performance.
@@ -300,6 +303,7 @@ class MixEngine(
      * call (iOS `loadAuto`), so it must not ride [loadOffload]. Supersedes any in-flight async load.
      */
     internal fun loadNow(item: MixLoadable, deck: Deck) {
+        onExplicitLoad?.invoke(item.songId)
         deckGestureGeneration++
         autoEndedExhausted = false
         loadSeq[deck.ordinal]++

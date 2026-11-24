@@ -86,6 +86,16 @@ class MixEngineTransportTest {
         assertNull(h.engine.loaded(B))
     }
 
+    @Test fun explicitLoadFiresPinHookForFileAndStreamLoads() {
+        val h = EngineHarness()
+        val pinned = mutableListOf<String>()
+        h.engine.onExplicitLoad = { pinned += it }
+        h.engine.streamLoad = { _, _ -> true }
+        h.engine.load(h.addSong("here", 5.0), A)
+        h.engine.load(com.levi.pocketdj.mix.model.MixLoadable("remote", "x", "y"), B)
+        assertEquals(listOf("here", "remote"), pinned)
+    }
+
     @Test fun loadResetsRatePitchLeadStemsLoopAndRecordsOneLoad() {
         val h = EngineHarness()
         val a = h.addSong("a", 10.0, gridBpm = 120.0)

@@ -45,6 +45,8 @@ class CollectionMixDownloaderTest {
             else statuses[songId] = MixBurnStatus(BurnState.ERROR, "presign timeout", 0)
         }
         override fun status(songId: String) = statuses[songId]
+        val pins = ArrayList<Pair<Collection<String>, String>>()
+        override fun pin(songIds: Collection<String>, reason: String) { pins += songIds.toList() to reason }
         override fun requestStop() { stops++ }
         override fun cancelTransfers(songIds: Collection<String>) { cancelled += songIds }
         override fun watchFinalized(cb: ((String) -> Unit)?) { finalized = cb }
@@ -139,6 +141,16 @@ class CollectionMixDownloaderTest {
         // b is in flight (removed from the queue); c waits
         assertEquals(listOf("c"), r.d.burnQueueForTesting)
         assertEquals(listOf(listOf("d", "e")), r.rips.ripCalls)
+        r.d.cancel()
+    }
+
+    @Test fun mixDownloadPinsAlreadyPresentAndDownloadedSongs() = runTest {
+        val r = rig(listOf("a", "b"), onDisk = setOf("a"), ripped = setOf("a", "b"))
+        r.d.begin(crate)
+        runCurrent()
+        val pinned = r.burns.pins.filter { it.second == "mix-download" }.flatMap { it.first }.toSet()
+        assertTrue("already-present a pinned", "a" in pinned)
+        assertTrue("downloaded b pinned", "b" in pinned)
         r.d.cancel()
     }
 

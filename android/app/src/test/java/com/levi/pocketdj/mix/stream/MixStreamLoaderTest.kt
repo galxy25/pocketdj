@@ -382,11 +382,11 @@ class MixStreamLoaderTest {
         val entered = java.util.concurrent.CountDownLatch(1)
         val real = BurnStoreAdopter(burns)
         val slow = object : StreamAdopter {
-            override fun adoptFile(songId: String, title: String, artist: String, from: File): File? {
+            override fun adoptFile(songId: String, title: String, artist: String, from: File, origin: com.levi.pocketdj.data.burns.AssetOrigin): File? {
                 entered.countDown(); gate.await(10, java.util.concurrent.TimeUnit.SECONDS)
-                return real.adoptFile(songId, title, artist, from)
+                return real.adoptFile(songId, title, artist, from, origin)
             }
-            override fun adoptStems(songId: String, files: Map<String, File>) = real.adoptStems(songId, files)
+            override fun adoptStems(songId: String, files: Map<String, File>, origin: com.levi.pocketdj.data.burns.AssetOrigin) = real.adoptStems(songId, files, origin)
         }
         val l = MixStreamLoader(rips = fakeRips, adopter = slow, directory = File(rig.dir, "cache/slow"), network = net, scope = scope)
         val s = l.open("a", "A", "x")!!
@@ -504,4 +504,37 @@ class MixStreamLoaderTest {
         net.available = false
         assertFalse(loader.canStreamStems("a"))
     }
+    // ---- AssetOrigin (P2-MM-1) ------------------------------------------------------------------
+
+    @Test fun explicitOpenerJoiningABufferStreamUpgradesIt() {
+        digital("a")
+        val s = loader.open("a", "A", "x", origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)!!
+        assertEquals(com.levi.pocketdj.data.burns.AssetOrigin.Buffer, s.origin)
+        val joined = loader.open("a", "A", "x")!!   // default = explicit("mix")
+        assertTrue(joined === s)
+        assertEquals(com.levi.pocketdj.data.burns.AssetOrigin.explicit("mix"), s.origin)
+        // A later buffer opener never downgrades it.
+        loader.open("a", "A", "x", origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)
+        assertTrue(s.origin.isExplicit)
+    }
+
+    @Test fun bufferStreamLandsAsTemporaryHoldAndExplicitStreamDoesNot() {
+        digital("buf"); digital("exp")
+        loader.open("buf", "B", "x", origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)
+        loader.open("exp", "E", "x")
+        waitUntil(what = "both adopted") { finalized.containsAll(listOf("buf", "exp")) }
+        assertTrue("buffer landing is temporary", burns.isTemporary("buf"))
+        assertFalse("explicit landing is pinned", burns.isTemporary("exp"))
+        assertNull(burns.temporaryExpiry("exp"))
+    }
+
+    @Test fun explicitOpenerJoiningAFinishedBufferStreamPinsIt() {
+        digital("a")
+        loader.open("a", "A", "x", origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)
+        waitUntil(what = "adopted") { finalized.contains("a") }
+        assertTrue(burns.isTemporary("a"))
+        loader.open("a", "A", "x")   // explicit join
+        assertFalse(burns.isTemporary("a"))
+    }
+
 }
