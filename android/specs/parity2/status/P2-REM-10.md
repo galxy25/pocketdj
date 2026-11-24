@@ -7,7 +7,7 @@ state: implemented
 - [x] BrokerRemoteTransport.kt: `BrokerApi` (OkHttp, suspend, cancellable) + `BrokerRemoteTransport` (poll loop with cursor/rev, ordered send loop, retry/backoff, session end on 401/404/410 or N poll failures).
 - [x] BrokerRemoteStarter.kt: "Over the internet" `RemoteSessionStarter` (create + join as creator; join by 8-char code; mode comes back on join).
 - [x] JukeboxUrls (touchpoint): remoteCreate / remoteRoom / remotePoll. RemoteScreen (touchpoint): "Over the internet" switch, hidden when jukeboxServerUrl is blank, with the Mix Together Wi-Fi note; broker sessions skip the Nearby permission gate. RemoteGraph: brokerServer + brokerStarter.
-- [x] BrokerRemoteTransportTest (MockWebServer): 19 tests.
+- [x] BrokerRemoteTransportTest (MockWebServer): 20 tests. Full suite: 7857 tests, 0 failures; assembleDebug green.
 
 ## Wire (so a future iOS BrokerTransport joins unchanged)
 - POST /remote {mode?} (Bearer = JUKEBOX_TOKEN when set) -> {roomId, joinCode, hostSecret}. roomId is the lower-cased 8-char joinCode.
