@@ -101,6 +101,19 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
                     com.levi.pocketdj.data.pockets.wheel.PocketRunMixPath.collections(rows),
                 )
             }
+            // P2-POC-12: adapt a run to walking & running (opt-in; sequencer path only).
+            st.adaptToActivity = {
+                motionStore.isActive && com.levi.pocketdj.screens.settings.sections.MotionPrefs.adaptToActivity(app.appContext)
+            }
+            st.startActivityUpdates = { onSample ->
+                motionTimeline.onEnter = onSample
+                // Seed with the activity already under way, its clock starting at run start (never an instant re-target on play).
+                val n = System.currentTimeMillis()
+                runCatching { motionTimeline.segments(n - 2 * 3_600_000L, n + 1).filter { it.endMs >= n - 1_000 }.maxByOrNull { it.endMs } }
+                    .getOrNull()?.let { onSample(it.copy(startMs = maxOf(it.startMs, n))) }
+            }
+            st.stopActivityUpdates = { motionTimeline.onEnter = null }
+            st.profileForMode = { mode -> wheelController.profileForMode(mode) }
             st.mixOwnsRun = { label -> app.mixGraph.mixFacade.let { it.autoMixing && it.autoMixLabel == label } }
             sequencer.pocketRunTagFor = { plan -> st.tag(plan) }
             registerWheelClear { st.clearLocal() }
@@ -191,6 +204,10 @@ class PocketsGraph(private val app: AppGraph) : FeatureModule {
     /** Installs the run store's History-tag hook on the sequencer and resumes a relaunched mid-run (on Main). */
     fun resumeRun() {
         app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) { runCatching { runStore.resumeTrackingIfNeeded() } }
+    }
+
+    override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> by lazy {
+        listOf(com.levi.pocketdj.screens.settings.sections.listeningMotionSection())
     }
 
     override val resetHooks: List<ResetHook> = listOf(ResetHook { wheelClearLocal() })
