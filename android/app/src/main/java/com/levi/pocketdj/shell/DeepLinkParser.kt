@@ -18,6 +18,12 @@ sealed interface DeepLink {
     /** `pocketdj://play/<kind>/<id>[?shuffle=1]` — start playback of a collection item. */
     data class Play(val kind: PlayKind, val id: String, val shuffle: Boolean) : DeepLink
 
+    /** `pocketdj://add?collection=<pocket:id|playlist:id>[&song=<id>]` — add a song (default: the one playing) to a collection. */
+    data class AddToCollection(val collectionId: String, val songId: String?) : DeepLink
+
+    /** `pocketdj://automix/<pocket|playlist|setlist>/<id>[?shuffle=1]` — start an Auto-DJ mix of a source. */
+    data class AutoMix(val source: MixSource, val shuffle: Boolean) : DeepLink
+
     /** `pocketdj://{album,artist,playlist,pocket,setlist,search}/...` — open a screen. */
     data class Navigate(val route: ShellRoute) : DeepLink
 
@@ -113,6 +119,21 @@ object DeepLinkParser {
                 val kind = arg?.let(PlayKind::fromToken) ?: return DeepLink.None
                 val id = parts.getOrNull(2)?.takeIf { it.isNotBlank() } ?: return DeepLink.None
                 DeepLink.Play(kind, id, truthy(query["shuffle"]))
+            }
+            "add" -> {
+                val collection = query["collection"]?.trim().orEmpty()
+                if (CollectionRef.target(collection) == null) DeepLink.None
+                else DeepLink.AddToCollection(collection, query["song"]?.trim()?.takeIf { it.isNotEmpty() })
+            }
+            "automix" -> {
+                val id = parts.getOrNull(2)?.takeIf { it.isNotBlank() } ?: return DeepLink.None
+                val source = when (arg?.lowercase()) {
+                    "pocket" -> MixSource.Pocket(id)
+                    "playlist" -> MixSource.Playlist(id)
+                    "setlist" -> MixSource.Setlist(id)
+                    else -> return DeepLink.None
+                }
+                DeepLink.AutoMix(source, truthy(query["shuffle"]))
             }
             "games" -> when {
                 arg.isNullOrBlank() -> DeepLink.Navigate(ShellRoute.Tab(PocketDjDestination.Games))

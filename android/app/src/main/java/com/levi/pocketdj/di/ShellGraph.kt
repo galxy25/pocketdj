@@ -108,6 +108,11 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                 override fun song(id: String): IndexSong? = app.catalogRepository.state.value.catalog?.songsById?.get(id)
                 override fun album(id: String): IndexAlbum? = app.catalogRepository.state.value.catalog?.albumsById?.get(id)
             },
+            audibleSongId = ::audibleSongId,
+            fallbackSongTitle = { id ->
+                app.playbackGraph.sequencer.state.value.queue.firstOrNull { it.id == id }?.title
+                    ?: app.mixGraph.mixDeckTitle(id)
+            },
             player = ShellPlayer { set, ctx -> app.playbackController.playSetlist(set, ctx) },
             setup = SetupGate {
                 onboarding.awaitLoaded()
@@ -130,6 +135,18 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                 }
             },
         ).also { it.mixFacade = app.mixGraph.mixFacade } // MIX-16: the Mix drives Auto-Mix actions
+    }
+
+    /** "This song": the audible owner's track ([com.levi.pocketdj.shell.AudibleOwner]). */
+    private fun audibleSongId(): String? {
+        val seq = app.playbackGraph.sequencer.state.value
+        val mix = app.mixGraph.mixLiveSong()
+        return com.levi.pocketdj.shell.AudibleOwner.songId(
+            sequencerRunning = seq.isRunning,
+            mixActive = mix.active,
+            mixSongId = mix.songId,
+            sequencerSongId = seq.currentSongId,
+        )
     }
 
     private fun mediaCandidates(kinds: Set<MediaCandidate.Kind>): List<MediaCandidate> {
@@ -198,6 +215,7 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
             },
             sink = ShortcutManagerSink(app.appContext),
             cap = { ShortcutManagerSink.dynamicCap(app.appContext) },
+            withAutoMix = true,
         )
     }
 
@@ -219,6 +237,8 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                 NavRequestBus.post(ShellRoute.JukeboxJoin(id))
             }
         }
+        deepLinkSeams.addToCollection = com.levi.pocketdj.shell.addLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
+        deepLinkSeams.autoMix = com.levi.pocketdj.shell.autoMixLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
         deepLinkSeams.playItem = com.levi.pocketdj.shell.playLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
         SearchPlayBridge.handler = { request ->
             app.appScope.launch { mediaSearch.handle(request) }

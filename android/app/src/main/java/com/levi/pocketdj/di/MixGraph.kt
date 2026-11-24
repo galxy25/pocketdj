@@ -361,6 +361,28 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     }
     val mixEngine: MixEngine get() = engineLazy.value
 
+    /** SURF-5 "this song": whether the Mix owns a running deck / auto mix, and the live deck's song. Never builds the engine. */
+    class MixLiveSong(val active: Boolean, val songId: String?, val title: String?)
+
+    fun mixLiveSong(): MixLiveSong {
+        if (!engineLazy.isInitialized()) return MixLiveSong(false, null, null)
+        val e = engineLazy.value
+        val dj = autoDjInst
+        val deck = (if (dj?.isMixing == true) dj.liveDeck else null)
+            ?: e.leadDeck
+            ?: com.levi.pocketdj.mix.model.Deck.entries.firstOrNull { e.deckState(it).isPlaying }
+            ?: com.levi.pocketdj.mix.model.Deck.A
+        val t = e.deckState(deck).loaded
+        return MixLiveSong(e.isRunning || e.autoMixing, t?.songId, t?.title)
+    }
+
+    /** A Mix deck's title for [songId] (a studio / non-catalog track), else null. */
+    fun mixDeckTitle(songId: String): String? {
+        if (!engineLazy.isInitialized()) return null
+        val e = engineLazy.value
+        return com.levi.pocketdj.mix.model.Deck.entries.firstNotNullOfOrNull { d -> e.deckState(d).loaded?.takeIf { it.songId == songId }?.title }
+    }
+
     @Volatile private var sessionPlayerRef: com.levi.pocketdj.mix.service.MixSessionPlayer? = null
 
     /** MIX-11: the Mix as a [com.levi.pocketdj.playback.session.TransportOwner] (built with [mixEngine]). */

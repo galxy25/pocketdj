@@ -8,7 +8,12 @@ import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.Setlist
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.playback.QueueOutcome
+import com.levi.pocketdj.screens.collections.AddToActions
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 /**
  * User-facing failures of an out-of-UI action, each with a speakable sentence (iOS
@@ -35,6 +40,12 @@ sealed class ShellActionException(message: String) : Exception(message) {
         ShellActionException("None of the songs in $name are playable on this device yet.")
 
     class PlaybackFailed(message: String) : ShellActionException(message)
+
+    /** "Add this song" with nothing loaded in Now Playing or the Mix. */
+    data object NothingPlaying : ShellActionException("Nothing is playing in PocketDJ right now.")
+
+    /** The pocket / playlist an add names no longer exists (or is the reserved Now Playing set). */
+    data object CollectionNotFound : ShellActionException("I couldn't find that pocket or playlist in PocketDJ.")
 }
 
 /** Catalog lookups ShellActions needs (production: the merged catalog snapshot). */
@@ -87,6 +98,10 @@ class ShellActions(
     private val setup: SetupGate,
     private val readiness: ReadinessPort,
     private val postRoute: (ShellRoute) -> Unit = NavRequestBus::post,
+    /** The audible owner's song id ([AudibleOwner]); production wires the sequencer + Mix. Null = nothing loaded. */
+    private val audibleSongId: () -> String? = { null },
+    /** Title for a song not in the catalog (a studio / queue-only track); null = unknown. */
+    private val fallbackSongTitle: (String) -> String? = { null },
 ) : MediaPlayActions {
     /** Assigned by the Mix area; null ⇒ every Auto-Mix action says it isn't available. */
     @Volatile var mixFacade: MixFacade? = null
@@ -213,6 +228,25 @@ class ShellActions(
         }
     }
 
+    // ---- add to a collection ----
+
+    /** "This song" (iOS `currentSongId`): the audible owner's track, or null when nothing is loaded. */
+    fun currentSongId(): String? = audibleSongId()
+
+    /**
+     * Add [songId] (null = the song playing now) to the collection [collectionId] names
+     * (`pocket:<id>` / `playlist:<id>`). Pocket -> membership; playlist -> its FIRST chapter; a member is
+     * never toggled off ("X is already in Y."); never the reserved Now Playing playlist. Goes through the
+     * Add-to sheet's own [AddToActions], so Recent, History > Activity and Apple Music write-back all fire.
+     */
+    suspend fun addSongToCollection(songId: String?, collectionId: String): AddToCollectionResult {
+        veto()
+        ensureReady()
+        val id = songId ?: currentSongId() ?: throw ShellActionException.NothingPlaying
+        val title = catalog.song(id)?.name ?: fallbackSongTitle(id) ?: throw ShellActionException.SongNotFound
+        return AddToCollectionAction(collections).add(id, title, collectionId)
+    }
+
     // ---- navigation ----
 
     /** Raise a navigation request (consumed by the shell). Not vetoed: onboarding gates the shell itself. */
@@ -307,4 +341,47 @@ internal fun mixCrateUnion(sources: List<MixSource>, collections: CollectionsSto
         seen.addAll(part)
     }
     return seen.toList()
+}
+
+/** The result line for a started auto mix (iOS `StartAutoMixIntent`): "Auto-mixing X — N burned songs." */
+fun autoMixLine(name: String, count: Int, shuffle: Boolean): String {
+    val lead = if (shuffle) "Auto-mixing $name, shuffled" else "Auto-mixing $name"
+    return "$lead — $count burned ${if (count == 1) "song" else "songs"}."
+}
+
+/** Run an out-of-UI action; its failure becomes a speakable toast, never a crash. */
+private fun CoroutineScope.launchAction(postMessage: (String) -> Unit, fallback: String, body: suspend () -> String?): Job =
+    launch {
+        try {
+            body()?.let(postMessage)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            postMessage((e as? ShellActionException)?.message ?: fallback)
+        }
+    }
+
+/** The `pocketdj://add?...` seam: [ShellActions.addSongToCollection], result as a toast. [onLaunched] is a test hook. */
+fun addLinkSeam(
+    actions: ShellActions,
+    scope: CoroutineScope,
+    postMessage: (String) -> Unit,
+    onLaunched: (Job) -> Unit = {},
+): (String, String?) -> Unit = { collectionId, songId ->
+    onLaunched(scope.launchAction(postMessage, "Couldn't add that.") { actions.addSongToCollection(songId, collectionId).dialog })
+}
+
+/** The `pocketdj://automix/...` seam (veto + ensureReady inside [ShellActions.startAutoMix]). */
+fun autoMixLinkSeam(
+    actions: ShellActions,
+    scope: CoroutineScope,
+    postMessage: (String) -> Unit,
+    onLaunched: (Job) -> Unit = {},
+): (MixSource, Boolean) -> Unit = { source, shuffle ->
+    onLaunched(
+        scope.launchAction(postMessage, "Couldn't start the auto-mix.") {
+            val r = actions.startAutoMix(source, shuffle)
+            autoMixLine(r.name, r.count, shuffle)
+        },
+    )
 }
