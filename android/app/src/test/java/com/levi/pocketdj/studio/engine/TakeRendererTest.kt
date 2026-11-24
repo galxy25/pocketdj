@@ -125,6 +125,22 @@ class TakeRendererTest {
         assertEquals(0, synths.single().program)                                // piano GM program
     }
 
+    @Test fun songKeyUseHookFiresForCatalogSongKeysOnly() = runBlocking {
+        val env = env(); val store = env.store()
+        val used = ArrayList<String>()
+        val r = TakeRenderer(env.roots, store, { FakeSynth() }, FakeCodec(), Dispatchers.Unconfined, onSongKeyUse = { used.add(it) })
+        var n = 0
+        suspend fun renderWith(key: String?) {
+            val id = "tk_h${n++}"
+            store.addTake(StudioTake(id, "T", fileName = "f", events = listOf(ev(0, 10)), demuxSourceKey = key))
+            r.render(store.take(id)!!) { File("/bank.sf2") }
+        }
+        renderWith(null)
+        renderWith("dmx_abc")
+        renderWith("song-123")
+        assertEquals(listOf("song-123"), used)
+    }
+
     @Test fun tempoChangeInvalidatesTheRenderAndRerendersWithRescaledNotes() = runBlocking {
         val env = env(); val store = env.store(); val codec = FakeCodec()
         val r = TakeRenderer(env.roots, store, { FakeSynth() }, codec, Dispatchers.Unconfined)

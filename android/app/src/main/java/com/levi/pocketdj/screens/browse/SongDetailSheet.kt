@@ -195,6 +195,8 @@ fun SongDetailSheet(
                 }
             }
 
+            BufferedBadge(songId, graph)
+
             if (album != null) {
                 Spacer(Modifier.height(16.dp))
                 Row(

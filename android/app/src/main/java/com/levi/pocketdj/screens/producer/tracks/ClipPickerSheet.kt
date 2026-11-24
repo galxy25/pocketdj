@@ -77,6 +77,7 @@ object ClipPickerModel {
 @Composable
 fun ClipPickerSheet(doc: StudioDocument, stems: List<PickItem>, onPick: (ClipPick) -> Unit, onDismiss: () -> Unit) {
     var query by remember { mutableStateOf("") }
+    val pinGraph = com.levi.pocketdj.di.AppGraph.get(androidx.compose.ui.platform.LocalContext.current)
     val sections = remember(doc, stems, query) { ClipPickerModel.sections(doc, stems, query) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), modifier = Modifier.testTag("clip-picker")) {
         Column(Modifier.padding(horizontal = 16.dp)) {
@@ -98,7 +99,11 @@ fun ClipPickerSheet(doc: StudioDocument, stems: List<PickItem>, onPick: (ClipPic
                             Modifier.fillMaxWidth().clickable {
                                 onPick(
                                     when (sec.key) {
-                                        "stems" -> ClipPick.Stems(item.id)
+                                        "stems" -> {
+                                            // EXPLICIT stem import (np-mix-mode 3.3): buffered stems become a download.
+                                            com.levi.pocketdj.screens.settings.storage.StudioPins.pin(pinGraph, item.id, com.levi.pocketdj.screens.settings.storage.MixModeBufferState.REASON_TRACKS_STEMS)
+                                            ClipPick.Stems(item.id)
+                                        }
                                         "artifacts" -> ClipPick.Artifact(item.id)
                                         else -> ClipPick.Source(item.id, sec.kind!!)
                                     },

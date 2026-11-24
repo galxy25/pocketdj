@@ -13,7 +13,8 @@ internal fun storageSection() = SettingsSection(SettingsSections.STORAGE, 700) {
         Text("Manage storage")
     }
     SettingsCaption(
-        "See what PocketDJ keeps on this device per category, with sizes, and " +
+        "See what PocketDJ keeps on this device per category, with sizes, " +
+            "manage the Mix Mode buffer (keep time, limit, Keep all / Clear now), and " +
             "clear the re-derivable caches and logs.",
     )
 }

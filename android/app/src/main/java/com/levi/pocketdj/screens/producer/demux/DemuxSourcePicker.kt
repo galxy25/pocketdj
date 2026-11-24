@@ -29,6 +29,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.catalog.IndexSong
+import com.levi.pocketdj.screens.settings.storage.MixModeBufferState
+import com.levi.pocketdj.screens.settings.storage.StudioPins
 import com.levi.pocketdj.studio.demux.DemuxSource
 
 /** Pure picker rules (JVM-tested): collapse persistence, search force-expand, burned-first track ordering. */
@@ -87,6 +89,12 @@ fun DemuxSourcePicker(
     onPick: (DemuxSource) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val pinGraph = com.levi.pocketdj.di.AppGraph.get(androidx.compose.ui.platform.LocalContext.current)
+    // EXPLICIT Studio use (np-mix-mode 3.3): picking a catalog song for the Demuxer makes a buffered copy a download.
+    val pickAndPin: (DemuxSource) -> Unit = { src ->
+        if (src is DemuxSource.Song) StudioPins.pin(pinGraph, src.id, MixModeBufferState.REASON_DEMUX)
+        onPick(src)
+    }
     var search by remember { mutableStateOf("") }
     val expanded = DemuxPickerRules.parseExpanded(expandedRaw)
     val files = DemuxPickerRules.fileMatches(data.files, search)
@@ -127,7 +135,7 @@ fun DemuxSourcePicker(
             }
             if (files.isNotEmpty()) group("Imported audio", "imported", files.size, files.map { f -> { Row2(f.second, null, "demux-file-row-${f.first}") { onPick(DemuxSource.ImportedFile(f.first, f.second)) } } })
             if (studio.isNotEmpty()) group("Performance media", "studio", studio.size, studio.map { s -> { Row2(s.name, s.kind, "demux-studio-row-${s.id}") { onPick(DemuxSource.Studio(s.id, s.name)) } } })
-            if (tracks.isNotEmpty()) group("Tracks", "tracks", tracks.size, tracks.map { t -> { Row2(t.name, t.artist + if (t.id in data.burned) " · on device" else "", "demux-track-row-${t.id}") { onPick(DemuxSource.Song(t.id, t.name, t.artist)) } } })
+            if (tracks.isNotEmpty()) group("Tracks", "tracks", tracks.size, tracks.map { t -> { Row2(t.name, t.artist + if (t.id in data.burned) " · on device" else "", "demux-track-row-${t.id}") { pickAndPin(DemuxSource.Song(t.id, t.name, t.artist)) } } })
             if (files.isEmpty() && studio.isEmpty() && tracks.isEmpty()) item {
                 Text(
                     if (q.isEmpty()) "Burn a track, make a sample, or Import an audio file to demux it." else "Nothing matches “$search”.",

@@ -371,7 +371,10 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
 
     val takeRenderer: com.levi.pocketdj.studio.engine.TakeRenderer by lazy {
-        com.levi.pocketdj.studio.engine.TakeRenderer(studioRoots, studioStore)
+        com.levi.pocketdj.studio.engine.TakeRenderer(
+            studioRoots, studioStore,
+            onSongKeyUse = { key -> app.servicesGraph.burnStore.pin(listOf(key), com.levi.pocketdj.screens.settings.storage.MixModeBufferState.REASON_TAKE) },
+        )
     }
 
     /** Copies SAF-stored (content://) studio media to a cache file for File-only consumers (LRU-capped). */
