@@ -20,6 +20,15 @@ import java.util.concurrent.TimeUnit
 interface MixStreamRips {
     /** A rip server is configured (presigns need one). Synchronous: read on every canStream. */
     fun hasServer(): Boolean
+    /**
+     * The import-server token was rejected (401/403) and has not changed since: a CREDENTIAL fault, not "server down".
+     * New streams hold (no [MixStreamLoader] server-down trip) for the re-probe window, then one attempt probes; a token
+     * change (re-typed / credentials-sync heal) reopens it at once. Token-scoped in P2-LIB-1: a 401 is charged to the
+     * token the presign was SENT with, so a 401 for a replaced token never holds the new one.
+     */
+    fun authHoldoff(): Boolean = false
+    /** The token is currently rejected (live; used to classify a failed presign as a credential fault). */
+    fun isAuthRejected(): Boolean = false
     fun entry(songId: String): RipManifestEntry?
     /** A 6 h presigned URL for the song's durable object, or null when the server can't mint one. */
     suspend fun presignedUrl(songId: String, ttlSeconds: Int): String?
@@ -222,6 +231,8 @@ class MixStreamLoader(
     fun canStream(songId: String, forAuto: Boolean = false): Boolean = lock.withLock {
         if (streamMap[songId]?.let { !it.failed } == true) return true
         if (!network.available || !rips.hasServer() || rips.entry(songId) == null) return false
+        // A REJECTED token is not "server down": hold (reopens on a token change / after the re-probe window).
+        if (rips.authHoldoff()) return false
         val failedAt = recentFailures[songId]
         val cooldown = if (forAuto) autoFailureCooldownMs(consecutiveFailures[songId] ?: 0) else failureCooldownMs
         val cooledDown = failedAt == null || clock() - failedAt >= cooldown
@@ -323,7 +334,10 @@ class MixStreamLoader(
                 lock.withLock {
                     if (streamMap[songId] !== s) return@launch
                     if (url == null) {
-                        tripServerDown("presign"); fail(s, "presign failed")
+                        // 401/403 is a credential fault, not an outage: no "server down" trip (the auth hold gates
+                        // instead and clears on a token change) - and say so.
+                        if (rips.isAuthRejected()) fail(s, "presign rejected (401 - token)")
+                        else { tripServerDown("presign"); fail(s, "presign failed") }
                     } else start(s, url, 0)
                 }
             }
@@ -334,7 +348,8 @@ class MixStreamLoader(
 
     private suspend fun presignWithRetry(songId: String): String? =
         runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()
-            ?: runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()
+            // A rejected token will 401 again: don't double the rejection (one retry is for transient blips).
+            ?: if (rips.isAuthRejected()) null else runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()
 
     // ---- stems ----------------------------------------------------------------------------------
 

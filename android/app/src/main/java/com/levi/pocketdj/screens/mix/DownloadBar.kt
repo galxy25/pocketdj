@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.levi.pocketdj.mix.download.CatalogShortfall
 import com.levi.pocketdj.mix.download.CollectionMixDownloader
+import com.levi.pocketdj.mix.download.LaneIssue
 import com.levi.pocketdj.mix.download.MixDownloadState
 import kotlinx.coroutines.flow.StateFlow
 
@@ -38,26 +40,38 @@ object DownloadBarModel {
         data class Progress(
             val headline: String, val eta: String, val ripping: String?,
             val fraction: Float, val shortfall: String?,
+            /** Why the lanes can't fetch (token rejected / no server / ...); null when healthy. */
+            val issue: String? = null,
+            /** Offer "Play in Now Playing" (zero dead air): the lanes can't fetch audio without the user fixing Settings. */
+            val offerNowPlaying: Boolean = false,
         ) : Ui
 
         /** No run in flight, but the catalog is still short of what the crates declared. */
         data class ShortfallOnly(val caption: String) : Ui
     }
 
-    fun shortfallCaption(s: CatalogShortfall) =
-        "Only ${s.total} of ${s.declared} songs available on this device — catalog still loading"
+    fun shortfallCaption(s: CatalogShortfall, stillLoading: Boolean = true) =
+        LaneIssue.shortfallCaption(s.declared, s.total, stillLoading)
+
+    /** The copy line naming WHY nothing is moving, or null. A rejected token also shows with zero ripping songs. */
+    fun issueLine(issue: LaneIssue?): String? = when (issue) {
+        LaneIssue.TokenRejected -> LaneIssue.TOKEN_REJECTED_COPY
+        else -> null
+    }
 
     fun of(st: MixDownloadState): Ui? {
         if (st.isActive && st.downloadedCount < st.totalCount) {
             return Ui.Progress(
                 headline = "${st.downloadedCount} of ${st.totalCount} downloaded",
                 eta = "· ~${CollectionMixDownloader.etaLabel(st.etaSeconds)} left",
-                ripping = st.rippingCount.takeIf { it > 0 }?.let { "· $it ripping" },
+                ripping = LaneIssue.rippingLabel(st.rippingCount, st.laneIssue),
                 fraction = (st.downloadedCount.toFloat() / maxOf(st.totalCount, 1)).coerceIn(0f, 1f),
-                shortfall = st.catalogShortfall?.let(::shortfallCaption),
+                shortfall = st.catalogShortfall?.let { shortfallCaption(it, st.catalogStillLoading) },
+                issue = issueLine(st.laneIssue),
+                offerNowPlaying = st.laneIssue?.offersNowPlayingFallback == true,
             )
         }
-        return st.catalogShortfall?.let { Ui.ShortfallOnly(shortfallCaption(it)) }
+        return st.catalogShortfall?.let { Ui.ShortfallOnly(shortfallCaption(it, st.catalogStillLoading)) }
     }
 }
 
@@ -67,7 +81,13 @@ object DownloadBarModel {
  * its scroll position).
  */
 @Composable
-fun DownloadBar(state: StateFlow<MixDownloadState>, onCancel: () -> Unit, modifier: Modifier = Modifier) {
+fun DownloadBar(
+    state: StateFlow<MixDownloadState>,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** "Play in Now Playing" (zero-dead-air fallback); the button only shows when the lanes can't fetch audio. */
+    onPlayInNowPlaying: (() -> Unit)? = null,
+) {
     val st by state.collectAsState()
     when (val ui = DownloadBarModel.of(st)) {
         null -> Unit
@@ -90,7 +110,15 @@ fun DownloadBar(state: StateFlow<MixDownloadState>, onCancel: () -> Unit, modifi
                         progress = { ui.fraction }, modifier = Modifier.fillMaxWidth(),
                         color = DeckColors.accent, trackColor = DeckColors.overlay,
                     )
+                    ui.issue?.let { Text(it, color = DeckColors.danger, fontSize = 12.sp, maxLines = 3, modifier = Modifier.testTag("mix-dl-issue")) }
                     ui.shortfall?.let { Text(it, color = DeckColors.dim, fontSize = 12.sp, maxLines = 2) }
+                }
+                if (ui.offerNowPlaying && onPlayInNowPlaying != null) {
+                    OutlinedButton(
+                        onClick = onPlayInNowPlaying,
+                        modifier = Modifier.testTag("mix-dl-fallback-nowplaying")
+                            .semantics { contentDescription = "Play in Now Playing" },
+                    ) { Text("Play in Now Playing", fontSize = 12.sp) }
                 }
                 IconButton(
                     onClick = onCancel,

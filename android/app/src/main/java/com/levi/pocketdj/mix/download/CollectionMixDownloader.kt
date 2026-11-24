@@ -49,6 +49,17 @@ interface MixDownloadRips {
     val manifestCount: Int
     /** POST /rip-collection (or per-song /rip fallback). */
     suspend fun ripCollection(songIds: List<String>)
+    /**
+     * [ripCollection] that reports whether the server REFUSED the batch (iOS `BatchRipResult.refusedStatus`). The default
+     * treats every call as accepted; the production adapter overrides it once the rips plane exposes the status (P2-LIB-1).
+     */
+    suspend fun requestRips(songIds: List<String>): RipBatchOutcome { ripCollection(songIds); return RipBatchOutcome() }
+    /** The import-server token was rejected (401/403) and has not changed since. Read live every lane tick. */
+    val isAuthRejected: Boolean get() = false
+    /** Automatic callers hold off (a 401 is guaranteed); lapses after the re-probe window, clears on a token change. */
+    val authHoldoff: Boolean get() = false
+    /** Refresh [isAuthRejected] / [authHoldoff] (suspend settings reads) before the lanes read them. */
+    suspend fun refreshAuth() {}
     suspend fun cancelCollection(songIds: List<String>)
     suspend fun refreshManifest()
 }
@@ -68,6 +79,10 @@ data class MixDownloadState(
     val downloadedIds: Set<String> = emptySet(),
     /** Non-null exactly when the crates DECLARED more members than resolved (partial catalog). */
     val catalogShortfall: CatalogShortfall? = null,
+    /** The shortfall was observed while the catalog was still LOADING (picks the honest caption). */
+    val catalogStillLoading: Boolean = false,
+    /** Why the lanes can't make progress, or null (read live: a rejected token outranks what the rip lane last saw). */
+    val laneIssue: LaneIssue? = null,
 ) {
     val source: MixSource? get() = sources.firstOrNull()
 }
@@ -96,6 +111,10 @@ class CollectionMixDownloader(
     /** A source's crate name (provenance for appended rows). */
     var resolveSourceName: ((MixSource) -> String?)? = null
     var declaredMemberCount: ((MixSource) -> Int)? = null
+    /** The device catalog is still loading (picks the shortfall copy: "still loading" only while it actually is). */
+    var catalogIsLoading: (() -> Boolean)? = null
+    /** Another audio owner (Now Playing's sequencer) is running: a BACKGROUND event must never start a mix over it. */
+    var otherAudioActive: (() -> Boolean)? = null
     var catalogSongCount: (() -> Int)? = null
     /** A song's catalog length in seconds (ETA input; manifest duration is the fallback). */
     var songLengthSeconds: ((String) -> Double?)? = null
@@ -114,6 +133,9 @@ class CollectionMixDownloader(
     val etaSeconds: Double? get() = _state.value.etaSeconds
     val downloadedIds: Set<String> get() = _state.value.downloadedIds
     val catalogShortfall: CatalogShortfall? get() = _state.value.catalogShortfall
+    val catalogStillLoading: Boolean get() = _state.value.catalogStillLoading
+    /** The live lane issue (a rejected token outranks whatever the rip lane last observed). */
+    val laneIssue: LaneIssue? get() = _state.value.laneIssue
 
     private fun update(f: (MixDownloadState) -> MixDownloadState) { _state.value = f(_state.value) }
 
@@ -126,6 +148,14 @@ class CollectionMixDownloader(
     private var ripPollJob: Job? = null
     /** Bumped on every begin/cancel so a cancelled run's tail can never touch the next run. */
     private var runId = 0
+    /** Bumped per rip-lane start: an exiting lane only clears its OWN handle. */
+    private var ripGeneration = 0
+    /** Ids the rip lane is still waiting on (instance state so a catalog re-resolution can feed a RUNNING lane). */
+    private val ripPending = LinkedHashSet<String>()
+    /** A (re)POST of [ripPending] is due on the lane's next tick (new ids merged in). */
+    private var ripRequestDue = false
+    /** The lane issue the rip lane last OBSERVED (auth rejection is read live - see [publishLaneIssue]). */
+    private var observedLaneIssue: LaneIssue? = null
 
     private var autoArmed = false
     private var autoStartPending = false
@@ -152,9 +182,8 @@ class CollectionMixDownloader(
         if (isActive && sources == newSources) return
         if (isActive) cancel()
 
-        val seen = HashSet<String>()
-        val ids = newSources.flatMap { resolveRipIds?.invoke(it).orEmpty() }
-            .filter { it.isNotBlank() && seen.add(it) }
+        val resolved = resolveDownloadable(newSources)
+        val ids = resolved.ids
         burnMisses = 0
         retriedMisses = false
         orderedIds = ids
@@ -171,13 +200,17 @@ class CollectionMixDownloader(
         burnQueue.addAll(remainder.filter { rips.isRipped(it) })
         val needsRip = remainder.filter { !rips.isRipped(it) }
 
-        val declared = declaredMemberCount?.let { f -> newSources.sumOf { f(it) } }
+        val declared = effectiveDeclared(newSources, resolved)
+        observedLaneIssue = null
+        ripPending.clear()
+        ripRequestDue = false
         val shortfall = declared?.takeIf { it > ids.size }?.let { CatalogShortfall(it, ids.size) }
         update {
             MixDownloadState(
                 isActive = false, sources = newSources, totalCount = ids.size,
                 downloadedCount = onDisk.size, rippingCount = needsRip.size, etaSeconds = null,
                 downloadedIds = onDisk, catalogShortfall = shortfall,
+                catalogStillLoading = shortfall != null && catalogIsLoading?.invoke() == true,
             )
         }
         DiagLog.shared?.telemetry(
@@ -190,16 +223,103 @@ class CollectionMixDownloader(
         if (declared != null && declared > 0 && ids.size < declared) {
             DiagLog.shared?.log(
                 "warn",
-                "mixdl ${declared - ids.size}/$declared crate members unresolved - partial catalog" +
-                    " (an enabled source may be missing/unloaded on this device)",
+                "mixdl ${declared - ids.size}/$declared crate members unresolved (cross-crate dupes excluded) - partial catalog" +
+                    " (catalogLoading=${catalogIsLoading?.invoke()}; re-resolves on the next catalog assign)",
             )
         }
         if (ids.isEmpty() || remainder.isEmpty()) return  // nothing to do - all on disk
         val run = ++runId
         update { it.copy(isActive = true) }
         installHooks()
-        if (needsRip.isNotEmpty()) ripPollJob = scope.launch { ripAndPoll(run, needsRip) }
-        driveJob = scope.launch { drive(run) }
+        if (needsRip.isNotEmpty()) startRipLane(run, needsRip)
+        startDrive(run)
+    }
+
+    private fun startDrive(run: Int) { driveJob = scope.launch { drive(run) } }
+
+    /** Per-source resolved lists and their cross-crate UNION in first-appearance order. */
+    private class Resolved(val ids: List<String>, val perSourceCount: Int)
+
+    private fun resolveDownloadable(srcs: List<MixSource>): Resolved {
+        val seen = HashSet<String>()
+        val ids = ArrayList<String>()
+        var perSource = 0
+        for (src in srcs) {
+            val own = HashSet<String>()
+            for (id in resolveRipIds?.invoke(src).orEmpty()) {
+                if (id.isBlank() || !own.add(id)) continue
+                perSource++
+                if (seen.add(id)) ids.add(id)
+            }
+        }
+        return Resolved(ids, perSource)
+    }
+
+    /**
+     * The crates' declared member count, CORRECTED for cross-crate overlap. The raw per-crate sum double-counts a song in
+     * both crates while the total is the deduped union, so two overlapping fully-resolved crates read as a "partial
+     * catalog" (the 2026-10-30 iPad report: 279 + 139 sharing 14 songs -> "Only 404 of 418"). The overlap is exactly
+     * sum(per-source resolved) - |union|; subtracting it leaves only members that genuinely failed to resolve.
+     */
+    private fun effectiveDeclared(srcs: List<MixSource>, resolved: Resolved): Int? {
+        val f = declaredMemberCount ?: return null
+        val raw = srcs.sumOf { f(it) }
+        val overlap = maxOf(0, resolved.perSourceCount - resolved.ids.size)
+        return maxOf(0, raw - overlap)
+    }
+
+    private fun updateShortfall(declared: Int?, total: Int) {
+        val sf = declared?.takeIf { it > total }?.let { CatalogShortfall(it, total) }
+        update { it.copy(catalogShortfall = sf, catalogStillLoading = sf != null && catalogIsLoading?.invoke() == true) }
+    }
+
+    /**
+     * The device catalog was (re)assigned. A run that started while the catalog was partial re-resolves its crates and folds
+     * every newly-resolved member in: on disk -> downloaded, ripped -> burn lane (and straight into a running auto mix), un-ripped
+     * -> the rip lane. A finished/exhausted mix is never revived by a catalog event (it could start Auto-DJ hours later over
+     * Now Playing); only a still-RUNNING mix of ours is fed.
+     */
+    fun catalogDidChange() {
+        val srcs = sources
+        if (srcs.isEmpty()) return
+        val resolved = resolveDownloadable(srcs)
+        val fresh = resolved.ids.filter { it !in trackedIds }
+        val declared = effectiveDeclared(srcs, resolved)
+        if (fresh.isEmpty()) {
+            val had = catalogShortfall
+            if (had != null) {
+                updateShortfall(declared, totalCount)
+                if (catalogShortfall == null) DiagLog.shared?.log("mixdl", "catalog caught up - shortfall ${had.declared - had.total} cleared")
+            }
+            return
+        }
+        DiagLog.shared?.log("mixdl", "catalog re-resolve: +${fresh.size} member(s) now in the catalog (total $totalCount -> ${totalCount + fresh.size})")
+        if (!isActive) {
+            if (!autoArmed || !host.autoMixing || host.autoSourceLabel != autoLabel) {
+                updateShortfall(declared, totalCount)
+                return
+            }
+            // OUR mix still runs: re-seed (begin never touches the auto-arm) and feed it the late members.
+            begin(srcs)
+            continueAutoMixIfArmed(allowRestart = false)
+            return
+        }
+        orderedIds = orderedIds + fresh
+        trackedIds = trackedIds + fresh
+        val newRips = ArrayList<String>()
+        val landed = LinkedHashSet(downloadedIds)
+        for (id in fresh) when {
+            burns.isOnDisk(id) -> { landed.add(id); burns.pin(listOf(id), "mix-download") }
+            rips.isRipped(id) -> burnQueue.add(id)
+            else -> newRips.add(id)
+        }
+        update { it.copy(totalCount = orderedIds.size, downloadedIds = landed, downloadedCount = landed.size) }
+        updateShortfall(declared, orderedIds.size)
+        val run = runId
+        if (newRips.isNotEmpty()) startRipLane(run, newRips)
+        if (driveJob?.isActive != true) startDrive(run)
+        recomputeEta()
+        continueAutoMixIfArmed(allowRestart = false)
     }
 
     /**
@@ -254,6 +374,9 @@ class CollectionMixDownloader(
         orderedIds = emptyList()
         trackedIds = emptySet()
         burnQueue.clear()
+        ripPending.clear()
+        ripRequestDue = false
+        observedLaneIssue = null
         window = ThroughputWindow()
         _state.value = MixDownloadState()
     }
@@ -278,7 +401,7 @@ class CollectionMixDownloader(
                         id in burnQueue || !rips.isRipped(id)
                     ) return@launch
                     burnQueue.add(id)
-                    if (driveJob?.isActive != true) driveJob = scope.launch { drive(run) }
+                    if (driveJob?.isActive != true) startDrive(run)
                 }
             },
         )
@@ -299,7 +422,23 @@ class CollectionMixDownloader(
     // ---- drive (serial burn lane) -------------------------------------------------------------
 
     private suspend fun drive(run: Int) {
+        var parkedMs = 0L
         while (coroutineContext.isActive && run == runId) {
+            runCatching { rips.refreshAuth() }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+            publishLaneIssue()
+            if (burnQueue.isNotEmpty() && rips.authHoldoff) {
+                // Rejected token: every presign is a guaranteed 401 - park the lane (songs stay queued) instead of burning
+                // hundreds of rejections in a row. The hold lapses after the re-probe window (one burn then probes) and
+                // clears at once on a token change. Bounded: never parks forever. USER burns bypass this lane entirely.
+                if (parkedMs >= authParkMaxMs) {
+                    DiagLog.shared?.log("warn", "mixdl burn lane: token still rejected after ${parkedMs / 60_000} min - lane ended (${burnQueue.size} queued)")
+                    break
+                }
+                delay(idleWaitMs * 4)
+                parkedMs += idleWaitMs * 4
+                continue
+            }
+            parkedMs = 0
             val id = nextBurnId()
             when {
                 id != null -> { burnQueue.remove(id); burnOne(run, id) }
@@ -318,7 +457,7 @@ class CollectionMixDownloader(
                 else -> break // drained, no rips coming, sweep done
             }
         }
-        if (run == runId) driveJob = null
+        if (run == runId) { driveJob = null; publishLaneIssue() }
     }
 
     /** First song the running mix will PLAY (live slot onward), else collection order; never one a deck is streaming. */
@@ -355,6 +494,10 @@ class CollectionMixDownloader(
                 recomputeEta()
                 return
             }
+            if (rips.isAuthRejected && id !in burnQueue) {
+                // Not this song's fault - the credential is. Keep it queued (front) so it lands the moment the token heals.
+                burnQueue.add(0, id)
+            }
             burnMisses++
             if (burnMisses <= 5 || burnMisses % 25 == 0) {
                 DiagLog.shared?.log(
@@ -368,18 +511,78 @@ class CollectionMixDownloader(
 
     // ---- rip lane ------------------------------------------------------------------------------
 
-    private suspend fun ripAndPoll(run: Int, ids: List<String>) {
+    /** Start the rip lane for [ids], or feed them into the running one. */
+    private fun startRipLane(run: Int, ids: List<String>) {
+        ripPending.addAll(ids)
+        ripRequestDue = true
+        if (ripPollJob?.isActive != true) {
+            val gen = ++ripGeneration
+            ripPollJob = scope.launch { ripAndPoll(run, gen) }
+        }
+    }
+
+    /**
+     * Enqueue + manifest poll with a WATCHDOG. The old lane POSTed once, ignored the answer and polled for 2 h: a refused batch
+     * (every call 401'd on the 2026-10-30 iPad) read as "4 ripping" forever. Now every (re)request's outcome is classified:
+     *  - refused (401/403 -> [LaneIssue.TokenRejected], other -> [LaneIssue.RipServerRefused]): retry on an exponential backoff,
+     *    and never while the auth holdoff says a 401 is guaranteed;
+     *  - accepted: clear the issue, then the stall watchdog - no manifest flip for [ripStallTicks] => [LaneIssue.RipsStalled]
+     *    plus a re-POST (the server dedupes, so a re-request of a healthy job is a no-op);
+     *  - no server: [LaneIssue.NoServer], still poll the public manifest (another device may rip them).
+     * A flip moves the song to the burn lane and joins the running mix (it can stream now).
+     */
+    private suspend fun ripAndPoll(run: Int, gen: Int) {
         runCatching { rips.prepare() }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
         if (!rips.hasServer) {
-            DiagLog.shared?.log("error", "mixdl rip lane: ${ids.size} tracks need rip but NO SERVER configured")
+            DiagLog.shared?.log("error", "mixdl rip lane: ${ripPending.size} tracks need rip but NO SERVER configured")
         } else {
-            DiagLog.shared?.telemetry("mixdl", "rip lane start ids=${ids.size}")
+            DiagLog.shared?.telemetry("mixdl", "rip lane start ids=${ripPending.size}")
         }
-        runCatching { rips.ripCollection(ids) }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
-        if (!coroutineContext.isActive || run != runId) return
-        val pending = ids.toMutableSet()
         var ticks = 0
-        while (pending.isNotEmpty() && ticks < ripPollMaxTicks && coroutineContext.isActive && run == runId) {
+        var nextRequestTick = 0
+        var attempts = 0
+        var lastProgressTick = 0
+        var accepted = false
+        while (ripPending.isNotEmpty() && ticks < ripPollMaxTicks && coroutineContext.isActive && run == runId) {
+            runCatching { rips.refreshAuth() }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
+            if (!rips.hasServer) {
+                observedLaneIssue = LaneIssue.NoServer
+            } else {
+                if (observedLaneIssue == LaneIssue.NoServer) observedLaneIssue = null
+                if ((ripRequestDue || ticks >= nextRequestTick) && !rips.authHoldoff) {
+                    ripRequestDue = false
+                    val ids = orderedIds.filter { it in ripPending }
+                    val outcome = try {
+                        rips.requestRips(ids)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        RipBatchOutcome(LaneIssue.TRANSPORT_FAILURE)
+                    }
+                    if (!coroutineContext.isActive || run != runId) return
+                    val status = outcome.refusedStatus
+                    if (status != null) {
+                        attempts++
+                        accepted = false
+                        observedLaneIssue = LaneIssue.ofRefusal(status)
+                        val delayTicks = LaneIssue.ripRetryDelayTicks(attempts, ripRetryBaseTicks, ripRetryMaxTicks)
+                        nextRequestTick = ticks + delayTicks
+                        DiagLog.shared?.log(
+                            "error",
+                            "mixdl rip lane: batch of ${ids.size} REFUSED status=$status attempt=$attempts - retry in $delayTicks ticks",
+                        )
+                    } else {
+                        if (attempts > 0) DiagLog.shared?.log("mixdl", "rip lane: batch of ${ids.size} accepted after $attempts refusal(s)")
+                        attempts = 0
+                        // A stall re-request stays "stalled" until a song actually lands.
+                        if (observedLaneIssue != LaneIssue.RipsStalled) observedLaneIssue = null
+                        accepted = true
+                        lastProgressTick = ticks
+                        nextRequestTick = ticks + ripStallTicks
+                    }
+                }
+            }
+            publishLaneIssue()
             ticks++
             delay(ripPollIntervalMs)
             if (!coroutineContext.isActive || run != runId) return
@@ -387,17 +590,40 @@ class CollectionMixDownloader(
             if (!coroutineContext.isActive || run != runId) return
             var flipped = false
             for (id in orderedIds) {
-                if (id in pending && rips.isRipped(id)) {
-                    pending.remove(id)
+                if (id in ripPending && rips.isRipped(id)) {
+                    ripPending.remove(id)
                     burnQueue.add(id)
                     flipped = true
                 }
+            }
+            if (flipped) {
+                lastProgressTick = ticks
+                if (observedLaneIssue == LaneIssue.RipsStalled) observedLaneIssue = null
+                if (accepted) nextRequestTick = ticks + ripStallTicks
+                if (driveJob?.isActive != true) startDrive(run)
+            } else if (accepted && ripPending.isNotEmpty() && ticks - lastProgressTick >= ripStallTicks &&
+                observedLaneIssue != LaneIssue.RipsStalled
+            ) {
+                observedLaneIssue = LaneIssue.RipsStalled
+                DiagLog.shared?.log(
+                    "warn",
+                    "mixdl rip lane STALLED: ${ripPending.size} pending, no rip landed in ${ticks - lastProgressTick} ticks - re-requesting",
+                )
             }
             recomputeEta()
             // A freshly-ripped song is STREAMABLE now: it can join the mix without its download.
             if (flipped) continueAutoMixIfArmed()
         }
-        if (run == runId) ripPollJob = null
+        if (ripPending.isNotEmpty() && ticks >= ripPollMaxTicks) {
+            DiagLog.shared?.log("warn", "mixdl rip lane gave up after $ticks ticks - ${ripPending.size} never ripped")
+        }
+        if (gen == ripGeneration && run == runId) { ripPollJob = null; publishLaneIssue() }
+    }
+
+    /** Publish the live lane issue: a rejected token (read live, so a heal or re-typed token clears it instantly) outranks the rip lane's last observation. */
+    private fun publishLaneIssue() {
+        val live = if (!isActive) null else if (rips.isAuthRejected) LaneIssue.TokenRejected else observedLaneIssue
+        if (_state.value.laneIssue != live) update { it.copy(laneIssue = live) }
     }
 
     // ---- landing -> progress + progressive eligibility -----------------------------------------
@@ -420,7 +646,7 @@ class CollectionMixDownloader(
      * newly-loadable track (random when shuffled); if it ended exhausted - or a zero-start is
      * pending - (re)start it with the late arrivals. A DJ hand-mixing owns the decks.
      */
-    private fun continueAutoMixIfArmed() {
+    private fun continueAutoMixIfArmed(allowRestart: Boolean = true) {
         val resolve = resolveLoadables
         if (!autoArmed || sources.isEmpty() || resolve == null) return
         val seen = HashSet<String>()
@@ -445,7 +671,13 @@ class CollectionMixDownloader(
                 )
                 appendedIds.add(l.songId)
             }
-        } else if (host.autoEndedExhausted || autoStartPending) {
+        } else if (allowRestart && (host.autoEndedExhausted || autoStartPending)) {
+            // Now Playing owns the audio (the "Play in Now Playing" hand-off, or the user moved on): a background
+            // landing must never start Auto-DJ over it.
+            if (otherAudioActive?.invoke() == true) {
+                autoStartPending = false
+                return
+            }
             if (host.isRunning || (autoStartPending && host.deckGestureGeneration != armGestureGeneration)) {
                 autoStartPending = false
                 return
@@ -463,8 +695,10 @@ class CollectionMixDownloader(
         driveJob?.cancel(); driveJob = null
         ripPollJob?.cancel(); ripPollJob = null
         burnQueue.clear()
+        ripPending.clear()
+        observedLaneIssue = null
         removeHooks()
-        update { it.copy(rippingCount = 0, etaSeconds = null, isActive = false) }
+        update { it.copy(rippingCount = 0, etaSeconds = null, isActive = false, laneIssue = null) }
     }
 
     // ---- ETA -----------------------------------------------------------------------------------
@@ -493,6 +727,7 @@ class CollectionMixDownloader(
     internal val appendedIdsForTesting: Set<String> get() = appendedIds.toSet()
     internal val autoArmedForTesting: Boolean get() = autoArmed
     internal val autoStartPendingForTesting: Boolean get() = autoStartPending
+    internal val ripPendingForTesting: Set<String> get() = ripPending.toSet()
     internal val nextBurnIdForTesting: String? get() = nextBurnId()
 
     // ---- tunables + pure helpers ---------------------------------------------------------------
@@ -515,6 +750,16 @@ class CollectionMixDownloader(
     var ripPollIntervalMs = 4500L
     var ripPollMaxTicks = 1600
     var idleWaitMs = 500L
+    /**
+     * Rip-lane watchdog: an ACCEPTED batch with no manifest flip for this many poll ticks is stalled (~10 min at 4.5 s; one
+     * real-time capture is ~4 min) -> re-POST the still-pending ids and say so.
+     */
+    var ripStallTicks = 133
+    /** Refused-batch retry backoff, in poll ticks: base * 2^(attempt-1), capped (~5 min). */
+    var ripRetryBaseTicks = 2
+    var ripRetryMaxTicks = 67
+    /** Max continuous time the burn lane parks on a rejected token before ending (cheap - no network - but never unbounded). */
+    var authParkMaxMs = 2L * 60 * 60 * 1000
 
     companion object {
         /** 256 kbps MP3 = 32 KB of file per playback second. */
@@ -526,6 +771,9 @@ class CollectionMixDownloader(
             val bps = bytesPerSecond ?: return null
             return remainingPlaybackSeconds * BYTES_PER_PLAYBACK_SECOND / maxOf(bps, 1.0)
         }
+
+        /** Honest bar copy (see [LaneIssue.rippingLabel]). */
+        fun rippingLabel(count: Int, issue: LaneIssue?): String? = LaneIssue.rippingLabel(count, issue)
 
         /** "3m 20s" / "45s" / "-" (em dash) while no sample. */
         fun etaLabel(seconds: Double?): String {

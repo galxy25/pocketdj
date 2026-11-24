@@ -31,6 +31,8 @@ class MixFacadeImpl(
     private val remotePause: () -> Unit,
     private val remotePlay: () -> Unit,
     private val engineContext: CoroutineContext = Dispatchers.Main.immediate,
+    /** Runs on [engineContext]: cancel the downloader, stop the auto mix / pause hand-played decks. */
+    private val releaseForNowPlaying: () -> Unit = {},
 ) : MixFacade {
     override val autoMixing: Boolean get() = isAutoMixing()
     override val autoPaused: Boolean get() = isAutoPaused()
@@ -58,6 +60,12 @@ class MixFacadeImpl(
 
     override fun pauseAutoMix() = remotePause()
     override fun resumeAutoMix() = remotePlay()
+
+    override fun releaseForNowPlaying() {
+        // Engine + downloader are Main-confined: hop synchronously when called from another thread (the caller is a coroutine).
+        if (android.os.Looper.getMainLooper() == android.os.Looper.myLooper()) releaseForNowPlaying.invoke()
+        else kotlinx.coroutines.runBlocking(engineContext) { releaseForNowPlaying.invoke() }
+    }
 
     companion object {
         fun MixSource.toEngine(): EngineSource = when (this) {

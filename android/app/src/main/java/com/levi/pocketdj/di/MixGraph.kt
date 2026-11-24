@@ -789,11 +789,19 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 }
             }
             d.declaredMemberCount = { declaredMemberCount(app, it) }
+            d.catalogIsLoading = { app.catalogRepository.state.value.phase.let { p -> p == com.levi.pocketdj.data.catalog.CatalogRepository.Phase.Loading || p == com.levi.pocketdj.data.catalog.CatalogRepository.Phase.Idle } }
+            // The one-audio-owner rule: a background landing / catalog event never starts a mix over Now Playing.
+            d.otherAudioActive = { app.playbackController.nowPlaying.value?.isPlaying == true }
             d.catalogSongCount = { catalog()?.songsById?.size ?: 0 }
             d.songLengthSeconds = { id -> catalog()?.songsById?.get(id)?.length?.takeIf { it > 0 }?.let { it / 1000.0 } }
             d.songTitleArtist = { id -> catalog()?.songsById?.get(id)?.let { it.name to it.artist } ?: (id to "") }
             // Songs that landed while a fresh start was pending join the mix the moment it starts.
             autoDj.onDeferredStartFinished = { d.noteAutoStartFinished() }
+            // Catalog re-resolve: members that resolved late join the lanes (and a running mix) without a re-pick.
+            app.appScope.launch(Dispatchers.Main.immediate) {
+                app.catalogRepository.state.map { it.catalog }.distinctUntilChanged { x, y -> x === y }
+                    .collect { if (it != null) d.catalogDidChange() }
+            }
         }
     }
 
@@ -946,6 +954,14 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             // Lock-screen seam, on Main (the engine is Main-confined; the caller may be any thread).
             remotePause = { mainScope.launch { autoDjInst?.remotePause() } },
             remotePlay = { mainScope.launch { autoDjInst?.remotePlay() } },
+            releaseForNowPlaying = {
+                // Never builds the Mix just to tear it down.
+                if (downloaderLazy.isInitialized()) downloaderLazy.value.cancel()
+                val dj = autoDjInst
+                if (dj != null) {
+                    if (dj.isMixing) dj.stopAutoMix() else if (mixEngine.isRunning) mixEngine.pauseBoth()
+                }
+            },
         )
     }
 
