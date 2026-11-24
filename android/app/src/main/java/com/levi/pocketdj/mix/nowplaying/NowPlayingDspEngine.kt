@@ -81,11 +81,21 @@ class NowPlayingDspEngine(
     private val sampleRate: Int = 44_100,
     /** Opens the growing decoder for [engageStreaming] (a fake under test). */
     private val growing: StreamSourceFactory = Mp3StreamSourceFactory(),
+    /** Monotonic seconds for the DJ transition timeline (a fake clock under test). */
+    djClock: () -> Double = { System.nanoTime() / 1e9 },
+    /** Run the >= 50 Hz DJ ticker coroutine while a transition runs (off under test: the test calls [DjTransitionEngine.step]). */
+    djTicker: Boolean = true,
 ) : NowPlayingDspSeam {
 
     private val graph = MixGraph(sampleRate)
     private val composer = ParamsComposer(graph).also { it.setCrossfader(0f) }
-    private val deck = Deck.A
+    /** The LIVE deck (listener controls address it). Ping-pongs A <-> B across DJ transitions; the crossfader sits at its end. */
+    private var deck = Deck.A
+    internal val liveDeck: Deck get() = deck
+    /** DJ glide overlay on the live deck (identity outside a transition). */
+    private var ownOv = GlideOverlay.NONE
+    /** The DJ Mode two-deck transition engine (P2-DJ-7). */
+    val dj = DjTransitionEngine(this, scope, djClock, djTicker)
 
     // ---- engaged-track state ----
     private var sink: AudioSink? = null
@@ -244,6 +254,8 @@ class NowPlayingDspEngine(
         // The chain's handover persists across engages: a previous track that ended on its stems left the
         // gains at main=0/stems=1. A new track STARTS on the full mix (lands at the next block).
         graph.deck(deck).handover.settle(false)
+        ownOv = GlideOverlay.NONE
+        composer.setLevelDb(deck, 0.0)
         // FX Lock: carried (stamped) ON effects come up from transparent; an ordinary engage has none, so no ramp.
         armRamp(Effect.entries.filter { isEnabled(it) }.toSet())
         publishParams()
@@ -453,6 +465,7 @@ class NowPlayingDspEngine(
 
     override fun disengage(): Double? {
         if (!isEngaged) return null
+        dj.reset("stop")         // cuts everything (a tail / incoming deck) BEFORE the live deck is torn down
         val pos = currentTimeSec
         handoverGen++            // stop() FIRES completions: a stale fetch must find its generation moved on
         stemHandover = null
@@ -469,6 +482,7 @@ class NowPlayingDspEngine(
         stemGroup?.let { runCatching { it.closeAll() } }; stemGroup = null
         graph.deck(deck).resetDsp()
         cancelRamp()
+        ownOv = GlideOverlay.NONE
         songId = null
         started = false
         onChanged?.invoke()
@@ -486,6 +500,7 @@ class NowPlayingDspEngine(
         playWanted = true
         graph.settleHandover(deck)
         if (stemOnSide()) stemGroup?.startAt(-1) else v.play(-1)
+        dj.onPlay()
         onChanged?.invoke()
     }
 
@@ -493,12 +508,14 @@ class NowPlayingDspEngine(
         if (!isEngaged) return
         playWanted = false
         main?.pause(); stemGroup?.pauseAll()
+        dj.onPause()
         onChanged?.invoke()
     }
 
     fun togglePlay() { if (playWanted) pause() else play() }
 
     fun seekTo(seconds: Double) {
+        dj.onSeek()
         grow?.let { seekStreaming(it, seconds); return }
         val v = main ?: return
         val f = (windowStart + Math.round(seconds.coerceAtLeast(0.0) * sampleRate)).coerceAtMost(maxOf(windowStart, windowEnd - 1))
@@ -513,6 +530,7 @@ class NowPlayingDspEngine(
 
     /** Host heartbeat. Cheap; safe to call at any rate. */
     fun tick() {
+        dj.watchTick()
         grow?.let { g ->
             if (g.holding && playWanted) pumpStream()      // bytes may have landed since the last event
             val gv = main
@@ -561,13 +579,15 @@ class NowPlayingDspEngine(
     // ================================================================ controls
 
     fun setRate(r: Double) {
+        dj.listenerTouched()
         rate = r.coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)
-        composer.setTempoPitch(deck, rate, pitch); onChanged?.invoke()
+        publishTempo(); onChanged?.invoke()
     }
 
     fun setPitch(semitones: Double) {
+        dj.listenerTouched()
         pitch = semitones.coerceIn(MixRanges.pitch.start, MixRanges.pitch.endInclusive)
-        composer.setTempoPitch(deck, rate, pitch); onChanged?.invoke()
+        publishTempo(); onChanged?.invoke()
     }
 
     fun setVolume(v: Double) {
@@ -579,12 +599,14 @@ class NowPlayingDspEngine(
     fun strength(e: Effect): Double = slots[e.ordinal].strength
 
     fun setEffect(e: Effect, enabled: Boolean) {
+        dj.listenerTouched()
         slots[e.ordinal] = slots[e.ordinal].setEnabled(enabled)
         rampScale[e.ordinal] = 1.0; rampActive.remove(e)   // the listener's hand beats an FX Lock ramp-in
         publishSlots(); onChanged?.invoke(); onUserEffectChange?.invoke()
     }
 
     fun setEffectStrength(e: Effect, strength: Double) {
+        dj.listenerTouched()
         slots[e.ordinal] = slots[e.ordinal].setStrength(strength)
         strengthSet += e
         rampScale[e.ordinal] = 1.0; rampActive.remove(e)
@@ -592,7 +614,12 @@ class NowPlayingDspEngine(
     }
 
     private fun publishSlots() {
-        composer.setSlots(deck, slots.map { if (it.enabled) SlotParams(it, it.strength * rampScale[it.effect.ordinal]) else null })
+        composer.setSlots(deck, buildSlotParams(slots.asList(), rampScale, ownOv))
+    }
+
+    /** The live deck's tempo / pitch: the listener's controls times the DJ glide overlay (identity outside a transition). */
+    private fun publishTempo() {
+        composer.setTempoPitch(deck, glidedRate(rate, ownOv), glidedPitch(pitch, ownOv))
     }
 
     // ---- FX Lock seams (the host drives these) ----
@@ -665,7 +692,7 @@ class NowPlayingDspEngine(
     }
 
     private fun publishParams() {
-        composer.setTempoPitch(deck, rate, pitch)
+        publishTempo()
         composer.setVolume(deck, volume)
         publishSlots()
         publishBalance()
@@ -681,6 +708,7 @@ class NowPlayingDspEngine(
 
     fun setStemMuted(name: String, muted: Boolean) {
         if (name !in BurnFileNames.STEM_NAMES) return
+        dj.cutIfBeforeAdvance("stems")
         mutedStems = if (muted) mutedStems + name else mutedStems - name
         publishBalance(); onUserStemChange?.invoke(); onChanged?.invoke()
     }
@@ -729,6 +757,7 @@ class NowPlayingDspEngine(
     private fun changeStemMode(on: Boolean): Boolean {
         val id = songId ?: return false
         if (!isEngaged) return false
+        dj.cutIfBeforeAdvance("stems")
         handoverGen++
         retries = 0
         val gen = handoverGen
@@ -826,6 +855,164 @@ class NowPlayingDspEngine(
         onStemsOnAir?.invoke(id)
     }
 
+
+    // ================================================================ DJ two-deck seams (P2-DJ-7)
+    //
+    // The ping-pong design: the live deck is `deck`; a transition opens the incoming song on the OTHER deck
+    // (crossfader at the live end, so it is silent), and at the fade start the engine's whole per-song state
+    // swaps onto it ([djInstall]) while the outgoing song's state becomes the DjTransitionEngine's tail.
+
+    /** The per-song state that follows a song from deck to deck. */
+    internal class LiveState(
+        val deck: Deck, val main: Voice?, val mainRun: AutoCloseable?, val stemGroup: VoiceGroup?,
+        val stemRuns: List<AutoCloseable>, val songId: String?, val windowStart: Long, val windowEnd: Long,
+        val positionedAt: Long, val started: Boolean, val audioAnnounced: Boolean, val startedAtClock: Long,
+        val voiceEndedAtClock: Long, val endFired: Boolean,
+    )
+
+    /** The listener's controls of one song (frozen on the tail, restored on a refused fade start). */
+    internal class ControlSnap(
+        val rate: Double, val pitch: Double, val volume: Double, val slots: List<FXSlot>, val strengthSet: Set<Effect>,
+        val stemMode: Boolean, val mutedStems: Set<String>, val stemVolumes: Map<String, Double>, val overlay: GlideOverlay,
+    )
+
+    /** The incoming song opened on the idle deck. */
+    internal class IncomingDeck(
+        val deck: Deck, val songId: String, val voice: Voice, val run: AutoCloseable,
+        val windowStart: Long, val windowEnd: Long, val startFrame: Long,
+    )
+
+    internal val djPlayWanted: Boolean get() = playWanted
+    internal val djSampleRate: Int get() = sampleRate
+    internal val djStemHandoverInFlight: Boolean
+        get() = stemHandover != null || graph.deck(deck).handover.inFlight
+    internal val djHasMutedStems: Boolean get() = mutedStems.isNotEmpty()
+    internal val djHandoverGen: Int get() = handoverGen
+    internal fun djOtherDeck(): Deck = if (deck == Deck.A) Deck.B else Deck.A
+    internal fun djParams(d: Deck) = composer.current.deck(d)
+    internal fun djCrossfaderForTest(): Float = composer.crossfader
+    internal fun djLevelDb(d: Deck): Double = composer.levelDb(d)
+    internal fun djOverlay(): GlideOverlay = ownOv
+    internal fun djOutgoingPlaying(): Boolean = main?.isPlaying == true
+
+    /** Seconds of audio left on the live song at the tempo it renders at. */
+    internal fun djSecondsLeft(): Double = maxOf(0.0, durationSec - currentTimeSec) / maxOf(0.05, glidedRate(rate, ownOv))
+
+    /** Leveling gain for the LIVE deck (DJ Volume leveling; 0 = off). Not a volume-boost write. */
+    fun setLevelDb(db: Double) { composer.setLevelDb(deck, db) }
+
+    /** Position of the crossfader such that the deck [live] is fully heard. */
+    internal fun djCrossfaderEnd(live: Deck): Float = if (live == Deck.A) 0f else 1f
+    internal fun djSetCrossfader(x: Float) { composer.setCrossfader(x) }
+
+    /** Open [file] on the idle deck (silent: the crossfader sits at the live end). null = unreadable. */
+    internal fun djOpenIncoming(songId: String, file: File, startMs: Long, lengthMs: Long, levelDb: Double): IncomingDeck? {
+        val src = runCatching { opener.open(file) }.getOrNull() ?: return null
+        val d = djOtherDeck()
+        val v = Voice(src, sampleRate, name = "np-dsp-in")
+        val ws = Math.round(startMs / 1000.0 * sampleRate)
+        val we = if (lengthMs > 0) minOf(ws + Math.round(lengthMs / 1000.0 * sampleRate), v.totalFrames.takeIf { it > 0 } ?: Long.MAX_VALUE)
+        else Long.MAX_VALUE
+        v.schedule(ws, we)
+        val run = runner.run(v)
+        graph.deck(d).handover.settle(false)
+        graph.setMain(d, v)
+        composer.setLevelDb(d, levelDb)
+        return IncomingDeck(d, songId, v, run, ws, we, ws)
+    }
+
+    /** Publish the incoming deck's glide state (rate / pitch / texture) while it waits; identity controls. */
+    internal fun djPublishOverlay(d: Deck, snap: ControlSnap?, ov: GlideOverlay) {
+        val rate0 = snap?.rate ?: 1.0
+        val pitch0 = snap?.pitch ?: 0.0
+        composer.setTempoPitch(d, glidedRate(rate0, ov), glidedPitch(pitch0, ov))
+        val sl = snap?.slots ?: Effect.entries.map { FXSlot(it) }
+        composer.setSlots(d, buildSlotParams(sl, null, ov))
+    }
+
+    /** Overlay of the live deck changed (a ramp step / ease / glide end). */
+    internal fun djSetOwnOverlay(ov: GlideOverlay) {
+        ownOv = ov
+        publishTempo()
+        publishSlots()
+    }
+
+    /** Drop any glide overlay at once (the listener wins). */
+    internal fun djClearOwnOverlay() { if (ownOv !== GlideOverlay.NONE) djSetOwnOverlay(GlideOverlay.NONE) }
+
+    internal fun djCaptureLive() = LiveState(
+        deck, main, mainRun, stemGroup, stemRuns, songId, windowStart, windowEnd, positionedAt, started,
+        audioAnnounced, startedAtClock, voiceEndedAtClock, endFired,
+    )
+
+    internal fun djCaptureControls() = ControlSnap(
+        rate, pitch, volume, slots.toList(), strengthSet.toSet(), stemMode, mutedStems, stemVolumes, ownOv,
+    )
+
+    /** Move the engine's per-song state onto [s] (its deck becomes the live deck). The crossfader is the caller's. */
+    internal fun djInstall(s: LiveState) {
+        deck = s.deck; main = s.main; mainRun = s.mainRun; stemGroup = s.stemGroup; stemRuns = s.stemRuns
+        songId = s.songId; windowStart = s.windowStart; windowEnd = s.windowEnd; positionedAt = s.positionedAt
+        started = s.started; audioAnnounced = s.audioAnnounced; startedAtClock = s.startedAtClock
+        voiceEndedAtClock = s.voiceEndedAtClock; endFired = s.endFired
+    }
+
+    /** State of an incoming deck as the engine's live state (not yet audible: the voice starts here). */
+    internal fun djIncomingState(inc: IncomingDeck, id: String, startFrame: Long): LiveState =
+        LiveState(inc.deck, inc.voice, inc.run, null, emptyList(), id, inc.windowStart, inc.windowEnd, startFrame,
+            started = false, audioAnnounced = true, startedAtClock = 0L, voiceEndedAtClock = -1L, endFired = false)
+
+    /** COMMIT of the swap onto the incoming deck: bump the generation FIRST, then default controls on the new live deck. */
+    internal fun djCommitFlip(to: LiveState) {
+        handoverGen++            // before anything that can fire a completion (stale stem fetches must find it moved on)
+        stemHandover = null
+        djInstall(to)
+        cancelRamp()
+        rate = 1.0; pitch = 0.0; volume = 1.0
+        for (e in Effect.entries) slots[e.ordinal] = FXSlot(e)
+        strengthSet.clear()
+        stemMode = false; mutedStems = emptySet(); stemVolumes = emptyMap()
+        publishParams()
+        if (playWanted) { to.main?.play(-1) }
+        onChanged?.invoke()
+    }
+
+    /** Undo [djCommitFlip] (the host refused the advance): the outgoing song is live again with its controls. */
+    internal fun djRevertFlip(back: LiveState, controls: ControlSnap) {
+        handoverGen++
+        djInstall(back)
+        rate = controls.rate; pitch = controls.pitch; volume = controls.volume
+        for (e in Effect.entries) slots[e.ordinal] = controls.slots[e.ordinal]
+        strengthSet.clear(); strengthSet += controls.strengthSet
+        stemMode = controls.stemMode; mutedStems = controls.mutedStems; stemVolumes = controls.stemVolumes
+        ownOv = controls.overlay
+        publishParams()
+        onChanged?.invoke()
+    }
+
+    /** Stop the voices of a deck that has left the mix and clear its params (it is silent: the crossfader left it). */
+    internal fun djReleaseDeck(d: Deck, voice: Voice?, run: AutoCloseable?, group: VoiceGroup?, runs: List<AutoCloseable>) {
+        voice?.pause(); group?.pauseAll()
+        if (graph.deck(d).main === voice) graph.setMain(d, null)
+        if (graph.deck(d).stems === group) graph.setStems(d, null)
+        runCatching { run?.close() }; runCatching { voice?.close() }
+        runs.forEach { runCatching { it.close() } }
+        runCatching { group?.closeAll() }
+        composer.setTempoPitch(d, 1.0, 0.0)
+        composer.setSlots(d, emptyList())
+        composer.setLevelDb(d, 0.0)
+        composer.setStemBalance(d, floatArrayOf(1f, 1f, 1f, 1f))
+    }
+
+    /** Is [d]'s stem group the audible side (a tail that was on its stems)? */
+    internal fun djStemSide(d: Deck, group: VoiceGroup?): Boolean = graph.deck(d).handover.intentStems && group != null
+
+    /** The audible playhead of the live deck's song, seconds (same as [currentTimeSec]). */
+    internal fun djPosition(): Double = currentTimeSec
+
+    /** A DJ fade start refused / a cut put the outgoing back: its voice keeps playing (never left the deck). */
+    internal fun djVoiceOf(s: LiveState): Voice? = s.main
+
     companion object {
         const val RUNWAY_FRAMES = 2048
         /** Growth in received bytes before an undecided / implausible length probe is repeated. */
@@ -838,3 +1025,27 @@ class NowPlayingDspEngine(
 
 /** Audible playhead: the voice counter minus the stretcher delay, never negative (Now Playing DSP, ANS-MIX-2). */
 internal fun npAudibleSeconds(rawSeconds: Double, lagSeconds: Double): Double = (rawSeconds - lagSeconds).coerceAtLeast(0.0)
+
+/** Glide overlay on a deck: rate MULTIPLIER, pitch semitones ADDED, and the FX texture swept through (effect, strength). */
+class GlideOverlay(val rateMul: Double = 1.0, val pitchAdd: Double = 0.0, val texture: Pair<Effect, Double>? = null) {
+    val isIdentity: Boolean get() = rateMul == 1.0 && pitchAdd == 0.0 && texture == null
+    companion object { val NONE = GlideOverlay() }
+}
+
+internal fun glidedRate(rate: Double, ov: GlideOverlay): Double =
+    (rate * ov.rateMul).coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)
+
+internal fun glidedPitch(pitch: Double, ov: GlideOverlay): Double =
+    (pitch + ov.pitchAdd).coerceIn(MixRanges.pitch.start, MixRanges.pitch.endInclusive)
+
+/** Composer slots: the listener's ON slots (x [rampScale]); the texture effect shows through only where the listener has it off. */
+internal fun buildSlotParams(slots: List<FXSlot>, rampScale: DoubleArray?, ov: GlideOverlay): List<SlotParams?> =
+    slots.map { s ->
+        val tex = ov.texture
+        when {
+            s.enabled -> SlotParams(s, s.strength * (rampScale?.get(s.effect.ordinal) ?: 1.0))
+            tex != null && tex.first == s.effect && tex.second > 0.0 ->
+                SlotParams(s.setEnabled(true).setStrength(tex.second), tex.second.coerceIn(0.0, 1.0))
+            else -> null
+        }
+    }
