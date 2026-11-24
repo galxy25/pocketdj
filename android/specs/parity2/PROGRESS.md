@@ -60,3 +60,19 @@ Emulator (emulator-5556, shots in pocketdj-parity2-pkgs/_shots/wave3/):
 Integrator changes: debug-only broadcast extras in NpMixWiring (`npmix=publicrips`, `playsong=<id>`, `palette=a,b`), a `clip` playback log line, first-audio hand-off attempt + test.
 
 Open: StrictMode disk reads on main from `NpMixWiring.replanLane` (BurnStore.localUrlPreferringCut via the lane re-plan; debug-only warning, worth moving off-main). Device-only: audible gap during swap-on-land.
+
+## Wave 4
+
+Merged: P2-ALB-4, P2-MM-6, P2-MM-8, P2-POC-5, P2-POC-7, P2-REM-2, P2-REM-4, P2-SURF-4 (one conflict, PlaybackService History-suppression block: ALB-4's albumArmer.consumeRetarget and MM-8's suppressHistoryFor both kept). Unit tests: 6648, 0 failures; assembleDebug green.
+
+Emulator (emulator-5556, shots in pocketdj-parity2-pkgs/_shots/wave4/). Rip server is not configured on the emulator: run `am broadcast -a com.levi.pocketdj.DEBUG -p com.levi.pocketdj --es npmix publicrips` after each launch or growing starts log `skip reason=no-stream` (diagnostic `open denied ... server=false` now logged).
+- P2-ALB-4 PASS: new debug buttons "Analog album run" (burn + queue 3 songs of one side) and "Seek near end". Natural boundary logged `album boundary` then `track start backend=glide noLoad=true` and `album glide to=...` with no load line, metadata changed to track 2 with continuous position. Media key next/prev x2 logged `album jump in-place` three times (no reload). Device-only: replaceMediaItem never re-prepares, VBR seek accuracy.
+- P2-MM-6 PASS: NP header + chip (Ready) + switch, mini-bar long-press menu "Mix Mode" toggled `mode OFF`, Settings Playback rows (start in Mix Mode, buffer ahead 5, cellular Same as Wi-Fi) persisted over force-stop/relaunch and a new session started `mode ON (new-session default)`. Chip words are iOS verbatim (Q11).
+- P2-MM-8 PASS (start path): `growing start row=... holding`, `backend=growing claimed=true`, rows complete and adopt. Network throttling: with a dead/slow stream `growing fallback reason=hold>22s -> plain stream` then `skip reason=refused` and the plain rip stream started, no crash/ANR. The mid-song `hold>5s` variant and `svc wifi disable` step could NOT be run: emulator shaping (`adb emu network speed N`) blocks the connection outright (0 bytes even at 1500 kbps) and unthrottled files finish in under 1.5 s, so no mid-song stall exists to observe; covered by GrowingStartTest (Q13). Device-only: Bluetooth disconnect pauses the DSP.
+- P2-POC-5 PASS after a fix: wheel cache file rebuilt after plays (historyRevision moved, file rewritten). BUG: Settings > History "Clear play history" cleared only the history store, not the wheel/cache (POC-5 wired only StorageService). Fixed in HistorySection (wheelClearLocal); verified the file and palette are removed after clearing. (No unit test: Compose button.)
+- P2-SURF-4 PASS: `MEDIA_PLAY_FROM_SEARCH` with "12 Jewels by Burna Boy" played that song (title in media_session); a metadata-only match ("Somebodys Been Sleeping by 100 Proof Aged In Soul") resolved to the right row and was skipped as METADATA_ONLY. No `PocketDJ.action resolve tier` log exists in the resolver (resolution is verified by playback). Device-only: Hey Google.
+- P2-POC-7, P2-REM-2, P2-REM-4: pure/engine, no emulator step.
+
+Integrator changes: debug buttons (Analog album run, Seek near end), mixstream `open denied` diagnostic, HistorySection wheel clear.
+
+Open: StrictMode DiskReadViolations (8 ms) on main inside the album boundary advance path (StateFlow collect in advanceToNext), debug-only. P2-POC-7 PocketTuning.kt add/add with POC-8 expected; seeded iOS equality waits for POC-14. First play after cold launch on a device without a rip server correctly falls back to plain stream.

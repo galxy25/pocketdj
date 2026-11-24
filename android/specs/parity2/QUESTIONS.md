@@ -15,6 +15,9 @@ Format: `Q<n> [package] question — default meanwhile`. Integrators append new 
 - **P2Q8 [P2-REL-1]** Release path for the parity-2 build: Play internal testing first, then production staged rollout? — *Default: Upload to internal testing, run the device checklist, then production at 20 % staged rollout; the Data safety form is updated in Play Console in the same submission.*
 - **P2Q9 [P2-DJ-5]** Suspended-remote DJ chip wording: iOS verbatim "DJ — paused · SharePlay session" vs design doc "Remote session" for Android. — *Default: iOS verbatim (pinned by DjModeTest); one-line change.*
 - **P2Q10 [P2-MM-5]** Integrator added a hand-off attempt at first audio (a row preloaded as a stream whose file landed while it was still "next" otherwise kept streaming). Does iOS do the same, or should the preload swap to the local file instead? — *Default: attempt at first audio (observed on emulator: `hand-off ... reason=first-audio`).*
+- **P2Q11 [P2-MM-6]** Mix Mode chip uses iOS verbatim words ("Buffering 42%", "Ready") instead of the roadmap's "Buffering 1 of 3". Keep iOS wording? — *Default: iOS verbatim.*
+- **P2Q12 [P2-ALB-4]** Skip-back onto a song BEFORE the loaded album-side item's clip start (album started mid-side) reloads instead of seeking in place (the run item starts at the song, per the acceptance). Acceptable, or load every side from 0 so back always seeks in place? — *Default: reload in that one case.*
+- **P2Q13 [P2-MM-8]** Mid-song growing-stream stall: Android falls back to the plain stream at the playhead after a 5 s hold (22 s at start). Emulator network shaping cannot deliver slow bytes (it blocks the connection), so this was verified by unit tests plus the start-hold fallback only. OK to treat the mid-song path as device-verified later? — *Default: yes; add to the device checklist (airplane-mode toggle mid-song on a long digital rip).*
 
 ## ANSWERED
 

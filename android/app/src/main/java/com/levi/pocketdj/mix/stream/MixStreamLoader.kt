@@ -330,7 +330,11 @@ class MixStreamLoader(
                 }
             }
         }
-        if (!canStream(songId, forAuto)) return null
+        if (!canStream(songId, forAuto)) {
+            telemetry("open denied $songId net=${network.available} server=${rips.hasServer()} entry=${rips.entry(songId) != null} authHold=${rips.authHoldoff()} " +
+                "recentFail=${recentFailures[songId] != null} serverDown=${serverDownUntil?.let { clock() < it } == true}")
+            return null
+        }
         val entry = rips.entry(songId) ?: return null
         if (forAuto && startProbeArmed && serverDownUntil?.let { clock() < it } == true) {
             startProbeArmed = false   // one probe per armed retry: a real outage just fails it (and re-trips the gate)

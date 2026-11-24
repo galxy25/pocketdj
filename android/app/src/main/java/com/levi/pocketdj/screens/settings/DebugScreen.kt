@@ -618,6 +618,31 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 android.util.Log.d("PdjVerify", ripStatus)
             }
         }) { Text("Burn+play analog") }
+        // P2-ALB-4: burn + queue 3 consecutive songs of one analog album side, then seek near the end of the first.
+        var runDur by remember { mutableStateOf(0L) }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val side = manifest.entries.filter { it.value.source == "analog" && it.value.startMs != null && it.value.durationMs != null && songs.containsKey(it.key) }
+                    .groupBy { it.value.key }.values.filter { it.size >= 3 }.firstOrNull()
+                    ?.sortedBy { it.value.startMs }?.take(3)
+                if (side == null) { ripStatus = "AlbumRun: no side with 3 analog songs"; return@launch }
+                val ids = side.map { it.key }
+                runDur = side[0].value.durationMs ?: 0L
+                val r = host.graph.servicesGraph.burnStore.burn(ids.map { com.levi.pocketdj.data.burns.BurnSong(it, songs[it]?.name ?: it, songs[it]?.artist ?: "") })
+                val out = host.graph.playbackController.playQueue(ids.map { com.levi.pocketdj.playback.QueuePlan.QueueEntry(it) })
+                ripStatus = "AlbumRun ${ids.joinToString(",")} burn=${r.burned}/${r.total} play=$out dur0=$runDur"
+                android.util.Log.d("PdjVerify", ripStatus)
+            }
+        }) { Text("Analog album run") }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val songs = host.graph.playbackController.currentPositionMs()
+                android.util.Log.d("PdjVerify", "seek-near-end from=$songs dur0=$runDur")
+                host.graph.playbackController.seekTo(maxOf(0L, runDur - 10_000L))
+            }
+        }) { Text("Seek near end") }
         OutlinedButton(onClick = { burn5(false) }) { Text("Burn 5 long") }
         OutlinedButton(onClick = { burn5(true) }) { Text("Burn 5 (HTTP 400)") }
     }
