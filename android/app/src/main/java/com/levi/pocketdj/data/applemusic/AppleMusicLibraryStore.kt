@@ -210,6 +210,24 @@ class AppleMusicLibraryStore(private val file: File) {
         return changed
     }
 
+    /**
+     * SyncEntry.applyPayload seam: write pulled bytes + re-adopt under [lock] so a concurrent indexer write
+     * cannot interleave with the pull (whole-document last-writer-wins).
+     */
+    fun writePulled(bytes: ByteArray) {
+        val changed: Boolean
+        synchronized(lock) {
+            file.parentFile?.mkdirs()
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(file)) { file.writeBytes(bytes); tmp.delete() }
+            val next = decode(file)
+            changed = next != doc
+            doc = next
+        }
+        if (changed) onChanged?.invoke()
+    }
+
     private fun save() {
         val text = PdjJson.lenient.encodeToString(doc)
         runCatching {

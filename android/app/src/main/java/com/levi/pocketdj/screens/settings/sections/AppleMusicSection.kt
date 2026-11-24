@@ -11,6 +11,10 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.platform.testTag
+import com.levi.pocketdj.data.applemusic.AmLibrarySettings
 import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -88,6 +92,7 @@ internal fun appleMusicSection() = SettingsSection(SettingsSections.APPLE_MUSIC,
                     "subscription and the Apple Music app installed. Where a " +
                     "track can't stream, a 30-second preview plays instead.",
             )
+            AppleMusicLibraryBlock(host)
         }
         !current.hasRipServer -> {
             // The developer token is minted BY the rip server (§5): no server, no sign-in.
@@ -137,5 +142,48 @@ internal fun appleMusicSection() = SettingsSection(SettingsSections.APPLE_MUSIC,
             )
             appleMusicError?.let { SettingsCaption(it) }
         }
+    }
+}
+
+/**
+ * "My library" (P2-LIB-3): the toggle for the daily Web API index of the user's own Apple Music library, plus a
+ * manual "Re-index now" (a FULL run that ignores the toggle). Songs land in Browse / Collections as source
+ * "Apple Music", folding into an indexed "Apple Music (Local)" twin when the private catalog has the same track.
+ */
+@androidx.compose.runtime.Composable
+private fun androidx.compose.foundation.layout.ColumnScope.AppleMusicLibraryBlock(host: com.levi.pocketdj.shell.SettingsHost) {
+    val graph = host.graph
+    val enabled by graph.settings.flow(AmLibrarySettings.ENABLED).collectAsState(initial = AmLibrarySettings.ENABLED.default)
+    val lastIndexMs by graph.settings.flow(AmLibrarySettings.LAST_INDEX_MS).collectAsState(initial = 0.0)
+    var queued by remember { mutableStateOf(false) }
+    Spacer(Modifier.height(12.dp))
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text("Index my Apple Music library", modifier = Modifier.weight(1f))
+        Switch(
+            checked = enabled,
+            onCheckedChange = { v -> host.scope.launch { graph.settings.set(AmLibrarySettings.ENABLED, v) } },
+            modifier = Modifier.testTag("am-library-index-enabled"),
+        )
+    }
+    SettingsCaption(
+        "Once a day (and after you sign in) PocketDJ reads your own Apple Music library and lists it under the " +
+            "source \"Apple Music\". A song the private catalog already has is shown once, not twice.",
+    )
+    SettingsCaption(libraryIndexCaption(lastIndexMs, System.currentTimeMillis().toDouble()))
+    OutlinedButton(
+        onClick = { queued = true; graph.servicesGraph.reindexAmLibrary() },
+        modifier = Modifier.testTag("am-library-reindex"),
+    ) { Text(if (queued) "Re-index queued" else "Re-index now") }
+}
+
+/** "Last indexed 3 h ago" / "Not indexed yet" (pure; tested). */
+internal fun libraryIndexCaption(lastIndexMs: Double, nowMs: Double): String {
+    if (lastIndexMs <= 0.0) return "Not indexed yet."
+    val mins = ((nowMs - lastIndexMs) / 60_000.0).toLong().coerceAtLeast(0)
+    return when {
+        mins < 1 -> "Last indexed just now."
+        mins < 60 -> "Last indexed $mins min ago."
+        mins < 24 * 60 -> "Last indexed ${mins / 60} h ago."
+        else -> "Last indexed ${mins / (24 * 60)} d ago."
     }
 }
