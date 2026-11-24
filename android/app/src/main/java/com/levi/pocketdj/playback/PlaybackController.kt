@@ -1247,7 +1247,9 @@ class PlaybackController(
         var startIndex = playable.indexOfFirst { it.first.id == startSongId }
         if (startIndex < 0) startIndex = 0
 
-        val lastIndex = playable.lastIndex
+        // Non-sequencer queue path (track tap / playAlbum): an unbounded analog item plays to the album file's
+        // natural end, so queue items after it would double-play the album tail.
+        val lastIndex = lastQueueIndex(playable.map { it.second.isUnboundedAnalog }, startIndex)
 
         val serverConfigured = ripConfigured
         val queueEntries = playable.subList(0, lastIndex + 1)
@@ -1739,7 +1741,7 @@ class PlaybackController(
             if (itemMs < 0) return false
             // The RAW engine: the controller's seekTo is song-relative for a run item (and clamped to the song).
             (RunTransportBus.rawPlayer ?: c).seekTo(itemMs)
-            RunTransportBus.clockChanged?.invoke()
+            // No clockChanged here: the caller arms/retargets next (which announces the NEW song's span).
             return true
         }
 
@@ -1816,7 +1818,7 @@ class PlaybackController(
     /** What the session player reads: only while the armed song is the loaded run item's current identity. */
     private fun currentRunClock(): com.levi.pocketdj.playback.album.RunClock? {
         val a = armedClock ?: return null
-        return a.clock.takeIf { albumRunMediaId == a.songId && sequencerOwnsPlayer && activeBackend == ActiveBackend.EXO }
+        return a.clock.takeIf { albumRunMediaId != null && sequencerOwnsPlayer && activeBackend == ActiveBackend.EXO }
     }
 
     /** The engine's own (file-relative) position: the session controller's value is song-relative for a run item. */
@@ -1977,3 +1979,7 @@ private suspend fun <T> ListenableFuture<T>.await(): T =
 
 /** True when [mediaId] is the Tune-In item for stream [url] (see `loadUrl`'s `"url:" + url` id). */
 fun isTuneInMediaId(mediaId: String?, url: String): Boolean = mediaId == "url:$url"
+
+/** Last queue index kept for the raw (non-sequencer) album queue: truncate after the first unbounded analog item at or past [startIndex]. */
+internal fun lastQueueIndex(unbounded: List<Boolean>, startIndex: Int): Int =
+    unbounded.withIndex().firstOrNull { (i, u) -> i >= startIndex && u }?.index ?: unbounded.lastIndex

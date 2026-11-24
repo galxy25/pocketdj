@@ -759,7 +759,11 @@ class SetlistSequencer(
         val ms = fileMs.coerceAtLeast(0L)
         log("[playback] album scrub song=${seg.songId} fileMs=$ms")
         val base = com.levi.pocketdj.data.edition.SongVariant.baseId(cur.id)
-        if (base == seg.songId) return port.seekInFile(ms) // same song: a plain seek
+        if (base == seg.songId) { // same song: a plain seek, still a user seek for skip classification
+            val ok = port.seekInFile(ms)
+            if (ok) fireUser(UserTransport.SEEK)
+            return ok
+        }
         val pos = com.levi.pocketdj.playback.album.AlbumSeek.nearestOccurrence(queue.map { it.id }, seg.songId, index) ?: return false
         val fromUid = currentUid()
         noteAdvanceAway()
@@ -792,7 +796,7 @@ class SetlistSequencer(
         // P2-ALB-5 (iOS pendingStartCue): the next FRESH start consumes the one-shot cue either way.
         var resumeAtMs = resumeAtMs
         var cued = cued
-        if (resumeAtMs == null && fresh) {
+        if (resumeAtMs == null && fresh && albumScrubSongId == null) {
             val cue = startCue.consume(queue.getOrNull(index)?.id ?: "")
             if (cue != null && running) { resumeAtMs = cue; cued = true }
         }

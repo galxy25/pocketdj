@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-ALB-5 - Album run clocks (song-relative everywhere), album play through the sequencer, seekAlbumFile/cueNextStart
 
@@ -21,3 +21,11 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+fixes applied
+- MAJOR playAlbumQueue truncation removed -> fixed: restored for the non-sequencer path via `lastQueueIndex` (PlaybackController.kt); `AlbumQueueTruncationTest` (4 tests) covers it. Album Play button still goes through the sequencer.
+- MINOR armedClock/albumRunMediaId window -> fixed: `currentRunClock` no longer requires `albumRunMediaId == armed songId` (only a loaded run); `seekInFile` no longer calls clockChanged (both callers retarget right after, which announces the new span).
+- MINOR Mp3 index seeking -> deferred with a concrete follow-up: no rip access in this sandbox to inspect a side header. Owner: integrator/device pass (P2-ALB-6 waveform scrub test): seek mid-side; if inaccurate enable `Mp3Extractor.FLAG_ENABLE_INDEX_SEEKING` for analog keys in PlaybackService.
+- NIT same-song seekAlbumFile -> fixed: `fireUser(SEEK)` on success. NIT scrub eating cueNextStart -> fixed: fresh-start cue consume skipped while a scrub is pending.
+- Tests: 6665 -> 6669, 0 failures; assembleDebug green.
