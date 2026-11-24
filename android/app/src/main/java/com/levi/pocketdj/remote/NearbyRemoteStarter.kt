@@ -108,23 +108,45 @@ class NearbyRemoteStarter(
     private val _authDigits = MutableStateFlow<String?>(null)
     val authDigits: StateFlow<String?> = _authDigits.asStateFlow()
 
+    /** Open joins (picked from the Nearby list) waiting for this host to approve them by name + digits. */
+    private val _pendingJoins = MutableStateFlow<List<PendingJoin>>(emptyList())
+    val pendingJoins: StateFlow<List<PendingJoin>> = _pendingJoins.asStateFlow()
+    @Volatile private var hostTransport: NearbyRemoteTransport? = null
+
+    fun approveJoin(endpointId: String) { hostTransport?.approveJoin(endpointId) }
+    fun denyJoin(endpointId: String) { hostTransport?.denyJoin(endpointId) }
+
     private var discoveryClient: NearbyClient? = null
+    /** The Remote screen wants the Nearby list; survives a transport's `stopAllEndpoints` (which is app-wide). */
+    private var discoveryWanted = false
 
     init {
         controller.registerSessionObserver { active ->
-            if (active) RemoteKeepAliveService.start(context) else { RemoteKeepAliveService.stop(context); _authDigits.value = null }
+            if (active) RemoteKeepAliveService.start(context) else {
+                RemoteKeepAliveService.stop(context); _authDigits.value = null; _pendingJoins.value = emptyList(); hostTransport = null
+                resumeDiscovery()
+            }
         }
     }
 
-    private fun newTransport(mode: RemoteSessionMode?, hash: String) = NearbyRemoteTransport(
+    private fun newTransport(mode: RemoteSessionMode?, hash: String, token: String? = null) = NearbyRemoteTransport(
         client = clientFactory(), localParticipantId = UUID.randomUUID().toString(), deviceName = deviceName(),
         sessionMode = mode, tokenHash = hash, scope = scope, log = log,
         onAuthDigits = { name, digits -> _authDigits.value = "$name · $digits" },
+        token = token, onPendingJoins = { _pendingJoins.value = it },
     )
+
+    /** A transport's `leave()` runs `stopAllEndpoints`, which also kills the list-discovery client: bring it back. */
+    private fun resumeDiscovery() {
+        if (!discoveryWanted) return
+        discoveryClient?.let { runCatching { it.stopDiscovery() }; it.listener = null }
+        discoveryClient = null
+        startDiscoveryNow()
+    }
 
     override suspend fun start(mode: RemoteSessionMode): StartOutcome {
         val token = NearbyInvite.newToken()
-        val transport = newTransport(mode, NearbyInvite.hash(token))
+        val transport = newTransport(mode, NearbyInvite.hash(token), token)
         var attached = false
         try {
             val advertised = CompletableDeferred<Throwable?>()
@@ -136,20 +158,21 @@ class NearbyRemoteStarter(
             }
             controller.attach(transport, mode, asHost = true)
             attached = true
+            hostTransport = transport
             val invite = NearbyInvite.invite(token)
             _invite.value = invite
             log("hosting ${mode.name} token-hash=${NearbyInvite.hash(token)}")
             return StartOutcome.Started(invite)
         } finally {
             // Cancelled (or failed) before the session attached: withdraw the pending host start.
-            if (!attached) { transport.leave(); _invite.value = null }
+            if (!attached) { transport.leave(); _invite.value = null; resumeDiscovery() }
         }
     }
 
     override suspend fun joinWithCode(code: String): JoinOutcome {
         val token = RemoteJoinCode.parse(code) ?: return JoinOutcome.Failed("That doesn't look like a session code.")
-        stopDiscovery() // one discovery at a time: the transport runs its own.
-        val transport = newTransport(null, NearbyInvite.hash(token))
+        suspendDiscovery() // one discovery at a time: the transport runs its own.
+        val transport = newTransport(null, NearbyInvite.hash(token), token)
         return connect(transport) { fail ->
             transport.joinByHash { if (it != null) { fail(it); transport.linked.completeExceptionally(it) } }
         }
@@ -185,12 +208,24 @@ class NearbyRemoteStarter(
             attached = true
             return JoinOutcome.Joined
         } finally {
-            if (!attached) transport.leave()
+            if (!attached) { transport.leave(); resumeDiscovery() }
         }
     }
 
     override fun startDiscovery() {
+        discoveryWanted = true
         if (discoveryClient != null) return
+        startDiscoveryNow()
+    }
+
+    /** Stops the list scan without forgetting that the screen wants it (a code join runs its own scan). */
+    private fun suspendDiscovery() {
+        discoveryClient?.let { runCatching { it.stopDiscovery() }; it.listener = null }
+        discoveryClient = null
+        _discovered.value = emptyList()
+    }
+
+    private fun startDiscoveryNow() {
         val client = clientFactory()
         client.listener = object : NearbyListener {
             override fun onEndpointFound(endpointId: String, endpointName: String) {
@@ -214,9 +249,8 @@ class NearbyRemoteStarter(
     }
 
     override fun stopDiscovery() {
-        discoveryClient?.let { it.stopDiscovery(); it.listener = null }
-        discoveryClient = null
-        _discovered.value = emptyList()
+        discoveryWanted = false
+        suspendDiscovery()
     }
 
     override fun clearInvite() { _invite.value = null }
@@ -244,6 +278,8 @@ class RemoteKeepAliveService : android.app.Service() {
     override fun onBind(intent: Intent?): android.os.IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // startForegroundService() obliges us to call startForeground() promptly, even if a stop already raced ahead:
+        // so promote FIRST, then honour the stop.
         val nm = getSystemService(android.app.NotificationManager::class.java)
         if (nm.getNotificationChannel(CHANNEL) == null) {
             nm.createNotificationChannel(android.app.NotificationChannel(CHANNEL, "Remote session", android.app.NotificationManager.IMPORTANCE_LOW))
@@ -261,7 +297,9 @@ class RemoteKeepAliveService : android.app.Service() {
         }.onFailure {
             NPLog.lane(NPLog.REMOTE, "keep-alive refused: ${it.javaClass.simpleName} ${it.message}")
             stopSelf()
+            return START_NOT_STICKY
         }
+        if (!KeepAliveWant.wanted) stopSelf() // the session ended before we got going
         return START_NOT_STICKY
     }
 
@@ -269,9 +307,18 @@ class RemoteKeepAliveService : android.app.Service() {
         private const val CHANNEL = "remote_session"
         private const val NOTIFICATION_ID = 7421
         fun start(context: Context) {
+            KeepAliveWant.wanted = true
             runCatching { androidx.core.content.ContextCompat.startForegroundService(context, Intent(context, RemoteKeepAliveService::class.java)) }
                 .onFailure { NPLog.lane(NPLog.REMOTE, "keep-alive start failed: ${it.message}") }
         }
-        fun stop(context: Context) { runCatching { context.stopService(Intent(context, RemoteKeepAliveService::class.java)) } }
+        fun stop(context: Context) {
+            KeepAliveWant.wanted = false
+            runCatching { context.stopService(Intent(context, RemoteKeepAliveService::class.java)) }
+        }
     }
+}
+
+/** Whether a session currently wants the keep-alive service; read by the service once it is promoted (see its onStartCommand). */
+internal object KeepAliveWant {
+    @Volatile var wanted = false
 }

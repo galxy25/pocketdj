@@ -81,9 +81,13 @@ fun RemoteScreen(modifier: Modifier = Modifier) {
     fun granted(p: String) = androidx.core.content.ContextCompat.checkSelfPermission(context, p) == android.content.pm.PackageManager.PERMISSION_GRANTED
     var ask by remember { mutableStateOf<Pair<Boolean, () -> Unit>?>(null) }
     var showRationale by remember { mutableStateOf(false) }
+    fun scanPermitted() = RemotePermissions.canProceed(RemotePermissions.REQUIRED.associateWith(::granted), false)
+    // The Nearby list scans only once the permissions are held (a first-time user has none), and starts when they land.
+    var scanOk by remember { mutableStateOf(scanPermitted()) }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         val pending = ask
         ask = null
+        scanOk = scanPermitted()
         if (pending != null) {
             if (RemotePermissions.canProceed(RemotePermissions.REQUIRED.associateWith(::granted), pending.first)) pending.second()
             else controller.setStatus(RemotePermissions.DENIED_MESSAGE)
@@ -109,7 +113,7 @@ fun RemoteScreen(modifier: Modifier = Modifier) {
             dismissButton = { TextButton({ showRationale = false; ask = null }) { Text("Not now") } },
         )
     }
-    RemoteContent(controller, vm, modifier, guard)
+    RemoteContent(controller, vm, modifier, guard, canScan = scanOk, onScanPermitted = { scanOk = scanPermitted() })
 }
 
 @Composable
@@ -117,6 +121,9 @@ fun RemoteContent(
     controller: RemoteSessionController, vm: RemoteViewModel, modifier: Modifier = Modifier,
     /** Runs the action once the transport's permissions are granted (hosting = advertises; else scans). Default: no gate. */
     guard: (hosting: Boolean, action: () -> Unit) -> Unit = { _, action -> action() },
+    /** False until the scan permissions are held: the Nearby list stays off and offers "Find nearby sessions". */
+    canScan: Boolean = true,
+    onScanPermitted: () -> Unit = {},
 ) {
     val active by controller.isActive.collectAsState()
     val status by controller.statusMessage.collectAsState()
@@ -129,7 +136,7 @@ fun RemoteContent(
                 Text(it, Modifier.padding(12.dp).testTag("remote-status"), style = MaterialTheme.typography.bodyMedium)
             }
         }
-        if (active) ActiveSession(controller, vm) else StartSection(vm, guard)
+        if (active) ActiveSession(controller, vm) else StartSection(vm, guard, canScan, onScanPermitted)
         Spacer(Modifier.height(24.dp))
     }
 }
@@ -137,7 +144,7 @@ fun RemoteContent(
 // ---- Start + Join ----
 
 @Composable
-private fun StartSection(vm: RemoteViewModel, guard: (Boolean, () -> Unit) -> Unit) {
+private fun StartSection(vm: RemoteViewModel, guard: (Boolean, () -> Unit) -> Unit, canScan: Boolean, onScanPermitted: () -> Unit) {
     val starter = RemoteStarters.current
     val starting by vm.starting.collectAsState()
     val joining by vm.joining.collectAsState()
@@ -157,16 +164,16 @@ private fun StartSection(vm: RemoteViewModel, guard: (Boolean, () -> Unit) -> Un
         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 6.dp).testTag("remote-start-footer"),
     )
-    JoinSection(vm, starter.available && starting == null && !joining, guard)
+    JoinSection(vm, starter.available && starting == null && !joining, guard, canScan, onScanPermitted)
 }
 
 @Composable
-private fun JoinSection(vm: RemoteViewModel, enabled: Boolean, guard: (Boolean, () -> Unit) -> Unit) {
+private fun JoinSection(vm: RemoteViewModel, enabled: Boolean, guard: (Boolean, () -> Unit) -> Unit, canScan: Boolean, onScanPermitted: () -> Unit) {
     val starter = RemoteStarters.current
     var code by remember { mutableStateOf("") }
     var invalid by remember { mutableStateOf(false) }
     val hosts by starter.discovered.collectAsState()
-    DisposableEffect(starter) { vm.startDiscovery(); onDispose { vm.stopDiscovery() } }
+    DisposableEffect(starter, canScan) { if (canScan) vm.startDiscovery(); onDispose { vm.stopDiscovery() } }
     RemoteSectionHeader("Join a session")
     Text(
         "Scan the host’s QR code with your camera app, enter the code, or pick a nearby host.",
@@ -185,6 +192,9 @@ private fun JoinSection(vm: RemoteViewModel, enabled: Boolean, guard: (Boolean, 
             onClick = { if (RemoteJoinCode.parse(code) == null) invalid = true else { val c = code; code = ""; guard(false) { vm.joinWithCode(c) } } },
             enabled = enabled && code.isNotBlank(), modifier = Modifier.testTag("remote-join"),
         ) { Text("Join") }
+    }
+    if (!canScan && starter.available) {
+        OutlinedButton({ guard(false) { onScanPermitted() } }, Modifier.padding(top = 8.dp).testTag("remote-find-nearby")) { Text("Find nearby sessions") }
     }
     if (hosts.isNotEmpty()) {
         Text("Nearby", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 10.dp))
@@ -217,12 +227,28 @@ private fun ActiveSession(controller: RemoteSessionController, vm: RemoteViewMod
     val pausedHere by controller.pausedHere.collectAsState()
     val invite by RemoteStarters.current.invite.collectAsState()
     if (pausedHere) PausedHereCard(vm)
+    if (controller.isHost) JoinApprovals()
     if (controller.isHost && invite != null) InviteCard(invite!!, (RemoteStarters.current as? NearbyRemoteStarter)?.authDigits)
     SessionSection(controller, vm)
     ParticipantsSection(controller)
     NowPlayingSection(controller, vm)
     UpNextSection(controller, vm)
     AddSection(vm)
+}
+
+/** The host approves a nearby device that picked this session from the list, by name and the digits both phones show. */
+@Composable
+private fun JoinApprovals() {
+    val nearby = RemoteStarters.current as? NearbyRemoteStarter ?: return
+    val pending by nearby.pendingJoins.collectAsState()
+    val join = pending.firstOrNull() ?: return
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { nearby.denyJoin(join.endpointId) },
+        title = { Text("Let ${join.deviceName} join?") },
+        text = { Text("Check that ${join.authDigits} also shows on their phone. They'll be able to change what's playing.", Modifier.testTag("remote-join-approval")) },
+        confirmButton = { TextButton({ nearby.approveJoin(join.endpointId) }, modifier = Modifier.testTag("remote-join-allow")) { Text("Allow") } },
+        dismissButton = { TextButton({ nearby.denyJoin(join.endpointId) }, modifier = Modifier.testTag("remote-join-deny")) { Text("Deny") } },
+    )
 }
 
 @Composable

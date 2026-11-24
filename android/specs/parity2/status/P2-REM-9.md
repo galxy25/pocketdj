@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-REM-9 - Nearby Connections transport (offline) + QR/code invite + permissions + background keep-alive
 
@@ -25,3 +25,15 @@ Remote now runs over Google Nearby Connections with no server. The host advertis
 ## Questions for Levi
 - Open join from the "Nearby" list (no token, auth digits only, host accepts automatically): OK, or should the host get an explicit Accept prompt?
 - Device-verify: the connectedDevice keep-alive with the screen off for 10+ minutes; host hand-over timing.
+
+## Review
+Findings from the adversarial review, all addressed (fixes applied):
+- MAJOR open join / hash echo authenticates nobody -> fixed. Open ("-") joins are held UNACCEPTED until the host approves them in a dialog (name + auth digits; 30 s expiry; PendingJoin / approveJoin / denyJoin; JoinApprovals in RemoteScreen). A matching token HASH (public, advertised) only gets a link: the joiner must send a proof (`NearbyInvite.proof`, a different digest of the token, inside the first frame) or, after a host migration, be a member of the previous roster. Tests: anOpenJoinWaitsForTheHostsExplicitApproval..., denyingAnOpenJoinRejectsIt, anUnansweredOpenJoinExpires, echoingTheAdvertisedHashWithoutTheTokenIsNotAdmitted, proof test.
+- MAJOR discovery started outside the permission guard -> fixed. RemoteContent takes `canScan`; discovery starts only once scan permissions are held (re-keyed on grant), otherwise a "Find nearby sessions" button runs the guard.
+- MINOR deep link only parks -> fixed. New `DeepLinkSeams.showRemote` seam (hub sets it to flip to the Remote half; called on a parked invite), parked token expires after 120 s. Tests added (DeepLinkRemoteJoinTest). The hub itself is outside this package, so the seam is the hand-off; end-to-end link-to-join needs the hub (P2-REM-8) to assign it.
+- MINOR no retry after a failed outgoing connection -> fixed (up to 3 retries with backoff while finding, incl. migration). Test aFailedOutgoingConnectionIsRetried.
+- MINOR leave() kills list discovery -> fixed. Starter remembers discoveryWanted and restarts the list scan after any transport teardown / session end.
+- MINOR keep-alive FGS race -> fixed. The service always calls startForeground first, then stops itself if the session no longer wants it (KeepAliveWant flag). Still DEVICE-VERIFY with screen off.
+- Also fixed a latent ordering bug the new tests exposed: the host now sends its `hi` before the first roster whichever side's connected callback fires first.
+
+fixes applied

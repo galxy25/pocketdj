@@ -65,7 +65,8 @@ interface NearbyClient {
  *    stamps the sender from the endpoint binding, never trusting the claim) and omits `to` for "everyone".
  */
 sealed interface NearbyFrame {
-    data class Hi(val id: String) : NearbyFrame
+    /** [proof]: [NearbyInvite.proof] of the invite token when the sender holds it (joiner -> host). */
+    data class Hi(val id: String, val proof: String? = null) : NearbyFrame
     data class Roster(val ids: List<String>) : NearbyFrame
     data class Message(val from: String?, val to: String?, val envelope: RemoteEnvelope) : NearbyFrame
 }
@@ -79,7 +80,10 @@ object NearbyFrames {
 
     fun encode(frame: NearbyFrame): ByteArray {
         val o: JsonObject = when (frame) {
-            is NearbyFrame.Hi -> JsonObject(mapOf("t" to JsonPrimitive("hi"), "v" to JsonPrimitive(VERSION), "id" to JsonPrimitive(frame.id)))
+            is NearbyFrame.Hi -> buildMap<String, JsonElement> {
+                put("t", JsonPrimitive("hi")); put("v", JsonPrimitive(VERSION)); put("id", JsonPrimitive(frame.id))
+                frame.proof?.let { put("p", JsonPrimitive(it)) }
+            }.let(::JsonObject)
             is NearbyFrame.Roster -> JsonObject(mapOf("t" to JsonPrimitive("roster"), "ids" to JsonArray(frame.ids.map { JsonPrimitive(it) })))
             is NearbyFrame.Message -> buildMap<String, JsonElement> {
                 put("t", JsonPrimitive("m"))
@@ -95,7 +99,7 @@ object NearbyFrames {
     fun decode(bytes: ByteArray): NearbyFrame? = try {
         val o = PdjJson.lenient.parseToJsonElement(String(bytes, Charsets.UTF_8)).jsonObject
         when (o["t"]?.jsonPrimitive?.contentOrNull) {
-            "hi" -> o["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { NearbyFrame.Hi(it) }
+            "hi" -> o["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { NearbyFrame.Hi(it, o["p"]?.jsonPrimitive?.contentOrNull) }
             "roster" -> NearbyFrame.Roster(o["ids"]!!.jsonArray.map { it.jsonPrimitive.content })
             "m" -> NearbyFrame.Message(
                 from = o["from"]?.jsonPrimitive?.contentOrNull,
@@ -106,6 +110,9 @@ object NearbyFrames {
         }
     } catch (_: Exception) { null }
 }
+
+/** A joiner that picked the host from the Nearby list (no token) and is waiting for the host's explicit approval. */
+data class PendingJoin(val endpointId: String, val deviceName: String, val authDigits: String)
 
 /**
  * The Nearby Connections [RemoteTransport] (P2-REM-9). A star: the HOST advertises, joiners discover and connect to it,
@@ -129,6 +136,12 @@ class NearbyRemoteTransport(
     private val log: (String) -> Unit = {},
     /** Shown on both phones while a connection is pending: (the other device's name, the digits to compare). */
     private val onAuthDigits: (String, String) -> Unit = { _, _ -> },
+    /** The invite token (host, or a joiner who scanned/typed it). Never sent; only [NearbyInvite.proof] of it is. */
+    private val token: String? = null,
+    /** Host: the open joins waiting for approval changed. */
+    private val onPendingJoins: (List<PendingJoin>) -> Unit = {},
+    private val pendingJoinTimeoutMs: Long = DEFAULT_PENDING_TIMEOUT_MS,
+    private val connectRetryDelayMs: Long = DEFAULT_RETRY_DELAY_MS,
 ) : RemoteTransport, NearbyListener {
 
     override val maxStateBytes: Int = NearbyFrames.MAX_STATE_BYTES
@@ -151,6 +164,15 @@ class NearbyRemoteTransport(
     private val acceptedEndpoints = LinkedHashSet<String>()
     private val idByEndpoint = HashMap<String, String>()
     private val endpointById = LinkedHashMap<String, String>()
+    /** Endpoints accepted on a matching token HASH: admitted only by a valid proof (or a known roster id after migration). */
+    private val hashEndpoints = HashSet<String>()
+    /** Endpoints the host approved by hand (open join): admitted on their first frame. */
+    private val approvedEndpoints = HashSet<String>()
+    private val hiSent = HashSet<String>()
+    private val pendingJoins = LinkedHashMap<String, PendingJoin>()
+    private val pendingExpiry = HashMap<String, Job>()
+    /** After a migration: the previous roster. Its members may re-link without the token. */
+    private var knownIds: Set<String> = emptySet()
 
     // Joiner side.
     private var expectedEndpoint: String? = null
@@ -159,6 +181,7 @@ class NearbyRemoteTransport(
     private var lastRoster: Set<String> = emptySet()
     private var finding = false
     private var migrateJob: Job? = null
+    private var connectRetries = 0
 
     /** The mode the host advertised (joiner side), once known. */
     @Volatile var hostMode: RemoteSessionMode? = null
@@ -183,7 +206,7 @@ class NearbyRemoteTransport(
 
     /** Join by invite token hash: discover and connect to the first host advertising it. */
     fun joinByHash(onResult: (Throwable?) -> Unit = {}) = synchronized(lock) {
-        finding = true
+        finding = true; connectRetries = 0
         client.startDiscovery(onResult)
     }
 
@@ -223,11 +246,26 @@ class NearbyRemoteTransport(
         if (finished) { client.rejectConnection(endpointId); return }
         if (incoming) {
             val ep = NearbyInvite.parseEndpointName(endpointName)
-            onAuthDigits(ep.deviceName, authDigits)
-            val ok = isRelayHost && acceptedEndpoints.size < maxJoiners &&
-                NearbyInvite.accepts(ep.hash, sessionHash, openJoin)
-            if (ok) { acceptedEndpoints += endpointId; client.acceptConnection(endpointId) }
-            else { log("rejected connection from ${ep.deviceName}: ${if (isRelayHost) "token mismatch or full" else "not hosting"}"); client.rejectConnection(endpointId) }
+            val room = isRelayHost && acceptedEndpoints.size + pendingJoins.size < maxJoiners
+            when {
+                !room -> { log("rejected connection from ${ep.deviceName}: ${if (isRelayHost) "full" else "not hosting"}"); client.rejectConnection(endpointId) }
+                ep.hash == sessionHash -> {
+                    // The hash is public (it is in the advertisement): accept the link, but admit nobody without the proof.
+                    onAuthDigits(ep.deviceName, authDigits)
+                    acceptedEndpoints += endpointId; hashEndpoints += endpointId; client.acceptConnection(endpointId)
+                }
+                ep.hash == NearbyInvite.OPEN_HASH && openJoin -> {
+                    // A pick-from-list join has no token. Hold it UNACCEPTED until the host approves it by name + digits.
+                    val join = PendingJoin(endpointId, ep.deviceName, authDigits)
+                    pendingJoins[endpointId] = join
+                    pendingExpiry[endpointId] = scope.launch {
+                        delay(pendingJoinTimeoutMs)
+                        synchronized(lock) { if (pendingJoins.containsKey(endpointId)) denyJoin(endpointId) }
+                    }
+                    onPendingJoins(pendingJoins.values.toList())
+                }
+                else -> { log("rejected connection from ${ep.deviceName}: token mismatch"); client.rejectConnection(endpointId) }
+            }
         } else {
             if (endpointId != expectedEndpoint) { client.rejectConnection(endpointId); return }
             val ep = NearbyInvite.parseEndpointName(endpointName)
@@ -246,19 +284,28 @@ class NearbyRemoteTransport(
         if (finished) return
         if (success) {
             // Our id goes FIRST, so the other side can bind this endpoint to a participant id.
-            if (endpointId in acceptedEndpoints || endpointId == expectedEndpoint) transmit(endpointId, NearbyFrame.Hi(localParticipantId))
+            if (endpointId in acceptedEndpoints || endpointId == expectedEndpoint) sendHi(endpointId)
         } else {
-            acceptedEndpoints -= endpointId
+            acceptedEndpoints -= endpointId; hashEndpoints -= endpointId; approvedEndpoints -= endpointId; hiSent -= endpointId
+            dropPending(endpointId)
             if (endpointId == expectedEndpoint) {
                 expectedEndpoint = null
-                if (!finding && migrateJob == null && !linked.isCompleted) linked.completeExceptionally(IllegalStateException("The host declined the connection."))
+                if (finding && connectRetries < MAX_CONNECT_RETRIES) {
+                    // Nearby reports an endpoint once, so a transient failure would never be retried by discovery.
+                    connectRetries++
+                    scope.launch {
+                        delay(connectRetryDelayMs)
+                        synchronized(lock) { if (!finished && finding && expectedEndpoint == null) connectTo(endpointId) }
+                    }
+                } else if (!finding && migrateJob == null && !linked.isCompleted) linked.completeExceptionally(IllegalStateException("The host declined the connection."))
             }
         }
     }
 
     override fun onDisconnected(endpointId: String) = synchronized(lock) {
         if (finished) return
-        acceptedEndpoints -= endpointId
+        acceptedEndpoints -= endpointId; hashEndpoints -= endpointId; approvedEndpoints -= endpointId; hiSent -= endpointId
+        dropPending(endpointId)
         if (isRelayHost) {
             val id = idByEndpoint.remove(endpointId)
             if (id != null) { endpointById.remove(id); publishRoster() }
@@ -283,10 +330,12 @@ class NearbyRemoteTransport(
             is NearbyFrame.Hi -> {
                 val id = frame.id
                 if (id == localParticipantId) { client.disconnect(endpointId); return }
+                if (!admitted(endpointId, frame)) { log("refused a join without proof"); acceptedEndpoints -= endpointId; hashEndpoints -= endpointId; client.disconnect(endpointId); return }
                 if (idByEndpoint[endpointId] != null) return // a second hi on the same link is ignored
                 endpointById[id]?.takeIf { it != endpointId }?.let { old -> idByEndpoint.remove(old); client.disconnect(old) }
                 idByEndpoint[endpointId] = id
                 endpointById[id] = endpointId
+                sendHi(endpointId) // the joiner must hear our id before the roster
                 publishRoster()
             }
             is NearbyFrame.Message -> {
@@ -304,6 +353,39 @@ class NearbyRemoteTransport(
             }
             is NearbyFrame.Roster -> Unit // only the host sends rosters
         }
+    }
+
+    /** Our id (+ proof, joiner side) goes first on a link, exactly once, whichever side's "connected" callback fires first. */
+    private fun sendHi(endpointId: String) {
+        if (!hiSent.add(endpointId)) return
+        transmit(endpointId, NearbyFrame.Hi(localParticipantId, if (endpointId == expectedEndpoint) token?.let(NearbyInvite::proof) else null))
+    }
+
+    private fun admitted(endpointId: String, hi: NearbyFrame.Hi): Boolean = when {
+        endpointId in approvedEndpoints -> true
+        endpointId in hashEndpoints ->
+            (token != null && hi.proof == NearbyInvite.proof(token)) || hi.id in knownIds
+        else -> false
+    }
+
+    /** Host: let the pending open join in. */
+    fun approveJoin(endpointId: String): Unit = synchronized(lock) {
+        if (finished || pendingJoins[endpointId] == null) return
+        dropPending(endpointId)
+        acceptedEndpoints += endpointId; approvedEndpoints += endpointId
+        client.acceptConnection(endpointId)
+    }
+
+    /** Host: turn the pending open join away. */
+    fun denyJoin(endpointId: String): Unit = synchronized(lock) {
+        if (pendingJoins[endpointId] == null) return
+        dropPending(endpointId)
+        client.rejectConnection(endpointId)
+    }
+
+    private fun dropPending(endpointId: String) {
+        pendingExpiry.remove(endpointId)?.cancel()
+        if (pendingJoins.remove(endpointId) != null) onPendingJoins(pendingJoins.values.toList())
     }
 
     private fun publishRoster() {
@@ -359,13 +441,14 @@ class NearbyRemoteTransport(
         log("relay host left; migrating among ${remaining.size}")
         if (remaining.min() == localParticipantId) {
             isRelayHost = true
+            knownIds = remaining - localParticipantId
             openJoin = false // a migrated relay only takes participants that present the session's hash
             client.startAdvertising(NearbyInvite.endpointName(deviceName, sessionHash, sessionMode)) { err ->
                 if (err != null) synchronized(lock) { log("migration advertise failed: ${err.message}"); finish("advertise failed") }
             }
             publishRoster()
         } else {
-            finding = true
+            finding = true; connectRetries = 0
             client.startDiscovery { err -> if (err != null) synchronized(lock) { log("migration discover failed: ${err.message}"); finish("discover failed") } }
             migrateJob = scope.launch {
                 delay(migrateTimeoutMs)
@@ -391,6 +474,8 @@ class NearbyRemoteTransport(
         finished = true
         log("finish: $why")
         migrateJob?.cancel()
+        pendingExpiry.values.forEach { it.cancel() }; pendingExpiry.clear()
+        if (pendingJoins.isNotEmpty()) { pendingJoins.clear(); onPendingJoins(emptyList()) }
         runCatching { client.stopAll() }
         client.listener = null
         inboundChannel.close()
@@ -401,5 +486,8 @@ class NearbyRemoteTransport(
     companion object {
         const val DEFAULT_MIGRATE_TIMEOUT_MS = 15_000L
         const val DEFAULT_MAX_JOINERS = 7
+        const val DEFAULT_PENDING_TIMEOUT_MS = 30_000L
+        const val DEFAULT_RETRY_DELAY_MS = 1_000L
+        const val MAX_CONNECT_RETRIES = 3
     }
 }

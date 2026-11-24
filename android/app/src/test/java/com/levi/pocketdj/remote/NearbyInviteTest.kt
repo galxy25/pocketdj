@@ -53,4 +53,12 @@ class NearbyInviteTest {
         assertTrue(NearbyInvite.accepts(NearbyInvite.OPEN_HASH, "h1", true))
         assertFalse(NearbyInvite.accepts(NearbyInvite.OPEN_HASH, "h1", false))
     }
+
+    @Test fun theProofIsNotTheAdvertisedHashAndIsCaseInsensitive() {
+        val h = NearbyInvite.hash("ABCD2345")
+        val p = NearbyInvite.proof("ABCD2345")
+        org.junit.Assert.assertEquals(p, NearbyInvite.proof(" abcd2345 "))
+        org.junit.Assert.assertFalse(p.startsWith(h))
+        org.junit.Assert.assertNotEquals(p, NearbyInvite.proof("ABCD2346"))
+    }
 }

@@ -30,6 +30,7 @@ private class FakeNearbyNet {
         val pendingWith = HashSet<String>()
         val sentFrames = ArrayList<Pair<String, ByteArray>>()
         var vanished = false
+        var failNextRequest = false
 
         override fun startAdvertising(endpointName: String, onResult: (Throwable?) -> Unit) {
             advertisedName = endpointName
@@ -44,6 +45,7 @@ private class FakeNearbyNet {
         }
         override fun stopDiscovery() { discovering = false }
         override fun requestConnection(localName: String, endpointId: String) {
+            if (failNextRequest) { failNextRequest = false; listener?.onConnectionResult(endpointId, false); return }
             val host = clients.first { it.endpointId == endpointId }
             pendingWith += endpointId; host.pendingWith += this.endpointId
             host.listener?.onConnectionInitiated(this.endpointId, localName, "4821", true)
@@ -90,8 +92,12 @@ class NearbyFramingTest {
 
     private fun TestScope.transport(
         net: FakeNearbyNet, id: String, hash: String = this@NearbyFramingTest.hash, open: Boolean = true,
-        scope: CoroutineScope = backgroundScope, migrateMs: Long = 15_000,
-    ) = NearbyRemoteTransport(net.client(), id, "Dev-$id", RemoteSessionMode.LISTEN_TOGETHER, hash, scope, open, migrateMs)
+        scope: CoroutineScope = backgroundScope, migrateMs: Long = 15_000, token: String? = "ABCD2345",
+        onPending: (List<PendingJoin>) -> Unit = {},
+    ) = NearbyRemoteTransport(
+        net.client(), id, "Dev-$id", RemoteSessionMode.LISTEN_TOGETHER, hash, scope, open, migrateMs,
+        token = token, onPendingJoins = onPending, connectRetryDelayMs = 500,
+    )
 
     private fun host(t: NearbyRemoteTransport) { t.startHosting() }
 
@@ -142,19 +148,80 @@ class NearbyFramingTest {
         assertTrue(net.clients[0].connected.isEmpty())
     }
 
-    @Test fun openJoinIsAcceptedOnlyWhileTheHostAllowsIt() = runTest {
+    @Test fun openJoinIsRefusedWhenTheHostDoesNotAllowIt() = runTest {
         val net = FakeNearbyNet()
         val closed = transport(net, "m", open = false); host(closed)
-        val j1 = transport(net, "b", hash = NearbyInvite.OPEN_HASH)
+        val j1 = transport(net, "b", hash = NearbyInvite.OPEN_HASH, token = null)
         j1.joinEndpoint(net.clients[0].endpointId)
         assertTrue(j1.linked.isCancelled)
+    }
 
-        val net2 = FakeNearbyNet()
-        val open = transport(net2, "m", open = true); host(open)
-        val j2 = transport(net2, "b", hash = NearbyInvite.OPEN_HASH)
-        j2.joinEndpoint(net2.clients[0].endpointId)
-        assertTrue(j2.linked.isCompleted && !j2.linked.isCancelled)
-        assertEquals(setOf("m", "b"), open.participants.value)
+    @Test fun anOpenJoinWaitsForTheHostsExplicitApprovalBeforeAnythingIsAccepted() = runTest {
+        val net = FakeNearbyNet()
+        val pending = ArrayList<List<PendingJoin>>()
+        val h = transport(net, "m", onPending = { pending += it }); host(h)
+        val j = transport(net, "b", hash = NearbyInvite.OPEN_HASH, token = null)
+        j.joinEndpoint(net.clients[0].endpointId)
+        // Not accepted, not in the roster, not connected: the host has not said yes.
+        assertTrue(net.clients[0].accepted.isEmpty())
+        assertTrue(net.clients[0].connected.isEmpty())
+        assertFalse(j.linked.isCompleted)
+        assertEquals(setOf("m"), h.participants.value)
+        val join = pending.last().single()
+        assertEquals("4821", join.authDigits)
+        h.approveJoin(join.endpointId)
+        assertTrue(pending.last().isEmpty())
+        assertTrue(j.linked.isCompleted && !j.linked.isCancelled)
+        assertEquals(setOf("m", "b"), h.participants.value)
+    }
+
+    @Test fun denyingAnOpenJoinRejectsIt() = runTest {
+        val net = FakeNearbyNet()
+        val pending = ArrayList<List<PendingJoin>>()
+        val h = transport(net, "m", onPending = { pending += it }); host(h)
+        val j = transport(net, "b", hash = NearbyInvite.OPEN_HASH, token = null)
+        j.joinEndpoint(net.clients[0].endpointId)
+        h.denyJoin(pending.last().single().endpointId)
+        assertTrue(j.linked.isCancelled)
+        assertEquals(setOf("m"), h.participants.value)
+    }
+
+    @Test fun anUnansweredOpenJoinExpires() = runTest {
+        val net = FakeNearbyNet()
+        val pending = ArrayList<List<PendingJoin>>()
+        val h = transport(net, "m", onPending = { pending += it }); host(h)
+        val j = transport(net, "b", hash = NearbyInvite.OPEN_HASH, token = null)
+        j.joinEndpoint(net.clients[0].endpointId)
+        advanceTimeBy(NearbyRemoteTransport.DEFAULT_PENDING_TIMEOUT_MS + 1)
+        assertTrue(pending.last().isEmpty())
+        assertTrue(j.linked.isCancelled)
+    }
+
+    @Test fun echoingTheAdvertisedHashWithoutTheTokenIsNotAdmitted() = runTest {
+        val net = FakeNearbyNet()
+        val h = transport(net, "m"); host(h)
+        val hLog = ArrayList<RemoteInbound>().also { collecting(h, it) }
+        // A radio listener read the hash from the advertisement; it has no token.
+        val sniffer = transport(net, "x", token = null); sniffer.joinByHash()
+        assertEquals(setOf("m"), h.participants.value)
+        assertFalse(sniffer.linked.isCompleted && !sniffer.linked.isCancelled)
+        sniffer.send(env("hijack"), RemoteRecipient.All, true)
+        assertTrue(hLog.isEmpty())
+        // The real joiner (has the token) still gets in.
+        val b = transport(net, "b"); b.joinByHash()
+        assertEquals(setOf("m", "b"), h.participants.value)
+    }
+
+    @Test fun aFailedOutgoingConnectionIsRetried() = runTest {
+        val net = FakeNearbyNet()
+        val h = transport(net, "m"); host(h)
+        val j = transport(net, "b")
+        net.clients.last().failNextRequest = true
+        j.joinByHash()
+        assertFalse("first attempt failed", j.linked.isCompleted)
+        advanceTimeBy(600)
+        assertTrue(j.linked.isCompleted && !j.linked.isCancelled)
+        assertEquals(setOf("m", "b"), h.participants.value)
     }
 
     @Test fun hostRelaysParticipantToParticipantAndNeverEchoesToTheSender() = runTest {

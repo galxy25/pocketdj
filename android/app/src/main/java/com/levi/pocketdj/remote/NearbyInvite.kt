@@ -34,6 +34,15 @@ object NearbyInvite {
         return d.take(4).joinToString("") { "%02x".format(it) }
     }
 
+    /**
+     * The proof of holding the token. The hash is on the air (advertisement), so echoing it proves nothing; the proof is
+     * a different digest of the token that is only ever sent inside the encrypted link, in the first (`hi`) frame.
+     */
+    fun proof(token: String): String {
+        val d = MessageDigest.getInstance("SHA-256").digest(("pdj-proof|" + token.trim().uppercase()).toByteArray(Charsets.UTF_8))
+        return d.joinToString("") { "%02x".format(it) }
+    }
+
     fun endpointName(deviceName: String, hash: String, mode: RemoteSessionMode?): String {
         val safe = deviceName.replace("|", " ").trim().take(MAX_DEVICE_NAME).ifEmpty { "Android" }
         val m = when (mode) { RemoteSessionMode.LISTEN_TOGETHER -> "L"; RemoteSessionMode.BACKSEAT -> "B"; null -> "" }

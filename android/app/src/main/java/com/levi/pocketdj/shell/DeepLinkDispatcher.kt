@@ -45,6 +45,8 @@ class DeepLinkSeams {
     @Volatile var game: ((GameLink) -> Unit)? = null
     /** P2-REM-9: a Remote invite link; default parks the token in [DeepLinkDispatcher.pendingRemoteJoin] and opens the Jukebox tab. */
     @Volatile var remoteJoin: ((token: String) -> Unit)? = null
+    /** P2-REM-9: the hub sets this to flip the Jukebox panel to its Remote half; the dispatcher calls it for a parked invite. */
+    @Volatile var showRemote: (() -> Unit)? = null
 }
 
 /**
@@ -60,6 +62,7 @@ class DeepLinkDispatcher(
     private val postMessage: (String) -> Unit = NavRequestBus::postMessage,
     private val displayName: (Intent) -> String? = { null },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val _pendingMwf = MutableStateFlow<DeepLink.Mwf?>(null)
 
@@ -73,7 +76,13 @@ class DeepLinkDispatcher(
     /** A Remote invite token nobody has consumed yet (the Remote screen takes it with [takePendingRemoteJoin]). */
     val pendingRemoteJoin: StateFlow<String?> = _pendingRemoteJoin
 
-    fun takePendingRemoteJoin(): String? = _pendingRemoteJoin.getAndUpdate { null }
+    @Volatile private var remoteJoinParkedAt = 0L
+
+    /** The parked token, unless it is stale (an old scan must not join a session minutes later). */
+    fun takePendingRemoteJoin(): String? {
+        val token = _pendingRemoteJoin.getAndUpdate { null } ?: return null
+        return if (clock() - remoteJoinParkedAt <= REMOTE_JOIN_TTL_MS) token else null
+    }
 
     private val _pendingGame = MutableStateFlow<GameLink?>(null)
 
@@ -135,8 +144,10 @@ class DeepLinkDispatcher(
             is DeepLink.RemoteJoin -> {
                 val join = seams.remoteJoin
                 if (join != null) join(link.token) else {
+                    remoteJoinParkedAt = clock()
                     _pendingRemoteJoin.value = link.token
                     postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
+                    seams.showRemote?.invoke()
                 }
             }
             is DeepLink.Game -> {
@@ -186,6 +197,9 @@ class DeepLinkDispatcher(
     }
 
     companion object {
+        /** How long a scanned invite stays joinable while waiting for the Remote screen to compose. */
+        const val REMOTE_JOIN_TTL_MS = 120_000L
+
         /** Reads DISPLAY_NAME for an opaque content:// URI (Files/Downloads hand out no filename). */
         fun contentDisplayName(resolver: android.content.ContentResolver): (Intent) -> String? = { intent ->
             val uri = intent.data
