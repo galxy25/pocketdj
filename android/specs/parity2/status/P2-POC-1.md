@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 Summary: PlayEvent.motion + pocketRun (PocketRunTag, runId kept verbatim, lenient decode to null on unusable tag);
 PlayContext.pocketRun copied by record() (source stays pocket, no new PlaySource); stampMotion (write-once, own-only,

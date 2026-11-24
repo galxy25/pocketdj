@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-MM-1 Mix Mode ph1a: temporary-hold ledger, AssetOrigin, pin funnel, npMix settings keys
 

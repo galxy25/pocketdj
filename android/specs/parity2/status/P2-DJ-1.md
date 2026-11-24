@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 ## Summary
 New pure `playback/dj/AutoTransition.kt` (advancePlan/immediatePlan, equalPowerGains, glideParams, outgoing/incomingRamp,

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-DATA-1: durable session snapshot passthrough
 
