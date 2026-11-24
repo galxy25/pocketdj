@@ -1,11 +1,23 @@
-state: in-progress
+state: implemented
 
 # P2-MM-6 Mix Mode ph2c: header toggle + chip + buffer strip, menus, Settings rows
 
-- [x] NpMixModeChip.kt: pure NpMixChipState, chip + switch composables, NpMixIndicatorReader (iOS mixModeIndicator inputs), NpMixModeMenuItem
-- [x] NpMixBufferStrip.kt: pure dot rule / words / window, reader, strip composable
-- [x] NowPlayingDspPanel: header always shown while a session runs; controls disabled+dimmed while buffering
-- [x] MiniPlayerBar + RecordPlayer long-press menus (np-menu-mix-mode)
-- [x] Settings > Playback: start-in-Mix-Mode, buffer ahead 1/3/5/10, cellular policy
-- [x] NpMixModeChipStateTest
-- [ ] full build green
+- [x] NpMixModeChip.kt: pure NpMixChipState, chip (np-mix-mode-status) + switch (np-mix-mode), NpMixIndicatorReader, NpMixModeMenuItem (np-menu-mix-mode)
+- [x] NpMixBufferStrip.kt: pure dot rule (dot full only when the row's will-play file is local), words, window; strip np-mix-buffer-strip
+- [x] NowPlayingDspPanel: header always shown while a session runs; controls dimmed + touch-blocked while buffering; strip under controls; turning Mix Mode on expands once
+- [x] MiniPlayerBar long-press + RecordPlayer long-press menus
+- [x] Settings > Playback: Start new sessions in Mix Mode, buffer ahead 1/3/5/10, cellular (Off / Next song only / Same as Wi-Fi), iOS copy
+- [x] NpMixModeChipStateTest (12 tests); full suite 6413 tests, 0 failures; assembleDebug green. assembleRelease not run (no manifest/gradle/proguard/library change).
+
+## Summary
+Mix Mode is one tap from Now Playing; chip shows the iOS words (Ready, Mixing, Buffering 42%, ...) with TalkBack state descriptions; buffer dots; settings persist under the iOS keys.
+
+## Deviations / files touched outside owned set
+- NowPlayingDeckCluster.kt: one-line addition passing onDetails + showMixModeMenu to RecordPlayer. The record's long-press now opens a menu (Song details + Mix Mode) instead of opening details directly.
+- Chip words are iOS verbatim ("Buffering 42%", "Ready"), not "Buffering 1 of 3" from the roadmap emulator step.
+- Ripping states never show (ripping=false): rip-server gate is open (see MM-5 question).
+- Menu toggle from the mini bar / record does not auto-expand the panel (iOS does via AppStorage); panel switch does.
+- Not run: emulator steps.
+
+## Questions for Levi
+- None new (rip-server gate from MM-5 still open).
