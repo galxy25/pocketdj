@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-REM-2: RemoteTransport + RemoteSendQueue + LoopbackHub
 - [x] RemoteTransport.kt (interface, RemoteRecipient, RemoteInbound)
