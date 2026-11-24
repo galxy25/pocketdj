@@ -1592,6 +1592,47 @@ final class RipsStore {
     func discoverAddAlbum(_ hit: DiscoverAlbumHit,
                           library: (any MusicLibraryContributor)? = nil,
                           intent: AlbumAddIntent) async -> AppleMusicLibraryWriteOutcome {
+        let report = await addAlbumReport(hit, library: library, intent: intent)
+        // The shared field is still how every EXISTING caller (Discover rows, the album page's
+        // retry) reads the failure — but it is now only ever an echo of the report. A success
+        // does not clear it, exactly as before: that was always the caller's `discoverSearch`.
+        if let e = report.error { discoverError = e }
+        return report.write
+    }
+
+    /// What one album add did, with the failure text carried IN the value.
+    ///
+    /// WHY IT EXISTS: the For You ▸ New 👍 adds the record, and several of those can be in flight
+    /// at once (Add all, a double-tapped pair of rows, the launch sweep racing a tap). The old
+    /// contract — write the reason into `discoverError` and let the caller read it back after the
+    /// await — attributes whatever the LAST finisher wrote to every waiting row. A report is
+    /// per-call, so each row shows its own reason.
+    struct ReleaseAddReport: Equatable {
+        /// The Apple Music library write's honest outcome.
+        var write: AppleMusicLibraryWriteOutcome
+        /// Whether the provisional album + tracks were recorded in `DiscoverAddsStore` (i.e. the
+        /// release now counts as OWNED). False when the tracks couldn't be read, or none accepted.
+        var recorded: Bool
+        /// The user-facing reason when something needs the listener's attention; nil when clean.
+        var error: String?
+    }
+
+    /// ONE album add for callers that need the report. `.libraryOnly` ALWAYS: Levi reported on
+    /// 2026-08-07 that an album add on the New screen started ripping; a like must never capture
+    /// audio. The album page and the New 👍 both come through here so there is one implementation.
+    func addRelease(ref: AppleMusicAlbumRef, trackCount: Int?,
+                    library: (any MusicLibraryContributor)?) async -> ReleaseAddReport {
+        let hit = DiscoverAlbumHit(ref: ref, trackCount: trackCount)
+        let report = await addAlbumReport(hit, library: library, intent: .libraryOnly)
+        if let e = report.error { discoverError = e }
+        return report
+    }
+
+    /// The single body behind `discoverAddAlbum` and `addRelease`: it builds its error LOCALLY
+    /// and returns it, so concurrent adds cannot trample each other's reason.
+    func addAlbumReport(_ hit: DiscoverAlbumHit,
+                        library: (any MusicLibraryContributor)?,
+                        intent: AlbumAddIntent) async -> ReleaseAddReport {
         // 1) Library write (non-macOS only — canAddToLibrary is false on macOS), with a
         //    real outcome: skipped (no contributor / platform / unauthorized), failed
         //    (the throw is no longer swallowed), unconfirmed (add returned but the
@@ -1625,8 +1666,8 @@ final class RipsStore {
             }
         }
         guard !descs.isEmpty else {
-            discoverError = "Couldn’t read the album’s tracks — try again."
-            return write
+            return ReleaseAddReport(write: write, recorded: false,
+                                    error: "Couldn’t read the album’s tracks — try again.")
         }
 
         // 3) `.andPrepareCopies` ONLY: fan out the per-track rips on the shared queue FIRST,
@@ -1678,10 +1719,8 @@ final class RipsStore {
         // 4) ZERO tracks accepted (no server / all-miss) → record NOTHING: no dead album row,
         //    no dead song rows. Surface why (unless a per-track step already set the reason).
         guard !accepted.isEmpty else {
-            if discoverError == nil {
-                discoverError = "Add failed — the import server didn’t accept the request."
-            }
-            return write
+            return ReleaseAddReport(write: write, recorded: false,
+                                    error: "Add failed — the import server didn’t accept the request.")
         }
 
         // 5) Record the provisional album + its ACCEPTED track songs in ONE batched inject so
@@ -1700,8 +1739,8 @@ final class RipsStore {
                                     // and the .catalogAdd History event (truthful wording).
                                     libraryWrite: write.storageToken,
                                     songs: accepted)
-        surfaceLibraryWriteOutcome(write, noun: "album", hadLibrary: library != nil)
-        return write
+        let error = Self.libraryWriteSurfaceNotice(write, noun: "album", hadLibrary: library != nil)
+        return ReleaseAddReport(write: write, recorded: true, error: error)
     }
 
     // MARK: Discover — the Apple Music LIBRARY-WRITE half, with a REAL outcome
@@ -1781,19 +1820,27 @@ final class RipsStore {
     private func surfaceLibraryWriteOutcome(_ outcome: AppleMusicLibraryWriteOutcome,
                                             noun: String, hadLibrary: Bool) {
         guard discoverError == nil else { return }
+        discoverError = Self.libraryWriteSurfaceNotice(outcome, noun: noun, hadLibrary: hadLibrary)
+    }
+
+    /// The pure half of `surfaceLibraryWriteOutcome`: the notice a write outcome owes the
+    /// listener, or nil where it is silent (proven, a caller that opted out, macOS's designed
+    /// open-in-Music fallback). Split out so `addAlbumReport` can return it in the report.
+    static func libraryWriteSurfaceNotice(_ outcome: AppleMusicLibraryWriteOutcome,
+                                          noun: String, hadLibrary: Bool) -> String? {
         switch outcome {
         case .confirmed, .confirmedWeb:
-            return
+            return nil
         case .skipped:
             #if os(macOS)
-            return
+            return nil
             #else
-            guard hadLibrary else { return }
+            guard hadLibrary else { return nil }
             #endif
         case .failed, .unconfirmed:
             break
         }
-        discoverError = Self.libraryWriteNotice(outcome, noun: noun)
+        return libraryWriteNotice(outcome, noun: noun)
     }
 
     /// The user-facing message for a write that didn't land (pure → unit-testable).
@@ -2527,3 +2574,6 @@ extension RipsStore.DiscoverAlbumHit {
                            url: url.flatMap(URL.init(string:)))
     }
 }
+
+/// File-scope spelling of `RipsStore.ReleaseAddReport` for the For You ▸ New like-adder.
+typealias ReleaseAddReport = RipsStore.ReleaseAddReport

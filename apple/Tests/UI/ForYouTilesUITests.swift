@@ -120,4 +120,46 @@ final class ForYouTilesUITests: XCTestCase {
         XCTAssertTrue(app.el("foryou-tile-zone-shuffle").exists,
                       "…and 🔀 Shuffle beside it — the owner's ask")
     }
+    // MARK: - a 👍 on New adds the record; "Liked — not added" resurfaces the ones that never were
+
+    private func openNew(_ app: XCUIApplication) {
+        let new = app.el("foryou-tile-new")
+        XCTAssertTrue(new.waitForExistence(timeout: 15))
+        new.tap()
+    }
+
+    /// The fixture seeds `rel:9000000004` as a like from before the feature (accepted, metadata
+    /// cached, never added) — it must resurface in its own section, and tapping Add must take it
+    /// off the screen (the fixture port records the provisional album, so ownership flips exactly
+    /// as a real add's would).
+    @MainActor
+    func testLikedButNeverAddedResurfacesAndAddingRemovesIt() {
+        let app = launchOnForYou()
+        openNew(app)
+        XCTAssertTrue(app.any("new-liked-section").waitForExistence(timeout: 10),
+                      "a liked-but-never-added record gets its own section")
+        XCTAssertTrue(app.el("new-liked-row-9000000004").exists)
+        let add = app.el("new-liked-add-9000000004")
+        XCTAssertTrue(add.waitForExistence(timeout: 5))
+        add.tap()
+        let gone = NSPredicate(format: "exists == false")
+        expectation(for: gone, evaluatedWith: app.el("new-liked-row-9000000004"))
+        waitForExpectations(timeout: 10)
+    }
+
+    /// A 👍 on an Out-now row ADDS it: the row leaves Out now, and — because the add landed — it
+    /// does NOT reappear in "Liked — not added".
+    @MainActor
+    func testThumbsUpAddsAndTheRowDoesNotReappearInLiked() {
+        let app = launchOnForYou()
+        openNew(app)
+        let thumb = app.el("rec-accept-rel:9000000001")
+        XCTAssertTrue(thumb.waitForExistence(timeout: 10))
+        thumb.tap()
+        let gone = NSPredicate(format: "exists == false")
+        expectation(for: gone, evaluatedWith: app.el("rec-accept-rel:9000000001"))
+        waitForExpectations(timeout: 10)
+        XCTAssertFalse(app.el("new-liked-row-9000000001").exists,
+                       "an add that landed is owned — it must not sit in Liked")
+    }
 }

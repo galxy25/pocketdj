@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -38,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +60,9 @@ import coil.compose.AsyncImage
 import com.levi.pocketdj.data.applemusic.AmResult
 import com.levi.pocketdj.data.recs.ArtistReleaseEntry
 import com.levi.pocketdj.data.recs.ForYouTileKind
+import com.levi.pocketdj.data.recs.LikeAddState
+import com.levi.pocketdj.data.recs.LikedReleaseSelection
+import com.levi.pocketdj.data.recs.LikedRow
 import com.levi.pocketdj.data.recs.ReleaseEmptyReason
 import com.levi.pocketdj.data.recs.ReleaseFeedItem
 import com.levi.pocketdj.data.recs.ReleaseStatus
@@ -67,6 +72,8 @@ import com.levi.pocketdj.di.AppGraph
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.levi.pocketdj.screens.discover.AlbumLibraryWriteRetry
+import kotlinx.coroutines.flow.map
 
 /**
  * Pure presentation logic of the New screen (iOS `NewReleasesView`'s helpers). Every function takes the
@@ -77,11 +84,38 @@ object NewReleasesPresentation {
     val SCOPE: String = ForYouTileKind.NEW.raw
 
     /**
-     * Releases already thumbed up, taken off entirely (there is no add here for a thumbs-up to hide behind,
-     * so a New release needs its own permanent removal, as Zone has). Applied BEFORE [sunkLast].
+     * Releases already thumbed up, taken off these two sections. A thumbs-up now ADDS the record, so an accepted
+     * release is on its way out of the feed for real (owned) - until it is, it lives in "Liked - not added"
+     * rather than sitting in two places. Applied BEFORE [sunkLast]. [keeping] exempts the pre-orders that are
+     * already added on the Apple Music side: those stay in Coming soon, badged "Pre-added".
      */
-    fun offered(items: List<ReleaseFeedItem>, accepted: Map<String, Double>): List<ReleaseFeedItem> =
-        if (accepted.isEmpty()) items else items.filter { accepted[it.feedbackId] == null }
+    fun offered(
+        items: List<ReleaseFeedItem>,
+        accepted: Map<String, Double>,
+        keeping: Set<String> = emptySet(),
+    ): List<ReleaseFeedItem> =
+        if (accepted.isEmpty()) items
+        else items.filter { accepted[it.feedbackId] == null || (it.entry.releaseId?.let(keeping::contains) ?: false) }
+
+    // ---- "Liked - not added" copy (pure) ----
+
+    /** The row's button: Retry Apple Music (recorded, write unproven), Retry (failed), else Add. */
+    fun likedActionTitle(row: LikedRow): String = when {
+        row.retryWriteOnly -> "Retry Apple Music"
+        row.state == LikeAddState.FAILED -> "Retry"
+        else -> "Add"
+    }
+
+    /** The row's state line; null for a plain not-yet-added row. */
+    fun likedStatusLine(row: LikedRow, nowMs: Double): String? = when {
+        row.inFlight -> "Adding…"
+        row.retryWriteOnly -> row.message ?: LikeAddWording.NOT_CONFIRMED
+        row.state == LikeAddState.AWAITING_RELEASE -> row.release.releaseAtMs
+            ?.let { "Coming ${relative(it, nowMs).lowercase()} — will add on release day" }
+            ?: "Will add on release day"
+        row.state == LikeAddState.OFFLINE -> row.message ?: NewReleaseLikeAdder.OFFLINE_MESSAGE
+        else -> row.message
+    }
 
     /**
      * A rejected release SINKS to the bottom of its section (the same rule as every recommendation surface):
@@ -170,7 +204,13 @@ fun NewReleasesScreen(
         if (value == null) value = withContext(Dispatchers.IO) { browse.releaseFeed }
     }
     val service = feed
-    if (stores == null || service == null) {
+    // The like-adder reads the release feed's file on first touch: resolved off Main, like the feed itself.
+    // A failed build must not blank the screen for good: fall back to a null adder (pure feedback, as on iOS).
+    val likeAdderResult by produceState<Result<NewReleaseLikeAdder>?>(null) {
+        value = withContext(Dispatchers.IO) { runCatching { NewReleaseLikeAdder.get(graph) } }
+    }
+    val adder = likeAdderResult?.getOrNull()
+    if (stores == null || service == null || likeAdderResult == null) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         return
     }
@@ -186,14 +226,45 @@ fun NewReleasesScreen(
     var menu by remember { mutableStateOf(false) }
     var dismissedUnplayableFor by remember { mutableStateOf<Long?>(null) }
 
-    val now = remember(rev, fbState.revision) { System.currentTimeMillis().toDouble() }
+    val likedState by (adder?.store?.state ?: EMPTY_LIKED_STATE).collectAsState()
+    val busy by (adder?.busy ?: EMPTY_BUSY).collectAsState()
+    val canWrite by remember { graph.settings.settings.map { it.hasAppleMusic } }.collectAsState(false)
+    val discoverSnap by graph.browseGraph.discoverAdds.state.collectAsState()
+
+    val now = remember(rev, fbState.revision, likedState.revision) { System.currentTimeMillis().toDouble() }
     val accepted = remember(fbState.revision) { feedback.acceptedInScope(NewReleasesPresentation.SCOPE) }
     val tombstones = remember(fbState.revision) { feedback.activeTombstones(NewReleasesPresentation.SCOPE, now) }
-    val outNow = remember(rev, fbState.revision) {
-        NewReleasesPresentation.sunkLast(NewReleasesPresentation.offered(service.outNow(now), accepted), tombstones)
+    // Pre-orders whose Apple Music write PROVED it landed stay in Coming soon (badged) instead of vanishing
+    // with the rest of the accepted rows: added as far as Apple can say; the PocketDJ side follows on release day.
+    val preAdded = remember(likedState.revision) { LikedReleaseSelection.preAdded(likedState.releases, now, accepted) }
+    val outNow = remember(rev, fbState.revision, preAdded) {
+        NewReleasesPresentation.sunkLast(NewReleasesPresentation.offered(service.outNow(now), accepted, preAdded), tombstones)
     }
-    val soon = remember(rev, fbState.revision) {
-        NewReleasesPresentation.sunkLast(NewReleasesPresentation.offered(service.comingSoon(now), accepted), tombstones)
+    val soon = remember(rev, fbState.revision, preAdded) {
+        NewReleasesPresentation.sunkLast(NewReleasesPresentation.offered(service.comingSoon(now), accepted, preAdded), tombstones)
+    }
+    // "Liked - not added", from the pure selection. The probes are the feed's own, so a record owned by ANY
+    // path drops out with no extra bookkeeping.
+    val liked = remember(fbState.revision, likedState.revision, busy, rev, discoverSnap, canWrite) {
+        LikedReleaseSelection.likedNotAdded(
+            accepted = accepted,
+            meta = likedState.releases,
+            owns = { service.ownsRelease?.invoke(it) ?: false },
+            ownsVersion = { a, n, t -> service.ownsReleaseVersion?.invoke(a, n, t) ?: false },
+            writeNeedsRetry = { id ->
+                discoverSnap.albums.firstOrNull { it.appleMusicId == id }
+                    ?.takeIf { AlbumLibraryWriteRetry.needsRetry(it.libraryWrite, canWrite) }
+                    ?.let { it.libraryWrite ?: LikeAddWording.NOT_CONFIRMED }
+            },
+            inFlight = busy.ids,
+            nowMs = now,
+        )
+    }
+    // Rebuild metadata for likes this install has never seen (older likes, another device's), then retry what
+    // was waiting on a connection or a release day. Off the render path.
+    // On the ADDER's scope: this screen's own scope is cancelled on back, which would abort a half-done add.
+    LaunchedEffect(adder) {
+        adder?.maintain(feedback.acceptedInScope(NewReleasesPresentation.SCOPE))
     }
     // The LIVE half, computed ONCE and used by both the rows and the transport's enabled state.
     val liveOutNow = remember(outNow, tombstones) { NewReleasesPresentation.live(outNow, tombstones) }
@@ -250,12 +321,14 @@ fun NewReleasesScreen(
             }
         }
 
-        if (outNow.isEmpty() && soon.isEmpty()) {
+        // The empty state means "nothing at all" - a liked-but-not-added record is something.
+        if (outNow.isEmpty() && soon.isEmpty() && liked.rows.isEmpty()) {
             EmptyState(service.emptyReason())
         } else {
             LazyColumn(Modifier.fillMaxSize().testTag("foryou-new-list")) {
-                section(ReleaseStatus.OUT_NOW, outNow, now, catalog, feedback, context)
-                section(ReleaseStatus.COMING_SOON, soon, now, catalog, feedback, context)
+                if (adder != null) likedSection(liked.rows, now, catalog, feedback, adder)
+                section(ReleaseStatus.OUT_NOW, outNow, now, catalog, feedback, context, adder, preAdded)
+                section(ReleaseStatus.COMING_SOON, soon, now, catalog, feedback, context, adder, preAdded)
             }
         }
     }
@@ -297,6 +370,8 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
     feedback: com.levi.pocketdj.data.recs.RecFeedbackStore,
     context: android.content.Context,
+    adder: NewReleaseLikeAdder?,
+    preAdded: Set<String>,
 ) {
     if (rows.isEmpty()) return
     item(key = "h-${status.raw}") {
@@ -308,7 +383,120 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
         )
     }
     items(rows, key = { "${status.raw}-${it.entry.artistId}" }) { item ->
-        ReleaseRow(item, now, catalog, feedback, context)
+        ReleaseRow(item, now, catalog, feedback, context, adder, preAdded)
+    }
+}
+
+/**
+ * "Liked - not added": what he thumbed up but that never made it into the library. Android has no album
+ * preview screen, so the row tap still opens Apple Music and the Add happens HERE, on the row.
+ */
+private fun androidx.compose.foundation.lazy.LazyListScope.likedSection(
+    rows: List<LikedRow>,
+    now: Double,
+    catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
+    feedback: com.levi.pocketdj.data.recs.RecFeedbackStore,
+    adder: NewReleaseLikeAdder,
+) {
+    if (rows.isEmpty()) return
+    item(key = "h-liked") {
+        val addable = rows.filter { !it.inFlight }
+        val addingAll = adder.busy.collectAsState().value.addingAll
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+        ) {
+            Text(
+                "Liked — not added",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f).testTag("new-liked-section"),
+            )
+            // One at a time: disabled while anything is in flight (Add all itself too).
+            TextButton(
+                onClick = {
+                    val ids = addable.map { it.id }
+                    val writeOnly = addable.filter { it.retryWriteOnly }.map { it.id }.toSet()
+                    adder.addAll(ids, writeOnly)
+                },
+                enabled = !addingAll && addable.isNotEmpty() && addable.size == rows.size,
+                modifier = Modifier.testTag("new-liked-add-all"),
+            ) { Text("Add all (${addable.size})") }
+        }
+    }
+    items(rows, key = { "liked-${it.id}" }) { row ->
+        LikedRowItem(row, now, catalog, feedback, adder)
+    }
+}
+
+@Composable
+private fun LikedRowItem(
+    row: LikedRow,
+    now: Double,
+    catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
+    feedback: com.levi.pocketdj.data.recs.RecFeedbackStore,
+    adder: NewReleaseLikeAdder,
+) {
+    val context = LocalContext.current
+    val rel = row.release
+    val status = NewReleasesPresentation.likedStatusLine(row, now)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .weight(1f)
+                .clickable { openAlbum(context, rel.storeId) }
+                .testTag("new-liked-row-${rel.storeId}"),
+        ) {
+            ReleaseArt(rel.artworkUrl)
+            Column(Modifier.padding(start = 10.dp)) {
+                Text(rel.title ?: "—", style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    rel.artistName, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+                if (status != null) {
+                    Text(
+                        status, style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        color = if (row.state == LikeAddState.FAILED || row.retryWriteOnly) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag("new-liked-status-${rel.storeId}"),
+                    )
+                }
+            }
+        }
+        if (row.inFlight) {
+            CircularProgressIndicator(Modifier.size(20.dp).padding(horizontal = 2.dp).testTag("new-liked-add-${row.id}"), strokeWidth = 2.dp)
+        } else {
+            OutlinedButton(
+                onClick = { adder.add(row.id, writeOnly = row.retryWriteOnly) },
+                modifier = Modifier.testTag("new-liked-add-${row.id}"),
+            ) { Text(NewReleasesPresentation.likedActionTitle(row)) }
+        }
+        // The lit thumbs-up stays as the undo. Un-liking never removes anything from the library.
+        RecFeedbackButtons("rel:${rel.storeId}", NewReleasesPresentation.SCOPE, feedback, catalog)
+    }
+}
+
+private val EMPTY_LIKED_STATE = kotlinx.coroutines.flow.MutableStateFlow(com.levi.pocketdj.data.recs.LikedReleasesStore.State())
+private val EMPTY_BUSY = kotlinx.coroutines.flow.MutableStateFlow(NewReleaseLikeAdder.Busy())
+
+@Composable
+private fun ReleaseArt(template: String?) {
+    val art = NewReleasesPresentation.artworkUrl(template, 96)
+    if (art != null) {
+        AsyncImage(
+            model = art, contentDescription = null, contentScale = ContentScale.Crop,
+            modifier = Modifier.size(44.dp).clip(RoundedCornerShape(4.dp)),
+        )
+    } else {
+        Box(
+            Modifier.size(44.dp).clip(RoundedCornerShape(4.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Filled.Album, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }
 
@@ -319,6 +507,8 @@ private fun ReleaseRow(
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
     feedback: com.levi.pocketdj.data.recs.RecFeedbackStore,
     context: android.content.Context,
+    adder: NewReleaseLikeAdder?,
+    preAdded: Set<String>,
 ) {
     val e = item.entry
     Row(
@@ -366,14 +556,29 @@ private fun ReleaseRow(
                 }
             }
         }
-        // The reject half of the pair; a thumbs-up is pure feedback ("more releases like this").
-        RecFeedbackButtons(item.feedbackId, NewReleasesPresentation.SCOPE, feedback, catalog)
+        if (e.releaseId != null && e.releaseId in preAdded) {
+            Text(
+                "Pre-added ✓", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.padding(end = 4.dp).testTag("new-release-preadded-${e.releaseId}"),
+            )
+        }
+        // A thumbs-up is verdict AND add: the Discover add's own controller (LIBRARY_ONLY), through the
+        // app-scoped adder so leaving the screen mid-add cancels nothing. RecFeedbackButtons only fires onAccept
+        // for a thumbs-up that landed ACCEPTED, so an undo never adds. A `relartist:` row (no release id) has
+        // nothing to add and stays pure feedback - the one case that does.
+        RecFeedbackButtons(
+            item.feedbackId, NewReleasesPresentation.SCOPE, feedback, catalog,
+            onAccept = if (e.releaseId == null || adder == null) null else ({ adder.liked(e) }),
+        )
     }
 }
 
 /** A release with no store id can't be opened - the row simply doesn't navigate. */
 private fun openRelease(context: android.content.Context, e: ArtistReleaseEntry) {
-    val id = e.releaseId ?: return
+    openAlbum(context, e.releaseId ?: return)
+}
+
+private fun openAlbum(context: android.content.Context, id: String) {
     runCatching {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(NewReleasesPresentation.albumUrl(id))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }.onFailure { Toast.makeText(context, "Couldn’t open this release", Toast.LENGTH_SHORT).show() }

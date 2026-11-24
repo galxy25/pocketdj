@@ -658,15 +658,17 @@ struct AlbumPreviewView: View {
     /// the New tile brought a promise the ＋'s own wording ("Add album to your library") never
     /// made. The Discover search album row still passes `.andPrepareCopies` — see its `add()`.
     private func addAlbum() {
-        let hit = RipsStore.DiscoverAlbumHit(ref: ref, trackCount: tracks.isEmpty ? nil : tracks.count)
+        let count = tracks.isEmpty ? nil : tracks.count
         let lib = contributor
         #if os(macOS)
         if (lib?.canAddToLibrary ?? false) == false, let u = ref.url { openURL(u) }
         #endif
         adding = true; errorText = nil
         Task {
-            await rips.discoverAddAlbum(hit, library: lib, intent: .libraryOnly)
-            if let e = rips.discoverError { errorText = e }
+            // The SAME add a 👍 on For You ▸ New runs (`NewReleaseLikeAdder`) — one body, and the
+            // failure text rides the report instead of being read back off a shared field.
+            let report = await rips.addRelease(ref: ref, trackCount: count, library: lib)
+            if let e = report.error { errorText = e }
             adding = false
         }
     }
