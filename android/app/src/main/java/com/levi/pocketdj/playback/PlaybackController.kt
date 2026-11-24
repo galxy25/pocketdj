@@ -159,7 +159,7 @@ class PlaybackController(
     )
 
     /** Which engine owns audio right now (single-owner rule, §6.1). */
-    private enum class ActiveBackend { EXO, APPLE_MUSIC }
+    internal enum class ActiveBackend { EXO, APPLE_MUSIC }
 
     @Volatile
     private var activeBackend: ActiveBackend = ActiveBackend.EXO
@@ -994,6 +994,21 @@ class PlaybackController(
         }
     }
 
+    /** Monotonic id of the latest loadAppleMusic; a cancelled start only restores state if it is still the latest. */
+    private val amStartSeq = java.util.concurrent.atomic.AtomicLong(0)
+
+    /** Cancelled AM start (the SDK was already stopped by AppleMusicBackend.play): restore the prior backend, unconditionally unless superseded. */
+    private suspend fun restoreCancelledAppleMusicStart(prior: ActiveBackend, seq: Long) {
+        restoreAfterCancelledAmStart(
+            stillOwner = amStartSeq.get() == seq,
+            prior = prior,
+            clearAmId = { amCurrentAmId = null },
+            setBackend = { activeBackend = it },
+            resumeExo = { withController { it.play() } },
+        )
+        NPLog.lane(NPLog.PLAYBACK, "am start cancelled: backend restored=$prior")
+    }
+
     /** The sequencer's Apple Music row: SDK plays it, the adapter fronts the session, the monitor watches it. */
     private suspend fun loadAppleMusic(request: PlayRequest, src: AppleMusicSource) {
         val backend = appleMusicBackend ?: throw IllegalStateException("Apple Music engine unavailable")
@@ -1007,6 +1022,7 @@ class PlaybackController(
         amMonitor.disarm()
         amPollJob?.cancel()
         val prior = activeBackend
+        val startSeq = amStartSeq.incrementAndGet()
         // Claim ownership first so Exo's IPC-delayed pause/stop events cannot clobber the AM card.
         activeBackend = ActiveBackend.APPLE_MUSIC
         if (prior == ActiveBackend.EXO) withController { it.pause() }
@@ -1016,9 +1032,13 @@ class PlaybackController(
         val adapter = withContext(Dispatchers.Main) { ensureAmAdapter(backend).also { it.holdClaims() } }
         try {
         amCurrentAmId = src.appleMusicId
-        val started = runCatching {
-            backend.play(src.appleMusicId, item.id, song?.name ?: item.title, song?.artist ?: item.artist, song?.albumId, request.context)
-        }.getOrDefault(false)
+        // FR1: a cancelled start rethrows after stopping the SDK (see runCancellableAppleMusicStart).
+        val started = runCancellableAppleMusicStart(
+            play = {
+                backend.play(src.appleMusicId, item.id, song?.name ?: item.title, song?.artist ?: item.artist, song?.albumId, request.context)
+            },
+            abort = { restoreCancelledAppleMusicStart(prior, startSeq) },
+        )
         if (!started) {
             activeBackend = prior
             if (prior == ActiveBackend.EXO) withController { it.play() }
