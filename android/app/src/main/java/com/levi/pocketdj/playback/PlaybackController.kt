@@ -1,5 +1,7 @@
 package com.levi.pocketdj.playback
 
+import com.levi.pocketdj.remote.RemoteControllerGate
+import com.levi.pocketdj.remote.RemoteRedirect
 import android.content.ComponentName
 import android.content.Context
 import android.net.Uri
@@ -412,6 +414,7 @@ class PlaybackController(
             if (activeBackend == ActiveBackend.EXO && sequencerOwnsPlayer) seq.handleEnded(id)
         }
         seq.appleMusicActive = { activeBackend == ActiveBackend.APPLE_MUSIC }
+        seq.transportGate = { com.levi.pocketdj.remote.RemoteControllerGate.shared.intercept(it) }
         seq.rowOnDevice = { item -> localFiles.localUrlForPlayback(item) != null }
         seq.rowStartsInstantly = { item ->
             !com.levi.pocketdj.data.rips.PlayResolver.isStudioId(item.id) && rips.entry(item.resolveId) != null
@@ -804,7 +807,8 @@ class PlaybackController(
         val start = QueuePlan.queueIndexForEntry(entries, startEntryIndex)
         withContext(Dispatchers.Main) {
             // The engine is about to be driven by the sequencer.
-            sequencerOwnsPlayer = true
+            // A Backseat controller forwards the play to the session: it must not claim the engine.
+            if (!com.levi.pocketdj.remote.RemoteControllerGate.shared.active) sequencerOwnsPlayer = true
             sequencer.play(items, sourceSetlistId, context = playContext, startIndex = start)
         }
         return QueueOutcome.Started(
@@ -855,6 +859,7 @@ class PlaybackController(
     }
 
     suspend fun resume() {
+        if (RemoteControllerGate.shared.forward(RemoteRedirect.Play)) return
         if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStartRaw("nowplaying.resume")) return
         if (activeBackend == ActiveBackend.APPLE_MUSIC) {
             withContext(Dispatchers.Main) { amController?.play() ?: run { amMonitor.noteIntentionalPause(false) } }
@@ -870,18 +875,21 @@ class PlaybackController(
     }
 
     suspend fun next() {
+        if (RemoteControllerGate.shared.forward(RemoteRedirect.Next)) return
         if (withContext(Dispatchers.Main) { sequencer.isRunning.also { if (it) sequencer.skipNext() } }) return
         if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.next()
         else withController { it.seekToNextMediaItem() }
     }
 
     suspend fun previous() {
+        if (RemoteControllerGate.shared.forward(RemoteRedirect.Previous)) return
         if (withContext(Dispatchers.Main) { sequencer.isRunning.also { if (it) sequencer.skipPrevious() } }) return
         if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.previous()
         else withController { it.seekToPreviousMediaItem() }
     }
 
     suspend fun seekTo(positionMs: Long) {
+        if (RemoteControllerGate.shared.forward(RemoteRedirect.Seek(positionMs))) return
         if (activeBackend == ActiveBackend.APPLE_MUSIC) {
             // Through the controller so the monitor re-bases (our own backward scrub is not a system previous).
             withContext(Dispatchers.Main) {

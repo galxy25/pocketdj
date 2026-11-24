@@ -1,5 +1,7 @@
 package com.levi.pocketdj.widget
 
+import com.levi.pocketdj.remote.RemoteControllerGate
+import com.levi.pocketdj.remote.RemoteRedirect
 import android.content.Context
 import android.graphics.Bitmap
 import androidx.core.graphics.drawable.toBitmap
@@ -40,7 +42,8 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
             WidgetCommand.Kind.NEXT -> withContext(Dispatchers.Main) { pc.sequencer.skipNext() }
             WidgetCommand.Kind.PREVIOUS -> withContext(Dispatchers.Main) { pc.sequencer.skipPrevious() }
             WidgetCommand.Kind.PLAY_PAUSE ->
-                if (pc.nowPlaying.value?.isPlaying == true) pc.pause() else pc.resume()
+                if (RemoteControllerGate.shared.forward(RemoteRedirect.PlayPause)) Unit
+                else if (pc.nowPlaying.value?.isPlaying == true) pc.pause() else pc.resume()
             WidgetCommand.Kind.VERDICT_ACCEPT, WidgetCommand.Kind.VERDICT_REJECT -> Unit // no For You verdicts on Android
         }
     }
