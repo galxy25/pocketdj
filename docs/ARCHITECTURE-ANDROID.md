@@ -17,6 +17,8 @@
 > 168 MISSING · 32 N/A. The [parity status ledger](#parity-status-ledger--by-package)
 > at the bottom is updated by every package as it lands.
 
+**Parity 2 (2026-11, branch `feat/android-parity2`).** A second program ported the iOS 1.0.3-1.0.6 feature set (Mix Mode, DJ Mode, pocket wheel, Remote, album sides, system surfaces). See the [Parity 2 ledger](#parity-2-status-ledger--by-package).
+
 The **shared backend/system core** — sources, indexers, S3/CloudFront, the SQS/EC2
 cloud workers, aoss search, the rip server, the jukebox broker — is documented in
 [`ARCHITECTURE-APPLE.md`](./ARCHITECTURE-APPLE.md) and the shared chapter files
@@ -353,8 +355,8 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | SURF-6 — Settings shell rows: Profile name, Collections default recently-added count, Import serve… | 11 | DONE (emulator-verified 2026-10-30: profile name + Default recently added 50 survived force-stop/relaunch; Collections ▸ Recently added read "50 songs") | — |
 | SURF-11 — Jukebox guest: JukeboxLink, joined-sessions list, join panel with request line + Tune In … | 12 | DONE (unit-tested; emulator steps not run) | — |
 | SURF-7 — Glance Now Playing widget (small/medium/large + idle) with snapshot sync and offline comm… | 14 | PARTIAL | Code + JVM tests done, review fixes applied; device-only: widget rendering, media-button cold start, ⏭ after force-stop |
-| SURF-8 — Android Auto: MediaLibraryService browse tree (Playlists · Pockets · Continue), play/add-… | 15 | Planned | Real head unit / DHU rendering, voice; emulator uses the Desktop Head… |
-| SURF-9 — Android Auto Mix tab + Jukebox session rows (two-crate Auto DJ remote) | 18 | Planned | Real head unit; real Mix audio (depends on the Mix area's engine). |
+| SURF-8 — Android Auto: MediaLibraryService browse tree (Playlists · Pockets · Continue), play/add-… | 15 | Merged (`1d7ba7f8`) | Real head unit / DHU rendering, voice; emulator uses the Desktop Head… |
+| SURF-9 — Android Auto Mix tab + Jukebox session rows (two-crate Auto DJ remote) | 18 | Merged (`022e8254`) | Real head unit; real Mix audio (depends on the Mix area's engine). |
 
 **Services (rips, burns, sync, diag, storage)**
 
@@ -402,7 +404,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | COL-5 — Multi-select: RowSelection + SelectableRow + SelectionBar on Browse and every collection … | 9 | Merged (wave 9) | Multi-select on Browse, pocket, playlist, source playlist, set list (bar: Select all, Add to, Copy, Clear; clipboard capped). No paste UI, no hardware-keyboard range-select. Emulator steps NOT run (device-only). |
 | COL-7 — Source-sync completion: auto reconcile on catalog refresh, global + per-item toggles, dir… | 10 | DONE (emulator-verified 2026-10-30: pocket menu Link to Apple Music playlist…; a catalog seed with source adds reconciled 0 -> 50 songs and advanced the snapshot) | Real AM write-back on DEVICE-CHECKLIST.md. |
 | COL-12 — Recently added virtual playlist (derivation from IndexSong.dateAdded + add history) + Set… | 12 | DONE (emulator-verified 2026-10-30: Settings 50 -> Yours row "50 songs — newest first", list resolves 50/50) | Owner-gate seam only (no owner identity on Android, DEFAULT). |
-| COL-8 — Apple Music write-back queue (durable, Web API transport via SVC-15, batch confirm, backf… | 13 | Planned | Needs a real Apple Music subscription + Music-User-Token; emulator ve… |
+| COL-8 — Apple Music write-back queue (durable, Web API transport via SVC-15, batch confirm, backf… | 13 | Merged (`63178b7b`) | Needs a real Apple Music subscription + Music-User-Token; emulator ve… |
 | COL-14 — .pdjcollection + backup .pocketdj.zip codecs, idempotent import merge, CSV (pure JVM, byt… | 16 | DONE (JVM) | Codecs/merge/backup done + JVM-tested. onPortableItems wired + profile song ids excluded (ANS-GAP-4); restore merges sources, favorites and edits, and restored edits are APPLIED by the catalog edits overlay (Q115: `data/catalog/CatalogEdits.kt`, iOS EditSchema `applying` + `buildEffective`, re-applied on every merge and on restore). Fixtures hand-built (no real iOS export). |
 | COL-16 — Listening pockets wire models (extending GM-5 PocketsModels), HTTP client, CollectionFlat… | 16 | DONE (JVM; branch `parity/COL-16`) | Pure JVM, no device-only items. Deviations: results decoder reused from GM-5; no postRounds (InThePocketRoundsClient owns it); client takes PocketsCredentials; Android-only byte-cap enforcement (largest fitting prefix). |
 | COL-13 — Per-collection sort/filter on every collection detail (BrowseEngine over the song subset,… | 17 | DONE | No device-only items. Deviations: setlist detail not wired (iOS has none); Remove hidden in non-default order. Unit tests: 4476 on parity/COL-13 (feat/android-parity baseline not recorded; +10 COL-13 tests) |
@@ -429,12 +431,12 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | BRW-6 — History screen parity: tab model (Playback \| Collection \| Pockets \| For You slots), en… | 9 | Merged (wave 9) | — |
 | BRW-10 — ZoneEngine: In Da Zone + collection suggestions + cloud shaping | 11 | DONE (emulator-verified 2026-10-30: In Da Zone 45 songs + collection suggestion tiles ranked on device) | — |
 | BRW-7 — Collection timeline (F8) + timeline cue store + History ▸ Collection tab | 13 | DONE (emulator-verified 2026-10-30: History ▸ Collection Activity/Songs/Albums grains, timeline sections, cue added + jump) | Timeline artwork thumbnails (CODE default: text rows); owner-gate seam as COL-12. |
-| BRW-11 — For You feed store, feedback store, read-time refresh schedule, tiles/grid, recsEnabled t… | 14 | Planned | — |
+| BRW-11 — For You feed store, feedback store, read-time refresh schedule, tiles/grid, recsEnabled t… | 14 | Merged (`ce3c023d`) | — |
 | BRW-12 — For You UI: History ▸ For You tab, tiles grid, song list, feedback buttons, recs toggle, … | 15 | DONE (emulator-verified 2026-10-30: tiles, Refresh bar, 👎 sinks + dims to the tail, collection Recommendations off notice + tile removed; FIXED c63c8fc9: For You Refresh OOM'd on a 192 MB heap, now largeHeap) | New/release feed (BRW-14) needs Apple Music (DEVICE-CHECKLIST.md). |
 | BRW-13 — Cloud recommendation engine service + client + rec key (device-local) + Settings ▸ Recomm… | 16 | DONE (emulator-verified 2026-10-30: Settings ▸ Recommendations, Send now, Delete cloud data; FIXED 24c7be1d: a full enrollment cap (403 profile-cap-reached) no longer reads as key mismatch) | RecSuggestionFilter / similarSongs / enqueueAudioAnalysis remain DEFAULT-deferred. Green rec-engine MAX_PROFILES cap is full (Levi). |
-| BRW-15 — Discover tab: Apple Music catalog search (SVC-15) ∥ rip-server /search, Songs\|Albums sco… | 17 | Planned | — |
+| BRW-15 — Discover tab: Apple Music catalog search (SVC-15) ∥ rip-server /search, Songs\|Albums sco… | 17 | Merged (`967cb084`) | — |
 | BRW-16 — Discover ＋Add: provisional catalog entries, album fan-out, supersede, Remove from Library | 18 | PARTIAL | Device-only: the Apple Music library write needs a signed-in Music-User-Token (unsigned adds store "Apple Music write skipped: ..."). Not ported: pre-release album refresh; "Add to Apple Music again" retry UI (store half only). |
-| BRW-17 — '?♪?' recognizer: vendored ShazamKit-for-Android AAR + AudioRecord + catalog match + resu… | 19 | Planned | Live recognition needs a microphone + the vendored AAR's native libs;… |
+| BRW-17 — '?♪?' recognizer: vendored ShazamKit-for-Android AAR + AudioRecord + catalog match + resu… | 19 | Merged (`8ee20a67`) | Live recognition needs a microphone + the vendored AAR's native libs;… |
 | BRW-14 — New releases feed + screen + release streaming (am:<storeId> rows through the AM resolver) | 20 | DONE (JVM + emulator vs local mock) | Playing an unowned release (Apple Music DRM playback) — verify on a d… |
 
 **Mix**
@@ -458,8 +460,8 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | MIX-12 — Mix session audio recording (house tap → ADTS AAC) + MixRecorder + orphan recovery + Reco… | 13 | DONE (emulator-verified 2026-10-30: Record -> ADTS AAC take (44.1 kHz stereo, signal present); a take killed mid-recording was filed by MIX_ORPHANS on relaunch) | — |
 | MIX-15 — Sessions screen + replay timeline + recordings panel | 15 | DONE (emulator-verified 2026-10-30: live session counts, replay 2x + scrub, recordings panel delete, rotation keeps position/speed) | CSV export in sessions, load-card metadata sheet, tablet layout: DEFAULT. |
 | MIX-16 — Integrations: Jukebox ↔ Mix seams, MixPlayOutcomeBridge → History, MixFacade implementati… | 16 | DONE (emulator-verified 2026-10-30: History rows "Mix · SeedRip", events source=mix with the session id, Mix skip -> wasSkipped) | Un-ripped broadcast requests park behind burn-when-ripped (DEFAULT). |
-| MIX-18 — Now Playing Mix mini-panel (F4: swap-on-touch ExoPlayer→DSP hand-off, stems/effects/tempo… | 17 | Planned | Audible seamless hand-off and route changes. |
-| MIX-17 — Slot modulation (LFO beat-locked + envelope follower) on the FX rack | 18 | Planned | Audible sweep |
+| MIX-18 — Now Playing Mix mini-panel (F4: swap-on-touch ExoPlayer→DSP hand-off, stems/effects/tempo… | 17 | Merged (`a8c08625`) | Audible seamless hand-off and route changes. |
+| MIX-17 — Slot modulation (LFO beat-locked + envelope follower) on the FX rack | 18 | Merged (`bf005727`) | Audible sweep |
 
 **Producer (Studio)**
 
@@ -469,18 +471,18 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | STU-2 — Studio native DSP lib (cpp/pdjdsp: TinySoundFont, Signalsmith Stretch, TrackFX/MasterFX k… | 5 | Merged (`bf8cbc9b`) | Oboe low-latency path, real latency numbers, route-change (headphones… |
 | STU-3 — Producer shell + Samples tab (mic, import, from-track via LocalAudioCache→BurnStore) + sa… | 7 | DONE (emulator-verified 2026-10-30: seeded tone samples play; simulated phone call pauses + resumes; file import and from-track sample (burn, mark in/out, Make sample) both file samples) | Real mic quality, Bluetooth input picker, DRM rejection: DEVICE-CHECKLIST.md. |
 | STU-4 — Loops tab + slice editor (performance pads) | 10 | DONE (emulator-verified 2026-10-30: 4-beat loop saved at 83.4 BPM, preview/play/stop; auto-slice pads play; Send pads to sequencer bakes a pattern) | Audible seam click: DEVICE-CHECKLIST.md. |
-| STU-5 — Sequencer tab + pattern engine (clock, step modes, per-step loop/stretch) + bounce | 11 | Planned | Timing tightness and .interrupts cut audibility |
+| STU-5 — Sequencer tab + pattern engine (clock, step modes, per-step loop/stretch) + bounce | 11 | Merged (`79179646`) | Timing tightness and .interrupts cut audibility |
 | STU-6 — Cues tab + cue-seek playback plumbing (sequencer seek) + CuePointsProvider for the Mix de… | 11 | DONE (emulator-verified 2026-10-30: cue dropped at 0:05.490; tapping it seeks the session to 5490 ms) | Apple Music play-then-seek: DEVICE-CHECKLIST.md. |
 | STU-7 — Collections integration: StudioRowResolver (play studio ids as local files), counts, real… | 12 | DONE (emulator-verified 2026-10-30: seeded sample added to a pocket plays (start-ok 344 ms); Delete all samples -> 0 B, the row reads (missing song) and Play is inert, no crash, iOS parity) | — |
 | STU-11 — Tracks arranger: model CRUD, home list + folders, lanes/clips UI, clip baker, artifacts b… | 13 | DONE (emulator-verified 2026-10-30: arrangement CRUD with two lanes; Bounce all tracks wrote a 2.18 MB m4a listed under Bounces and playable) | Follow-scroll covered by FollowTimelineInstrumentedTest. |
-| STU-8 — Instrument packs + SF2 synth engine (native) + on-screen keys + takes (click/count-in) | 13 | Planned | Latency feel on Oboe; large-bank parse time on a real device |
+| STU-8 — Instrument packs + SF2 synth engine (native) + on-screen keys + takes (click/count-in) | 13 | Merged (`74eef7d7`) | Latency feel on Oboe; large-bank parse time on a real device |
 | STU-14 — Demuxer core: sources + DemuxStore + chord detection + timeline + chord detail + stems (d… | 14 | DONE (emulator-verified 2026-10-30: chords 14 segments, zoom/follow, chord detail, stems load; FIXED 2edcfe20: stem rows did not redraw on mute/solo, instrumented test) | Real-song chord quality and stem sync by ear: DEVICE-CHECKLIST.md. |
-| STU-9 — Score: quantizer, layout, editor (Enter/Select/Move/Edit, undo/cancel), live staff, PDF +… | 14 | Planned | — |
+| STU-9 — Score: quantizer, layout, editor (Enter/Select/Move/Edit, undo/cancel), live staff, PDF +… | 14 | Merged (`9923c744`) | — |
 | STU-12 — MultitrackPlayer (single render callback: clip sum + per-track gain/pan + TrackFX + Maste… | 15 | DONE (emulator-verified 2026-10-30: arranger playback, loop wrap, mute/solo, live master FX; 30 min arrangement warm play 91 ms, seek 251 ms, heap flat 169-177 MB) | Oboe latency and live FX quality: DEVICE-CHECKLIST.md. |
 | STU-10 — MIDI input (USB + BLE via MidiManager) + arpeggiator + overdub staffs | 16 | PARTIAL | Take-score overdub (ScoreScreen cursor + cached-mixdown backing) and cursor anchor on the live staff deferred (live overdub anchors at 0); USB/BLE MIDI hardware is device-only. JVM tests 4237 -> 4247. |
 | STU-13 — Bounce (artifact), record-to-master (Clean/Quantized), scissor trim (multi-select), Beat … | 16 | DONE (JVM + emulator: bounce, record, scissor) | Record-pitch correctness on a 48 kHz hardware device (the iOS 8.8%-sl…; ANS-STU-2: master bake streams (StreamingResampler -> AacEncoder.Stream); emulator: 5-min capture baked in 6.2 s, valid 300.07 s m4a, Java heap peak ~142 MB (no whole-capture buffer) |
-| STU-15 — Demux drum pattern + melody + key + instrumental + cut sample + send stems to arrangement… | 17 | Planned | Real-stem detection quality |
-| STU-16 — Studio hardening + diagnostics + emulator seed + docs sync + single-audio-layer grep guard | 19 | Planned | Headphone unplug / Bluetooth route change re-prime across each engine |
+| STU-15 — Demux drum pattern + melody + key + instrumental + cut sample + send stems to arrangement… | 17 | Merged (`8c303f85`) | Real-stem detection quality |
+| STU-16 — Studio hardening + diagnostics + emulator seed + docs sync + single-audio-layer grep guard | 19 | Merged (`5a7dd5ea`) | Headphone unplug / Bluetooth route change re-prime across each engine |
 
 **Games**
 
@@ -493,5 +495,98 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | GM-4 — Gem Collector screens (setup / countdown / running / summary) + multi-collection filing v… | 10 | DONE (emulator-verified 2026-10-30: Gem Collector setup/countdown/running/summary, multi-collection filing scores, Skip, "New high score" summary) | Full-track Apple Music takeover in a run: DEVICE-CHECKLIST.md. |
 | GM-7 — In the Pocket store + PocketsBridge interface (NoPocketsBridge default) + rounds upload c… | 11 | DONE (emulator-verified 2026-10-30, local mode: opt-in copy, recs OFF by default, round built from local history, skip -> "Broke at song 1", rating + typed feedback stored) | Cloud mode (server results, round upload) blocked by the full green listening-pockets enrollment cap (Levi); dictation: DEVICE-CHECKLIST.md. |
 | GM-9 — Music with Friends link, models, client, join secret, session file, store (broker-driven,… | 12 | DONE (logic only; no push — broker speaks APNs; catalog-only matching; unresolved collection entries counted, not materialized) | none |
-| GM-8 — In the Pocket screen + on-device feedback dictation | 14 | Planned | SpeechRecognizer dictation needs a real microphone/Google app; emulat… |
-| GM-10 — Music with Friends screens + deep-link handler (pocketdj://mwf, https /mwf/) + Games home… | 15 | Planned | https App Link auto-verification needs /.well-known/assetlinks.json o… |
+| GM-8 — In the Pocket screen + on-device feedback dictation | 14 | Merged (`2d0affae`) | SpeechRecognizer dictation needs a real microphone/Google app; emulat… |
+| GM-10 — Music with Friends screens + deep-link handler (pocketdj://mwf, https /mwf/) + Games home… | 15 | Merged (`79723ca3`) | https App Link auto-verification needs /.well-known/assetlinks.json o… |
+
+## Parity 2 status ledger — by package
+
+Second parity program (`feat/android-parity2`, design in [`architecture/android-parity2.md`](./architecture/android-parity2.md), roadmap `android/specs/parity2/roadmap.json`, per-wave results in `android/specs/parity2/PROGRESS.md`, open decisions in `QUESTIONS.md`). Every package is merged with JVM tests green; emulator steps were run for most but not all (see each row, e.g. SURF-11 and COL-5 record them as not run); the real-device items are collected in `android/specs/parity2/DEVICE-CHECKLIST.md`, and Play submission notes in `android/specs/parity2/RELEASE.md`.
+
+| Package | Wave | Status | Device-only |
+|---|---|---|---|
+| ALB-1 — AlbumFileTimeline + SegmentOverrides, and burned vinyl plays the shared SIDE file (neve… | 1 | Merged (`5f90f6d9`) | — |
+| DATA-1 — Durable session snapshot: iOS 1.0.3-1.0.6 fields + unknown-key passthrough (stop erasin… | 1 | Merged (`385c161b`) | — |
+| DJ-1 — Shared pure AutoTransition (timing, glide params, texture, phase align) + Mix Auto-DJ r… | 1 | Merged (`105eb51e`) | — |
+| LIB-1 — Credentials sync same-HOST empty-token guard (fleet token-wipe fix) + rip-server 401/40… | 1 | Merged (landed via P2-MIX-1) | — |
+| MM-1 — Mix Mode ph1a: temporary-hold ledger, AssetOrigin, pin funnel, npMix settings keys | 1 | Merged (`4913a5d0`) | — |
+| PB-1 — Apple Music cancelled-start fix (FR1) + stall episodes (no ping-pong back to an abandon… | 1 | Merged (`0af979a9`) | Real MusicKit: burned row -> stalled AM-only row -> hop to a burned row; the AM song must never start over the hop target. |
+| POC-1 — PlayEvent motion + pocketRun fields: carry through decode/merge/republish, record from … | 1 | Merged (`ef4457ee`) | — |
+| POC-2 — Play attribution phase 0: originId everywhere (incl. Android Auto source playlists), fa… | 1 | Merged (`24ee751c`) | — |
+| DJ-2 — BS.1770 loudness meter + LoudnessAnalyzer + LoudnessCache | 2 | Merged (`be8b4e24`) | — |
+| DJ-4 — DjSetPlanner (PocketDJ selector): tempo waves, pockets, key fit, artist spacing 4 + sca… | 2 | Merged (`8707d210`) | — |
+| DJ-5 — DJ Mode model + Settings ▸ Mixing pane (crossfades, 7 DJ toggles, Mix-tab options incl.… | 2 | Merged (`721c5ab7`) | — |
+| MIX-1 — Mix Auto Mix crate stall: honest rip/burn lanes, token hold, overlap-correct counts, 'P… | 2 | Merged (`19e26145`) | — |
+| MM-2 — Mix Mode ph1b: expiry sweep, soft-cap eviction order, triggers, SAF picked-folder identity | 2 | Merged (`0db50b5f`) | SAF picked folder on a real SD/USB folder. |
+| MM-4 — Mix Mode ph2a: Mix Mode state + NowPlayingPrefetcher (generalised Stem Lock lane), netw… | 2 | Merged (`aa69b8b5`) | Cellular vs Wi-Fi policy on a phone with a SIM. |
+| MM-7 — Mix Mode ph3a: shared GrowingFileSchedule, NP DSP engageStreaming, loader multi-listene… | 2 | Merged (`f7446f3d`) | — |
+| PB-2 — Sequencer extension seams I: hook bus, TransitionCause, queue generation, start/advance… | 2 | Merged (`30117998`) | — |
+| ALB-2 — 'edits' document cloud sync + writable EditsStore + live re-apply | 3 | Merged (`2b8ac3e6`) | Two devices with profile sync (only if P2-SOC-3 goes live). |
+| ALB-3 — Every shared-file start reader goes through SegmentOverrides + lone vinyl song ends at … | 3 | Merged (`5843c1d3`) | — |
+| MM-5 — Mix Mode ph2b: session state in the sequencer, lane driving, swap-on-land hand-off, rev… | 3 | Merged (`da6fdfab`) | Audible gap check on headphones during swap-on-land. |
+| PB-3 — Sequencer extension seams II: row plan/pin/pick fields, replaceUpcoming + appendRunRows… | 3 | Merged (`41a7cb78`) | — |
+| POC-3 — Pocket wheel engine (pure): models, PocketMode, moment keys/clock, moment engine, Pocke… | 3 | Merged (`77ecf303`) | — |
+| POC-4 — Pocket palette store (12 synced colour slots) + sync/deletion keys (pocket-palette, pro… | 3 | Merged (`aa9666ee`) | — |
+| REM-1 — Remote pure core: wire format (byte-compatible with iOS), RemoteQueueModel, SharedClock | 3 | Merged (`636b214b`) | — |
+| SURF-1 — Now Playing 👍/👎 for recommendation queues (shared rec target) + For You playback-scope … | 3 | Merged (`17183af8`) | — |
+| ALB-4 — Vinyl album run engine: one ExoPlayer item per side, boundaries, glide + retarget in pl… | 4 | Merged (`ed199b76`) | Verify Media3 metadata-only replaceMediaItem never re-prepares on a real phone; VBR side seek accuracy. |
+| MM-6 — Mix Mode ph2c: Now Playing header toggle + status chip + buffer strip, mini-bar + recor… | 4 | Merged (`be4171ea`) | — |
+| MM-8 — Mix Mode ph3b: start eligible rows on the growing buffer; touch hand-off; holds and fal… | 4 | Merged (`ef9b6d5b`) | Bluetooth disconnect pauses the DSP. |
+| POC-5 — Moment cache (off-main, debounced, disk cache) + PocketsGraph DI + wheel local clear on… | 4 | Merged (`8dbd9db1`) | — |
+| POC-7 — Adaptive 100-song pocket run planner + candidates (pure): derived profile, quotas, arti… | 4 | Merged (`011baf8e`) | — |
+| REM-2 — RemoteTransport interface + two-lane RemoteSendQueue + LoopbackHub (latency/drop inject… | 4 | Merged (`1a45a3d3`) | — |
+| REM-4 — RemoteSongResolver (rights boundary ladder) + SequencerRemoteTarget + InMemoryRemoteTarget | 4 | Merged (`96099bb6`) | — |
+| SURF-4 — Voice play by name: IntentSongMatcher (title / 'by' artist), strict collection-name mat… | 4 | Merged (`3e5a9a08`) | 'Hey Google, play … on PocketDJ' on a phone. |
+| ALB-5 — Album run clocks (song-relative everywhere), album ▶ through the sequencer, seekAlbumFi… | 5 | Merged (`305c83c6`) | — |
+| FX-1 — FX Lock: carry Now Playing effects (on/off + strength) across the session's tracks | 5 | Merged (`0c298f4e`) | — |
+| MM-3 — Mix Mode ph1c: Storage ▸ Mix Mode buffer section, 'Buffered · expires' badge, Studio ex… | 5 | Merged (`898d963e`) | — |
+| MM-9 — Mix Mode ph4: Apple Music rows — prefer local rip, AM→local touch hand-off, rip-ahead (… | 5 | Merged (`70ddf314`) | Real AM subscription: touch the tempo slider on an AM row -> hand-off to the rip without a gap. |
+| POC-6 — Best match for the centre ▶ (kernels, quality, continuity, cloud boost, cold-start tier… | 5 | Merged (`ea50223c`) | — |
+| SURF-2 — Media notification / lock screen / Android Auto buttons: ♥, shuffle, effective repeat, … | 5 | Merged (`60bd334b`) | Android Auto Now Playing shows the buttons on a DHU. |
+| SURF-5 — Add this/a song to a collection + auto-mix a source, by deep link, launcher shortcut an… | 5 | Merged (`8497f4a8`) | App Actions test tool / Assistant phrase after Play Console upload. |
+| SURF-7 — Android Auto 'For You' tab (frozen cached tiles, playable rows, add-to) | 5 | Merged (`e9baadf8`) | DHU. |
+| ALB-6 — Album waveform editor: whole-side waveform, key-tinted regions, live playhead, scrub/pl… | 6 | Merged (`35511e46`) | — |
+| DJ-3 — Progressive on-device analysis: 20 s quick hints then finals (BPM / key / loudness) + c… | 6 | Merged (`0764aa3f`) | Battery/thermal behaviour over a 1 h DJ session. |
+| DJ-6 — DJ Mode session shell: on/off in the sequencer, implies Mix Mode, suspensions, chip lef… | 6 | Merged (`2bc0d84a`) | — |
+| DJ-7 — NP DSP two-deck transition engine: ping-pong decks, equal-power crossfade, glide ramps,… | 6 | Merged (`ef08d34c`) | — |
+| LIB-2 — On-device 'Apple Music' library source, part 1: library store (iOS doc shape) + Web API… | 6 | Merged (`4db97029`) | Real subscribed account: library counts match the Music app. |
+| MIX-2 — Mix tab Volume Glide (opt-in Auto-DJ loudness leveling on deck trims) + visible deck trims | 6 | Merged (`2d32d1d9`) | — |
+| POC-8 — Pocket run store: start/stop, live learning from skips, bans, slot-wise re-plan, W2 100… | 6 | Merged (`1835538f`) | A real 100-song run stops at the 100th play-through. |
+| REM-3 — Remote controller gate on every Android transport surface + system-pause classification… | 6 | Merged (`f3ad3cac`) | Bluetooth headset + Android Auto ⏯ forwarded on a controller. |
+| ALB-7 — Album page parity: two-line rows on phones, artist hotlink, album queue menu, track lon… | 7 | Merged (`64cd46f3`) | — |
+| DJ-8 — DJ conductor: decide/decline at track start, advance at fade start (no reload), adoptDs… | 7 | Merged (`9e37bc5f`) | Listen: equal-power fade with no level dip on headphones. |
+| LIB-3 — Apple Music library source, part 2: merged-catalog fold, supersede onto indexed twins, … | 7 | Merged (`28761878`) | — |
+| LIB-4 — In-app store album page (recognizer / For You / Discover) + recognizer edition swap + r… | 7 | Merged (`b0126c9f`) | Real ShazamKit + subscription. |
+| MM-10 — Stem Lock edition rule A (vocals muted => base cut + stems) + edition-aware buffer dots | 7 | Merged (`bdf759f9`) | — |
+| POC-16 — Pocket surfaces: Android Auto '▶ Pocket for now' + 'Pockets right now', 'Play my pocket… | 7 | Merged (`96be8f9e`) | DHU / real head unit; 'Hey Google, play my pocket on PocketDJ'. |
+| POC-9 — Pocket wheel UI: WheelLayout + Canvas of 7 weekday rings x 24 h with mode slivers, fish… | 7 | Merged (`bc781ee5`) | — |
+| REM-5 — RemoteSessionController part 1: attach/leave, election + hand-over, state broadcast (si… | 7 | Merged (`d55fad15`) | — |
+| DJ-10 — DJ planner integration: next-up pick, debounced re-plan, fixed rows, uid-verified re-or… | 8 | Merged (`6aebcd75`) | — |
+| DJ-9 — DJ skip mix: ⏭ mixes over the Skip fade; double-tap and lock-screen/Auto/headset/widget… | 8 | Merged (`2eccba51`) | Bluetooth headset ⏭ and Android Auto ⏭ on a DHU. |
+| POC-10 — Moment card + History ▸ Pockets Wheel|List segment + List Play = derived run + Clear/fi… | 8 | Merged (`defb07f9`) | — |
+| POC-11 — Motion engine: Activity Recognition transitions -> device-local 7-day timeline -> Motio… | 8 | Merged (`aeac3085`) | Real walk/run produces transitions; re-registration after reboot. |
+| POC-14 — pocket-wheel-parity.json goldens: Swift dump on this Mac + Android golden tests (moment… | 8 | Merged (`dacb485c`) | — |
+| POC-15 — W7: a Mix-mode best match plays the run through Mix Auto-DJ (>= 10 deck-loadable songs)… | 8 | Merged (`0c985f0c`) | — |
+| REM-6 — RemoteSessionController part 2: reconcile + drift, local-change diffing, pausedHere/Rej… | 8 | Merged (`bc2593cc`) | — |
+| REM-7 — Remote screen UI: start Listen Together / Backseat, invite/join, role picker, participa… | 8 | Merged (`0ddb09d4`) | — |
+| DJ-11 — DJ volume leveling + analysis driving: per-song trim with 2 s ramps, analyses for curre… | 9 | Merged (`9a550c68`) | Perceived loudness consistency across a 10-song set. |
+| POC-12 — Settings ▸ Pocket Wheel motion section (prominent disclosure + permission) + adapt pock… | 9 | Merged (`eae19759`) | — |
+| POC-13 — Listening-pockets upload Phase 6: caps:['wheel'] gate, serverCaps, sensor-only mode, ru… | 9 | Merged (`53dc2c21`) | — |
+| REM-11 — Mix Together core: mix.* kinds, MixSyncModel, host ordering, proposals, no-echo shadowi… | 9 | Merged (`2d1de119`) | — |
+| REM-8 — Jukebox panel Hero | Remote switch, remote deep links, retired 'Remote' token, store-sc… | 9 | Merged (`5692e605`) | — |
+| REM-9 — Nearby Connections transport (offline, same room/car) + QR/code invite + permissions + … | 9 | Merged (`9aa4b2a6`) | Two phones: Listen Together in sync; Backseat with one phone on the car stereo; host leave -> hand-over. |
+| SOC-1 — Jukebox Hero Timeless toggle + Mix broadcast antenna + Now Playing Share + History mult… | 9 | Merged (`cc2abc9a`) | — |
+| SURF-3 — Glance widget 👍/👎 pair + self-contained verdict commands + effective repeat | 9 | Merged (`3ccc0441`) | — |
+| ALB-8 — Metadata edit sheets (album, song, audio analysis) + Settings ▸ Edits export/import/clear | 10 | Merged (`f0313d08`) | — |
+| DJ-12 — DJ automation display (controls move with the transition) + leveling readout + chip cro… | 10 | Merged (`d1d6e575`) | — |
+| LIB-5 — Inline slide-out player under the playing row on album/collection detail | 10 | Merged (`373972e5`) | — |
+| REM-12 — MixEngine sync seams for Mix Together: gesture taps, remote-apply guard, scheduled star… | 10 | Merged (`542c1512`) | — |
+| SURF-10 — Mix Mode on/off and mute/unmute stems by voice, deep link and App Actions | 10 | Merged (`c8105357`) | — |
+| SURF-11 — Create a pocket from a spoken/typed brief (deterministic parser; on-device Gemini Nano … | 10 | Merged (`8d86d8f5`) | Gemini Nano path on a Pixel 9+. |
+| SURF-8 — Android Auto Up Next list with Play now / Play next / Move to end / Remove | 10 | Merged (`a85ac78f`) | DHU. |
+| SURF-9 — Android Auto Mix tab live controls (FX/Audio Glide, FX slots, tempo/pitch, stems + mute… | 10 | Merged (`05e85239`) | DHU artwork size for the QR. |
+| REM-10 — Internet broker transport over the jukebox server (/remote long-poll routes) — optional… | 11 | Merged (`1b54e9e2`) | — |
+| REM-13 — Mix Together live: anchored starts, drift correction (phase-aware loops), held decks, M… | 11 | Merged (`dfee9ac3`) | Two phones: 40 ms sync target measured by ear/recording. |
+| SOC-2 — Profile sync (Android↔Android) go-live code: link-a-device QR scanner, pocketdj://link,… | 11 | Merged (`78ce07ec`) | Two-device link and pull. |
+| SURF-12 — Android AppFunctions for Gemini (the Siri AI tools equivalent), runtime-gated on API 36+ | 11 | Merged (`b84bcfe6`) | Gemini on an Android 16 phone. |
+| SURF-6 — Assistant/launcher extras: in-app search action, onProvideAssistContent, pin collection… | 11 | Merged (`316c965b`) | — |
+| REL-1 — Release: ledger reconciliation, device checklist, Play listing notes, Data safety/permi… | 12 | Merged (docs + release build; signed AAB not yet built) | Run DEVICE-CHECKLIST.md on Levi's phone before production. |
