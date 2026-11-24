@@ -376,6 +376,52 @@ class MixStreamLoaderTest {
         assertNotNull(loader.stream("a")); assertNull(loader.stream("b"))
     }
 
+    // ---- P2-MM-7: multi-listener fan-out + failed marking ------------------------------------------------
+
+    @Test fun progressFansOutToEveryListenerAndTheLegacyHook() {
+        val body = digital("a", 20_000)
+        val primary = CopyOnWriteArrayList<String>()
+        val second = CopyOnWriteArrayList<String>()
+        loader.onProgress = { primary += it }
+        val token = loader.addProgressListener { second += it }
+        loader.open("a", "A", "x")
+        waitUntil(what = "complete") { loader.stream("a")?.isComplete == true || loader.stream("a")?.adopted == true }
+        waitUntil(what = "both listeners saw it") { primary.contains("a") && second.contains("a") }
+        assertEquals("both observe the same events", primary.toList(), second.toList())
+        loader.removeProgressListener(token)
+        val before = second.size
+        digital("b", 5_000)
+        loader.open("b", "B", "x")
+        waitUntil(what = "b done on primary") { primary.contains("b") }
+        assertEquals("a removed listener hears nothing more", before, second.size)
+        assertTrue(body.isNotEmpty())
+    }
+
+    @Test fun cancelledStreamIsMarkedFailedAndListenersAreTold() {
+        digital("a"); origin.throttle["/side/a.mp3"] = 100
+        val seen = CopyOnWriteArrayList<String>()
+        loader.addProgressListener { seen += it }
+        val s = loader.open("a", "A", "x")!!
+        assertFalse(s.failed)
+        loader.cancel(listOf("a"))
+        assertTrue("a reader holding the Stream never waits forever", s.failed)
+        assertNull(loader.stream("a"))
+        waitUntil(what = "listener told") { seen.contains("a") }
+    }
+
+    @Test fun evictedStreamIsMarkedFailedAndListenersAreTold() {
+        for (id in listOf("a", "b", "c", "d")) { digital(id, 50_000); origin.throttle["/side/$id.mp3"] = 100 }
+        loader.pinnedIds = { setOf("a") }
+        val seen = CopyOnWriteArrayList<String>()
+        loader.addProgressListener { seen += it }
+        loader.open("a", "A", "x")
+        val b = loader.open("b", "B", "x")!!
+        loader.open("c", "C", "x"); loader.open("d", "D", "x")
+        assertTrue("the evicted victim is failed, not silently dropped", b.failed)
+        waitUntil(what = "victim announced") { seen.contains("b") }
+        assertFalse(loader.stream("a")!!.failed)
+    }
+
     @Test fun slowAdoptionDoesNotHoldTheLoaderLock() {
         val body = digital("a", 20_000)
         val gate = java.util.concurrent.CountDownLatch(1)

@@ -514,6 +514,7 @@ class NowPlayingDspEngine(
         tickCount++
         if (!started && playWanted && v.status == Voice.Status.PLAYING) {
             started = true
+            grow?.everStarted = true
             startedAtClock = clockNow()
         }
         // The stretcher delays the first audible sample: hand the session over when it actually sounds.
