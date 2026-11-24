@@ -72,6 +72,16 @@ class SetlistSequencer(
 
     @Volatile var editionDecider: EditionDecider = EditionDecider.Unchanged
 
+    /**
+     * P2-MM-10 Stem Lock rule A: (row, run is clean-only) -> the BASE id this preference row plays instead of its
+     * un-ripped wanted edition, or null. Consulted at the row's start; a hit is written into the row (sticky) and the
+     * start resolves rip-first (never Apple Music first).
+     */
+    @Volatile var editionSubstituter: ((QueueItem, Boolean) -> String?)? = null
+
+    /** Rows (uids) whose play took the rule-A substitution: they resolve rip-first. */
+    private val substitutedUids = HashSet<String>()
+
     /** Fan-out target for natural-end / skip outcomes. */
     @Volatile var outcomes: PlayOutcomeRegistry? = null
 
@@ -544,6 +554,7 @@ class SetlistSequencer(
         capturedContext = context ?: historyContextProvider(sourceSetlistId)
         capturedOrigin = originProvider(sourceSetlistId)
         queue.clear()
+        substitutedUids.clear()
         queue.addAll(if (preStamped) items else stamp(items, sourceSetlistId))
         index = startIndex.coerceIn(0, items.lastIndex)
         shuffleEnabled = false
@@ -665,6 +676,7 @@ class SetlistSequencer(
         notice = null
         index = 0
         queue.clear()
+        substitutedUids.clear()
         sourceSetlistId = null
         capturedContext = null
         capturedOrigin = null
@@ -830,8 +842,18 @@ class SetlistSequencer(
         if (fresh) playsRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
         val gen = ++playGeneration
         resetPreload() // a load replaces the whole engine playlist: slot 1 is gone with it
-        val item = queue[index]
+        var item = queue[index]
         val at = index
+        // P2-MM-10 rule A (never for locked / clean-only-skip rows): decided at the start, written into the row, sticky.
+        if (!item.cleanOnlySkip && !item.editionLocked && item.uid !in substitutedUids) {
+            val sub = try { editionSubstituter?.invoke(item, cleanOnlyProvider(sourceSetlistId)) } catch (e: Exception) { null }
+            if (sub != null && sub != item.resolveId) {
+                item = item.copy(resolveId = sub)
+                queue[at] = item
+                substitutedUids += item.uid
+                memberIds = null
+            }
+        }
         // A new generation retires the previous start's timers; the start window + resolve stall guard this one.
         cancelHealthTimers()
         if (item.cleanOnlySkip) {
@@ -892,7 +914,7 @@ class SetlistSequencer(
 
         val mode = modeProvider()
         val source = try {
-            registry.resolve(item, mode, reResolve)
+            registry.resolve(item, mode, reResolve, ripFirst = item.uid in substitutedUids)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -1398,6 +1420,7 @@ class SetlistSequencer(
         val context = if (ghost) context?.copy(runTag = null, contextId = null) else context
         this.sessionId = sessionId ?: ("pses_" + java.util.UUID.randomUUID().toString().uppercase())
         queue.clear()
+        substitutedUids.clear()
         queue.addAll(items)
         this.index = index.coerceIn(0, items.lastIndex)
         this.sourceSetlistId = sourceSetlistId

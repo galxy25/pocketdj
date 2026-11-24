@@ -623,6 +623,21 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         }
     }
 
+    /** P2-MM-10: rule-A facts for [q] right now (unmemoized - the dot must agree with the start). */
+    private fun ruleAFacts(q: com.levi.pocketdj.playback.sequencer.QueueItem): com.levi.pocketdj.playback.npmix.EditionSubstitution.Facts {
+        val burns = app.servicesGraph.burnStore
+        fun available(id: String) = burns.hasLocalFile(id) || app.ripsRepository.entry(id) != null
+        return com.levi.pocketdj.playback.npmix.EditionSubstitution.Facts(
+            wantedAvailable = available(q.resolveId),
+            baseAvailable = available(q.id),
+            baseHasStems = burns.stemPartsBurned(q.id).isNotEmpty() || burns.stemsRemote(q.id),
+        )
+    }
+
+    /** The base id rule A substitutes for [q] now, or null. */
+    private fun ruleASubstitute(q: com.levi.pocketdj.playback.sequencer.QueueItem, cleanOnly: Boolean): String? =
+        com.levi.pocketdj.playback.npmix.EditionSubstitution.substitute(q, stemLockSession.current, cleanOnly, ruleAFacts(q))
+
     /** The Apple Music catalog id of [songId] (null = no Apple Music identity; off-catalog `amrec_` rows are CATALOG_ONLY, not here). */
     private fun appleMusicIdOf(songId: String): String? =
         app.catalogRepository.state.value.catalog?.songsById?.get(songId)?.appleMusicId?.takeIf { it.isNotBlank() }
@@ -668,7 +683,13 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val loader = mixStreamLoader
         val net = npNetwork()
         fun isStudioOrProfile(id: String) = com.levi.pocketdj.data.rips.PlayResolver.isStudioId(id) || com.levi.pocketdj.data.profile.ProfileSourceStore.isProfileSongId(id)
-        fun track(q: com.levi.pocketdj.playback.sequencer.QueueItem, isCurrent: Boolean = false): com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track {
+        val cleanOnlyRun = seq.cleanOnlyProvider(st.sourceSetlistId)
+        fun track(q0: com.levi.pocketdj.playback.sequencer.QueueItem, isCurrent: Boolean = false): com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track {
+            // P2-MM-10 rule A: the lane fetches (and the dots key on) the file the row WILL play - the base cut when substituted.
+            val audio = com.levi.pocketdj.playback.npmix.EditionSubstitution.laneAudioId(
+                q0, isCurrent, if (isCurrent) null else ruleASubstitute(q0, cleanOnlyRun),
+            )
+            val q = if (audio == q0.resolveId) q0 else q0.copy(resolveId = audio)
             val local = burns.hasLocalFile(q.resolveId) || loader.stream(q.resolveId)?.isComplete == true
             // The PLAYING row is fetched when it can hand off: a presigned rip stream (no live capture). P2-MM-9: an Apple
             // Music row that is ripped fetches too - its local copy is what the first control touch hands off to.
@@ -818,6 +839,12 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val lock = stemLockSession
         val ctx = app.appContext
         seq.sessionExtras.register(fxLockSession)   // P2-FX-1: `fxLock` rides the durable session
+        // P2-MM-10 Stem Lock rule A: a vocals-muted lock plays the base cut for an un-ripped preference edition.
+        seq.editionSubstituter = { q, cleanOnly ->
+            ruleASubstitute(q, cleanOnly)?.also {
+                com.levi.pocketdj.mix.nowplaying.NpMixMode.log(com.levi.pocketdj.playback.npmix.EditionSubstitution.logLine(q, "start", it))
+            }
+        }
 
         val port = object : com.levi.pocketdj.mix.nowplaying.NowPlayingDspPort {
             override fun card(): com.levi.pocketdj.mix.service.MixCard? {
