@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-LIB-5: Inline slide-out player under the playing row (album detail)
 
