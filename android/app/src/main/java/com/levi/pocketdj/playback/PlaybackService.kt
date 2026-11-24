@@ -488,6 +488,9 @@ class PlaybackService : MediaLibraryService() {
     /** The shared 👍/👎 target, only if the rec stores are already built (never forces a store load from here). */
     private fun recFeedback() = com.levi.pocketdj.di.AppGraph.peek()?.browseGraph?.nowPlayingFeedbackIfReady()
 
+    /** Last published button set; Spec is a data class so equal sets skip the session update. */
+    private var lastButtonSpecs: List<MediaButtonPrefs.Spec>? = null
+
     /** P2-SURF-2: publish the ♥ / shuffle / repeat / 👍👎 set for the current state (replaces setCustomLayout). */
     private fun refreshCustomLayout() {
         val session = mediaSession ?: return
@@ -506,7 +509,10 @@ class PlaybackService : MediaLibraryService() {
             hasRecTarget = target != null,
             verdict = np?.currentVerdict(),
         )
-        session.setMediaButtonPreferences(MediaButtonPrefs.buttons(input))
+        val specs = MediaButtonPrefs.specs(input)
+        if (specs == lastButtonSpecs) return
+        lastButtonSpecs = specs
+        session.setMediaButtonPreferences(specs.map(MediaButtonPrefs::button))
     }
 
     /**

@@ -16,6 +16,7 @@ import com.levi.pocketdj.data.history.HistorySettings
 import com.levi.pocketdj.screens.history.HistoryBrowseState
 import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
@@ -71,6 +72,11 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     /** 👍/👎 decisions (BRW-11). Reads its file on first touch: touch off Main. */
     private val recFeedbackLazy: Lazy<com.levi.pocketdj.data.recs.RecFeedbackStore> = lazy {
+        // P2-SURF-2: the media-button layout reads the stores only once built; republish it when they are.
+        app.appScope.launch {
+            while (!recFeedbackLazy.isInitialized()) delay(20)
+            com.levi.pocketdj.playback.RunTransportBus.stateChanged?.invoke()
+        }
         com.levi.pocketdj.data.recs.RecFeedbackStore(
             file = java.io.File(app.appContext.filesDir, REC_FEEDBACK_FILE),
             scope = app.appScope,

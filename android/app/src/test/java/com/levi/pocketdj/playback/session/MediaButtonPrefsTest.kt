@@ -74,4 +74,10 @@ class MediaButtonPrefsTest {
         assertEquals(Surface.CAR_PLAY, MediaButtonPrefs.surfaceFor("com.google.android.projection.gearhead"))
         assertEquals(Surface.NOW_PLAYING, MediaButtonPrefs.surfaceFor("com.android.systemui"))
     }
+
+    @Test fun equalInputsGiveEqualSpecs_soServiceCanSkipRepublish() {
+        val i = Input(favoriteVisible = true, runActive = true, shuffle = true, hasRecTarget = true)
+        assertEquals(MediaButtonPrefs.specs(i), MediaButtonPrefs.specs(i.copy()))
+        assert(MediaButtonPrefs.specs(i) != MediaButtonPrefs.specs(i.copy(verdict = Verdict.ACCEPTED)))
+    }
 }

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 - [x] MediaButtonPrefs (pure specs + CommandButton mapping, trusted pdj.shuffle/repeat/rec.accept/rec.reject commands)
 - [x] PlaybackService: setMediaButtonPreferences replaces setCustomLayout; commands added in onConnect; handlers in onCustomCommand; rebuilt via RunTransportBus.stateChanged (main-thread hop)
@@ -14,3 +14,10 @@ Button set: heart (exo owner only), shuffle + repeat (effective mode) only while
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR PlaybackService republishes buttons every call -> fixed: last List<Spec> cached, setMediaButtonPreferences only when it differs (test: equal inputs give equal specs).
+- MINOR no rebuild when rec stores become ready -> fixed: BrowseGraph recFeedbackLazy initializer launches a watcher that fires RunTransportBus.stateChanged once the lazy is initialized.
+- NIT command-handling untested -> not done (needs extracting service logic; optional).
+
+fixes applied
