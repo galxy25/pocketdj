@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 class AppLifecycleObserver(
     private val scope: CoroutineScope,
     private val onForeground: List<() -> Unit>,
+    private val onBackground: List<() -> Unit> = emptyList(),
     private val flush: suspend () -> Unit,
 ) : DefaultLifecycleObserver {
 
@@ -22,6 +23,7 @@ class AppLifecycleObserver(
     }
 
     override fun onStop(owner: LifecycleOwner) {
+        for (hook in onBackground) runCatching { hook() }
         scope.launch { runCatching { flush() } }
     }
 

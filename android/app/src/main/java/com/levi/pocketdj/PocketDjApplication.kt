@@ -2,6 +2,8 @@ package com.levi.pocketdj
 
 import android.app.Application
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.data.storage.SweepTicker
+import com.levi.pocketdj.data.storage.TemporarySweep
 import com.levi.pocketdj.shell.AppLifecycleObserver
 import com.levi.pocketdj.work.WorkScheduler
 import java.util.concurrent.atomic.AtomicBoolean
@@ -27,6 +29,14 @@ class PocketDjApplication : Application() {
         }
         val scheduler = WorkScheduler(this)
         val firstForeground = AtomicBoolean(true)
+        val firstForeground2 = AtomicBoolean(true)
+        // Hourly temporary-asset sweep while the app is in the foreground (started/stopped with it).
+        val sweepTicker = lazy {
+            val g = AppGraph.get(this)
+            SweepTicker(g.appScope, TemporarySweep.INTERVAL_MS) {
+                g.servicesGraph.storageManager.sweepTemporaryIfDue("tick", minIntervalMs = TemporarySweep.INTERVAL_MS - 60_000L)
+            }
+        }
         AppLifecycleObserver(
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             onForeground = listOf(
@@ -48,7 +58,19 @@ class PocketDjApplication : Application() {
                         runCatching { g.servicesGraph.storageManager.pruneIfDue() }
                     }
                 },
+                // Temporary (Mix Mode buffer) asset expiry sweep: launch (first foreground, after the first
+                // frame) and every foreground, gated to once per 5 min; then the hourly tick.
+                {
+                    val g = AppGraph.get(this)
+                    val reason = if (firstForeground2.getAndSet(false)) "launch" else "foreground"
+                    g.appScope.launch(Dispatchers.IO) {
+                        delay(3_000)
+                        runCatching { g.servicesGraph.storageManager.sweepTemporaryIfDue(reason, minIntervalMs = 5 * 60 * 1000L) }
+                    }
+                    sweepTicker.value.start()
+                },
             ),
+            onBackground = listOf({ if (sweepTicker.isInitialized()) sweepTicker.value.stop() }),
             flush = { AppGraph.get(this).flushNow() },
         ).install()
     }

@@ -2,6 +2,10 @@ package com.levi.pocketdj.data.storage
 
 import com.levi.pocketdj.data.settings.AppSettingsStore
 import com.levi.pocketdj.data.settings.PrefKey
+import com.levi.pocketdj.mix.nowplaying.NpMixSettings
+import com.levi.pocketdj.mix.nowplaying.NpMixSettingsKeys
+import com.levi.pocketdj.mix.nowplaying.NpMixSettingsRules
+import com.levi.pocketdj.mix.nowplaying.stampTemporarySweepAt
 
 /**
  * Storage soft-cap preferences (iOS `storageSoftCapGB` / `storageSoftCapSongs` /
@@ -33,6 +37,13 @@ interface StorageSettingsPort {
     suspend fun lastPruneAt(): Long?
     /** Durable before it returns: this stamp is what breaks a crash loop. */
     suspend fun stampPrune(nowMs: Long)
+
+    /** Epoch ms the last temporary sweep STARTED (null = never). */
+    suspend fun lastTemporarySweepAt(): Long? = null
+    /** Durable before it returns: stamped FIRST so a crash mid-sweep never causes a sweep storm. */
+    suspend fun stampTemporarySweep(nowMs: Long) {}
+    /** The temporary-footprint cap (npMixBufferCapGB, decimal GB). */
+    suspend fun bufferCapBytes(): Long = NpMixSettings().bufferCapBytes
 }
 
 class DataStoreStorageSettings(private val store: AppSettingsStore) : StorageSettingsPort {
@@ -40,6 +51,12 @@ class DataStoreStorageSettings(private val store: AppSettingsStore) : StorageSet
     override suspend fun capSongs(): Int? = store.get(StorageSettings.SOFT_CAP_SONGS).takeIf { it > 0 }
     override suspend fun lastPruneAt(): Long? = store.get(StorageSettings.LAST_PRUNE_AT).takeIf { it > 0L }
     override suspend fun stampPrune(nowMs: Long) = store.set(StorageSettings.LAST_PRUNE_AT, nowMs)
+
+    override suspend fun lastTemporarySweepAt(): Long? =
+        store.get(NpMixSettingsKeys.LAST_TEMPORARY_SWEEP_AT).takeIf { it > 0.0 }?.toLong()
+    override suspend fun stampTemporarySweep(nowMs: Long) = store.stampTemporarySweepAt(nowMs.toDouble())
+    override suspend fun bufferCapBytes(): Long =
+        (NpMixSettingsRules.effectiveCapGb(store.get(NpMixSettingsKeys.BUFFER_CAP_GB)) * NpMixSettings.BYTES_PER_GB).toLong()
 
     suspend fun setCapGB(gb: Double?) = store.set(StorageSettings.SOFT_CAP_GB, gb?.takeIf { it > 0.0 } ?: 0.0)
     suspend fun setCapSongs(n: Int?) = store.set(StorageSettings.SOFT_CAP_SONGS, n?.takeIf { it > 0 } ?: 0)

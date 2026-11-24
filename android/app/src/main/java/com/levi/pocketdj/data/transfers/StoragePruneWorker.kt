@@ -3,6 +3,7 @@ package com.levi.pocketdj.data.transfers
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.work.WorkOutcome
 import com.levi.pocketdj.work.WorkSeams
 import com.levi.pocketdj.work.runWorkBody
@@ -15,8 +16,19 @@ import com.levi.pocketdj.work.runWorkBody
  */
 open class StoragePruneWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result =
-        when (runWorkBody { WorkSeams.storagePrune(applicationContext) }) {
+        when (runWorkBody {
+            WorkSeams.storagePrune(applicationContext)
+            // The temporary-asset expiry sweep rides the same job and is NOT gated on the soft cap.
+            sweep(applicationContext)
+        }) {
             WorkOutcome.SUCCESS -> Result.success()
             WorkOutcome.RETRY -> Result.retry()
         }
+
+    companion object {
+        /** Test seam for the sweep half of the job body. */
+        @Volatile var sweep: suspend (Context) -> Unit = { ctx ->
+            AppGraph.get(ctx).servicesGraph.storageManager.sweepTemporaryIfDue("prune-job")
+        }
+    }
 }
