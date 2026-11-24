@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-DJ-2 — BS.1770 loudness meter + LoudnessAnalyzer + LoudnessCache
 
