@@ -963,6 +963,13 @@ class MixDeckExtras(
         engine.onDeckTick = stems::onTick
         engine.onTransport = stems::onTransport
         engine.onDeckLoaded = { d, l -> stems.prewarm(l.songId); hydrator.hydrate(d, l.songId) }
+        engine.syncExtras = object : SyncExtras {
+            override fun setLoopExact(deck: Deck, on: Boolean, units: Double?, startMs: Int?, endMs: Int?) =
+                loops.syncSet(deck, on, units, startMs, endMs)
+            override fun setStemMode(deck: Deck, on: Boolean) = stems.setStemMode(on, deck)
+            override fun toggleStemMute(deck: Deck, name: String) = stems.toggleStemMute(name, deck)
+            override fun setStemVolume(deck: Deck, name: String, v: Double) = stems.setStemVolume(name, v, deck)
+        }
         engine.onRestoreDeckExtras = { d, ds ->
             if (ds.stemMode) stems.prewarm(ds.track.songId)
             stems.restore(d, ds); loops.restore(d, ds)

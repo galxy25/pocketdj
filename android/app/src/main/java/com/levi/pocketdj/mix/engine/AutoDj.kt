@@ -135,16 +135,23 @@ class AutoDj(
     /**
      * [MixTogetherBlock] changed. Blocked: Auto mode goes off and a running auto mix ends (`endAutoLoop` only stops the
      * transition machine and recentres the crossfader; the decks keep playing, they are the session's now). Either way
-     * the UI state is refreshed so the Auto toggle enables / disables with its reason. Auto is NOT restored afterwards
-     * (iOS does; left to P2-REM-11, see the status file).
+     * the UI state is refreshed so the Auto toggle enables / disables with its reason. When the block lifts the user's Auto
+     * setting comes back exactly as it was (iOS `autoEnabledBeforeBlock`); a running mix the block ended is NOT restarted.
      */
     fun onAutoBlocked() {
         if (blockedReason != null) {
+            if (enabledBeforeBlock == null) enabledBeforeBlock = enabled
             enabled = false
             if (mixing) endAutoLoop()
+        } else {
+            enabledBeforeBlock?.let { enabled = it }
+            enabledBeforeBlock = null
         }
         refreshStatus()
     }
+
+    /** The Auto toggle as the user had it when Mix Together blocked the Auto-DJ (null = not blocked). */
+    private var enabledBeforeBlock: Boolean? = null
 
     fun setAutoEnabled(on: Boolean) {
         if (on && blockedReason != null) return // mixing together: no Auto-DJ (an explicit OFF still goes through)
@@ -1060,7 +1067,7 @@ class AutoDj(
      * it: pauseAuto first, then FREEZE the wall clock, then silence the decks. IDEMPOTENT: Bluetooth
      * heads re-send discrete PAUSE; a duplicate must not clobber the pause memory or resume intent.
      */
-    fun remotePause() {
+    override fun remotePause() {
         streamHeldSince.clear()   // silenced decks aren't holding; the pause must not bank hold time
         if (!(engine.isRunning || (remotePausedAt == null && !engine.hasMasterPaused))) {
             engine.diag("mix remotePause guard=dup")

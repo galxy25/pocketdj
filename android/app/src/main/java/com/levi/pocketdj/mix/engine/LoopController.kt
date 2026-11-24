@@ -220,8 +220,57 @@ class LoopController(
         armLoop(deck, resumeAt = here(deck))
     }
 
-    /** Engage / release the loop. */
+    /** Multiplayer: one `loop` / `loopUnits` gesture carrying the EXACT window every device must loop (AFTER any re-arm). */
+    private fun tapLoop(deck: Deck, kind: String, withPos: Boolean = false) {
+        val s = core.deckState(deck)
+        val w = loopWindow(deck)
+        core.tapGesture(
+            Gesture(
+                kind, deck, value = s.loopUnits, flag = s.loopOn,
+                posMs = if (withPos) (core.position(deck) * 1000).toInt() else null,
+                loopStartMs = w?.let { Math.round(it.first * 1000).toInt() },
+                loopEndMs = w?.let { Math.round(it.second * 1000).toInt() },
+            ),
+        )
+    }
+
+    /**
+     * MULTIPLAYER: engage (or re-place) the loop on EXACTLY `[startMs, endMs)`, the owner's window rather than one re-derived from
+     * this device's playhead, keeping the deck's phase inside it. `on == false` releases it. [units] is the owner's length.
+     * An older sender with no window derives it here. Call under `applyingRemote` (no tap, no log).
+     */
+    fun syncSet(deck: Deck, on: Boolean, units: Double?, startMs: Int?, endMs: Int?) {
+        val s = core.deckState(deck)
+        val loaded = s.loaded ?: return
+        if (units != null) core.updateDeck(deck) { it.copy(loopUnits = min(max(Math.round(units).toDouble(), LoopMath.MIN_UNITS), LoopMath.MAX_UNITS)) }
+        if (!on) { if (core.deckState(deck).loopOn) setLoop(deck, false); return }
+        val w = if (startMs != null && endMs != null) MixSyncMath.exactWindow(startMs, endMs, core.duration(deck)) else null
+        if (w == null) {
+            if (startMs == null || endMs == null) { if (!core.deckState(deck).loopOn) setLoop(deck, true) }
+            return
+        }
+        val cur = windows[deck]
+        if (cur != null && core.deckState(deck).loopOn && Math.abs(cur.first - w.first) < 0.0005 && Math.abs(cur.second - w.second) < 0.0005) return
+        hydrator?.hydrate(deck, loaded.songId, force = true)
+        val here = here(deck)
+        val wasOn = core.deckState(deck).loopOn
+        core.updateDeck(deck) { it.copy(loopOn = true) }
+        windows[deck] = w
+        if (!armLoop(deck, resumeAt = MixSyncMath.foldIntoLoop(here, w.first, w.second))) {
+            if (wasOn) setLoop(deck, false) else clear(deck)
+            core.diag("loop SYNC ${deck.label} REFUSED - window not schedulable")
+        }
+    }
+
+    /** Engage / release the loop (ONE `loop` gesture: the release's internal re-seek is not a second one). */
     fun setLoop(deck: Deck, on: Boolean) {
+        val s = core.deckState(deck)
+        if (s.loaded == null || on == s.loopOn) return
+        core.gestureMuted { setLoopCore(deck, on) }
+        if (core.deckState(deck).loopOn == on) tapLoop(deck, Gesture.LOOP, withPos = true)
+    }
+
+    private fun setLoopCore(deck: Deck, on: Boolean) {
         val s = core.deckState(deck)
         val loaded = s.loaded ?: return
         if (on == s.loopOn) return
@@ -264,6 +313,7 @@ class LoopController(
                 armLoop(deck, resumeAt = if (h > nw.first && h < nw.second) h else null)
             }
         }
+        tapLoop(deck, Gesture.LOOP_UNITS)   // AFTER the re-arm: the window everyone must loop
         persist(debounced = true)
     }
 
@@ -275,6 +325,7 @@ class LoopController(
         windows[deck] = n.window
         core.updateDeck(deck) { it.copy(loopUnits = n.units) }
         armLoop(deck, resumeAt = if (h > n.window.first && h < n.window.second) h else null)
+        tapLoop(deck, Gesture.LOOP_UNITS)   // an edge nudge moves the window: share it
         persist(debounced = true)
     }
 
