@@ -878,6 +878,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             override fun play() = engine.play()
             override fun pause() = engine.pause()
             override fun skipNext() { npMain.launch { controller.next() } }
+            override fun skipNextRemote() { npMain.launch { controller.next(fast = true) } }
             override fun skipPrevious() { npMain.launch { controller.previous() } }
             override fun release() { engine.disengage(); host.refresh() }
             override fun seekTo(positionMs: Long) { engine.seekTo(positionMs / 1000.0) }

@@ -494,6 +494,7 @@ class PlaybackService : MediaLibraryService() {
             get() = c?.shuffleEnabled == true
             set(v) { c?.shuffleEnabled = v }
         override fun skipNext() { c?.skipNext() }
+        override fun skipNextRemote() { c?.skipNextRemote() }
         override fun skipPrevious() { c?.skipPrevious() }
         override fun resumeFromHold() { c?.resumeFromHold() }
         override fun startCurrent() = c?.startCurrent() == true

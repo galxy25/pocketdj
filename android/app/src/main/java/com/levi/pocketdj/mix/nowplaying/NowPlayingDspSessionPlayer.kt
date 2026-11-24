@@ -23,6 +23,8 @@ interface NowPlayingDspPort {
     fun play()
     fun pause()
     fun skipNext()
+    /** A REMOTE controller's next (lock screen, headset, Auto): DJ Mode mixes it over the 5 s sweep (P2-DJ-9). */
+    fun skipNextRemote() = skipNext()
     fun skipPrevious()
     /** Scrub within the engaged song (ms from the song start). */
     fun seekTo(positionMs: Long) {}
@@ -110,11 +112,7 @@ class NowPlayingDspSessionPlayer(
     override fun handleStop(): ListenableFuture<*> { port.pause(); return Futures.immediateVoidFuture() }
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
-        when (MixPlayerStateMap.route(mediaItemIndex, seekCommand, currentIndex = 1)) {
-            MixPlayerStateMap.Route.Next -> port.skipNext()
-            MixPlayerStateMap.Route.Previous -> port.skipPrevious()
-            MixPlayerStateMap.Route.None -> if (positionMs != androidx.media3.common.C.TIME_UNSET) port.seekTo(positionMs.coerceAtLeast(0L))
-        }
+        routeSeek(port, mediaItemIndex, positionMs, seekCommand)
         return Futures.immediateVoidFuture()
     }
 
@@ -129,3 +127,12 @@ class NowPlayingDspSessionPlayer(
  */
 internal fun npCardFor(card: MixCard?, buffering: Boolean): MixCard? =
     if (card != null && buffering && !card.held) card.copy(held = true) else card
+
+/** The session's seek routing (a REMOTE controller's next = the 5 s sweep, P2-DJ-9); a pure function so a fake port can test it. */
+internal fun routeSeek(port: NowPlayingDspPort, mediaItemIndex: Int, positionMs: Long, seekCommand: Int) {
+    when (MixPlayerStateMap.route(mediaItemIndex, seekCommand, currentIndex = 1)) {
+        MixPlayerStateMap.Route.Next -> port.skipNextRemote()
+        MixPlayerStateMap.Route.Previous -> port.skipPrevious()
+        MixPlayerStateMap.Route.None -> if (positionMs != androidx.media3.common.C.TIME_UNSET) port.seekTo(positionMs.coerceAtLeast(0L))
+    }
+}
