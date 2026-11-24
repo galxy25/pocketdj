@@ -7,6 +7,7 @@ import com.levi.pocketdj.data.collections.CollectionsStore
 import com.levi.pocketdj.data.collections.NOW_PLAYING_PLAYLIST_ID
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.Setlist
+import com.levi.pocketdj.data.collections.asForYouCollections
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.playback.QueueOutcome
@@ -223,10 +224,63 @@ class AppAutoPlayer(private val app: AppGraph) : AutoPlayer {
         start(set, song.name, 0)
     }
 
+    override suspend fun playForYouSongs(ids: List<String>, name: String, scope: String, shuffle: Boolean) {
+        ready()
+        try {
+            app.shellGraph.shellActions.playSongIds(ids, name, shuffle, PlayContext.SOURCE_BROWSER)
+        } catch (e: com.levi.pocketdj.shell.ShellActionException) {
+            throw AutoPlayException(e.message ?: "Couldn't start that")
+        }
+        // After playNow -> onPlaybackReplaced -> endPlaybackScope: stamping first would wipe the new scope.
+        app.browseGraph.recFeedbackStore.beginPlayback(scope, ids)
+    }
+
+    override suspend fun playReleases(releaseIds: List<String>, shuffle: Boolean) {
+        ready()
+        val rows = com.levi.pocketdj.data.recs.ReleaseStreaming.tracks(releaseIds) { id ->
+            when (val r = app.appleMusicApi.albumTracks(id)) {
+                is com.levi.pocketdj.data.applemusic.AmResult.Ok -> r.value.map {
+                    com.levi.pocketdj.data.recs.ReleaseStreamTrack(it.id, it.title, it.artist, it.durationMs?.toLong())
+                }
+                else -> emptyList()
+            }
+        }
+        var queue = com.levi.pocketdj.data.recs.ReleaseStreaming.items(rows) { app.browseGraph.catalogSongIdForAppleMusicId(it) }
+        if (queue.isEmpty()) throw AutoPlayException("Couldn't load those releases. Check your connection.")
+        if (shuffle) queue = queue.shuffled()
+        app.playbackGraph.sequencer.play(queue, sourceSetlistId = com.levi.pocketdj.data.recs.ReleaseStreaming.RUN_TAG)
+    }
+
     override suspend fun resumeHeld() {
         ready()
         app.playbackGraph.resumptionProvider.onPlaybackResumption()
         app.playbackController.resume()
+    }
+}
+
+/**
+ * SURF-7: the For You tab's production source. Reads the CACHED feed snapshot only (never `refresh`), the live
+ * collections/feedback, and the already-persisted release feed. Touches files on first read: call off Main.
+ */
+class AppAutoForYouSource(private val app: AppGraph) : AutoForYouSource {
+    private val browse get() = app.browseGraph
+    private val feedStore get() = browse.forYouFeedStore
+
+    override fun snapshot() = feedStore.snapshot
+    override val collections get() = app.collections.asForYouCollections()
+    override val feedback get() = browse.recFeedbackStore
+    override val releaseSource get() = com.levi.pocketdj.data.recs.ReleaseFeedForYouSource(browse.releaseFeed)
+
+    /** Bumped on every commit/reload/clear of the cached feed: the host re-notifies the open tab on it. */
+    val revisions get() = feedStore.state
+
+    override fun outNowReleases(nowMs: Double): List<AutoRelease> {
+        val scope = com.levi.pocketdj.data.recs.ForYouTileKind.NEW.raw
+        val items = browse.releaseFeed.outNow(nowMs).mapNotNull { i ->
+            val id = i.entry.releaseId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            AutoRelease(id, i.entry.releaseName ?: i.entry.artistName, i.entry.artistName, i.feedbackId)
+        }
+        return AutoForYou.liveReleases(items, browse.recFeedbackStore.acceptedInScope(scope), browse.recFeedbackStore.activeTombstones(scope, nowMs))
     }
 }
 
