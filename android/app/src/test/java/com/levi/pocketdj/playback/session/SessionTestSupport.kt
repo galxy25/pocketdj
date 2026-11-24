@@ -48,6 +48,8 @@ class FakeControl : SequencerControl {
     override var repeatMode = RepeatMode.OFF
     override var shuffleEnabled = false
     val calls = mutableListOf<String>()
+    val userKinds = mutableListOf<com.levi.pocketdj.playback.sequencer.UserTransport>()
+    override fun noteUserTransport(kind: com.levi.pocketdj.playback.sequencer.UserTransport) { userKinds += kind }
     override fun skipNext() { calls += "next" }
     override fun skipPrevious() { calls += "prev" }
     override fun resumeFromHold() { calls += "resumeHeld" }

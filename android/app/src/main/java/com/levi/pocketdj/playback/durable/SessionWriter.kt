@@ -2,6 +2,7 @@ package com.levi.pocketdj.playback.durable
 
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.playback.sequencer.SequencerState
+import com.levi.pocketdj.playback.sequencer.SessionExtras
 
 /**
  * Turns sequencer state changes into session-store writes (iOS `persistSession` call sites).
@@ -29,7 +30,16 @@ class SessionWriter(
     /** The offset a launch-time resume consumed before this writer observed the deck (it never saw it held). */
     private val consumedResumeOffset: () -> Long? = { null },
     private val stemLock: () -> SessionStemLock? = { null },
+    /**
+     * P2-PB-2: the features' registry. Their [com.levi.pocketdj.playback.sequencer.SessionExtra.write] values ride
+     * every snapshot (through [SnapshotExtras] so unregistered keys keep what iOS wrote); a feature toggle persists at once.
+     */
+    private val sessionExtras: SessionExtras? = null,
 ) {
+    init {
+        sessionExtras?.onChanged = { persistExtras() }
+    }
+
     private var last: SequencerState? = null
     private var heldOffsetMs: Long? = null
 
@@ -79,6 +89,14 @@ class SessionWriter(
         store.updatePosition(position(), isPlaying())
     }
 
+    /** A feature changed its session state: write it into the live snapshot (never while idle; while held only the extras change, position/offset stay as stored). */
+    private fun persistExtras() {
+        val st = last ?: return
+        if (!st.isRunning) return // held is fine: updateExtras keeps the stored position/offset
+        val reg = sessionExtras ?: return
+        store.updateExtras { reg.collect(it) }
+    }
+
     private fun livePosition(st: SequencerState): Long =
         if (positionValid()) position() else store.currentSnapshot?.positionMs ?: 0L
 
@@ -88,6 +106,8 @@ class SessionWriter(
 
     private fun save(st: SequencerState, positionMs: Long) {
         val ctx = st.capturedContext ?: PlayContext(PlayContext.SOURCE_SETLIST)
+        // Only what registered features write; the store overlays the rest from its own (session-scoped) extras.
+        val fx = sessionExtras?.collect(SnapshotExtras())
         store.save(
             SessionSnapshot(
                 sessionId = st.sessionId ?: return,
@@ -105,6 +125,9 @@ class SessionWriter(
                 repeatMode = st.repeatMode.token,
                 shuffleEnabled = st.shuffleEnabled,
                 stemLock = stemLock()?.takeIf { it.enabled },
+                npMixMode = fx?.npMixMode,
+                fxLock = fx?.fxLock,
+                djMode = fx?.djMode,
             ),
         )
     }

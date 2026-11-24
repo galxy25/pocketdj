@@ -50,6 +50,7 @@ class SessionRestorer(
             shuffle = snap.shuffleEnabled == true,
             resumeAtMs = snap.positionMs.takeIf { it > 0 },
             sessionId = snap.sessionId,
+            extras = SnapshotExtras.of(snap), // P2-PB-2: Mix Mode / FX Lock / DJ Mode reach their features HELD
         )
         // Blind restore: remember the unlocked rows with no persisted edition; the first resume re-decides them.
         val blind = decider.isActive() && !decider.isReady()

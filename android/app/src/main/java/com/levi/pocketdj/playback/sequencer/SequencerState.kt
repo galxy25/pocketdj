@@ -27,6 +27,10 @@ data class SequencerState(
     /** A device-mode run ended having loaded no on-device file (one-shot banner signal). */
     val deviceQueueUnplayable: Boolean = false,
     val deviceUnplayableSourceId: String? = null,
+    /** P2-PB-2: bumps on every queue mutation. */
+    val queueGeneration: Long = 0,
+    /** P2-PB-2: bumps on every current-row change. */
+    val transitionSeq: Long = 0,
 ) {
     val current: QueueItem? get() = if (isRunning) queue.getOrNull(index) else null
 
