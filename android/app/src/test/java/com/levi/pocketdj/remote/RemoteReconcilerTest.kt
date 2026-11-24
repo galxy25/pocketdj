@@ -33,7 +33,7 @@ class RemoteReconcilerTest {
     }
 
     private inner class Dev(val id: String, val clk: Clk, scope: CoroutineScope, val hub: LoopbackHub) {
-        val link = hub.join(id)
+        val link by lazy { hub.join(id) }
         val mem = InMemoryRemoteTarget { clk.t }
         val target = StickyPlay(mem)
         val missing = HashSet<String>()
@@ -60,7 +60,10 @@ class RemoteReconcilerTest {
         fun sync() = clock.ingest(SharedClock.Sample(0.0, 1.0))
     }
 
-    private class Rig(val scope: TestScope) { val clk = Clk(); val hub = LoopbackHub() }
+    private class Rig(val scope: TestScope, withLatency: Boolean = false) {
+        val clk = Clk()
+        val hub = if (withLatency) LoopbackHub(scope.backgroundScope) else LoopbackHub()
+    }
 
     private fun row(id: String) = RemoteRow("r-$id", SessionRow(songId = id, title = "T$id", artist = "A", lengthMs = 200_000))
     private fun TestScope.rig() = Rig(this)
@@ -282,11 +285,13 @@ class RemoteReconcilerTest {
         b.mem.simulateSystemPause()
         advance(r, 20_000, a, b)
         assertTrue(b.controller.pausedHere.value)
+        b.sync()
         b.mem.userSetPlaying(true) // the listener's ▶
         advance(r, 500, a, b)
         assertFalse(b.controller.pausedHere.value)
         assertTrue(b.mem.isPlaying)
         assertTrue("agrees with the session: no command", b.sentCommands().isEmpty())
+        advance(r, 1_500, a, b) // two drift strikes bring it to the session position
         assertTrue("resumed in sync, not where it stopped",
             kotlin.math.abs(b.mem.positionMs - a.controller.model.position(r.clk.t)) < 1_000)
     }
@@ -316,11 +321,12 @@ class RemoteReconcilerTest {
         val r = rig(); val a = r.dev("A"); val b = r.dev("B")
         a.host(listOf("s1", "s2")); b.guest(); settle()
         b.sync(); advance(r, 2_000, a, b)
-        b.mem.userSeek(b.mem.positionMs + 600); b.rec.local.expected = b.rec.local.observe()
+        b.mem.userSeek(a.controller.model.position(r.clk.t) + 600); b.rec.local.expected = b.rec.local.observe()
         advance(r, 3_000, a, b)
         assertEquals("under 750 ms", 0, b.log.count { it == "seek" })
+        b.mem.userSeek(a.controller.model.position(r.clk.t) + 1_500)
         b.mem.hasCoarsePosition = true
-        b.mem.userSeek(b.mem.positionMs + 1_500); b.rec.local.expected = b.rec.local.observe()
+        b.rec.local.expected = b.rec.local.observe()
         advance(r, 3_000, a, b)
         assertEquals("under the 2000 ms coarse threshold", 0, b.log.count { it == "seek" })
     }
@@ -428,7 +434,7 @@ class RemoteReconcilerTest {
     }
 
     @Test fun reconcilingUnderLatencyAndALostStateConverges() = runTest {
-        val r = Rig(this); r.hub.latency = { _, _ -> 0.2 }
+        val r = Rig(this, withLatency = true); r.hub.latency = { _, _ -> 0.2 }
         val a = r.dev("A"); val b = r.dev("B")
         var dropped = false
         r.hub.drop = { env, from, _ -> if (!dropped && from == "A" && env.kind == RemoteMessageKind.STATE.wire && b.controller.state.value == null) { dropped = true; true } else false }

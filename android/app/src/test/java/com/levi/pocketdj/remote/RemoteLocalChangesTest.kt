@@ -88,7 +88,7 @@ class RemoteLocalChangesTest {
         val cmds = e.local.diff(exp, ob)
         val play = cmds.single() as RemoteCommand.Play
         assertEquals(0, play.startIndex)
-        assertEquals(1 + RemoteQueueModel.WINDOW_AHEAD, play.rows.size)
+        assertEquals("the whole 60-row set fits the window", 60, play.rows.size)
         assertEquals("the rows carry the local uid as rid", e.target.item(0).uid, play.rows[0].rid)
         assertEquals(e.target.item(0).uid, e.controller.ridByUid[e.target.item(0).uid])
     }
