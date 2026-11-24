@@ -39,6 +39,11 @@ data class QueueItem(
      * Excluded from equality like [plan].
      */
     val djUserNext: Boolean = false,
+    /**
+     * DJ Mode AGING (iOS `Item.djDeferrals`): how many re-plans pushed this row later. In memory only (not in the
+     * snapshot), like iOS. Excluded from equality.
+     */
+    val djDeferrals: Int = 0,
 ) {
     /** The listener has since moved this run row (iOS `plan.pinned`): a re-plan never touches it. */
     val pinned: Boolean get() = plan?.pinned == true

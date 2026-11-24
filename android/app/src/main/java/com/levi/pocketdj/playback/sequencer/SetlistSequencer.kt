@@ -1825,6 +1825,35 @@ class SetlistSequencer(
 
     private fun ripInFlight(it: QueueItem): Boolean = it.id in ripWindow.requested || it.resolveId in ripWindow.requested
 
+    /** A playback rip for [item] is in flight (moving it out of the rip window would cancel the capture). DJ planner seam. */
+    fun isRipInFlight(item: QueueItem): Boolean = ripInFlight(item)
+
+    /** Seconds of the CURRENT row left, null when unknown. DJ planner seam (the next row's 30 s runway rule). */
+    fun runwaySecondsOrNull(): Double? = currentRunwaySeconds()
+
+    /**
+     * DJ Mode's ONE re-order (iOS `applyDJOrder`): the window `[lo, lo + expected.size)` is rewritten as [order]
+     * (uids) - only if it still holds exactly [expected] in that order (uid-verified, no duplicate uid) and every
+     * [fixed] slot keeps its row. A row placed LATER than before counts one deferral (aging) when [countDeferrals].
+     * One queue mutation; returns its queue generation (the planner ignores its own), or null when refused.
+     */
+    fun applyDjOrder(lo: Int, expected: List<String>, order: List<String>, fixed: List<Boolean>, countDeferrals: Boolean = true): Long? {
+        val hi = lo + expected.size
+        if (!running || lo <= index || hi > queue.size || order.size != expected.size || fixed.size != expected.size) return null
+        if (expected.toSet().size != expected.size || order.toSet() != expected.toSet()) return null
+        for (k in expected.indices) if (queue[lo + k].uid != expected[k]) return null
+        for (k in expected.indices) if (fixed[k] && order[k] != expected[k]) return null
+        val oldSlot = HashMap<String, Int>().also { m -> expected.forEachIndexed { k, u -> m[u] = k } }
+        val byUid = HashMap<String, QueueItem>().also { m -> for (k in lo until hi) m[queue[k].uid] = queue[k] }
+        val rows = order.mapIndexed { k, uid ->
+            val row = byUid[uid] ?: return null
+            if (countDeferrals && k > (oldSlot[uid] ?: k)) row.copy(djDeferrals = row.djDeferrals + 1) else row
+        }
+        for (k in rows.indices) queue[lo + k] = rows[k]
+        queueEdited()
+        return queueGeneration
+    }
+
     /** The upcoming rows of run [runId] a re-plan may touch NOW (re-checked again at apply time). */
     fun replaceableUpcomingRows(runId: String): List<ReplaceableRow> {
         if (!running || index + 1 >= queue.size) return emptyList()
@@ -2330,8 +2359,12 @@ class SetlistSequencer(
         ) ?: return false
         stallEpisodeAbandoned = stallEpisodeAbandoned + stalled.uid
         val row = ResolveStallHop.apply(queue, index, choice)
+        // DJ Mode: the deferred row stays RIGHT BEHIND the hop target (FR1): it becomes the pick, so the re-plan the hop
+        // target's start triggers never carries the skipped song away.
+        val pickLanded = if (djModeEnabled() && queue.getOrNull(index + 1)?.uid == stalled.uid) setUserNext(index + 1) else null
         log("[playback] $reason song=${stalled.id} \u2192 hop to ${choice.kind.label} ${row.id} (deferred stalled row)")
         queueEdited()
+        announceLandedNext(pickLanded)
         noteTransition(stalled.uid, TransitionCause.STALL_HOP)
         startPlayCurrent()
         return true
