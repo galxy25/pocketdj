@@ -23,3 +23,24 @@ Open issues:
 - P2-PB-1: the roadmap step says a hop at about 6 s; the start-stall hop actually fires at 20 s (rekick at 8 s). Behaviour is correct, the expected timing in the step text is off.
 - The emulator image carries an old release build (versionCode 1793355941) from earlier; the debug APK needed an uninstall first, which wipes app data.
 - P2-LIB-1 still to merge.
+
+## Wave 2
+
+Merged (no conflicts): P2-PB-2, P2-DJ-2, P2-DJ-4, P2-DJ-5, P2-MIX-1 (carries P2-LIB-1's code, merged into it with two LIB-1 fixes; LIB-1's own status file still says in-progress, so treat LIB-1 as landed via MIX-1), P2-MM-2, P2-MM-4, P2-MM-7.
+
+Tests: `:app:testDebugUnitTest` 6165 tests, 0 failures, 0 skipped; `:app:assembleDebug` green. No integration fixes were needed.
+
+Emulator (emulator-5556, which has the real catalog/rips; debug APK installed over wave-1 data; shots in pocketdj-parity2-pkgs/_shots/wave2/):
+- P2-PB-2 PASS: Seed rip playlist + Play seed queue, two skips: `transition cause=USER seq=1..4` (an UNPLAYABLE cause=UNPLAYABLE seq=3 for a metadata-only row), `queueGen=1` at start, `queueGen=2` after Now Playing "Play next" (queue reorder). Pocket: build+start plays (start-ok). Kill + relaunch logs `held restore ... rows=13 index=4` and the player comes back paused.
+- P2-DJ-2 / P2-DJ-4: pure Kotlin, no emulator step (covered by unit tests incl. the 30-case iOS-compiled battery for DJ-4).
+- P2-DJ-5 PASS: Settings > Mixing opens the pane (Crossfades / Now Playing DJ Mode groups); Tempo match toggled off, app force-stopped and relaunched, still off.
+- P2-MIX-1 PASS: pointed Import server at a local fake server that answers 401 (http://10.0.2.2:8099), Debug > Mix download SeedRip: Mix bar reads "The import server rejected this device's token (Settings > Import server)" with "Play in Now Playing" and "Stop collection download"; the server saw only 4 requests in about 80 s (no retry storm). "Play in Now Playing" starts the 13 crates in the sequencer (`source=mix`, start-ok). Settings restored afterwards.
+- P2-MM-2 PASS (launch trigger): set one temporaryHold's expiresAtMs to the past while the app was stopped, relaunched: `temporary sweep reason=launch deleted=1 freed=39937728`, the other hold and the other burns untouched. The foreground-trigger line itself is unit-tested (TemporarySweepTest); the emulator run hit the launch trigger first.
+- P2-MM-4 PASS (regression only, engine-only package): Play seed queue still plays; no `PocketDJ.np` prefetch lines because Stem Lock is off in this profile, so there is nothing to diff.
+- P2-MM-7 PASS (regression): "Mix stream open" and "AutoDJ: start streamed" stream and play, `mixstream deck A start ... complete`, heartbeat position advancing, no underrun loops.
+- No FATAL EXCEPTION or ANR from com.levi.pocketdj. Settings "Show advanced" (which reveals the Debug panel) does not survive leaving Settings, by design of that toggle.
+
+Open issues:
+- Device-only, not verifiable here: P2-MM-2 SAF picked folder on a real SD/USB folder; P2-MM-4 cellular vs Wi-Fi policy on a SIM phone.
+- Not wired yet by design: `scheduleCapSweepIfNeeded` (Mix Mode off, P2-MM-4/5) and `sweepForDiskGuard` / DiskGuard footprint and the production `awaitPendingDownload` binding (P2-MM-5); loudness `isComplete` predicate (P2-DJ-11/MIX-2).
+- New question P2Q9 (DJ chip wording). StrictMode disk-write on main in DeadAirMeter.save (pre-existing, debug builds only).

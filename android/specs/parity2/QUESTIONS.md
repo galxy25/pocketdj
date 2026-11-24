@@ -13,6 +13,7 @@ Format: `Q<n> [package] question — default meanwhile`. Integrators append new 
 - **P2Q6 [P2-SOC-2]** Publish the endpoints doc with profileSyncBase so Android↔Android profile sync goes live? (Q119 said not for 1.0.) — *Default: Ship the scanner/link code dormant; do NOT publish the endpoints doc.*
 - **P2Q7 [P2-SURF-5]** Google is winding App Actions down in favour of Gemini/AppFunctions. Still declare App Actions capabilities (harmless if ignored) next to the deep links? — *Default: Yes — declare them; deep links + launcher shortcuts are the doors that always work.*
 - **P2Q8 [P2-REL-1]** Release path for the parity-2 build: Play internal testing first, then production staged rollout? — *Default: Upload to internal testing, run the device checklist, then production at 20 % staged rollout; the Data safety form is updated in Play Console in the same submission.*
+- **P2Q9 [P2-DJ-5]** Suspended-remote DJ chip wording: iOS verbatim "DJ — paused · SharePlay session" vs design doc "Remote session" for Android. — *Default: iOS verbatim (pinned by DjModeTest); one-line change.*
 
 ## ANSWERED
 
