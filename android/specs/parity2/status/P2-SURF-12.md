@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-SURF-12 status: Android AppFunctions for Gemini (12 actions), runtime-gated on API 36+
 - [x] Dependencies: androidx.appfunctions + appfunctions-service + appfunctions-compiler (KSP) all pinned 1.0.0-alpha08; KSP plugin 2.3.14 (new, applied in app only)
@@ -18,3 +18,11 @@ state: implemented
 
 ## Questions for Levi
 - Move to appfunctions 1.0.0 stable? It needs compileSdk 37 (install platform 37, bump compileSdk across the app) and a port to its new service API. Alpha08 is shipping in a live Play build until then.
+
+## Review
+- MINOR auto-mix set lists -> fixed (documented): startAutoMix KDoc, which Gemini reads, now says set lists are not supported; resolving them was not added.
+- MINOR R8 survival -> partially fixed: added keep rules (appfunctions library, PocketDjAppFunctions, generated *_AppFunctionInventory / *_AppFunctionFactory) to proguard-rules.pro. The emulator check (`cmd app_function list-app-functions` on a minified release build, API 36) was NOT run (emulator is integrator-owned); integrator should run it.
+- MINOR test coverage -> fixed: added a test that PocketDjAppFunctions delegates all 12 functions to the right adapter calls (suite 7849 -> 7850, 0 failures). ShellActionsTarget mapping and KSP wiring remain untested (need the concrete ShellActions graph / instrumentation).
+- NIT alpha08 -> no change; 1.0.0 move tracked in Questions for Levi.
+
+fixes applied

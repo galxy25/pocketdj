@@ -110,4 +110,40 @@ class PocketDjAppFunctionsTest {
         rec.fail = ShellActionException.NoAutoMixRunning
         assertEquals("There's no auto-mix running.", run { a.pauseAutoMix() })
     }
+
+    // PocketDjAppFunctions: each of the 12 functions delegates to the right adapter call.
+    private val ctx: androidx.appfunctions.AppFunctionContext = java.lang.reflect.Proxy.newProxyInstance(
+        javaClass.classLoader, arrayOf(androidx.appfunctions.AppFunctionContext::class.java),
+    ) { _, _, _ -> null } as androidx.appfunctions.AppFunctionContext
+    private val fns = PocketDjAppFunctions(a)
+
+    @Test fun appFunctions_delegateEachOfTwelveToTheRightCall() {
+        runBlocking {
+            fns.addSongToCollection(ctx, "make me proud", "Drake", "Chill Vibes")
+            fns.addCurrentSongToCollection(ctx, "Workout")
+            fns.setMixMode(ctx, true)
+            fns.muteStem(ctx, "vocals")
+            fns.unmuteStem(ctx, "drums")
+            fns.playCollection(ctx, "Workout")
+            fns.shuffleCollection(ctx, "Chill Vibes")
+            fns.playMyPocket(ctx)
+            fns.startAutoMix(ctx, "Workout", null)
+            fns.pauseAutoMix(ctx)
+            fns.resumeAutoMix(ctx)
+            fns.createPocket(ctx, "90s hip hop", null)
+        }
+        assertEquals(12, rec.calls.size)
+        assertEquals("add(s1,pocket:k1)", rec.calls[0])
+        assertEquals("add(null,playlist:p1)", rec.calls[1])
+        assertEquals("mixMode(true)", rec.calls[2])
+        assertEquals(true, rec.calls[3].endsWith(",true)") && rec.calls[3].startsWith("stem("))
+        assertEquals(true, rec.calls[4].endsWith(",false)") && rec.calls[4].startsWith("stem("))
+        assertEquals("playlist(p1,false)", rec.calls[5])
+        assertEquals("pocket(k1,true)", rec.calls[6])
+        assertEquals("now", rec.calls[7])
+        assertEquals("mix(Playlist(id=p1),false)", rec.calls[8])
+        assertEquals("pause", rec.calls[9])
+        assertEquals("resume", rec.calls[10])
+        assertEquals(true, rec.calls[11].startsWith("create(90s hip hop,"))
+    }
 }

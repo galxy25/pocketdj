@@ -211,7 +211,8 @@ class PocketDjAppFunctions(private val adapter: AppFunctionsAdapter) {
     suspend fun playMyPocket(appFunctionContext: AppFunctionContext): String = adapter.playPocketForNow()
 
     /**
-     * Starts Auto-Mix, the DJ that beat-matches and blends songs, from one of the user's pockets or playlists.
+     * Starts Auto-Mix, the DJ that beat-matches and blends songs, from one of the user's pockets or playlists, found
+     * by name. Set lists are not supported here; they can only be mixed from inside the app.
      *
      * @param collection the name of the pocket or playlist to mix
      * @param shuffle true to shuffle the order
