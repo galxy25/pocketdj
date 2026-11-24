@@ -125,13 +125,18 @@ class AppGraph private constructor(context: Context) {
     // ---- Feature modules (decision D3): the ONLY place the eight sidecars are listed ----
     // Aggregation order is area order and is stable; consumers read [features].
     val playbackGraph: PlaybackGraph by lazy { PlaybackGraph(this) }
-    val mixGraph: MixGraph by lazy { MixGraph(this) }
+    private val mixGraphLazy = lazy { MixGraph(this) }
+    val mixGraph: MixGraph get() = mixGraphLazy.value
+    /** The Mix graph only if something already built it (never constructs it): for per-tick housekeeping. */
+    val mixGraphIfBuilt: MixGraph? get() = if (mixGraphLazy.isInitialized()) mixGraphLazy.value else null
     val studioGraph: StudioGraph by lazy { StudioGraph(this) }
     val gamesGraph: GamesGraph by lazy { GamesGraph(this) }
     val collectionsGraph: CollectionsGraph by lazy { CollectionsGraph(this) }
     val browseGraph: BrowseGraph by lazy { BrowseGraph(this) }
     val servicesGraph: ServicesGraph by lazy { ServicesGraph(this) }
     val shellGraph: ShellGraph by lazy { ShellGraph(this) }
+    val pocketsGraph: PocketsGraph by lazy { PocketsGraph(this) } // P2-POC-5
+    val remoteGraph: RemoteGraph by lazy { RemoteGraph(this) } // P2-REM-5
 
     /** Zero-to-hero first-run state (SURF-3); lives in the shell sidecar. */
     val onboarding: com.levi.pocketdj.onboarding.OnboardingStore get() = shellGraph.onboarding
@@ -155,7 +160,7 @@ class AppGraph private constructor(context: Context) {
         FeatureModuleRegistry(
             listOf(
                 playbackGraph, mixGraph, studioGraph, gamesGraph,
-                collectionsGraph, browseGraph, servicesGraph, shellGraph,
+                collectionsGraph, browseGraph, servicesGraph, shellGraph, pocketsGraph, remoteGraph,
             ),
         )
     }
@@ -201,7 +206,10 @@ class AppGraph private constructor(context: Context) {
         http = httpClient,
         json = json,
         scope = appScope,
-    ).also { it.launchGate = { onboarding.waitUntilComplete() } } // SURF-3 gate seam
+        segmentOverrides = { catalogRepository.segmentOverrides.value }, // P2-ALB-1: edited vinyl starts
+    ).also {
+        it.launchGate = { onboarding.waitUntilComplete() } // SURF-3 gate seam
+    }
 
     /** Shared rip-server config used by both the rip client and the AM dev-token
      *  client (specs/applemusic.md §5, §8) — the AM token IS minted by the rip
@@ -228,6 +236,7 @@ class AppGraph private constructor(context: Context) {
         scope = appScope,
         isConfigured = { ripServerClient.isConfigured() },
         presigner = { songId, ttl -> ripServerClient.presign(songId, ttl) },
+        authHoldoff = { ripServerClient.authHoldoff() },
     )
 
     /** Keeps polling rips that outlived the interactive wait; fires onRipReady (SVC-1). */
@@ -307,7 +316,7 @@ class AppGraph private constructor(context: Context) {
             activityFile = File(appContext.filesDir, CollectionActivityStore.FILE_NAME),
             artwork = CoilArtworkCache(appContext),
             clearCatalogCache = { catalogService.clearCache() },
-            clearPlayHistory = { PlayHistoryStore.get(appContext).clear() },
+            clearPlayHistory = { PlayHistoryStore.get(appContext).clear(); pocketsGraph.wheelClearLocal() }, // P2-POC-5: the wheel is derived from history
             clearActivity = { collectionActivity.clear() },
             favoritesFile = File(appContext.filesDir, com.levi.pocketdj.data.favorites.FavoritesStore.FILE_NAME),
             // SVC-2: burns/stems measure + clear (BURNS excludes stems so the total never double-counts).
@@ -355,6 +364,8 @@ class AppGraph private constructor(context: Context) {
             CollectionsStore(f, writer = VersionedJsonWriter(f, bgWriterExecutor))
         }.also { store ->
             store.catalogProvider = { catalogRepository.state.value.catalog }
+            // P2-SURF-1: a rec playback scope never outlives its queue (installed before any play can happen).
+            store.onPlaybackReplaced = { browseGraph.endRecPlaybackScope() }
             // COL-8: Apple Music write-back seams (queue is lazy; nothing read until first use).
             collectionsGraph.wireWriteBack(store)
             // STU-7: studio items count/realize/play with their real lengths (lazy; never builds the studio store for catalog ids).
@@ -440,9 +451,15 @@ class AppGraph private constructor(context: Context) {
                 }.onFailure { android.util.Log.e("PocketDJ", "[burns] reconcile failed", it) }
             }
             // MainActivity forwards every intent to IntentSink; the modules' handlers answer.
-            StartStep.INTENT_SINK -> appScope.launch { IntentSink.install(features.deepLinkHandlers) }
+            StartStep.INTENT_SINK -> {
+                appScope.launch { IntentSink.install(features.deepLinkHandlers) }
+                appScope.launch(Dispatchers.IO) { runCatching { pocketsGraph.start() } } // P2-POC-5 wheel rebuild loop
+            }
 
-            StartStep.PLAYBACK_WIRE -> playbackGraph.wire() // PB-1 seams + the run-gated 1 Hz session tick
+            StartStep.PLAYBACK_WIRE -> {
+                playbackGraph.wire() // PB-1 seams + the run-gated 1 Hz session tick
+                appScope.launch(Dispatchers.Main) { runCatching { remoteGraph.wire() } } // P2-REM-5: gate + DJ probe (Main, after djMode.install is queued)
+            }
             // MIX-12: a kill mid-take leaves a playable .aac with no row; file it (off-main, streamed scan).
             StartStep.MIX_ORPHANS -> appScope.launch(Dispatchers.IO) { runCatching { mixGraph.mixRecorder.recoverOrphans() } }
             // MIX-18: Now Playing DSP panel + Stem Lock observers (after the sequencer exists).

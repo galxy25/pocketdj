@@ -59,7 +59,8 @@ class MixResolver(
         } else deduped
     }
 
-    private fun loadables(songIds: List<String>): List<MixLoadable> {
+    /** Loadable songs among [songIds] (deduped, first-seen wins, order kept). */
+    fun loadables(songIds: List<String>): List<MixLoadable> {
         val seen = HashSet<String>()
         return songIds.mapNotNull { id ->
             if (!seen.add(id)) return@mapNotNull null

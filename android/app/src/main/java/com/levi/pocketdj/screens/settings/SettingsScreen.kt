@@ -43,6 +43,7 @@ import kotlinx.coroutines.CoroutineScope
 fun SettingsScreen(
     modifier: Modifier = Modifier,
     onOpenStorage: () -> Unit = {},
+    onOpenMixing: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -54,13 +55,14 @@ fun SettingsScreen(
     // below sent the Compose compiler's deep copy into a non-terminating loop.
     val advancedState = androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
     val advanced = advancedState.value
-    val host = remember(graph, scope, snackbar, onOpenStorage, settings, advanced) {
+    val host = remember(graph, scope, snackbar, onOpenStorage, onOpenMixing, settings, advanced) {
         object : SettingsHost {
             override val graph: AppGraph = graph
             override val settings: AppSettings? = settings
             override val snackbar: SnackbarHostState = snackbar
             override val scope: CoroutineScope = scope
             override fun openStorage() = onOpenStorage()
+            override fun openMixing() = onOpenMixing()
             override val showAdvanced: Boolean = advanced
         }
     }

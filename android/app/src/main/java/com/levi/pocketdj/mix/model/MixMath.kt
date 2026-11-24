@@ -8,6 +8,7 @@ import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
+import com.levi.pocketdj.playback.dj.AutoTransition
 
 data class LoopWindow(val start: Double, val end: Double)
 data class GlideParams(val outRate: Double, val outPitch: Double, val inRate: Double, val inPitch: Double)
@@ -33,26 +34,18 @@ object MixMath {
 
     /** Equal-power crossfade factor 0..1 for a deck at crossfader position [crossfader] (0=A, 1=B). */
     fun crossfadeFactor(deck: Deck, crossfader: Float): Float {
-        val v = crossfader
-        return if (deck == Deck.A) cos((PI / 2 * v).toFloat()) else cos((PI / 2 * (1 - v)).toFloat())
+        val g = AutoTransition.equalPowerGains(crossfader)
+        return if (deck == Deck.A) g.outgoing else g.incoming
     }
 
     // Tempo
 
     /** Octave-fold a tempo ratio into 0.5..2.0 then clamp; non-finite / non-positive folds to 1.0. */
-    fun octaveFolded(ratio: Double): Double {
-        if (!ratio.isFinite() || ratio <= 0) return 1.0
-        var r = ratio
-        while (r > MixRanges.rate.endInclusive) r /= 2
-        while (r < MixRanges.rate.start) r *= 2
-        return r.coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)
-    }
+    fun octaveFolded(ratio: Double): Double = AutoTransition.octaveFolded(ratio)
 
     /** Follower tempo multiplier that matches the lead's effective BPM (octave-folded). */
-    fun syncRate(leadBPM: Double, leadRate: Double, followerBPM: Double): Double {
-        if (!(followerBPM > 0)) return 1.0
-        return octaveFolded(leadBPM * leadRate / followerBPM)
-    }
+    fun syncRate(leadBPM: Double, leadRate: Double, followerBPM: Double): Double =
+        AutoTransition.syncRate(leadBPM, leadRate, followerBPM)
 
     // Loops
 
@@ -80,12 +73,10 @@ object MixMath {
     // Glide
 
     /** Tempo multiplier for a glide of [keys] Camelot hours (1 key = +/-10%), clamped to the rate range. */
-    fun glideRate(keys: Double): Double =
-        (1 + 0.10 * keys).coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)
+    fun glideRate(keys: Double): Double = AutoTransition.glideRate(keys)
 
     /** Pitch shift (semitones) for a glide of [keys], clamped to the pitch range. */
-    fun glidePitch(keys: Double): Double =
-        (keys * SEMITONES_PER_KEY).coerceIn(MixRanges.pitch.start, MixRanges.pitch.endInclusive)
+    fun glidePitch(keys: Double): Double = AutoTransition.glidePitch(keys)
 
     fun signedCamelotSteps(a: String?, b: String?): Int? = Camelot.signedSteps(a, b)
 
@@ -95,55 +86,36 @@ object MixMath {
      * Missing datum: identity.
      */
     fun glideParams(fromCamelot: String?, toCamelot: String?, fromBPM: Double?, toBPM: Double?): GlideParams {
-        var outPitch = 0.0
-        var inPitch = 0.0
-        var outRate = 1.0
-        var inRate = 1.0
-        val d = signedCamelotSteps(fromCamelot, toCamelot)
-        if (d != null && abs(d) >= 1) {
-            val mag = min(1.0, abs(d).toDouble() / 2.0)
-            val dir = if (d > 0) 1.0 else -1.0
-            outPitch = glidePitch(dir * mag)
-            inPitch = glidePitch(-dir * mag)
-        }
-        if (fromBPM != null && toBPM != null && fromBPM > 0 && toBPM > 0) {
-            val split = sqrt(octaveFolded(fromBPM / toBPM))
-            inRate = split.coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)
-            outRate = (1 / split).coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)
-        }
-        return GlideParams(outRate, outPitch, inRate, inPitch)
+        val g = AutoTransition.glideParams(fromCamelot, toCamelot, fromBPM, toBPM)
+        return GlideParams(g.outRate, g.outPitch, g.inRate, g.inPitch)
     }
 
     // PRNG
 
     /** splitmix64 step; mutates [rng]. */
     fun splitmix64(rng: SplitMix64): ULong {
-        rng.state += 0x9E37_79B9_7F4A_7C15uL
-        var z = rng.state
-        z = (z xor (z shr 30)) * 0xBF58_476D_1CE4_E5B9uL
-        z = (z xor (z shr 27)) * 0x94D0_49BB_1331_11EBuL
-        return z xor (z shr 31)
+        val r = AutoTransition.Rng(rng.state)
+        val v = AutoTransition.splitmix64(r)
+        rng.state = r.state
+        return v
     }
 
     /** Next FX-Glide texture: pool effect, peak 0.5..0.8, run 3..5. Deterministic given state. */
     fun rollTexture(rng: SplitMix64): GlideTexture {
-        val a = splitmix64(rng)
-        val b = splitmix64(rng)
-        val c = splitmix64(rng)
-        val effect = FX_GLIDE_POOL[(a % FX_GLIDE_POOL.size.toULong()).toInt()]
-        val peak = 0.5 + (b % 1000uL).toDouble() / 1000.0 * 0.3
-        val run = 3 + (c % 3uL).toInt()
-        return GlideTexture(effect, peak, run)
+        val r = AutoTransition.Rng(rng.state)
+        val t = AutoTransition.rollTexture(r)
+        rng.state = r.state
+        val effect = when (t.effect) {
+            AutoTransition.TextureEffect.FILTER -> Effect.FILTER
+            AutoTransition.TextureEffect.REVERB -> Effect.REVERB
+            AutoTransition.TextureEffect.FLANGER -> Effect.FLANGER
+        }
+        return GlideTexture(effect, t.peak, t.run)
     }
 
     /** FNV-1a over the first song id (or "seed") xor the item count. */
-    fun fxSeed(items: List<AutoMixItem>): ULong {
-        var h = 0xcbf2_9ce4_8422_2325uL
-        for (byte in (items.firstOrNull()?.loadable?.songId ?: "seed").toByteArray(Charsets.UTF_8)) {
-            h = (h xor (byte.toInt() and 0xFF).toULong()) * 0x0000_0100_0000_01B3uL
-        }
-        return h xor items.size.toULong()
-    }
+    fun fxSeed(items: List<AutoMixItem>): ULong =
+        AutoTransition.fxSeed(items.firstOrNull()?.loadable?.songId, items.size)
 
     // Streaming
 

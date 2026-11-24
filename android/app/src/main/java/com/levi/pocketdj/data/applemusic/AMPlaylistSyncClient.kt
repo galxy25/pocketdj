@@ -188,7 +188,25 @@ class AMPlaylistSyncClient(
         else -> false
     }
 
+    /**
+     * [runJobInner] plus the rejected-MUT rule: a failure matching `AM <METHOD> <path> -> 401|403` means Apple refuses
+     * the stored Music-User-Token. Android cannot re-mint silently (iOS does, with .ignoreCache), so the token is
+     * cleared ONCE ([AppleMusicTokens.onAppleAuthRejected]) and Settings asks to reconnect. Our own gateway's 401
+     * never matches ([RejectedMut.isAppleAuthRejection]).
+     */
     private suspend fun runJob(op: String, body: JsonObject?, onProgress: ((AmJobProgress) -> Unit)?): JsonElement {
+        val usedToken = tokens.musicUserToken()
+        try {
+            return runJobInner(op, body, onProgress)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (RejectedMut.isAppleAuthRejection(e)) runCatching { tokens.onAppleAuthRejected(usedToken) }
+            throw e
+        }
+    }
+
+    private suspend fun runJobInner(op: String, body: JsonObject?, onProgress: ((AmJobProgress) -> Unit)?): JsonElement {
         // RESUME: attach to an unfinished job rather than re-submitting (no double work/pushes).
         storedJobId(op)?.let { existing ->
             try {

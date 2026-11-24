@@ -85,11 +85,19 @@ object WaveformExtractor {
 
 /** BurnStore-aware helper: prefers the per-song cut (the file the deck plays); windows only a shared-album file. */
 object MixWaveform {
-    suspend fun peaksForSong(songId: String, lengthMs: Int?, burns: BurnStore): FloatArray {
+    /**
+     * [endOf] maps the song's start in the shared file to where it ENDS on the record (edited / detected + grace,
+     * `RipsRepository.analogEndMs`); null/absent => the catalog [lengthMs] past the start.
+     */
+    suspend fun peaksForSong(songId: String, lengthMs: Int?, burns: BurnStore, endOf: ((Long) -> Long?)? = null): FloatArray {
         val h = burns.localUrlPreferringCut(songId) ?: return FloatArray(0)
         val startMs = if (h.isCut) null else burns.startMs(songId)?.toInt()
-        return WaveformExtractor.peaks(h.file, startMs, if (startMs != null) lengthMs else null)
+        return WaveformExtractor.peaks(h.file, startMs, if (startMs != null) windowLengthMs(startMs, lengthMs, endOf?.invoke(startMs.toLong())) else null)
     }
+
+    /** The folded window length: start..end when an end on the record is known, else the catalog length. */
+    fun windowLengthMs(startMs: Int, lengthMs: Int?, endMs: Long?): Int? =
+        if (endMs != null && endMs > startMs) (endMs - startMs).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() else lengthMs
 }
 
 /**

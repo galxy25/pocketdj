@@ -20,6 +20,33 @@ interface AutoPlayer {
     suspend fun playSolo(songId: String)
     /** Resume the held session (the Continue row). Never called on connect. */
     suspend fun resumeHeld()
+
+    /**
+     * SURF-7: start a For You tile's songs (or the rows from the tapped one on) and stamp the recommendation
+     * scope. ORDER IS LOAD-BEARING: playSongIds -> playNow -> onPlaybackReplaced -> endPlaybackScope ->
+     * beginPlayback(scope, ids).
+     */
+    suspend fun playForYouSongs(ids: List<String>, name: String, scope: String, shuffle: Boolean) {
+        throw AutoPlayException("For You isn't available here")
+    }
+
+    /** SURF-7: start New-tile releases (expanded to `am:<storeId>` rows; no feedback scope). */
+    suspend fun playReleases(releaseIds: List<String>, shuffle: Boolean) {
+        throw AutoPlayException("For You isn't available here")
+    }
+
+    /**
+     * P2-POC-16: the Pocket Wheel's best match for now (car connected => carPlay mode). Goes through the same door as
+     * the phone (onboarding veto + ensureReady). A failure throws [AutoPlayException] with the speakable reason.
+     */
+    suspend fun playPocketForNow() {
+        throw AutoPlayException("Pockets aren't available here")
+    }
+
+    /** P2-POC-16: one "Pockets right now" moment. */
+    suspend fun playPocketMoment(key: com.levi.pocketdj.data.pockets.wheel.PocketMomentKey) {
+        throw AutoPlayException("Pockets aren't available here")
+    }
 }
 
 /**
@@ -42,6 +69,8 @@ class AutoLibraryCallback(
     private val recentTargets: () -> List<Pair<AutoTargetKind, String>> = { emptyList() },
     private val warmUp: () -> Unit = {},
     private val catalogReady: () -> Boolean = { true },
+    /** P2-POC-16: recompute the Pocket Wheel's answer (called on root fetch; the host decides threading). */
+    private val refreshPockets: suspend () -> Unit = {},
 ) {
     init {
         // SURF-9: the Mix tab rebuilds on facade state changes through the same notify channel.
@@ -57,13 +86,59 @@ class AutoLibraryCallback(
             warmed = true
             if (!catalogReady()) warmUp()
         }
+        refreshPocketsAndNotify()
         return tree.root()
+    }
+
+    /**
+     * The host's root-children cap from the root hints. The tree is shared by every connected controller, so the
+     * hint only ever LOWERS the cap: a controller with no hint (null) or a looser one never resets Auto's.
+     * Call BEFORE [onConnect] so the first root fetch already honours it; re-notifies only on a real change.
+     */
+    fun setRootLimit(limit: Int?) {
+        if (limit == null || limit <= 0) return
+        val cur = tree.rootLimit
+        if (cur != null && cur <= limit) return
+        tree.rootLimit = limit
+        notifyLibraryChanged()
+    }
+
+    private var pocketsSignature: String? = null
+    private val pocketsRefreshing = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * "Refreshed on root": recompute the wheel's answer off the browse path, then re-notify ONLY when the rows really
+     * changed (so the notification can never loop). A failed refresh keeps the previous answer; never throws.
+     */
+    private fun refreshPocketsAndNotify() {
+        val pockets = tree.pockets ?: return
+        if (!pocketsRefreshing.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                refreshPockets()
+                val sig = pockets.signature()
+                if (sig != pocketsSignature) {
+                    pocketsSignature = sig
+                    notifyLibraryChanged()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+            } finally {
+                pocketsRefreshing.set(false)
+            }
+        }
     }
 
     fun getItem(mediaId: String): AutoNode? = tree.item(mediaId)
 
+    /** For You tile drill-ins a browser has opened: re-notified with the tabs so they never go stale. */
+    private val openForYouTiles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     fun getChildren(parentId: String, page: Int, pageSize: Int): List<AutoNode>? {
         val id = AutoId.decode(parentId)
+        if (id is AutoId.ForYouTile) openForYouTiles += parentId
+        if (id is AutoId.Tab && id.tab == AutoId.Tab.Which.FOR_YOU) refreshPocketsAndNotify()
         if (id is AutoId.AddTo) {
             val all = addTargets.nodes(id.songId)
             return window(all, page, pageSize)
@@ -89,7 +164,7 @@ class AutoLibraryCallback(
     /** Collections / sign-in / held row changed: re-notify the root and tabs (and [extra] parents) with real counts. */
     fun notifyLibraryChanged(vararg extra: String) {
         if (!notifiedReady) return
-        val parents = listOf(AutoId.Root.encoded) + AutoId.Tab.Which.entries.map { AutoId.Tab(it).encoded } + extra
+        val parents = (listOf(AutoId.Root.encoded) + AutoId.Tab.Which.entries.filter { it != AutoId.Tab.Which.FOR_YOU || tree.hasForYouTab }.map { AutoId.Tab(it).encoded } + openForYouTiles + extra).distinct()
         parents.forEach { notifyChildrenChanged(it, tree.children(it, 0, Int.MAX_VALUE)?.size ?: 0) }
     }
 
@@ -109,6 +184,10 @@ class AutoLibraryCallback(
                 val mix = tree.mix
                 if (mix == null) done() else run { mix.select(id)?.let(toast) }
             }
+            AutoId.PocketList -> done()
+            AutoId.PocketNow, is AutoId.PocketMoment -> run { playPocket(id) }
+            is AutoId.ForYouTile, is AutoId.ForYouAll -> run { playForYou(id) }
+            is AutoId.ForYouRow -> guardPlayable(mediaId) { playForYou(id) }
             is AutoId.Song -> guardPlayable(mediaId) { player.playSong(id.ref, id.songId) }
             is AutoId.Solo -> guardPlayable(mediaId) { player.playSolo(id.songId) }
             is AutoId.AddTarget -> run {
@@ -121,6 +200,23 @@ class AutoLibraryCallback(
                 } else fail("Couldn't add that")
             }
             else -> done()
+        }
+    }
+
+    /** Never an empty player: a failure is an [AutoPlayException] the [run] wrapper turns into a toast + car error. */
+    private suspend fun playPocket(id: AutoId) {
+        when (val plan = tree.pockets?.plan(id)) {
+            AutoPocketPlay.ForNow -> player.playPocketForNow()
+            is AutoPocketPlay.Moment -> player.playPocketMoment(plan.key)
+            null -> throw AutoPlayException("Nothing to play here yet")
+        }
+    }
+
+    private suspend fun playForYou(id: AutoId) {
+        when (val plan = tree.forYou?.plan(id)) {
+            is AutoForYouPlay.Songs -> player.playForYouSongs(plan.ids, plan.name, plan.scope, plan.shuffle)
+            is AutoForYouPlay.Releases -> player.playReleases(plan.releaseIds, plan.shuffle)
+            null -> throw AutoPlayException("Nothing to play here yet")
         }
     }
 
@@ -155,10 +251,13 @@ class AutoLibraryCallback(
     fun addToChooserNode(mediaId: String): String? = when (val id = AutoId.decode(mediaId)) {
         is AutoId.Song -> AutoId.AddTo(id.songId).encoded
         is AutoId.Solo -> AutoId.AddTo(id.songId).encoded
+        is AutoId.ForYouRow -> tree.forYou?.songIdOf(id)?.let { AutoId.AddTo(it).encoded }
         else -> null
     }
 
     companion object {
+        /** androidx.media.utils.MediaConstants.BROWSER_ROOT_HINTS_KEY_ROOT_CHILDREN_LIMIT (media-utils is not a dependency). */
+        const val KEY_ROOT_CHILDREN_LIMIT = "androidx.media.MediaBrowserCompat.Extras.KEY_ROOT_CHILDREN_LIMIT"
         const val ACTION_ADD_TO = "pdj.addTo"
         const val ADD_TO_LABEL = "Add to…"
         /** Android Auto honours this extra on a custom-action result to open a browse node. */

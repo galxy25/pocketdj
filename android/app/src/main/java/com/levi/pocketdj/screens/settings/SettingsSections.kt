@@ -54,6 +54,8 @@ object SettingsSections {
     const val STORAGE = "storage"
     const val ABOUT = "about"
     const val DEBUG = "debug"
+    /** Pocket Wheel motion rows (P2-POC-12), registered by PocketsGraph at order 667. */
+    const val LISTENING_MOTION = "listeningMotion"
 }
 
 // ---- Shared building blocks for sections -------------------------------------

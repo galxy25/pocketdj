@@ -33,6 +33,7 @@ import com.levi.pocketdj.data.burns.BurnSettings
 import com.levi.pocketdj.data.burns.BurnSong
 import com.levi.pocketdj.data.burns.BurnState
 import com.levi.pocketdj.data.rips.BatchRipResult
+import com.levi.pocketdj.data.rips.RipAuthState
 import com.levi.pocketdj.data.rips.RipJob
 import com.levi.pocketdj.data.stems.BatchStemResult
 import com.levi.pocketdj.data.stems.StemClient
@@ -73,7 +74,16 @@ data class CollectionBurnBarState(
 
 /** Pure result -> user-string rules, ported from the iOS controller verbatim. */
 object CollectionBurnReducer {
+    /** Rip result copy: a rejected token says so (credential problem), never "server down". */
+    fun refusedSummary(r: BatchRipResult): String? = when {
+        r.refusedStatus == null -> null
+        r.unauthorized -> RipAuthState.REJECTED_COPY
+        r.refusedStatus == RipAuthState.TRANSPORT_FAILURE -> "Couldn't reach the import server — nothing was queued."
+        else -> "The import server refused the request (${r.refusedStatus}) — nothing was queued."
+    }
+
     fun ripSummary(r: BatchRipResult): String {
+        refusedSummary(r)?.let { return it }
         val pending = r.queued + r.inflight
         val parts = buildList {
             if (r.ready > 0) add("${r.ready} already ripped")
@@ -84,7 +94,7 @@ object CollectionBurnReducer {
         return if (parts.isEmpty()) "Nothing to rip." else parts.joinToString(" · ")
     }
 
-    fun burnSummary(r: BurnResult, hasServer: Boolean): String {
+    fun burnSummary(r: BurnResult, hasServer: Boolean, tokenRejected: Boolean = false): String {
         if (r.folderUnavailable) return BurnSettings.FOLDER_UNAVAILABLE
         val parts = buildList {
             add("Burned ${r.burned} of ${r.total}")
@@ -94,7 +104,8 @@ object CollectionBurnReducer {
             if (r.failed > 0) add("${r.failed} failed")
             if (r.outOfSpace) add("out of space — stopped early")
             if (r.stopped) add("stopped")
-            if (!r.stopped && r.notRipped > 0 && hasServer) add("prepared one at a time")
+            if (r.notRipped > 0 && hasServer && tokenRejected) add(RipAuthState.REJECTED_COPY)
+            else if (!r.stopped && r.notRipped > 0 && hasServer) add("prepared one at a time")
             if (r.fellBack) add(BurnSettings.FOLDER_FELL_BACK)
         }
         return parts.joinToString(" · ")
@@ -178,6 +189,10 @@ class CollectionBurnController(
     private val stemMaxTicks: Int = BurnSettings.STEM_POLL_MAX_TICKS,
     /** Q14: Stop also cancels the burn's queued background downloads (BurnStore.cancelTransfers). */
     private val cancelTransfers: (List<String>) -> Unit = {},
+    /** The server rejected the saved token (RipServerClient.isAuthRejected). */
+    private val authRejected: suspend () -> Boolean = { false },
+    /** Rejected token inside its re-probe window (RipServerClient.authHoldoff): automatic rips hold off. */
+    private val authHoldoff: suspend () -> Boolean = { false },
 ) {
     private val _state = MutableStateFlow(CollectionBurnBarState())
     val state: StateFlow<CollectionBurnBarState> = _state.asStateFlow()
@@ -334,7 +349,8 @@ class CollectionBurnController(
                 // return a partial result (stopped = true), so the summary still reports counts.
                 val r = burn(songs)
                 val server = hasServer()
-                if (CollectionBurnReducer.shouldRipMissing(r, server)) {
+                // The follow-up rip of missing songs is AUTOMATIC: don't spend a guaranteed 401 on a rejected token.
+                if (CollectionBurnReducer.shouldRipMissing(r, server) && !authHoldoff()) {
                     val missing = songs.map { it.id }.filterNot(isRipped)
                     if (missing.isNotEmpty()) {
                         // Emulator verification (SVC-4): these server rips were untracked, so the bar's Stop could
@@ -346,7 +362,7 @@ class CollectionBurnController(
                 }
                 _state.update {
                     it.copy(
-                        summary = CollectionBurnReducer.burnSummary(r, server),
+                        summary = CollectionBurnReducer.burnSummary(r, server, tokenRejected = authRejected()),
                         canRefresh = CollectionBurnReducer.canRefreshAfterBurn(r),
                         working = false, inFlightOp = null, showSummary = true,
                     )
@@ -417,7 +433,7 @@ fun rememberCollectionBurnController(key: Any? = null): CollectionBurnController
             burn = { store.burn(it) },
             requestStopBurn = store::requestStop,
             cancelTransfers = { store.cancelTransfers(it) },
-            ripCollection = { ids -> coordinator.ripCollection(ids) { graph.ripsRepository.entry(it) != null } },
+            ripCollection = { ids -> coordinator.ripCollection(ids, { graph.ripsRepository.entry(it) != null }) },
             cancelRips = { coordinator.cancelRips(it) },
             isRipped = { graph.ripsRepository.entry(it) != null },
             refreshManifest = {
@@ -425,6 +441,8 @@ fun rememberCollectionBurnController(key: Any? = null): CollectionBurnController
                 graph.ripJobTracker.pruneFinishedStemJobs() // iOS refreshManifest prunes after every refresh
             },
             hasServer = { graph.ripServerClient.isConfigured() },
+            authRejected = { graph.ripServerClient.isAuthRejected() },
+            authHoldoff = { graph.ripServerClient.authHoldoff() },
             stemifyCollection = { ids, confirm ->
                 graph.ripServerClient.stemifyCollection(
                     ids, confirmLarge = confirm,
@@ -527,6 +545,16 @@ fun CollectionBurnBar(
         }
     }
 
+    CollectionBurnDialogs(controller, noun)
+}
+
+/**
+ * The over-cap Stemify confirm + the result summary dialog for [controller]. Shared by [CollectionBurnBar] and
+ * pages that start a Stemify from their own button (album page).
+ */
+@Composable
+fun CollectionBurnDialogs(controller: CollectionBurnController, noun: String = "collection") {
+    val state by controller.state.collectAsState()
     state.stemConfirm?.let { c ->
         AlertDialog(
             onDismissRequest = controller::dismissStemConfirm,

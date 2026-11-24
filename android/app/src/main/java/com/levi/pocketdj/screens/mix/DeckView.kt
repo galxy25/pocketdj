@@ -172,6 +172,9 @@ fun DeckView(
                 if (stemActive) StemGrid(host, deck, a11y)
                 DeckVuMeter(engine, deck)
                 VolSlider(engine, deck, ds.volume, a11y)
+                // Volume Glide's automatic trim (Auto-DJ, opt-in): read-only, beside (never in) Vol.
+                val leveling by engine.volumeGlide.leveling.collectAsState()
+                if (leveling[deck].status != com.levi.pocketdj.mix.engine.LevelingStatus.INACTIVE) LevelingReadout(leveling[deck], "$a11y-leveling")
                 PlayButton(engine, deck, loaded != null, ds.isPlaying, buffering, a11y)
             }
         }

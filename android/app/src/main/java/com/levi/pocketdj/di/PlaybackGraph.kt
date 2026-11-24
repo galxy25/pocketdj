@@ -95,8 +95,15 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
             positionValid = { seq.engine?.hasLoadedItem == true && seq.currentRowLoaded },
             consumedResumeOffset = { seq.lastResumeOffsetMs },
             stemLock = { app.mixGraph.stemLockForSession() },   // MIX-18
+            sessionExtras = seq.sessionExtras,                  // P2-PB-2
         )
     }
+
+    /** P2-MM-5: Now Playing Mix Mode (session state, lane driving, swap-on-land hand-off). Installed by [wire]. */
+    val npMix: com.levi.pocketdj.playback.npmix.NpMixWiring by lazy { com.levi.pocketdj.playback.npmix.NpMixWiring(app) }
+
+    /** P2-DJ-6: DJ Mode's session shell (controller, suspensions). Installed by [wire] right after Mix Mode. */
+    val djMode: com.levi.pocketdj.playback.dj.DjModeWiring by lazy { com.levi.pocketdj.playback.dj.DjModeWiring(app) }
 
     /** Held restore at launch (and for the system's playback-resumption request). */
     val sessionRestorer: SessionRestorer by lazy {
@@ -141,7 +148,9 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
                     interruptionOpen = d.interruptionOpen,
                     intentPlaying = d.intentPlaying,
                 )
-                if (engine == null || !seq.isRunning || !engine.hasLoadedItem) {
+                // P2-MM-8: while the NP DSP owns the audio (a growing-file start / touch hand-off) its own 5 s hold fallback is
+                // the backstop; the Exo-keyed ladder must never re-kick, retry or escalate a row it is not playing.
+                if (engine == null || !seq.isRunning || !engine.hasLoadedItem || npMix.growing.ownsAudio) {
                     lastPos = -1L
                     probe
                 } else {
@@ -219,6 +228,8 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
                 if (running) supervisor.start() else supervisor.stopTicking()
             }
         }
+        // P2-MM-5: Mix Mode registers on the sequencer BEFORE the held restore below delivers its stored `npMixMode`.
+        app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) { runCatching { npMix.install() }; runCatching { djMode.install() } }
         // PB-4: held restore FIRST (before the writer observes: a restore is not a write), then the
         // real-time writer + 1 Hz position tick.
         app.appScope.launch(kotlinx.coroutines.Dispatchers.Main) {

@@ -42,6 +42,9 @@ object JukeboxUrls {
             ?.addPathSegment("decision")
             ?.build()
 
+    /** `POST {base}/jukebox/{id}/config` — flip timeless (hostKey bearer). */
+    fun config(base: String, jukeboxId: String): HttpUrl? = session(base, jukeboxId, "config")
+
     /** `POST {base}/jukebox/{id}/end` */
     fun end(base: String, jukeboxId: String): HttpUrl? = session(base, jukeboxId, "end")
 

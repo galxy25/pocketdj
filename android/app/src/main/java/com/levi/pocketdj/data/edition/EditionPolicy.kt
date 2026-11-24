@@ -51,6 +51,15 @@ object EditionPolicy {
     /** Clean-only skip predicate (explicit with no clean edition); iOS `CleanOnly.isSkipped`. */
     fun isSkipped(song: IndexSong?): Boolean = CleanOnly.isSkipped(song)
 
+    /**
+     * Stem Lock rule A eligibility (P2-MM-10): only a PREFERENCE row whose wanted edition differs from its base
+     * song. Never an `editionLocked` row, a Q94 `cleanOnlySkip` row, or any row of a clean-only collection run
+     * (a clean-only RESTRICTION is skip-not-fallback and never substitutes).
+     */
+    fun allowsVocalsMutedSubstitution(item: com.levi.pocketdj.playback.sequencer.QueueItem, collectionCleanOnly: Boolean): Boolean =
+        !collectionCleanOnly && !item.editionLocked && !item.cleanOnlySkip &&
+            item.variant != null && item.resolveId != item.id
+
     /** Ordered storage ids: [wanted, base, other] with fallback; [wanted] only without. */
     fun storageIds(base: String, edition: SongVariant?, allowFallback: Boolean): List<String> {
         if (edition == null) return listOf(base)

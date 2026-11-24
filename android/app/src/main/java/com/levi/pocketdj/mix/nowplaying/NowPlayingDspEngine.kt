@@ -5,7 +5,12 @@ import com.levi.pocketdj.audio.core.SyntheticPcmSource
 import com.levi.pocketdj.audio.core.Voice
 import com.levi.pocketdj.audio.core.VoiceGroup
 import com.levi.pocketdj.data.burns.BurnFileNames
+import com.levi.pocketdj.audio.core.PcmSource
 import com.levi.pocketdj.mix.engine.MixSourceOpener
+import com.levi.pocketdj.mix.engine.Mp3StreamSourceFactory
+import com.levi.pocketdj.mix.engine.StreamHandle
+import com.levi.pocketdj.mix.engine.StreamSourceFactory
+import com.levi.pocketdj.mix.stream.GrowingFileSchedule
 import com.levi.pocketdj.mix.engine.StemHandover
 import com.levi.pocketdj.mix.graph.DeckParams
 import com.levi.pocketdj.mix.graph.MixGraph
@@ -17,7 +22,11 @@ import com.levi.pocketdj.mix.model.Effect
 import com.levi.pocketdj.mix.model.FXSlot
 import com.levi.pocketdj.mix.model.FxRack
 import com.levi.pocketdj.mix.model.MixRanges
+import com.levi.pocketdj.playback.dj.LevelRamper
+import com.levi.pocketdj.playback.durable.SessionFxSetting
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -71,11 +80,23 @@ class NowPlayingDspEngine(
     private val stemSource: DspStemSource,
     private val scope: CoroutineScope,
     private val sampleRate: Int = 44_100,
+    /** Opens the growing decoder for [engageStreaming] (a fake under test). */
+    private val growing: StreamSourceFactory = Mp3StreamSourceFactory(),
+    /** Monotonic seconds for the DJ transition timeline (a fake clock under test). */
+    djClock: () -> Double = { System.nanoTime() / 1e9 },
+    /** Run the >= 50 Hz DJ ticker coroutine while a transition runs (off under test: the test calls [DjTransitionEngine.step]). */
+    djTicker: Boolean = true,
 ) : NowPlayingDspSeam {
 
     private val graph = MixGraph(sampleRate)
     private val composer = ParamsComposer(graph).also { it.setCrossfader(0f) }
-    private val deck = Deck.A
+    /** The LIVE deck (listener controls address it). Ping-pongs A <-> B across DJ transitions; the crossfader sits at its end. */
+    private var deck = Deck.A
+    internal val liveDeck: Deck get() = deck
+    /** DJ glide overlay on the live deck (identity outside a transition). */
+    private var ownOv = GlideOverlay.NONE
+    /** The DJ Mode two-deck transition engine (P2-DJ-7). */
+    val dj = DjTransitionEngine(this, scope, djClock, djTicker)
 
     // ---- engaged-track state ----
     private var sink: AudioSink? = null
@@ -99,7 +120,40 @@ class NowPlayingDspEngine(
     /** Song-window frame the voice was last positioned at (the voice reports 0 until its first rendered block). */
     private var positionedAt = 0L
 
+    /** A growing-file song being played while it downloads (null for an ordinary file). */
+    private var grow: Grow? = null
+
+    /** The mutable [StreamHandle] [engageStreaming] / [streamProgressed] keep current. */
+    private class GrowHandle(file: File, expected: Long?, override val startMs: Long?) : StreamHandle {
+        override val songId: String = file.name
+        override val resolved = true
+        override var bytesReceived = 0L
+        override var expectedBytes: Long? = expected
+        override var isComplete = false
+        override var failed = false
+        override val isCut = false
+        override var file: File? = file
+    }
+
+    private class Grow(val handle: GrowHandle, val sources: StreamSourceFactory, val lengthMs: Long) {
+        /** Waiting for bytes: playhead frozen at [heldSec], play intent kept. */
+        var holding = true
+        var attached = false
+        var headerless = false
+        /** Bytes received at the last undecided sniff / implausible-length probe (-1 = none): re-probe only after real growth. */
+        var sniffedAt = -1L
+        var everStarted = false
+        var fullEnd = 0L
+        /** Voice window end = how far the voice has been allowed to schedule (never past the byte frontier). */
+        var voiceEnd = 0L
+        var bps: Double? = null
+        var source: PcmSource? = null
+        var heldSec = 0.0
+    }
+
     override var onReachedEnd: (() -> Unit)? = null
+    /** A growing file died BEFORE any audio attached: the host re-plays the row its plain way from [posSec]. */
+    var onStreamFailed: ((posSec: Double) -> Unit)? = null
     /** The first audio left the engine (host: claim the MediaSession / pause ExoPlayer here). */
     var onAudioStarted: (() -> Unit)? = null
     /**
@@ -111,6 +165,8 @@ class NowPlayingDspEngine(
     var onDisengaged: (() -> Unit)? = null
     /** A USER stem control moved (Stem Lock captures the carry from this; carried applies do not fire it). */
     var onUserStemChange: (() -> Unit)? = null
+    /** FX Lock: a USER effect action (on/off or strength) - never carry, DJ automation or restore. */
+    var onUserEffectChange: (() -> Unit)? = null
     /** The stems went on air for [songId]. */
     var onStemsOnAir: ((songId: String) -> Unit)? = null
     /** Any observable state changed (UI recomposition trigger). */
@@ -131,14 +187,21 @@ class NowPlayingDspEngine(
     private var retries = 0
     private var lastAbortGen = 0
 
-    override val isEngaged: Boolean get() = main != null
+    override val isEngaged: Boolean get() = main != null || grow != null
+    /** The engaged song is still downloading (its window is the byte frontier, not the file). */
+    val isStreaming: Boolean get() = grow != null
+    /** The DSP HOLDS at the frontier of a still-downloading song with the play intent kept (the session shows BUFFERING). */
+    val isBuffering: Boolean get() = grow?.let { it.holding && playWanted } == true
     val engagedSongId: String? get() = songId
     override val isPlaying: Boolean get() = isEngaged && playWanted
     /** Audio has actually started flowing since [engage]. */
     val hasStarted: Boolean get() = started
+    /** The engaged growing song has ever made sound this engagement (survives hold resumes, unlike [hasStarted]). */
+    val producedAudio: Boolean get() = grow?.everStarted ?: started
 
     override val currentTimeSec: Double
         get() {
+            grow?.let { if (it.holding || !it.attached) return it.heldSec }
             val v = (if (stemOnSide()) stemGroup?.voices?.getOrNull(0) else main) ?: main ?: return 0.0
             val frame = if (started) v.playerFrame else maxOf(v.playerFrame, positionedAt)
             val raw = ((frame - windowStart).coerceAtLeast(0L)).toDouble() / sampleRate
@@ -150,7 +213,7 @@ class NowPlayingDspEngine(
 
     val durationSec: Double
         get() {
-            val m = main ?: return 0.0
+            val m = main ?: return grow?.let { (if (it.lengthMs > 0) it.lengthMs else FALLBACK_DURATION_MS) / 1000.0 } ?: 0.0
             val end = if (windowEnd == Long.MAX_VALUE) m.totalFrames else windowEnd
             return (end - windowStart).coerceAtLeast(0L).toDouble() / sampleRate
         }
@@ -181,9 +244,21 @@ class NowPlayingDspEngine(
         main = v
         mainRun = runner.run(v)
         graph.setMain(deck, v)
+        beginGraph(play)
+        if (play) v.play(-1)
+        onChanged?.invoke()
+        return true
+    }
+
+    /** Shared tail of an engage: settle the handover, publish the controls, attach the sink, claim the session. */
+    private fun beginGraph(play: Boolean) {
         // The chain's handover persists across engages: a previous track that ended on its stems left the
         // gains at main=0/stems=1. A new track STARTS on the full mix (lands at the next block).
         graph.deck(deck).handover.settle(false)
+        ownOv = GlideOverlay.NONE
+        levelSet(deck, 0.0)
+        // FX Lock: carried (stamped) ON effects come up from transparent; an ordinary engage has none, so no ramp.
+        armRamp(Effect.entries.filter { isEnabled(it) }.toSet())
         publishParams()
         val s = sinkFactory()
         sink = s
@@ -196,9 +271,194 @@ class NowPlayingDspEngine(
         tickCount = 0
         // Claim the session (ExoPlayer pauses silently) BEFORE the voice starts: no double audio.
         onEngaged?.invoke()
-        if (play) v.play(-1)
+    }
+
+    // ================================================================ growing file (engageStreaming)
+
+    /**
+     * Take over a STILL-DOWNLOADING file (the loader's buffer stream) at [atSeconds] into the song. The graph
+     * engages at once; the file attaches when its header declares the full length, the playhead is HELD until
+     * there is start runway, and nothing is ever scheduled past the byte frontier (iOS `engageStreaming`).
+     * A hold freezes the playhead and keeps the play intent ([isBuffering]). Feed progress with [streamProgressed].
+     * A headerless mp3 (no Xing/Info/VBRI) is never attached on a partial length estimate - held unattached
+     * until complete. The window is [startMs] + [lengthMs] (0 = whole file) like [engage].
+     */
+    fun engageStreaming(
+        file: File, expectedBytes: Long?, atSeconds: Double, play: Boolean,
+        startMs: Long = 0, lengthMs: Long = 0, bytesReceived: Long = 0, complete: Boolean = false,
+        sources: StreamSourceFactory = growing,
+    ): Boolean {
+        if (isEngaged) disengage()
+        val h = GrowHandle(file, expectedBytes, startMs.takeIf { it > 0 })
+        h.bytesReceived = bytesReceived; h.isComplete = complete
+        val g = Grow(h, sources, lengthMs)
+        g.heldSec = atSeconds.coerceAtLeast(0.0)
+        grow = g
+        windowStart = 0L
+        windowEnd = Long.MAX_VALUE
+        positionedAt = 0L
+        beginGraph(play)
+        pumpStream()          // attach now when the header is already there
         onChanged?.invoke()
         return true
+    }
+
+    /** The loader's progress for the engaged stream: bytes landed / complete / dead. [finalFile] = the adopted burn file. */
+    fun streamProgressed(bytesReceived: Long, complete: Boolean = false, failed: Boolean = false, finalFile: File? = null) {
+        val g = grow ?: return
+        val h = g.handle
+        h.bytesReceived = maxOf(h.bytesReceived, bytesReceived)
+        h.isComplete = h.isComplete || complete
+        h.failed = h.failed || failed
+        if (finalFile != null) h.file = finalFile
+        pumpStream()
+    }
+
+    private fun setHolding(g: Grow, on: Boolean) {
+        if (g.holding == on) return
+        g.holding = on
+        onChanged?.invoke()
+    }
+
+    /** Extend the growing song to the new byte frontier: attach, resume a hold with runway, append, finish. */
+    private fun pumpStream() {
+        val g = grow ?: return
+        val h = g.handle
+        if (h.failed) { streamFailed(g); return }
+        if (!(h.bytesReceived > 0 || h.isComplete)) return
+        if (!g.attached && !attachStream(g)) return
+        val v = main ?: return
+        val sr = sampleRate.toDouble()
+        val complete = h.isComplete
+        val frontier = if (complete) g.fullEnd else minOf(
+            GrowingFileSchedule.frontier(h.bytesReceived, false, g.bps, sr, windowStart, g.fullEnd),
+            // never past what the decoder can actually produce (ID3 / art bytes, VBR intros)
+            g.source?.let { maxOf(windowStart, it.availableFrames) } ?: g.fullEnd,
+        )
+        if (g.holding) {
+            if (!playWanted) return                 // paused at the held spot: ▶ pumps again
+            val posFrame = windowStart + Math.round(g.heldSec * sr)
+            if (!GrowingFileSchedule.canStart(posFrame, frontier, g.fullEnd, complete,
+                    GrowingFileSchedule.runwayNeeded(resuming = g.everStarted), sr)) return
+            v.append(frontier, final = complete && frontier >= g.fullEnd)
+            g.voiceEnd = maxOf(g.voiceEnd, frontier)
+            setHolding(g, false)
+            resumeVoiceAt(v, posFrame)
+        } else if (frontier > g.voiceEnd &&
+            GrowingFileSchedule.shouldAppend(g.voiceEnd, frontier, v.playerFrame, sr, complete)) {
+            v.append(frontier, final = complete && frontier >= g.fullEnd)
+            g.voiceEnd = frontier
+        }
+        if (complete && g.voiceEnd >= g.fullEnd && !g.holding) finishStream(g)
+    }
+
+    private fun resumeVoiceAt(v: Voice, posFrame: Long) {
+        positionedAt = posFrame
+        started = false
+        v.seek(posFrame)
+        if (playWanted) { graph.settleHandover(deck); v.play(-1) }
+    }
+
+    /** First attach: the header (and its full-length claim) is readable; install the voice over an EMPTY window. */
+    private fun attachStream(g: Grow): Boolean {
+        val h = g.handle
+        // An undecided / implausible verdict is cached by bytes received: progress fires per chunk and each
+        // probe is file IO (and possibly a decoder open), so re-probe only after SNIFF_REPROBE_BYTES of growth.
+        if (!h.isComplete && g.sniffedAt >= 0 && h.bytesReceived - g.sniffedAt < SNIFF_REPROBE_BYTES) return false
+        val claim = if (h.isComplete) GrowingFileSchedule.LengthClaim.Container else g.sources.lengthClaim(h)
+        if (!h.isComplete && !GrowingFileSchedule.attachableWhilePartial(claim)) {
+            g.sniffedAt = h.bytesReceived
+            // Headerless (or undecided): the decoder's length is an estimate from the bytes present; attached,
+            // the completed song would "end" where the partial did. Held unattached until complete.
+            if (claim != GrowingFileSchedule.LengthClaim.Undetermined) g.headerless = true
+            return false
+        }
+        val src = runCatching { g.sources.open(h) }.getOrNull()
+        if (src == null) { if (h.isComplete) streamFailed(g); return false }
+        val v = Voice(src, sampleRate, name = "np-dsp")
+        val sr = sampleRate.toDouble()
+        val bps = GrowingFileSchedule.bytesPerSecond(v.totalFrames, sr, h.expectedBytes, claim)
+        if (bps == null && !h.isComplete) { runCatching { v.close() }; g.headerless = true; g.sniffedAt = h.bytesReceived; return false }
+        val w = GrowingFileSchedule.window(
+            v.totalFrames, sr, h.startMs?.toInt(), g.lengthMs.takeIf { it > 0 }?.toInt(),
+        )
+        if (w.second <= 0) { runCatching { v.close() }; if (h.isComplete) streamFailed(g); return false }
+        windowStart = w.first
+        windowEnd = w.first + w.second
+        g.fullEnd = windowEnd
+        g.voiceEnd = windowStart
+        g.bps = bps
+        g.source = src
+        g.heldSec = g.heldSec.coerceAtMost(w.second.toDouble() / sr)
+        v.schedule(windowStart, windowStart, final = false)
+        main = v
+        mainRun = runner.run(v)
+        graph.setMain(deck, v)
+        positionedAt = windowStart + Math.round(g.heldSec * sr)
+        g.attached = true
+        onChanged?.invoke()
+        return true
+    }
+
+    /** The whole window is scheduled and the download is done: an ordinary file song from now on. */
+    private fun finishStream(g: Grow) {
+        g.source?.let { g.sources.markComplete(it) }
+        grow = null
+        onChanged?.invoke()
+    }
+
+    /** The download died. Before any audio: the host re-plays the row its plain way. Mid-song: the bytes we have ARE the song. */
+    private fun streamFailed(g: Grow) {
+        if (!g.attached || main == null || (!g.everStarted && g.voiceEnd <= windowStart)) {
+            val at = g.heldSec
+            disengage()
+            onStreamFailed?.invoke(at)
+            return
+        }
+        val v = main ?: return
+        v.append(g.voiceEnd, final = true)       // the voice now ENDS at the frontier instead of underrunning
+        windowEnd = g.voiceEnd
+        g.source?.let { g.sources.markComplete(it) }   // drain every byte that arrived
+        val dead = g
+        grow = null
+        if (dead.holding) {
+            val sr = sampleRate.toDouble()
+            val last = maxOf(windowStart, windowEnd - 1)
+            resumeVoiceAt(v, minOf(windowStart + Math.round(dead.heldSec * sr), last))
+        }
+        onChanged?.invoke()
+    }
+
+    /** The playing voice caught the frontier of a growing song: freeze the playhead there, keep the play intent. */
+    private fun holdStream(g: Grow, v: Voice) {
+        val sr = sampleRate.toDouble()
+        val endSec = (g.voiceEnd - windowStart).toDouble() / sr
+        g.heldSec = minOf(currentTimeSec, endSec).coerceAtLeast(0.0)
+        g.everStarted = true
+        v.pause(); stemGroup?.pauseAll()
+        setHolding(g, true)
+    }
+
+    private fun seekStreaming(g: Grow, seconds: Double) {
+        val target = seconds.coerceIn(0.0, maxOf(0.0, durationSec - 0.05))
+        endFired = false
+        val v = main
+        if (!g.attached || v == null) { g.heldSec = target; onChanged?.invoke(); return }
+        val sr = sampleRate.toDouble()
+        val f = windowStart + Math.round(target * sr)
+        if (g.holding || (!g.handle.isComplete && f >= g.voiceEnd - Math.round(GrowingFileSchedule.UNDERRUN_LEAD * sr))) {
+            // Past the downloaded frontier: HOLD at the target; the pump resumes there once the bytes arrive.
+            g.everStarted = g.everStarted || started
+            v.pause()
+            g.heldSec = target
+            positionedAt = f
+            setHolding(g, true)
+            pumpStream()
+        } else {
+            positionedAt = f
+            v.seek(f)
+            if (playWanted) v.play(-1)
+        }
     }
 
     /** Remember which song is engaged (stems are keyed on it). Call right after a successful [engage]. */
@@ -206,10 +466,14 @@ class NowPlayingDspEngine(
 
     override fun disengage(): Double? {
         if (!isEngaged) return null
+        dj.reset("stop")         // cuts everything (a tail / incoming deck) BEFORE the live deck is torn down
+        rampers.forEach { it?.cancel() }
         val pos = currentTimeSec
         handoverGen++            // stop() FIRES completions: a stale fetch must find its generation moved on
         stemHandover = null
         playWanted = false
+        grow?.let { g -> g.source?.let { s -> runCatching { g.sources.markComplete(s) } } }
+        grow = null
         graph.setMain(deck, null)
         graph.setStems(deck, null)
         sink?.let { runCatching { it.stop() }; runCatching { it.release() } }
@@ -219,6 +483,8 @@ class NowPlayingDspEngine(
         stemRuns.forEach { runCatching { it.close() } }; stemRuns = emptyList()
         stemGroup?.let { runCatching { it.closeAll() } }; stemGroup = null
         graph.deck(deck).resetDsp()
+        cancelRamp()
+        ownOv = GlideOverlay.NONE
         songId = null
         started = false
         onChanged?.invoke()
@@ -229,10 +495,14 @@ class NowPlayingDspEngine(
     // ================================================================ transport
 
     fun play() {
+        grow?.let { g ->
+            if (g.holding || !g.attached) { playWanted = true; pumpStream(); onChanged?.invoke(); return }
+        }
         val v = main ?: return
         playWanted = true
         graph.settleHandover(deck)
         if (stemOnSide()) stemGroup?.startAt(-1) else v.play(-1)
+        dj.onPlay()
         onChanged?.invoke()
     }
 
@@ -240,12 +510,15 @@ class NowPlayingDspEngine(
         if (!isEngaged) return
         playWanted = false
         main?.pause(); stemGroup?.pauseAll()
+        dj.onPause()
         onChanged?.invoke()
     }
 
     fun togglePlay() { if (playWanted) pause() else play() }
 
     fun seekTo(seconds: Double) {
+        dj.onSeek()
+        grow?.let { seekStreaming(it, seconds); return }
         val v = main ?: return
         val f = (windowStart + Math.round(seconds.coerceAtLeast(0.0) * sampleRate)).coerceAtMost(maxOf(windowStart, windowEnd - 1))
         graph.settleHandover(deck)
@@ -259,10 +532,25 @@ class NowPlayingDspEngine(
 
     /** Host heartbeat. Cheap; safe to call at any rate. */
     fun tick() {
+        dj.watchTick()
+        grow?.let { g ->
+            if (g.holding && playWanted) pumpStream()      // bytes may have landed since the last event
+            val gv = main
+            if (grow === g && g.attached && !g.holding && playWanted && started && gv != null && stemGroup == null) {
+                val sr = sampleRate.toDouble()
+                val raw = (gv.playerFrame - windowStart).toDouble() / sr
+                val end = (g.voiceEnd - windowStart).toDouble() / sr
+                if (GrowingFileSchedule.underrun(raw, end, (g.fullEnd - windowStart).toDouble() / sr)) {
+                    holdStream(g, gv)
+                    pumpStream()                            // bytes that arrived since may already cover it
+                }
+            }
+        }
         val v = main ?: return
         tickCount++
         if (!started && playWanted && v.status == Voice.Status.PLAYING) {
             started = true
+            grow?.everStarted = true
             startedAtClock = clockNow()
         }
         // The stretcher delays the first audible sample: hand the session over when it actually sounds.
@@ -293,13 +581,15 @@ class NowPlayingDspEngine(
     // ================================================================ controls
 
     fun setRate(r: Double) {
+        dj.listenerTouched()
         rate = r.coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)
-        composer.setTempoPitch(deck, rate, pitch); onChanged?.invoke()
+        publishTempo(); onChanged?.invoke()
     }
 
     fun setPitch(semitones: Double) {
+        dj.listenerTouched()
         pitch = semitones.coerceIn(MixRanges.pitch.start, MixRanges.pitch.endInclusive)
-        composer.setTempoPitch(deck, rate, pitch); onChanged?.invoke()
+        publishTempo(); onChanged?.invoke()
     }
 
     fun setVolume(v: Double) {
@@ -311,21 +601,100 @@ class NowPlayingDspEngine(
     fun strength(e: Effect): Double = slots[e.ordinal].strength
 
     fun setEffect(e: Effect, enabled: Boolean) {
+        dj.listenerTouched()
         slots[e.ordinal] = slots[e.ordinal].setEnabled(enabled)
-        publishSlots(); onChanged?.invoke()
+        rampScale[e.ordinal] = 1.0; rampActive.remove(e)   // the listener's hand beats an FX Lock ramp-in
+        publishSlots(); onChanged?.invoke(); onUserEffectChange?.invoke()
     }
 
     fun setEffectStrength(e: Effect, strength: Double) {
+        dj.listenerTouched()
         slots[e.ordinal] = slots[e.ordinal].setStrength(strength)
-        publishSlots(); onChanged?.invoke()
+        strengthSet += e
+        rampScale[e.ordinal] = 1.0; rampActive.remove(e)
+        publishSlots(); onChanged?.invoke(); onUserEffectChange?.invoke()
     }
 
     private fun publishSlots() {
-        composer.setSlots(deck, slots.map { if (it.enabled) SlotParams(it, it.strength) else null })
+        composer.setSlots(deck, buildSlotParams(slots.asList(), rampScale, ownOv))
+    }
+
+    /** The live deck's tempo / pitch: the listener's controls times the DJ glide overlay (identity outside a transition). */
+    private fun publishTempo() {
+        composer.setTempoPitch(deck, glidedRate(rate, ownOv), glidedPitch(pitch, ownOv))
+    }
+
+    // ---- FX Lock seams (the host drives these) ----
+
+    /** Effects whose strength the listener (or a carry) set: they are carried even while off (iOS `effectSettings`). */
+    private val strengthSet = HashSet<Effect>()
+    /** Per effect 0..1 share of its strength currently applied while it ramps in (1 = at its set strength). */
+    private val rampScale = DoubleArray(Effect.entries.size) { 1.0 }
+    private val rampActive = HashSet<Effect>()
+    private var rampJob: Job? = null
+    /** Ramp length; the host/tests may shorten it. */
+    var fxRampSeconds = FxLock.RAMP_SECONDS
+    /** A ramp-in is still moving. */
+    val effectRampInFlight: Boolean get() = rampJob?.isActive == true
+    /** The strength actually rendered for [e] now (set strength x ramp share), 0 when off. */
+    fun renderedStrength(e: Effect): Double = if (isEnabled(e)) strength(e) * rampScale[e.ordinal] else 0.0
+
+    /** The effects as the FX Lock carries them: every effect that is ON or whose strength was set. */
+    fun effectSettings(): Map<String, SessionFxSetting> =
+        Effect.entries.filter { isEnabled(it) || it in strengthSet }.associate { it.raw to SessionFxSetting(isEnabled(it), strength(it)) }
+
+    /**
+     * Stamp a carried effects state as the control state (an effect not listed goes back to off at the default
+     * strength; unknown keys are ignored). Never notifies [onUserEffectChange]. Engaged: the newly-ON effects RAMP IN
+     * over [fxRampSeconds]; idle: the next engage ramps them in.
+     */
+    fun applyCarriedEffects(fx: Map<String, SessionFxSetting>) {
+        val wasOn = Effect.entries.filter { isEnabled(it) }.toSet()
+        strengthSet.clear()
+        for (e in Effect.entries) {
+            val s = fx[e.raw]
+            slots[e.ordinal] = if (s == null) FXSlot(e) else slots[e.ordinal].setStrength(s.strength.coerceIn(0.0, 1.0)).setEnabled(s.on)
+            if (s != null) strengthSet += e
+        }
+        if (isEngaged) startRamp(Effect.entries.filter { isEnabled(it) && it !in wasOn }.toSet())
+        else { cancelRamp(); publishSlots() }
+        onChanged?.invoke()
+    }
+
+    /** Ramp [keys] (ON effects) from transparent to their set strength; every other effect applies as-is. */
+    private fun startRamp(keys: Set<Effect>) {
+        armRamp(keys)
+        publishSlots()
+    }
+
+    private fun armRamp(keys: Set<Effect>) {
+        rampJob?.cancel(); rampJob = null
+        rampActive.clear()
+        rampScale.fill(1.0)
+        if (keys.isEmpty() || fxRampSeconds <= 0.0) return
+        for (e in keys) { rampScale[e.ordinal] = 0.0; rampActive += e }
+        val steps = FxLock.RAMP_STEPS
+        val stepMs = maxOf(1L, Math.round(fxRampSeconds * 1000.0 / steps))
+        rampJob = scope.launch {
+            for (i in 1..steps) {
+                delay(stepMs)
+                val k = FxLockSession.rampScale(i, steps)
+                for (e in rampActive.toList()) rampScale[e.ordinal] = k
+                publishSlots()
+            }
+            rampActive.clear()
+            rampJob = null
+        }
+    }
+
+    private fun cancelRamp() {
+        rampJob?.cancel(); rampJob = null
+        rampActive.clear()
+        rampScale.fill(1.0)
     }
 
     private fun publishParams() {
-        composer.setTempoPitch(deck, rate, pitch)
+        publishTempo()
         composer.setVolume(deck, volume)
         publishSlots()
         publishBalance()
@@ -341,6 +710,7 @@ class NowPlayingDspEngine(
 
     fun setStemMuted(name: String, muted: Boolean) {
         if (name !in BurnFileNames.STEM_NAMES) return
+        dj.cutIfBeforeAdvance("stems")
         mutedStems = if (muted) mutedStems + name else mutedStems - name
         publishBalance(); onUserStemChange?.invoke(); onChanged?.invoke()
     }
@@ -362,6 +732,7 @@ class NowPlayingDspEngine(
     fun resetControls() {
         rate = 1.0; pitch = 0.0; volume = 1.0
         for (e in Effect.entries) slots[e.ordinal] = FXSlot(e)
+        strengthSet.clear(); cancelRamp()
         stemMode = false; stemHandover = null; handoverGen++
         mutedStems = emptySet(); stemVolumes = emptyMap()
         publishParams()
@@ -388,6 +759,7 @@ class NowPlayingDspEngine(
     private fun changeStemMode(on: Boolean): Boolean {
         val id = songId ?: return false
         if (!isEngaged) return false
+        dj.cutIfBeforeAdvance("stems")
         handoverGen++
         retries = 0
         val gen = handoverGen
@@ -453,6 +825,7 @@ class NowPlayingDspEngine(
         val h = graph.deck(deck).handover
         when (stemHandover) {
             StemHandover.TO_STEMS -> {
+                if (grow != null) return         // stems hand over once the song has finished downloading
                 if (!partsReady(id)) return
                 if (stemGroup == null) {
                     val g = buildGroup(id) ?: return
@@ -484,11 +857,217 @@ class NowPlayingDspEngine(
         onStemsOnAir?.invoke(id)
     }
 
+
+    // ================================================================ DJ two-deck seams (P2-DJ-7)
+    //
+    // The ping-pong design: the live deck is `deck`; a transition opens the incoming song on the OTHER deck
+    // (crossfader at the live end, so it is silent), and at the fade start the engine's whole per-song state
+    // swaps onto it ([djInstall]) while the outgoing song's state becomes the DjTransitionEngine's tail.
+
+    /** The per-song state that follows a song from deck to deck. */
+    internal class LiveState(
+        val deck: Deck, val main: Voice?, val mainRun: AutoCloseable?, val stemGroup: VoiceGroup?,
+        val stemRuns: List<AutoCloseable>, val songId: String?, val windowStart: Long, val windowEnd: Long,
+        val positionedAt: Long, val started: Boolean, val audioAnnounced: Boolean, val startedAtClock: Long,
+        val voiceEndedAtClock: Long, val endFired: Boolean,
+    )
+
+    /** The listener's controls of one song (frozen on the tail, restored on a refused fade start). */
+    internal class ControlSnap(
+        val rate: Double, val pitch: Double, val volume: Double, val slots: List<FXSlot>, val strengthSet: Set<Effect>,
+        val stemMode: Boolean, val mutedStems: Set<String>, val stemVolumes: Map<String, Double>, val overlay: GlideOverlay,
+    )
+
+    /** The incoming song opened on the idle deck. */
+    internal class IncomingDeck(
+        val deck: Deck, val songId: String, val voice: Voice, val run: AutoCloseable,
+        val windowStart: Long, val windowEnd: Long, val startFrame: Long, val levelDb: Double = 0.0,
+    )
+
+    internal val djPlayWanted: Boolean get() = playWanted
+    internal val djSampleRate: Int get() = sampleRate
+    internal val djStemHandoverInFlight: Boolean
+        get() = stemHandover != null || graph.deck(deck).handover.inFlight
+    internal val djHasMutedStems: Boolean get() = mutedStems.isNotEmpty()
+    internal val djHandoverGen: Int get() = handoverGen
+    internal fun djOtherDeck(): Deck = if (deck == Deck.A) Deck.B else Deck.A
+    internal fun djParams(d: Deck) = composer.current.deck(d)
+    internal fun djCrossfaderForTest(): Float = composer.crossfader
+    internal fun djLevelDb(d: Deck): Double = composer.levelDb(d)
+    internal fun djOverlay(): GlideOverlay = ownOv
+    internal fun djOutgoingPlaying(): Boolean = main?.isPlaying == true
+
+    /** Seconds of audio left on the live song at the tempo it renders at. */
+    internal fun djSecondsLeft(): Double = maxOf(0.0, durationSec - currentTimeSec) / maxOf(0.05, glidedRate(rate, ownOv))
+
+    /**
+     * Leveling gain for the LIVE deck (DJ Volume leveling; 0 = off). Not a volume-boost write. [ramp]: glide there over [seconds]
+     * (default 2 s, 20 ms steps - an analysis landing mid-play); otherwise it lands at once (a track start, before audio).
+     */
+    fun setLevelDb(db: Double, ramp: Boolean = false, seconds: Double? = null) { levelRamper(deck).set(db, ramp, seconds) }
+
+    /** Where the live deck's leveling gain is heading (dB). */
+    val levelTargetDb: Double get() = levelRamper(deck).target
+
+    // One ramper per deck: a tail keeps ramping on ITS deck after a flip; a released deck's ramp is cancelled.
+    private val rampers = arrayOfNulls<LevelRamper>(2)
+    private fun levelRamper(d: Deck): LevelRamper =
+        rampers[d.ordinal] ?: LevelRamper(scope, composer.levelDb(d)) { composer.setLevelDb(d, it) }.also { rampers[d.ordinal] = it }
+    private fun levelSet(d: Deck, db: Double) { levelRamper(d).set(db, false) }
+
+    /** The incoming's leveling gain, landed over 150 ms by the commit flip (its fade gain is about 0 meanwhile). */
+    private var incomingLevelDb = 0.0
+
+    /** Position of the crossfader such that the deck [live] is fully heard. */
+    internal fun djCrossfaderEnd(live: Deck): Float = if (live == Deck.A) 0f else 1f
+    internal fun djSetCrossfader(x: Float) { composer.setCrossfader(x) }
+
+    /** Open [file] on the idle deck (silent: the crossfader sits at the live end). null = unreadable. */
+    internal fun djOpenIncoming(songId: String, file: File, startMs: Long, lengthMs: Long, levelDb: Double): IncomingDeck? {
+        val src = runCatching { opener.open(file) }.getOrNull() ?: return null
+        val d = djOtherDeck()
+        val v = Voice(src, sampleRate, name = "np-dsp-in")
+        val ws = Math.round(startMs / 1000.0 * sampleRate)
+        val we = if (lengthMs > 0) minOf(ws + Math.round(lengthMs / 1000.0 * sampleRate), v.totalFrames.takeIf { it > 0 } ?: Long.MAX_VALUE)
+        else Long.MAX_VALUE
+        v.schedule(ws, we)
+        val run = runner.run(v)
+        graph.deck(d).handover.settle(false)
+        graph.setMain(d, v)
+        levelSet(d, 0.0)         // the gain lands over 150 ms at fade start (djCommitFlip), never a step
+        return IncomingDeck(d, songId, v, run, ws, we, ws, levelDb)
+    }
+
+    /** Publish the incoming deck's glide state (rate / pitch / texture) while it waits; identity controls. */
+    internal fun djPublishOverlay(d: Deck, snap: ControlSnap?, ov: GlideOverlay) {
+        val rate0 = snap?.rate ?: 1.0
+        val pitch0 = snap?.pitch ?: 0.0
+        composer.setTempoPitch(d, glidedRate(rate0, ov), glidedPitch(pitch0, ov))
+        val sl = snap?.slots ?: Effect.entries.map { FXSlot(it) }
+        composer.setSlots(d, buildSlotParams(sl, null, ov))
+    }
+
+    /** Overlay of the live deck changed (a ramp step / ease / glide end). */
+    internal fun djSetOwnOverlay(ov: GlideOverlay) {
+        ownOv = ov
+        publishTempo()
+        publishSlots()
+    }
+
+    /** Drop any glide overlay at once (the listener wins). */
+    internal fun djClearOwnOverlay() { if (ownOv !== GlideOverlay.NONE) djSetOwnOverlay(GlideOverlay.NONE) }
+
+    internal fun djCaptureLive() = LiveState(
+        deck, main, mainRun, stemGroup, stemRuns, songId, windowStart, windowEnd, positionedAt, started,
+        audioAnnounced, startedAtClock, voiceEndedAtClock, endFired,
+    )
+
+    internal fun djCaptureControls() = ControlSnap(
+        rate, pitch, volume, slots.toList(), strengthSet.toSet(), stemMode, mutedStems, stemVolumes, ownOv,
+    )
+
+    /** Move the engine's per-song state onto [s] (its deck becomes the live deck). The crossfader is the caller's. */
+    internal fun djInstall(s: LiveState) {
+        deck = s.deck; main = s.main; mainRun = s.mainRun; stemGroup = s.stemGroup; stemRuns = s.stemRuns
+        songId = s.songId; windowStart = s.windowStart; windowEnd = s.windowEnd; positionedAt = s.positionedAt
+        started = s.started; audioAnnounced = s.audioAnnounced; startedAtClock = s.startedAtClock
+        voiceEndedAtClock = s.voiceEndedAtClock; endFired = s.endFired
+    }
+
+    /** State of an incoming deck as the engine's live state (not yet audible: the voice starts here). */
+    internal fun djIncomingState(inc: IncomingDeck, id: String, startFrame: Long): LiveState {
+        incomingLevelDb = inc.levelDb
+        return LiveState(inc.deck, inc.voice, inc.run, null, emptyList(), id, inc.windowStart, inc.windowEnd, startFrame,
+            started = false, audioAnnounced = true, startedAtClock = 0L, voiceEndedAtClock = -1L, endFired = false)
+    }
+
+    /** COMMIT of the swap onto the incoming deck: bump the generation FIRST, then default controls on the new live deck. */
+    internal fun djCommitFlip(to: LiveState) {
+        handoverGen++            // before anything that can fire a completion (stale stem fetches must find it moved on)
+        stemHandover = null
+        djInstall(to)
+        cancelRamp()
+        // Leveling: the incoming's gain lands over 150 ms while its fade gain is about 0 (never a step).
+        val lvl = incomingLevelDb; incomingLevelDb = 0.0
+        if (lvl != 0.0) levelRamper(deck).set(lvl, ramp = true, seconds = LevelRamper.FADE_START_SECONDS)
+        rate = 1.0; pitch = 0.0; volume = 1.0
+        for (e in Effect.entries) slots[e.ordinal] = FXSlot(e)
+        strengthSet.clear()
+        stemMode = false; mutedStems = emptySet(); stemVolumes = emptyMap()
+        publishParams()
+        if (playWanted) { to.main?.play(-1) }
+        onChanged?.invoke()
+    }
+
+    /** Undo [djCommitFlip] (the host refused the advance): the outgoing song is live again with its controls. */
+    internal fun djRevertFlip(back: LiveState, controls: ControlSnap) {
+        handoverGen++
+        djInstall(back)
+        rate = controls.rate; pitch = controls.pitch; volume = controls.volume
+        for (e in Effect.entries) slots[e.ordinal] = controls.slots[e.ordinal]
+        strengthSet.clear(); strengthSet += controls.strengthSet
+        stemMode = controls.stemMode; mutedStems = controls.mutedStems; stemVolumes = controls.stemVolumes
+        ownOv = controls.overlay
+        publishParams()
+        onChanged?.invoke()
+    }
+
+    /** Stop the voices of a deck that has left the mix and clear its params (it is silent: the crossfader left it). */
+    internal fun djReleaseDeck(d: Deck, voice: Voice?, run: AutoCloseable?, group: VoiceGroup?, runs: List<AutoCloseable>) {
+        voice?.pause(); group?.pauseAll()
+        if (graph.deck(d).main === voice) graph.setMain(d, null)
+        if (graph.deck(d).stems === group) graph.setStems(d, null)
+        runCatching { run?.close() }; runCatching { voice?.close() }
+        runs.forEach { runCatching { it.close() } }
+        runCatching { group?.closeAll() }
+        composer.setTempoPitch(d, 1.0, 0.0)
+        composer.setSlots(d, emptyList())
+        levelRamper(d).cancel(); levelSet(d, 0.0)
+        composer.setStemBalance(d, floatArrayOf(1f, 1f, 1f, 1f))
+    }
+
+    /** Is [d]'s stem group the audible side (a tail that was on its stems)? */
+    internal fun djStemSide(d: Deck, group: VoiceGroup?): Boolean = graph.deck(d).handover.intentStems && group != null
+
+    /** The audible playhead of the live deck's song, seconds (same as [currentTimeSec]). */
+    internal fun djPosition(): Double = currentTimeSec
+
+    /** A DJ fade start refused / a cut put the outgoing back: its voice keeps playing (never left the deck). */
+    internal fun djVoiceOf(s: LiveState): Voice? = s.main
+
     companion object {
         const val RUNWAY_FRAMES = 2048
+        /** Growth in received bytes before an undecided / implausible length probe is repeated. */
+        const val SNIFF_REPROBE_BYTES = 16L * 1024
         const val MAX_RETRIES = 3
+        /** Provisional length of a streaming engage that did not carry one (the Mix deck's value). */
+        const val FALLBACK_DURATION_MS = 180_000L
     }
 }
 
 /** Audible playhead: the voice counter minus the stretcher delay, never negative (Now Playing DSP, ANS-MIX-2). */
 internal fun npAudibleSeconds(rawSeconds: Double, lagSeconds: Double): Double = (rawSeconds - lagSeconds).coerceAtLeast(0.0)
+
+/** Glide overlay on a deck: rate MULTIPLIER, pitch semitones ADDED, and the FX texture swept through (effect, strength). */
+class GlideOverlay(val rateMul: Double = 1.0, val pitchAdd: Double = 0.0, val texture: Pair<Effect, Double>? = null) {
+    val isIdentity: Boolean get() = rateMul == 1.0 && pitchAdd == 0.0 && texture == null
+    companion object { val NONE = GlideOverlay() }
+}
+
+internal fun glidedRate(rate: Double, ov: GlideOverlay): Double =
+    (rate * ov.rateMul).coerceIn(MixRanges.rate.start, MixRanges.rate.endInclusive)
+
+internal fun glidedPitch(pitch: Double, ov: GlideOverlay): Double =
+    (pitch + ov.pitchAdd).coerceIn(MixRanges.pitch.start, MixRanges.pitch.endInclusive)
+
+/** Composer slots: the listener's ON slots (x [rampScale]); the texture effect shows through only where the listener has it off. */
+internal fun buildSlotParams(slots: List<FXSlot>, rampScale: DoubleArray?, ov: GlideOverlay): List<SlotParams?> =
+    slots.map { s ->
+        val tex = ov.texture
+        when {
+            s.enabled -> SlotParams(s, s.strength * (rampScale?.get(s.effect.ordinal) ?: 1.0))
+            tex != null && tex.first == s.effect && tex.second > 0.0 ->
+                SlotParams(s.setEnabled(true).setStrength(tex.second), tex.second.coerceIn(0.0, 1.0))
+            else -> null
+        }
+    }

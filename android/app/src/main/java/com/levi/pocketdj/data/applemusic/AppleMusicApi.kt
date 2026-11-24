@@ -176,6 +176,22 @@ class AppleMusicApi(
             AppleMusicApiModels.parseLibraryPlaylists(it)
         }
 
+    // ---- P2-LIB-2 library index reads ---------------------------------------------
+
+    /** `GET /v1/me/library/songs?limit=&offset=&include=catalog` - one page of the user's library songs. */
+    suspend fun librarySongsPage(offset: Int = 0, limit: Int = 100): AmResult<AmPage<AmLibrarySong>> =
+        call(
+            get(url("v1", "me", "library", "songs") { paging(offset, limit); addQueryParameter("include", "catalog") }),
+            userScoped = true,
+        ) { AppleMusicLibraryParsing.parseSongs(it) }
+
+    /** `GET /v1/me/library/albums?limit=&offset=&include=catalog` - one page of library albums (artwork/genre enrichment). */
+    suspend fun libraryAlbumsPage(offset: Int = 0, limit: Int = 100): AmResult<AmPage<AmLibraryAlbum>> =
+        call(
+            get(url("v1", "me", "library", "albums") { paging(offset, limit); addQueryParameter("include", "catalog") }),
+            userScoped = true,
+        ) { AppleMusicLibraryParsing.parseAlbums(it) }
+
     /** One library playlist's STRICT `canEdit` (absent = false). Null when the playlist can't be read. */
     suspend fun libraryPlaylistCanEdit(playlistId: String): AmResult<Boolean?> =
         call(get(url("v1", "me", "library", "playlists", playlistId)), userScoped = true) {

@@ -65,10 +65,11 @@ data class MergedCatalog(
          * (specs/catalog.md §5). Each document's source name is
          * `manifest.sourceName ?? "Collection"`.
          *
-         * Synthetic local sources (iOS "Discover"/"Imported") do not exist on
-         * Android P1, but the merge-order seam is this parameter: append them
-         * AFTER all real sources so a real source always shadows a provisional
-         * twin.
+         * Synthetic local sources (iOS "Discover"/"Imported"/"Apple Music" library)
+         * ride this parameter: CatalogRepository appends them AFTER all real
+         * sources (first-wins), so a real source always shadows a provisional
+         * twin. The own-library source "Apple Music" is a distinct source name
+         * from the private "Apple Music (Local)" index.
          */
         fun merge(documents: List<IndexJson>): MergedCatalog {
             val albumsById = LinkedHashMap<String, IndexAlbum>()

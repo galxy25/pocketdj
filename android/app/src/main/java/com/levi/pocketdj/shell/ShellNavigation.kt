@@ -68,6 +68,7 @@ import com.levi.pocketdj.screens.playlists.PlaylistsScreen
 import com.levi.pocketdj.screens.playlists.PocketDetailScreen
 import com.levi.pocketdj.screens.playlists.SetlistDetailScreen
 import com.levi.pocketdj.screens.playlists.SourcePlaylistDetailScreen
+import com.levi.pocketdj.screens.settings.MixingSettingsScreen
 import com.levi.pocketdj.screens.settings.SettingsScreen
 import com.levi.pocketdj.screens.settings.StorageScreen
 import kotlinx.coroutines.Dispatchers
@@ -79,6 +80,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 const val SETTINGS_ROUTE = "settings"
 const val SETTINGS_STORAGE_ROUTE = "settings/storage"
+const val SETTINGS_MIXING_ROUTE = "settings/mixing"
 const val ALBUM_ROUTE = "album/{albumId}"
 const val ARTIST_ROUTE = "artist/{artistName}"
 const val PLAYLIST_ROUTE = "playlist/{playlistId}"
@@ -86,6 +88,12 @@ const val POCKET_ROUTE = "pocket/{pocketId}"
 const val SETLIST_ROUTE = "setlist/{setlistId}?autoplay={autoplay}"
 const val JUKEBOX_JOIN_ROUTE = "jukebox/join/{jukeboxId}"
 const val SOURCE_PLAYLIST_ROUTE = "sourcePlaylist/{playlistId}/{sourceName}"
+/** In-app Apple Music store album page (P2-LIB-4): recognizer, For You releases and Discover albums land here. */
+const val STORE_ALBUM_ROUTE = "storeAlbum/{storeId}?title={title}&artist={artist}&year={year}&art={art}&url={url}"
+
+fun storeAlbumRoute(ref: com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef): String =
+    "storeAlbum/${Uri.encode(ref.storeId)}?title=${Uri.encode(ref.title)}&artist=${Uri.encode(ref.artist)}" +
+        "&year=${ref.year ?: ""}&art=${Uri.encode(ref.artworkUrl.orEmpty())}&url=${Uri.encode(ref.url.orEmpty())}"
 
 fun albumRoute(albumId: String): String = "album/${Uri.encode(albumId)}"
 fun artistRoute(name: String): String = "artist/${Uri.encode(name)}"
@@ -287,6 +295,7 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
     val title = when (currentRoute) {
         SETTINGS_ROUTE -> "Settings"
         SETTINGS_STORAGE_ROUTE -> "Storage"
+        SETTINGS_MIXING_ROUTE -> "Mixing"
         ALBUM_ROUTE -> "Album"
         ARTIST_ROUTE -> backStackEntry?.arguments?.getString("artistName") ?: "Artist"
         PLAYLIST_ROUTE -> "Playlist"
@@ -298,6 +307,7 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
                 "Set list"
             }
         SOURCE_PLAYLIST_ROUTE -> "Source playlist"
+        STORE_ALBUM_ROUTE -> "Album"
         JUKEBOX_JOIN_ROUTE -> "Jukebox"
         NOW_PLAYING_ROUTE -> "Now Playing"
         MORE_ROUTE -> "More"
@@ -424,6 +434,12 @@ private fun ShellNavHost(
             }
         }
     }
+    // Recognizer / For You / Discover ask for a store album; push the in-app page (no open-the-AM-app fallback).
+    androidx.compose.runtime.LaunchedEffect(nav) {
+        com.levi.pocketdj.screens.discover.StoreAlbumRouter.events.collect { ref ->
+            nav.navigate(storeAlbumRoute(ref)) { launchSingleTop = true }
+        }
+    }
     val funnelScope = androidx.compose.runtime.rememberCoroutineScope()
     // ▶/🔀 funnels target the reserved Now Playing setlist: start the run, then open the deck.
     val openSetlist: (String, Boolean) -> Unit = { id, autoplay ->
@@ -487,7 +503,7 @@ private fun ShellNavHost(
             }
         }
         composable(PocketDjDestination.Jukebox.route) {
-            JukeboxScreen(onOpenJoin = { id -> nav.navigate(jukeboxJoinRoute(id)) })
+            com.levi.pocketdj.screens.jukebox.JukeboxHubScreen(onOpenJoin = { id -> nav.navigate(jukeboxJoinRoute(id)) })
         }
         composable(
             route = JUKEBOX_JOIN_ROUTE,
@@ -584,6 +600,33 @@ private fun ShellNavHost(
             AlbumDetailScreen(
                 albumId = entry.arguments?.getString("albumId").orEmpty(),
                 onOpenSetlist = openSetlist,
+                onOpenArtist = { name -> nav.navigate(artistRoute(name)) },
+            )
+        }
+        composable(
+            route = STORE_ALBUM_ROUTE,
+            arguments = listOf(
+                navArgument("storeId") { type = NavType.StringType },
+                navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                navArgument("artist") { type = NavType.StringType; defaultValue = "" },
+                navArgument("year") { type = NavType.StringType; defaultValue = "" },
+                navArgument("art") { type = NavType.StringType; defaultValue = "" },
+                navArgument("url") { type = NavType.StringType; defaultValue = "" },
+            ),
+        ) { entry ->
+            val a = entry.arguments
+            com.levi.pocketdj.screens.discover.AlbumPreviewScreen(
+                ref = com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef(
+                    storeId = a?.getString("storeId").orEmpty(),
+                    title = a?.getString("title").orEmpty(),
+                    artist = a?.getString("artist").orEmpty(),
+                    year = a?.getString("year")?.toIntOrNull(),
+                    artworkUrl = a?.getString("art")?.takeIf { it.isNotEmpty() },
+                    url = a?.getString("url")?.takeIf { it.isNotEmpty() },
+                ),
+                onBack = { nav.popBackStack() },
+                onOpenArtist = { name -> nav.navigate(artistRoute(name)) },
+                onOpenAlbum = { albumId -> nav.navigate(albumRoute(albumId)) },
             )
         }
         composable(
@@ -597,10 +640,16 @@ private fun ShellNavHost(
             )
         }
         composable(SETTINGS_ROUTE) {
-            SettingsScreen(onOpenStorage = { nav.navigate(SETTINGS_STORAGE_ROUTE) })
+            SettingsScreen(
+                onOpenStorage = { nav.navigate(SETTINGS_STORAGE_ROUTE) },
+                onOpenMixing = { nav.navigate(SETTINGS_MIXING_ROUTE) },
+            )
         }
         composable(SETTINGS_STORAGE_ROUTE) {
             StorageScreen()
+        }
+        composable(SETTINGS_MIXING_ROUTE) {
+            MixingSettingsScreen()
         }
         // Area-contributed pushed routes (decision D3): no edit here per package.
         graph.features.navEntries.forEach { entry -> entry.register(this, actions) }

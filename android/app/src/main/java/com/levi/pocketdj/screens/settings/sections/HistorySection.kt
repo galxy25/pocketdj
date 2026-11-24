@@ -49,6 +49,7 @@ internal fun historySection() = SettingsSection(SettingsSections.HISTORY, 600) {
                             // clear() does synchronous file IO — keep it off-main.
                             withContext(Dispatchers.Default) {
                                 PlayHistoryStore.get(context).clear()
+                                runCatching { host.graph.pocketsGraph.wheelClearLocal() } // P2-POC-5: the wheel is derived from history
                             }
                             host.snackbar.showSnackbar("Play history cleared")
                         }

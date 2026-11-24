@@ -100,4 +100,12 @@ class NextRowPreloader(var enabled: Boolean = true) {
         slot = null
         return s
     }
+
+    companion object {
+        /**
+         * Is queue position [pos] inside the prefetch window of the row at [index] (`index + 1 .. index + PREFETCH_AHEAD`)?
+         * An edit that touches it must re-arm the preload window.
+         */
+        fun inWindow(index: Int, pos: Int): Boolean = pos > index && pos <= index + PREFETCH_AHEAD
+    }
 }

@@ -6,6 +6,7 @@ import com.levi.pocketdj.data.activity.ActivityKind
 import com.levi.pocketdj.data.applemusic.PlaylistWriteBack
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.catalog.SourcePlaylist
+import com.levi.pocketdj.data.pockets.ListeningPocketsCollections
 import com.levi.pocketdj.data.backup.BackupPayload
 import com.levi.pocketdj.data.backup.BackupZip
 import com.levi.pocketdj.data.collections.io.CollectionFile
@@ -1918,7 +1919,38 @@ class CollectionsStore(
             )
         }
         save()
+        // P2-SURF-1: a recommendation scope never outlives its queue. Fires on EVERY replace; a For You
+        // tile play re-stamps its scope AFTER playNow returns (iOS order), so this retire cannot eat it.
+        runCatching { onPlaybackReplaced?.invoke() }
         return set
+    }
+
+    /** Fired (under the store lock, after the save) whenever the reserved Now Playing set is replaced. */
+    @Volatile var onPlaybackReplaced: (() -> Unit)? = null
+
+    /**
+     * iOS `addAcceptedSong(_:scopedTo:)`: a thumbs-up that landed accepted while playing a COLLECTION
+     * recommendation also adds the song to that collection. Reserved scopes (zone/new) and dead ids add
+     * nothing. Returns true when an add ran.
+     */
+    fun addAcceptedSong(songId: String, scopedTo: String): Boolean {
+        // iOS: membership check + add under one lock, so a repeat accept (toggle on/off/on) never duplicates.
+        return synchronized(lock) {
+            val target = when {
+                scopedTo == "zone" || scopedTo == "new" -> null
+                playlist(scopedTo) != null -> AddTarget(AddTarget.Kind.PLAYLIST, scopedTo)
+                pocket(scopedTo) != null -> AddTarget(AddTarget.Kind.POCKET, scopedTo)
+                else -> null
+            } ?: return@synchronized false
+            val members: Set<String> = if (target.kind == AddTarget.Kind.PLAYLIST) {
+                playableIdsForPlaylist(scopedTo).toSet() + songIdsInNodes(playlist(scopedTo)!!.sequences)
+            } else {
+                playableIdsForPocket(scopedTo).toSet() + pocket(scopedTo)!!.songIds
+            }
+            if (songId in members) return@synchronized false
+            addSong(songId, target)
+            true
+        }
     }
 
     /** One live-queue row for [materializeNowPlayingSetlist]. */
@@ -2074,8 +2106,19 @@ class CollectionsStore(
         pocket(sourceSetlistId)?.let {
             return PlayContext(PlayContext.SOURCE_POCKET, contextId = sourceSetlistId, contextName = it.name)
         }
+        // A catalog SOURCE playlist (`pl_…`) or the reserved Favorites id: collections a play can come from
+        // (Pocket Wheel attribution) though neither is a stored playlist.
+        sourcePlaylistName(sourceSetlistId)?.let {
+            return PlayContext(PlayContext.SOURCE_PLAYLIST, contextId = sourceSetlistId, contextName = it)
+        }
+        if (sourceSetlistId == ListeningPocketsCollections.FAVORITES_ID) {
+            return PlayContext(PlayContext.SOURCE_PLAYLIST, contextId = sourceSetlistId, contextName = ListeningPocketsCollections.FAVORITES_NAME)
+        }
         return PlayContext(PlayContext.SOURCE_SETLIST, contextId = sourceSetlistId)
     }
+
+    private fun sourcePlaylistName(id: String): String? =
+        catalogProvider?.invoke()?.playlists?.firstOrNull { it.playlist.id == id }?.playlist?.name
 
     /**
      * The navigable origin collection of the current Now Playing run (the Up
@@ -2092,6 +2135,8 @@ class CollectionsStore(
         if (setlist(sourceSetlistId) != null) return PlayContext.SOURCE_SETLIST to sourceSetlistId
         if (playlist(sourceSetlistId) != null) return PlayContext.SOURCE_PLAYLIST to sourceSetlistId
         if (pocket(sourceSetlistId) != null) return PlayContext.SOURCE_POCKET to sourceSetlistId
+        if (catalogProvider?.invoke()?.playlists?.any { it.playlist.id == sourceSetlistId } == true) return PlayContext.SOURCE_PLAYLIST to sourceSetlistId
+        if (sourceSetlistId == ListeningPocketsCollections.FAVORITES_ID) return PlayContext.SOURCE_PLAYLIST to sourceSetlistId
         return null
     }
 

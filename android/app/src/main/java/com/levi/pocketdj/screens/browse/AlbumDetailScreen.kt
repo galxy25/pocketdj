@@ -53,10 +53,16 @@ import com.levi.pocketdj.data.share.ShareText
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.ui.FavoriteToggle
-import com.levi.pocketdj.playback.PlayOutcome
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
 import com.levi.pocketdj.screens.collections.AddToItem
+import androidx.compose.material3.TextButton
+import com.levi.pocketdj.screens.collections.AddToPlaylistMenu
+import com.levi.pocketdj.screens.nowplaying.QueueAdd
+import com.levi.pocketdj.screens.playlists.CollectionBurnDialogs
+import com.levi.pocketdj.screens.playlists.rememberCollectionBurnController
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Album detail (specs/browse.md §8): header (cover 168dp, name, artist, tags,
@@ -67,12 +73,15 @@ import kotlinx.coroutines.launch
  *
  * The integrator navigates here with the album id.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun AlbumDetailScreen(
     albumId: String,
     modifier: Modifier = Modifier,
     /** Opens a setlist in Now Playing (shell nav); null disables Shuffle (no destination). */
     onOpenSetlist: ((setlistId: String, autoplay: Boolean) -> Unit)? = null,
+    /** Direct push to the artist page; the album stays underneath for Back. Null renders the artist as plain text. */
+    onOpenArtist: ((artistName: String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -86,6 +95,12 @@ fun AlbumDetailScreen(
 
     var detailSongId by remember { mutableStateOf<String?>(null) }
     var showAddSheet by remember { mutableStateOf(false) }
+    var trackMenuSongId by remember { mutableStateOf<String?>(null) }
+    var trackAddSheet by remember { mutableStateOf(false) }
+    val stemController = rememberCollectionBurnController(albumId)
+    val stemState by stemController.state.collectAsState()
+    val discoverSnap by graph.browseGraph.discoverAdds.state.collectAsState()
+    var retryingLibraryWrite by remember { mutableStateOf(false) }
 
     // Resolve the latest album by id from the catalog on every render (§8).
     val catalog = catalogState.catalog
@@ -131,6 +146,9 @@ fun AlbumDetailScreen(
                                 album.artist,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .let { m -> if (onOpenArtist != null) m.clickable { onOpenArtist(album.artist) } else m }
+                                    .testTag("artist-hotlink"),
                             )
                             Spacer(Modifier.height(6.dp))
                             MetaTag(
@@ -139,30 +157,107 @@ fun AlbumDetailScreen(
                                     album.year?.toString(),
                                     album.country,
                                     catalog.sourceOfAlbum[album.id],
-                                    Fmt.count(tracks.size, "track"),
                                 ).joinToString(" · "),
                             )
-                            Spacer(Modifier.height(12.dp))
+                            val discoverEntry = discoverSnap.albums.firstOrNull { it.albumId == album.id }
+                            val canAddToLibrary = settings?.hasAppleMusic == true
+                            when (AlbumLibraryState.of(discoverEntry, canAddToLibrary)) {
+                                AlbumLibraryState.Kind.RETRY -> {
+                                    val entry = discoverEntry!!
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        if (!entry.libraryWrite.isNullOrBlank()) {
+                                            Text(
+                                                entry.libraryWrite.orEmpty(),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.testTag("album-am-note"),
+                                            )
+                                        }
+                                        TextButton(
+                                            onClick = {
+                                                retryingLibraryWrite = true
+                                                // appScope, not the composable scope: leaving the page mid-write must not drop it (iOS: unstructured Task).
+                                                graph.appScope.launch {
+                                                    try {
+                                                        withContext(Dispatchers.IO) {
+                                                            graph.browseGraph.discoverController
+                                                                .retryAlbumLibraryWrite(entry.albumId, entry.appleMusicId)
+                                                        }
+                                                    } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                                                        throw e
+                                                    } catch (_: Exception) {
+                                                    } finally {
+                                                        retryingLibraryWrite = false
+                                                    }
+                                                }
+                                            },
+                                            enabled = !retryingLibraryWrite,
+                                            modifier = Modifier.testTag("album-am-retry"),
+                                        ) {
+                                            Text(
+                                                if (retryingLibraryWrite) {
+                                                    com.levi.pocketdj.screens.discover.AlbumLibraryWriteRetry.BUSY_LABEL
+                                                } else {
+                                                    com.levi.pocketdj.screens.discover.AlbumLibraryWriteRetry.LABEL
+                                                },
+                                            )
+                                        }
+                                    }
+                                }
+
+                                AlbumLibraryState.Kind.CONFIRMED -> Text(
+                                    "In your Apple Music library",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                    modifier = Modifier.testTag("album-am-confirmed"),
+                                )
+
+                                AlbumLibraryState.Kind.NONE -> Unit
+                            }
+                            // Whole-album queueing sits beside the track count (iOS), always present.
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    Fmt.count(tracks.size, "track"),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                AlbumQueueMenuButton(
+                                    songs = tracks,
+                                    onAdd = { items, next ->
+                                        graph.appScope.launch { QueueAdd.add(graph, items, next) }
+                                    },
+                                    onAddToPlaylist = { showAddSheet = true },
+                                )
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            androidx.compose.foundation.layout.FlowRow(
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                            ) {
                                 if (anyPlayable) {
                                     Button(
                                         onClick = {
-                                            scope.launch {
-                                                when (val outcome = graph.playbackController.playAlbum(album.id)) {
-                                                    is PlayOutcome.Failed ->
-                                                        snackbar.showSnackbar(outcome.message)
-                                                    is PlayOutcome.NotPlayable ->
-                                                        snackbar.showSnackbar(Fmt.NO_IMPORT_SERVER)
-                                                    else -> Unit
-                                                }
+                                            // Same path as Shuffle (iOS play(shuffle: false)): the album in track order through the
+                                            // sequencer, so an in-order vinyl side plays as ONE engine item (album run).
+                                            val set = graph.collections.playNow(
+                                                songIds = tracks.map { it.id },
+                                                name = album.name,
+                                                shuffle = false,
+                                                sourceToken = PlayContext.SOURCE_ALBUM,
+                                                originId = album.id,
+                                            )
+                                            if (set != null) {
+                                                onOpenSetlist?.invoke(NOW_PLAYING_SETLIST_ID, true)
+                                            } else {
+                                                scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
                                             }
                                         },
+                                        modifier = Modifier.testTag("album-play"),
                                     ) {
                                         Icon(Icons.Filled.PlayArrow, contentDescription = null)
                                         Spacer(Modifier.width(6.dp))
                                         Text("Play")
                                     }
-                                    Spacer(Modifier.width(8.dp))
                                 }
                                 if (onOpenSetlist != null && tracks.isNotEmpty() && anyPlayable) {
                                     OutlinedButton(
@@ -188,7 +283,6 @@ fun AlbumDetailScreen(
                                         Spacer(Modifier.width(6.dp))
                                         Text("Shuffle")
                                     }
-                                    Spacer(Modifier.width(8.dp))
                                 }
                                 // Add-to-Collection launch point (specs/playlists-ui.md §8.1).
                                 FilledTonalIconButton(
@@ -200,7 +294,13 @@ fun AlbumDetailScreen(
                                         contentDescription = "Add album to collection",
                                     )
                                 }
-                                Spacer(Modifier.width(8.dp))
+                                // Album-level Stemify (progress pill + over-cap confirm via the shared controller); per-track
+                                // Stemify stays on each row's transport. Needs a rip server.
+                                OutlinedButton(
+                                    onClick = { stemController.stemify(tracks.map { it.id }) },
+                                    enabled = hasServer && tracks.isNotEmpty() && !stemState.working,
+                                    modifier = Modifier.testTag("album-stemify"),
+                                ) { Text("Stemify") }
                                 FilledTonalIconButton(
                                     onClick = { ShareText.send(context, ShareText.forAlbum(album), "${album.name} — ${album.artist}") },
                                     modifier = Modifier.testTag("album-share"),
@@ -208,8 +308,41 @@ fun AlbumDetailScreen(
                                     Icon(Icons.Filled.Share, contentDescription = "Share album")
                                 }
                             }
+                            (stemState.stemProgress)?.let {
+                                Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                         HorizontalDivider()
+                    }
+
+                    run {
+                        item(key = "waveform") {
+                            AlbumWaveformEditor(
+                                album = album,
+                                songsById = catalog.songsById,
+                                manifest = manifest,
+                                playFrom = { index, _ ->
+                                    // Start the album at track `index` through the sequencer (like Play); the one-shot
+                                    // cueNextStart armed by the editor makes the first song begin mid-track.
+                                    val set = graph.collections.playNow(
+                                        songIds = tracks.map { it.id },
+                                        name = album.name,
+                                        shuffle = false,
+                                        sourceToken = PlayContext.SOURCE_ALBUM,
+                                        originId = album.id,
+                                    )
+                                    if (set != null) {
+                                        // Whole album queued (previous-track / setlist match iOS), started at `index`.
+                                        val want = tracks.getOrNull(index)?.id
+                                        val entry = set.tracks.indexOfFirst { it.songId == want }.coerceAtLeast(0)
+                                        scope.launch { graph.playbackController.playSetlist(set, startEntryIndex = entry) }
+                                        onOpenSetlist?.invoke(NOW_PLAYING_SETLIST_ID, false)
+                                    } else {
+                                        scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
+                                    }
+                                },
+                            )
+                        }
                     }
 
                     itemsIndexed(tracks, key = { _, song -> song.id }) { index, song ->
@@ -220,6 +353,7 @@ fun AlbumDetailScreen(
                             isPreparing = preparingId == song.id,
                             zebra = index % 2 == 1,
                             onClick = { detailSongId = song.id },
+                            onLongClick = { trackMenuSongId = song.id },
                             onPlay = {
                                 scope.launch {
                                     playAndReport(graph.playbackController, song.id, snackbar)
@@ -246,6 +380,34 @@ fun AlbumDetailScreen(
         )
     }
 
+    CollectionBurnDialogs(stemController, noun = "album")
+
+    // Track long-press: Play next / Play last above the Add-to-Playlist targets (iOS contextMenu).
+    trackMenuSongId?.let { songId ->
+        val song = catalogState.catalog?.songsById?.get(songId)
+        if (trackAddSheet) {
+            AddToCollectionSheet(
+                item = AddToItem.Song(songId),
+                searchFirst = true,
+                onDismiss = { trackMenuSongId = null; trackAddSheet = false },
+            )
+        } else if (song != null) {
+            AddToPlaylistMenu(
+                item = AddToItem.Song(songId),
+                onDismiss = { trackMenuSongId = null },
+                onMore = { trackAddSheet = true },
+                header = com.levi.pocketdj.screens.collections.ContextHeader(
+                    song.name, song.artist, catalogState.catalog?.albumsById?.get(albumId),
+                ),
+                leadingActions = AlbumQueueMenu.trackActions(song) { items, next ->
+                    graph.appScope.launch { QueueAdd.add(graph, items, next) }
+                },
+            )
+        } else {
+            trackMenuSongId = null
+        }
+    }
+
     if (showAddSheet) {
         AddToCollectionSheet(
             item = AddToItem.Album(albumId),
@@ -254,106 +416,16 @@ fun AlbumDetailScreen(
     }
 }
 
-/**
- * Track row (§8): # (trackNumber ?? position), title (+E, + up to 3 sentiment
- * keywords caption), BPM, key chip, time, play control. Metadata-only rows are
- * dimmed with no ▶.
- */
-@Composable
-private fun AlbumTrackRow(
-    position: Int,
-    song: IndexSong,
-    playable: Playability,
-    isPreparing: Boolean,
-    zebra: Boolean,
-    onClick: () -> Unit,
-    onPlay: () -> Unit,
-) {
-    val contentAlpha = if (playable == Playability.NONE) 0.45f else 1f
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .clickable(onClick = onClick)
-            .fillMaxWidth()
-            .let { base ->
-                if (zebra) {
-                    base.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-                } else {
-                    base
-                }
-            }
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-    ) {
-        Text(
-            (song.trackNumber ?: position).toString(),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(26.dp),
-        )
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    song.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = contentAlpha),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                if (song.explicit == true) {
-                    Spacer(Modifier.width(6.dp))
-                    ExplicitBadge()
-                }
-            }
-            val sentiments = song.sentimentKeywords.orEmpty().take(3)
-            if (sentiments.isNotEmpty()) {
-                MetaTag(sentiments.joinToString(" · "))
-            }
-        }
-        Spacer(Modifier.width(8.dp))
-        Text(
-            Fmt.bpm(song.bpm),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(30.dp),
-        )
-        // Same fixed columns as the Browse song row (unplayable rows keep the time aligned).
-        androidx.compose.foundation.layout.Box(Modifier.width(SongRowColumns.KEY), contentAlignment = Alignment.Center) {
-            KeyChip(song.key?.takeIf { song.camelot == null }, song.camelot)
-        }
-        Spacer(Modifier.width(4.dp))
-        Text(
-            Fmt.duration(song.length),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = androidx.compose.ui.text.style.TextAlign.End,
-            maxLines = 1,
-            modifier = Modifier.width(SongRowColumns.TIME),
-        )
-        FavoriteToggle(songId = song.id, appleMusicId = song.appleMusicId, iconSize = 18.dp)
-        when {
-            isPreparing -> {
-                androidx.compose.foundation.layout.Box(Modifier.size(SongRowColumns.PLAY), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                }
-            }
+/** What the album header shows about the Apple Music library write of a provisional (amrec_album_) album. */
+internal object AlbumLibraryState {
+    enum class Kind { NONE, RETRY, CONFIRMED }
 
-            playable != Playability.NONE -> {
-                IconButton(onClick = onPlay) {
-                    Icon(
-                        Icons.Filled.PlayArrow,
-                        contentDescription = "Play ${song.name}",
-                        tint = if (playable == Playability.STREAM) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
-                }
-            }
-
-            else -> Spacer(Modifier.width(SongRowColumns.PLAY))
-        }
+    /** [entry] = the Discover entry backing this album (null = not a provisional album). */
+    fun of(entry: com.levi.pocketdj.data.discover.DiscoverAddsStore.AlbumEntry?, canAddToLibrary: Boolean): Kind = when {
+        entry == null -> Kind.NONE
+        com.levi.pocketdj.screens.discover.AlbumLibraryWriteRetry.needsRetry(entry.libraryWrite, canAddToLibrary) -> Kind.RETRY
+        com.levi.pocketdj.data.discover.DiscoverAddsStore.provenByToken(entry.libraryWrite) -> Kind.CONFIRMED
+        else -> Kind.NONE
     }
 }
 

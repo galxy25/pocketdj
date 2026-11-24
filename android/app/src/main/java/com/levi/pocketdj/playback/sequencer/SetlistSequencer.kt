@@ -6,6 +6,7 @@ import com.levi.pocketdj.playback.PlayAdvancedAway
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.playback.PlayEventBus
 import com.levi.pocketdj.playback.PlayProgress
+import com.levi.pocketdj.playback.PlayStarted
 import com.levi.pocketdj.playback.PlayStopped
 import com.levi.pocketdj.playback.PlaybackMode
 import com.levi.pocketdj.playback.health.AutoAdvanceCascadeBreaker
@@ -56,7 +57,7 @@ class SetlistSequencer(
     private val modeProvider: () -> PlaybackMode = { PlaybackMode.CLOUD },
     initialRepeatMode: RepeatMode = RepeatMode.OFF,
     private val random: Random = Random.Default,
-    private val log: (String) -> Unit = { NPLog.lane(NPLog.PLAYBACK, it.removePrefix("[playback] ")) },
+    private val log: (String) -> Unit = ::defaultLog,
     /** Wall clock (ms) for audible-time sampling and the runway; tests pass virtual time. */
     private val clockMs: () -> Long = System::currentTimeMillis,
 ) {
@@ -71,6 +72,17 @@ class SetlistSequencer(
 
     @Volatile var editionDecider: EditionDecider = EditionDecider.Unchanged
 
+    /**
+     * P2-MM-10 Stem Lock rule A: (row, run is clean-only) -> the BASE id this preference row plays instead of its
+     * un-ripped wanted edition, or null. Consulted at the row's start; a hit is written into the row (sticky) and the
+     * start resolves rip-first (never Apple Music first).
+     */
+    @Volatile var editionSubstituter: ((QueueItem, Boolean) -> String?)? = null
+
+    /** Rows (uids) whose play took the rule-A substitution: they resolve rip-first. */
+    /** uid -> the row's original resolveId (restored when the row is freshly re-entered). */
+    private val substitutedUids = HashMap<String, String>()
+
     /** Fan-out target for natural-end / skip outcomes. */
     @Volatile var outcomes: PlayOutcomeRegistry? = null
 
@@ -83,8 +95,155 @@ class SetlistSequencer(
     /** Persist the sticky repeat mode. */
     @Volatile var onRepeatModeChanged: (RepeatMode) -> Unit = {}
 
-    /** Cascade-breaker seam: return false to HALT an [AdvanceCause.AUTO] advance. */
+    /** Cascade-breaker seam: return false to HALT an automatic ([AdvanceCause.isAuto]) advance. */
     @Volatile var autoAdvanceGate: () -> Boolean = { true }
+
+    // ---- parity-2 extension seams (P2-PB-2) -----------------------------------------------------------
+
+    /** Ordered listener bus: session / track / transition / queue / hold events (see [SequencerListener]). */
+    val hooks = SequencerHooks { log(it) }
+
+    /** Features' durable-session state (Mix Mode, FX Lock, DJ Mode): written by the session writer, restored HELD. */
+    val sessionExtras = SessionExtras()
+
+    /**
+     * P2-ALB-4: the shared-album-file layout provider (null = album runs off: every analog row keeps its own window).
+     * Bound by the controller to the rips manifest + the user's boundary edits.
+     */
+    @Volatile var albumTimelines: com.levi.pocketdj.playback.album.AlbumTimelineSource? = null
+
+    /** The cause of the latest current-row change (null before any); the album run claims in-place skips only for non-natural ones. */
+    @Volatile var lastTransitionCause: TransitionCause? = null
+        private set
+
+    /**
+     * The album-run plan for the row at [pos] loading from [source] ([PlayRequest.albumRun]); null when runs are off or the
+     * row is not a song of an in-order run.
+     */
+    fun albumPlanFor(pos: Int, source: RowSource, fresh: Boolean, resumeAtMs: Long?): com.levi.pocketdj.playback.album.AlbumRun.Plan? {
+        val provider = albumTimelines ?: return null
+        val item = queue.getOrNull(pos) ?: return null
+        val startMs = when (source) {
+            is LocalFileSource -> source.file.startMs
+            is StreamSource -> source.action.clipStartMs
+            else -> null
+        } ?: return null
+        val tl = provider.timeline(item.id) ?: return null
+        return com.levi.pocketdj.playback.album.AlbumRun.plan(queue, pos, tl, startMs, effectiveRepeatMode == RepeatMode.ONE, fresh, resumeAtMs)
+    }
+
+    @Volatile private var startInterceptors: List<StartInterceptor> = emptyList()
+    @Volatile private var advanceInterceptors: List<AdvanceInterceptor> = emptyList()
+
+    /** Registered claimers, highest priority first (stable for ties). */
+    fun addStartInterceptor(i: StartInterceptor) {
+        startInterceptors = (startInterceptors + i).sortedByDescending { it.priority }
+    }
+
+    fun removeStartInterceptor(i: StartInterceptor) { startInterceptors = startInterceptors - i }
+
+    fun addAdvanceInterceptor(i: AdvanceInterceptor) {
+        advanceInterceptors = (advanceInterceptors + i).sortedByDescending { it.priority }
+    }
+
+    fun removeAdvanceInterceptor(i: AdvanceInterceptor) { advanceInterceptors = advanceInterceptors - i }
+
+    /** Bumped on every current-row change; [lastUserTransitionSeq] is the seq of the latest [TransitionCause.USER] one. */
+    @Volatile var transitionSeq = 0L
+        private set
+    @Volatile var lastUserTransitionSeq = 0L
+        private set
+
+    /** Bumped on every queue mutation (a new run, an edit, a hop, a shuffle, a clear). */
+    @Volatile var queueGeneration = 0L
+        private set
+
+    private var causeOverride: TransitionCause? = null
+
+    /**
+     * Run [block] with every current-row change tagged [cause] instead of its natural cause (an external driver such
+     * as Remote uses [TransitionCause.REMOTE]). While REMOTE, transports are not reported as listener intent.
+     */
+    fun <T> applyingCause(cause: TransitionCause, block: () -> T): T {
+        val prev = causeOverride
+        causeOverride = cause
+        try {
+            return block()
+        } finally {
+            causeOverride = prev
+        }
+    }
+
+    // ---- P2-PB-3: external-driver seams (Remote is the first user; generic) ---------------------------------
+
+    private var externalDepth = 0
+
+    /**
+     * Run [block] as an EXTERNAL-DRIVER apply (a Remote session): every current-row change inside it is tagged
+     * [TransitionCause.REMOTE], ▶/⏸ inside it are not the listener's intent, and [transportGate] is bypassed.
+     */
+    fun <T> applyingExternal(block: () -> T): T {
+        externalDepth++
+        try {
+            return applyingCause(TransitionCause.REMOTE, block)
+        } finally {
+            externalDepth--
+        }
+    }
+
+    /**
+     * Wired to the Remote session: returns true when this device is a Backseat CONTROLLER and the request was
+     * forwarded to the session (the sequencer must not touch local audio). Null / false = every transport behaves
+     * exactly as before. Consulted by every transport entry; bypassed inside [applyingExternal].
+     */
+    @Volatile var transportGate: ((TransportRedirect) -> Boolean)? = null
+
+    /** True = [request] went to the Remote session; the caller must not touch local audio. */
+    private fun redirected(request: TransportRedirect): Boolean {
+        if (externalDepth > 0) return false
+        val gate = transportGate ?: return false
+        if (!gate(request)) return false
+        log("[session] local transport -> session (controller) request=${request::class.simpleName}")
+        return true
+    }
+
+    /** Bumped on every ▶/⏸ the LISTENER pressed (never by a cascade halt, an interruption, a stall or an external apply). */
+    @Volatile var userPlayIntentSeq = 0L
+        private set
+    @Volatile var lastUserPlayIntent = false
+        private set
+
+    /** The listener pressed ▶ (`playing = true`) or ⏸ - recorded for the Remote session. Ignored inside [applyingExternal]. */
+    fun noteListenerPlayIntent(playing: Boolean) {
+        if (externalDepth > 0 || causeOverride == TransitionCause.REMOTE) return
+        userPlayIntentSeq++
+        lastUserPlayIntent = playing
+    }
+
+    /** The current HOLD was made by an external driver (start-paused / controller silence), not by a restore. */
+    private var heldByRemote = false
+
+    /** A start-paused hold: the first ▶ starts a genuinely NEW track at the cue (not a mid-song resume). */
+    private var heldIsCuedStart = false
+
+    val isHeldByRemote: Boolean get() = held && heldByRemote
+
+    // ---- P2-PB-3: pocket-run seams -------------------------------------------------------------------------------
+
+    /**
+     * Does the run with this source id force repeat off? Pocket Wheel runs are exactly N played-through songs, so
+     * playback ignores repeat while one owns the sequencer, WITHOUT touching the sticky [repeatMode]. Default: the
+     * `pwr_` run tag; pocket runs may bind another predicate.
+     */
+    @Volatile var repeatForcedOff: (String?) -> Boolean = { it?.startsWith(POCKET_WHEEL_RUN_PREFIX) == true }
+
+    val isRepeatForcedOff: Boolean get() = running && repeatForcedOff(sourceSetlistId)
+
+    /** The repeat mode playback obeys (and every repeat surface shows): OFF while forced off, else the sticky mode. */
+    val effectiveRepeatMode: RepeatMode get() = if (isRepeatForcedOff) RepeatMode.OFF else repeatMode
+
+    /** DJ Mode is on (the next-up pick is then held: a random insert never lands ahead of it). Bound by DJ. */
+    @Volatile var djModeEnabled: () -> Boolean = { false }
 
     // ---- PB-3 zero-dead-air seams ---------------------------------------------------------------
 
@@ -273,20 +432,88 @@ class SetlistSequencer(
             capturedOrigin = capturedOrigin,
             repeatMode = repeatMode,
             shuffleEnabled = shuffleEnabled,
+            repeatForcedOff = isRepeatForcedOff,
             playbackNotice = notice,
             waitingForLive = waitingForLive,
             pausedByCascade = pausedByCascade,
             playGeneration = playGeneration,
             deviceQueueUnplayable = deviceQueueUnplayable,
             deviceUnplayableSourceId = deviceUnplayableSourceId,
+            queueGeneration = queueGeneration,
+            transitionSeq = transitionSeq,
         )
     }
 
     private fun queueEdited() {
         memberIds = null
+        val g = if (running) bumpQueueGeneration() else queueGeneration
         publish()
+        if (running) announceQueue(g)
         reconcilePreload()
         scheduleRipWindowReconcile()
+    }
+
+    private fun bumpQueueGeneration(): Long {
+        val g = ++queueGeneration
+        log("[session] queueGen=$g size=${queue.size}")
+        return g
+    }
+
+    private fun announceQueue(g: Long) = hooks.emit { it.onQueueChanged(g) }
+
+    /** Public seam for user pause/seek/resume that the media-session player handles itself (REMOTE-cause suppressed). */
+    fun reportUserTransport(kind: UserTransport) = fireUser(kind)
+
+    private fun fireUser(kind: UserTransport) {
+        if (causeOverride == TransitionCause.REMOTE || externalDepth > 0) return
+        when (kind) {
+            UserTransport.PLAY -> noteListenerPlayIntent(true)
+            UserTransport.PAUSE -> noteListenerPlayIntent(false)
+            else -> Unit
+        }
+        hooks.emit { it.onUserTransport(kind) }
+    }
+
+    /** A listener-driven queue edit: report the intent, then the mutation. */
+    private fun userQueueEdited() {
+        if (running) fireUser(UserTransport.EDIT)
+        queueEdited()
+    }
+
+    /** The current row changed from [fromUid] (null = nothing was current): record + announce it. */
+    private fun noteTransition(fromUid: String?, cause: TransitionCause) {
+        val toUid = queue.getOrNull(index)?.uid
+        if (fromUid == toUid) return
+        val c = causeOverride ?: cause
+        lastTransitionCause = c
+        val seq = ++transitionSeq
+        if (c == TransitionCause.USER) lastUserTransitionSeq = seq
+        log("[session] transition cause=$c seq=$seq from=${fromUid ?: "-"} to=${toUid ?: "-"}")
+        val t = Transition(fromUid, toUid, c, seq)
+        hooks.emit { it.onTransition(t) }
+    }
+
+    private fun currentUid(): String? = if (running) queue.getOrNull(index)?.uid else null
+
+    private fun pathFor(backend: String): StartPath = if (backend == "appleMusic") StartPath.AM else StartPath.EXO
+
+    private fun fireTrackStarted(item: QueueItem, at: Int, gen: Long, path: StartPath, fresh: Boolean) {
+        val ts = TrackStart(item, at, gen, path, fresh)
+        hooks.emit { it.onTrackStarted(ts) }
+    }
+
+    /** The History play of a start no engine event will report (an advance or claim with no load). */
+    private fun emitHistoryStart(item: QueueItem) {
+        PlayEventBus.emit(
+            PlayStarted(
+                songId = item.id,
+                title = item.title,
+                artist = item.artist,
+                context = requestContext(item),
+                atMs = clockMs(),
+                originCollectionId = originCollectionIdFor(),
+            ),
+        )
     }
 
     // ---- start / stop ---------------------------------------------------------------------
@@ -303,25 +530,40 @@ class SetlistSequencer(
         /** Explicit History context (wins over [historyContextProvider]). */
         context: PlayContext? = null,
         startIndex: Int = 0,
+        /** External driver: cue the first row at this offset (ms) - the cue travels WITH the start. */
+        atMs: Long? = null,
+        /** External driver: park the new run on its row, HELD (the first ▶ starts it at [atMs]). */
+        startPaused: Boolean = false,
     ) {
         if (items.isEmpty()) return
+        if (redirected(TransportRedirect.Play(items, startIndex))) return
         log("[playback] set start count=${items.size} source=${sourceSetlistId ?: "-"}")
         val first = items.first()
+        val replacing = running
+        val fromUid = currentUid()
         if (running && !isRestartOfCurrent(first.id)) noteAdvanceAway()
         // The previous session's playback rips (minus the row that was sounding and anything heard) are
         // cancelled - a fresh run has its own window.
         if (running) endRipWindowSession("new-session")
         noteUserTransport()
+        fireUser(UserTransport.PLAY)
+        if (replacing) {
+            sessionExtras.clearHeld()
+            hooks.emit { it.onSessionEnded(SessionEndReason.REPLACED) }
+        }
         this.sourceSetlistId = sourceSetlistId
         capturedContext = context ?: historyContextProvider(sourceSetlistId)
         capturedOrigin = originProvider(sourceSetlistId)
         queue.clear()
+        substitutedUids.clear()
         queue.addAll(if (preStamped) items else stamp(items, sourceSetlistId))
         index = startIndex.coerceIn(0, items.lastIndex)
         shuffleEnabled = false
         canonicalOrder = null
         running = true
         held = false
+        heldByRemote = false
+        heldIsCuedStart = false
         sessionId = "pses_" + java.util.UUID.randomUUID().toString().uppercase()
         pendingResumeMs = null
         lastResumeOffsetMs = null
@@ -332,8 +574,32 @@ class SetlistSequencer(
         lastLoadedId = null
         unplayableStreak = 0
         memberIds = null
+        endNotedUid = null
+        val g = bumpQueueGeneration()
         publish()
-        startPlayCurrent()
+        val sid = sessionId
+        if (sid != null) {
+            val src = SourceRef(capturedContext?.source ?: PlayContext.SOURCE_SETLIST, sourceSetlistId, capturedContext?.contextName)
+            log("[session] started id=$sid source=${src.kind}")
+            hooks.emit { it.onSessionStarted(sid, src) }
+        }
+        announceQueue(g)
+        noteTransition(fromUid, TransitionCause.USER)
+        val cue = atMs?.takeIf { it > 0 }
+        if (startPaused) {
+            // Whatever the previous run was sounding (or starting) goes quiet; the new run is parked on its row.
+            cancelStartAndSilence("start-paused")
+            playsRemaining = CollectionMembership.normalizedRepeat(queue.getOrNull(index)?.repeatCount)
+            held = true
+            heldByRemote = true
+            heldIsCuedStart = true
+            pendingResumeMs = cue
+            publish()
+            reconcilePreload()
+            hooks.emit { it.onHeld() }
+            return
+        }
+        startPlayCurrent(fresh = true, resumeAtMs = cue, cued = cue != null)
     }
 
     private fun stamp(items: List<QueueItem>, setlistId: String?): List<QueueItem> {
@@ -353,9 +619,11 @@ class SetlistSequencer(
     }
 
     /** Tear the run down (natural end included): cancels any in-flight resolve, clears the queue. */
-    fun stop() {
+    fun stop() = stopRun(SessionEndReason.STOPPED)
+
+    private fun stopRun(reason: SessionEndReason) {
         val wasRunning = running
-        endRun()
+        endRun(reason)
         if (wasRunning) scope.launch { runCatching { port.stop() } }
     }
 
@@ -373,9 +641,14 @@ class SetlistSequencer(
      * End the run WITHOUT touching the player - a foreign play (an album queue) has taken the
      * engine over and must keep sounding.
      */
-    fun abandonRun() = endRun()
+    fun abandonRun() = endRun(SessionEndReason.REPLACED)
 
-    private fun endRun() {
+    private fun endRun(reason: SessionEndReason = SessionEndReason.STOPPED) {
+        val wasRunning = running
+        djSkip?.clearPending()
+        endStallEpisode("stop")
+        endNotedUid = null
+        sessionExtras.clearHeld()
         pendingRedecideUids = emptySet()
         if (running) {
             skipTracker?.checkpoint() // a stop / set end never advances away: still land the final fraction
@@ -399,10 +672,13 @@ class SetlistSequencer(
         resetPreload()
         running = false
         held = false
+        heldByRemote = false
+        heldIsCuedStart = false
         sessionId = null
         notice = null
         index = 0
         queue.clear()
+        substitutedUids.clear()
         sourceSetlistId = null
         capturedContext = null
         capturedOrigin = null
@@ -411,7 +687,15 @@ class SetlistSequencer(
         unplayableStreak = 0
         lastLoadedId = null
         memberIds = null
-        publish()
+        if (wasRunning) {
+            val g = bumpQueueGeneration()
+            publish()
+            log("[session] ended reason=$reason")
+            hooks.emit { it.onSessionEnded(reason) }
+            announceQueue(g)
+        } else {
+            publish()
+        }
     }
 
     /**
@@ -431,6 +715,17 @@ class SetlistSequencer(
         if (running) publish()
     }
 
+    /**
+     * P2-MM-8: put the CURRENT row (by [uid]) back through the start funnel at [atMs] without moving the cursor. A row the
+     * NP DSP's growing file could not carry (a hold ran too long, its stream died) restarts the plain way, at the same
+     * song position. False = not running / held / the cursor is on another row.
+     */
+    fun restartCurrentRow(uid: String, atMs: Long?): Boolean {
+        if (!running || held || queue.getOrNull(index)?.uid != uid) return false
+        startPlayCurrent(fresh = false, resumeAtMs = atMs?.takeIf { it > 0 })
+        return true
+    }
+
     /** Acknowledge the one-shot device-unplayable banner. */
     fun clearDeviceUnplayable() {
         deviceQueueUnplayable = false
@@ -439,11 +734,98 @@ class SetlistSequencer(
         publish()
     }
 
+    // ---- P2-ALB-5: album scrub APIs ------------------------------------------------------
+
+    /** P2-ALB-6: the loaded album-run item (media id + absolute file position) while the run is live, else null (waveform playhead). */
+    fun albumFileState(): AlbumFileState? = if (running) port.albumFileState() else null
+
+    /** P2-ALB-6: the playhead as an absolute position in the shared side file, null when no run item is loaded. */
+    fun albumFilePositionMs(): Long? = albumFileState()?.fileMs
+
+
+    private val startCue = com.levi.pocketdj.playback.album.AlbumSeek.StartCue()
+
+    /**
+     * One-shot cue for the NEXT fresh start: when it lands on [songId] it starts [atMs] into the song instead of at its
+     * top (the album waveform's scrub on an album that is not playing yet). Expires after 30 s.
+     */
+    fun cueNextStart(songId: String, atMs: Long) = startCue.arm(songId, atMs)
+
+    /** A pending in-file scrub target (absolute file ms) for [songId]'s next start; the album engine glue claims it. */
+    private var albumScrubSongId: String? = null
+    private var albumScrubFileMs: Long = 0
+    private var albumScrubAtMs: Long = 0
+
+    /** One-shot: the file position the in-flight [seekAlbumFile] start of [songId] must land on (null = not a scrub). */
+    fun takeAlbumScrub(songId: String): Long? {
+        val id = albumScrubSongId ?: return null
+        albumScrubSongId = null
+        if (System.currentTimeMillis() - albumScrubAtMs > 5_000) return null // a stale unclaimed scrub never leaks
+        return albumScrubFileMs.takeIf { com.levi.pocketdj.data.edition.SongVariant.baseId(id) == com.levi.pocketdj.data.edition.SongVariant.baseId(songId) }
+    }
+
+    /**
+     * ALBUM WAVEFORM SCRUB (iOS `seekAlbumFile`): jump to absolute position [fileMs] of the shared album file the deck is
+     * playing. The song under that position becomes current (title, card, History) and the audio seeks inside the same
+     * file. False when the deck is not on a shared album file that holds that song (the caller then starts the album there
+     * with [cueNextStart]).
+     */
+    fun seekAlbumFile(fileMs: Long): Boolean {
+        if (!running || index >= queue.size || held || waitingForLive) return false
+        val st = port.albumFileState() ?: return false
+        val cur = queue[index]
+        if (!cur.matches(st.mediaId) && com.levi.pocketdj.data.edition.SongVariant.baseId(cur.id) != com.levi.pocketdj.data.edition.SongVariant.baseId(st.mediaId)) return false
+        val tl = albumTimelines?.timeline(st.mediaId) ?: return false
+        val seg = tl.segmentAt(fileMs) ?: return false
+        val ms = fileMs.coerceAtLeast(0L)
+        log("[playback] album scrub song=${seg.songId} fileMs=$ms")
+        val base = com.levi.pocketdj.data.edition.SongVariant.baseId(cur.id)
+        if (base == seg.songId) { // same song: a plain seek, still a user seek for skip classification
+            val ok = port.seekInFile(ms)
+            if (ok) fireUser(UserTransport.SEEK)
+            return ok
+        }
+        val pos = com.levi.pocketdj.playback.album.AlbumSeek.nearestOccurrence(queue.map { it.id }, seg.songId, index) ?: return false
+        val fromUid = currentUid()
+        noteAdvanceAway()
+        noteUserTransport()
+        fireUser(UserTransport.JUMP)
+        waitingForLive = false
+        index = pos
+        publish() // the session writer persists the new row at its song-relative position
+        noteTransition(fromUid, TransitionCause.USER)
+        val rel = (ms - seg.startMs).coerceAtLeast(0L)
+        // The engine glue seeks FIRST (the new song's end boundary must never meet the old position) then retargets;
+        // when it declines (a DSP engaged, a held deck...) the normal load starts the song at [rel].
+        albumScrubSongId = seg.songId
+        albumScrubFileMs = ms
+        albumScrubAtMs = System.currentTimeMillis()
+        startPlayCurrent(fresh = true, resumeAtMs = rel.takeIf { it > 0 }, cued = rel > 0)
+        return true
+    }
+
     // ---- the ONE start funnel -----------------------------------------------------------
 
-    private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false, reResolve: Boolean = false) {
+    private fun startPlayCurrent(
+        fresh: Boolean = true,
+        resumeAtMs: Long? = null,
+        inPlace: Boolean = false,
+        reResolve: Boolean = false,
+        /** [resumeAtMs] is a start CUE of a new track (external driver), not a mid-song resume. */
+        cued: Boolean = false,
+    ) {
+        // P2-ALB-5 (iOS pendingStartCue): the next FRESH start consumes the one-shot cue either way.
+        var resumeAtMs = resumeAtMs
+        var cued = cued
+        if (resumeAtMs == null && fresh && albumScrubSongId == null) {
+            val cue = startCue.consume(queue.getOrNull(index)?.id ?: "")
+            if (cue != null && running) { resumeAtMs = cue; cued = true }
+        }
+        djSkip?.clearPending() // a (re)start supersedes any pending skip mix
         if (pausedByCascade) { pausedByCascade = false; publish() }
+        spendCurrentUserNext()
         if (inPlace) queue.getOrNull(index)?.let { skipTracker?.noteTrackRestarted(it.id) }
+        endNotedUid = null
         resetTrackAudible()
         reconcileRipWindow() // the playhead (may have) moved: rips outside the window go
         ensureHealthTicker()
@@ -451,20 +833,44 @@ class SetlistSequencer(
         // LAZY + assign + start: an inline-dispatching scope may run (and even recurse into) this
         // body before launch() returns; the handle must already be in place so a nested start
         // cancels THIS job, not a stale one.
-        val job = scope.launch(start = CoroutineStart.LAZY) { playCurrent(fresh, resumeAtMs, inPlace, reResolve) }
+        val job = scope.launch(start = CoroutineStart.LAZY) { playCurrent(fresh, resumeAtMs, inPlace, reResolve, cued) }
         playJob = job
         job.start()
     }
 
-    private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?, inPlace: Boolean, reResolve: Boolean) {
+    /**
+     * P2-MM-10 rule A for the row at [at]. [restoreFirst] (a fresh entry / replay) puts the original resolveId back and
+     * re-evaluates, so the substitution lasts one play, as on iOS; retries and preloads keep it.
+     */
+    private fun applyEditionSubstitution(at: Int, row: QueueItem, restoreFirst: Boolean): QueueItem {
+        var item = row
+        if (restoreFirst) {
+            val orig = substitutedUids.remove(item.uid)
+            if (orig != null) { item = item.copy(resolveId = orig); queue[at] = item; memberIds = null }
+        }
+        if (!item.cleanOnlySkip && !item.editionLocked && item.uid !in substitutedUids) {
+            val sub = try { editionSubstituter?.invoke(item, cleanOnlyProvider(sourceSetlistId)) } catch (e: Exception) { null }
+            if (sub != null && sub != item.resolveId) {
+                substitutedUids[item.uid] = item.resolveId
+                item = item.copy(resolveId = sub)
+                queue[at] = item
+                memberIds = null
+            }
+        }
+        return item
+    }
+
+    private suspend fun playCurrent(fresh: Boolean, resumeAtMs: Long?, inPlace: Boolean, reResolve: Boolean, cued: Boolean = false) {
         if (!running || index >= queue.size) return
         // A job cancelled BEFORE it ran must do nothing - above all it must not claim a generation.
         if (!currentCoroutineContext().isActive) return
         if (fresh) playsRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
         val gen = ++playGeneration
         resetPreload() // a load replaces the whole engine playlist: slot 1 is gone with it
-        val item = queue[index]
+        var item = queue[index]
         val at = index
+        // P2-MM-10 rule A (never for locked / clean-only-skip rows): decided at the start, written into the row, sticky.
+        item = applyEditionSubstitution(at, item, restoreFirst = fresh)
         // A new generation retires the previous start's timers; the start window + resolve stall guard this one.
         cancelHealthTimers()
         if (item.cleanOnlySkip) {
@@ -496,14 +902,36 @@ class SetlistSequencer(
             if (!owns(gen)) return
             if (restarted) {
                 log("[playback] replay in place song=${item.id} index=${at + 1}/${queue.size}")
+                fireTrackStarted(item, at, gen, pathFor(currentBackend), fresh = false)
                 handleFirstAudio("replay") // the engine already holds the row: audio is immediate
                 return
             }
         }
 
+        // P2-PB-2 seam: a registered interceptor may claim the start BEFORE the default resolve/load.
+        val claimers = startInterceptors
+        if (claimers.isNotEmpty()) {
+            val attempt = StartAttempt(item, at, queue.size, gen, fresh, resumeAtMs, inPlace, reResolve)
+            for (claimer in claimers) {
+                val claimed = try {
+                    claimer.tryClaim(attempt)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    log("[session] start interceptor ${claimer.javaClass.simpleName} threw ${e.javaClass.simpleName}: ${e.message}")
+                    false
+                }
+                if (!owns(gen)) return // superseded while the interceptor worked
+                if (claimed) {
+                    log("[session] start claimed by ${claimer.javaClass.simpleName} song=${item.id} gen=$gen")
+                    return
+                }
+            }
+        }
+
         val mode = modeProvider()
         val source = try {
-            registry.resolve(item, mode)
+            registry.resolve(item, mode, reResolve, ripFirst = item.uid in substitutedUids)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -527,6 +955,7 @@ class SetlistSequencer(
             count = queue.size,
             reResolve = reResolve,
             generation = gen,
+            albumRun = albumPlanFor(at, source, fresh, resumeAtMs),
         )
         log("[playback] track start song=${item.id} index=${at + 1}/${queue.size} backend=${source.backend}")
         currentBackend = source.backend
@@ -541,13 +970,14 @@ class SetlistSequencer(
                 log("[playback] advance: load failed song=${item.id} index=$at/${queue.size} err=${e.message}")
                 lastLoadedId = null
                 if (failureLapComplete()) return
-                advanceToNext(AdvanceCause.AUTO)
+                advanceToNext(AdvanceCause.AUTO_SKIP)
             }
             return
         }
         if (owns(gen)) {
             startedAnyRow = true
             lastLoadedId = item.id
+            fireTrackStarted(item, at, gen, pathFor(source.backend), cued || (fresh && !inPlace && resumeAtMs == null))
             if (source !is RipOnDemandSource) {
                 // Loaded: the network resolve is over. The start watchdog owns it from here.
                 stallTimer.cancel()
@@ -564,7 +994,7 @@ class SetlistSequencer(
      * breaker). The streak resets only when a row plays through or the listener acts.
      */
     private fun failureLapComplete(): Boolean {
-        if (++unplayableStreak >= queue.size.coerceAtLeast(1) && repeatMode == RepeatMode.ALL) {
+        if (++unplayableStreak >= queue.size.coerceAtLeast(1) && effectiveRepeatMode == RepeatMode.ALL) {
             finishRun()
             return true
         }
@@ -573,10 +1003,172 @@ class SetlistSequencer(
 
     private fun owns(gen: Long): Boolean = running && gen == playGeneration
 
+    /**
+     * A [StartInterceptor] that claimed the start of generation [gen] reports its audio is installed. Runs the same
+     * bookkeeping a normal load does (start window + stall watchdog stay armed from [playCurrent]; the backend is
+     * noted for the dead-air meter; the History play is recorded unless [emitHistory] is false because an engine
+     * event will report it) and announces `onTrackStarted`. False when [gen] is no longer current.
+     */
+    fun completeClaimedStart(
+        gen: Long,
+        path: StartPath,
+        backend: String = path.name.lowercase(),
+        emitHistory: Boolean = true,
+        fresh: Boolean = true,
+    ): Boolean {
+        if (!owns(gen)) return false
+        val item = queue.getOrNull(index) ?: return false
+        startedAnyRow = true
+        lastLoadedId = item.id
+        currentBackend = backend
+        meter?.trackStarting(backend)
+        log("[playback] track start song=${item.id} index=${index + 1}/${queue.size} backend=$backend claimed=true")
+        if (emitHistory) emitHistoryStart(item)
+        stallTimer.cancel()
+        if (firstAudioPending) armStartStall(gen, item.id)
+        fireTrackStarted(item, index, gen, path, fresh)
+        return true
+    }
+
+    /** Uid of the row whose natural end was already reported (outcome + skip tracker): never reported twice. */
+    private var endNotedUid: String? = null
+
+    private fun noteNaturalEndOf(item: QueueItem) {
+        if (endNotedUid == item.uid) return
+        endNotedUid = item.uid
+        outcomes?.emit(item.id, false, 1.0)
+        skipTracker?.noteNaturalEnd(item.id)
+        unplayableStreak = 0
+    }
+
+    private class NoLoad(val path: StartPath, val backend: String, val rendering: Boolean, val meterCause: String? = null)
+
+    /**
+     * A normal advance minus [PlayerPort.load]: the cursor moves exactly as [advanceToNext] moves it (gate, cascade
+     * breaker, repeat-ALL wrap, finish), with the repeat counter, skip tracker verdict, ONE History play, dead-air
+     * meter, transition record and hooks - but the engine is NOT asked to load; the caller (album glide, DJ
+     * conductor) has already put the next row's audio on air. [rendering] says the engine is already producing it
+     * (closes the dead-air transition now); false leaves it to [onFirstAudio]. Returns false when nothing advanced
+     * (not running, held, or halted by the gate/breaker).
+     */
+    fun advanceWithoutLoad(
+        cause: AdvanceCause = AdvanceCause.NATURAL_END,
+        path: StartPath = StartPath.ALBUM_GLIDE,
+        backend: String = path.name.lowercase(),
+        rendering: Boolean = true,
+        meterCause: String? = null,
+        /** A USER advance whose listen already ended at the press (the DJ skip mix reports it there): do not report it twice. */
+        awayNoted: Boolean = false,
+    ): Boolean {
+        if (!running || held) return false
+        val cur = queue.getOrNull(index) ?: return false
+        val genBefore = playGeneration
+        when (cause) {
+            AdvanceCause.USER -> { if (!awayNoted) noteAdvanceAway(); unplayableStreak = 0 }
+            AdvanceCause.NATURAL_END -> noteNaturalEndOf(cur)
+            else -> Unit
+        }
+        advanceToNext(cause, NoLoad(path, backend, rendering, meterCause))
+        return playGeneration != genBefore || !running
+    }
+
+    /** Plays left of the CURRENT row (1 = the row ends after this pass); DJ Mode declines a repeating row. */
+    val currentPlaysRemaining: Int get() = playsRemaining
+
+    /**
+     * DJ Mode's FADE START (P2-DJ-8): the advance onto the row the DSP already mixes in. Exactly a natural-end
+     * [advanceWithoutLoad] (index, naturalEnd, repeat counter, generation / start-window / stall bookkeeping, ONE History
+     * play, dead-air cause `dj` with first audio at once, hooks), tagged [StartPath.DJ] and NEVER auto-skip. The engine's
+     * preload slot is forgotten (the DSP owns the audio); [PlayerPort.adoptDsp] then leaves ExoPlayer idle. Returns false
+     * when nothing advanced (halted by the gate / breaker, or no longer running): the engine puts the outgoing back.
+     */
+    fun advanceAtDjFadeStart(skip: Boolean = false): Boolean {
+        // A ⏭'s mix (P2-DJ-9) is the listener's skip: a USER transport (cause USER lifts the cascade halt and overrides repeat-one / a
+        // repeat count, since the cursor just moves on), dead-air cause `skip`, the listen already ended at the press.
+        val advanced = if (skip) {
+            advanceWithoutLoad(AdvanceCause.USER, StartPath.DJ, "dj", rendering = true, meterCause = "skip", awayNoted = true)
+        } else {
+            advanceWithoutLoad(AdvanceCause.NATURAL_END, StartPath.DJ, "dj", rendering = true, meterCause = "dj")
+        }
+        if (!advanced) return false
+        preloader.noteCleared()
+        val item = queue.getOrNull(index) ?: return true
+        val request = PlayRequest(
+            item = item, source = DjAdoptedSource, context = requestContext(item), originCollectionId = originCollectionIdFor(),
+            resumeAtMs = null, index = index, count = queue.size, generation = playGeneration,
+        )
+        val adoptGen = playGeneration
+        scope.launch {
+            // The listener may have skipped or tapped another row since the fade start: a stale adopt must not touch the player.
+            if (!owns(adoptGen) || queue.getOrNull(index)?.uid != item.uid) return@launch
+            val ok = try { port.adoptDsp(request) } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
+            if (!ok) djAdoptFailed(item.uid)
+        }
+        return true
+    }
+
+    /** The skip tracker's PRESS for a DJ skip mix (the listen ends when ⏭ is pressed, not when the fade lands). */
+    fun noteDjSkipPress() = noteAdvanceAway()
+
+    /**
+     * A ⏭'s mix was refused at its fade start (the queue moved, Transitions went off ...): the listener still pressed ⏭, so the
+     * immediate advance (the press was already reported away).
+     */
+    fun skipAfterRefusedDjMix() {
+        if (!running || held) return
+        log("[dj] skip mix refused -> immediate advance")
+        exitHoldIfNeeded()
+        unplayableStreak = 0
+        advanceToNext(AdvanceCause.USER)
+    }
+
+    /** DJ: the engine could not take the adopted row (ExoPlayer would not go idle): called once per failed adopt. */
+    @Volatile var onDjAdoptFailed: (uid: String) -> Unit = {}
+    private fun djAdoptFailed(uid: String) { if (running && queue.getOrNull(index)?.uid == uid) onDjAdoptFailed(uid) }
+
+    /**
+     * An in-place engine retarget (album glide) failed after the cursor already moved: load the current row normally
+     * (not a fresh start, so no interceptor re-claims it and no second History play is recorded).
+     */
+    fun reloadCurrentAfterFailedRetarget() {
+        if (!running || held || index >= queue.size) return
+        startPlayCurrent(fresh = false)
+    }
+
+    /** Ask the natural-end interceptors; true when one took the advance. */
+    private fun offerNaturalEnd(): Boolean {
+        val claimers = advanceInterceptors
+        if (claimers.isEmpty()) return false
+        val cur = queue.getOrNull(index) ?: return false
+        val attempt = AdvanceAttempt(cur, index, queue.getOrNull(index + 1))
+        for (c in claimers) {
+            val claimed = try {
+                c.onNaturalEnd(attempt)
+            } catch (e: Exception) {
+                log("[session] advance interceptor ${c.javaClass.simpleName} threw ${e.javaClass.simpleName}: ${e.message}")
+                false
+            }
+            if (claimed) {
+                log("[session] natural end claimed by ${c.javaClass.simpleName} song=${cur.id}")
+                return true
+            }
+        }
+        return false
+    }
+
+    /** The History / session context [item] plays under (P2-MM-8: the growing DSP card carries it like an ExoPlayer item). */
+    fun contextFor(item: QueueItem): PlayContext = requestContext(item)
+
     private fun requestContext(item: QueueItem): PlayContext {
         val base = capturedContext ?: PlayContext(PlayContext.SOURCE_SETLIST)
-        return if (item.runTag != null) base.copy(runTag = item.runTag) else base
+        val tagged = if (item.runTag != null) base.copy(runTag = item.runTag) else base
+        // P2-POC-8: a Pocket Wheel run row records its provenance (run, moment, row collection, slot) on its History play.
+        val pocket = item.plan?.let { pocketRunTagFor?.invoke(it) }
+        return if (pocket != null) tagged.copy(pocketRun = pocket) else tagged
     }
+
+    /** P2-POC-8: maps a run row's [PlanTag] to the History tag (`PocketRunStore.tag(forPlan:)`); null = not a run row. */
+    @Volatile var pocketRunTagFor: ((PlanTag) -> com.levi.pocketdj.data.history.PocketRunTag?)? = null
 
     private fun originCollectionIdFor(): String? =
         if (sourceSetlistId == com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID) capturedOrigin?.second else null
@@ -590,10 +1182,8 @@ class SetlistSequencer(
      */
     fun handleEnded(songId: String) {
         if (!running || index >= queue.size || !queue[index].matches(songId)) return
-        outcomes?.emit(queue[index].id, false, 1.0)
-        skipTracker?.noteNaturalEnd(queue[index].id)
-        unplayableStreak = 0
-        if (repeatMode == RepeatMode.ONE) {
+        noteNaturalEndOf(queue[index])
+        if (effectiveRepeatMode == RepeatMode.ONE) {
             startPlayCurrent(fresh = true, inPlace = true)
             return
         }
@@ -602,7 +1192,8 @@ class SetlistSequencer(
             startPlayCurrent(fresh = false, inPlace = true)
             return
         }
-        advanceToNext(AdvanceCause.AUTO)
+        if (offerNaturalEnd()) return
+        advanceToNext(AdvanceCause.NATURAL_END)
     }
 
     // ---- PB-8: Apple Music rows (iOS handleAppleMusicEnded / handleAppleMusicRestarted) ------------
@@ -620,7 +1211,7 @@ class SetlistSequencer(
                 log("[playback] advance: AM never started song=${queue[index].id} index=$index/${queue.size}")
                 lastLoadedId = null
                 if (failureLapComplete()) return
-                advanceToNext(AdvanceCause.AUTO)
+                advanceToNext(AdvanceCause.AUTO_SKIP)
             }
             com.levi.pocketdj.playback.am.EndReason.SYSTEM_SKIP -> {
                 log("[playback] setlist AM system-skip -> advance from index $index")
@@ -665,7 +1256,7 @@ class SetlistSequencer(
         log("[playback] advance: item failed mid-song song=${queue[index].id} index=$index/${queue.size}")
         lastLoadedId = null
         if (failureLapComplete()) return
-        advanceToNext(AdvanceCause.AUTO)
+        advanceToNext(AdvanceCause.AUTO_SKIP)
     }
 
     /**
@@ -682,7 +1273,9 @@ class SetlistSequencer(
             return true
         }
         val pos = nearestOccurrence(songId, index) ?: return false
+        val fromUid = currentUid()
         noteUserTransport()
+        fireUser(UserTransport.JUMP)
         noteAdvanceAway()
         exitHoldIfNeeded()
         retirePendingStart() // the manual play owns the engine now; a pending resolve must not load over it
@@ -690,6 +1283,7 @@ class SetlistSequencer(
         playsRemaining = CollectionMembership.normalizedRepeat(queue[pos].repeatCount)
         log("[playback] adopt jump index=${pos + 1}/${queue.size} song=$songId")
         publish()
+        noteTransition(fromUid, TransitionCause.USER)
         return true
     }
 
@@ -711,10 +1305,25 @@ class SetlistSequencer(
 
     // ---- advancing --------------------------------------------------------------------------
 
-    /** ⏭ (UI, lock screen, remote). */
-    fun skipNext() {
+    /** DJ Mode's skip mix (P2-DJ-9); null until DJ is first bound. */
+    @Volatile var djSkip: com.levi.pocketdj.playback.dj.DjSkipHooks? = null
+
+    /**
+     * ⏭ (UI, lock screen, remote). With DJ Mode on it MIXES into the next row (P2-DJ-9) over the Skip fade, or the 5 s sweep
+     * when [fast] (remote controllers, widget, Auto, headset; a second in-app tap inside the mix also upgrades to it). Anything
+     * DJ cannot mix is today's immediate advance.
+     */
+    fun skipNext(fast: Boolean = false) {
         if (!running) return
-        noteAdvanceAway()
+        if (redirected(TransportRedirect.SkipNext)) return
+        fireUser(UserTransport.SKIP)
+        var awayNoted = false
+        when (djSkip?.skip(fast)) {
+            com.levi.pocketdj.playback.dj.DjSkipResult.HANDLED -> return
+            com.levi.pocketdj.playback.dj.DjSkipResult.FALLBACK_AWAY_NOTED -> awayNoted = true
+            else -> Unit
+        }
+        if (!awayNoted) noteAdvanceAway()
         exitHoldIfNeeded()
         unplayableStreak = 0
         advanceToNext(AdvanceCause.USER)
@@ -723,7 +1332,11 @@ class SetlistSequencer(
     /** ⏮: never below 0; at the top it restarts (or wraps to the last row with repeat ALL). */
     fun skipPrevious() {
         if (!running) return
+        if (redirected(TransportRedirect.SkipPrevious)) return
+        val fromUid = currentUid()
+        djSkip?.clearPending()
         noteUserTransport()
+        fireUser(UserTransport.PREV)
         exitHoldIfNeeded()
         // Clean-only skip rows are never played: step back PAST them (iOS drops them from the queue, so
         // previous always reaches the real previous song). All earlier rows skipped = restart the current one.
@@ -731,7 +1344,7 @@ class SetlistSequencer(
         var found = false
         for (step in 0 until queue.size) {
             i = if (i == 0) {
-                if (repeatMode == RepeatMode.ALL && queue.size > 1) queue.size - 1 else break
+                if (effectiveRepeatMode == RepeatMode.ALL && queue.size > 1) queue.size - 1 else break
             } else {
                 i - 1
             }
@@ -740,15 +1353,18 @@ class SetlistSequencer(
         }
         if (found) index = i
         publish()
+        noteTransition(fromUid, TransitionCause.USER)
         startPlayCurrent()
     }
 
-    private fun advanceToNext(cause: AdvanceCause) {
+    private fun advanceToNext(cause: AdvanceCause, noLoad: NoLoad? = null) {
         if (!running) return
+        djSkip?.clearPending() // any pending skip mix is superseded by this advance
         when (cause) {
             AdvanceCause.USER -> noteUserTransport()
             AdvanceCause.UNPLAYABLE_HERE -> Unit
-            AdvanceCause.AUTO -> {
+            AdvanceCause.NATURAL_END, AdvanceCause.AUTO_SKIP, AdvanceCause.STALL_HOP -> {
+                endStallEpisode("advance")
                 // Halted: nothing advances by itself until the listener acts.
                 if (pausedByCascade) return
                 if (!autoAdvanceGate()) {
@@ -764,27 +1380,63 @@ class SetlistSequencer(
             }
         }
         // Dead-air clock: an auto-advance is the between-tracks gap; a skip is listener-driven.
-        meter?.transitionBegan(if (cause == AdvanceCause.USER) "skip" else "advance")
+        meter?.transitionBegan(noLoad?.meterCause ?: if (cause == AdvanceCause.USER) "skip" else "advance")
         waitingForLive = false
         log("[playback] advance from=${queue.getOrNull(index)?.id ?: "?"} index=$index/${queue.size} cause=$cause")
         val fromId = queue.getOrNull(index)?.id
-        val dupNext = cause == AdvanceCause.AUTO && fromId != null && queue.getOrNull(index + 1)?.id == fromId
+        val fromUid = currentUid()
+        val dupNext = cause.isAuto && fromId != null && queue.getOrNull(index + 1)?.id == fromId
         index += 1
         if (index >= queue.size) {
-            if (repeatMode == RepeatMode.ALL && queue.isNotEmpty()) {
+            if (effectiveRepeatMode == RepeatMode.ALL && queue.isNotEmpty()) {
                 index = 0
                 // Reshuffle the whole queue on a shuffle wrap so the next pass differs;
                 // canonicalOrder is untouched so shuffle-OFF still restores.
                 if (shuffleEnabled) reshuffleEntireQueue()
                 queueEdited()
-                startPlayCurrent(fresh = true, inPlace = cause == AdvanceCause.AUTO && fromId != null && queue.getOrNull(0)?.id == fromId)
+                noteTransition(fromUid, cause.toTransitionCause())
+                if (noLoad != null) {
+                    startWithoutLoad(noLoad)
+                } else {
+                    startPlayCurrent(fresh = true, inPlace = cause.isAuto && fromId != null && queue.getOrNull(0)?.id == fromId)
+                }
                 return
             }
             finishRun()
         } else {
             publish()
-            startPlayCurrent(fresh = true, inPlace = dupNext)
+            noteTransition(fromUid, cause.toTransitionCause())
+            if (noLoad != null) startWithoutLoad(noLoad) else startPlayCurrent(fresh = true, inPlace = dupNext)
         }
+    }
+
+    /** The start bookkeeping of a row whose audio is already on air (see [advanceWithoutLoad]); no engine load. */
+    private fun startWithoutLoad(noLoad: NoLoad) {
+        spendCurrentUserNext()
+        val item = queue.getOrNull(index) ?: return
+        val at = index
+        endNotedUid = null
+        playJob?.cancel()
+        playJob = null
+        cancelHealthTimers()
+        playsRemaining = CollectionMembership.normalizedRepeat(item.repeatCount)
+        val gen = ++playGeneration
+        resetTrackAudible()
+        reconcileRipWindow()
+        ensureHealthTicker()
+        startedAnyRow = true
+        lastLoadedId = item.id
+        firstAudioPending = true
+        startingUid = item.uid
+        waitingForLive = false
+        currentBackend = noLoad.backend
+        meter?.trackStarting(noLoad.backend)
+        beginStartWindow(item, gen)
+        emitHistoryStart(item)
+        log("[playback] track start song=${item.id} index=${at + 1}/${queue.size} backend=${noLoad.backend} noLoad=true")
+        publish()
+        fireTrackStarted(item, at, gen, noLoad.path, true)
+        if (noLoad.rendering) handleFirstAudio("advance") else armStartStall(gen, item.id)
     }
 
     /** Past the end: tear down; a device-mode run that loaded nothing raises the one-shot banner. */
@@ -793,7 +1445,7 @@ class SetlistSequencer(
         val device = modeProvider() == PlaybackMode.DEVICE
         val raisedBy = sourceSetlistId
         val allCleanSkipped = queue.isNotEmpty() && queue.all { it.cleanOnlySkip }
-        stop()
+        stopRun(SessionEndReason.FINISHED)
         if (nothingStarted) {
             // Device mode keeps its banner signal; cloud mode (every row unplayable / failed) gets a
             // notice the UI surfaces so a dead set never ends in silence with no feedback.
@@ -844,6 +1496,8 @@ class SetlistSequencer(
         resumeAtMs: Long?,
         canonicalOrder: List<String>? = null,
         sessionId: String? = null,
+        /** The persisted optional session state (Mix Mode / FX Lock / DJ Mode): delivered HELD to [sessionExtras]. */
+        extras: com.levi.pocketdj.playback.durable.SnapshotExtras? = null,
     ) {
         if (items.isEmpty() || running) return
         // iOS parity (SetlistPlayer restore): a `puzzle_` run tag is a ghost after relaunch - the game
@@ -855,6 +1509,7 @@ class SetlistSequencer(
         val context = if (ghost) context?.copy(runTag = null, contextId = null) else context
         this.sessionId = sessionId ?: ("pses_" + java.util.UUID.randomUUID().toString().uppercase())
         queue.clear()
+        substitutedUids.clear()
         queue.addAll(items)
         this.index = index.coerceIn(0, items.lastIndex)
         this.sourceSetlistId = sourceSetlistId
@@ -867,8 +1522,25 @@ class SetlistSequencer(
         lastLoadedId = null
         running = true
         held = true
+        heldByRemote = false
+        heldIsCuedStart = false
         pendingResumeMs = resumeAtMs
-        queueEdited()
+        endNotedUid = null
+        memberIds = null
+        val g = bumpQueueGeneration()
+        publish()
+        val sid = this.sessionId
+        if (sid != null) {
+            val src = SourceRef(capturedContext?.source ?: PlayContext.SOURCE_SETLIST, sourceSetlistId, capturedContext?.contextName)
+            hooks.emit { it.onSessionStarted(sid, src) }
+        }
+        announceQueue(g)
+        reconcilePreload()
+        scheduleRipWindowReconcile()
+        // HELD: features receive their stored state but arm nothing until the first play (onResumedFromHold).
+        if (extras != null) sessionExtras.restoreHeld(extras) { log(it) }
+        log("[session] held restore id=${this.sessionId} rows=${queue.size} index=${this.index}")
+        hooks.emit { it.onHeld() }
         onHeldRestored()
     }
 
@@ -895,20 +1567,23 @@ class SetlistSequencer(
     /** First explicit ▶ on a held deck: start the current row, mid-song when a position was saved. */
     fun resumeFromHold() {
         if (!running || !held) return
+        if (redirected(TransportRedirect.SetPlaying(true))) return
         val at = pendingResumeMs
+        val cuedStart = heldByRemote && heldIsCuedStart
         lastResumeOffsetMs = at
         noteUserTransport()
-        held = false
-        pendingResumeMs = null
+        fireUser(UserTransport.PLAY)
+        leaveHold()
         redecidePending()
         playsRemaining = CollectionMembership.normalizedRepeat(queue.getOrNull(index)?.repeatCount)
         publish()
-        startPlayCurrent(fresh = false, resumeAtMs = at)
+        startPlayCurrent(fresh = cuedStart, resumeAtMs = at, cued = cuedStart)
     }
 
     /** Start the current row from the top (cascade-halted deck, idle ▶). */
     fun startCurrent(): Boolean {
         if (!running || index >= queue.size) return false
+        if (redirected(TransportRedirect.LocalStart)) return true // a Backseat controller never sounds
         // Q21 (BEFORE noteUserTransport, which clears the cascade halt): ▶ while this very row's start is still
         // in flight must not load (and POST /rip) a second time.
         if (!held && !pausedByCascade && firstAudioPending && startingUid == queue[index].uid) {
@@ -918,26 +1593,41 @@ class SetlistSequencer(
             return true
         }
         noteUserTransport()
+        fireUser(UserTransport.PLAY)
         discriminator.noteListenerIntent(true)
-        held = false
+        leaveHold(clearOffset = false)
         publish()
         startPlayCurrent()
         return true
     }
 
-    private fun exitHoldIfNeeded() {
+    /** Leave the held state (if held) and announce it; the held offset is spent. */
+    private fun leaveHold(clearOffset: Boolean = true) {
         if (!held) return
         held = false
-        pendingResumeMs = null
+        heldByRemote = false
+        heldIsCuedStart = false
+        if (clearOffset) pendingResumeMs = null
+        sessionExtras.clearHeld()
+        hooks.emit { it.onResumedFromHold() }
     }
+
+    private fun exitHoldIfNeeded() = leaveHold()
 
     // ---- repeat & shuffle -------------------------------------------------------------------
 
-    fun cycleRepeatMode() = setRepeatMode(repeatMode.next)
+    fun cycleRepeatMode() = setRepeatMode(effectiveRepeatMode.next)
 
     /** No-op when unchanged. Safe while idle: the mode simply rides the next run. */
     fun setRepeatMode(mode: RepeatMode) {
+        // A pocket run's repeat is off by contract: the listener's sticky mode rides through the run untouched
+        // (never written), and the surfaces keep showing OFF.
+        if (isRepeatForcedOff) {
+            log("[session] setRepeatMode($mode) ignored: repeat forced off")
+            return
+        }
         if (mode == repeatMode) return
+        fireUser(UserTransport.EDIT)
         repeatMode = mode
         onRepeatModeChanged(mode)
         publish()
@@ -959,7 +1649,8 @@ class SetlistSequencer(
         } else {
             restoreUpcomingOrder()
         }
-        queueEdited()
+        setUserNext(null, keepingCurrentPick = true) // the pick may have been shuffled away from next
+        userQueueEdited()
     }
 
     private fun shuffleUpcomingTail() {
@@ -997,8 +1688,38 @@ class SetlistSequencer(
     }
 
     /**
+     * Mark the listener's NEXT-UP pick at [pos] (must be `index + 1`; null = none) and clear the mark everywhere
+     * else: only the next slot is ever held. [keepingCurrentPick]: an edit elsewhere keeps the existing pick if it is
+     * STILL next. Returns the uid of a NEWLY placed pick (null when none / kept) so the caller can announce it.
+     */
+    private fun setUserNext(pos: Int?, keepingCurrentPick: Boolean = false): String? {
+        if (!running) return null
+        val keep = keepingCurrentPick && queue.getOrNull(index + 1)?.djUserNext == true
+        val target = if (keep) index + 1 else if (pos != null && pos == index + 1) pos else null
+        for (i in index + 1 until queue.size) {
+            val want = i == target
+            if (queue[i].djUserNext != want) queue[i] = queue[i].copy(djUserNext = want)
+        }
+        return if (!keep && target != null) queue.getOrNull(target)?.uid else null
+    }
+
+    /** The listener's next-up pick is PLAYING now: its hold is spent at EVERY start. */
+    private fun spendCurrentUserNext() {
+        val cur = queue.getOrNull(index) ?: return
+        if (running && cur.djUserNext) queue[index] = cur.copy(djUserNext = false)
+    }
+
+    /** A queue edit landed [uid] at `index + 1`: tell the listeners (DJ sets the pick). Call AFTER the edit is published. */
+    private fun announceLandedNext(uid: String?) {
+        if (uid == null) return
+        log("[session] row landed next uid=$uid")
+        hooks.emit { it.onRowLandedNext(uid) }
+    }
+
+    /**
      * Reorder within the tail (SwiftUI `.onMove` shape; offsets relative to the tail, 0 = right
      * after the current). Stale offsets are dropped and [toOffset] is CLAMPED to the live tail.
+     * Moved run rows are PINNED (a re-plan never moves them again); a row dragged to the top is the next-up pick.
      */
     fun moveUpcoming(fromOffsets: Collection<Int>, toOffset: Int) {
         if (!running || index + 1 >= queue.size) return
@@ -1006,12 +1727,17 @@ class SetlistSequencer(
         val src = fromOffsets.filter { it in tail.indices }.toSortedSet().toList()
         if (src.isEmpty()) return
         val dest = toOffset.coerceIn(0, tail.size)
-        val moved = src.map { tail[it] }
         val remaining = tail.filterIndexed { i, _ -> i !in src }
         val insertAt = (dest - src.count { it < dest }).coerceIn(0, remaining.size)
+        // A drop that changes nothing (same-position drag) is not an edit: no pins, no pick.
+        if (remaining.toMutableList().also { r -> r.addAll(insertAt, src.map { tail[it] }) }.map { it.uid } == tail.map { it.uid }) return
+        val moved = src.map { tail[it].pinnedCopy() }
         val out = remaining.toMutableList().also { it.addAll(insertAt, moved) }
         replaceTail(out)
-        queueEdited()
+        val toTop = dest == 0
+        val landed = setUserNext(if (toTop) index + 1 else null, keepingCurrentPick = !toTop)
+        userQueueEdited()
+        announceLandedNext(landed)
     }
 
     /** Remove tail rows by IDENTITY (a stale position would delete whatever shifted into the slot). */
@@ -1020,14 +1746,15 @@ class SetlistSequencer(
         val tail = queue.subList(index + 1, queue.size).filter { it.uid !in uids }
         if (tail.size == queue.size - index - 1) return
         replaceTail(tail)
-        queueEdited()
+        setUserNext(null, keepingCurrentPick = true) // the row that slid into next wasn't chosen
+        userQueueEdited()
     }
 
     /** Append to the end of the running queue. No-op when idle (resurrecting is a fresh [play]). */
     fun appendToQueue(items: List<QueueItem>) {
         if (!running || items.isEmpty()) return
-        queue.addAll(stampInsert(items))
-        queueEdited()
+        queue.addAll(stampInsert(items.map { it.pinnedCopy() }))
+        userQueueEdited()
     }
 
     /**
@@ -1037,11 +1764,25 @@ class SetlistSequencer(
     fun appendRows(items: List<QueueItem>, runTag: String) =
         appendToQueue(items.map { it.copy(runTag = runTag) })
 
+    /**
+     * A run's top-up rows (pocket runs, game runs): edition-stamped EXACTLY like the rows [play] stamped (clean-only
+     * AND prefer-explicit), tagged [runTag], then appended. They are planner material, not the listener's edit:
+     * not pinned, no EDIT intent. No-op when idle.
+     */
+    fun appendRunRows(items: List<QueueItem>, runTag: String? = null) {
+        if (!running || items.isEmpty()) return
+        val tagged = if (runTag == null) items else items.map { it.copy(runTag = runTag) }
+        queue.addAll(stamp(tagged, sourceSetlistId))
+        queueEdited()
+    }
+
     /** "Add next": right AFTER the current one. */
     fun insertNextInQueue(items: List<QueueItem>) {
         if (!running || items.isEmpty()) return
-        queue.addAll(minOf(index + 1, queue.size), stampInsert(items))
-        queueEdited()
+        queue.addAll(minOf(index + 1, queue.size), stampInsert(items.map { it.pinnedCopy() }))
+        val landed = setUserNext(index + 1) // Play Next: the first of them is the pick
+        userQueueEdited()
+        announceLandedNext(landed)
     }
 
     /** Before an upcoming row by identity; an unknown/played anchor falls back to append. */
@@ -1052,34 +1793,47 @@ class SetlistSequencer(
             appendToQueue(items)
             return
         }
-        queue.addAll(pos, stampInsert(items))
-        queueEdited()
+        queue.addAll(pos, stampInsert(items.map { it.pinnedCopy() }))
+        // Dropped into the next-up slot -> the listener's pick; mid-queue -> planner material.
+        val landed = setUserNext(if (pos == index + 1) pos else null, keepingCurrentPick = pos != index + 1)
+        userQueueEdited()
+        announceLandedNext(landed)
     }
 
-    /** Jukebox "Surprise Slot": a random slot in the tail; [slot] is injectable for tests. */
+    /**
+     * Jukebox "Surprise Slot": a random slot in the tail; [slot] is injectable for tests. With DJ Mode on, the
+     * listener's held next-up pick keeps its place: the random row never lands ahead of it.
+     */
     fun insertRandomInQueue(
         items: List<QueueItem>,
         slot: (IntRange) -> Int = { random.nextInt(it.first, it.last + 1) },
     ) {
         if (!running || items.isEmpty()) return
-        val lo = minOf(index + 1, queue.size)
+        val pickHeld = djModeEnabled() && queue.getOrNull(index + 1)?.djUserNext == true
+        val lo = minOf(index + if (pickHeld) 2 else 1, queue.size)
         val at = slot(lo..queue.size).coerceIn(lo, queue.size)
-        queue.addAll(at, stampInsert(items))
-        queueEdited()
+        queue.addAll(at, stampInsert(items.map { it.pinnedCopy() }))
+        // A request that lands NEXT is held there; a mid-queue one the DJ may re-order.
+        val landed = setUserNext(if (at == index + 1) at else null, keepingCurrentPick = at != index + 1)
+        userQueueEdited()
+        announceLandedNext(landed)
     }
 
     /** "Play next". Unknown/played uids are ignored. */
     fun moveUpcomingNext(uid: String) {
         val pos = upcomingPos(uid) ?: return
-        queue.add(index + 1, queue.removeAt(pos))
-        queueEdited()
+        queue.add(index + 1, queue.removeAt(pos).pinnedCopy())
+        val landed = setUserNext(index + 1) // "Play next": the listener's pick
+        userQueueEdited()
+        announceLandedNext(landed)
     }
 
     /** "Move to end". */
     fun moveUpcomingToEnd(uid: String) {
         val pos = upcomingPos(uid) ?: return
-        queue.add(queue.removeAt(pos))
-        queueEdited()
+        queue.add(queue.removeAt(pos).pinnedCopy())
+        setUserNext(null, keepingCurrentPick = true) // sent to the end: planner material
+        userQueueEdited()
     }
 
     private fun upcomingPos(uid: String): Int? {
@@ -1087,15 +1841,207 @@ class SetlistSequencer(
         return (index + 1 until queue.size).firstOrNull { queue[it].uid == uid }
     }
 
+    // ---- P2-PB-3: pocket-run re-plan -------------------------------------------------------------------------------
+
+    /** Remaining seconds of the current track, or null when unknown (then `index + 1` is not replaceable). */
+    private fun currentRunwaySeconds(): Double? {
+        val cur = queue.getOrNull(index) ?: return null
+        val e = engine?.takeIf { it.hasLoadedItem }
+        val dur = e?.durationMs ?: cur.lengthMs ?: return null
+        val pos = e?.positionMs ?: pendingResumeMs ?: 0L
+        return (dur - pos) / 1000.0
+    }
+
+    /** May the row at absolute position [i] be replaced RIGHT NOW? (iOS `isReplaceablePosition`.) */
+    private fun isReplaceablePosition(i: Int): Boolean {
+        if (!running || i <= index || i >= queue.size) return false // never the playing / played rows
+        val plan = queue[i].plan ?: return false // manual rows are the listener's
+        if (plan.pinned) return false // moved rows too
+        if (i == index + 1) {
+            val remaining = currentRunwaySeconds() ?: return false
+            if (remaining < REPLACE_NEXT_MIN_RUNWAY_SECONDS) return false
+        }
+        return true
+    }
+
+    private fun ripInFlight(it: QueueItem): Boolean = it.id in ripWindow.requested || it.resolveId in ripWindow.requested
+
+    /** A playback rip for [item] is in flight (moving it out of the rip window would cancel the capture). DJ planner seam. */
+    fun isRipInFlight(item: QueueItem): Boolean = ripInFlight(item)
+
+    /** Seconds of the CURRENT row left, null when unknown. DJ planner seam (the next row's 30 s runway rule). */
+    fun runwaySecondsOrNull(): Double? = currentRunwaySeconds()
+
+    /**
+     * DJ Mode's ONE re-order (iOS `applyDJOrder`): the window `[lo, lo + expected.size)` is rewritten as [order]
+     * (uids) - only if it still holds exactly [expected] in that order (uid-verified, no duplicate uid) and every
+     * [fixed] slot keeps its row. A row placed LATER than before counts one deferral (aging) when [countDeferrals].
+     * One queue mutation; returns its queue generation (the planner ignores its own), or null when refused.
+     */
+    fun applyDjOrder(lo: Int, expected: List<String>, order: List<String>, fixed: List<Boolean>, countDeferrals: Boolean = true): Long? {
+        val hi = lo + expected.size
+        if (!running || lo <= index || hi > queue.size || order.size != expected.size || fixed.size != expected.size) return null
+        if (expected.toSet().size != expected.size || order.toSet() != expected.toSet()) return null
+        for (k in expected.indices) if (queue[lo + k].uid != expected[k]) return null
+        for (k in expected.indices) if (fixed[k] && order[k] != expected[k]) return null
+        val oldSlot = HashMap<String, Int>().also { m -> expected.forEachIndexed { k, u -> m[u] = k } }
+        val byUid = HashMap<String, QueueItem>().also { m -> for (k in lo until hi) m[queue[k].uid] = queue[k] }
+        val rows = order.mapIndexed { k, uid ->
+            val row = byUid[uid] ?: return null
+            if (countDeferrals && k > (oldSlot[uid] ?: k)) row.copy(djDeferrals = row.djDeferrals + 1) else row
+        }
+        for (k in rows.indices) queue[lo + k] = rows[k]
+        queueEdited()
+        return queueGeneration
+    }
+
+    /** The upcoming rows of run [runId] a re-plan may touch NOW (re-checked again at apply time). */
+    fun replaceableUpcomingRows(runId: String): List<ReplaceableRow> {
+        if (!running || index + 1 >= queue.size) return emptyList()
+        return (index + 1 until queue.size).mapNotNull { i ->
+            val plan = queue[i].plan
+            if (plan == null || plan.runId != runId || !isReplaceablePosition(i)) return@mapNotNull null
+            ReplaceableRow(
+                uid = queue[i].uid,
+                songId = queue[i].id,
+                slot = plan.slot,
+                collectionId = plan.collectionId,
+                requiresInstant = ripInFlight(queue[i]),
+                prevSongId = queue[i - 1].id,
+                nextSongId = queue.getOrNull(i + 1)?.id,
+            )
+        }
+    }
+
+    /**
+     * Swap / drop upcoming rows by IDENTITY (uid; stale uids are ignored). The protection rules are evaluated HERE,
+     * at apply time, because the queue may have advanced since the re-plan was computed: the playing row is never
+     * touched, the next row only with >= 30 s of runway, manual (`plan == null`) and moved (`pinned`) rows never, and
+     * a row whose rip is in flight only by a replacement that starts instantly (an in-flight capture is never traded
+     * for another). A replacement takes the replaced row's `canonicalOrder` slot, so shuffle-off ordering stays
+     * coherent; touching the prefetch window re-arms the preloader. Returns how many rows changed.
+     */
+    fun replaceUpcoming(replacements: Map<String, QueueItem>, removing: Set<String>): Int {
+        if (!running || index + 1 >= queue.size || (replacements.isEmpty() && removing.isEmpty())) return 0
+        val taken = HashSet<String>(queue.size * 2)
+        queue.forEach { taken.add(it.uid) }
+        var changed = 0
+        var touchedWindow = false
+        val dropped = ArrayList<Int>()
+        var canon = canonicalOrder
+        for (i in index + 1 until queue.size) {
+            val row = queue[i]
+            val raw = replacements[row.uid]
+            if (raw != null) {
+                if (!isReplaceablePosition(i)) continue
+                // The same edition policy every queued row gets at play() (clean-only / prefer-explicit).
+                var rep = stamp(listOf(raw), sourceSetlistId).firstOrNull() ?: raw
+                if (ripInFlight(row) && !(rowOnDevice(rep) || rowStartsInstantly(rep))) continue
+                // uids must stay unique: a replacement reusing a live uid becomes a fresh instance.
+                if (rep.uid != row.uid && !taken.add(rep.uid)) rep = rep.freshInstance().also { taken.add(it.uid) }
+                queue[i] = rep
+                if (canon != null && rep.uid != row.uid) canon = canon.map { if (it == row.uid) rep.uid else it }
+                changed++
+                if (NextRowPreloader.inWindow(index, i)) touchedWindow = true
+            } else if (row.uid in removing) {
+                if (!isReplaceablePosition(i)) continue
+                dropped.add(i)
+                changed++
+                if (NextRowPreloader.inWindow(index, i)) touchedWindow = true
+            }
+        }
+        if (changed == 0) return 0
+        for (i in dropped.asReversed()) queue.removeAt(i)
+        canonicalOrder = canon
+        if (touchedWindow) {
+            // queueEdited() -> reconcilePreload() empties a stale slot 1 on the ENGINE and re-resolves the new next row.
+            log("[session] replaceUpcoming touched prefetch window - re-arming preload")
+        }
+        setUserNext(null, keepingCurrentPick = true)
+        queueEdited() // publishes, bumps queueGeneration (-> persisted) and re-arms preload + rip window
+        return changed
+    }
+
+    /**
+     * Replace the first [count] upcoming rows with [items] in ONE queue mutation (rows after them are kept): a
+     * Remote speaker re-syncs the session's window without truncating the rest of a long local set.
+     */
+    fun replaceUpcomingSegment(count: Int, items: List<QueueItem>) {
+        if (!running) return
+        val lo = minOf(index + 1, queue.size)
+        val hi = minOf(queue.size, lo + maxOf(0, count))
+        val stamped = stampInsert(items)
+        for (k in hi - 1 downTo lo) queue.removeAt(k)
+        queue.addAll(lo, stamped)
+        setUserNext(null, keepingCurrentPick = true)
+        queueEdited()
+    }
+
+    /** External driver: insert [items] before the upcoming row [beforeUid] (null / unknown = append). Not the listener's edit. */
+    fun insertUpcoming(items: List<QueueItem>, beforeUid: String?) {
+        if (!running || items.isEmpty()) return
+        applyingExternal {
+            if (beforeUid == null) appendToQueue(items) else insertInQueue(items, beforeUid)
+        }
+    }
+
+    /** While HELD, move the resume point (an external driver seeking a paused / held speaker). */
+    fun setHeldResumePosition(ms: Long) {
+        if (!held) return
+        pendingResumeMs = ms.takeIf { it > 0 }
+    }
+
+    /** Cancel any start in flight and silence the engine (no notice, no cascade flag). */
+    private fun cancelStartAndSilence(reason: String) {
+        playJob?.cancel()
+        playJob = null
+        playGeneration++ // a resolve still in flight must not start audio now
+        cancelHealthTimers()
+        endStartWindow(reason)
+        if (firstAudioPending) meter?.transitionAbandoned(reason)
+        firstAudioPending = false
+        waitingForLive = false
+        scope.launch { runCatching { port.pause() } }
+        discriminator.noteListenerIntent(false)
+    }
+
+    /**
+     * A Remote session made this device a CONTROLLER: go silent and STAY silent. A start in flight is cancelled (a
+     * plain pause raced it: the pause was a no-op while nothing sounded yet, then the start landed audibly), the
+     * engine is paused, and the deck parks HELD at its position - so every later ▶ goes through [resumeFromHold] /
+     * [transportGate], i.e. to the session. Idempotent.
+     */
+    fun silenceForController() {
+        if (!running) return
+        val sounding = engine?.isPlaying == true
+        if (held && !isStartPending && !sounding) return
+        val pos = if (held) (pendingResumeMs ?: 0L) else engine?.takeIf { it.hasLoadedItem }?.positionMs ?: 0L
+        cancelStartAndSilence("remote-controller")
+        val wasHeld = held
+        held = true
+        heldByRemote = true
+        if (!wasHeld) heldIsCuedStart = false
+        pendingResumeMs = pos.takeIf { it > 0 }
+        publish()
+        reconcilePreload()
+        if (!wasHeld) hooks.emit { it.onHeld() }
+    }
+
     /** Up Next "Play now": step the cursor onto EXACTLY this row (uid, not song id). */
-    fun jumpToUpcoming(uid: String) {
+    fun jumpToUpcoming(uid: String, atMs: Long? = null) {
         val pos = upcomingPos(uid) ?: return
+        if (redirected(TransportRedirect.Jump(uid))) return
+        val fromUid = currentUid()
         if (!isRestartOfCurrent(queue[pos].id)) noteAdvanceAway()
         noteUserTransport()
+        fireUser(UserTransport.JUMP)
         exitHoldIfNeeded()
         index = pos
         publish()
-        startPlayCurrent()
+        noteTransition(fromUid, TransitionCause.USER)
+        // The start cue travels WITH the jump: a seek after it would land on the old backend.
+        val cue = atMs?.takeIf { it > 0 }
+        startPlayCurrent(fresh = true, resumeAtMs = cue, cued = cue != null)
     }
 
     /**
@@ -1105,6 +2051,7 @@ class SetlistSequencer(
      */
     fun playNow(item: QueueItem) {
         if (!running) return
+        if (redirected(TransportRedirect.PlayNow(item))) return
         val fresh = if (queue.any { it.uid == item.uid }) item.freshInstance() else item
         val stamped = stampInsert(listOf(fresh)).single()
         if (stamped.cleanOnlySkip) {
@@ -1112,13 +2059,16 @@ class SetlistSequencer(
             publish()
             return
         }
+        val fromUid = currentUid()
         if (!isRestartOfCurrent(item.id)) noteAdvanceAway()
         noteUserTransport()
+        fireUser(UserTransport.JUMP)
         exitHoldIfNeeded()
         val at = minOf(index + 1, queue.size)
         queue.add(at, stamped)
         index = at
         queueEdited()
+        noteTransition(fromUid, TransitionCause.USER)
         startPlayCurrent()
     }
 
@@ -1126,11 +2076,15 @@ class SetlistSequencer(
     fun jumpToPlayed(uid: String) {
         if (!running || index <= 0) return
         val pos = (0 until minOf(index, queue.size)).firstOrNull { queue[it].uid == uid } ?: return
+        if (redirected(TransportRedirect.Jump(uid))) return
+        val fromUid = currentUid()
         if (!isRestartOfCurrent(queue[pos].id)) noteAdvanceAway()
         noteUserTransport()
+        fireUser(UserTransport.JUMP)
         exitHoldIfNeeded()
         index = pos
         publish()
+        noteTransition(fromUid, TransitionCause.USER)
         startPlayCurrent()
     }
 
@@ -1144,7 +2098,7 @@ class SetlistSequencer(
     suspend fun playUrl(title: String, artist: String?, url: String, seekMs: Long = 0) {
         if (running && !held) {
             playJob?.cancel()
-            endRun()
+            endRun(SessionEndReason.REPLACED)
         } else if (running) {
             playJob?.cancel()
             playGeneration++ // a held deck has no job; the bump just retires any straggler
@@ -1195,8 +2149,12 @@ class SetlistSequencer(
     }
 
     private fun handleFirstAudio(source: String) {
+        // Steady-state audio of the current row also ends the episode (a mid-song rebuffer or a hop with no
+        // start window must not leave earlier rows ineligible as hop targets for the rest of the session).
+        endStallEpisode("first-audio")
         if (!firstAudioPending && startWindow == null) return
         firstAudioPending = false
+        queue.getOrNull(index)?.let { cur -> hooks.emit { it.onFirstAudio(cur, source) } }
         meter?.firstAudio(currentBackend, clockMs())
         startWatchdog.cancel()
         stallTimer.cancel()
@@ -1228,13 +2186,21 @@ class SetlistSequencer(
         preloadJob = null
         val armed = preloadArmed()
         if (!armed && preloader.slot == null) return
-        val target = if (armed) {
-            preloader.target(queue, index, repeatMode, shuffleEnabled, playsRemaining, true)
+        val rawTarget = if (armed) {
+            preloader.target(queue, index, effectiveRepeatMode, shuffleEnabled, playsRemaining, true)
         } else {
             null
         }
-        if (target == null && preloader.slot == null) return
+        if (rawTarget == null && preloader.slot == null) return
         val gen = playGeneration
+        // P2-ALB-4: the next row of an in-order album run is the SAME file's next song - the run item moves onto it
+        // in place, so it is never preloaded (a window slot would only duplicate the file).
+        val target = rawTarget?.takeIf { t ->
+            t.index != index + 1 || !com.levi.pocketdj.playback.album.AlbumRun.isRunContinuation(
+                queue, index, albumTimelines?.timeline(queue[index].id), effectiveRepeatMode == RepeatMode.ONE,
+            )
+        }
+        if (target == null && preloader.slot == null) return
         val job = scope.launch(start = CoroutineStart.LAZY) {
             if (preloader.isStale(target)) {
                 try { port.preloadNext(null) } catch (e: CancellationException) { throw e } catch (e: Exception) { }
@@ -1243,8 +2209,12 @@ class SetlistSequencer(
             }
             if (target == null) return@launch
             if (preloader.slot?.uid == target.item.uid) return@launch // already the next row
+            val row = if (target.index in queue.indices && queue[target.index].uid == target.item.uid) {
+                val before = queue[target.index]
+                applyEditionSubstitution(target.index, before, restoreFirst = false).also { if (it !== before) publish() }
+            } else target.item
             val source = try {
-                registry.resolve(target.item, modeProvider())
+                registry.resolve(row, modeProvider(), ripFirst = row.uid in substitutedUids)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1260,7 +2230,7 @@ class SetlistSequencer(
                 return@launch
             }
             val request = PlayRequest(
-                item = target.item,
+                item = row,
                 source = source!!,
                 context = requestContext(target.item),
                 originCollectionId = originCollectionIdFor(),
@@ -1319,7 +2289,7 @@ class SetlistSequencer(
                 skipTracker?.noteNaturalEnd(from.id)
             }
             unplayableStreak = 0
-            advanceToNext(AdvanceCause.AUTO)
+            advanceToNext(AdvanceCause.NATURAL_END)
             return true
         }
         // Gate + breaker run BEFORE the cursor moves: a halt sits on the ENDED row (PB-3 / iOS), never the new one.
@@ -1337,10 +2307,11 @@ class SetlistSequencer(
         outcomes?.emit(from.id, false, 1.0)
         skipTracker?.noteNaturalEnd(from.id)
         unplayableStreak = 0
+        endNotedUid = null
         index = pos
         val item = queue[pos]
         meter?.transitionBegan("advance")
-        log("[playback] advance from=${from.id} index=$pos/${queue.size} cause=${AdvanceCause.AUTO} preloaded=true")
+        log("[playback] advance from=${from.id} index=$pos/${queue.size} cause=${AdvanceCause.NATURAL_END} preloaded=true")
         waitingForLive = false
         cancelHealthTimers()
         playsRemaining = CollectionMembership.normalizedRepeat(item.repeatCount)
@@ -1356,6 +2327,8 @@ class SetlistSequencer(
         beginStartWindow(item, gen)
         log("[playback] track start song=${item.id} index=${pos + 1}/${queue.size} backend=${slot.source.backend} preloaded=true")
         publish()
+        noteTransition(from.uid, TransitionCause.NATURAL_END)
+        fireTrackStarted(item, pos, gen, StartPath.EXO, true)
         if (rendering) {
             handleFirstAudio("preload") // the engine is already rendering it: gap ~0
         } else {
@@ -1393,7 +2366,7 @@ class SetlistSequencer(
             stillWaiting = { running && playGeneration == gen && waitingForLive },
             onExpire = {
                 log("[playback] advance: live capture past its length+grace song=${queue.getOrNull(index)?.id ?: "?"}")
-                advanceToNext(AdvanceCause.AUTO)
+                advanceToNext(AdvanceCause.NATURAL_END)
             },
         )
     }
@@ -1421,13 +2394,31 @@ class SetlistSequencer(
      */
     private fun hopToPlayableRow(reason: String): Boolean {
         if (index >= queue.size) return false
-        val choice = ResolveStallHop.choose(queue, index, rowOnDevice, rowStartsInstantly) ?: return false
         val stalled = queue[index]
+        val choice = ResolveStallHop.choose(
+            queue, index, rowOnDevice, rowStartsInstantly, abandoned = stallEpisodeAbandoned,
+        ) ?: return false
+        stallEpisodeAbandoned = stallEpisodeAbandoned + stalled.uid
         val row = ResolveStallHop.apply(queue, index, choice)
+        // DJ Mode: the deferred row stays RIGHT BEHIND the hop target (FR1): it becomes the pick, so the re-plan the hop
+        // target's start triggers never carries the skipped song away.
+        val pickLanded = if (djModeEnabled() && queue.getOrNull(index + 1)?.uid == stalled.uid) setUserNext(index + 1) else null
         log("[playback] $reason song=${stalled.id} \u2192 hop to ${choice.kind.label} ${row.id} (deferred stalled row)")
         queueEdited()
+        announceLandedNext(pickLanded)
+        noteTransition(stalled.uid, TransitionCause.STALL_HOP)
         startPlayCurrent()
         return true
+    }
+
+    /** Uids hopped away from since the last first audio / user transport / stop (one stall EPISODE). */
+    private var stallEpisodeAbandoned: Set<String> = emptySet()
+
+    /** First audio, any user transport, or stop ends the episode; logged only if a hop happened. */
+    private fun endStallEpisode(reason: String) {
+        if (stallEpisodeAbandoned.isEmpty()) return
+        log("[playback] stall episode end reason=$reason abandoned=${stallEpisodeAbandoned.size}")
+        stallEpisodeAbandoned = emptySet()
     }
 
     private fun armStartStall(gen: Long, songId: String) {
@@ -1465,7 +2456,7 @@ class SetlistSequencer(
         if (!running || index >= queue.size || held || pausedByCascade) return
         if (hopToPlayableRow(reason)) return
         log("[playback] advance: $reason song=${queue[index].id} \u2014 no on-device row to hop to")
-        advanceToNext(AdvanceCause.AUTO)
+        advanceToNext(AdvanceCause.STALL_HOP)
     }
 
     // ---- supervisor hooks (only ever called while the listener intends to hear sound) ---------------
@@ -1542,6 +2533,7 @@ class SetlistSequencer(
 
     /** The listener acted: whatever happened before is not a cascade any more. */
     private fun noteUserTransport() {
+        endStallEpisode("user")
         breaker.reset()
         pausedByCascade = false
         notice = null
@@ -1633,9 +2625,26 @@ class SetlistSequencer(
 
     // ---- transport passthrough ---------------------------------------------------------------
 
-    suspend fun pause() = port.pause()
-    suspend fun resume() = port.resume()
-    suspend fun seekTo(positionMs: Long) = port.seekTo(positionMs)
+    suspend fun pause() {
+        if (redirected(TransportRedirect.SetPlaying(false))) return
+        reportUserTransport(UserTransport.PAUSE)
+        port.pause()
+    }
+    suspend fun resume() {
+        if (redirected(TransportRedirect.SetPlaying(true))) return
+        fireUser(UserTransport.PLAY)
+        port.resume()
+    }
+    suspend fun seekTo(positionMs: Long) { fireUser(UserTransport.SEEK); port.seekTo(positionMs) }
+}
+
+/** `[session] ...` lines go to the `session` lane (adb logcat -s PocketDJ.session); the rest to `playback`. */
+private fun defaultLog(line: String) {
+    if (line.startsWith("[session] ")) {
+        NPLog.lane(NPLog.SESSION, line.removePrefix("[session] "))
+    } else {
+        NPLog.lane(NPLog.PLAYBACK, line.removePrefix("[playback] "))
+    }
 }
 
 private const val GHOST_RUN_PREFIX = "puzzle_"

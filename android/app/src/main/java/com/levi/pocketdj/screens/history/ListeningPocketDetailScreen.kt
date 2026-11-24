@@ -17,6 +17,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
+import androidx.compose.material.icons.filled.Replay
+import com.levi.pocketdj.data.pockets.wheel.PocketProfile
+import com.levi.pocketdj.data.pockets.wheel.PocketRunStore
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -67,6 +71,12 @@ internal object PocketDetailText {
         }
         return out
     }
+
+    const val BUILDING = "Building a mix from this pocket…"
+    const val PLAYING = "Playing a fresh mix from this pocket."
+
+    /** The note under Play once a derived run was asked for (iOS `play()`): success, the build's failure text, or nothing. */
+    fun runNote(started: Boolean, failure: String?): String? = if (started) PLAYING else failure
 
     fun harmonicLine(h: ListeningPocketHarmonic): String {
         var s = "Keys flow: ${ListeningPocketLabeler.pct(h.rate)} of changes go to a neighbouring key"
@@ -128,6 +138,36 @@ internal fun ListeningPocketDetailScreen(
     val history = remember { PlayHistoryStore.get(context) }
     var savedName by remember { mutableStateOf<String?>(null) }
     var playError by remember { mutableStateOf<String?>(null) }
+    var runNote by remember { mutableStateOf<String?>(null) }
+
+    /** The pocket's exact songs, in play order (iOS `replay()`; also the fallback when no run store is wired). */
+    fun replay() {
+        scope.launch {
+            // iOS playNow(songIds:name:) passes no source, which historyContext resolves to .setlist; 'pocket' is for collection Pockets.
+            runCatching {
+                graph.shellGraph.shellActions.playSongIds(songIds, title, source = PlayContext.SOURCE_SETLIST)
+            }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it else playError = it.message ?: "Couldn't play" }
+        }
+    }
+
+    /** A fresh run DERIVED from this pocket (similar songs from its collections), not the captured songs again. */
+    fun play() {
+        val store = graph.pocketsGraph.runStore
+        val profile = when {
+            pocket != null -> PocketProfile.fromListening(pocket.title, pocket.features, pocket.numeric, pocket.membership, songIds = pocket.songIds)
+            pattern != null -> PocketProfile.fromListening(pattern.title, pattern.features, pattern.numeric, pattern.membership,
+                pattern.collectionCandidates, pattern.songIds)
+            else -> return
+        }
+        playError = null
+        runNote = PocketDetailText.BUILDING
+        scope.launch {
+            // NonCancellable: leaving the screen must not cancel a build half-way.
+            val started = runCatching { kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { store.start(profile) } }.getOrDefault(false)
+            val failure = (store.buildState.value as? PocketRunStore.BuildState.Failed)?.message
+            runNote = PocketDetailText.runNote(started, failure)
+        }
+    }
 
     LazyColumn(modifier.fillMaxSize().testTag("pocket-detail")) {
         item(key = "top") {
@@ -141,15 +181,7 @@ internal fun ListeningPocketDetailScreen(
                 Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        enabled = songIds.isNotEmpty(),
-                        onClick = {
-                            scope.launch {
-                                // iOS playNow(songIds:name:) passes no source, which historyContext resolves to .setlist; 'pocket' is for collection Pockets.
-                                runCatching {
-                                    graph.shellGraph.shellActions.playSongIds(songIds, title, source = PlayContext.SOURCE_SETLIST)
-                                }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it else playError = it.message ?: "Couldn't play" }
-                            }
-                        },
+                        onClick = { play() },
                         modifier = Modifier.testTag("pocket-play"),
                     ) {
                         Icon(Icons.Filled.PlayArrow, contentDescription = null)
@@ -164,6 +196,18 @@ internal fun ListeningPocketDetailScreen(
                 savedName?.let {
                     Text("Saved \"$it\" to your playlists.", style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.testTag("pocket-saved"))
+                }
+                runNote?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.testTag("pocket-run-note"))
+                }
+                TextButton(
+                    enabled = songIds.isNotEmpty(),
+                    onClick = { replay() },
+                    modifier = Modifier.testTag("pocket-replay"),
+                ) {
+                    Icon(Icons.Filled.Replay, contentDescription = null)
+                    Text("Play the original songs", style = MaterialTheme.typography.bodySmall)
                 }
                 playError?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
             }

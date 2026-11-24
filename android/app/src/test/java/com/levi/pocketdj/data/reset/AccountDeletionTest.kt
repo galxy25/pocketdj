@@ -1,5 +1,6 @@
 package com.levi.pocketdj.data.reset
 
+import com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold
 import com.levi.pocketdj.data.credentials.DiagKeySync
 import com.levi.pocketdj.data.credentials.SettingsCredentialsDocument
 import com.levi.pocketdj.data.games.GamesPrefs
@@ -166,7 +167,8 @@ class AccountDeletionTest {
             BrowseGraph.REC_FEEDBACK_SYNC_KEY, BrowseGraph.FORYOU_FEED_SYNC_KEY, BrowseGraph.REC_KEY_SYNC_KEY,
             "studio-cues", GamesPrefs.SCOREBOARD_SYNC_KEY, GamesGraph.PUZZLE_DECISIONS_SYNC_KEY,
             BrowseGraph.DISCOVER_ADDS_SYNC_KEY,
-            "favorites", "imported-songs", "playback-session", "mix-sessions", "mix-decks",
+            "favorites", "imported-songs", "playback-session", "mix-sessions", "mix-decks", "edits",
+            "pocket-palette", "profile-source", AppleMusicLibraryFold.SYNC_KEY,
         )
         assertEquals(registry, AccountDeletionService.cloudDocKeys.toSet())
         assertEquals("no duplicates", AccountDeletionService.cloudDocKeys.size, AccountDeletionService.cloudDocKeys.toSet().size)

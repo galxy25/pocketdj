@@ -37,6 +37,12 @@ object PlaybackContract {
     /** Game-run tag ([PlayContext.runTag]) of a sequencer-appended row. */
     const val EXTRA_RUN_TAG = "pdj.runTag"
 
+    /** Pocket Wheel run provenance (`PocketRunTag` JSON) of a run row, copied onto its History play. */
+    const val EXTRA_POCKET_RUN = "pdj.pocketRun"
+
     /** Origin collection id of a `set_now_playing` run (History attribution). */
     const val EXTRA_ORIGIN_COLLECTION_ID = "pdj.originCollectionId"
+
+    /** P2-ALB-4: the item is ONE shared album file played as a run (clip end unset; song ends are armed boundaries). */
+    const val EXTRA_ALBUM_RUN = "pdj.albumRun"
 }

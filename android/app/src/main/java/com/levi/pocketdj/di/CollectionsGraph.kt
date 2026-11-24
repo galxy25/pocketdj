@@ -298,6 +298,21 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         app.catalogRepository.importedSource = { real -> importedSongs.resolve(real) }
         // ANS-STU-7: the per-profile "Pocket DJ" source appends after every real source (only once the store has >=1 item, as iOS).
         app.catalogRepository.syntheticDocuments = { app.studioGraph.profileSource.syntheticDocumentsIfAny() }
+        // P2-LIB-3: the user's own Apple Music library joins the merge as source "Apple Music" (after Imported / profile).
+        val am = app.servicesGraph.amLibraryStore
+        val amSource = app.servicesGraph.amLibraryFoldSource
+        am.onChanged = { app.catalogRepository.remergeLocal() }
+        app.catalogRepository.amLibrarySource = { real -> amSource.resolve(real) }
+        // The library's own add-times carried onto a surviving indexed twin feed "Recently added".
+        com.levi.pocketdj.data.collections.RecentlyAdded.extraOverrides = { am.supersededAddedAt }
+        // Same durability order as Imported: remap collections + favorites FIRST (idempotent), THEN prune the rows.
+        app.catalogRepository.onAmLibrarySupersede = { pairs ->
+            app.appScope.launch(Dispatchers.IO) {
+                runCatching { app.collections.remapSongIds(pairs) }
+                runCatching { favorites.remapSongIds(pairs) }
+                runCatching { am.supersede(pairs) }
+            }
+        }
         // iOS applySupersede order: drop the imported rows, THEN remap collections + favorites onto the indexed twin.
         app.catalogRepository.onImportedSupersede = { pairs ->
             app.appScope.launch(Dispatchers.IO) {
@@ -339,6 +354,20 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                     app.appScope.launch { runCatching { app.settings.set(AmSyncSettings.BASE_OVERRIDE, b) } }
                 }
                 intent.getStringExtra("pdj.pocketsBase")?.let { pocketsDebugBase = it }
+                // P2-LIB-4 emulator hook: `-e pdj.storeAlbum "<storeId>|<title>|<artist>"` opens the in-app store album page
+                // exactly as the recognizer / New releases / Discover rows do (there is no fake recognizer backend).
+                intent.getStringExtra("pdj.storeAlbum")?.let { v ->
+                    val p = v.split("|")
+                    com.levi.pocketdj.screens.discover.StoreAlbumRouter.open(
+                        com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef(p[0], p.getOrElse(1) { "Store album" }, p.getOrElse(2) { "" }, null, null, null),
+                    )
+                }
+                // P2-LIB-3 emulator hook: `-e pdj.amFold 1` turns the owner gate on (the fold is otherwise off until a real
+                // "this catalog is my own" signal exists) and rebuilds the catalog so the supersede can be checked.
+                intent.getStringExtra("pdj.amFold")?.let { v ->
+                    app.servicesGraph.amLibrarySupersedesOntoLocal = v == "1"
+                    app.appScope.launch(Dispatchers.IO) { runCatching { app.servicesGraph.amLibraryStore.onChanged?.invoke() } }
+                }
                 if (intent.hasExtra("pdj.pocketsFakeCreds")) pocketsDebugCreds = true
                 intent.getStringExtra("pdj.pocketsEnable")?.let { v ->
                     app.appScope.launch(Dispatchers.IO) {
@@ -398,7 +427,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 com.levi.pocketdj.auto.AutoBrowseDebug.run(
                     app.appContext, app.appScope,
                     picks = intent.getStringExtra("pdj.autoPick").orEmpty().split("|").filter { it.isNotBlank() },
-                    roots = listOf("Mix", "Jukebox"),
+                    roots = listOf("Mix", "Jukebox", "For You"),
                 )
             }
             false // never consumes the intent
@@ -430,7 +459,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 com.levi.pocketdj.data.applemusic.PlaylistAppleMusicSync.LOOKUPS_FILE,
             )) runCatching { File(files, n).delete() }
             // Q115: restored catalog edits are APPLIED now, so a reset / account deletion must drop them too.
-            runCatching { app.catalogEdits.file.delete(); app.catalogEdits.invalidate(); app.catalogRepository.reapplyEdits() }
+            runCatching { editsStore.clearAll() }
             runCatching { app.appContext.getSharedPreferences("pdj-amsync", android.content.Context.MODE_PRIVATE).edit().clear().apply() }
         },
     )
@@ -443,6 +472,15 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         },
     )
 
+    /** P2-ALB-2: the writable edits document (iOS `EditsStore`); every write/pull re-applies the overlay live. */
+    val editsStore: com.levi.pocketdj.data.catalog.EditsStore by lazy {
+        com.levi.pocketdj.data.catalog.EditsStore(
+            reader = app.catalogEdits,
+            writer = VersionedJsonWriter(app.catalogEdits.file, VersionedJsonWriter.backgroundExecutor("pdj-edits-writer")),
+            onChanged = { app.catalogRepository.reapplyEdits() },
+        )
+    }
+
     /** Final review: hearts sync across devices (iOS key "favorites"); a pull re-adopts the file. */
     override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = listOf(
         com.levi.pocketdj.shell.SyncEntry("favorites", com.levi.pocketdj.data.favorites.FavoritesStore.FILE_NAME,
@@ -450,6 +488,9 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         // Q75(b): imports follow the profile (iOS key "imported-songs"); a pull re-adopts the file + refreshes the catalog.
         com.levi.pocketdj.shell.SyncEntry(com.levi.pocketdj.data.catalog.ImportedSongsStore.SYNC_KEY, com.levi.pocketdj.data.catalog.ImportedSongsStore.FILE_NAME,
             applyPayload = { importedSongs.writePulled(it) }, onPulled = { importedSongs.reloadFromDisk() }),
+        // P2-ALB-2 (iOS key "edits"): boundary edits + renames; a pull re-times/re-titles playback and never pushes back.
+        com.levi.pocketdj.shell.SyncEntry(com.levi.pocketdj.data.catalog.CatalogEditsFile.SYNC_KEY, com.levi.pocketdj.data.catalog.CatalogEditsFile.FILE_NAME,
+            applyPayload = { editsStore.writePulled(it) }, onPulled = { editsStore.reloadFromDisk() }),
     )
 
 
@@ -519,6 +560,8 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             deviceId = { pocketsDeviceId },
         ).also { svc ->
             svc.collectionsProvider = ::pocketsCollectionsInput
+            // Phase 6: `mode` rides uploads only when the user opted into motion notice (and holds the permission).
+            svc.motionOptedIn = { app.pocketsGraph.motionStore.isActive }
             svc.onDisabled = {
                 app.appScope.launch(Dispatchers.IO) {
                     // Pockets closed: places & trips goes off with it, and its data is erased (opt-out always works).
@@ -544,7 +587,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         }
 
     /** The membership snapshot input (iOS `collectionsInput`): pockets, playlists, source playlists, add log. */
-    private fun pocketsCollectionsInput(): com.levi.pocketdj.data.pockets.ListeningPocketsCollections.Input {
+    fun pocketsCollectionsInput(): com.levi.pocketdj.data.pockets.ListeningPocketsCollections.Input {
         val pockets = app.collections.pockets
         val playlists = app.collections.playlists
         val activity = app.collectionActivity.events
@@ -630,7 +673,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     }
 
     /** Car-projection signal: UI_MODE_TYPE_CAR only (a phone running Android Auto is not detectable without the car-app library). */
-    private fun carConnected(): Boolean? = runCatching {
+    internal fun carConnected(): Boolean? = runCatching {
         val ui = app.appContext.getSystemService(android.content.Context.UI_MODE_SERVICE) as android.app.UiModeManager
         ui.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_CAR
     }.getOrNull()

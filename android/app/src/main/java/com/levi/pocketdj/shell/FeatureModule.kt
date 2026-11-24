@@ -54,6 +54,9 @@ interface SettingsHost {
     val scope: CoroutineScope
     fun openStorage()
 
+    /** Open Settings ▸ Mixing (the pushed MixingSettingsScreen). */
+    fun openMixing() {}
+
     /** Settings ▸ "Show advanced" is on: raw endpoints/URLs and diagnostics may be shown. */
     val showAdvanced: Boolean get() = false
 }
@@ -110,6 +113,7 @@ data class PeriodicWorkSpec(
     val id: String,
     val repeatMinutes: Long,
     val requiresNetwork: Boolean = false,
+    val requiresBatteryNotLow: Boolean = false,
 )
 
 /**

@@ -74,6 +74,11 @@ fun RecFeedbackButtons(
     modifier: Modifier = Modifier,
     surface: RecFeedbackStore.Surface = RecFeedbackStore.Surface.TILE,
     onAccept: (() -> Unit)? = null,
+    /**
+     * P2-SURF-1: when set, a tap is handed here INSTEAD of filing directly, so Now Playing routes through the
+     * single shared `NowPlayingFeedback.record` (which also does the scoped add).
+     */
+    recorder: ((RecFeedbackStore.Verdict) -> Unit)? = null,
 ) {
     if (feedback == null) return
     // Re-read on every store revision so a verdict from another surface lights this one.
@@ -86,6 +91,7 @@ fun RecFeedbackButtons(
             val desc = RecFeedbackActions.label(v, on)
             IconButton(
                 onClick = {
+                    if (recorder != null) { recorder(v); return@IconButton }
                     val landed = RecFeedbackActions.record(feedback, catalog, songId, scope, surface, v)
                     if (RecFeedbackActions.shouldAdd(landed)) onAccept?.invoke()
                 },

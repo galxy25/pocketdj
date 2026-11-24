@@ -4,12 +4,16 @@ import com.levi.pocketdj.data.burns.BurnItem
 import com.levi.pocketdj.data.burns.BurnState
 import com.levi.pocketdj.data.burns.BurnStore
 import com.levi.pocketdj.data.burns.EvictionPlan
+import com.levi.pocketdj.data.burns.TemporaryHold
 import com.levi.pocketdj.data.edition.SongVariant
 import com.levi.pocketdj.data.stats.PlayStatsStore
 import java.util.concurrent.atomic.AtomicBoolean
 import com.levi.pocketdj.playback.sequencer.QueueItem
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 
@@ -29,6 +33,12 @@ interface PruneBurns {
     /** ONE listing per root: sweeps orphan aux first when over [capBytes], then plans. Deletes no burn. */
     fun plan(order: List<String>, capBytes: Long, capSongs: Int): EvictionPlan
     fun removeBurns(songIds: List<String>)
+
+    /** Song id -> temporary (buffer-lane) hold. Empty by default: a port without a ledger has no temporary assets. */
+    fun temporaryHolds(): Map<String, TemporaryHold> = emptyMap()
+
+    /** Delete exactly what these songs' holds list (`BurnStore.removeTemporaryAssets`). */
+    fun removeTemporaryAssets(songIds: List<String>): TemporaryRemoval = TemporaryRemoval()
 }
 
 class BurnStorePruneAdapter(private val store: BurnStore) : PruneBurns {
@@ -37,6 +47,8 @@ class BurnStorePruneAdapter(private val store: BurnStore) : PruneBurns {
         store.planEvictionSweepingOrphans(order, capBytes, capSongs)
     // Storage-pressure eviction stays local-only: the user's browsable folder copy is kept.
     override fun removeBurns(songIds: List<String>) = store.removeBurns(songIds, mirrored = false)
+    override fun temporaryHolds(): Map<String, TemporaryHold> = store.temporaryHolds.value
+    override fun removeTemporaryAssets(songIds: List<String>) = store.removeTemporaryAssets(songIds)
 }
 
 /**
@@ -61,6 +73,8 @@ class StorageManager(
     private val log: (String) -> Unit = {},
     /** Disk work (listing, orphan deletes, burn removal) runs here, never on the caller (Main) dispatcher. */
     private val io: CoroutineContext = Dispatchers.IO,
+    /** Runs the debounced cap sweep a landing hold schedules; null = [scheduleCapSweepIfNeeded] is inert. */
+    private val scope: CoroutineScope? = null,
 ) {
     data class PruneResult(
         val evicted: Int = 0,
@@ -104,7 +118,7 @@ class StorageManager(
                 val protected = protectedSongIds()
                 val (spare, go) = run.plan.evict.subList(start, end).partition { it in protected }
                 skipped += spare
-                withContext(io) { burns.removeBurns(go) }
+                withContext(io) { evict(go, protected) }
                 gone += go.filter { id -> burns.items().none { it.songId == id } }
                 start = end
                 yield()
@@ -113,6 +127,20 @@ class StorageManager(
         } finally {
             pruning.set(false)
         }
+    }
+
+    /**
+     * One eviction batch. A song that is still TEMPORARY (buffered audio) goes through the hold-scoped
+     * primitive - only what its hold lists, so stems the user pinned for it survive - and every other
+     * song through the ordinary `removeBurns`.
+     */
+    private fun evict(ids: List<String>, protected: Set<String>) {
+        if (ids.isEmpty()) return
+        val holds = burns.temporaryHolds()
+        val bases = TemporarySweep.bases(protected)
+        val temp = ids.filter { holds[it]?.audio == true && !TemporarySweep.isProtected(it, protected, bases) }
+        if (temp.isNotEmpty()) burns.removeTemporaryAssets(temp)
+        burns.removeBurns(ids.filter { holds[it]?.audio != true })
     }
 
     private class Run(val cap: ActiveCap, val plan: EvictionPlan, val itemsBefore: Map<String, BurnItem>)
@@ -124,8 +152,16 @@ class StorageManager(
         val items = burns.items()
         // LRP: never-played (0) ahead of everything, oldest download breaking ties. A substituted
         // (clean/explicit) burn is keyed "sng_x_clean" while plays are recorded against the BASE id.
-        val order = items.asSequence()
-            .filter { it.state == BurnState.READY && it.songId !in protected }
+        // TEMPORARY (buffered) songs go first, soonest expiry first - they were never asked for - then the
+        // pinned burns, least-recently-played first.
+        val tempFirst = TemporarySweep.softCapTemporaryFirst(
+            burns.temporaryHolds().values,
+            items.asSequence().filter { it.state == BurnState.READY }.map { it.songId }.toSet(),
+            protected,
+        )
+        val tempSet = tempFirst.toSet()
+        val order = tempFirst + items.asSequence()
+            .filter { it.state == BurnState.READY && it.songId !in protected && it.songId !in tempSet }
             .map { it to (playStats.lastPlayedAt(SongVariant.baseId(it.songId)) ?: 0.0) }
             .sortedWith(compareBy<Pair<BurnItem, Double>> { it.second }.thenBy { it.first.downloadedAt })
             .map { it.first.songId }
@@ -155,4 +191,109 @@ class StorageManager(
         lastResult = result
         return result
     }
+
+    // ---- temporary-asset expiry sweep (np-mix-mode phase 1) -----------------------------------
+
+    @Volatile var lastSweep: SweepResult? = null
+        private set
+
+    /** A cap sweep scheduled by a hold landing, not yet run (debounce). */
+    private val capSweepScheduled = AtomicBoolean(false)
+
+    /**
+     * The EXPIRY SWEEP: delete temporary (buffered) assets past their TTL - and, over the buffer cap
+     * (or [capOverrideBytes]), the soonest-expiring ones - never anything protected, and never
+     * anything without a hold. Not gated on the soft cap. Null when a prune/sweep is already running.
+     *
+     * Crash-loop discipline: the stamp is written FIRST, the plan is ONE pass over the ledger (no disk
+     * scan), deletion runs in chunks of [TemporarySweep.CHUNK] with a yield between them, and the
+     * protected set is RE-READ and each hold RE-VALIDATED per chunk (a pin, a deck load or a track
+     * change mid-sweep is honoured). [ignoreExpiry] = "Clear now".
+     */
+    suspend fun sweepTemporary(
+        now: Long = clock(),
+        reason: String,
+        ignoreExpiry: Boolean = false,
+        capOverrideBytes: Long? = null,
+    ): SweepResult? {
+        if (!pruning.compareAndSet(false, true)) return null
+        try {
+            val holds = withContext(io) { burns.temporaryHolds() }
+            if (holds.isEmpty()) return SweepResult().also { lastSweep = it }
+            settings.stampTemporarySweep(now) // STAMP FIRST - before any planning or deletion
+            val capBytes = capOverrideBytes?.coerceAtLeast(0L) ?: settings.bufferCapBytes()
+            val plan = TemporarySweep.planSweep(holds.values, now.toDouble(), capBytes, protectedSongIds(), ignoreExpiry)
+            log("temporary sweep start reason=$reason holds=${holds.size} footprint=${holds.values.sumOf { it.bytes }} cap=$capBytes n=${plan.delete.size} protected=${plan.skippedProtected}")
+            var removed = 0; var freed = 0L; var kept = 0; var skipped = plan.skippedProtected
+            var start = 0
+            while (start < plan.delete.size) {
+                val end = minOf(start + TemporarySweep.CHUNK, plan.delete.size)
+                val protected = protectedSongIds() // re-read per chunk
+                val bases = TemporarySweep.bases(protected)
+                val live = burns.temporaryHolds()
+                var footprint = live.values.sumOf { it.bytes }
+                val chunk = plan.delete.subList(start, end).filter { id ->
+                    val h = live[id] ?: return@filter false // pinned meanwhile
+                    if (TemporarySweep.isProtected(id, protected, bases)) { skipped++; return@filter false }
+                    // An expiry pick whose hold a fresh landing extended is spared; cap picks are re-checked.
+                    if (!(ignoreExpiry || h.expiresAtMs <= now || footprint > capBytes)) return@filter false
+                    footprint -= h.bytes
+                    true
+                }
+                if (chunk.isNotEmpty()) {
+                    val r = withContext(io) { burns.removeTemporaryAssets(chunk) }
+                    removed += r.songs; freed += r.bytes; kept += r.kept
+                }
+                start = end
+                yield()
+            }
+            val result = SweepResult(removed, freed, skipped, kept, remaining = burns.temporaryHolds().size)
+            log("temporary sweep reason=$reason deleted=$removed freed=$freed kept=$kept protected=$skipped left=${result.remaining}")
+            lastSweep = result
+            return result
+        } finally {
+            pruning.set(false)
+        }
+    }
+
+    /**
+     * The gated sweep for launch / foreground / the hourly tick / the prune job: a no-op with no holds,
+     * while a prune/sweep runs, or when the last sweep STARTED less than [minIntervalMs] ago.
+     */
+    suspend fun sweepTemporaryIfDue(reason: String, minIntervalMs: Long = TemporarySweep.INTERVAL_MS): SweepResult? {
+        if (isPruning || withContext(io) { burns.temporaryHolds().isEmpty() }) return null
+        val now = clock()
+        val last = settings.lastTemporarySweepAt()
+        if (last != null && now >= last && now - last < minIntervalMs) return null
+        return sweepTemporary(now, reason)
+    }
+
+    /**
+     * A hold just landed or Mix Mode went off: when the temporary footprint is over the buffer cap, run
+     * ONE cap sweep on a later turn (debounced - a burst of stem parts schedules a single pass and the
+     * landing call never waits on deletes).
+     */
+    fun scheduleCapSweepIfNeeded() {
+        val sc = scope ?: return
+        if (capSweepScheduled.get()) return
+        if (burns.temporaryHolds().values.sumOf { it.bytes } <= 0L) return
+        if (!capSweepScheduled.compareAndSet(false, true)) return
+        sc.launch(io) {
+            yield()
+            capSweepScheduled.set(false)
+            val over = burns.temporaryHolds().values.sumOf { it.bytes } > settings.bufferCapBytes()
+            if (over && sweepTemporary(reason = "cap") == null) {
+                // A prune/sweep was running and dropped this pass: retry once it finishes.
+                delay(2_000)
+                scheduleCapSweepIfNeeded()
+            }
+        }
+    }
+
+    /**
+     * Disk guard (before every buffer step): sweep the soonest-expiring unprotected buffers down to
+     * [targetFootprintBytes]. Null when a prune/sweep is already running.
+     */
+    suspend fun sweepForDiskGuard(targetFootprintBytes: Long): SweepResult? =
+        sweepTemporary(reason = "diskguard", capOverrideBytes = targetFootprintBytes)
 }

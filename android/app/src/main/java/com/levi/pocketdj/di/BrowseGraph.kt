@@ -14,7 +14,9 @@ import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.SettingsSection
 import com.levi.pocketdj.data.history.HistorySettings
 import com.levi.pocketdj.screens.history.HistoryBrowseState
+import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.debounce
@@ -70,6 +72,11 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     /** 👍/👎 decisions (BRW-11). Reads its file on first touch: touch off Main. */
     private val recFeedbackLazy: Lazy<com.levi.pocketdj.data.recs.RecFeedbackStore> = lazy {
+        // P2-SURF-2: the media-button layout reads the stores only once built; republish it when they are.
+        app.appScope.launch {
+            while (!recFeedbackLazy.isInitialized()) delay(20)
+            com.levi.pocketdj.playback.RunTransportBus.stateChanged?.invoke()
+        }
         com.levi.pocketdj.data.recs.RecFeedbackStore(
             file = java.io.File(app.appContext.filesDir, REC_FEEDBACK_FILE),
             scope = app.appScope,
@@ -77,6 +84,48 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         )
     }
     val recFeedbackStore: com.levi.pocketdj.data.recs.RecFeedbackStore by recFeedbackLazy
+
+    /**
+     * P2-SURF-1: `CollectionsStore.onPlaybackReplaced` target (installed synchronously when the collections
+     * store is built, so no play can precede the hook). Synchronous (ordering vs the tile's post-playNow
+     * `beginPlayback` matters). Always resolves the store (lazy, thread-safe; its file read is off-main safe
+     * for this caller), so there is no check-then-act window where a retire could be lost.
+     */
+    fun endRecPlaybackScope() {
+        recFeedbackStore.endPlaybackScope()
+    }
+
+    /** The shared 👍/👎 target for NP / notification / widget / Auto (P2-SURF-1). */
+    val nowPlayingFeedback: com.levi.pocketdj.data.recs.NowPlayingFeedback by lazy {
+        com.levi.pocketdj.data.recs.NowPlayingFeedback(
+            feedback = recFeedbackStore,
+            sequencer = { app.playbackGraph.sequencer.state.value },
+            mixSessionActive = { com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.mixSessionActive },
+            catalog = { app.catalogRepository.state.value.catalog },
+            addAccepted = { songId, scope -> app.collections.addAcceptedSong(songId, scope) },
+        )
+    }
+
+    /** P2-SURF-2: the shared target for the media-button layout; null (never builds the stores) until recs have started. */
+    fun nowPlayingFeedbackIfReady(): com.levi.pocketdj.data.recs.NowPlayingFeedback? =
+        if (recFeedbackLazy.isInitialized()) nowPlayingFeedback else null
+
+    /** Install the NP rating seam. The composable resolves the store off-main when it is still cold. */
+    private fun installNowPlayingRating() {
+        com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.rating = { _ ->
+            val np = androidx.compose.runtime.produceState<com.levi.pocketdj.data.recs.NowPlayingFeedback?>(
+                if (recFeedbackLazy.isInitialized()) nowPlayingFeedback else null,
+            ) {
+                if (value == null) value = withContext(Dispatchers.IO) { nowPlayingFeedback }
+            }.value
+            if (np != null) {
+                val catalog = app.catalogRepository.state.collectAsState().value.catalog
+                com.levi.pocketdj.screens.nowplaying.NowPlayingFeedbackRow(
+                    np, recFeedbackStore, app.playbackGraph.sequencer.state, catalog,
+                )
+            }
+        }
+    }
 
     /** Timbre corpus for the For You refresh (BRW-12): memoized fetch, never throws, empty when offline. */
     val timbreCatalog: com.levi.pocketdj.data.recs.TimbreCatalog by lazy {
@@ -160,6 +209,7 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
      * also finishes an owed server-side deletion regardless of the toggle; it exits at once when disabled.
      */
     fun startRecs() {
+        installNowPlayingRating()
         startReleaseFeed()
         // Final review: the Add-to sheet / context submenu "Suggested" rows read this seam (it was never assigned).
         // Non-blocking cache read; a miss starts one fetch and the revision bump re-renders.
@@ -536,6 +586,17 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
                 val rows = api.librarySongRows("${song.title} ${song.artist}".trim()).okOrNull().orEmpty()
                 return song.copy(inLibrary = com.levi.pocketdj.screens.shazam.libraryRowsContain(rows, song.title, song.artist))
             }
+
+            /** Edition swap (G13): the preferred explicit/clean twin of the recognized id, best-effort. */
+            override suspend fun preferredEdition(storeId: String, title: String, artist: String): String =
+                com.levi.pocketdj.screens.shazam.RecognizerEdition.preferredStoreId(
+                    storeId, title, artist, com.levi.pocketdj.data.edition.EditionSettings.get(app.settings),
+                ) { term ->
+                    val r = app.appleMusicApi.searchCatalog(term, limit = 15, storefront = sf()).okOrNull()
+                    r?.songs?.items.orEmpty().map {
+                        com.levi.pocketdj.screens.shazam.EditionRow(it.id, it.title, it.artist, it.explicit, it.durationSec)
+                    }
+                }
 
             override suspend fun addSongToLibrary(storeId: String) =
                 app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.SONGS, listOf(storeId)) is

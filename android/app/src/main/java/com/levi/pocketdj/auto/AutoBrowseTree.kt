@@ -28,7 +28,7 @@ sealed interface AutoId {
 
     data object Root : AutoId { override val encoded = "root" }
     data class Tab(val tab: Which) : AutoId {
-        enum class Which(val token: String) { PLAYLISTS("playlists"), POCKETS("pockets") }
+        enum class Which(val token: String) { PLAYLISTS("playlists"), POCKETS("pockets"), FOR_YOU("foryou") }
         override val encoded get() = "tab:${tab.token}"
     }
     data object Continue : AutoId { override val encoded = "continue" }
@@ -48,6 +48,28 @@ sealed interface AutoId {
     /** One chooser row: add [songId] to the pocket/playlist [targetId]. */
     data class AddTarget(val songId: String, val targetKind: AutoTargetKind, val targetId: String) : AutoId {
         override val encoded get() = "addt:${enc(songId)}:${targetKind.token}:${enc(targetId)}"
+    }
+
+    /** A For You tile (`fy:<tileId>`: "new" / "zone" / "col-<id>"); browsable, and playing it plays the whole tile. */
+    data class ForYouTile(val tileId: String) : AutoId { override val encoded get() = "fy:${enc(tileId)}" }
+    /** Play all / Shuffle all inside a For You tile. */
+    data class ForYouAll(val tileId: String, val shuffle: Boolean) : AutoId {
+        override val encoded get() = "${if (shuffle) "fyshuf" else "fyall"}:${enc(tileId)}"
+    }
+    /** One row inside a For You tile: a catalog song id, or `rel:<storeId>` for a New release. */
+    data class ForYouRow(val tileId: String, val rowId: String) : AutoId {
+        override val encoded get() = "fyrow:${enc(tileId)}:${enc(rowId)}"
+    }
+    /** The cold-cache note row. */
+    data object ForYouNote : AutoId { override val encoded = "fynote" }
+
+    /** "▶ Pocket for now" (`pocketwheel:now`, P2-POC-16): playable, the wheel's best match for right now. */
+    data object PocketNow : AutoId { override val encoded = "pocketwheel:now" }
+    /** The browsable "Pockets right now" folder (`pocketwheel:list`). */
+    data object PocketList : AutoId { override val encoded = "pocketwheel:list" }
+    /** One wheel moment in that folder (`pocketwheel:m:<token>`, token like `h08|d2|carPlay`: no ':' inside). */
+    data class PocketMoment(val key: com.levi.pocketdj.data.pockets.wheel.PocketMomentKey) : AutoId {
+        override val encoded get() = "pocketwheel:m:${key.token}"
     }
 
     /** A Mix-tab node (SURF-9). [a]/[b] are kind-specific payloads (deck, crate key, session id). */
@@ -80,9 +102,21 @@ sealed interface AutoId {
                 "all" -> if (p.size == 4) decRef(p[1], p[2], p[3])?.let(::PlayAll) else null
                 "shuf" -> if (p.size == 4) decRef(p[1], p[2], p[3])?.let(::ShuffleAll) else null
                 "song" -> if (p.size == 5) decRef(p[1], p[2], p[3])?.let { Song(it, dec(p[4])) } else null
+                "fy" -> if (p.size == 2) ForYouTile(dec(p[1])) else null
+                "fyall" -> if (p.size == 2) ForYouAll(dec(p[1]), false) else null
+                "fyshuf" -> if (p.size == 2) ForYouAll(dec(p[1]), true) else null
+                "fyrow" -> if (p.size == 3) ForYouRow(dec(p[1]), dec(p[2])) else null
+                "fynote" -> if (p.size == 1) ForYouNote else null
                 "mix" -> if (p.size == 4) {
                     AutoMixKind.fromToken(p[1])?.let { Mix(it, dec(p[2]), dec(p[3])) }
                 } else null
+                "pocketwheel" -> when {
+                    p.size == 2 && p[1] == "now" -> PocketNow
+                    p.size == 2 && p[1] == "list" -> PocketList
+                    p.size == 3 && p[1] == "m" ->
+                        com.levi.pocketdj.data.pockets.wheel.PocketMomentKey.fromToken(p[2])?.let(::PocketMoment)
+                    else -> null
+                }
                 "solo" -> if (p.size == 2) Solo(dec(p[1])) else null
                 "addto" -> if (p.size == 2) AddTo(dec(p[1])) else null
                 "addt" -> if (p.size == 4) {
@@ -162,7 +196,20 @@ class AutoBrowseTree(
     private val maxSongs: Int = MAX_SONGS,
     /** The Mix tab (SURF-9). Null until a MixFacade is wired: the tab is then hidden entirely. */
     val mix: AutoMixTab? = null,
+    /** The For You tab (SURF-7): frozen cached tiles. Null hides the tab. */
+    val forYou: AutoForYou? = null,
+    /** P2-POC-16: "▶ Pocket for now" + "Pockets right now" at the top of the For You tab. Null = absent. */
+    val pockets: AutoPockets? = null,
 ) {
+    /** The For You tab exists when either its tiles or the pocket rows do. */
+    val hasForYouTab: Boolean get() = forYou != null || pockets != null
+
+    /**
+     * The host's BROWSER_ROOT_HINTS_KEY_ROOT_CHILDREN_LIMIT (null = unknown / unlimited). When the root would
+     * exceed it, the Continue row folds into a top row inside Playlists.
+     */
+    @Volatile var rootLimit: Int? = null
+
     fun root(): AutoNode = AutoNode(
         id = AutoId.Root.encoded,
         title = "PocketDJ",
@@ -183,6 +230,8 @@ class AutoBrowseTree(
             is AutoId.Tab -> if (!data.catalogReady) listOf(loadingNode()) else tabChildren(id.tab)
             is AutoId.Collection -> collectionChildren(id.ref)
             is AutoId.Mix -> mix?.children(id)
+            is AutoId.ForYouTile -> forYou?.tileChildren(id.tileId)
+            AutoId.PocketList -> pockets?.listChildren()
             is AutoId.AddTo -> null // resolved by AutoLibraryCallback (needs AutoAddTargets)
             else -> null
         }
@@ -190,18 +239,16 @@ class AutoBrowseTree(
 
     private fun loadingNode() = AutoNode(AutoId.Loading.encoded, "Loading…", subtitle = "Getting your library ready")
 
-    private fun rootChildren(): List<AutoNode> {
-        // The catalog isn't warm yet: ONE "Loading…" child; the callback notifies the root once it is.
-        if (!data.catalogReady) return listOf(loadingNode())
-        val out = ArrayList<AutoNode>(3)
-        data.held()?.let { h ->
-            out += AutoNode(
-                id = AutoId.Continue.encoded,
-                title = "Continue",
-                subtitle = listOf(h.title, h.artist).filter { it.isNotBlank() }.joinToString(" – "),
-                playable = true,
-            )
-        }
+    private fun continueNode(h: AutoHeld) = AutoNode(
+        id = AutoId.Continue.encoded,
+        title = "Continue",
+        subtitle = listOf(h.title, h.artist).filter { it.isNotBlank() }.joinToString(" – "),
+        playable = true,
+    )
+
+    /** The tab rows below Continue, in the phone's order: Playlists, Pockets, For You, then Mix. */
+    private fun tabNodes(): List<AutoNode> {
+        val out = ArrayList<AutoNode>(4)
         out += AutoNode(
             AutoId.Tab(AutoId.Tab.Which.PLAYLISTS).encoded, "Playlists",
             browsable = true, childBrowsableStyle = AutoStyle.LIST,
@@ -210,20 +257,53 @@ class AutoBrowseTree(
             AutoId.Tab(AutoId.Tab.Which.POCKETS).encoded, "Pockets",
             browsable = true, childBrowsableStyle = AutoStyle.LIST,
         )
+        if (hasForYouTab) out += forYouTabNode()
         mix?.let { out += it.tabNode() }
         return out
+    }
+
+    private fun forYouTabNode() = AutoNode(
+        AutoId.Tab(AutoId.Tab.Which.FOR_YOU).encoded, "For You",
+        browsable = true, childBrowsableStyle = AutoStyle.LIST,
+    )
+
+    /** True when a held session exists and the root has no room for a Continue row beside the tabs. */
+    private fun continueFolded(held: AutoHeld?): Boolean {
+        val limit = rootLimit ?: return false
+        return held != null && tabNodes().size + 1 > limit
+    }
+
+    private fun rootChildren(): List<AutoNode> {
+        // The catalog isn't warm yet: ONE "Loading…" child; the callback notifies the root once it is.
+        if (!data.catalogReady) return listOf(loadingNode())
+        val held = data.held()
+        val out = ArrayList<AutoNode>(5)
+        if (held != null && !continueFolded(held)) out += continueNode(held)
+        out += tabNodes()
+        val limit = rootLimit
+        return if (limit != null && limit > 0 && out.size > limit) out.take(limit) else out
     }
 
     private fun tabChildren(tab: AutoId.Tab.Which): List<AutoNode> {
         val infos = when (tab) {
             AutoId.Tab.Which.PLAYLISTS -> sortedByName(data.playlists()) + sortedByName(data.sourcePlaylists())
             AutoId.Tab.Which.POCKETS -> sortedByName(data.pockets())
+            AutoId.Tab.Which.FOR_YOU ->
+                return pockets?.forYouRows().orEmpty() + forYou?.children().orEmpty()
         }
         if (infos.isEmpty()) {
+            // Continue folded into the first Playlists row (root-limit hint): keep it even with no playlists.
+            val folded = if (tab == AutoId.Tab.Which.PLAYLISTS) foldedContinue() else emptyList()
             val what = if (tab == AutoId.Tab.Which.PLAYLISTS) "playlists" else "pockets"
-            return listOf(AutoNode(AutoId.Empty(AutoId.Tab(tab).encoded).encoded, "No $what yet"))
+            return folded + AutoNode(AutoId.Empty(AutoId.Tab(tab).encoded).encoded, "No $what yet")
         }
-        return infos.map(::collectionNode)
+        val rows = infos.map(::collectionNode)
+        return if (tab == AutoId.Tab.Which.PLAYLISTS) foldedContinue() + rows else rows
+    }
+
+    private fun foldedContinue(): List<AutoNode> {
+        val h = data.held()
+        return if (h != null && continueFolded(h)) listOf(continueNode(h)) else emptyList()
     }
 
     private fun sortedByName(l: List<AutoCollectionInfo>) = l.sortedBy { it.name.lowercase() }
@@ -271,11 +351,14 @@ class AutoBrowseTree(
         return when (val id = AutoId.decode(mediaId) ?: return null) {
             AutoId.Root -> root()
             AutoId.Loading -> loadingNode()
-            AutoId.Continue -> data.held()?.let { h ->
-                AutoNode(id.encoded, "Continue", listOf(h.title, h.artist).filter { it.isNotBlank() }.joinToString(" – "), playable = true)
-            }
+            AutoId.Continue -> data.held()?.let(::continueNode)
             is AutoId.Tab -> AutoNode(
-                id.encoded, if (id.tab == AutoId.Tab.Which.PLAYLISTS) "Playlists" else "Pockets",
+                id.encoded,
+                when (id.tab) {
+                    AutoId.Tab.Which.PLAYLISTS -> "Playlists"
+                    AutoId.Tab.Which.POCKETS -> "Pockets"
+                    AutoId.Tab.Which.FOR_YOU -> "For You"
+                },
                 browsable = true, childBrowsableStyle = AutoStyle.LIST,
             )
             is AutoId.Collection -> data.collection(id.ref)?.let(::collectionNode)
@@ -284,6 +367,8 @@ class AutoBrowseTree(
             is AutoId.Song -> data.song(id.songId)?.let { songNode(id.encoded, it) }
             is AutoId.Solo -> data.song(id.songId)?.let { songNode(id.encoded, it) }
             is AutoId.Mix -> mix?.item(id)
+            AutoId.PocketNow, AutoId.PocketList, is AutoId.PocketMoment -> pockets?.item(id)
+            AutoId.ForYouNote, is AutoId.ForYouTile, is AutoId.ForYouAll, is AutoId.ForYouRow -> forYou?.item(id)
             is AutoId.Empty, is AutoId.AddTo, is AutoId.AddTarget -> null
         }
     }

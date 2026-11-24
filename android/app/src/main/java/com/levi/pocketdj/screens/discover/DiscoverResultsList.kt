@@ -343,6 +343,7 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
                 addStates = albumStates,
                 retryAlbumTokens = retryAlbumTokens,
                 onRetryLibraryWrite = { graph.browseGraph.retryAlbumLibraryWrite(it) },
+                onOpenAlbum = { StoreAlbumRouter.open(it) },
             )
         }
     }

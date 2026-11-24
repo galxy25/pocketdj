@@ -149,8 +149,9 @@ class PlayHistoryStore(
                 null
             } else {
                 val installId = _state.value.installId
-                // Stamped only for the Now Playing run, whose contextId is not navigable by itself.
-                val origin = if (context.contextId == NOW_PLAYING_SETLIST_ID) originCollectionId else null
+                // Stamped for the Now Playing run (its contextId is not navigable by itself) and for Mix
+                // plays (their contextId is a Mix SESSION; the crate rides as the origin, per row).
+                val origin = if (context.contextId == NOW_PLAYING_SETLIST_ID || context.source == PlayContext.SOURCE_MIX) originCollectionId else null
                 val event = PlayEvent(
                     id = UUID.randomUUID().toString(),
                     songId = songId,
@@ -164,6 +165,7 @@ class PlayHistoryStore(
                     tzOffsetMin = tzOffsetMin,
                     originCollectionId = origin,
                     carPlay = runCatching { carPlayProbe?.invoke() }.getOrNull(),
+                    pocketRun = context.pocketRun,
                 )
                 var events = _state.value.events + event
                 // Max, not assignment: an out-of-order append can't move last-played back.
@@ -227,6 +229,25 @@ class PlayHistoryStore(
             val events = _state.value.events.map { e ->
                 val t = tags[e.id]
                 if (t != null && e.listeningContext == null && !isFromAnotherDevice(e)) { n++; e.copy(listeningContext = t) } else e
+            }
+            if (n == 0) return 0
+            publish(events)
+            saveSoon()
+            return n
+        }
+    }
+
+    /**
+     * Stamp settled MOTION tokens (event id -> token). WRITE-ONCE (a settled token is never overwritten),
+     * blank tokens ignored, own plays only. No-op without a revision bump when nothing changes. Returns count stamped.
+     */
+    fun stampMotion(tokens: Map<String, String>): Int {
+        if (tokens.isEmpty()) return 0
+        synchronized(lock) {
+            var n = 0
+            val events = _state.value.events.map { e ->
+                val t = tokens[e.id]
+                if (t != null && t.isNotEmpty() && e.motion == null && !isFromAnotherDevice(e)) { n++; e.copy(motion = t) } else e
             }
             if (n == 0) return 0
             publish(events)
@@ -315,6 +336,8 @@ class PlayHistoryStore(
                 if (mine.tzOffsetMin == null && theirs.tzOffsetMin != null) merged = merged.copy(tzOffsetMin = theirs.tzOffsetMin)
                 if (mine.listeningContext == null && theirs.listeningContext != null) merged = merged.copy(listeningContext = theirs.listeningContext)
                 if (mine.carPlay == null && theirs.carPlay != null) merged = merged.copy(carPlay = theirs.carPlay)
+                if (mine.motion == null && theirs.motion != null) merged = merged.copy(motion = theirs.motion)
+                if (mine.pocketRun == null && theirs.pocketRun != null) merged = merged.copy(pocketRun = theirs.pocketRun)
                 if (merged != mine) {
                     byId[theirs.id] = merged
                     absorbedPeerFields = true
@@ -346,6 +369,8 @@ class PlayHistoryStore(
         if (mine.tzOffsetMin != null && theirs.tzOffsetMin == null) return true
         if (mine.listeningContext != null && theirs.listeningContext == null) return true
         if (mine.carPlay != null && theirs.carPlay == null) return true
+        if (mine.motion != null && theirs.motion == null) return true
+        if (mine.pocketRun != null && theirs.pocketRun == null) return true
         return false
     }
 

@@ -560,7 +560,7 @@ private fun LikedRowItem(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .weight(1f)
-                .clickable { openAlbum(context, rel.storeId) }
+                .clickable { openAlbum(context, rel.storeId, rel.title, rel.artistName, rel.artworkUrl) }
                 .testTag("new-liked-row-${rel.storeId}"),
         ) {
             ReleaseArt(rel.artworkUrl)
@@ -688,12 +688,20 @@ private fun ReleaseRow(
     }
 }
 
-/** A release with no store id can't be opened - the row simply doesn't navigate. */
+/** A release with no store id can't be opened - the row simply doesn't navigate. Otherwise: the in-app store album page. */
 private fun openRelease(context: android.content.Context, e: ArtistReleaseEntry) {
-    openAlbum(context, e.releaseId ?: return)
+    val id = e.releaseId ?: return
+    openAlbum(context, id, e.releaseName, e.artistName, e.releaseArtworkUrl)
 }
 
-private fun openAlbum(context: android.content.Context, id: String) {
+/** The in-app store album page; the Apple Music link only if the router can't take it. */
+private fun openAlbum(context: android.content.Context, id: String, title: String?, artist: String, artworkUrl: String?) {
+    val ref = com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef(
+        storeId = id, title = title.orEmpty(), artist = artist,
+        year = null, artworkUrl = NewReleasesPresentation.artworkUrl(artworkUrl, 300),
+        url = NewReleasesPresentation.albumUrl(id),
+    )
+    if (com.levi.pocketdj.screens.discover.StoreAlbumRouter.open(ref)) return
     runCatching {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(NewReleasesPresentation.albumUrl(id))).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }.onFailure { Toast.makeText(context, "Couldn’t open this release", Toast.LENGTH_SHORT).show() }

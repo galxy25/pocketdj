@@ -82,6 +82,8 @@ class TakeRenderer(
     private val synthFactory: () -> SynthVoice = { Sf2SynthVoice() },
     private val codec: StudioCodec = AndroidStudioCodec,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    /** EXPLICIT use of a catalog song's stems by a take (np-mix-mode 3.3): pins [songKey] (reason `take`). Null = no ledger. */
+    private val onSongKeyUse: ((songKey: String) -> Unit)? = null,
 ) {
     private val mutex = Mutex()
 
@@ -104,6 +106,8 @@ class TakeRenderer(
      * when an edit landed mid-render (revision mismatch: the stale render is dropped).
      */
     suspend fun render(take: StudioTake, bankFor: (InstrumentKey) -> File?): File? = mutex.withLock {
+        // A take built on a song's stems resolves them by key at every use: it must be a download, never a buffer.
+        take.demuxSourceKey?.takeIf { com.levi.pocketdj.studio.demux.DemuxSource.isSongKey(it) }?.let { onSongKeyUse?.invoke(it) }
         withContext(dispatcher) {
             val staffs = ArrayList<Triple<List<StudioNoteEvent>, InstrumentKey, Int>>()
             staffs.add(Triple(take.scoreEvents, take.instrument, take.instrument.gmProgram))

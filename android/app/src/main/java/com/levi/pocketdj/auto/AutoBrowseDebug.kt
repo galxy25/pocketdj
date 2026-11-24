@@ -43,8 +43,12 @@ object AutoBrowseDebug {
                     dump(browser, node, 0)
                 }
                 for (p in picks) {
-                    val mix = children(browser, root.mediaId).firstOrNull { it.mediaMetadata.title.toString().contains("Mix", true) }
-                    val target = mix?.let { find(browser, it, p, 0) }
+                    // SURF-7: `fy:<tile>` picks a For You node by media id (searched under the For You tab).
+                    val isFy = p.startsWith("fy") || p.startsWith("pocketwheel")
+                    val mix = children(browser, root.mediaId).firstOrNull {
+                        it.mediaMetadata.title.toString().contains(if (isFy) "For You" else "Mix", true)
+                    }
+                    val target = mix?.let { if (isFy) findId(browser, it, p, 0) else find(browser, it, p, 0) }
                     if (target == null) { Log.d(TAG, "PICK '$p' not found"); continue }
                     Log.d(TAG, "PICK '$p' -> ${target.mediaId}")
                     Log.d(TAG, "cmdSetItem=${browser.isCommandAvailable(androidx.media3.common.Player.COMMAND_SET_MEDIA_ITEM)} cmdPrepare=${browser.isCommandAvailable(androidx.media3.common.Player.COMMAND_PREPARE)} state=${browser.playbackState}")
@@ -61,8 +65,16 @@ object AutoBrowseDebug {
 
     private suspend fun dump(b: MediaBrowser, node: MediaItem, depth: Int) {
         val m = node.mediaMetadata
-        Log.d(TAG, "  ".repeat(depth) + "- ${m.title} [${m.subtitle ?: ""}] play=${m.isPlayable} browse=${m.isBrowsable}")
+        Log.d(TAG, "  ".repeat(depth) + "- ${m.title} {${node.mediaId}} [${m.subtitle ?: ""}] play=${m.isPlayable} browse=${m.isBrowsable}")
         if (depth < 2 && m.isBrowsable == true) children(b, node.mediaId).forEach { dump(b, it, depth + 1) }
+    }
+
+    private suspend fun findId(b: MediaBrowser, node: MediaItem, id: String, depth: Int): MediaItem? {
+        if (depth > 0 && node.mediaId == id) return node
+        if (depth < 2 && node.mediaMetadata.isBrowsable == true) {
+            for (c in children(b, node.mediaId)) findId(b, c, id, depth + 1)?.let { return it }
+        }
+        return null
     }
 
     private suspend fun find(b: MediaBrowser, node: MediaItem, token: String, depth: Int): MediaItem? {

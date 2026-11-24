@@ -38,11 +38,20 @@ class MixStreamLoaderTest {
     private val finalized = CopyOnWriteArrayList<String>()
     private val failedIds = CopyOnWriteArrayList<String>()
 
+    @Volatile private var authHeld = false
+    @Volatile private var authRejected = false
+    private val presignCalls = java.util.concurrent.atomic.AtomicInteger()
+    /** Songs whose presign came back 401 for the token it was SENT with (independent of the live [authRejected]). */
+    private val rejectedWhenSent = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     private val fakeRips = object : MixStreamRips {
         override fun hasServer() = hasServer
+        override fun authHoldoff() = authHeld
+        override fun isAuthRejected() = authRejected
+        override fun consumePresignRejection(songId: String) = rejectedWhenSent.remove(songId)
         override fun entry(songId: String) = entries[songId]
         override suspend fun presignedUrl(songId: String, ttlSeconds: Int): String? =
-            if (songId in presignFails) null else server.url("/side/$songId.mp3").toString()
+            if (songId in presignFails.also { presignCalls.incrementAndGet() }) null else server.url("/side/$songId.mp3").toString()
         override fun urlForKey(key: String) = server.url("/" + key.removePrefix("/")).toString()
         override fun stemUrls(songId: String) = entries[songId]?.stemUrls(server.url("/").toString())
     }
@@ -320,6 +329,62 @@ class MixStreamLoaderTest {
         assertFalse(loader.canStream("s1"))
     }
 
+    // ---- credential hold (P2-MIX-1: 401 is a token fault, not "server down") ------------------------
+
+    @Test fun authHoldRefusesNewStreamsAndReopensTheMomentTheTokenChanges() {
+        digital("a")
+        authHeld = true
+        assertFalse("held under a rejected token", loader.canStream("a"))
+        authHeld = false
+        assertTrue("a token change reopens it at once", loader.canStream("a"))
+    }
+
+    @Test fun rejectedPresignFailsTheStreamButNeverTripsServerDown() {
+        digital("a"); digital("b")
+        presignFails += "a"
+        rejectedWhenSent += "a"
+        authRejected = true
+        val s = loader.open("a", "A", "x")!!
+        waitUntil(what = "failed") { failedIds.contains("a") }
+        assertTrue(s.failed)
+        assertEquals("a rejected token is not retried (one 401, not two)", 1, presignCalls.get())
+        authRejected = false
+        assertTrue("no 60 s server-down gate for a credential fault", loader.canStream("b"))
+    }
+
+    @Test fun presign401IsChargedToTheTokenItWasSentWith_notTheLiveOne() {
+        digital("a"); digital("b")
+        presignFails += "a"
+        rejectedWhenSent += "a"
+        authRejected = false   // the user already re-typed the token: the LIVE state is clean
+        val s = loader.open("a", "A", "x")!!
+        waitUntil(what = "failed") { failedIds.contains("a") }
+        assertTrue(s.failed)
+        assertEquals("a 401 is not retried even though the live token looks fine", 1, presignCalls.get())
+        assertTrue("and it never trips the server-down gate", loader.canStream("b"))
+    }
+
+    @Test fun aLiveRejectionWithoutAPresign401DoesNotMislabelAnOutage() {
+        digital("a"); digital("b")
+        presignFails += "a"      // unreachable, NOT a 401 for this presign
+        authRejected = true      // a different, stale rejection is live
+        val s = loader.open("a", "A", "x")!!
+        waitUntil(what = "failed") { failedIds.contains("a") }
+        assertTrue(s.failed)
+        assertEquals("an outage keeps its one retry", 2, presignCalls.get())
+        assertFalse("and still trips server-down", loader.canStream("b"))
+    }
+
+    @Test fun unreachablePresignStillTripsServerDownAndRetriesOnce() {
+        digital("a"); digital("b")
+        presignFails += "a"
+        val s = loader.open("a", "A", "x")!!
+        waitUntil(what = "failed") { failedIds.contains("a") }
+        assertTrue(s.failed)
+        assertEquals("transient blips keep their one retry", 2, presignCalls.get())
+        assertFalse("a real outage pauses new streams", loader.canStream("b"))
+    }
+
     // ---- Range retry --------------------------------------------------------------------------------
 
     @Test fun droppedConnectionResumesWithRangeAndCompletes() {
@@ -376,17 +441,63 @@ class MixStreamLoaderTest {
         assertNotNull(loader.stream("a")); assertNull(loader.stream("b"))
     }
 
+    // ---- P2-MM-7: multi-listener fan-out + failed marking ------------------------------------------------
+
+    @Test fun progressFansOutToEveryListenerAndTheLegacyHook() {
+        val body = digital("a", 20_000)
+        val primary = CopyOnWriteArrayList<String>()
+        val second = CopyOnWriteArrayList<String>()
+        loader.onProgress = { primary += it }
+        val token = loader.addProgressListener { second += it }
+        loader.open("a", "A", "x")
+        waitUntil(what = "complete") { loader.stream("a")?.isComplete == true || loader.stream("a")?.adopted == true }
+        waitUntil(what = "both listeners saw it") { primary.contains("a") && second.contains("a") }
+        assertEquals("both observe the same events", primary.toList(), second.toList())
+        loader.removeProgressListener(token)
+        val before = second.size
+        digital("b", 5_000)
+        loader.open("b", "B", "x")
+        waitUntil(what = "b done on primary") { primary.contains("b") }
+        assertEquals("a removed listener hears nothing more", before, second.size)
+        assertTrue(body.isNotEmpty())
+    }
+
+    @Test fun cancelledStreamIsMarkedFailedAndListenersAreTold() {
+        digital("a"); origin.throttle["/side/a.mp3"] = 100
+        val seen = CopyOnWriteArrayList<String>()
+        loader.addProgressListener { seen += it }
+        val s = loader.open("a", "A", "x")!!
+        assertFalse(s.failed)
+        loader.cancel(listOf("a"))
+        assertTrue("a reader holding the Stream never waits forever", s.failed)
+        assertNull(loader.stream("a"))
+        waitUntil(what = "listener told") { seen.contains("a") }
+    }
+
+    @Test fun evictedStreamIsMarkedFailedAndListenersAreTold() {
+        for (id in listOf("a", "b", "c", "d")) { digital(id, 50_000); origin.throttle["/side/$id.mp3"] = 100 }
+        loader.pinnedIds = { setOf("a") }
+        val seen = CopyOnWriteArrayList<String>()
+        loader.addProgressListener { seen += it }
+        loader.open("a", "A", "x")
+        val b = loader.open("b", "B", "x")!!
+        loader.open("c", "C", "x"); loader.open("d", "D", "x")
+        assertTrue("the evicted victim is failed, not silently dropped", b.failed)
+        waitUntil(what = "victim announced") { seen.contains("b") }
+        assertFalse(loader.stream("a")!!.failed)
+    }
+
     @Test fun slowAdoptionDoesNotHoldTheLoaderLock() {
         val body = digital("a", 20_000)
         val gate = java.util.concurrent.CountDownLatch(1)
         val entered = java.util.concurrent.CountDownLatch(1)
         val real = BurnStoreAdopter(burns)
         val slow = object : StreamAdopter {
-            override fun adoptFile(songId: String, title: String, artist: String, from: File): File? {
+            override fun adoptFile(songId: String, title: String, artist: String, from: File, origin: com.levi.pocketdj.data.burns.AssetOrigin): File? {
                 entered.countDown(); gate.await(10, java.util.concurrent.TimeUnit.SECONDS)
-                return real.adoptFile(songId, title, artist, from)
+                return real.adoptFile(songId, title, artist, from, origin)
             }
-            override fun adoptStems(songId: String, files: Map<String, File>) = real.adoptStems(songId, files)
+            override fun adoptStems(songId: String, files: Map<String, File>, origin: com.levi.pocketdj.data.burns.AssetOrigin) = real.adoptStems(songId, files, origin)
         }
         val l = MixStreamLoader(rips = fakeRips, adopter = slow, directory = File(rig.dir, "cache/slow"), network = net, scope = scope)
         val s = l.open("a", "A", "x")!!
@@ -504,4 +615,37 @@ class MixStreamLoaderTest {
         net.available = false
         assertFalse(loader.canStreamStems("a"))
     }
+    // ---- AssetOrigin (P2-MM-1) ------------------------------------------------------------------
+
+    @Test fun explicitOpenerJoiningABufferStreamUpgradesIt() {
+        digital("a")
+        val s = loader.open("a", "A", "x", origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)!!
+        assertEquals(com.levi.pocketdj.data.burns.AssetOrigin.Buffer, s.origin)
+        val joined = loader.open("a", "A", "x")!!   // default = explicit("mix")
+        assertTrue(joined === s)
+        assertEquals(com.levi.pocketdj.data.burns.AssetOrigin.explicit("mix"), s.origin)
+        // A later buffer opener never downgrades it.
+        loader.open("a", "A", "x", origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)
+        assertTrue(s.origin.isExplicit)
+    }
+
+    @Test fun bufferStreamLandsAsTemporaryHoldAndExplicitStreamDoesNot() {
+        digital("buf"); digital("exp")
+        loader.open("buf", "B", "x", origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)
+        loader.open("exp", "E", "x")
+        waitUntil(what = "both adopted") { finalized.containsAll(listOf("buf", "exp")) }
+        assertTrue("buffer landing is temporary", burns.isTemporary("buf"))
+        assertFalse("explicit landing is pinned", burns.isTemporary("exp"))
+        assertNull(burns.temporaryExpiry("exp"))
+    }
+
+    @Test fun explicitOpenerJoiningAFinishedBufferStreamPinsIt() {
+        digital("a")
+        loader.open("a", "A", "x", origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)
+        waitUntil(what = "adopted") { finalized.contains("a") }
+        assertTrue(burns.isTemporary("a"))
+        loader.open("a", "A", "x")   // explicit join
+        assertFalse(burns.isTemporary("a"))
+    }
+
 }

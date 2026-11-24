@@ -18,8 +18,19 @@
     <!-- ANS-LOC-1: PlaybackService adds the location FGS type only while music plays with places & trips on. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- P2-POC-11: motion (Activity Recognition transitions) for the Pocket wheel; opt-in, prominent disclosure first. -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+    <!-- P2-REM-9: Remote (Listen Together / Backseat) over Nearby Connections: advertise + scan + connect over Bluetooth,
+         the Wi-Fi upgrade (NEARBY_WIFI_DEVICES, never for location), and a connectedDevice FGS so a controller with no
+         local playback survives in the background. Requested at start/join behind a rationale sheet. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 
     <uses-feature android:name="android.software.midi" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
@@ -149,6 +160,11 @@
         </provider>
 
         <service
+            android:name=".remote.RemoteKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <service
             android:name=".playback.PlaybackService"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback|location">
@@ -192,6 +208,19 @@
         <receiver
             android:name=".data.location.FusedLocationReceiver"
             android:exported="false" />
+
+        <!-- P2-POC-11: Activity Recognition transition updates (PendingIntent target; debug builds export it for adb). -->
+        <receiver
+            android:name=".data.motion.MotionTransitionReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".data.motion.MotionBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".widget.WidgetActionReceiver"

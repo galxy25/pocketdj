@@ -240,6 +240,22 @@ class MixViewModelTest {
         assertFalse(vm.state.value.autoEnabled)
     }
 
+    @Test fun mixTogetherBlock_refusesTheAutoToggleAndShowsTheReason() = runTest {
+        val r = rig(); val vm = r.vm()
+        val why = "Auto DJ is off while you mix together."
+        r.engine.autoUi.value = AutoUiState(blockedReason = why)
+        assertEquals(why, vm.state.value.autoBlockedReason)
+        vm.setAutoEnabled(true)
+        assertFalse("the toggle must not flip on", vm.state.value.autoEnabled)
+        assertFalse(r.engine.autoEnabled)
+        assertEquals(why, vm.state.value.autoStartError)
+        vm.setAutoEnabled(false)                       // an explicit OFF always goes through
+        r.engine.autoUi.value = AutoUiState(blockedReason = null)
+        assertNull(vm.state.value.autoBlockedReason)
+        vm.setAutoEnabled(true)
+        assertTrue(r.engine.autoEnabled)
+    }
+
     @Test fun runAdoptsEngineEnabledAfterMaterializingARestore() = runTest {
         val r = rig(); val vm = r.vm()
         r.engine.restoreEnables = true     // the parked restore flips dj.enabled without a ui emission

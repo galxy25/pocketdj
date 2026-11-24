@@ -1,11 +1,13 @@
 package com.levi.pocketdj.playback.session
 
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import com.levi.pocketdj.playback.durable.HeldQueue
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import com.levi.pocketdj.playback.sequencer.SetlistSequencer
+import com.levi.pocketdj.playback.sequencer.UserTransport
 
 /** What the forwarding player needs from the sequencer (fakeable). */
 interface SequencerControl {
@@ -20,9 +22,13 @@ interface SequencerControl {
     var repeatMode: RepeatMode
     var shuffleEnabled: Boolean
     fun skipNext()
+    /** A REMOTE controller's next (lock screen, headset, Auto): DJ Mode mixes it over the 5 s sweep (P2-DJ-9). */
+    fun skipNextRemote() = skipNext()
     fun skipPrevious()
     fun resumeFromHold()
     fun startCurrent(): Boolean
+    /** A user pause/seek/plain-resume that ExoPlayer handles itself: report it to sequencer hooks. */
+    fun noteUserTransport(kind: UserTransport) {}
 }
 
 class SetlistSequencerControl(private val seq: SetlistSequencer) : SequencerControl {
@@ -33,15 +39,18 @@ class SetlistSequencerControl(private val seq: SetlistSequencer) : SequencerCont
     override val currentNeverSounded get() = seq.currentNeverSounded
     override val hasRun get() = seq.isRunning
     override var repeatMode: RepeatMode
-        get() = seq.state.value.repeatMode
+        // The EFFECTIVE mode (a pocket run forces repeat off); the setter is inert while forced off.
+        get() = seq.effectiveRepeatMode
         set(v) = seq.setRepeatMode(v)
     override var shuffleEnabled: Boolean
         get() = seq.state.value.shuffleEnabled
         set(v) = seq.setShuffle(v)
     override fun skipNext() = seq.skipNext()
+    override fun skipNextRemote() = seq.skipNext(fast = true)
     override fun skipPrevious() = seq.skipPrevious()
     override fun resumeFromHold() = seq.resumeFromHold()
     override fun startCurrent() = seq.startCurrent()
+    override fun noteUserTransport(kind: UserTransport) = seq.reportUserTransport(kind)
 }
 
 /**
@@ -60,6 +69,8 @@ class SequencerForwardingPlayer(
     /** SessionRestorer.restore for the armed resumption set (idempotent; a live run stays untouched). */
     private val restoreForResumption: (HeldQueue) -> Unit = {},
     private val clockMs: () -> Long = System::currentTimeMillis,
+    /** P2-ALB-5: the loaded album run's clock; null = the engine's own clock is already song-relative. */
+    private val runClock: com.levi.pocketdj.playback.album.RunClockSource = com.levi.pocketdj.playback.album.RunClockSource { com.levi.pocketdj.playback.RunTransportBus.runClock?.current() },
 ) : SetGatedPlayer(player) {
 
     @Volatile private var armedResumption: HeldQueue? = null
@@ -114,6 +125,7 @@ class SequencerForwardingPlayer(
     @Volatile private var instant: MediaMetadata? = null
     @Volatile private var pausedByListener = false
     @Volatile private var quiet = false
+    @Volatile private var rekicking = false
 
     /** Set by the session callback: the current command comes from our own app, not a remote. */
     @Volatile var callerInternal = false
@@ -188,8 +200,11 @@ class SequencerForwardingPlayer(
         }
     }
 
-    override fun seekToNext() = route(TransportLog.Cmd.NEXT, { control.skipNext() }, { super.seekToNext() })
-    override fun seekToNextMediaItem() = route(TransportLog.Cmd.NEXT, { control.skipNext() }, { super.seekToNextMediaItem() })
+    /** Our own app's calls skip over the Skip fade; a remote controller's ⏭ is the 5 s sweep (iOS `skipNext(fast: true)`). */
+    private fun nextViaSequencer() { if (callerInternal) control.skipNext() else control.skipNextRemote() }
+
+    override fun seekToNext() = route(TransportLog.Cmd.NEXT, { nextViaSequencer() }, { super.seekToNext() })
+    override fun seekToNextMediaItem() = route(TransportLog.Cmd.NEXT, { nextViaSequencer() }, { super.seekToNextMediaItem() })
     override fun seekToPrevious() = route(TransportLog.Cmd.PREV, { control.skipPrevious() }, { super.seekToPrevious() })
     override fun seekToPreviousMediaItem() = route(TransportLog.Cmd.PREV, { control.skipPrevious() }, { super.seekToPreviousMediaItem() })
 
@@ -198,7 +213,10 @@ class SequencerForwardingPlayer(
 
     override fun setRepeatMode(repeatMode: Int) {
         if (control.isRunning) {
-            control.repeatMode = fromExo(repeatMode)
+            val asked = fromExo(repeatMode)
+            control.repeatMode = asked
+            // Refused (repeat forced off): re-assert the effective mode to the platform session / AVRCP.
+            if (control.repeatMode != asked) pushedRepeat = -1
             emit(TransportLog.Cmd.REPEAT, TransportLog.Verdict.HANDLED)
             syncModes()
         } else {
@@ -233,7 +251,8 @@ class SequencerForwardingPlayer(
 
     /** A real re-kick: re-request the load from the current position (prepare/play are no-ops here). */
     fun rekick() {
-        seekTo(currentPosition)
+        rekicking = true
+        try { seekTo(super.getCurrentPosition()) } finally { rekicking = false }
         emit(TransportLog.Cmd.PLAY, TransportLog.Verdict.REKICK_BUFFERING)
     }
 
@@ -245,6 +264,8 @@ class SequencerForwardingPlayer(
     }
 
     override fun play() {
+        // Backseat controller: notification / headset / Auto ▶ goes to the session, never sounds here (P2-REM-3).
+        if (com.levi.pocketdj.remote.RemoteControllerGate.shared.forward(com.levi.pocketdj.remote.RemoteRedirect.Play)) return
         // Notification / lock-screen / headset play must honour the mic-capture gate exactly like PlaybackController.play.
         if (!micGate("playback.remote")) { emit(TransportLog.Cmd.PLAY, TransportLog.Verdict.REFUSED_MIC); return }
         if (!permitted(TransportLog.Cmd.PLAY)) return
@@ -284,10 +305,75 @@ class SequencerForwardingPlayer(
         latch.clear()
         pausedByListener = false
         super.play()
+        if (control.isRunning) control.noteUserTransport(UserTransport.PLAY)
         emit(TransportLog.Cmd.PLAY, TransportLog.Verdict.HANDLED)
     }
 
+    private fun noteSeek() { if (!rekicking && control.isRunning) control.noteUserTransport(UserTransport.SEEK) }
+
+    // ---- P2-ALB-5: song-relative clocks. One engine item plays a whole vinyl side, so the engine's position/duration are
+    // file-relative; the lock screen, Auto, widget, skip tracker and snapshot all read THIS player (directly or through the
+    // session controller) and want the current song's clock. Remote seeks are mapped back to the item.
+
+    private fun fromItem(itemMs: Long, c: com.levi.pocketdj.playback.album.RunClock): Long =
+        if (itemMs == C.TIME_UNSET) itemMs else com.levi.pocketdj.playback.album.AlbumSeek.relativePosition(itemMs, c.clipStartMs, c.span)
+
+    private fun toItem(relMs: Long, c: com.levi.pocketdj.playback.album.RunClock): Long =
+        com.levi.pocketdj.playback.album.AlbumSeek.toItemPosition(relMs, c.clipStartMs, c.span)
+
+    override fun getCurrentPosition(): Long {
+        val raw = super.getCurrentPosition()
+        return runClock.current()?.let { fromItem(raw, it) } ?: raw
+    }
+
+    override fun getContentPosition(): Long {
+        val raw = super.getContentPosition()
+        return runClock.current()?.let { fromItem(raw, it) } ?: raw
+    }
+
+    override fun getBufferedPosition(): Long {
+        val raw = super.getBufferedPosition()
+        return runClock.current()?.let { fromItem(raw, it) } ?: raw
+    }
+
+    override fun getContentBufferedPosition(): Long {
+        val raw = super.getContentBufferedPosition()
+        return runClock.current()?.let { fromItem(raw, it) } ?: raw
+    }
+
+    private fun relDuration(raw: Long): Long {
+        val c = runClock.current() ?: return raw
+        return com.levi.pocketdj.playback.album.AlbumSeek.relativeDuration(raw.takeIf { it != C.TIME_UNSET }, c.clipStartMs, c.span) ?: C.TIME_UNSET
+    }
+
+    override fun getDuration(): Long = relDuration(super.getDuration())
+    override fun getContentDuration(): Long = relDuration(super.getContentDuration())
+
+    /** The song under the playhead changed in place (glide / jump / scrub): tell the session its clock jumped. */
+    fun notifyClockChanged() {
+        val item = currentMediaItem
+        val pos = currentPosition
+        val info = Player.PositionInfo(null, currentMediaItemIndex, item, null, currentPeriodIndex, pos, pos, -1, -1)
+        notifyListeners { it.onPositionDiscontinuity(info, info, Player.DISCONTINUITY_REASON_INTERNAL) }
+    }
+
+    override fun seekTo(positionMs: Long) {
+        if (com.levi.pocketdj.remote.RemoteControllerGate.shared.forward(com.levi.pocketdj.remote.RemoteRedirect.Seek(positionMs))) return
+        noteSeek()
+        val c = if (rekicking) null else runClock.current()
+        super.seekTo(if (c != null) toItem(positionMs, c) else positionMs)
+    }
+
+    override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
+        if (com.levi.pocketdj.remote.RemoteControllerGate.shared.forward(com.levi.pocketdj.remote.RemoteRedirect.Seek(positionMs))) return
+        noteSeek()
+        val c = if (rekicking) null else runClock.current()
+        super.seekTo(mediaItemIndex, if (c != null && mediaItemIndex == currentMediaItemIndex) toItem(positionMs, c) else positionMs)
+    }
+
     override fun pause() {
+        if (com.levi.pocketdj.remote.RemoteControllerGate.shared.forward(com.levi.pocketdj.remote.RemoteRedirect.Pause)) return
+        if (control.isRunning) control.noteUserTransport(UserTransport.PAUSE)
         pausedByListener = true
         super.pause()
         emit(TransportLog.Cmd.PAUSE, TransportLog.Verdict.HANDLED)

@@ -25,13 +25,56 @@ class PlaybackSessionStore(
     private var version = 0L
     private var lastWriteAt = Long.MIN_VALUE
 
+    private var extrasState = SnapshotExtras()
+
+    /** The last snapshot read from disk while no live session exists (a held restore's stored deck). */
+    private var loaded: SessionSnapshot? = null
+
+    /**
+     * The iOS-owned optional state (Mix Mode, FX Lock, DJ Mode, unknown top-level keys) carried across
+     * writes: seeded from the file by [load] / adopted from each saved snapshot, overlaid onto any snapshot
+     * saved without it. Later packages read it to restore HELD and replace it via [updateExtras].
+     */
+    val extras: SnapshotExtras get() = synchronized(lock) { extrasState }
+
+    /** Replace the carried extras (e.g. Mix Mode toggled off); the live snapshot adopts them and persists. */
+    fun updateExtras(transform: (SnapshotExtras) -> SnapshotExtras) = synchronized(lock) {
+        extrasState = transform(extrasState)
+        val now = clock()
+        val snap = current
+        if (snap == null) {
+            // Held restore: no live session adopted yet. Re-write the loaded file with only the extras changed
+            // (position / offset / play-state stay as stored) so a kill before the first play keeps the toggle.
+            val base = loaded ?: return
+            val upd = base.copy(
+                npMixMode = extrasState.npMixMode, fxLock = extrasState.fxLock, djMode = extrasState.djMode,
+                unknownKeys = extrasState.unknownKeys, updatedAt = now.toDouble(),
+            )
+            loaded = upd
+            version++
+            lastWriteAt = now
+            writer.write(version) { SessionSnapshot.encode(upd) }
+            return
+        }
+        current = snap.copy(
+            npMixMode = extrasState.npMixMode, fxLock = extrasState.fxLock, djMode = extrasState.djMode,
+            unknownKeys = extrasState.unknownKeys, updatedAt = now.toDouble(),
+        )
+        writeNow(now)
+    }
+
     /** The in-memory truth of the current run's snapshot (null = no live session on this launch). */
     val currentSnapshot: SessionSnapshot? get() = synchronized(lock) { current }
 
     /** A STRUCTURAL change (play, index move, live edit, repeat/shuffle): persists immediately. */
     fun save(snapshot: SessionSnapshot) = synchronized(lock) {
         val now = clock()
-        current = snapshot.copy(updatedAt = now.toDouble())
+        // Extras belong to the session they came from; a different session starts clean.
+        val owner = extrasState.sessionId
+        if (owner != null && owner != snapshot.sessionId) extrasState = SnapshotExtras()
+        val merged = extrasState.overlay(snapshot)
+        extrasState = SnapshotExtras.of(merged)
+        current = merged.copy(updatedAt = now.toDouble())
         writeNow(now)
     }
 
@@ -58,6 +101,8 @@ class PlaybackSessionStore(
     /** End of the session (stop / natural end-of-set): forget it and delete the file. */
     fun clear() = synchronized(lock) {
         current = null
+        loaded = null
+        extrasState = SnapshotExtras()
         version++
         writer.delete(version)
     }
@@ -69,7 +114,7 @@ class PlaybackSessionStore(
 
     fun load(): SessionSnapshot? = try {
         loadCount++
-        if (!file.exists()) null else SessionSnapshot.decode(file.readText())
+        if (!file.exists()) null else SessionSnapshot.decode(file.readText())?.also { adoptExtras(it) }
     } catch (_: Exception) {
         null
     }
@@ -87,6 +132,11 @@ class PlaybackSessionStore(
         val s = snap.copy(updatedAt = now.toDouble())
         current = s
         writer.flushNow(version) { SessionSnapshot.encode(s) }
+    }
+
+    /** A loaded file seeds the carried extras unless a live session already owns them. */
+    private fun adoptExtras(snap: SessionSnapshot) = synchronized(lock) {
+        if (current == null) { extrasState = SnapshotExtras.of(snap); loaded = snap }
     }
 
     private fun writeNow(now: Long) {

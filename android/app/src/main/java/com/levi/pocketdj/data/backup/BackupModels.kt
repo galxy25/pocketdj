@@ -161,7 +161,11 @@ object BackupEdits {
  * File-backed `edits.json`. Restored edits round-trip to iOS backups AND are applied to the catalog by the overlay
  * ([com.levi.pocketdj.data.catalog.CatalogEdits] via [com.levi.pocketdj.data.catalog.CatalogEditsFile], Q115).
  */
-class BackupEditsStore(private val file: java.io.File) {
+class BackupEditsStore(
+    private val file: java.io.File,
+    /** P2-ALB-2: when set, the merged document is written THROUGH the app's EditsStore (versioned writer + live re-apply). */
+    private val write: ((ByteArray) -> Unit)? = null,
+) {
     @Synchronized fun exportData(): ByteArray? = rawBytes()?.let { BackupEdits.restamp(it) }
 
     private fun rawBytes(): ByteArray? = runCatching { file.takeIf { it.exists() }?.readBytes() }.getOrNull()
@@ -172,6 +176,7 @@ class BackupEditsStore(private val file: java.io.File) {
         val changed = BackupEdits.changedCount(local, incoming)
         if (changed == 0) return 0
         val merged = BackupEdits.merge(local, incoming) ?: return 0
+        write?.let { it(merged); return changed }
         file.parentFile?.mkdirs()
         val tmp = java.io.File(file.path + ".tmp")
         tmp.writeBytes(merged)

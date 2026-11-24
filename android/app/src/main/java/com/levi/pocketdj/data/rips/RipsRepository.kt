@@ -32,6 +32,8 @@ class RipsRepository(
     private val http: OkHttpClient,
     private val json: Json = PdjJson.lenient,
     private val scope: CoroutineScope,
+    /** Vinyl layout provider (CatalogRepository.segmentOverrides); EMPTY by default. */
+    segmentOverrides: () -> SegmentOverrides.Snapshot = { SegmentOverrides.Snapshot.EMPTY },
 ) {
     private val _manifest = MutableStateFlow<RipsManifest>(emptyMap())
     val manifest: StateFlow<RipsManifest> = _manifest.asStateFlow()
@@ -46,6 +48,35 @@ class RipsRepository(
     }
 
     fun entry(songId: String): RipManifestEntry? = _manifest.value[songId]
+
+    private val segmentOverrides: () -> SegmentOverrides.Snapshot = segmentOverrides
+
+    /**
+     * A shared-side song's start inside its album file: the user's boundary edit wins over the manifest's detected
+     * start. null for a per-song file (the override only applies when the item HAS a start).
+     */
+    fun effectiveStartMs(songId: String): Long? =
+        _manifest.value[songId]?.startMs?.let {
+            segmentOverrides().startMs[com.levi.pocketdj.data.edition.SongVariant.baseId(songId)] ?: it
+        }
+
+    /**
+     * Where [songId]'s analog window ends in its shared file: edited end exact, else detected end + grace capped at
+     * the next start, else [lengthMs] past [startMs] ([AnalogWindow.endMs]). null for a per-song file.
+     */
+    fun analogEndMs(songId: String, startMs: Long?, lengthMs: Long?, run: AnalogWindow.Run? = null): Long? {
+        if (startMs == null) return null
+        val base = com.levi.pocketdj.data.edition.SongVariant.baseId(songId)
+        val tl = AlbumFileTimeline.forSong(base, _manifest.value, segmentOverrides())
+        return AnalogWindow.endMs(base, startMs, tl, run, lengthMs)
+    }
+
+    /**
+     * The layout of the shared album file [songId] plays from (manifest starts + the user's boundary edits), or null when
+     * the song is not a slice of a multi-song file (P2-ALB-4: album runs).
+     */
+    fun albumTimeline(songId: String): AlbumFileTimeline? =
+        AlbumFileTimeline.forSong(com.levi.pocketdj.data.edition.SongVariant.baseId(songId), _manifest.value, segmentOverrides())
 
     /** True when a public rip exists (metadata-only rows render no ▶ otherwise). */
     fun isPlayable(songId: String): Boolean =

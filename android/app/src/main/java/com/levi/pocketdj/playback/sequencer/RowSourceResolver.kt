@@ -49,6 +49,12 @@ data class ResolveContext(
     val mode: PlaybackMode,
     val ripServerConfigured: Boolean,
     val ripStartsNow: Boolean,
+    /** P2-MM-9: Mix Mode is buffering - an Apple-Music-sourced row prefers its local rip ([PreferLocalAudio]). */
+    val preferLocalAudio: Boolean = false,
+    /** P2-MM-9: the rip is INSTANT (a complete local copy, a cached presign, or a public url that needs none). */
+    val localCopyInstant: Boolean = false,
+    /** P2-MM-9: [PreferLocalAudio] ordered the Apple Music rung AHEAD of the rip (no instant local copy). */
+    val appleMusicFirst: Boolean = false,
 )
 
 /**
@@ -77,14 +83,20 @@ class LocalFileRowResolver(
  * Default rung: the rips manifest (public mp3 + analog clip window; instant). Studio ids are fenced
  * (never sent to /rip, never streamed): they resolve only through a registered STUDIO_LOCAL rung.
  */
-class ManifestRowResolver(private val entry: (String) -> RipManifestEntry?) : RowSourceResolver {
+class ManifestRowResolver(
+    /** Start reader; production passes the edit-aware `RipsRepository.effectiveStartMs`. */
+    private val startOf: (String, RipManifestEntry) -> Long? = { _, e -> e.startMs },
+    /** Window end reader (`RipsRepository.analogEndMs`); null = start + manifest length. */
+    private val endOf: ((String, Long, Long?) -> Long?)? = null,
+    private val entry: (String) -> RipManifestEntry?,
+) : RowSourceResolver {
     override val id: String = "manifest"
     override val rung: Rung = Rung.MANIFEST
     override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? {
         if (PlayResolver.isStudioId(item.id)) {
             return UnplayableSource(UnplayableSource.Reason.STUDIO_LOCAL)
         }
-        val action = PlayResolver.resolve(item.resolveId, entry(item.resolveId), ripServerConfigured = false)
+        val action = PlayResolver.resolve(item.resolveId, entry(item.resolveId), ripServerConfigured = false, startOf = startOf, endOf = endOf)
         return (action as? PlayAction.Stream)?.let(::StreamSource)
     }
 }

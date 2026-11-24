@@ -99,7 +99,8 @@ class AccountDeletionService(
             "profile", "collections", "play-history", "collection-activity", "play-stats",
             "timeline-cues", "settings-credentials", "diag-key",
             "rec-feedback", "foryou-feed", "rec-key", "studio-cues", "game-scores", "puzzle-decisions",
-            "discover-adds", "imported-songs", "favorites", "playback-session", "mix-sessions", "mix-decks",
+            "discover-adds", "imported-songs", "favorites", "playback-session", "mix-sessions", "mix-decks", "edits",
+            "pocket-palette", "profile-source", "apple-music-library",
         )
     }
 }

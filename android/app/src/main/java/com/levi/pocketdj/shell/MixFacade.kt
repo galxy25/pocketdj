@@ -38,6 +38,23 @@ interface MixFacade {
         allowPendingStart: Boolean,
     ): MixStartResult
 
+    /** The label of the running auto mix (`AutoDj.sourceLabel`); null when none runs. */
+    val autoMixLabel: String? get() = null
+
+    /**
+     * W7 (pocket run through Mix): start Auto-DJ over exactly [songIds] in order, labelled [label]. [originCollections]
+     * maps songId to the row's collection (History colour). Returns how many were deck-loadable; the mix starts only when
+     * that is at least 10 (iOS `playThroughMix`), otherwise nothing starts and the caller plays through the sequencer.
+     * Call on the main thread.
+     */
+    suspend fun startAutoMixSongs(songIds: List<String>, label: String, originCollections: Map<String, String> = emptyMap()): Int = 0
+
     fun pauseAutoMix()
     fun resumeAutoMix()
+
+    /**
+     * The "Play in Now Playing" hand-off: ONE audio owner afterwards. Cancels the collection downloader (its start-on-landing arm
+     * must never start Auto-DJ over Now Playing once a token heals), stops a running auto mix and pauses hand-played decks.
+     */
+    suspend fun releaseForNowPlaying() {}
 }

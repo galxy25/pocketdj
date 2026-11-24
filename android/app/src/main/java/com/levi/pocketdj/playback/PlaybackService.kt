@@ -19,6 +19,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.levi.pocketdj.playback.durable.HeldQueue
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import com.levi.pocketdj.playback.session.FavoriteCommand
+import com.levi.pocketdj.playback.session.MediaButtonPrefs
 import com.levi.pocketdj.playback.session.SequencerControl
 import com.levi.pocketdj.playback.session.SequencerForwardingPlayer
 import com.levi.pocketdj.playback.session.SessionSwitchboard
@@ -61,6 +62,8 @@ class PlaybackService : MediaLibraryService() {
         val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
         autoScope = scope
         val data = com.levi.pocketdj.auto.AppAutoData(app)
+        val forYouSource = com.levi.pocketdj.auto.AppAutoForYouSource(app)
+        val pocketsSource = com.levi.pocketdj.auto.AppAutoPocketsSource(app)
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val cb = AutoLibraryCallback(
             tree = com.levi.pocketdj.auto.AutoBrowseTree(
@@ -69,6 +72,10 @@ class PlaybackService : MediaLibraryService() {
                 mix = app.shellGraph.shellActions.mixFacade?.let {
                     com.levi.pocketdj.auto.AutoMixTab(it, com.levi.pocketdj.auto.AppAutoMixExtras(app, it))
                 },
+                // SURF-7: the frozen For You tab (cached snapshot only; nothing refreshes or ranks on connect).
+                forYou = com.levi.pocketdj.auto.AutoForYou(forYouSource, data::song),
+                // P2-POC-16: "▶ Pocket for now" + "Pockets right now" on top of For You.
+                pockets = com.levi.pocketdj.auto.AutoPockets(pocketsSource),
             ),
             addTargets = com.levi.pocketdj.auto.AutoAddTargets(com.levi.pocketdj.auto.AppAutoAddSink(app.collections)),
             player = com.levi.pocketdj.auto.AppAutoPlayer(app),
@@ -95,8 +102,15 @@ class PlaybackService : MediaLibraryService() {
             // Cache-first, single-flight, idempotent: the same load the app runs on every cold start.
             warmUp = { app.catalogRepository.loadIfNeeded() },
             catalogReady = { data.catalogReady },
+            refreshPockets = { pocketsSource.refresh() },
         )
         data.onLibraryChanged = { main.post { cb.notifyLibraryChanged() } }
+        // A phone-side refresh/commit of the cached feed re-notifies the open lists (the car itself never refreshes).
+        // Feed commits, thumbs and the release feed all change the tiles/rows; open fy:<tile> drill-ins are re-notified
+        // by the callback itself. Posted to main like every other library notification.
+        scope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            forYouSource.changes.collect { main.post { cb.notifyLibraryChanged() } }
+        }
         scope.launch {
             app.catalogRepository.state.first { it.catalog != null }
             cb.onCatalogReady()
@@ -118,6 +132,7 @@ class PlaybackService : MediaLibraryService() {
     private var forwardingPlayer: SequencerForwardingPlayer? = null
     private var exoOwner: ExoOwner? = null
     private var exoPlayer: ExoPlayer? = null
+    private var albumArmer: com.levi.pocketdj.playback.album.AlbumBoundaryArmer? = null
 
     /** Id-changed gate: a same-song restart/seek must not re-fire the play hook. */
     private var lastPlayEventSongId: String? = null
@@ -145,6 +160,8 @@ class PlaybackService : MediaLibraryService() {
             .setWakeMode(C.WAKE_MODE_NETWORK) // holds CPU+wifi while buffering a long rip-on-demand wait
             .build()
         exoPlayer = player
+        albumArmer = com.levi.pocketdj.playback.album.AlbumBoundaryArmer(player, onBoundary = { id -> RunTransportBus.albumBoundaryFired?.invoke(id) })
+            .also { RunTransportBus.albumArmer = it }
 
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -170,6 +187,14 @@ class PlaybackService : MediaLibraryService() {
                     return
                 }
                 lastPlayEventSongId = songId
+                // P2-ALB-4: an album run moving onto the next song in place is not a new play here: the sequencer
+                // records the History row (advanceWithoutLoad / completeClaimedStart).
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED && albumArmer?.consumeRetarget(songId) == true) return
+                // P2-MM-8: a row the growing DSP already recorded restarts on its plain stream: not a second History play.
+                if (suppressHistoryFor == songId) {
+                    suppressHistoryFor = null
+                    if (android.os.SystemClock.elapsedRealtime() <= suppressHistoryUntilMs) return
+                }
                 PlayEventBus.emit(
                     PlayStarted(
                         songId = songId,
@@ -181,6 +206,11 @@ class PlaybackService : MediaLibraryService() {
                             contextId = extras?.getString(PlaybackContract.EXTRA_CONTEXT_ID),
                             contextName = extras?.getString(PlaybackContract.EXTRA_CONTEXT_NAME),
                             runTag = extras?.getString(PlaybackContract.EXTRA_RUN_TAG),
+                            pocketRun = extras?.getString(PlaybackContract.EXTRA_POCKET_RUN)?.let { raw ->
+                                runCatching {
+                                    com.levi.pocketdj.data.history.PocketRunTagSerializer.parse(kotlinx.serialization.json.Json.parseToJsonElement(raw))
+                                }.getOrNull()
+                            },
                         ),
                         atMs = System.currentTimeMillis(),
                         originCollectionId = extras?.getString(PlaybackContract.EXTRA_ORIGIN_COLLECTION_ID),
@@ -220,10 +250,19 @@ class PlaybackService : MediaLibraryService() {
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = refreshCustomLayout()
+
+            // P2-REM-3: classify system pauses (noisy / focus loss) for the Remote session's pausedHere.
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) =
+                com.levi.pocketdj.remote.SystemPauseState.onPlayWhenReadyChanged(playWhenReady, reason)
+
+            override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) =
+                com.levi.pocketdj.remote.SystemPauseState.onSuppressionChanged(playbackSuppressionReason)
         })
         RunTransportBus.instantMetadata = { md -> forwarding.showInstantMetadata(md) }
-        RunTransportBus.stateChanged = { forwarding.syncGate() }
+        RunTransportBus.stateChanged = { forwarding.syncGate(); refreshOnMain() }
         RunTransportBus.heldRestored = { forwarding.onHeldRestored() }
+        RunTransportBus.rawPlayer = player
+        RunTransportBus.clockChanged = { forwarding.notifyClockChanged() }
         RunTransportBus.clearInstantMetadata = { md -> forwarding.clearInstantMetadata(md) }
         board.onChange = { o -> mediaSession?.let { s -> val p = (o ?: exo).sessionPlayer; if (s.player !== p) s.player = p }; refreshCustomLayout() }
 
@@ -384,6 +423,15 @@ class PlaybackService : MediaLibraryService() {
     }
 
     companion object {
+        /** P2-MM-8: the next load of this song id (a growing-file fallback restart) records no History play. One-shot. */
+        @Volatile var suppressHistoryFor: String? = null
+        @Volatile var suppressHistoryUntilMs: Long = 0L
+        /** Arm the one-shot with a short expiry so a restart that never loads cannot swallow a later legitimate play. */
+        fun armSuppressHistory(songId: String?) {
+            suppressHistoryFor = songId
+            suppressHistoryUntilMs = if (songId == null) 0L else android.os.SystemClock.elapsedRealtime() + 15_000L
+        }
+
         private const val BOOT_CHANNEL = "pdj_playback_boot"
         private const val MAX_SETTLE_CHECKS = 12
         private const val MAX_FGS_RETRIES = 5
@@ -406,6 +454,11 @@ class PlaybackService : MediaLibraryService() {
         RunTransportBus.stateChanged = null
         RunTransportBus.heldRestored = null
         RunTransportBus.clearInstantMetadata = null
+        RunTransportBus.albumArmer = null
+        RunTransportBus.rawPlayer = null
+        RunTransportBus.clockChanged = null
+        albumArmer?.release()
+        albumArmer = null
         SessionSwitchboard.shared.onChange = {}
         exoOwner?.let { SessionSwitchboard.shared.unregister(it) }
         forwardingPlayer = null
@@ -441,6 +494,7 @@ class PlaybackService : MediaLibraryService() {
             get() = c?.shuffleEnabled == true
             set(v) { c?.shuffleEnabled = v }
         override fun skipNext() { c?.skipNext() }
+        override fun skipNextRemote() { c?.skipNextRemote() }
         override fun skipPrevious() { c?.skipPrevious() }
         override fun resumeFromHold() { c?.resumeFromHold() }
         override fun startCurrent() = c?.startCurrent() == true
@@ -453,12 +507,42 @@ class PlaybackService : MediaLibraryService() {
         override fun pauseForHandoff() { sessionPlayer.silently { sessionPlayer.pause() } }
     }
 
+    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+
+    /** `stateChanged` can fire from the sequencer or a verdict on any thread; the session player is main-only. */
+    private fun refreshOnMain() {
+        if (android.os.Looper.myLooper() === android.os.Looper.getMainLooper()) refreshCustomLayout()
+        else mainHandler.post { refreshCustomLayout() }
+    }
+
+    /** The shared 👍/👎 target, only if the rec stores are already built (never forces a store load from here). */
+    private fun recFeedback() = com.levi.pocketdj.di.AppGraph.peek()?.browseGraph?.nowPlayingFeedbackIfReady()
+
+    /** Last published button set; Spec is a data class so equal sets skip the session update. */
+    private var lastButtonSpecs: List<MediaButtonPrefs.Spec>? = null
+
+    /** P2-SURF-2: publish the ♥ / shuffle / repeat / 👍👎 set for the current state (replaces setCustomLayout). */
     private fun refreshCustomLayout() {
         val session = mediaSession ?: return
         val songId = session.player.currentMediaItem?.mediaId
         val owner = SessionSwitchboard.shared.current
         val seam = if (owner == null || owner.engine == "exo") FavoriteCommand.seam else null
-        session.setCustomLayout(FavoriteCommand.layout(seam, songId))
+        val run = DeferredControl.isRunning && (owner == null || owner.engine == "exo")
+        val np = if (run) recFeedback() else null
+        val target = np?.currentTarget()
+        val input = MediaButtonPrefs.Input(
+            favoriteVisible = FavoriteCommand.visible(seam, songId),
+            favoriteFilled = FavoriteCommand.filled(seam, songId),
+            runActive = run,
+            repeat = DeferredControl.repeatMode,
+            shuffle = DeferredControl.shuffleEnabled,
+            hasRecTarget = target != null,
+            verdict = np?.currentVerdict(),
+        )
+        val specs = MediaButtonPrefs.specs(input)
+        if (specs == lastButtonSpecs) return
+        lastButtonSpecs = specs
+        session.setMediaButtonPreferences(specs.map(MediaButtonPrefs::button))
     }
 
     /**
@@ -475,15 +559,23 @@ class PlaybackService : MediaLibraryService() {
             // Final review: the service is exported (Auto / system controllers need it), but the state-changing custom
             // commands (favorite, add-to-collection) go only to our own process and trusted system controllers.
             val trusted = controller.isTrusted || controller.packageName == packageName
+            if (session.isAutomotiveController(controller) || session.isAutoCompanionController(controller)) {
+                com.levi.pocketdj.auto.AutoSessionTracker.connected(controller)
+            }
             val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().apply {
                 if (trusted) {
                     add(FavoriteCommand.sessionCommand)
+                    MediaButtonPrefs.commands.forEach { add(it) }
                     add(SessionCommand(AutoLibraryCallback.ACTION_ADD_TO, android.os.Bundle.EMPTY))
                 }
             }.build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(cmds)
                 .build()
+        }
+
+        override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) {
+            com.levi.pocketdj.auto.AutoSessionTracker.disconnected(controller)
         }
 
         override fun onPlayerCommandRequest(
@@ -581,6 +673,32 @@ class PlaybackService : MediaLibraryService() {
             customCommand: SessionCommand,
             args: android.os.Bundle,
         ): ListenableFuture<SessionResult> {
+            when (customCommand.customAction) {
+                MediaButtonPrefs.ACTION_SHUFFLE, MediaButtonPrefs.ACTION_REPEAT -> {
+                    val isShuffle = customCommand.customAction == MediaButtonPrefs.ACTION_SHUFFLE
+                    val engine = SessionSwitchboard.shared.current?.engine ?: "exo"
+                    val ok = DeferredControl.isRunning && engine == "exo"
+                    if (ok) {
+                        if (isShuffle) DeferredControl.shuffleEnabled = !DeferredControl.shuffleEnabled
+                        // Effective mode in, so a pocket run (forced off) stays inert: the sequencer refuses the set.
+                        else DeferredControl.repeatMode = MediaButtonPrefs.nextRepeat(DeferredControl.repeatMode)
+                    }
+                    TransportLog.rc(
+                        if (isShuffle) TransportLog.Cmd.SHUFFLE else TransportLog.Cmd.REPEAT, engine,
+                        if (ok) TransportLog.Verdict.HANDLED else TransportLog.Verdict.NOT_RUNNING,
+                    )
+                    refreshCustomLayout()
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+                MediaButtonPrefs.ACTION_REC_ACCEPT, MediaButtonPrefs.ACTION_REC_REJECT -> {
+                    // Never touches the transport (no skip, no pause, even on a thumbs-down); a lit thumb's tap clears.
+                    val verdict = MediaButtonPrefs.verdictFor(customCommand.customAction)
+                    val np = recFeedback()
+                    if (verdict != null && np != null) np.record(verdict, MediaButtonPrefs.surfaceFor(controller.packageName))
+                    refreshCustomLayout()
+                    return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                }
+            }
             if (customCommand.customAction == FavoriteCommand.ACTION) {
                 val songId = session.player.currentMediaItem?.mediaId
                 val did = FavoriteCommand.press(FavoriteCommand.seam, songId)
@@ -631,7 +749,11 @@ class PlaybackService : MediaLibraryService() {
                 return Futures.immediateFuture(LibraryResult.ofItem(root, params))
             }
             // Q96: the root is static; the auto graph (AppGraph, data, tree) is built off Main and warms the catalog.
-            autoBg.launch { runCatching { auto.onConnect() } }
+            // SURF-7: the host's root-children cap (e.g. 4) decides whether Continue folds into Playlists.
+            val rootLimit = params?.extras
+                ?.getInt(AutoLibraryCallback.KEY_ROOT_CHILDREN_LIMIT, 0)
+                ?.takeIf { it > 0 }
+            autoBg.launch { runCatching { auto.setRootLimit(rootLimit); auto.onConnect() } }
             return Futures.immediateFuture(
                 LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(com.levi.pocketdj.auto.AutoAsync.STATIC_ROOT), params),
             )

@@ -2,6 +2,7 @@ package com.levi.pocketdj.mix
 
 import com.levi.pocketdj.data.settings.AppSettingsStore
 import com.levi.pocketdj.data.settings.PrefKey
+import com.levi.pocketdj.playback.dj.DJModeSettings
 import com.levi.pocketdj.screens.mix.DeckLayout
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
@@ -38,6 +39,10 @@ data class MixSettings(
     val cueOutputChannel: CueChannel = CueChannel.RIGHT,
     val beatPulseEnabled: Boolean = false,
     val mixDeckLayout: DeckLayout = DeckLayout.STACKED,
+    /** Auto-DJ volume glide (iOS `mixVolumeGlide`); off by default. */
+    val mixVolumeGlide: Boolean = false,
+    /** Now Playing DJ Mode part toggles (iOS `dj*`); every part defaults on. They only MASK parts off. */
+    val dj: DJModeSettings = DJModeSettings(),
 ) {
     companion object {
         const val DEFAULT_LEAD = 15.0
@@ -62,6 +67,16 @@ object MixSettingsKeys {
     val CUE_CHANNEL = PrefKey.string("cueOutputChannel", CueChannel.RIGHT.raw)
     val BEAT_PULSE = PrefKey.boolean("beatPulseEnabled", false)
     val DECK_LAYOUT = PrefKey.string("mixDeckLayout", DeckLayout.STACKED.raw)
+    val VOLUME_GLIDE = PrefKey.boolean("mixVolumeGlide", false)
+
+    // Now Playing DJ Mode toggles; a missing key reads true (iOS defaults).
+    val DJ_TRANSITIONS = PrefKey.boolean("djTransitions", true)
+    val DJ_EFFECT_SWEEPS = PrefKey.boolean("djEffectSweeps", true)
+    val DJ_TEMPO_MATCH = PrefKey.boolean("djTempoMatch", true)
+    val DJ_KEY_MATCH = PrefKey.boolean("djKeyMatch", true)
+    val DJ_VOLUME_LEVELING = PrefKey.boolean("djVolumeLeveling", true)
+    val DJ_TEMPO_WAVES = PrefKey.boolean("djTempoWaves", true)
+    val DJ_POCKETS = PrefKey.boolean("djPockets", true)
 }
 
 /** Stepper clamps (iOS Settings ▸ Mix ranges), applied on write AND on read. */
@@ -114,6 +129,11 @@ fun AppSettingsStore.mixSettingsFlow(): Flow<MixSettings> = combine(
         flow(MixSettingsKeys.LEAD), flow(MixSettingsKeys.FADE), flow(MixSettingsKeys.SKIP_FADE),
         flow(MixSettingsKeys.GLIDE), flow(MixSettingsKeys.AUTO_HIDE_PLAYED), flow(MixSettingsKeys.CUE_CHANNEL),
         flow(MixSettingsKeys.BEAT_PULSE), flow(MixSettingsKeys.DECK_LAYOUT),
+        flow(MixSettingsKeys.VOLUME_GLIDE),
+        flow(MixSettingsKeys.DJ_TRANSITIONS), flow(MixSettingsKeys.DJ_EFFECT_SWEEPS),
+        flow(MixSettingsKeys.DJ_TEMPO_MATCH), flow(MixSettingsKeys.DJ_KEY_MATCH),
+        flow(MixSettingsKeys.DJ_VOLUME_LEVELING), flow(MixSettingsKeys.DJ_TEMPO_WAVES),
+        flow(MixSettingsKeys.DJ_POCKETS),
     ),
 ) { v ->
     MixSettingsRules.clamp(
@@ -126,6 +146,12 @@ fun AppSettingsStore.mixSettingsFlow(): Flow<MixSettings> = combine(
             cueOutputChannel = CueChannel.fromRaw(v[5] as String),
             beatPulseEnabled = v[6] as Boolean,
             mixDeckLayout = DeckLayout.fromRaw(v[7] as String),
+            mixVolumeGlide = v[8] as Boolean,
+            dj = DJModeSettings(
+                transitions = v[9] as Boolean, effectSweeps = v[10] as Boolean, tempoMatch = v[11] as Boolean,
+                keyMatch = v[12] as Boolean, volumeLeveling = v[13] as Boolean, tempoWaves = v[14] as Boolean,
+                pockets = v[15] as Boolean,
+            ),
         ),
     )
 }.distinctUntilChanged()
@@ -140,3 +166,11 @@ suspend fun AppSettingsStore.setMixAutoHidePlayed(on: Boolean) = set(MixSettings
 suspend fun AppSettingsStore.setMixCueChannel(c: CueChannel) = set(MixSettingsKeys.CUE_CHANNEL, c.raw)
 suspend fun AppSettingsStore.setMixBeatPulse(on: Boolean) = set(MixSettingsKeys.BEAT_PULSE, on)
 suspend fun AppSettingsStore.setMixDeckLayout(l: DeckLayout) = set(MixSettingsKeys.DECK_LAYOUT, l.raw)
+suspend fun AppSettingsStore.setMixVolumeGlide(on: Boolean) = set(MixSettingsKeys.VOLUME_GLIDE, on)
+suspend fun AppSettingsStore.setDjTransitions(on: Boolean) = set(MixSettingsKeys.DJ_TRANSITIONS, on)
+suspend fun AppSettingsStore.setDjEffectSweeps(on: Boolean) = set(MixSettingsKeys.DJ_EFFECT_SWEEPS, on)
+suspend fun AppSettingsStore.setDjTempoMatch(on: Boolean) = set(MixSettingsKeys.DJ_TEMPO_MATCH, on)
+suspend fun AppSettingsStore.setDjKeyMatch(on: Boolean) = set(MixSettingsKeys.DJ_KEY_MATCH, on)
+suspend fun AppSettingsStore.setDjVolumeLeveling(on: Boolean) = set(MixSettingsKeys.DJ_VOLUME_LEVELING, on)
+suspend fun AppSettingsStore.setDjTempoWaves(on: Boolean) = set(MixSettingsKeys.DJ_TEMPO_WAVES, on)
+suspend fun AppSettingsStore.setDjPockets(on: Boolean) = set(MixSettingsKeys.DJ_POCKETS, on)

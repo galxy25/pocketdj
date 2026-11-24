@@ -173,6 +173,9 @@ fun NowPlayingScreen(modifier: Modifier = Modifier) {
             onRepeat = { withRun { vm.cycleRepeat() } },
             onTogglePlayed = vm::togglePlayed,
         )
+        NowPlayingShareButton(
+            NowPlayingShareText.build(state.hasTrack, state.songId, state.title, state.artist, catalogState.catalog?.songsById),
+        )
         NowPlayingNotice(state.notice, Modifier.padding(top = 8.dp))
         NowPlayingSeams.dspSlot?.invoke()
     }

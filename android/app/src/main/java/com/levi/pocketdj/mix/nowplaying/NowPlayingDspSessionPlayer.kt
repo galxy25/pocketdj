@@ -18,9 +18,13 @@ interface NowPlayingDspPort {
     fun card(): MixCard?
     val isPlaying: Boolean
     val hasSounded: Boolean
+    /** The DSP is HOLDING a still-downloading file at its frontier (play intent kept): the card shows buffering. */
+    val isBuffering: Boolean get() = false
     fun play()
     fun pause()
     fun skipNext()
+    /** A REMOTE controller's next (lock screen, headset, Auto): DJ Mode mixes it over the 5 s sweep (P2-DJ-9). */
+    fun skipNextRemote() = skipNext()
     fun skipPrevious()
     /** Scrub within the engaged song (ms from the song start). */
     fun seekTo(positionMs: Long) {}
@@ -60,7 +64,9 @@ class NowPlayingDspSessionPlayer(
 
     override fun pauseForHandoff() { port.release(); invalidateState() }
 
-    private fun model() = MixPlayerStateMap.model(port.card(), port.isPlaying, canSkip = true)
+    private fun card(): MixCard? = npCardFor(port.card(), port.isBuffering)
+
+    private fun model() = MixPlayerStateMap.model(card(), port.isPlaying, canSkip = true)
 
     override fun getState(): State {
         val m = model()
@@ -69,7 +75,7 @@ class NowPlayingDspSessionPlayer(
             .setPlaybackState(m.playbackState)
             .setPlayWhenReady(m.playWhenReady, Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE)
             .setPlaybackParameters(androidx.media3.common.PlaybackParameters(m.rate))
-        val c = port.card() ?: return b.build()
+        val c = card() ?: return b.build()
         val cur = MediaItemData.Builder(c.songId)
             .setMediaItem(
                 MixPlayerStateMap.toMediaItem(c).let { mi ->
@@ -85,7 +91,7 @@ class NowPlayingDspSessionPlayer(
             listOf(MediaItemData.Builder(MixPlayerStateMap.UID_PREV).build(), cur, MediaItemData.Builder(MixPlayerStateMap.UID_NEXT).build()),
         ).setCurrentMediaItemIndex(1)
         b.setContentPositionMs(
-            if (m.playWhenReady) PositionSupplier.getExtrapolating(m.positionMs, m.rate) else PositionSupplier.getConstant(m.positionMs),
+            if (m.playWhenReady && !m.held) PositionSupplier.getExtrapolating(m.positionMs, m.rate) else PositionSupplier.getConstant(m.positionMs),
         )
         return b.build()
     }
@@ -106,15 +112,27 @@ class NowPlayingDspSessionPlayer(
     override fun handleStop(): ListenableFuture<*> { port.pause(); return Futures.immediateVoidFuture() }
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
-        when (MixPlayerStateMap.route(mediaItemIndex, seekCommand, currentIndex = 1)) {
-            MixPlayerStateMap.Route.Next -> port.skipNext()
-            MixPlayerStateMap.Route.Previous -> port.skipPrevious()
-            MixPlayerStateMap.Route.None -> if (positionMs != androidx.media3.common.C.TIME_UNSET) port.seekTo(positionMs.coerceAtLeast(0L))
-        }
+        routeSeek(port, mediaItemIndex, positionMs, seekCommand)
         return Futures.immediateVoidFuture()
     }
 
     override fun handleRelease(): ListenableFuture<*> { board.unregister(this); return Futures.immediateVoidFuture() }
 
     companion object { const val ENGINE = "npdsp" }
+}
+
+/**
+ * The card as the session shows it: while the DSP HOLDS a growing file the card is [MixCard.held], which the
+ * state map reports as STATE_BUFFERING with a frozen position (the play intent stays, so the button stays Pause).
+ */
+internal fun npCardFor(card: MixCard?, buffering: Boolean): MixCard? =
+    if (card != null && buffering && !card.held) card.copy(held = true) else card
+
+/** The session's seek routing (a REMOTE controller's next = the 5 s sweep, P2-DJ-9); a pure function so a fake port can test it. */
+internal fun routeSeek(port: NowPlayingDspPort, mediaItemIndex: Int, positionMs: Long, seekCommand: Int) {
+    when (MixPlayerStateMap.route(mediaItemIndex, seekCommand, currentIndex = 1)) {
+        MixPlayerStateMap.Route.Next -> port.skipNextRemote()
+        MixPlayerStateMap.Route.Previous -> port.skipPrevious()
+        MixPlayerStateMap.Route.None -> if (positionMs != androidx.media3.common.C.TIME_UNSET) port.seekTo(positionMs.coerceAtLeast(0L))
+    }
 }

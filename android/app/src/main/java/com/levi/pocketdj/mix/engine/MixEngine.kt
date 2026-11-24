@@ -61,6 +61,10 @@ class MixEngine(
     private val nanoClock: () -> Long = System::nanoTime,
     deckStore: MixDeckSessionStore? = null,
     private val diagSink: (String) -> Unit = {},
+    /** Volume Glide: runs the 20 ms trim-ramp steps (its own driver: the engine tick's may be a single-block fake). */
+    levelDriver: TickDriver = tickDriver,
+    /** Volume Glide: receives the off-main loudness result back on main (the app passes Main.immediate). */
+    glideScope: kotlinx.coroutines.CoroutineScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Unconfined),
 ) : EngineCore {
 
     // ------------------------------------------------------------------------------ state
@@ -75,6 +79,42 @@ class MixEngine(
     )
     private val tick = MixTick(this, tickDriver)
     val hooks = MixRecordingHooks()
+
+    // ---- Volume Glide (P2-MIX-2): Auto-DJ loudness leveling on the deck trims
+
+    /** The shared loudness cache (app wiring); null = nothing can be measured (decks read "unavailable"). */
+    var loudnessCache: com.levi.pocketdj.playback.dj.LoudnessCache? = null
+    private val deckFiles = arrayOfNulls<java.io.File>(2)
+    private val streamingDecks = BooleanArray(2)
+    val volumeGlide = MixVolumeGlide(
+        host = object : VolumeGlideHost {
+            override val autoMixing: Boolean get() = this@MixEngine.autoMixing
+            override fun loadedSongId(deck: Deck): String? = st(deck).loaded?.songId
+            override fun levelSource(deck: Deck): LevelSource? {
+                val f = deckFiles[deck.ordinal] ?: return null
+                val s = st(deck)
+                // An analog shared-album song is its own slice of the side (iOS: startMs + window length).
+                return LevelSource(f, s.startMs, if (s.startMs == null) null else Math.round(s.durationSec * 1000).toInt())
+            }
+            override fun isStreaming(deck: Deck): Boolean = streamingDecks[deck.ordinal]
+            override fun isAudible(deck: Deck): Boolean =
+                st(deck).isPlaying && MixMath.crossfadeFactor(deck, crossfader.toFloat()) > 0.01f
+            override fun writeTrim(deck: Deck, db: Double) = params.setLevelDb(deck, db)
+            override fun log(line: String) = diag(line)
+        },
+        cache = { loudnessCache }, driver = levelDriver, scope = glideScope,
+    )
+    val volumeGlideEnabled: Boolean get() = volumeGlide.enabled
+    /** Settings > Mixing > Volume glide (wired at app init; a flip anywhere reaches the engine without the Mix tab). */
+    fun setVolumeGlide(on: Boolean) = volumeGlide.setEnabled(on)
+    /** The Auto-DJ started / ended / resumed: re-level both decks (no-op work when glide is off). */
+    fun refreshVolumeGlide() = volumeGlide.refresh()
+    /** A stream finished downloading onto [deck]: its file is measurable now ([file] null = the stream died: nothing to measure). */
+    internal fun streamSettled(deck: Deck, file: java.io.File?) {
+        streamingDecks[deck.ordinal] = false
+        deckFiles[deck.ordinal] = file
+        volumeGlide.deckSettled(deck)
+    }
 
     /** The durable mix-deck session store; null = persistence is a no-op. */
     var sessionStore: MixDeckSessionStore? = deckStore
@@ -118,6 +158,8 @@ class MixEngine(
     var onStemsReset: ((Deck) -> Unit)? = null
     /** Not-on-disk loads: MIX-10 may open a growing-file stream instead. True = handled. */
     var streamLoad: ((MixLoadable, Deck) -> Boolean)? = null
+    /** Explicit deck load (file or stream): promotes a temporary buffer hold (iOS `pin(_, "mix-deck")`). */
+    var onExplicitLoad: ((songId: String) -> Unit)? = null
     /** Restore extras for a deck (stem mode + loop need the MIX-8 controllers). */
     var onRestoreDeckExtras: ((Deck, DeckSnapshot) -> Unit)? = null
     /** A Mix deck started sounding (the audio-owner arbiter claims the system card). */
@@ -278,6 +320,7 @@ class MixEngine(
 
     /** Load a catalog song onto [deck] through the resolver (cut preferred, analog window bounded). */
     fun load(item: MixLoadable, deck: Deck) {
+        onExplicitLoad?.invoke(item.songId)
         deckGestureGeneration++
         // A manual load disarms an exhausted-ended auto pickup: a landing download must never
         // eject these decks mid-performance.
@@ -300,6 +343,7 @@ class MixEngine(
      * call (iOS `loadAuto`), so it must not ride [loadOffload]. Supersedes any in-flight async load.
      */
     internal fun loadNow(item: MixLoadable, deck: Deck) {
+        onExplicitLoad?.invoke(item.songId)
         deckGestureGeneration++
         autoEndedExhausted = false
         loadSeq[deck.ordinal]++
@@ -417,6 +461,7 @@ class MixEngine(
         val window: LoadWindow.Frames? = null,
         val startMs: Int? = null,
         val meta: LoadedTrack? = null,
+        val file: java.io.File? = null,
     ) {
         fun discard() { runCatching { voice?.close() } }
     }
@@ -439,7 +484,7 @@ class MixEngine(
             gridBpm = r.gridBpm, firstDownbeatMs = r.firstDownbeatMs, steady = r.steady,
             beatsMs = r.beatsMs, downbeatsMs = r.downbeatsMs,
         )
-        return PreparedLoad(false, voice, w, startMs, meta)
+        return PreparedLoad(false, voice, w, startMs, meta, r.file)
     }
 
     private fun commitPrepared(item: MixLoadable, deck: Deck, p: PreparedLoad?) {
@@ -451,7 +496,7 @@ class MixEngine(
         }
         loadSeq[deck.ordinal]++
         ensureEngine(startNow = !isRestoringMixSession)
-        install(deck, p.voice!!, p.window!!, p.meta!!, p.startMs)
+        install(deck, p.voice!!, p.window!!, p.meta!!, p.startMs, p.file)
     }
 
     /**
@@ -469,13 +514,13 @@ class MixEngine(
 
     /** MIX-10 streaming load, second half: the track takes the deck with a provisional [durationSeconds]. */
     internal fun commitStreamLoad(deck: Deck, meta: LoadedTrack, durationSeconds: Double) =
-        commitLoad(deck, meta, null, durationSeconds)
+        commitLoad(deck, meta, null, durationSeconds, file = null, streaming = true)
 
     /** Internal load seam (shared with tests): open [file] and load it as [meta]. False = deck untouched. */
     fun loadFile(file: java.io.File, startMs: Int?, lengthMs: Int?, meta: LoadedTrack, deck: Deck): Boolean {
         if (!isRestoringMixSession) { pendingRestore = null; restoreGen++; restoreSettled = true }
         val src = runCatching { opener.open(file) }.getOrNull() ?: return false   // unreadable / corrupt
-        return loadSource(src, startMs, lengthMs, meta, deck)
+        return loadSource(src, startMs, lengthMs, meta, deck, file)
     }
 
     /**
@@ -483,7 +528,7 @@ class MixEngine(
      * An over-length startMs / empty file keeps the current track. A successful load resets
      * rate/pitch/lead/stems/loop and records ONE `.load` with bpm/camelot.
      */
-    fun loadSource(source: PcmSource, startMs: Int?, lengthMs: Int?, meta: LoadedTrack, deck: Deck): Boolean {
+    fun loadSource(source: PcmSource, startMs: Int?, lengthMs: Int?, meta: LoadedTrack, deck: Deck, file: java.io.File? = null): Boolean {
         // A REAL load supersedes a parked (not-yet-materialized) restore.
         if (!isRestoringMixSession) { pendingRestore = null; restoreGen++; restoreSettled = true }
         loadSeq[deck.ordinal]++
@@ -491,19 +536,19 @@ class MixEngine(
         val voice = Voice(source, graph.sampleRate, name = "deck${deck.label}")
         val w = LoadWindow.compute(voice.totalFrames, graph.sampleRate, startMs, lengthMs)
         if (w == null) { runCatching { voice.close() }; return false }
-        install(deck, voice, w, meta, startMs)
+        install(deck, voice, w, meta, startMs, file)
         return true
     }
 
-    private fun install(deck: Deck, voice: Voice, w: LoadWindow.Frames, meta: LoadedTrack, startMs: Int?) {
+    private fun install(deck: Deck, voice: Voice, w: LoadWindow.Frames, meta: LoadedTrack, startMs: Int?, file: java.io.File? = null) {
         masterPausedDecks = masterPausedDecks - deck   // a NEW track was never silenced by the pause
         onStemsReset?.invoke(deck)                     // BEFORE the swap: landing a fade stops the player
         controller(deck).open(voice, w)
-        commitLoad(deck, meta, startMs, w.count.toDouble() / graph.sampleRate)
+        commitLoad(deck, meta, startMs, w.count.toDouble() / graph.sampleRate, file)
     }
 
     /** The shared tail of every deck load. */
-    private fun commitLoad(deck: Deck, meta: LoadedTrack, startMs: Int?, durationSeconds: Double) {
+    private fun commitLoad(deck: Deck, meta: LoadedTrack, startMs: Int?, durationSeconds: Double, file: java.io.File? = null, streaming: Boolean = false) {
         // A track that played on this deck is being loaded over: its listen ends here.
         reportDeckEnded(deck, MixTrackEndReason.REPLACED)
         resetLoadCycle(deck)
@@ -516,6 +561,9 @@ class MixEngine(
             )
         }
         onLoopInvalidated?.invoke(deck)
+        deckFiles[deck.ordinal] = file
+        streamingDecks[deck.ordinal] = streaming
+        volumeGlide.deckLoaded(deck)   // Auto-DJ + glide on: the new song's trim (0 dB / no readout otherwise)
         onDeckLoaded?.invoke(deck, meta)
         // Loading stopped this deck OUTSIDE setPlaying: keep the sticky card subject honest.
         stickyFromPlaying()
@@ -696,6 +744,8 @@ class MixEngine(
         controller(deck).release()
         if (leadDeck == deck) updateUi { it.copy(leadDeck = null) }
         updateDeck(deck) { DeckState() }                    // empty track, every parameter default, cue off
+        deckFiles[deck.ordinal] = null; streamingDecks[deck.ordinal] = false
+        volumeGlide.deckCleared(deck)                       // no song, no trim
         positions.set(deck, 0.0)
         pushAllParams(deck)
         stickyFromPlaying()

@@ -1,5 +1,6 @@
 package com.levi.pocketdj.mix.stream
 
+import com.levi.pocketdj.data.burns.AssetOrigin
 import com.levi.pocketdj.data.burns.BurnFileNames
 import com.levi.pocketdj.data.burns.BurnStore
 import com.levi.pocketdj.data.rips.RipManifestEntry
@@ -19,7 +20,23 @@ import java.util.concurrent.TimeUnit
 interface MixStreamRips {
     /** A rip server is configured (presigns need one). Synchronous: read on every canStream. */
     fun hasServer(): Boolean
+    /**
+     * The import-server token was rejected (401/403) and has not changed since: a CREDENTIAL fault, not "server down".
+     * New streams hold (no [MixStreamLoader] server-down trip) for the re-probe window, then one attempt probes; a token
+     * change (re-typed / credentials-sync heal) reopens it at once. Token-scoped in P2-LIB-1: a 401 is charged to the
+     * token the presign was SENT with, so a 401 for a replaced token never holds the new one.
+     */
+    fun authHoldoff(): Boolean = false
+    /** The token is currently rejected (live; used to classify a failed presign as a credential fault). */
+    fun isAuthRejected(): Boolean = false
+    /**
+     * True (and cleared) when the most recent presign for [songId] came back 401/403 for the token it was SENT with.
+     * This is what classifies a failed presign: the live [isAuthRejected] may already describe a re-typed token.
+     */
+    fun consumePresignRejection(songId: String): Boolean = false
     fun entry(songId: String): RipManifestEntry?
+    /** A shared-side song's start with the user's boundary edit applied (iOS `RipsStore.effectiveStartMs`); default: the manifest's. */
+    fun effectiveStartMs(songId: String): Long? = entry(songId)?.startMs
     /** A 6 h presigned URL for the song's durable object, or null when the server can't mint one. */
     suspend fun presignedUrl(songId: String, ttlSeconds: Int): String?
     /** Public (no-auth) URL of an S3 key. */
@@ -31,9 +48,11 @@ interface MixStreamRips {
 /** Where completed streams land: the burn store. */
 interface StreamAdopter {
     /** Adopt a complete song file as a `.ready` burn; the adopted file or null. */
-    fun adoptFile(songId: String, title: String, artist: String, from: File): File?
+    fun adoptFile(songId: String, title: String, artist: String, from: File, origin: AssetOrigin = AssetOrigin.explicit("mix")): File?
     /** Move four complete stem parts into the burn folder; part -> new file, or null. */
-    fun adoptStems(songId: String, files: Map<String, File>): Map<String, File>?
+    fun adoptStems(songId: String, files: Map<String, File>, origin: AssetOrigin = AssetOrigin.explicit("mix")): Map<String, File>?
+    /** An explicit opener joined (or finished behind) a buffer stream: drop its temporary hold. */
+    fun pin(songId: String, reason: String) {}
     /** A queued/in-flight BACKGROUND burn of the same file would download it twice - stream takes over. */
     fun yieldBackgroundDownload(songId: String) {}
 }
@@ -43,10 +62,13 @@ class BurnStoreAdopter(
     private val burns: BurnStore,
     private val yieldBackground: (String) -> Unit = { burns.yieldBackgroundDownload(it) },
 ) : StreamAdopter {
-    override fun adoptFile(songId: String, title: String, artist: String, from: File) =
-        burns.adoptStreamedFile(songId, title, artist, from)
+    override fun adoptFile(songId: String, title: String, artist: String, from: File, origin: AssetOrigin) =
+        burns.adoptStreamedFile(songId, title, artist, from, origin)
 
-    override fun adoptStems(songId: String, files: Map<String, File>) = burns.adoptStreamedStems(songId, files)
+    override fun adoptStems(songId: String, files: Map<String, File>, origin: AssetOrigin) =
+        burns.adoptStreamedStems(songId, files, origin)
+
+    override fun pin(songId: String, reason: String) { burns.pin(listOf(songId), reason) }
     override fun yieldBackgroundDownload(songId: String) = yieldBackground(songId)
 }
 
@@ -104,6 +126,8 @@ class MixStreamLoader(
         /** The complete file's location: the adopted burn file, or [file] when not adopted. */
         @Volatile var finalFile: File? = null; internal set
         val adopted: Boolean get() = finalFile.let { it != null && it != file }
+        /** Who asked: explicit (default) pins the landed burn; buffer lands as a temporary hold. */
+        @Volatile var origin: AssetOrigin = AssetOrigin.explicit("mix"); internal set
         internal var adoptable = false
         internal var taskId: Int? = null
         internal var retries = 0
@@ -118,6 +142,7 @@ class MixStreamLoader(
     class StemSet internal constructor(val songId: String, val parts: Map<String, Stream>) {
         @Volatile var adopted = false; internal set
         @Volatile internal var adopting = false
+        @Volatile var origin: AssetOrigin = AssetOrigin.explicit("mix"); internal set
         val isComplete: Boolean get() = parts.isNotEmpty() && parts.values.all { it.isComplete }
         val failed: Boolean get() = parts.values.any { it.failed }
     }
@@ -145,6 +170,26 @@ class MixStreamLoader(
     }
 
     fun removeStemListener(id: String) { stemListeners.remove(id) }
+
+    private val progressListeners = java.util.concurrent.ConcurrentHashMap<String, (String) -> Unit>()
+
+    /** Further SONG-progress listeners besides [onProgress] (e.g. the Now Playing DSP's growing file). Returns a token for [removeProgressListener]. */
+    fun addProgressListener(listener: (String) -> Unit): String {
+        val id = UUID.randomUUID().toString()
+        progressListeners[id] = listener
+        return id
+    }
+
+    fun removeProgressListener(id: String) { progressListeners.remove(id) }
+
+    /** Fan a song's progress / completion / failure out to [onProgress] and every extra listener (callback executor). */
+    private fun fireProgress(id: String) {
+        val others = progressListeners.values.toList()
+        post {
+            onProgress?.invoke(id)
+            others.forEach { it(id) }
+        }
+    }
 
     private fun stemProgressed(base: String) {
         val primary = onStemProgress
@@ -213,6 +258,8 @@ class MixStreamLoader(
     fun canStream(songId: String, forAuto: Boolean = false): Boolean = lock.withLock {
         if (streamMap[songId]?.let { !it.failed } == true) return true
         if (!network.available || !rips.hasServer() || rips.entry(songId) == null) return false
+        // A REJECTED token is not "server down": hold (reopens on a token change / after the re-probe window).
+        if (rips.authHoldoff()) return false
         val failedAt = recentFailures[songId]
         val cooldown = if (forAuto) autoFailureCooldownMs(consecutiveFailures[songId] ?: 0) else failureCooldownMs
         val cooledDown = failedAt == null || clock() - failedAt >= cooldown
@@ -265,14 +312,29 @@ class MixStreamLoader(
      * Begin (or join) the stream for [songId]. Null when it can't stream. A finished stream whose
      * file still exists is returned as-is (the deck plays it like a burn).
      */
-    fun open(songId: String, title: String, artist: String, forAuto: Boolean = false): Stream? = lock.withLock {
+    fun open(
+        songId: String, title: String, artist: String, forAuto: Boolean = false,
+        origin: AssetOrigin = AssetOrigin.explicit("mix"),
+    ): Stream? = lock.withLock {
         streamMap[songId]?.let { s ->
             if (!s.failed) {
                 val f = s.finalFile ?: s.file
-                if (!s.isComplete || f.exists()) return s
+                if (!s.isComplete || f.exists()) {
+                    // Explicit wins: an explicit opener joining a buffer stream upgrades it (and pins what already landed).
+                    val merged = s.origin.merged(origin)
+                    if (merged != s.origin) {
+                        s.origin = merged
+                        (merged as? AssetOrigin.Explicit)?.let { adopter.pin(songId, it.reason) }
+                    }
+                    return s
+                }
             }
         }
-        if (!canStream(songId, forAuto)) return null
+        if (!canStream(songId, forAuto)) {
+            telemetry("open denied $songId net=${network.available} server=${rips.hasServer()} entry=${rips.entry(songId) != null} authHold=${rips.authHoldoff()} " +
+                "recentFail=${recentFailures[songId] != null} serverDown=${serverDownUntil?.let { clock() < it } == true}")
+            return null
+        }
         val entry = rips.entry(songId) ?: return null
         if (forAuto && startProbeArmed && serverDownUntil?.let { clock() < it } == true) {
             startProbeArmed = false   // one probe per armed retry: a real outage just fails it (and re-trips the gate)
@@ -283,6 +345,7 @@ class MixStreamLoader(
         directory.mkdirs()
         file.createNewFile()
         val s = Stream(songId, file, title, artist, clock())
+        s.origin = origin
         streamMap[songId] = s
         recentFailures.remove(songId)
         val cutKey = entry.cutKey
@@ -294,7 +357,7 @@ class MixStreamLoader(
             start(s, rips.urlForKey(cutKey), 0)
         } else {
             s.adoptable = true
-            s.startMs = if (entry.source == "analog") entry.startMs else null
+            s.startMs = if (entry.source == "analog") (rips.effectiveStartMs(songId) ?: entry.startMs) else null
             scope.launch {
                 val url = presignWithRetry(songId)
                 // Yield only once the stream is certain to start (adoptable + presigned), and off the lock.
@@ -302,7 +365,10 @@ class MixStreamLoader(
                 lock.withLock {
                     if (streamMap[songId] !== s) return@launch
                     if (url == null) {
-                        tripServerDown("presign"); fail(s, "presign failed")
+                        // 401/403 is a credential fault, not an outage: no "server down" trip (the auth hold gates
+                        // instead and clears on a token change) - and say so.
+                        if (presignRejected.remove(songId)) fail(s, "presign rejected (401 - token)")
+                        else { tripServerDown("presign"); fail(s, "presign failed") }
                     } else start(s, url, 0)
                 }
             }
@@ -311,9 +377,18 @@ class MixStreamLoader(
         s
     }
 
-    private suspend fun presignWithRetry(songId: String): String? =
-        runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()
-            ?: runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()
+    /** Songs whose last presign was refused for the token it was sent with (see [MixStreamRips.consumePresignRejection]). */
+    private val presignRejected: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    private suspend fun presignWithRetry(songId: String): String? {
+        presignRejected.remove(songId)
+        runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()?.let { return it }
+        // A rejected token will 401 again: don't double the rejection (one retry is for transient blips).
+        if (rips.consumePresignRejection(songId)) { presignRejected.add(songId); return null }
+        val second = runCatching { rips.presignedUrl(songId, PRESIGN_TTL_S) }.getOrNull()
+        if (second == null && rips.consumePresignRejection(songId)) presignRejected.add(songId)
+        return second
+    }
 
     // ---- stems ----------------------------------------------------------------------------------
 
@@ -331,12 +406,19 @@ class MixStreamLoader(
      * Begin (or join) streaming [songId]'s 4 stems, all at once. Null when it can't. [owner]
      * registers a claim; see [cancelStems].
      */
-    fun openStems(songId: String, owner: String = MIX_STEM_OWNER): StemSet? = lock.withLock {
+    fun openStems(
+        songId: String, owner: String = MIX_STEM_OWNER, origin: AssetOrigin = AssetOrigin.explicit("mix"),
+    ): StemSet? = lock.withLock {
         stemSetMap[songId]?.let { set ->
             if (!set.failed) {
                 val files = set.parts.values.map { it.finalFile ?: it.file }
                 if (!set.isComplete || set.adopting || files.all { it.exists() }) {
                     stemOwners.getOrPut(songId) { mutableSetOf() }.add(owner)
+                    val merged = set.origin.merged(origin)
+                    if (merged != set.origin) {
+                        set.origin = merged
+                        (merged as? AssetOrigin.Explicit)?.let { adopter.pin(songId, it.reason) }
+                    }
                     return set
                 }
             }
@@ -356,6 +438,7 @@ class MixStreamLoader(
             sources += s to url
         }
         val set = StemSet(songId, parts)
+        set.origin = origin
         stemSetMap[songId] = set
         stemOwners[songId] = mutableSetOf(owner)
         recentStemFailures.remove(songId)
@@ -400,7 +483,9 @@ class MixStreamLoader(
         val files = set.parts.mapValues { it.value.file }
         // The move can be a cross-filesystem copy of four files: never under the loader lock.
         scope.launch {
-            val moved = runCatching { adopter.adoptStems(base, files) }.getOrNull()
+            val moved = runCatching { adopter.adoptStems(base, files, set.origin) }.getOrNull()
+            // An explicit opener may have joined while the move ran: pin what the buffer landing wrote.
+            (set.origin as? AssetOrigin.Explicit)?.let { o -> if (moved != null) runCatching { adopter.pin(base, o.reason) } }
             lock.withLock {
                 set.adopting = false
                 if (moved == null || stemSetMap[base] !== set) return@withLock
@@ -420,9 +505,20 @@ class MixStreamLoader(
             val s = streamMap[id] ?: continue
             if (s.isComplete || s.failed) continue
             cancelTransfer(s)
+            markCancelled(s)
             streamMap.remove(id)
             s.file.delete()
         }
+    }
+
+    /**
+     * A cancelled / evicted stream will never get more bytes: mark it FAILED and tell the listeners, so no
+     * reader (a deck, the Now Playing DSP) waits on it forever. No failure cooldown: this was deliberate.
+     */
+    private fun markCancelled(s: Stream) {
+        if (s.isComplete) return
+        s.failed = true
+        if (stemSongId(s.songId) == null) fireProgress(s.songId)
     }
 
     // ---- transfer plumbing ----------------------------------------------------------------------
@@ -452,6 +548,7 @@ class MixStreamLoader(
         val victim = live.filter { it.songId !in pinned }.minByOrNull { it.startedAt } ?: return
         telemetry("evict ${victim.songId} (cap $maxConcurrent)")
         cancelTransfer(victim)
+        markCancelled(victim)
         streamMap.remove(victim.songId)
         victim.file.delete()
         post { onFailed?.invoke(victim.songId) } // back to the downloader lane - it still needs the file
@@ -459,7 +556,7 @@ class MixStreamLoader(
 
     private fun notify(key: String) {
         val base = stemSongId(key)
-        if (base != null) stemProgressed(base) else post { onProgress?.invoke(key) }
+        if (base != null) stemProgressed(base) else fireProgress(key)
     }
 
     private fun handle(event: StreamSink.Event) {
@@ -476,7 +573,7 @@ class MixStreamLoader(
                         s.sideFallback = null
                         s.isCut = false
                         s.adoptable = true
-                        s.startMs = rips.entry(id)?.startMs
+                        s.startMs = rips.effectiveStartMs(id)
                         telemetry("cut HTTP ${event.status} $id -> side fallback")
                         scope.launch {
                             val url = fallback()
@@ -546,7 +643,8 @@ class MixStreamLoader(
         // and the main thread. The stream reads as still-streaming (all bytes landed, file in
         // place) until the move is done, so no reader sees a half-moved path.
         scope.launch {
-            val moved = runCatching { adopter.adoptFile(s.songId, s.title, s.artist, s.file) }.getOrNull()
+            val moved = runCatching { adopter.adoptFile(s.songId, s.title, s.artist, s.file, s.origin) }.getOrNull()
+            (s.origin as? AssetOrigin.Explicit)?.let { o -> if (moved != null) runCatching { adopter.pin(s.songId, o.reason) } }
             lock.withLock { if (streamMap[s.songId] === s) finishComplete(s, moved) }
         }
     }
@@ -591,7 +689,7 @@ class MixStreamLoader(
         recentFailures[s.songId] = now
         consecutiveFailures[s.songId] = (consecutiveFailures[s.songId] ?: 0) + 1
         val id = s.songId
-        post { onProgress?.invoke(id) }
+        fireProgress(id)
         post { onFailed?.invoke(id) }
         // Drop the record so a later open (after the cooldown) starts clean.
         streamMap.remove(id)

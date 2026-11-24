@@ -18,6 +18,18 @@ sealed interface DeepLink {
     /** `pocketdj://play/<kind>/<id>[?shuffle=1]` — start playback of a collection item. */
     data class Play(val kind: PlayKind, val id: String, val shuffle: Boolean) : DeepLink
 
+    /** `pocketdj://remote` / `pocketdj://remote/join/<code>` — the Jukebox panel's Remote half, optionally joining [code]. */
+    data class Remote(val code: String?) : DeepLink
+
+    /** `pocketdj://pocket/now` — play the Pocket Wheel's best match for right now (P2-POC-16). */
+    data object PocketNow : DeepLink
+
+    /** `pocketdj://add?collection=<pocket:id|playlist:id>[&song=<id>]` — add a song (default: the one playing) to a collection. */
+    data class AddToCollection(val collectionId: String, val songId: String?) : DeepLink
+
+    /** `pocketdj://automix/<pocket|playlist|setlist>/<id>[?shuffle=1]` — start an Auto-DJ mix of a source. */
+    data class AutoMix(val source: MixSource, val shuffle: Boolean) : DeepLink
+
     /** `pocketdj://{album,artist,playlist,pocket,setlist,search}/...` — open a screen. */
     data class Navigate(val route: ShellRoute) : DeepLink
 
@@ -26,6 +38,12 @@ sealed interface DeepLink {
 
     /** A `.pdjdiagkey` file; SVC-5's own handler consumes it, the dispatcher ignores it. */
     data class DiagKey(val uri: String) : DeepLink
+
+    /** P2-REM-9: `pocketdj://remote/join/<token>` (the Nearby invite QR). */
+    data class RemoteJoin(val token: String) : DeepLink
+
+    /** One of our add/automix links whose target couldn't be resolved (e.g. a spoken name): surfaces [message]. */
+    data class Unresolved(val message: String) : DeepLink
 
     /** Not ours (OAuth redirects, unrelated https URLs, garbage). */
     data object None : DeepLink
@@ -66,6 +84,9 @@ object DeepLinkParser {
 
     /** The server's session-id shape (`genId`, jukebox-server.mjs): base32, 4–32 chars. */
     private val ID_RE = Regex("^[a-z2-7]{4,32}$")
+
+    /** A Remote join code / invite token (short code or long token). */
+    private val REMOTE_TOKEN_RE = Regex("^[A-Za-z0-9_-]{4,64}$")
 
     fun isValidId(s: String): Boolean = ID_RE.matches(s)
 
@@ -114,6 +135,33 @@ object DeepLinkParser {
                 val id = parts.getOrNull(2)?.takeIf { it.isNotBlank() } ?: return DeepLink.None
                 DeepLink.Play(kind, id, truthy(query["shuffle"]))
             }
+            "add" -> {
+                val collection = query["collection"]?.trim().orEmpty()
+                if (collection.isEmpty()) DeepLink.None
+                else if (CollectionRef.target(collection) == null)
+                    DeepLink.Unresolved("Couldn't find a pocket or playlist called \"$collection\" — open it in the app and add from there.")
+                else DeepLink.AddToCollection(collection, query["song"]?.trim()?.takeIf { it.isNotEmpty() })
+            }
+            "automix" -> {
+                val unresolved = DeepLink.Unresolved("Couldn't tell which pocket, playlist or setlist to auto-mix — start it from the app.")
+                if (arg == null) return DeepLink.None
+                val id = parts.getOrNull(2)?.takeIf { it.isNotBlank() } ?: return unresolved
+                val source = when (arg.lowercase()) {
+                    "pocket" -> MixSource.Pocket(id)
+                    "playlist" -> MixSource.Playlist(id)
+                    "setlist" -> MixSource.Setlist(id)
+                    else -> return unresolved
+                }
+                DeepLink.AutoMix(source, truthy(query["shuffle"]))
+            }
+            "remote" -> when {
+                arg == null -> DeepLink.Remote(null)
+                arg.equals("join", ignoreCase = true) ->
+                    parts.getOrNull(2)?.trim()?.takeIf { REMOTE_TOKEN_RE.matches(it) }
+                        ?.let { DeepLink.RemoteJoin(if (it.length <= 8) it.uppercase() else it) }
+                        ?: if (parts.getOrNull(2) == null) DeepLink.Remote(null) else DeepLink.None
+                else -> DeepLink.None
+            }
             "games" -> when {
                 arg.isNullOrBlank() -> DeepLink.Navigate(ShellRoute.Tab(PocketDjDestination.Games))
                 else -> GameLink.fromToken(arg)?.let { DeepLink.Game(it) } ?: DeepLink.None
@@ -121,7 +169,7 @@ object DeepLinkParser {
             "album" -> nav(arg) { ShellRoute.Album(it) }
             "artist" -> nav(arg) { ShellRoute.Artist(it) }
             "playlist" -> nav(arg) { ShellRoute.Playlist(it) }
-            "pocket" -> nav(arg) { ShellRoute.Pocket(it) }
+            "pocket" -> if (arg.equals("now", ignoreCase = true)) DeepLink.PocketNow else nav(arg) { ShellRoute.Pocket(it) }
             "setlist" -> nav(arg) { ShellRoute.Setlist(it, autoplay = truthy(query["autoplay"])) }
             "search" -> {
                 val q = (query["q"] ?: arg)?.trim().orEmpty()

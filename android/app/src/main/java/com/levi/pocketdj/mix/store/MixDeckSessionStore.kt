@@ -150,6 +150,8 @@ data class AutoRow(
     val durationMs: Int,
     /** Crate provenance; null for legacy rows. */
     val sourceLabel: String? = null,
+    /** The crate's collection id (iOS `AutoRow.originCollectionId`); absent on pre-wheel snapshots. */
+    val originCollectionId: String? = null,
 )
 
 /** The Auto-DJ machine's restorable state (queue in FINAL order; restore is always suspended). */

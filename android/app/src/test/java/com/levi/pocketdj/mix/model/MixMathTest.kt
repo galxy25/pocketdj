@@ -22,6 +22,16 @@ class MixMathTest {
         }
     }
 
+    @Test fun crossfadeAgreesWithSharedEqualPowerGains() {
+        var x = 0f
+        while (x <= 1.0f) {
+            val g = com.levi.pocketdj.playback.dj.AutoTransition.equalPowerGains(x)
+            assertEquals(g.outgoing, MixMath.crossfadeFactor(Deck.A, x), 0f)
+            assertEquals(g.incoming, MixMath.crossfadeFactor(Deck.B, x), 0f)
+            x += 0.05f
+        }
+    }
+
     @Test fun crossfadeEndpoints() {
         assertEquals(1f, MixMath.crossfadeFactor(Deck.A, 0f), 1e-6f)
         assertEquals(0f, MixMath.crossfadeFactor(Deck.A, 1f), 1e-6f)

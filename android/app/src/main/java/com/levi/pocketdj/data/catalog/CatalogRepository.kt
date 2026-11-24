@@ -1,5 +1,6 @@
 package com.levi.pocketdj.data.catalog
 
+import com.levi.pocketdj.data.rips.SegmentOverrides
 import com.levi.pocketdj.data.settings.AppSettingsStore
 import com.levi.pocketdj.data.settings.SourceConfig
 import java.util.concurrent.atomic.AtomicBoolean
@@ -96,17 +97,31 @@ class CatalogRepository(
     @Volatile
     var onImportedSupersede: ((List<Pair<String, String>>) -> Unit)? = null
 
+    /**
+     * The user's own Apple Music library (P2-LIB-3): resolved against the REAL documents of this merge; a row an
+     * indexed "Apple Music (Local)" twin claims is dropped and returned as a (library -> indexed) pair. Appended
+     * after Imported and the synthetic sources (iOS order). Null = none.
+     */
+    @Volatile
+    var amLibrarySource: ((real: List<IndexJson>) -> com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.Resolution)? = null
+
+    /** Fired after publish with the (library -> indexed) pairs: remap collections + favorites, THEN prune the store. */
+    @Volatile
+    var onAmLibrarySupersede: ((List<Pair<String, String>>) -> Unit)? = null
+
     private class Applied(
         val prov: com.levi.pocketdj.data.discover.ProvisionalSource.Result?,
         val importedPairs: List<Pair<String, String>>,
+        val amLibraryPairs: List<Pair<String, String>> = emptyList(),
     )
 
     /** Real docs + provisional + imported + synthetic, in merge order; reports supersedes through the callbacks. */
     private fun withProvisional(real: List<IndexJson>): Pair<List<IndexJson>, Applied> {
         val prov = provisionalSources?.let { runCatching { it(real) }.getOrNull() }
         val imp = importedSource?.let { runCatching { it(real) }.getOrNull() }
-        val docs = real + prov?.documents.orEmpty() + imp?.documents.orEmpty() + syntheticDocuments()
-        return docs to Applied(prov, imp?.pairs.orEmpty())
+        val am = amLibrarySource?.let { runCatching { it(real) }.getOrNull() }
+        val docs = real + prov?.documents.orEmpty() + imp?.documents.orEmpty() + syntheticDocuments() + am?.documents.orEmpty()
+        return docs to Applied(prov, imp?.pairs.orEmpty(), am?.pairs.orEmpty())
     }
 
     private fun notifySupersede(applied: Applied?) {
@@ -119,6 +134,7 @@ class CatalogRepository(
             runCatching { onAlbumsSuperseded?.invoke(albums) }
         }
         applied?.importedPairs?.takeIf { it.isNotEmpty() }?.let { runCatching { onImportedSupersede?.invoke(it) } }
+        applied?.amLibraryPairs?.takeIf { it.isNotEmpty() }?.let { runCatching { onAmLibrarySupersede?.invoke(it) } }
     }
 
     /** Provisional ALBUM supersedes (provisional album id -> indexed album id); prune-only. */
@@ -159,9 +175,11 @@ class CatalogRepository(
                 if (inputs.isEmpty()) return@withLock
                 val e = withContext(Dispatchers.IO) { currentEdits() }
                 if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs) && lastAppliedEdits === e) return@withLock
-                val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val built = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val mergedCatalog = built.catalog
                 lastMergedInputs = inputs
                 lastAppliedEdits = e
+                publishOverrides(built)
                 _state.update { it.copy(catalog = mergedCatalog, phase = Phase.Ready) }
                 notifySupersede(prov)
             }
@@ -201,9 +219,38 @@ class CatalogRepository(
 
     private fun currentEdits(): CatalogEdits = runCatching { edits() }.getOrDefault(CatalogEdits.EMPTY)
 
-    private fun buildCatalog(inputs: List<IndexJson>, e: CatalogEdits): MergedCatalog {
+    private val _segmentOverrides = MutableStateFlow(SegmentOverrides.Snapshot.EMPTY)
+
+    /**
+     * The vinyl side layout (boundary edits, detected ends, album membership), re-derived on EVERY publish and
+     * `reapplyEdits` (iOS `SegmentOverrides.shared`) so the playback layer reads it without any UI.
+     */
+    val segmentOverrides: StateFlow<SegmentOverrides.Snapshot> = _segmentOverrides.asStateFlow()
+
+    /** A built catalog with the layout snapshot derived from the SAME merge; both are published together. */
+    private class Built(val catalog: MergedCatalog, val overrides: SegmentOverrides.Snapshot)
+
+    /** Call inside the publish lock, immediately before the matching `_state.update`. */
+    private fun publishOverrides(b: Built) { _segmentOverrides.value = b.overrides }
+
+    /** The pre-overlay (RAW) merge behind the published catalog: what an edit's deltas are measured against (P2-ALB-6). */
+    @Volatile private var rawCatalog: MergedCatalog? = null
+
+    fun rawAlbum(id: String): IndexAlbum? = rawCatalog?.albumsById?.get(id)
+    fun rawSong(id: String): IndexSong? = rawCatalog?.songsById?.get(id)
+
+    private fun buildCatalog(inputs: List<IndexJson>, e: CatalogEdits): Built {
         mergeCount++
-        return e.apply(MergedCatalog.merge(inputs))
+        val raw = MergedCatalog.merge(inputs)
+        rawCatalog = raw
+        val effective = e.apply(raw)
+        val overrides = SegmentOverrides.derive(
+            albumEdits = e.albums,
+            rawAlbum = { raw.albumsById[it] },
+            orderedSongIds = { raw.albumsById[it]?.trackList.orEmpty() },
+            effectiveAlbums = effective.albums,
+        )
+        return Built(effective, overrides)
     }
 
     /**
@@ -217,8 +264,10 @@ class CatalogRepository(
                 if (_state.value.catalog == null) return@withLock
                 val e = withContext(Dispatchers.IO) { currentEdits() }
                 if (lastAppliedEdits === e) return@withLock
-                val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val built = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val mergedCatalog = built.catalog
                 lastAppliedEdits = e
+                publishOverrides(built)
                 _state.update { it.copy(catalog = mergedCatalog) }
             }
         }
@@ -285,9 +334,11 @@ class CatalogRepository(
         val prov = publishLock.withLock {
             val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(cached) }
             val e = withContext(Dispatchers.IO) { currentEdits() }
-            val merged = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+            val built = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+            val merged = built.catalog
             lastMergedInputs = inputs
             lastAppliedEdits = e
+            publishOverrides(built)
             _state.update { it.copy(catalog = merged, phase = Phase.Ready, error = null) }
             prov
         }
@@ -325,9 +376,11 @@ class CatalogRepository(
                     val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(emptyList()) }
                     if (inputs.isEmpty()) return@withLock null
                     val e = withContext(Dispatchers.IO) { currentEdits() }
-                    val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                    val built = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val mergedCatalog = built.catalog
                     lastMergedInputs = inputs
                     lastAppliedEdits = e
+                    publishOverrides(built)
                     _state.update { it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError) }
                     prov
                 }
@@ -352,10 +405,12 @@ class CatalogRepository(
                     _state.update { it.copy(phase = Phase.Ready, error = lastError) }
                     return@withLock prov
                 }
-                val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val built = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val mergedCatalog = built.catalog
                 merged = true
                 lastMergedInputs = inputs
                 lastAppliedEdits = e
+                publishOverrides(built)
                 _state.update {
                     it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError)
                 }

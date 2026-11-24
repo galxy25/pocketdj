@@ -24,11 +24,27 @@ data class JukeboxSessionInfo(
     /** The guest page URL — the QR payload, verbatim. */
     val url: String = "",
     val requiresToken: Boolean? = null,
-    /** Older/absent decodes as off; Android P1 always creates timeless:false. */
+    /** Older/absent decodes as off. */
     val timeless: Boolean? = null,
     /** Epoch ms; null on a timeless session. */
     val expiresAt: Double? = null,
 )
+
+/** `POST /jukebox/{id}/config` reply: the lifecycle fields after a timeless flip. */
+@Serializable
+data class JukeboxLifecycle(
+    val timeless: Boolean? = null,
+    val expiresAt: Double? = null,
+)
+
+/**
+ * Merge a config reply into the local session (iOS parity): `timeless` takes the reply's value (falling
+ * back to the requested one), and `expiresAt` is null whenever the session is timeless. Pure.
+ */
+fun JukeboxSessionInfo.mergeLifecycle(reply: JukeboxLifecycle, requestedTimeless: Boolean): JukeboxSessionInfo {
+    val nowTimeless = reply.timeless ?: requestedTimeless
+    return copy(timeless = nowTimeless, expiresAt = if (nowTimeless) null else reply.expiresAt ?: expiresAt)
+}
 
 /**
  * One guest request (jukebox.md §3.2). The host poll also carries `clientId`,

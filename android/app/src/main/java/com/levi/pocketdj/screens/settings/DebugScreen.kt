@@ -120,6 +120,12 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     ToggleRow("Remote telemetry", telemetry) {
         telemetry = it; diag.settings.telemetryEnabled = it; diag.log.telemetryEnabled = it
     }
+    var forceDj by remember { mutableStateOf(com.levi.pocketdj.ParityFlags.DEBUG_FORCE_DJ_MODE) }
+    ToggleRow("Parity: show DJ Mode chip", forceDj) { forceDj = it; com.levi.pocketdj.ParityFlags.DEBUG_FORCE_DJ_MODE = it }
+    var fakeController by remember { mutableStateOf(com.levi.pocketdj.remote.RemoteControllerGate.shared.fakeController) }
+    ToggleRow("Remote: fake controller gate", fakeController) {
+        fakeController = it; com.levi.pocketdj.remote.RemoteControllerGate.shared.fakeController = it
+    }
     SettingsCaption("Telemetry streams every action and screen (with titles) near-live. Owner opt-in; uploads need a key.")
 
     OutlinedTextField(
@@ -462,6 +468,36 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 android.util.Log.d("PdjVerify", ripStatus)
             }
         }) { Text("Burn first 3") }
+        // Wave-8 seed (P2-DJ-10): a 60-row queue, ripped songs first, so DJ Mode's replan window (40 rows) is full.
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = withContext(Dispatchers.IO) {
+                    val songs = host.graph.catalogRepository.catalogFlow.first()?.songs ?: emptyList()
+                    val manifest = host.graph.ripsRepository.manifest.value
+                    val (ripped, rest) = songs.partition { manifest[it.id]?.source == "digital" }
+                    (ripped + rest).take(60).map { it.id }
+                }
+                val out = host.graph.playbackController.playQueue(ids.map { com.levi.pocketdj.playback.QueuePlan.QueueEntry(it) })
+                ripStatus = "Rip seed: play60 ${ids.size} -> $out"
+            }
+        }) { Text("Play 60 queue") }
+        // Wave-8 seed (P2-POC-15): burn every ripped seed song (12) so a Mix-mode pocket run clears the 10-loadable threshold.
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = seedIds.ifEmpty { pickSeed().also { seedIds = it } }
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val r = host.graph.servicesGraph.burnStore.burn(ids.map { com.levi.pocketdj.data.burns.BurnSong(it, songs[it]?.name ?: it, songs[it]?.artist ?: "") })
+                ripStatus = "Rip seed: burn all ${ids.size} -> $r"
+                android.util.Log.d("PdjVerify", ripStatus)
+            }
+        }) { Text("Burn all seed") }
+        // Wave-8 seed (P2-REM-7): the Remote screen over an in-memory two-device session.
+        var showRemoteLoopback by remember { mutableStateOf(false) }
+        OutlinedButton(onClick = { showRemoteLoopback = true }) { Text("Remote loopback") }
+        if (showRemoteLoopback) {
+            val songs = remember { host.graph.catalogRepository.state.value.catalog?.songsById?.values?.toList().orEmpty() }
+            RemoteLoopbackDialog(songs = songs.take(20), onDismiss = { showRemoteLoopback = false })
+        }
     }
     // Wave-6 verify seeds: stemmed burn fixture, profile-source demux ingest, soft-cap-below-usage.
     var w6Status by remember { mutableStateOf("W6 seed: idle") }
@@ -582,6 +618,67 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 }
             }
         }) { Text("Mix stream open") }
+        OutlinedButton(onClick = {
+            // P2-MM-1: BUFFER-origin stream (expect a temporaryHolds entry); the 6th-longest ripped digital song (NOT burned) through MixStreamLoader and poll it.
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val store = host.graph.servicesGraph.burnStore
+                val id = songs.keys.filter { manifest[it]?.source == "digital" && !store.hasLocalFile(it) }
+                    .sortedByDescending { manifest[it]?.durationMs ?: 0L }.firstOrNull()
+                if (id == null) { ripStatus = "Mix stream: no candidate"; return@launch }
+                com.levi.pocketdj.di.MixDebug.publicRips = true
+                val loader = host.graph.mixGraph.mixStreamLoader
+                val s = loader.open(id, songs[id]?.name ?: id, songs[id]?.artist ?: "", origin = com.levi.pocketdj.data.burns.AssetOrigin.Buffer)
+                android.util.Log.d("PdjVerify", "mixstream BUFFER debug open $id can=${loader.canStream(id)} stream=${s != null}")
+                repeat(40) {
+                    kotlinx.coroutines.delay(1000)
+                    val st = loader.stream(id)
+                    android.util.Log.d("PdjVerify", "mixstream poll $id bytes=${st?.bytesReceived} expected=${st?.expectedBytes} complete=${st?.isComplete} failed=${st?.failed} adopted=${st?.adopted} burned=${store.hasLocalFile(id)}")
+                    ripStatus = "Mix stream $id bytes=${st?.bytesReceived} burned=${store.hasLocalFile(id)}"
+                    if (st == null || st.isComplete || st.failed) return@launch
+                }
+            }
+        }) { Text("Mix stream buffer") }
+        OutlinedButton(onClick = {
+            // P2-ALB-1: burn ONE analog song (shared side file) and play it; resolve line must show the side file + clip start.
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val id = manifest.entries.filter { it.value.source == "analog" && it.value.startMs != null && songs.containsKey(it.key) }
+                    .minByOrNull { it.value.durationMs ?: Long.MAX_VALUE }?.key
+                if (id == null) { ripStatus = "Analog: no candidate"; return@launch }
+                val r = host.graph.servicesGraph.burnStore.burn(listOf(com.levi.pocketdj.data.burns.BurnSong(id, songs[id]?.name ?: id, songs[id]?.artist ?: "")))
+                val out = host.graph.playbackController.playQueue(listOf(com.levi.pocketdj.playback.QueuePlan.QueueEntry(id)))
+                ripStatus = "Analog $id burn=$r play=$out start=${manifest[id]?.startMs}"
+                android.util.Log.d("PdjVerify", ripStatus)
+            }
+        }) { Text("Burn+play analog") }
+        // P2-ALB-4: burn + queue 3 consecutive songs of one analog album side, then seek near the end of the first.
+        var runDur by remember { mutableStateOf(0L) }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val manifest = host.graph.ripsRepository.manifest.value
+                val side = manifest.entries.filter { it.value.source == "analog" && it.value.startMs != null && it.value.durationMs != null && songs.containsKey(it.key) }
+                    .groupBy { it.value.key }.values.filter { it.size >= 3 }.firstOrNull()
+                    ?.sortedBy { it.value.startMs }?.take(3)
+                if (side == null) { ripStatus = "AlbumRun: no side with 3 analog songs"; return@launch }
+                val ids = side.map { it.key }
+                runDur = side[0].value.durationMs ?: 0L
+                val r = host.graph.servicesGraph.burnStore.burn(ids.map { com.levi.pocketdj.data.burns.BurnSong(it, songs[it]?.name ?: it, songs[it]?.artist ?: "") })
+                val out = host.graph.playbackController.playQueue(ids.map { com.levi.pocketdj.playback.QueuePlan.QueueEntry(it) })
+                ripStatus = "AlbumRun ${ids.joinToString(",")} burn=${r.burned}/${r.total} play=$out dur0=$runDur"
+                android.util.Log.d("PdjVerify", ripStatus)
+            }
+        }) { Text("Analog album run") }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val songs = host.graph.playbackController.currentPositionMs()
+                android.util.Log.d("PdjVerify", "seek-near-end from=$songs dur0=$runDur")
+                host.graph.playbackController.seekTo(maxOf(0L, runDur - 10_000L))
+            }
+        }) { Text("Seek near end") }
         OutlinedButton(onClick = { burn5(false) }) { Text("Burn 5 long") }
         OutlinedButton(onClick = { burn5(true) }) { Text("Burn 5 (HTTP 400)") }
     }
@@ -737,11 +834,47 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = {
             host.scope.launch { host.graph.gamesGraph.inThePocket.buildRound(); host.graph.gamesGraph.inThePocket.start(); pocketStatus = pocketLine() }
+        }) { Text("Pocket: game round") }
+        // P2-POC-8: the adaptive 100-song run for the best match (kept beside the game-round probe above).
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val pg = host.graph.pocketsGraph
+                val ok = runCatching {
+                    val best = pg.wheelController.refresh().profile
+                    pg.runStore.start(best)
+                }.getOrDefault(false)
+                val a = pg.runStore.active.value
+                pocketStatus = "Pocket run started=$ok build=${pg.runStore.buildState.value} through=${a?.playedThrough} skips=${a?.skips} banned=${a?.banned}"
+            }
         }) { Text("Pocket: build+start") }
-        OutlinedButton(onClick = { pocketStatus = pocketLine() }) { Text("Pocket: status") }
+        OutlinedButton(onClick = {
+            val pg = host.graph.pocketsGraph
+            val a = pg.runStore.active.value
+            pocketStatus = "Pocket run active=${a != null} through=${a?.playedThrough} skips=${a?.skips} banned=${a?.banned} retuned=${pg.runStore.retunedUids.value.size}"
+        }) { Text("Pocket: run status") }
+        OutlinedButton(onClick = { host.graph.pocketsGraph.runStore.stop(); pocketStatus = "Pocket run stopped" }) { Text("Pocket: run stop") }
+        OutlinedButton(onClick = {
+            pocketStatus = pocketLine()
+            // P2-POC-6: the centre play button's best match (caption + tier) for NOW.
+            host.scope.launch {
+                val r = runCatching { host.graph.pocketsGraph.wheelController.refresh() }.getOrNull()
+                pocketStatus = pocketLine() + (r?.let { " | best tier=${it.profile.tier} caption='${it.profile.caption}' detail='${it.profile.detail}' alts=${it.alternatives.size}" } ?: " | best=error")
+            }
+        }) { Text("Pocket: status") }
         OutlinedButton(onClick = { host.graph.gamesGraph.inThePocket.endActiveRound(); pocketStatus = pocketLine() }) { Text("Pocket: end") }
     }
     Text(pocketStatus, style = MaterialTheme.typography.bodySmall)
+
+    // P2-POC-9: the Pocket wheel preview (ignores ParityFlags.POCKET_WHEEL; History hosts it from P2-POC-10).
+    var wheelPreview by remember { mutableStateOf(false) }
+    ToggleRow("Wheel preview", wheelPreview) { wheelPreview = it }
+    if (wheelPreview) {
+        val wheelScope = androidx.compose.runtime.rememberCoroutineScope()
+        com.levi.pocketdj.screens.history.wheel.PocketWheelHost(
+            graph = host.graph.pocketsGraph,
+            onPause = { wheelScope.launch { runCatching { host.graph.playbackController.pause() } } },
+        )
+    }
 
     // BRW-10 verify probe (debug only): log the In Da Zone queue the ranker would build.
     var zoneStatus by remember { mutableStateOf("Zone: idle") }

@@ -97,8 +97,8 @@ class MediaSearchHandlerTest {
     fun noMatch_landsOnBrowseWithTheQuery() {
         val r = resolve("  something else ", pool = listOf(pk("pk", "Warmup")))
         assertEquals(MediaSearchResult.Browse("something else"), r)
-        // A partial token ("warm") is NOT coverage of "warmup".
-        assertEquals(MediaSearchResult.Browse("warm"), resolve("warm", pool = listOf(pk("pk", "Warmup"))))
+        // Initials / subsequence never match (922ea73c).
+        assertEquals(MediaSearchResult.Browse("wu"), resolve("wu", pool = listOf(pk("pk", "Warmup"))))
     }
 
     @Test
@@ -164,5 +164,94 @@ class MediaSearchHandlerTest {
         actions.fail = ShellActionException.SetupIncomplete
         assertNull(h.handle(MediaSearchRequest("warmup")))
         assertEquals(listOf("Finish setting up PocketDJ in the app first."), messages)
+    }
+
+    private fun songResolve(q: String, rows: List<IntentSongMatcher.Row>, prefer: (String) -> Boolean = { false }) =
+        MediaSearchResolver.resolve(MediaSearchRequest(q, MediaFocus.Any), { rows }, prefer) { emptyList() }
+
+    @Test
+    fun titleStartingWithFillerWord_exactTitleWinsOverStripped() {
+        val rows = listOf(
+            IntentSongMatcher.Row("pm", "Please Mr. Postman", "The Marvelettes"),
+            IntentSongMatcher.Row("other", "Mr. Postman", "The Beatles"),
+        )
+        val r = songResolve("Please Mr. Postman", rows) as MediaSearchResult.Play
+        assertEquals("pm", r.candidate.id)
+        val pd = songResolve("Play Date", listOf(IntentSongMatcher.Row("pd", "Play Date", "Melanie Martinez"), IntentSongMatcher.Row("d", "Date", "X"))) as MediaSearchResult.Play
+        assertEquals("pd", pd.candidate.id)
+    }
+
+    @Test
+    fun fillerStillStrippedWhenTitleHasNone() {
+        val r = songResolve("play Warmup please", listOf(IntentSongMatcher.Row("w", "Warmup", "A"))) as MediaSearchResult.Play
+        assertEquals("w", r.candidate.id)
+    }
+
+    @Test
+    fun equalScoreSongTie_preferredSongWins_elseBrowse() {
+        val rows = listOf(IntentSongMatcher.Row("a", "Echo", "One"), IntentSongMatcher.Row("b", "Echo", "Two"))
+        assertTrue(songResolve("Echo", rows) is MediaSearchResult.Browse)
+        assertEquals("b", ((songResolve("Echo", rows) { it == "b" }) as MediaSearchResult.Play).candidate.id)
+    }
+
+    @Test
+    fun collectionNameTie_picksMostRecentlyPlayed_pinned() {
+        val pool = listOf(pl("a", "Chill", 1.0), pk("b", "Chill", 5.0))
+        assertEquals("b", (resolve("Chill", MediaFocus.Any, pool) as MediaSearchResult.Play).candidate.id)
+    }
+
+    // ---- P2-POC-16: "my pocket" / "pocket for now" / "something that fits" ----
+
+    @Test
+    fun pocketForNowPhrases_mapToPocketForNow() {
+        for (q in listOf("my pocket", "play my pocket", "Pocket for now", "play my pocket on PocketDJ", "the pocket for right now!",
+            "something that fits", "Play something that fits please", "whatever fits")) {
+            assertEquals(q, MediaSearchResult.PocketForNow, resolve(q, MediaFocus.Any, emptyList()))
+            assertEquals(q, MediaSearchResult.PocketForNow, resolve(q, MediaFocus.Playlist, emptyList()))
+        }
+    }
+
+    @Test
+    fun pocketForNow_wholeUtteranceOnly() {
+        assertTrue(!MediaSearchResolver.isPocketForNowPhrase("my pocket of sunshine"))
+        assertTrue(!MediaSearchResolver.isPocketForNowPhrase("warmup pocket"))
+        assertTrue(MediaSearchResolver.isPocketForNowPhrase("My Pocket."))
+        val r = resolve("my pocket of sunshine", MediaFocus.Any, listOf(pk("s", "My Pocket of Sunshine")))
+        assertEquals("s", (r as MediaSearchResult.Play).candidate.id)
+    }
+
+    @Test
+    fun pocketForNow_beatsCollectionNamedMyPocket() {
+        val pool = listOf(pk("mine", "My Pocket", 9.0), pl("pl", "my pocket", 1.0))
+        assertEquals(MediaSearchResult.PocketForNow, resolve("my pocket", MediaFocus.Any, pool))
+        assertEquals(MediaSearchResult.PocketForNow, resolve("play my pocket", MediaFocus.Playlist, pool))
+    }
+
+    @Test
+    fun pocketForNow_notForAlbumOrSongFocus() {
+        assertTrue(resolve("my pocket", MediaFocus.Album, emptyList()) !is MediaSearchResult.PocketForNow)
+        assertTrue(resolve("my pocket", MediaFocus.Song, emptyList()) !is MediaSearchResult.PocketForNow)
+    }
+
+    private class PocketActions(var caption: String = "Warmup, steady", var fail: ShellActionException? = null) : MediaPlayActions {
+        override suspend fun playPlaylist(id: String, shuffle: Boolean) = ""
+        override suspend fun playPocket(id: String, shuffle: Boolean) = ""
+        override suspend fun playAlbum(id: String, shuffle: Boolean) = ""
+        override suspend fun playSong(id: String) = ""
+        override suspend fun playPocketForNow(): String = fail?.let { throw it } ?: caption
+    }
+
+    @Test
+    fun handler_pocketForNow_playsAndAnnounces_orSpeaksFailure() = runTest {
+        val actions = PocketActions()
+        val messages = mutableListOf<String>()
+        val h = MediaSearchHandler(actions, { emptyList() }, { }, { messages += it })
+        assertEquals("Warmup, steady", h.handle(MediaSearchRequest("play my pocket", MediaFocus.Any)))
+        assertEquals(listOf(com.levi.pocketdj.shell.pocketPlayingLine("Warmup, steady")), messages)
+        actions.fail = ShellActionException.NoPocketFits
+        messages.clear()
+        assertNull(h.handle(MediaSearchRequest("something that fits", MediaFocus.Any)))
+        assertEquals(listOf(ShellActionException.NoPocketFits.message.orEmpty()), messages)
+        assertTrue(messages.single().isNotBlank())
     }
 }

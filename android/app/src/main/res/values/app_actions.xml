@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SURF-5: App Actions custom intents (best-effort: Google is winding App Actions down in favour of
+     Gemini / AppFunctions; the deep links and launcher shortcuts are the doors that always work).
+     Query patterns are the phrases the Assistant may match; $-slots bind to the capability parameters. -->
+<resources>
+    <string-array name="app_action_add_to_collection_patterns">
+        <item>add this song to $collection</item>
+        <item>add this to $collection</item>
+        <item>add the current song to $collection</item>
+        <item>save this song to $collection</item>
+        <item>put this song in $collection</item>
+    </string-array>
+    <string-array name="app_action_auto_mix_patterns">
+        <item>auto mix $source</item>
+        <item>auto-mix $source</item>
+        <item>auto DJ $source</item>
+        <item>start an auto mix of $source</item>
+        <item>mix $source automatically</item>
+    </string-array>
+    <string name="app_action_add_to_collection_label">Add this song to a collection</string>
+    <string name="app_action_auto_mix_label">Auto-mix a collection</string>
+</resources>

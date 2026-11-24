@@ -26,6 +26,8 @@ class PresignCache(
     private val usableMs: Long = RipSettings.PREFETCH_USABLE_MS,
     private val ttlSeconds: Int = RipSettings.PREFETCH_TTL_SECONDS,
     private val onTrace: (String) -> Unit = {},
+    /** True while a rejected rip token's re-probe window is open: AUTOMATIC prefetch skips the guaranteed 401. */
+    private val authHoldoff: suspend () -> Boolean = { false },
 ) {
     private data class Entry(val url: String, val at: Long)
 
@@ -83,7 +85,8 @@ class PresignCache(
     fun prefetch(songIds: Collection<String>) {
         for (id in songIds.distinct()) {
             if (cached(id) != null || inFlight.containsKey(id)) continue
-            scope.launch { urlFor(id) }
+            // Automatic traffic holds off a rejected token; user-driven urlFor() still tries.
+            scope.launch { if (!authHoldoff()) urlFor(id) }
         }
     }
 

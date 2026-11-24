@@ -1,5 +1,6 @@
 package com.levi.pocketdj.di
 
+import com.levi.pocketdj.assistant.IntentSongMatcher
 import com.levi.pocketdj.assistant.MediaCandidate
 import com.levi.pocketdj.assistant.MediaSearchHandler
 import com.levi.pocketdj.assistant.MediaSearchIntentHandler
@@ -93,6 +94,12 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
             },
             seams = deepLinkSeams,
             displayName = DeepLinkDispatcher.contentDisplayName(app.appContext.contentResolver),
+            wantsRemoteShowcase = { intent ->
+                com.levi.pocketdj.remote.RemoteShowcaseSeed.wanted(
+                    intent.getStringExtra(com.levi.pocketdj.remote.RemoteShowcaseSeed.EXTRA),
+                    (app.appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+                )
+            },
         )
     }
 
@@ -106,6 +113,11 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
             catalog = object : ShellCatalog {
                 override fun song(id: String): IndexSong? = app.catalogRepository.state.value.catalog?.songsById?.get(id)
                 override fun album(id: String): IndexAlbum? = app.catalogRepository.state.value.catalog?.albumsById?.get(id)
+            },
+            audibleSongId = ::audibleSongId,
+            fallbackSongTitle = { id ->
+                app.playbackGraph.sequencer.state.value.queue.firstOrNull { it.id == id }?.title
+                    ?: app.mixGraph.mixDeckTitle(id)
             },
             player = ShellPlayer { set, ctx -> app.playbackController.playSetlist(set, ctx) },
             setup = SetupGate {
@@ -128,7 +140,22 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                     }
                 }
             },
-        ).also { it.mixFacade = app.mixGraph.mixFacade } // MIX-16: the Mix drives Auto-Mix actions
+        ).also {
+            it.mixFacade = app.mixGraph.mixFacade // MIX-16: the Mix drives Auto-Mix actions
+            it.pocketWheel = { app.pocketsGraph.wheelController } // P2-POC-16: "Play my pocket" / pocketdj://pocket/now
+        }
+    }
+
+    /** "This song": the audible owner's track ([com.levi.pocketdj.shell.AudibleOwner]). */
+    private fun audibleSongId(): String? {
+        val seq = app.playbackGraph.sequencer.state.value
+        val mix = app.mixGraph.mixLiveSong()
+        return com.levi.pocketdj.shell.AudibleOwner.songId(
+            sequencerRunning = seq.isRunning,
+            mixActive = mix.active,
+            mixSongId = mix.songId,
+            sequencerSongId = seq.currentSongId,
+        )
     }
 
     private fun mediaCandidates(kinds: Set<MediaCandidate.Kind>): List<MediaCandidate> {
@@ -153,13 +180,36 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
         return out
     }
 
+    /** Pre-normalized song rows, cached per catalog identity (one rebuild per catalog revision). */
+    @Volatile private var songRowCache: Pair<Any, List<IntentSongMatcher.Row>>? = null
+
+    private fun songRows(): List<IntentSongMatcher.Row> {
+        val catalog = app.catalogRepository.state.value.catalog ?: return emptyList()
+        songRowCache?.let { if (it.first === catalog) return it.second }
+        val rows = catalog.songsById.values.map { IntentSongMatcher.Row(it.id, it.name, it.artist) }
+        songRowCache = catalog to rows
+        return rows
+    }
+
     private val mediaSearch: MediaSearchHandler by lazy {
         MediaSearchHandler(
             actions = shellActions,
             candidates = ::mediaCandidates,
             openRoute = NavRequestBus::post,
             message = NavRequestBus::postMessage,
+            songRows = ::songRows,
+            preferSong = ::preferSong,
         )
+    }
+
+    /** Tie-break for voice song matches: the audible song, or one already filed in a pocket / playlist. */
+    private fun preferSong(songId: String): Boolean {
+        val st = app.playbackGraph.sequencer.state.value
+        if (st.isRunning && st.currentSongId == songId) return true
+        if (app.collections.pockets.any { songId in it.songIds }) return true
+        fun inNodes(nodes: List<com.levi.pocketdj.data.collections.PlaylistNode>): Boolean =
+            nodes.any { it.songId == songId || (it.children?.let(::inNodes) ?: false) }
+        return app.collections.playlists.any { it.id != NOW_PLAYING_PLAYLIST_ID && inNodes(it.sequences) }
     }
 
     /** Dynamic launcher shortcuts: most recently played playlists/pockets (iOS donations analogue). */
@@ -174,6 +224,7 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
             },
             sink = ShortcutManagerSink(app.appContext),
             cap = { ShortcutManagerSink.dynamicCap(app.appContext) },
+            withAutoMix = true,
         )
     }
 
@@ -195,6 +246,9 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
                 NavRequestBus.post(ShellRoute.JukeboxJoin(id))
             }
         }
+        deepLinkSeams.addToCollection = com.levi.pocketdj.shell.addLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
+        deepLinkSeams.autoMix = com.levi.pocketdj.shell.autoMixLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
+        deepLinkSeams.pocketNow = com.levi.pocketdj.shell.pocketNowLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postNotice(it) })
         deepLinkSeams.playItem = com.levi.pocketdj.shell.playLinkSeam(shellActions, app.appScope, postMessage = { NavRequestBus.postMessage(it) })
         SearchPlayBridge.handler = { request ->
             app.appScope.launch { mediaSearch.handle(request) }

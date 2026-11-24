@@ -416,6 +416,7 @@
 		86023A0E7007263EFE1FB553 /* SMFWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADC99437AEB5BB2133D5D0EA /* SMFWriter.swift */; };
 		8635DA3BB908925B738B0A1E /* OnboardingStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1CFF8AEA6487C5EF9A258BC /* OnboardingStoreTests.swift */; };
 		863D21BA53280AAA929949D9 /* StudioEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5658BF6FB3E1C0B4C53EF88B /* StudioEngine.swift */; };
+		8696E0D520B089876D290BDD /* PocketWheelParityDumpTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8C380EA2D465F0C8D65ED63 /* PocketWheelParityDumpTests.swift */; };
 		87113C7F42ADBEABB2220CE2 /* JukeboxJoinView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E8B350FAAC7E6D5EB518D0A /* JukeboxJoinView.swift */; };
 		87357294B2DEA9127BBCD302 /* CollectionTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44D73C41BA289BDBD7312F60 /* CollectionTimelineTests.swift */; };
 		88B35066ED233F049000C1A6 /* FXRack.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3114C7979FC9315629D622E8 /* FXRack.swift */; };
@@ -1531,6 +1532,7 @@
 		F8696362644993EA5F6EF359 /* TimbreEnrollmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimbreEnrollmentTests.swift; sourceTree = "<group>"; };
 		F86BBA511B279776A06AEC30 /* ArrangerBouncer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrangerBouncer.swift; sourceTree = "<group>"; };
 		F882DD25F394B6D5F3EAE1CA /* TimbreCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimbreCatalog.swift; sourceTree = "<group>"; };
+		F8C380EA2D465F0C8D65ED63 /* PocketWheelParityDumpTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketWheelParityDumpTests.swift; sourceTree = "<group>"; };
 		F901CE80D782B77478D57909 /* SeededRNG.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeededRNG.swift; sourceTree = "<group>"; };
 		FA26669FF3F14F5E34CE5460 /* CloudSyncOnboardingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSyncOnboardingTests.swift; sourceTree = "<group>"; };
 		FA8AA1ACBAF38396605479DB /* OwnerIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OwnerIdentity.swift; sourceTree = "<group>"; };
@@ -1851,6 +1853,7 @@
 				51C6E6AB956C25C696D951AF /* PocketRunStoreTests.swift */,
 				D9D8E2C636B9D7CA96F8599D /* PocketsCollectionsTests.swift */,
 				3337967CE1BD12FD79E3563D /* PocketWheelCloudTests.swift */,
+				F8C380EA2D465F0C8D65ED63 /* PocketWheelParityDumpTests.swift */,
 				142DCFC413FBB0A93CC595D1 /* PocketZipTests.swift */,
 				AEFF189C07F35D94924D0295 /* PortableItemsTests.swift */,
 				1D460DF489827FCD96529248 /* PresignAuthTests.swift */,
@@ -3103,6 +3106,7 @@
 				5603F6B128929F6BAAB8E2E7 /* PocketRunPlannerTests.swift in Sources */,
 				1E59919A35EE0E2E3778F19A /* PocketRunStoreTests.swift in Sources */,
 				0FBCA98AC970E7184A620C56 /* PocketWheelCloudTests.swift in Sources */,
+				8696E0D520B089876D290BDD /* PocketWheelParityDumpTests.swift in Sources */,
 				0CBFF3993EB761E6945C6217 /* PocketZipTests.swift in Sources */,
 				147107230DDD20095F9E85D1 /* PocketsCollectionsTests.swift in Sources */,
 				359D4D1951614DF2EB527C9C /* PortableItemsTests.swift in Sources */,

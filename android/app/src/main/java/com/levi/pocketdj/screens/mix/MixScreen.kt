@@ -1,5 +1,7 @@
 package com.levi.pocketdj.screens.mix
 
+import kotlinx.coroutines.launch
+import com.levi.pocketdj.mix.setMixVolumeGlide
 import androidx.compose.ui.unit.sp
 
 import androidx.compose.foundation.layout.size
@@ -79,11 +81,18 @@ fun MixScreen(
     val sessions = mix.mixSessions
     val st by vm.state.collectAsState()
     val engineUi by mix.mixEngine.ui.collectAsState()
+    // Only the lane-issue COPY is collected here (not the progress ticks), so the screen never recomposes on a byte count.
+    val laneNote by remember(mix) {
+        mix.collectionMixDownloader.state
+            .map { com.levi.pocketdj.screens.mix.DownloadBarModel.issueLine(it.laneIssue) }
+            .distinctUntilChanged()
+    }.collectAsState(null)
     val askNotifications = com.levi.pocketdj.ui.rememberNotificationPermissionRequester()
     val settings by vm.settings.collectAsState()
     val auto by vm.autoUi.collectAsState()
     val sessionName by sessions.currentNameFlow.collectAsState()
     var confirmingReset by remember { mutableStateOf(false) }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
     // MIX-17: the slot whose modulation sheet is open (deck, slot index).
     var modTarget by remember { mutableStateOf<Pair<com.levi.pocketdj.mix.model.Deck, Int>?>(null) }
 
@@ -117,7 +126,7 @@ fun MixScreen(
             peaksFor = { t ->
                 // Bound an analog shared-album burn to the SONG (catalog length), not to the end of the whole side.
                 val len = graph.catalogRepository.state.value.catalog?.songsById?.get(t.songId)?.length?.toInt()
-                MixWaveform.peaksForSong(t.songId, len, burns)
+                MixWaveform.peaksForSong(t.songId, len, burns) { st -> graph.ripsRepository.analogEndMs(t.songId, st, len?.toLong()) }
             },
             art = { albumId, m ->
                 AlbumArt(albumId?.let { graph.catalogRepository.state.value.catalog?.albumsById?.get(it) }, m)
@@ -143,11 +152,16 @@ fun MixScreen(
             // The shell top bar already titles this tab "Mix" (a second "Mix" here duplicated it).
             Spacer(Modifier.weight(1f))
             FilterChip(
-                selected = st.autoEnabled, onClick = { vm.setAutoEnabled(!st.autoEnabled) },
+                selected = st.autoEnabled, enabled = st.autoBlockedReason == null || st.autoEnabled,
+                onClick = { vm.setAutoEnabled(!st.autoEnabled) },
                 label = { Text(if (st.autoEnabled) "Auto" else "Manual") },
                 modifier = Modifier.testTag("mix-auto-toggle").semantics { contentDescription = "Auto mode" },
             )
+            MixBroadcastButton(graph)
             recordAction()
+        }
+        st.autoBlockedReason?.let {
+            Text(it, color = DeckColors.fg, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp).testTag("mix-auto-blocked"))
         }
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
             Column(
@@ -163,6 +177,7 @@ fun MixScreen(
                     )
                 }
                 MixRecordingControls(mix.mixRecorder)
+                VolGlidePill(on = settings.mixVolumeGlide, onToggle = { scope.launch { graph.settings.setMixVolumeGlide(false) } })
                 recordingIndicator()
                 if (st.autoEnabled && !auto.mixing) {
                     AutoSetupBar(
@@ -183,6 +198,7 @@ fun MixScreen(
                         auto = auto, buffering = buffering,
                         onPause = vm::pauseAuto, onResume = vm::resumeAuto, onStop = vm::stopAuto,
                         onFxGlide = vm::setFXGlide, onMixGlide = vm::setMixGlide,
+                        laneNote = laneNote,
                     )
                 }
                 DeckArea(
@@ -211,7 +227,30 @@ fun MixScreen(
         // decks are ~3 screens tall, so a crossfader at the end of the scroll was out of reach.
         PinnedMixBar(engine)
         // Bottom-pinned; the ONLY collector of the downloader's progress.
-        DownloadBar(state = mix.collectionMixDownloader.state, onCancel = { mix.collectionMixDownloader.cancel() })
+        val dlScope = androidx.compose.runtime.rememberCoroutineScope()
+        DownloadBar(
+            state = mix.collectionMixDownloader.state,
+            onCancel = { mix.collectionMixDownloader.cancel() },
+            // Zero dead air: when the lanes CAN'T fetch audio (token rejected / no server), play the crates in Now Playing.
+            onPlayInNowPlaying = {
+                val srcs = mix.collectionMixDownloader.sources
+                val names = srcs.mapNotNull { s ->
+                    when (s) {
+                        is com.levi.pocketdj.mix.model.MixSource.Pocket -> graph.collections.pocket(s.value)?.name
+                        is com.levi.pocketdj.mix.model.MixSource.Playlist -> graph.collections.playlist(s.value)?.name
+                        is com.levi.pocketdj.mix.model.MixSource.Setlist -> graph.collections.setlist(s.value)?.let { it.name ?: "Set list" }
+                    }
+                }
+                val shell = srcs.map { s ->
+                    when (s) {
+                        is com.levi.pocketdj.mix.model.MixSource.Pocket -> com.levi.pocketdj.shell.MixSource.Pocket(s.value)
+                        is com.levi.pocketdj.mix.model.MixSource.Playlist -> com.levi.pocketdj.shell.MixSource.Playlist(s.value)
+                        is com.levi.pocketdj.mix.model.MixSource.Setlist -> com.levi.pocketdj.shell.MixSource.Setlist(s.value)
+                    }
+                }
+                dlScope.launch { runCatching { graph.shellGraph.shellActions.playMixCratesInNowPlaying(shell, names) } }
+            },
+        )
     }
 
     st.loaderDeck?.let { deck ->

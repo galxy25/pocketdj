@@ -23,6 +23,10 @@ interface OnboardingGate {
  * visible fallback (never a crash, never a silent drop):
  *  - [playItem]: SURF-5 `ShellActions.playPlaylist/...` — default opens the item's screen
  *    (the resolver reports the iOS-style message for an unknown id). Returns a failure message or null.
+ *  - [addToCollection] / [autoMix]: SURF-5 `ShellActions.addSongToCollection` / `startAutoMix` — default says
+ *    the action isn't available (never a silent drop).
+ *  - [pocketNow]: P2-POC-16 `ShellActions.playPocketForNow` (the seam posts its own snackbar) — default says it isn't
+ *    available (never a silent drop).
  *  - [joinJukebox]: JBX-2 `JoinedSessionsStore.addJoined` + open the join panel — default opens the Jukebox tab with a
  *    "coming soon" message (JBX-2 must assign this seam).
  *  - [importCollection]: SET-2/COL-15 collection import — default "Import coming soon".
@@ -32,10 +36,17 @@ interface OnboardingGate {
  */
 class DeepLinkSeams {
     @Volatile var playItem: ((PlayKind, String, Boolean) -> String?)? = null
+    @Volatile var addToCollection: ((collectionId: String, songId: String?) -> Unit)? = null
+    @Volatile var pocketNow: (() -> Unit)? = null
+    @Volatile var autoMix: ((MixSource, shuffle: Boolean) -> Unit)? = null
     @Volatile var joinJukebox: ((id: String, guestBase: String?) -> Unit)? = null
     @Volatile var importCollection: ((uri: String) -> Unit)? = null
     @Volatile var mwf: ((DeepLink.Mwf) -> Unit)? = null
     @Volatile var game: ((GameLink) -> Unit)? = null
+    /** P2-REM-9: a Remote invite link; default parks the token in [DeepLinkDispatcher.pendingRemoteJoin] and opens the Jukebox tab. */
+    @Volatile var remoteJoin: ((token: String) -> Unit)? = null
+    /** P2-REM-9: the hub sets this to flip the Jukebox panel to its Remote half; the dispatcher calls it for a parked invite. */
+    @Volatile var showRemote: (() -> Unit)? = null
 }
 
 /**
@@ -51,6 +62,9 @@ class DeepLinkDispatcher(
     private val postMessage: (String) -> Unit = NavRequestBus::postMessage,
     private val displayName: (Intent) -> String? = { null },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /** DEBUG-only: true for a launch intent carrying `pdj.seedRemote=showcase` (store screenshots). */
+    private val wantsRemoteShowcase: (Intent) -> Boolean = { false },
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val _pendingMwf = MutableStateFlow<DeepLink.Mwf?>(null)
 
@@ -58,6 +72,19 @@ class DeepLinkDispatcher(
     val pendingMwf: StateFlow<DeepLink.Mwf?> = _pendingMwf
 
     fun takePendingMwf(): DeepLink.Mwf? = _pendingMwf.getAndUpdate { null }
+
+    private val _pendingRemoteJoin = MutableStateFlow<String?>(null)
+
+    /** A Remote invite token nobody has consumed yet (the Remote screen takes it with [takePendingRemoteJoin]). */
+    val pendingRemoteJoin: StateFlow<String?> = _pendingRemoteJoin
+
+    @Volatile private var remoteJoinParkedAt = 0L
+
+    /** The parked token, unless it is stale (an old scan must not join a session minutes later). */
+    fun takePendingRemoteJoin(): String? {
+        val token = _pendingRemoteJoin.getAndUpdate { null } ?: return null
+        return if (clock() - remoteJoinParkedAt <= REMOTE_JOIN_TTL_MS) token else null
+    }
 
     private val _pendingGame = MutableStateFlow<GameLink?>(null)
 
@@ -70,6 +97,11 @@ class DeepLinkDispatcher(
     val intentHandler = DeepLinkHandler { intent -> handle(intent) }
 
     fun handle(intent: Intent): Boolean {
+        if (wantsRemoteShowcase(intent)) {
+            RemotePanelRequests.request(showcase = true)
+            postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
+            if (intent.action != Intent.ACTION_VIEW) return true
+        }
         if (intent.action != Intent.ACTION_VIEW) return false
         val data = intent.data?.toString() ?: return false
         if (intent.data?.scheme == "content") {
@@ -112,9 +144,23 @@ class DeepLinkDispatcher(
                     postMessage("Joining jukeboxes is coming soon")
                 }
             }
+            is DeepLink.Remote -> {
+                RemotePanelRequests.request(joinCode = link.code)
+                postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
+            }
             is DeepLink.Mwf -> {
                 val consumer = seams.mwf
                 if (consumer != null) consumer(link) else _pendingMwf.value = link
+            }
+            is DeepLink.RemoteJoin -> {
+                val join = seams.remoteJoin
+                if (join != null) join(link.token) else {
+                    remoteJoinParkedAt = clock()
+                    _pendingRemoteJoin.value = link.token
+                    postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
+                    seams.showRemote?.invoke()
+                    RemotePanelRequests.request() // flips the hub to its Remote half; RemoteScreen then takes the parked token
+                }
             }
             is DeepLink.Game -> {
                 val opener = seams.game
@@ -140,6 +186,19 @@ class DeepLinkDispatcher(
                     if (link.kind != PlayKind.Setlist) postMessage("Playing from links is coming soon")
                 }
             }
+            is DeepLink.AddToCollection -> {
+                val add = seams.addToCollection
+                if (add != null) add(link.collectionId, link.songId) else postMessage("Adding from links isn't available yet")
+            }
+            is DeepLink.AutoMix -> {
+                val mix = seams.autoMix
+                if (mix != null) mix(link.source, link.shuffle) else postMessage("Auto-Mix isn't available yet")
+            }
+            DeepLink.PocketNow -> {
+                val pocket = seams.pocketNow
+                if (pocket != null) pocket() else postMessage("Pocket for now isn't available yet")
+            }
+            is DeepLink.Unresolved -> postMessage(link.message)
             is DeepLink.Navigate -> postRoute(link.route)
             is DeepLink.CollectionFile -> {
                 val import = seams.importCollection
@@ -150,6 +209,9 @@ class DeepLinkDispatcher(
     }
 
     companion object {
+        /** How long a scanned invite stays joinable while waiting for the Remote screen to compose. */
+        const val REMOTE_JOIN_TTL_MS = 120_000L
+
         /** Reads DISPLAY_NAME for an opaque content:// URI (Files/Downloads hand out no filename). */
         fun contentDisplayName(resolver: android.content.ContentResolver): (Intent) -> String? = { intent ->
             val uri = intent.data

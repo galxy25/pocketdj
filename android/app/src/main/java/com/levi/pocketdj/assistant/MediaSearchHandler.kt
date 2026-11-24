@@ -6,6 +6,7 @@ import com.levi.pocketdj.navigation.PocketDjDestination
 import com.levi.pocketdj.shell.DeepLinkHandler
 import com.levi.pocketdj.shell.ShellActionException
 import com.levi.pocketdj.shell.ShellRoute
+import com.levi.pocketdj.shell.pocketPlayingLine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -15,6 +16,9 @@ interface MediaPlayActions {
     suspend fun playPocket(id: String, shuffle: Boolean = false): String
     suspend fun playAlbum(id: String, shuffle: Boolean = false): String
     suspend fun playSong(id: String): String
+
+    /** P2-POC-16: the Pocket Wheel's best match for now; returns the spoken caption. */
+    suspend fun playPocketForNow(): String = throw ShellActionException.NoPocketFits
 }
 
 /** What kind of thing the voice request named (`android.intent.extra.focus` MIME). */
@@ -104,15 +108,21 @@ sealed interface MediaSearchResult {
     /** No confident match: land on Browse with [query] in the search field. */
     data class Browse(val query: String) : MediaSearchResult
 
+    /** "play my pocket" / "pocket for now" / "something that fits": the Pocket Wheel's best match (P2-POC-16). */
+    data object PocketForNow : MediaSearchResult
+
     /** Nothing was asked for (blank query): just bring the app up. */
     data object Empty : MediaSearchResult
 }
 
-/** Pure name resolution: exact → normalized → token coverage, ties → most recently played. */
+/**
+ * Pure name resolution (iOS parity, P2-SURF-4). Collections / albums match STRICTLY
+ * ([CollectionNameMatcher]: literal equals > prefix > contains, typo only when nothing literal,
+ * never initials); songs match through [IntentSongMatcher] (whole phrase and "<title> by <artist>").
+ * `MediaFocus.Any` order: strict collection -> unique top-tier song -> Browse search. (A "pocket
+ * phrase" door is reserved for P2-POC-16 ahead of the collection step.)
+ */
 object MediaSearchResolver {
-    /** Spoken filler that is never part of a collection's name. */
-    private val NOISE = setOf("play", "please", "listen", "to", "some", "music", "my", "the", "a", "playlist", "playlists", "pocket", "pockets", "pocketdj", "on", "shuffle", "shuffled")
-
     fun kindsFor(focus: MediaFocus): Set<MediaCandidate.Kind> = when (focus) {
         MediaFocus.Any, MediaFocus.Playlist -> setOf(MediaCandidate.Kind.Playlist, MediaCandidate.Kind.Pocket)
         MediaFocus.Album -> setOf(MediaCandidate.Kind.Album)
@@ -120,7 +130,10 @@ object MediaSearchResolver {
         MediaFocus.Artist, MediaFocus.Genre -> emptySet() // no collection to play: Browse handles it
     }
 
-    /** Match tier of [name] for [query]: 3 exact, 2 normalized-equal, 1 every query token covered, 0 none. */
+    /**
+     * Loose match tier for Android Auto's browse search box (3 exact, 2 normalized-equal, 1 every
+     * query token covered, 0 none). NOT used for voice resolution, which is strict ([resolve]).
+     */
     fun tier(query: String, name: String): Int {
         val q = query.trim()
         if (q.isEmpty()) return 0
@@ -133,10 +146,63 @@ object MediaSearchResolver {
         return if (nq.split(' ').all { it in nameTokens }) 1 else 0
     }
 
-    private data class Scored(val candidate: MediaCandidate, val tier: Int, val hinted: Boolean, val artistMatch: Boolean)
+    private val POCKET_NOW_PHRASES = setOf(
+        "my pocket", "my pockets", "pocket for now", "my pocket for now", "pocket for right now", "my pocket right now",
+        "something that fits", "something that fits now", "something that fits right now", "something that fits my pocket",
+        "what fits right now", "whatever fits",
+    )
+
+    /**
+     * Step 1 of the voice order (P2-SURF / S-1): a pocket-for-now PHRASE, matched as the whole cleaned utterance (so
+     * "play my pocket", "play my pocket on PocketDJ" and "my pocket please" qualify but "my pocket of sunshine" does
+     * not). Case, punctuation and a leading "the" are ignored.
+     */
+    fun isPocketForNowPhrase(raw: String): Boolean {
+        val words = cleanSpoken(raw).lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+        val norm = words.dropWhile { it == "the" }.joinToString(" ")
+        return norm in POCKET_NOW_PHRASES
+    }
+
+    private val LEADING = listOf("play ", "please ", "shuffle ", "shuffled ", "listen to ", "put on ")
+    private val TRAILING = listOf(
+        " please", " on pocketdj", " in pocketdj", " with pocketdj", " using pocketdj",
+        " on pocket dj", " in pocket dj", " with pocket dj",
+    )
+
+    /** Drops only the trailing "please" / "on PocketDJ" filler. */
+    fun stripTail(raw: String): String {
+        var q = raw.trim()
+        var changed = true
+        while (changed) {
+            changed = false
+            val l = q.lowercase()
+            TRAILING.firstOrNull { l.endsWith(it) }?.let { q = q.substring(0, q.length - it.length).trim(); changed = true }
+        }
+        return q
+    }
+
+    /** Drops spoken filler around the thing named ("play X on PocketDJ", "shuffle X please"). */
+    fun cleanSpoken(raw: String): String {
+        var q = raw.trim()
+        var changed = true
+        while (changed) {
+            changed = false
+            val l = q.lowercase()
+            LEADING.firstOrNull { l.startsWith(it) }?.let { q = q.substring(it.length).trim(); changed = true }
+            val l2 = q.lowercase()
+            TRAILING.firstOrNull { l2.endsWith(it) }?.let { q = q.substring(0, q.length - it.length).trim(); changed = true }
+        }
+        return q
+    }
+
+    private class Tied(val candidate: MediaCandidate, val hinted: Boolean, val artistMatch: Boolean)
 
     fun resolve(
         request: MediaSearchRequest,
+        /** Pre-normalized song rows (cached per catalog by the caller); default derives them from [candidates]. */
+        songRows: (() -> List<IntentSongMatcher.Row>)? = null,
+        /** Songs that win ties: the playing one, ones already in a collection. */
+        preferSong: (String) -> Boolean = { false },
         candidates: (Set<MediaCandidate.Kind>) -> List<MediaCandidate>,
     ): MediaSearchResult {
         val raw = request.effectiveQuery
@@ -144,40 +210,83 @@ object MediaSearchResolver {
         val browse = MediaSearchResult.Browse(request.query.ifBlank { raw }.trim())
         val kinds = kindsFor(request.focus)
         if (kinds.isEmpty()) return browse
+        if ((request.focus == MediaFocus.Any || request.focus == MediaFocus.Playlist) &&
+            (isPocketForNowPhrase(raw) || isPocketForNowPhrase(request.query))
+        ) return MediaSearchResult.PocketForNow
 
         // Hint + shuffle come from BOTH the raw spoken query and the structured match string.
-        val words = (JukeboxMatcher.normalize(raw) + " " + JukeboxMatcher.normalize(request.query))
-            .split(' ').filter { it.isNotEmpty() }
-        val wantedArtist = request.artist?.let { JukeboxMatcher.normalize(it) }?.takeIf { it.isNotEmpty() }
+        val words = (raw + " " + request.query).lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
         val shuffle = "shuffle" in words || "shuffled" in words
-        val stripped = words.filterNot { it in NOISE }.joinToString(" ")
         val hint = when {
             "pocket" in words || "pockets" in words -> MediaCandidate.Kind.Pocket
             "playlist" in words || "playlists" in words -> MediaCandidate.Kind.Playlist
             else -> null
         }
-        val pool = candidates(kinds)
-        val queries = listOfNotNull(raw, stripped.takeIf { it.isNotEmpty() && it != raw }).distinct()
+        val wantedArtist = request.artist?.let { IntentSongMatcher.compact(it) }?.takeIf { it.isNotEmpty() }
+        val cleaned = cleanSpoken(raw)
+        // A title may itself start with a filler word ("Play Date", "Please Mr. Postman"), so the
+        // query minus only the PocketDJ tail is ranked too; the higher tier wins, unstripped on ties.
+        val tailOnly = stripTail(raw)
+        val queries = if (tailOnly.isNotBlank() && !tailOnly.equals(cleaned, ignoreCase = true)) listOf(tailOnly, cleaned) else listOf(cleaned)
 
-        val best = pool.map { c ->
-            Scored(
-                c,
-                queries.maxOf { tier(it, c.name) },
-                hint != null && c.kind == hint,
-                wantedArtist != null && c.artist != null && JukeboxMatcher.normalize(c.artist).let { a ->
-                    a == wantedArtist || a.contains(wantedArtist) || wantedArtist.contains(a)
-                },
-            )
-        }.filter { it.tier > 0 }
-            .sortedWith(
-                compareByDescending<Scored> { it.tier }
-                    .thenByDescending { it.artistMatch }
-                    .thenByDescending { it.hinted }
-                    .thenByDescending { it.candidate.lastPlayedAt ?: Double.NEGATIVE_INFINITY }
-                    .thenBy { it.candidate.name.length }
-                    .thenBy { it.candidate.name.lowercase() },
-            ).firstOrNull() ?: return browse
-        return MediaSearchResult.Play(best.candidate, shuffle)
+        // 1. Strict collection / album names.
+        val named = kinds - MediaCandidate.Kind.Song
+        if (named.isNotEmpty()) {
+            val pool = candidates(named)
+            val ranked = queries.map { CollectionNameMatcher.rankScored(it, pool) { c -> c.name } }
+                .filter { it.isNotEmpty() }
+                .reduceOrNull { a, b -> if (b.first().second > a.first().second) b else a }
+                .orEmpty()
+            if (ranked.isNotEmpty()) {
+                val top = ranked.first().second
+                val best = ranked.filter { it.second == top }.map { (c, _) ->
+                    Tied(
+                        c,
+                        hint != null && c.kind == hint,
+                        wantedArtist != null && c.artist != null && IntentSongMatcher.compact(c.artist).let { a ->
+                            a == wantedArtist || a.contains(wantedArtist) || wantedArtist.contains(a)
+                        },
+                    )
+                }.sortedWith(
+                    compareByDescending<Tied> { it.artistMatch }
+                        .thenByDescending { it.hinted }
+                        .thenByDescending { it.candidate.lastPlayedAt ?: Double.NEGATIVE_INFINITY }
+                        .thenBy { it.candidate.name.length }
+                        .thenBy { it.candidate.name.lowercase() },
+                ).first()
+                return MediaSearchResult.Play(best.candidate, shuffle)
+            }
+        }
+
+        // 2. Songs: explicit Song focus plays the best; unstructured plays only a clear top-tier winner.
+        val songFocus = request.focus == MediaFocus.Song
+        if (songFocus || request.focus == MediaFocus.Any) {
+            val rows = songRows?.invoke() ?: candidates(setOf(MediaCandidate.Kind.Song))
+                .map { IntentSongMatcher.Row(it.id, it.name, it.artist.orEmpty()) }
+            val query = when {
+                songFocus && !request.title.isNullOrBlank() && !request.artist.isNullOrBlank() ->
+                    "${request.title!!.trim()} by ${request.artist.trim()}"
+                else -> cleaned
+            }
+            val matches = (if (songFocus && query !== cleaned) listOf(query) else queries)
+                .map { IntentSongMatcher.rank(it, rows, preferSong) }
+                .filter { it.isNotEmpty() }
+                .reduceOrNull { a, b -> if (b.first().score > a.first().score) b else a }
+                .orEmpty()
+            // Unstructured: play only a clear winner (strictly higher score, or the preferred copy).
+            val pick = matches.firstOrNull()?.takeIf { top ->
+                songFocus || matches.size == 1 || top.score > matches[1].score ||
+                    (preferSong(top.id) && !preferSong(matches[1].id))
+            }
+            if (pick != null) {
+                val row = rows.first { it.id == pick.id }
+                return MediaSearchResult.Play(
+                    MediaCandidate(MediaCandidate.Kind.Song, row.id, row.name, artist = row.artist.ifEmpty { null }),
+                    shuffle,
+                )
+            }
+        }
+        return browse
     }
 }
 
@@ -190,13 +299,23 @@ class MediaSearchHandler(
     private val candidates: (Set<MediaCandidate.Kind>) -> List<MediaCandidate>,
     private val openRoute: (ShellRoute) -> Unit,
     private val message: (String) -> Unit,
+    private val songRows: (() -> List<IntentSongMatcher.Row>)? = null,
+    private val preferSong: (String) -> Boolean = { false },
 ) {
     /** @return the spoken/display name that started playing, or null when it navigated or failed. */
     suspend fun handle(request: MediaSearchRequest): String? {
-        return when (val r = MediaSearchResolver.resolve(request, candidates)) {
+        return when (val r = MediaSearchResolver.resolve(request, songRows, preferSong, candidates)) {
             MediaSearchResult.Empty -> null
             is MediaSearchResult.Browse -> {
                 openRoute(ShellRoute.BrowseSearch(r.query))
+                null
+            }
+            MediaSearchResult.PocketForNow -> try {
+                val caption = actions.playPocketForNow()
+                message(pocketPlayingLine(caption))
+                caption
+            } catch (e: ShellActionException) {
+                message(e.message.orEmpty())
                 null
             }
             is MediaSearchResult.Play -> try {

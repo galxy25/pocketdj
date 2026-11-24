@@ -16,6 +16,9 @@ import com.levi.pocketdj.data.transfers.WorkManagerTransferWork
 import com.levi.pocketdj.diag.DiagServices
 import java.io.File
 import com.levi.pocketdj.screens.settings.sections.debugSection
+import com.levi.pocketdj.mix.engine.autoUpcoming
+import com.levi.pocketdj.mix.nowplaying.npMixSettingsFlow
+import kotlinx.coroutines.flow.stateIn
 import com.levi.pocketdj.shell.DeepLinkHandler
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
@@ -34,6 +37,9 @@ import com.levi.pocketdj.shell.SettingsSection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.plus
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
@@ -99,6 +105,12 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** Latest Now Playing Mix buffer settings (feeds BurnStore's TTL / keep-picked-folder providers). */
+    private val npMixSettings: kotlinx.coroutines.flow.StateFlow<com.levi.pocketdj.mix.nowplaying.NpMixSettings> by lazy {
+        app.settings.npMixSettingsFlow()
+            .stateIn(app.appScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, com.levi.pocketdj.mix.nowplaying.NpMixSettings())
+    }
+
     private val burnStoreLazy: Lazy<BurnStore> = lazy {
         val rips = HttpBurnRips(
             http = app.httpClient,
@@ -118,6 +130,9 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             },
             writerExecutor = VersionedJsonWriter.backgroundExecutor("pdj-burns-writer"),
             transfers = transfers,
+            segmentStartOverride = { id -> app.catalogRepository.segmentOverrides.value.startMs[id] },
+            bufferTtlHours = { npMixSettings.value.bufferTtlHours },
+            keepPickedFolderBuffers = { npMixSettings.value.keepPickedFolderBuffers },
         )
     }
     val burnStore: BurnStore get() = burnStoreLazy.value
@@ -130,10 +145,22 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     /** SVC-4 burned-first resolver: one instance feeds the LOCAL_FILE rung and every direct play path. */
     val burnedFirst: com.levi.pocketdj.playback.sequencer.BurnedRowResolver by lazy {
         com.levi.pocketdj.playback.sequencer.BurnedRowResolver.from(
-            preferringCut = { burnStore.localUrlPreferringCut(it) },
+            playbackFile = { burnStore.localUrlForPlayback(it) },
             startMs = { burnStore.startMs(it) },
             durationMs = { burnStore.items.value[it]?.durationMs },
+            endMs = { id ->
+                val base = com.levi.pocketdj.data.edition.SongVariant.baseId(id)
+                com.levi.pocketdj.data.rips.AlbumFileTimeline.forSong(
+                    base, app.ripsRepository.manifest.value, app.catalogRepository.segmentOverrides.value,
+                )?.endMs(base)
+            },
         )
+    }
+
+    /** P2-POC-4 Pocket Wheel colour palette (`pocketdj-pocket-palette.json`): synced as "pocket-palette", cleared on account deletion. */
+    val pocketPalette: com.levi.pocketdj.data.pockets.wheel.PocketPaletteStore by lazy {
+        com.levi.pocketdj.data.pockets.wheel.PocketPaletteStore(
+            File(app.appContext.filesDir, com.levi.pocketdj.data.pockets.wheel.PocketPaletteStore.FILE_NAME))
     }
 
     /** SVC-6 per-song play stats (LRP ordering signal), recorded from the core play-event seam. */
@@ -168,17 +195,38 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             burns = com.levi.pocketdj.data.storage.BurnStorePruneAdapter(burnStore),
             playStats = playStats,
             settings = storageSettings,
-            protectedSongIds = {
-                com.levi.pocketdj.data.storage.protectedIds(
-                    current = app.playbackGraph.sequencer.state.value.current,
-                    deckSongIds = runCatching {
-                        val e = app.mixGraph.mixEngine
-                        com.levi.pocketdj.mix.model.Deck.entries.map { d -> e.loaded(d)?.songId }
-                    }.getOrDefault(emptyList()),
-                )
-            },
-            log = { android.util.Log.i("PocketDJ", "[storage] $it") },
-        )
+            protectedSongIds = ::sweepProtectedIds,
+            scope = app.appScope,
+            log = { android.util.Log.i("PocketDJ.storage", it) },
+        ).also { sm -> burnStore.onTemporaryHoldsChanged = { sm.scheduleCapSweepIfNeeded() } }
+    }
+
+    /**
+     * Song ids the prune AND the temporary sweep must spare RIGHT NOW (iOS `protectedSongIds`): the
+     * current row (base + resolve id) and, current + `npMixBufferAhead`, the NP window (a restored
+     * held session included - the queue is there before the first play), the Mix decks, the Auto
+     * queue's next tracks, live MixStreamLoader streams + claimed stem sets.
+     */
+    private fun sweepProtectedIds(): Set<String> {
+        val st = app.playbackGraph.sequencer.state.value
+        val ahead = npMixSettings.value.bufferAhead
+        val window = st.queue.drop(st.index.coerceAtLeast(0)).take(ahead + 1)
+        val decks = runCatching {
+            val e = app.mixGraph.mixEngine
+            com.levi.pocketdj.mix.model.Deck.entries.map { d -> e.loaded(d)?.songId }
+        }.getOrDefault(emptyList())
+        val auto = runCatching {
+            app.mixGraph.autoDj.autoUpcoming.take(ahead + 1).map { it.songId }
+        }.getOrDefault(emptyList())
+        val live = runCatching {
+            val loader = app.mixGraph.mixStreamLoader
+            val streams = loader.streams.filter { (_, s) -> !s.isComplete && !s.failed }.map { (k, s) ->
+                com.levi.pocketdj.mix.stream.MixStreamLoader.stemSongId(k) ?: s.songId
+            }
+            streams + loader.stemSets.filterValues { !it.failed }.keys
+        }.getOrDefault(emptyList())
+        return com.levi.pocketdj.data.storage.protectedIds(st.current, decks + auto + live) +
+            window.flatMap { listOf(it.id, it.resolveId) }
     }
 
     val burnStorageOps: com.levi.pocketdj.data.storage.StorageService.BurnStorageOps by lazy {
@@ -468,6 +516,9 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             onPulled = { playStats.reloadFromDisk(); false }),
         SyncEntry(SyncRegistry.KEY_TIMELINE_CUES, com.levi.pocketdj.data.timeline.TimelineCueStore.FILE_NAME,
             onPulled = { timelineCues.reloadFromDisk() }),
+        SyncEntry(com.levi.pocketdj.data.pockets.wheel.PocketPaletteStore.SYNC_KEY,
+            com.levi.pocketdj.data.pockets.wheel.PocketPaletteStore.FILE_NAME,
+            onPulled = { pocketPalette.reloadFromDisk() }),
         // SVC-10: empty-secret-guarded credentials doc + the diag-key doc (empty never wins).
         SyncEntry(com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.KEY,
             com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.FILE_NAME,
@@ -480,6 +531,12 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 if (r == com.levi.pocketdj.data.credentials.DiagKeySync.PullResult.ADOPTED && diag.channel) diag.log.reloadCredentials()
                 false
             }),
+        // P2-LIB-3 (iOS key "apple-music-library"): the Apple Music library index, whole-document last-writer-wins;
+        // a pull re-adopts the file and the store's onChanged rebuilds the catalog.
+        SyncEntry(com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.SYNC_KEY,
+            com.levi.pocketdj.data.applemusic.AppleMusicLibraryStore.FILE_NAME,
+            applyPayload = { amLibraryStore.writePulled(it) },
+            onPulled = { amLibraryStore.reloadFromDisk(); false }),
     )
 
     // The cloud-sync state clear and the profile-secret clear are NOT hooks any more: SVC-13's
@@ -487,6 +544,8 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     override val resetHooks: List<ResetHook> = listOf(
         // iOS AccountDeletionService: timelineCues?.clear(). Clears (and deletes the file) even if never opened.
         ResetHook { timelineCues.clear() },
+        // P2-LIB-3: erase the on-device copy of the user's Apple Music library index (and its add-time stamps).
+        ResetHook { amLibraryStore.clear() },
     )
 
     // ---- SVC-13 reset everything + account deletion ----------------------------------------------
@@ -614,6 +673,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 add("collections" to { app.collections.clear() })
                 add("favorites" to { app.collectionsGraph.favorites.clear() })
                 add("play-stats" to { playStats.clear() })
+                add("pocket-palette" to { pocketPalette.clear() })
                 add("play-history" to { com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext).clear() })
                 add("listening-pockets" to { app.collectionsGraph.listeningPockets.clearLocal() })
                 add("collection-activity" to { app.collectionActivity.clear() })
@@ -644,6 +704,83 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    // ---- P2-LIB-2 Apple Music library source (store + Web API indexer) --------------------------------
+
+    /** `pocketdj-apple-music-library.json` (iOS doc shape). The fold + sync entry are P2-LIB-3. Touch off-main. */
+    val amLibraryStore: com.levi.pocketdj.data.applemusic.AppleMusicLibraryStore by lazy {
+        com.levi.pocketdj.data.applemusic.AppleMusicLibraryStore(
+            File(app.appContext.filesDir, com.levi.pocketdj.data.applemusic.AppleMusicLibraryStore.FILE_NAME))
+    }
+
+    /**
+     * The fold source for the catalog (P2-LIB-3). [supersedesOntoLocal] is the owner gate (see
+     * [AppleMusicLibraryFold.Source]). Android has no owner-identity probe yet, so it defaults OFF: the fold
+     * is irreversible (remaps collections/favorites, prunes rows), so it must never run for a non-owner.
+     * Flip [amLibrarySupersedesOntoLocal] only from a real "this catalog is my own" signal.
+     */
+    @Volatile var amLibrarySupersedesOntoLocal: Boolean = false
+
+    val amLibraryFoldSource: com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.Source by lazy {
+        com.levi.pocketdj.data.applemusic.AppleMusicLibraryFold.Source(amLibraryStore) { amLibrarySupersedesOntoLocal }
+    }
+
+    val amLibraryIndexer: com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer by lazy {
+        com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer(app.appleMusicApi, amLibraryStore)
+    }
+
+    private val amLibraryMutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * One index run (single-flight). Null when skipped: signed out, or the Settings toggle is off (a [manual]
+     * "Re-index" ignores the toggle). Stamps [AmLibrarySettings.LAST_INDEX_MS] on success.
+     */
+    suspend fun runAmLibraryIndex(
+        mode: com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer.Mode =
+            com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer.Mode.AUTO,
+        manual: Boolean = false,
+    ): com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer.Outcome? = withContext(Dispatchers.IO) {
+        if (!manual && !app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.ENABLED)) return@withContext null
+        if (!app.settings.current().hasAppleMusic) return@withContext null
+        amLibraryMutex.withLock {
+            amLibraryIndexer.run(mode).also {
+                if (it is com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer.Outcome.Indexed) {
+                    app.settings.set(com.levi.pocketdj.data.applemusic.AmLibrarySettings.LAST_INDEX_MS, System.currentTimeMillis().toDouble())
+                }
+            }
+        }
+    }
+
+    /** Settings ▸ Apple Music "Re-index" hook: a FULL run on WorkManager (survives leaving the screen). */
+    fun reindexAmLibrary() = com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker.enqueueNow(app.appContext, manual = true)
+
+    /** After Apple Music sign-in (and on first launch while signed in with no index yet) enqueue one index run. */
+    private suspend fun watchAmLibrarySignIn() {
+        var prev: Boolean? = null
+        app.settings.settings.map { it.hasAppleMusic }.distinctUntilChanged().collect { signedIn ->
+            val decision = com.levi.pocketdj.data.applemusic.signInIndexDecision(
+                prev, signedIn, amLibraryStore.isEmpty,
+                app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.LAST_INDEX_MS),
+                System.currentTimeMillis().toDouble())
+            // Sign-out leaves the index alone: clear() only deletes the local file, so sync would re-adopt the
+            // old cloud copy anyway, and a re-sign-in is a FULL run (signInIndexDecision) that replaces it wholesale.
+            prev = signedIn
+            if (decision != com.levi.pocketdj.data.applemusic.SignInIndexDecision.NONE &&
+                app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.ENABLED)) {
+                com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker.enqueueNow(
+                    app.appContext, full = decision == com.levi.pocketdj.data.applemusic.SignInIndexDecision.FULL)
+            }
+        }
+    }
+
+    override val periodicWork: List<com.levi.pocketdj.shell.PeriodicWorkSpec> by lazy {
+        com.levi.pocketdj.work.WorkerRegistry.register(
+            com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker.PERIODIC_ID,
+            com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker::class.java)
+        listOf(com.levi.pocketdj.shell.PeriodicWorkSpec(
+            com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker.PERIODIC_ID,
+            repeatMinutes = 24 * 60, requiresNetwork = true, requiresBatteryNotLow = true))
+    }
+
     override val settingsSections: List<SettingsSection> by lazy {
         listOf(com.levi.pocketdj.screens.settings.linkDeviceSection(), com.levi.pocketdj.screens.settings.sections.resetSection()) +
             if (diag.channel) listOf(debugSection()) else emptyList()
@@ -653,6 +790,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         // Keystore/prefs work must not run on the registry (main) path: start on IO.
         if (diag.channel) app.appScope.launch(Dispatchers.IO) { diag.start() }
         app.appScope.launch(Dispatchers.IO) { runCatching { retryPendingErasure() } }
+        app.appScope.launch(Dispatchers.IO) { runCatching { watchAmLibrarySignIn() } }
         listOf(diag.deepLink)
     }
 

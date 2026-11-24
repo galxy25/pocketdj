@@ -31,6 +31,12 @@ object ListeningPocketsCollections {
         val isEmpty: Boolean get() = collections.isEmpty() && addEvents.isEmpty()
     }
 
+    /** The reserved Favorites collection id (iOS `PocketWheelIds.favorites`): a collection a play can come from, never a server context. */
+    const val FAVORITES_ID = "fav_songs"
+    const val FAVORITES_NAME = "Favorite songs"
+    /** Pocket Wheel run sequencer tag prefix (`pwr_<uuid>`): a QUEUE, never a collection. */
+    const val RUN_TAG_PREFIX = "pwr_"
+
     // Caps mirror rec-engine cleanSnapshot.
     const val COLLECTION_CAP = 500
     const val SONG_CAP = 5_000
@@ -142,6 +148,10 @@ object ListeningPocketsCollections {
             id.startsWith("pkt_") -> id to "pocket"
             id.startsWith("pls_") -> id to "playlist"
             id.startsWith("set_") -> id to "setlist"
+            // A run tag is never a context, the synthetic Favorites set is not a collection the server knows,
+            // and a catalog source playlist (`pl_`) is a source whatever surface played it.
+            id.startsWith(RUN_TAG_PREFIX) || id == FAVORITES_ID -> null
+            id.startsWith("pl_") -> id to "source"
             else -> when (source) {
                 PlaySource.POCKET -> id to "pocket"
                 PlaySource.PLAYLIST -> id to "source"   // a non-`pls_` playlist id is a catalog source playlist
@@ -149,4 +159,11 @@ object ListeningPocketsCollections {
             }
         }
     }
+
+    /**
+     * The collection id a wire event rides: the first non-`pwr_` of [rowCollectionId] (a run's per-row collection),
+     * [originCollectionId], [contextId]. A `pwr_` tag is a queue and the server keeps the first context forever.
+     */
+    fun rawContextId(rowCollectionId: String?, originCollectionId: String?, contextId: String?): String? =
+        listOf(rowCollectionId, originCollectionId, contextId).firstOrNull { it != null && !it.startsWith(RUN_TAG_PREFIX) }
 }

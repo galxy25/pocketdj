@@ -8,6 +8,7 @@ import com.levi.pocketdj.mix.store.AutoRow
 import com.levi.pocketdj.mix.store.AutoSnapshot
 import com.levi.pocketdj.mix.store.MixEventKind
 import com.levi.pocketdj.mix.store.TrackRef
+import com.levi.pocketdj.playback.dj.AutoTransition
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,6 +30,8 @@ data class AutoUiState(
     val sourceLabel: String? = null,
     /** Auto/Manual toggle (engine is the source of truth; the Mix screen mirrors it). */
     val enabled: Boolean = false,
+    /** Why Auto-DJ is unavailable (Mix Together owns the decks), else null: the Auto toggle disables and says why. */
+    val blockedReason: String? = null,
 )
 
 /**
@@ -102,7 +105,7 @@ class AutoDj(
     /** Lock-screen next/previous enablement (MIX-11 wires this to the media session). */
     var onSkipCommandsEnabled: ((Boolean) -> Unit)? = null
 
-    private val _ui = MutableStateFlow(AutoUiState())
+    private val _ui = MutableStateFlow(AutoUiState(blockedReason = com.levi.pocketdj.remote.MixTogetherBlock.reason))
     val ui: StateFlow<AutoUiState> = _ui.asStateFlow()
     val autoStatus: String? get() = _ui.value.status
 
@@ -123,7 +126,28 @@ class AutoDj(
 
     // ------------------------------------------------------------------------------ toggles
 
+    /**
+     * Why Auto-DJ is unavailable right now (a multiplayer Mix session owns the decks, iOS `autoDJBlockedReason`), else
+     * null. While set: Auto mode, a new auto mix and a resume are refused.
+     */
+    val blockedReason: String? get() = com.levi.pocketdj.remote.MixTogetherBlock.reason
+
+    /**
+     * [MixTogetherBlock] changed. Blocked: Auto mode goes off and a running auto mix ends (`endAutoLoop` only stops the
+     * transition machine and recentres the crossfader; the decks keep playing, they are the session's now). Either way
+     * the UI state is refreshed so the Auto toggle enables / disables with its reason. Auto is NOT restored afterwards
+     * (iOS does; left to P2-REM-11, see the status file).
+     */
+    fun onAutoBlocked() {
+        if (blockedReason != null) {
+            enabled = false
+            if (mixing) endAutoLoop()
+        }
+        refreshStatus()
+    }
+
     fun setAutoEnabled(on: Boolean) {
+        if (on && blockedReason != null) return // mixing together: no Auto-DJ (an explicit OFF still goes through)
         enabled = on
         if (!on) endAutoLoop()
         refreshStatus()
@@ -153,7 +177,7 @@ class AutoDj(
     // ------------------------------------------------------------------------------ start / stop
 
     fun startAutoMix(items: List<AutoMixItem>, shuffled: Boolean, lead: Double, fade: Double, label: String? = null) {
-        if (items.isEmpty()) return
+        if (items.isEmpty() || blockedReason != null) return
         engine.noteSounded()
         engine.ensureEngine()
         endAutoLoop()
@@ -228,6 +252,11 @@ class AutoDj(
      * songs that landed during the pending window (it could not while [isMixing] was false).
      */
     var onDeferredStartFinished: (() -> Unit)? = null
+    /**
+     * One-audio-owner seam: true when another player (Now Playing) owns the audio. Checked when a start RETRY fires
+     * after its rest: a start that was waiting on the stream gate must not land over Now Playing that took over meanwhile.
+     */
+    var otherAudioActive: (() -> Boolean)? = null
     /** Inside [startAutoMix]'s synchronous body: a completion there is not deferred. */
     private var inStartCall = false
 
@@ -274,6 +303,7 @@ class AutoDj(
                 scheduler(START_RETRY_REST_MS) {
                     if (gen != startGen || !startPending) return@scheduler
                     if (engine.deckGestureGeneration != gesture) { abandonStart("a deck gesture took over"); return@scheduler }
+                    if (otherAudioActive?.invoke() == true) { abandonStart("Now Playing took the audio"); return@scheduler }
                     advLog("start: retry $attempt/$START_RETRY_ATTEMPTS")
                     beginStart(gen, probe = true)
                 }
@@ -293,6 +323,7 @@ class AutoDj(
 
         deckEndsAt[Deck.A] = now() + (deckDurationMs[Deck.A] ?: FALLBACK_DURATION_MS).toLong()
         mixing = true
+        engine.refreshVolumeGlide()   // Volume Glide: level both decks now the Auto-DJ is on
         onSkipCommandsEnabled?.invoke(true)   // lock-screen next/previous = fast/slow auto-mix skip
         engine.play(Deck.A)
         refreshStatus()
@@ -335,6 +366,7 @@ class AutoDj(
         remotePausedAt = null
         engineStallAt = null     // a stale stall park must never shift the NEXT mix's fresh clocks
         mixing = false
+        engine.refreshVolumeGlide()   // Volume Glide: the leveling goes with the Auto-DJ (back to 0 dB)
         sourceLabel = null
         // Recenter ONLY after a real auto-mix, non-recording, so ending never injects a `.crossfader`.
         if (wasMixing) {
@@ -366,7 +398,7 @@ class AutoDj(
      *  - NEITHER: restart the live deck (its track, or the next unplayed) before arming.
      */
     override fun resumeAuto() {
-        if (!mixing || !paused) return
+        if (!mixing || !paused || blockedReason != null) return
         engine.noteSounded()
         var fromRestore = resumeFromRestore
         resumeFromRestore = false    // consume-once: only the FIRST resume after a restore
@@ -493,6 +525,16 @@ class AutoDj(
     }
 
     // ------------------------------------------------------------------------------ repeat preloads
+
+    /**
+     * The crate collection a just-started track came from (History's `originCollectionId` for a Mix play).
+     * Searches outward from the live cursor so a song queued twice resolves to the copy on air; null when not
+     * auto-mixing or the row carries no provenance. Port of iOS `MixEngine.autoOriginCollectionId(forSongId:)`.
+     */
+    fun originCollectionIdFor(songId: String): String? {
+        if (!isMixing) return null
+        return originCollectionIdIn(queue, livePos, songId)
+    }
 
     /** The item repeat-one replays: the live slot when it matches the on-air track, else rebuilt from the deck. */
     private fun repeatOneItem(): AutoMixItem? {
@@ -726,17 +768,15 @@ class AutoDj(
      * glide-fitting tail shared by the normal, repeat-one and repeat-all lanes.
      */
     private fun beginAdvanceTransition(t: Long, secondsLeft: Double) {
-        // Cap the fade to the runway left (a track slid to 2 s from its end crossfades over ~2 s).
-        if (secondsLeft < fadeSeconds && pendingFadeRestore == null) {
-            pendingFadeRestore = fadeSeconds
-            fadeSeconds = maxOf(0.5, secondsLeft)
-        }
+        // Cap the fade to the runway left + fit the glide pre-roll: the shared AutoTransition plan.
+        val plan = AutoTransition.advancePlan(
+            secondsLeft, fadeSeconds, glide.mixGlideSeconds, glide.fxGlideEnabled, glide.mixGlideEnabled,
+            fadeOverridePending = pendingFadeRestore != null,
+        )
+        plan.fadeRestore?.let { pendingFadeRestore = it }
+        fadeSeconds = plan.fadeSeconds
         if (glide.anyGlide) {
-            // Fit the preroll into what's left after the (possibly capped) fade + a margin. Mix Glide
-            // bends the OUTGOING tempo up to +10%, so divide the runway by that headroom.
-            val headroom = if (glide.mixGlideEnabled) 1.12 else 1.0
-            val preroll = maxOf(0.0, minOf(glide.mixGlideSeconds, secondsLeft / headroom - fadeSeconds - 0.3))
-            glide.begin(t, preroll)
+            glide.begin(t, plan.preRollSeconds)
         } else {
             beginAutoCrossfade(t)
         }
@@ -814,8 +854,12 @@ class AutoDj(
             // A manual skip glides too, but with NO preroll.
             glide.begin(now(), 0.0, fade)
         } else {
-            if (pendingFadeRestore == null) pendingFadeRestore = fadeSeconds
-            fadeSeconds = maxOf(0.2, fade)
+            val plan = AutoTransition.immediatePlan(
+                fade, fadeSeconds, glide.mixGlideSeconds, false, false,
+                fadeOverridePending = pendingFadeRestore != null,
+            )
+            plan.fadeRestore?.let { pendingFadeRestore = it }
+            fadeSeconds = plan.fadeSeconds
             beginAutoCrossfade(now())
         }
     }
@@ -1108,7 +1152,7 @@ class AutoDj(
         } else null
         val next = AutoUiState(
             mixing, paused, transitioning, s, livePos, queue.size, liveDeck, repeat,
-            glide.fxGlideEnabled, glide.mixGlideEnabled, sourceLabel, enabled,
+            glide.fxGlideEnabled, glide.mixGlideEnabled, sourceLabel, enabled, blockedReason,
         )
         if (next != _ui.value) _ui.value = next
     }
@@ -1118,7 +1162,7 @@ class AutoDj(
         return AutoSnapshot(
             queue = queue.map {
                 val l = it.loadable
-                AutoRow(TrackRef(l.songId, l.title, l.artist, l.bpm, l.camelot, l.key, l.albumId, l.lengthMs), it.durationMs, it.sourceLabel)
+                AutoRow(TrackRef(l.songId, l.title, l.artist, l.bpm, l.camelot, l.key, l.albumId, l.lengthMs), it.durationMs, it.sourceLabel, it.originCollectionId)
             },
             livePos = livePos, nextToLoad = nextToLoad, liveDeck = liveDeck.label, sourceLabel = sourceLabel,
             leadSeconds = leadSeconds, fadeSeconds = pendingFadeRestore ?: fadeSeconds,
@@ -1134,7 +1178,7 @@ class AutoDj(
         queue.addAll(
             auto.queue.map {
                 val t = it.track
-                AutoMixItem(MixLoadable(t.songId, t.title, t.artist, t.bpm, t.camelot, t.key, t.albumId, t.lengthMs), it.durationMs, it.sourceLabel)
+                AutoMixItem(MixLoadable(t.songId, t.title, t.artist, t.bpm, t.camelot, t.key, t.albumId, t.lengthMs), it.durationMs, it.sourceLabel, it.originCollectionId)
             },
         )
         repeat = AutoRepeatMode.fromRaw(auto.repeatMode) ?: AutoRepeatMode.OFF
@@ -1161,6 +1205,7 @@ class AutoDj(
         paused = true                      // SUSPENDED
         resumeFromRestore = true           // first resume: the restored cursor wins over the play-log
         mixing = true
+        engine.refreshVolumeGlide()
         refreshStatus()
         prefetchUpcoming()
     }
@@ -1175,4 +1220,16 @@ class AutoDj(
         const val START_RETRY_REST_MS = 3_000L
         const val FALLBACK_DURATION_MS = 180_000
     }
+}
+
+/** Pure core of [AutoDj.originCollectionIdFor]: nearest-to-[livePos] row holding [songId], its origin. */
+internal fun originCollectionIdIn(queue: List<AutoMixItem>, livePos: Int, songId: String): String? {
+    if (queue.isEmpty()) return null
+    val start = livePos.coerceIn(0, queue.size - 1)
+    for (offset in queue.indices) {
+        for (i in intArrayOf(start - offset, start + offset)) { // ties go backward: the row on air, not the next copy
+            if (i in queue.indices && queue[i].loadable.songId == songId) return queue[i].originCollectionId
+        }
+    }
+    return null
 }

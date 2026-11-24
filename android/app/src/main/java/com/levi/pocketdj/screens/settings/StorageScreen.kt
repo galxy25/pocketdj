@@ -465,6 +465,8 @@ private fun DownloadSections(graph: AppGraph, onChanged: () -> Unit, snackbar: S
 
     BurnFolderSection(graph, snackbar)
     Spacer(Modifier.height(16.dp))
+    com.levi.pocketdj.screens.settings.storage.MixModeBufferSection(graph)
+    Spacer(Modifier.height(16.dp))
     SectionHeader("Automatic cleanup")
     Caption(
         "Optional soft cap on downloaded songs. When set, PocketDJ removes the songs you " +

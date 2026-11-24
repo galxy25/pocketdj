@@ -49,13 +49,23 @@ object PlayResolver {
         songId: String,
         entry: RipManifestEntry?,
         ripServerConfigured: Boolean,
+        /** Shared-file start reader; production passes `RipsRepository::effectiveStartMs` so boundary edits apply. */
+        startOf: (String, RipManifestEntry) -> Long? = { _, e -> e.startMs },
+        /** Window end reader (`RipsRepository::analogEndMs`: edited / detected end on the record); default start + length. */
+        endOf: ((songId: String, startMs: Long, lengthMs: Long?) -> Long?)? = null,
     ): PlayAction {
         if (isStudioId(songId)) {
             return PlayAction.MetadataOnly(PlayAction.MetadataOnly.Reason.STUDIO_LOCAL_ID)
         }
         if (entry != null) {
-            val start = entry.startMs
-            val end = if (start != null && entry.durationMs != null) start + entry.durationMs else null
+            val start = entry.startMs?.let { startOf(songId, entry) ?: it }
+            val end = when {
+                start == null -> null
+                endOf != null -> endOf(songId, start, entry.durationMs)
+                    ?: entry.durationMs?.let { start + it } // no timeline end: manifest duration still bounds (keeps the queue going)
+                entry.durationMs != null -> start + entry.durationMs
+                else -> null
+            }
             return PlayAction.Stream(
                 url = playableUrl(entry),
                 clipStartMs = start,
@@ -80,10 +90,13 @@ object PlayResolver {
         entry: RipManifestEntry?,
         ripServerConfigured: Boolean,
         local: com.levi.pocketdj.playback.sequencer.LocalFile?,
+        startOf: (String, RipManifestEntry) -> Long? = { _, e -> e.startMs },
+        endOf: ((songId: String, startMs: Long, lengthMs: Long?) -> Long?)? = null,
     ): PlayAction {
-        if (isStudioId(songId)) return resolve(songId, entry, ripServerConfigured)
+        if (isStudioId(songId)) return resolve(songId, entry, ripServerConfigured, startOf, endOf)
+        // `local` is the SHARED side file + window (BurnStore.localUrlForPlayback), never a per-song cut.
         if (local != null) return PlayAction.Stream(local.url, local.startMs, local.endMs)
-        return resolve(songId, entry, ripServerConfigured)
+        return resolve(songId, entry, ripServerConfigured, startOf, endOf)
     }
 
     /** True when a [PlayAction.Stream] points at an on-device file (never presign / re-route it). */

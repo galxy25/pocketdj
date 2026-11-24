@@ -23,9 +23,9 @@ data class NowPlayingSnapshot(
     /** "off" / "all" / "one". */
     val repeatMode: String = "off",
     val shuffleEnabled: Boolean = false,
-    /** "" / "accepted" / "rejected". Android has no For You verdicts yet: always "". */
+    /** "" / "accepted" / "rejected": the standing verdict for the snapshot song in [recScope]. */
     val recVerdict: String = "",
-    /** Empty on Android: the widget shows no thumbs. */
+    /** Non-empty only while the running queue is a recommendation list: the widget shows 👍/👎 then. */
     val recScope: String = "",
     /** Android-only additive key (iOS ignores it): is a FavoriteSeam installed, so ♥ may show. */
     val favoriteAvailable: Boolean = true,
@@ -37,6 +37,15 @@ data class NowPlayingSnapshot(
         val title: String,
         val artist: String,
     )
+
+    /** Thumbs show only while a recommendation scope is stamped (iOS `!recScope.isEmpty`). */
+    val showsFeedback: Boolean get() = hasContent && recScope.isNotEmpty() && !songId.isNullOrEmpty()
+
+    /** The optimistic result of tapping 👍/👎 here: a tap on the lit thumb clears it, else it lands. */
+    fun afterVerdictTap(accept: Boolean): NowPlayingSnapshot {
+        val tapped = if (accept) "accepted" else "rejected"
+        return copy(recVerdict = if (recVerdict == tapped) "" else tapped)
+    }
 
     companion object {
         val EMPTY = NowPlayingSnapshot()
