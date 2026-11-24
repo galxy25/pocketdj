@@ -19,6 +19,13 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class DjPlannerDriverTest {
 
+    @Test fun albumLinkedChecksThePairAcrossTheWindowEdge() {
+        // Row 3 runs into row 4; the window ends at hi = 4 (rows < 4), so row 3 must be linked.
+        assertEquals(setOf(3), DjCandidates.albumLinked(0, 4, 10) { it == 3 })
+        assertEquals(setOf(2, 3), DjCandidates.albumLinked(0, 5, 10) { it == 2 })
+        assertEquals(emptySet<Int>(), DjCandidates.albumLinked(0, 4, 4) { it == 3 })
+    }
+
     // ---- fixed-row matrix (pure) -------------------------------------------------------------------------------------
 
     private fun fixed(
@@ -390,6 +397,16 @@ class DjPlannerDriverTest {
         assertEquals("track starts do not ask again", 1, r.membershipCalls)
         // DJ off then on again: a fresh load
         r.enabled = false; r.driver.onApply()
+        r.enabled = true; r.driver.onApply(); runCurrent()
+        assertEquals(2, r.membershipCalls)
+    }
+
+    @Test
+    fun disarmWhileOff_forgetsMembership_soTheNextDjOnReloads() = runTest {
+        val r = rig(); r.start()
+        r.driver.onApply(); runCurrent()
+        assertEquals(1, r.membershipCalls)
+        r.enabled = false; r.driver.disarm()      // off via the engine hook only: no onApply / track start in between
         r.enabled = true; r.driver.onApply(); runCurrent()
         assertEquals(2, r.membershipCalls)
     }

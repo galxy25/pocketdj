@@ -103,6 +103,13 @@ class DjPlannerDriver(
     /** DJ OFF / suspended (engine hook `disarm`): no re-plan is waiting. */
     fun disarm() {
         cancelReplan()
+        if (!host.enabled) {
+            // DJ is off: the next DJ-on loads the membership afresh, even with no track start in between.
+            membershipTask?.cancel(); membershipTask = null
+            membership = emptyMap()
+            membershipLoaded = false
+            wasEnabled = false
+        }
     }
 
     /** Every start path: every advance re-plans what comes next. */

@@ -13,6 +13,20 @@ object DjCandidates {
     /** How many upcoming rows one plan re-orders (the rest of a huge queue keeps its order). */
     const val PLAN_WINDOW = 40
 
+    /**
+     * Rows linked into an album run, as iOS djAlbumLinkedRows: pairs (i, i+1) are checked while i+1 <= [hi] (so the pair
+     * straddling the window edge counts), and only positions inside the window (< [hi]) are returned.
+     */
+    fun albumLinked(start: Int, hi: Int, size: Int, runs: (Int) -> Boolean): Set<Int> {
+        val out = HashSet<Int>()
+        var i = start
+        while (i + 1 < minOf(size, hi + 1)) {
+            if (runs(i)) { if (i < hi) out.add(i); if (i + 1 < hi) out.add(i + 1) }
+            i++
+        }
+        return out
+    }
+
     /** AGING: a row pushed later this many times holds its place from then on. */
     const val MAX_DEFERRALS = 12
 

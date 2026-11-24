@@ -221,10 +221,8 @@ class DjModeWiring(private val app: AppGraph) {
         }
 
         override fun albumLinkedRows(hi: Int): Set<Int> {
-            val out = HashSet<Int>()
-            var i = seq.state.value.index
-            while (i + 1 < hi) { if (rowRuns(i)) { out.add(i); out.add(i + 1) }; i++ }
-            return out
+            val st = seq.state.value
+            return DjCandidates.albumLinked(st.index, hi, st.queue.size, ::rowRuns)
         }
 
         override val transitioning: Boolean get() = bound && engine.dj.isTransitioning
