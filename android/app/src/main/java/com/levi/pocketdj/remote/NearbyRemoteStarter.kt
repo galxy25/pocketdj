@@ -56,7 +56,7 @@ class GmsNearbyClient(context: Context) : NearbyClient {
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) = Unit
     }
 
-    private inline fun guarded(onResult: (Throwable?) -> Unit, block: () -> com.google.android.gms.tasks.Task<Void>) {
+    private fun guarded(onResult: (Throwable?) -> Unit, block: () -> com.google.android.gms.tasks.Task<Void>) {
         try {
             block().addOnSuccessListener { onResult(null) }.addOnFailureListener { onResult(it) }
         } catch (t: Throwable) { onResult(t) }
