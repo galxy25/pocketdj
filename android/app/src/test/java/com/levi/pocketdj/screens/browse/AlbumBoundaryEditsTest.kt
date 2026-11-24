@@ -6,11 +6,11 @@ import com.levi.pocketdj.data.catalog.AudioTrackEdit
 import com.levi.pocketdj.data.catalog.EditsStore
 import com.levi.pocketdj.data.catalog.CatalogEdits
 import com.levi.pocketdj.data.catalog.SongEdit
-import kotlin.test.Test
-import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import org.junit.Test
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 
 class AlbumBoundaryEditsTest {
     private val raw = listOf(
@@ -106,10 +106,19 @@ class AlbumBoundaryEditsTest {
     }
 
     @Test fun valueEqualToRawClearsTheDeltaAndAllEmptyDropsAudioTracks() {
-        val moved = AlbumBoundaryEdits.saveBoundary(null, raw, 1, 212_000)
-        val back = AlbumBoundaryEdits.saveBoundary(moved, raw, 1, 210_000)!!
+        val tight = listOf(AudioTrack(trackNumber = 1, startMs = 0, endMs = 200_000), AudioTrack(trackNumber = 2, startMs = 200_000, endMs = 400_000))
+        val moved = AlbumBoundaryEdits.saveBoundary(null, tight, 1, 212_000)
+        val back = AlbumBoundaryEdits.saveBoundary(moved, tight, 1, 200_000)!!
         assertNull(back.audioTracks) // every delta is empty again
         assertTrue(back.isEmpty)
+    }
+
+    @Test fun movingBackToTheRawStartOfAGappedSideKeepsThePreviousEnd() {
+        // iOS parity: the previous song's end is compared with ITS raw end (200 s), so it stays at the boundary (210 s).
+        val moved = AlbumBoundaryEdits.saveBoundary(null, raw, 1, 212_000)
+        val back = AlbumBoundaryEdits.saveBoundary(moved, raw, 1, 210_000)!!.audioTracks!!
+        assertNull(back[1].startMs)
+        assertEquals(210_000L, back[0].endMs)
     }
 
     @Test fun existingDeltasCarryByTrackNumberAndKeepOtherFields() {
@@ -148,7 +157,7 @@ class AlbumBoundaryEditsTest {
         val e = AlbumBoundaryEdits.saveBoundary(null, raw, 1, 212_000)!!
         val doc = EditsStore.encode(CatalogEdits(mapOf("alb" to e), emptyMap()))
         // deltas only: no nulls, trackNumber kept, positionally one entry per raw segment
-        assertTrue(doc.contains("\"audioTracks\":[{\"trackNumber\":1,\"endMs\":212000},{\"trackNumber\":2,\"startMs\":212000},{\"trackNumber\":3}]"), doc)
+        assertTrue(doc, doc.contains("\"audioTracks\":[{\"trackNumber\":1,\"endMs\":212000},{\"trackNumber\":2,\"startMs\":212000},{\"trackNumber\":3}]"))
         assertFalse(doc.contains("null"))
     }
 
