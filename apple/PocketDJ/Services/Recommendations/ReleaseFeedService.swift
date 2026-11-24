@@ -719,12 +719,20 @@ final class ReleaseFeedService {
         guard let data = try? Data(contentsOf: fileURL),
               let doc = try? JSONDecoder().decode(Document.self, from: data) else { return }
         // v1 (one row per artist) is a valid v2 file: grouping is all the migration there is.
-        // No fetch, TTL clocks kept — each artist gains its full list on its next normal check.
         let now = Date().timeIntervalSince1970 * 1000
         entries = ReleaseFeedCache.group(doc.entries).mapValues {
             ReleaseFeedCache.normalize(rows: $0, nowMs: now)
         }
         seededAtMs = doc.seededAtMs
+        // ...but a v1 file only ever held each artist's LATEST release, so an album that a newer
+        // single displaced is missing from it — exactly what "Albums only" exists to show. Waiting
+        // out the TTL (up to 14 days) would hide it that long, so the upgrade queues every artist
+        // ONCE through the ordinary batched drain (~10 requests for ~500 artists, the seed's own
+        // volume). The first drain that lands saves v2, so this never repeats; a kill before then
+        // just re-queues on the next load. The queue drains on the next play / New-screen recheck.
+        if doc.schemaVersion < 2 {
+            for (id, rows) in entries { pending[id] = rows.first?.artistName ?? "" }
+        }
     }
 
     private func save() {

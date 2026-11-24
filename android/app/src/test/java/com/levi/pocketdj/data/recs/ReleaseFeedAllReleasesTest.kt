@@ -164,7 +164,7 @@ class ReleaseFeedAllReleasesTest {
         assertEquals(listOf("1"), ReleaseFeedCache.normalize(listOf(head), now).map { it.releaseId })
     }
 
-    @Test fun v1FileLoadsWithNoFetchAndTtlClocksKept() {
+    @Test fun v1FileLoadKeepsTtlClocksAndQueuesOneReask() {
         val v1 = ReleaseFeedDocument(
             listOf(row(1, "10", "Rec", 4.0), ArtistReleaseEntry(2, "B", now - 3 * day)), schemaVersion = 1,
         )
@@ -173,11 +173,13 @@ class ReleaseFeedAllReleasesTest {
         val svc = service(t)
         assertEquals(2, svc.cachedArtistCount)
         assertEquals(now - 3 * day, svc.entry(2)!!.checkedAtMs, 0.0)
-        assertEquals(0, svc.pendingCount)
-        assertEquals(0, t.calls.get())
-        svc.playsForArtist = { 2860 } // 2-day TTL; artist 1 was checked "now"
-        svc.noteArtistPlayed(1, "Artist 1", now)
-        assertEquals("a play inside the TTL queues nothing", 0, svc.pendingCount)
+        assertEquals("a v1 file held only each artist's latest release: every artist is re-asked once", 2, svc.pendingCount)
+        assertEquals("loading itself never fetches", 0, t.calls.get())
+    }
+
+    @Test fun v2FileLoadQueuesNothing() {
+        file.writeText(ReleaseFeedDocumentCodec.encode(ReleaseFeedDocument(listOf(row(1, "10", "Rec", 4.0)), schemaVersion = 2)))
+        assertEquals("the one-time re-ask is for v1 caches only", 0, service(Routing()).pendingCount)
     }
 
     @Test fun v2RoundTripsAndDowngradeKeepsTheHead() = runBlocking {

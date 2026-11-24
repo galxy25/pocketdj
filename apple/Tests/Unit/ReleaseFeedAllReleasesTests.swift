@@ -170,7 +170,7 @@ final class ReleaseFeedAllReleasesTests: XCTestCase {
         XCTAssertEqual(lone.compactMap(\.releaseId), ["1"], "the head is always kept")
     }
 
-    func testV1FileLoadsWithNoFetchAndTTLClocksKept() throws {
+    func testV1FileLoadKeepsTTLClocksAndQueuesOneReask() throws {
         let url = tempURL()
         let v1 = Document(rows: [row(1, "A", "10", "Rec", daysAgo: 4, now: now),
                                  ArtistReleaseEntry(artistId: 2, artistName: "B", checkedAtMs: now - 3 * day)],
@@ -180,11 +180,17 @@ final class ReleaseFeedAllReleasesTests: XCTestCase {
         let s = ReleaseFeedService(transport: stub, fileURL: url)
         XCTAssertEqual(s.entries.count, 2)
         XCTAssertEqual(s.entries[2]?.first?.checkedAtMs ?? 0, now - 3 * day, accuracy: 1)
-        XCTAssertEqual(s.pendingCountForTesting, 0)
-        XCTAssertEqual(stub.requestCount, 0, "loading never fetches")
-        s.playsForArtist = { _ in 2860 }       // 2-day TTL; artist 1 is fresh (checked now)
-        s.noteArtistPlayed(artistId: 1, name: "A", nowMs: now)
-        XCTAssertEqual(s.pendingCountForTesting, 0, "a play inside the TTL queues nothing")
+        XCTAssertEqual(s.pendingCountForTesting, 2,
+                       "a v1 file held only each artist's latest release: every artist is re-asked once")
+        XCTAssertEqual(stub.requestCount, 0, "loading itself never fetches; the queue rides the next drain")
+    }
+
+    func testV2FileLoadQueuesNothing() throws {
+        let url = tempURL()
+        let v2 = Document(rows: [row(1, "A", "10", "Rec", daysAgo: 4, now: now)], version: 2)
+        try JSONEncoder().encode(v2).write(to: url)
+        let s = ReleaseFeedService(transport: StubReleaseTransport(), fileURL: url)
+        XCTAssertEqual(s.pendingCountForTesting, 0, "the one-time re-ask is for v1 caches only")
     }
 
     func testV2RoundTripsAndOldBuildsSeeTheHead() async throws {

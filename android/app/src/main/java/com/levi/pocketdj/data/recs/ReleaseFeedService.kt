@@ -458,11 +458,15 @@ class ReleaseFeedService(
     private fun load() {
         val f = file ?: return
         val doc = runCatching { ReleaseFeedDocumentCodec.decode(f.readText()) }.getOrNull() ?: return
-        // v1 (one row per artist) is a valid v2 file: grouping is all the migration there is. No fetch, TTL
-        // clocks kept - each artist gains its full list on its next normal check.
+        // v1 (one row per artist) is a valid v2 file: grouping is all the migration there is.
         val now = clock()
         for ((id, rows) in ReleaseFeedCache.group(doc.entries)) entries[id] = ReleaseFeedCache.normalize(rows, now)
         seededAtMs = doc.seededAtMs
+        // ...but a v1 file only held each artist's LATEST release, so an album a newer single displaced is
+        // missing - exactly what "Albums only" exists to show. Rather than wait out the TTL (up to 14 days),
+        // the upgrade queues every artist ONCE through the ordinary batched drain (the seed's volume). The
+        // first drain saves v2 so this never repeats; a kill before then re-queues on the next load.
+        if (doc.schemaVersion < 2) for ((id, rows) in entries) pending[id] = rows.firstOrNull()?.artistName.orEmpty()
     }
 
     /** One row per release, grouped by artist, head first. */
