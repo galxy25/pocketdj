@@ -83,11 +83,18 @@ class LikedReleaseSelectionTest {
         assertEquals(1, select(mapOf("rel:1" to now), listOf(rel("1", attempt = attempt(25.0)))).rows.size)
     }
 
-    @Test fun provenPreAddIsHiddenFromLikedUntilThreeDaysAfterRelease() {
+    @Test fun provenPreAddIsHiddenFromLikedOnlyUntilReleaseDay() {
         val a = LikeAddAttempt(now - 10 * day, LikeAddState.AWAITING_RELEASE, null, "confirmed (web)", false)
         assertTrue(select(mapOf("rel:1" to now), listOf(rel("1", releaseAt = now + 5 * day, attempt = a))).rows.isEmpty())
-        assertTrue(select(mapOf("rel:1" to now), listOf(rel("1", releaseAt = now - 2 * day, attempt = a))).rows.isEmpty())
-        assertEquals(1, select(mapOf("rel:1" to now), listOf(rel("1", releaseAt = now - 4 * day, attempt = a))).rows.size)
+        assertEquals(1, select(mapOf("rel:1" to now), listOf(rel("1", releaseAt = now - 2 * day, attempt = a))).rows.size)
+    }
+
+    @Test fun ownedWithFailedWriteAndNoRetryNoteKeepsTheRowWithItsMessage() {
+        val a = LikeAddAttempt(now - hour, LikeAddState.FAILED, "Connect Apple Music", "Apple Music write skipped: not authorized", true)
+        val r = select(mapOf("rel:1" to now), listOf(rel("1", attempt = a)), owned = setOf("1"))
+        assertEquals(1, r.rows.size)
+        assertEquals("Connect Apple Music", r.rows[0].message)
+        assertTrue(r.rows[0].retryWriteOnly)
     }
 
     @Test fun unprovenPreOrderShowsInLikedAsAwaitingRelease() {
@@ -99,7 +106,16 @@ class LikedReleaseSelectionTest {
     @Test fun preAddedSetIsOnlyProvenAwaitingRelease() {
         val proven = LikeAddAttempt(now, LikeAddState.AWAITING_RELEASE, null, "confirmed", false)
         val unproven = LikeAddAttempt(now, LikeAddState.AWAITING_RELEASE, null, "Apple Music write failed: x", false)
-        val set = LikedReleaseSelection.preAdded(mapOf("1" to rel("1", attempt = proven), "2" to rel("2", attempt = unproven), "3" to rel("3")))
+        val set = LikedReleaseSelection.preAdded(
+            mapOf(
+                "1" to rel("1", releaseAt = now + day, attempt = proven),
+                "2" to rel("2", releaseAt = now + day, attempt = unproven),
+                "3" to rel("3"),
+                "4" to rel("4", releaseAt = now - day, attempt = proven), // released: Out now, not a pre-order
+                "5" to rel("5", releaseAt = now + day, attempt = proven), // no longer accepted
+            ),
+            now, accepted = mapOf("rel:1" to now, "rel:2" to now, "rel:3" to now, "rel:4" to now),
+        )
         assertEquals(setOf("1"), set)
     }
 

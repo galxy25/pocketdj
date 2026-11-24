@@ -188,8 +188,6 @@ data class LikedRow(
 object LikedReleaseSelection {
     /** `added` stays hidden this long even if the ownership probes haven't caught up (catalog rebuild / sync lag). */
     const val ADDED_GRACE_MS = 24 * 3_600_000.0
-    /** A proven pre-add comes back into Liked this long after release day if it still isn't owned. */
-    const val PRE_ADD_RETURN_MS = 3 * 86_400_000.0
 
     /** `rel:<storeId>` -> `<storeId>`; null for `relartist:` (no release to add) and anything else. */
     fun storeId(feedbackId: String): String? =
@@ -232,8 +230,14 @@ object LikedReleaseSelection {
             // 3. Owned by ANY path -> gone, unless the Apple Music write is unproven.
             val owned = owns(rel.identity) || (rel.title?.let { ownsVersion(rel.artistId ?: 0, rel.artistName, it) } ?: false)
             if (owned) {
-                writeNeedsRetry(sid)?.let { note ->
+                val note = writeNeedsRetry(sid)
+                val a = rel.attempt
+                if (note != null) {
                     rows += LikedRow(rel, at, working, retryWriteOnly = true, message = note)
+                } else if (a != null && a.state == LikeAddState.FAILED && a.recorded == true && !a.writeProven && a.message != null) {
+                    // Recorded, write failed, and this device can't write right now (Apple Music not connected):
+                    // dropping the row would swallow the error. Keep it with his message.
+                    rows += LikedRow(rel, at, working, retryWriteOnly = true, message = a.message)
                 }
                 continue
             }
@@ -247,8 +251,10 @@ object LikedReleaseSelection {
                 if (a.state == LikeAddState.ADDED && nowMs - a.atMs < ADDED_GRACE_MS) continue
                 // 5. A proven pre-add lives in Coming soon ("Pre-added") until well past release.
                 if (a.state == LikeAddState.AWAITING_RELEASE && a.writeProven) {
+                    // Only until release day: after it the record is in Out now, and the release-day add either
+                    // lands (owned) or leaves him an Add button here.
                     val releaseAt = rel.releaseAtMs
-                    if (releaseAt == null || nowMs < releaseAt + PRE_ADD_RETURN_MS) continue
+                    if (releaseAt != null && nowMs < releaseAt) continue
                 }
             }
             // 6. No age limit: a like from six months ago that was never added still shows.
@@ -265,9 +271,14 @@ object LikedReleaseSelection {
     }
 
     /** Releases pre-added with a PROVEN write and not yet owned - what Coming soon badges "Pre-added". */
-    fun preAdded(meta: Map<String, LikedRelease>): Set<String> =
-        meta.values.filter { it.attempt?.state == LikeAddState.AWAITING_RELEASE && it.attempt.writeProven }
-            .map { it.storeId }.toSet()
+    fun preAdded(meta: Map<String, LikedRelease>, nowMs: Double, accepted: Map<String, Double>? = null): Set<String> =
+        meta.values.filter {
+            val a = it.attempt
+            a != null && a.state == LikeAddState.AWAITING_RELEASE && a.writeProven &&
+                // Released already -> an ordinary Out now record, not a pre-order.
+                (it.releaseAtMs ?: return@filter false) > nowMs &&
+                (accepted == null || "rel:${it.storeId}" in accepted)
+        }.map { it.storeId }.toSet()
 }
 
 // ============================================================================

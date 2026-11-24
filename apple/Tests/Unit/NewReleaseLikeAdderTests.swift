@@ -77,15 +77,6 @@ final class NewReleaseLikeAdderTests: XCTestCase {
         XCTAssertTrue(store.releases.isEmpty)
     }
 
-    func testUnlikeBeforeTheQueuedAddStartsCancelsIt() async {
-        let (adder, port, _) = make()
-        let t = adder.liked(entry("1"))
-        adder.unliked(storeId: "1")
-        await t?.value
-        XCTAssertTrue(port.addCalls.isEmpty, "an undone like must not add")
-        XCTAssertTrue(port.writeCalls.isEmpty, "and nothing else is called — no library removal exists")
-    }
-
     func testVerdictGoneBeforeTheAddStartsCancelsIt() async {
         let (adder, port, _) = make()
         adder.acceptedProvider = { [:] }
@@ -210,6 +201,42 @@ final class NewReleaseLikeAdderTests: XCTestCase {
         adder.acceptedProvider = { ["rel:2": 1] }
         await adder.sweep()
         XCTAssertEqual(Set(store.releases.keys), ["2"])
+    }
+
+    // MARK: review fixes
+
+    /// Review #5: an empty accepted set (verdict sync behind) must not wipe attempt history.
+    func testSweepDoesNotPruneWhenAcceptedIsEmpty() async {
+        let (adder, _, store) = make()
+        store.upsert([LikedRelease(storeId: "1"), LikedRelease(storeId: "2")])
+        adder.acceptedProvider = { [:] }
+        await adder.sweep()
+        XCTAssertEqual(Set(store.releases.keys), ["1", "2"])
+    }
+
+    /// Review #4: a fresh 👍 on an id a hydrate once tombstoned must show again.
+    func testFreshLikeClearsAnEarlierTombstone() async {
+        let (adder, port, store) = make()
+        store.upsert(LikedRelease(storeId: "1", tombstoned: true))
+        await adder.liked(entry("1"))?.value
+        XCTAssertNotEqual(store.releases["1"]?.tombstoned, true)
+        XCTAssertEqual(port.addCalls, ["1"])
+    }
+
+    /// Review #2: the screen's maintenance task is cancelled with the view; the adder's must not be.
+    func testMaintainSurvivesCancellationOfTheCaller() async {
+        let (adder, port, store) = make()
+        store.upsert(LikedRelease(storeId: "1", title: "T", releaseAtMs: clockMs - day, likedAtMs: 1,
+                                  attempt: LikeAddAttempt(atMs: clockMs - 7 * hour, state: .offline,
+                                                          message: nil, writeToken: nil, recorded: false)))
+        adder.acceptedProvider = { ["rel:1": 1] }
+        let caller = Task { @MainActor in
+            adder.maintain(accepted: ["rel:1": 1])
+        }
+        caller.cancel()
+        await caller.value.value
+        XCTAssertEqual(port.addCalls, ["1"])
+        XCTAssertEqual(store.releases["1"]?.attempt?.state, .added)
     }
 
     // MARK: Add all

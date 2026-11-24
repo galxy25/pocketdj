@@ -55,7 +55,8 @@ struct NewReleasesView: View {
         // Pre-orders whose Apple Music write PROVED it landed stay in Coming soon (badged) instead
         // of vanishing with the rest of the accepted rows: the record is "added" as far as Apple
         // can say, and the PocketDJ side follows on release day.
-        let preAdded = adder.map { LikedReleaseSelection.preAdded(meta: $0.store.releases, nowMs: nowMs) } ?? []
+        let preAdded = adder.map { LikedReleaseSelection.preAdded(meta: $0.store.releases, nowMs: nowMs,
+                                                                          accepted: feedback?.acceptedInScope(scope)) } ?? []
         let outNow = sunkLast(offered(releaseFeed?.outNow() ?? [], keeping: preAdded))
         let soon = sunkLast(offered(releaseFeed?.comingSoon() ?? [], keeping: preAdded))
         let liked = likedSelection(nowMs: nowMs)
@@ -113,8 +114,7 @@ struct NewReleasesView: View {
         // then retry what was waiting on a connection or a release day. Off the render path.
         .task {
             guard let adder, let feedback else { return }
-            await adder.hydrateMissing(accepted: feedback.acceptedInScope(scope))
-            await adder.sweep()
+            adder.maintain(accepted: feedback.acceptedInScope(scope))
         }
     }
 

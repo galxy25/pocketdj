@@ -9,10 +9,13 @@ import com.levi.pocketdj.data.recs.ReleaseFeedTransport
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -48,9 +51,10 @@ class NewReleaseLikeAdderTest {
         port: FakePort = FakePort(),
         transport: ReleaseFeedTransport? = null,
         file: File? = null,
+        scope: CoroutineScope = CoroutineScope(Dispatchers.Unconfined),
     ): Triple<NewReleaseLikeAdder, FakePort, LikedReleasesStore> {
         val store = LikedReleasesStore(file)
-        val adder = NewReleaseLikeAdder(store, port, transport, CoroutineScope(Dispatchers.Unconfined)) { clockMs }
+        val adder = NewReleaseLikeAdder(store, port, transport, scope) { clockMs }
         return Triple(adder, port, store)
     }
 
@@ -127,7 +131,7 @@ class NewReleaseLikeAdderTest {
         assertEquals(LikeAddState.FAILED, store.releases["1"]?.attempt?.state)
         assertTrue(store.releases["1"]?.attempt?.message?.contains("Apple Music library add failed") == true)
         port.next = ReleaseAddReport("confirmed (web)", recorded = true, error = null)
-        adder.retry("1", writeOnly = true)
+        adder.retry("1", writeOnly = true).join()
         assertEquals(listOf("1"), port.writeCalls)
         assertEquals(listOf("1"), port.addCalls)
         assertEquals(LikeAddState.ADDED, store.releases["1"]?.attempt?.state)
@@ -198,13 +202,95 @@ class NewReleaseLikeAdderTest {
         assertEquals(setOf("2"), store.releases.keys)
     }
 
+    // ---- review fixes ----
+
+    /** MAJOR #1: the Liked-row Add runs on the ADDER's scope; the caller going away cancels nothing. */
+    @Test fun rowAddSurvivesTheCallersCancellation() = runBlocking {
+        val port = FakePort().apply { gate = kotlinx.coroutines.CompletableDeferred() }
+        val (adder, _, store) = make(port)
+        store.upsert(LikedRelease("1"))
+        val callerScope = CoroutineScope(Dispatchers.Unconfined + kotlinx.coroutines.Job())
+        var job: kotlinx.coroutines.Job? = null
+        callerScope.launch { job = adder.add("1") }
+        assertTrue("1" in adder.busy.value.inFlight)
+        callerScope.cancel() // the screen is left mid-add
+        port.gate!!.complete(Unit)
+        job!!.join()
+        assertEquals(LikeAddState.ADDED, store.releases["1"]?.attempt?.state)
+        assertTrue(adder.busy.value.ids.isEmpty())
+    }
+
+    /** MAJOR #1: add-all and maintain are likewise the adder's, not the screen's. */
+    @Test fun addAllAndMaintainRunOnTheAdderScope() = runBlocking {
+        val (adder, port, store) = make()
+        store.upsert(listOf(LikedRelease("1"), LikedRelease("2")))
+        val callerScope = CoroutineScope(Dispatchers.Unconfined + kotlinx.coroutines.Job())
+        var job: kotlinx.coroutines.Job? = null
+        callerScope.launch { job = adder.addAll(listOf("1", "2")) }
+        callerScope.cancel()
+        job!!.join()
+        assertEquals(listOf("1", "2"), port.addCalls)
+        store.setAttempt("1", LikeAddAttempt(clockMs - 7 * hour, LikeAddState.OFFLINE))
+        adder.acceptedProvider = { mapOf("rel:1" to 1.0, "rel:2" to 1.0) }
+        adder.maintain(mapOf("rel:1" to 1.0, "rel:2" to 1.0)).join()
+        assertEquals(listOf("1", "2", "1"), port.addCalls)
+    }
+
+    /** MAJOR #1: if the adder's own scope IS torn down mid-add, the attempt must not stay ADDING. */
+    @Test fun cancelledAddBecomesOfflineNotStuckAdding() = runBlocking {
+        val port = FakePort().apply { gate = kotlinx.coroutines.CompletableDeferred() }
+        val scope = CoroutineScope(Dispatchers.Unconfined + kotlinx.coroutines.Job())
+        val (adder, _, store) = make(port, scope = scope)
+        store.upsert(LikedRelease("1"))
+        val job = adder.add("1")
+        assertEquals(LikeAddState.ADDING, store.releases["1"]?.attempt?.state)
+        scope.cancel()
+        job.join()
+        assertEquals(LikeAddState.OFFLINE, store.releases["1"]?.attempt?.state)
+        assertTrue(adder.busy.value.inFlight.isEmpty())
+    }
+
+    @Test fun sweepDoesNotPruneWhenAcceptedIsEmpty() = runBlocking {
+        val (adder, _, store) = make()
+        store.upsert(listOf(LikedRelease("1"), LikedRelease("2")))
+        adder.acceptedProvider = { emptyMap() }
+        adder.sweep()
+        assertEquals(setOf("1", "2"), store.releases.keys)
+    }
+
+    @Test fun freshLikeClearsAnEarlierTombstone() = runBlocking {
+        val (adder, port, store) = make()
+        store.upsert(LikedRelease("1", tombstoned = true))
+        adder.liked(entry("1"))?.join()
+        assertNotEquals(true, store.releases["1"]?.tombstoned)
+        assertEquals(listOf("1"), port.addCalls)
+    }
+
+    @Test fun upsertInheritsTombstoneOnlyForMetadataLessRows() {
+        val s = LikedReleasesStore(null)
+        s.upsert(LikedRelease("1", tombstoned = true))
+        s.upsert(LikedRelease("1"))
+        assertEquals(true, s.releases["1"]?.tombstoned)
+        s.upsert(LikedRelease("1", artistName = "A", title = "Real"))
+        assertNotEquals(true, s.releases["1"]?.tombstoned)
+    }
+
+    /** MINOR #6: the production store saves off the calling thread, and flush() makes it observable. */
+    @Test fun asyncSaveRoundTripsAfterFlush() {
+        val f = File.createTempFile("pdj-adder-async", ".json").also { it.deleteOnExit() }
+        val a = LikedReleasesStore(f, asyncSave = true)
+        a.upsert(LikedRelease("1", title = "T"))
+        a.flush()
+        assertEquals("T", LikedReleasesStore(f).releases["1"]?.title)
+    }
+
     // ---- Add all ----
 
     @Test fun addAllRunsOneAtATimeAndSkipsOwned() = runBlocking {
         val (adder, port, store) = make()
         store.upsert(listOf("1", "2", "3", "4").map { LikedRelease(it) })
         adder.isOwned = { it.storeId == "3" }
-        adder.addAll(listOf("1", "2", "3", "4"))
+        adder.addAll(listOf("1", "2", "3", "4")).join()
         assertEquals(listOf("1", "2", "4"), port.addCalls)
         assertEquals(1, port.maxConcurrent)
         assertFalse(adder.busy.value.addingAll)
@@ -215,7 +301,7 @@ class NewReleaseLikeAdderTest {
         val (adder, port, store) = make()
         store.upsert(listOf(LikedRelease("1"), LikedRelease("2")))
         adder.acceptedProvider = { mapOf("rel:1" to 1.0) }
-        adder.addAll(listOf("1", "2"))
+        adder.addAll(listOf("1", "2")).join()
         assertEquals(listOf("1"), port.addCalls)
     }
 

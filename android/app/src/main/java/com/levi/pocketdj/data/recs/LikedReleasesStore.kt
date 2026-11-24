@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
  * nothing - hydration rebuilds every row from the verdict ids - so it is deliberately NOT registered with
  * cloud sync. Same JSON as iOS (`LikedReleasesStore.swift`), lenient decode (a bad row is skipped).
  */
-class LikedReleasesStore(private val file: File?) {
+class LikedReleasesStore(private val file: File?, private val asyncSave: Boolean = false) {
     data class State(val releases: Map<String, LikedRelease> = emptyMap(), val revision: Int = 0)
 
     private val lock = Any()
@@ -36,7 +36,8 @@ class LikedReleasesStore(private val file: File?) {
             val merged = if (old == null) r else r.copy(
                 attempt = r.attempt ?: old.attempt,
                 likedAtMs = r.likedAtMs ?: old.likedAtMs,
-                tombstoned = r.tombstoned ?: old.tombstoned,
+                // A tombstone only describes a row with NO metadata; a row that now has a title is real.
+                tombstoned = r.tombstoned ?: if (r.title == null) old.tombstoned else null,
             )
             if (old != merged) { cur[r.storeId] = merged; changed = true }
         }
@@ -64,7 +65,20 @@ class LikedReleasesStore(private val file: File?) {
         save(map)
     }
 
+    // Production saves go through one daemon thread so a thumbs-up on Main never touches the disk.
+    private val saver by lazy {
+        java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "liked-releases-save").apply { isDaemon = true } }
+    }
+
+    /** Block until every queued save has hit the disk (tests, and anything about to read the file). */
+    fun flush() { if (asyncSave) saver.submit {}.get() }
+
     private fun save(map: Map<String, LikedRelease>) {
+        if (file == null) return
+        if (asyncSave) saver.execute { write(map) } else write(map)
+    }
+
+    private fun write(map: Map<String, LikedRelease>) {
         val f = file ?: return
         runCatching {
             val tmp = File(f.parentFile, f.name + ".tmp")

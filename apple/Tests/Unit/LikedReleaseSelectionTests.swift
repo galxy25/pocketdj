@@ -84,18 +84,26 @@ final class LikedReleaseSelectionTests: XCTestCase {
         XCTAssertEqual(select(accepted: ["rel:1": now], meta: [rel("1", attempt: attempt(ageHours: 25))]).rows.count, 1)
     }
 
-    func testProvenPreAddIsHiddenFromLikedUntilThreeDaysAfterRelease() {
+    func testProvenPreAddIsHiddenFromLikedOnlyUntilReleaseDay() {
         let a = LikeAddAttempt(atMs: now - 10 * day, state: .awaitingRelease, message: nil,
                                writeToken: "confirmed (web)", recorded: false)
         // Before release.
         XCTAssertTrue(select(accepted: ["rel:1": now],
                              meta: [rel("1", releaseAt: now + 5 * day, attempt: a)]).rows.isEmpty)
-        // Released two days ago: sweep still has time.
-        XCTAssertTrue(select(accepted: ["rel:1": now],
-                             meta: [rel("1", releaseAt: now - 2 * day, attempt: a)]).rows.isEmpty)
-        // Released four days ago and still not owned: back in Liked.
+        // Released, still not owned: he gets an Add button (review #8) instead of a hidden row.
         XCTAssertEqual(select(accepted: ["rel:1": now],
-                              meta: [rel("1", releaseAt: now - 4 * day, attempt: a)]).rows.count, 1)
+                              meta: [rel("1", releaseAt: now - 2 * day, attempt: a)]).rows.count, 1)
+    }
+
+    /// Review #3: recorded + write failed on a device that can't write now → owned, no retry note,
+    /// but the error must still surface.
+    func testOwnedWithFailedWriteAndNoRetryNoteKeepsTheRowWithItsMessage() {
+        let a = LikeAddAttempt(atMs: now - hour, state: .failed, message: "Connect Apple Music",
+                               writeToken: "Apple Music write skipped: not authorized", recorded: true)
+        let r = select(accepted: ["rel:1": now], meta: [rel("1", attempt: a)], owned: ["1"])
+        XCTAssertEqual(r.rows.count, 1)
+        XCTAssertEqual(r.rows.first?.message, "Connect Apple Music")
+        XCTAssertTrue(r.rows.first?.retryWriteOnly ?? false)
     }
 
     func testUnprovenPreOrderShowsInLikedAsAwaitingRelease() {
@@ -111,8 +119,12 @@ final class LikedReleaseSelectionTests: XCTestCase {
         let unproven = LikeAddAttempt(atMs: now, state: .awaitingRelease, message: nil,
                                       writeToken: "Apple Music write failed: x", recorded: false)
         let set = LikedReleaseSelection.preAdded(
-            meta: ["1": rel("1", attempt: proven), "2": rel("2", attempt: unproven), "3": rel("3")],
-            nowMs: now)
+            meta: ["1": rel("1", releaseAt: now + day, attempt: proven),
+                   "2": rel("2", releaseAt: now + day, attempt: unproven), "3": rel("3"),
+                   "4": rel("4", releaseAt: now - day, attempt: proven),
+                   "5": rel("5", releaseAt: now + day, attempt: proven)],
+            nowMs: now, accepted: ["rel:1": now, "rel:2": now, "rel:3": now, "rel:4": now])
+        // 4 is released (Out now); 5 is no longer accepted (review #8).
         XCTAssertEqual(set, ["1"])
     }
 

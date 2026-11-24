@@ -61,6 +61,15 @@ final class LikedReleasesStoreTests: XCTestCase {
         XCTAssertEqual(s.releases["1"]?.attempt?.state, .failed)
     }
 
+    func testTombstoneIsInheritedOnlyByMetadataLessRows() {
+        let s = LikedReleasesStore(fileURL: tmp())
+        s.upsert(LikedRelease(storeId: "1", tombstoned: true))
+        s.upsert(LikedRelease(storeId: "1"))
+        XCTAssertEqual(s.releases["1"]?.tombstoned, true)
+        s.upsert(LikedRelease(storeId: "1", artistName: "A", title: "Real"))
+        XCTAssertNotEqual(s.releases["1"]?.tombstoned, true)
+    }
+
     func testPruneDropsRowsNoLongerAccepted() {
         let s = LikedReleasesStore(fileURL: tmp())
         s.upsert([LikedRelease(storeId: "1"), LikedRelease(storeId: "2")])

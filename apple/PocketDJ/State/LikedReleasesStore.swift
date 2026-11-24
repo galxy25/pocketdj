@@ -81,7 +81,9 @@ final class LikedReleasesStore {
         if let old = releases[r.storeId] {
             if merged.attempt == nil { merged.attempt = old.attempt }
             if merged.likedAtMs == nil { merged.likedAtMs = old.likedAtMs }
-            if merged.tombstoned == nil { merged.tombstoned = old.tombstoned }
+            // A tombstone only describes a row with NO metadata. A row that now carries a title is
+            // real: inheriting the tombstone would hide a fresh 👍 from Liked.
+            if merged.tombstoned == nil, merged.title == nil { merged.tombstoned = old.tombstoned }
         }
         guard releases[r.storeId] != merged else { return }
         releases[r.storeId] = merged
@@ -89,16 +91,7 @@ final class LikedReleasesStore {
     }
 
     func upsert(_ list: [LikedRelease]) {
-        var any = false
-        for r in list {
-            var merged = r
-            if let old = releases[r.storeId] {
-                if merged.attempt == nil { merged.attempt = old.attempt }
-                if merged.likedAtMs == nil { merged.likedAtMs = old.likedAtMs }
-            }
-            if releases[r.storeId] != merged { releases[r.storeId] = merged; any = true }
-        }
-        if any { changed() }
+        for r in list { upsert(r) }
     }
 
     func setAttempt(_ attempt: LikeAddAttempt?, for storeId: String) {

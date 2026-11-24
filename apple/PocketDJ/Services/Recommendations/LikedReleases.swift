@@ -162,9 +162,6 @@ enum LikedReleaseSelection {
     /// `added` stays hidden this long even if the ownership probes haven't caught up — the
     /// catalog rebuild and the CloudKit sync both lag a fresh add.
     static let addedGraceMs: Double = 24 * 3_600_000
-    /// A proven pre-add comes back into Liked this long after release day if it still isn't
-    /// owned — the sweep's release-day add evidently didn't land.
-    static let preAddReturnMs: Double = 3 * 86_400_000
 
     /// `rel:<storeId>` → `<storeId>`; nil for `relartist:` (no release to add) and anything else.
     static func storeId(fromFeedbackId id: String) -> String? {
@@ -213,6 +210,13 @@ enum LikedReleaseSelection {
                 if let note = writeNeedsRetry(sid) {
                     rows.append(LikedRow(release: rel, acceptedAtMs: at, inFlight: working,
                                          retryWriteOnly: true, message: note))
+                } else if let a = rel.attempt, a.state == .failed, a.recorded == true,
+                          !a.writeProven, let msg = a.message {
+                    // The add recorded the album but the write failed on a device that can't write
+                    // right now (Apple Music not authorized): `writeNeedsRetry` is nil there, and
+                    // dropping the row would swallow the error. Keep it, with his message.
+                    rows.append(LikedRow(release: rel, acceptedAtMs: at, inFlight: working,
+                                         retryWriteOnly: true, message: msg))
                 }
                 continue
             }
@@ -226,8 +230,9 @@ enum LikedReleaseSelection {
                 if a.state == .added, nowMs - a.atMs < addedGraceMs { continue }
                 // 5. A proven pre-add lives in Coming soon ("Pre-added") until well past release.
                 if a.state == .awaitingRelease, a.writeProven {
-                    let returnAt = (rel.releaseAtMs ?? 0) + preAddReturnMs
-                    if rel.releaseAtMs == nil || nowMs < returnAt { continue }
+                    // Only until release day: after it the record is in Out now, and the sweep's
+                    // release-day add either lands (owned) or leaves him an Add button here.
+                    if let at = rel.releaseAtMs, nowMs < at { continue }
                 }
             }
             // 6. No age limit: a like from six months ago that was never added still shows.
@@ -254,9 +259,13 @@ enum LikedReleaseSelection {
 
     /// Accepted releases that are pre-added with a PROVEN write and not yet released — the set
     /// the Coming-soon section badges "Pre-added".
-    static func preAdded(meta: [String: LikedRelease], nowMs: Double) -> Set<String> {
+    static func preAdded(meta: [String: LikedRelease], nowMs: Double,
+                         accepted: [String: Double]? = nil) -> Set<String> {
         Set(meta.values.compactMap { r in
             guard let a = r.attempt, a.state == .awaitingRelease, a.writeProven else { return nil }
+            // Released already → it is a normal Out now record, not a pre-order.
+            guard let at = r.releaseAtMs, at > nowMs else { return nil }
+            if let accepted, accepted["rel:\(r.storeId)"] == nil { return nil }
             return r.storeId
         })
     }

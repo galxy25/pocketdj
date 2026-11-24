@@ -22,6 +22,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -168,7 +170,8 @@ class NewReleaseLikeAdder(
      */
     fun liked(entry: com.levi.pocketdj.data.recs.ArtistReleaseEntry): Job? {
         // A fresh thumbs-up starts a fresh attempt history (the old one belongs to an earlier like).
-        val rel = LikedRelease.from(entry, clock())?.copy(attempt = null) ?: return null
+        // Also clears any tombstone an earlier hydrate left: the row has real metadata now and must show.
+        val rel = LikedRelease.from(entry, clock())?.copy(attempt = null, tombstoned = false) ?: return null
         store.upsert(rel)
         // Owned by another path already: nothing to add (Retry-Apple-Music is the Liked section's job).
         if (isOwned?.invoke(rel) == true) return null
@@ -182,24 +185,29 @@ class NewReleaseLikeAdder(
         }
     }
 
-    /** Un-thumbs-up: cancel an add still queued. Never touches the library; an in-flight add completes. */
-    fun unliked(storeId: String) = mutateBusy { it.copy(queued = it.queued - storeId) }
-
     private fun stillAccepted(storeId: String): Boolean =
         acceptedProvider?.invoke()?.let { "rel:$storeId" in it } ?: true
 
     // ---- row buttons ----
 
-    /** Add / Retry on a Liked row. [writeOnly] = the album is recorded and only the Apple Music write is owed. */
-    suspend fun add(storeId: String, writeOnly: Boolean = false) = runAdd(storeId, writeOnly)
+    /**
+     * Add / Retry on a Liked row. [writeOnly] = the album is recorded and only the Apple Music write is owed.
+     * Launched on the ADDER's scope, never the caller's: leaving the screen must not cancel an add halfway
+     * (the Apple Music write could land with no PocketDJ record).
+     */
+    fun add(storeId: String, writeOnly: Boolean = false): Job = scope.launch { runAdd(storeId, writeOnly) }
 
-    suspend fun retry(storeId: String, writeOnly: Boolean = false) = runAdd(storeId, writeOnly)
+    fun retry(storeId: String, writeOnly: Boolean = false): Job = add(storeId, writeOnly)
 
     /**
      * "Add all (n)": one at a time - kinder to the Apple edge limiter (the feed measured 429 bursts) and it keeps
      * error-to-row attribution exact. Skips in-flight and owned items; an un-thumbs-up while a row waits drops it.
+     * On the adder's scope, like [add].
      */
-    suspend fun addAll(storeIds: List<String>, writeOnly: Set<String> = emptySet()) {
+    fun addAll(storeIds: List<String>, writeOnly: Set<String> = emptySet()): Job =
+        scope.launch { addAllNow(storeIds, writeOnly) }
+
+    internal suspend fun addAllNow(storeIds: List<String>, writeOnly: Set<String> = emptySet()) {
         val started = synchronized(lock) {
             if (_busy.value.addingAll) false else {
                 _busy.value = _busy.value.copy(
@@ -224,6 +232,16 @@ class NewReleaseLikeAdder(
         } finally {
             mutateBusy { it.copy(addingAll = false, queued = it.queued - storeIds.toSet()) }
         }
+    }
+
+    private var maintenance: Job? = null
+
+    /** Hydrate + sweep on the adder's scope (the screen's own scope dies with the screen). One at a time. */
+    fun maintain(accepted: Map<String, Double>): Job = synchronized(lock) {
+        maintenance?.takeIf { it.isActive } ?: scope.launch {
+            hydrateMissing(accepted)
+            sweep()
+        }.also { maintenance = it }
     }
 
     // ---- the one add ----
@@ -254,6 +272,10 @@ class NewReleaseLikeAdder(
             val report = try {
                 if (writeOnly) port.retryWrite(rel) else port.add(rel)
             } catch (e: CancellationException) {
+                // Interrupted, not refused: leave it for the sweep instead of a stuck ADDING / a manual Retry.
+                withContext(NonCancellable) {
+                    store.setAttempt(storeId, LikeAddAttempt(clock(), LikeAddState.OFFLINE, OFFLINE_MESSAGE, rel.attempt?.writeToken, rel.attempt?.recorded))
+                }
                 throw e
             } catch (e: Exception) {
                 ReleaseAddReport(null, recorded = false, error = e.message ?: GENERIC_FAILURE)
@@ -278,7 +300,9 @@ class NewReleaseLikeAdder(
      */
     suspend fun sweep(nowMs: Double = clock()): Int {
         val accepted = acceptedProvider?.invoke()
-        if (accepted != null) {
+        // An EMPTY accepted set usually means "verdict sync is behind", not "he cleared every like": pruning
+        // then would wipe the attempt history (pre-add badge, release-day retry) and re-add what's pre-added.
+        if (accepted != null && accepted.isNotEmpty()) {
             // Prune rows whose verdict is gone. Never one that's mid-add.
             val keep = accepted.keys.mapNotNull(LikedReleaseSelection::storeId).toSet() + _busy.value.inFlight
             store.prune(keep)
@@ -382,7 +406,7 @@ class NewReleaseLikeAdder(
                 canSyncProvider = { signedIn.get() },
                 baseOverride = { if (com.levi.pocketdj.BuildConfig.DEBUG) com.levi.pocketdj.data.applemusic.AppleMusicApi.debugBase else null },
             )
-            val store = LikedReleasesStore(File(graph.appContext.filesDir, LikedReleasesStore.FILE_NAME))
+            val store = LikedReleasesStore(File(graph.appContext.filesDir, LikedReleasesStore.FILE_NAME), asyncSave = true)
             val port = DiscoverReleaseAddPort(browse.discoverController, browse.discoverAdds) { isOnline(graph.appContext) }
             return NewReleaseLikeAdder(store, port, transport, scope).also { a ->
                 a.isOwned = { rel ->

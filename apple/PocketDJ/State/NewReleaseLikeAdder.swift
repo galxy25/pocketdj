@@ -194,8 +194,10 @@ final class NewReleaseLikeAdder {
     @discardableResult
     func liked(_ entry: ArtistReleaseEntry) -> Task<Void, Never>? {
         guard var rel = LikedRelease(entry: entry, likedAtMs: clock()) else { return nil }
-        // A fresh 👍 starts a fresh attempt history (the old one belongs to an earlier like).
+        // A fresh 👍 starts a fresh attempt history (the old one belongs to an earlier like), and
+        // clears any tombstone an earlier hydrate left: the row now has real metadata and must show.
         rel.attempt = nil
+        rel.tombstoned = false
         store.upsert(rel)
         // Owned by another path already (the feed hides owned rows, but a stale row can be tapped):
         // nothing to add, and Retry-Apple-Music is the Liked section's job.
@@ -208,11 +210,6 @@ final class NewReleaseLikeAdder {
             guard self.queued.contains(id), self.stillAccepted(id) else { self.queued.remove(id); return }
             await self.run(id, writeOnly: false)
         }
-    }
-
-    /// Un-👍: cancel an add still queued. Never touches the library; an in-flight add completes.
-    func unliked(storeId: String) {
-        queued.remove(storeId)
     }
 
     /// Is the verdict still `accepted`? Unknown (no provider — tests) reads as yes.
@@ -266,8 +263,13 @@ final class NewReleaseLikeAdder {
                                         recorded: rel.attempt?.recorded), for: storeId)
         let report = writeOnly ? await port.retryWrite(rel) : await port.add(rel)
         let now = clock()
-        let outcome = Self.state(for: report, releaseAtMs: rel.releaseAtMs, nowMs: now,
+        var outcome = Self.state(for: report, releaseAtMs: rel.releaseAtMs, nowMs: now,
                                  offline: port.isOffline)
+        // A cancelled run that recorded nothing was interrupted, not refused: never a "failed"
+        // that waits for a manual Retry — leave it for the sweep.
+        if Task.isCancelled, !report.recorded, outcome.state == .failed {
+            outcome = Outcome(state: .offline, message: Self.offlineMessage)
+        }
         store.setAttempt(LikeAddAttempt(atMs: now, state: outcome.state, message: outcome.message,
                                         writeToken: report.write.storageToken,
                                         recorded: report.recorded), for: storeId)
@@ -276,6 +278,23 @@ final class NewReleaseLikeAdder {
 
     // MARK: sweep + hydration
 
+    @ObservationIgnored private var maintenanceTask: Task<Void, Never>?
+
+    /// Hydrate + sweep in an UNSTRUCTURED task owned by the adder, so leaving the screen that
+    /// started it cancels nothing (a cancelled add would read as failed). One at a time.
+    @discardableResult
+    func maintain(accepted: [String: Double]) -> Task<Void, Never> {
+        if let t = maintenanceTask { return t }
+        let t = Task { [weak self] in
+            guard let self else { return }
+            await self.hydrateMissing(accepted: accepted)
+            await self.sweep()
+            self.maintenanceTask = nil
+        }
+        maintenanceTask = t
+        return t
+    }
+
     /// Retry what can't have failed for a reason of his: `offline` items, and pre-orders whose
     /// release day has arrived. At most once per item per 6 h, sequentially, never `failed` items
     /// (those wait for his Retry tap), never an item he has since un-👍'd or now owns.
@@ -283,7 +302,10 @@ final class NewReleaseLikeAdder {
     func sweep(nowMs: Double? = nil) async -> Int {
         let now = nowMs ?? clock()
         let accepted = acceptedProvider?()
-        if let accepted {
+        // An EMPTY accepted set is "verdicts haven't synced yet" far more often than "he cleared
+        // every like": pruning then would wipe the attempt history (the pre-add badge, the
+        // release-day retry), so the rows would be rebuilt bare and re-added.
+        if let accepted, !accepted.isEmpty {
             // Prune rows whose verdict is gone. Never one that's mid-add.
             let keep = Set(accepted.keys.compactMap(LikedReleaseSelection.storeId(fromFeedbackId:)))
                 .union(inFlight)

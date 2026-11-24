@@ -205,11 +205,12 @@ fun NewReleasesScreen(
     }
     val service = feed
     // The like-adder reads the release feed's file on first touch: resolved off Main, like the feed itself.
-    val likeAdder by produceState<NewReleaseLikeAdder?>(null) {
-        value = withContext(Dispatchers.IO) { NewReleaseLikeAdder.get(graph) }
+    // A failed build must not blank the screen for good: fall back to a null adder (pure feedback, as on iOS).
+    val likeAdderResult by produceState<Result<NewReleaseLikeAdder>?>(null) {
+        value = withContext(Dispatchers.IO) { runCatching { NewReleaseLikeAdder.get(graph) } }
     }
-    val adder = likeAdder
-    if (stores == null || service == null || adder == null) {
+    val adder = likeAdderResult?.getOrNull()
+    if (stores == null || service == null || likeAdderResult == null) {
         Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         return
     }
@@ -225,8 +226,8 @@ fun NewReleasesScreen(
     var menu by remember { mutableStateOf(false) }
     var dismissedUnplayableFor by remember { mutableStateOf<Long?>(null) }
 
-    val likedState by adder.store.state.collectAsState()
-    val busy by adder.busy.collectAsState()
+    val likedState by (adder?.store?.state ?: EMPTY_LIKED_STATE).collectAsState()
+    val busy by (adder?.busy ?: EMPTY_BUSY).collectAsState()
     val canWrite by remember { graph.settings.settings.map { it.hasAppleMusic } }.collectAsState(false)
     val discoverSnap by graph.browseGraph.discoverAdds.state.collectAsState()
 
@@ -235,7 +236,7 @@ fun NewReleasesScreen(
     val tombstones = remember(fbState.revision) { feedback.activeTombstones(NewReleasesPresentation.SCOPE, now) }
     // Pre-orders whose Apple Music write PROVED it landed stay in Coming soon (badged) instead of vanishing
     // with the rest of the accepted rows: added as far as Apple can say; the PocketDJ side follows on release day.
-    val preAdded = remember(likedState.revision) { LikedReleaseSelection.preAdded(likedState.releases) }
+    val preAdded = remember(likedState.revision) { LikedReleaseSelection.preAdded(likedState.releases, now, accepted) }
     val outNow = remember(rev, fbState.revision, preAdded) {
         NewReleasesPresentation.sunkLast(NewReleasesPresentation.offered(service.outNow(now), accepted, preAdded), tombstones)
     }
@@ -261,11 +262,9 @@ fun NewReleasesScreen(
     }
     // Rebuild metadata for likes this install has never seen (older likes, another device's), then retry what
     // was waiting on a connection or a release day. Off the render path.
+    // On the ADDER's scope: this screen's own scope is cancelled on back, which would abort a half-done add.
     LaunchedEffect(adder) {
-        withContext(Dispatchers.IO) {
-            adder.hydrateMissing(feedback.acceptedInScope(NewReleasesPresentation.SCOPE))
-            adder.sweep()
-        }
+        adder?.maintain(feedback.acceptedInScope(NewReleasesPresentation.SCOPE))
     }
     // The LIVE half, computed ONCE and used by both the rows and the transport's enabled state.
     val liveOutNow = remember(outNow, tombstones) { NewReleasesPresentation.live(outNow, tombstones) }
@@ -327,7 +326,7 @@ fun NewReleasesScreen(
             EmptyState(service.emptyReason())
         } else {
             LazyColumn(Modifier.fillMaxSize().testTag("foryou-new-list")) {
-                likedSection(liked.rows, now, catalog, feedback, adder, scope)
+                if (adder != null) likedSection(liked.rows, now, catalog, feedback, adder)
                 section(ReleaseStatus.OUT_NOW, outNow, now, catalog, feedback, context, adder, preAdded)
                 section(ReleaseStatus.COMING_SOON, soon, now, catalog, feedback, context, adder, preAdded)
             }
@@ -371,7 +370,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.section(
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
     feedback: com.levi.pocketdj.data.recs.RecFeedbackStore,
     context: android.content.Context,
-    adder: NewReleaseLikeAdder,
+    adder: NewReleaseLikeAdder?,
     preAdded: Set<String>,
 ) {
     if (rows.isEmpty()) return
@@ -398,7 +397,6 @@ private fun androidx.compose.foundation.lazy.LazyListScope.likedSection(
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
     feedback: com.levi.pocketdj.data.recs.RecFeedbackStore,
     adder: NewReleaseLikeAdder,
-    scope: kotlinx.coroutines.CoroutineScope,
 ) {
     if (rows.isEmpty()) return
     item(key = "h-liked") {
@@ -419,7 +417,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.likedSection(
                 onClick = {
                     val ids = addable.map { it.id }
                     val writeOnly = addable.filter { it.retryWriteOnly }.map { it.id }.toSet()
-                    scope.launch(Dispatchers.IO) { adder.addAll(ids, writeOnly) }
+                    adder.addAll(ids, writeOnly)
                 },
                 enabled = !addingAll && addable.isNotEmpty() && addable.size == rows.size,
                 modifier = Modifier.testTag("new-liked-add-all"),
@@ -427,7 +425,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.likedSection(
         }
     }
     items(rows, key = { "liked-${it.id}" }) { row ->
-        LikedRowItem(row, now, catalog, feedback, adder, scope)
+        LikedRowItem(row, now, catalog, feedback, adder)
     }
 }
 
@@ -438,7 +436,6 @@ private fun LikedRowItem(
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
     feedback: com.levi.pocketdj.data.recs.RecFeedbackStore,
     adder: NewReleaseLikeAdder,
-    scope: kotlinx.coroutines.CoroutineScope,
 ) {
     val context = LocalContext.current
     val rel = row.release
@@ -475,7 +472,7 @@ private fun LikedRowItem(
             CircularProgressIndicator(Modifier.size(20.dp).padding(horizontal = 2.dp).testTag("new-liked-add-${row.id}"), strokeWidth = 2.dp)
         } else {
             OutlinedButton(
-                onClick = { scope.launch(Dispatchers.IO) { adder.add(row.id, writeOnly = row.retryWriteOnly) } },
+                onClick = { adder.add(row.id, writeOnly = row.retryWriteOnly) },
                 modifier = Modifier.testTag("new-liked-add-${row.id}"),
             ) { Text(NewReleasesPresentation.likedActionTitle(row)) }
         }
@@ -483,6 +480,9 @@ private fun LikedRowItem(
         RecFeedbackButtons("rel:${rel.storeId}", NewReleasesPresentation.SCOPE, feedback, catalog)
     }
 }
+
+private val EMPTY_LIKED_STATE = kotlinx.coroutines.flow.MutableStateFlow(com.levi.pocketdj.data.recs.LikedReleasesStore.State())
+private val EMPTY_BUSY = kotlinx.coroutines.flow.MutableStateFlow(NewReleaseLikeAdder.Busy())
 
 @Composable
 private fun ReleaseArt(template: String?) {
@@ -507,7 +507,7 @@ private fun ReleaseRow(
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
     feedback: com.levi.pocketdj.data.recs.RecFeedbackStore,
     context: android.content.Context,
-    adder: NewReleaseLikeAdder,
+    adder: NewReleaseLikeAdder?,
     preAdded: Set<String>,
 ) {
     val e = item.entry
@@ -568,7 +568,7 @@ private fun ReleaseRow(
         // nothing to add and stays pure feedback - the one case that does.
         RecFeedbackButtons(
             item.feedbackId, NewReleasesPresentation.SCOPE, feedback, catalog,
-            onAccept = if (e.releaseId == null) null else ({ adder.liked(e) }),
+            onAccept = if (e.releaseId == null || adder == null) null else ({ adder.liked(e) }),
         )
     }
 }
