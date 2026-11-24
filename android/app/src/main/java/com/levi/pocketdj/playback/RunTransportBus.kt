@@ -34,4 +34,13 @@ object RunTransportBus {
 
     /** P2-ALB-4: an armed album boundary fired for this song id (the controller reports a natural end). */
     @Volatile var albumBoundaryFired: ((String) -> Unit)? = null
+
+    /** P2-ALB-5: the loaded album run's song clock (controller-owned); read by the session player. */
+    @Volatile var runClock: com.levi.pocketdj.playback.album.RunClockSource? = null
+
+    /** P2-ALB-5: the service's RAW engine (file-relative clock, no song mapping) for the run engine glue's own seeks/reads. */
+    @Volatile var rawPlayer: androidx.media3.common.Player? = null
+
+    /** P2-ALB-5: the song under the playhead changed in place - the session player re-announces its clock. */
+    @Volatile var clockChanged: (() -> Unit)? = null
 }

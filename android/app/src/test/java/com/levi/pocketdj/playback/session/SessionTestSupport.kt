@@ -10,6 +10,10 @@ class FakePlayerState {
     var items = 1
     var playWhenReady = false
     val calls = mutableListOf<String>()
+    /** P2-ALB-5: the raw engine clock + the position args of every seekTo. */
+    var position = 0L
+    var duration = 0L
+    val seeks = mutableListOf<Long>()
     val listeners = mutableListOf<Player.Listener>()
     var baseCommands: Player.Commands = Player.Commands.Builder().addAllCommands().build()
 }
@@ -17,8 +21,11 @@ class FakePlayerState {
 fun fakePlayer(s: FakePlayerState): Player =
     Proxy.newProxyInstance(Player::class.java.classLoader, arrayOf(Player::class.java)) { _, m, args ->
         s.calls += m.name
+        if (m.name == "seekTo") s.seeks += args.last() as Long
         if (m.name == "addListener") s.listeners += args[0] as Player.Listener
         when (m.name) {
+            "getCurrentPosition", "getContentPosition", "getBufferedPosition", "getContentBufferedPosition" -> s.position
+            "getDuration", "getContentDuration" -> s.duration
             "getPlaybackState" -> s.state
             "getMediaItemCount" -> s.items
             "getPlayWhenReady" -> s.playWhenReady

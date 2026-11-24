@@ -386,6 +386,7 @@ class PlaybackController(
         )
         seq.addAdvanceInterceptor(albumRun)
         seq.addStartInterceptor(albumRun)
+        RunTransportBus.runClock = com.levi.pocketdj.playback.album.RunClockSource { currentRunClock() }
         RunTransportBus.albumBoundaryFired = { id ->
             if (activeBackend == ActiveBackend.EXO && sequencerOwnsPlayer) seq.handleEnded(id)
         }
@@ -1115,8 +1116,8 @@ class PlaybackController(
             url = url,
             clipStartMs = clipStart,
             clipEndMs = clipEnd,
-            positionMs = c.currentPosition,
-            durationMs = c.duration.takeIf { it != androidx.media3.common.C.TIME_UNSET },
+            positionMs = rawPositionMs(c),
+            durationMs = (RunTransportBus.rawPlayer?.duration ?: c.duration).takeIf { it != androidx.media3.common.C.TIME_UNSET },
             isFile = url.startsWith("file:") || url.startsWith("content:") || url.startsWith("/"),
             live = extras?.getBoolean(PlaybackContract.EXTRA_IS_LIVE, false) == true || url.contains("/hls/"),
             hasLoadedItem = c.mediaItemCount > 0,
@@ -1246,14 +1247,9 @@ class PlaybackController(
         var startIndex = playable.indexOfFirst { it.first.id == startSongId }
         if (startIndex < 0) startIndex = 0
 
-        // P1 decision for unbounded analog windows (durationMs null in the
-        // manifest): the item plays to the album file's natural end (iOS
-        // whole-file behavior), so queue items after it would double-play the
-        // album tail — truncate the queue after the first unbounded item at or
-        // past the start index.
-        val lastIndex = playable.withIndex()
-            .firstOrNull { (index, entry) -> index >= startIndex && entry.second.isUnboundedAnalog }
-            ?.index ?: playable.lastIndex
+        // Non-sequencer queue path (track tap / playAlbum): an unbounded analog item plays to the album file's
+        // natural end, so queue items after it would double-play the album tail.
+        val lastIndex = lastQueueIndex(playable.map { it.second.isUnboundedAnalog }, startIndex)
 
         val serverConfigured = ripConfigured
         val queueEntries = playable.subList(0, lastIndex + 1)
@@ -1621,7 +1617,7 @@ class PlaybackController(
                     it.play()
                 }
                 // Always re-armed (or disarmed) by a load: a previous run's boundary must never outlive its item.
-                RunTransportBus.albumArmer?.arm(item.id, plan?.boundaryFileMs, plan?.clipStartMs ?: 0L)
+                armRun(if (plan != null) item.id else "", plan?.boundaryFileMs, plan?.clipStartMs ?: 0L)
                 if (rip != null) watchRipOnDemand(rip.songId, item.id, entryGeneration, mi)
             } catch (e: Throwable) {
                 // A failed/superseded load must not leave this row's title over whatever is still loaded.
@@ -1724,7 +1720,7 @@ class PlaybackController(
         // ---- P2-ALB-4: album run (one engine item per vinyl side) ----
 
         override fun armBoundary(songId: String, fileMs: Long?, clipStartMs: Long) {
-            RunTransportBus.albumArmer?.arm(songId, fileMs, clipStartMs)
+            armRun(songId, fileMs, clipStartMs)
         }
 
         override fun albumFileState(): AlbumFileState? {
@@ -1735,7 +1731,7 @@ class PlaybackController(
             val extras = item.requestMetadata.extras ?: return null
             if (!extras.getBoolean(PlaybackContract.EXTRA_ALBUM_RUN, false)) return null
             val clip = extras.getLong(PlaybackContract.EXTRA_CLIP_START_MS, -1L).takeIf { it >= 0 } ?: return null
-            return AlbumFileState(runId, clip, clip + c.currentPosition.coerceAtLeast(0L), c.isPlaying)
+            return AlbumFileState(runId, clip, clip + rawPositionMs(c).coerceAtLeast(0L), c.isPlaying)
         }
 
         override fun seekInFile(fileMs: Long): Boolean {
@@ -1743,7 +1739,9 @@ class PlaybackController(
             val st = albumFileState() ?: return false
             val itemMs = fileMs - st.clipStartMs
             if (itemMs < 0) return false
-            c.seekTo(itemMs)
+            // The RAW engine: the controller's seekTo is song-relative for a run item (and clamped to the song).
+            (RunTransportBus.rawPlayer ?: c).seekTo(itemMs)
+            // No clockChanged here: the caller arms/retargets next (which announces the NEW song's span).
             return true
         }
 
@@ -1766,12 +1764,13 @@ class PlaybackController(
                 val next = cur.buildUpon().setMediaId(item.id).setMediaMetadata(md).build()
                 albumRunMediaId = item.id
                 RunTransportBus.albumArmer?.expectRetarget(item.id)
-                val before = c.currentPosition
+                val before = rawPositionMs(c)
                 c.replaceMediaItem(c.currentMediaItemIndex, next)
                 if (startPlayback) c.play()
                 before
             } ?: return false
             guardRetargetPosition(moved)
+            RunTransportBus.clockChanged?.invoke() // the song-relative clock restarts at the new song
             val ahead = sequencer.state.value.upcomingPlayable.take(PlaybackUrlResolver.AHEAD).map { it.resolveId }
             urls.prefetch(ahead, settings.current().hasRipServer)
             return true
@@ -1801,10 +1800,34 @@ class PlaybackController(
     /** The song id the loaded album run item is currently retitled to (null = no run item loaded by the sequencer). */
     @Volatile private var albumRunMediaId: String? = null
 
+    /** The song clock of the loaded run item: the armed song's span in the shared file + the item's clip start. */
+    private class ArmedClock(val songId: String, val clock: com.levi.pocketdj.playback.album.RunClock)
+
+    @Volatile private var armedClock: ArmedClock? = null
+
+    /** Arm the engine's boundary AND publish the song clock the session player translates positions with (P2-ALB-5). */
+    private fun armRun(songId: String, fileMs: Long?, clipStartMs: Long) {
+        RunTransportBus.albumArmer?.arm(songId, fileMs, clipStartMs)
+        val start = if (songId.isEmpty()) null else rips.albumTimeline(songId)?.segment(com.levi.pocketdj.data.edition.SongVariant.baseId(songId))?.startMs
+        armedClock = if (start == null) null else ArmedClock(
+            songId,
+            com.levi.pocketdj.playback.album.RunClock(clipStartMs, com.levi.pocketdj.playback.album.SongSpan(start, fileMs)),
+        )
+    }
+
+    /** What the session player reads: only while the armed song is the loaded run item's current identity. */
+    private fun currentRunClock(): com.levi.pocketdj.playback.album.RunClock? {
+        val a = armedClock ?: return null
+        return a.clock.takeIf { albumRunMediaId != null && sequencerOwnsPlayer && activeBackend == ActiveBackend.EXO }
+    }
+
+    /** The engine's own (file-relative) position: the session controller's value is song-relative for a run item. */
+    private fun rawPositionMs(c: MediaController): Long = RunTransportBus.rawPlayer?.currentPosition ?: c.currentPosition
+
     /** No run item is loaded (or its boundary must not fire): disarm the engine and forget the run identity. */
     private fun clearAlbumRun() {
         albumRunMediaId = null
-        RunTransportBus.albumArmer?.arm("", null, 0L)
+        armRun("", null, 0L)
     }
 
     /**
@@ -1824,9 +1847,9 @@ class PlaybackController(
             kotlinx.coroutines.delay(500)
             withController { c ->
                 val expected = beforeMs + 500
-                if (albumRunMediaId != null && c.currentPosition + 1_500 < expected) {
-                    NPLog.lane(NPLog.PLAYBACK, "album retarget re-seek from=${c.currentPosition} to=$expected")
-                    c.seekTo(expected)
+                if (albumRunMediaId != null && rawPositionMs(c) + 1_500 < expected) {
+                    NPLog.lane(NPLog.PLAYBACK, "album retarget re-seek from=${rawPositionMs(c)} to=$expected")
+                    (RunTransportBus.rawPlayer ?: c).seekTo(expected)
                 }
             }
         }
@@ -1956,3 +1979,7 @@ private suspend fun <T> ListenableFuture<T>.await(): T =
 
 /** True when [mediaId] is the Tune-In item for stream [url] (see `loadUrl`'s `"url:" + url` id). */
 fun isTuneInMediaId(mediaId: String?, url: String): Boolean = mediaId == "url:$url"
+
+/** Last queue index kept for the raw (non-sequencer) album queue: truncate after the first unbounded analog item at or past [startIndex]. */
+internal fun lastQueueIndex(unbounded: List<Boolean>, startIndex: Int): Int =
+    unbounded.withIndex().firstOrNull { (i, u) -> i >= startIndex && u }?.index ?: unbounded.lastIndex
