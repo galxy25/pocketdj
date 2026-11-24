@@ -1185,6 +1185,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             contextLabel = { autoDjInst?.takeIf { it.isMixing }?.sourceLabel ?: mixSessions.currentName },
             contextId = { mixSessions.currentId },
             originOf = { id -> autoDjInst?.originCollectionIdFor(id) },
+            pocketRunTag = { id, label -> app.pocketsGraph.runStore.mixTag(id, label) },
             // The store records off the bus asynchronously: poll briefly, then fall back to the collapsed row.
             resolveAsync = { attempt ->
                 mainScope.launch {
@@ -1239,6 +1240,10 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             // Lock-screen seam, on Main (the engine is Main-confined; the caller may be any thread).
             remotePause = { mainScope.launch { autoDjInst?.remotePause() } },
             remotePlay = { mainScope.launch { autoDjInst?.remotePlay() } },
+            songLoadables = { ids -> mixResolver.loadables(ids) },
+            startItems = { items, lead, fade, label -> autoDj.startAutoMix(items, false, lead, fade, label) },
+            autoLabel = { autoDjInst?.takeIf { it.isMixing }?.sourceLabel },
+            pushSettings = { st -> com.levi.pocketdj.mix.MixSettingsPush.pushAll(st, portsLazy.value.first) },
             releaseForNowPlaying = {
                 // Never builds the Mix just to tear it down.
                 if (downloaderLazy.isInitialized()) downloaderLazy.value.cancel()

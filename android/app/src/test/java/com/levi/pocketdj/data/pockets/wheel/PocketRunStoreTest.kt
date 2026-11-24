@@ -156,6 +156,54 @@ class PocketRunStoreTest {
 
     // ---- start ----------------------------------------------------------------------------
 
+    // ---- W7 Mix path ----------------------------------------------------------------------
+
+    private val mixProfile get() = profile.copy(mode = PocketMode.MIX)
+
+    @Test fun mixRunAtTenLoadablePlaysViaMixAndTagsTheFirstSongDuringTheStart() = runTest {
+        val h = harness()
+        var tagDuringStart: PocketRunTag? = null
+        h.store.playThroughMix = { rows, label ->
+            // Auto-DJ's first PlayStarted fires while this call is still suspended.
+            tagDuringStart = h.store.mixTag(rows.first().songId, label)
+            10
+        }
+        assertTrue(h.store.start(mixProfile, seed = 42uL))
+        val a = h.store.active.value!!
+        assertTrue(a.viaMix)
+        assertEquals(0, h.player.plays)
+        assertNull(h.store.mixCaption.value)
+        assertNotNull(tagDuringStart)
+        assertEquals(a.runId, tagDuringStart!!.runId)
+        assertEquals(1, tagDuringStart!!.slot)
+        h.store.stop()
+    }
+
+    @Test fun mixRunBelowTenFallsBackToTheSequencerWithACaptionClearedOnStop() = runTest {
+        val h = harness()
+        h.store.playThroughMix = { _, _ -> 9 }
+        assertTrue(h.store.start(mixProfile, seed = 42uL))
+        val a = h.store.active.value!!
+        assertFalse(a.viaMix)
+        assertEquals(1, h.player.plays)
+        assertEquals("pwr_${a.runId}", h.player.source)
+        assertEquals(PocketRunMixPath.fallbackCaption(9), h.store.mixCaption.value)
+        assertNull(h.store.mixTag("x", a.label))
+        h.store.stop()
+        assertNull(h.store.mixCaption.value)
+    }
+
+    @Test fun nonMixProfileNeverTouchesTheMixPath() = runTest {
+        val h = harness()
+        var called = false
+        h.store.playThroughMix = { _, _ -> called = true; 50 }
+        assertTrue(h.store.start(profile, seed = 42uL))
+        assertFalse(called)
+        assertFalse(h.store.active.value!!.viaMix)
+        h.store.stop()
+    }
+
+
     @Test fun startPlansOffMainTagsRowsAndPlaysUnderPwrSource() = runTest {
         val h = harness()
         assertTrue(h.store.start(profile, seed = 42uL))

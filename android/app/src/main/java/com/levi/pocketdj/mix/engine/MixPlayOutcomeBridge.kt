@@ -44,6 +44,8 @@ class MixPlayOutcomeBridge(
     private val originOf: (songId: String) -> String? = { null },
     /** The Mix session id (iOS `mixSessions.currentId`) so History groups by session. */
     private val contextId: () -> String? = { null },
+    /** W7: the pocket-run History tag for a Mix play of the song under the current crate label (null when not a run row). */
+    private val pocketRunTag: (songId: String, label: String?) -> com.levi.pocketdj.data.history.PocketRunTag? = { _, _ -> null },
     private val nowMs: () -> Long = System::currentTimeMillis,
     /** Runs [block] later, off the caller: production hops to a coroutine; tests run it inline. */
     private val resolveAsync: ((attempt: (final: Boolean) -> Boolean) -> Unit)? = null,
@@ -62,12 +64,13 @@ class MixPlayOutcomeBridge(
         val entry = Entry(songId, null, null)
         synchronized(lock) { entries[deck] = entry }
         val info = trackInfo(deck)
+        val label = contextLabel()
         emit(
             PlayStarted(
                 songId = songId,
                 title = info?.first,
                 artist = info?.second,
-                context = PlayContext(PlayContext.SOURCE_MIX, contextId = contextId(), contextName = contextLabel()),
+                context = PlayContext(PlayContext.SOURCE_MIX, contextId = contextId(), contextName = label, pocketRun = pocketRunTag(songId, label)),
                 atMs = at,
                 originCollectionId = originOf(songId),
             ),

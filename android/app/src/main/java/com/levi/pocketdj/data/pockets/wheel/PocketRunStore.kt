@@ -131,6 +131,10 @@ class PocketRunStore(
     val active: StateFlow<RunState?> get() = _active.asStateFlow()
     private val _past = MutableStateFlow<List<RunSummary>>(emptyList())
     val past: StateFlow<List<RunSummary>> get() = _past.asStateFlow()
+    private val _mixCaption = MutableStateFlow<String?>(null)
+    /** Set when a Mix moment's run fell back to the regular player (fewer than 10 deck-loadable songs). */
+    val mixCaption: StateFlow<String?> get() = _mixCaption.asStateFlow()
+
     private val _buildState = MutableStateFlow<BuildState>(BuildState.Idle)
     val buildState: StateFlow<BuildState> get() = _buildState.asStateFlow()
     private val _revision = MutableStateFlow(0)
@@ -180,7 +184,7 @@ class PocketRunStore(
     var currentEventId: () -> String? = { null }
 
     /** W7: start the run's songs as a Mix Auto-DJ queue; returns how many were loadable. null = no Mix path here. */
-    var playThroughMix: ((List<PocketRunPlanner.Row>, String) -> Int)? = null
+    var playThroughMix: (suspend (List<PocketRunPlanner.Row>, String) -> Int)? = null
     var mixOwnsRun: (String) -> Boolean = { false }
     var onRunEnded: ((RunSummary) -> Unit)? = null
 
@@ -267,15 +271,31 @@ class PocketRunStore(
         )
         runNames[state.tag] = label
         // W7: a Mix moment plays through Mix Auto-DJ when enough of the run can load on the decks (no live re-plan there).
+        _mixCaption.value = null
         val mix = playThroughMix
         if (profile.mode == PocketMode.MIX && mix != null) {
-            val loaded = mix(plan.rows, label)
-            if (loaded >= MIX_MIN_LOADABLE) {
-                state = state.copy(
-                    viaMix = true,
-                    mixSlots = plan.rows.associate { it.songId to it.slot },
-                    mixCollections = plan.rows.mapNotNull { r -> r.collectionId?.let { r.songId to it } }.toMap(),
-                )
+            // Publish the run BEFORE Auto-DJ starts: the first song's play can fire mixTag() while mix() is still
+            // suspended, and it must already find viaMix + the slot map. Rolled back below if too few load.
+            val before = _active.value
+            val provisional = state.copy(
+                viaMix = true,
+                mixSlots = PocketRunMixPath.slots(plan.rows),
+                mixCollections = PocketRunMixPath.collections(plan.rows),
+            )
+            _active.value = provisional
+            val loaded = try {
+                mix(plan.rows, label)
+            } catch (e: Throwable) {
+                _active.value = before
+                throw e
+            }
+            if (PocketRunMixPath.shouldPlayViaMix(loaded)) {
+                state = provisional
+            } else {
+                _active.value = before
+                // Too few songs load on the decks: the regular player takes the run, and says why.
+                _mixCaption.value = PocketRunMixPath.fallbackCaption(loaded)
+                log("mix path skipped: loadable=$loaded < ${PocketRunMixPath.MIN_LOADABLE}")
             }
         }
         if (!state.viaMix) {
@@ -661,6 +681,7 @@ class PocketRunStore(
 
     /** Clear this pocket: stop the queue (if it is still this run's) and file the run into past runs. */
     fun stop() {
+        _mixCaption.value = null
         val a = _active.value ?: return
         if (!a.viaMix && player?.state()?.sourceSetlistId == a.tag) player.stop()
         endOrClearActive()
@@ -668,6 +689,7 @@ class PocketRunStore(
 
     /** End a live run; a run that already finished (card not dismissed) is only cleared, never summarised twice. */
     private fun endOrClearActive() {
+        _mixCaption.value = null
         val a = _active.value ?: return
         if (a.finished) dismissFinished() else endRun(finished = false)
     }
@@ -693,6 +715,7 @@ class PocketRunStore(
     /** Dismiss the "Pocket finished" card. */
     fun dismissFinished() {
         if (_active.value?.finished != true) return
+        _mixCaption.value = null
         _active.value = null
         bump()
         persist()
@@ -742,7 +765,7 @@ class PocketRunStore(
         const val RETUNED_BADGE_MS = 4_000L
         const val TICK_MS = 1_000L
         const val PAST_CAP = 50
-        const val MIX_MIN_LOADABLE = 10
+        const val MIX_MIN_LOADABLE = PocketRunMixPath.MIN_LOADABLE
         private const val TAIL_SLACK_MS = 60_000.0
         const val NOT_ENOUGH_SONGS =
             "Not enough playable songs fit your pocket right now. Download some, or connect Apple Music."
