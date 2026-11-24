@@ -86,6 +86,13 @@ class AnalogWindowTest {
         assertEquals(150_000L, legacy.clipEndMs)
     }
 
+    @Test fun resolverFallsBackToDurationWhenTimelineHasNoEnd() {
+        val entry = RipManifestEntry(key = "rips/sideL.mp3", source = "analog", startMs = 10_000, durationMs = 150_000)
+        val a = PlayResolver.resolve("lo_1", entry, false, endOf = { _, _, _ -> null }) as PlayAction.Stream
+        assertEquals(160_000L, a.clipEndMs)
+        assertEquals(false, a.isUnboundedAnalog)
+    }
+
     @Test fun cueSeekBoundsCueByEndOnTheRecord() {
         val p = CueSeek.plan(240_000, 90_000, 150_000, endMs = 400_000)
         assertEquals(160_000L, p.durationMs)

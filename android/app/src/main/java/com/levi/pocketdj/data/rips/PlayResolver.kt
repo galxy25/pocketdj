@@ -62,6 +62,7 @@ object PlayResolver {
             val end = when {
                 start == null -> null
                 endOf != null -> endOf(songId, start, entry.durationMs)
+                    ?: entry.durationMs?.let { start + it } // no timeline end: manifest duration still bounds (keeps the queue going)
                 entry.durationMs != null -> start + entry.durationMs
                 else -> null
             }

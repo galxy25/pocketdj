@@ -18,3 +18,10 @@ Tests: 13 new in AnalogWindowTest; full suite green (see commit), :app:assembleD
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR PlayResolver endOf null truncates queue -> fixed: resolver falls back to start+durationMs when endOf yields null (unbounded only if both null); test resolverFallsBackToDurationWhenTimelineHasNoEnd.
+- MINOR CuesScreen stale effStart/effEnd -> fixed: remember keyed on catalogRepository.segmentOverrides snapshot.
+- NIT CuesScreen fallback length -> fixed: song.length first, then manifest durationMs.
+
+fixes applied

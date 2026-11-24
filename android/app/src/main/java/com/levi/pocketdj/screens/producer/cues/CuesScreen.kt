@@ -140,8 +140,9 @@ private fun SelectedPane(graph: AppGraph, song: IndexSong, modifier: Modifier) {
     val isBurned = burns.hasLocalFile(song.id)
     val cues = remember(doc.cues, song.id) { store.cues(song.id) }
     // A shared-file song starts where the record (and any edit) says and ends at its end on the record (P2-ALB-3).
-    val effStart = remember(song.id, manifest) { rips.effectiveStartMs(song.id) }
-    val effEnd = remember(song.id, manifest, effStart) { rips.analogEndMs(song.id, effStart, entry?.durationMs ?: song.length) }
+    val overrides by graph.catalogRepository.segmentOverrides.collectAsState()
+    val effStart = remember(song.id, manifest, overrides) { rips.effectiveStartMs(song.id) }
+    val effEnd = remember(song.id, manifest, overrides, effStart) { rips.analogEndMs(song.id, effStart, song.length ?: entry?.durationMs) }
     val windowMs = if (effStart != null && effEnd != null && effEnd > effStart) effEnd - effStart else null
     val durMs = (windowMs ?: song.length?.takeIf { it > 0 } ?: entry?.durationMs?.takeIf { it > 0 } ?: 1L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     // Re-polled while the pane is visible: the AM engine can become ready after open (sign-in, late token).
