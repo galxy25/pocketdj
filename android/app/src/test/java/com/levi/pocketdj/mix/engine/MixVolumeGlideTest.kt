@@ -298,7 +298,7 @@ class MixVolumeGlideTest {
         val host = FakeHost()
         val glide = MixVolumeGlide(host, { null }, MultiTickDriver(), CoroutineScope(StandardTestDispatcher()))
         glide.setEnabled(true)
-        host.songs[A] = "s"; host.sources[A] = LevelSource(File.createTempFile("x", ".mp3").also { it.deleteOnExit() }, null, null)
+        host.songs[A] = "s"; host.sources[A] = LevelSource(File.createTempFile("nocache", ".mp3").also { it.deleteOnExit() }, null, null)
         glide.deckLoaded(A)
         assertEquals(LevelingStatus.UNAVAILABLE, glide.leveling.value[A].status)
     }
