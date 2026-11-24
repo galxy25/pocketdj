@@ -1,4 +1,4 @@
-state: reviewed
+state: implemented
 
 # P2-REM-8 - Jukebox panel Hero | Remote switch, remote links, retired token, showcase seed
 
