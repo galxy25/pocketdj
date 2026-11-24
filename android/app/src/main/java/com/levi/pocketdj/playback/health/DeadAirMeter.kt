@@ -218,6 +218,9 @@ class DeadAirMeter(
 
         const val FILE_NAME = "pocketdj-dead-air.json"
 
+        /** P2-MM-8: the backend label of a row the NP DSP started on its growing file (`growing` in `from->to` pairs). */
+        const val BACKEND_GROWING = "growing"
+
         private val JSON = Json { encodeDefaults = true; ignoreUnknownKeys = true }
     }
 }

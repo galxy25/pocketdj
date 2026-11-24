@@ -39,6 +39,13 @@ interface DspHostPorts {
     /** The engine ended its window: reset session-side state (resign the MediaSession) BEFORE the sequencer advances/replays. */
     fun engineEnded() {}
     fun log(line: String) {}
+    /**
+     * P2-MM-8: the playing row streams from its presigned URL (no local file) and Mix Mode's buffer already covers the
+     * playhead: the first control touch can move it onto the GROWING file. Cheap (a byte estimate); default off.
+     */
+    fun growingTouchReady(songId: String): Boolean = false
+    /** P2-MM-8: do that hand-off now ([play] = the listener wants sound; false stays paused). False = refused, nothing touched. */
+    suspend fun engageGrowingFromStream(songId: String, play: Boolean): Boolean = false
 }
 
 /** Immutable snapshot for the panel (the engine is not observable by Compose). */
@@ -106,7 +113,7 @@ class NowPlayingDspHost(
     fun available(): Boolean {
         val id = ports.currentSongId ?: return false
         if (ports.mixSessionActive || ports.appleMusicActive || ports.heldForResume) return false
-        return engine.isEngaged && engine.engagedSongId == id || ports.resolve(id) != null
+        return engine.isEngaged && engine.engagedSongId == id || ports.resolve(id) != null || ports.growingTouchReady(id)
     }
 
     /** Idempotent and serialized: the FIRST control touch hands the playing track off ExoPlayer into the DSP graph. */
@@ -116,7 +123,14 @@ class NowPlayingDspHost(
         val id = ports.currentSongId ?: return false
         if (engine.isEngaged && engine.engagedSongId == id) return true
         if (!available()) return false
-        val t = ports.resolve(id) ?: return false
+        val t = ports.resolve(id)
+        if (t == null) {
+            // P2-MM-8: no local file, but Mix Mode's buffer covers the playhead - the touch moves the row onto the growing file.
+            if (atSeconds != null || !ports.growingTouchReady(id)) return false
+            val ok = ports.engageGrowingFromStream(id, play ?: ports.playWanted)
+            publish()
+            return ok
+        }
         val pos = atSeconds ?: (ports.positionMs() / 1000.0)
         val go = play ?: ports.exoPlaying
         val ok = engine.engage(t.file, if (t.isCut) 0L else (t.startMs ?: 0).toLong(), ports.windowLengthMs(id), pos, go)
@@ -150,6 +164,7 @@ class NowPlayingDspHost(
     suspend fun carryIfReady() {
         val id = carryPending ?: return
         if (ports.currentSongId != id) { carryPending = null; return }
+        if (isEngagedFor(id)) { carryPending = null; return } // P2-MM-8: a growing start engaged the row itself (stems follow its completion)
         if (ports.loadedSongId != id) return
         carryPending = null
         engageLock.withLock { applyLockOnTrackStart(id) }

@@ -145,7 +145,9 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
                     interruptionOpen = d.interruptionOpen,
                     intentPlaying = d.intentPlaying,
                 )
-                if (engine == null || !seq.isRunning || !engine.hasLoadedItem) {
+                // P2-MM-8: while the NP DSP owns the audio (a growing-file start / touch hand-off) its own 5 s hold fallback is
+                // the backstop; the Exo-keyed ladder must never re-kick, retry or escalate a row it is not playing.
+                if (engine == null || !seq.isRunning || !engine.hasLoadedItem || npMix.growing.ownsAudio) {
                     lastPos = -1L
                     probe
                 } else {

@@ -701,6 +701,17 @@ class SetlistSequencer(
         if (running) publish()
     }
 
+    /**
+     * P2-MM-8: put the CURRENT row (by [uid]) back through the start funnel at [atMs] without moving the cursor. A row the
+     * NP DSP's growing file could not carry (a hold ran too long, its stream died) restarts the plain way, at the same
+     * song position. False = not running / held / the cursor is on another row.
+     */
+    fun restartCurrentRow(uid: String, atMs: Long?): Boolean {
+        if (!running || held || queue.getOrNull(index)?.uid != uid) return false
+        startPlayCurrent(fresh = false, resumeAtMs = atMs?.takeIf { it > 0 })
+        return true
+    }
+
     /** Acknowledge the one-shot device-unplayable banner. */
     fun clearDeviceUnplayable() {
         deviceQueueUnplayable = false
@@ -971,6 +982,9 @@ class SetlistSequencer(
         }
         return false
     }
+
+    /** The History / session context [item] plays under (P2-MM-8: the growing DSP card carries it like an ExoPlayer item). */
+    fun contextFor(item: QueueItem): PlayContext = requestContext(item)
 
     private fun requestContext(item: QueueItem): PlayContext {
         val base = capturedContext ?: PlayContext(PlayContext.SOURCE_SETLIST)

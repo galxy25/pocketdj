@@ -180,6 +180,8 @@ class NowPlayingDspEngine(
     override val isPlaying: Boolean get() = isEngaged && playWanted
     /** Audio has actually started flowing since [engage]. */
     val hasStarted: Boolean get() = started
+    /** The engaged growing song has ever made sound this engagement (survives hold resumes, unlike [hasStarted]). */
+    val producedAudio: Boolean get() = grow?.everStarted ?: started
 
     override val currentTimeSec: Double
         get() {
