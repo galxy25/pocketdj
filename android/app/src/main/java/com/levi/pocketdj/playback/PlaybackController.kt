@@ -1773,7 +1773,8 @@ class PlaybackController(
             val extras = item.requestMetadata.extras ?: return null
             if (!extras.getBoolean(PlaybackContract.EXTRA_ALBUM_RUN, false)) return null
             val clip = extras.getLong(PlaybackContract.EXTRA_CLIP_START_MS, -1L).takeIf { it >= 0 } ?: return null
-            return AlbumFileState(runId, clip, clip + rawPositionMs(c).coerceAtLeast(0L), c.isPlaying)
+            val dur = (RunTransportBus.rawPlayer?.duration ?: c.duration).takeIf { it > 0 && it != androidx.media3.common.C.TIME_UNSET }
+            return AlbumFileState(runId, clip, clip + rawPositionMs(c).coerceAtLeast(0L), c.isPlaying, dur)
         }
 
         override fun seekInFile(fileMs: Long): Boolean {

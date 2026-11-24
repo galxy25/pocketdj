@@ -217,6 +217,36 @@ fun AlbumDetailScreen(
                         HorizontalDivider()
                     }
 
+                    run {
+                        item(key = "waveform") {
+                            AlbumWaveformEditor(
+                                album = album,
+                                songsById = catalog.songsById,
+                                manifest = manifest,
+                                playFrom = { index, _ ->
+                                    // Start the album at track `index` through the sequencer (like Play); the one-shot
+                                    // cueNextStart armed by the editor makes the first song begin mid-track.
+                                    val set = graph.collections.playNow(
+                                        songIds = tracks.map { it.id },
+                                        name = album.name,
+                                        shuffle = false,
+                                        sourceToken = PlayContext.SOURCE_ALBUM,
+                                        originId = album.id,
+                                    )
+                                    if (set != null) {
+                                        // Whole album queued (previous-track / setlist match iOS), started at `index`.
+                                        val want = tracks.getOrNull(index)?.id
+                                        val entry = set.tracks.indexOfFirst { it.songId == want }.coerceAtLeast(0)
+                                        scope.launch { graph.playbackController.playSetlist(set, startEntryIndex = entry) }
+                                        onOpenSetlist?.invoke(NOW_PLAYING_SETLIST_ID, false)
+                                    } else {
+                                        scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
+                                    }
+                                },
+                            )
+                        }
+                    }
+
                     itemsIndexed(tracks, key = { _, song -> song.id }) { index, song ->
                         AlbumTrackRow(
                             position = index + 1,

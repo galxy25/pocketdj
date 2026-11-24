@@ -722,6 +722,13 @@ class SetlistSequencer(
 
     // ---- P2-ALB-5: album scrub APIs ------------------------------------------------------
 
+    /** P2-ALB-6: the loaded album-run item (media id + absolute file position) while the run is live, else null (waveform playhead). */
+    fun albumFileState(): AlbumFileState? = if (running) port.albumFileState() else null
+
+    /** P2-ALB-6: the playhead as an absolute position in the shared side file, null when no run item is loaded. */
+    fun albumFilePositionMs(): Long? = albumFileState()?.fileMs
+
+
     private val startCue = com.levi.pocketdj.playback.album.AlbumSeek.StartCue()
 
     /**

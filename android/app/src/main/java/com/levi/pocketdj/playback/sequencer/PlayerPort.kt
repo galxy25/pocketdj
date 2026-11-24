@@ -103,4 +103,6 @@ data class AlbumFileState(
     val fileMs: Long,
     /** The deck is audibly playing (not paused / buffering-idle). */
     val playing: Boolean,
+    /** The shared file's full duration when the engine knows it. */
+    val durationMs: Long? = null,
 )
