@@ -37,6 +37,9 @@ import com.levi.pocketdj.shell.SettingsSection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.plus
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
@@ -693,6 +696,61 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    // ---- P2-LIB-2 Apple Music library source (store + Web API indexer) --------------------------------
+
+    /** `pocketdj-apple-music-library.json` (iOS doc shape). The fold + sync entry are P2-LIB-3. Touch off-main. */
+    val amLibraryStore: com.levi.pocketdj.data.applemusic.AppleMusicLibraryStore by lazy {
+        com.levi.pocketdj.data.applemusic.AppleMusicLibraryStore(
+            File(app.appContext.filesDir, com.levi.pocketdj.data.applemusic.AppleMusicLibraryStore.FILE_NAME))
+    }
+
+    val amLibraryIndexer: com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer by lazy {
+        com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer(app.appleMusicApi, amLibraryStore)
+    }
+
+    private val amLibraryMutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * One index run (single-flight). Null when skipped: signed out, or the Settings toggle is off (a [manual]
+     * "Re-index" ignores the toggle). Stamps [AmLibrarySettings.LAST_INDEX_MS] on success.
+     */
+    suspend fun runAmLibraryIndex(
+        mode: com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer.Mode =
+            com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer.Mode.AUTO,
+        manual: Boolean = false,
+    ): com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer.Outcome? = withContext(Dispatchers.IO) {
+        if (!manual && !app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.ENABLED)) return@withContext null
+        if (!app.settings.current().hasAppleMusic) return@withContext null
+        amLibraryMutex.withLock {
+            amLibraryIndexer.run(mode).also {
+                if (it is com.levi.pocketdj.data.applemusic.AppleMusicLibraryIndexer.Outcome.Indexed) {
+                    app.settings.set(com.levi.pocketdj.data.applemusic.AmLibrarySettings.LAST_INDEX_MS, System.currentTimeMillis().toDouble())
+                }
+            }
+        }
+    }
+
+    /** Settings ▸ Apple Music "Re-index" hook: a FULL run on WorkManager (survives leaving the screen). */
+    fun reindexAmLibrary() = com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker.enqueueNow(app.appContext, manual = true)
+
+    /** After Apple Music sign-in (and on first launch while signed in with no index yet) enqueue one index run. */
+    private suspend fun watchAmLibrarySignIn() {
+        app.settings.settings.map { it.hasAppleMusic }.distinctUntilChanged().collect { signedIn ->
+            if (signedIn && app.settings.get(com.levi.pocketdj.data.applemusic.AmLibrarySettings.ENABLED)) {
+                com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker.enqueueNow(app.appContext)
+            }
+        }
+    }
+
+    override val periodicWork: List<com.levi.pocketdj.shell.PeriodicWorkSpec> by lazy {
+        com.levi.pocketdj.work.WorkerRegistry.register(
+            com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker.PERIODIC_ID,
+            com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker::class.java)
+        listOf(com.levi.pocketdj.shell.PeriodicWorkSpec(
+            com.levi.pocketdj.data.applemusic.AppleMusicLibraryWorker.PERIODIC_ID,
+            repeatMinutes = 24 * 60, requiresNetwork = true, requiresBatteryNotLow = true))
+    }
+
     override val settingsSections: List<SettingsSection> by lazy {
         listOf(com.levi.pocketdj.screens.settings.linkDeviceSection(), com.levi.pocketdj.screens.settings.sections.resetSection()) +
             if (diag.channel) listOf(debugSection()) else emptyList()
@@ -702,6 +760,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         // Keystore/prefs work must not run on the registry (main) path: start on IO.
         if (diag.channel) app.appScope.launch(Dispatchers.IO) { diag.start() }
         app.appScope.launch(Dispatchers.IO) { runCatching { retryPendingErasure() } }
+        app.appScope.launch(Dispatchers.IO) { runCatching { watchAmLibrarySignIn() } }
         listOf(diag.deepLink)
     }
 

@@ -113,6 +113,7 @@ data class PeriodicWorkSpec(
     val id: String,
     val repeatMinutes: Long,
     val requiresNetwork: Boolean = false,
+    val requiresBatteryNotLow: Boolean = false,
 )
 
 /**
