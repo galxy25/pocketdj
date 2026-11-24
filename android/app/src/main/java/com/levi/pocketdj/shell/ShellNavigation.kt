@@ -114,6 +114,7 @@ fun pushRouteFor(route: ShellRoute): String? = when (route) {
     is ShellRoute.Setlist -> setlistRoute(route.id, route.autoplay)
     is ShellRoute.SourcePlaylist -> sourcePlaylistRoute(route.id, route.sourceName)
     is ShellRoute.JukeboxJoin -> jukeboxJoinRoute(route.id)
+    ShellRoute.Settings -> SETTINGS_ROUTE
     is ShellRoute.BrowseSearch, is ShellRoute.Tab -> null
 }
 
@@ -415,6 +416,7 @@ private fun ShellRoute.homeTab(): PocketDjDestination? = when (this) {
     is ShellRoute.Playlist, is ShellRoute.Pocket, is ShellRoute.Setlist,
     is ShellRoute.SourcePlaylist -> PocketDjDestination.Playlists
     is ShellRoute.JukeboxJoin -> PocketDjDestination.Jukebox
+    ShellRoute.Settings -> null
 }
 
 @Composable
