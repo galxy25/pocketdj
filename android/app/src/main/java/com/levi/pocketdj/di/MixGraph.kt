@@ -157,6 +157,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             private val rejectedPresigns = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
             override fun consumePresignRejection(songId: String): Boolean = rejectedPresigns.remove(songId)
             override fun entry(songId: String) = ripsRepo.entry(songId)
+            override fun effectiveStartMs(songId: String) = ripsRepo.effectiveStartMs(songId)
             override suspend fun presignedUrl(songId: String, ttlSeconds: Int): String? {
                 if (MixDebug.publicRips) return ripsRepo.entry(songId)?.let { Endpoints.ripAudioUrl(it.key) }
                 if (!client.isConfigured()) return null
@@ -591,7 +592,13 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             override val appleMusicActive: Boolean get() = controller.isAppleMusicActive
             override fun resolve(songId: String) = resolver.resolve(songId)
             // The QUEUE row's clipped length (never the controller's now-playing, which may still be the previous row).
-            override fun windowLengthMs(songId: String): Long = seq.state.value.current?.takeIf { it.id == songId }?.lengthMs ?: 0L
+            override fun windowLengthMs(songId: String): Long {
+                val len = seq.state.value.current?.takeIf { it.id == songId }?.lengthMs ?: 0L
+                // An analog song ends at its end on the record (edited / detected + grace), not startMs + catalog length.
+                val start = resolver.resolve(songId)?.takeIf { !it.isCut }?.startMs?.toLong() ?: return len
+                val end = app.ripsRepository.analogEndMs(songId, start, len) ?: return len
+                return if (end > start) end - start else len
+            }
             override val loadedSongId: String? get() = controller.nowPlaying.value?.songId
             override val playWanted: Boolean get() = !seq.discriminator.pausedByListener
             override fun engineEnded() { npReleaseSession() }

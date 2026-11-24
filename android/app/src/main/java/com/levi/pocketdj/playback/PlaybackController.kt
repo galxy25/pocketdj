@@ -218,7 +218,7 @@ class PlaybackController(
     val rowResolvers = RowResolverRegistry(
         initial = listOf(
             LocalFileRowResolver { item -> localFiles.localUrlForPlayback(item) },
-            ManifestRowResolver(startOf = { id, _ -> rips.effectiveStartMs(id) }, entry = { id -> rips.entry(id) }),
+            ManifestRowResolver(startOf = { id, _ -> rips.effectiveStartMs(id) }, endOf = { id, st, len -> rips.analogEndMs(id, st, len) }, entry = { id -> rips.entry(id) }),
             CloudRowResolver(),
         ) + listOfNotNull(
             // PB-8: Apple Music rung. Null backend (AM not wired) / emulator (canPlayFullTrack=false) => falls through.
@@ -639,7 +639,7 @@ class PlaybackController(
         val queueAlbumContext = queueAlbumContext && startMs <= 0L &&
             !withContext(Dispatchers.Main) { sequencer.inRunningQueue(songId) }
 
-        return when (val action = PlayResolver.resolveBurnedFirst(songId, rips.entry(songId), ripConfigured, burnedFile(songId), { id, _ -> rips.effectiveStartMs(id) })) {
+        return when (val action = PlayResolver.resolveBurnedFirst(songId, rips.entry(songId), ripConfigured, burnedFile(songId), { id, _ -> rips.effectiveStartMs(id) }, { id, st, len -> rips.analogEndMs(id, st, len) })) {
             // AM ladder (specs/applemusic.md §6.0): a manifest hit (Stream) always
             // wins first; only for a non-manifest song with an appleMusicId do the
             // AM rungs (full-track → preview) sit BEFORE rip-on-demand / metadata.
@@ -1098,7 +1098,7 @@ class PlaybackController(
 
         // Manifest hits only — metadata-only tracks are skipped in queues.
         val playable = merged.tracks(album).mapNotNull { song ->
-            val action = PlayResolver.resolveBurnedFirst(song.id, rips.entry(song.id), false, burnedFile(song.id), { id, _ -> rips.effectiveStartMs(id) })
+            val action = PlayResolver.resolveBurnedFirst(song.id, rips.entry(song.id), false, burnedFile(song.id), { id, _ -> rips.effectiveStartMs(id) }, { id, st, len -> rips.analogEndMs(id, st, len) })
             (action as? PlayAction.Stream)?.let { song to it }
         }
         if (playable.isEmpty()) {
