@@ -204,3 +204,21 @@ object WheelAccessibility {
 
     fun nextHour(h: Int, delta: Int): Int = (((h + delta) % 24) + 24) % 24
 }
+
+/** Colour encoding (iOS `PocketWheelPaint`, §2.4): opacity 0.25 + 0.75 x confidence; one-offs at 50 % saturation; legend dimming. */
+object PocketWheelPaint {
+    data class Rgba(val r: Double, val g: Double, val b: Double, val a: Double)
+
+    fun fill(moment: PocketMoment, swatch: com.levi.pocketdj.data.pockets.wheel.PocketSwatch, dimmed: Boolean): Rgba {
+        var (r, g, b) = swatch.rgb(dark = true)
+        if (!moment.isRecurring) {
+            val l = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            r = (r + l) / 2; g = (g + l) / 2; b = (b + l) / 2
+        }
+        val opacity = (0.25 + 0.75 * moment.confidence) * (if (dimmed) 0.18 else 1.0)
+        return Rgba(r, g, b, opacity)
+    }
+
+    /** "12a" / "6a" / "12p" / "6p" outside-rim labels. */
+    fun hourTick(h: Int): String = when (h) { 0 -> "12a"; 6 -> "6a"; 12 -> "12p"; else -> "6p" }
+}

@@ -166,4 +166,39 @@ class WheelLayoutTest {
         assertEquals(0, WheelAccessibility.nextHour(23, 1))
         assertEquals(23, WheelAccessibility.nextHour(0, -1))
     }
+
+    @Test fun paintOpacityFollowsConfidenceOneOffsDesaturateAndLegendDims() {
+        val swatch = com.levi.pocketdj.data.pockets.wheel.PocketSwatch.Slot(0)
+        val recurring = moment(1, 1, PocketMode.MIX, 6.0).copy(distinctDays = 3)
+        val oneOff = recurring.copy(distinctDays = 1)
+        val full = PocketWheelPaint.fill(recurring, swatch, dimmed = false)
+        assertEquals(0.25 + 0.75 * recurring.confidence, full.a, 1e-12)
+        val (r, g, b) = swatch.rgb(dark = true)
+        assertEquals(r, full.r, 1e-12); assertEquals(g, full.g, 1e-12); assertEquals(b, full.b, 1e-12)
+        val faded = PocketWheelPaint.fill(oneOff, swatch, dimmed = false)
+        val lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        assertEquals((r + lum) / 2, faded.r, 1e-12)
+        assertTrue("one-offs sit between the colour and its grey", Math.abs(faded.r - lum) < Math.abs(r - lum))
+        assertEquals(full.a * 0.18, PocketWheelPaint.fill(recurring, swatch, dimmed = true).a, 1e-12)
+        assertEquals("12a", PocketWheelPaint.hourTick(0)); assertEquals("6a", PocketWheelPaint.hourTick(6))
+        assertEquals("12p", PocketWheelPaint.hourTick(12)); assertEquals("6p", PocketWheelPaint.hourTick(18))
+    }
+
+    @Test fun modeChipsCoverEveryModeOnceInTheDesignOrder() {
+        assertEquals(PocketMode.entries.toSet(), CHIP_MODES.toSet())
+        assertEquals(PocketMode.entries.size, CHIP_MODES.size)
+        assertEquals(listOf("Car", "Trip", "Run", "Walk", "Mix", "Browse", "Home"), CHIP_MODES.map { chipLabel(it) })
+    }
+
+    @Test fun runProgressIsNullWithoutAnActiveOrWhenFinished() {
+        assertNull(PocketWheelActions.progressOf(null))
+        val run = com.levi.pocketdj.data.pockets.wheel.PocketRunStore.RunState(
+            runId = "r", momentKey = "h08|d2|carPlay", label = "x", seed = "1",
+            profile = com.levi.pocketdj.data.pockets.wheel.PocketProfile(com.levi.pocketdj.data.pockets.wheel.PocketProfile.Tier.RICH, caption = "c", detail = "d"),
+            playedThrough = 12, startedAtMs = 0.0,
+        )
+        val p = PocketWheelActions.progressOf(run)!!
+        assertEquals(12, p.done); assertEquals(100, p.total); assertEquals(PocketMomentKey(8, 2, PocketMode.CAR_PLAY), p.key)
+        assertNull(PocketWheelActions.progressOf(run.copy(finished = true)))
+    }
 }

@@ -835,6 +835,17 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }
     Text(pocketStatus, style = MaterialTheme.typography.bodySmall)
 
+    // P2-POC-9: the Pocket wheel preview (ignores ParityFlags.POCKET_WHEEL; History hosts it from P2-POC-10).
+    var wheelPreview by remember { mutableStateOf(false) }
+    ToggleRow("Wheel preview", wheelPreview) { wheelPreview = it }
+    if (wheelPreview) {
+        val wheelScope = androidx.compose.runtime.rememberCoroutineScope()
+        com.levi.pocketdj.screens.history.wheel.PocketWheelHost(
+            graph = host.graph.pocketsGraph,
+            onPause = { wheelScope.launch { runCatching { host.graph.playbackController.pause() } } },
+        )
+    }
+
     // BRW-10 verify probe (debug only): log the In Da Zone queue the ranker would build.
     var zoneStatus by remember { mutableStateOf("Zone: idle") }
     OutlinedButton(onClick = {

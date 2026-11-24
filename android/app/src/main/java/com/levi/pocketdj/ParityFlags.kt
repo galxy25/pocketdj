@@ -26,4 +26,10 @@ object ParityFlags {
 
     /** Debug screen toggle ("Parity: show DJ Mode chip"): lets the emulator drive the DJ-6 shell before P2-DJ-8 flips [DJ_MODE]. */
     @Volatile var DEBUG_FORCE_DJ_MODE: Boolean = false
+
+    /**
+     * P2-POC-9: the Pocket wheel inside History > Pockets (Wheel | List). `false` until P2-POC-10 hosts it there.
+     * Debug > "Wheel preview" ignores this flag.
+     */
+    val POCKET_WHEEL: Boolean get() = false
 }
