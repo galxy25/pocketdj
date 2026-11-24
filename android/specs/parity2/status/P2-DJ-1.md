@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 ## Summary
 New pure `playback/dj/AutoTransition.kt` (advancePlan/immediatePlan, equalPowerGains, glideParams, outgoing/incomingRamp,
@@ -18,3 +18,11 @@ octaveFolded/syncRate/glideRate/glidePitch/glideParams/splitmix64/rollTexture/fx
 
 ## Questions for Levi
 None.
+
+## Review
+- GlideMachine.begin skip floor hand-rolled -> fixed: now routes through AutoTransition.immediatePlan with real fxGlide/mixGlide flags.
+- MixMath.crossfadeFactor own cosine law -> fixed: delegates to AutoTransition.equalPowerGains; test asserts exact agreement (5802 tests, 0 failures, +1).
+- AutoDj import order/blank line (NIT) -> fixed.
+- splitmix64 iOS goldens (NIT) -> not done: port compared line-for-line against Swift; published vectors kept.
+
+fixes applied
