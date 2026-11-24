@@ -113,6 +113,15 @@
                 <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <!-- SURF-6: "search PocketDJ for ..." -> Browse search. -->
+            <intent-filter>
+                <action android:name="com.google.android.gms.actions.SEARCH_ACTION" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
             <!-- SURF-5: static launcher shortcuts (res/xml/shortcuts.xml); dynamic ones come from ShortcutsPublisher. -->
             <meta-data
                 android:name="android.app.shortcuts"
