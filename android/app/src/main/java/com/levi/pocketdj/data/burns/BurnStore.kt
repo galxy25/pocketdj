@@ -5,6 +5,8 @@ import com.levi.pocketdj.data.catalog.IndexAlbum
 import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.edition.SongVariant
 import com.levi.pocketdj.data.rips.RipManifestEntry
+import com.levi.pocketdj.data.storage.TemporaryRemoval
+import com.levi.pocketdj.data.storage.TemporarySweep
 import com.levi.pocketdj.data.store.VersionedJsonWriter
 import com.levi.pocketdj.data.transfers.TransferCoordinator
 import com.levi.pocketdj.data.transfers.TransferKind
@@ -137,7 +139,11 @@ class BurnStore(
         onTemporaryHoldsChanged?.invoke()
     }
 
-    private fun userFolderPath(root: BurnRoot): String? = root.dir.absoluteFile.normalize().path
+    /**
+     * The picked folder's identity for holds: its SAF tree (a switch to another tree changes it even
+     * though the local staging dir is the same), else the directory path.
+     */
+    private fun userFolderPath(root: BurnRoot): String? = root.treeUri ?: root.dir.absoluteFile.normalize().path
 
     /** True only while an in-process burn loop holds the run lock (NOT background transfers). */
     val loopActive: Boolean get() = runLock.isLocked
@@ -946,6 +952,90 @@ class BurnStore(
         if (_holds.value.isNotEmpty()) mutateHolds { dropAll(goners.keys) }
         save()
     }
+
+    /**
+     * THE SWEEP PRIMITIVE (iOS `removeTemporaryAssets`): delete exactly what each listed song's hold
+     * lists - the buffered audio + sidecar and the stem parts the buffer lane created - and nothing
+     * else (a per-song analog cut, a beat grid, a stem the user pinned all stay). Picked-folder files
+     * go only when the folder is unchanged and the file's mtime still matches what we recorded;
+     * otherwise they are RELEASED (kept on disk, dropped from the hold). An unreachable folder keeps
+     * the hold for a later sweep. Saves once.
+     */
+    fun removeTemporaryAssets(songIds: Collection<String>): TemporaryRemoval {
+        val holdsNow = _holds.value
+        val ids = songIds.toSet().filter { holdsNow[it] != null }
+        if (ids.isEmpty()) return TemporaryRemoval()
+        val snapshot = _items.value
+        val roots = folder.roots()
+        val appRoot = roots.firstOrNull { !it.isUserFolder }
+        val userRoot = roots.firstOrNull { it.isUserFolder }
+        val userPath = userRoot?.let(::userFolderPath)
+        var songs = 0
+        var bytes = 0L
+        var kept = 0
+        val goners = LinkedHashMap<String, File>()
+        val audioDone = HashSet<String>()
+        for (id in ids) {
+            val h = holdsNow.getValue(id)
+            if (!h.audio) { audioDone += id; continue }
+            val item = snapshot[id]
+            if (item == null) { audioDone += id; continue } // dangling hold
+            if (item.state != BurnState.READY) { audioDone += id; continue } // an explicit burn took over
+            val dir = itemDir(item) ?: continue // unreachable -> keep
+            if (item.wasAppStorage == false) {
+                if (userPath != h.userFolderPath) { audioDone += id; continue } // folder switched: release
+                if (item.audioFileName.isNotEmpty() &&
+                    !TemporarySweep.fileIsOurs(h, item.audioFileName, File(dir, item.audioFileName).mtimeOrNull())
+                ) { audioDone += id; continue } // rewritten since we wrote it: release
+            }
+            goners[id] = dir
+        }
+        val survivorAudio = snapshot.values.filter { it.songId !in goners }.map { it.audioFileName }.toSet()
+        val mirrorNames = LinkedHashMap<String?, MutableSet<String>>()
+        for ((id, dir) in goners) {
+            val item = snapshot.getValue(id)
+            val mirror = if (item.wasAppStorage == false) mirrorNames.getOrPut(item.treeUri) { LinkedHashSet() } else null
+            if (item.audioFileName.isNotEmpty() && item.audioFileName !in survivorAudio) {
+                File(dir, item.audioFileName).delete(); mirror?.add(item.audioFileName)
+            }
+            if (item.sidecarFileName.isNotEmpty()) { File(dir, item.sidecarFileName).delete(); mirror?.add(item.sidecarFileName) }
+            audioDone += id
+        }
+        if (goners.isNotEmpty()) dropItems(goners.keys)
+        val updated = LinkedHashMap<String, TemporaryHold?>()
+        for (id in ids) {
+            val h = holdsNow.getValue(id)
+            val inUser = h.stemPartsInUserFolder.orEmpty().toSet()
+            val keptParts = ArrayList<String>()
+            for (part in h.stemParts) {
+                if (part !in BurnFileNames.STEM_NAMES) continue // unknown name: release
+                val name = BurnFileNames.stemFileName(id, part)
+                if (part in inUser) {
+                    if (userRoot == null) { keptParts += part; continue } // unreachable: keep
+                    if (userPath != h.userFolderPath) continue // folder switched: release
+                    val f = File(userRoot.dir, name)
+                    if (!TemporarySweep.fileIsOurs(h, name, f.mtimeOrNull())) continue // changed: release
+                    f.delete()
+                    mirrorNames.getOrPut(userRoot.treeUri) { LinkedHashSet() }.add(name)
+                } else {
+                    if (appRoot == null) { keptParts += part; continue }
+                    File(appRoot.dir, name).delete()
+                }
+                bytes += h.stemBytes?.get(part) ?: 0L
+            }
+            val audioGone = id in audioDone
+            if (audioGone && h.audio && id in goners) bytes += h.audioBytes ?: 0L
+            val after = TemporarySweep.afterRemoval(h, audioGone, keptParts)
+            updated[id] = after
+            if (after == null) songs++ else kept++
+        }
+        for ((tree, names) in mirrorNames) folder.deleteMirrored(tree, names)
+        mutateHolds { for ((id, h) in updated) replace(id, h) }
+        save()
+        return TemporaryRemoval(songs, bytes, kept)
+    }
+
+    private fun File.mtimeOrNull(): Double? = lastModified().takeIf { it > 0 }?.toDouble()
 
     /** Remove EVERY burn, then sweep aux leftovers (stems for never-burned songs). */
     fun removeAllBurns() {

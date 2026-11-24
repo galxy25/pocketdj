@@ -15,6 +15,8 @@ class AppLifecycleObserver(
     private val scope: CoroutineScope,
     private val onForeground: List<() -> Unit>,
     private val flush: suspend () -> Unit,
+    /** Run on ON_STOP before the flush (cancel foreground-only tickers). */
+    private val onBackground: List<() -> Unit> = emptyList(),
 ) : DefaultLifecycleObserver {
 
     override fun onStart(owner: LifecycleOwner) {
@@ -22,6 +24,7 @@ class AppLifecycleObserver(
     }
 
     override fun onStop(owner: LifecycleOwner) {
+        for (hook in onBackground) runCatching { hook() }
         scope.launch { runCatching { flush() } }
     }
 

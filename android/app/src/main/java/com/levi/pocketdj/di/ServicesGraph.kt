@@ -16,6 +16,7 @@ import com.levi.pocketdj.data.transfers.WorkManagerTransferWork
 import com.levi.pocketdj.diag.DiagServices
 import java.io.File
 import com.levi.pocketdj.screens.settings.sections.debugSection
+import com.levi.pocketdj.mix.engine.autoUpcoming
 import com.levi.pocketdj.mix.nowplaying.npMixSettingsFlow
 import kotlinx.coroutines.flow.stateIn
 import com.levi.pocketdj.shell.DeepLinkHandler
@@ -185,17 +186,38 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             burns = com.levi.pocketdj.data.storage.BurnStorePruneAdapter(burnStore),
             playStats = playStats,
             settings = storageSettings,
-            protectedSongIds = {
-                com.levi.pocketdj.data.storage.protectedIds(
-                    current = app.playbackGraph.sequencer.state.value.current,
-                    deckSongIds = runCatching {
-                        val e = app.mixGraph.mixEngine
-                        com.levi.pocketdj.mix.model.Deck.entries.map { d -> e.loaded(d)?.songId }
-                    }.getOrDefault(emptyList()),
-                )
-            },
-            log = { android.util.Log.i("PocketDJ", "[storage] $it") },
-        )
+            protectedSongIds = ::sweepProtectedIds,
+            scope = app.appScope,
+            log = { android.util.Log.i("PocketDJ.storage", it) },
+        ).also { sm -> burnStore.onTemporaryHoldsChanged = { sm.scheduleCapSweepIfNeeded() } }
+    }
+
+    /**
+     * Song ids the prune AND the temporary sweep must spare RIGHT NOW (iOS `protectedSongIds`): the
+     * current row (base + resolve id) and, current + `npMixBufferAhead`, the NP window (a restored
+     * held session included - the queue is there before the first play), the Mix decks, the Auto
+     * queue's next tracks, live MixStreamLoader streams + claimed stem sets.
+     */
+    private fun sweepProtectedIds(): Set<String> {
+        val st = app.playbackGraph.sequencer.state.value
+        val ahead = npMixSettings.value.bufferAhead
+        val window = st.queue.drop(st.index.coerceAtLeast(0)).take(ahead + 1)
+        val decks = runCatching {
+            val e = app.mixGraph.mixEngine
+            com.levi.pocketdj.mix.model.Deck.entries.map { d -> e.loaded(d)?.songId }
+        }.getOrDefault(emptyList())
+        val auto = runCatching {
+            app.mixGraph.autoDj.autoUpcoming.take(ahead + 1).map { it.songId }
+        }.getOrDefault(emptyList())
+        val live = runCatching {
+            val loader = app.mixGraph.mixStreamLoader
+            val streams = loader.streams.filter { (_, s) -> !s.isComplete && !s.failed }.map { (k, s) ->
+                com.levi.pocketdj.mix.stream.MixStreamLoader.stemSongId(k) ?: s.songId
+            }
+            streams + loader.stemSets.filterValues { !it.failed }.keys
+        }.getOrDefault(emptyList())
+        return com.levi.pocketdj.data.storage.protectedIds(st.current, decks + auto + live) +
+            window.flatMap { listOf(it.id, it.resolveId) }
     }
 
     val burnStorageOps: com.levi.pocketdj.data.storage.StorageService.BurnStorageOps by lazy {

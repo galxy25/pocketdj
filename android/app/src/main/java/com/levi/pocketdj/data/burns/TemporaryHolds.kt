@@ -47,6 +47,9 @@ class TemporaryHoldLedger(initial: Collection<TemporaryHold> = emptyList()) {
     /** Remove one hold outright (the sweep, after deleting its files). */
     fun drop(songId: String): TemporaryHold? = map.remove(songId)
 
+    /** Replace (or, with null, remove) one hold: the sweep's post-removal write. */
+    fun replace(songId: String, hold: TemporaryHold?) { if (hold == null) map.remove(songId) else map[songId] = hold }
+
     /** Files for [songIds] are gone (removeBurns): their holds go with them. */
     fun dropAll(songIds: Collection<String>) { songIds.forEach { map.remove(it) } }
 
