@@ -70,7 +70,14 @@ class AlbumRunPlayer(
         if (step is AlbumRun.GlideStep.SeekThenRetarget) port.seekInFile(step.toFileMs)
         arm(queue, pos, tl, nextSeg.startMs, st.clipStartMs)
         log("[playback] album glide to=${item.id} index=${pos + 1}/${queue.size} file=${nextSeg.startMs}")
-        scope.launch { retarget(item, startPlayback = false) }
+        scope.launch {
+            // The cursor already moved: a failed retarget must not leave the engine item tagged with the old song.
+            if (!retarget(item, startPlayback = false)) {
+                log("[playback] album glide retarget failed - reloading song=${item.id}")
+                port.armBoundary("", null, 0L)
+                seq.reloadCurrentAfterFailedRetarget()
+            }
+        }
         return true
     }
 

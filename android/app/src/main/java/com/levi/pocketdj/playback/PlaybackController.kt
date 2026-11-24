@@ -1139,7 +1139,10 @@ class PlaybackController(
             val idx = c.currentMediaItemIndex
             val cur = c.currentMediaItem
             if (cur == null || cur.mediaId != songId || !sequencerOwnsPlayer || activeBackend != ActiveBackend.EXO) return@withController false
+            val wasRun = albumRunMediaId != null
             val extras = Bundle(cur.requestMetadata.extras ?: Bundle()).apply {
+                // A swapped item has its own song window: it is no longer an album run item.
+                remove(PlaybackContract.EXTRA_ALBUM_RUN)
                 putString(PlaybackContract.EXTRA_URL, url)
                 remove(PlaybackContract.EXTRA_CLIP_START_MS)
                 remove(PlaybackContract.EXTRA_CLIP_END_MS)
@@ -1152,6 +1155,7 @@ class PlaybackController(
                 .setRequestMetadata(MediaItem.RequestMetadata.Builder().setMediaUri(Uri.parse(url)).setExtras(extras).build())
                 .build()
             handOffAudio = kotlinx.coroutines.CompletableDeferred()
+            if (wasRun) clearAlbumRun()
             c.replaceMediaItem(idx, next)
             // The hop onto the main thread took time while the stream kept playing: resume where it is NOW.
             val elapsed = if (c.playWhenReady) (android.os.SystemClock.elapsedRealtime() - t0).coerceAtLeast(0L) else 0L
@@ -1777,7 +1781,12 @@ class PlaybackController(
         RunTransportBus.albumArmer?.arm("", null, 0L)
     }
 
-    /** Other owners of the audio (DJ tail deck, Stem Lock) bind here: while true an album run never moves in place. */
+    /**
+     * Other owners of the audio (DJ tail deck, Stem Lock) bind here: while true an album run never moves in place.
+     * ACCEPTANCE GAP: no Android DSP / Mix / DJ-tail / Stem Lock engagement signal exists yet in this package; the run
+     * already declines whenever Exo does not front the session ([exoFronts]), which covers the engine hand-overs that
+     * exist today. Bind the new signals here when they land.
+     */
     @Volatile var albumRunDeclines: () -> Boolean = { false }
 
     /**

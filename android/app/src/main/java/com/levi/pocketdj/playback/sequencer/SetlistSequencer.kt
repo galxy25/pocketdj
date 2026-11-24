@@ -942,6 +942,15 @@ class SetlistSequencer(
         return playGeneration != genBefore || !running
     }
 
+    /**
+     * An in-place engine retarget (album glide) failed after the cursor already moved: load the current row normally
+     * (not a fresh start, so no interceptor re-claims it and no second History play is recorded).
+     */
+    fun reloadCurrentAfterFailedRetarget() {
+        if (!running || held || index >= queue.size) return
+        startPlayCurrent(fresh = false)
+    }
+
     /** Ask the natural-end interceptors; true when one took the advance. */
     private fun offerNaturalEnd(): Boolean {
         val claimers = advanceInterceptors

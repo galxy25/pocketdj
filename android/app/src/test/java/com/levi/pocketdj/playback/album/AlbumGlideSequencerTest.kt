@@ -48,6 +48,7 @@ class AlbumGlideSequencerTest {
         var fileMs = 0L
         var playing = true
         var isRun = false
+        var retargetOk = true
 
         override suspend fun load(request: PlayRequest) {
             loads += request
@@ -76,6 +77,7 @@ class AlbumGlideSequencerTest {
         }
         override suspend fun retargetInPlace(item: QueueItem, startPlayback: Boolean): Boolean {
             calls += "retarget ${item.id}"
+            if (!retargetOk) return false
             retargets += item.id to startPlayback
             mediaId = item.id
             if (startPlayback) playing = true
@@ -142,6 +144,17 @@ class AlbumGlideSequencerTest {
         assertTrue("no seek: the playhead just rolled on", r.port.seeks.isEmpty())
         // the last song reached through the album plays to the file's end: nothing armed
         assertNull(r.port.armed!!.second)
+    }
+
+    @Test fun failedGlideRetargetFallsBackToALoadOfTheCurrentRow() = runTest {
+        val r = rig(mapOf("gl_1" to 0L, "gl_2" to 180_000L))
+        r.seq.play(rows("gl_1" to 150_000, "gl_2" to 120_000)); r.settle()
+        r.port.retargetOk = false
+        r.port.fileMs = 180_200
+        r.seq.handleEnded("gl_1"); r.settle()
+        assertEquals(1, r.seq.currentIndex())
+        assertEquals("the engine item must carry the new song", "gl_2", r.port.mediaId)
+        assertEquals(listOf("load gl_1", "retarget gl_2", "load gl_2").filter { it != "retarget gl_2" }, r.port.calls.filter { it.startsWith("load") })
     }
 
     @Test fun albumRunPlaysThroughTheGapAfterADetectedEnd() = runTest {
