@@ -86,9 +86,15 @@ class DeepLinkDispatcher(
     @Volatile private var remoteJoinParkedAt = 0L
 
     /** The parked token, unless it is stale (an old scan must not join a session minutes later). */
-    fun takePendingRemoteJoin(): String? {
+    fun takePendingRemoteJoin(): String? = takePendingRemoteJoinTarget()?.first
+
+    @Volatile private var remoteJoinInternet = false
+
+    /** Like [takePendingRemoteJoin], plus whether the invite was a broker (`join-net`) one: the starter must match what the inviter used. */
+    fun takePendingRemoteJoinTarget(): Pair<String, Boolean>? {
+        val internet = remoteJoinInternet
         val token = _pendingRemoteJoin.getAndUpdate { null } ?: return null
-        return if (clock() - remoteJoinParkedAt <= REMOTE_JOIN_TTL_MS) token else null
+        return if (clock() - remoteJoinParkedAt <= REMOTE_JOIN_TTL_MS) token to internet else null
     }
 
     private val _pendingGame = MutableStateFlow<GameLink?>(null)
@@ -161,6 +167,7 @@ class DeepLinkDispatcher(
                 val join = seams.remoteJoin
                 if (join != null) join(link.token) else {
                     remoteJoinParkedAt = clock()
+                    remoteJoinInternet = link.internet
                     _pendingRemoteJoin.value = link.token
                     postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
                     seams.showRemote?.invoke()
