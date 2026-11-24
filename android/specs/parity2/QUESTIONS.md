@@ -53,3 +53,5 @@ Format: `Q<n> [package] question — default meanwhile`. Integrators append new 
 ## ANSWERED
 
 (none yet)
+- **P2Q41 [P2-REL-1]** docs/legal/PRIVACY.md (lawyer-reviewed) says Android does not read physical activity (~lines 66, 141, 207); the Pocket Wheel motion feature now uses ACTIVITY_RECOGNITION. Approve applying the replacement text from RELEASE.md section 4 before the release ships? — *Default: not applied; release blocked on it.*
+- **P2Q42 [P2-REL-1]** Signed AAB not built (needs signing keys; run android/scripts/release-aab.sh from main). Build and upload to Play now? — *Default: no upload until you say so.*

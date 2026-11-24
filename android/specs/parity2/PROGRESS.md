@@ -214,3 +214,14 @@ Emulator (API 36, screenshots in pocketdj-parity2-pkgs/_shots/wave11/):
 Integrator changes: `ksp { arg("appfunctions:aggregateAppFunctions","true") }` in app/build.gradle.kts (app module aggregates app_functions*.xml); DebugScreen "Mix Together loopback" seed.
 
 Notes: an unqualified SEARCH_ACTION intent shows a chooser (Drive/Maps also handle it) - expected. Open: P2Q36-P2Q40.
+
+## Wave 12
+
+Merged: P2-REL-1 (release docs, ledger reconciliation, DEVICE-CHECKLIST, RELEASE.md). Docs-only. Tests: 7927, 0 failures (count unchanged by design); assembleDebug and assembleRelease green (needed -Pkotlin.daemon.jvmargs=-Xmx6g).
+
+Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave12/):
+- P2-REL-1 smoke PASS (partial wheel): release APK (assembleRelease, zipaligned + debug-key signed because release-aab.sh needs the real keys) installs and launches; onboarding -> Browse/Collections/History/More render, no FATAL. Debug build: seed rip + burn + "Play seed queue" plays (PlaybackState PLAYING), Mix Mode and DJ Mode chips toggled during playback, Mix tab (two decks) renders, Remote showcase seed (pdj.seedRemote=showcase) shows Backseat session with Car at 1:37. No FATAL/ANR from com.levi.pocketdj (only unrelated GMS DeviceDoctor lines).
+- Wheel tab: not visible on a fresh pocket; it is gated on the server "wheel" capability (serverSupportsWheel), and the emulator has no pockets server, so it cannot appear here. Device/server-only.
+- Release build smoke ran Browse/Collections/History/More only (release has no debug seeds, so playback was smoked on the debug build).
+
+Open: signed AAB not built (needs signing keys, run android/scripts/release-aab.sh from main). docs/legal/PRIVACY.md still says Android does not read physical activity; replacement text is in RELEASE.md section 4, must be applied before shipping.

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-REL-1: Release docs and build
 
