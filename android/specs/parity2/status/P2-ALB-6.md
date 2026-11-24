@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # P2-ALB-6 - Album waveform editor
 

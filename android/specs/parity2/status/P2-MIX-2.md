@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-MIX-2 - Mix tab Volume Glide + visible deck trims
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-DJ-7: NP DSP two-deck transition engine
 

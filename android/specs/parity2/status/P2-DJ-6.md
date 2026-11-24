@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-DJ-6: DJ Mode session shell
 

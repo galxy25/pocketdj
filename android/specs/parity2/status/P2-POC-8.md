@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-POC-8 Pocket run store
 

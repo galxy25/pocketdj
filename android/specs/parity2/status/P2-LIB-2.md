@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-LIB-2: Apple Music library source, part 1 (store + Web API indexer)
 
