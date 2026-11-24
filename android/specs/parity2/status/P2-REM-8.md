@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-REM-8 - Jukebox panel Hero | Remote switch, remote links, retired token, showcase seed
 
@@ -18,3 +18,12 @@ state: implemented
 - None.
 
 Summary: implemented; JVM suite 7467 tests (11 new in JukeboxHubModeTest), 0 failures.
+
+## Review
+
+- Finding 1 (remoteAvailable not observable) -> fixed: RemoteShowcaseSeed.running StateFlow, collected by the hub; test asserts it tracks start/stop.
+- Finding 2 (switch placement / flip when off-tab) -> rejected for the flip: iOS onChange fires on transitions only, and flipping on every appear would override a manual Hero choice during a session. The in-panel switch placement is an accepted, disclosed deviation.
+- Finding 3 (join cancelled/replayed; seed over real session) -> fixed: request consumed before the join, work runs NonCancellable; seed skipped when controller.isActive.
+- Finding 4 (NIT, no composable test) -> not done.
+
+fixes applied. Unit tests: 7470 run, 0 failures; assembleDebug OK.

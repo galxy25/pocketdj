@@ -48,7 +48,8 @@ fun JukeboxHubScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit
     val scope = rememberCoroutineScope()
     val controller = graph.remoteGraph.controller
     val storedRaw by graph.settings.flow(JukeboxPanelModeStore.KEY).collectAsState(initial = JukeboxPanelMode.HERO.raw)
-    val remoteAvailable = ParityFlags.REMOTE || RemoteShowcaseSeed.isRunning
+    val seedRunning by RemoteShowcaseSeed.running.collectAsState()
+    val remoteAvailable = ParityFlags.REMOTE || seedRunning
     val mode = JukeboxPanelModeStore.effective(JukeboxPanelMode.fromRaw(storedRaw), remoteAvailable)
 
     fun setMode(m: JukeboxPanelMode) { scope.launch { graph.settings.set(JukeboxPanelModeStore.KEY, m.raw) } }
@@ -67,7 +68,11 @@ fun JukeboxHubScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit
     val request by RemotePanelRequests.pending.collectAsState()
     LaunchedEffect(request) {
         val req = request ?: return@LaunchedEffect
-        if (req.showcase) {
+        // Consume first: a join that is cancelled mid-flight (tab switch) must not replay on the next composition.
+        // The key changes to null on consume, so the rest runs NonCancellable to finish the join.
+        RemotePanelRequests.consume(req)
+        kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+        if (req.showcase && !controller.isActive.value) {
             val songs = graph.catalogRepository.state.value.catalog?.songsById?.values?.toList().orEmpty()
             RemoteShowcaseSeed.start(controller, songs)
         }
@@ -79,7 +84,7 @@ fun JukeboxHubScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit
                 if (outcome is JoinOutcome.Failed) controller.setStatus("Couldn’t join the session: ${outcome.message}")
             }
         }
-        RemotePanelRequests.consume(req)
+        }
     }
 
     Column(modifier.fillMaxSize().testTag("jukebox-hub")) {

@@ -115,6 +115,7 @@ class JukeboxHubModeTest {
             val rig = RemoteShowcaseSeed.start(local, songs, scope)
             repeat(6) { runCurrent() }
             assertTrue(RemoteShowcaseSeed.isRunning)
+            assertTrue(RemoteShowcaseSeed.running.value)
             assertTrue(local.isActive.value)
             assertEquals(RemoteSessionMode.BACKSEAT, local.mode.value)
             assertTrue(local.peers.any { it.name == "Car" })
@@ -124,6 +125,7 @@ class JukeboxHubModeTest {
             RemoteShowcaseSeed.stop()
         }
         assertFalse(RemoteShowcaseSeed.isRunning)
+        assertFalse(RemoteShowcaseSeed.running.value)
     }
 
     @get:org.junit.Rule val tmp = org.junit.rules.TemporaryFolder()

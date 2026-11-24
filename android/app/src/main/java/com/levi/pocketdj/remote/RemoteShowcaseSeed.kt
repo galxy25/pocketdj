@@ -6,6 +6,8 @@ import com.levi.pocketdj.playback.sequencer.QueueItem
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * DEBUG-only store-screenshot seed (`adb shell am start -n com.levi.pocketdj/.MainActivity --es pdj.seedRemote showcase`):
@@ -58,6 +60,11 @@ object RemoteShowcaseSeed {
     /** True while the seed's session exists (the hub shows the Remote half regardless of [com.levi.pocketdj.ParityFlags.REMOTE]). */
     val isRunning: Boolean get() = rig != null
 
+    private val _running = MutableStateFlow(false)
+
+    /** Observable [isRunning], so Compose recomposes the hub when the seed starts or stops. */
+    val running: StateFlow<Boolean> get() = _running
+
     /**
      * Attach [controller] (this device) as the Backseat host/controller and a fresh "Car" speaker as the joiner.
      * Idempotent: a second call while the first rig is alive does nothing.
@@ -77,10 +84,10 @@ object RemoteShowcaseSeed {
         val carLink = hub.join("b-car")
         controller.attach(local, RemoteSessionMode.BACKSEAT, asHost = true, seed = model(songs, System.currentTimeMillis().toDouble()))
         car.attach(carLink, RemoteSessionMode.BACKSEAT, asHost = false)
-        return Rig(hub, car, carTarget).also { rig = it }
+        return Rig(hub, car, carTarget).also { rig = it; _running.value = true }
     }
 
-    @Synchronized fun stop() { rig?.stop(); rig = null }
+    @Synchronized fun stop() { rig?.stop(); rig = null; _running.value = false }
 
     private fun defaultScope() = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 }
