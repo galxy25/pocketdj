@@ -33,6 +33,9 @@ sealed interface DeepLink {
     /** A `.pdjdiagkey` file; SVC-5's own handler consumes it, the dispatcher ignores it. */
     data class DiagKey(val uri: String) : DeepLink
 
+    /** One of our add/automix links whose target couldn't be resolved (e.g. a spoken name): surfaces [message]. */
+    data class Unresolved(val message: String) : DeepLink
+
     /** Not ours (OAuth redirects, unrelated https URLs, garbage). */
     data object None : DeepLink
 }
@@ -122,16 +125,20 @@ object DeepLinkParser {
             }
             "add" -> {
                 val collection = query["collection"]?.trim().orEmpty()
-                if (CollectionRef.target(collection) == null) DeepLink.None
+                if (collection.isEmpty()) DeepLink.None
+                else if (CollectionRef.target(collection) == null)
+                    DeepLink.Unresolved("Couldn't find a pocket or playlist called \"$collection\" — open it in the app and add from there.")
                 else DeepLink.AddToCollection(collection, query["song"]?.trim()?.takeIf { it.isNotEmpty() })
             }
             "automix" -> {
-                val id = parts.getOrNull(2)?.takeIf { it.isNotBlank() } ?: return DeepLink.None
-                val source = when (arg?.lowercase()) {
+                val unresolved = DeepLink.Unresolved("Couldn't tell which pocket, playlist or setlist to auto-mix — start it from the app.")
+                if (arg == null) return DeepLink.None
+                val id = parts.getOrNull(2)?.takeIf { it.isNotBlank() } ?: return unresolved
+                val source = when (arg.lowercase()) {
                     "pocket" -> MixSource.Pocket(id)
                     "playlist" -> MixSource.Playlist(id)
                     "setlist" -> MixSource.Setlist(id)
-                    else -> return DeepLink.None
+                    else -> return unresolved
                 }
                 DeepLink.AutoMix(source, truthy(query["shuffle"]))
             }

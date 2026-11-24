@@ -152,6 +152,7 @@ class DeepLinkDispatcher(
                 val mix = seams.autoMix
                 if (mix != null) mix(link.source, link.shuffle) else postMessage("Auto-Mix isn't available yet")
             }
+            is DeepLink.Unresolved -> postMessage(link.message)
             is DeepLink.Navigate -> postRoute(link.route)
             is DeepLink.CollectionFile -> {
                 val import = seams.importCollection

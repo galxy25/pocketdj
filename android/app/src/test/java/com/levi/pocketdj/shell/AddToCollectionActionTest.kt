@@ -188,8 +188,18 @@ class AddToCollectionActionTest {
             DeepLinkParser.parse("pocketdj://add?collection=playlist%3Apls_1&song=sng_9"),
         )
         assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://add"))
-        assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://add?collection=setlist:x"))
-        assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://add?collection=nonsense"))
+        assertTrue(DeepLinkParser.parse("pocketdj://add?collection=setlist:x") is DeepLink.Unresolved)
+        assertTrue(DeepLinkParser.parse("pocketdj://add?collection=Road%20Trip") is DeepLink.Unresolved)
+    }
+
+    @Test
+    fun autoMixLabel_truncatesNameWithEllipsis() {
+        val a = com.levi.pocketdj.assistant.ShortcutRanking.autoMixLabel("Road Trip Summer 2024 Part One")
+        val b = com.levi.pocketdj.assistant.ShortcutRanking.autoMixLabel("Road Trip Summer 2024 Part Two")
+        assertTrue(a.length <= 25 && a.endsWith("…"))
+        assertEquals("Auto-mix Road", com.levi.pocketdj.assistant.ShortcutRanking.autoMixLabel("Road").take(13))
+        assertEquals(a, b) // documents the unavoidable limit; short names stay intact
+        assertEquals("Auto-mix Road", com.levi.pocketdj.assistant.ShortcutRanking.autoMixLabel("Road"))
     }
 
     @Test
@@ -197,8 +207,9 @@ class AddToCollectionActionTest {
         assertEquals(DeepLink.AutoMix(MixSource.Pocket("p1"), false), DeepLinkParser.parse("pocketdj://automix/pocket/p1"))
         assertEquals(DeepLink.AutoMix(MixSource.Playlist("pls_1"), true), DeepLinkParser.parse("pocketdj://automix/playlist/pls_1?shuffle=1"))
         assertEquals(DeepLink.AutoMix(MixSource.Setlist("st"), false), DeepLinkParser.parse("pocketdj:///automix/setlist/st"))
-        assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://automix/album/x"))
-        assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://automix/pocket"))
+        assertTrue(DeepLinkParser.parse("pocketdj://automix/album/x") is DeepLink.Unresolved)
+        assertTrue(DeepLinkParser.parse("pocketdj://automix/pocket") is DeepLink.Unresolved)
+        assertTrue(DeepLinkParser.parse("pocketdj://automix/Road%20Trip") is DeepLink.Unresolved)
         assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://automix"))
     }
 

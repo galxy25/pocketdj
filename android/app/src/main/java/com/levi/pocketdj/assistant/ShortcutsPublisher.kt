@@ -39,6 +39,15 @@ object ShortcutRanking {
 
     const val AUTO_MIX_ID = "automix_last"
 
+    private const val AUTO_MIX_PREFIX = "Auto-mix "
+
+    /** Name truncated first (with an ellipsis) so the prefix never eats the distinguishing part. */
+    fun autoMixLabel(name: String): String {
+        val n = name.trim()
+        val room = MAX_LABEL - AUTO_MIX_PREFIX.length
+        return AUTO_MIX_PREFIX + if (n.length <= room) n else n.take(room - 1) + "…"
+    }
+
     fun autoMixLink(kind: PlayKind, id: String): String =
         "pocketdj://automix/${kind.token}/${java.net.URLEncoder.encode(id, "UTF-8").replace("+", "%20")}"
 
@@ -48,7 +57,7 @@ object ShortcutRanking {
         val c = candidates.first { "play_${it.kind.token}_${it.id}" == top.id }
         return ShortcutSpec(
             id = AUTO_MIX_ID,
-            label = "Auto-mix ${c.name.trim()}".take(MAX_LABEL),
+            label = autoMixLabel(c.name),
             uri = autoMixLink(c.kind, c.id),
             rank = 0,
         )

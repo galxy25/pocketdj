@@ -67,6 +67,12 @@ class DeepLinkDispatcherTest {
         assertEquals(listOf("Playing from links is coming soon"), messages)
     }
 
+    @Test fun spokenCollectionNamePostsVisibleMessage() = runTest {
+        assertTrue(dispatcher(FakeGate(true)).handle(DeepLinkParser.parse("pocketdj://add?collection=Road%20Trip")))
+        assertEquals(1, messages.size)
+        assertTrue(messages[0].contains("Road Trip"))
+    }
+
     @Test fun everyPlayKindReachesPlayItemSeamWithShuffle() = runTest {
         val seen = mutableListOf<Triple<PlayKind, String, Boolean>>()
         seams.playItem = { k, id, sh -> seen += Triple(k, id, sh); null }
