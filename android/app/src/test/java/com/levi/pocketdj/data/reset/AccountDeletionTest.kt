@@ -167,6 +167,7 @@ class AccountDeletionTest {
             "studio-cues", GamesPrefs.SCOREBOARD_SYNC_KEY, GamesGraph.PUZZLE_DECISIONS_SYNC_KEY,
             BrowseGraph.DISCOVER_ADDS_SYNC_KEY,
             "favorites", "imported-songs", "playback-session", "mix-sessions", "mix-decks", "edits",
+             "pocket-palette", "profile-source",
         )
         assertEquals(registry, AccountDeletionService.cloudDocKeys.toSet())
         assertEquals("no duplicates", AccountDeletionService.cloudDocKeys.size, AccountDeletionService.cloudDocKeys.toSet().size)

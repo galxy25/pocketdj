@@ -154,6 +154,12 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** P2-POC-4 Pocket Wheel colour palette (`pocketdj-pocket-palette.json`): synced as "pocket-palette", cleared on account deletion. */
+    val pocketPalette: com.levi.pocketdj.data.pockets.wheel.PocketPaletteStore by lazy {
+        com.levi.pocketdj.data.pockets.wheel.PocketPaletteStore(
+            File(app.appContext.filesDir, com.levi.pocketdj.data.pockets.wheel.PocketPaletteStore.FILE_NAME))
+    }
+
     /** SVC-6 per-song play stats (LRP ordering signal), recorded from the core play-event seam. */
     private val playStatsLazy = lazy {
         val f = File(app.appContext.filesDir, com.levi.pocketdj.data.stats.PlayStatsStore.FILE_NAME)
@@ -507,6 +513,9 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             onPulled = { playStats.reloadFromDisk(); false }),
         SyncEntry(SyncRegistry.KEY_TIMELINE_CUES, com.levi.pocketdj.data.timeline.TimelineCueStore.FILE_NAME,
             onPulled = { timelineCues.reloadFromDisk() }),
+        SyncEntry(com.levi.pocketdj.data.pockets.wheel.PocketPaletteStore.SYNC_KEY,
+            com.levi.pocketdj.data.pockets.wheel.PocketPaletteStore.FILE_NAME,
+            onPulled = { pocketPalette.reloadFromDisk() }),
         // SVC-10: empty-secret-guarded credentials doc + the diag-key doc (empty never wins).
         SyncEntry(com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.KEY,
             com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.FILE_NAME,
@@ -653,6 +662,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 add("collections" to { app.collections.clear() })
                 add("favorites" to { app.collectionsGraph.favorites.clear() })
                 add("play-stats" to { playStats.clear() })
+                add("pocket-palette" to { pocketPalette.clear() })
                 add("play-history" to { com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext).clear() })
                 add("listening-pockets" to { app.collectionsGraph.listeningPockets.clearLocal() })
                 add("collection-activity" to { app.collectionActivity.clear() })
