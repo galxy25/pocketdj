@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 Glance widget 👍/👎 pair + self-contained verdict commands + effective repeat.
 

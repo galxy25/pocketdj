@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # P2-POC-13 — Listening-pockets upload Phase 6
 - [x] ListeningPocketsUploadResponse.caps parsed

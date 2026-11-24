@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # P2-SOC-1: Jukebox Timeless + Mix antenna + NP Share + History multi-select Share
 

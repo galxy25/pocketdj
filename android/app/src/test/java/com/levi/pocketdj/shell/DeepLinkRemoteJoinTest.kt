@@ -13,10 +13,10 @@ class DeepLinkRemoteJoinTest {
     }
 
     @Test fun malformedRemoteLinksAreNone() {
-        assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://remote/join/"))
+        assertEquals(DeepLink.Remote(null), DeepLinkParser.parse("pocketdj://remote/join/")) // no code: just open the Remote half
         assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://remote/join/a!b"))
         assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://remote/leave/ABCD2345"))
-        assertEquals(DeepLink.None, DeepLinkParser.parse("pocketdj://remote"))
+        assertEquals(DeepLink.Remote(null), DeepLinkParser.parse("pocketdj://remote"))
     }
 
     @Test fun remoteJoinParksInItsOwnSlot() {

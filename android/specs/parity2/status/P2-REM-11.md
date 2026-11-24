@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-REM-11 Mix Together core (pure)
 

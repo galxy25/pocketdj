@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-REM-9 - Nearby Connections transport (offline) + QR/code invite + permissions + background keep-alive
 
