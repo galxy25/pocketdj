@@ -102,6 +102,12 @@ class DjConductor(private val env: Env, private val scope: CoroutineScope) : DjE
         /** Play [item] the plain way (a normal start; its History play was already recorded by the advance). */
         fun playPlain(item: QueueItem)
 
+        /** Let the DSP go of whatever it holds (the adopt failed: ExoPlayer plays the row the plain way, one audio owner). */
+        fun disengageDsp() {}
+
+        /** Resolve [item]'s [localSource] off the main thread and cache it, so the lead-window retries stay cheap lookups. */
+        fun prefetchLocal(item: QueueItem) {}
+
         // ---- seams of later packages ----
         /** The selector re-plans what comes next (P2-DJ-10). */
         fun replan(reason: String) {}
@@ -136,6 +142,8 @@ class DjConductor(private val env: Env, private val scope: CoroutineScope) : DjE
     fun onTrackStarted(songId: String) {
         pendingArm = songId
         engineDecline = null
+        env.currentItem()?.let { env.prefetchLocal(it) }
+        env.nextItem()?.let { env.prefetchLocal(it) }
         poll()
     }
 
@@ -250,6 +258,15 @@ class DjConductor(private val env: Env, private val scope: CoroutineScope) : DjE
         env.log("declined reason=$words song=$songId -> normal advance")
     }
 
+    /** The texture rolled for the (current, next) pair: the engine's 1 Hz retries reuse it instead of consuming a run each call. */
+    private var pairTexture: Triple<String, String, AutoTransition.Texture>? = null
+    private var loggedPair: Pair<String, String>? = null
+
+    private fun textureFor(curId: String, nextId: String): AutoTransition.Texture {
+        pairTexture?.takeIf { it.first == curId && it.second == nextId }?.let { return it.third }
+        return nextTexture().also { pairTexture = Triple(curId, nextId, it) }
+    }
+
     private fun nextTexture(): AutoTransition.Texture {
         if (!seeded) { rng = AutoTransition.Rng(AutoTransition.fxSeed(env.currentItem()?.id, env.queueCount)); seeded = true }
         if (textureLeft <= 0 || texture == null) {
@@ -301,16 +318,18 @@ class DjConductor(private val env: Env, private val scope: CoroutineScope) : DjE
         }
         val level = if (cfg.volumeLeveling) env.levelDb(next.id, src) else 0.0
         val spec = DjTransitionSpec(
-            plan = plan, glide = g, texture = if (cfg.effectSweeps) nextTexture() else null, outgoingBeat = ba,
+            plan = plan, glide = g, texture = if (cfg.effectSweeps) textureFor(cur.id, next.id) else null, outgoingBeat = ba,
             incoming = DjIncoming(next.id, src.file, src.startMs, src.lengthMs, bb, level),
         )
+        if (loggedPair != cur.id to next.id) {
+            loggedPair = cur.id to next.id
         env.log(
             "transition from=${cur.id} to=${next.id} plan=" + String.format(
                 Locale.US, "pre=%.1fs fade=%.1fs post=%.1fs glide=%s fx=%s level=%.1fdB left=%.1fs", plan.preRollSeconds, plan.fadeSeconds,
                 if (plan.hasPostRoll) plan.postRollSeconds else 0.0, plan.isGlide, spec.texture?.effect?.raw ?: "none", level, env.dspSecondsLeft,
             ),
         )
-        lastDecline = null
+        }
         return spec
     }
 
@@ -343,6 +362,8 @@ class DjConductor(private val env: Env, private val scope: CoroutineScope) : DjE
             return false
         }
         transitionCount++
+        pairTexture = null
+        loggedPair = null
         env.log("advance at fade start from=${cur.id} to=${next.id} (no reload; the DSP owns the audio)")
         engineDecline = null
         lastDecline = null
@@ -361,6 +382,7 @@ class DjConductor(private val env: Env, private val scope: CoroutineScope) : DjE
         val cur = env.currentItem() ?: return
         if (!cur.matches(songId)) return
         env.log("incoming song=$songId refused by the engine -> plain start")
+        env.disengageDsp()   // the DSP deck still holds the incoming: one audio owner, ExoPlayer's
         env.playPlain(cur)
     }
 

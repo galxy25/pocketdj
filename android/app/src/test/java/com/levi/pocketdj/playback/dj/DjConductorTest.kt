@@ -99,7 +99,12 @@ class DjConductorTest {
         val advances = mutableListOf<String>()
         override fun advanceAtFadeStart(songId: String): Boolean { advances += songId; return advanceResult }
         val plain = mutableListOf<QueueItem>()
-        override fun playPlain(item: QueueItem) { plain += item }
+        val order = mutableListOf<String>()
+        override fun playPlain(item: QueueItem) { plain += item; order += "plain" }
+        var disengages = 0
+        override fun disengageDsp() { disengages++; order += "disengage" }
+        val prefetched = mutableListOf<String>()
+        override fun prefetchLocal(item: QueueItem) { prefetched += item.id }
         val replans = mutableListOf<String>()
         override fun replan(reason: String) { replans += reason }
         val logs = mutableListOf<String>()
@@ -288,10 +293,17 @@ class DjConductorTest {
         c.plannerSeeded(1234uL)
         val rng = AutoTransition.Rng(1234uL)
         val first = AutoTransition.rollTexture(rng)
-        val seen = (1..first.run).map { c.buildTransition()!!.texture }
+        // each call is a distinct transition (a new incoming), as retries of one pair no longer consume a run
+        var n = 0
+        fun one(): AutoTransition.Texture? {
+            val id = "n${n++}"
+            env.next = QueueItem(id); env.sources[id] = DjConductor.LocalSource(File("$id.mp3"))
+            return c.buildTransition()!!.texture
+        }
+        val seen = (1..first.run).map { one() }
         assertTrue("held for its run", seen.all { it == first })
         val next = AutoTransition.rollTexture(rng)
-        assertEquals("then re-rolled from the same seeded stream", next, c.buildTransition()!!.texture)
+        assertEquals("then re-rolled from the same seeded stream", next, one())
     }
 
     @Test fun aSuspendedOrHeldDeckBuildsNothing() = runTest {
@@ -451,6 +463,26 @@ class DjConductorTest {
         assertEquals("only the current row", 1, env.plain.size)
     }
 
+    @Test fun aFailedAdoptLetsTheDspGoBeforeThePlainLoad() = runTest {
+        val (c, env) = conductor()
+        env.cur = QueueItem("b")
+        c.onIncomingFailed("b")
+        assertEquals(listOf("disengage", "plain"), env.order)
+    }
+
+    @Test fun leadWindowRetriesDoNotConsumeTexturesOrRepeatTheTransitionLog() = runTest {
+        val (c, env) = conductor()
+        val first = c.buildTransition()!!
+        repeat(5) { assertEquals(first.texture, c.buildTransition()!!.texture) }
+        assertEquals("one transition line per pair", 1, env.logs.count { it.startsWith("transition ") })
+    }
+
+    @Test fun trackStartPrefetchesCurrentAndNextOffTheHotPath() = runTest {
+        val (c, env) = conductor()
+        c.onTrackStarted("a")
+        assertEquals(listOf("a", "b"), env.prefetched)
+    }
+
     @Test fun aHandBackLogsAndTheSongPlaysOn() = runTest {
         val (c, env) = conductor()
         c.onHandBack(41.25)
@@ -607,6 +639,7 @@ class DjConductorTest {
         r.seq.skipNext()          // the listener moves on before the adopt result lands
         r.settle()
         assertTrue(failed.isEmpty())
+        assertTrue("a stale adopt never reaches the player", r.adopted.isEmpty())
     }
 
     @Test fun theDspEndOfTheIncomingAdvancesTaggedNaturalEnd() = runTest {

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-DJ-8: DJ conductor: decide/decline at track start, advance at fade start (no reload), adoptDsp, hand-back
 
@@ -27,3 +27,13 @@ With DJ Mode on, each local row is engaged on the NP DSP once ExoPlayer is sound
 
 ## Questions for Levi
 None.
+
+## Review
+- MAJOR ParityFlags.DJ_MODE flipped unverified -> fixed: `DJ_MODE` follows `DEBUG_FORCE_DJ_MODE` again (ships hidden); the integrator makes it `true` after the emulator steps (logcat -s PocketDJ.dj, one History play, deadair cause=dj gap~0). DjModeControllerTest.chipWordsAndFlag asserts the gate.
+- MINOR adoptDsp ignores generation/current item -> fixed: the sequencer's adopt coroutine re-checks generation + current uid (new test: anAdoptFailureForARowThatMovedOnIsIgnored asserts no adopt reaches the port); PlaybackController.adoptDsp only stops/clears when ExoPlayer holds the outgoing row (or nothing) and bumps its generation only then.
+- MINOR buildTransition side effects -> fixed: texture cached per (cur,next) pair (cleared at fade start), one `transition` log per pair, `lastDecline` no longer reset by a build (tests: leadWindowRetriesDoNotConsumeTexturesOrRepeatTheTransitionLog; texture-run test now varies the incoming).
+- MINOR onIncomingFailed leaves DSP engaged -> fixed: new Env.disengageDsp() called before playPlain (test aFailedAdoptLetsTheDspGoBeforeThePlainLoad).
+- MINOR localSource disk on main thread -> fixed: production Env caches LocalSource (prefetched on IO at track start for current+next, stale hits refresh in background, first miss only resolves inline); test trackStartPrefetchesCurrentAndNextOffTheHotPath.
+- NIT DEBUG_FORCE_DJ_MODE no-op -> resolved: it is the real gate again.
+
+Tests: 7092 total, 0 failures (+3). fixes applied

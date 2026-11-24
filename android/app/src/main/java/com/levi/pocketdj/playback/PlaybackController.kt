@@ -1679,11 +1679,18 @@ class PlaybackController(
             claimForDsp()
             clearAlbumRun()
             urlRetriedFor = null
-            playGeneration.incrementAndGet()
+            val outgoingId = sequencer.state.value.queue.getOrNull(request.index - 1)?.id
             return try {
                 withController {
-                    it.stop()
-                    it.clearMediaItems()
+                    // Only the outgoing row is ours to stop: anything else loaded since the fade start belongs to a newer load.
+                    val loaded = it.currentMediaItem?.mediaId
+                    if (loaded == null || loaded == outgoingId) {
+                        playGeneration.incrementAndGet()
+                        it.stop()
+                        it.clearMediaItems()
+                    } else {
+                        NPLog.lane(NPLog.PLAYBACK, "[playback] adoptDsp song=${request.item.id} left ExoPlayer alone (holds $loaded)")
+                    }
                     true
                 }
             } catch (e: CancellationException) {

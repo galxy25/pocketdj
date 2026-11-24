@@ -1049,7 +1049,10 @@ class SetlistSequencer(
             item = item, source = DjAdoptedSource, context = requestContext(item), originCollectionId = originCollectionIdFor(),
             resumeAtMs = null, index = index, count = queue.size, generation = playGeneration,
         )
+        val adoptGen = playGeneration
         scope.launch {
+            // The listener may have skipped or tapped another row since the fade start: a stale adopt must not touch the player.
+            if (!owns(adoptGen) || queue.getOrNull(index)?.uid != item.uid) return@launch
             val ok = try { port.adoptDsp(request) } catch (e: CancellationException) { throw e } catch (e: Exception) { false }
             if (!ok) djAdoptFailed(item.uid)
         }

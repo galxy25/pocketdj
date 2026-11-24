@@ -25,6 +25,8 @@ import kotlinx.coroutines.launch
  * durable extras, the Mix tab / Remote / Mix Mode observations, and the engine seam the later packages bind
  * ([engineHooks]). Lives in the playback graph (`app.playbackGraph.djMode`); [install] runs once after Mix Mode's.
  */
+private class Cached(val at: Long, val src: DjConductor.LocalSource?)
+
 class DjModeWiring(private val app: AppGraph) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val seq get() = app.playbackGraph.sequencer
@@ -102,7 +104,31 @@ class DjModeWiring(private val app: AppGraph) {
         override fun currentInAlbumRun(): Boolean = rowRuns(seq.state.value.index)
         override fun nextStartsAlbumRun(): Boolean = rowRuns(seq.state.value.index + 1)
 
+        // Resolution touches disk (resolveLocal, the rips index): off the main thread, cached, and the engine's 1 Hz retries
+        // in the lead window only ever read this map. A first-ever miss resolves inline; a stale hit refreshes in the background.
+        private val localCache = java.util.concurrent.ConcurrentHashMap<String, Cached>()
+        private val refreshing = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+        override fun prefetchLocal(item: QueueItem) {
+            if (!refreshing.add(item.id)) return
+            scope.launch(Dispatchers.IO) {
+                try { localCache[item.id] = Cached(android.os.SystemClock.elapsedRealtime(), resolveLocalSource(item)) }
+                finally { refreshing.remove(item.id) }
+            }
+        }
+
         override fun localSource(item: QueueItem): DjConductor.LocalSource? {
+            val hit = localCache[item.id]
+            if (hit == null) {
+                return resolveLocalSource(item).also { localCache[item.id] = Cached(android.os.SystemClock.elapsedRealtime(), it) }
+            }
+            if (android.os.SystemClock.elapsedRealtime() - hit.at > (if (hit.src == null) 2_000L else 15_000L)) prefetchLocal(item)
+            return hit.src
+        }
+
+        override fun disengageDsp() { if (engine.isEngaged) engine.disengage() }
+
+        private fun resolveLocalSource(item: QueueItem): DjConductor.LocalSource? {
             val r = host.resolveLocal(item.id) ?: return null
             val len = item.lengthMs ?: 0L
             val start = if (r.isCut) 0L else (r.startMs ?: 0).toLong()
