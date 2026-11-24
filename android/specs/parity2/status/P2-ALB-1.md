@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # P2-ALB-1 AlbumFileTimeline + SegmentOverrides + burned side-file playback
 
@@ -7,7 +7,7 @@ state: in-progress
 - [x] RipsRepository.effectiveStartMs, BurnStore.startMs apply override (only when item has a start)
 - [x] ServicesGraph.burnedFirst uses localUrlForPlayback (side file + window, isCut=false); PreferringCut stays for Mix/Studio
 - [x] Tests: AlbumFileTimelineTest, SegmentOverridesTest, BurnedSideFileTest
-- [ ] Full build green
+- [x] testDebugUnitTest + assembleDebug green: 5794 tests, 0 failures (14 new: 7 timeline, 5 overrides, 2 side-file). No manifest/gradle change, so no assembleRelease.
 
 ## Deviations / files outside owned set
 - di/AppGraph.kt: 3-line additive wiring of RipsRepository.segmentOverrides provider (ServicesGraph can't reach it safely at init).
