@@ -1,6 +1,8 @@
 package com.levi.pocketdj.screens.nowplaying
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -39,6 +41,7 @@ private val GoldDark = Color(0xFF8A6A12)
  * angle lives in a remembered accumulator so a pause freezes it in place and resume continues
  * from the same angle. [progress] (0..1, 1 Hz) sweeps the tonearm outer edge -> center.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RecordPlayer(
     spinning: Boolean,
@@ -49,6 +52,9 @@ fun RecordPlayer(
     album: com.levi.pocketdj.data.catalog.IndexAlbum? = null,
     /** False when nothing is loaded: the tonearm parks OFF the record. */
     hasTrack: Boolean = true,
+    /** Long-press menu (iOS record context menu): "Song details" when set, plus the "Mix Mode" toggle (np-menu-mix-mode). */
+    onDetails: (() -> Unit)? = null,
+    showMixModeMenu: Boolean = false,
 ) {
     var angle by androidx.compose.runtime.saveable.rememberSaveable { mutableFloatStateOf(0f) }
     val spinningNow by rememberUpdatedState(spinning)
@@ -64,9 +70,26 @@ fun RecordPlayer(
         }
     }
     val arm = (if (hasTrack) RecordMath.tonearmAngle(progress) else RecordMath.TONEARM_PARKED_DEG).toFloat()
+    val menuEnabled = showMixModeMenu
+    var menuOpen by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    val menuApp = if (menuEnabled) com.levi.pocketdj.di.AppGraph.get(androidx.compose.ui.platform.LocalContext.current) else null
     androidx.compose.foundation.layout.BoxWithConstraints(
-        modifier.fillMaxWidth().aspectRatio(1f).padding(8.dp).testTag("np-record"),
+        modifier.fillMaxWidth().aspectRatio(1f).padding(8.dp).testTag("np-record").let { m ->
+            if (menuEnabled) m.combinedClickable(onClick = {}, onLongClick = { menuOpen = true }) else m
+        },
     ) {
+        if (menuApp != null) {
+            androidx.compose.material3.DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                if (onDetails != null) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { androidx.compose.material3.Text("Song details") },
+                        onClick = { menuOpen = false; onDetails() },
+                        modifier = Modifier.testTag("np-menu-details"),
+                    )
+                }
+                NpMixModeMenuItem(menuApp) { menuOpen = false }
+            }
+        }
         val side = if (maxWidth < maxHeight) maxWidth else maxHeight
         Canvas(Modifier.matchParentSize()) {
             val s = size.minDimension

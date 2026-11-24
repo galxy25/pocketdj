@@ -82,6 +82,7 @@ fun NowPlayingRecord(
         RecordPlayer(
             spinning = state.spinning, bpm = state.bpm, progress = progress,
             album = album, hasTrack = state.hasTrack,
+            onDetails = onLongPress, showMixModeMenu = true,
         )
     }
 }
