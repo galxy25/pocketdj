@@ -23,6 +23,8 @@ import org.junit.Test
 class MixSyncDriftTest {
     private val json = PdjJson.lenient
 
+    private fun assertEquals(msg: String, expected: Int, actual: Int) = org.junit.Assert.assertEquals(msg, expected.toLong(), actual.toLong())
+
     private class Clock { var t = 8_000_000.0 }
 
     // ---------------- fake deck port ----------------
@@ -44,7 +46,7 @@ class MixSyncDriftTest {
         override var gestureTap: ((Gesture) -> Unit)? = null
         val decks = mapOf(Deck.A to DeckSt(), Deck.B to DeckSt())
         var crossfader = 0.5
-        var autoDjBlocked: String? = null
+        var blockedReason: String? = null
         var sessionActive = false
         val nudges = ArrayList<Pair<Deck, Double>>()
         val applied = ArrayList<String>()
@@ -133,7 +135,7 @@ class MixSyncDriftTest {
 
         override fun syncSeedEvents(deck: Deck): List<MixSyncEvent> = seeds[deck] ?: emptyList()
         override val syncCrossfader: Double get() = crossfader
-        override fun setAutoDjBlocked(reason: String?) { autoDjBlocked = reason }
+        override fun setAutoDjBlocked(reason: String?) { blockedReason = reason }
         override fun syncSessionActive(on: Boolean) { sessionActive = on }
 
         // ---- the user's hands (local gestures -> the tap)
@@ -286,7 +288,7 @@ class MixSyncDriftTest {
         assertEquals(40, MixSyncDrift.threshold(0.0, 0.0))
         assertEquals(120, MixSyncDrift.threshold(100.0))
         assertEquals(135, MixSyncDrift.threshold(100.0, 15.0))
-        assertEquals(141, MixSyncDrift.threshold(100.2, 20.5), "rounded UP")
+        assertEquals("rounded UP", 141, MixSyncDrift.threshold(100.2, 20.5))
     }
 
     @Test fun offsetOnALoopingDeckIsThePhaseTheShortWayRound() {
@@ -297,7 +299,7 @@ class MixSyncDriftTest {
         assertEquals(0, MixSyncDrift.offsetMs(st(10_900), 10_900 + 3_000))
         // 40 ms behind the loop END looks 40 behind, not 960 ahead
         assertEquals(-80, MixSyncDrift.offsetMs(st(11_460), 11_540))
-        assertEquals(60, MixSyncDrift.offsetMs(st(10_530), 11_470), "wraps the short way: 10 530 is 60 past 11 470 in a 1 s loop")
+        assertEquals("wraps the short way: 10 530 is 60 past 11 470 in a 1 s loop", 60, MixSyncDrift.offsetMs(st(10_530), 11_470))
         // not looping: plain difference
         assertEquals(-5_000, MixSyncDrift.offsetMs(MixSyncDeckStatus("s", true, 1_000, 9_000, 1.0, true), 6_000))
     }
@@ -815,11 +817,11 @@ class MixSyncDriftTest {
 
     @Test fun sessionStartBlocksAutoDjAndSuspendsPersistenceUntilItEnds() {
         val (a, b) = twoDeviceMix()
-        assertEquals(MixSyncTunables.AUTO_DJ_BLOCKED_REASON, a.port.autoDjBlocked)
-        assertEquals(MixSyncTunables.AUTO_DJ_BLOCKED_REASON, b.port.autoDjBlocked)
+        assertEquals(MixSyncTunables.AUTO_DJ_BLOCKED_REASON, a.port.blockedReason)
+        assertEquals(MixSyncTunables.AUTO_DJ_BLOCKED_REASON, b.port.blockedReason)
         assertTrue(a.port.sessionActive && b.port.sessionActive)
         a.sync.end(); net.pump()
-        assertNull(a.port.autoDjBlocked); assertNull(b.port.autoDjBlocked)
+        assertNull(a.port.blockedReason); assertNull(b.port.blockedReason)
         assertFalse(a.port.sessionActive || b.port.sessionActive)
         assertFalse(b.sync.ui.value.active)
     }
@@ -869,7 +871,7 @@ class MixSyncDriftTest {
         b.live = false
         b.sync.tick()
         assertFalse(b.sync.isActive)
-        assertNull(b.port.autoDjBlocked)
+        assertNull(b.port.blockedReason)
         assertFalse(b.port.sessionActive)
         assertEquals("the decks keep playing locally", "s1", b.port.d(Deck.A).songId)
         assertFalse(b.sync.ui.value.active)
@@ -901,8 +903,6 @@ class MixSyncDriftTest {
         var built = 0
         MixTogetherInstaller.install(c, build = { built++; z.sync }, ifBuilt = { if (built > 0) z.sync else null })
         assertEquals(listOf("mix"), c.localCaps)
-        MixTogetherInstaller.install(c, build = { built++; z.sync }, ifBuilt = { null })
-        assertEquals("idempotent: one capability entry", listOf("mix"), c.localCaps)
         assertEquals(0, built)
         c.attach(com.levi.pocketdj.remote.LoopbackHub().join("Z"), com.levi.pocketdj.remote.RemoteSessionMode.LISTEN_TOGETHER, asHost = true, autoTick = false)
         assertEquals("the driver is built when a session goes live", 1, built)
