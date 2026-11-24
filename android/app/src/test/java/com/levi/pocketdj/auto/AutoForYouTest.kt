@@ -299,4 +299,47 @@ class AutoForYouTest {
         assertNull(c.addToChooserNode(AutoId.ForYouRow("new", "rel:111").encoded))
         assertNotNull(c.getChildren("tab:foryou", 0, 50))
     }
+
+    private fun cbWithNotes(notes: MutableList<String>, limit: Int? = null) = AutoLibraryCallback(
+        tree = tree(limit),
+        addTargets = AutoAddTargets(NoSink()),
+        player = Rec(),
+        scope = CoroutineScope(Dispatchers.Unconfined),
+        toast = {},
+        notifyChildrenChanged = { p, _ -> notes += p },
+    ).also { it.onCatalogReady() }
+
+    @Test fun rootLimit_onlyLowers_aHintlessOrLooserControllerNeverResetsIt() {
+        val notes = mutableListOf<String>()
+        val c = cbWithNotes(notes)
+        c.setRootLimit(4)
+        assertEquals(4, c.javaClass.getDeclaredField("tree").also { it.isAccessible = true }.get(c).let { (it as AutoBrowseTree).rootLimit })
+        c.setRootLimit(null)
+        c.setRootLimit(8)
+        val tree = c.javaClass.getDeclaredField("tree").also { it.isAccessible = true }.get(c) as AutoBrowseTree
+        assertEquals(4, tree.rootLimit)
+        assertEquals(4, tree.children(AutoId.Root.encoded)!!.size)
+        c.setRootLimit(3)
+        assertEquals(3, tree.rootLimit)
+    }
+
+    @Test fun openForYouTile_isReNotifiedWithTheTabs() {
+        val notes = mutableListOf<String>()
+        val c = cbWithNotes(notes)
+        c.getChildren("fy:zone", 0, 50)
+        notes.clear()
+        c.notifyLibraryChanged()
+        assertTrue("fy:zone" in notes)
+        assertTrue("tab:foryou" in notes)
+    }
+
+    @Test fun newTile_countAndRowsComeFromTheSameReleaseList() {
+        val f = fy(Source(snap(), rel))
+        val count = f.children().first { it.id == "fy:new" }.childCount
+        val rows = f.tileChildren("new")!!.filter { it.id.startsWith("fyrow:") }
+        assertEquals(count, rows.size)
+        val cold = fy(Source(snap(), emptyList()))
+        assertEquals(0, cold.children().first { it.id == "fy:new" }.childCount)
+        assertEquals("No new releases yet", cold.tileChildren("new")!!.single().title)
+    }
 }

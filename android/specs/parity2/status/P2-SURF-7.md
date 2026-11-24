@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 - [x] AutoForYou (tiles via ForYouGrid.tiles on the cached snapshot, rel: release rows, cold-cache note, play plans)
 - [x] AutoId: tab:foryou, fy:<tile>, fyall/fyshuf, fyrow, fynote; tree wiring + ROOT_CHILDREN_LIMIT folding (Continue -> top of Playlists)
@@ -19,3 +19,11 @@ Android Auto gets a For You tab built only from the cached ForYouFeedStore snaps
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR root-limit shared field -> fixed: setRootLimit only ever lowers (null/looser hints ignored); PlaybackService sets it BEFORE onConnect. Test rootLimit_onlyLowers_*.
+- MINOR re-notify gaps -> fixed: AppAutoForYouSource.changes combines feed revision + feedback state + release-feed revision (initial value no longer dropped); collector posts to main; callback tracks opened fy:<tile> parents and re-notifies them with the tabs. Test openForYouTile_isReNotifiedWithTheTabs.
+- MINOR New tile vs live release feed -> fixed/verified: outNowReleases reads only persisted state (releaseFeed.outNow + feedback); tile count and rows come from the same list. Test newTile_countAndRowsComeFromTheSameReleaseList.
+- NIT playForYouSongs ordering -> rejected as unit-testable (needs AppGraph); stays device-only, documented in AutoPlayer KDoc.
+
+fixes applied. Suite 6673 tests, 0 failures (was 6670); assembleDebug green.

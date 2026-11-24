@@ -8,6 +8,7 @@ import com.levi.pocketdj.data.collections.NOW_PLAYING_PLAYLIST_ID
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.Setlist
 import com.levi.pocketdj.data.collections.asForYouCollections
+import kotlinx.coroutines.flow.map
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.playback.QueueOutcome
@@ -273,6 +274,11 @@ class AppAutoForYouSource(private val app: AppGraph) : AutoForYouSource {
 
     /** Bumped on every commit/reload/clear of the cached feed: the host re-notifies the open tab on it. */
     val revisions get() = feedStore.state
+
+    /** Any For You input changing: cached feed revision, thumbs (feedback) or the release feed. */
+    val changes: kotlinx.coroutines.flow.Flow<Triple<Int, Any, Int>> get() = kotlinx.coroutines.flow.combine(
+        feedStore.state.map { it.revision }, browse.recFeedbackStore.state, browse.releaseFeed.revisionFlow,
+    ) { a, b, c -> Triple(a, b as Any, c) }
 
     override fun outNowReleases(nowMs: Double): List<AutoRelease> {
         val scope = com.levi.pocketdj.data.recs.ForYouTileKind.NEW.raw

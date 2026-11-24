@@ -101,8 +101,10 @@ class PlaybackService : MediaLibraryService() {
         )
         data.onLibraryChanged = { main.post { cb.notifyLibraryChanged() } }
         // A phone-side refresh/commit of the cached feed re-notifies the open lists (the car itself never refreshes).
+        // Feed commits, thumbs and the release feed all change the tiles/rows; open fy:<tile> drill-ins are re-notified
+        // by the callback itself. Posted to main like every other library notification.
         scope.launch(kotlinx.coroutines.Dispatchers.Default) {
-            forYouSource.revisions.map { it.revision }.drop(1).collect { cb.notifyLibraryChanged() }
+            forYouSource.changes.collect { main.post { cb.notifyLibraryChanged() } }
         }
         scope.launch {
             app.catalogRepository.state.first { it.catalog != null }
@@ -665,7 +667,7 @@ class PlaybackService : MediaLibraryService() {
             val rootLimit = params?.extras
                 ?.getInt(AutoLibraryCallback.KEY_ROOT_CHILDREN_LIMIT, 0)
                 ?.takeIf { it > 0 }
-            autoBg.launch { runCatching { auto.onConnect(); auto.setRootLimit(rootLimit) } }
+            autoBg.launch { runCatching { auto.setRootLimit(rootLimit); auto.onConnect() } }
             return Futures.immediateFuture(
                 LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(com.levi.pocketdj.auto.AutoAsync.STATIC_ROOT), params),
             )

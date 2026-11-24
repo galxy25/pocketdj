@@ -74,17 +74,27 @@ class AutoLibraryCallback(
         return tree.root()
     }
 
-    /** The host's root-children cap from the root hints (null = none); re-notifies the root when it changes. */
+    /**
+     * The host's root-children cap from the root hints. The tree is shared by every connected controller, so the
+     * hint only ever LOWERS the cap: a controller with no hint (null) or a looser one never resets Auto's.
+     * Call BEFORE [onConnect] so the first root fetch already honours it; re-notifies only on a real change.
+     */
     fun setRootLimit(limit: Int?) {
-        if (tree.rootLimit == limit) return
+        if (limit == null || limit <= 0) return
+        val cur = tree.rootLimit
+        if (cur != null && cur <= limit) return
         tree.rootLimit = limit
         notifyLibraryChanged()
     }
 
     fun getItem(mediaId: String): AutoNode? = tree.item(mediaId)
 
+    /** For You tile drill-ins a browser has opened: re-notified with the tabs so they never go stale. */
+    private val openForYouTiles = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     fun getChildren(parentId: String, page: Int, pageSize: Int): List<AutoNode>? {
         val id = AutoId.decode(parentId)
+        if (id is AutoId.ForYouTile) openForYouTiles += parentId
         if (id is AutoId.AddTo) {
             val all = addTargets.nodes(id.songId)
             return window(all, page, pageSize)
@@ -110,7 +120,7 @@ class AutoLibraryCallback(
     /** Collections / sign-in / held row changed: re-notify the root and tabs (and [extra] parents) with real counts. */
     fun notifyLibraryChanged(vararg extra: String) {
         if (!notifiedReady) return
-        val parents = listOf(AutoId.Root.encoded) + AutoId.Tab.Which.entries.filter { it != AutoId.Tab.Which.FOR_YOU || tree.forYou != null }.map { AutoId.Tab(it).encoded } + extra
+        val parents = (listOf(AutoId.Root.encoded) + AutoId.Tab.Which.entries.filter { it != AutoId.Tab.Which.FOR_YOU || tree.forYou != null }.map { AutoId.Tab(it).encoded } + openForYouTiles + extra).distinct()
         parents.forEach { notifyChildrenChanged(it, tree.children(it, 0, Int.MAX_VALUE)?.size ?: 0) }
     }
 
