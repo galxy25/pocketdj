@@ -14,6 +14,13 @@ import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -397,7 +404,8 @@ class PocketRunStoreTest {
         h.store.evaluate(); h.store.awaitTopUp()
         assertEquals(99, h.store.active.value!!.playedThrough)
         assertTrue(h.store.isRunning)
-        assertEquals("exactly the sounding row; no spare beyond the one allowed", 0, h.player.upcomingRun(rid).size)
+        assertEquals("the 100th is sounding and unproven: exactly ONE spare is queued (it may yet be skipped)", 1, h.player.upcomingRun(rid).size)
+        assertEquals(101, h.player.queue.size)
         // the 100th plays through: no more rows, and the run is finished
         h.finish(h.player.queue[99].id, false, 1.0)
         h.advanceTo(99)
@@ -408,7 +416,8 @@ class PocketRunStoreTest {
         val s = h.store.past.value.last()
         assertTrue(s.finished)
         assertEquals(100, s.playedThrough)
-        assertEquals("never a 101st row", 100, h.player.queue.size)
+        assertEquals("the spare left with the 100th play-through: never a 101st row", 100, h.player.queue.size)
+        assertTrue(h.player.upcomingRun(rid).isEmpty())
         h.store.dismissFinished()
         assertNull(h.store.active.value)
     }
@@ -417,18 +426,23 @@ class PocketRunStoreTest {
         val h = harness()
         h.store.start(profile, seed = 42uL)
         val rid = h.store.active.value!!.runId
-        // listener pins the row at index 50
-        h.player.queue[50] = h.player.queue[50].copy(plan = h.player.queue[50].plan!!.copy(pinned = true))
-        val pinnedUid = h.player.queue[50].uid
-        val tailUid = h.player.queue.last().uid
-        // 10 completions arrive while the queue still holds all rows -> 10 excess
+        // earlier top-ups left 5 extra rows on the tail; the listener pinned the LAST of them
+        val spare = pool.keys.filter { id -> h.player.queue.none { it.id == id } }.take(5)
+        spare.forEachIndexed { i, id ->
+            h.player.queue += QueueItem(id = id, plan = PlanTag(rid, 101 + i, null, 0.5, pinned = i == 4))
+        }
+        val pinnedUid = h.player.queue.last().uid
+        val removedTail = h.player.queue.takeLast(5).dropLast(1).map { it.uid }.toSet()
+        val midPin = h.player.queue[50].also { h.player.queue[50] = it.copy(plan = it.plan!!.copy(pinned = true)) }.uid
         for (i in 0 until 10) h.finish(h.player.queue[i].id, false, 1.0)
         h.advanceTo(10)
         h.store.evaluate()
         val left = h.player.upcomingRun(rid)
-        assertEquals("100 - 10 played - 1 sounding", 89, left.size)
-        assertTrue(left.any { it.uid == pinnedUid })
-        assertTrue("the tail is what leaves", left.none { it.uid == tailUid })
+        // 105 queued - cursor 10 = 94 upcoming; 100 - 10 played - 1 sounding = 89 needed; 5 excess leave the TAIL
+        assertEquals(89, left.size)
+        assertTrue("a pinned row still counts and stays", left.any { it.uid == pinnedUid } || left.none { it.uid in removedTail })
+        assertTrue(left.none { it.uid in removedTail })
+        assertTrue(left.any { it.uid == midPin })
         h.store.stop()
     }
 
@@ -475,21 +489,19 @@ class PocketRunStoreTest {
         val a = h.store.active.value!!
         h.store.stop()
         h.store.start(profile, seed = 43uL) // second run: the first is filed under past[]
-        val doc = org.json.JSONObject(h.file.readText())
-        assertEquals(1, doc.getInt("schemaVersion"))
-        assertEquals(1, doc.getJSONArray("past").length())
-        assertEquals(a.runId, doc.getJSONArray("past").getJSONObject(0).getString("id"))
-        assertEquals(h.store.active.value!!.runId, doc.getJSONObject("active").getString("runId"))
-        assertTrue(doc.getJSONObject("active").has("nextSlot"))
+        val doc = Json.parseToJsonElement(h.file.readText()).jsonObject
+        assertEquals(1, doc["schemaVersion"]!!.jsonPrimitive.int)
+        assertEquals(1, doc["past"]!!.jsonArray.size)
+        assertEquals(a.runId, doc["past"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content)
+        assertEquals(h.store.active.value!!.runId, doc["active"]!!.jsonObject["runId"]!!.jsonPrimitive.content)
+        assertTrue(doc["active"]!!.jsonObject.containsKey("nextSlot"))
 
         // a relaunch restores the active run + past, and an iOS file missing the newer fields still loads
         val re = PocketRunStore(h.file, h.player, CoroutineScope(StandardTestDispatcher(testScheduler)))
         assertEquals(h.store.active.value, re.active.value)
         assertEquals(1, re.past.value.size)
-        val trimmed = org.json.JSONObject(h.file.readText()).also {
-            it.getJSONObject("active").remove("retargetedMode"); it.getJSONObject("active").put("fromTheFuture", 1)
-        }
-        h.file.writeText(trimmed.toString())
+        val active = doc["active"]!!.jsonObject.toMutableMap().also { it.remove("retargetedMode"); it["fromTheFuture"] = JsonPrimitive(1) }
+        h.file.writeText(JsonObject(doc.toMutableMap().also { it["active"] = JsonObject(active) }).toString())
         assertEquals(h.store.active.value!!.runId, PocketRunStore(h.file, h.player, CoroutineScope(StandardTestDispatcher(testScheduler))).active.value!!.runId)
         h.store.stop()
     }

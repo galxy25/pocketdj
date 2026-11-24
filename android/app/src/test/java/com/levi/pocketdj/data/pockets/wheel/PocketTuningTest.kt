@@ -92,14 +92,14 @@ class PocketTuningTest {
             pocketRun = run?.let { PocketRunTag(it, "h08|d2|carPlay", "pl_x", 3) },
         )
         val events = listOf(
-            ev("e1", "sng_a", "R1", true, 0.1),
-            ev("e2", "sng_b_clean", "R1", null, 1.0),
+            ev("e1", "sng_aaaaaaaaaaaa", "R1", true, 0.1),
+            ev("e2", "sng_bbbbbbbbbbbb_clean", "R1", null, 1.0),
             ev("e3", "sng_c", null, true, 0.1), // not a pocket-run play
             ev("e4", "sng_d", "R2", null, 0.6),
         )
         val all = PocketTuning.verdicts(events)
         assertEquals(listOf("R1", "R1", "R2"), all.map { it.first })
-        assertEquals("sng_b", all[1].second.songId)
+        assertEquals("sng_bbbbbbbbbbbb", all[1].second.songId)
         assertEquals("pl_x", all[0].second.rowCollectionId)
         assertTrue(all[0].second.skipped)
         assertEquals(listOf("R2"), PocketTuning.verdicts(events, excludingRun = "R1").map { it.first })
