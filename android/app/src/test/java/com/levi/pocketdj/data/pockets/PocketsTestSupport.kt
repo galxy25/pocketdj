@@ -18,6 +18,7 @@ class FakePocketsBackend : Dispatcher() {
     val eventPosts = CopyOnWriteArrayList<JsonObject>()
     val requests = CopyOnWriteArrayList<String>()
     @Volatile var eventsCode = 200
+    @Volatile var eventsBody = """{"ok":true}"""
     @Volatile var eventsDelayMs = 0L
     @Volatile var resultsCode = 200
     @Volatile var deleteCode = 200
@@ -28,7 +29,7 @@ class FakePocketsBackend : Dispatcher() {
         return when {
             request.path == "/pockets/events" -> {
                 eventPosts += Json.parseToJsonElement(request.body.readUtf8()).jsonObject
-                MockResponse().setResponseCode(eventsCode).setBody("""{"ok":true}""").also {
+                MockResponse().setResponseCode(eventsCode).setBody(eventsBody).also {
                     if (eventsDelayMs > 0) it.setHeadersDelay(eventsDelayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
                 }
             }

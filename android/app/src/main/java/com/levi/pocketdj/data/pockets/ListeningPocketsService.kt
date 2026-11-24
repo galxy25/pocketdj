@@ -85,6 +85,9 @@ class ListeningPocketsService(
     /** "Is places & trips ON?" - gates sending `ctx`. null => [ListeningContextProviding.isActive]. */
     @Volatile var locationOptedIn: (() -> Boolean)? = null
 
+    /** "Notice walking & running" is ON - motion may ride the upload only while it is. Default off. */
+    @Volatile var motionOptedIn: (() -> Boolean)? = null
+
     /** Fired when the gate CLOSES: the app turns places & trips off too (location exists only to feed pockets). */
     @Volatile var onDisabled: (() -> Unit)? = null
 
@@ -132,6 +135,11 @@ class ListeningPocketsService(
         val uploadFloorMs: Double? = null,
         val collectionsHash: String? = null,
         val collectionsSentAtMs: Double? = null,
+        /**
+         * Capabilities the server echoed on POST /events. The Pocket Wheel fields ride only once `wheel` is
+         * here: an old server would DROP them yet 2xx, and the fingerprint would then never re-send them.
+         */
+        val serverCaps: List<String> = emptyList(),
     )
 
     @Volatile private var sync: SyncDoc = SyncDoc()
@@ -236,7 +244,7 @@ class ListeningPocketsService(
 
         if (sync.profileId != creds.profileId) {
             // A different identity (first run, key rebind, migration): start the fingerprints over, keep the floor.
-            updateSync { SyncDoc(profileId = creds.profileId, uploadFloorMs = it.uploadFloorMs) }
+            updateSync { SyncDoc(profileId = creds.profileId, uploadFloorMs = it.uploadFloorMs, serverCaps = it.serverCaps) }
         }
         val floorMs = maxOf(nowMs - WINDOW_DAYS * 86_400_000.0, sync.uploadFloorMs ?: 0.0)
         val window = history.events.filter { it.playedAt >= floorMs }.sortedBy { it.playedAt }
@@ -273,8 +281,9 @@ class ListeningPocketsService(
                 deviceId = deviceId(), installId = history.installId, sentAtMs = nowMs.toLong(),
                 events = slice.map { it.first }, places = places, trips = trips,
             )
+            val response: ListeningPocketsUploadResponse
             try {
-                client.postEvents(batch, creds)
+                response = client.postEvents(batch, creds)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: ListeningPocketsClient.ClientError.NotFound) {
@@ -288,6 +297,10 @@ class ListeningPocketsService(
                 return sentAny
             }
             if (epoch != flushEpoch.get()) return sentAny   // deleted / toggled mid-flight
+            // A server that now advertises the wheel fields: the NEXT flush's rows carry them, their
+            // fingerprints move and those plays re-send once (nothing was acked without them by a server
+            // that understood them).
+            response.caps?.let { noteServerCaps(it) }
             val acked = slice.associate { it.first.id to it.second }
             updateSync { it.copy(sent = it.sent + acked) }
             repeat(slice.size) { pending.removeAt(0) }
@@ -371,14 +384,25 @@ class ListeningPocketsService(
 
     private val nowMs: Double get() = now().toDouble()
 
+    /** Record what the server echoed it understands (also the test seam). */
+    fun noteServerCaps(caps: List<String>) {
+        val sorted = caps.distinct().sorted()
+        if (sorted == sync.serverCaps) return
+        updateSync { it.copy(serverCaps = sorted) }
+    }
+
+    /** The server understands the Pocket Wheel fields (see [SyncDoc.serverCaps]). */
+    val serverSupportsWheel: Boolean get() = "wheel" in sync.serverCaps
+
     /** One history event -> its upload row (`ord` filled in from [ordinals]). */
     fun wireEvent(e: PlayEvent, locationOn: Boolean): ListeningPocketsUploadEvent {
         val tz = e.tzOffsetMin ?: (TimeZone.getDefault().getOffset(e.playedAt.toLong()) / 60_000)
         // Context rides only on THIS device's plays, and only while places & trips is on.
         val ctx = if (locationOn && !history.isFromAnotherDevice(e)) e.listeningContext else null
         // Ids only; the reserved Now Playing queue id is replaced by the run's captured origin when it has one.
+        val wheel = serverSupportsWheel
         val collection = ListeningPocketsCollections.context(
-            ListeningPocketsCollections.rawContextId(null /* TODO(P2-POC-1): e.pocketRun?.rowCollectionId once PlayEvent.pocketRun exists */, e.originCollectionId, e.contextId), e.source,
+            ListeningPocketsCollections.rawContextId(e.pocketRun?.rowCollectionId, e.originCollectionId, e.contextId), e.source,
         )
         return ListeningPocketsUploadEvent(
             id = e.id, songId = e.songId, atMs = flooredMinute(e.playedAt), ord = 0,
@@ -386,6 +410,10 @@ class ListeningPocketsService(
             fraction = e.listenedFraction?.let { (it * 1000).roundToLong() / 1000.0 },
             originInstallId = e.originInstallId, artist = e.artist, carPlay = e.carPlay, ctx = ctx,
             contextId = collection?.first, contextKind = collection?.second,
+            mode = if (wheel && motionOptedIn?.invoke() == true) sensorMode(e, ctx) else null,
+            run = if (wheel) e.pocketRun?.let {
+                ListeningPocketsUploadEvent.RunWire(it.runId, it.momentKey, it.slot, it.rowCollectionId)
+            } else null,
         )
     }
 
@@ -542,8 +570,29 @@ class ListeningPocketsService(
             val ctx = e.ctx?.let { "${it.kind}/${it.placeId ?: ""}/${it.tripId ?: ""}/${it.destination ?: ""}" } ?: "-"
             val base = "${e.outcome}|$pct|$ctx|${e.tzOffsetMin ?: 0}"
             // Appended only when present, so pre-collections fingerprints stay identical (no mass re-send).
-            val cid = e.contextId ?: return base
-            return "$base|${e.contextKind ?: ""}/$cid"
+            var fp = base
+            if (e.contextId != null) fp += "|${e.contextKind ?: ""}/${e.contextId}"
+            // Pocket Wheel fields, appended only when present (a settled motion / run tag re-sends once).
+            e.mode?.let { fp += "|m:$it" }
+            e.run?.let { fp += "|r:${it.id}/${it.slot}" }
+            return fp
+        }
+
+        /**
+         * The Pocket Wheel mode worth sending: only what the SENSORS decided - running / walking, or trip
+         * from automotive / cycling motion. Surface modes (and a trip the `ctx` already carries) are
+         * derivable server-side and never sent.
+         */
+        fun sensorMode(e: PlayEvent, ctx: ListeningContextTag?): String? {
+            val m = com.levi.pocketdj.data.pockets.wheel.PocketMode.derive(e.source, e.carPlay, e.motion, ctx) ?: return null
+            return when (m) {
+                com.levi.pocketdj.data.pockets.wheel.PocketMode.RUNNING,
+                com.levi.pocketdj.data.pockets.wheel.PocketMode.WALKING -> m.token
+                com.levi.pocketdj.data.pockets.wheel.PocketMode.TRIP ->
+                    if (e.motion == com.levi.pocketdj.data.pockets.wheel.MotionToken.AUTOMOTIVE ||
+                        e.motion == com.levi.pocketdj.data.pockets.wheel.MotionToken.CYCLING) m.token else null
+                else -> null
+            }
         }
 
         fun message(e: ListeningPocketsClient.ClientError): String = when (e) {

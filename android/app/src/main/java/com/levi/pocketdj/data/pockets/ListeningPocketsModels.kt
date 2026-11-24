@@ -97,7 +97,22 @@ data class ListeningPocketsUploadEvent(
     /** Opaque collection id the play started from + its kind (pocket|playlist|setlist|source). */
     val contextId: String? = null,
     val contextKind: String? = null,
+    /** Pocket Wheel (Phase 6): sensor-derived mode (running|walking|trip). ABSENT (never null) when not sent. */
+    val mode: String? = null,
+    /** Pocket Wheel run tag for plays a wheel run started. ABSENT (never null) when not sent. */
+    val run: RunWire? = null,
 ) {
+    /** iOS `ListeningPocketsUploadEvent.RunWire`: `collectionId` omitted when nil. */
+    data class RunWire(val id: String, val moment: String, val slot: Int, val collectionId: String? = null) {
+        fun toJson(): JsonObject {
+            val m = linkedMapOf<String, JsonElement>(
+                "id" to JsonPrimitive(id), "moment" to JsonPrimitive(moment), "slot" to JsonPrimitive(slot),
+            )
+            collectionId?.let { m["collectionId"] = JsonPrimitive(it) }
+            return JsonObject(m)
+        }
+    }
+
     fun toJson(): JsonObject {
         val m = linkedMapOf<String, JsonElement>()
         m["id"] = JsonPrimitive(id)
@@ -116,6 +131,8 @@ data class ListeningPocketsUploadEvent(
             m["contextId"] = JsonPrimitive(contextId)
             m["contextKind"] = JsonPrimitive(contextKind)
         }
+        mode?.let { m["mode"] = JsonPrimitive(it) }
+        run?.let { m["run"] = it.toJson() }
         return JsonObject(m)
     }
 
@@ -163,6 +180,8 @@ data class ListeningPocketsUploadResponse(
     val rejected: Int? = null,
     val total: Int? = null,
     val dirty: Boolean? = null,
+    /** Capabilities beyond upload.v1 (`["wheel"]` = Pocket Wheel fields). null = the key was absent. */
+    val caps: List<String>? = null,
 ) {
     companion object {
         fun parse(e: JsonElement?): ListeningPocketsUploadResponse {
@@ -171,6 +190,7 @@ data class ListeningPocketsUploadResponse(
                 ok = o.lpBool("ok"), accepted = o.lpInt("accepted"), updated = o.lpInt("updated"),
                 unchanged = o.lpInt("unchanged"), rejected = o.lpInt("rejected"),
                 total = o.lpInt("total"), dirty = o.lpBool("dirty"),
+                caps = (o["caps"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content },
             )
         }
     }
