@@ -796,7 +796,8 @@ final class CarPlayController {
         let releases = model.isReleaseTile(tile.id)
         pushRows(title: tile.title, rows: model.forYouRows(tileId: tile.id),
                  header: releases ? "Releases" : "Songs",
-                 emptyText: releases ? "No new releases to play" : "Nothing to suggest right now",
+                 emptyText: releases ? (model.newReleaseFilterNote() ?? "No new releases to play")
+                                    : "Nothing to suggest right now",
                  playAll: { await model.playForYouTile(tile.id) },
                  shuffleAll: { await model.playForYouTile(tile.id, shuffle: true) },
                  onSelect: { [weak self] row in self?.presentForYouActions(row, inTile: tile, model) })

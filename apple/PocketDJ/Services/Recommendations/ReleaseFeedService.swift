@@ -672,6 +672,27 @@ final class ReleaseFeedService {
                            releaseArtworkUrl: nil, releaseKind: "album", trackCount: 10)
     }
 
+    /// `PDJ_NEW_FIXTURE_KINDS=1` adds the two rows the albums/singles UI tests need, kept opt-in so
+    /// the default fixture's counts (CarPlay, toolbar, streaming tests) don't move.
+    nonisolated static var wantsUIKindFixtures: Bool {
+        wantsUIFixture && ProcessInfo.processInfo.environment["PDJ_NEW_FIXTURE_KINDS"] == "1"
+    }
+
+    /// A newer single by name + flag, and an "album" that is really a one-track single.
+    nonisolated static func uiFixtureKindEntries(nowMs: Double = Date().timeIntervalSince1970 * 1000) -> [ArtistReleaseEntry] {
+        let day = 86_400_000.0
+        return [
+            ArtistReleaseEntry(artistId: 900_005, artistName: "Fresh Hands",
+                               checkedAtMs: nowMs, releaseId: "9000000005",
+                               releaseName: "Fresh Cut - Single", releaseAtMs: nowMs - 1 * day,
+                               releaseArtworkUrl: nil, releaseKind: "single", trackCount: 1),
+            ArtistReleaseEntry(artistId: 900_006, artistName: "Midnight Radio",
+                               checkedAtMs: nowMs, releaseId: "9000000006",
+                               releaseName: "Midnight Edit", releaseAtMs: nowMs - 3 * day,
+                               releaseArtworkUrl: nil, releaseKind: nil, trackCount: 1),
+        ]
+    }
+
     /// The transport the feed reads Apple Music through — also what hydrates liked-release
     /// metadata, so there is ONE credential path and one backoff policy.
     var catalogTransport: Transport? { transport }

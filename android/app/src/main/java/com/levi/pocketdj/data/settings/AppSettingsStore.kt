@@ -49,6 +49,8 @@ data class AppSettings(
     // collections document). Tokens/semantics mirror the iOS keys exactly.
     /** `CollectionSortOrder` raw token; missing ⇒ "name" (fresh install AND upgrade). */
     val collectionSort: String = "name",
+    /** For You ▸ New albums/singles filter (`NewReleaseKindFilter.raw`); missing ⇒ "all". Per install. */
+    val newReleaseKind: String = "all",
     /** Yours/Shared tab: "user" | "shared"; missing ⇒ "user". */
     val playlistsMode: String = "user",
     /** COLLAPSED folder ids — missing/absent ⇒ expanded (folders default OPEN). */
@@ -130,6 +132,7 @@ class AppSettingsStore(
         val INSTALL_ID = LegacyPrefKeys.INSTALL_ID
         val BROWSE_SNAPSHOT_JSON = LegacyPrefKeys.BROWSE_SNAPSHOT_JSON
         val COLLECTION_SORT = LegacyPrefKeys.COLLECTION_SORT
+        val NEW_RELEASE_KIND = LegacyPrefKeys.NEW_RELEASE_KIND
         val PLAYLISTS_MODE = LegacyPrefKeys.PLAYLISTS_MODE
         val COLLAPSED_FOLDER_IDS = LegacyPrefKeys.COLLAPSED_FOLDER_IDS
         val EXPANDED_SOURCE_NAMES = LegacyPrefKeys.EXPANDED_SOURCE_NAMES
@@ -192,6 +195,7 @@ class AppSettingsStore(
         onlineSearchEnabled = prefs[Keys.ONLINE_SEARCH_ENABLED.key] ?: false,
         installId = prefs[Keys.INSTALL_ID.key] ?: "",
         collectionSort = prefs[Keys.COLLECTION_SORT.key] ?: "name",
+        newReleaseKind = prefs[Keys.NEW_RELEASE_KIND.key] ?: "all",
         playlistsMode = prefs[Keys.PLAYLISTS_MODE.key] ?: "user",
         collapsedFolderIds = prefs[Keys.COLLAPSED_FOLDER_IDS.key] ?: emptySet(),
         expandedSourceNames = prefs[Keys.EXPANDED_SOURCE_NAMES.key] ?: emptySet(),
@@ -287,6 +291,11 @@ class AppSettingsStore(
     /** Persist the Playlists collection-sort token (`CollectionSortOrder.token`). */
     suspend fun setCollectionSort(token: String) {
         dataStore.edit { it[Keys.COLLECTION_SORT.key] = token }
+    }
+
+    /** Persist the For You ▸ New albums/singles filter (`NewReleaseKindFilter.raw`). */
+    suspend fun setNewReleaseKind(raw: String) {
+        dataStore.edit { it[Keys.NEW_RELEASE_KIND.key] = raw }
     }
 
     /** Persist the Playlists Yours/Shared tab ("user" | "shared"). */

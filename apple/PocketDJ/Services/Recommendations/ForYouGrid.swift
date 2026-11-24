@@ -35,8 +35,13 @@ enum ForYouGrid {
                       collections: CollectionsStore,
                       feedback: RecFeedbackStore?,
                       releaseFeed: ReleaseFeedService?,
+                      newKind: NewReleaseKindFilter = .all,
                       nowMs: Double = Date().timeIntervalSince1970 * 1000) -> [ForYouTile] {
-        let releases = releaseFeed?.feed(nowMs: nowMs) ?? []
+        let allReleases = releaseFeed?.feed(nowMs: nowMs) ?? []
+        // The New tile counts what its screen will SHOW: a kind filter that hides singles must
+        // hide them from the badge too, or the tile promises a number the screen can't deliver.
+        let arranged = NewReleaseKinds.arrange(allReleases, mode: newKind, cls: { $0.entry.kindClass })
+        let releases = arranged.flat
         let soon = releases.filter { $0.status == .comingSoon }
         let newScope = ForYouTileRoute.Kind.new.rawValue
 
@@ -54,6 +59,18 @@ enum ForYouGrid {
 
         let newCount = live(releases.map(\.feedbackId), scope: newScope,
                             feedback: feedback, nowMs: nowMs).count
+        // Zero BECAUSE OF THE FILTER is its own note: "No releases in the last 30 days" would be
+        // false. Only when the unfiltered feed still has something the owner could be offered.
+        let filterNote: String? = {
+            guard newCount == 0, arranged.hiddenTotal > 0,
+                  let hidden = NewReleaseKinds.hiddenNote(albums: arranged.hiddenAlbums,
+                                                          eps: arranged.hiddenEPs,
+                                                          singles: arranged.hiddenSingles),
+                  live(allReleases.map(\.feedbackId), scope: newScope,
+                       feedback: feedback, nowMs: nowMs).count > 0
+            else { return nil }
+            return NewReleaseKinds.emptyNote(mode: newKind, hidden: hidden)
+        }()
         return ForYouTiles.build(
             newReleaseCount: newCount,
             comingSoonCount: live(soon.map(\.feedbackId), scope: newScope,
@@ -71,7 +88,8 @@ enum ForYouGrid {
             // A ZERO ON THE NEW TILE HAS FOUR DIFFERENT CAUSES. Say which — a bare 0 with
             // "no releases in the last 30 days" beneath it is the card asserting something it
             // has not checked, and it is why this feature read as broken.
-            newEmptyNote: newCount == 0 ? releaseFeed?.emptyReason().tileNote : nil)
+            newEmptyNote: newCount == 0 ? (filterNote ?? releaseFeed?.emptyReason().tileNote) : nil,
+            newKind: newKind)
     }
 
     /// **The song ids a tile's badge counted** — and therefore exactly what its ▶ must play.

@@ -833,7 +833,11 @@ struct PocketDJApp: App {
         // UI-test seam (double-gated — see `wantsUIFixture`): canned releases, so the New tile's
         // toolbar can be driven without a catalog request.
         if ReleaseFeedService.wantsUIFixture {
-            releaseFeed.seedForTesting(ReleaseFeedService.uiFixtureEntries())
+            releaseFeed.seedForTesting(ReleaseFeedService.uiFixtureEntries()
+                + (ReleaseFeedService.wantsUIKindFixtures ? ReleaseFeedService.uiFixtureKindEntries() : []))
+            // The albums/singles mode is set at launch (missing → everything), so a test that
+            // leaves "Albums only" behind can't leak it into the next through persisted defaults.
+            settings.newReleaseKindFilter = .from(ProcessInfo.processInfo.environment["PDJ_NEW_KIND"])
         }
         playHistory.onRecord = { [weak app, weak releaseFeed, weak skipTracker] event in
             // Skip tracking: this event IS the live "playing now" row — arm the tracker first.

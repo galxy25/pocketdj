@@ -64,6 +64,7 @@ object LegacyPrefKeys {
     val INSTALL_ID = PrefKey.string("installId")
     val BROWSE_SNAPSHOT_JSON = PrefKey.string("browseSnapshotJson")
     val COLLECTION_SORT = PrefKey.string("collectionSort", "name")
+    val NEW_RELEASE_KIND = PrefKey.string("newReleaseKind", "all")
     val PLAYLISTS_MODE = PrefKey.string("playlistsMode", "user")
     val COLLAPSED_FOLDER_IDS = PrefKey.stringSet("collapsedFolderIds")
     val EXPANDED_SOURCE_NAMES = PrefKey.stringSet("expandedSourceNames")

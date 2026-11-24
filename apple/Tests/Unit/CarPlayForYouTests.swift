@@ -343,4 +343,38 @@ final class CarPlayForYouTests: XCTestCase {
         XCTAssertFalse(ok)
         XCTAssertFalse(rig.services.setlistPlayer.isRunning)
     }
+
+    // MARK: - The albums/singles filter reaches the car
+
+    func testKindFilterDecidesWhatTheCarListsAndPlays() async {
+        let rig = await makeRig()
+        let now = 1_000_000_000_000.0
+        rig.releases.seedForTesting(ReleaseFeedService.uiFixtureEntries(nowMs: now)
+                                    + ReleaseFeedService.uiFixtureKindEntries(nowMs: now))
+        let rows = { rig.model.forYouRows(tileId: "new", nowMs: now).map(\.id) }
+        rig.services.settings.newReleaseKindFilter = .albums
+        XCTAssertEqual(rows(), ["rel:9000000001"])
+        rig.services.settings.newReleaseKindFilter = .singles
+        XCTAssertEqual(rows(), ["rel:9000000005", "rel:9000000006", "rel:9000000002"])
+        rig.services.settings.newReleaseKindFilter = .albumsFirst
+        XCTAssertEqual(rows().first, "rel:9000000001", "the album precedes every single")
+        XCTAssertNil(rig.model.newReleaseFilterNote(nowMs: now))
+        // Everything hidden → the car says why.
+        rig.releases.seedForTesting([ReleaseFeedService.uiFixtureKindEntries(nowMs: now)[0]])
+        rig.services.settings.newReleaseKindFilter = .albums
+        XCTAssertEqual(rig.model.newReleaseFilterNote(nowMs: now), "No new albums · 1 single hidden")
+    }
+
+    /// Review fix: when the visible kind is empty because it is all 👎'd, the filter is not the cause
+    /// and the car must not claim it is.
+    func testFilterNoteSilentWhenHiddenKindIsAllThumbedDown() async {
+        let rig = await makeRig()
+        let now = 1_000_000_000_000.0
+        let entries = ReleaseFeedService.uiFixtureKindEntries(nowMs: now)   // two singles
+        rig.releases.seedForTesting(entries)
+        rig.services.settings.newReleaseKindFilter = .albums
+        XCTAssertNotNil(rig.model.newReleaseFilterNote(nowMs: now), "live singles hidden: filter is the cause")
+        for e in entries { rig.feedback.record(songId: "rel:\(e.releaseId ?? "")", scope: "new", verdict: .rejected, surface: .carPlay) }
+        XCTAssertNil(rig.model.newReleaseFilterNote(nowMs: now))
+    }
 }

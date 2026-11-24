@@ -86,7 +86,8 @@ extension CarPlayModel {
     /// The tile cards, from the ONE shared derivation the phone grid uses.
     private func forYouTileModels(nowMs: Double) -> [ForYouTile] {
         ForYouGrid.tiles(snapshot: feedSnapshot, collections: services.collections,
-                         feedback: feedback, releaseFeed: services.releaseFeed, nowMs: nowMs)
+                         feedback: feedback, releaseFeed: services.releaseFeed,
+                         newKind: services.settings.newReleaseKindFilter, nowMs: nowMs)
     }
 
     private func forYouTile(_ tileId: String, nowMs: Double) -> ForYouTile? {
@@ -137,13 +138,32 @@ extension CarPlayModel {
     /// already thumbed up removed), newest first. A pre-order is deliberately absent — there is no
     /// audio behind it, and a row that cannot play has no business on a car screen.
     private func newReleaseItems(nowMs: Double) -> [ReleaseFeedItem] {
-        let items = services.releaseFeed?.outNow(nowMs: nowMs) ?? []
-        guard let feedback else { return items }
+        // Through the owner's albums/singles choice, so the car plays exactly what the phone's
+        // New screen plays (`NewReleaseKinds.liveOutNow` is the one derivation).
+        NewReleaseKinds.liveOutNow(outNow: services.releaseFeed?.outNow(nowMs: nowMs) ?? [],
+                                   feedback: feedback, scope: ForYouTileRoute.Kind.new.rawValue,
+                                   mode: services.settings.newReleaseKindFilter, nowMs: nowMs)
+    }
+
+    /// Why the New drill-in is empty when the albums/singles filter is the cause ("No new albums ·
+    /// 3 singles hidden"); nil otherwise. The car has no Show all — changing a preference while
+    /// driving isn't CarPlay's job — so the line says why instead.
+    func newReleaseFilterNote(nowMs: Double = Date().timeIntervalSince1970 * 1000) -> String? {
+        let mode = services.settings.newReleaseKindFilter
+        guard mode == .albums || mode == .singles, newReleaseItems(nowMs: nowMs).isEmpty else { return nil }
         let scope = ForYouTileRoute.Kind.new.rawValue
-        let sunk = feedback.activeTombstones(scope: scope, nowMs: nowMs)
-        let accepted = feedback.acceptedInScope(scope)
-        guard !sunk.isEmpty || !accepted.isEmpty else { return items }
-        return items.filter { sunk[$0.feedbackId] == nil && accepted[$0.feedbackId] == nil }
+        let accepted = feedback?.acceptedInScope(scope) ?? [:]
+        let offered = (services.releaseFeed?.outNow(nowMs: nowMs) ?? []).filter { accepted[$0.feedbackId] == nil }
+        let a = NewReleaseKinds.arrange(offered, mode: mode, cls: { $0.entry.kindClass })
+        // Only blame the filter if it hides something LIVE: when the visible kind is all 👎'd the
+        // list is empty for that reason, not this one (iOS ForYouGrid guards the same way).
+        let sunk = feedback?.activeTombstones(scope: scope, nowMs: nowMs) ?? [:]
+        let hiddenKind = offered.filter { (mode == .albums) ? $0.entry.kindClass == .single
+                                                           : $0.entry.kindClass.isAlbumBucket }
+        guard hiddenKind.contains(where: { sunk[$0.feedbackId] == nil }) else { return nil }
+        guard let hidden = NewReleaseKinds.hiddenNote(albums: a.hiddenAlbums, eps: a.hiddenEPs,
+                                                      singles: a.hiddenSingles) else { return nil }
+        return NewReleaseKinds.emptyNote(mode: mode, hidden: hidden)
     }
 
     // ========================================================================

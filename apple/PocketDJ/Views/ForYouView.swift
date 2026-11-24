@@ -228,7 +228,7 @@ struct ForYouTilesView: View {
     ///    leave one dead tile up and one live tile missing.
     private var derivationKey: String {
         "\(feed?.revision ?? 0)|\(snapshot.refreshedAtMs)|\(feedback?.revision ?? 0)"
-        + "|\(releaseFeed?.revision ?? 0)"
+        + "|\(releaseFeed?.revision ?? 0)|\(settings.newReleaseKindFilter.rawValue)"
         + "|\(collections.playlists.count)|\(collections.pockets.count)"
         + "|\(collections.membershipRevision)"
         + "|\(collections.recommendationsOffIds().sorted().joined(separator: ","))"
@@ -243,7 +243,8 @@ struct ForYouTilesView: View {
         let now = Date().timeIntervalSince1970 * 1000
         updatedLabel = ForYouFeedStore.updatedLabel(refreshedAtMs: snapshot.refreshedAtMs, nowMs: now)
         tiles = ForYouGrid.tiles(snapshot: snapshot, collections: collections,
-                                 feedback: feedback, releaseFeed: releaseFeed, nowMs: now)
+                                 feedback: feedback, releaseFeed: releaseFeed,
+                                 newKind: settings.newReleaseKindFilter, nowMs: now)
     }
 
     // ========================================================================
@@ -402,11 +403,12 @@ struct ForYouTilesView: View {
     /// queue.
     @ViewBuilder private func tileMenu(_ tile: ForYouTile) -> some View {
         if tile.route.kind == .new {
-            let releases = releaseFeed?.outNow() ?? []
-            let scope = ForYouTileRoute.Kind.new.rawValue
-            let sunk = feedback?.activeTombstones(scope: scope) ?? [:]
-            let accepted = feedback?.acceptedInScope(scope) ?? [:]
-            let live = releases.filter { sunk[$0.feedbackId] == nil && accepted[$0.feedbackId] == nil }
+            // The SAME derivation the screen, CarPlay and the badge use, so ▶ plays what the
+            // New screen shows under the owner's albums/singles choice.
+            let nowMs = Date().timeIntervalSince1970 * 1000
+            let live = NewReleaseKinds.liveOutNow(outNow: releaseFeed?.outNow() ?? [], feedback: feedback,
+                                                  scope: ForYouTileRoute.Kind.new.rawValue,
+                                                  mode: settings.newReleaseKindFilter, nowMs: nowMs)
             Button { startReleases(live, shuffle: false) } label: {
                 Label("Play", systemImage: "play.fill")
             }

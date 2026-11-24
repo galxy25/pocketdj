@@ -191,6 +191,9 @@ final class SettingsStore {
     /// How the Playlists screen orders the user's collections + each Shared-tab source group.
     /// Persisted (per-device — Settings isn't CloudSync-registered); default `.name` (A–Z).
     var collectionSort: CollectionSortOrder
+    /// For You ▸ New: which releases show and in what order (albums vs singles). Per-install like
+    /// `collectionSort` — UI prefs never ride the credentials sync. Default `.all` (today's list).
+    var newReleaseKindFilter: NewReleaseKindFilter
     /// The last-visited section's rawValue ("" = the home menu) — iOS relaunches
     /// reopen there ("open to wherever you last left off"); macOS ignores it
     /// (always lands on Mix). Written by RootView on every section change.
@@ -574,6 +577,7 @@ final class SettingsStore {
         self.beatPulseEnabled = data.beatPulseEnabled ?? false
         self.mixDeckLayout = data.mixDeckLayout.flatMap(MixDeckLayout.init(rawValue:)) ?? .stacked
         self.collectionSort = data.collectionSort.flatMap(CollectionSortOrder.init(rawValue:)) ?? .name
+        self.newReleaseKindFilter = NewReleaseKindFilter.from(data.newReleaseKindFilter)
         self.lastSection = data.lastSection
         self.storageSoftCapGB = data.storageSoftCapGB
         self.lastStoragePruneAt = data.lastStoragePruneAt
@@ -784,6 +788,7 @@ final class SettingsStore {
             beatPulseEnabled: beatPulseEnabled,
             mixDeckLayout: mixDeckLayout.rawValue,
             collectionSort: collectionSort.rawValue,
+            newReleaseKindFilter: newReleaseKindFilter.rawValue,
             lastSection: lastSection,
             storageSoftCapGB: storageSoftCapGB,
             lastStoragePruneAt: lastStoragePruneAt,
@@ -884,6 +889,7 @@ final class SettingsStore {
         beatPulseEnabled = d.beatPulseEnabled ?? false
         mixDeckLayout = d.mixDeckLayout.flatMap(MixDeckLayout.init(rawValue:)) ?? .stacked
         collectionSort = d.collectionSort.flatMap(CollectionSortOrder.init(rawValue:)) ?? .name
+        newReleaseKindFilter = NewReleaseKindFilter.from(d.newReleaseKindFilter)
         lastSection = d.lastSection
         storageSoftCapGB = d.storageSoftCapGB
         lastStoragePruneAt = d.lastStoragePruneAt
@@ -1008,6 +1014,8 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode — the Playlists collection sort. Stored as the
     /// enum's raw string; coalesced to `.name` (A–Z) at the read sites (default on upgrade).
     var collectionSort: String?
+    /// Optional so older blobs still decode — `NewReleaseKindFilter` raw; missing/unknown → `.all`.
+    var newReleaseKindFilter: String?
     /// Optional so older blobs still decode (nil = never persisted = home).
     var lastSection: String?
     /// Storage soft cap in decimal GB. Optional-by-design even when current: nil IS the
@@ -1165,6 +1173,7 @@ struct SettingsData: Codable {
         beatPulseEnabled: false,
         mixDeckLayout: MixDeckLayout.stacked.rawValue,
         collectionSort: nil,
+        newReleaseKindFilter: nil,
         lastSection: nil,
         storageSoftCapGB: nil,
         lastStoragePruneAt: nil,

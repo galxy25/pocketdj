@@ -85,6 +85,7 @@ import com.levi.pocketdj.playback.PlayContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 
 // =====================================================================================
@@ -323,7 +324,10 @@ fun ForYouTilesScreen(
         if (value == null) value = withContext(Dispatchers.IO) { graph.browseGraph.releaseFeed }
     }
     val releaseRev = releaseFeed?.revisionFlow?.collectAsState()?.value ?: 0
-    val releaseSource = remember(releaseFeed) { releaseFeed?.let { com.levi.pocketdj.data.recs.ReleaseFeedForYouSource(it) } }
+    // The New tile counts what its screen shows under the albums/singles choice (New's ⋯ menu).
+    val newKind by remember { graph.settings.settings.map { NewReleaseKindFilter.from(it.newReleaseKind) } }
+        .collectAsState(remember { NewReleaseKindFilter.initial(graph.settings.settings) })
+    val releaseSource = remember(releaseFeed, newKind) { releaseFeed?.let { KindFilteredForYouSource(it, newKind) } }
     val tiles = remember(feedState.revision, snapshot.refreshedAtMs, fbState.revision, colState.revision, releaseRev, releaseSource) {
         ForYouGrid.tiles(snapshot, stores.collections.asForYouCollections(), stores.feedback, releaseSource)
     }
