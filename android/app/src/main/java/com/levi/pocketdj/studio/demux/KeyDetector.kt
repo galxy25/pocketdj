@@ -65,18 +65,21 @@ object KeyDetector {
         return detect(chroma)
     }
 
-    /** Audio key from a decoded buffer (first 30 s). Null when too short/quiet to be tonal. */
-    fun detect(pcm: PcmBuffer): Camelot? = chromagram(pcm)?.let { detect(it) }
+    /**
+     * Audio key from a decoded buffer (first [maxSeconds], default 30). Null when too short/quiet to be
+     * tonal. [Camelot.strength] is the 0..1 key-fit (the DJ quick pass gates on >= 0.7).
+     */
+    fun detect(pcm: PcmBuffer, maxSeconds: Double = MAX_SECONDS): Camelot? = chromagram(pcm, maxSeconds)?.let { detect(it) }
 
     private const val FFT_SIZE = 4096
     private const val HOP = 2048
     private const val MAX_SECONDS = 30.0
 
     /** Fold the FFT magnitude spectrum of [pcm] into 12 pitch-class bins (A1 ... ~D8). Null when unreadable/silent. */
-    fun chromagram(pcm: PcmBuffer): DoubleArray? {
+    fun chromagram(pcm: PcmBuffer, maxSeconds: Double = MAX_SECONDS): DoubleArray? {
         val sr = pcm.sampleRate
         if (sr <= 0 || pcm.frames <= 0) return null
-        val cap = minOf(pcm.frames, (sr * MAX_SECONDS).toInt())
+        val cap = minOf(pcm.frames, (sr * maxSeconds).toInt())
         val mono = Chromagram.toMono(pcm.samples, pcm.channels, cap)
         if (mono.size < FFT_SIZE) return null
         val window = DoubleArray(FFT_SIZE) { 0.5 - 0.5 * cos(2 * PI * it / FFT_SIZE) }
