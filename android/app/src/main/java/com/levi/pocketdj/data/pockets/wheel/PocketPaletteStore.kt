@@ -39,7 +39,7 @@ class PocketPaletteStore(private val file: File) {
     @Volatile var onChanged: (() -> Unit)? = null
 
     init {
-        val doc = decode(file)
+        val doc = decode(file) ?: Document(emptyMap(), emptyMap())
         entriesRef = normalized(doc.entries)
         passthrough = doc.extras
     }
@@ -95,9 +95,10 @@ class PocketPaletteStore(private val file: File) {
     /**
      * Merge a peer's document (sync pull rewrote the file). Saves only when we hold something the pulled doc
      * lacks (an unconditional save after every pull ping-pongs two devices forever). Returns true when it re-saved.
+     * A missing/unparsable file changes nothing and returns false (iOS parity: never overwrite from a bad read).
      */
     fun reloadFromDisk(): Boolean {
-        val doc = decode(file)
+        val doc = decode(file) ?: return false
         var resaved = false
         var changed = false
         synchronized(lock) {
@@ -175,9 +176,10 @@ class PocketPaletteStore(private val file: File) {
             return normalized(out)
         }
 
-        internal fun decode(file: File): Document {
+        /** Null when the file is missing or not a JSON object. */
+        internal fun decode(file: File): Document? {
             val root = runCatching { Json.parseToJsonElement(file.readText()) as? JsonObject }.getOrNull()
-                ?: return Document(emptyMap(), emptyMap())
+                ?: return null
             val raw = root["entries"] as? JsonObject
             val entries = LinkedHashMap<String, Entry>()
             raw?.forEach { (id, el) ->

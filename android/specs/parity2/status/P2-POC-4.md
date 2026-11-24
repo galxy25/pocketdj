@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-POC-4 Pocket palette store + sync/deletion keys
 
@@ -15,3 +15,11 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR reloadFromDisk no unreadable-file guard -> fixed (decode returns null on missing/unparsable; reloadFromDisk returns false without saving; test added)
+- MINOR weak sync/deletion test -> fixed (source-guard test for both SyncEntry registrations; ProfileSourceStore.reloadFromDisk onChanged test)
+- NIT StudioGraph stale comment -> fixed
+- NIT fav_songs never freed -> no change needed (deliberate deviation; keep documented here and in architecture doc)
+
+fixes applied. Tests 6181, 0 failures; assembleDebug green.

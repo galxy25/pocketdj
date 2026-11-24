@@ -119,7 +119,7 @@ class PocketPaletteStoreTest {
         f.writeText(ios)
         val s = PocketPaletteStore(f)
         s.assign(listOf("a"), nowMs = 2000.0) // no change
-        assertEquals(PocketPaletteStore.encode(s.entries, emptyMap()), PocketPaletteStore.encode(PocketPaletteStore.decode(f).entries, emptyMap()))
+        assertEquals(PocketPaletteStore.encode(s.entries, emptyMap()), PocketPaletteStore.encode(PocketPaletteStore.decode(f)!!.entries, emptyMap()))
         assertTrue(PocketPaletteStore.encode(s.entries, emptyMap()).contains("\"assignedAtMs\":1000,"))
         assertTrue(PocketPaletteStore.encode(s.entries, emptyMap()).contains("1500.5"))
         // Unknown top-level key survives a re-write.
@@ -157,5 +157,30 @@ class PocketPaletteStoreTest {
     @Test fun registeredForDeletion() {
         assertTrue("pocket-palette" in AccountDeletionService.cloudDocKeys)
         assertTrue("profile-source" in AccountDeletionService.cloudDocKeys)
+    }
+
+    @Test fun reloadFromDiskWithMissingOrCorruptFileKeepsStateAndDoesNotRewrite() {
+        val f = file()
+        val s = PocketPaletteStore(f)
+        s.assign(listOf("a"), nowMs = 1000.0)
+        f.delete()
+        assertFalse(s.reloadFromDisk())
+        assertFalse("must not recreate the file", f.exists())
+        f.writeText("{ truncated")
+        assertFalse(s.reloadFromDisk())
+        assertEquals("{ truncated", f.readText())
+        assertEquals(0, s.slot("a"))
+    }
+
+    private fun src(rel: String): String {
+        val r = "app/src/main/java/com/levi/pocketdj/$rel"
+        return listOf(File(r), File("android/$r"), File("../$r")).first { it.exists() }.readText()
+    }
+
+    @Test fun syncEntriesAreRegistered() {
+        assertTrue(Regex("""SyncEntry\(\s*com\.levi\.pocketdj\.data\.pockets\.wheel\.PocketPaletteStore\.SYNC_KEY""")
+            .containsMatchIn(src("di/ServicesGraph.kt")))
+        assertEquals("pocket-palette", PocketPaletteStore.SYNC_KEY)
+        assertTrue(src("di/StudioGraph.kt").contains("SyncEntry(\"profile-source\""))
     }
 }

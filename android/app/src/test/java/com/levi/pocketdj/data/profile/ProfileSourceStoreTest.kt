@@ -178,4 +178,18 @@ class ProfileSourceStoreTest {
         assertEquals(0L, audio.usageBytes())
         assertTrue(store().songs().isEmpty())
     }
+
+    @Test fun reloadFromDiskFiresOnChangedOnlyWhenSongsChanged() {
+        val a = store()
+        val b = store()
+        var fired = 0
+        b.onChanged = { fired++ }
+        b.reloadFromDisk()
+        assertEquals(0, fired)
+        a.add(listOf(entry("x", Kind.SAMPLE)))
+        b.reloadFromDisk()
+        assertEquals(1, fired)
+        b.reloadFromDisk()
+        assertEquals(1, fired)
+    }
 }
