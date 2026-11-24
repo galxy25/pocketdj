@@ -77,7 +77,7 @@ class PocketWheelParityGoldenTest {
             assertTrue("$path: expected=$expected actual=$actual", expected.isNullish() && actual.isNullish())
             return
         }
-        when (expected) {
+        when (expected!!) {
             is JsonObject -> {
                 val a = actual as? JsonObject ?: error("$path: expected object, got $actual")
                 val keys = (expected.keys + a.keys).filter { !(expected[it].isNullish() && a[it].isNullish()) }.toSortedSet()
@@ -98,6 +98,7 @@ class PocketWheelParityGoldenTest {
                     assertEquals(path, expected.contentOrNull, a.contentOrNull)
                 }
             }
+            JsonNull -> Unit
         }
     }
 
