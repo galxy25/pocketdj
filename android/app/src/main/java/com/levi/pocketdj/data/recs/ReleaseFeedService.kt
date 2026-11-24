@@ -393,7 +393,9 @@ class ReleaseFeedService(
         val now = clock()
         val rows = ArtistsCatalogResponse.parse(body, now)?.toMutableList() ?: return failed
         // A failed follow-up keeps the 25: losing release 26+ for one check beats re-queuing fifty artists.
-        for (artistId in ArtistsCatalogResponse.saturatedArtistIds(body, ALBUMS_PER_ARTIST, now)) {
+        // At most MAX_FOLLOW_UPS_PER_BATCH, so one saturated crowd cannot hold a permit through five backoff
+        // retries each; the rest keep their first 25 until the next check.
+        for (artistId in ArtistsCatalogResponse.saturatedArtistIds(body, ALBUMS_PER_ARTIST, now).take(MAX_FOLLOW_UPS_PER_BATCH)) {
             val page = fetchWithBackoff(t, overflowUrl(artistId)) ?: continue
             val name = rows.firstOrNull { it.artistId == artistId }?.artistName.orEmpty()
             ArtistsCatalogResponse.parseAlbumsPage(page, artistId, name, now)?.let { rows += it }
@@ -429,7 +431,8 @@ class ReleaseFeedService(
             }
             // Featured appearances are not this artist's releases.
             val own = ReleaseFeedDedupe.ownReleases(fetched.filter { it.releaseId != null }, meta.artistName)
-            entries[id] = ReleaseFeedCache.normalize(listOf(meta) + own, now)
+            // The head comes from `own`, never from `fetched[0]` (which may itself be a filtered featured credit).
+            entries[id] = ReleaseFeedCache.normalize(listOf(ReleaseFeedCache.bare(meta)) + own, now)
         }
         // ONLY this batch's ids: walking the whole due set would let the first batch to return stamp the
         // clocks of artists belonging to batches still in flight (which may then fail).
@@ -503,6 +506,7 @@ class ReleaseFeedService(
 
         /** Releases asked for per artist in the batch (measured: keeps a 50-artist batch ~0.6 MB). */
         const val ALBUMS_PER_ARTIST = 25
+        const val MAX_FOLLOW_UPS_PER_BATCH = 4
         private const val ALBUM_FIELDS = "name,releaseDate,artwork,trackCount,contentRating,isSingle,isCompilation,artistName"
 
         /** The one batch request shape. Commas stay literal; brackets are percent-encoded (both work, measured). */

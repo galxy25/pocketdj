@@ -253,4 +253,56 @@ class ReleaseFeedAllReleasesTest {
         assertNotNull(svc.entry(1))
         assertFalse(svc.releases(1).isEmpty())
     }
+
+    // ---- review fixes -------------------------------------------------------------------------
+
+    @Test fun applyNeverCachesAFeaturedCreditAsTheHead() = runBlocking {
+        // fetched[0] is Apple's newest row, and it is a guest verse on someone else's record.
+        val body = """{"data":[{"id":"1","attributes":{"name":"Drake"},"relationships":{"albums":{"data":[
+          {"id":"feat","attributes":{"name":"Guest","releaseDate":"${iso(1.0)}","artistName":"Future"}},
+          {"id":"own","attributes":{"name":"Mine","releaseDate":"${iso(3.0)}","artistName":"Drake"}}]}}}]}"""
+        val t = Routing(body)
+        val svc = service(t, null)
+        svc.seedForTesting(listOf(row(1, "old", "Old", 20.0, name = "Drake")))
+        svc.playsForArtist = { 0 }
+        svc.recheckKnownArtists()
+        settle(svc, t)
+        assertEquals(listOf("own"), svc.releases(1).map { it.releaseId })
+    }
+
+    @Test fun applyWithOnlyFeaturedCreditsLeavesABareRow() = runBlocking {
+        val body = """{"data":[{"id":"1","attributes":{"name":"Drake"},"relationships":{"albums":{"data":[
+          {"id":"feat","attributes":{"name":"Guest","releaseDate":"${iso(1.0)}","artistName":"Future"}}]}}}]}"""
+        val t = Routing(body)
+        val svc = service(t, null)
+        svc.seedForTesting(listOf(row(1, "old", "Old", 20.0, name = "Drake")))
+        svc.playsForArtist = { 0 }
+        svc.recheckKnownArtists()
+        settle(svc, t)
+        assertTrue(svc.releases(1).all { it.releaseId == null })
+        assertNotNull(svc.entry(1))
+    }
+
+    @Test fun collabWithASeparatorInTheArtistNameIsKept() {
+        val rows = listOf(
+            row(1, "1", "Collab", 1.0, name = "Tyler, The Creator", credit = "Tyler, The Creator & Kali Uchis"),
+            row(1, "2", "Elsewhere", 1.0, name = "Tyler, The Creator", credit = "Kali Uchis"),
+        )
+        assertEquals(listOf("1"), ReleaseFeedDedupe.ownReleases(rows, "Tyler, The Creator").map { it.releaseId })
+    }
+
+    @Test fun followUpsPerBatchAreCapped() = runBlocking {
+        val artists = (1..6).joinToString(",") { a ->
+            val items = (1..25).joinToString(",") {
+                """{"id":"${a * 1000 + it}","attributes":{"name":"R$it - Single","releaseDate":"${iso(it * 0.5)}","isSingle":true,"artistName":"A$a"}}"""
+            }
+            """{"id":"$a","attributes":{"name":"A$a"},"relationships":{"albums":{"data":[$items],"next":"/v1/x?offset=25"}}}"""
+        }
+        val t = Routing("""{"data":[$artists]}""")
+        val svc = service(t, null)
+        svc.playsForArtist = { 0 }
+        for (a in 1..6) svc.noteArtistPlayed(a, "A$a", now)
+        settle(svc, t)
+        assertEquals(1 + ReleaseFeedService.MAX_FOLLOW_UPS_PER_BATCH, t.calls.get())
+    }
 }

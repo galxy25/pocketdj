@@ -335,3 +335,14 @@ copes:
 - Similar-artists refresh on its own slow cadence, if a consumer ever ships (§1.1).
 - Track-level single↔album matching (§3.4).
 - The Android `AppleMusicApi` wrapper's own `views=latest-release` call (§4 #15).
+
+## Review-fix notes
+
+- Apply builds the head from the filtered own releases (`ReleaseFeedCache.bare(meta)` + `ownReleases`), never from `fetched[0]`; all-featured yields a bare row.
+- Appears-on fails open when the whole folded credit contains the artist's name as words (names with a separator, e.g. "Tyler, The Creator").
+- Migration is the lazy re-ask by design: a v1 cache holds only the head, so an artist whose head is a newer single shows "single only" until its TTL (up to 14 days) expires.
+- A failed overflow follow-up still stamps the TTL: releases 26+ stay missing for one TTL. Accepted (the busiest artist in the 400-artist sample had 9 in-window).
+- Overflow follow-ups are capped at 4 per batch so a permit is never held through many backoff chains.
+- `similarArtistIds` is now only a carry-over (the request no longer asks); nothing in production reads it. Needs Levi's sign-off.
+- Editions: a standard release and a Deluxe both inside the window both show until one is owned (then feature 6 suppresses). Intended.
+- The `BrowseGraph.kt` / `PlaybackGraph.kt` edits are small wiring changes that go against "leave it alone"; flag in the PR.

@@ -271,6 +271,60 @@ final class ReleaseFeedAllReleasesTests: XCTestCase {
         XCTAssertEqual(s.pendingCountForTesting, 0)
     }
 
+    // ── Review fixes ─────────────────────────────────────────────────────────────────────────
+
+    func testApplyNeverCachesAFeaturedCreditAsTheHead() async {
+        // fetched[0] is Apple's newest row, and it is a guest verse on someone else's record.
+        let body = """
+        {"data":[{"id":"1","attributes":{"name":"Drake"},"relationships":{"albums":{"data":[
+         {"id":"feat","attributes":{"name":"Guest","releaseDate":"\(iso(1, now: now))","artistName":"Future"}},
+         {"id":"own","attributes":{"name":"Mine","releaseDate":"\(iso(3, now: now))","artistName":"Drake"}}]}}}]}
+        """
+        let live = ReleaseFeedService(transport: StubReleaseTransport(body: Data(body.utf8)),
+                                      fileURL: tempURL(), timeScale: 0.0001)
+        live.seedForTesting([row(1, "Drake", "old", "Old", daysAgo: 20, now: now)])
+        live.playsForArtist = { _ in 0 }
+        live.noteArtistPlayed(artistId: 1, name: "Drake", nowMs: now + 30 * day)
+        await live.drain()
+        XCTAssertEqual(live.entries[1]?.compactMap(\.releaseId), ["own"])
+    }
+
+    func testApplyWithOnlyFeaturedCreditsLeavesABareRow() async {
+        let body = """
+        {"data":[{"id":"1","attributes":{"name":"Drake"},"relationships":{"albums":{"data":[
+         {"id":"feat","attributes":{"name":"Guest","releaseDate":"\(iso(1, now: now))","artistName":"Future"}}]}}}]}
+        """
+        let live = ReleaseFeedService(transport: StubReleaseTransport(body: Data(body.utf8)),
+                                      fileURL: tempURL(), timeScale: 0.0001)
+        live.seedForTesting([row(1, "Drake", "old", "Old", daysAgo: 20, now: now)])
+        live.playsForArtist = { _ in 0 }
+        live.noteArtistPlayed(artistId: 1, name: "Drake", nowMs: now + 30 * day)
+        await live.drain()
+        XCTAssertEqual(live.entries[1]?.count, 1)
+        XCTAssertNil(live.entries[1]?.first?.releaseId)
+    }
+
+    func testCollabWithASeparatorInTheArtistNameIsKept() {
+        let rows = [row(1, "Tyler, The Creator", "1", "Collab", daysAgo: 1, now: now, credit: "Tyler, The Creator & Kali Uchis"),
+                    row(1, "Tyler, The Creator", "2", "Elsewhere", daysAgo: 1, now: now, credit: "Kali Uchis")]
+        XCTAssertEqual(ReleaseFeedDedupe.ownReleases(rows, artistName: "Tyler, The Creator").compactMap(\.releaseId), ["1"])
+    }
+
+    func testFollowUpsPerBatchAreCapped() async {
+        let artists = (1...6).map { a in
+            let items = (1...25).map { i in
+                "{\"id\":\"\(a * 1000 + i)\",\"attributes\":{\"name\":\"R\(i) - Single\",\"releaseDate\":\"\(iso(Double(i) * 0.5, now: now))\",\"isSingle\":true,\"artistName\":\"A\(a)\"}}"
+            }.joined(separator: ",")
+            return "{\"id\":\"\(a)\",\"attributes\":{\"name\":\"A\(a)\"},\"relationships\":{\"albums\":{\"data\":[\(items)],\"next\":\"/v1/x?offset=25\"}}}"
+        }.joined(separator: ",")
+        let t = RoutingTransport(); t.batchBody = Data("{\"data\":[\(artists)]}".utf8)
+        let s = ReleaseFeedService(transport: t, fileURL: tempURL(), timeScale: 0.0001)
+        s.playsForArtist = { _ in 0 }
+        for a in 1...6 { s.noteArtistPlayed(artistId: a, name: "A\(a)") }
+        await s.drain()
+        XCTAssertEqual(t.urls.count, 1 + ReleaseFeedPolicy.maxFollowUpsPerBatch)
+    }
+
     func testNoFollowUpWithoutNext() async {
         let t = RoutingTransport(); t.batchBody = saturatedBody(next: false)
         let s = ReleaseFeedService(transport: t, fileURL: tempURL(), timeScale: 0.0001)

@@ -399,6 +399,10 @@ object ReleaseFeedCache {
      * rows only when there is nothing else, the head always kept, the rest only if future-dated or within
      * [KEEP_DAYS], capped.
      */
+    /** The artist-level fields of [meta] with every release field cleared. */
+    fun bare(meta: ArtistReleaseEntry) = ArtistReleaseEntry(meta.artistId, meta.artistName, meta.checkedAtMs,
+        similarArtistIds = meta.similarArtistIds, similarCheckedAtMs = meta.similarCheckedAtMs)
+
     fun normalize(rows: List<ArtistReleaseEntry>, nowMs: Double): List<ArtistReleaseEntry> {
         val meta = rows.firstOrNull() ?: return emptyList()
         val seen = HashSet<String>()
@@ -408,8 +412,7 @@ object ReleaseFeedCache {
             similarArtistIds = meta.similarArtistIds, similarCheckedAtMs = meta.similarCheckedAtMs,
         )
         if (real.isEmpty()) {
-            return listOf(ArtistReleaseEntry(meta.artistId, meta.artistName, meta.checkedAtMs,
-                similarArtistIds = meta.similarArtistIds, similarCheckedAtMs = meta.similarCheckedAtMs))
+            return listOf(bare(meta))
         }
         // sortedByDescending is stable: newest first, undated (-inf) last.
         val sorted = real.sortedByDescending { it.releaseAtMs ?: Double.NEGATIVE_INFINITY }
@@ -449,7 +452,10 @@ object ReleaseFeedDedupe {
             val credit = r.releaseArtistName?.trim().orEmpty()
             if (credit.isEmpty()) return@filter true
             val keys = RecVersionIdentity.creditArtistKeys(credit)
-            keys.isEmpty() || me in keys
+            if (keys.isEmpty() || me in keys) return@filter true
+            // Fail open for names containing a separator ("Tyler, The Creator & Kali Uchis"): the split pieces
+            // never equal `me`, but the whole folded credit contains it as words.
+            " ${RecVersionIdentity.artistKey(credit)} ".contains(" $me ")
         }
     }
 
@@ -518,7 +524,9 @@ object ReleaseFeedDedupe {
                 k == RecVersionIdentity.VersionClass.STANDARD || k == RecVersionIdentity.VersionClass.COSMETIC
             }
             if (!collapsible) { members.forEach { out += ReleaseGroup(it, emptyList()) }; continue }
-            fun verdict(r: ArtistReleaseEntry) = r.releaseId?.let { hasVerdict?.invoke("rel:$it") } ?: false
+            // Once per member, not once per comparison.
+            val verdicts = members.mapNotNull { m -> m.releaseId?.let { it to (hasVerdict?.invoke("rel:$it") ?: false) } }.toMap()
+            fun verdict(r: ArtistReleaseEntry) = r.releaseId?.let { verdicts[it] } ?: false
             val sorted = members.sortedWith { a, b ->
                 val (va, vb) = verdict(a) to verdict(b)
                 if (va != vb) return@sortedWith if (va) -1 else 1

@@ -53,6 +53,8 @@ enum ReleaseFeedPolicy {
     /// 40-way fan-out against this endpoint produced 24 separate HTTP 429s. Two at a time with
     /// backoff has been stable.
     static let maxConcurrentRequests = 2
+    /// Overflow follow-ups one batch may issue (they run sequentially while holding its permit).
+    static let maxFollowUpsPerBatch = 4
 
     /// Normalized popularity in [0, 1], from the owner's own play count for the artist.
     /// Logarithmic because play counts are heavy-tailed — a linear scale would put all but a
@@ -299,6 +301,15 @@ enum ReleaseFeedCache {
     /// Newest first (undated last); one row per release id; bare (release-less) rows only when
     /// there is nothing else; the head is always kept (that is exactly what the old one-entry
     /// cache stored), the rest only if future-dated or within `keepDays`; capped.
+    /// The artist-level fields of `row` with every release field cleared.
+    static func bare(_ row: ArtistReleaseEntry) -> ArtistReleaseEntry {
+        var b = row
+        b.releaseId = nil; b.releaseName = nil; b.releaseAtMs = nil
+        b.releaseArtworkUrl = nil; b.releaseKind = nil; b.trackCount = nil
+        b.explicit = nil; b.releaseArtistName = nil
+        return b
+    }
+
     static func normalize(rows: [ArtistReleaseEntry], nowMs: Double) -> [ArtistReleaseEntry] {
         guard let meta = rows.first else { return [] }
         var seen = Set<String>()
@@ -316,13 +327,7 @@ enum ReleaseFeedCache {
             r.similarCheckedAtMs = meta.similarCheckedAtMs
             return r
         }
-        guard !real.isEmpty else {
-            var bare = meta
-            bare.releaseId = nil; bare.releaseName = nil; bare.releaseAtMs = nil
-            bare.releaseArtworkUrl = nil; bare.releaseKind = nil; bare.trackCount = nil
-            bare.explicit = nil; bare.releaseArtistName = nil
-            return [bare]
-        }
+        guard !real.isEmpty else { return [bare(meta)] }
         // Stable sort: newest first, undated last.
         let sorted = real.enumerated().sorted { a, b in
             let x = a.element.releaseAtMs ?? -Double.infinity
@@ -370,7 +375,10 @@ enum ReleaseFeedDedupe {
             guard let credit = r.releaseArtistName,
                   !credit.trimmingCharacters(in: .whitespaces).isEmpty else { return true }
             let keys = RecVersionIdentity.creditArtistKeys(credit)
-            return keys.isEmpty || keys.contains(me)
+            if keys.isEmpty || keys.contains(me) { return true }
+            // Fail open for names containing a separator ("Tyler, The Creator & Kali Uchis"):
+            // the split pieces never equal `me`, but the whole folded credit contains it as words.
+            return " \(RecVersionIdentity.artistKey(credit)) ".contains(" \(me) ")
         }
     }
 
@@ -428,9 +436,10 @@ enum ReleaseFeedDedupe {
                 out.append(contentsOf: members.map { ReleaseGroup(rep: $0, alternates: []) })
                 continue
             }
-            let verdict: (ArtistReleaseEntry) -> Bool = { r in
-                r.releaseId.map { hasVerdict?("rel:\($0)") ?? false } ?? false
-            }
+            // Once per member, not once per comparison.
+            var verdicts: [String: Bool] = [:]
+            for m in members { if let id = m.releaseId { verdicts[id] = hasVerdict?("rel:\(id)") ?? false } }
+            let verdict: (ArtistReleaseEntry) -> Bool = { r in r.releaseId.flatMap { verdicts[$0] } ?? false }
             let sorted = members.sorted { a, b in
                 let (va, vb) = (verdict(a), verdict(b))
                 if va != vb { return va }

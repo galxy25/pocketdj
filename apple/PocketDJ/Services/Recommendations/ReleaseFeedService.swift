@@ -615,7 +615,10 @@ final class ReleaseFeedService {
         // sequentially INSIDE this batch's task, so the in-flight total never exceeds the 2-permit
         // cap. A failed follow-up keeps the 25 — losing release 26+ for one check beats
         // re-queuing fifty artists.
-        for artistId in decoded.saturatedArtistIds(limit: albumsPerArtist, nowMs: now) {
+        // At most `maxFollowUpsPerBatch` per batch, so one saturated crowd cannot hold a permit
+        // through five backoff retries each; the rest keep their first 25 until the next check.
+        for artistId in decoded.saturatedArtistIds(limit: albumsPerArtist, nowMs: now)
+            .prefix(ReleaseFeedPolicy.maxFollowUpsPerBatch) {
             guard let url = overflowURL(artistId: artistId) else { continue }
             var r = URLRequest(url: url); r.httpMethod = "GET"
             guard let page = await fetchWithBackoff(r, transport: transport, timeScale: timeScale),
@@ -663,7 +666,10 @@ final class ReleaseFeedService {
             // Featured appearances are not this artist's releases.
             let own = ReleaseFeedDedupe.ownReleases(fetched.filter { $0.releaseId != nil },
                                                     artistName: meta.artistName)
-            entries[id] = ReleaseFeedCache.normalize(rows: [meta] + own, nowMs: now)
+            // The head comes from `own`, never from `fetched[0]`: that row is only the SOURCE of
+            // the artist-level fields, and may itself be a featured credit that was just filtered.
+            // A bare head makes `normalize` take its head from `own` (or stay bare if `own` is empty).
+            entries[id] = ReleaseFeedCache.normalize(rows: [ReleaseFeedCache.bare(meta)] + own, nowMs: now)
         }
         // ONLY this batch's ids. Walking the whole due set here would let the first batch to
         // return stamp the clocks of artists belonging to batches still in flight — and if one of
