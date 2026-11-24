@@ -56,10 +56,16 @@ enum class WidgetSizeClass {
     }
 }
 
-/** What the large widget lists / the ♥ shows; pure derivations over the snapshot. */
 /** Minimum placed widths (dp), shared with the layout-budget test. */
-object WidgetSizes { const val MEDIUM_W = 250; const val LARGE_W = 250 }
+object WidgetSizes {
+    const val MEDIUM_W = 250; const val LARGE_W = 250
+    /** Root padding (each side), Medium's cover and gap: the layout and the budget test read these same values. */
+    const val ROOT_PAD = 10; const val MEDIUM_COVER = 56; const val MEDIUM_GAP = 10
+    const val LARGE_USABLE = LARGE_W - 2 * ROOT_PAD
+    const val MEDIUM_USABLE = MEDIUM_W - 2 * ROOT_PAD - MEDIUM_COVER - MEDIUM_GAP
+}
 
+/** What the large widget lists / the ♥ shows; pure derivations over the snapshot. */
 object WidgetModel {
     fun showHeart(s: NowPlayingSnapshot) = s.hasContent && s.favoriteAvailable && !s.songId.isNullOrEmpty()
     fun showFeedback(s: NowPlayingSnapshot) = s.showsFeedback
@@ -68,8 +74,9 @@ object WidgetModel {
     fun glyphBox(s: NowPlayingSnapshot): Int = if (showFeedback(s)) 32 else 40
 
     /** Heart yields to the thumbs (a recommendation queue is not a favorites context); Previous never goes. */
-    fun mediumHeart(s: NowPlayingSnapshot) = showHeart(s) && !showFeedback(s)
-    fun largeHeart(s: NowPlayingSnapshot) = showHeart(s) && !showFeedback(s)
+    fun heartVisible(s: NowPlayingSnapshot) = showHeart(s) && !showFeedback(s)
+    fun mediumHeart(s: NowPlayingSnapshot) = heartVisible(s)
+    fun largeHeart(s: NowPlayingSnapshot) = heartVisible(s)
 
     /** Glyph counts per row, for the width-budget test. */
     fun mediumGlyphs(s: NowPlayingSnapshot) = 3 + (if (mediumHeart(s)) 1 else 0) + (if (showFeedback(s)) 2 else 0)

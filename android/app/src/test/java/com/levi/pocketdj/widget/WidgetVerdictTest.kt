@@ -2,6 +2,7 @@ package com.levi.pocketdj.widget
 
 import com.levi.pocketdj.data.recs.RecFeedbackStore.Verdict
 import com.levi.pocketdj.widget.WidgetCommand.Kind
+import com.levi.pocketdj.data.catalog.CatalogRepository.Phase
 import java.io.File
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -86,8 +87,8 @@ class WidgetVerdictTest {
         val plain = NowPlayingSnapshot(hasContent = true, songId = "A", favoriteAvailable = true)
         val rec = plain.copy(recScope = "zone")
         // Usable width = widget width - 2*10dp root padding; Medium also loses cover (56) + gap (10) at fb.
-        val largeW = WidgetSizes.LARGE_W - 20
-        val mediumW = WidgetSizes.MEDIUM_W - 20 - 56 - 10
+        val largeW = WidgetSizes.LARGE_USABLE
+        val mediumW = WidgetSizes.MEDIUM_USABLE
         assertTrue(WidgetModel.largeGlyphs(rec) * WidgetModel.glyphBox(rec) <= largeW)
         assertTrue(WidgetModel.mediumGlyphs(rec) * WidgetModel.glyphBox(rec) <= mediumW)
         // Heart yields to the thumbs; Previous (counted in the base 3 / 5) is never dropped.
@@ -123,5 +124,27 @@ class WidgetVerdictTest {
         assertEquals("", store.read().recVerdict)
         sync.onInputs(i.copy(songId = null)) // nothing playing
         assertEquals("", store.read().recScope)
+    }
+
+    @Test fun catalogWaitIsSkippedWhenItWillNotLoad() {
+                assertEquals(0L, WidgetVerdicts.catalogWaitMs(true, Phase.Ready, false))
+        assertEquals(0L, WidgetVerdicts.catalogWaitMs(false, Phase.Failed, false))
+        assertEquals(0L, WidgetVerdicts.catalogWaitMs(false, Phase.Ready, false))
+        assertEquals(0L, WidgetVerdicts.catalogWaitMs(false, Phase.Loading, true))
+        val w = WidgetVerdicts.catalogWaitMs(false, Phase.Loading, false)
+        assertTrue(w in 1..2_000L)
+    }
+
+    @Test fun drainRunsVerdictsAfterTransportCommands() {
+        val cmds = listOf(
+            WidgetCommand(Kind.VERDICT_ACCEPT, songId = "A", scope = "z"),
+            WidgetCommand(Kind.NEXT),
+            WidgetCommand(Kind.VERDICT_REJECT, songId = "B", scope = "z"),
+            WidgetCommand(Kind.REPEAT, value = "all"),
+        )
+        assertEquals(
+            listOf(Kind.NEXT, Kind.REPEAT, Kind.VERDICT_ACCEPT, Kind.VERDICT_REJECT),
+            WidgetVerdicts.transportFirst(cmds).map { it.kind },
+        )
     }
 }

@@ -51,9 +51,11 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
             WidgetCommand.Kind.VERDICT_ACCEPT, WidgetCommand.Kind.VERDICT_REJECT -> withContext(Dispatchers.IO) {
                 // The target is the one the command carries (the snapshot the user saw), never what plays now.
                 val np = app.browseGraph.nowPlayingFeedback
-                // Cold-start drain: the catalog may not be loaded yet, and recordFor reads artist/genre from it.
-                // Wait (bounded) so a queued verdict keeps its taste weights; on timeout it still records.
-                kotlinx.coroutines.withTimeoutOrNull(CATALOG_WAIT_MS) {
+                // recordFor reads artist/genre from the catalog. Wait only while it is actually loading, and
+                // only briefly: a failed/empty catalog must not hold a goAsync broadcast or delay later commands.
+                val cs = app.catalogRepository.state.value
+                val waitMs = WidgetVerdicts.catalogWaitMs(cs.catalog != null, cs.phase, cs.error != null)
+                if (waitMs > 0) kotlinx.coroutines.withTimeoutOrNull(waitMs) {
                     app.catalogRepository.state.first { it.catalog != null }
                 }
                 WidgetVerdicts.apply(cmd) { songId, scope, verdict ->
@@ -65,7 +67,7 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
 
     private fun drainPending() {
         app.appScope.launch(Dispatchers.Default) {
-            pending.drain().forEach { runCatching { executor.apply(it) } }
+            WidgetVerdicts.transportFirst(pending.drain()).forEach { runCatching { executor.apply(it) } }
         }
     }
 
@@ -88,7 +90,18 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
             // Verdict revisions (the store is lazy: polled until recs have started, then reactive).
             val recRev = kotlinx.coroutines.flow.flow {
                 var fb = app.browseGraph.nowPlayingFeedbackIfReady()
-                while (fb == null) { emit(-1); kotlinx.coroutines.delay(3_000); fb = app.browseGraph.nowPlayingFeedbackIfReady() }
+                while (fb == null) {
+                    emit(-1)
+                    // A restored/playing queue must show thumbs without a screen having touched recs: build the
+                    // lazy stores here (off-main, this flow runs on Default) as soon as the sequencer is running.
+                    if (pc.sequencer.state.value.isRunning) {
+                        fb = withContext(Dispatchers.IO) { app.browseGraph.nowPlayingFeedback }
+                    } else {
+                        // React to the sequencer starting rather than waiting out a poll tick.
+                        kotlinx.coroutines.withTimeoutOrNull(3_000) { pc.sequencer.state.first { it.isRunning } }
+                        fb = app.browseGraph.nowPlayingFeedbackIfReady()
+                    }
+                }
                 emitAll(app.browseGraph.recFeedbackStore.state.map { it.revision })
             }
             val inputs = combine(pc.nowPlaying, pc.sequencer.state, fav.state, app.catalogRepository.state, combine(owner, recRev) { o, _ -> o }) { np0, seq, _, cat, eng ->
@@ -138,8 +151,7 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
 
     private companion object {
         const val MIX_ENGINE = "mix"
-        const val CATALOG_WAIT_MS = 10_000L
-    }
+            }
 }
 
 /**
@@ -149,6 +161,20 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
  * Returns whether it was applied.
  */
 object WidgetVerdicts {
+    /** Longest a verdict waits for the catalog (taste weights only; the verdict itself always records). */
+    const val CATALOG_WAIT_MS = 2_000L
+
+    /** 0 when the catalog is loaded or will not load (failed / errored / ready-but-empty); else the bounded wait. */
+    fun catalogWaitMs(hasCatalog: Boolean, phase: com.levi.pocketdj.data.catalog.CatalogRepository.Phase, errored: Boolean): Long = when {
+        hasCatalog || errored -> 0L
+        phase == com.levi.pocketdj.data.catalog.CatalogRepository.Phase.Idle ||
+            phase == com.levi.pocketdj.data.catalog.CatalogRepository.Phase.Loading -> CATALOG_WAIT_MS
+        else -> 0L
+    }
+
+    /** Drain order: transport/favorite commands first (stable), verdicts last, so a slow verdict never delays ⏭. */
+    fun transportFirst(cmds: List<WidgetCommand>): List<WidgetCommand> = cmds.sortedBy { it.isVerdict }
+
     fun apply(cmd: WidgetCommand, record: (songId: String, scope: String, verdict: RecFeedbackStore.Verdict) -> Unit): Boolean {
         if (!cmd.isVerdict) return false
         val songId = cmd.songId?.takeIf { it.isNotEmpty() } ?: return false
