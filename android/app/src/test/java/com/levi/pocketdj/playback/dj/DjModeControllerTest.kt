@@ -247,6 +247,6 @@ class DjModeControllerTest {
         assertNull(DjChipText.mixChipNote(DjMode.Indicator.Off, null))
         assertEquals("On, mixing 50 percent", DjChipText.switchValue(true, 0.5f))
         assertEquals(0.04f, DjChipText.floorFraction(0f), 0f)
-        assertFalse(ParityFlags.DJ_MODE)
+        assertTrue("P2-DJ-8 flipped the flag", ParityFlags.DJ_MODE)
     }
 }

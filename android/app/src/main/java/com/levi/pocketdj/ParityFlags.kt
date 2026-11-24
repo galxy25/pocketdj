@@ -19,10 +19,10 @@ package com.levi.pocketdj
  */
 object ParityFlags {
     /**
-     * P2-DJ-6: the Now Playing DJ Mode chip and the DJ menu items. `false` until P2-DJ-8 (the transition engine +
-     * conductor) lands, so a release cut after the session shell shows nothing the engine can't back.
+     * P2-DJ-6: the Now Playing DJ Mode chip and the DJ menu items. P2-DJ-8 (the transition engine + conductor) flipped it
+     * to `true`; [DEBUG_FORCE_DJ_MODE] stays as a no-op override so the Debug toggle keeps compiling.
      */
-    val DJ_MODE: Boolean get() = DEBUG_FORCE_DJ_MODE
+    val DJ_MODE: Boolean get() = true
 
     /** Debug screen toggle ("Parity: show DJ Mode chip"): lets the emulator drive the DJ-6 shell before P2-DJ-8 flips [DJ_MODE]. */
     @Volatile var DEBUG_FORCE_DJ_MODE: Boolean = false

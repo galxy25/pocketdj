@@ -100,6 +100,18 @@ class NowPlayingDspHost(
     /** A track started whose Stem Lock carry waits for ExoPlayer to finish loading the row. */
     private var carryPending: String? = null
 
+    /**
+     * P2-DJ-8: the row a DJ fade start is advancing onto. The DSP ALREADY owns it (no ExoPlayer load), so its track start
+     * applies the locks onto the engaged incoming instead of waiting for a load. Consumed by [onTrackStarted].
+     */
+    @Volatile var djAdvanceFor: String? = null
+
+    /** P2-DJ-8: the DJ conductor's heartbeat (a pending track-start arm waits for the row to sound); null = DJ not bound. */
+    @Volatile var djPoll: (() -> Unit)? = null
+
+    /** P2-DJ-8: the row's complete local file (the DJ conductor decides a transition from it); null = not local. */
+    fun resolveLocal(songId: String): ResolvedTrack? = ports.resolve(songId)
+
     init {
         engine.onChanged = { publish() }
         engine.onUserStemChange = { stemControlsChangedByUser() }
@@ -190,6 +202,21 @@ class NowPlayingDspHost(
         carryPending = null
         if (engine.isEngaged && engine.engagedSongId != songId) engine.disengage()
         engine.resetControls()
+        if (songId != null && djAdvanceFor == songId && engine.isEngaged && engine.engagedSongId == songId) {
+            // P2-DJ-8: a DJ fade start advanced onto a row the DSP already plays: the locks carry onto it right now (iOS
+            // djAdvanceAtFadeStart reset + applyLocksOnTrackStart): the FX Lock's effects, then the Stem Lock.
+            djAdvanceFor = null
+            if (fxLock.current.enabled) {
+                fxLock.applying = true
+                try { engine.applyCarriedEffects(fxLock.current.effects) } finally { fxLock.applying = false }
+            }
+            lock.trackStarted()
+            publish()
+            replan()
+            engageLock.withLock { applyLockOnTrackStart(songId, engine.currentTimeSec) }
+            publish()
+            return
+        }
         stampFxIfIdle()   // the carry IS the control state while idle: the panel shows it, the next engage ramps it in
         lock.trackStarted()
         publish()
@@ -202,6 +229,11 @@ class NowPlayingDspHost(
 
     /** Heartbeat/collector hook: apply the pending Stem Lock carry once the new row is loaded. */
     suspend fun carryIfReady() {
+        carryIfReadyLocked()
+        djPoll?.invoke()
+    }
+
+    private suspend fun carryIfReadyLocked() {
         val id = carryPending ?: return
         if (ports.currentSongId != id) { carryPending = null; return }
         if (isEngagedFor(id)) { carryPending = null; return } // P2-MM-8: a growing start engaged the row itself (stems follow its completion; the engage ramped the effects in)

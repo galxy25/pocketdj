@@ -18,6 +18,8 @@ object NPLog {
     const val STUDIO = "studio"
     /** Now Playing Mix Mode (np-mix-mode): `[npmix] lane step=…`, `[npmix] hand-off row=…`. Not in [LANES] (the report scripts read the original eleven). */
     const val NPMIX = "npmix"
+    /** Now Playing DJ Mode (`[dj] transition from=… to=… plan=…`, `[dj] declined reason=…`): logcat tag `PocketDJ.dj`. Not in [LANES]. */
+    const val DJ = "dj"
 
     val LANES = listOf(PLAYBACK, SESSION, TRANSPORT, SUPERVISOR, DEADAIR, RUNWAY, RIPREQ, ACTION, NP, MIX, STUDIO)
 
