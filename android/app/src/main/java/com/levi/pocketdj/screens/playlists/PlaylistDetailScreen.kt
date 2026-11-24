@@ -211,6 +211,7 @@ fun PlaylistDetailScreen(
                         Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     OverflowMenu { dismiss ->
+                        com.levi.pocketdj.shell.PinToHomeMenuItem(com.levi.pocketdj.shell.PlayKind.Playlist, playlistId, playlist.name, dismiss)
                         DropdownMenuItem(
                             text = { Text("Paste songs") },
                             enabled = clipboardHasSongs(context),

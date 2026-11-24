@@ -243,6 +243,10 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
     val currentDestination = backStackEntry?.destination
     val currentRoute = currentDestination?.route
     val appSnackbar = remember { SnackbarHostState() }
+    // SURF-6: tell MainActivity.onProvideAssistContent whether Now Playing is on screen.
+    androidx.compose.runtime.SideEffect {
+        com.levi.pocketdj.assistant.AssistContent.currentRoute = currentRoute
+    }
 
     // App-level snackbar: surfaces async playback errors (a failed rip-on-demand
     // finishes long after the tab that started it may be gone).
