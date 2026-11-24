@@ -43,7 +43,7 @@ class SegmentOverridesTest {
 
     @Test fun countMismatchIsNeverGuessed() {
         val edit = AlbumEdit(audioTracks = listOf(AudioTrackEdit(trackNumber = 2, startMs = 195_000)))
-        assertEquals(SegmentOverrides.Snapshot(), SegmentOverrides.derive(mapOf("alb" to edit), raw) { listOf("s1", "s2") })
+        assertEquals(SegmentOverrides.Snapshot(), SegmentOverrides.derive(mapOf("alb" to edit), raw, orderedSongIds = { listOf("s1", "s2") }))
         val short = album.copy(trackList = listOf("s1", "s2"))
         assertEquals(SegmentOverrides.Snapshot(), SegmentOverrides.derive(emptyMap(), { null }, { emptyList() }, listOf(short)))
     }
@@ -53,6 +53,6 @@ class SegmentOverridesTest {
         val edits = CatalogEdits.decode(json.toByteArray())
         val snap = SegmentOverrides.derive(edits.albums, raw, order, listOf(album))
         assertEquals(195_000L, snap.startMs["s2"])
-        assertEquals(4, snap.detectedEndMs.size + 1) // 3 detected ends + the sentinel, proving both inputs applied
+        assertEquals(3, snap.detectedEndMs.size)
     }
 }
