@@ -1,5 +1,7 @@
 package com.levi.pocketdj.screens.producer.samples
 
+import com.levi.pocketdj.screens.settings.storage.MixModeBufferState
+import com.levi.pocketdj.screens.settings.storage.StudioPins
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -177,6 +179,8 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
     fun pick(s: IndexSong) {
         selection++
         val token = selection
+        // EXPLICIT Studio use (np-mix-mode 3.3): sampling a buffered song makes it (and its stems) a download.
+        StudioPins.pin(graph, s.id, MixModeBufferState.REASON_SAMPLE)
         song = s; error = null; window = null; peaks = FloatArray(0)
         audition.release(); auditioningStems = false   // the previous song's stem audition dies here
         stemsDownloaded = burns.stemsBurned(s.id)
@@ -227,6 +231,7 @@ fun NewSampleFromTrackSheet(graph: AppGraph, onDismiss: () -> Unit, onFiled: (St
 
     fun carve() {
         val s = song ?: return
+        StudioPins.pin(graph, s.id, MixModeBufferState.REASON_SAMPLE)
         val src = (phase as? SourcePhase.Ready)?.source ?: run { error = "This track isn’t on the device anymore. Burn it again, then carve."; return }
         carving = true; error = null
         val chosenStems = enabledStems
