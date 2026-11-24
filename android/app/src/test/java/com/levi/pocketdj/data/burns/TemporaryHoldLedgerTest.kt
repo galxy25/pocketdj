@@ -225,6 +225,37 @@ class TemporaryHoldLedgerTest {
         assertFalse(r.store().isTemporary("b"))
     }
 
+    @Test fun explicitStemPartRePinsAHoldLandedByAConcurrentBufferAdoption() = runTest {
+        val r = Rig(); r.stemmed("s")
+        val store = r.store()
+        var fired = false
+        r.rips.onDownload = {
+            if (!fired) {
+                fired = true
+                val parts = BurnFileNames.STEM_NAMES.associateWith { n -> r.stream("$n.tmp", 500) }
+                store.adoptStreamedStems("s", parts, AssetOrigin.Buffer)
+                assertTrue("buffer landing wrote a hold mid-download", store.isTemporary("s") || store.temporaryHolds.value.containsKey("s"))
+            }
+        }
+        assertTrue(store.burnStemPart("s", "vocals", AssetOrigin.explicit("mix")))
+        assertTrue("explicit action must end with no hold", store.temporaryHolds.value.isEmpty())
+    }
+
+    @Test fun burnStemsRePinsAfterAConcurrentBufferLanding() = runTest {
+        val r = Rig(); r.stemmed("s")
+        val store = r.store()
+        var fired = false
+        r.rips.onDownload = {
+            if (!fired) {
+                fired = true
+                val parts = BurnFileNames.STEM_NAMES.associateWith { n -> r.stream("$n.tmp", 500) }
+                store.adoptStreamedStems("s", parts, AssetOrigin.Buffer)
+            }
+        }
+        assertNotNull(store.burnStems("s"))
+        assertTrue(store.temporaryHolds.value.isEmpty())
+    }
+
     @Test fun bufferStemsHoldOnlyPartsItCreated() = runTest {
         val r = Rig(); r.stemmed("s")
         val store = r.store()

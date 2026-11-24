@@ -1079,6 +1079,7 @@ class BurnStoreMixBurns(
     override suspend fun burn(songId: String, title: String, artist: String) {
         burns.burn(listOf(BurnSong(songId, title, artist)))
     }
+    override fun pin(songIds: Collection<String>, reason: String) { burns.pin(songIds, reason) }
     override fun status(songId: String): MixBurnStatus? =
         burns.items.value[songId]?.let { MixBurnStatus(it.state, it.error, it.bytes) }
     override fun requestStop() = burns.requestStop()

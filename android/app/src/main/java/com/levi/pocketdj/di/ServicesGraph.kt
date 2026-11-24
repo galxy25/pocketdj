@@ -16,6 +16,8 @@ import com.levi.pocketdj.data.transfers.WorkManagerTransferWork
 import com.levi.pocketdj.diag.DiagServices
 import java.io.File
 import com.levi.pocketdj.screens.settings.sections.debugSection
+import com.levi.pocketdj.mix.nowplaying.npMixSettingsFlow
+import kotlinx.coroutines.flow.stateIn
 import com.levi.pocketdj.shell.DeepLinkHandler
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
@@ -99,6 +101,12 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** Latest Now Playing Mix buffer settings (feeds BurnStore's TTL / keep-picked-folder providers). */
+    private val npMixSettings: kotlinx.coroutines.flow.StateFlow<com.levi.pocketdj.mix.nowplaying.NpMixSettings> by lazy {
+        app.settings.npMixSettingsFlow()
+            .stateIn(app.appScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, com.levi.pocketdj.mix.nowplaying.NpMixSettings())
+    }
+
     private val burnStoreLazy: Lazy<BurnStore> = lazy {
         val rips = HttpBurnRips(
             http = app.httpClient,
@@ -118,6 +126,8 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             },
             writerExecutor = VersionedJsonWriter.backgroundExecutor("pdj-burns-writer"),
             transfers = transfers,
+            bufferTtlHours = { npMixSettings.value.bufferTtlHours },
+            keepPickedFolderBuffers = { npMixSettings.value.keepPickedFolderBuffers },
         )
     }
     val burnStore: BurnStore get() = burnStoreLazy.value

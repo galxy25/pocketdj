@@ -339,8 +339,14 @@ class BurnStore(
      */
     suspend fun burn(songs: List<BurnSong>): BurnResult {
         // EXPLICIT download: pin BEFORE the freshness skip, so an already-buffered song converts.
-        pin(songs.map { it.id }, "burn")
-        return runLock.withLock { burnLocked(songs) }
+        val ids = songs.map { it.id }
+        pin(ids, "burn")
+        // Re-pin after the work: a buffer landing for the same song mid-download must not leave a hold.
+        try {
+            return runLock.withLock { burnLocked(songs) }
+        } finally {
+            pin(ids, "burn")
+        }
     }
 
     private val priorReady = ConcurrentHashMap<String, BurnItem>()
@@ -659,6 +665,14 @@ class BurnStore(
     /** BURN the 4 stems (idempotent; never triggers separation). Null if not stemmed / failed. */
     suspend fun burnStems(songId: String): Map<String, File>? {
         pin(listOf(songId), "burn-stems")
+        try {
+            return burnStemsWork(songId)
+        } finally {
+            pin(listOf(songId), "burn-stems")
+        }
+    }
+
+    private suspend fun burnStemsWork(songId: String): Map<String, File>? {
         localStemFiles(songId)?.let { return it }
         val remote = rips.stemUrls(songId) ?: return null
         val dir = folder.activeWritable()?.dir ?: return null
@@ -685,6 +699,14 @@ class BurnStore(
     suspend fun burnStemPart(songId: String, part: String, origin: AssetOrigin = AssetOrigin.Incidental): Boolean {
         if (part !in BurnFileNames.STEM_NAMES) return false
         if (origin is AssetOrigin.Explicit) pin(listOf(songId), origin.reason)
+        try {
+            return burnStemPartWork(songId, part, origin)
+        } finally {
+            if (origin is AssetOrigin.Explicit) pin(listOf(songId), origin.reason)
+        }
+    }
+
+    private suspend fun burnStemPartWork(songId: String, part: String, origin: AssetOrigin): Boolean {
         val url = rips.stemUrls(songId)?.get(part) ?: return false
         val root = folder.activeWritable() ?: return false
         val dir = root.dir

@@ -27,6 +27,8 @@ interface MixDownloadBurns {
     /** The download+persist funnel. Returns when the in-process burn finished or was handed to a background transfer. */
     suspend fun burn(songId: String, title: String, artist: String)
     fun status(songId: String): MixBurnStatus?
+    /** Explicit Mix download action: promote any temporary buffer hold (iOS `pin(_, reason: "mix-download")`). */
+    fun pin(songIds: Collection<String>, reason: String) {}
     /** Stop the loop AND its in-flight background transfers. */
     fun requestStop()
     fun cancelTransfers(songIds: Collection<String>)
@@ -162,6 +164,8 @@ class CollectionMixDownloader(
         // ONE seed pass: on disk = downloaded; the rest partitions into the burn lane
         // (manifest-ready) and the rip lane (needs the server's real-time capture).
         val onDisk = ids.filterTo(LinkedHashSet()) { burns.isOnDisk(it) }
+        // Already-present files are an explicit Mix download too: pin them so the TTL sweep never takes them.
+        burns.pin(onDisk, "mix-download")
         val remainder = ids.filter { it !in onDisk }
         burnQueue.clear()
         burnQueue.addAll(remainder.filter { rips.isRipped(it) })
@@ -332,7 +336,12 @@ class CollectionMixDownloader(
             if (!coroutineContext.isActive || run != runId) return
         }
         val (title, artist) = songTitleArtist?.invoke(id) ?: (id to "")
-        burns.burn(id, title, artist)
+        burns.pin(listOf(id), "mix-download")
+        try {
+            burns.burn(id, title, artist)
+        } finally {
+            burns.pin(listOf(id), "mix-download")
+        }
         if (!coroutineContext.isActive || run != runId) return
         if (burns.isOnDisk(id)) {
             // In-process completion: the await WAS the download - sample the landed bytes.

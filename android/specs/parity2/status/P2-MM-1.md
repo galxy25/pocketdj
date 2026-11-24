@@ -26,3 +26,11 @@ Build ran with FIN_MIN_FREE_GB=5 because the shared machine sat at ~6-7 GB free 
 
 ## Questions for Levi
 - none
+
+## Review
+- MAJOR (no mix-deck / mix-download pin call sites) -> fixed. MixEngine.onExplicitLoad (fired from load() and loadNow(), so file and streaming loads) wired in MixGraph to BurnStore.pin(id, "mix-deck"). MixDownloadBurns.pin added; CollectionMixDownloader pins already-present songs at seed and each burned song before/after burn ("mix-download"); BurnStoreMixBurns delegates to BurnStore.pin. Tests: MixEngineTransportTest.explicitLoadFiresPinHookForFileAndStreamLoads, CollectionMixDownloaderTest.mixDownloadPinsAlreadyPresentAndDownloadedSongs.
+- MINOR (settings lambdas unwired) -> fixed. ServicesGraph feeds bufferTtlHours / keepPickedFolderBuffers from a StateFlow of npMixSettingsFlow().
+- MINOR (no post-work re-pin) -> fixed. burn, burnStems, burnStemPart(Explicit) re-pin in finally. Tests: explicitStemPartRePinsAHoldLandedByAConcurrentBufferAdoption, burnStemsRePinsAfterAConcurrentBufferLanding.
+- NIT (hold removal by exact id) -> not changed (harmless over-pin/under-forget).
+
+fixes applied. Tests 5811 -> 5815, 0 failed; assembleDebug green.
