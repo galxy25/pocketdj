@@ -194,10 +194,10 @@ class ShellActions(
      * ▶/🔀 an arbitrary id list (a source playlist, For You…). A fresh snapshot is built per call,
      * so replaying picks up the source's current songs. [source] is a `PlayContext.SOURCE_*` token.
      */
-    suspend fun playSongIds(ids: List<String>, name: String, shuffle: Boolean = false, source: String): String {
+    suspend fun playSongIds(ids: List<String>, name: String, shuffle: Boolean = false, source: String, originId: String? = null): String {
         veto()
         ensureReady()
-        val set = collections.playNow(songIds = ids, name = name, shuffle = shuffle, sourceToken = source)
+        val set = collections.playNow(songIds = ids, name = name, shuffle = shuffle, sourceToken = source, originId = originId)
         if (set == null || set.tracks.isEmpty()) throw ShellActionException.EmptyCollection(name)
         start(set, name)
         return name

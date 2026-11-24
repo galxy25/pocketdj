@@ -415,11 +415,11 @@ class CollectionMixDownloader(
         val resolve = resolveLoadables
         if (!autoArmed || sources.isEmpty() || resolve == null) return
         val seen = HashSet<String>()
-        val fresh = ArrayList<Pair<MixLoadable, String?>>()
+        val fresh = ArrayList<Triple<MixLoadable, String?, String>>()
         for (source in sources) {
             val label = resolveSourceName?.invoke(source)
             for (l in resolve(source)) {
-                if (seen.add(l.songId) && l.songId !in initialAutoIds && l.songId !in appendedIds) fresh.add(l to label)
+                if (seen.add(l.songId) && l.songId !in initialAutoIds && l.songId !in appendedIds) fresh.add(Triple(l, label, source.collectionId))
             }
         }
         if (fresh.isEmpty()) return
@@ -429,9 +429,9 @@ class CollectionMixDownloader(
         if (host.autoMixing) {
             autoStartPending = false
             if (host.autoSourceLabel != autoLabel) return // someone else's mix
-            for ((l, label) in fresh) {
+            for ((l, label, origin) in fresh) {
                 host.autoQueueInsert(
-                    AutoMixItem(l, l.lengthMs ?: FALLBACK_DURATION_MS, label),
+                    AutoMixItem(l, l.lengthMs ?: FALLBACK_DURATION_MS, label, origin),
                     if (autoShuffled) AutoPlacement.RANDOM else AutoPlacement.END,
                 )
                 appendedIds.add(l.songId)
@@ -442,9 +442,9 @@ class CollectionMixDownloader(
                 return
             }
             autoStartPending = false
-            for ((l, _) in fresh) appendedIds.add(l.songId)
+            for ((l, _, _) in fresh) appendedIds.add(l.songId)
             host.startAutoMix(
-                fresh.map { (l, label) -> AutoMixItem(l, l.lengthMs ?: FALLBACK_DURATION_MS, label) },
+                fresh.map { (l, label, origin) -> AutoMixItem(l, l.lengthMs ?: FALLBACK_DURATION_MS, label, origin) },
                 shuffled = false, lead = autoLead, fade = autoFade, label = autoLabel,
             )
         }

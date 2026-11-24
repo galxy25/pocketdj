@@ -377,7 +377,9 @@ class ListeningPocketsService(
         // Context rides only on THIS device's plays, and only while places & trips is on.
         val ctx = if (locationOn && !history.isFromAnotherDevice(e)) e.listeningContext else null
         // Ids only; the reserved Now Playing queue id is replaced by the run's captured origin when it has one.
-        val collection = ListeningPocketsCollections.context(e.originCollectionId ?: e.contextId, e.source)
+        val collection = ListeningPocketsCollections.context(
+            ListeningPocketsCollections.rawContextId(null /* TODO(P2-POC-1): e.pocketRun?.rowCollectionId once PlayEvent.pocketRun exists */, e.originCollectionId, e.contextId), e.source,
+        )
         return ListeningPocketsUploadEvent(
             id = e.id, songId = e.songId, atMs = flooredMinute(e.playedAt), ord = 0,
             tzOffsetMin = tz, source = e.source.token, outcome = e.outcome.wireToken,

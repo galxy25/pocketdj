@@ -6,6 +6,7 @@ import com.levi.pocketdj.data.activity.ActivityKind
 import com.levi.pocketdj.data.applemusic.PlaylistWriteBack
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.catalog.SourcePlaylist
+import com.levi.pocketdj.data.pockets.ListeningPocketsCollections
 import com.levi.pocketdj.data.backup.BackupPayload
 import com.levi.pocketdj.data.backup.BackupZip
 import com.levi.pocketdj.data.collections.io.CollectionFile
@@ -2074,8 +2075,19 @@ class CollectionsStore(
         pocket(sourceSetlistId)?.let {
             return PlayContext(PlayContext.SOURCE_POCKET, contextId = sourceSetlistId, contextName = it.name)
         }
+        // A catalog SOURCE playlist (`pl_…`) or the reserved Favorites id: collections a play can come from
+        // (Pocket Wheel attribution) though neither is a stored playlist.
+        sourcePlaylistName(sourceSetlistId)?.let {
+            return PlayContext(PlayContext.SOURCE_PLAYLIST, contextId = sourceSetlistId, contextName = it)
+        }
+        if (sourceSetlistId == ListeningPocketsCollections.FAVORITES_ID) {
+            return PlayContext(PlayContext.SOURCE_PLAYLIST, contextId = sourceSetlistId, contextName = ListeningPocketsCollections.FAVORITES_NAME)
+        }
         return PlayContext(PlayContext.SOURCE_SETLIST, contextId = sourceSetlistId)
     }
+
+    private fun sourcePlaylistName(id: String): String? =
+        catalogProvider?.invoke()?.playlists?.firstOrNull { it.playlist.id == id }?.playlist?.name
 
     /**
      * The navigable origin collection of the current Now Playing run (the Up
@@ -2092,6 +2104,8 @@ class CollectionsStore(
         if (setlist(sourceSetlistId) != null) return PlayContext.SOURCE_SETLIST to sourceSetlistId
         if (playlist(sourceSetlistId) != null) return PlayContext.SOURCE_PLAYLIST to sourceSetlistId
         if (pocket(sourceSetlistId) != null) return PlayContext.SOURCE_POCKET to sourceSetlistId
+        if (catalogProvider?.invoke()?.playlists?.any { it.playlist.id == sourceSetlistId } == true) return PlayContext.SOURCE_PLAYLIST to sourceSetlistId
+        if (sourceSetlistId == ListeningPocketsCollections.FAVORITES_ID) return PlayContext.SOURCE_PLAYLIST to sourceSetlistId
         return null
     }
 

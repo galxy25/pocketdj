@@ -53,6 +53,14 @@ enum class AutoRepeatMode(val raw: String) {
 sealed class MixSource {
     abstract val id: String
 
+    /** The bare collection id (pocket / playlist / setlist): Play History stamps it as a Mix play's `originCollectionId`. */
+    val collectionId: String
+        get() = when (this) {
+            is Pocket -> value
+            is Playlist -> value
+            is Setlist -> value
+        }
+
     data class Pocket(val value: String) : MixSource() { override val id get() = "pocket:$value" }
     data class Playlist(val value: String) : MixSource() { override val id get() = "playlist:$value" }
     data class Setlist(val value: String) : MixSource() { override val id get() = "setlist:$value" }
@@ -117,6 +125,11 @@ data class AutoMixItem(
     val loadable: MixLoadable,
     val durationMs: Int,
     val sourceLabel: String? = null,
+    /**
+     * The crate's COLLECTION id (pocket / playlist / setlist), per ROW because two crates interleave. History
+     * stamps it as the play's `originCollectionId` (the Pocket Wheel's colour). Null for manual/legacy rows.
+     */
+    val originCollectionId: String? = null,
 )
 
 /** Tunable ranges (iOS MixEngine). */

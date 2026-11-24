@@ -891,6 +891,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             trackInfo = { d -> e.loaded(d)?.let { t -> t.title to t.artist } },
             contextLabel = { autoDjInst?.takeIf { it.isMixing }?.sourceLabel ?: mixSessions.currentName },
             contextId = { mixSessions.currentId },
+            originOf = { id -> autoDjInst?.originCollectionIdFor(id) },
             // The store records off the bus asynchronously: poll briefly, then fall back to the collapsed row.
             resolveAsync = { attempt ->
                 mainScope.launch {
