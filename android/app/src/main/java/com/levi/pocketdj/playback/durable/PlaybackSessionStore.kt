@@ -27,6 +27,9 @@ class PlaybackSessionStore(
 
     private var extrasState = SnapshotExtras()
 
+    /** The last snapshot read from disk while no live session exists (a held restore's stored deck). */
+    private var loaded: SessionSnapshot? = null
+
     /**
      * The iOS-owned optional state (Mix Mode, FX Lock, DJ Mode, unknown top-level keys) carried across
      * writes: seeded from the file by [load] / adopted from each saved snapshot, overlaid onto any snapshot
@@ -37,8 +40,22 @@ class PlaybackSessionStore(
     /** Replace the carried extras (e.g. Mix Mode toggled off); the live snapshot adopts them and persists. */
     fun updateExtras(transform: (SnapshotExtras) -> SnapshotExtras) = synchronized(lock) {
         extrasState = transform(extrasState)
-        val snap = current ?: return
         val now = clock()
+        val snap = current
+        if (snap == null) {
+            // Held restore: no live session adopted yet. Re-write the loaded file with only the extras changed
+            // (position / offset / play-state stay as stored) so a kill before the first play keeps the toggle.
+            val base = loaded ?: return
+            val upd = base.copy(
+                npMixMode = extrasState.npMixMode, fxLock = extrasState.fxLock, djMode = extrasState.djMode,
+                unknownKeys = extrasState.unknownKeys, updatedAt = now.toDouble(),
+            )
+            loaded = upd
+            version++
+            lastWriteAt = now
+            writer.write(version) { SessionSnapshot.encode(upd) }
+            return
+        }
         current = snap.copy(
             npMixMode = extrasState.npMixMode, fxLock = extrasState.fxLock, djMode = extrasState.djMode,
             unknownKeys = extrasState.unknownKeys, updatedAt = now.toDouble(),
@@ -84,6 +101,7 @@ class PlaybackSessionStore(
     /** End of the session (stop / natural end-of-set): forget it and delete the file. */
     fun clear() = synchronized(lock) {
         current = null
+        loaded = null
         extrasState = SnapshotExtras()
         version++
         writer.delete(version)
@@ -118,7 +136,7 @@ class PlaybackSessionStore(
 
     /** A loaded file seeds the carried extras unless a live session already owns them. */
     private fun adoptExtras(snap: SessionSnapshot) = synchronized(lock) {
-        if (current == null) extrasState = SnapshotExtras.of(snap)
+        if (current == null) { extrasState = SnapshotExtras.of(snap); loaded = snap }
     }
 
     private fun writeNow(now: Long) {

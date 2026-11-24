@@ -337,9 +337,9 @@ class SetlistSequencer(
 
     private fun queueEdited() {
         memberIds = null
-        val g = bumpQueueGeneration()
+        val g = if (running) bumpQueueGeneration() else queueGeneration
         publish()
-        announceQueue(g)
+        if (running) announceQueue(g)
         reconcilePreload()
         scheduleRipWindowReconcile()
     }
@@ -352,6 +352,9 @@ class SetlistSequencer(
 
     private fun announceQueue(g: Long) = hooks.emit { it.onQueueChanged(g) }
 
+    /** Public seam for user pause/seek/resume that the media-session player handles itself (REMOTE-cause suppressed). */
+    fun reportUserTransport(kind: UserTransport) = fireUser(kind)
+
     private fun fireUser(kind: UserTransport) {
         if (causeOverride == TransitionCause.REMOTE) return
         hooks.emit { it.onUserTransport(kind) }
@@ -359,7 +362,7 @@ class SetlistSequencer(
 
     /** A listener-driven queue edit: report the intent, then the mutation. */
     private fun userQueueEdited() {
-        fireUser(UserTransport.EDIT)
+        if (running) fireUser(UserTransport.EDIT)
         queueEdited()
     }
 
@@ -1981,7 +1984,7 @@ class SetlistSequencer(
 
     // ---- transport passthrough ---------------------------------------------------------------
 
-    suspend fun pause() { fireUser(UserTransport.PAUSE); port.pause() }
+    suspend fun pause() { reportUserTransport(UserTransport.PAUSE); port.pause() }
     suspend fun resume() { fireUser(UserTransport.PLAY); port.resume() }
     suspend fun seekTo(positionMs: Long) { fireUser(UserTransport.SEEK); port.seekTo(positionMs) }
 }

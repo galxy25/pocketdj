@@ -6,6 +6,7 @@ import androidx.media3.common.Player
 import com.levi.pocketdj.playback.durable.HeldQueue
 import com.levi.pocketdj.playback.sequencer.RepeatMode
 import com.levi.pocketdj.playback.sequencer.SetlistSequencer
+import com.levi.pocketdj.playback.sequencer.UserTransport
 
 /** What the forwarding player needs from the sequencer (fakeable). */
 interface SequencerControl {
@@ -23,6 +24,8 @@ interface SequencerControl {
     fun skipPrevious()
     fun resumeFromHold()
     fun startCurrent(): Boolean
+    /** A user pause/seek/plain-resume that ExoPlayer handles itself: report it to sequencer hooks. */
+    fun noteUserTransport(kind: UserTransport) {}
 }
 
 class SetlistSequencerControl(private val seq: SetlistSequencer) : SequencerControl {
@@ -42,6 +45,7 @@ class SetlistSequencerControl(private val seq: SetlistSequencer) : SequencerCont
     override fun skipPrevious() = seq.skipPrevious()
     override fun resumeFromHold() = seq.resumeFromHold()
     override fun startCurrent() = seq.startCurrent()
+    override fun noteUserTransport(kind: UserTransport) = seq.reportUserTransport(kind)
 }
 
 /**
@@ -114,6 +118,7 @@ class SequencerForwardingPlayer(
     @Volatile private var instant: MediaMetadata? = null
     @Volatile private var pausedByListener = false
     @Volatile private var quiet = false
+    @Volatile private var rekicking = false
 
     /** Set by the session callback: the current command comes from our own app, not a remote. */
     @Volatile var callerInternal = false
@@ -233,7 +238,8 @@ class SequencerForwardingPlayer(
 
     /** A real re-kick: re-request the load from the current position (prepare/play are no-ops here). */
     fun rekick() {
-        seekTo(currentPosition)
+        rekicking = true
+        try { seekTo(currentPosition) } finally { rekicking = false }
         emit(TransportLog.Cmd.PLAY, TransportLog.Verdict.REKICK_BUFFERING)
     }
 
@@ -284,10 +290,17 @@ class SequencerForwardingPlayer(
         latch.clear()
         pausedByListener = false
         super.play()
+        if (control.isRunning) control.noteUserTransport(UserTransport.PLAY)
         emit(TransportLog.Cmd.PLAY, TransportLog.Verdict.HANDLED)
     }
 
+    private fun noteSeek() { if (!rekicking && control.isRunning) control.noteUserTransport(UserTransport.SEEK) }
+
+    override fun seekTo(positionMs: Long) { noteSeek(); super.seekTo(positionMs) }
+    override fun seekTo(mediaItemIndex: Int, positionMs: Long) { noteSeek(); super.seekTo(mediaItemIndex, positionMs) }
+
     override fun pause() {
+        if (control.isRunning) control.noteUserTransport(UserTransport.PAUSE)
         pausedByListener = true
         super.pause()
         emit(TransportLog.Cmd.PAUSE, TransportLog.Verdict.HANDLED)

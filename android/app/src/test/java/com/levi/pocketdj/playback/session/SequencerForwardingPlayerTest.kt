@@ -296,4 +296,26 @@ class SequencerForwardingPlayerTest {
         assertTrue(ctl.calls.isEmpty())
         assertFalse(ps.calls.any { it.startsWith("setMediaItems") })
     }
+
+    @Test fun userPauseSeekAndPlainResumeReachSequencerHooks() {
+        ctl.isRunning = true
+        p.pause()
+        p.seekTo(5_000L)
+        p.seekTo(0, 1_000L)
+        p.play()
+        assertEquals(
+            listOf(
+                com.levi.pocketdj.playback.sequencer.UserTransport.PAUSE,
+                com.levi.pocketdj.playback.sequencer.UserTransport.SEEK,
+                com.levi.pocketdj.playback.sequencer.UserTransport.SEEK,
+                com.levi.pocketdj.playback.sequencer.UserTransport.PLAY,
+            ),
+            ctl.userKinds,
+        )
+    }
+
+    @Test fun noRunMeansNoUserTransportEvents() {
+        p.pause(); p.seekTo(1L)
+        assertTrue(ctl.userKinds.isEmpty())
+    }
 }

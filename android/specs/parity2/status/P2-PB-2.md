@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-PB-2 Sequencer extension seams I
 
@@ -27,3 +27,11 @@ Deviations / notes:
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR UserTransport PAUSE/SEEK never fired on real input -> fixed: SequencerControl.noteUserTransport (SetlistSequencer.reportUserTransport); SequencerForwardingPlayer fires PAUSE, SEEK (seekTo both overloads, not the internal rekick), and PLAY on the plain ExoPlayer resume, only while a run exists. Passthroughs delegate to the same method. Tests: SequencerForwardingPlayerTest (2 new).
+- MINOR persistExtras skipped while held -> fixed: SessionWriter allows held; PlaybackSessionStore.updateExtras rewrites the loaded (not-yet-adopted) snapshot with only extras changed, position/offset kept. Test: SessionExtrasTest.toggleWhileHeld_persistsExtrasKeepingStoredPosition.
+- NIT AdvanceInterceptor not offered on preload roll -> documented in SequencerHooks (no behaviour change).
+- NIT queueEdited events while idle -> fixed: generation bump, onQueueChanged and EDIT only while running.
+
+fixes applied. Tests 5941 -> 5944, 0 failures, assembleDebug green.

@@ -89,10 +89,10 @@ class SessionWriter(
         store.updatePosition(position(), isPlaying())
     }
 
-    /** A feature changed its session state: write it into the live snapshot (never while held / idle: a restore is not a write). */
+    /** A feature changed its session state: write it into the live snapshot (never while idle; while held only the extras change, position/offset stay as stored). */
     private fun persistExtras() {
         val st = last ?: return
-        if (!st.isRunning || st.isHeldForResume) return
+        if (!st.isRunning) return // held is fine: updateExtras keeps the stored position/offset
         val reg = sessionExtras ?: return
         store.updateExtras { reg.collect(it) }
     }

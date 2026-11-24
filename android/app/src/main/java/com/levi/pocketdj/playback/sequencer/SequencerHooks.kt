@@ -124,6 +124,9 @@ data class AdvanceAttempt(val from: QueueItem, val index: Int, val next: QueueIt
  * fade start). Returning true means "I own the advance": the sequencer does nothing, and the claimer calls
  * [SetlistSequencer.advanceWithoutLoad] when it is time. Descending [priority]; first to claim wins.
  * Exceptions are logged and count as "did not claim".
+ * Offered only on a natural end that reaches handleEnded: a gapless preload roll (handlePreloadedTransition) is
+ * committed by the engine and is NOT offered, so an interceptor that must own the advance has to keep the next
+ * row from being preloaded.
  */
 interface AdvanceInterceptor {
     val priority: Int

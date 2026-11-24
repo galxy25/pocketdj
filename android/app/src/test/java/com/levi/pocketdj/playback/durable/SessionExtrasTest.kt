@@ -76,6 +76,29 @@ class SessionExtrasTest {
     }
 
     @Test
+    fun toggleWhileHeld_persistsExtrasKeepingStoredPosition() = runTest {
+        val d = DurableHarness(this, tmp.root, "a", "b")
+        val feature = MixFeature()
+        d.seq.sessionExtras.register(feature)
+        d.observeWith(d.extrasWriter())
+        val snap = SessionSnapshot(
+            sessionId = "pses_H", source = SessionSourceRef(kind = "setlist", id = "s"),
+            queue = listOf(SessionRow(songId = "a", title = "a"), SessionRow(songId = "b", title = "b")),
+            index = 0, positionMs = 4_000, npMixMode = SessionNpMixMode(true),
+        )
+        d.file.writeText(SessionSnapshot.encode(snap))
+        assertNotNull(d.store.load())
+        SessionRestorer(d.store, d.seq).restore(snap)
+        assertTrue(d.seq.isHeldForResume)
+        d.h.settle()
+        feature.enabled = false
+        d.seq.sessionExtras.notifyChanged()
+        val disk = d.snapshotOnDisk()!!
+        assertEquals(SessionNpMixMode(false), disk.npMixMode)
+        assertEquals(4_000L, disk.positionMs)
+    }
+
+    @Test
     fun iosShapedFields_nobodyRegistered_roundTripUntouched() = runTest {
         val d = DurableHarness(this, tmp.root, "a", "b")
         val ios = SessionSnapshot(
