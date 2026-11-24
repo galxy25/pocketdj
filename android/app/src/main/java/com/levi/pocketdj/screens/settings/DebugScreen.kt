@@ -798,7 +798,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         OutlinedButton(onClick = {
             host.scope.launch { host.graph.gamesGraph.inThePocket.buildRound(); host.graph.gamesGraph.inThePocket.start(); pocketStatus = pocketLine() }
-        }) { Text("Pocket: build+start") }
+        }) { Text("Pocket: game round") }
         // P2-POC-8: the adaptive 100-song run for the best match (kept beside the game-round probe above).
         OutlinedButton(onClick = {
             host.scope.launch {
@@ -810,7 +810,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
                 val a = pg.runStore.active.value
                 pocketStatus = "Pocket run started=$ok build=${pg.runStore.buildState.value} through=${a?.playedThrough} skips=${a?.skips} banned=${a?.banned}"
             }
-        }) { Text("Pocket: run best") }
+        }) { Text("Pocket: build+start") }
         OutlinedButton(onClick = {
             val pg = host.graph.pocketsGraph
             val a = pg.runStore.active.value

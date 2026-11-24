@@ -213,7 +213,15 @@ class PocketRunStore(
     suspend fun start(profile: PocketProfile, seed: ULong? = null): Boolean {
         if (_buildState.value == BuildState.Building) return false
         _buildState.value = BuildState.Building
-        if (_active.value != null) endRun(finished = false)
+        try {
+            return startBuilding(profile, seed)
+        } finally {
+            // A throw or cancellation mid-build must not wedge every later start() at the Building guard.
+            if (_buildState.value == BuildState.Building) _buildState.value = BuildState.Idle
+        }
+    }
+
+    private suspend fun startBuilding(profile: PocketProfile, seed: ULong?): Boolean {
         val runId = UUID.randomUUID().toString().uppercase()
         val theSeed = seed ?: Random.nextULong(1uL, ULong.MAX_VALUE)
         val t = nowMs
@@ -248,6 +256,8 @@ class PocketRunStore(
             _buildState.value = BuildState.Failed(NOT_ENOUGH_SONGS)
             return false
         }
+        // Only now is the new plan known good: end the previous run (a finished-not-dismissed one is just cleared).
+        endOrClearActive()
         priorEvidence = prior
         runTuning = PocketTuning.multipliers(prior, allowBans = false)
         val label = "Pocket · " + (moment?.shortLabel?.replace(" · ", " ") ?: profile.caption)
@@ -598,9 +608,9 @@ class PocketRunStore(
     internal fun flashRetuned(uids: Set<String>) {
         val queued = player?.state()?.queue?.mapTo(HashSet()) { it.uid } ?: emptySet<String>()
         val live = uids.intersect(queued)
+        if (live.isEmpty()) return // nothing landed: keep the previous swap's badge and its timer
         retunedGeneration++
         _retuned.value = live
-        if (live.isEmpty()) return
         val gen = retunedGeneration
         val ms = retunedBadgeMs
         scope.launch {
@@ -653,7 +663,13 @@ class PocketRunStore(
     fun stop() {
         val a = _active.value ?: return
         if (!a.viaMix && player?.state()?.sourceSetlistId == a.tag) player.stop()
-        endRun(finished = false)
+        endOrClearActive()
+    }
+
+    /** End a live run; a run that already finished (card not dismissed) is only cleared, never summarised twice. */
+    private fun endOrClearActive() {
+        val a = _active.value ?: return
+        if (a.finished) dismissFinished() else endRun(finished = false)
     }
 
     private fun endRun(finished: Boolean) {

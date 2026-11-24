@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-POC-8 Pocket run store
 
@@ -24,3 +24,14 @@ state: implemented
 
 ## Questions for Levi
 - one-at-a-time.sh free-memory guard: ran with FIN_MIN_FREE_GB=5.
+
+## Review
+
+- start() Building wedge / old run killed early -> fixed (try/finally resets Building; previous run ended only after the new plan is non-empty). Test: aThrowingBuildDoesNotWedgeLaterStartsAndKeepsTheOldRun.
+- flashRetuned wipes badge when nothing landed -> fixed (early return before touching state/generation). Test: aNoOpFlashKeepsThePreviousBadge.
+- Debug "Pocket: build+start" -> fixed (now drives PocketRunStore.start; game probe relabelled "Pocket: game round").
+- Duplicate RunSummary on start()/stop() over a finished run -> fixed (finished run is only cleared). Test: startingOverAFinishedRunDoesNotDuplicateItsSummary.
+
+Tests: 6865 run, 0 failures (+3). assembleDebug OK.
+
+fixes applied

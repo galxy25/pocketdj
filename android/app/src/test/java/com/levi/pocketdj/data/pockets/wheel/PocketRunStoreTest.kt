@@ -466,6 +466,50 @@ class PocketRunStoreTest {
         h.store.stop()
     }
 
+    @Test fun aThrowingBuildDoesNotWedgeLaterStartsAndKeepsTheOldRun() = runTest {
+        val h = harness()
+        assertTrue(h.store.start(profile, seed = 42uL))
+        val rid = h.store.active.value!!.runId
+        val good = h.store.candidates
+        h.store.candidates = { throw IllegalStateException("boom") }
+        try { h.store.start(profile, seed = 1uL); throw AssertionError("expected throw") } catch (_: IllegalStateException) {}
+        assertEquals(PocketRunStore.BuildState.Idle, h.store.buildState.value)
+        assertEquals("old run untouched by a failed rebuild", rid, h.store.active.value?.runId)
+        assertEquals(1, h.store.past.value.size + 1)
+        h.store.candidates = good
+        assertTrue(h.store.start(profile, seed = 2uL))
+        h.store.stop()
+    }
+
+    @Test fun aNoOpFlashKeepsThePreviousBadge() = runTest {
+        val h = harness()
+        h.store.start(profile, seed = 42uL)
+        val u1 = h.player.queue[5].uid
+        h.store.flashRetuned(setOf(u1))
+        advanceTimeBy(1_500); runCurrent()
+        h.store.flashRetuned(setOf("never-landed"))
+        assertEquals(setOf(u1), h.store.retunedUids.value)
+        advanceTimeBy(2_600); runCurrent()
+        assertTrue(h.store.retunedUids.value.isEmpty())
+        h.store.stop()
+    }
+
+    @Test fun startingOverAFinishedRunDoesNotDuplicateItsSummary() = runTest {
+        val h = harness()
+        h.store.start(profile, seed = 42uL)
+        for (i in 0 until 100) h.finish(h.player.queue[i].id, false, 1.0)
+        h.advanceTo(99)
+        h.store.evaluate(); h.store.awaitTopUp()
+        h.finish(h.player.queue[99].id, false, 1.0)
+        h.store.evaluate()
+        assertTrue(h.store.active.value!!.finished)
+        assertEquals(1, h.store.past.value.size)
+        assertTrue(h.store.start(profile, seed = 43uL))
+        assertEquals(1, h.store.past.value.size)
+        h.store.stop()
+        assertEquals(2, h.store.past.value.size)
+    }
+
     @Test fun aDeclinedSwapDoesNotLightTheBadge() = runTest {
         val h = harness()
         h.store.start(profile, seed = 42uL)
