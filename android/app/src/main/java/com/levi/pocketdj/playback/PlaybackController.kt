@@ -1116,6 +1116,7 @@ class PlaybackController(
      * next row stays in the window. False = the engine no longer holds that row.
      */
     suspend fun swapCurrentItem(songId: String, url: String, clipStartMs: Long?, clipEndMs: Long?, atMs: Long): Boolean {
+        val t0 = android.os.SystemClock.elapsedRealtime()
         val ok = withController { c ->
             val idx = c.currentMediaItemIndex
             val cur = c.currentMediaItem
@@ -1134,7 +1135,9 @@ class PlaybackController(
                 .build()
             handOffAudio = kotlinx.coroutines.CompletableDeferred()
             c.replaceMediaItem(idx, next)
-            c.seekTo(idx, atMs)
+            // The hop onto the main thread took time while the stream kept playing: resume where it is NOW.
+            val elapsed = if (c.playWhenReady) (android.os.SystemClock.elapsedRealtime() - t0).coerceAtLeast(0L) else 0L
+            c.seekTo(idx, atMs + elapsed)
             c.prepare()
             true
         }
@@ -1145,7 +1148,9 @@ class PlaybackController(
     /** Suspends until the first sound after the last [swapCurrentItem], or [timeoutMs]. */
     suspend fun awaitHandOffAudio(timeoutMs: Long): Boolean {
         val d = handOffAudio ?: return false
-        return kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { d.await() } ?: false
+        val heard = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { d.await() } ?: false
+        if (handOffAudio === d) handOffAudio = null // never hand a completed/expired signal to the next hand-off
+        return heard
     }
 
     suspend fun currentPositionMs(): Long =

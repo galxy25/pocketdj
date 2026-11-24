@@ -18,6 +18,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import kotlinx.coroutines.launch
 import org.junit.Test
 
 private val STREAM = "https://rips.example/presigned/a.mp3?sig=1"
@@ -224,14 +225,14 @@ class SwapOnLandRunnerTest {
     private class FakeEngine : SwapOnLand.Engine {
         val reloads = mutableListOf<List<Any?>>()
         var accept = true
-        var audio = CompletableDeferred<Boolean>()
+        var audio: CompletableDeferred<Boolean>? = null
         override suspend fun reload(songId: String, url: String, clipStartMs: Long?, clipEndMs: Long?, atMs: Long): Boolean {
             if (!accept) return false
             reloads += listOf(songId, url, clipStartMs, clipEndMs, atMs)
             audio = CompletableDeferred()
             return true
         }
-        override suspend fun awaitAudio(timeoutMs: Long): Boolean = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { audio.await() } ?: false
+        override suspend fun awaitAudio(timeoutMs: Long): Boolean { val a = audio ?: return false; return kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { a.await() } ?: false }
     }
 
     private class FakeEnv : SwapOnLand.Env {
@@ -242,7 +243,9 @@ class SwapOnLandRunnerTest {
         val dspCalls = mutableListOf<Pair<String, Long>>()
         var replans = 0
         val lines = mutableListOf<String>()
-        override suspend fun facts(): Facts? { val q = sequence; return if (q != null) (if (q.size > 1) q.removeFirst() else q.first()) else next }
+        var onFacts: (() -> Unit)? = null
+        var fired = false
+        override suspend fun facts(): Facts? { onFacts?.invoke(); val q = sequence; val v = if (q != null) (if (q.size > 1) q.removeFirst() else q.first()) else next; kotlinx.coroutines.yield(); return v }
         override suspend fun engageDsp(songId: String, atMs: Long): Boolean { dspCalls += songId to atMs; return dspResult }
         override fun replan() { replans++ }
         override val runwayLock: RunwayLock? = null
@@ -262,10 +265,35 @@ class SwapOnLandRunnerTest {
         assertTrue(env.lines.any { it.startsWith("hand-off row=a pos=42000") })
         runCurrent()
         assertTrue("runway held across the reload", r.runwayHeld)
-        eng.audio.complete(true)
+        eng.audio!!.complete(true)
         runCurrent()
         assertFalse(r.runwayHeld)
         assertTrue(runwayLines.any { it.contains("reason=firstAudio") })
+    }
+
+    @Test fun aSecondHandOffDoesNotSeeTheStaleCompletedSignal() = runTest {
+        val env = FakeEnv(); val eng = FakeEngine()
+        val r = SwapOnLand.Runner(env, eng, backgroundScope, newRunway = ::newRunway)
+        r.attempt("landed"); runCurrent()
+        eng.audio!!.complete(true); runCurrent()
+        assertFalse(r.runwayHeld)
+        r.attempt("landed-again"); runCurrent()
+        assertTrue("held until the NEW first audio", r.runwayHeld)
+    }
+
+    @Test fun aLandingDuringAnInFlightAttemptIsRerun() = runTest {
+        val env = FakeEnv(); val eng = FakeEngine()
+        val r = SwapOnLand.Runner(env, eng, backgroundScope, newRunway = ::newRunway)
+        env.next = mkFacts(target = null)
+        env.onFacts = {
+            if (!env.fired) {
+                env.fired = true
+                // The file lands while attempt A is still reading facts; its trigger arrives re-entrantly.
+                backgroundScope.launch { env.next = mkFacts(); r.attempt("landed") }
+            }
+        }
+        r.attempt("mode-on"); runCurrent()
+        assertEquals("the dropped landing trigger was re-run", 1, eng.reloads.size)
     }
 
     @Test fun theRunwayIsCappedAtTenSecondsWhenNoAudioEverComes() = runTest {

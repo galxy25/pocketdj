@@ -28,3 +28,11 @@ Mix Mode is now a live session feature. Toggling it (debug broadcast now, the ch
 
 ## Emulator steps (integrator)
 Seed rip playlist, play, `adb shell am broadcast -a com.levi.pocketdj.DEBUG --es npmix on`, `adb logcat -d -s PocketDJ.npmix` for `lane step=`, `hand-off row=`, `hand-off refused reason=paused`.
+
+## Review
+- MAJOR runway not held across reload -> fixed. Runner.beginRunway now only creates the runway; the first-audio wait starts (awaitRunwayAudio) after engine.reload returns ok (signal armed inside swapCurrentItem), on both the hand-off and revert paths. PlaybackController.awaitHandOffAudio clears the deferred once completed/timed out, so a stale signal is never reused. Tests: FakeEngine now arms its signal inside reload() (real ordering, null before); `aSecondHandOffDoesNotSeeTheStaleCompletedSignal`; existing runway tests exercise the ordering.
+- MINOR dropped attempt while one in flight -> fixed. Runner records a `rerun` trigger and re-runs after the active attempt ends. Test `aLandingDuringAnInFlightAttemptIsRerun`.
+- MINOR hand-off position captured early -> fixed. swapCurrentItem adds the elapsed main-hop time to atMs when playWhenReady, inside the withController block just before seekTo.
+- NIT MixGraph edits -> not changed (already minimal hooks); AssetOrigin.Buffer question stays open for Levi; MixGraph is a shared touchpoint, integrate before/with MM-9 (rip-server gate).
+
+fixes applied

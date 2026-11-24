@@ -273,6 +273,7 @@ object SwapOnLand {
         private var runway: PlaybackRunway? = null
         private var runwayJob: Job? = null
         private var attempting = false
+        private var rerun: String? = null
 
         /** TEST PROBE: a hand-off runway is held. */
         val runwayHeld: Boolean get() = runway != null
@@ -281,9 +282,22 @@ object SwapOnLand {
 
         /** Try to hand the playing row over to its local file. True = it did. */
         suspend fun attempt(reason: String): Boolean {
-            if (attempting) return false
+            if (attempting) { rerun = reason; return false }
             attempting = true
             try {
+                return attemptOnce(reason)
+            } finally {
+                attempting = false
+                // A trigger that arrived while this attempt was reading facts must not be lost (the landing
+                // event fires once): run it again now that this one is done.
+                val again = rerun
+                rerun = null
+                if (again != null) attempt(again)
+            }
+        }
+
+        private suspend fun attemptOnce(reason: String): Boolean {
+            run {
                 val f = env.facts() ?: return false
                 val d = decide(f)
                 if (d is Decision.Refuse) {
@@ -326,12 +340,11 @@ object SwapOnLand {
                     log("hand-off refused reason=engine row=${f.rowId} trigger=$reason")
                     return false
                 }
+                awaitRunwayAudio()
                 ledger.recordHandOff(f.rowUid, f.rowId, d2.target, d2.stream, d2.atMs)
                 log("hand-off row=${f.rowId} pos=${d2.atMs} start=${d2.target.startMs ?: 0} reason=$reason")
                 env.replan()
                 return true
-            } finally {
-                attempting = false
             }
         }
 
@@ -352,7 +365,7 @@ object SwapOnLand {
                 val ok = try {
                     engine.reload(songId, v.stream.url, v.stream.clipStartMs, v.stream.clipEndMs, v.atMs)
                 } catch (e: CancellationException) { throw e } catch (_: Exception) { false }
-                if (!ok) endRunway("revert-refused")
+                if (!ok) endRunway("revert-refused") else awaitRunwayAudio()
             }
             return true
         }
@@ -370,7 +383,12 @@ object SwapOnLand {
 
         private fun beginRunway(songId: String) {
             runway = newRunway("pocketdj-npmix-handoff-$songId", env.runwayLock, runwayCapMs)
-            val mine = runway
+        }
+
+        /** Start waiting for first audio only AFTER the reload armed the engine's signal (never a stale one). */
+        private fun awaitRunwayAudio() {
+            val mine = runway ?: return
+            runwayJob?.cancel()
             runwayJob = scope.launch {
                 val heard = try { engine.awaitAudio(runwayCapMs) } catch (e: CancellationException) { throw e } catch (_: Exception) { false }
                 if (runway === mine) endRunway(if (heard) "firstAudio" else "cap")
