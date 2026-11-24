@@ -493,6 +493,17 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         com.levi.pocketdj.mix.nowplaying.StemLockSession(onChanged = { persistStemLock() })
     }
 
+    /** P2-FX-1: the session-scoped FX Lock carry; persisted through the sequencer's session extras (`fxLock`). */
+    val fxLockSession: com.levi.pocketdj.mix.nowplaying.FxLockSession by lazy {
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val persist = Runnable { app.playbackGraph.sequencer.sessionExtras.notifyChanged() }
+        com.levi.pocketdj.mix.nowplaying.FxLockSession(onChanged = { debounced ->
+            // A strength drag fires per tick: coalesce it (iOS 400 ms); a toggle persists at once.
+            handler.removeCallbacks(persist)
+            if (debounced) handler.postDelayed(persist, com.levi.pocketdj.mix.nowplaying.FxLock.PERSIST_DEBOUNCE_MS) else persist.run()
+        })
+    }
+
     /** Write the lock into the live durable-session snapshot (the SessionWriter supplier covers later saves). */
     private fun persistStemLock() {
         val store = app.playbackGraph.sessionStore
@@ -587,7 +598,8 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val carry = stemLockSession.current
         val mix = app.playbackGraph.npMix
         val buffering = mix.coordinator.buffering
-        if (!(carry.wantsStems || buffering) || !st.isRunning || st.isHeldForResume || st.current == null) { pf.cancelAll(); return }
+        val fxWants = fxLockSession.current.wantsFX
+        if (!(carry.wantsStems || fxWants || buffering) || !st.isRunning || st.isHeldForResume || st.current == null) { pf.cancelAll(); return }
         val burns = app.servicesGraph.burnStore
         val loader = mixStreamLoader
         val net = npNetwork()
@@ -612,9 +624,15 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         }
         val engaged = st.current?.takeIf { npDspEngine.isEngaged && npDspEngine.engagedSongId == it.id }
         if (!buffering) {
+            // Mix Mode off: the Stem Lock plan (byte for byte); an FX Lock carrying an effect adds the next songs (no stems).
             pf.apply(
-                com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.plan(
-                    engaged?.let { track(it) }, st.upcomingPlayable.take(STEM_LOCK_WINDOW).map { track(it) }, carry, net, STEM_LOCK_WINDOW,
+                com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.plan(
+                    com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Input(
+                        current = engaged?.let { track(it) },
+                        upcoming = st.upcomingPlayable.take(STEM_LOCK_WINDOW).map { track(it) },
+                        stemLock = carry, network = net, stemLockWindow = STEM_LOCK_WINDOW,
+                        currentStemsPartial = engaged != null, fxLockSongs = fxWants,
+                    ),
                 ),
             )
             return
@@ -634,6 +652,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 cellular = cfg.cellular,
                 currentStemsPartial = engaged != null,
                 currentStemsWanted = engaged != null && npDspEngine.stemMode,
+                fxLockSongs = fxWants,
                 // Cloud rips / stem separation are gated on a rip-server install that may use them (MM-9; see the questions file).
                 isRipServerConfigured = false,
             ),
@@ -698,7 +717,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             override suspend fun engageGrowingFromStream(songId: String, play: Boolean): Boolean =
                 seq.state.value.current?.id == songId && app.playbackGraph.npMix.growing.engageFromStream(play)
         }
-        com.levi.pocketdj.mix.nowplaying.NowPlayingDspHost(npDspEngine, stemLockSession, ports, replan = { replanStemLock() })
+        com.levi.pocketdj.mix.nowplaying.NowPlayingDspHost(npDspEngine, stemLockSession, ports, replan = { replanStemLock() }, fxLock = fxLockSession)
     }
 
     /** MIX-18: the panel's host (engage / stem-lock apply / ui state). */
@@ -725,6 +744,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val seq = app.playbackGraph.sequencer
         val lock = stemLockSession
         val ctx = app.appContext
+        seq.sessionExtras.register(fxLockSession)   // P2-FX-1: `fxLock` rides the durable session
 
         val port = object : com.levi.pocketdj.mix.nowplaying.NowPlayingDspPort {
             override fun card(): com.levi.pocketdj.mix.service.MixCard? {
@@ -835,7 +855,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                     } else null
                     if (persisted != null || st.isHeldForResume) {
                         lock.restore(persisted?.stemLock)
-                        host.refresh()
+                        host.restoreFxStamp()
                     } else { host.sessionEnded(); persistStemLock() }   // a NEW session clears the lock
                     prevSession = sid
                 }

@@ -22,7 +22,10 @@ import com.levi.pocketdj.mix.model.Effect
 import com.levi.pocketdj.mix.model.FXSlot
 import com.levi.pocketdj.mix.model.FxRack
 import com.levi.pocketdj.mix.model.MixRanges
+import com.levi.pocketdj.playback.durable.SessionFxSetting
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -151,6 +154,8 @@ class NowPlayingDspEngine(
     var onDisengaged: (() -> Unit)? = null
     /** A USER stem control moved (Stem Lock captures the carry from this; carried applies do not fire it). */
     var onUserStemChange: (() -> Unit)? = null
+    /** FX Lock: a USER effect action (on/off or strength) - never carry, DJ automation or restore. */
+    var onUserEffectChange: (() -> Unit)? = null
     /** The stems went on air for [songId]. */
     var onStemsOnAir: ((songId: String) -> Unit)? = null
     /** Any observable state changed (UI recomposition trigger). */
@@ -239,6 +244,8 @@ class NowPlayingDspEngine(
         // The chain's handover persists across engages: a previous track that ended on its stems left the
         // gains at main=0/stems=1. A new track STARTS on the full mix (lands at the next block).
         graph.deck(deck).handover.settle(false)
+        // FX Lock: carried (stamped) ON effects come up from transparent; an ordinary engage has none, so no ramp.
+        armRamp(Effect.entries.filter { isEnabled(it) }.toSet())
         publishParams()
         val s = sinkFactory()
         sink = s
@@ -461,6 +468,7 @@ class NowPlayingDspEngine(
         stemRuns.forEach { runCatching { it.close() } }; stemRuns = emptyList()
         stemGroup?.let { runCatching { it.closeAll() } }; stemGroup = null
         graph.deck(deck).resetDsp()
+        cancelRamp()
         songId = null
         started = false
         onChanged?.invoke()
@@ -572,16 +580,88 @@ class NowPlayingDspEngine(
 
     fun setEffect(e: Effect, enabled: Boolean) {
         slots[e.ordinal] = slots[e.ordinal].setEnabled(enabled)
-        publishSlots(); onChanged?.invoke()
+        rampScale[e.ordinal] = 1.0; rampActive.remove(e)   // the listener's hand beats an FX Lock ramp-in
+        publishSlots(); onChanged?.invoke(); onUserEffectChange?.invoke()
     }
 
     fun setEffectStrength(e: Effect, strength: Double) {
         slots[e.ordinal] = slots[e.ordinal].setStrength(strength)
-        publishSlots(); onChanged?.invoke()
+        strengthSet += e
+        rampScale[e.ordinal] = 1.0; rampActive.remove(e)
+        publishSlots(); onChanged?.invoke(); onUserEffectChange?.invoke()
     }
 
     private fun publishSlots() {
-        composer.setSlots(deck, slots.map { if (it.enabled) SlotParams(it, it.strength) else null })
+        composer.setSlots(deck, slots.map { if (it.enabled) SlotParams(it, it.strength * rampScale[it.effect.ordinal]) else null })
+    }
+
+    // ---- FX Lock seams (the host drives these) ----
+
+    /** Effects whose strength the listener (or a carry) set: they are carried even while off (iOS `effectSettings`). */
+    private val strengthSet = HashSet<Effect>()
+    /** Per effect 0..1 share of its strength currently applied while it ramps in (1 = at its set strength). */
+    private val rampScale = DoubleArray(Effect.entries.size) { 1.0 }
+    private val rampActive = HashSet<Effect>()
+    private var rampJob: Job? = null
+    /** Ramp length; the host/tests may shorten it. */
+    var fxRampSeconds = FxLock.RAMP_SECONDS
+    /** A ramp-in is still moving. */
+    val effectRampInFlight: Boolean get() = rampJob?.isActive == true
+    /** The strength actually rendered for [e] now (set strength x ramp share), 0 when off. */
+    fun renderedStrength(e: Effect): Double = if (isEnabled(e)) strength(e) * rampScale[e.ordinal] else 0.0
+
+    /** The effects as the FX Lock carries them: every effect that is ON or whose strength was set. */
+    fun effectSettings(): Map<String, SessionFxSetting> =
+        Effect.entries.filter { isEnabled(it) || it in strengthSet }.associate { it.raw to SessionFxSetting(isEnabled(it), strength(it)) }
+
+    /**
+     * Stamp a carried effects state as the control state (an effect not listed goes back to off at the default
+     * strength; unknown keys are ignored). Never notifies [onUserEffectChange]. Engaged: the newly-ON effects RAMP IN
+     * over [fxRampSeconds]; idle: the next engage ramps them in.
+     */
+    fun applyCarriedEffects(fx: Map<String, SessionFxSetting>) {
+        val wasOn = Effect.entries.filter { isEnabled(it) }.toSet()
+        strengthSet.clear()
+        for (e in Effect.entries) {
+            val s = fx[e.raw]
+            slots[e.ordinal] = if (s == null) FXSlot(e) else slots[e.ordinal].setStrength(s.strength.coerceIn(0.0, 1.0)).setEnabled(s.on)
+            if (s != null) strengthSet += e
+        }
+        if (isEngaged) startRamp(Effect.entries.filter { isEnabled(it) && it !in wasOn }.toSet())
+        else { cancelRamp(); publishSlots() }
+        onChanged?.invoke()
+    }
+
+    /** Ramp [keys] (ON effects) from transparent to their set strength; every other effect applies as-is. */
+    private fun startRamp(keys: Set<Effect>) {
+        armRamp(keys)
+        publishSlots()
+    }
+
+    private fun armRamp(keys: Set<Effect>) {
+        rampJob?.cancel(); rampJob = null
+        rampActive.clear()
+        rampScale.fill(1.0)
+        if (keys.isEmpty() || fxRampSeconds <= 0.0) return
+        for (e in keys) { rampScale[e.ordinal] = 0.0; rampActive += e }
+        val steps = FxLock.RAMP_STEPS
+        val stepMs = maxOf(1L, Math.round(fxRampSeconds * 1000.0 / steps))
+        rampJob = scope.launch {
+            for (i in 1..steps) {
+                delay(stepMs)
+                val k = FxLockSession.rampScale(i, steps)
+                for (e in rampActive.toList()) rampScale[e.ordinal] = k
+                publishSlots()
+            }
+            rampActive.clear()
+            rampJob = null
+        }
+    }
+
+    private fun cancelRamp() {
+        rampJob?.cancel(); rampJob = null
+        rampActive.clear()
+        rampScale.fill(1.0)
     }
 
     private fun publishParams() {
@@ -622,6 +702,7 @@ class NowPlayingDspEngine(
     fun resetControls() {
         rate = 1.0; pitch = 0.0; volume = 1.0
         for (e in Effect.entries) slots[e.ordinal] = FXSlot(e)
+        strengthSet.clear(); cancelRamp()
         stemMode = false; stemHandover = null; handoverGen++
         mutedStems = emptySet(); stemVolumes = emptyMap()
         publishParams()
