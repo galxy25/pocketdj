@@ -219,9 +219,10 @@ class DjTransitionEngineTest {
         r.engageSong()
         r.seconds(0.5)
         assertNull(r.engine.dj.beginTransition(spec(levelDb = -3.5)))
-        assertEquals(-3.5, r.engine.djParams(Deck.B).trimDb.toDouble(), 1e-4)
+        assertEquals("P2-DJ-11: the incoming opens at 0 dB; its gain lands over 150 ms at fade start", 0.0, r.engine.djParams(Deck.B).trimDb.toDouble(), 1e-4)
         assertEquals(0.0, r.engine.djParams(Deck.A).trimDb.toDouble(), 1e-4)
         r.seconds(1.5)
+        r.scope.testScheduler.advanceTimeBy(400); r.scope.testScheduler.runCurrent()
         assertEquals("the level follows the song onto the live deck", -3.5, r.engine.djParams(Deck.B).trimDb.toDouble(), 1e-4)
         assertEquals("the retired deck is back to 0 dB", 0.0, r.engine.djParams(Deck.A).trimDb.toDouble(), 1e-4)
     }
