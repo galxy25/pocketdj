@@ -14,6 +14,7 @@ import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.SettingsSection
 import com.levi.pocketdj.data.history.HistorySettings
 import com.levi.pocketdj.screens.history.HistoryBrowseState
+import androidx.compose.runtime.collectAsState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.collectLatest
@@ -74,9 +75,50 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
             file = java.io.File(app.appContext.filesDir, REC_FEEDBACK_FILE),
             scope = app.appScope,
             identityFile = java.io.File(app.appContext.filesDir, "pocketdj-rec-feedback-install-id"),
-        )
+        ).also { if (playbackScopeRetirePending.getAndSet(false)) it.endPlaybackScope() }
     }
     val recFeedbackStore: com.levi.pocketdj.data.recs.RecFeedbackStore by recFeedbackLazy
+
+    /** True when a queue replace fired before the store existed: its stale scope is retired on first touch. */
+    private val playbackScopeRetirePending = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * P2-SURF-1: `CollectionsStore.onPlaybackReplaced` target. Synchronous (ordering vs the tile's
+     * post-playNow `beginPlayback` matters); if the store has not been touched yet there is nothing live
+     * to retire off-main, so it is retired the moment the store is first built.
+     */
+    fun endRecPlaybackScope() {
+        if (recFeedbackLazy.isInitialized()) recFeedbackStore.endPlaybackScope()
+        else playbackScopeRetirePending.set(true)
+    }
+
+    /** The shared 👍/👎 target for NP / notification / widget / Auto (P2-SURF-1). */
+    val nowPlayingFeedback: com.levi.pocketdj.data.recs.NowPlayingFeedback by lazy {
+        com.levi.pocketdj.data.recs.NowPlayingFeedback(
+            feedback = recFeedbackStore,
+            sequencer = { app.playbackGraph.sequencer.state.value },
+            mixSessionActive = { com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.mixSessionActive },
+            catalog = { app.catalogRepository.state.value.catalog },
+            addAccepted = { songId, scope -> app.collections.addAcceptedSong(songId, scope) },
+        )
+    }
+
+    /** Install the NP rating seam. The composable resolves the store off-main when it is still cold. */
+    private fun installNowPlayingRating() {
+        com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.rating = { _ ->
+            val np = androidx.compose.runtime.produceState<com.levi.pocketdj.data.recs.NowPlayingFeedback?>(
+                if (recFeedbackLazy.isInitialized()) nowPlayingFeedback else null,
+            ) {
+                if (value == null) value = withContext(Dispatchers.IO) { nowPlayingFeedback }
+            }.value
+            if (np != null) {
+                val catalog = app.catalogRepository.state.collectAsState().value.catalog
+                com.levi.pocketdj.screens.nowplaying.NowPlayingFeedbackRow(
+                    np, recFeedbackStore, app.playbackGraph.sequencer.state, catalog,
+                )
+            }
+        }
+    }
 
     /** Timbre corpus for the For You refresh (BRW-12): memoized fetch, never throws, empty when offline. */
     val timbreCatalog: com.levi.pocketdj.data.recs.TimbreCatalog by lazy {
@@ -160,6 +202,9 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
      * also finishes an owed server-side deletion regardless of the toggle; it exits at once when disabled.
      */
     fun startRecs() {
+        installNowPlayingRating()
+        // Off-main: the collections store reads its document on first touch.
+        app.appScope.launch(Dispatchers.IO) { app.collections.onPlaybackReplaced = { endRecPlaybackScope() } }
         startReleaseFeed()
         // Final review: the Add-to sheet / context submenu "Suggested" rows read this seam (it was never assigned).
         // Non-blocking cache read; a miss starts one fetch and the revision bump re-renders.
