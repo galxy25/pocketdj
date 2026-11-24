@@ -95,6 +95,32 @@ class SetlistSequencer(
     /** Features' durable-session state (Mix Mode, FX Lock, DJ Mode): written by the session writer, restored HELD. */
     val sessionExtras = SessionExtras()
 
+    /**
+     * P2-ALB-4: the shared-album-file layout provider (null = album runs off: every analog row keeps its own window).
+     * Bound by the controller to the rips manifest + the user's boundary edits.
+     */
+    @Volatile var albumTimelines: com.levi.pocketdj.playback.album.AlbumTimelineSource? = null
+
+    /** The cause of the latest current-row change (null before any); the album run claims in-place skips only for non-natural ones. */
+    @Volatile var lastTransitionCause: TransitionCause? = null
+        private set
+
+    /**
+     * The album-run plan for the row at [pos] loading from [source] ([PlayRequest.albumRun]); null when runs are off or the
+     * row is not a song of an in-order run.
+     */
+    fun albumPlanFor(pos: Int, source: RowSource, fresh: Boolean, resumeAtMs: Long?): com.levi.pocketdj.playback.album.AlbumRun.Plan? {
+        val provider = albumTimelines ?: return null
+        val item = queue.getOrNull(pos) ?: return null
+        val startMs = when (source) {
+            is LocalFileSource -> source.file.startMs
+            is StreamSource -> source.action.clipStartMs
+            else -> null
+        } ?: return null
+        val tl = provider.timeline(item.id) ?: return null
+        return com.levi.pocketdj.playback.album.AlbumRun.plan(queue, pos, tl, startMs, effectiveRepeatMode == RepeatMode.ONE, fresh, resumeAtMs)
+    }
+
     @Volatile private var startInterceptors: List<StartInterceptor> = emptyList()
     @Volatile private var advanceInterceptors: List<AdvanceInterceptor> = emptyList()
 
@@ -448,6 +474,7 @@ class SetlistSequencer(
         val toUid = queue.getOrNull(index)?.uid
         if (fromUid == toUid) return
         val c = causeOverride ?: cause
+        lastTransitionCause = c
         val seq = ++transitionSeq
         if (c == TransitionCause.USER) lastUserTransitionSeq = seq
         log("[session] transition cause=$c seq=$seq from=${fromUid ?: "-"} to=${toUid ?: "-"}")
@@ -801,6 +828,7 @@ class SetlistSequencer(
             count = queue.size,
             reResolve = reResolve,
             generation = gen,
+            albumRun = albumPlanFor(at, source, fresh, resumeAtMs),
         )
         log("[playback] track start song=${item.id} index=${at + 1}/${queue.size} backend=${source.backend}")
         currentBackend = source.backend
@@ -912,6 +940,15 @@ class SetlistSequencer(
         }
         advanceToNext(cause, NoLoad(path, backend, rendering))
         return playGeneration != genBefore || !running
+    }
+
+    /**
+     * An in-place engine retarget (album glide) failed after the cursor already moved: load the current row normally
+     * (not a fresh start, so no interceptor re-claims it and no second History play is recorded).
+     */
+    fun reloadCurrentAfterFailedRetarget() {
+        if (!running || held || index >= queue.size) return
+        startPlayCurrent(fresh = false)
     }
 
     /** Ask the natural-end interceptors; true when one took the advance. */
@@ -1911,13 +1948,21 @@ class SetlistSequencer(
         preloadJob = null
         val armed = preloadArmed()
         if (!armed && preloader.slot == null) return
-        val target = if (armed) {
+        val rawTarget = if (armed) {
             preloader.target(queue, index, effectiveRepeatMode, shuffleEnabled, playsRemaining, true)
         } else {
             null
         }
-        if (target == null && preloader.slot == null) return
+        if (rawTarget == null && preloader.slot == null) return
         val gen = playGeneration
+        // P2-ALB-4: the next row of an in-order album run is the SAME file's next song - the run item moves onto it
+        // in place, so it is never preloaded (a window slot would only duplicate the file).
+        val target = rawTarget?.takeIf { t ->
+            t.index != index + 1 || !com.levi.pocketdj.playback.album.AlbumRun.isRunContinuation(
+                queue, index, albumTimelines?.timeline(queue[index].id), effectiveRepeatMode == RepeatMode.ONE,
+            )
+        }
+        if (target == null && preloader.slot == null) return
         val job = scope.launch(start = CoroutineStart.LAZY) {
             if (preloader.isStale(target)) {
                 try { port.preloadNext(null) } catch (e: CancellationException) { throw e } catch (e: Exception) { }

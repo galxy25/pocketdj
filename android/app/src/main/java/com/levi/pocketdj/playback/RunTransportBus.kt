@@ -28,4 +28,10 @@ object RunTransportBus {
 
     /** PB-2: a held restore landed (consumes a latched remote play). Separate from [stateChanged]. */
     @Volatile var heldRestored: (() -> Unit)? = null
+
+    /** P2-ALB-4: the service's album boundary armer (null until the service is up). */
+    @Volatile var albumArmer: com.levi.pocketdj.playback.album.AlbumBoundaryArmer? = null
+
+    /** P2-ALB-4: an armed album boundary fired for this song id (the controller reports a natural end). */
+    @Volatile var albumBoundaryFired: ((String) -> Unit)? = null
 }

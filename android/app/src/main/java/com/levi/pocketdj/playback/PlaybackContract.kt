@@ -39,4 +39,7 @@ object PlaybackContract {
 
     /** Origin collection id of a `set_now_playing` run (History attribution). */
     const val EXTRA_ORIGIN_COLLECTION_ID = "pdj.originCollectionId"
+
+    /** P2-ALB-4: the item is ONE shared album file played as a run (clip end unset; song ends are armed boundaries). */
+    const val EXTRA_ALBUM_RUN = "pdj.albumRun"
 }
