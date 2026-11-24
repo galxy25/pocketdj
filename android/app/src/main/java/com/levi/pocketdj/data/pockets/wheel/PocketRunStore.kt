@@ -188,6 +188,20 @@ class PocketRunStore(
     var mixOwnsRun: (String) -> Boolean = { false }
     var onRunEnded: ((RunSummary) -> Unit)? = null
 
+    // ---- adapt to activity (P2-POC-12; iOS Phase 5b seams) -----------------------------------
+
+    /** "Adapt pocket runs to walking & running" (Settings; default off). */
+    var adaptToActivity: () -> Boolean = { false }
+    /** Begin live activity updates (the callback may be invoked from any thread; it is marshalled onto the store thread). */
+    var startActivityUpdates: ((onSample: (com.levi.pocketdj.data.motion.MotionSegment) -> Unit, onExit: (String) -> Unit) -> Unit)? = null
+    var stopActivityUpdates: () -> Unit = {}
+    /** The best pocket for NOW in a given mode (the wheel's best match with the mode forced). */
+    var profileForMode: suspend (PocketMode) -> PocketProfile? = { null }
+    private var activity = ActivityTracker()
+    private var activityFeedOn = false
+    private var retargetJob: Job? = null
+    private var retargetBackoffUntilMs = 0.0
+
     private var tickerJob: Job? = null
     private var topUpJob: Job? = null
     private var replanJob: Job? = null
@@ -306,6 +320,7 @@ class PocketRunStore(
         ownershipLostAtMs = null
         bump()
         persist()
+        beginActivityUpdates(state)
         val recencyAtStart = recencyNow()
         val fresh = plan.rows.count { (recencyAtStart[it.songId] ?: 0.0) <= 0.0 }
         log("start run=${runId.take(8)} moment=${moment?.token ?: profile.tier.name.lowercase()} rows=${plan.rows.size} fresh=$fresh bench=${plan.bench.size} mix=${state.viaMix}")
@@ -350,6 +365,7 @@ class PocketRunStore(
     fun resumeTrackingIfNeeded() {
         val a = _active.value ?: return
         if (a.finished) return
+        beginActivityUpdates(a)
         if (cachedCandidates.isEmpty()) {
             scope.launch {
                 cachedCandidates = withContext(compute) { candidates() }
@@ -359,6 +375,63 @@ class PocketRunStore(
         } else {
             startTicker()
         }
+    }
+
+    private fun beginActivityUpdates(a: RunState) {
+        val start = startActivityUpdates ?: return
+        if (a.viaMix || !adaptToActivity()) return
+        if (activityFeedOn) return   // already feeding this run: keep the tracker and its sustain clock
+        activity = ActivityTracker()
+        val runId = a.runId
+        activityFeedOn = true
+        start(
+            { seg -> scope.launch { if (_active.value?.runId == runId) noteActivity(seg) } },
+            { act -> scope.launch { if (_active.value?.runId == runId) activity.ended(act) } },
+        )
+    }
+
+    /** Ticker: follow the adapt toggle mid-run (start the feed when turned on, stop it when turned off). */
+    private fun syncActivityFeed() {
+        val a = _active.value ?: return
+        if (a.finished || a.viaMix || startActivityUpdates == null) return
+        val want = adaptToActivity()
+        if (want && !activityFeedOn) beginActivityUpdates(a)
+        else if (!want && activityFeedOn) { stopActivityUpdates(); activityFeedOn = false }
+    }
+
+    /** An EXIT for [act] (test seam + the feed's callback body). */
+    fun noteActivityEnded(act: String) { activity.ended(act) }
+
+    /**
+     * A live motion sample. A SUSTAINED change (>= 180 s) into a body mode the run isn't for re-targets the run's
+     * remaining slots toward the best moment for that mode, through the same protected replace path as a re-plan. Once
+     * per mode per run, sequencer path only, and only while the adapt toggle is on.
+     */
+    fun noteActivity(seg: com.levi.pocketdj.data.motion.MotionSegment) {
+        val a = _active.value ?: return
+        if (a.finished || a.viaMix) return
+        activity.note(seg)
+        checkSustainedActivity()
+    }
+
+    /** Also called from the ticker: Android delivers one ENTER per change, so the 180 s elapses with no new sample. */
+    private fun checkSustainedActivity() {
+        val a = _active.value ?: return
+        if (a.finished || a.viaMix || startActivityUpdates == null || !adaptToActivity()) return
+        val mode = activity.sustainedMode(nowMs.toLong())
+        if (!ActivityTracker.shouldRetarget(mode, a.retargetedMode, a.profile.mode) || mode == null) return
+        if (retargetJob != null || nowMs < retargetBackoffUntilMs) return
+        retargetBackoffUntilMs = nowMs + RETARGET_RETRY_MS   // an attempt that changes nothing is retried at most once a minute
+        val job = scope.launch(start = CoroutineStart.LAZY) {
+            try {
+                val profile = profileForMode(mode) ?: return@launch
+                retarget(profile, mode)
+            } finally {
+                if (retargetJob === coroutineContext[Job]) retargetJob = null
+            }
+        }
+        retargetJob = job
+        job.start()
     }
 
     /** Rebuild the prior (every OTHER run) and this run's tuning from History after a relaunch. */
@@ -380,6 +453,8 @@ class PocketRunStore(
             try {
                 while (isActive && isRunning) {
                     evaluate()
+                    syncActivityFeed()
+                    checkSustainedActivity()
                     delay(TICK_MS)
                 }
             } finally {
@@ -696,6 +771,9 @@ class PocketRunStore(
 
     private fun endRun(finished: Boolean) {
         val a = _active.value ?: return
+        activityFeedOn = false
+        stopActivityUpdates()
+        retargetJob?.cancel(); retargetJob = null
         tickerJob?.cancel(); tickerJob = null
         replanJob?.cancel(); replanJob = null
         topUpJob?.cancel(); topUpJob = null
@@ -730,6 +808,8 @@ class PocketRunStore(
 
     /** Delete-history / account-deletion wipe (registered with `PocketsGraph.registerWheelClear`). */
     fun clearLocal() {
+        if (_active.value != null) { activityFeedOn = false; stopActivityUpdates() }
+        retargetJob?.cancel(); retargetJob = null
         tickerJob?.cancel(); tickerJob = null
         replanJob?.cancel(); replanJob = null
         topUpJob?.cancel(); topUpJob = null
@@ -764,6 +844,7 @@ class PocketRunStore(
         const val TOP_UP_BACKOFF_MS = 30_000.0
         const val RETUNED_BADGE_MS = 4_000L
         const val TICK_MS = 1_000L
+        const val RETARGET_RETRY_MS = 60_000.0
         const val PAST_CAP = 50
         const val MIX_MIN_LOADABLE = PocketRunMixPath.MIN_LOADABLE
         private const val TAIL_SLACK_MS = 60_000.0

@@ -27,9 +27,15 @@ class MotionTimelineStore(
     private val lock = Any()
     private var doc: Document = load()
 
+    /** P2-POC-12: live feed of ENTER transitions (the pocket run's adapt-to-activity). Called on the caller's thread. */
+    @Volatile var onEnter: ((MotionSegment) -> Unit)? = null
+    /** Live feed of EXITs that closed the open segment (activity token). Lets a consumer drop a stale activity. */
+    @Volatile var onExit: ((String) -> Unit)? = null
+
     /** One transition. [entering] = ENTER, else EXIT. Unknown tokens ignored. */
     fun onTransition(activity: String, entering: Boolean, atMs: Long) {
         if (activity !in MotionToken.activityOrder) return
+        var exited = false
         synchronized(lock) {
             var segs = doc.segments
             var open = doc.open
@@ -41,10 +47,13 @@ class MotionTimelineStore(
                 if (open == null || open.activity != activity) return
                 segs = segs + closed(open, atMs)
                 open = null
+                exited = true
             }
             doc = trim(Document(segs, open), now())
             save()
         }
+        if (entering) runCatching { onEnter?.invoke(MotionSegment(atMs, atMs, activity, MEDIUM)) }
+        else if (exited) runCatching { onExit?.invoke(activity) }
     }
 
     /**
