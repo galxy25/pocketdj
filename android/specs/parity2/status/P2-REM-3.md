@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-REM-3 Remote controller gate on every transport surface
 
@@ -24,3 +24,12 @@ Tests: +8 JVM (RemoteGateSurfacesTest). Full suite green, `:app:testDebugUnitTes
 
 ## Questions for Levi
 - none
+
+## Review
+- MAJOR flow never re-evaluated after transient grace -> fixed (SystemPauseFlow schedules a refresh at TRANSIENT_GRACE_MS; test transientLoss_flowTurnsTrueAfterGrace_withoutFurtherPlayerEvents)
+- MINOR MediaSession seekTo ungated -> fixed (SequencerForwardingPlayer both seekTo overloads forward Seek)
+- MINOR controller with null forwarder swallowed transport -> fixed (active requires forwarder != null; test added)
+- NIT duplicate silencer mechanism -> fixed (SequencerRemoteTarget default extraSilencers = gate.silencerSnapshot())
+- NIT surface-level tests -> not done (optional); gate/flow/classifier covered
+
+fixes applied

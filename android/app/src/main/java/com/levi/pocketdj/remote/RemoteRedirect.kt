@@ -43,7 +43,10 @@ class RemoteControllerGate(private val log: (String) -> Unit = {}) {
 
     private val silencers = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
 
-    val active: Boolean get() = fakeController || isController()
+    /** Snapshot of the registered silencers: the default `extraSilencers` seam of SequencerRemoteTarget. */
+    fun silencerSnapshot(): List<() -> Unit> = silencers.toList()
+
+    val active: Boolean get() = fakeController || (isController() && forwarder != null)
 
     /** Sequencer entry ([SetlistSequencer.transportGate]): true = refused here (forwarded, or a local start dropped). */
     fun intercept(request: TransportRedirect): Boolean {
@@ -136,22 +139,47 @@ class SystemPauseClassifier(private val nowMs: () -> Long = System::currentTimeM
     }
 }
 
-/** Process-wide system-pause state: [PlaybackService] feeds it, the Remote target reads it. */
-object SystemPauseState {
-    val classifier = SystemPauseClassifier()
+/**
+ * Publishes [flow] from a [classifier]. A transient loss has no closing player event, so on suppression it schedules a
+ * re-evaluation at the end of the grace window ([schedule] = delay ms + action; default a daemon timer).
+ */
+class SystemPauseFlow(
+    val classifier: SystemPauseClassifier,
+    private val schedule: (Long, () -> Unit) -> Unit,
+) {
     private val _flow = MutableStateFlow(false)
     val flow: StateFlow<Boolean> = _flow.asStateFlow()
 
-    /** Live value (re-evaluates the transient grace). */
     val isSystemPaused: Boolean get() = classifier.isSystemPaused
 
     fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
         classifier.onPlayWhenReadyChanged(playWhenReady, reason)
-        _flow.value = classifier.isSystemPaused
+        refresh()
     }
 
     fun onSuppressionChanged(reason: Int) {
         classifier.onSuppressionChanged(reason)
-        _flow.value = classifier.isSystemPaused
+        refresh()
+        if (reason == Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS) {
+            schedule(SystemPauseClassifier.TRANSIENT_GRACE_MS) { refresh() }
+        }
     }
+
+    fun refresh() { _flow.value = classifier.isSystemPaused }
+}
+
+/** Process-wide system-pause state: [PlaybackService] feeds it, the Remote target reads it. */
+object SystemPauseState {
+    private val timer by lazy { java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "sys-pause").apply { isDaemon = true } } }
+    private val impl = SystemPauseFlow(SystemPauseClassifier()) { ms, f ->
+        timer.schedule({ runCatching(f) }, ms + 50, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+    val classifier get() = impl.classifier
+    val flow: StateFlow<Boolean> get() = impl.flow
+
+    /** Live value (re-evaluates the transient grace). */
+    val isSystemPaused: Boolean get() = impl.isSystemPaused
+
+    fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) = impl.onPlayWhenReadyChanged(playWhenReady, reason)
+    fun onSuppressionChanged(reason: Int) = impl.onSuppressionChanged(reason)
 }

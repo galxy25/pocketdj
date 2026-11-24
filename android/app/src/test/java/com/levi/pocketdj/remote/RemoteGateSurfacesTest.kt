@@ -107,4 +107,32 @@ class RemoteGateSurfacesTest {
         c.onSuppressionChanged(Player.PLAYBACK_SUPPRESSION_REASON_NONE) // resumed on focus gain
         assertFalse(c.isSystemPaused)
     }
+
+    @Test fun controllerWithoutForwarder_doesNotSwallow() {
+        val g = RemoteControllerGate().apply { isController = { true } }
+        assertFalse(g.intercept(TransportRedirect.SkipNext))
+        assertFalse(g.forward(RemoteRedirect.Play))
+    }
+
+    @Test fun silencerSnapshot_runsRegistered() {
+        val g = RemoteControllerGate()
+        var n = 0
+        g.addSilencer { n++ }
+        g.silencerSnapshot().forEach { it() }
+        assertEquals(1, n)
+    }
+
+    @Test fun transientLoss_flowTurnsTrueAfterGrace_withoutFurtherPlayerEvents() {
+        var now = 0L
+        val pending = mutableListOf<Pair<Long, () -> Unit>>()
+        val f = SystemPauseFlow(SystemPauseClassifier { now }) { ms, a -> pending.add(ms to a) }
+        f.onSuppressionChanged(Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS)
+        assertFalse(f.flow.value)
+        assertEquals(SystemPauseClassifier.TRANSIENT_GRACE_MS, pending.single().first)
+        now = SystemPauseClassifier.TRANSIENT_GRACE_MS
+        pending.single().second()
+        assertTrue(f.flow.value)
+        f.onSuppressionChanged(Player.PLAYBACK_SUPPRESSION_REASON_NONE)
+        assertFalse(f.flow.value)
+    }
 }

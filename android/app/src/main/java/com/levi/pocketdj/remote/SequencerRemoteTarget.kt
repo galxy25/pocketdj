@@ -26,7 +26,7 @@ class SequencerRemoteTarget(
     private val scope: CoroutineScope,
     private val systemPaused: () -> Boolean = { false },
     private val coarsePosition: () -> Boolean = { seq.appleMusicActive() },
-    private val extraSilencers: () -> List<() -> Unit> = { emptyList() },
+    private val extraSilencers: () -> List<() -> Unit> = { RemoteControllerGate.shared.silencerSnapshot() },
 ) : RemotePlaybackTarget {
 
     @Volatile private var lastCause: TransitionCause = TransitionCause.USER
