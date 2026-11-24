@@ -88,6 +88,12 @@ const val POCKET_ROUTE = "pocket/{pocketId}"
 const val SETLIST_ROUTE = "setlist/{setlistId}?autoplay={autoplay}"
 const val JUKEBOX_JOIN_ROUTE = "jukebox/join/{jukeboxId}"
 const val SOURCE_PLAYLIST_ROUTE = "sourcePlaylist/{playlistId}/{sourceName}"
+/** In-app Apple Music store album page (P2-LIB-4): recognizer, For You releases and Discover albums land here. */
+const val STORE_ALBUM_ROUTE = "storeAlbum/{storeId}?title={title}&artist={artist}&year={year}&art={art}&url={url}"
+
+fun storeAlbumRoute(ref: com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef): String =
+    "storeAlbum/${Uri.encode(ref.storeId)}?title=${Uri.encode(ref.title)}&artist=${Uri.encode(ref.artist)}" +
+        "&year=${ref.year ?: ""}&art=${Uri.encode(ref.artworkUrl.orEmpty())}&url=${Uri.encode(ref.url.orEmpty())}"
 
 fun albumRoute(albumId: String): String = "album/${Uri.encode(albumId)}"
 fun artistRoute(name: String): String = "artist/${Uri.encode(name)}"
@@ -301,6 +307,7 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
                 "Set list"
             }
         SOURCE_PLAYLIST_ROUTE -> "Source playlist"
+        STORE_ALBUM_ROUTE -> "Album"
         JUKEBOX_JOIN_ROUTE -> "Jukebox"
         NOW_PLAYING_ROUTE -> "Now Playing"
         MORE_ROUTE -> "More"
@@ -425,6 +432,12 @@ private fun ShellNavHost(
             override fun pop() {
                 nav.popBackStack()
             }
+        }
+    }
+    // Recognizer / For You / Discover ask for a store album; push the in-app page (no open-the-AM-app fallback).
+    androidx.compose.runtime.LaunchedEffect(nav) {
+        com.levi.pocketdj.screens.discover.StoreAlbumRouter.events.collect { ref ->
+            nav.navigate(storeAlbumRoute(ref)) { launchSingleTop = true }
         }
     }
     val funnelScope = androidx.compose.runtime.rememberCoroutineScope()
@@ -587,6 +600,32 @@ private fun ShellNavHost(
             AlbumDetailScreen(
                 albumId = entry.arguments?.getString("albumId").orEmpty(),
                 onOpenSetlist = openSetlist,
+            )
+        }
+        composable(
+            route = STORE_ALBUM_ROUTE,
+            arguments = listOf(
+                navArgument("storeId") { type = NavType.StringType },
+                navArgument("title") { type = NavType.StringType; defaultValue = "" },
+                navArgument("artist") { type = NavType.StringType; defaultValue = "" },
+                navArgument("year") { type = NavType.StringType; defaultValue = "" },
+                navArgument("art") { type = NavType.StringType; defaultValue = "" },
+                navArgument("url") { type = NavType.StringType; defaultValue = "" },
+            ),
+        ) { entry ->
+            val a = entry.arguments
+            com.levi.pocketdj.screens.discover.AlbumPreviewScreen(
+                ref = com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef(
+                    storeId = a?.getString("storeId").orEmpty(),
+                    title = a?.getString("title").orEmpty(),
+                    artist = a?.getString("artist").orEmpty(),
+                    year = a?.getString("year")?.toIntOrNull(),
+                    artworkUrl = a?.getString("art")?.takeIf { it.isNotEmpty() },
+                    url = a?.getString("url")?.takeIf { it.isNotEmpty() },
+                ),
+                onBack = { nav.popBackStack() },
+                onOpenArtist = { name -> nav.navigate(artistRoute(name)) },
+                onOpenAlbum = { albumId -> nav.navigate(albumRoute(albumId)) },
             )
         }
         composable(

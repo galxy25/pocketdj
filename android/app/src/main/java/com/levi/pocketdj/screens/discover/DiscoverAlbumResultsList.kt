@@ -53,6 +53,8 @@ fun DiscoverAlbumResultsList(
     /** Album ids whose Apple Music write isn't proven (show "Add to Apple Music again"); retry returns the token. */
     retryAlbumTokens: Map<String, String?> = emptyMap(),
     onRetryLibraryWrite: suspend (DiscoverAlbumHit) -> String = { LibraryWrite.SKIPPED_NO_CONNECTION },
+    /** A row tap opens the in-app store album page instead of expanding in place (P2-LIB-4). null = expand. */
+    onOpenAlbum: ((DiscoverAlbumHit) -> Unit)? = null,
 ) {
     var expandedId by rememberSaveable { mutableStateOf<String?>(null) }
     DiscoverStateHost(ui, "album") {
@@ -60,7 +62,8 @@ fun DiscoverAlbumResultsList(
             items(ui.hits, key = { it.id }) { hit ->
                 DiscoverAlbumRow(
                     hit, canAddToLibrary, expanded = expandedId == hit.id,
-                    onToggle = { expandedId = if (expandedId == hit.id) null else hit.id },
+                    onToggle = onOpenAlbum?.let { open -> { open(hit) } }
+                        ?: { expandedId = if (expandedId == hit.id) null else hit.id },
                     loadTracks = loadTracks, onAdd = onAdd, addState = addStates[hit.id],
                     needsRetry = hit.id in retryAlbumTokens, retryReason = retryAlbumTokens[hit.id], onRetry = onRetryLibraryWrite,
                 )

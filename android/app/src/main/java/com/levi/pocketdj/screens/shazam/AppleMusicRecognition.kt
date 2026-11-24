@@ -93,6 +93,73 @@ interface AppleMusicRecognitionPort {
      * ready) burns it to this device (iOS BurnStore.startRipAndBurn). Throws when the request fails.
      */
     suspend fun startRipAndBurn(songId: String, title: String, artist: String, storeId: String): RipStart
+
+    /**
+     * The store id to actually add: the recognized id swapped for its preferred-edition (clean/explicit) sibling
+     * when one verifiably exists (iOS `VariantResolver.preferredStoreID`). Best-effort and never throws; the
+     * default keeps the recognized id (no preference chosen / unavailable).
+     */
+    suspend fun preferredEdition(storeId: String, title: String, artist: String): String = storeId
+}
+
+/** One catalog song row as the edition swap sees it (title/artist/duration/explicit flag). */
+data class EditionRow(
+    val storeId: String,
+    val title: String,
+    val artist: String,
+    /** null = unclassified (no explicit/clean marker). */
+    val explicit: Boolean?,
+    val durationSec: Double? = null,
+)
+
+/**
+ * Recognizer edition swap (iOS `VariantResolver.preferredStoreID` + `AppleMusicProvider.editionMatches`): before the
+ * library add / rip+burn, replace the recognized store id with its preferred-edition twin. Deliberately NOT applied
+ * to Discover adds (a tapped edition row there is the user's authoritative pick).
+ */
+object RecognizerEdition {
+    const val DURATION_TOLERANCE_MS = 7_000
+
+    /** Same recording, the wanted edition, durations agree - never a different cut. */
+    fun matches(row: EditionRow, name: String, artist: String, lengthMs: Int?, wantExplicit: Boolean): Boolean {
+        if (row.explicit != wantExplicit) return false
+        val nt = ShazamCatalogMatch.norm(name)
+        if (nt.isEmpty() || ShazamCatalogMatch.norm(row.title) != nt) return false
+        val na = ShazamCatalogMatch.norm(artist)
+        if (na.isNotEmpty()) {
+            val ra = ShazamCatalogMatch.norm(row.artist)
+            if (!(ra == na || ra.contains(na) || na.contains(ra))) return false
+        }
+        val d = row.durationSec
+        if (lengthMs != null && lengthMs > 0 && d != null) {
+            if (kotlin.math.abs(Math.round(d * 1000).toInt() - lengthMs) > DURATION_TOLERANCE_MS) return false
+        }
+        return true
+    }
+
+    /**
+     * [preferExplicit] is the tri-state setting: null = never chosen, nothing is substituted. [search] returns catalog
+     * rows for a "title artist" term; the recognized row is found among them by id. ANY miss keeps [storeId].
+     */
+    suspend fun preferredStoreId(
+        storeId: String, title: String, artist: String, preferExplicit: Boolean?,
+        search: suspend (term: String) -> List<EditionRow>,
+    ): String {
+        val prefer = preferExplicit ?: return storeId
+        if (storeId.isBlank()) return storeId
+        val rows = try {
+            search("$title $artist".trim())
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            return storeId
+        }
+        val row = rows.firstOrNull { it.storeId == storeId } ?: return storeId
+        // Already the preferred edition (or unclassified): keep the input.
+        if (row.explicit != !prefer) return storeId
+        val lengthMs = row.durationSec?.let { Math.round(it * 1000).toInt() }
+        return rows.firstOrNull { matches(it, title, artist, lengthMs, prefer) }?.storeId ?: storeId
+    }
 }
 
 enum class RipStart { REQUESTED, NO_SERVER }
@@ -123,22 +190,37 @@ class RecognitionAddController(
     private fun patch(storeId: String, f: (RecognitionAddState) -> RecognitionAddState) =
         _states.update { it + (storeId to f(it[storeId] ?: RecognitionAddState())) }
 
-    /** [catalogSongId] is the indexed id when the track is already in the catalog. */
-    fun add(storeId: String, title: String, artist: String, catalogSongId: String?): kotlinx.coroutines.Job? {
+    /**
+     * [catalogSongId] is the indexed id when the track is already in the catalog. The preferred edition is resolved
+     * FIRST (the add and the rip+burn use the swapped id); [catalogSongIdFor] re-resolves the indexed id for it.
+     * Order: edition swap -> add to the Apple Music library -> THEN rip+burn.
+     */
+    fun add(
+        storeId: String, title: String, artist: String, catalogSongId: String?,
+        catalogSongIdFor: ((chosenStoreId: String) -> String?)? = null,
+    ): kotlinx.coroutines.Job? {
         val cur = _states.value[storeId]
         if (cur != null && (cur.adding || cur.added)) return null // latch: never invite a duplicate add
         patch(storeId) { RecognitionAddState(adding = true) }
         return scope.launch {
             try {
-                if (!port.addSongToLibrary(storeId)) {
+                val chosen = try {
+                    port.preferredEdition(storeId, title, artist).ifBlank { storeId }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    storeId
+                }
+                if (!port.addSongToLibrary(chosen)) {
                     patch(storeId) { it.copy(addError = "Couldn’t add to Apple Music") }
                     return@launch
                 }
-                val id = AppleMusicRecognition.burnSongId(catalogSongId, storeId)
+                val indexed = if (chosen != storeId && catalogSongIdFor != null) catalogSongIdFor(chosen) else catalogSongId
+                val id = AppleMusicRecognition.burnSongId(indexed, chosen)
                 patch(storeId) { it.copy(added = true, burnSongId = id) }
                 runCatching { onCatalogAdd?.invoke(id, title, artist) }
                 try {
-                    if (port.startRipAndBurn(id, title, artist, storeId) == RipStart.NO_SERVER) {
+                    if (port.startRipAndBurn(id, title, artist, chosen) == RipStart.NO_SERVER) {
                         patch(storeId) { it.copy(burnError = "No rip server — can’t download a copy to this device") }
                     }
                 } catch (e: kotlinx.coroutines.CancellationException) {
