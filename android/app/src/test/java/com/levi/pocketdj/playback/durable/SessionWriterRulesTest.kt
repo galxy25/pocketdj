@@ -62,6 +62,26 @@ class SessionWriterRulesTest {
     }
 
     @Test
+    fun pickOnlyEdit_playNextOnAlreadyNextRow_persistsPickAndPin() = runTest {
+        val d = DurableHarness(this, tmp.root, "a", "b", "c")
+        d.observe()
+        d.seq.play(rows("a", "b", "c")); d.h.settle()
+        val uid = d.seq.state.value.queue[1].uid
+        assertEquals(null, d.snapshotOnDisk()!!.queue[1].djUserNext)
+        d.seq.moveUpcomingNext(uid) // order unchanged; only pin + pick change
+        assertEquals(true, d.snapshotOnDisk()!!.queue[1].djUserNext)
+    }
+
+    @Test
+    fun samePositionDrop_isNotAnEdit_noPickNoPin() = runTest {
+        val d = DurableHarness(this, tmp.root, "a", "b", "c")
+        d.observe()
+        d.seq.play(rows("a", "b", "c")); d.h.settle()
+        d.seq.moveUpcoming(listOf(0), 0)
+        assertFalse(d.seq.state.value.queue[1].djUserNext)
+    }
+
+    @Test
     fun tick_persistsPausedAndResumedTransitionsImmediately_andThrottlesPlaying() = runTest {
         val d = DurableHarness(this, tmp.root, "a", "b")
         d.observe()

@@ -39,3 +39,10 @@ Tests: +43 JVM tests (ReplaceUpcomingPropertyTest 8, EffectiveRepeatTest 7, Exte
 
 ## Questions for Levi
 - none
+
+## Review
+
+- MINOR SessionWriter.structurallyChanged ignored plan/djUserNext → fixed (compares per-row plan + djUserNext); test pickOnlyEdit_playNextOnAlreadyNextRow_persistsPickAndPin.
+- NIT moveUpcoming same-position drop pinned/picked → fixed (early return when order unchanged); test samePositionDrop_isNotAnEdit_noPickNoPin.
+
+fixes applied

@@ -1481,9 +1481,11 @@ class SetlistSequencer(
         val src = fromOffsets.filter { it in tail.indices }.toSortedSet().toList()
         if (src.isEmpty()) return
         val dest = toOffset.coerceIn(0, tail.size)
-        val moved = src.map { tail[it].pinnedCopy() }
         val remaining = tail.filterIndexed { i, _ -> i !in src }
         val insertAt = (dest - src.count { it < dest }).coerceIn(0, remaining.size)
+        // A drop that changes nothing (same-position drag) is not an edit: no pins, no pick.
+        if (remaining.toMutableList().also { r -> r.addAll(insertAt, src.map { tail[it] }) }.map { it.uid } == tail.map { it.uid }) return
+        val moved = src.map { tail[it].pinnedCopy() }
         val out = remaining.toMutableList().also { it.addAll(insertAt, moved) }
         replaceTail(out)
         val toTop = dest == 0
