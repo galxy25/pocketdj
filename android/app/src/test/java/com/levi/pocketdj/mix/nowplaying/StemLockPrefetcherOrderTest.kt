@@ -1,8 +1,8 @@
 package com.levi.pocketdj.mix.nowplaying
 
-import com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Network
-import com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Step
-import com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Track
+import com.levi.pocketdj.mix.nowplaying.NetworkClass as Network
+import com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Step
+import com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.Track
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -20,7 +20,7 @@ class StemLockPrefetcherOrderTest {
     private fun t(id: String, songLocal: Boolean = false, fetchable: Boolean = true, local: Set<String> = emptySet(), remote: Boolean = true) =
         Track(songId = id, audioId = id, title = id, artist = "a", songLocal = songLocal, songFetchable = fetchable, stemsLocal = local, stemsRemote = remote)
 
-    private fun names(p: StemLockPrefetcher.Plan) = p.steps.map { it.toString() }
+    private fun names(p: NowPlayingPrefetcher.Plan) = p.steps.map { it.toString() }
 
     @Test fun nextTrackIsSongThenVocalsDrumsOtherBass() {
         val p = StemLockPrefetcher.plan(null, listOf(t("n")), carry, Network.UNMETERED, 3)
