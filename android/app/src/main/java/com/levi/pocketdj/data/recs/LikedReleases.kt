@@ -254,12 +254,13 @@ object LikedReleaseSelection {
             // 6. No age limit: a like from six months ago that was never added still shows.
             rows += LikedRow(rel, at, inFlight = false, retryWriteOnly = false, message = a?.message)
         }
-        // 7. In-flight and errors first, then most recently liked first.
-        fun urgent(r: LikedRow) = r.inFlight || r.retryWriteOnly ||
-            r.state == LikeAddState.ADDING || r.state == LikeAddState.FAILED || r.state == LikeAddState.OFFLINE
-        val sorted = rows.sortedWith(
-            compareByDescending<LikedRow> { urgent(it) }.thenByDescending { it.acceptedAtMs }.thenBy { it.id },
-        )
+        // 7. In-flight first, then errors, then everything else; most recently liked first within each.
+        fun rank(r: LikedRow) = when {
+            r.inFlight -> 0
+            r.retryWriteOnly || r.state == LikeAddState.ADDING || r.state == LikeAddState.FAILED || r.state == LikeAddState.OFFLINE -> 1
+            else -> 2
+        }
+        val sorted = rows.sortedWith(compareBy<LikedRow> { rank(it) }.thenByDescending { it.acceptedAtMs }.thenBy { it.id })
         return Result(sorted, hydrate.sorted())
     }
 

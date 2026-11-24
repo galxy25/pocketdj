@@ -319,7 +319,7 @@ struct NewReleasesView: View {
             guard let at = r.release.releaseAtMs else { return "Will add on release day" }
             return "Coming \(Self.relative(at, nowMs: nowMs).lowercased()) — will add on release day"
         case .offline?: return r.message ?? NewReleaseLikeAdder.offlineMessage
-        case .failed?: return r.message
+        case .failed?: return r.message ?? r.release.attempt?.message
         default: return r.message
         }
     }

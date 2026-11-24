@@ -234,17 +234,18 @@ enum LikedReleaseSelection {
             rows.append(LikedRow(release: rel, acceptedAtMs: at, inFlight: false,
                                  retryWriteOnly: false, message: rel.attempt?.message))
         }
-        // 7. In-flight and errors first, then most recently liked first.
-        func urgent(_ r: LikedRow) -> Bool {
-            if r.inFlight || r.retryWriteOnly { return true }
+        // 7. In-flight first, then errors, then everything else; most recently liked first within each.
+        func rank(_ r: LikedRow) -> Int {
+            if r.inFlight { return 0 }
+            if r.retryWriteOnly { return 1 }
             switch r.state {
-            case .adding?, .failed?, .offline?: return true
-            default: return false
+            case .adding?, .failed?, .offline?: return 1
+            default: return 2
             }
         }
         rows.sort {
-            let (a, b) = (urgent($0), urgent($1))
-            if a != b { return a }
+            let (a, b) = (rank($0), rank($1))
+            if a != b { return a < b }
             if $0.acceptedAtMs != $1.acceptedAtMs { return $0.acceptedAtMs > $1.acceptedAtMs }
             return $0.id < $1.id
         }

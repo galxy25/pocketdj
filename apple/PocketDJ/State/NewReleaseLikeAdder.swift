@@ -166,7 +166,7 @@ final class NewReleaseLikeAdder {
     ///    on release day — whether or not the write landed)
     ///  • nothing recorded, offline → offline (the sweep retries)
     ///  • nothing recorded, anything else → failed with the honest message
-    nonisolated static func state(for report: ReleaseAddReport, releaseAtMs: Double?, nowMs: Double,
+    static func state(for report: ReleaseAddReport, releaseAtMs: Double?, nowMs: Double,
                                   offline: Bool = false,
                                   canWrite: Bool = NewReleaseLikeAdder.platformCanWrite) -> Outcome {
         if report.recorded {

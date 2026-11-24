@@ -31,7 +31,8 @@ final class NewReleaseLikeAdderTests: XCTestCase {
 
     private var clockMs = 1_800_000_000_000.0
 
-    private func make(port: FakePort = FakePort()) -> (NewReleaseLikeAdder, FakePort, LikedReleasesStore) {
+    private func make(port given: FakePort? = nil) -> (NewReleaseLikeAdder, FakePort, LikedReleasesStore) {
+        let port = given ?? FakePort()
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-adder-\(UUID().uuidString).json")
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         let store = LikedReleasesStore(fileURL: url)
@@ -139,20 +140,23 @@ final class NewReleaseLikeAdderTests: XCTestCase {
 
         // Inside the window: nothing.
         clockMs += 5 * hour
-        XCTAssertEqual(await adder.sweep(), 0)
+        let swept1 = await adder.sweep()
+        XCTAssertEqual(swept1, 0)
         XCTAssertEqual(port.addCalls.count, 1)
 
         // Past it, and now online: one retry, which lands.
         clockMs += 2 * hour
         port.offline = false
         port.nextReport = ReleaseAddReport(write: .confirmed, recorded: true, error: nil)
-        XCTAssertEqual(await adder.sweep(), 1)
+        let swept2 = await adder.sweep()
+        XCTAssertEqual(swept2, 1)
         XCTAssertEqual(port.addCalls.count, 2)
         XCTAssertEqual(store.releases["1"]?.attempt?.state, .added)
 
         // Settled items are never touched again.
         clockMs += 10 * hour
-        XCTAssertEqual(await adder.sweep(), 0)
+        let swept3 = await adder.sweep()
+        XCTAssertEqual(swept3, 0)
     }
 
     func testSweepNeverRetriesFailedItems() async {
@@ -161,7 +165,8 @@ final class NewReleaseLikeAdderTests: XCTestCase {
         await adder.liked(entry("1"))?.value
         XCTAssertEqual(store.releases["1"]?.attempt?.state, .failed)
         clockMs += 48 * hour
-        XCTAssertEqual(await adder.sweep(), 0)
+        let swept4 = await adder.sweep()
+        XCTAssertEqual(swept4, 0)
         XCTAssertEqual(port.addCalls.count, 1)
     }
 
@@ -171,7 +176,8 @@ final class NewReleaseLikeAdderTests: XCTestCase {
         await adder.liked(entry("1"))?.value
         adder.acceptedProvider = { [:] }
         clockMs += 8 * hour
-        XCTAssertEqual(await adder.sweep(), 0)
+        let swept5 = await adder.sweep()
+        XCTAssertEqual(swept5, 0)
     }
 
     func testPreOrderIsAwaitingThenAddedOnReleaseDay() async {
@@ -185,13 +191,15 @@ final class NewReleaseLikeAdderTests: XCTestCase {
 
         // Before release day: nothing, however long since the attempt.
         clockMs += 2 * day
-        XCTAssertEqual(await adder.sweep(), 0)
+        let swept6 = await adder.sweep()
+        XCTAssertEqual(swept6, 0)
         XCTAssertEqual(port.addCalls.count, 1)
 
         // Release day: the sweep re-runs the add, which now records.
         clockMs += 1.5 * day
         port.nextReport = ReleaseAddReport(write: .confirmedWeb, recorded: true, error: nil)
-        XCTAssertEqual(await adder.sweep(), 1)
+        let swept7 = await adder.sweep()
+        XCTAssertEqual(swept7, 1)
         XCTAssertEqual(port.addCalls.count, 2)
         XCTAssertEqual(store.releases["1"]?.attempt?.state, .added)
     }
