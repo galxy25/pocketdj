@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-LIB-5: Inline slide-out player under the playing row (album detail)
 
@@ -28,4 +28,4 @@ None.
 - NIT coverage -> seek logic extracted into a pure testable function; no Compose JVM harness exists.
 
 fixes applied. Tests: 7665, 0 failures (+2).
-state: reviewed
+state: merged

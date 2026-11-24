@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-SURF-11 status: Create a pocket from a spoken/typed brief
 - [x] PocketBriefParser: years, ranges, 2-digit range end, decades (90s / '90s / nineties), early/mid/late, length ("45 minute", "2 hours"), catalog + Genre-table genres (ambiguous words stay moods), built-in mood words + synonyms + catalog sentiment vocabulary

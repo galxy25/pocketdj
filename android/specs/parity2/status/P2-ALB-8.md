@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-ALB-8 - Metadata edit sheets + Settings > Edits
 

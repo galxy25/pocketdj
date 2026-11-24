@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 - [x] AutoUpNext (source port, rows, tab node, playNow, per-row commands) + AutoId.UpNext / UpNextRow (`upnext`, `upnext:<uid>`)
 - [x] AutoBrowseTree: Up Next root entry (only while rows are upcoming), root-limit fold into Playlists
