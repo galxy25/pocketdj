@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # P2-ALB-4 - Vinyl album run engine: one ExoPlayer item per side, boundaries, glide + retarget in place, in-place skip, lead-in
 

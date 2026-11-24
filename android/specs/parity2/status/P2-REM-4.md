@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 # P2-REM-4 RemoteSongResolver + SequencerRemoteTarget + InMemoryRemoteTarget
 

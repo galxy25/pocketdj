@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 ## Summary
 - `PocketMomentCache` (data/pockets/wheel): StateFlow<PocketWheelSnapshot>; `attach(revisions)` debounces 5 s then rebuilds on Dispatchers.Default (collectLatest cancels a stale build); persists device-local `pocketdj-pocket-wheel-cache.json` (atomic write, instant paint at construction, always one rebuild per launch); folds into the palette (frees slots of collections absent from `liveCollectionIds`, fav_songs kept); `makeInput` adds the `fav_songs` pseudo-collection from FavoritesStore. `clearLocal()` bumps a generation so an in-flight build can never resurrect the wheel.
@@ -26,4 +26,4 @@ None.
 
 fixes applied
 
-state: reviewed
+state: merged

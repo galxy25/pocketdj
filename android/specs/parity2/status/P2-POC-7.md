@@ -1,4 +1,4 @@
-state: implemented
+state: merged
 
 Summary: Pure Kotlin port of iOS PocketRunPlanner + PocketRunCandidates in data/pockets/wheel/: constants, Scorer,
 fillingGapsFromSeeds / withNeighbourCollections / derived, pool (core+soft, per-collection pool share), quotas, compose

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # P2-SURF-4 status
 - [x] IntentSongMatcher (port of iOS) + tests
