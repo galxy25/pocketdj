@@ -1,0 +1,2578 @@
+{
+ "collections": [
+  {
+   "id": "pl_potential",
+   "name": "Potential",
+   "songIds": [
+    "pot_0",
+    "pot_1",
+    "pot_2",
+    "pot_3",
+    "pot_4",
+    "pot_5",
+    "pot_6",
+    "pot_7",
+    "pot_8",
+    "pot_9",
+    "pot_10",
+    "pot_11",
+    "pot_12",
+    "pot_13",
+    "pot_14",
+    "pot_15",
+    "pot_16",
+    "pot_17",
+    "pot_18",
+    "pot_19",
+    "pot_20",
+    "pot_21",
+    "pot_22",
+    "pot_23"
+   ]
+  },
+  {
+   "id": "pkt_late",
+   "name": "Late Night",
+   "songIds": [
+    "late_0",
+    "late_1",
+    "late_2",
+    "late_3",
+    "late_4",
+    "late_5",
+    "late_6",
+    "late_7",
+    "late_8",
+    "late_9",
+    "late_10",
+    "late_11"
+   ]
+  },
+  {
+   "id": "fav_songs",
+   "name": "Favorite songs",
+   "songIds": [
+    "fav_0",
+    "fav_1",
+    "fav_2",
+    "fav_3",
+    "fav_4",
+    "fav_5",
+    "fav_6",
+    "fav_7",
+    "fav_8",
+    "fav_9",
+    "pot_0",
+    "pot_1"
+   ]
+  },
+  {
+   "id": "pls_road",
+   "name": "Roadtrip",
+   "songIds": [
+    "road_0",
+    "road_1",
+    "road_2",
+    "road_3",
+    "road_4",
+    "road_5",
+    "road_6",
+    "road_7"
+   ]
+  },
+  {
+   "id": "pkt_chill",
+   "name": "Chill Lunch",
+   "songIds": [
+    "lun_0",
+    "lun_1",
+    "lun_2",
+    "lun_3",
+    "lun_4",
+    "lun_5",
+    "lun_6",
+    "lun_7"
+   ]
+  },
+  {
+   "id": "pl_library",
+   "name": "Library",
+   "songIds": [
+    "pot_0",
+    "pot_1",
+    "pot_2",
+    "pot_3",
+    "pot_4",
+    "pot_5",
+    "pot_6",
+    "pot_7",
+    "pot_8",
+    "pot_9",
+    "pot_10",
+    "pot_11",
+    "pot_12",
+    "pot_13",
+    "pot_14",
+    "pot_15",
+    "pot_16",
+    "pot_17",
+    "pot_18",
+    "pot_19",
+    "pot_20",
+    "pot_21",
+    "pot_22",
+    "pot_23",
+    "late_0",
+    "late_1",
+    "late_2",
+    "late_3",
+    "late_4",
+    "late_5",
+    "late_6",
+    "late_7",
+    "late_8",
+    "late_9",
+    "late_10",
+    "late_11",
+    "fav_0",
+    "fav_1",
+    "fav_2",
+    "fav_3",
+    "fav_4",
+    "fav_5",
+    "fav_6",
+    "fav_7",
+    "fav_8",
+    "fav_9",
+    "road_0",
+    "road_1",
+    "road_2",
+    "road_3",
+    "road_4",
+    "road_5",
+    "road_6",
+    "road_7",
+    "lun_0",
+    "lun_1",
+    "lun_2",
+    "lun_3",
+    "lun_4",
+    "lun_5",
+    "lun_6",
+    "lun_7",
+    "lib_0",
+    "lib_1",
+    "lib_2",
+    "lib_3",
+    "lib_4",
+    "lib_5",
+    "lib_6",
+    "lib_7",
+    "lib_8",
+    "lib_9",
+    "lib_10",
+    "lib_11",
+    "lib_12",
+    "lib_13",
+    "lib_14",
+    "lib_15",
+    "lib_16",
+    "lib_17",
+    "lib_18",
+    "lib_19",
+    "lib_20",
+    "lib_21",
+    "lib_22",
+    "lib_23",
+    "lib_24",
+    "lib_25",
+    "lib_26",
+    "lib_27",
+    "lib_28",
+    "lib_29",
+    "lib_30",
+    "lib_31",
+    "lib_32",
+    "lib_33",
+    "lib_34",
+    "lib_35",
+    "lib_36",
+    "lib_37",
+    "lib_38",
+    "lib_39",
+    "lib_40",
+    "lib_41",
+    "lib_42",
+    "lib_43",
+    "lib_44",
+    "lib_45",
+    "lib_46",
+    "lib_47",
+    "lib_48",
+    "lib_49",
+    "lib_50",
+    "lib_51",
+    "lib_52",
+    "lib_53",
+    "lib_54",
+    "lib_55",
+    "lib_56",
+    "lib_57",
+    "lib_58",
+    "lib_59"
+   ]
+  }
+ ],
+ "events": [
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "D634D64C-03FC-53B0-AE1C-1C6EB89E4A8E",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791385500000,
+   "songId": "pot_15",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "FEFB1DC0-B9E8-5411-BCBB-19A22B7DD119",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791385740000,
+   "songId": "pot_16",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "728AA082-DF23-5AB8-8BE7-18408CF76D46",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791385980000,
+   "songId": "pot_17",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "A253D5CC-7FB1-5A81-BD30-DFF9D4C6EDA2",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791400200000,
+   "songId": "lun_5",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "05845010-6F1B-53D0-8671-7F4626DDD962",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791400800000,
+   "songId": "lun_0",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "FEE5DBFA-DCFE-5A08-ACA9-FA5E1301B705",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791432000000,
+   "songId": "late_9",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "B0BFBFA9-FF19-5A04-8D6A-AB20C7657F8A",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791432300000,
+   "songId": "late_2",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "D5760958-2747-5F9D-BB98-36C5E12AF864",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791453600000,
+   "songId": "lib_0",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "95422934-F1C6-53A6-9715-C2D580E6DD72",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791471900000,
+   "songId": "pot_12",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "974D396B-CD0E-5011-996D-CC11578A6509",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791472140000,
+   "songId": "pot_13",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "4C5FEA93-F0C0-5A20-B08E-08EB22456C48",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791472380000,
+   "songId": "pot_14",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "BDC6C8C2-D379-5171-8196-394AEE191E10",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791486600000,
+   "songId": "lun_4",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "C8D87C67-F16A-504B-BBE8-99161DFDAE68",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791487200000,
+   "songId": "lun_7",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "3582CCE8-500A-5B97-AC11-18F6AC4A0E3A",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791518400000,
+   "songId": "late_8",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "E986F0D4-B130-5AD5-A38F-D452C524A6C0",
+   "listenedFraction": 0.2,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791518700000,
+   "songId": "late_1",
+   "source": "mix",
+   "tzOffsetMin": -420,
+   "wasSkipped": true
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "1DAAE75E-5E95-5C02-88B4-4B5797E42210",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791558300000,
+   "songId": "pot_9",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "5FD3DC33-C4F1-5351-A5FC-3BCD1E2AC83E",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791558540000,
+   "songId": "pot_10",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "861B57AE-AEAA-52D6-9C6B-EC2656284E20",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791558780000,
+   "songId": "pot_11",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "01877D38-089C-50A7-AC82-53A6BEBA8DB9",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791573000000,
+   "songId": "lun_3",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "3563F643-E67A-54F4-820F-1F6229DC78AC",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791573600000,
+   "songId": "lun_6",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "08AF1619-6B97-5D9C-A997-6056CF674D1C",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791604800000,
+   "songId": "late_7",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "B57AC1CA-6149-55A3-AFBA-4634EF977057",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791605100000,
+   "songId": "late_0",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "F44FBF53-6E40-5A8E-9AB4-9B3CB42A377F",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791648000000,
+   "songId": "fav_8",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "8342FA16-D207-5690-8363-961A0CDDDC09",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791648240000,
+   "songId": "fav_9",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "245C6CEB-CF0B-5164-BAB4-D90065927083",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791648480000,
+   "songId": "fav_0",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "F7BA9B2A-ADB5-5F35-8C44-DACED2EF5431",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791648720000,
+   "songId": "fav_1",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "B2A7CE52-525F-5EFA-BA68-648EF941B3F0",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791691200000,
+   "songId": "late_6",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "7A3C4C26-85A4-536C-8F4E-B7C0E39C248A",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791691500000,
+   "songId": "late_11",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "set_now_playing",
+   "contextName": "Roadtrip",
+   "id": "1D173DC1-E602-5411-BEB3-35E46B1F2BC7",
+   "listenedFraction": 1.0,
+   "listeningContext": {
+    "destination": "plc_b",
+    "kind": "trip",
+    "origin": "plc_a",
+    "tripId": "trp_ab"
+   },
+   "originCollectionId": "pls_road",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791756000000,
+   "songId": "road_1",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "set_now_playing",
+   "contextName": "Roadtrip",
+   "id": "AB709524-7245-57DA-AF7A-5722B905795A",
+   "listenedFraction": 1.0,
+   "listeningContext": {
+    "destination": "plc_b",
+    "kind": "trip",
+    "origin": "plc_a",
+    "tripId": "trp_ab"
+   },
+   "originCollectionId": "pls_road",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791756240000,
+   "songId": "road_2",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "D5F3032F-2132-5A5B-A046-609F74830904",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791777600000,
+   "songId": "late_5",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "1075CC38-9DA0-5EF2-8129-F0E814BBF850",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791777900000,
+   "songId": "late_10",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "9109A75C-79D2-5DF2-ABA0-68462EA473EB",
+   "listenedFraction": 0.1,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791817500000,
+   "songId": "pot_0",
+   "source": "playlist",
+   "tzOffsetMin": -420,
+   "wasSkipped": true
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "EEB047DC-A6B1-588C-ACA3-5A7635C2FF61",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791817740000,
+   "songId": "pot_1",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "A718CA65-C6E8-5612-9438-A8B6BEF47EB9",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791817980000,
+   "songId": "pot_2",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "D9ABAA64-A505-56EE-9E4F-F566B2BEB7DD",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791832200000,
+   "songId": "lun_0",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "950FC69F-811C-5A66-8609-69BE28530C67",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791832800000,
+   "songId": "lun_3",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "7C4273E5-ABCB-51C9-8CBC-96975809CB46",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791864000000,
+   "songId": "late_4",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "0ED3353B-4F81-5F1C-A018-5F07FFE0CA63",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791864300000,
+   "songId": "late_9",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "315042DF-BDC8-50BE-B852-58EE40B0D026",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791903900000,
+   "songId": "pot_21",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "1BB48FAA-3090-5586-8E67-8F65339AB44D",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791904140000,
+   "songId": "pot_22",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "0BC0F733-D6B3-5E94-91E8-AB77CAACF077",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791904380000,
+   "songId": "pot_23",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "0A3DB94D-5D9B-5F4D-A6FE-B8CD49173170",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791918600000,
+   "songId": "lun_7",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "E8BB1A04-8A9E-5D27-BEFC-1A89F763C0B0",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1791919200000,
+   "songId": "lun_2",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "DA809E18-8FF6-5016-A693-4F618E0B554D",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791950400000,
+   "songId": "late_3",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "3164F67C-6A61-5E86-9913-A8CB83DE8AC7",
+   "listenedFraction": 0.2,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791950700000,
+   "songId": "late_8",
+   "source": "mix",
+   "tzOffsetMin": -420,
+   "wasSkipped": true
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "451FB1F6-D486-520B-A66B-06107163702A",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791990300000,
+   "songId": "pot_18",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "6140F3E2-6F39-5DC6-93C5-1104BB035FCC",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791990540000,
+   "songId": "pot_19",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "2B861594-7165-5369-A004-89E32F4BCFA1",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1791990780000,
+   "songId": "pot_20",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "89EBA4F4-0FB5-5E3F-B012-2EABC5DC2FB0",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792005000000,
+   "songId": "lun_6",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "404F80DC-2E5A-5EA0-BC0B-721CEF24C121",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792005600000,
+   "songId": "lun_1",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "A213FFC7-87BF-5357-8328-03D07A1D39A1",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792036800000,
+   "songId": "late_2",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "9F98F97F-A057-5DBE-BC64-7F04A8E80EC7",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792037100000,
+   "songId": "late_7",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "FE9E8EEE-20C2-52E9-AE8E-E453B1A39BB8",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792076700000,
+   "songId": "pot_15",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "8FE473AF-8A80-54E6-AEFE-8F8D48FA3839",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792076940000,
+   "songId": "pot_16",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "51005EDC-0EB6-5044-AAED-066309F267E8",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792077180000,
+   "songId": "pot_17",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "39EC00C9-2A95-5F79-BC6E-F7A3F1AAC91A",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792091400000,
+   "songId": "lun_5",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "4B72E0B9-1A81-53D5-8150-AD73FE2B6B44",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792092000000,
+   "songId": "lun_0",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "2EF419B4-7BF7-5DDA-9826-9EAE6D4D8C61",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792123200000,
+   "songId": "late_1",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "5576799D-5F61-5367-9E80-CE24061FABA4",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792123500000,
+   "songId": "late_6",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "75C0B591-0A76-5ABD-9350-CEB5810EB6B8",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792163100000,
+   "songId": "pot_12",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "2921BEA0-D5E4-5511-9E63-22A2BA43627E",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792163340000,
+   "songId": "pot_13",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "7BB1B33C-5D78-5314-B389-B848ED1AEDAC",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792163580000,
+   "songId": "pot_14",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "4176F3C8-517F-543E-B971-92019BA09D35",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792177800000,
+   "songId": "lun_4",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "5222F567-CBFB-5624-84DA-BB265A7A2355",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792178400000,
+   "songId": "lun_7",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "82656707-FA92-50A5-9EEE-1195F2E6B293",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792209600000,
+   "songId": "late_0",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "A5F6EBDA-CF8F-5CB5-B71A-CFBB8099A00D",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792209900000,
+   "songId": "late_5",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "D4C6A5E4-0DB9-5901-AEAF-CC66DE1216BD",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792252800000,
+   "songId": "fav_1",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "7BBE0B86-A8F1-5410-A1AA-D9F53A8B493B",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792253040000,
+   "songId": "fav_2",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "E6E23E87-DC04-50A8-836D-5ED417B04BF0",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792253280000,
+   "songId": "fav_3",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "7EBA2018-8323-5876-8FC0-130D03D32404",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792253520000,
+   "songId": "fav_4",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "937F055F-1E7E-59C1-9E39-34977B888F65",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792296000000,
+   "songId": "late_11",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "3C8F5D20-A2F7-50F2-B14A-A8AC849221EB",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792296300000,
+   "songId": "late_4",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "set_now_playing",
+   "contextName": "Roadtrip",
+   "id": "9DAAC9B0-41DB-5AB3-8D3B-72C8953CC707",
+   "listenedFraction": 1.0,
+   "listeningContext": {
+    "destination": "plc_b",
+    "kind": "trip",
+    "origin": "plc_a",
+    "tripId": "trp_ab"
+   },
+   "originCollectionId": "pls_road",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792360800000,
+   "songId": "road_2",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "set_now_playing",
+   "contextName": "Roadtrip",
+   "id": "1A9E78CC-6C2D-548D-8CD5-80C8EE0DFFDD",
+   "listenedFraction": 1.0,
+   "listeningContext": {
+    "destination": "plc_b",
+    "kind": "trip",
+    "origin": "plc_a",
+    "tripId": "trp_ab"
+   },
+   "originCollectionId": "pls_road",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792361040000,
+   "songId": "road_3",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "F9CFA573-3B3A-50DE-B70E-27B87102B6FC",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792382400000,
+   "songId": "late_10",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "9B55E271-2F89-59DC-9A38-5CC05C068442",
+   "listenedFraction": 0.2,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792382700000,
+   "songId": "late_3",
+   "source": "mix",
+   "tzOffsetMin": -420,
+   "wasSkipped": true
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "093EA8B7-DF94-5FFA-AE1D-9F0718183057",
+   "listenedFraction": 0.1,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792422300000,
+   "songId": "pot_3",
+   "source": "playlist",
+   "tzOffsetMin": -420,
+   "wasSkipped": true
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "B1833E92-F41F-5AA6-A222-235906DE8EBA",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792422540000,
+   "songId": "pot_4",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "2DB55C6E-4AB1-5D7A-88D2-A3F04D25B791",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792422780000,
+   "songId": "pot_5",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "52B0DBE4-CAF3-540B-B682-8E2D33E361E1",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792437000000,
+   "songId": "lun_1",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "9558A6CD-AAA1-510F-AC3B-8115E8317D2B",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792437600000,
+   "songId": "lun_4",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "C0A3B86C-1966-5C1E-B5F8-67609E5179E1",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792468800000,
+   "songId": "late_9",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "EAD473FC-5997-546A-AC21-B8A4582F6C2D",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792469100000,
+   "songId": "late_2",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "5C66B342-0DB4-581D-851A-7FA04D208220",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792508700000,
+   "songId": "pot_0",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "8386E9FE-2729-5BDE-B97C-2A448EE4EEA6",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792508940000,
+   "songId": "pot_1",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "253159FE-5D22-5F1C-B5B1-5B0F549DFAC5",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792509180000,
+   "songId": "pot_2",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "94E9EC62-61BC-579D-91C2-E789E7DED502",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792523400000,
+   "songId": "lun_0",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "C9716906-C64A-56B2-9515-EA6BF917B496",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792524000000,
+   "songId": "lun_3",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "B87151FE-B683-5F09-A98A-1127BA65D176",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792555200000,
+   "songId": "late_8",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "0C8066D8-F2B1-5BB2-91D8-E4E180F87EB3",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792555500000,
+   "songId": "late_1",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "CEA04BFD-C068-59BB-AC53-EDB169FB4152",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792595100000,
+   "songId": "pot_21",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "C807C453-22EB-5B80-B2E6-485CA18C144D",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792595340000,
+   "songId": "pot_22",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "700F203F-DF74-58FF-9456-05F89022A7CE",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792595580000,
+   "songId": "pot_23",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "8C3C8FCC-2DBC-50C4-8DC8-99483650606B",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792609800000,
+   "songId": "lun_7",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "B9C6F408-EBE2-502B-8F19-CD8141E72406",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792610400000,
+   "songId": "lun_2",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "8D138B79-BF3F-50C4-8FAC-BC4B022C12D1",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792641600000,
+   "songId": "late_7",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "E85AE645-ED2C-5F80-8B0D-0A70B5EE2ACE",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792641900000,
+   "songId": "late_0",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "1E093DEC-8EEE-503E-AA6E-A807A23BF4B1",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792681500000,
+   "songId": "pot_18",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "640238F3-7E8C-527F-A6F9-32D0DC508A67",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792681740000,
+   "songId": "pot_19",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "73A405C5-4A2B-528B-90FF-A7ADE4C2E394",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792681980000,
+   "songId": "pot_20",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "C9E52A5C-ECE0-5E9C-8110-98CF049FBFAC",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792696200000,
+   "songId": "lun_6",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "0A0AFF23-E2C0-58B1-AA21-DD38856511EF",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792696800000,
+   "songId": "lun_1",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "86CDD9E6-F5ED-5FEF-93CC-341B157CDC23",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792728000000,
+   "songId": "late_6",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "B4BFE0E6-8BF2-53F2-A95F-EBA98C11FCBF",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792728300000,
+   "songId": "late_11",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "6B074A09-BEDC-5784-BE46-C2E61D785134",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792767900000,
+   "songId": "pot_15",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "FCFA1C25-BEAC-572D-B031-B6D51F511CE6",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792768140000,
+   "songId": "pot_16",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "8CCA427D-B648-5E0B-8BBF-1D0890CC4DB2",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792768380000,
+   "songId": "pot_17",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "CF89C277-528F-5516-9EB4-3BE92A288D14",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792782600000,
+   "songId": "lun_5",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "24CFCFDC-E74B-58EE-A430-CE9B518AD18F",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1792783200000,
+   "songId": "lun_0",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "938009A4-1A0F-5DC1-8F7C-BEE618ABF834",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792814400000,
+   "songId": "late_5",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "51471199-B2FE-5210-9FC1-568CE3DAD731",
+   "listenedFraction": 0.2,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792814700000,
+   "songId": "late_10",
+   "source": "mix",
+   "tzOffsetMin": -420,
+   "wasSkipped": true
+  },
+  {
+   "id": "72DED0D4-7CA2-5556-8044-9D2DE486D8B3",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792857600000,
+   "songId": "fav_4",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "3D968A37-7F55-5334-868A-3AA11C791CBB",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792857840000,
+   "songId": "fav_5",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "1A094B8C-5B31-521E-ADFB-DAD485EE2401",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792858080000,
+   "songId": "fav_6",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "63F36AC8-6091-52DA-8845-5705193D411B",
+   "listenedFraction": 1.0,
+   "motion": "running",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792858320000,
+   "songId": "fav_7",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "57467531-4686-5843-A8C5-32CD2D60A60F",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792900800000,
+   "songId": "late_4",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "9584BD64-942B-576F-A2A6-4049E9F4F22F",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792901100000,
+   "songId": "late_9",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "set_now_playing",
+   "contextName": "Roadtrip",
+   "id": "AB6AD340-5938-5956-A1F6-EF87DE1AB47C",
+   "listenedFraction": 1.0,
+   "listeningContext": {
+    "destination": "plc_b",
+    "kind": "trip",
+    "origin": "plc_a",
+    "tripId": "trp_ab"
+   },
+   "originCollectionId": "pls_road",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792965600000,
+   "songId": "road_3",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "set_now_playing",
+   "contextName": "Roadtrip",
+   "id": "F8E770AD-1404-5086-8F17-CE201BF0A30C",
+   "listenedFraction": 1.0,
+   "listeningContext": {
+    "destination": "plc_b",
+    "kind": "trip",
+    "origin": "plc_a",
+    "tripId": "trp_ab"
+   },
+   "originCollectionId": "pls_road",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792965840000,
+   "songId": "road_4",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "BD97510A-4800-5570-86C4-D60C37F2EAC6",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792987200000,
+   "songId": "late_3",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "E509CCAD-9E1C-5181-A787-E886FAF43DFF",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1792987500000,
+   "songId": "late_8",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "4C01CBEA-3712-55A4-92B6-2F5B50E9DB67",
+   "listenedFraction": 0.1,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1793027100000,
+   "songId": "pot_6",
+   "source": "playlist",
+   "tzOffsetMin": -420,
+   "wasSkipped": true
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "E181022F-76CB-5BA3-94DE-78D4B9C36DAA",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1793027340000,
+   "songId": "pot_7",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "EFBE165A-4579-5AC0-9F12-62A87E226618",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1793027580000,
+   "songId": "pot_8",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextName": "In the Pocket",
+   "id": "7478E282-EE3A-58F4-B764-C8DE6A948B55",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1793034000000,
+   "songId": "pot_0",
+   "source": "game",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "1CBBB826-408B-5C88-B1F5-F5FD0A4C2DA9",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1793041800000,
+   "songId": "lun_2",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "0B906A78-475D-545D-8CFF-6E191ED1E910",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1793042400000,
+   "songId": "lun_5",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "04FB96FC-2C8D-5D9F-BEC2-289AE93D2827",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1793073600000,
+   "songId": "late_2",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "A4F8BE09-E85E-57CA-A2EF-D96E52C76A31",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1793073900000,
+   "songId": "late_7",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "9EEBC200-6D81-5FD9-A796-7900EAD8E615",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1793113500000,
+   "songId": "pot_3",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "5C0BEF9D-0245-546E-84D5-04E61F2E00B6",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1793113740000,
+   "songId": "pot_4",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "carPlay": true,
+   "contextId": "set_now_playing",
+   "contextName": "Potential",
+   "id": "1A51A84D-F2AC-5318-90E8-23BC97BCE2D5",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pl_potential",
+   "originInstallId": "fixture-install",
+   "playedAt": 1793113980000,
+   "songId": "pot_5",
+   "source": "playlist",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "5CFBE283-A9A1-5BD0-A3BE-8E547C561D8A",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1793128200000,
+   "songId": "lun_1",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "id": "C40764E1-6BC2-5147-B5AC-E4D817986041",
+   "listenedFraction": 1.0,
+   "originInstallId": "fixture-install",
+   "playedAt": 1793128800000,
+   "songId": "lun_4",
+   "source": "browser",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "BB501054-117E-54C9-9DA0-41D448BBE016",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1793160000000,
+   "songId": "late_1",
+   "source": "mix",
+   "tzOffsetMin": -420
+  },
+  {
+   "contextId": "mxs_1",
+   "contextName": "Late Night",
+   "id": "0C41DF57-D24D-59C3-B373-177080E3BF84",
+   "listenedFraction": 1.0,
+   "originCollectionId": "pkt_late",
+   "originInstallId": "fixture-install",
+   "playedAt": 1793160300000,
+   "songId": "late_6",
+   "source": "mix",
+   "tzOffsetMin": -420
+  }
+ ],
+ "librarySize": 122,
+ "nowMs": 1793215800000,
+ "songs": {
+  "fav_0": {
+   "artist": "Daft Punk",
+   "bpm": 120,
+   "genre": "electronic",
+   "year": 2005
+  },
+  "fav_1": {
+   "artist": "Justice",
+   "bpm": 121,
+   "genre": "electronic",
+   "year": 2006
+  },
+  "fav_2": {
+   "artist": "Chromeo",
+   "bpm": 122,
+   "genre": "electronic",
+   "year": 2007
+  },
+  "fav_3": {
+   "artist": "Daft Punk",
+   "bpm": 123,
+   "genre": "electronic",
+   "year": 2008
+  },
+  "fav_4": {
+   "artist": "Justice",
+   "bpm": 124,
+   "genre": "electronic",
+   "year": 2009
+  },
+  "fav_5": {
+   "artist": "Chromeo",
+   "bpm": 125,
+   "genre": "electronic",
+   "year": 2010
+  },
+  "fav_6": {
+   "artist": "Daft Punk",
+   "bpm": 126,
+   "genre": "electronic",
+   "year": 2005
+  },
+  "fav_7": {
+   "artist": "Justice",
+   "bpm": 127,
+   "genre": "electronic",
+   "year": 2006
+  },
+  "fav_8": {
+   "artist": "Chromeo",
+   "bpm": 128,
+   "genre": "electronic",
+   "year": 2007
+  },
+  "fav_9": {
+   "artist": "Daft Punk",
+   "bpm": 129,
+   "genre": "electronic",
+   "year": 2008
+  },
+  "late_0": {
+   "artist": "Massive Attack",
+   "bpm": 70,
+   "genre": "electronic",
+   "year": 1994
+  },
+  "late_1": {
+   "artist": "Portishead",
+   "bpm": 72,
+   "genre": "electronic",
+   "year": 1995
+  },
+  "late_10": {
+   "artist": "Tricky",
+   "bpm": 90,
+   "genre": "electronic",
+   "year": 1996
+  },
+  "late_11": {
+   "artist": "Burial",
+   "bpm": 92,
+   "genre": "electronic",
+   "year": 1997
+  },
+  "late_2": {
+   "artist": "Tricky",
+   "bpm": 74,
+   "genre": "electronic",
+   "year": 1996
+  },
+  "late_3": {
+   "artist": "Burial",
+   "bpm": 76,
+   "genre": "electronic",
+   "year": 1997
+  },
+  "late_4": {
+   "artist": "Massive Attack",
+   "bpm": 78,
+   "genre": "electronic",
+   "year": 1998
+  },
+  "late_5": {
+   "artist": "Portishead",
+   "bpm": 80,
+   "genre": "electronic",
+   "year": 1999
+  },
+  "late_6": {
+   "artist": "Tricky",
+   "bpm": 82,
+   "genre": "electronic",
+   "year": 2000
+  },
+  "late_7": {
+   "artist": "Burial",
+   "bpm": 84,
+   "genre": "electronic",
+   "year": 2001
+  },
+  "late_8": {
+   "artist": "Massive Attack",
+   "bpm": 86,
+   "genre": "electronic",
+   "year": 1994
+  },
+  "late_9": {
+   "artist": "Portishead",
+   "bpm": 88,
+   "genre": "electronic",
+   "year": 1995
+  },
+  "lib_0": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_1": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_10": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_11": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_12": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_13": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_14": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_15": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_16": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_17": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_18": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_19": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_2": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_20": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_21": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_22": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_23": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_24": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_25": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_26": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_27": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_28": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_29": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_3": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_30": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_31": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_32": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_33": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_34": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_35": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_36": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_37": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_38": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_39": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_4": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_40": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_41": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_42": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_43": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_44": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_45": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_46": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_47": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_48": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_49": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_5": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_50": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_51": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_52": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_53": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_54": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_55": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_56": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_57": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_58": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_59": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_6": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_7": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_8": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lib_9": {
+   "artist": "Various",
+   "bpm": 100,
+   "genre": "pop",
+   "year": 2000
+  },
+  "lun_0": {
+   "artist": "Khruangbin",
+   "bpm": 96,
+   "genre": "electronic",
+   "year": 2016
+  },
+  "lun_1": {
+   "artist": "Tycho",
+   "bpm": 97,
+   "genre": "electronic",
+   "year": 2017
+  },
+  "lun_2": {
+   "artist": "Khruangbin",
+   "bpm": 98,
+   "genre": "electronic",
+   "year": 2018
+  },
+  "lun_3": {
+   "artist": "Tycho",
+   "bpm": 99,
+   "genre": "electronic",
+   "year": 2019
+  },
+  "lun_4": {
+   "artist": "Khruangbin",
+   "bpm": 100,
+   "genre": "electronic",
+   "year": 2016
+  },
+  "lun_5": {
+   "artist": "Tycho",
+   "bpm": 101,
+   "genre": "electronic",
+   "year": 2017
+  },
+  "lun_6": {
+   "artist": "Khruangbin",
+   "bpm": 102,
+   "genre": "electronic",
+   "year": 2018
+  },
+  "lun_7": {
+   "artist": "Tycho",
+   "bpm": 103,
+   "genre": "electronic",
+   "year": 2019
+  },
+  "pot_0": {
+   "artist": "Drake",
+   "bpm": 88,
+   "genre": "hip-hop",
+   "year": 2012
+  },
+  "pot_1": {
+   "artist": "Bryson Tiller",
+   "bpm": 92,
+   "genre": "r&b",
+   "year": 2013
+  },
+  "pot_10": {
+   "artist": "6LACK",
+   "bpm": 104,
+   "genre": "r&b",
+   "year": 2012
+  },
+  "pot_11": {
+   "artist": "dvsn",
+   "bpm": 108,
+   "genre": "r&b",
+   "year": 2013
+  },
+  "pot_12": {
+   "artist": "Majid Jordan",
+   "bpm": 88,
+   "genre": "hip-hop",
+   "year": 2014
+  },
+  "pot_13": {
+   "artist": "PARTYNEXTDOOR",
+   "bpm": 92,
+   "genre": "r&b",
+   "year": 2015
+  },
+  "pot_14": {
+   "artist": "SZA",
+   "bpm": 96,
+   "genre": "r&b",
+   "year": 2016
+  },
+  "pot_15": {
+   "artist": "Frank Ocean",
+   "bpm": 100,
+   "genre": "hip-hop",
+   "year": 2017
+  },
+  "pot_16": {
+   "artist": "Drake",
+   "bpm": 104,
+   "genre": "r&b",
+   "year": 2018
+  },
+  "pot_17": {
+   "artist": "Bryson Tiller",
+   "bpm": 108,
+   "genre": "r&b",
+   "year": 2019
+  },
+  "pot_18": {
+   "artist": "6LACK",
+   "bpm": 88,
+   "genre": "hip-hop",
+   "year": 2020
+  },
+  "pot_19": {
+   "artist": "dvsn",
+   "bpm": 92,
+   "genre": "r&b",
+   "year": 2021
+  },
+  "pot_2": {
+   "artist": "6LACK",
+   "bpm": 96,
+   "genre": "r&b",
+   "year": 2014
+  },
+  "pot_20": {
+   "artist": "Majid Jordan",
+   "bpm": 96,
+   "genre": "r&b",
+   "year": 2012
+  },
+  "pot_21": {
+   "artist": "PARTYNEXTDOOR",
+   "bpm": 100,
+   "genre": "hip-hop",
+   "year": 2013
+  },
+  "pot_22": {
+   "artist": "SZA",
+   "bpm": 104,
+   "genre": "r&b",
+   "year": 2014
+  },
+  "pot_23": {
+   "artist": "Frank Ocean",
+   "bpm": 108,
+   "genre": "r&b",
+   "year": 2015
+  },
+  "pot_3": {
+   "artist": "dvsn",
+   "bpm": 100,
+   "genre": "hip-hop",
+   "year": 2015
+  },
+  "pot_4": {
+   "artist": "Majid Jordan",
+   "bpm": 104,
+   "genre": "r&b",
+   "year": 2016
+  },
+  "pot_5": {
+   "artist": "PARTYNEXTDOOR",
+   "bpm": 108,
+   "genre": "r&b",
+   "year": 2017
+  },
+  "pot_6": {
+   "artist": "SZA",
+   "bpm": 88,
+   "genre": "hip-hop",
+   "year": 2018
+  },
+  "pot_7": {
+   "artist": "Frank Ocean",
+   "bpm": 92,
+   "genre": "r&b",
+   "year": 2019
+  },
+  "pot_8": {
+   "artist": "Drake",
+   "bpm": 96,
+   "genre": "r&b",
+   "year": 2020
+  },
+  "pot_9": {
+   "artist": "Bryson Tiller",
+   "bpm": 100,
+   "genre": "hip-hop",
+   "year": 2021
+  },
+  "road_0": {
+   "artist": "Tom Petty",
+   "bpm": 110,
+   "genre": "rock",
+   "year": 1977
+  },
+  "road_1": {
+   "artist": "Fleetwood Mac",
+   "bpm": 111,
+   "genre": "rock",
+   "year": 1978
+  },
+  "road_2": {
+   "artist": "Tom Petty",
+   "bpm": 112,
+   "genre": "rock",
+   "year": 1979
+  },
+  "road_3": {
+   "artist": "Fleetwood Mac",
+   "bpm": 113,
+   "genre": "rock",
+   "year": 1980
+  },
+  "road_4": {
+   "artist": "Tom Petty",
+   "bpm": 114,
+   "genre": "rock",
+   "year": 1981
+  },
+  "road_5": {
+   "artist": "Fleetwood Mac",
+   "bpm": 115,
+   "genre": "rock",
+   "year": 1982
+  },
+  "road_6": {
+   "artist": "Tom Petty",
+   "bpm": 116,
+   "genre": "rock",
+   "year": 1983
+  },
+  "road_7": {
+   "artist": "Fleetwood Mac",
+   "bpm": 117,
+   "genre": "rock",
+   "year": 1984
+  }
+ },
+ "tzOffsetMin": -420
+}
