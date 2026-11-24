@@ -262,6 +262,9 @@ class RemoteResolutionCache(private val resolver: RemoteSongResolver) {
     /** Forget everything (a new session / a catalog change / a host change). */
     fun clear() = decided.clear()
 
+    /** Keep only the rows still in the live window (the cache stays bounded as the set advances). */
+    fun retainOnly(live: Set<String>) { decided.keys.retainAll(live) }
+
     /**
      * Resolve [rows] given the position of the current row inside them. Rows before [currentIndex] (already played)
      * get the cheap rungs only. Returns one entry per row, null = undecided.

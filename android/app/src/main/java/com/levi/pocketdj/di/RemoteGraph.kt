@@ -2,7 +2,9 @@ package com.levi.pocketdj.di
 
 import com.levi.pocketdj.playback.dj.RemoteSessionProbe
 import com.levi.pocketdj.remote.RemoteControllerGate
+import com.levi.pocketdj.remote.MixTogetherBlock
 import com.levi.pocketdj.remote.RemoteDevice
+import com.levi.pocketdj.remote.RemoteReconciler
 import com.levi.pocketdj.remote.RemotePlaybackTarget
 import com.levi.pocketdj.remote.RemoteSessionController
 import com.levi.pocketdj.remote.RemoteSongResolver
@@ -36,7 +38,12 @@ class RemoteGraph(private val app: AppGraph) : FeatureModule {
     }
 
     /** The local player a speaker session drives. */
-    val target: RemotePlaybackTarget by lazy { SequencerRemoteTarget(app.playbackGraph.sequencer, mainScope) }
+    val target: RemotePlaybackTarget by lazy { 
+        SequencerRemoteTarget(
+            app.playbackGraph.sequencer, mainScope,
+            systemPaused = { com.levi.pocketdj.remote.SystemPauseState.isSystemPaused },
+        )
+    }
 
     /** "<profile>’s <Build.MODEL>" (iOS `RemoteDevice.name`). */
     fun deviceName(): String =
@@ -68,5 +75,11 @@ class RemoteGraph(private val app: AppGraph) : FeatureModule {
         gate.isController = { controller.isActive.value && controller.localRole.value == com.levi.pocketdj.remote.RemoteDeviceRole.CONTROLLER }
         gate.forwarder = { controller.interceptLocalTransport(it) }
         app.playbackGraph.djMode.bindRemote(probe)
+        // The speaker half (P2-REM-6): reconcile + drift + local-change diffing.
+        RemoteReconciler.bind(controller, target, clock)
+        // A controller keeps EVERY local audio engine silent (the Mix decks, the NP DSP host), re-asserted each tick.
+        controller.registerControllerSilencer { app.mixGraph.silenceForRemoteController() }
+        // Mixing together owns the decks: a running Auto-DJ ends and a new one is refused.
+        MixTogetherBlock.onChanged = { app.mixGraph.autoDj.onAutoBlocked() }
     }
 }

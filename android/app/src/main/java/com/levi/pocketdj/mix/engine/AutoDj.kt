@@ -124,7 +124,22 @@ class AutoDj(
 
     // ------------------------------------------------------------------------------ toggles
 
+    /**
+     * Why Auto-DJ is unavailable right now (a multiplayer Mix session owns the decks, iOS `autoDJBlockedReason`), else
+     * null. While set: Auto mode, a new auto mix and a resume are refused.
+     */
+    val blockedReason: String? get() = com.levi.pocketdj.remote.MixTogetherBlock.reason
+
+    /** Mix Together began: a running auto mix ends (the decks keep playing, they are the session's now). */
+    fun onAutoBlocked() {
+        if (blockedReason == null) return
+        enabled = false
+        if (mixing) endAutoLoop()
+        refreshStatus()
+    }
+
     fun setAutoEnabled(on: Boolean) {
+        if (on && blockedReason != null) return // mixing together: no Auto-DJ (an explicit OFF still goes through)
         enabled = on
         if (!on) endAutoLoop()
         refreshStatus()
@@ -154,7 +169,7 @@ class AutoDj(
     // ------------------------------------------------------------------------------ start / stop
 
     fun startAutoMix(items: List<AutoMixItem>, shuffled: Boolean, lead: Double, fade: Double, label: String? = null) {
-        if (items.isEmpty()) return
+        if (items.isEmpty() || blockedReason != null) return
         engine.noteSounded()
         engine.ensureEngine()
         endAutoLoop()
@@ -375,7 +390,7 @@ class AutoDj(
      *  - NEITHER: restart the live deck (its track, or the next unplayed) before arming.
      */
     override fun resumeAuto() {
-        if (!mixing || !paused) return
+        if (!mixing || !paused || blockedReason != null) return
         engine.noteSounded()
         var fromRestore = resumeFromRestore
         resumeFromRestore = false    // consume-once: only the FIRST resume after a restore

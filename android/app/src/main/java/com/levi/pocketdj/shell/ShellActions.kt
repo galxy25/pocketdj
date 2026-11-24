@@ -36,6 +36,8 @@ sealed class ShellActionException(message: String) : Exception(message) {
     )
     data object NoAutoMixRunning : ShellActionException("There's no auto-mix running.")
     data object AutoMixNotPaused : ShellActionException("The auto-mix isn't paused.")
+    /** Mix Together owns the decks (`MixTogetherBlock.REASON`). */
+    class MixTogetherActive(why: String) : ShellActionException(why)
     data object MixUnavailable : ShellActionException("Auto-Mix isn't available yet")
 
     /** The queue started nothing (every row unplayable on this device). */
@@ -121,6 +123,11 @@ class ShellActions(
 
     private suspend fun veto() {
         if (setup.isIncomplete()) throw ShellActionException.SetupIncomplete
+    }
+
+    /** An Auto-DJ start is refused while mixing together: say WHY (Assistant, `pocketdj://automix`, the Auto Mix tab). */
+    private fun vetoDuringMixTogether() {
+        com.levi.pocketdj.remote.MixTogetherBlock.reason?.let { throw ShellActionException.MixTogetherActive(it) }
     }
 
     suspend fun ensureReady() {
@@ -305,6 +312,7 @@ class ShellActions(
 
     suspend fun startAutoMix(source: MixSource, shuffle: Boolean, allowPendingStart: Boolean = false): MixStartResult {
         veto()
+        vetoDuringMixTogether()
         val mix = mixOrThrow()
         ensureReady()
         checkSource(source)
@@ -318,6 +326,7 @@ class ShellActions(
         allowPendingStart: Boolean = false,
     ): MixStartResult {
         veto()
+        vetoDuringMixTogether()
         val mix = mixOrThrow()
         ensureReady()
         checkSource(deckA)
