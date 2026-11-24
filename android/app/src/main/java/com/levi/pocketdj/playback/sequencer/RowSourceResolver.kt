@@ -77,14 +77,18 @@ class LocalFileRowResolver(
  * Default rung: the rips manifest (public mp3 + analog clip window; instant). Studio ids are fenced
  * (never sent to /rip, never streamed): they resolve only through a registered STUDIO_LOCAL rung.
  */
-class ManifestRowResolver(private val entry: (String) -> RipManifestEntry?) : RowSourceResolver {
+class ManifestRowResolver(
+    /** Start reader; production passes the edit-aware `RipsRepository.effectiveStartMs`. */
+    private val startOf: (String, RipManifestEntry) -> Long? = { _, e -> e.startMs },
+    private val entry: (String) -> RipManifestEntry?,
+) : RowSourceResolver {
     override val id: String = "manifest"
     override val rung: Rung = Rung.MANIFEST
     override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? {
         if (PlayResolver.isStudioId(item.id)) {
             return UnplayableSource(UnplayableSource.Reason.STUDIO_LOCAL)
         }
-        val action = PlayResolver.resolve(item.resolveId, entry(item.resolveId), ripServerConfigured = false)
+        val action = PlayResolver.resolve(item.resolveId, entry(item.resolveId), ripServerConfigured = false, startOf = startOf)
         return (action as? PlayAction.Stream)?.let(::StreamSource)
     }
 }

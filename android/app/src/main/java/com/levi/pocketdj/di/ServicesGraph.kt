@@ -118,7 +118,8 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             },
             writerExecutor = VersionedJsonWriter.backgroundExecutor("pdj-burns-writer"),
             transfers = transfers,
-        ).also { it.segmentStartOverride = { id -> app.catalogRepository.segmentOverrides.value.startMs[id] } }
+            segmentStartOverride = { id -> app.catalogRepository.segmentOverrides.value.startMs[id] },
+        )
     }
     val burnStore: BurnStore get() = burnStoreLazy.value
 
@@ -133,6 +134,12 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             playbackFile = { burnStore.localUrlForPlayback(it) },
             startMs = { burnStore.startMs(it) },
             durationMs = { burnStore.items.value[it]?.durationMs },
+            endMs = { id ->
+                val base = com.levi.pocketdj.data.edition.SongVariant.baseId(id)
+                com.levi.pocketdj.data.rips.AlbumFileTimeline.forSong(
+                    base, app.ripsRepository.manifest.value, app.catalogRepository.segmentOverrides.value,
+                )?.endMs(base)
+            },
         )
     }
 

@@ -32,6 +32,8 @@ class RipsRepository(
     private val http: OkHttpClient,
     private val json: Json = PdjJson.lenient,
     private val scope: CoroutineScope,
+    /** Vinyl layout provider (CatalogRepository.segmentOverrides); EMPTY by default. */
+    segmentOverrides: () -> SegmentOverrides.Snapshot = { SegmentOverrides.Snapshot.EMPTY },
 ) {
     private val _manifest = MutableStateFlow<RipsManifest>(emptyMap())
     val manifest: StateFlow<RipsManifest> = _manifest.asStateFlow()
@@ -47,8 +49,7 @@ class RipsRepository(
 
     fun entry(songId: String): RipManifestEntry? = _manifest.value[songId]
 
-    /** Vinyl layout provider (CatalogRepository.segmentOverrides, wired by ServicesGraph); EMPTY until wired. */
-    @Volatile var segmentOverrides: () -> SegmentOverrides.Snapshot = { SegmentOverrides.Snapshot.EMPTY }
+    private val segmentOverrides: () -> SegmentOverrides.Snapshot = segmentOverrides
 
     /**
      * A shared-side song's start inside its album file: the user's boundary edit wins over the manifest's detected

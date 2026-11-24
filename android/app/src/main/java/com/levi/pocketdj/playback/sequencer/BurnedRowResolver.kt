@@ -15,6 +15,8 @@ data class BurnedHit(
     val isCut: Boolean,
     val startMs: Long?,
     val durationMs: Long?,
+    /** Timeline end (detected end + fade grace, or user-edited); null = start + durationMs. */
+    val endMs: Long? = null,
 )
 
 /** The burn store's view for one storage id; null = not burned (or the file vanished). */
@@ -40,7 +42,7 @@ class BurnedRowResolver(
 
     override fun localUrlForPlayback(item: QueueItem): LocalFile? {
         val hit = lookup.burned(item.resolveId) ?: return null
-        return burnedLocalFile(hit.file, hit.isCut, hit.startMs, hit.durationMs)
+        return burnedLocalFile(hit.file, hit.isCut, hit.startMs, hit.durationMs, hit.endMs)
     }
 
     override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? =
@@ -56,8 +58,9 @@ class BurnedRowResolver(
             playbackFile: (String) -> File?,
             startMs: (String) -> Long?,
             durationMs: (String) -> Long?,
+            endMs: (String) -> Long? = { null },
         ): BurnedRowResolver = BurnedRowResolver { id ->
-            playbackFile(id)?.let { BurnedHit(it, isCut = false, startMs = startMs(id), durationMs = durationMs(id)) }
+            playbackFile(id)?.let { BurnedHit(it, isCut = false, startMs = startMs(id), durationMs = durationMs(id), endMs = endMs(id)) }
         }
     }
 }

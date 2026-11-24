@@ -160,9 +160,11 @@ class CatalogRepository(
                 if (inputs.isEmpty()) return@withLock
                 val e = withContext(Dispatchers.IO) { currentEdits() }
                 if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs) && lastAppliedEdits === e) return@withLock
-                val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val built = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val mergedCatalog = built.catalog
                 lastMergedInputs = inputs
                 lastAppliedEdits = e
+                publishOverrides(built)
                 _state.update { it.copy(catalog = mergedCatalog, phase = Phase.Ready) }
                 notifySupersede(prov)
             }
@@ -210,17 +212,23 @@ class CatalogRepository(
      */
     val segmentOverrides: StateFlow<SegmentOverrides.Snapshot> = _segmentOverrides.asStateFlow()
 
-    private fun buildCatalog(inputs: List<IndexJson>, e: CatalogEdits): MergedCatalog {
+    /** A built catalog with the layout snapshot derived from the SAME merge; both are published together. */
+    private class Built(val catalog: MergedCatalog, val overrides: SegmentOverrides.Snapshot)
+
+    /** Call inside the publish lock, immediately before the matching `_state.update`. */
+    private fun publishOverrides(b: Built) { _segmentOverrides.value = b.overrides }
+
+    private fun buildCatalog(inputs: List<IndexJson>, e: CatalogEdits): Built {
         mergeCount++
         val raw = MergedCatalog.merge(inputs)
         val effective = e.apply(raw)
-        _segmentOverrides.value = SegmentOverrides.derive(
+        val overrides = SegmentOverrides.derive(
             albumEdits = e.albums,
             rawAlbum = { raw.albumsById[it] },
             orderedSongIds = { raw.albumsById[it]?.trackList.orEmpty() },
             effectiveAlbums = effective.albums,
         )
-        return effective
+        return Built(effective, overrides)
     }
 
     /**
@@ -234,8 +242,10 @@ class CatalogRepository(
                 if (_state.value.catalog == null) return@withLock
                 val e = withContext(Dispatchers.IO) { currentEdits() }
                 if (lastAppliedEdits === e) return@withLock
-                val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val built = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val mergedCatalog = built.catalog
                 lastAppliedEdits = e
+                publishOverrides(built)
                 _state.update { it.copy(catalog = mergedCatalog) }
             }
         }
@@ -302,9 +312,11 @@ class CatalogRepository(
         val prov = publishLock.withLock {
             val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(cached) }
             val e = withContext(Dispatchers.IO) { currentEdits() }
-            val merged = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+            val built = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+            val merged = built.catalog
             lastMergedInputs = inputs
             lastAppliedEdits = e
+            publishOverrides(built)
             _state.update { it.copy(catalog = merged, phase = Phase.Ready, error = null) }
             prov
         }
@@ -342,9 +354,11 @@ class CatalogRepository(
                     val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(emptyList()) }
                     if (inputs.isEmpty()) return@withLock null
                     val e = withContext(Dispatchers.IO) { currentEdits() }
-                    val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                    val built = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val mergedCatalog = built.catalog
                     lastMergedInputs = inputs
                     lastAppliedEdits = e
+                    publishOverrides(built)
                     _state.update { it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError) }
                     prov
                 }
@@ -369,10 +383,12 @@ class CatalogRepository(
                     _state.update { it.copy(phase = Phase.Ready, error = lastError) }
                     return@withLock prov
                 }
-                val mergedCatalog = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val built = withContext(Dispatchers.Default) { buildCatalog(inputs, e) }
+                val mergedCatalog = built.catalog
                 merged = true
                 lastMergedInputs = inputs
                 lastAppliedEdits = e
+                publishOverrides(built)
                 _state.update {
                     it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError)
                 }

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-ALB-1 AlbumFileTimeline + SegmentOverrides + burned side-file playback
 
@@ -16,3 +16,11 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MAJOR burned window truncated at catalog length -> fixed: BurnedHit/burnedLocalFile/BurnedRowResolver.from take an end provider; ServicesGraph wires AlbumFileTimeline.forSong(...).endMs (detected end + 15 s grace, or edited end), falling back to start+duration. Test: BurnedTimelineEndTest.
+- MAJOR effectiveStartMs dead code -> fixed: PlaybackController passes it as startOf to PlayResolver.resolveBurnedFirst (both sites) and to ManifestRowResolver (sequencer stream rung, new startOf param). Mix/Studio/Cues use per-song cut/other paths, not the manifest start. Tests: streamStartHonorsEditedBoundary, manifestRowResolverUsesStartOf.
+- MINOR buildCatalog side effect -> fixed: buildCatalog returns Built(catalog, overrides); overrides published next to each _state.update under publishLock.
+- MINOR AppGraph wiring split -> fixed: both providers are now constructor params (RipsRepository, BurnStore) wired at their single construction sites. AppGraph.kt is still edited (one param line): integrator conflict risk flagged.
+
+fixes applied. Tests: 5798, 0 failures (+4); assembleDebug green.

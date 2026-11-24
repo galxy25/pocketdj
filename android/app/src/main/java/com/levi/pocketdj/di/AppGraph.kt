@@ -201,9 +201,9 @@ class AppGraph private constructor(context: Context) {
         http = httpClient,
         json = json,
         scope = appScope,
+        segmentOverrides = { catalogRepository.segmentOverrides.value }, // P2-ALB-1: edited vinyl starts
     ).also {
         it.launchGate = { onboarding.waitUntilComplete() } // SURF-3 gate seam
-        it.segmentOverrides = { catalogRepository.segmentOverrides.value } // P2-ALB-1: edited vinyl starts
     }
 
     /** Shared rip-server config used by both the rip client and the AM dev-token

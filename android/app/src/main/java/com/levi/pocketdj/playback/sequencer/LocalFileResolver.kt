@@ -29,11 +29,13 @@ fun burnedLocalFile(
     isCut: Boolean,
     startMs: Long?,
     durationMs: Long?,
+    /** Detected/edited song end inside the shared file (AlbumFileTimeline.endMs); null falls back to start + durationMs. */
+    endMs: Long? = null,
     // Production passes android.net.Uri.fromFile(..).toString(): the hand-rolled form left ExoPlayer
     // never signalling STATE_ENDED on the emulator, so the set stalled after the first burned row.
     toUri: (java.io.File) -> String = { "file://" + it.toURI().rawPath },
 ): LocalFile {
     val start = if (isCut) null else startMs
-    val end = if (start != null && durationMs != null) start + durationMs else null
+    val end = if (start == null) null else (endMs?.takeIf { it > start } ?: durationMs?.let { start + it })
     return LocalFile(toUri(file), start, end)
 }
