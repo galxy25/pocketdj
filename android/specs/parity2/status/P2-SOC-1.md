@@ -7,10 +7,10 @@ state: implemented
 - [x] MixBroadcastButton (testTag mix-broadcast), placed in Mix top bar beside Record; repository.ensureBootstrapped() so the "no session?" check doesn't race the persisted-session load
 - [x] NowPlayingShare (np-share button under transport; forSong else forTitleArtist; hidden with nothing playing)
 - [x] SelectionBar gained a Share action (selection-share) -> ShareText.forSongs, so Browse AND History get it; History gained multi-select (row menu "Select", tap/long-press routing, scope history-playback)
-- [x] JukeboxTimelessTest (17 tests)
+- [x] JukeboxTimelessTest (15 tests)
 
 ## Test count
-Full suite 17 new tests; testDebugUnitTest + assembleDebug green. assembleRelease not run (no manifest/gradle/proguard/library change).
+15 new tests (full suite now 7471, 0 failures); testDebugUnitTest + assembleDebug green. assembleRelease not run (no manifest/gradle/proguard/library change).
 
 ## Deviations / files outside owned set (minimal, additive)
 - ui/selection/SelectionUi.kt: Share button + SelectionBarSemantics.shareText.
