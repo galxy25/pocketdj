@@ -145,6 +145,18 @@ object MediaSearchResolver {
         " on pocket dj", " in pocket dj", " with pocket dj",
     )
 
+    /** Drops only the trailing "please" / "on PocketDJ" filler. */
+    fun stripTail(raw: String): String {
+        var q = raw.trim()
+        var changed = true
+        while (changed) {
+            changed = false
+            val l = q.lowercase()
+            TRAILING.firstOrNull { l.endsWith(it) }?.let { q = q.substring(0, q.length - it.length).trim(); changed = true }
+        }
+        return q
+    }
+
     /** Drops spoken filler around the thing named ("play X on PocketDJ", "shuffle X please"). */
     fun cleanSpoken(raw: String): String {
         var q = raw.trim()
@@ -185,12 +197,19 @@ object MediaSearchResolver {
         }
         val wantedArtist = request.artist?.let { IntentSongMatcher.compact(it) }?.takeIf { it.isNotEmpty() }
         val cleaned = cleanSpoken(raw)
+        // A title may itself start with a filler word ("Play Date", "Please Mr. Postman"), so the
+        // query minus only the PocketDJ tail is ranked too; the higher tier wins, unstripped on ties.
+        val tailOnly = stripTail(raw)
+        val queries = if (tailOnly.isNotBlank() && !tailOnly.equals(cleaned, ignoreCase = true)) listOf(tailOnly, cleaned) else listOf(cleaned)
 
         // 1. Strict collection / album names.
         val named = kinds - MediaCandidate.Kind.Song
         if (named.isNotEmpty()) {
             val pool = candidates(named)
-            val ranked = CollectionNameMatcher.rankScored(cleaned, pool) { it.name }
+            val ranked = queries.map { CollectionNameMatcher.rankScored(it, pool) { c -> c.name } }
+                .filter { it.isNotEmpty() }
+                .reduceOrNull { a, b -> if (b.first().second > a.first().second) b else a }
+                .orEmpty()
             if (ranked.isNotEmpty()) {
                 val top = ranked.first().second
                 val best = ranked.filter { it.second == top }.map { (c, _) ->
@@ -222,7 +241,11 @@ object MediaSearchResolver {
                     "${request.title!!.trim()} by ${request.artist.trim()}"
                 else -> cleaned
             }
-            val matches = IntentSongMatcher.rank(query, rows, preferSong)
+            val matches = (if (songFocus && query !== cleaned) listOf(query) else queries)
+                .map { IntentSongMatcher.rank(it, rows, preferSong) }
+                .filter { it.isNotEmpty() }
+                .reduceOrNull { a, b -> if (b.first().score > a.first().score) b else a }
+                .orEmpty()
             // Unstructured: play only a clear winner (strictly higher score, or the preferred copy).
             val pick = matches.firstOrNull()?.takeIf { top ->
                 songFocus || matches.size == 1 || top.score > matches[1].score ||

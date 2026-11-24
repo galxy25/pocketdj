@@ -16,3 +16,11 @@ state: implemented
 
 ## Questions for Levi
 - none
+
+## Review
+- MINOR MediaSearchHandler cleanSpoken stripping -> fixed: tail-only-stripped and fully cleaned queries are both ranked (collections + songs); higher top score wins, unstripped on ties. Tests: "Please Mr. Postman", "Play Date", filler still stripped.
+- MINOR preferSong unwired -> fixed: ShellGraph.preferSong = playing song, or member of any pocket/playlist. Test pins tie -> Browse without prefer, Play with it.
+- NIT collection tie -> documented/pinned by test (most recently played wins, as before).
+- Tests 6434 -> 6438, 0 failures; assembleDebug green.
+
+fixes applied

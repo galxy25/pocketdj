@@ -172,7 +172,18 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
             openRoute = NavRequestBus::post,
             message = NavRequestBus::postMessage,
             songRows = ::songRows,
+            preferSong = ::preferSong,
         )
+    }
+
+    /** Tie-break for voice song matches: the audible song, or one already filed in a pocket / playlist. */
+    private fun preferSong(songId: String): Boolean {
+        val st = app.playbackGraph.sequencer.state.value
+        if (st.isRunning && st.currentSongId == songId) return true
+        if (app.collections.pockets.any { songId in it.songIds }) return true
+        fun inNodes(nodes: List<com.levi.pocketdj.data.collections.PlaylistNode>): Boolean =
+            nodes.any { it.songId == songId || (it.children?.let(::inNodes) ?: false) }
+        return app.collections.playlists.any { it.id != NOW_PLAYING_PLAYLIST_ID && inNodes(it.sequences) }
     }
 
     /** Dynamic launcher shortcuts: most recently played playlists/pockets (iOS donations analogue). */
