@@ -58,8 +58,9 @@ internal object PocketsTabGate {
      * The tab shows while the pockets gate is open (rec engine AND pockets ON) OR, once, as the opt-in
      * offer: engine on and the question never answered. "Not now" answers it and the tab goes away.
      */
-    fun tabVisible(recEngine: Boolean, pocketsOn: Boolean, answered: Boolean): Boolean =
-        (recEngine && pocketsOn) || (recEngine && !answered)
+    fun tabVisible(recEngine: Boolean, pocketsOn: Boolean, answered: Boolean, historyNonEmpty: Boolean = false): Boolean =
+        // P2-POC-10: the wheel needs only local history, so any history (or a non-empty wheel snapshot) opens the tab.
+        historyNonEmpty || (recEngine && pocketsOn) || (recEngine && !answered)
 
     fun gateOpen(recEngine: Boolean, pocketsOn: Boolean): Boolean = recEngine && pocketsOn
 

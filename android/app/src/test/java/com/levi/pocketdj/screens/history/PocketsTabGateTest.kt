@@ -49,4 +49,40 @@ class PocketsTabGateTest {
         assertEquals("pocket:x", PocketsTabGate.pocketKey("x"))
         assertEquals("pattern:x", PocketsTabGate.patternKey("x"))
     }
+
+    @Test fun historyNonEmptyOpensTheTabRegardlessOfEngineAndAnswer() {
+        // The visibility matrix: historyNonEmpty is an OR on top of the old cloud gate.
+        for (rec in listOf(true, false)) for (on in listOf(true, false)) for (answered in listOf(true, false)) {
+            assertTrue(PocketsTabGate.tabVisible(rec, on, answered, historyNonEmpty = true))
+            assertEquals(
+                (rec && on) || (rec && !answered),
+                PocketsTabGate.tabVisible(rec, on, answered, historyNonEmpty = false),
+            )
+            // Default argument keeps the three-arg callers unchanged.
+            assertEquals(PocketsTabGate.tabVisible(rec, on, answered, false), PocketsTabGate.tabVisible(rec, on, answered))
+        }
+    }
+
+    @Test fun listSegmentHiddenOnlyWhenCloudPocketsDeclined() {
+        assertFalse(PocketsSegment.showsList(pocketsOn = false, answered = true))   // declined
+        assertTrue(PocketsSegment.showsList(pocketsOn = false, answered = false))   // never asked: List keeps the offer
+        assertTrue(PocketsSegment.showsList(pocketsOn = true, answered = true))
+        assertTrue(PocketsSegment.showsList(pocketsOn = true, answered = false))
+    }
+
+    @Test fun segmentDefaultsToWheelAndHiddenListCollapsesToWheel() {
+        assertEquals(PocketsSegment.WHEEL, PocketsSegment.parse(null))
+        assertEquals(PocketsSegment.WHEEL, PocketsSegment.parse("garbage"))
+        assertEquals(PocketsSegment.LIST, PocketsSegment.parse("List"))
+        assertEquals(PocketsSegment.WHEEL, PocketsSegment.effective(PocketsSegment.LIST, showsList = false))
+        assertEquals(PocketsSegment.LIST, PocketsSegment.effective(PocketsSegment.LIST, showsList = true))
+        assertEquals("pdj.history.pockets.segment", PocketsSegment.PREF_KEY)
+    }
+
+    @Test fun runNoteTexts() {
+        assertEquals("Playing a fresh mix from this pocket.", PocketDetailText.runNote(true, "ignored"))
+        assertEquals("Not enough songs", PocketDetailText.runNote(false, "Not enough songs"))
+        assertEquals(null, PocketDetailText.runNote(false, null))
+        assertEquals("Building a mix from this pocket…", PocketDetailText.BUILDING)
+    }
 }
