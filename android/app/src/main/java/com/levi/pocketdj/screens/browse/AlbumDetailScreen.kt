@@ -227,14 +227,18 @@ fun AlbumDetailScreen(
                                     // Start the album at track `index` through the sequencer (like Play); the one-shot
                                     // cueNextStart armed by the editor makes the first song begin mid-track.
                                     val set = graph.collections.playNow(
-                                        songIds = tracks.drop(index).map { it.id },
+                                        songIds = tracks.map { it.id },
                                         name = album.name,
                                         shuffle = false,
                                         sourceToken = PlayContext.SOURCE_ALBUM,
                                         originId = album.id,
                                     )
                                     if (set != null) {
-                                        onOpenSetlist?.invoke(NOW_PLAYING_SETLIST_ID, true)
+                                        // Whole album queued (previous-track / setlist match iOS), started at `index`.
+                                        val want = tracks.getOrNull(index)?.id
+                                        val entry = set.tracks.indexOfFirst { it.songId == want }.coerceAtLeast(0)
+                                        scope.launch { graph.playbackController.playSetlist(set, startEntryIndex = entry) }
+                                        onOpenSetlist?.invoke(NOW_PLAYING_SETLIST_ID, false)
                                     } else {
                                         scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
                                     }

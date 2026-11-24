@@ -109,7 +109,7 @@ internal fun AlbumWaveformEditor(
     val isLoaded = fileState?.let { SongVariant.baseId(it.mediaId) in bases } == true
     val playhead: Long? = if (isLoaded) fileState?.fileMs else null
 
-    val total = maxOf(1L, AlbumBoundaryEdits.totalMs(starts, null, album.audioDurationSec, album.audioTracks))
+    val total = maxOf(1L, AlbumBoundaryEdits.totalMs(starts, if (isLoaded) fileState?.durationMs else null, album.audioDurationSec, album.audioTracks))
     val fileKey = trackList.firstNotNullOfOrNull { id -> manifest[id]?.takeIf { it.startMs != null }?.key }
     val waveformUrl = trackList.firstNotNullOfOrNull { id -> manifest[id]?.waveform?.let { Endpoints.ripAudioUrl(it) } }
     val rawSegments = graph.catalogRepository.rawAlbum(album.id)?.audioTracks ?: album.audioTracks
@@ -290,7 +290,12 @@ internal fun AlbumWaveformEditor(
                                     onDragEnd(ch.position)
                                     return@awaitEachGesture
                                 }
-                                // A tap: wait for a second one (double-tap = rename), else the single tap acts.
+                                // Handle band: act at once (no rename there). Waveform area: wait for a second tap
+                                // (double-tap = rename), else the single tap acts.
+                                if (down.position.y < bandPx) {
+                                    onTap(down.position)
+                                    return@awaitEachGesture
+                                }
                                 val second = withTimeoutOrNull(doubleTapMs) { awaitFirstDown(requireUnconsumed = false) }
                                 if (second == null) {
                                     onTap(down.position)
