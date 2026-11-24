@@ -6,4 +6,6 @@
     <string name="shortcut_browse_long">Browse and search the library</string>
     <string name="shortcut_mix_short">Mix</string>
     <string name="shortcut_mix_long">Open the Mix</string>
+    <string name="shortcut_pocket_now_short">Play my pocket</string>
+    <string name="shortcut_pocket_now_long">Play the pocket that fits right now</string>
 </resources>

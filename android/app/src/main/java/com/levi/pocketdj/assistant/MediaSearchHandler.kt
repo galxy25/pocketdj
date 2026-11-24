@@ -6,6 +6,7 @@ import com.levi.pocketdj.navigation.PocketDjDestination
 import com.levi.pocketdj.shell.DeepLinkHandler
 import com.levi.pocketdj.shell.ShellActionException
 import com.levi.pocketdj.shell.ShellRoute
+import com.levi.pocketdj.shell.pocketPlayingLine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -15,6 +16,9 @@ interface MediaPlayActions {
     suspend fun playPocket(id: String, shuffle: Boolean = false): String
     suspend fun playAlbum(id: String, shuffle: Boolean = false): String
     suspend fun playSong(id: String): String
+
+    /** P2-POC-16: the Pocket Wheel's best match for now; returns the spoken caption. */
+    suspend fun playPocketForNow(): String = throw ShellActionException.NoPocketFits
 }
 
 /** What kind of thing the voice request named (`android.intent.extra.focus` MIME). */
@@ -104,6 +108,9 @@ sealed interface MediaSearchResult {
     /** No confident match: land on Browse with [query] in the search field. */
     data class Browse(val query: String) : MediaSearchResult
 
+    /** "play my pocket" / "pocket for now" / "something that fits": the Pocket Wheel's best match (P2-POC-16). */
+    data object PocketForNow : MediaSearchResult
+
     /** Nothing was asked for (blank query): just bring the app up. */
     data object Empty : MediaSearchResult
 }
@@ -137,6 +144,23 @@ object MediaSearchResolver {
         if (nq == nn) return 2
         val nameTokens = nn.split(' ').toSet()
         return if (nq.split(' ').all { it in nameTokens }) 1 else 0
+    }
+
+    private val POCKET_NOW_PHRASES = setOf(
+        "my pocket", "my pockets", "pocket for now", "my pocket for now", "pocket for right now", "my pocket right now",
+        "something that fits", "something that fits now", "something that fits right now", "something that fits my pocket",
+        "what fits right now", "whatever fits",
+    )
+
+    /**
+     * Step 1 of the voice order (P2-SURF / S-1): a pocket-for-now PHRASE, matched as the whole cleaned utterance (so
+     * "play my pocket", "play my pocket on PocketDJ" and "my pocket please" qualify but "my pocket of sunshine" does
+     * not). Case, punctuation and a leading "the" are ignored.
+     */
+    fun isPocketForNowPhrase(raw: String): Boolean {
+        val words = cleanSpoken(raw).lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+        val norm = words.dropWhile { it == "the" }.joinToString(" ")
+        return norm in POCKET_NOW_PHRASES
     }
 
     private val LEADING = listOf("play ", "please ", "shuffle ", "shuffled ", "listen to ", "put on ")
@@ -186,6 +210,9 @@ object MediaSearchResolver {
         val browse = MediaSearchResult.Browse(request.query.ifBlank { raw }.trim())
         val kinds = kindsFor(request.focus)
         if (kinds.isEmpty()) return browse
+        if ((request.focus == MediaFocus.Any || request.focus == MediaFocus.Playlist) &&
+            (isPocketForNowPhrase(raw) || isPocketForNowPhrase(request.query))
+        ) return MediaSearchResult.PocketForNow
 
         // Hint + shuffle come from BOTH the raw spoken query and the structured match string.
         val words = (raw + " " + request.query).lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
@@ -281,6 +308,14 @@ class MediaSearchHandler(
             MediaSearchResult.Empty -> null
             is MediaSearchResult.Browse -> {
                 openRoute(ShellRoute.BrowseSearch(r.query))
+                null
+            }
+            MediaSearchResult.PocketForNow -> try {
+                val caption = actions.playPocketForNow()
+                message(pocketPlayingLine(caption))
+                caption
+            } catch (e: ShellActionException) {
+                message(e.message.orEmpty())
                 null
             }
             is MediaSearchResult.Play -> try {

@@ -56,8 +56,8 @@ class PocketWheelController(
     /** Start a pocket (P2-POC-7: `PocketRunStore.start`). Returns whether a run actually started. */
     var play: suspend (PocketProfile) -> Boolean = { false }
 
-    /** Recompute the best match for NOW. */
-    suspend fun refresh(): PocketBestMatch.Result {
+    /** Recompute the best match for NOW. [carOverride] counts the car as connected (an Android Auto session is one by definition). */
+    suspend fun refresh(carOverride: Boolean = false): PocketBestMatch.Result {
         val nowMs = clockMs()
         val tz = tzOffsetMin(nowMs)
         val local = PocketClock.local(nowMs, tz)
@@ -67,7 +67,7 @@ class PocketWheelController(
         val n = PocketBestMatch.Now(
             hour = local.fractionalHour,
             dow = local.dow,
-            mode = PocketBestMatch.modeNow(carConnected(), motion, guess),
+            mode = PocketBestMatch.modeNow(carOverride || carConnected(), motion, guess),
             ctx = PocketMomentEngine.contextKey(guess).takeIf { it != "none" },
             recentCollections = recentColls,
             recentSkipRate = recentSkips,

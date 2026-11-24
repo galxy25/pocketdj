@@ -6,6 +6,8 @@ import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.collections.CollectionsStore
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.Setlist
+import com.levi.pocketdj.data.pockets.wheel.PocketMomentKey
+import com.levi.pocketdj.data.pockets.wheel.PocketWheelController
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.playback.QueueOutcome
 import com.levi.pocketdj.screens.collections.AddToActions
@@ -40,6 +42,11 @@ sealed class ShellActionException(message: String) : Exception(message) {
         ShellActionException("None of the songs in $name are playable on this device yet.")
 
     class PlaybackFailed(message: String) : ShellActionException(message)
+
+    /** The Pocket Wheel's run could not start (iOS `noPocketFits`; text is the run store's own failure line). */
+    data object NoPocketFits : ShellActionException(
+        com.levi.pocketdj.data.pockets.wheel.PocketRunStore.NOT_ENOUGH_SONGS,
+    )
 
     /** "Add this song" with nothing loaded in Now Playing or the Mix. */
     data object NothingPlaying : ShellActionException("Nothing is playing in PocketDJ right now.")
@@ -105,6 +112,9 @@ class ShellActions(
 ) : MediaPlayActions {
     /** Assigned by the Mix area; null ⇒ every Auto-Mix action says it isn't available. */
     @Volatile var mixFacade: MixFacade? = null
+
+    /** The Pocket Wheel (P2-POC-16). A provider so the lazily built wheel is only touched when an action needs it. */
+    @Volatile var pocketWheel: (() -> PocketWheelController?)? = null
 
     private val kickedManifestRefresh = AtomicBoolean(false)
 
@@ -216,6 +226,30 @@ class ShellActions(
         if (set == null || set.tracks.isEmpty()) throw ShellActionException.EmptyCollection(name)
         start(set, name)
         return name
+    }
+
+    /**
+     * The out-of-UI door into the Pocket Wheel's best match (iOS `IntentServices.playPocketForNow`): onboarding veto +
+     * readiness like every other play door, then the same run the wheel's centre play button starts. Returns the
+     * spoken caption ("<collection>, <caption>"). [car] counts the car as connected (an Android Auto session).
+     */
+    override suspend fun playPocketForNow(): String = playPocketForNow(car = false)
+
+    suspend fun playPocketForNow(car: Boolean): String {
+        veto()
+        ensureReady()
+        val wheel = pocketWheel?.invoke() ?: throw ShellActionException.EmptyCollection("your pocket")
+        val r = wheel.refresh(carOverride = car)
+        if (!wheel.play(r.profile)) throw ShellActionException.NoPocketFits
+        return pocketSpokenCaption(wheel.collectionName(r.profile.dominantCollectionId.orEmpty()), r.profile.caption)
+    }
+
+    /** One wheel moment (Android Auto "Pockets right now"): same veto + readiness as every play door. */
+    suspend fun playPocketMoment(key: PocketMomentKey) {
+        veto()
+        ensureReady()
+        val wheel = pocketWheel?.invoke() ?: throw ShellActionException.EmptyCollection("your pocket")
+        if (!wheel.playMoment(key)) throw ShellActionException.NoPocketFits
     }
 
     private suspend fun start(set: Setlist, name: String) {
@@ -349,6 +383,13 @@ fun autoMixLine(name: String, count: Int, shuffle: Boolean): String {
     return "$lead — $count burned ${if (count == 1) "song" else "songs"}."
 }
 
+/** "Weekend wind-down, Potential" style caption: the dominant collection (when named) then the profile caption. */
+fun pocketSpokenCaption(collectionName: String?, caption: String): String =
+    listOfNotNull(collectionName?.takeIf { it.isNotBlank() }, caption.takeIf { it.isNotBlank() }).joinToString(", ")
+
+/** The snackbar line for a started pocket run. */
+fun pocketPlayingLine(caption: String): String = "Playing your pocket: $caption."
+
 /** Run an out-of-UI action; its failure becomes a speakable toast, never a crash. */
 private fun CoroutineScope.launchAction(postMessage: (String) -> Unit, fallback: String, body: suspend () -> String?): Job =
     launch {
@@ -369,6 +410,16 @@ fun addLinkSeam(
     onLaunched: (Job) -> Unit = {},
 ): (String, String?) -> Unit = { collectionId, songId ->
     onLaunched(scope.launchAction(postMessage, "Couldn't add that.") { actions.addSongToCollection(songId, collectionId).dialog })
+}
+
+/** The `pocketdj://pocket/now` seam: [ShellActions.playPocketForNow], result (or the failure line) as a snackbar. */
+fun pocketNowLinkSeam(
+    actions: ShellActions,
+    scope: CoroutineScope,
+    postMessage: (String) -> Unit,
+    onLaunched: (Job) -> Unit = {},
+): () -> Unit = {
+    onLaunched(scope.launchAction(postMessage, "Couldn't play your pocket.") { pocketPlayingLine(actions.playPocketForNow()) })
 }
 
 /** The `pocketdj://automix/...` seam (veto + ensureReady inside [ShellActions.startAutoMix]). */

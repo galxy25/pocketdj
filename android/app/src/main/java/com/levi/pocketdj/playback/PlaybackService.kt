@@ -63,6 +63,7 @@ class PlaybackService : MediaLibraryService() {
         autoScope = scope
         val data = com.levi.pocketdj.auto.AppAutoData(app)
         val forYouSource = com.levi.pocketdj.auto.AppAutoForYouSource(app)
+        val pocketsSource = com.levi.pocketdj.auto.AppAutoPocketsSource(app)
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val cb = AutoLibraryCallback(
             tree = com.levi.pocketdj.auto.AutoBrowseTree(
@@ -73,6 +74,8 @@ class PlaybackService : MediaLibraryService() {
                 },
                 // SURF-7: the frozen For You tab (cached snapshot only; nothing refreshes or ranks on connect).
                 forYou = com.levi.pocketdj.auto.AutoForYou(forYouSource, data::song),
+                // P2-POC-16: "▶ Pocket for now" + "Pockets right now" on top of For You.
+                pockets = com.levi.pocketdj.auto.AutoPockets(pocketsSource),
             ),
             addTargets = com.levi.pocketdj.auto.AutoAddTargets(com.levi.pocketdj.auto.AppAutoAddSink(app.collections)),
             player = com.levi.pocketdj.auto.AppAutoPlayer(app),
@@ -99,6 +102,7 @@ class PlaybackService : MediaLibraryService() {
             // Cache-first, single-flight, idempotent: the same load the app runs on every cold start.
             warmUp = { app.catalogRepository.loadIfNeeded() },
             catalogReady = { data.catalogReady },
+            refreshPockets = { pocketsSource.refresh() },
         )
         data.onLibraryChanged = { main.post { cb.notifyLibraryChanged() } }
         // A phone-side refresh/commit of the cached feed re-notifies the open lists (the car itself never refreshes).

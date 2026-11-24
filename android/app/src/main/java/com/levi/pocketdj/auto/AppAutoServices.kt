@@ -252,6 +252,25 @@ class AppAutoPlayer(private val app: AppGraph) : AutoPlayer {
         app.playbackGraph.sequencer.play(queue, sourceSetlistId = com.levi.pocketdj.data.recs.ReleaseStreaming.RUN_TAG)
     }
 
+    override suspend fun playPocketForNow() {
+        ready()
+        try {
+            // An Android Auto session is a car by definition: the wheel plans in carPlay mode.
+            app.shellGraph.shellActions.playPocketForNow(car = true)
+        } catch (e: com.levi.pocketdj.shell.ShellActionException) {
+            throw AutoPlayException(e.message ?: "Couldn't start your pocket")
+        }
+    }
+
+    override suspend fun playPocketMoment(key: com.levi.pocketdj.data.pockets.wheel.PocketMomentKey) {
+        ready()
+        try {
+            app.shellGraph.shellActions.playPocketMoment(key)
+        } catch (e: com.levi.pocketdj.shell.ShellActionException) {
+            throw AutoPlayException(e.message ?: "Couldn't start that pocket")
+        }
+    }
+
     override suspend fun resumeHeld() {
         ready()
         app.playbackGraph.resumptionProvider.onPlaybackResumption()
@@ -287,6 +306,19 @@ class AppAutoForYouSource(private val app: AppGraph) : AutoForYouSource {
             AutoRelease(id, i.entry.releaseName ?: i.entry.artistName, i.entry.artistName, i.feedbackId)
         }
         return AutoForYou.liveReleases(items, browse.recFeedbackStore.acceptedInScope(scope), browse.recFeedbackStore.activeTombstones(scope, nowMs))
+    }
+}
+
+/** P2-POC-16: the Pocket Wheel as the Auto tree's source. Cheap to build; the wheel itself is only touched on use. */
+class AppAutoPocketsSource(private val app: AppGraph) : AutoPocketsSource {
+    private val wheel get() = app.pocketsGraph.wheelController
+
+    override fun best() = wheel.result.value
+    override fun momentsNow(count: Int) = wheel.momentsNow(count)
+    override fun collectionNames() = wheel.collectionNames
+
+    override suspend fun refresh() {
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { wheel.refresh(carOverride = true) }
     }
 }
 

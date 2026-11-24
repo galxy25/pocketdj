@@ -39,6 +39,9 @@ object ShortcutRanking {
 
     const val AUTO_MIX_ID = "automix_last"
 
+    /** The static "Play my pocket" shortcut's deep link (res/xml/shortcuts.xml; P2-POC-16). */
+    const val POCKET_NOW_LINK = "pocketdj://pocket/now"
+
     private const val AUTO_MIX_PREFIX = "Auto-mix "
 
     /** Name truncated first (with an ellipsis) so the prefix never eats the distinguishing part. */
@@ -163,7 +166,7 @@ class ShortcutManagerSink(private val context: Context) : ShortcutSink {
 
     companion object {
         /** Number of entries in res/xml/shortcuts.xml. */
-        const val STATIC_COUNT = 3
+        const val STATIC_COUNT = 4
 
         fun dynamicCap(context: Context): Int =
             (ShortcutManagerCompat.getMaxShortcutCountPerActivity(context) - STATIC_COUNT).coerceAtLeast(0)
