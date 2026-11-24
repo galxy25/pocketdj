@@ -120,7 +120,56 @@ class DjConductor(private val env: Env, private val scope: CoroutineScope) : DjE
         fun levelToZero() {}
 
         fun log(line: String)
+
+        // ---- P2-DJ-9: the skip mix (defaults = "no DSP skip support", so a fake Env that does not care stays valid) ----
+        /** The DSP is sounding (not paused). */
+        val dspPlaying: Boolean get() = true
+
+        /** The run's incoming song while a transition is in flight. */
+        val dspIncomingSongId: String? get() = null
+
+        /** The outgoing's glide tempo multiplier for the transition in flight. */
+        val dspOutRate: Double? get() = null
+        fun beginTransition(spec: DjTransitionSpec): String? = "no engine"
+        fun skipDuringPreRoll(fadeSeconds: Double) {}
+        fun abandonForSkip() {}
+        fun endPostRollForSkip() {}
+        fun shortenFade(fadeSeconds: Double): Boolean = false
+
+        /** The skip tracker's PRESS (the sequencer's advance-away). */
+        fun noteAdvanceAway() {}
+
+        /** The sequencer advance of a SKIP's fade start: a USER transport (meter cause `skip`, lifts the cascade halt). */
+        fun advanceAtFadeStartForSkip(songId: String): Boolean = advanceAtFadeStart(songId)
+
+        /** A skip's mix was refused at its fade start: the immediate advance (the press was already reported). */
+        fun skipAfterRefusedMix() {}
     }
+
+    /** The skip mix (P2-DJ-9): ⏭ with DJ on mixes into the next row. */
+    val skipMix: DjSkipMix = DjSkipMix(object : DjSkipMix.Port {
+        override val canMix: Boolean
+            get() = env.djActive && env.running && !env.held && env.dspEngaged && env.currentItem() != null
+        override val currentId: String? get() = env.currentItem()?.id
+        override val phase: DjPhase get() = env.dspPhase
+        override val isPlaying: Boolean get() = env.dspPlaying
+        override val incomingSongId: String? get() = env.dspIncomingSongId
+        override val secondsLeft: Double get() = env.dspSecondsLeft
+        override val outRate: Double? get() = env.dspOutRate
+        override val skipFadeSeconds: Double get() = env.timings().skipFade
+        override fun makeTransition(skipFade: Double) = buildTransition(skipFade)
+        override fun beginTransition(spec: DjTransitionSpec) = env.beginTransition(spec)
+        override fun skipDuringPreRoll(fadeSeconds: Double) = env.skipDuringPreRoll(fadeSeconds)
+        override fun abandonForSkip() = env.abandonForSkip()
+        override fun endPostRollForSkip() = env.endPostRollForSkip()
+        override fun shortenFade(fadeSeconds: Double) = env.shortenFade(fadeSeconds)
+        override fun noteAdvanceAway() = env.noteAdvanceAway()
+        override fun declined(from: String, reason: String) = this@DjConductor.declined(from, reason, forSkip = false)
+        override fun log(line: String) = env.log(line)
+    })
+
+    /** ⏭ (see [DjSkipMix]). */
+    fun skip(fast: Boolean): DjSkipResult = skipMix.skip(fast)
 
     private var rng = AutoTransition.Rng(0u)
     private var seeded = false
@@ -200,6 +249,7 @@ class DjConductor(private val env: Env, private val scope: CoroutineScope) : DjE
 
     override fun disarm() {
         pendingArm = null
+        skipMix.clearPending()
         env.disarm()
     }
 
@@ -347,24 +397,30 @@ class DjConductor(private val env: Env, private val scope: CoroutineScope) : DjE
      * decision checked changed during the pre-roll (a repeat count, the cascade halt, Transitions off, DJ suspended).
      */
     fun onFadeStart(songId: String): Boolean {
+        // A ⏭'s mix: the advance is the listener's skip (a USER transport).
+        val taken = skipMix.consumeAtFadeStart(songId)
+        // A refused fade start while a SKIP is pending still skips: the engine hands the outgoing back first, then the
+        // immediate advance (the outgoing was already reported skipped at the press).
+        fun refuse(why: String): Boolean {
+            env.log("fade start -> $songId refused ($why)")
+            if (taken.skipPending) env.skipAfterRefusedMix()
+            return false
+        }
+        if (taken.skipPending && !taken.isSkip) return refuse("a skip was pending for another row")
         val cur = env.currentItem()
         val next = env.nextItem()
         if (!env.djActive || !env.running || env.held || !env.dspEngaged || cur == null || next == null || !next.matches(songId)) {
-            env.log("fade start -> $songId refused (the queue moved under the transition)")
-            return false
+            return refuse("the queue moved under the transition")
         }
-        decide(forSkip = false, withLocal = false)?.let {
-            env.log("fade start -> $songId refused (${it.raw} since the transition began)")
-            return false
+        decide(forSkip = taken.isSkip, withLocal = false)?.let {
+            return refuse("${it.raw} since the transition began")
         }
-        if (!env.advanceAtFadeStart(songId)) {
-            env.log("fade start -> $songId refused (the sequencer did not advance)")
-            return false
-        }
+        val advanced = if (taken.isSkip) env.advanceAtFadeStartForSkip(songId) else env.advanceAtFadeStart(songId)
+        if (!advanced) return refuse("the sequencer did not advance")
         transitionCount++
         pairTexture = null
         loggedPair = null
-        env.log("advance at fade start from=${cur.id} to=${next.id} (no reload; the DSP owns the audio)")
+        env.log("advance at fade start from=${cur.id} to=${next.id}${if (taken.isSkip) " (skip)" else ""} (no reload; the DSP owns the audio)")
         engineDecline = null
         lastDecline = null
         pendingArm = null
@@ -394,6 +450,7 @@ class DjConductor(private val env: Env, private val scope: CoroutineScope) : DjE
     }
 
     fun onTransitionEnded(songId: String?, how: String) {
+        skipMix.transitionEnded()
         env.log("transition end ${songId?.let { "song=$it " } ?: ""}how=$how")
         if (songId == null) engineDecline = null
     }

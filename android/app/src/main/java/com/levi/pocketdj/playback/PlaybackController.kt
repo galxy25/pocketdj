@@ -429,7 +429,7 @@ class PlaybackController(
         }
         RunTransportBus.handler = object : RunTransportBus.Handler {
             override val isRunActive: Boolean get() = seq.isRunning && sequencerOwnsPlayer
-            override fun next() = seq.skipNext()
+            override fun next() = seq.skipNext(fast = true) // the bus is the session's (remote) transport
             override fun previous() = seq.skipPrevious()
         }
         val base = com.levi.pocketdj.playback.session.SetlistSequencerControl(seq)
@@ -874,9 +874,9 @@ class PlaybackController(
         }
     }
 
-    suspend fun next() {
+    suspend fun next(fast: Boolean = false) {
         if (RemoteControllerGate.shared.forward(RemoteRedirect.Next)) return
-        if (withContext(Dispatchers.Main) { sequencer.isRunning.also { if (it) sequencer.skipNext() } }) return
+        if (withContext(Dispatchers.Main) { sequencer.isRunning.also { if (it) sequencer.skipNext(fast) } }) return
         if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.next()
         else withController { it.seekToNextMediaItem() }
     }
@@ -970,7 +970,7 @@ class PlaybackController(
         return AppleMusicPlayerAdapter(
             looper = android.os.Looper.getMainLooper(),
             engineControl = ctl,
-            onSkipNext = { sequencer.skipNext() },
+            onSkipNext = { sequencer.skipNext(fast = true) }, // the Apple Music session's next is a remote controller's
             onSkipPrevious = { sequencer.skipPrevious() },
             canSkip = { sequencer.isRunning },
             // A session stop is the full set stop (abandon the run + disarm), not a bare engine stop.

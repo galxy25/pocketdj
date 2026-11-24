@@ -39,7 +39,7 @@ class WidgetBridge(private val app: AppGraph, private val ctx: Context) {
             }
             WidgetCommand.Kind.REPEAT -> withContext(Dispatchers.Main) { pc.sequencer.setRepeatMode(RepeatMode.fromToken(cmd.value)) }
             WidgetCommand.Kind.SHUFFLE -> withContext(Dispatchers.Main) { pc.sequencer.setShuffle(cmd.value == "1") }
-            WidgetCommand.Kind.NEXT -> withContext(Dispatchers.Main) { pc.sequencer.skipNext() }
+            WidgetCommand.Kind.NEXT -> withContext(Dispatchers.Main) { pc.sequencer.skipNext(fast = true) } // the widget's ⏭ is the 5 s sweep when DJ Mode mixes
             WidgetCommand.Kind.PREVIOUS -> withContext(Dispatchers.Main) { pc.sequencer.skipPrevious() }
             WidgetCommand.Kind.PLAY_PAUSE ->
                 if (RemoteControllerGate.shared.forward(RemoteRedirect.PlayPause)) Unit

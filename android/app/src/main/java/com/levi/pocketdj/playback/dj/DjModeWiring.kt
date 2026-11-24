@@ -185,6 +185,29 @@ class DjModeWiring(private val app: AppGraph) {
         }
 
         override fun log(line: String) { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.DJ, line) }
+
+        // ---- P2-DJ-9: the skip mix ----
+        override val dspPlaying: Boolean get() = engine.isPlaying
+        override val dspIncomingSongId: String? get() = engine.dj.incomingSongId
+        override val dspOutRate: Double? get() = engine.dj.outRate
+        override fun beginTransition(spec: DjTransitionSpec): String? = engine.dj.beginTransition(spec)
+        override fun skipDuringPreRoll(fadeSeconds: Double) { engine.dj.skipDuringPreRoll(fadeSeconds) }
+        override fun abandonForSkip() = engine.dj.abandonForSkip()
+        override fun endPostRollForSkip() { engine.dj.endPostRollForSkip() }
+        override fun shortenFade(fadeSeconds: Double) = engine.dj.shortenFade(fadeSeconds)
+        override fun noteAdvanceAway() = seq.noteDjSkipPress()
+
+        override fun advanceAtFadeStartForSkip(songId: String): Boolean {
+            val item = seq.state.value.queue.getOrNull(seq.state.value.index + 1) ?: return false
+            val undoMeta = mixGraph.djAdoptMeta(item, seq.contextFor(item))
+            host.djAdvanceFor = songId
+            val ok = seq.advanceAtDjFadeStart(skip = true)
+            if (!ok) { host.djAdvanceFor = null; undoMeta() }
+            return ok
+        }
+
+        // Not inline: the refusal fires inside the engine's fade-start revert; the immediate advance lands on the next loop turn.
+        override fun skipAfterRefusedMix() { android.os.Handler(android.os.Looper.getMainLooper()).post { seq.skipAfterRefusedDjMix() } }
     }
 
     // ---- P2-DJ-10: the PocketDJ selector driver's production host --------------------------------------------------------
@@ -257,6 +280,15 @@ class DjModeWiring(private val app: AppGraph) {
 
     @Volatile private var bound = false
 
+    /** The sequencer's ⏭ routes here (P2-DJ-9). Not bound / DJ off or suspended = today's immediate advance. */
+    private val skipHooks = object : DjSkipHooks {
+        override fun skip(fast: Boolean): DjSkipResult {
+            if (!bound || !controller.djActive) return DjSkipResult.FALLBACK
+            return conductor.skip(fast)
+        }
+        override fun clearPending() { if (bound) conductor.skipMix.clearPending() }
+    }
+
     /** First DJ use: hook the DSP's DJ callbacks, the heartbeat and the sequencer's adopt failure. Main thread. */
     private fun ensureBound() {
         if (bound) return
@@ -297,6 +329,7 @@ class DjModeWiring(private val app: AppGraph) {
         seq.hooks.add(trackListener)
         seq.hooks.add(planner)
         seq.sessionExtras.register(controller)
+        seq.djSkip = skipHooks
         seq.djModeEnabled = { controller.enabled } // a random insert never lands ahead of the listener's pick
         mix.onModeSwitched = { controller.onMixModeChanged(it) } // synchronous, before the lane re-plans
         scope.launch { mix.state.map { it.enabled }.distinctUntilChanged().collect { controller.onMixModeChanged(it) } } // backstop
