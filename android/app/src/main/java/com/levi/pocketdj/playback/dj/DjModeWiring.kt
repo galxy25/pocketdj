@@ -49,7 +49,7 @@ class DjModeWiring(private val app: AppGraph) {
     private val delegating = object : DjEngineHooks {
         // The selector re-plans BEFORE the engage (iOS applyDJOnTrackStart order: membership, first plan, engage + arm + level).
         override fun applyOnTrackStart(liveClock: Boolean) { planner.onApply(); engineHooks.applyOnTrackStart(liveClock) }
-        override fun disarm() { planner.disarm(); engineHooks.disarm() }
+        override fun disarm() { planner.disarm(); if (levelingBuilt) analysisDriver.cancelAll(); engineHooks.disarm() }
         override fun levelToZero() = engineHooks.levelToZero()
         override fun plannerSeeded(seed: ULong) = engineHooks.plannerSeeded(seed)
         override fun indicator() = engineHooks.indicator()
@@ -109,12 +109,19 @@ class DjModeWiring(private val app: AppGraph) {
         // Resolution touches disk (resolveLocal, the rips index): off the main thread, cached, and the engine's 1 Hz retries
         // in the lead window only ever read this map. A first-ever miss resolves inline; a stale hit refreshes in the background.
         private val localCache = java.util.concurrent.ConcurrentHashMap<String, Cached>()
+        /** A row's local source resolved for the first time (analysis window rows wait on this). */
+        @Volatile var onFirstResolved: (() -> Unit)? = null
         private val refreshing = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
         override fun prefetchLocal(item: QueueItem) {
             if (!refreshing.add(item.id)) return
             scope.launch(Dispatchers.IO) {
-                try { localCache[item.id] = Cached(android.os.SystemClock.elapsedRealtime(), resolveLocalSource(item)) }
+                try {
+                    val had = localCache[item.id]?.src != null
+                    val src = resolveLocalSource(item)
+                    localCache[item.id] = Cached(android.os.SystemClock.elapsedRealtime(), src)
+                    if (src != null && !had) scope.launch { onFirstResolved?.invoke() }   // a window row became analysable
+                }
                 finally { refreshing.remove(item.id) }
             }
         }
@@ -127,6 +134,9 @@ class DjModeWiring(private val app: AppGraph) {
             if (android.os.SystemClock.elapsedRealtime() - hit.at > (if (hit.src == null) 2_000L else 15_000L)) prefetchLocal(item)
             return hit.src
         }
+
+        /** The cached resolution only (null = not resolved yet / not local): never touches disk. */
+        fun cachedLocalSource(item: QueueItem): DjConductor.LocalSource? = localCache[item.id]?.src
 
         override fun disengageDsp() { if (engine.isEngaged) engine.disengage() }
 
@@ -167,7 +177,10 @@ class DjModeWiring(private val app: AppGraph) {
         override suspend fun engageCurrent(liveClock: Boolean): Boolean = host.engage()
         override fun arm(lead: Double, build: () -> DjTransitionSpec?) = engine.dj.armDj(lead, build)
         override fun disarm() = engine.dj.disarmDj()
-        override fun levelToZero() { if (engine.isEngaged) engine.setLevelDb(0.0) }
+        override fun levelToZero() { leveling.levelToZero() }
+        override fun levelDb(songId: String, src: DjConductor.LocalSource): Double = leveling.levelDb(songId, src)
+        override fun applyLeveling(ramp: Boolean) = leveling.applyCurrent(ramp)
+        override fun analyzeUpcoming() = analysisDriver.analyzeUpcoming()
 
         override fun advanceAtFadeStart(songId: String): Boolean {
             val item = seq.state.value.queue.getOrNull(seq.state.value.index + 1) ?: return false
@@ -210,6 +223,55 @@ class DjModeWiring(private val app: AppGraph) {
         override fun skipAfterRefusedMix() { android.os.Handler(android.os.Looper.getMainLooper()).post { seq.skipAfterRefusedDjMix() } }
     }
 
+    // ---- P2-DJ-11: volume leveling + analysis driving -------------------------------------------------------------------------
+
+    private var levelingBuilt = false
+    private val loudnessCache by lazy { LoudnessCache(java.io.File(app.appContext.filesDir, "loudness.json")) }
+    private val analysisCache by lazy { AudioAnalysisCache(java.io.File(app.appContext.filesDir, "analysis.json")) }
+    private val analysisScheduler by lazy {
+        AudioAnalysisScheduler(analysisCache, mayRun = AudioAnalysisScheduler.powerGate(app.appContext),
+            log = { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.DJ, it) })
+            .also { AudioAnalysisScheduler.registerGateListeners(app.appContext, it) }
+    }
+
+    /** The row's local source: the playing + next rows resolve inline (as the conductor does); the rest of the window only from the cache. */
+    private fun analysisSource(item: QueueItem): DjConductor.LocalSource? {
+        val st = seq.state.value
+        if (item.uid == st.current?.uid || item.uid == st.queue.getOrNull(st.index + 1)?.uid) return env.localSource(item)
+        env.prefetchLocal(item)           // off-main resolve; a later schedule picks it up
+        return env.cachedLocalSource(item)
+    }
+
+    val leveling: DjLeveling by lazy {
+        levelingBuilt = true
+        DjLeveling(object : DjLeveling.Host {
+            override val djActive: Boolean get() = controller.djActive
+            override val volumeLeveling: Boolean get() = mixSettings.value.dj.volumeLeveling
+            override val running: Boolean get() = seq.isRunning
+            override val dspEngaged: Boolean get() = engine.isEngaged
+            override val dspStreaming: Boolean get() = engine.isStreaming
+            override val levelTargetDb: Double get() = engine.levelTargetDb
+            override fun currentItem(): QueueItem? = seq.state.value.current
+            override fun localSource(item: QueueItem) = env.localSource(item)
+            override fun setLevel(db: Double, ramp: Boolean) { if (engine.isEngaged) engine.setLevelDb(db, ramp) }
+            override fun log(line: String) { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.DJ, line) }
+        }, loudnessCache, analysisCache, scope)
+    }
+
+    val analysisDriver: DjAnalysisDriver by lazy {
+        DjAnalysisDriver(object : DjAnalysisDriver.Host {
+            override val djActive: Boolean get() = controller.djActive
+            override val volumeLeveling: Boolean get() = mixSettings.value.dj.volumeLeveling
+            override val running: Boolean get() = seq.isRunning
+            override val index: Int get() = seq.state.value.index
+            override val queue: List<QueueItem> get() = seq.state.value.queue
+            override val currentStreaming: Boolean get() = engine.isStreaming
+            override fun localSource(item: QueueItem) = analysisSource(item)
+            override fun analysisLanded(songId: String) = planner.onAnalysisLanded(songId)
+            override fun log(line: String) { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.DJ, line) }
+        }, leveling, analysisScheduler)
+    }
+
     // ---- P2-DJ-10: the PocketDJ selector driver's production host --------------------------------------------------------
 
     private val plannerHost = object : DjPlannerDriver.Host {
@@ -222,11 +284,16 @@ class DjModeWiring(private val app: AppGraph) {
         override fun setPlannerState(st: DjPlannerState) = controller.setPlannerState(st)
 
         override fun facts(item: QueueItem): DjCandidates.Facts? {
-            val song = catalog?.songsById?.get(com.levi.pocketdj.data.edition.SongVariant.baseId(item.id)) ?: return null
+            val song = catalog?.songsById?.get(com.levi.pocketdj.data.edition.SongVariant.baseId(item.id))
+            // On-device analysis fills what the catalog lacks (full > a confident quick hint; never over a measured value).
+            var (full, quick) = analysisCache.results(item.resolveId)
+            if (full == null && quick == null) analysisCache.results(item.id).let { full = it.first; quick = it.second }
+            val (bpm, camelot) = DjAnalysisDriver.factsWithAnalysis(song?.bpm, song?.camelot, full, quick)
+            if (song == null) return if (bpm == null && camelot == null) null else DjCandidates.Facts(bpm = bpm, camelot = camelot)
             val album = song.albumId?.let { catalog?.albumsById?.get(it) }
             val keys = com.levi.pocketdj.data.recs.RecVersionIdentity.creditArtistKeys(song.artist)
             return DjCandidates.Facts(
-                bpm = song.bpm, camelot = song.camelot, genre = album?.genre, year = song.year ?: album?.year,
+                bpm = bpm, camelot = camelot, genre = album?.genre, year = song.year ?: album?.year,
                 artists = (if (keys.isEmpty()) listOf(song.artist.lowercase()) else keys).toSet(),
             )
         }
@@ -335,5 +402,19 @@ class DjModeWiring(private val app: AppGraph) {
         scope.launch { mix.state.map { it.enabled }.distinctUntilChanged().collect { controller.onMixModeChanged(it) } } // backstop
         scope.launch { NowPlayingSeams.mixSessionActiveFlow.collect { controller.onSuspensionInputsChanged() } }
         bindRemote(controller.remote)
+        // P2-DJ-11: a next row landed (queue edit / re-order) -> measure it before its mix; the Volume toggle re-levels the playing row.
+        scope.launch {
+            seq.state.map { it.queue.getOrNull(it.index + 1)?.uid }.distinctUntilChanged().collect {
+                if (controller.djActive && levelingBuilt) analysisDriver.analyzeUpcoming()
+            }
+        }
+        env.onFirstResolved = { if (levelingBuilt && controller.djActive) analysisDriver.scheduleAnalysis() }
+        scope.launch {
+            mixSettings.map { it.dj.volumeLeveling }.distinctUntilChanged().collect { on ->
+                if (!levelingBuilt || !controller.djActive) return@collect
+                if (!on) leveling.cancelAnalyses()   // Volume off: running / upcoming measurements stop
+                leveling.applyCurrent(ramp = true)
+            }
+        }
     }
 }

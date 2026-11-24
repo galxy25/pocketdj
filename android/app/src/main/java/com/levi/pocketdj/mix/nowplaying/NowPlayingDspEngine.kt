@@ -22,6 +22,7 @@ import com.levi.pocketdj.mix.model.Effect
 import com.levi.pocketdj.mix.model.FXSlot
 import com.levi.pocketdj.mix.model.FxRack
 import com.levi.pocketdj.mix.model.MixRanges
+import com.levi.pocketdj.playback.dj.LevelRamper
 import com.levi.pocketdj.playback.durable.SessionFxSetting
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -255,7 +256,7 @@ class NowPlayingDspEngine(
         // gains at main=0/stems=1. A new track STARTS on the full mix (lands at the next block).
         graph.deck(deck).handover.settle(false)
         ownOv = GlideOverlay.NONE
-        composer.setLevelDb(deck, 0.0)
+        levelSet(deck, 0.0)
         // FX Lock: carried (stamped) ON effects come up from transparent; an ordinary engage has none, so no ramp.
         armRamp(Effect.entries.filter { isEnabled(it) }.toSet())
         publishParams()
@@ -466,6 +467,7 @@ class NowPlayingDspEngine(
     override fun disengage(): Double? {
         if (!isEngaged) return null
         dj.reset("stop")         // cuts everything (a tail / incoming deck) BEFORE the live deck is torn down
+        rampers.forEach { it?.cancel() }
         val pos = currentTimeSec
         handoverGen++            // stop() FIRES completions: a stale fetch must find its generation moved on
         stemHandover = null
@@ -879,7 +881,7 @@ class NowPlayingDspEngine(
     /** The incoming song opened on the idle deck. */
     internal class IncomingDeck(
         val deck: Deck, val songId: String, val voice: Voice, val run: AutoCloseable,
-        val windowStart: Long, val windowEnd: Long, val startFrame: Long,
+        val windowStart: Long, val windowEnd: Long, val startFrame: Long, val levelDb: Double = 0.0,
     )
 
     internal val djPlayWanted: Boolean get() = playWanted
@@ -898,8 +900,23 @@ class NowPlayingDspEngine(
     /** Seconds of audio left on the live song at the tempo it renders at. */
     internal fun djSecondsLeft(): Double = maxOf(0.0, durationSec - currentTimeSec) / maxOf(0.05, glidedRate(rate, ownOv))
 
-    /** Leveling gain for the LIVE deck (DJ Volume leveling; 0 = off). Not a volume-boost write. */
-    fun setLevelDb(db: Double) { composer.setLevelDb(deck, db) }
+    /**
+     * Leveling gain for the LIVE deck (DJ Volume leveling; 0 = off). Not a volume-boost write. [ramp]: glide there over [seconds]
+     * (default 2 s, 20 ms steps - an analysis landing mid-play); otherwise it lands at once (a track start, before audio).
+     */
+    fun setLevelDb(db: Double, ramp: Boolean = false, seconds: Double? = null) { levelRamper(deck).set(db, ramp, seconds) }
+
+    /** Where the live deck's leveling gain is heading (dB). */
+    val levelTargetDb: Double get() = levelRamper(deck).target
+
+    // One ramper per deck: a tail keeps ramping on ITS deck after a flip; a released deck's ramp is cancelled.
+    private val rampers = arrayOfNulls<LevelRamper>(2)
+    private fun levelRamper(d: Deck): LevelRamper =
+        rampers[d.ordinal] ?: LevelRamper(scope, composer.levelDb(d)) { composer.setLevelDb(d, it) }.also { rampers[d.ordinal] = it }
+    private fun levelSet(d: Deck, db: Double) { levelRamper(d).set(db, false) }
+
+    /** The incoming's leveling gain, landed over 150 ms by the commit flip (its fade gain is about 0 meanwhile). */
+    private var incomingLevelDb = 0.0
 
     /** Position of the crossfader such that the deck [live] is fully heard. */
     internal fun djCrossfaderEnd(live: Deck): Float = if (live == Deck.A) 0f else 1f
@@ -917,8 +934,8 @@ class NowPlayingDspEngine(
         val run = runner.run(v)
         graph.deck(d).handover.settle(false)
         graph.setMain(d, v)
-        composer.setLevelDb(d, levelDb)
-        return IncomingDeck(d, songId, v, run, ws, we, ws)
+        levelSet(d, 0.0)         // the gain lands over 150 ms at fade start (djCommitFlip), never a step
+        return IncomingDeck(d, songId, v, run, ws, we, ws, levelDb)
     }
 
     /** Publish the incoming deck's glide state (rate / pitch / texture) while it waits; identity controls. */
@@ -958,9 +975,11 @@ class NowPlayingDspEngine(
     }
 
     /** State of an incoming deck as the engine's live state (not yet audible: the voice starts here). */
-    internal fun djIncomingState(inc: IncomingDeck, id: String, startFrame: Long): LiveState =
-        LiveState(inc.deck, inc.voice, inc.run, null, emptyList(), id, inc.windowStart, inc.windowEnd, startFrame,
+    internal fun djIncomingState(inc: IncomingDeck, id: String, startFrame: Long): LiveState {
+        incomingLevelDb = inc.levelDb
+        return LiveState(inc.deck, inc.voice, inc.run, null, emptyList(), id, inc.windowStart, inc.windowEnd, startFrame,
             started = false, audioAnnounced = true, startedAtClock = 0L, voiceEndedAtClock = -1L, endFired = false)
+    }
 
     /** COMMIT of the swap onto the incoming deck: bump the generation FIRST, then default controls on the new live deck. */
     internal fun djCommitFlip(to: LiveState) {
@@ -968,6 +987,9 @@ class NowPlayingDspEngine(
         stemHandover = null
         djInstall(to)
         cancelRamp()
+        // Leveling: the incoming's gain lands over 150 ms while its fade gain is about 0 (never a step).
+        val lvl = incomingLevelDb; incomingLevelDb = 0.0
+        if (lvl != 0.0) levelRamper(deck).set(lvl, ramp = true, seconds = LevelRamper.FADE_START_SECONDS)
         rate = 1.0; pitch = 0.0; volume = 1.0
         for (e in Effect.entries) slots[e.ordinal] = FXSlot(e)
         strengthSet.clear()
@@ -1000,7 +1022,7 @@ class NowPlayingDspEngine(
         runCatching { group?.closeAll() }
         composer.setTempoPitch(d, 1.0, 0.0)
         composer.setSlots(d, emptyList())
-        composer.setLevelDb(d, 0.0)
+        levelRamper(d).cancel(); levelSet(d, 0.0)
         composer.setStemBalance(d, floatArrayOf(1f, 1f, 1f, 1f))
     }
 
