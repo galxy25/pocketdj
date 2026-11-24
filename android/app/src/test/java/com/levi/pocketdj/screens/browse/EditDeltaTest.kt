@@ -169,4 +169,14 @@ class EditDeltaTest {
         assertEquals("X", re["albums"]!!.jsonObject["a1"]!!.jsonObject["name"]!!.jsonPrimitive.content)
         assertFalse(re["albums"]!!.jsonObject["a1"]!!.jsonObject.containsKey("year"))
     }
+
+    @Test fun invalidNumericInputIsFlagged() {
+        assertTrue(EditDelta.albumInvalid("19x5"))
+        assertFalse(EditDelta.albumInvalid(""))
+        assertFalse(EditDelta.albumInvalid(" 1999 "))
+        assertTrue(EditDelta.songInvalid("1999", "3", "12o"))
+        assertFalse(EditDelta.songInvalid("1999", "3", "124.5"))
+        assertTrue(EditDelta.audioInvalid(listOf(EditDelta.AudioRow(0, 1, "", "", "", "1x", ""))))
+        assertFalse(EditDelta.audioInvalid(EditDelta.audioRows(rawAlbum.audioTracks)))
+    }
 }

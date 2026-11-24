@@ -82,6 +82,15 @@ internal object EditDelta {
         return if (v == original) null else v
     }
 
+    /** True when [entered] is non-blank but does not parse as the number type (blank = "no value", valid). */
+    fun badInt(entered: String) = entered.isNotBlank() && entered.trim().toIntOrNull() == null
+    fun badLong(entered: String) = entered.isNotBlank() && entered.trim().toLongOrNull() == null
+    fun badDouble(entered: String) = entered.isNotBlank() && entered.trim().toDoubleOrNull() == null
+
+    fun albumInvalid(year: String) = badInt(year)
+    fun songInvalid(year: String, track: String, bpm: String) = badInt(year) || badInt(track) || badDouble(bpm)
+    fun audioInvalid(rows: List<AudioRow>) = rows.any { badDouble(it.bpm) || badLong(it.startMs) || badLong(it.endMs) }
+
     /** iOS `Fmt.trim`: a whole number prints without ".0". */
     fun trim(d: Double): String = if (d == Math.rint(d) && Math.abs(d) < 1e15) d.toLong().toString() else d.toString()
 
@@ -157,12 +166,13 @@ internal object EditDelta {
 
 /** A labelled single-line text field shared by the edit sheets (iOS `EditField`). */
 @Composable
-internal fun EditField(label: String, value: String, onChange: (String) -> Unit, numeric: Boolean = false, tag: String? = null) {
+internal fun EditField(label: String, value: String, onChange: (String) -> Unit, numeric: Boolean = false, tag: String? = null, isError: Boolean = false) {
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
         label = { Text(label) },
         singleLine = true,
+        isError = isError,
         keyboardOptions = KeyboardOptions(
             keyboardType = if (numeric) KeyboardType.Decimal else KeyboardType.Text,
             capitalization = if (numeric) KeyboardCapitalization.None else KeyboardCapitalization.Sentences,
@@ -182,6 +192,7 @@ internal fun EditSheetScaffold(
     resetLabel: String? = null,
     resetTag: String = "reset-edit",
     onReset: (() -> Unit)? = null,
+    saveEnabled: Boolean = true,
     content: @Composable () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -191,7 +202,7 @@ internal fun EditSheetScaffold(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = onDismiss) { Text("Cancel") }
                 Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                Button(onClick = onSave, modifier = Modifier.testTag(saveTag)) { Text("Save") }
+                Button(onClick = onSave, enabled = saveEnabled, modifier = Modifier.testTag(saveTag)) { Text("Save") }
             }
             Spacer(Modifier.height(8.dp))
             content()
@@ -225,8 +236,11 @@ fun EditAlbumSheet(album: IndexAlbum, onDismiss: () -> Unit) {
         title = "Edit Album",
         saveTag = "save-edit",
         onDismiss = onDismiss,
+        saveEnabled = !EditDelta.albumInvalid(year),
         onSave = {
-            val edit = EditDelta.albumEdit(store.albumEdit(album.id), graph.catalogRepository.rawAlbum(album.id), name, artist, genre, year, country)
+            // Without the raw row there is nothing to diff against: refuse rather than freeze every field.
+            val raw = graph.catalogRepository.rawAlbum(album.id) ?: return@EditSheetScaffold onDismiss()
+            val edit = EditDelta.albumEdit(store.albumEdit(album.id), raw, name, artist, genre, year, country)
             scope.launch { store.setAlbumEditIo(album.id, edit); onDismiss() }
         },
         resetLabel = if (hasMetaEdit) "Reset to original" else null,
@@ -241,7 +255,7 @@ fun EditAlbumSheet(album: IndexAlbum, onDismiss: () -> Unit) {
         EditField("Title", name, { name = it }, tag = "edit-album-title")
         EditField("Artist", artist, { artist = it })
         EditField("Genre", genre, { genre = it })
-        EditField("Year", year, { year = it }, numeric = true, tag = "edit-album-year")
+        EditField("Year", year, { year = it }, numeric = true, tag = "edit-album-year", isError = EditDelta.badInt(year))
         EditField("Country", country, { country = it })
     }
 }

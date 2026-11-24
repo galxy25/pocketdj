@@ -43,8 +43,10 @@ fun EditSongSheet(song: IndexSong, onDismiss: () -> Unit) {
         title = "Edit Song",
         saveTag = "save-edit",
         onDismiss = onDismiss,
+        saveEnabled = !EditDelta.songInvalid(year, track, bpm),
         onSave = {
-            val edit = EditDelta.songEdit(graph.catalogRepository.rawSong(song.id), name, artist, year, track, bpm, key, camelot, explicit, sentiment)
+            val raw = graph.catalogRepository.rawSong(song.id) ?: return@EditSheetScaffold onDismiss()
+            val edit = EditDelta.songEdit(raw, name, artist, year, track, bpm, key, camelot, explicit, sentiment)
             scope.launch { store.setSongEditIo(song.id, edit); onDismiss() }
         },
         resetLabel = if (hasEdit) "Reset to original" else null,
@@ -52,9 +54,9 @@ fun EditSongSheet(song: IndexSong, onDismiss: () -> Unit) {
     ) {
         EditField("Title", name, { name = it }, tag = "edit-song-title")
         EditField("Artist", artist, { artist = it })
-        EditField("Track #", track, { track = it }, numeric = true)
-        EditField("Year", year, { year = it }, numeric = true)
-        EditField("BPM", bpm, { bpm = it }, numeric = true, tag = "edit-song-bpm")
+        EditField("Track #", track, { track = it }, numeric = true, isError = EditDelta.badInt(track))
+        EditField("Year", year, { year = it }, numeric = true, isError = EditDelta.badInt(year))
+        EditField("BPM", bpm, { bpm = it }, numeric = true, tag = "edit-song-bpm", isError = EditDelta.badDouble(bpm))
         EditField("Key", key, { key = it })
         EditField("Camelot", camelot, { camelot = it })
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {

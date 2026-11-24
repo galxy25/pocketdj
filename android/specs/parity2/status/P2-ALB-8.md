@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-ALB-8 - Metadata edit sheets + Settings > Edits
 
@@ -20,3 +20,10 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR EditSongSheet/EditAlbumSheet/EditAudioAnalysisSheet diff against a null raw row -> fixed (Save now no-ops and dismisses when the raw row is missing; audio sheet no longer falls back to the overlaid album)
+- MINOR EditsSection stale count -> fixed (count re-read on every CatalogRepository.state change)
+- NIT unparseable numeric text -> fixed (field shows error, Save disabled; `EditDelta.*Invalid`, covered by `invalidNumericInputIsFlagged`)
+
+fixes applied

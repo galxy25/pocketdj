@@ -36,8 +36,10 @@ fun EditAudioAnalysisSheet(album: IndexAlbum, onDismiss: () -> Unit) {
         title = "Edit Audio Analysis",
         saveTag = "save-audio-edit",
         onDismiss = onDismiss,
+        saveEnabled = !EditDelta.audioInvalid(rows.toList()),
         onSave = {
-            val edit = EditDelta.audioEdit(store.albumEdit(album.id), graph.catalogRepository.rawAlbum(album.id) ?: album, rows.toList())
+            val raw = graph.catalogRepository.rawAlbum(album.id) ?: return@EditSheetScaffold onDismiss()
+            val edit = EditDelta.audioEdit(store.albumEdit(album.id), raw, rows.toList())
             scope.launch { store.setAlbumEditIo(album.id, edit); onDismiss() }
         },
         resetLabel = if (hasOverride) "Reset audio analysis" else null,
@@ -53,11 +55,11 @@ fun EditAudioAnalysisSheet(album: IndexAlbum, onDismiss: () -> Unit) {
         Column {
             rows.forEachIndexed { i, row ->
                 Text("Segment ${row.trackNumber ?: (row.index + 1)}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                EditField("BPM", row.bpm, { rows[i] = row.copy(bpm = it) }, numeric = true, tag = "audio-bpm-$i")
+                EditField("BPM", row.bpm, { rows[i] = row.copy(bpm = it) }, numeric = true, tag = "audio-bpm-$i", isError = EditDelta.badDouble(row.bpm))
                 EditField("Key", row.key, { rows[i] = row.copy(key = it) }, tag = "audio-key-$i")
                 EditField("Camelot", row.camelot, { rows[i] = row.copy(camelot = it) }, tag = "audio-camelot-$i")
-                EditField("Start (ms)", row.startMs, { rows[i] = row.copy(startMs = it) }, numeric = true, tag = "audio-start-$i")
-                EditField("End (ms)", row.endMs, { rows[i] = row.copy(endMs = it) }, numeric = true, tag = "audio-end-$i")
+                EditField("Start (ms)", row.startMs, { rows[i] = row.copy(startMs = it) }, numeric = true, tag = "audio-start-$i", isError = EditDelta.badLong(row.startMs))
+                EditField("End (ms)", row.endMs, { rows[i] = row.copy(endMs = it) }, numeric = true, tag = "audio-end-$i", isError = EditDelta.badLong(row.endMs))
                 Spacer(Modifier.height(10.dp))
             }
         }

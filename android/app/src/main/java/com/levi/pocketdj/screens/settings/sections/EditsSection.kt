@@ -11,6 +11,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -68,6 +70,9 @@ private fun ColumnScope.EditsBlock(host: SettingsHost) {
     val store = g.collectionsGraph.editsStore
     val scope = host.scope
     var count by remember { mutableIntStateOf(store.count) }
+    // A sync pull / edit elsewhere rebuilds the catalog state: re-read the count so the buttons never go stale.
+    val catalogState by g.catalogRepository.state.collectAsState()
+    LaunchedEffect(catalogState) { count = store.count }
     var confirmClear by remember { mutableStateOf(false) }
     val appVersion = remember {
         runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty()
