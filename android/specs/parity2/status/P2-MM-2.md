@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-MM-2 Mix Mode ph1b: expiry sweep, soft-cap eviction order, triggers, SAF picked-folder identity
 
@@ -22,3 +22,11 @@ Tests: 25 new in TemporarySweepTest (plan, identity, stamp-first, chunking + per
 
 ## Questions for Levi
 - none
+
+## Review
+- MINOR hourly tick defeated by its own gate -> fixed: tick uses minIntervalMs = INTERVAL_MS - 60 s; test hourlyTickPassesWithAMarginAfterTheForegroundStamp
+- MINOR cap sweep dropped when a pass is running -> fixed: retries (2 s later) when sweepTemporary returns null; callers of sweepForDiskGuard (MM-5) must handle a null result
+- MINOR removeTemporaryAssets stale snapshot -> fixed: whole primitive runs under the hold-ledger lock (all hold mutations take it) and the final replace applies only when the live hold still equals the snapshot
+- NIT Mix Mode off / disk guard call sites -> not wired here by design; owned by P2-MM-4 / P2-MM-5 (entry points exist and are tested)
+
+fixes applied

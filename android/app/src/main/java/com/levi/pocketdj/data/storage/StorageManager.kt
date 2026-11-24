@@ -12,6 +12,7 @@ import com.levi.pocketdj.playback.sequencer.QueueItem
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
@@ -281,7 +282,11 @@ class StorageManager(
             yield()
             capSweepScheduled.set(false)
             val over = burns.temporaryHolds().values.sumOf { it.bytes } > settings.bufferCapBytes()
-            if (over) sweepTemporary(reason = "cap")
+            if (over && sweepTemporary(reason = "cap") == null) {
+                // A prune/sweep was running and dropped this pass: retry once it finishes.
+                delay(2_000)
+                scheduleCapSweepIfNeeded()
+            }
         }
     }
 

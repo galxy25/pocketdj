@@ -961,7 +961,13 @@ class BurnStore(
      * otherwise they are RELEASED (kept on disk, dropped from the hold). An unreachable folder keeps
      * the hold for a later sweep. Saves once.
      */
-    fun removeTemporaryAssets(songIds: Collection<String>): TemporaryRemoval {
+    fun removeTemporaryAssets(songIds: Collection<String>): TemporaryRemoval = synchronized(holdLedger) {
+        // Every hold mutation (pin, extend, land) takes this same lock, so the snapshot below cannot go
+        // stale while files are deleted: a pin either lands before (hold changed -> skipped) or after.
+        removeTemporaryAssetsLocked(songIds)
+    }
+
+    private fun removeTemporaryAssetsLocked(songIds: Collection<String>): TemporaryRemoval {
         val holdsNow = _holds.value
         val ids = songIds.toSet().filter { holdsNow[it] != null }
         if (ids.isEmpty()) return TemporaryRemoval()
@@ -1030,7 +1036,7 @@ class BurnStore(
             if (after == null) songs++ else kept++
         }
         for ((tree, names) in mirrorNames) folder.deleteMirrored(tree, names)
-        mutateHolds { for ((id, h) in updated) replace(id, h) }
+        mutateHolds { for ((id, h) in updated) if (_holds.value[id] == holdsNow[id]) replace(id, h) }
         save()
         return TemporaryRemoval(songs, bytes, kept)
     }

@@ -229,6 +229,15 @@ class TemporarySweepTest {
         assertNull("no holds -> no-op", mgr(Burns(emptyList(), s), s).sweepTemporaryIfDue("tick"))
     }
 
+    @Test fun hourlyTickPassesWithAMarginAfterTheForegroundStamp() = runTest {
+        // Foreground sweep stamped ~3 s after the ticker started: the tick fires at 59m57s.
+        val s = Settings(last = now - (TemporarySweep.INTERVAL_MS - 3_000L))
+        val b = Burns(listOf(hold("a", now - 1.0)), s)
+        val m = mgr(b, s)
+        assertNull("default gate would skip it", m.sweepTemporaryIfDue("tick"))
+        assertNotNull(m.sweepTemporaryIfDue("tick", minIntervalMs = TemporarySweep.INTERVAL_MS - 60_000L))
+    }
+
     @Test fun logsTheGreppableSweepLine() = runTest {
         val s = Settings(); val lines = mutableListOf<String>()
         mgr(Burns(listOf(hold("a", now - 1.0)), s), s, log = { lines += it }).sweepTemporary(reason = "foreground")

@@ -34,7 +34,7 @@ class PocketDjApplication : Application() {
         val sweepTicker = lazy {
             val g = AppGraph.get(this)
             SweepTicker(g.appScope, TemporarySweep.INTERVAL_MS) {
-                g.servicesGraph.storageManager.sweepTemporaryIfDue("tick")
+                g.servicesGraph.storageManager.sweepTemporaryIfDue("tick", minIntervalMs = TemporarySweep.INTERVAL_MS - 60_000L)
             }
         }
         AppLifecycleObserver(
