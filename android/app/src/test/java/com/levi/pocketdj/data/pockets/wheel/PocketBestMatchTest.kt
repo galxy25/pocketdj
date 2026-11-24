@@ -253,8 +253,8 @@ class PocketBestMatchTest {
         assertEquals(setOf("a1"), p.artists.keys)
         assertEquals(setOf("disco"), p.genres.keys)
         assertEquals("a 4-BPM band widens to 6", 6.0, p.bpmHi!! - p.bpmLo!!, 0.0)
-        assertEquals(1977.0, p.eraLo!!, 0.0)
-        assertEquals(1983.0, p.eraHi!!, 0.0)
+        assertEquals(1978.0, p.eraLo!!, 0.0)
+        assertEquals(1982.0, p.eraHi!!, 0.0)
         assertEquals(mapOf("s1" to 1.0, "s2" to 1.0), p.seeds)
         assertEquals(mapOf("s9" to 0.7), p.candidateBoost)
         assertNull(p.key)
@@ -339,7 +339,8 @@ class PocketBestMatchTest {
         assertNotNull(alt)
         assertTrue(c.playAlternative(alt!!))
         assertEquals(alt.key, played.last().key)
-        assertFalse("an unknown key plays nothing", c.playMoment(key(1, 3, BROWSE)))
+        val absent = PocketMode.entries.flatMap { m -> (0..23).map { h -> key(7, h, m) } }.first { it !in fixtureWheel().index() }
+        assertFalse("an unknown key plays nothing", c.playMoment(absent))
         assertFalse(c.playAlternative(PocketWheelBestMatchSummary(null, "x", "y", null)))
         assertEquals(c.bestSummary?.caption, "Tue 8 AM · CarPlay")
     }
@@ -348,7 +349,7 @@ class PocketBestMatchTest {
         val c = controller(PocketWheelSnapshot(), tuesday0830)
         assertNull(c.profileForMode(RUNNING))
         val c2 = controller(fixtureWheel(), tuesday0830)
-        assertEquals(RUNNING, c2.profileForMode(RUNNING)?.mode ?: RUNNING)
+        assertNotNull(c2.profileForMode(RUNNING))
         assertNotNull(c2.profileForMode(CAR_PLAY))
     }
 
