@@ -16,6 +16,8 @@ object NPLog {
     const val NP = "np"
     const val MIX = "mix"
     const val STUDIO = "studio"
+    /** Remote (Listen Together / Backseat) session lane: `[remote] attach / yield / handover`. Not in [LANES]. */
+    const val REMOTE = "remote"
     /** Now Playing Mix Mode (np-mix-mode): `[npmix] lane step=…`, `[npmix] hand-off row=…`. Not in [LANES] (the report scripts read the original eleven). */
     const val NPMIX = "npmix"
     /** Now Playing DJ Mode (`[dj] transition from=… to=… plan=…`, `[dj] declined reason=…`): logcat tag `PocketDJ.dj`. Not in [LANES]. */
