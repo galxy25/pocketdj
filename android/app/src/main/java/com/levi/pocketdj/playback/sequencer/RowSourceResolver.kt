@@ -49,6 +49,12 @@ data class ResolveContext(
     val mode: PlaybackMode,
     val ripServerConfigured: Boolean,
     val ripStartsNow: Boolean,
+    /** P2-MM-9: Mix Mode is buffering - an Apple-Music-sourced row prefers its local rip ([PreferLocalAudio]). */
+    val preferLocalAudio: Boolean = false,
+    /** P2-MM-9: the rip is INSTANT (a complete local copy, a cached presign, or a public url that needs none). */
+    val localCopyInstant: Boolean = false,
+    /** P2-MM-9: [PreferLocalAudio] ordered the Apple Music rung AHEAD of the rip (no instant local copy). */
+    val appleMusicFirst: Boolean = false,
 )
 
 /**

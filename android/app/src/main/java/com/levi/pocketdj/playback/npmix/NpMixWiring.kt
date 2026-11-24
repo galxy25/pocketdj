@@ -169,7 +169,15 @@ class NpMixWiring(private val app: AppGraph) {
                 ripped = entry != null,
                 // Android's ladder never starts a RIPPED row on Apple Music (AppleMusicRowResolver defers on ripStartsNow);
                 // the Apple-Music-sourced distinction is P2-MM-9's.
-                appleMusicFirst = false,
+                appleMusicFirst = com.levi.pocketdj.playback.sequencer.PreferLocalAudio.appleMusicFirst(
+                    com.levi.pocketdj.playback.sequencer.PreferLocalAudio.Facts(
+                        preferLocalAudio = true,
+                        appleMusicSourced = app.catalogRepository.state.value.catalog?.songsById?.get(item.id)?.appleMusicId?.isNotBlank() == true,
+                        ripped = entry != null,
+                        localCopyInstant = local || !app.playbackController.ripServerConfigured ||
+                            app.servicesGraph.presignCacheOrNull()?.cached(id) != null,
+                    ),
+                ) && controller.canPlayFullTrackWarming(),
                 analogSide = analog && entry?.cutKey == null,
                 analogStartMs = if (analog) (app.ripsRepository.effectiveStartMs(id) ?: entry?.startMs ?: 0L) else 0L,
                 networkAllows = com.levi.pocketdj.mix.nowplaying.NowPlayingPrefetcher.mixReach(net, cfg.cellular, cfg.bufferAhead) != null,
@@ -273,6 +281,58 @@ class NpMixWiring(private val app: AppGraph) {
         override fun log(line: String) = SwapOnLand.laneLog(line)
     }
 
+    // ---- P2-MM-9: the Apple Music -> local touch hand-off (np-mix-mode phase 4) -----------------------------
+
+    private val amHandOffEnv = object : AppleMusicHandOffEnv {
+        private val mixGraph get() = app.mixGraph
+        override val buffering: Boolean get() = coordinator.buffering
+        override val generation: Long get() = seq.state.value.playGeneration
+        override fun currentRowUid(): String? = seq.state.value.current?.uid
+        override fun currentRowId(): String? = seq.state.value.current?.id
+
+        override suspend fun facts(): AppleMusicHandOffRules.Facts? {
+            val item = seq.state.value.current ?: return null
+            if (!controller.isAppleMusicActive) return null
+            return AppleMusicHandOffRules.Facts(
+                buffering = coordinator.buffering,
+                appleMusicActive = true,
+                dspEngaged = mixGraph.npDspEngine.isEngaged,
+                mixTabActive = NowPlayingSeams.mixSessionActive,
+                deviceMode = deviceModeMirror,
+                localCopyComplete = mixGraph.npDspHost.hasLocalCopy(item.id),
+                interruptionOpen = seq.discriminator.interruptionOpen,
+                startPending = seq.isStartPending,
+                lengthMs = item.lengthMs,
+            )
+        }
+
+        override suspend fun appleMusicPositionMs(): Long? = runCatching { controller.currentPositionMs() }.getOrNull()
+
+        override suspend fun engagePaused(atSeconds: Double): Boolean {
+            val id = seq.state.value.current?.id ?: return false
+            return mixGraph.npDspHost.engageLocalPaused(id, atSeconds)
+        }
+
+        // The controller becomes the sequencer's own again (single owner), exactly as for a growing start.
+        override suspend fun stopAppleMusic() = controller.claimForDsp()
+        override fun resume() = mixGraph.npDspEngine.play()
+        override fun disengage() { mixGraph.npDspEngine.disengage(); runCatching { mixGraph.npDspHost.refresh() } }
+        override fun readyChanged() { runCatching { mixGraph.npDspHost.refresh() } }
+        override fun meterBegan(cause: String) { seq.meter?.transitionBegan(cause) }
+        override fun meterTrackStarting(backend: String) { seq.meter?.trackStarting(backend) }
+        override fun meterFirstAudio(backend: String) { seq.meter?.firstAudio(backend) }
+        override fun log(line: String) = SwapOnLand.laneLog(line)
+    }
+
+    /** The touch hand-off of an Apple Music row onto its local copy (never automatic). */
+    val appleMusicHandOff: AppleMusicHandOff = AppleMusicHandOff(amHandOffEnv)
+
+    /** Recompute the hand-off's cached availability (a local copy landed / the row changed). Main-thread. */
+    fun refreshAppleMusicHandOff() {
+        if (!coordinator.buffering && !appleMusicHandOff.ready()) return
+        scope.launch { appleMusicHandOff.refresh() }
+    }
+
     /** The growing-file start (a sequencer StartInterceptor) and its touch hand-off / fallback ledger. */
     val growing: GrowingStart = GrowingStart(growingEnv, scope)
 
@@ -281,8 +341,8 @@ class NpMixWiring(private val app: AppGraph) {
         object : NpMixCoordinator.HandOff {
             override fun attempt(reason: String) { scope.launch { runner.attempt(reason) } }
             override fun retryOwed(trigger: String) { scope.launch { runner.retryOwed(trigger, ports.currentUid) } }
-            override fun rowChanged(currentUid: String?) { runner.rowChanged(currentUid); growing.rowChanged(currentUid) }
-            override fun sessionEnded() { runner.sessionEnded(); growing.sessionEnded() }
+            override fun rowChanged(currentUid: String?) { runner.rowChanged(currentUid); growing.rowChanged(currentUid); appleMusicHandOff.rowChanged(currentUid); refreshAppleMusicHandOff() }
+            override fun sessionEnded() { runner.sessionEnded(); growing.sessionEnded(); appleMusicHandOff.sessionEnded() }
         },
     )
 
@@ -294,6 +354,7 @@ class NpMixWiring(private val app: AppGraph) {
         installed = true
         seq.hooks.add(coordinator)
         seq.sessionExtras.register(coordinator)
+        controller.preferLocalAudioProvider = { coordinator.buffering } // P2-MM-9: Mix Mode buffering reorders the AM ladder
         seq.addStartInterceptor(growing) // P2-MM-8: Mix Mode starts eligible rows on the growing buffer
         // A swap-on-land local file that fails reverts once onto the stream (the sequencer advances on a second failure).
         controller.handOffFailed = { songId, url, pos ->

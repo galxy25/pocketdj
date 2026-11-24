@@ -46,6 +46,13 @@ interface DspHostPorts {
     fun growingTouchReady(songId: String): Boolean = false
     /** P2-MM-8: do that hand-off now ([play] = the listener wants sound; false stays paused). False = refused, nothing touched. */
     suspend fun engageGrowingFromStream(songId: String, play: Boolean): Boolean = false
+    /**
+     * P2-MM-9: the row sounds on Apple Music and has a complete local copy: the first control touch can hand it off to
+     * the DSP (AppleMusicHandOff). Cheap (a cached verdict); default off.
+     */
+    fun appleMusicHandOffReady(songId: String): Boolean = false
+    /** P2-MM-9: do that hand-off now ([play] = the listener wants sound; false stays paused). False = refused, nothing touched. */
+    suspend fun handOffFromAppleMusic(songId: String, play: Boolean): Boolean = false
 }
 
 /** Immutable snapshot for the panel (the engine is not observable by Compose). */
@@ -112,8 +119,28 @@ class NowPlayingDspHost(
      */
     fun available(): Boolean {
         val id = ports.currentSongId ?: return false
-        if (ports.mixSessionActive || ports.appleMusicActive || ports.heldForResume) return false
+        if (ports.mixSessionActive || ports.heldForResume) return false
+        // P2-MM-9: an Apple Music row is mixable only once it can hand off to its local copy (hidden, never greyed, otherwise).
+        if (ports.appleMusicActive) return ports.appleMusicHandOffReady(id)
         return engine.isEngaged && engine.engagedSongId == id || ports.resolve(id) != null || ports.growingTouchReady(id)
+    }
+
+    /** P2-MM-9: the row has a complete local copy the DSP can open (the Apple Music hand-off's target). */
+    fun hasLocalCopy(songId: String): Boolean = ports.resolve(songId) != null
+
+    /**
+     * P2-MM-9: open the DSP on [songId]'s local copy at [atSeconds], PAUSED (the Apple Music hand-off's step 2; the engage
+     * claims the session). False = refused (no copy / undecodable): nothing was touched.
+     */
+    suspend fun engageLocalPaused(songId: String, atSeconds: Double): Boolean = engageLock.withLock {
+        if (ports.currentSongId != songId || ports.mixSessionActive || ports.heldForResume) return@withLock false
+        if (isEngagedFor(songId)) return@withLock true
+        val t = ports.resolve(songId) ?: return@withLock false
+        val ok = engine.engage(t.file, if (t.isCut) 0L else (t.startMs ?: 0).toLong(), ports.windowLengthMs(songId), atSeconds, false)
+        if (!ok) { ports.log("npdsp am-handoff engage REFUSED song=$songId"); publish(); return@withLock false }
+        engine.bindSong(songId)
+        publish()
+        true
     }
 
     /** Idempotent and serialized: the FIRST control touch hands the playing track off ExoPlayer into the DSP graph. */
@@ -123,6 +150,12 @@ class NowPlayingDspHost(
         val id = ports.currentSongId ?: return false
         if (engine.isEngaged && engine.engagedSongId == id) return true
         if (!available()) return false
+        if (ports.appleMusicActive) {
+            if (atSeconds != null) return false
+            val ok = ports.handOffFromAppleMusic(id, play ?: ports.playWanted)
+            publish()
+            return ok
+        }
         val t = ports.resolve(id)
         if (t == null) {
             // P2-MM-8: no local file, but Mix Mode's buffer covers the playhead - the touch moves the row onto the growing file.

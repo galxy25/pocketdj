@@ -215,6 +215,24 @@ class PlaybackController(
     @Volatile private var cachedMode: PlaybackMode = PlaybackMode.CLOUD
     @Volatile private var cachedRipConfigured: Boolean = false
 
+    /** A rip server is configured (Settings > Import server has a URL + token). Cached; safe on any thread. */
+    val ripServerConfigured: Boolean get() = cachedRipConfigured
+
+    /**
+     * P2-MM-9 `preferLocalAudio` = Mix Mode is buffering. Wired by `NpMixWiring.install` (the controller is built before the
+     * Mix Mode coordinator); false until then, so the ladder is the old one.
+     */
+    @Volatile var preferLocalAudioProvider: () -> Boolean = { false }
+
+    /** P2-MM-9: the row has an Apple Music identity (catalog `appleMusicId`; off-catalog `amrec_` rows are Apple-Music-only). */
+    private fun isAppleMusicSourcedRow(item: QueueItem): Boolean =
+        catalog.state.value.catalog?.songsById?.get(item.id)?.appleMusicId?.isNotBlank() == true
+
+    /** P2-MM-9: a rip that would start INSTANTLY: a device file, a url needing no presign (no rip server), or a cached presign. */
+    private suspend fun ripCopyInstant(item: QueueItem): Boolean =
+        !cachedRipConfigured || presigns?.cached(item.resolveId) != null ||
+            withContext(Dispatchers.IO) { localFiles.localUrlForPlayback(item) } != null
+
     /** The per-row resolve ladder; packages register their rung via [RowResolverRegistry.register]. */
     val rowResolvers = RowResolverRegistry(
         initial = listOf(
@@ -239,6 +257,9 @@ class PlaybackController(
         ),
         manifestHit = { id -> rips.entry(id) != null },
         ripServerConfigured = { cachedRipConfigured },
+        preferLocalAudio = { preferLocalAudioProvider() },
+        isAppleMusicSourced = { isAppleMusicSourcedRow(it) },
+        localCopyInstant = { ripCopyInstant(it) },
     )
 
     private val sequencerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)

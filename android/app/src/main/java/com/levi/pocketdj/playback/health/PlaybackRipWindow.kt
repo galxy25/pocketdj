@@ -64,6 +64,16 @@ class PlaybackRipWindow {
             return out
         }
 
+        /**
+         * P2-MM-9 rip-AHEAD for an Apple-Music-only row: inside the window AND never the playing row (the playing row
+         * is on Apple Music right now; a rip for it would only compete with its own start). [playing] = the playing
+         * row's base + resolve ids.
+         */
+        fun allowsAhead(id: String, rows: List<Row>, index: Int): Boolean {
+            val playing = rows.getOrNull(index)?.let { setOf(it.id, it.resolveId) } ?: return false
+            return id !in playing && allows(id, rows, index)
+        }
+
         /** Whether a playback rip for [id] may be requested at all right now. */
         fun allows(id: String, rows: List<Row>, index: Int): Boolean = id in windowIds(rows, index)
     }
