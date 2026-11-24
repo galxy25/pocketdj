@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # P2-DATA-1: durable session snapshot passthrough
 
@@ -14,3 +14,13 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+fixes applied
+
+- MAJOR clear() leaked extras -> fixed: clear() resets extras; save() also resets them when the sessionId differs from the extras' owner (SnapshotExtras.sessionId). Tests: clearThenNewSessionDoesNotLeakOldExtras, differentSessionIdWithoutClearDoesNotLeakEither.
+- MAJOR row extras dropped on rebuilt snapshots -> fixed: SnapshotExtras carries the previous rows; overlay() restores plan, appleMusicId, djUserNext, djPlaced and unknownKeys onto rebuilt rows, matched by songId (n-th occurrence), not by position. The deviation above is superseded. Tests: rowExtrasSurviveAStructuralSaveBuiltThroughQueueItems, reorderedRowsKeepTheirOwnExtras.
+- MINOR unknown keys in source / stemLock -> fixed: unknownKeys on SessionSourceRef and SessionStemLock, captured in attach(), re-emitted in merge(), carried by overlay(). Fixture extended; test sourceAndStemLockUnknownKeysSurvive. Row passthrough now keyed by songId on store overlay (decode/encode of one object is positional, which is safe).
+- NIT coverage + string hack -> fixed: new tests above; absentFieldsStayAbsentNotNull now walks the parsed JSON for nulls.
+
+Tests: 5789 -> 5794, 0 failures; assembleDebug green.

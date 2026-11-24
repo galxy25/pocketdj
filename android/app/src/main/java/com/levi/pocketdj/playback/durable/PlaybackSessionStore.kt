@@ -52,6 +52,9 @@ class PlaybackSessionStore(
     /** A STRUCTURAL change (play, index move, live edit, repeat/shuffle): persists immediately. */
     fun save(snapshot: SessionSnapshot) = synchronized(lock) {
         val now = clock()
+        // Extras belong to the session they came from; a different session starts clean.
+        val owner = extrasState.sessionId
+        if (owner != null && owner != snapshot.sessionId) extrasState = SnapshotExtras()
         val merged = extrasState.overlay(snapshot)
         extrasState = SnapshotExtras.of(merged)
         current = merged.copy(updatedAt = now.toDouble())
@@ -81,6 +84,7 @@ class PlaybackSessionStore(
     /** End of the session (stop / natural end-of-set): forget it and delete the file. */
     fun clear() = synchronized(lock) {
         current = null
+        extrasState = SnapshotExtras()
         version++
         writer.delete(version)
     }

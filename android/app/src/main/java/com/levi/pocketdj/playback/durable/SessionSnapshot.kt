@@ -23,6 +23,7 @@ data class SessionSourceRef(
     val name: String? = null,
     val originKind: String? = null,
     val originId: String? = null,
+    @Transient val unknownKeys: JsonObject = JsonObject(emptyMap()),
 )
 
 /** One queue row: self-contained (title/artist/length ride the file) so a restore needs no catalog. */
@@ -61,6 +62,7 @@ data class SessionStemLock(
     val stemsOn: Boolean = false,
     val muted: List<String> = emptyList(),
     val volumes: Map<String, Double> = emptyMap(),
+    @Transient val unknownKeys: JsonObject = JsonObject(emptyMap()),
 )
 
 /** The iOS `PlaybackSessionStore.Snapshot` JSON shape. */

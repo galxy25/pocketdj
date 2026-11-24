@@ -86,7 +86,14 @@ class SessionSnapshotPassthroughTest {
         val text = SessionSnapshot.encode(SessionSnapshot.decode(fixture)!!.copy(npMixMode = null, fxLock = null, djMode = null))
         val o = root(text)
         assertTrue("npMixMode" !in o && "fxLock" !in o && "djMode" !in o)
-        assertTrue(":null" !in text.replace("null,\"s\"", ""))
+        // the fixture's own futureTopLevel holds a JSON null; no OTHER value anywhere is null
+        fun nulls(e: kotlinx.serialization.json.JsonElement, path: String): List<String> = when (e) {
+            is JsonObject -> e.flatMap { (k, v) -> nulls(v, "$path/$k") }
+            is kotlinx.serialization.json.JsonArray -> e.flatMapIndexed { i, v -> nulls(v, "$path[$i]") }
+            is kotlinx.serialization.json.JsonNull -> listOf(path)
+            else -> emptyList()
+        }
+        assertEquals(listOf("/futureTopLevel/x[1]"), nulls(o, ""))
     }
 
     @Test fun storeCarriesIosFieldsAcrossAnAndroidWriteOfARebuiltSnapshot() {
@@ -131,5 +138,83 @@ class SessionSnapshotPassthroughTest {
         val o = root(SessionSnapshot.encode(ex.overlay(snap)))
         assertEquals("real", o["sessionId"]!!.jsonPrimitive.content)
         assertEquals("1", o["k"]!!.jsonPrimitive.content)
+    }
+
+    private fun tmpStore(block: (PlaybackSessionStore, File) -> Unit) {
+        val dir = kotlin.io.path.createTempDirectory("pdjsnap").toFile()
+        try {
+            val f = File(dir, PLAYBACK_SESSION_FILE).also { it.writeText(fixture) }
+            block(PlaybackSessionStore(f, clock = { 5L }), f)
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    private fun freshSnapshot(id: String = "new-session") = SessionSnapshot(
+        sessionId = id, source = SessionSourceRef("album", "alb_1"),
+        queue = listOf(SessionRow("sng_x", "X")), index = 0,
+    )
+
+    @Test fun clearThenNewSessionDoesNotLeakOldExtras() {
+        tmpStore { store, f ->
+            store.save(store.load()!!)
+            store.clear()
+            store.save(freshSnapshot())
+            store.awaitWrites()
+            val out = root(f.readText())
+            for (k in listOf("djMode", "fxLock", "npMixMode", "futureTopLevel")) assertNull(k, out[k])
+            assertEquals(null, out["source"]!!.jsonObject["futureSourceKey"])
+        }
+    }
+
+    @Test fun differentSessionIdWithoutClearDoesNotLeakEither() {
+        tmpStore { store, f ->
+            store.save(store.load()!!)
+            store.save(freshSnapshot())
+            store.awaitWrites()
+            val out = root(f.readText())
+            for (k in listOf("djMode", "fxLock", "npMixMode", "futureTopLevel")) assertNull(k, out[k])
+        }
+    }
+
+    @Test fun rowExtrasSurviveAStructuralSaveBuiltThroughQueueItems() {
+        tmpStore { store, f ->
+            val loaded = store.load()!!
+            val rebuilt = loaded.copy(
+                queue = loaded.toQueueItems().map { SessionSnapshot.row(it) },
+                npMixMode = null, fxLock = null, djMode = null, positionMs = 3,
+            )
+            assertNull(rebuilt.queue[0].plan)
+            store.save(rebuilt)
+            store.awaitWrites()
+            val out = root(f.readText())
+            val inRows = root(fixture)["queue"]!!.jsonArray
+            val outRows = out["queue"]!!.jsonArray
+            assertEquals(inRows[0].jsonObject["plan"], outRows[0].jsonObject["plan"])
+            assertEquals(inRows[0].jsonObject["futureRowKey"], outRows[0].jsonObject["futureRowKey"])
+            assertEquals(inRows[0].jsonObject["djUserNext"], outRows[0].jsonObject["djUserNext"])
+            for (k in listOf("appleMusicId", "djPlaced", "djUserNext")) assertEquals(k, inRows[1].jsonObject[k], outRows[1].jsonObject[k])
+        }
+    }
+
+    @Test fun reorderedRowsKeepTheirOwnExtras() {
+        tmpStore { store, f ->
+            val loaded = store.load()!!
+            val reordered = loaded.copy(queue = loaded.queue.reversed().map { SessionSnapshot.row(it.let { r -> com.levi.pocketdj.playback.sequencer.QueueItem(id = r.songId, title = r.title) }) })
+            store.save(reordered)
+            store.awaitWrites()
+            val rows = root(f.readText())["queue"]!!.jsonArray
+            assertEquals("sng_b", rows[1].jsonObject["songId"]!!.jsonPrimitive.content)
+            assertEquals("1440857781", rows[1].jsonObject["appleMusicId"]!!.jsonPrimitive.content)
+            assertNull(rows[0].jsonObject["appleMusicId"])
+            assertEquals("sng_a", rows[2].jsonObject["songId"]!!.jsonPrimitive.content)
+            assertNotNull(rows[2].jsonObject["futureRowKey"])
+        }
+    }
+
+    @Test fun sourceAndStemLockUnknownKeysSurvive() {
+        val out = root(SessionSnapshot.encode(SessionSnapshot.decode(fixture)!!))
+        assertEquals("s", out["source"]!!.jsonObject["futureSourceKey"]!!.jsonPrimitive.content)
+        assertEquals("7", out["stemLock"]!!.jsonObject["futureStemKey"]!!.jsonPrimitive.content)
     }
 }

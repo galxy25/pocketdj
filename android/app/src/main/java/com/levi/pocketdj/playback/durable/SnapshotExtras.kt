@@ -62,17 +62,47 @@ data class SnapshotExtras(
     val fxLock: SessionFxLock? = null,
     val djMode: SessionDjMode? = null,
     val unknownKeys: JsonObject = JsonObject(emptyMap()),
+    /** The session these extras came from; extras never overlay a different session. */
+    val sessionId: String? = null,
+    /** The previous rows, whose iOS-only row fields (plan, appleMusicId, djUserNext, djPlaced, unknown keys) are carried. */
+    val rows: List<SessionRow> = emptyList(),
+    val sourceUnknownKeys: JsonObject = JsonObject(emptyMap()),
+    val stemLockUnknownKeys: JsonObject = JsonObject(emptyMap()),
 ) {
-    /** [snap] with every absent field filled from this (the snapshot's own non-null value wins). */
-    fun overlay(snap: SessionSnapshot): SessionSnapshot = snap.copy(
-        npMixMode = snap.npMixMode ?: npMixMode,
-        fxLock = snap.fxLock ?: fxLock,
-        djMode = snap.djMode ?: djMode,
-        unknownKeys = JsonObject(unknownKeys + snap.unknownKeys),
-    )
+    /**
+     * [snap] with every absent field filled from this (the snapshot's own non-null value wins). Rows are
+     * matched by songId (the n-th occurrence of an id takes the n-th previous row with that id), so a
+     * reorder or edit of the queue cannot hand one row another row's keys.
+     */
+    fun overlay(snap: SessionSnapshot): SessionSnapshot {
+        val prev = HashMap<String, ArrayDeque<SessionRow>>()
+        rows.forEach { prev.getOrPut(it.songId) { ArrayDeque() }.addLast(it) }
+        val queue = snap.queue.map { r ->
+            val p = prev[r.songId]?.removeFirstOrNull() ?: return@map r
+            r.copy(
+                plan = r.plan ?: p.plan,
+                appleMusicId = r.appleMusicId ?: p.appleMusicId,
+                djUserNext = r.djUserNext ?: p.djUserNext,
+                djPlaced = r.djPlaced ?: p.djPlaced,
+                unknownKeys = JsonObject(p.unknownKeys + r.unknownKeys),
+            )
+        }
+        return snap.copy(
+            queue = queue,
+            source = snap.source.copy(unknownKeys = JsonObject(sourceUnknownKeys + snap.source.unknownKeys)),
+            stemLock = snap.stemLock?.let { it.copy(unknownKeys = JsonObject(stemLockUnknownKeys + it.unknownKeys)) },
+            npMixMode = snap.npMixMode ?: npMixMode,
+            fxLock = snap.fxLock ?: fxLock,
+            djMode = snap.djMode ?: djMode,
+            unknownKeys = JsonObject(unknownKeys + snap.unknownKeys),
+        )
+    }
 
     companion object {
-        fun of(snap: SessionSnapshot) = SnapshotExtras(snap.npMixMode, snap.fxLock, snap.djMode, snap.unknownKeys)
+        fun of(snap: SessionSnapshot) = SnapshotExtras(
+            snap.npMixMode, snap.fxLock, snap.djMode, snap.unknownKeys, snap.sessionId, snap.queue,
+            snap.source.unknownKeys, snap.stemLock?.unknownKeys ?: JsonObject(emptyMap()),
+        )
     }
 }
 
@@ -100,6 +130,8 @@ internal object SnapshotCodec {
         "songId", "title", "artist", "lengthMs", "repeatCount", "variant", "editionLocked", "resolveId",
         "cleanOnlySkip", "plan", "appleMusicId", "djPlaced", "djUserNext",
     )
+    private val SOURCE = setOf("kind", "id", "name", "originKind", "originId")
+    private val STEM = setOf("enabled", "stemsOn", "muted", "volumes")
     private val PLAN = setOf("runId", "slot", "collectionId", "score", "pinned")
     private val ENABLED = setOf("enabled")
     private val FX = setOf("enabled", "effects")
@@ -118,6 +150,8 @@ internal object SnapshotCodec {
                     plan = row.plan?.copy(unknownKeys = r["plan"].obj()?.unknownTo(PLAN) ?: JsonObject(emptyMap())),
                 )
             },
+            source = typed.source.copy(unknownKeys = root["source"].obj()?.unknownTo(SOURCE) ?: JsonObject(emptyMap())),
+            stemLock = typed.stemLock?.copy(unknownKeys = root["stemLock"].obj()?.unknownTo(STEM) ?: JsonObject(emptyMap())),
             npMixMode = typed.npMixMode?.copy(unknownKeys = root["npMixMode"].obj()?.unknownTo(ENABLED) ?: JsonObject(emptyMap())),
             fxLock = typed.fxLock?.let { fx ->
                 val raw = root["fxLock"].obj()
@@ -147,6 +181,12 @@ internal object SnapshotCodec {
                 }
                 o.mergedAfter(row.unknownKeys)
             })
+        }
+        if (typed.source.unknownKeys.isNotEmpty()) {
+            m["source"] = encoded["source"].obj()!!.mergedAfter(typed.source.unknownKeys)
+        }
+        typed.stemLock?.let { st ->
+            if (st.unknownKeys.isNotEmpty()) m["stemLock"] = encoded["stemLock"].obj()!!.mergedAfter(st.unknownKeys)
         }
         typed.npMixMode?.let { n ->
             if (n.unknownKeys.isNotEmpty()) m["npMixMode"] = encoded["npMixMode"].obj()!!.mergedAfter(n.unknownKeys)
