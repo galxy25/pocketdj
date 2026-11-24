@@ -158,3 +158,21 @@ Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave8/). New debu
 Integrator changes: debug-only seeds in DebugScreen.kt and new screens/settings/RemoteLoopbackDebug.kt.
 
 Open: P2Q24-P2Q27; StrictMode disk reads on main (DJ skip path, MotionBootReceiver) join P2Q23.
+
+## Wave 9
+
+Packages merged: P2-DJ-11, P2-REM-8, P2-REM-9, P2-POC-12, P2-POC-13, P2-REM-11, P2-SOC-1, P2-SURF-3. One conflict set (DeepLinkParser.kt, DeepLinkDispatcher.kt): REM-8 (`DeepLink.Remote(code?)` + `RemotePanelRequests`) and REM-9 (`DeepLink.RemoteJoin(token)` + parked token) both parsed `pocketdj://remote[/join/<code>]`. Resolution: `remote` or `remote/join` with no code -> `Remote(null)` (opens the hub's Remote half); `remote/join/<code>` -> `RemoteJoin` (REM-9's parked token, which RemoteScreen consumes), and the dispatcher also posts a `RemotePanelRequests` so the hub flips to Remote. Two tests (JukeboxHubModeTest, DeepLinkRemoteJoinTest) updated to the merged contract.
+
+Tests: 7655 JVM tests, 0 failures; assembleDebug green.
+
+Emulator (emulator-5554, shots in pocketdj-parity2-pkgs/_shots/wave9/; app data was wiped (`pm clear`) mid-run, so it went through onboarding again, then Seed rip playlist + Burn all seed):
+- P2-REM-8 PASS after a fix: `--es pdj.seedRemote showcase` on a COLD start left the hub on Hero (the setMode write ran on the composition scope, which was cancelled when the tab composed twice). Moved the write to `appScope`; cold start now lands on Remote with the Car speaker playing "Leech" 1:45 in. Warm re-delivery and `pocketdj://remote` also land on Remote (start-a-session view). No regression test (UI scope timing); covered by hub mode tests.
+- P2-REM-9 PASS (permissions flow): Listen Together -> "Allow nearby access?" rationale -> system Nearby dialogs -> Allow -> QR + code `VV8T273S` shown and `Mode: Listen Together`; `PocketDJ.remote` logs `hosting LISTEN_TOGETHER` then `nearby unavailable on emulator (8002: STATUS_ALREADY_DISCOVERING)` when joining; no crash. Device-only: two phones, Backseat on a car stereo, host hand-over.
+- P2-POC-12 PASS: Recommendations on -> Settings shows "Notice walking & running"; toggle -> prominent-disclosure dialog -> system Activity dialog -> Allow -> "Motion access: Allowed"; adapt toggle on; `pdj.motionFake=WALKING` + Pocket wheel centre play (`start run=B10A90DF`), 3 min later `[pocketrun] retarget run=B10A90DF mode=walking applied=99`.
+- P2-POC-13 PASS (local mock /pockets server on 10.0.2.2:8799 with `pdj.pocketsBase/pocketsFakeCreds/pocketsEnable`): uploads without caps carry no `mode`/`run` keys; after the mock answered `caps:["wheel"]` (persisted `serverCaps`) uploads carried `mode` (settled walking plays) and, for plays from a Pocket run, `run` + `contextId/contextKind`.
+- P2-DJ-11 PASS: with the 13-song SeedRip queue burned (`backend=burned`), DJ on logged `analysis quick/full song=... lufs=...` and `leveling song=sng_b6846b242c09 lufs=-19.6 gain=+5.6 dB (ramped)`; DJ off logged `leveling off gain=0`. (Over a rip-streamed queue it logs "plain (not a local file...)" and no leveling, by design.) Device-only: loudness consistency across a 10-song set.
+- P2-SOC-1 PASS: Now Playing Share opened the system chooser (`ChooserActivityLauncher`); History long-press > Select 2 rows > Share selected opened the chooser; Mix tab antenna opened the Jukebox tab; Jukebox create with Timeless on showed "Timeless — never expires" (live toggle flipped off/on, End Jukebox). NOTE: the emulator's Broker URL pointed at 10.0.2.2:8788, which is the REAL iMac jukebox server (launchd), not a dry run, so this created and then ended one real session "Tester's Jukebox" on the dev bucket (5 sessions are listed there now, all ended/idle); the broker URL was cleared afterwards. See P2Q29 for the antenna landing on the Remote half.
+- P2-SURF-3 PASS: widget placed from the launcher (long-press > Widgets) and resized to Large; playing the For You "In Da Zone" queue shows thumbs up/down beside the transport; tapping thumbs-up then Next recorded `{songId: sng_a6a557ead74f (Miss Me), scope: zone, verdict: accepted, surface: widget}` in pocketdj-rec-feedback.json for the song that was showing, not the one after the skip.
+- P2-REM-11: pure, no emulator step.
+No FATAL EXCEPTION / ANR from com.levi.pocketdj. Open: P2Q28-P2Q30.
+

@@ -35,6 +35,10 @@ Format: `Q<n> [package] question — default meanwhile`. Integrators append new 
 - **P2Q26 [P2-DJ-10]** DJ planner facts come from the catalog only (iOS also uses burned-item and on-device analysis facts). Leave to P2-DJ-11 (`driver.onAnalysisLanded`)? — *Default: yes.*
 - **P2Q27 [P2-REM-7]** `ParityFlags.REMOTE` stays false and `RemoteStarters.current` is `None` until P2-REM-9 (Nearby transport); the Remote screen was verified only through a debug loopback dialog (Settings > Debug > "Remote loopback"). Scan-to-join (`pocketdj://remote/join`) belongs to REM-8/9. OK? — *Default: yes.*
 
+- **P2Q28 [P2-REM-9]** Joining from the Nearby list (no token) now makes the host approve each joiner in a dialog (name + auth digits, 30 s expiry); a matching QR/code token joins without a prompt. Keep the explicit approve step? — *Default: Yes, approve prompt for token-less joins.*
+- **P2Q29 [P2-SOC-1]** The Mix tab's broadcast antenna opens the Jukebox tab on whichever half (Hero | Remote) you used last, so after using Remote it lands on Remote, not on Hero's "Start a jukebox". Force Hero when the antenna is tapped? — *Default: keep last-used half; one-line change if you want Hero forced.*
+- **P2Q30 [P2-REM-11]** An earlier attempt's optional extras (unreliable send for `mix.beat`, an `onMirrorChanged` hook for LOAD/EJECT) were stashed in the P2-REM-11 worktree (`git stash`) because one of their tests failed; P2-REM-12/13 may need them. Revive them there, or leave them out until needed? — *Default: left out; P2-REM-12 pulls them in if it needs them.*
+
 ## ANSWERED
 
 (none yet)

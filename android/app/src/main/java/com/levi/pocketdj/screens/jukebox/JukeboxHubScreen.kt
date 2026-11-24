@@ -52,7 +52,8 @@ fun JukeboxHubScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit
     val remoteAvailable = ParityFlags.REMOTE || seedRunning
     val mode = JukeboxPanelModeStore.effective(JukeboxPanelMode.fromRaw(storedRaw), remoteAvailable)
 
-    fun setMode(m: JukeboxPanelMode) { scope.launch { graph.settings.set(JukeboxPanelModeStore.KEY, m.raw) } }
+    // App scope: a hub recomposed/left mid-request (cold start) must still persist the flip.
+    fun setMode(m: JukeboxPanelMode) { graph.appScope.launch { graph.settings.set(JukeboxPanelModeStore.KEY, m.raw) } }
 
     // A session arriving while the panel shows Hero flips it to Remote.
     LaunchedEffect(controller, remoteAvailable) {
