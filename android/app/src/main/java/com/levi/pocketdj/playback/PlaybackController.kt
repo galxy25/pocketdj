@@ -33,6 +33,7 @@ import com.levi.pocketdj.playback.am.AmTrack
 import com.levi.pocketdj.playback.am.AppleMusicEndMonitor
 import com.levi.pocketdj.playback.am.BackendAppleMusicController
 import com.levi.pocketdj.playback.health.EngineProbe
+import com.levi.pocketdj.playback.sequencer.AlbumFileState
 import com.levi.pocketdj.playback.sequencer.AppleMusicRowResolver
 import com.levi.pocketdj.playback.sequencer.AppleMusicSource
 import com.levi.pocketdj.playback.session.AppleMusicPlayerAdapter
@@ -362,9 +363,13 @@ class PlaybackController(
         }
     }
 
+    /** The sequencer's engine seam (also the album run's: boundaries, in-file seeks, in-place retitles). */
+    private val enginePort: PlayerPort =
+        com.levi.pocketdj.playback.sequencer.GamePreviewFallbackPort(Media3Port()) { id -> gamePreviewUrl?.invoke(id) }
+
     val sequencer: SetlistSequencer = SetlistSequencer(
         scope = sequencerScope,
-        port = com.levi.pocketdj.playback.sequencer.GamePreviewFallbackPort(Media3Port()) { id -> gamePreviewUrl?.invoke(id) },
+        port = enginePort,
         registry = rowResolvers,
         modeProvider = { cachedMode },
     ).also { seq ->
@@ -372,6 +377,18 @@ class PlaybackController(
         seq.ripWaitProbe = { ripSession.isResolving() }
         seq.engine = engineProbe
         seq.preloadEnabled = true // PB-10: gapless window for local / manifest-rip boundaries
+        // P2-ALB-4: a vinyl side plays as ONE engine item; song changes retarget it in place (no load).
+        val albumTimelines = com.levi.pocketdj.playback.album.AlbumTimelineSource { id -> rips.albumTimeline(id) }
+        seq.albumTimelines = albumTimelines
+        val albumRun = com.levi.pocketdj.playback.album.AlbumRunPlayer(
+            seq, enginePort, albumTimelines, sequencerScope,
+            declines = { activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer || !exoFronts() || albumRunDeclines() },
+        )
+        seq.addAdvanceInterceptor(albumRun)
+        seq.addStartInterceptor(albumRun)
+        RunTransportBus.albumBoundaryFired = { id ->
+            if (activeBackend == ActiveBackend.EXO && sequencerOwnsPlayer) seq.handleEnded(id)
+        }
         seq.appleMusicActive = { activeBackend == ActiveBackend.APPLE_MUSIC }
         seq.rowOnDevice = { item -> localFiles.localUrlForPlayback(item) != null }
         seq.rowStartsInstantly = { item ->
@@ -477,6 +494,7 @@ class PlaybackController(
             if (activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer || !exoFronts()) return
             val rendering = controller?.let { it.isPlaying && it.playbackState == Player.STATE_READY } ?: false
             if (!sequencer.handlePreloadedTransition(mediaItem.mediaId, rendering)) return
+            clearAlbumRun() // the engine rolled onto a preloaded row: the previous run item is gone
             urlRetriedFor = null
             playGeneration.incrementAndGet()
             scope.launch {
@@ -1406,6 +1424,7 @@ class PlaybackController(
         originCollectionId: String? = null,
         titleFallback: String? = null,
         artistFallback: String? = null,
+        albumRun: Boolean = false,
     ): MediaItem {
         val artUri = album?.artCandidates()?.firstOrNull() ?: album?.let { artFallback(it) }
         val isLive = action.url.contains("/hls/")
@@ -1425,6 +1444,7 @@ class PlaybackController(
             album?.id?.let { putString(PlaybackContract.EXTRA_ALBUM_ID, it) }
             playContext.runTag?.let { putString(PlaybackContract.EXTRA_RUN_TAG, it) }
             originCollectionId?.let { putString(PlaybackContract.EXTRA_ORIGIN_COLLECTION_ID, it) }
+            if (albumRun) putBoolean(PlaybackContract.EXTRA_ALBUM_RUN, true)
         }
         return MediaItem.Builder()
             .setMediaId(songId)
@@ -1459,6 +1479,7 @@ class PlaybackController(
     ) {
         // Single-owner: hand audio to ExoPlayer, stopping the AM engine first.
         cancelRipOnDemand() // a foreign play retires the run's rip-on-demand wait
+        clearAlbumRun()
         directSampler?.noteReplacing() // Q89c: the direct row it replaces gets its verdict (<50 % = skipped)
         playGeneration.incrementAndGet()
         urlRetriedFor = null
@@ -1493,7 +1514,7 @@ class PlaybackController(
     /** The sequencer's engine: loads ONLY the current row into ExoPlayer. */
     private inner class Media3Port : PlayerPort {
         override suspend fun load(request: PlayRequest) {
-            (request.source as? AppleMusicSource)?.let { loadAppleMusic(request, it); return }
+            (request.source as? AppleMusicSource)?.let { clearAlbumRun(); loadAppleMusic(request, it); return }
             val item = request.item
             if (!sequencerOwnsPlayer) directSampler?.noteReplacing() // Q89c: a run's row replaces a direct single
             // A foreign play retires the sequencer's pending start (generation bump, published); if
@@ -1524,16 +1545,26 @@ class PlaybackController(
                     else -> throw IllegalStateException("No player path for source ${src.backend}")
                 }
                 if (request.source !is RipOnDemandSource) ripSession.cancel()
+                // P2-ALB-4: a row of an in-order album run loads the whole side as ONE item (lead-in from 0:00 for a
+                // fresh first song, else its own start; no clip end) - its end is the armed boundary below.
+                val plan = request.albumRun?.takeIf { action is PlayAction.Stream && action.clipStartMs != null }
+                val playAction = if (plan != null && action is PlayAction.Stream) {
+                    action.copy(clipStartMs = plan.clipStartMs, clipEndMs = plan.clipEndMs)
+                } else {
+                    action
+                }
                 val mi = mediaItem(
                     songId = item.id,
-                    action = action,
+                    action = playAction,
                     song = song,
                     album = album,
                     playContext = request.context,
                     originCollectionId = request.originCollectionId,
                     titleFallback = item.title,
                     artistFallback = item.artist,
+                    albumRun = plan != null,
                 )
+                albumRunMediaId = if (plan != null) item.id else null
                 if (sequencer.state.value.playGeneration != entryGeneration) throw CancellationException("superseded by a foreign play")
                 playGeneration.incrementAndGet()
                 urlRetriedFor = null
@@ -1559,6 +1590,8 @@ class PlaybackController(
                     it.prepare()
                     it.play()
                 }
+                // Always re-armed (or disarmed) by a load: a previous run's boundary must never outlive its item.
+                RunTransportBus.albumArmer?.arm(item.id, plan?.boundaryFileMs, plan?.clipStartMs ?: 0L)
                 if (rip != null) watchRipOnDemand(rip.songId, item.id, entryGeneration, mi)
             } catch (e: Throwable) {
                 // A failed/superseded load must not leave this row's title over whatever is still loaded.
@@ -1590,6 +1623,7 @@ class PlaybackController(
                 )
                 .build()
             playGeneration.incrementAndGet()
+            clearAlbumRun()
             stopAppleMusic()
             activeBackend = ActiveBackend.EXO
             sequencerOwnsPlayer = false // the stream's end must never advance a (held) queue
@@ -1603,6 +1637,8 @@ class PlaybackController(
 
         override suspend fun replay(songId: String): Boolean {
             if (!sequencerOwnsPlayer || activeBackend != ActiveBackend.EXO) return false
+            // A run item has no clip end (its song end is an armed boundary): a replay needs a fresh, correctly clipped load.
+            if (albumRunMediaId != null) return false
             return withController { c ->
                 val cur = c.currentMediaItem
                 if (cur == null || cur.mediaId != songId) {
@@ -1655,6 +1691,62 @@ class PlaybackController(
             }
         }
 
+        // ---- P2-ALB-4: album run (one engine item per vinyl side) ----
+
+        override fun armBoundary(songId: String, fileMs: Long?, clipStartMs: Long) {
+            RunTransportBus.albumArmer?.arm(songId, fileMs, clipStartMs)
+        }
+
+        override fun albumFileState(): AlbumFileState? {
+            val c = controller ?: return null
+            val runId = albumRunMediaId ?: return null
+            if (!sequencerOwnsPlayer || activeBackend != ActiveBackend.EXO || !exoFronts()) return null
+            val item = c.currentMediaItem ?: return null
+            val extras = item.requestMetadata.extras ?: return null
+            if (!extras.getBoolean(PlaybackContract.EXTRA_ALBUM_RUN, false)) return null
+            val clip = extras.getLong(PlaybackContract.EXTRA_CLIP_START_MS, -1L).takeIf { it >= 0 } ?: return null
+            return AlbumFileState(runId, clip, clip + c.currentPosition.coerceAtLeast(0L), c.isPlaying)
+        }
+
+        override fun seekInFile(fileMs: Long): Boolean {
+            val c = controller ?: return false
+            val st = albumFileState() ?: return false
+            val itemMs = fileMs - st.clipStartMs
+            if (itemMs < 0) return false
+            c.seekTo(itemMs)
+            return true
+        }
+
+        override suspend fun retargetInPlace(item: QueueItem, startPlayback: Boolean): Boolean {
+            if (!sequencerOwnsPlayer || activeBackend != ActiveBackend.EXO || albumRunMediaId == null) return false
+            // The CURRENT catalog title (a rename made in the waveform editor shows at once), else the row's snapshot.
+            val merged = catalog.state.value.catalog
+            val song = merged?.songsById?.get(item.id)
+            val album = song?.albumId?.let { merged.albumsById[it] }
+            val md = MediaMetadata.Builder()
+                .setTitle(song?.name ?: item.title)
+                .setArtist(song?.artist ?: item.artist)
+                .setAlbumTitle(album?.name)
+                .apply { (album?.artCandidates()?.firstOrNull() ?: album?.let { artFallback(it) })?.let { setArtworkUri(Uri.parse(it)) } }
+                .build()
+            val moved = withController { c ->
+                val cur = c.currentMediaItem ?: return@withController null
+                if (cur.requestMetadata.extras?.getBoolean(PlaybackContract.EXTRA_ALBUM_RUN, false) != true) return@withController null
+                // Same URI + clip (the extras ride along), new identity + metadata: Media3 updates it in place.
+                val next = cur.buildUpon().setMediaId(item.id).setMediaMetadata(md).build()
+                albumRunMediaId = item.id
+                RunTransportBus.albumArmer?.expectRetarget(item.id)
+                val before = c.currentPosition
+                c.replaceMediaItem(c.currentMediaItemIndex, next)
+                if (startPlayback) c.play()
+                before
+            } ?: return false
+            guardRetargetPosition(moved)
+            val ahead = sequencer.state.value.upcomingPlayable.take(PlaybackUrlResolver.AHEAD).map { it.resolveId }
+            urls.prefetch(ahead, settings.current().hasRipServer)
+            return true
+        }
+
         override suspend fun pause() = withController { it.pause() }
         override suspend fun resume() = withController { it.play() }
         override suspend fun seekTo(positionMs: Long) = withController { it.seekTo(positionMs) }
@@ -1662,6 +1754,7 @@ class PlaybackController(
             // Only tear the engine down if the sequencer still owns it (a foreign single may be playing).
             if (!sequencerOwnsPlayer) return
             sequencerOwnsPlayer = false
+            clearAlbumRun()
             cancelRipOnDemand()
             if (activeBackend == ActiveBackend.APPLE_MUSIC) {
                 disarmAppleMusic()
@@ -1671,6 +1764,35 @@ class PlaybackController(
             withController {
                 it.stop()
                 it.clearMediaItems()
+            }
+        }
+    }
+
+    /** The song id the loaded album run item is currently retitled to (null = no run item loaded by the sequencer). */
+    @Volatile private var albumRunMediaId: String? = null
+
+    /** No run item is loaded (or its boundary must not fire): disarm the engine and forget the run identity. */
+    private fun clearAlbumRun() {
+        albumRunMediaId = null
+        RunTransportBus.albumArmer?.arm("", null, 0L)
+    }
+
+    /** Other owners of the audio (DJ tail deck, Stem Lock) bind here: while true an album run never moves in place. */
+    @Volatile var albumRunDeclines: () -> Boolean = { false }
+
+    /**
+     * Safety net for a Media3 that re-prepared instead of updating the replaced run item in place: if the playhead fell
+     * back well behind where it was, seek forward again (the emulator step verifies this never triggers).
+     */
+    private fun guardRetargetPosition(beforeMs: Long) {
+        scope.launch {
+            kotlinx.coroutines.delay(500)
+            withController { c ->
+                val expected = beforeMs + 500
+                if (albumRunMediaId != null && c.currentPosition + 1_500 < expected) {
+                    NPLog.lane(NPLog.PLAYBACK, "album retarget re-seek from=${c.currentPosition} to=$expected")
+                    c.seekTo(expected)
+                }
             }
         }
     }

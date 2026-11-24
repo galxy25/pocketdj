@@ -71,6 +71,13 @@ class RipsRepository(
         return AnalogWindow.endMs(base, startMs, tl, run, lengthMs)
     }
 
+    /**
+     * The layout of the shared album file [songId] plays from (manifest starts + the user's boundary edits), or null when
+     * the song is not a slice of a multi-song file (P2-ALB-4: album runs).
+     */
+    fun albumTimeline(songId: String): AlbumFileTimeline? =
+        AlbumFileTimeline.forSong(com.levi.pocketdj.data.edition.SongVariant.baseId(songId), _manifest.value, segmentOverrides())
+
     /** True when a public rip exists (metadata-only rows render no ▶ otherwise). */
     fun isPlayable(songId: String): Boolean =
         !PlayResolver.isStudioId(songId) && _manifest.value.containsKey(songId)
